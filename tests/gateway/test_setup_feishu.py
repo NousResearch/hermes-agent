@@ -29,9 +29,9 @@ def _run_setup_feishu(
     """
     existing_env = existing_env or {}
     prompt_yes_no_responses = list(prompt_yes_no_responses or [True])
-    # QR path: method(0), dm(0), group(0) — 3 choices (no connection mode)
-    # Manual path: method(1), domain(0), connection(0), dm(0), group(0) — 5 choices
-    prompt_choice_responses = list(prompt_choice_responses or [0, 0, 0])
+    # QR path: method(0), dm(0), group(0), thread(0) — 4 choices (no connection mode)
+    # Manual path: method(1), domain(0), connection(0), dm(0), group(0), thread(0) — 6 choices
+    prompt_choice_responses = list(prompt_choice_responses or [0, 0, 0, 0])
     prompt_responses = list(prompt_responses or [""])
 
     saved_env = {}
@@ -90,7 +90,7 @@ class TestSetupFeishuConnectionMode:
     def test_manual_path_websocket(self, _mock_probe):
         env, _ = _run_setup_feishu(
             qr_result=None,
-            prompt_choice_responses=[1, 0, 0, 0, 0],  # method=manual, domain=feishu, connection=ws, dm=pairing, group=open
+            prompt_choice_responses=[1, 0, 0, 0, 0, 0],  # method=manual, domain, connection=ws, dm=pairing, group=open, thread=off
             prompt_responses=["cli_manual", "secret_manual", ""],  # app_id, app_secret, home_channel
         )
         assert env["FEISHU_CONNECTION_MODE"] == "websocket"
@@ -110,7 +110,7 @@ class TestSetupFeishuDmPolicy:
                 "open_id": "ou_owner", "bot_name": None, "bot_open_id": None,
             },
             prompt_yes_no_responses=[True],
-            prompt_choice_responses=[0, dm_choice_idx, 0],  # method=QR, dm=<choice>, group=open
+            prompt_choice_responses=[0, dm_choice_idx, 0, 0],  # method=QR, dm=<choice>, group=open, thread=off
             prompt_responses=prompt_responses or [""],
         )
         return env
@@ -136,10 +136,49 @@ class TestSetupFeishuGroupPolicy:
                 "open_id": None, "bot_name": None, "bot_open_id": None,
             },
             prompt_yes_no_responses=[True],
-            prompt_choice_responses=[0, 0, 0],  # method=QR, dm=pairing, group=open
+            prompt_choice_responses=[0, 0, 0, 0],  # method=QR, dm=pairing, group=open, thread=off
             prompt_responses=[""],
         )
         assert env["FEISHU_GROUP_POLICY"] == "open"
+
+
+# ---------------------------------------------------------------------------
+# Thread (topic) replies
+# ---------------------------------------------------------------------------
+
+class TestSetupFeishuThreadReply:
+
+    def _qr_env(self, prompt_choice_responses, prompt_responses=None):
+        return _run_setup_feishu(
+            qr_result={
+                "app_id": "cli_test", "app_secret": "s", "domain": "feishu",
+                "open_id": None, "bot_name": None, "bot_open_id": None,
+            },
+            prompt_yes_no_responses=[True],
+            prompt_choice_responses=prompt_choice_responses,
+            prompt_responses=prompt_responses or [""],
+        )[0]
+
+    def test_thread_choice_saves_true(self):
+        env = self._qr_env([0, 0, 0, 1])  # group=open, thread=topic
+        assert env["FEISHU_THREAD_REPLY"] == "true"
+
+    def test_quote_choice_saves_false(self):
+        env = self._qr_env([0, 0, 0, 0])
+        assert env["FEISHU_THREAD_REPLY"] == "false"
+
+    def test_groups_disabled_skips_thread_question(self):
+        # method, dm, group=disabled — no 4th response exists; exhausting it would raise.
+        env = self._qr_env([0, 0, 1])
+        assert "FEISHU_THREAD_REPLY" not in env
+
+    @patch.dict(os.environ, _SYS_ENV, clear=True)
+    def test_saved_true_reaches_adapter_settings(self):
+        env = self._qr_env([0, 0, 0, 1])
+        with patch.dict(os.environ, {**_SYS_ENV, **env}, clear=True):
+            from gateway.config import PlatformConfig
+            from plugins.platforms.feishu.adapter import FeishuAdapter
+            assert FeishuAdapter(PlatformConfig())._thread_reply is True
 
 
 # ---------------------------------------------------------------------------
@@ -156,7 +195,7 @@ class TestSetupFeishuHomeChannel:
                 "open_id": None, "bot_name": None, "bot_open_id": None,
             },
             prompt_yes_no_responses=[True],
-            prompt_choice_responses=[0, 0, 0],
+            prompt_choice_responses=[0, 0, 0, 0],
             prompt_responses=[""],
             existing_env={"FEISHU_HOME_CHANNEL": "chat_old"},
         )
@@ -187,7 +226,7 @@ class TestSetupFeishuAdapterIntegration:
                 "bot_open_id": "ou_bot_integration",
             },
             prompt_yes_no_responses=[True],
-            prompt_choice_responses=[0, dm_idx, group_idx],  # method=QR, dm, group
+            prompt_choice_responses=[0, dm_idx, group_idx, 0],  # method=QR, dm, group, thread=off
             prompt_responses=[""],
         )
         return env

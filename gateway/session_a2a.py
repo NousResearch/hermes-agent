@@ -73,7 +73,8 @@ def storage_source(db, source, session_id, fallback):
     if 'legacy_session_id' in receipt:
         root = db.get_session(receipt['legacy_session_id'])
         return (root or {}).get('source') or label
-    return fallback if label in {'cli', 'tui', 'gui', 'acp'} else label
+    from gateway.session_policy import STORED_AS_LOCAL
+    return fallback if label in STORED_AS_LOCAL else label
 
 
 async def forward(connection, params):

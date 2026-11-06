@@ -57,7 +57,7 @@ iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 
 </div>
 
-سورس انسٹالر Python 3.14، Node.js، npm، ripgrep، FFmpeg اور Python کی
+سورس انسٹالر Python 3.14، Node.js، npm، pnpm، ripgrep، FFmpeg اور Python کی
 ڈیپینڈینسیز کے لیے PM استعمال کرتا ہے۔ اگر Git موجود نہ ہو تو Git for Windows
 کا تصدیق شدہ آرکائیو ہرمیس کے ٹول اسٹور میں نصب کرتا ہے۔ سسٹم کا Git تبدیل نہیں
 ہوتا۔ MSIX/App Installer ایک الگ پیکیج ہے۔
@@ -187,6 +187,7 @@ hermes setup --portal
 <div dir="ltr">
 
 ```bash
+hermes plugins install agent-importers  # ایک بار: OpenClaw، Claude Code، Codex اور Cursor
 hermes claw migrate              # انٹرایکٹو مائیگریشن (مکمل پری سیٹ)
 hermes claw migrate --dry-run    # جائزہ لیں کہ کیا کیا مائیگریٹ ہوگا
 hermes claw migrate --preset user-data   # حساس معلومات (secrets) کے بغیر مائیگریٹ کریں

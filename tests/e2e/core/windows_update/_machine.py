@@ -576,16 +576,46 @@ class Machine:
         except OSError:
             pass
         artifacts = os.environ.get("HERMES_E2E_ARTIFACTS")
-        if artifacts:
-            dest = Path(artifacts) / self.root.name
-            shutil.copytree(self.logs, dest / "transcripts", dirs_exist_ok=True)
-            for sub in ("logs",):
-                src = self.hermes_home / sub
-                if src.is_dir():
-                    shutil.copytree(src, dest / sub, dirs_exist_ok=True,
-                                    ignore=shutil.ignore_patterns("*.db", "*.db-*"))
-            (dest / "evidence.txt").write_text(self.evidence(), encoding="utf-8", errors="replace")
-            (dest / "timings.json").write_text(json.dumps(self.timings, indent=1), encoding="utf-8")
+        try:
+            if artifacts:
+                dest = Path(artifacts) / self.root.name
+                shutil.copytree(self.logs, dest / "transcripts", dirs_exist_ok=True)
+                for sub in ("logs",):
+                    src = self.hermes_home / sub
+                    if src.is_dir():
+                        shutil.copytree(src, dest / sub, dirs_exist_ok=True,
+                                        ignore=shutil.ignore_patterns("*.db", "*.db-*"))
+                (dest / "evidence.txt").write_text(self.evidence(), encoding="utf-8", errors="replace")
+                (dest / "timings.json").write_text(json.dumps(self.timings, indent=1), encoding="utf-8")
+        finally:
+            # Every machine is a full install (checkout, venv with every extra, PM tools, caches) on
+            # the runner's only drive; kept, they add up past its free space before the last file
+            # runs. A failed artifact copy (a full disk) must not keep the install. The transcripts
+            # stay (small, and the only record when no artifacts dir is set).
+            leftovers = [note for tree in (self.profile, self.serve) if (note := _remove_tree(tree))]
+            if leftovers:  # the job's "No machine install left behind" step names these
+                dest = Path(artifacts) / self.root.name if artifacts else self.logs
+                dest.mkdir(parents=True, exist_ok=True)
+                (dest / "teardown-leftovers.txt").write_text("\n".join(leftovers) + "\n", encoding="utf-8")
+
+
+def _remove_tree(path: Path) -> str | None:
+    """Delete ``path``; ``None`` when gone, else what stopped it.
+
+    The ``\\\\?\\`` prefix reaches past MAX_PATH (the checkout carries 159-character paths); a
+    just-killed process can hold a handle for a moment, so a failure is retried."""
+    from utils import rmtree_readonly
+
+    error: OSError | None = None
+    for _ in range(5):
+        if not path.exists():
+            return None
+        try:
+            rmtree_readonly("\\\\?\\" + str(path.resolve()))
+        except OSError as exc:
+            error = exc
+            time.sleep(2)
+    return None if not path.exists() else f"{path}: {error}"
 
 
 def new_machine(tmp_root: Path, base_url: str, *, label: str, person: str = "",

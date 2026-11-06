@@ -15,7 +15,7 @@ import threading
 import time
 from agent.i18n import t
 from agent.interrupt_compat import request_hard_interrupt
-from agent.pet import render as pet_render
+from agent import terminal_image
 from contextlib import suppress
 from hermes_constants import get_hermes_home
 from prompt_toolkit.application import Application
@@ -31,21 +31,44 @@ class CLITuiRuntimeMixin:
     def _tui_process_loop(self):
         """REPL worker thread: drain ``_pending_input``, run idle housekeeping, dispatch each input."""
         self._sync_program_status()
+        held = None
         while not self._should_exit:
             try:
+                if held is not None:
+                    held, user_input = self._tui_hold_step(held)
+                    if user_input is not None:
+                        self._tui_process_one_input(user_input)
+                    continue
                 try:
                     user_input = self._pending_input.get(timeout=0.1)
                 except queue.Empty:
                     if not self._agent_running:
                         self._tui_idle_tick()
                     continue
-                self._tui_process_one_input(user_input)
+                from hermes_cli.gateway_queue import OwnQueueHold
+                held = OwnQueueHold.begin(self, user_input)
+                if held is None:
+                    self._tui_process_one_input(user_input)
             except Exception as e:
                 if isinstance(e, OSError) and e.errno == errno.EIO:
                     self._mark_terminal_io_broken("process_loop")
                     logger.warning("process_loop EIO — freezing UI paints (#81521): %s", e)
                     continue
                 logger.warning("process_loop unhandled error (msg may be lost): %s", e)
+
+    def _tui_hold_step(self, hold):
+        """One step of holding a local input behind this viewer's own ``/queue`` admission (#134889 N5):
+        ``(hold or None, input to run now or None)``. A turn the owner runs now goes first; the held
+        input runs once that admission was taken, left the queue, or the bounded wait ran out."""
+        with suppress(Exception):
+            self._drain_process_notifications("cli-idle")  # adopts the admission on its message.start
+        item = hold.take_gateway_turn(self._pending_input)
+        if item is not None:
+            return hold, item
+        if hold.done():
+            return None, hold.item
+        time.sleep(0.05)
+        return hold, None
 
     def _tui_idle_tick(self):
         """Idle housekeeping between inputs (agent not running)."""
@@ -131,6 +154,8 @@ class CLITuiRuntimeMixin:
             n = len(submit_images)
             _attached = t("cli.tui.images_attached_one" if n == 1 else "cli.tui.images_attached_other", count=n)
             _cprint(f"  {_DIM}{_attached}{_RST}")
+            from hermes_cli.cli_inline_images import print_inline_images
+            print_inline_images(self, submit_images)
 
         self._program_turn_outcome = None
         self._agent_running = self._interactive_turn = True
@@ -167,6 +192,7 @@ class CLITuiRuntimeMixin:
         self._spinner_text = self._last_scrollback_tool = ""
         self._tool_start_time = 0.0
         self._pending_tool_info.clear()
+        self.__dict__.pop("_running_tool_labels", None)
         self._pet_react_turn_end()
         self._turn_summary_emit()
         self._interactive_turn = False
@@ -247,23 +273,15 @@ class CLITuiRuntimeMixin:
             pass
         raise KeyboardInterrupt()  # fallback for non-prompt_toolkit contexts
 
-    def _show_startup_browser_notice(self):
-        """Main's ``_show_browser_backend_notice``; on a gateway session the gateway computed the notice
-        (and its once-per-24h stamp) with the session's tools, so it is printed from the snapshot."""
-        inventory = getattr(getattr(self, "_session_db", None), "banner_inventory", lambda: None)()
-        if inventory is None or "browser_backend_notice" not in inventory:
-            self._show_browser_backend_notice()
-            return
-        notice = inventory.get("browser_backend_notice")
-        if notice:
-            from gateway.warning_notifications import render_notification
-            render_notification(lambda: self._console_print(f"[yellow]⚠ {notice}[/yellow]"), platform="cli")
-
     def _tui_print_startup(self):
         """Startup output: light-mode probe, banner, advisories, resume/welcome lines, tips."""
         from cli import _accent_hex, _detect_light_mode
         with suppress(Exception):  # light-mode probe before pt grabs the tty (cached)
             _detect_light_mode()
+        from hermes_cli.cli_inline_images import vscode_images_hint
+        _show_vscode_images_hint = False
+        with suppress(Exception):  # VS Code image probe: same pre-pt window, cached, ~10 ms
+            _show_vscode_images_hint = vscode_images_hint(self._inline_images_mode)
         # Scroll the cursor to the last row so banner, responses and prompt pin to the bottom.
         with suppress(Exception):
             _term_lines = shutil.get_terminal_size().lines
@@ -279,7 +297,6 @@ class CLITuiRuntimeMixin:
             raise SystemExit(2) from None
         self.show_banner()
         self._show_security_advisories()
-        self._show_startup_browser_notice()
 
         # First-run: an unconfigured install routes into provider onboarding instead of
         # a chat that spins ~30s and fails with a provider-specific error. TTY only. A
@@ -321,7 +338,12 @@ class CLITuiRuntimeMixin:
         self._console_print(f"[{_welcome_color}]{_welcome_text}[/]")
 
         self._tui_startup_prewarm_and_warnings(_welcome_skin)
-        self._print_random_tip()
+        if _show_vscode_images_hint:
+            from hermes_cli.skin_engine import get_active_skin
+            _tip_color = get_active_skin().get_color("banner_dim", "#B8860B")
+            self._console_print(f"[dim {_tip_color}]{t('cli.tip_line', tip=t('cli.tui.vscode_images_hint'))}[/]")
+        else:
+            self._print_random_tip()
 
         self._tui_startup_background_maintenance()
         # Before the background preload is folded in (at agent init), show the REQUESTED names.
@@ -407,7 +429,7 @@ class CLITuiRuntimeMixin:
         # Kitty placeholders encode the image id in exact foreground RGB, so the whole app
         # runs 24-bit there. ColorDepth is imported lazily for tests that stub prompt_toolkit.
         extra_kw = {}
-        if pet_render.supports_kitty_placeholders():
+        if terminal_image.supports_kitty_placeholders():
             from prompt_toolkit.output import ColorDepth
 
             extra_kw["color_depth"] = ColorDepth.DEPTH_24_BIT
@@ -545,6 +567,14 @@ class CLITuiRuntimeMixin:
         # turn fires it in the gateway when the interrupted turn finalizes.
         if self.agent and self._agent_running and not _gateway_owns_session_end(self.agent):
             _invoke_interrupted_session_end(self.agent, self.agent.session_id, "shutdown")
+        # Ask AND apply before _run_cleanup arms the exit watchdog, so a large archive is never cut
+        # short; a signal-driven exit never asks.
+        import cli as _cli_mod
+        if not _cli_mod._signal_watchdog_armed and _cli_mod._active_worktree:
+            from hermes_cli.worktree_exit import apply_exit_choice, ask_exit_choice
+            with suppress(Exception, KeyboardInterrupt):
+                ask_exit_choice(_cli_mod._active_worktree)
+                apply_exit_choice(_cli_mod._active_worktree, _cprint)
         _run_cleanup()
         self._print_exit_summary()
         self._release_active_session()

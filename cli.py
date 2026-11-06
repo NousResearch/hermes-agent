@@ -47,6 +47,7 @@ from hermes_cli.cli_tui_mixin import CLITuiMixin
 from hermes_cli.cli_process_notifications import CLIProcessNotificationsMixin
 from hermes_cli.cli_init_mixin import CLIInitMixin
 from hermes_cli.cli_tui_runtime_mixin import CLITuiRuntimeMixin
+from hermes_cli.cli_backtrack import CLIBacktrackMixin
 # Extracted clusters (mechanical split, #116911); re-exported here so `cli.<name>` stays the seam.
 from hermes_cli.cli_shutdown import (
     _CLEANUP_STEPS,
@@ -407,7 +408,7 @@ _cleanup_all_terminals = _lazy_shim("tools.terminal_tool", "cleanup_all_environm
 set_sudo_password_callback = _lazy_shim("tools.terminal_tool", "set_sudo_password_callback")
 set_approval_callback = _lazy_shim("tools.terminal_tool", "set_approval_callback")
 set_secret_capture_callback = _lazy_shim("tools.skills_tool", "set_secret_capture_callback")
-_cleanup_all_browsers = _lazy_shim("tools.browser_tool_lifecycle", "_emergency_cleanup_all_sessions", "_cleanup_all_browsers")
+_cleanup_all_browsers = _lazy_shim("tools.browser_session_lifecycle", "emergency_cleanup_all_sessions", "_cleanup_all_browsers")
 
 _cleanup_done = False  # _run_cleanup runs exactly once
 _cleanup_in_progress = False
@@ -558,6 +559,9 @@ def _cleanup_worktree(info: dict[str, str] | None = None) -> None:
     if not Path(wt_path).exists():
         return
     _active_worktree = None
+    from hermes_cli.worktree_exit import apply_exit_choice
+    if apply_exit_choice(info, _cprint):  # an exit-question answer not applied yet (normally none)
+        return
 
     if _worktree_is_dirty(wt_path, repo_root, timeout=10):
         # Uncommitted work: say so, and don't hint at `remove --force`, which would destroy it.
@@ -572,6 +576,12 @@ def _cleanup_worktree(info: dict[str, str] | None = None) -> None:
         else:
             _cprint(f"\n\033[33m{_t('cli.worktree.unpushed_keeping', path=wt_path)}\033[0m")
             print(f"  {_t('cli.worktree.clean_up_manually', path=wt_path)}")
+        return
+
+    from hermes_cli.worktree_ops import removal_blocked
+    blocked = removal_blocked(wt_path)  # an embedded repo or private ref dies with it
+    if blocked:
+        _cprint(f"\n\033[33m{_t('cli.worktree.kept_reason', path=wt_path, reason=blocked[1])}\033[0m")
         return
 
     # Release the tree's language servers while the path still exists, then unlock so `remove`
@@ -769,8 +779,8 @@ def save_config_value(key_path: str, value: any) -> bool:
     try:
         from hermes_constants import mkdir_under_hermes_home
         mkdir_under_hermes_home(config_path.parent)
-        from utils import atomic_roundtrip_yaml_update
-        atomic_roundtrip_yaml_update(config_path, key_path, value)
+        from hermes_cli.config_backend import write_config_key
+        write_config_key(config_path, key_path, value)
         try:  # owner-only: config files contain API keys
             os.chmod(config_path, 0o600)
         except (OSError, NotImplementedError):
@@ -820,11 +830,14 @@ class _VoiceInputMessage:
 class _SeededQueryMessage:
     """Sentinel for a ``-q`` prompt seeded into an interactive session; treated LITERALLY (no slash/!/file-drop)."""
 
-    __slots__ = ("images", "text")
+    __slots__ = ("admission_id", "images", "text")
 
-    def __init__(self, text: str, images=None):
+    def __init__(self, text: str, images=None, admission_id=None):
         self.text = text or ""
         self.images = list(images or [])
+        # A ``/queue`` admission the gateway is running (#134889 N5): ``run_conversation`` pumps that
+        # admission by this id, never by comparing the (sanitized) text.
+        self.admission_id = admission_id
 
     def __str__(self) -> str:
         return self.text
@@ -865,7 +878,7 @@ from hermes_cli.cli_chat_turn_mixin import CLIChatTurnMixin
 _PASTE_REF_RE = re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
 
 
-class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMixin, CLIStatusBarMixin, CLIVoiceMixin, CLIModelSwitchMixin, CLISessionMixin, CLIStreamMixin, CLIModalMixin, CLITerminalMixin, CLIInfoMixin, CLILoopsMixin, CLIChatTurnMixin):
+class HermesCLI(CLIBacktrackMixin, CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMixin, CLIStatusBarMixin, CLIVoiceMixin, CLIModelSwitchMixin, CLISessionMixin, CLIStreamMixin, CLIModalMixin, CLITerminalMixin, CLIInfoMixin, CLILoopsMixin, CLIChatTurnMixin):
     """Interactive REPL for the Hermes Agent."""
 
     # Seeded -q first message (see _should_seed_interactive); run() re-creates
@@ -962,18 +975,6 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         except Exception:
             pass  # never block startup
 
-    def _show_browser_backend_notice(self):
-        """Once-per-24h hint when the default Browser Use backend silently fell back to built-in tools."""
-        try:
-            from tools.browser_use_cli import default_downgrade_notice
-
-            notice = default_downgrade_notice()
-            if notice:
-                from gateway.warning_notifications import render_notification
-                render_notification(lambda: self._console_print(f"[yellow]⚠ {notice}[/yellow]"), platform="cli")
-        except Exception:
-            logger.debug("browser backend notice failed", exc_info=True)
-
     def finalize_preloaded_skills(self) -> None:
         """Join the background --skills preload and fold it into the prompt (idempotent).
 
@@ -1040,14 +1041,18 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
 
     def show_config(self):
         """Display current configuration with kawaii ASCII art."""
+        from hermes_cli.config_backend import config_exists
         terminal_env = os.getenv("TERMINAL_ENV", "local")
         terminal_cwd = os.getenv("TERMINAL_CWD", os.getcwd())
         terminal_timeout = os.getenv("TERMINAL_TIMEOUT", "60")
 
         config_path = _hermes_home / 'config.yaml'
-        if not config_path.exists():
+        if not config_exists(config_path):
             config_path = Path(__file__).parent / 'cli-config.yaml'
-        config_status = _t("cli.config.loaded") if config_path.exists() else _t("cli.config.not_found")
+        config_status = _t("cli.config.loaded") if config_exists(config_path) else _t("cli.config.not_found")
+        from hermes_cli.config_backend import get_config_backend
+        if not get_config_backend().supports_file_tooling():  # no local file: name where config comes from
+            config_path, config_status = get_config_backend().describe(_hermes_home), ""
 
         # ``api_key`` may be a callable bearer provider (Entra ID, Vertex OAuth, key_cmd, ...):
         # label it by its tagged source and never invoke it (that would mint a token just to mask
@@ -1272,12 +1277,18 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         answered = gateway_plugin_commands.run(self, base_cmd.lstrip("/"), user_args)
         if answered:
             return answered  # ran beside the plugin's hooks, tools and MCP servers in the gateway, or GONE
+        from hermes_cli.plugin_command_dispatch import invoke_plugin_command
         from hermes_cli.plugins import get_plugin_command_handler, resolve_plugin_command_result
         plugin_handler = get_plugin_command_handler(base_cmd.lstrip("/"))
         if not plugin_handler:
             return
+        session_id = getattr(self, "session_id", None) or ""
+        from hermes_cli.plugin_choices import bind_asker, clarify_asker
         try:
-            result = resolve_plugin_command_result(plugin_handler(user_args))
+            with bind_asker(clarify_asker(self._clarify_callback)):  # ctx.ask_choice: the clarify panel
+                result = resolve_plugin_command_result(invoke_plugin_command(
+                    plugin_handler, user_args, source=None, session_id=session_id, session_key=session_id,
+                    platform="cli"))
             if result:
                 _cprint(str(result))
         except Exception as e:
@@ -1592,6 +1603,8 @@ def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url
 def _run_legacy_gateway():
     """Legacy `cli.py --gateway` entry: arm the startup watchdog (before importing the gateway graph), then run it."""
     import asyncio
+    from hermes_cli.resource_limits import apply_malloc_arena_max
+    apply_malloc_arena_max()  # before the watchdog thread: glibc latches its arena limit
     with suppress(Exception):
         from hermes_startup_watchdog import arm_startup_watchdog
         arm_startup_watchdog()
@@ -1623,7 +1636,8 @@ def _start_worktree_setup(list_tools, list_toolsets, worktree, w):
 
     def _create_worktree() -> None:
         try:
-            _wt_result["info"] = _setup_worktree(sync_base=_sync_base)
+            # The session freezes this cwd: recorded so a resume recreates the tree quit removed (N8).
+            _wt_result["info"] = _setup_worktree(sync_base=_sync_base, retain_db=get_hermes_home() / "state.db")
         except Exception:
             logger.debug("worktree setup failed", exc_info=True)
             _wt_result["info"] = None

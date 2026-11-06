@@ -175,7 +175,7 @@ export const resolveOutsideAsar = (specifier: string): string =>
 let getWindowsModule: Promise<GetWindowsModule | EnumerationFailure> | null = null
 
 const loadGetWindows = (): Promise<GetWindowsModule | EnumerationFailure> => {
-  // get-windows is an optionalDependency: `npm ci` can skip it when its native
+  // get-windows is an optionalDependency: the install can skip it when its native
   // install fails, including Linux and Windows ARM64 where 9.3.0 has no
   // prebuilt. A missing module is therefore a normal state on those targets,
   // so the lazy import resolves to null instead of rejecting; enumeration then

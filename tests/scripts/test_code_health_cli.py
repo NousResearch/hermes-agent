@@ -24,7 +24,8 @@ from scripts.code_health.config import ENFORCEMENT
 REPO = Path(__file__).resolve().parents[2]
 _GUARD_SCRIPTS = (
     "scripts/check-windows-footguns.py", "scripts/check_bash_shebangs.py",
-    "scripts/check_no_tmp_literals.py", "scripts/check_config_yaml_writers.py",
+    "scripts/check_no_tmp_literals.py", "scripts/check_detached_spawns.py",
+    "scripts/check_config_yaml_writers.py", "scripts/check_config_yaml_readers.py",
     "scripts/ci/check_os_marker_fakes.py", "scripts/check-case-collisions.py",
     "scripts/ci/check_lazy_deps_imports.py", "scripts/ci/check_profile_archive_boundary.py",
     "scripts/ci/check_agents_md_size.py", "scripts/ci/check_blob_size.py",
@@ -442,8 +443,8 @@ def test_allow_comment_lists_rules_by_comma_or_space(tmp_path, capsys, rules):
 
 def test_tooling_failure_exits_2_without_a_traceback(tmp_path, monkeypatch, capsys):
     repo, base = _ratchet_repo(tmp_path)
-    lock = {"packages": {"node_modules/typescript": {"version": "0.0.0-not-published"}}}
-    _commit(repo, {"package-lock.json": json.dumps(lock), "web/a.ts": "export const a = 1;\n"})
+    manifest = {"devDependencies": {"typescript": "0.0.0-not-published"}}
+    _commit(repo, {"package.json": json.dumps(manifest), "web/a.ts": "export const a = 1;\n"})
     if not shutil.which("npm") or not shutil.which("node"):
         pytest.skip("needs node + npm to reach the npm install path")
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))

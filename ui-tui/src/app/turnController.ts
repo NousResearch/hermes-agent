@@ -126,6 +126,13 @@ const finalTail = (finalText: string, segments: Msg[]) => {
   return tail
 }
 
+// Whether the streamed tail is a segment of its own: only when the gateway's final text does not
+// already carry it — otherwise the tail IS the answer and flushing would move the tool shelf/trail
+// under it. Never without a final text (`rawText` is then the buffer, #16391), nor when a
+// transform_llm_output plugin rewrote the reply: the tail is the raw text the rewrite replaces.
+const keepsStreamedTail = (tail: string, completionText: null | string | undefined, transformed?: boolean | null) =>
+  Boolean(tail && completionText != null && !transformed && !completionText.includes(tail))
+
 const interruptedText = (partial: string) => (partial ? `${partial}\n\n*[interrupted]*` : '*[interrupted]*')
 
 // What interruptTurn sealed into the transcript: `text` is the bubble it
@@ -344,6 +351,7 @@ class TurnController {
     this.activeTools = []
     this.streamTimer = clear(this.streamTimer)
     this.bufRef = ''
+
     // `keepTurnArchive`: the turn-over signal arrived before the final; the sealed segments
     // and finished tool rows wait for `recordMessageComplete` to archive them.
     if (!opts.keepTurnArchive) {
@@ -619,6 +627,21 @@ class TurnController {
     patchTurnState({ streamSegments: this.segmentMessages })
   }
 
+  // A tool's image lands right under the trail line of the call that made it,
+  // ahead of whatever the agent streams next (same anchoring as diffs).
+  pushImageSegment(path?: null | string, toolId?: string) {
+    if (!path || this.interrupted) {
+      return
+    }
+
+    this.flushStreamingSegment()
+    this.segmentMessages = [
+      ...this.segmentMessages,
+      { images: [path], kind: 'image', role: 'system', text: '', ...(toolId && { imageRevision: toolId }) }
+    ]
+    patchTurnState({ streamSegments: this.segmentMessages })
+  }
+
   pushActivity(text: string, tone: ActivityItem['tone'] = 'info', replaceLabel?: string) {
     patchTurnState(state => {
       const base = replaceLabel
@@ -685,13 +708,8 @@ class TurnController {
     const rawText = (completionText ?? this.bufRef).trimStart()
 
     // Text still in `this.bufRef` streamed after the last segment flush; `idle()`
-    // below would wipe it (#61520). Flush it as a segment only when the
-    // gateway's final text does not already carry it — otherwise the tail IS
-    // the answer and flushing would move the tool shelf/trail under it. Skipped
-    // when `completionText` is absent: `rawText` is then the buffer (#16391).
-    const tail = this.bufRef.trim()
-
-    if (tail && completionText != null && !completionText.includes(tail)) {
+    // below would wipe it (#61520).
+    if (keepsStreamedTail(this.bufRef.trim(), completionText, payload.response_transformed)) {
       this.flushStreamingSegment()
     }
 

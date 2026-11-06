@@ -92,9 +92,21 @@ CASES = {
     # through the same compilers (tests/ci/test_update_ci_routing.py).
     "shared JS builder → frontend + both update suites": (
         ["scripts/build/web.mjs"],
-        _lanes(python=True, frontend=True, e2e_upgrade=True, e2e_desktop_update=True),
+        _lanes(python=True, frontend=True, e2e_upgrade=True, e2e_desktop_update=True, docker=True),
+    ),
+    # The image builds the Webapp through this recipe; Desktop sources do not route to docker.
+    "webapp build recipe → docker": (
+        ["apps/desktop/scripts/build-webapp.mjs"],
+        _lanes(frontend=True, e2e_upgrade=True, e2e_desktop_core=True, e2e_desktop_update=True, docker=True),
     ),
     "root JS tests → frontend": (["tests-js/product-builders.test.mjs"], _lanes(python=True, frontend=True)),
+    # The bridge's node --test suites run in the JS & TS job (js-tests.yml).
+    "whatsapp bridge → frontend": (
+        ["scripts/whatsapp-bridge/bridge_helpers.js"], _lanes(python=True, frontend=True),
+    ),
+    "whatsapp adapter → frontend": (
+        ["plugins/platforms/whatsapp/adapter.py"], _lanes(python=True, frontend=True, scan=True),
+    ),
     "docs-only → nothing heavy": (["README.md", "docs/guide.md"], _lanes()),
     "python source → python": (["run_agent.py"], _lanes(python=True, scan=True)),
     # pyproject.toml declares the pytest markers the OS lanes select on, so it
@@ -109,7 +121,9 @@ CASES = {
     "ts package → frontend": (["apps/desktop/src/app.tsx"], _lanes(frontend=True)),
     "ui-tui → frontend": (["ui-tui/src/entry.ts"], _lanes(frontend=True)),
     # Lockfile bump shifts every TS package's tree, but not the Python suite.
-    "root lockfile → frontend, not python": (["package-lock.json"], _lanes(frontend=True, npm_lock=True, docker=True, nix=True)),
+    "root lockfile → frontend, not python": (["pnpm-lock.yaml"], _lanes(frontend=True, npm_lock=True, docker=True, nix=True)),
+    # The workspace config (overrides, release-age policy) shifts the same trees.
+    "workspace config → frontend, not python": (["pnpm-workspace.yaml"], _lanes(frontend=True, docker=True, nix=True)),
     "nested lockfile → npm_lock": (["website/package-lock.json"], _lanes(site=True, npm_lock=True)),
     # A website file the Python suite cannot read stays site-only.
     "website config → site": (["website/docusaurus.config.ts"], _lanes(site=True)),
@@ -257,6 +271,14 @@ CASES = {
     # .py/.pth payloads are what it scans for).
     "test runner script → python_prod stays on": (
         ["scripts/run_tests_parallel.py"],
+        _lanes(python=True, scan=True, e2e=True, e2e_upgrade=True),
+    ),
+    "runner launch module → same lanes as the runner": (
+        ["scripts/run_tests_launch.py"],
+        _lanes(python=True, scan=True, e2e=True, e2e_upgrade=True),
+    ),
+    "fork-server child → same lanes as the runner": (
+        ["scripts/run_tests_fork_child.py"],
         _lanes(python=True, scan=True, e2e=True, e2e_upgrade=True),
     ),
     # Supply-chain lanes

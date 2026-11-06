@@ -160,7 +160,7 @@ def check_api_response(
             active_system_prompt=active_system_prompt, conversation_history=conversation_history,
             api_call_count=api_call_count, effective_task_id=effective_task_id, turn_id=turn_id,
             api_request_id=api_request_id, api_start_time=api_start_time, retry_count=retry_count,
-            max_retries=max_retries,
+            max_retries=max_retries, current_turn_user_idx=current_turn_user_idx,
         )
         thinking_spinner = None
         active_system_prompt = _rv.active_system_prompt

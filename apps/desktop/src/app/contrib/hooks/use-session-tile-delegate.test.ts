@@ -14,7 +14,8 @@ import { $sessionTiles, sessionTileDelegate } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
 
 import {
-  clearSingleFlightSessionResumeState
+  clearSingleFlightSessionResumeState,
+  singleFlightSessionResume
 } from '../../session/hooks/use-prompt-actions/single-flight-resume'
 
 import { useSessionTileDelegate } from './use-session-tile-delegate'
@@ -24,6 +25,7 @@ vi.mock('@/hermes', async importActual => ({
   getLatestSessionMessages: vi.fn(async () => ({ messages: [], session_id: '' })),
   getSession: vi.fn()
 }))
+vi.mock('@/store/confirm', () => ({ confirm: vi.fn(async () => false) }))
 vi.mock('@/store/gateway', async importActual => ({
   ...(await importActual<Record<string, unknown>>()),
   requestGatewayForAgent: vi.fn(),
@@ -32,6 +34,7 @@ vi.mock('@/store/gateway', async importActual => ({
 
 const { getLatestSessionMessages, getSession, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } = await import('@/hermes')
 const { requestGatewayForAgent, requestGatewayForProfile } = await import('@/store/gateway')
+const { confirm } = await import('@/store/confirm')
 
 const row = (over: Partial<SessionInfo>): SessionInfo =>
   ({
@@ -262,6 +265,176 @@ describe('useSessionTileDelegate resumeTile', () => {
     })
     expect(getLatestSessionMessages).not.toHaveBeenCalled()
     expect(states.current.get('runtime-tile')).toMatchObject({ busy: true, model: 'snapshot-model' })
+    expect(JSON.stringify(states.current.get('runtime-tile')?.messages)).toContain('new answer')
+    expect(states.current.get('runtime-tile')?.messages).toContainEqual(pending)
+    expect($activeSessionId.get()).toBe('runtime-foreground')
+    expect(takeSessionDraft('stored-tile').text).toBe('unsent tile draft')
+
+    clearSessionDraft('stored-tile')
+    $activeSessionId.set(null)
+    $sessionTiles.set([])
+  })
+
+  it('preserves a newer completed tile turn when an older authoritative snapshot arrives late', async () => {
+    const ownerRoute = { connectionId: 'remote-tile', profile: 'tile-profile', targetProfile: 'backend-tile' }
+
+    const baseline = {
+      busy: false,
+      messages: [
+        { id: 'old-user', parts: [{ type: 'text', text: 'old prompt' }], role: 'user' },
+        { id: 'old-answer', parts: [{ type: 'text', text: 'old answer' }], role: 'assistant' }
+      ],
+      storedSessionId: 'stored-tile'
+    }
+
+    const runtimeIdByStoredSessionIdRef = { current: new Map([['stored-tile', 'runtime-tile']]) }
+    const states = { current: new Map([['runtime-tile', baseline]]) }
+
+    const update = vi.fn((id, updater) => {
+      const next = updater(states.current.get(id))
+      states.current.set(id, next)
+
+      return next
+    })
+
+    let resolveSnapshot!: (value: unknown) => void
+    const snapshot = new Promise(resolve => (resolveSnapshot = resolve))
+
+    vi.mocked(requestGatewayForAgent).mockReset()
+    vi.mocked(requestGatewayForAgent).mockReturnValueOnce(snapshot as never)
+    $sessionTiles.set([{ ownerRoute, runtimeId: 'runtime-tile', storedSessionId: 'stored-tile' }] as never)
+    renderTile(vi.fn(), {
+      runtimeIdByStoredSessionIdRef,
+      sessionStateByRuntimeIdRef: states,
+      updateSessionState: update
+    })
+
+    const refreshing = sessionTileDelegate()!.resumeTile('stored-tile', { authoritativeSnapshot: true })
+    await vi.waitFor(() => expect(requestGatewayForAgent).toHaveBeenCalledTimes(1))
+
+    const completed = {
+      ...baseline,
+      messages: [
+        ...baseline.messages,
+        { id: 'new-user', parts: [{ type: 'text', text: 'new prompt' }], role: 'user' },
+        { id: 'new-answer', parts: [{ type: 'text', text: 'new completed answer' }], role: 'assistant' }
+      ]
+    }
+
+    states.current.set('runtime-tile', completed as never)
+    resolveSnapshot({
+      messages: [
+        { content: 'old prompt', role: 'user', timestamp: 1 },
+        { content: 'old answer', role: 'assistant', timestamp: 2 }
+      ],
+      resumed: 'stored-tile',
+      running: false,
+      session_id: 'runtime-tile'
+    })
+    await refreshing
+
+    const merged = states.current.get('runtime-tile')?.messages
+
+    // Each turn once, in order: the snapshot's rows, then the newer turn as the tile had it.
+    expect(merged?.map(message => message.parts[0]?.text)).toEqual([
+      'old prompt',
+      'old answer',
+      'new prompt',
+      'new completed answer'
+    ])
+    expect(merged?.slice(2)).toEqual(completed.messages.slice(2))
+    $sessionTiles.set([])
+  })
+
+  it('serializes an authoritative gap snapshot after an omitted-message resume already in flight', async () => {
+    const ownerRoute = { connectionId: 'remote-tile', profile: 'tile-profile', targetProfile: 'backend-tile' }
+    const oldMessage = { id: 'old-user', parts: [{ type: 'text', text: 'old prompt' }], role: 'user' }
+
+    const pending = {
+      id: 'user-pending',
+      parts: [{ type: 'text', text: 'local pending prompt' }],
+      pending: true,
+      role: 'user'
+    }
+
+    const warm = { busy: false, messages: [oldMessage, pending], storedSessionId: 'stored-tile' }
+    const runtimeIdByStoredSessionIdRef = { current: new Map([['stored-tile', 'runtime-tile']]) }
+    const states = { current: new Map([['runtime-tile', warm]]) }
+
+    const update = vi.fn((id, updater) => {
+      const next = updater(states.current.get(id))
+      states.current.set(id, next)
+
+      return next
+    })
+
+    let resolveNormal!: (value: unknown) => void
+    let resolveAuthoritative!: (value: unknown) => void
+    const normalResponse = new Promise(resolve => (resolveNormal = resolve))
+    const authoritativeResponse = new Promise(resolve => (resolveAuthoritative = resolve))
+
+    vi.mocked(requestGatewayForAgent).mockReset()
+    vi.mocked(requestGatewayForAgent).mockImplementation(
+      async (_connectionId, _profile, _method, params) =>
+        (params?.omit_messages ? normalResponse : authoritativeResponse) as never
+    )
+
+    $activeSessionId.set('runtime-foreground')
+    $sessionTiles.set([{ ownerRoute, runtimeId: 'runtime-tile', storedSessionId: 'stored-tile' }] as never)
+    stashSessionDraft('stored-tile', 'unsent tile draft', [])
+    renderTile(vi.fn(), {
+      runtimeIdByStoredSessionIdRef,
+      sessionStateByRuntimeIdRef: states,
+      updateSessionState: update
+    })
+
+    const normal = singleFlightSessionResume(
+      'stored-tile',
+      () =>
+        requestGatewayForAgent('remote-tile', 'tile-profile', 'session.resume', {
+          omit_messages: true,
+          profile: 'backend-tile',
+          session_id: 'stored-tile'
+        }),
+      { scope: ownerRoute }
+    )
+
+    await vi.waitFor(() => expect(requestGatewayForAgent).toHaveBeenCalledTimes(1))
+
+    let authoritativeSettled = false
+
+    const authoritative = sessionTileDelegate()!
+      .resumeTile('stored-tile', { authoritativeSnapshot: true })
+      .finally(() => (authoritativeSettled = true))
+
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(requestGatewayForAgent).toHaveBeenCalledTimes(1)
+
+    resolveNormal({ messages: [], resumed: 'stored-tile', session_id: 'runtime-tile' })
+    await normal
+    await Promise.resolve()
+    expect(authoritativeSettled).toBe(false)
+    expect(states.current.get('runtime-tile')?.messages).toEqual([oldMessage, pending])
+
+    await vi.waitFor(() => expect(requestGatewayForAgent).toHaveBeenCalledTimes(2))
+    expect(requestGatewayForAgent).toHaveBeenLastCalledWith('remote-tile', 'tile-profile', 'session.resume', {
+      cols: 96,
+      omit_messages: false,
+      profile: 'backend-tile',
+      session_id: 'stored-tile'
+    })
+
+    resolveAuthoritative({
+      info: { model: 'snapshot-model' },
+      messages: [
+        { content: 'new prompt', role: 'user', timestamp: 1 },
+        { content: 'new answer', role: 'assistant', timestamp: 2 }
+      ],
+      resumed: 'stored-tile',
+      session_id: 'runtime-tile'
+    })
+    await authoritative
+
     expect(JSON.stringify(states.current.get('runtime-tile')?.messages)).toContain('new answer')
     expect(states.current.get('runtime-tile')?.messages).toContainEqual(pending)
     expect($activeSessionId.get()).toBe('runtime-foreground')
@@ -631,7 +804,15 @@ describe('useSessionTileDelegate resumeTile', () => {
     setSessions([row({ id: 'stored-c', profile: 'default' })])
 
     const liveState = { busy: false, messages: [{ id: 'm1' }], storedSessionId: 'stored-c' }
-    const runtimeIdByStoredSessionIdRef = { current: new Map([['stored-c', 'runtime-dead']]) }
+
+    const runtimeIdByStoredSessionIdRef = {
+      current: new Map([
+        ['stored-c', 'runtime-dead'],
+        // A canonical binding: the runtime id IS the durable id, which no backend can re-mint.
+        ['local-open', 'local-open']
+      ])
+    }
+
     const sessionStateByRuntimeIdRef = { current: new Map([['runtime-dead', liveState]]) }
 
     const requestGateway = vi.fn(async () => ({}) as never)
@@ -642,7 +823,7 @@ describe('useSessionTileDelegate resumeTile', () => {
 
     // Gateway reconnect (what resetTileRuntimeBindings calls on wake):
     sessionTileDelegate()!.invalidateRuntimeBindings!()
-    expect(runtimeIdByStoredSessionIdRef.current.size).toBe(0)
+    expect([...runtimeIdByStoredSessionIdRef.current]).toEqual([['local-open', 'local-open']])
 
     // The next resume goes cold instead of reusing the dead binding.
     const runtimeId = await sessionTileDelegate()!.resumeTile('stored-c')
@@ -682,6 +863,28 @@ describe('useSessionTileDelegate resumeTile', () => {
 
     await expect(sessionTileDelegate()!.branchSessionAtMessage('stored-x', 'runtime-gone', 'a1')).resolves.toBe(false)
     expect(branchLoadedSession).not.toHaveBeenCalled()
+  })
+})
+
+describe('useSessionTileDelegate switchSessionModel', () => {
+  it('answers applied only after a guarded target is confirmed, and never on "keep current model"', async () => {
+    const asked = { key: 'model', session_id: 'rt-1', value: 'example/model-a --provider nous --session' }
+
+    const requestGateway = vi.fn(async (_method: string, params: Record<string, unknown>) =>
+      params.confirm_expensive_model ? {} : { confirm_message: 'Large model', confirm_required: true }
+    )
+
+    renderTile(requestGateway)
+    const switchSessionModel = sessionTileDelegate()!.switchSessionModel!
+
+    vi.mocked(confirm).mockResolvedValueOnce(false)
+    await expect(switchSessionModel('rt-1', 'example/model-a', 'nous')).resolves.toBe(false)
+    expect(requestGateway).toHaveBeenCalledTimes(1)
+    expect(requestGateway).toHaveBeenCalledWith('config.set', asked)
+
+    vi.mocked(confirm).mockResolvedValueOnce(true)
+    await expect(switchSessionModel('rt-1', 'example/model-a', 'nous')).resolves.toBe(true)
+    expect(requestGateway).toHaveBeenLastCalledWith('config.set', { ...asked, confirm_expensive_model: true })
   })
 })
 

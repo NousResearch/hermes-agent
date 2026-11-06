@@ -185,7 +185,7 @@ def _ensure_tui_workspace(tui_dir: Path) -> None:
         "This usually means `hermes update` left tracked ui-tui files deleted.\n"
         "Recovery:\n"
         "  1. From the Hermes checkout, run `git restore -- ui-tui`\n"
-        "  2. Run `npm install --silent --no-fund --no-audit --progress=false`\n"
+        "  2. Run `pnpm install --frozen-lockfile`\n"
         "  3. Retry `hermes --tui`\n"
         "If the checkout is still inconsistent, run `hermes update --force`.",
         file=sys.stderr)
@@ -226,7 +226,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     # 1. Prebuilt bundle (nix / packaged release / Docker image): just run it.
     # Must run BEFORE _ensure_tui_workspace(): a prebuilt install ships
     # hermes_cli/tui_dist/entry.js but never ui-tui/ (git checkouts only).
-    # 1. A prebuilt install (Docker image, Nix build, or prior `npm run build`) ships
+    # 1. A prebuilt install (Docker image, Nix build, or prior `pnpm run build`) ships
     #   hermes_cli/tui_dist/entry.js but never ships ui-tui/ at all (that directory only exists in a git
     #   checkout) — so requiring the workspace to exist first made every prebuilt dashboard Chat tab
     #   connection hard-exit before it ever got a chance to try the bundled entry.js it already has. See
@@ -241,7 +241,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         if bundled is not None:
             return [_tui_node_bin("node"), "--expose-gc", str(bundled)], bundled.parent
 
-    # About to npm install/build from source, so the workspace must exist.
+    # About to pnpm install/build from source, so the workspace must exist.
     if not ext_dir:
         _ensure_tui_workspace(tui_dir)
 
@@ -256,10 +256,10 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     if tui_dev:
         # tsx imports @hermes/ink's built exports; the production bundle instead
         # compiles its source directly through scripts/build/tui.mjs.
-        npm = shutil.which("npm", path=env["PATH"])
-        subprocess.run([npm, "run", "build"], cwd=tui_dir / "packages/hermes-ink", env=env, check=True)
+        pnpm = shutil.which("pnpm", path=env["PATH"])
+        subprocess.run([pnpm, "run", "build"], cwd=tui_dir / "packages/hermes-ink", env=env, check=True, timeout=600)
         tsx = tui_dir / "node_modules/.bin/tsx"
-        return ([str(tsx), "src/entry.tsx"] if tsx.exists() else [npm, "start"]), tui_dir
+        return ([str(tsx), "src/entry.tsx"] if tsx.exists() else [pnpm, "start"]), tui_dir
 
     build_source_tui(project_root, env=env)
     node = shutil.which("node", path=env["PATH"])
@@ -395,6 +395,39 @@ def _setup_tui_worktree() -> dict:
     if not wt_info:
         sys.exit(1)
     return wt_info
+
+
+def _remove_idle_clean_tui_worktree(wt_info: dict) -> bool:
+    """Remove the ``--tui -w`` checkout on quit when nothing still needs it (N8) -> True if gone.
+
+    Kept when the gateway has queued or started work for a session inside it (quitting only
+    detaches the viewer), still schedules work for one (an active loop, heartbeat or goal
+    continuation, or a cron job bound to it), another viewer still holds one, or another process
+    still works in it; and by ``_cleanup_worktree`` when it is dirty, holds unpushed commits or
+    something no branch keeps.
+    """
+    from hermes_cli.config import get_hermes_home
+    from hermes_cli.worktree_exit import _still_in_use
+    from hermes_cli.worktree_ops import _retained_tree_is_live, _tree_still_served
+
+    path = wt_info.get("path")
+    if not path or not Path(path).is_dir():
+        return False
+    try:
+        db_path = str(get_hermes_home() / "state.db")
+        if _retained_tree_is_live(db_path, path, pending_only=True):
+            return False
+        if _still_in_use(path):
+            return False
+        # After the grace above: a legacy sidecar stamps its rows ``tui_shutdown`` as it exits.
+        if _tree_still_served(db_path, path):
+            return False
+        from cli import _cleanup_worktree
+        _cleanup_worktree(wt_info)
+    except Exception:
+        logger.debug("TUI worktree cleanup failed; keeping %s", path, exc_info=True)
+        return False
+    return not Path(path).exists()
 
 
 def _require_bypass_model(env: dict, model: Optional[str], resume_session_id: Optional[str]) -> None:
@@ -544,6 +577,14 @@ def _launch_tui(
         attached_session = _read_tui_active_session_file(active_session_file) or resume_session_id
         with contextlib.suppress(OSError):
             os.unlink(active_session_file)
+        if wt_info and code in {0, 130}:
+            from hermes_cli.worktree_exit import ask_exit_choice
+            ask_exit_choice(wt_info)
+        from hermes_cli.worktree_exit import apply_exit_choice
+        if wt_info and apply_exit_choice(wt_info, print):
+            wt_info = None  # archived or discarded at the user's request
+        if wt_info and _remove_idle_clean_tui_worktree(wt_info):
+            wt_info = None  # clean and idle: removed with its branch, as before the shared gateway
         if wt_info:
             # Quitting detaches a viewer; the gateway may still be executing in
             # this checkout and future resumes retain its frozen cwd.

@@ -67,15 +67,28 @@ env:
   CANDIDATE_COMMIT: ${{ inputs.commit || github.sha }}
 
 jobs:
-  # Resolve the release phase. Release modes run only via workflow_call from
-  # the parent stable-release workflow, which passes the candidate commit.
+  # Resolve the release phase, then (outside release phases) classify the PR's
+  # changed files. Release modes run only via workflow_call from the parent
+  # stable-release workflow, which passes the candidate commit.
+  #
+  # Classification used to be a separate `detect` job that started right after
+  # this one on the same runner: a second billed minute for ~10s of work. Its
+  # steps are gated on the resolved phase instead, so a release phase still
+  # skips classification entirely (the parent already ran full CI and the tag
+  # dispatch has no meaningful PR diff to classify).
+  #
+  # ci.yml used to gate the docker call on its own ``detect`` outputs; now that
+  # this workflow triggers itself, it runs the same composite action. On push
+  # the classifier fails open (every lane true), so post-merge validation is
+  # never weakened.
   mode:
-    name: Resolve release phase
+    name: Resolve release phase and affected areas
     runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 5
+    timeout-minutes: 10
     outputs:
       phase: ${{ steps.resolve.outputs.phase }}
       release: ${{ steps.resolve.outputs.release }}
+      build: ${{ steps.gate.outputs.build }}
     steps:
       - id: resolve
         env:
@@ -90,33 +103,21 @@ jobs:
             *)    echo "::error::Invalid release-phase input: $PHASE"; exit 1 ;;
           esac
 
-  # Classify the PR's changed files. ci.yml used to gate the docker call on
-  # its own ``detect`` outputs; now that this workflow triggers itself, it
-  # runs the same composite action. On push and release the classifier fails
-  # open (every lane true), so post-merge validation is never weakened.
-  # Release phases skip classification entirely: the parent already ran full
-  # CI and the tag dispatch has no meaningful PR diff to classify.
-  detect:
-    name: Detect affected areas
-    needs: [mode]
-    if: needs.mode.outputs.release != 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 10
-    outputs:
-      build: ${{ steps.gate.outputs.build }}
-    steps:
       - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        if: steps.resolve.outputs.release != 'true'
         with:
           ref: ${{ inputs.commit }}
 
       - name: Detect affected areas
         id: classify
+        if: steps.resolve.outputs.release != 'true'
         uses: ./.github/actions/detect-changes
         with:
           github-token: ${{ github.token }}
 
       - name: Decide whether to build
         id: gate
+        if: steps.resolve.outputs.release != 'true'
         env:
           # The docker lane is a slow lane: on a pull request it runs only
           # for docker meta, the dependency manifests, PM and tests/docker
@@ -142,10 +143,10 @@ jobs:
   # rebuilds — it downloads these exact artifacts.
   build:
     name: Build and test image (${{ matrix.variant }}/${{ matrix.arch }})
-    needs: [mode, detect]
+    needs: [mode]
     if: >-
       !cancelled() && needs.mode.result == 'success' &&
-      ((needs.mode.outputs.release != 'true' && github.repository == 'NousResearch/hermes-agent' && needs.detect.outputs.build == 'true') || needs.mode.outputs.phase == 'test')
+      ((needs.mode.outputs.release != 'true' && github.repository == 'NousResearch/hermes-agent' && needs.mode.outputs.build == 'true') || needs.mode.outputs.phase == 'test')
     strategy:
       fail-fast: false
       matrix:
@@ -443,7 +444,10 @@ jobs:
     # `needs` is the whole 4-leg matrix: only publish both :main variants
     # after every arch and variant publisher succeeds.
     if: ${{ !cancelled() && needs.mode.outputs.release != 'true' && github.repository == 'NousResearch/hermes-agent' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    # GitHub-hosted with docker/setup-buildx-action, as before the runner migration: on
+    # Blacksmith `imagetools create` cannot commit a manifest list to Docker Hub (404 on the
+    # index commit, any buildx version): v0.22.3 rc.1-rc.4 died on it in the versioned manifest.
+    runs-on: ubuntu-latest
     needs: [mode, publish]
     timeout-minutes: 10
     environment: container-publish
@@ -470,11 +474,11 @@ jobs:
       - name: Set up Docker Buildx
         id: buildx
         continue-on-error: true
-        uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Set up Docker Buildx (retry)
         if: steps.buildx.outcome == 'failure'
-        uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Log in to Docker Hub
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
@@ -628,7 +632,10 @@ jobs:
     name: Assemble versioned manifest and digest receipt
     if: needs.mode.outputs.phase == 'publish'
     needs: [mode, release-publish]
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    # GitHub-hosted with docker/setup-buildx-action, as before the runner migration: on
+    # Blacksmith `imagetools create` cannot commit a manifest list to Docker Hub (404 on the
+    # index commit, any buildx version): v0.22.3 rc.1-rc.4 died on it in the versioned manifest.
+    runs-on: ubuntu-latest
     outputs:
       digest: ${{ steps.list.outputs.digest }}
     timeout-minutes: 15
@@ -637,7 +644,7 @@ jobs:
       RELEASE_TAG: ${{ inputs.tag }}
     steps:
       - name: Checkout release code (helper scripts only)
-        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ inputs.commit || github.sha }}
 
@@ -650,11 +657,11 @@ jobs:
       - name: Set up Docker Buildx
         id: buildx
         continue-on-error: true
-        uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Set up Docker Buildx (retry)
         if: steps.buildx.outcome == 'failure'
-        uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Log in to Docker Hub
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0

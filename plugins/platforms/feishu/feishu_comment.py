@@ -501,8 +501,12 @@ def _run_comment_agent(prompt: str, client: Any, session_key: str = "") -> str:
         history = _load_session_history(session_key) if session_key else []
         if history:
             logger.info("[Feishu-Comment] _run_comment_agent: loaded %d history messages from session %s", len(history), session_key)
+        # skip_memory unless compression.checkpoint_required needs the provider to checkpoint with (fork scope).
+        from agent.conversation_compression_checkpoint import checkpoint_required_from_config
+
         agent = AIAgent(model=model, **{k: runtime_kwargs.get(k) for k in ("base_url", "api_key", "provider", "api_mode", "credential_pool", "reasoning_config")},
-                        quiet_mode=True, skip_context_files=True, skip_memory=True, max_iterations=15, enabled_toolsets=["feishu_doc", "feishu_drive"])
+                        quiet_mode=True, skip_context_files=True, skip_memory=not checkpoint_required_from_config(),
+                        memory_agent_context="subagent", max_iterations=15, enabled_toolsets=["feishu_doc", "feishu_drive"])
         try:
             logger.info("[Feishu-Comment] _run_comment_agent: calling run_conversation (prompt=%d chars, history=%d)", len(prompt), len(history))
             result = agent.run_conversation(prompt, conversation_history=history or None)

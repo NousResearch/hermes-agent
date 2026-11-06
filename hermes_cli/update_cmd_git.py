@@ -6,6 +6,8 @@ test patches on ``update_cmd`` stay effective).
 """
 
 import logging
+import os
+import shlex
 from contextlib import nullcontext, suppress
 import subprocess
 import sys
@@ -496,6 +498,34 @@ def _has_http_code(stderr: str, *codes: str) -> bool:
     return any(f"HTTP {code}" in stderr or f"returned error: {code}" in stderr for code in codes)
 
 
+def _damaged_checkout_message(root: Path) -> str:
+    """The repair for a checkout git rejects: the installer pointed at THIS checkout (a bare one-liner
+    would rebuild the default directory and leave a ``--dir`` install broken)."""
+    if sys.platform == "win32":
+        quoted = "'" + str(root).replace("'", "''") + "'"
+        repair = ("& ([scriptblock]::Create((irm https://hermes-agent.nousresearch.com/install.ps1)))"
+                  f" -InstallDir {quoted}")
+    else:
+        repair = f"curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --dir {shlex.quote(str(root))}"
+    return (f"✗ This Hermes checkout's git data is damaged (git no longer recognizes {root / '.git'}),"
+            " so it cannot be updated in place.\n"
+            "  Run the installer again to repair it; it moves the damaged checkout aside and keeps"
+            f" your config and chats:\n    {repair}")
+
+
+def _checkout_rejected_by_git(stderr: str, git_cmd, root: Path) -> bool:
+    """The fetch failed because git cannot open *root* itself, not because of its remote.
+
+    git prints the same ``fatal: not a git repository`` for a remote whose ``.git`` is broken, so the
+    stderr line alone is not proof: the checkout must also fail to resolve as its own top level.
+    """
+    if not any(line.startswith("fatal: not a git repository") for line in stderr.splitlines()):
+        return False
+    top = _git_run(git_cmd, ["rev-parse", "--show-toplevel"], cwd=root)
+    return top.returncode != 0 or os.path.normcase(os.path.realpath(top.stdout.strip())) != os.path.normcase(
+        os.path.realpath(root))
+
+
 # Ordered (predicate, diagnosis): curl reports HTTP errors as ``unable to access '<url>': ... error: 429``,
 # so rate-limit/outage checks must run BEFORE the generic "unable to access" check. An anonymous fetch
 # answered with HTTP 401 ("could not read Username") is GitHub during an outage (or a renamed/private
@@ -529,10 +559,13 @@ def _classify_fetch_failure(stderr: str) -> str:
     return next((message for matches, message in _FETCH_FAILURE_RULES if matches(stderr)), "✗ Failed to fetch updates from origin.")
 
 
-def _print_fetch_failure(stderr: str) -> None:
-    """Print the classified diagnosis plus bounded raw stderr for diagnosis."""
+def _print_fetch_failure(stderr: str, *, git_cmd=None, root: Optional[Path] = None) -> None:
+    """Print the classified diagnosis plus bounded raw stderr for diagnosis. With *root*, a checkout
+    git rejects (no fetch can ever work; the ZIP fallback cannot tell user edits apart) gets the
+    installer repair instead."""
     stderr = (stderr or "").strip()
-    print(_classify_fetch_failure(stderr))
+    damaged = root is not None and _checkout_rejected_by_git(stderr, git_cmd, Path(root))
+    print(_damaged_checkout_message(Path(root)) if damaged else _classify_fetch_failure(stderr))
     if stderr:
         lines = stderr.splitlines()
         for line in lines[:15]:
@@ -612,42 +645,17 @@ def _ensure_non_trampoline_git(git_cmd: list) -> list:
     return [str(real_git)] + list(git_cmd[1:])
 
 
-def _npm_lockfile_owners(repo_root: Path) -> set[Path]:
-    """Manifest directories whose specs the single root ``package-lock.json`` records: the root plus every
-    workspace from the root ``workspaces`` globs (same model as ``update_cmd_deps._npm_manifest_paths``).
-    A manifest outside that graph (``website/``, ``scripts/whatsapp-bridge/``) has its own lockfile."""
-    owners = {Path(".")}
-    try:
-        import json
-        package = json.loads((repo_root / "package.json").read_text(encoding="utf-8-sig"))
-        workspaces = package.get("workspaces", [])
-        if isinstance(workspaces, dict):
-            workspaces = workspaces.get("packages", [])
-        if not isinstance(workspaces, list):
-            return owners
-        for pattern in workspaces:
-            # One bad glob (absolute pattern -> NotImplementedError) degrades to "not an owner"
-            # instead of aborting the whole churn cleanup through the caller's suppress(Exception).
-            with suppress(Exception):
-                for directory in repo_root.glob(str(pattern)):
-                    if (directory / "package.json").is_file():
-                        owners.add(directory.relative_to(repo_root))
-    except (OSError, ValueError, TypeError):
-        pass
-    return owners
-
-
 def _no_move(*_targets, **_bound):
     """The ``checkout_move`` of a run with no paused gateways: the step runs unbound."""
     return nullcontext({})
 
 
 def _discard_lockfile_churn(git_cmd, repo_root, *, checkout_move=None):
-    """Restore ``package-lock.json`` files npm rewrote non-deterministically, so the update sees a clean tree
-    instead of autostashing every run. A lockfile is kept when a manifest it records is dirty: for the root
-    lock that is the root or ANY workspace ``package.json`` (reverting it under a dirty ``apps/desktop``
-    manifest desyncs spec and lock and every later ``npm ci`` fails, #112378); a nested lock is kept only
-    with its sibling manifest. Best-effort."""
+    """Restore ``package-lock.json`` files npm rewrote non-deterministically (the npm projects: WhatsApp
+    bridge, Photon sidecar), so the update sees a clean tree instead of autostashing every run. A lock is
+    kept when its sibling ``package.json`` is dirty: reverting it alone desyncs spec and lock and every
+    later ``npm ci`` fails (#112378). ``pnpm-lock.yaml`` is never touched: pnpm's frozen installs do not
+    rewrite it, so a change there is the user's own. Best-effort."""
     from hermes_cli.update_cmd_git import _git_run
     with suppress(Exception):
         diff = _git_run(git_cmd, ["diff", "--name-only"], repo_root)
@@ -655,17 +663,8 @@ def _discard_lockfile_churn(git_cmd, repo_root, *, checkout_move=None):
             return
         changed = [line.strip() for line in diff.stdout.splitlines()]
         dirty_manifests = {Path(p).parent for p in changed if p.endswith("package.json")}
-        root_owners = _npm_lockfile_owners(Path(repo_root))
-        dirty = []
-        for path in changed:
-            if not path.endswith("package-lock.json"):
-                continue
-            lock_dir = Path(path).parent
-            protected = (lock_dir == Path(".") and bool(dirty_manifests & root_owners)) or (
-                lock_dir != Path(".") and lock_dir in dirty_manifests
-            )
-            if not protected:
-                dirty.append(path)
+        dirty = [path for path in changed
+                 if path.endswith("package-lock.json") and Path(path).parent not in dirty_manifests]
         if not dirty:
             return
         with (checkout_move or _no_move)(paths=dirty):

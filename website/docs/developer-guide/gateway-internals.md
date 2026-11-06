@@ -334,7 +334,6 @@ including top-level one-shot launches. It does not become a process-wide option.
 | `gateway/hooks.py` | Hook discovery, loading, and lifecycle event dispatch |
 | `gateway/mirror.py` | Cross-session message mirroring for `send_message` |
 | `gateway/status.py` | Token lock management for profile-scoped gateway instances |
-| `gateway/builtin_hooks/` | Extension point for always-registered hooks (none shipped) |
 | `gateway/platform_registry.py` | Adapter registry, factories, and deferred (lazy) loaders for bundled platform plugins |
 | `plugins/platforms/<name>/` | Bundled messaging adapters (most platforms: `adapter.py` + `plugin.yaml`) |
 | `gateway/platforms/` | Shared `base.py` plus legacy/direct adapters (Signal, API server, webhooks, …) |
@@ -640,7 +639,7 @@ Gateway hooks are Python modules that respond to lifecycle events:
 | `agent:end` | Agent finishes and returns response |
 | `command:*` | Any slash command is executed |
 
-Hooks are discovered from `gateway/builtin_hooks/` (an extension point — currently empty in the shipped distribution; `_register_builtin_hooks()` is a no-op stub) and `<profile home>/hooks/` (user-installed; `~/.hermes/hooks/` for the default profile, one directory per served profile under multiplexing — paths resolve at call time, never at import). Each hook is a directory with a `HOOK.yaml` manifest and `handler.py`.
+Hooks are discovered from `<profile home>/hooks/` (user-installed; `~/.hermes/hooks/` for the default profile, one directory per served profile under multiplexing — paths resolve at call time, never at import). Each hook is a directory with a `HOOK.yaml` manifest and `handler.py`.
 
 ## Memory Provider Integration
 
@@ -709,6 +708,13 @@ acceptance. Refused admission refunds every claimed batch sibling without spendi
 actual delivery errors keep their bounded retry policy. Recognized raw API routes resolve after
 persisted messaging origins and defer quietly when unavailable; malformed routes still warn.
 
+Completions that land while the session is busy fold into ONE queued turn
+(`session_automation.py::_admit_folded_completion`): a completion whose route already has a
+completion waiting at the very end of the FIFO replaces it with a combined admission (both texts,
+every producer identity, a "N background process results" header), cancelling the waiting row in
+the same transaction. Only the tail folds, so a prompt queued after a completion keeps its place
+between them; a waiting row claimed first leaves the new completion to queue alone.
+
 Cron execution has its own session. Eligible continuable deliveries may mirror or seed the
 reply-facing conversation: origin, origin-less home fallback, user-written bare-platform home,
 or opted-in explicit targets. `all` expansions do not gain home mirror eligibility. Mirrored
@@ -722,7 +728,7 @@ briefs are labelled user turns appended at a turn boundary, preserving role alte
 `GatewayLoginCommandsMixin` (`gateway/slash_commands_login.py`). It refuses outside a paired DM:
 `chat_type in {"dm","private"}`, a truthy `chat_id`, and a platform whose `"dm"` really is a paired
 conversation — ntfy, raft and a2a all report `chat_type="dm"` for a broadcast topic, a channel and
-an agent peer, so posting a consent link there would publish it.
+an agent peer, so posting a sign-in link and code there would publish them.
 
 **It binds the whole install.** The sign-in writes the singleton `providers.nous`, so whoever
 approves the code owns this gateway's inference and connectors for every chat it serves. Slash
@@ -730,15 +736,15 @@ gating is opt-in (`gateway/slash_access.py`): with no `allow_admin_from` set, ev
 DM the bot can run it. Operators of shared gateways must set it.
 
 The handler returns its ack at once and drains `anon_auth.run_sign_in` on a **private single-worker
-executor** (`_login_executor`), never the shared 10-thread gateway pool — a promotion wait can last
+executor** (`_login_executor`), never the shared 10-thread gateway pool — the token poll can last
 the code's full expiry, and a live worker in the shared pool makes shutdown skip the SessionDB
 close/checkpoint. One attempt per process, stamped with the identity that started it: the same
-identity's second `/login` supersedes (the loser ends with the superseded copy pushed into its own
-chat); a different identity is refused. `task.cancel()` cannot interrupt a blocking poll inside a
-worker thread, so shutdown and supersede both work through `attempt.cancelled`, which
-`wait_for_promotion` now polls on a ≤1 s tick. A shutdown-cancelled attempt pushes nothing — the
-task is dying and its adapters may already be gone — but if the server had already completed the
-transfer it still persists, because that transfer is irreversible.
+identity's second `/login` cancels the first (the loser ends with the cancelled copy pushed into its
+own chat); a different identity is refused. `task.cancel()` cannot interrupt a blocking poll inside
+a worker thread, so shutdown and the replacement both work through `attempt.cancelled`, which the
+token poll checks on a ≤1 s tick and once more before the save. A cancelled attempt saves nothing.
+A shutdown-cancelled attempt pushes nothing — the task is dying and its adapters may already be
+gone. The completion copy carries what the free tier's handoff moved.
 
 On completion the handler **evicts** every cached agent still on `nous/welcome` and clears any
 session model override pinned to it. It does not switch agents in place and does not write a model

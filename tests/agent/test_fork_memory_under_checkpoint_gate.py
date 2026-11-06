@@ -26,9 +26,10 @@ class _ConstructorStop(BaseException):
     and would swallow an ordinary failure into a green test."""
 
 
-def _fork_site(site):
+def _fork_site(site, parent_skip_memory=False):
     """``(module holding the AIAgent binding, spawn thunk, extra patches)``, resolved lazily.
-    batch_runner binds AIAgent at import, so its patch lands on its own global."""
+    batch_runner binds AIAgent at import, so its patch lands on its own global. The delegate parent is
+    built-in-only (no memory manager); ``parent_skip_memory`` makes it an ``--ignore-rules`` parent."""
     if site == "delegate":
         import run_agent
         from tools import delegate_tool
@@ -37,6 +38,7 @@ def _fork_site(site):
             model="m", provider="openrouter", api_key="k", base_url="https://openrouter.ai/api/v1",
             api_mode="chat_completions", session_id="parent", enabled_toolsets=None, disabled_toolsets=None,
             request_overrides={}, prefill_messages=None, _delegate_depth=0,
+            _memory_manager=None, skip_memory=parent_skip_memory,
         )
         return run_agent, (lambda: delegate_tool._build_child_agent(
             task_index=0, goal="g", context=None, toolsets=None, model=None, max_iterations=3, task_count=1,
@@ -64,9 +66,9 @@ def _fork_site(site):
     raise AssertionError(f"unknown fork site: {site}")
 
 
-def _capture_fork_kwargs(site, *, checkpoint_required):
+def _capture_fork_kwargs(site, *, checkpoint_required, parent_skip_memory=False):
     """Drive one real fork site and return the kwargs it passed to AIAgent."""
-    binding, spawn, extra_patches = _fork_site(site)
+    binding, spawn, extra_patches = _fork_site(site, parent_skip_memory)
     captured = {}
 
     def _recorder(**kwargs):
@@ -103,6 +105,27 @@ def test_fork_inherits_memory_provider_when_checkpoint_required(site):
 def test_fork_stays_provider_less_when_gate_is_off(site):
     """The control against "always inherit"."""
     assert _capture_fork_kwargs(site, checkpoint_required=False)["skip_memory"] is True
+
+
+def test_delegate_child_never_gains_the_provider_its_parent_went_without():
+    """An ``--ignore-rules`` / ``--safe-mode`` parent runs with ``skip_memory=True``. Its children stay
+    provider-less under the armed gate too, so no checkpoint writes the fork's transcript into memory the
+    session opted out of; the child fails closed at compaction, as its parent does."""
+    captured = _capture_fork_kwargs("delegate", checkpoint_required=True, parent_skip_memory=True)
+    assert captured["skip_memory"] is True
+
+
+def test_delegate_child_of_a_builtin_only_parent_still_gets_the_checkpoint_provider():
+    """A parent with built-in memory only holds no manager without opting out. Its child may be routed to a
+    profile that arms the gate with a checkpoint provider, so the opt-out, not the parent's manager, decides."""
+    captured = _capture_fork_kwargs("delegate", checkpoint_required=True)
+    assert captured["skip_memory"] is False
+
+
+def test_agent_records_its_memory_opt_out_for_its_delegate_children():
+    """The delegate site reads ``parent.skip_memory``; a real init records it."""
+    assert _build_agent_with_recording_provider({}).skip_memory is False
+    assert _build_agent_with_recording_provider({}, skip_memory=True).skip_memory is True
 
 
 def test_checkpoint_required_from_config_reads_the_armed_key():
@@ -148,7 +171,7 @@ class _RecordingProvider(MemoryProvider):
         return []
 
 
-def _build_agent_with_recording_provider(seen, builtin_memory=False, **extra):
+def _build_agent_with_recording_provider(seen, builtin_memory=False, skip_memory=False, **extra):
     """A real AIAgent init with a recording provider; returns the agent. ``builtin_memory`` sets both
     built-in store flags (``memory.memory_enabled`` / ``memory.user_profile_enabled``)."""
     cfg = {"compression": {}, "agent": {}, "memory": {"provider": "recording", "memory_enabled": builtin_memory,
@@ -165,7 +188,7 @@ def _build_agent_with_recording_provider(seen, builtin_memory=False, **extra):
         from run_agent import AIAgent
 
         return AIAgent(api_key="test-key-1234567890", base_url="https://openrouter.ai/api/v1", quiet_mode=True,
-                       skip_context_files=True, skip_memory=False, **extra)
+                       skip_context_files=True, skip_memory=skip_memory, **extra)
 
 
 def test_memory_agent_context_reaches_the_provider_initialize():

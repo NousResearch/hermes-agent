@@ -94,6 +94,13 @@ def _warn_checkpoint_required_without_capable_provider(agent: Any) -> None:
     )
 
 
+def _checkpoint_exempt_fork(agent: Any) -> bool:
+    """A detached review or side-question fork (persistence-isolated, no memory manager, no session DB)
+    cannot checkpoint by design, so neither the compaction gate nor the prune gate binds it."""
+    return bool(getattr(agent, "_persist_disabled", False) and getattr(agent, "_memory_manager", None) is None
+                and getattr(agent, "_session_db", None) is None)
+
+
 def _refuse_checkpoint_required_on_codex_app_server(checkpoint_required: bool, api_mode: str | None) -> None:
     """Fail closed at init: the codex app-server compacts its own thread without a truthful
     pre-compaction boundary (default "native" mode), so a required checkpoint can't be

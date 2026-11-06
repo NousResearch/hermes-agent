@@ -386,19 +386,21 @@ def _proactive_tool_result_prune(agent: Any, compressor: Any, messages: list, cu
     committed, else the same ``messages`` object. No-op unless proactive_prune_tokens is exceeded;
     commits only past proactive_prune_min_reclaim_tokens so cache breaks stay episodic.
 
-    Withheld while compression.checkpoint_required is armed: the prune rewrites the durable
-    transcript between compactions, so no checkpoint precedes it. Gating here, not in the
-    compressor, also covers engines that override the hook. Suppression, not refusal (it runs per
-    tool iteration); the material stays in context for the checkpointed threshold compaction.
+    Withheld while compression.checkpoint_required is armed, except on the detached forks whose
+    compaction is exempt too: the prune rewrites the durable transcript between compactions, so
+    no checkpoint precedes it. Gating here, not in the compressor, also covers engines that
+    override the hook. Suppression, not refusal (it runs per tool iteration); the material stays
+    in context for the checkpointed threshold compaction.
     """
     if getattr(agent, "compression_checkpoint_required", False) is True:
         from agent.conversation_compression_checkpoint import (
-            _prune_would_have_run, _record_checkpoint_gate_suppression,
+            _checkpoint_exempt_fork, _prune_would_have_run, _record_checkpoint_gate_suppression,
         )
 
-        if _prune_would_have_run(compressor, current_tokens):
-            _record_checkpoint_gate_suppression(agent, "the proactive tool-result prune")
-        return messages
+        if not _checkpoint_exempt_fork(agent):
+            if _prune_would_have_run(compressor, current_tokens):
+                _record_checkpoint_gate_suppression(agent, "the proactive tool-result prune")
+            return messages
     prune = getattr(compressor, "prune_tool_results_only", None)
     if not callable(prune):
         return messages

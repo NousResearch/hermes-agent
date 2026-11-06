@@ -290,10 +290,12 @@ def _build_child_agent(
         child_session_db = _open_child_session_db(parent_agent)
         # Children run provider-less. Under compression.checkpoint_required the child arms the same gate
         # (read inside the delegated profile scope, as the child reads it) and would die at its first
-        # compaction, so it inherits the provider, scoped as a fork. Cost: one initialize() per spawn.
+        # compaction, so it inherits the provider, scoped as a fork, unless its parent opted out of memory
+        # (--ignore-rules). Cost: one initialize() per spawn.
         from agent.conversation_compression_checkpoint import checkpoint_required_from_config
 
-        child_checkpoint_required = checkpoint_required_from_config()
+        child_checkpoint_required = (not getattr(parent_agent, "skip_memory", False)
+                                     and checkpoint_required_from_config())
         with delegated_child_context():
             try:
                 child = AIAgent(

@@ -39,9 +39,12 @@ def _git(*args: str) -> str:
     return subprocess.run(["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace", check=False).stdout
 
 
-def _changed_py(base: str, head: str) -> list[str]:
-    out = _git("diff", "--name-only", "--diff-filter=M", base, head)
-    return [f for f in out.split() if f.endswith(".py")]
+def _changed_py(base: str, head: str) -> list[tuple[str, str]]:
+    """``(path at base, path at head)`` for every modified or renamed ``.py`` file; a moved file is
+    compared with its old self (``-l0``: no rename-detection limit, so a large move is still seen)."""
+    out = _git("diff", "--name-status", "-M", "-l0", "--diff-filter=MR", base, head)
+    pairs = [line.split("\t") for line in out.splitlines() if "\t" in line]
+    return [(paths[1], paths[-1]) for paths in pairs if paths[-1].endswith(".py")]
 
 
 def _show(rev: str, path: str) -> str | None:
@@ -101,6 +104,7 @@ def public_methods(src: str) -> set[str]:
 
 
 def _is_source(path: str) -> bool:
+    path = path.removeprefix("src/hermes_agent/")
     return "/" not in path or path.split("/", 1)[0] in SRC_DIRS
 
 
@@ -108,8 +112,8 @@ def diff_surface(base: str, head: str) -> dict:
     dropped_names: dict[str, list[str]] = {}
     dropped_methods: dict[str, list[str]] = {}
     test_drops: dict[str, tuple[int, int]] = {}
-    for path in _changed_py(base, head):
-        before, after = _show(base, path), _show(head, path)
+    for old, path in _changed_py(base, head):
+        before, after = _show(base, old), _show(head, path)
         if before is None or after is None:
             continue
         if path.startswith("tests/"):

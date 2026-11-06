@@ -15,7 +15,7 @@ screenshots:
   - https://raw.githubusercontent.com/dandacompany/hermes-consult/81efb6ea95300f3dd5dae1f5108eb0ac445c3f16/assets/desktop-safety.png
 known_issues:
   - Requires Node.js 24 or later and a separately provisioned public HTTPS origin.
-  - Subscription voice requires Hermes Live with the consultation API (pending PR #143585) and the user's installed Codex CLI login.
+  - Subscription voice requires Hermes Live 0.9.1+ (consultation API; the catalog currently lists 0.9.0) and the user's installed Codex CLI login.
   - Funded OpenAI API voice E2E and production HTTPS/load verification remain outstanding.
 capabilities:
   provides_tools: []

@@ -95,6 +95,13 @@ def test_both_pnpm_archives_follow_the_users_npm_registry(tmp_path, monkeypatch)
         assert source.url == "https://npm.corp.example/npm/" + path
 
 
+@pytest.fixture
+def no_proxy_env(monkeypatch):
+    """urllib honours proxy variables in any case; a developer's proxy must not carry 127.0.0.2."""
+    for key in [k for k in os.environ if k.lower() in ("http_proxy", "https_proxy", "all_proxy", "no_proxy")]:
+        monkeypatch.delenv(key)
+
+
 @contextlib.contextmanager
 def _lan_mirror():
     """A plain-http npm registry on an address the downloader does not treat as loopback."""
@@ -109,7 +116,7 @@ def _lan_mirror():
 
 @pytest.mark.platforms("linux")  # all of 127/8 answers on Linux; macOS binds only 127.0.0.1
 @pytest.mark.parametrize("tampered", [False, True])
-def test_plain_http_npm_mirror_serves_pinned_bytes(tmp_path, monkeypatch, dl_server, tampered):
+def test_plain_http_npm_mirror_serves_pinned_bytes(tmp_path, monkeypatch, dl_server, no_proxy_env, tampered):
     """#150032: an http LAN registry in ~/.npmrc may serve a pinned artifact; the pin still decides."""
     from pm.artifact_mirror import pinned_source
     from pm.downloader import Download, HashError

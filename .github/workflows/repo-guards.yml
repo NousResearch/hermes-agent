@@ -596,7 +596,7 @@ jobs:
               f.write(f"review_status={json.dumps(status)}\n")
           PYEOF
 
-      - name: Fail on unbounded deps
+      - name: Fail on unbounded deps (supply-chain policy)
         if: ${{ !cancelled() && steps.bounds.outputs.found == 'true' }}
         run: |
           echo "::error::PyPI dependencies without upper bounds detected. Add <next_major ceiling per CONTRIBUTING.md policy."

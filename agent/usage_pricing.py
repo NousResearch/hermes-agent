@@ -529,8 +529,10 @@ def _pricing_entry_from_metadata(
 
     def rate(key: str, *aliases: str) -> Optional[Decimal]:
         raw = pricing.get(key)
-        for alias in aliases:  # alias chain is truthiness-based (``a or b or c``)
-            raw = raw or pricing.get(alias)
+        for alias in aliases:
+            if raw is not None and raw != "":  # Zero is a known free rate, not a missing field.
+                break
+            raw = pricing.get(alias)
         value = _to_decimal(raw)
         # A negative rate is a "pricing varies" sentinel (OpenRouter publishes "-1" for
         # openrouter/auto), not a price: priced through, it books huge negative session costs.

@@ -55,6 +55,15 @@ def test_empty_buffer_does_not_seed(tmp_path, monkeypatch):
     assert s._pending_agent_seed is None
 
 
+@pytest.mark.platforms("linux")
+def test_compose_uses_profile_editor_when_environment_is_unset(tmp_path, monkeypatch):
+    """A Desktop backend can use its profile setting without mutating EDITOR."""
+    from hermes_cli import config
+
+    monkeypatch.setattr(config, "load_config", lambda: {"editor": {"command": _fake_editor(tmp_path, "Saved draft.")}})
+    assert _Stub()._compose_in_editor("") == "Saved draft."
+
+
 def test_editor_failure_never_falls_back_to_shell(monkeypatch):
     """An editor the argv path cannot run must not retry through the shell.
 

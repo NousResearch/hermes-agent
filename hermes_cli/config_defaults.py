@@ -20,6 +20,8 @@ LEGACY_VERCEL_RUNTIME = "node24"  # the seeded pre-49 default, never a user choi
 
 DEFAULT_CONFIG = {
     "model": "",
+    # Per-profile alternative to the process-wide EDITOR environment variable.
+    "editor": {"command": ""},
     "providers": {},
     "fallback_providers": [],
     # min_switch_reset_seconds: opt-in (0 = off). When a rate-limited primary declares a reset

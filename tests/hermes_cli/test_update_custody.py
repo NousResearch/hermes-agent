@@ -606,12 +606,12 @@ def test_a_terminated_launcher_takes_node_and_its_descendants_with_it(repo, tmp_
 
 @pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="needs /proc fd listing")
 def test_the_desktop_build_runs_in_checkout_custody(repo, tmp_path, monkeypatch):
-    """F04: the desktop app build (npm run build / builder) writes the checkout like the other
+    """F04: the desktop app build (pnpm run build / builder) writes the checkout like the other
     product builds, so it holds the checkout lock while it runs."""
     from hermes_cli import main_desktop
 
-    npm = _held_lock_recorder(tmp_path, "npm", "exit 0")
-    out = tmp_path / "npm.out"
+    pnpm = _held_lock_recorder(tmp_path, "pnpm", "exit 0")
+    out = tmp_path / "pnpm.out"
     monkeypatch.setenv("HERMES_TEST_LOCK", os.path.realpath(ul.checkout_lock_path(repo)))
     monkeypatch.setenv("HERMES_TEST_OUT", str(out))
     desktop = repo / "apps" / "desktop"
@@ -619,7 +619,7 @@ def test_the_desktop_build_runs_in_checkout_custody(repo, tmp_path, monkeypatch)
     lock = ul.UpdateLock(path=tmp_path / "marker", install_root=repo)
     assert lock.acquire()
     try:
-        main_desktop.build_prepared_desktop(desktop, source_mode=True, npm=str(npm), env=dict(os.environ))
+        main_desktop.build_prepared_desktop(desktop, source_mode=True, pnpm=str(pnpm), env=dict(os.environ))
     finally:
         lock.release()
     assert out.read_text(encoding="utf-8-sig").split() == ["yes"], "the desktop build ran without the checkout lock"

@@ -21,9 +21,11 @@ from agent.session_activity import format_iteration_progress
 from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE
 from contextlib import nullcontext, suppress
 from contextvars import copy_context
+from gateway.bot_peer_notices import automatic_notices_allowed
 from gateway.config import Platform
 from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
 from gateway.platforms.event import MessageEvent
+from gateway.platforms.helpers import typing_metadata_for_turn
 from gateway.response_filters import (
     display_kind_for_event, display_metadata_for_event, is_machinery_display_kind, persisted_user_metadata_for_event,
     reply_expected_metadata,
@@ -183,17 +185,17 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         return None
 
     async def _hmwa_stop_typing_for_turn(self, event, source):
-        """Stop the typing indicator (never raises). Slack AI status is scoped to a thread/
-        workspace, so preserve the routing metadata used by the response delivery path."""
+        """Stop the typing indicator (never raises), with the delivery path's thread/workspace routing
+        metadata (Slack AI status is thread-scoped), on this turn's own message, not the chat's latest."""
+        from gateway.platforms.helpers import typing_metadata_for_turn
         with suppress(Exception):
             _typing_adapter = self._delivery_adapter_for(source)
             _kind = type(_typing_adapter)
             if _typing_adapter and callable(getattr(_kind, "_stop_typing_with_metadata", None)):
-                await _typing_adapter._stop_typing_with_metadata(source.chat_id, self._event_thread_metadata(event, source))
+                await _typing_adapter._stop_typing_with_metadata(source.chat_id, typing_metadata_for_turn(_typing_adapter,
+                    source.chat_id, self._reply_anchor_for_event(event), self._event_thread_metadata(event, source)))
             elif _typing_adapter and callable(getattr(_kind, "stop_typing", None)):
                 await _typing_adapter.stop_typing(source.chat_id)
-
-
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
@@ -301,7 +303,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             agent_failed_early, hidden_reasoning_incomplete, is_context_overflow_failure = (
                 self._hmwa_classify_turn_failure(agent_result, history, session_entry)
             )
-            if agent_failed_early and not is_context_overflow_failure:
+            if agent_failed_early and not is_context_overflow_failure and automatic_notices_allowed(source):
                 response = self._hmwa_add_failed_turn_notice(response, self._hmwa_failed_turn_notice(agent_result))
             response, session_entry = await self._hmwa_compression_exhaustion_reset(
                 agent_result, response, session_entry, session_key, source,
@@ -406,7 +408,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         context_length = resolved.context_length
         ctx_source = {
             "config": "config",
-            "default": "default — set model.context_length in config to override",
+            "default": "fallback, not a detected limit — set model.context_length in config to override",
         }.get(resolved.context_source, "detected")
         ctx_display = (
             f"{context_length / 1_000_000:.1f}M" if context_length >= 1_000_000
@@ -724,7 +726,8 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         _adapter = self._delivery_adapter_for(source)
         if _adapter and not scheduled_heartbeat:
             with suppress(Exception):
-                await _adapter.send_typing(source.chat_id, metadata=_thread_metadata)
+                await _adapter.send_typing(source.chat_id, metadata=typing_metadata_for_turn(
+                    _adapter, source.chat_id, event_message_id, _thread_metadata))
 
         full_response = ""
         _start = time.time()
@@ -907,9 +910,9 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
                         if kind in {"heartbeat", "waiting", "long_running", "status"}
                         else t("gateway.progress.status_fallback_short"))
 
-        # Webhooks can't edit messages, so tool progress / log mode are off there.
-        is_webhook = source.platform == Platform.WEBHOOK
-        tool_progress_enabled = progress_mode not in {"off", "log"} and not is_webhook
+        # Webhooks can't edit messages; a bot peer gets the final reply only (#137027): no progress lanes.
+        is_webhook, bot_peer = source.platform == Platform.WEBHOOK, not automatic_notices_allowed(source)
+        tool_progress_enabled = progress_mode not in {"off", "log"} and not is_webhook and not bot_peer
         # Live status for text-rendering typing indicators (Slack); independent of tool_progress.
         _live_status_mode = resolve_display_setting(user_config, platform_key, "live_status", "full")
         _live_status_adapter = (
@@ -922,11 +925,10 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         interim_assistant_messages_mode = _display_surface_mode(
             "interim_assistant_messages", default=True, require_platform_override_for={Platform.MATTERMOST},
         )
-        interim_assistant_messages_enabled = not is_webhook and interim_assistant_messages_mode != "off"
+        interim_assistant_messages_enabled = not is_webhook and not bot_peer and interim_assistant_messages_mode != "off"
         _thinking_enabled = _display_surface_mode(
             "thinking_progress", default=False, require_platform_override_for={Platform.MATTERMOST},
-        ) != "off"
-        # Slack-native task cards need the progress queue even with text tool_progress off.
+        ) != "off" and not bot_peer
         # Slack-native task cards (#29483): when the Slack adapter's opt-in is set, tool progress renders as
         # native plan/task cards via chat.startStream — the progress queue is needed even though Slack keeps
         # ordinary text tool_progress off by default (requiring both flags would silently leave the native
@@ -939,7 +941,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         if (
             source.platform == Platform.SLACK
             and hasattr(adapter, "native_task_cards_enabled")
-            and not (_tool_progress_explicit and progress_mode == "off")
+            and not (_tool_progress_explicit and progress_mode == "off") and not bot_peer
         ):
             try:
                 _native_slack_task_cards = bool(adapter.native_task_cards_enabled())
@@ -1399,7 +1401,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
     async def _run_agent_inactivity_warning(self, worker, source, _status_thread_metadata) -> None:
         """Staged one-shot warning before the inactivity timeout escalates."""
         from gateway.run import _interim_metadata
-        _warn_adapter = self._delivery_adapter_for(source)
+        _warn_adapter = self._delivery_adapter_for(source) if automatic_notices_allowed(source) else None
         if not _warn_adapter:
             return
         try:
@@ -1762,8 +1764,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             # of the turn they are recursively following.
             next_channel_prompt = turn_ctx.channel_prompt
 
-        # Clear the prior turn's streaming-TTS completion marker so the recursive turn isn't suppressed.
-        # See #60671.
+        # Clear the prior turn's streaming-TTS completion marker so the recursive turn isn't suppressed (#60671).
         _clear_adapter = self._delivery_adapter_for(source)
         _completed_turns = getattr(_clear_adapter, "_streaming_tts_completed_turns", None)
         _prior_key = getattr(_clear_adapter, "_streaming_tts_turn_key", None)
@@ -1775,10 +1776,9 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         # Restart the typing indicator; the outer typing task may be stale.
         if _clear_adapter:
             with suppress(Exception):
-                await _clear_adapter.send_typing(source.chat_id, metadata=_status_thread_metadata)
+                await _clear_adapter.send_typing(source.chat_id, metadata=typing_metadata_for_turn(
+                    _clear_adapter, source.chat_id, next_message_id, _status_thread_metadata))
 
-        # Re-baseline the cached agent's message_count before recursing, else the coherence guard
-        # rebuilds on OUR OWN flushed rows (the outer handler re-baselines only after the chain).
         # Re-baseline the cached agent's message_count snapshot before recursing into the in-band queued
         # (/queue) follow-up turn. The first turn has completed and flushed its own user + assistant rows to
         # the SessionDB, so the cross-process coherence guard (#45966) — which this recursive _run_agent
@@ -2206,7 +2206,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         # Periodic "still working" notifications so the user knows the agent hasn't died.
         _executor_task_holder: list = [None]  # bound once the executor future exists (see below)
         _notify_task = (
-            None if (scheduled_heartbeat or turn_ctx.mute_notification_reply)
+            None if (scheduled_heartbeat or turn_ctx.mute_notification_reply or not automatic_notices_allowed(source))
             else spawn(self._run_agent_notify_long_running(disp, turn_ctx, _executor_task_holder))
         )
 

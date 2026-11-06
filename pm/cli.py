@@ -90,24 +90,9 @@ def _locked_extras(root: Path) -> set[str]:
 
 def _new_opt_in_extras(root: Path, before: set[str]) -> list[str]:
     """Extras this relock introduced that the default [all] closure does not reach."""
-    import re
-    import tomllib
+    from pm.extras import droppable_extras
 
-    with (root / "pyproject.toml").open("rb") as f:
-        project = tomllib.load(f)["project"]
-    extras = project.get("optional-dependencies", {})
-    self_ref = re.compile(rf"\s*{re.escape(project['name'])}\s*\[([^\]]+)\]")
-    covered, pending = set(), ["all"]
-    while pending:
-        extra = pending.pop()
-        if extra in covered:
-            continue
-        covered.add(extra)
-        for requirement in extras.get(extra, ()):
-            match = self_ref.match(requirement)
-            if match:
-                pending.extend(part.strip() for part in match.group(1).split(","))
-    return sorted(set(extras) - before - covered)
+    return sorted(set(droppable_extras(root)) - before)
 
 
 @reuse_index_responses()
@@ -143,6 +128,8 @@ def _pin_tool(args) -> int:
     lockfile.set_pin(args.name, args.version, artifacts)
     lockfile.save()
     print(f"pinned {args.name} {args.version} ({len(artifacts)} targets)")
+    if args.name == "pnpm":
+        _sync_pnpm_dev_engines(lockfile)
     return _regenerate_bootstrap_pins(lockfile)
 
 
@@ -285,14 +272,29 @@ def _install_flag_error(args, *, extras: list[str], cross_target, tools_only: bo
     if without and (extras or cross_target or args.names):
         return "--without shapes the default closure; it does not take names, --extra, or --target"
     if without:
-        from pm.defaults import canonical_default_name, default_package_names
+        from pm.defaults import default_package_names
+        from pm.extras import droppable_extras
 
-        allowed = default_package_names()
-        unknown = [name for name in without if canonical_default_name(name) not in allowed]
+        unknown = _split_without(without)[2]
         if unknown:
-            return (f"--without accepts only optional default packages ({', '.join(allowed)}); "
+            return (f"--without accepts only optional default packages ({', '.join(default_package_names())}) "
+                    f"or extras outside [all] ({', '.join(droppable_extras(repo_root()))}); "
                     f"not {', '.join(unknown)}")
     return None
+
+
+def _split_without(names) -> tuple[list[str], list[str], list[str]]:
+    """Sort ``--without`` names into (default packages, droppable extras, unknown)."""
+    from pm.defaults import canonical_default_name, default_package_names
+    from pm.extras import droppable_extras
+
+    packages, extras = set(default_package_names()), set(droppable_extras(repo_root()))
+    split: tuple[list[str], list[str], list[str]] = ([], [], [])
+    for name in names:
+        package = canonical_default_name(name)
+        bucket = 0 if package in packages else 1 if name in extras else 2
+        split[bucket].append(package if bucket == 0 else name)
+    return split
 
 
 def _install_defaults(names: list[str], *, verify: bool) -> None:
@@ -308,6 +310,26 @@ def _install_defaults(names: list[str], *, verify: bool) -> None:
                   f"`hermes pm install {name}` succeeds", flush=True)
 
 
+def _first_selection(extras: list[str]) -> tuple[list[str], list[str]]:
+    """``(extras this install's sync requests, the ones it carries)``: the caller's, else ``[all]``.
+
+    Before PM has recorded a selection (a first migration that failed before writing facts),
+    the main-era venv's extras are carried too, minus any dropped with ``--without``, exactly as
+    the launch migration would; otherwise this sync's facts would end the re-scan without them.
+    The carried ones are not a request, so they never opt a declined extra back in.
+    """
+    from pm.environments import runtime_facts_path
+    from pm.extras import legacy_selection
+
+    requested = extras or ["all"]
+    if runtime_facts_path(repo_root()).is_file():
+        return requested, []
+    carried = legacy_selection(repo_root())
+    if carried == ["all"]:
+        return requested, []
+    return sorted(set(carried) | set(extras)), sorted(set(carried) - set(requested))
+
+
 def _install_python_environments(extras: list[str], *, sync: bool, test_environment) -> int:
     """Sync the venv and build the side test environment; return the failure count."""
     failed = 0
@@ -320,7 +342,8 @@ def _install_python_environments(extras: list[str], *, sync: bool, test_environm
             # the installers' old `--extra all` did. sync_venv unions, so
             # any lazy extras already recorded survive this; it only makes
             # a fresh bootstrap match what the first update would do.
-            sync_venv(extras or ["all"], explicit=True)
+            selection, carried = _first_selection(extras)
+            sync_venv(selection, explicit=True, **({"automatic": carried} if carried else {}))
             print(f"✓ venv{' +' + ' +'.join(extras) if extras else ''}")
         except InstallError as e:
             print(f"✗ {e}")
@@ -362,10 +385,14 @@ def cmd_install(args) -> int:
     without = list(dict.fromkeys(getattr(args, "without", None) or ()))
     if without:
         from pm.defaults import record_declined
+        from pm.install import decline_extras
 
         # Persisted before anything installs: later bare installs and
-        # `hermes update` read the same record, so the opt-out sticks.
-        record_declined(add=without)
+        # `hermes update` read the same record, so the opt-out sticks. A
+        # dropped extra leaves the recorded selection at this install's sync.
+        declined_packages, declined_extras, _ = _split_without(without)
+        record_declined(add=declined_packages)
+        decline_extras(declined_extras)
     defaults: list[str] = []
     if not (args.names or extras):
         from pm.defaults import default_packages
@@ -425,7 +452,7 @@ def cmd_env(args) -> int:
 
 def cmd_doctor(args) -> int:
     from pm.install import _identity, _installed_location
-    from pm.store import tree_digest
+    from pm.store import digest_matches
 
     lockfile = _lockfile()
     facts = _facts()
@@ -464,7 +491,7 @@ def cmd_doctor(args) -> int:
             bad += 1
             continue
         recorded = fact.get("digest")
-        if recorded is not None and tree_digest(entry) != recorded:
+        if recorded is not None and not digest_matches(entry, recorded):
             # Doctor is the expensive-path tool: re-hash the realized
             # bytes. Boot checks stay O(1) json compares.
             print(f"✗ {name}: realized bytes do not match recorded digest")
@@ -630,6 +657,28 @@ def _sync_venv_step() -> bool:
     return True
 
 
+def _sync_pnpm_dev_engines(lockfile) -> None:
+    """Carry the pnpm pin into root package.json's devEngines.
+
+    scripts/build/node-deps.mjs refuses any pnpm but the devEngines one, so a
+    pnpm re-pin that left it behind would break every install. A lock outside a
+    checkout (a test fixture) has no manifest.
+    """
+    import json
+
+    manifest_path = lockfile.path.parent.parent / "package.json"
+    version = lockfile.version("pnpm")
+    if not version or not manifest_path.is_file():
+        return
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    pin = manifest.get("devEngines", {}).get("packageManager", {})
+    if pin.get("name") != "pnpm" or pin.get("version") == version:
+        return
+    pin["version"] = version
+    manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    print(f"✓ package.json devEngines pnpm → {version}")
+
+
 def _regenerate_bootstrap_pins(lockfile) -> int:
     """Splice the new uv and Windows git pins into this checkout's installers.
 
@@ -671,6 +720,8 @@ def _apply_pins(changed: list, lockfile) -> int:
         print(f"✓ {d.name} pinned {d.locked or '—'} → {d.version}")
     if pinned:
         lockfile.save()
+        if "pnpm" in pinned:
+            _sync_pnpm_dev_engines(lockfile)
         fragments = _regenerate_bootstrap_pins(lockfile)
         rc = 1 if _install_names(pinned) or not _sync_venv_step() or fragments else 0
     else:
@@ -700,38 +751,43 @@ def _refresh_uv_lock() -> int:
     return 0 if _sync_venv_step() else 1
 
 
-def _refresh_npm_lock() -> int:
+def _refresh_pnpm_lock() -> int:
     from pm.install import env_for, installed_package
-    from pm.packages import npm_env
-    from pm.paths import writable_store_root
+    from pm.packages import pnpm_env
 
-    npm = installed_package("npm")
-    node = installed_package("node")
-    if npm is None or npm.binary is None or node is None or node.binary is None:
-        print("✗ npm or Node: not installed; run `hermes pm install`")
+    pnpm = installed_package("pnpm")
+    if pnpm is None or pnpm.binary is None:
+        print("✗ pnpm: not installed; run `hermes pm install`")
         return 1
-    env = npm_env(writable_store_root() / ".npm-cache", env_for("npm"))
-    code, tail = _run_live([str(npm.binary), "update"], cwd=str(repo_root()), env=env)
+    # Every workspace and the root, within the declared ranges: --no-save keeps the manifests'
+    # specifiers as written, and the release-age policy applies to every new pick.
+    command = [str(pnpm.binary), "update", "--recursive", "--lockfile-only", "--no-save"]
+    code, tail = _run_live(command, cwd=str(repo_root()), env=pnpm_env(env_for("pnpm")))
     if code != 0:
-        print(f"✗ npm update failed:\n{tail}")
+        print(f"✗ pnpm update failed:\n{tail}")
+        # --no-save turns the "only too-young versions match" case into the
+        # REQUIRES_SAVE error: pnpm would otherwise write the exclude itself.
+        if "ERR_PNPM_NO_MATURE_MATCHING_VERSION" in tail or "ERR_PNPM_STRICT_MIN_RELEASE_AGE_REQUIRES_SAVE" in tail:
+            print("  a range's only matches are newer than minimumReleaseAge (pnpm-workspace.yaml): "
+                  "wait for them to age, or add the package to minimumReleaseAgeExclude")
         return 1
-    print("✓ package-lock.json refreshed")
+    print("✓ pnpm-lock.yaml refreshed")
     return 0
 
 
 def cmd_update(args) -> int:
-    """`hermes pm update [names...] [--check] [--target T] [--skip-target T] [--uv] [--npm] [--termux]`.
+    """`hermes pm update [names...] [--check] [--target T] [--skip-target T] [--uv] [--pnpm] [--termux]`.
 
     Resolve each package's latest via its own latest_versions() hook,
     intersect across targets, and (real mode) re-pin the lockfile + install
     the changed ones. --check is dry-run: hits upstream indexes, writes
-    nothing. --uv / --npm also refresh uv.lock (+sync venv) / package-lock.
+    nothing. --uv / --pnpm also refresh uv.lock (+sync venv) / pnpm-lock.yaml.
     --termux is its own repair pass: it repins only the pool archives the
     rolling termux-main pool has retired under our pins.
     """
     if args.termux:
         ignored = [name for name, given in (("names", args.names), ("--target", args.target),
-                                            ("--uv", args.uv), ("--npm", args.npm)) if given]
+                                            ("--uv", args.uv), ("--pnpm", args.pnpm)) if given]
         if ignored:
             print(f"::warning::--termux repairs the termux pool pins only; ignoring {', '.join(ignored)}")
         return _termux_pass(check=args.check)
@@ -755,16 +811,16 @@ def cmd_update(args) -> int:
     if args.check:
         if args.uv:
             print("uv deps: would run `uv lock --upgrade` + venv sync")
-        if args.npm:
-            print("npm deps: would run `npm update`")
+        if args.pnpm:
+            print("pnpm deps: would run `pnpm update --recursive --lockfile-only --no-save`")
         return 1 if changed else 0
 
     if _apply_pins(changed, lockfile):
         return 1
     if args.uv and _refresh_uv_lock():
         return 1
-    if args.npm:
-        return _refresh_npm_lock()
+    if args.pnpm:
+        return _refresh_pnpm_lock()
     return 0
 
 
@@ -953,8 +1009,9 @@ def main(argv=None) -> int:
     p.add_argument("--extra", action="append", default=[], metavar="NAME",
                    help="enable a declared dependency extra in the venv (repeatable)")
     p.add_argument("--without", action="append", default=[], metavar="NAME",
-                   help="leave an optional default package (chromium, cua-driver) out of this and every later "
-                        "default install and update; `hermes pm install NAME` opts back in (repeatable)")
+                   help="leave an optional default package (chromium, cua-driver) or a recorded extra outside "
+                        "[all] (matrix, ...) out of this and every later default install and update; "
+                        "`hermes pm install NAME` / `--extra NAME` opts back in (repeatable)")
     p.add_argument("--tools-only", action="store_true",
                    help="install the tool closure, put it on PATH, and stop before the venv sync")
     p.add_argument("--trust-recorded", action="store_true",
@@ -1013,7 +1070,7 @@ def main(argv=None) -> int:
                    help="leave TARGET's pins as they are, e.g. linux-arm64-bionic while the termux "
                         "pool lags upstream (repeatable)")
     p.add_argument("--uv", action="store_true", help="also refresh uv.lock + venv (uv update + sync)")
-    p.add_argument("--npm", action="store_true", help="also refresh package-lock.json (npm update)")
+    p.add_argument("--pnpm", action="store_true", help="also refresh pnpm-lock.yaml (pnpm update)")
     p.add_argument("--termux", action="store_true",
                    help="repin the termux pool archives the pool has retired (the runtime-lib "
                         "table + the bionic lock rows); --check reports without writing")

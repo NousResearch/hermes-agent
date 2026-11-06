@@ -556,7 +556,7 @@ def _log_only_write(text: str) -> None:
 
     During ``hermes update`` ``sys.stdout`` is an ``_UpdateOutputStream`` that
     mirrors to both the terminal and ``update.log``. Loud, low-signal
-    subprocess output (npm installs, the Electron/vite build, the cua-driver
+    subprocess output (pnpm installs, the Electron/vite build, the cua-driver
     installer's "Next steps" wall) should be captured and tucked into the log
     so failures stay debuggable, without flooding the user's terminal. This
     reaches past the mirroring stream straight to the underlying log handle.
@@ -1830,10 +1830,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # fail with "File exists" until an operator removed the lock by hand (#132089). Idempotent,
     # and _sweep_stale skips everything while a git process holds it. A killed update's
     # index.lock is younger than the sweep's age floor, so it goes here once its git is proven
-    # dead (we hold the update lock: no other update's git can own it).
-    from hermes_cli.gitlock import release_dead_index_lock
+    # dead (we hold the update lock: no other update's git can own it). Its killed fetch's ref
+    # and shallow locks likewise, or every later fetch fails ("reference already exists").
+    from hermes_cli.gitlock import release_dead_fetch_locks, release_dead_index_lock
     if release_dead_index_lock(_m().PROJECT_ROOT):
         print("  (removed .git/index.lock left by a git that was killed)")
+    for lock in release_dead_fetch_locks(_m().PROJECT_ROOT):
+        print(f"  (removed {lock} left by a git that was killed)")
     _check.clear_git_debris(_m().PROJECT_ROOT)
 
     opts = _resolve_update_options(args, gateway_mode)

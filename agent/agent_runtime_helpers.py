@@ -39,8 +39,6 @@ from agent.primary_runtime_snapshot import _build_primary_runtime_snapshot
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 logger = logging.getLogger(__name__)
 
-# Cap same-entry OAuth refreshes on a persistent auth failure, else a single-entry pool re-mints forever.
-_MAX_AUTH_REFRESH_ATTEMPTS = 2
 _TOOL_CALL_TAG_NAMES = ("tool_call", "tool_calls", "tool_result", "function_call", "function_calls")
 # Optional XML namespace prefix: some models serialize native tool calls as <ns:function_calls>.
 _NS_PREFIX = r"(?:[\w.-]+:)?"
@@ -934,44 +932,9 @@ def _is_entitlement_403(agent, status_code, error_context) -> bool:
     return False
 
 
-def _recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_context, api_key_hint, credential_id, rotate_and_swap):
-    if _is_entitlement_403(agent, status_code, error_context):
-        _ra().logger.info(
-            "Credential %s — entitlement-shaped 403 from %s; "
-            "skipping pool refresh (account lacks subscription, "
-            "not a transient auth failure).", status_code if status_code is not None else "auth",
-            agent.provider or "provider",
-        )
-        return False, has_retried_429
-    # Refresh the entry that supplied the failing key, not current(): refreshing a healthy entry
-    # burns its single-use refresh token for a failure it never had.
-    refresh_kwargs = {"api_key_hint": api_key_hint}
-    if credential_id:
-        refresh_kwargs["credential_id"] = credential_id
-    refreshed = pool.try_refresh_matching(**refresh_kwargs)
-    if refreshed is None:
-        # Refresh failed; rotate (the failed entry is already marked exhausted).
-        return (True, False) if rotate_and_swap(401, "auth refresh failed") else (False, has_retried_429)
-    # try_refresh_matching() reports success even when upstream keeps rejecting; cap same-entry
-    # refreshes so a single-entry pool falls through to fallback.
-    refreshed_id = getattr(refreshed, "id", None)
-    if refreshed_id is not None:
-        if getattr(agent, "_auth_pool_refresh_counts", None) is None:
-            agent._auth_pool_refresh_counts = {}
-        refresh_counts = agent._auth_pool_refresh_counts
-        refresh_key = (agent.provider, refreshed_id)
-        refresh_counts[refresh_key] = refresh_counts.get(refresh_key, 0) + 1
-        if refresh_counts[refresh_key] > _MAX_AUTH_REFRESH_ATTEMPTS:
-            _ra().logger.warning(
-                "Credential auth failure persists after %s refreshes for "
-                "pool entry %s — treating as unrecoverable and allowing "
-                "fallback to activate.", refresh_counts[refresh_key] - 1, refreshed_id,
-            )
-            return False, has_retried_429
-    _ra().logger.info("Credential auth failure — refreshed pool entry %s", getattr(refreshed, 'id', '?'))
-    if agent._swap_credential(refreshed) is False:
-        return False, has_retried_429
-    return True, has_retried_429
+def _recover_auth_failure(agent, pool, **kwargs):
+    from agent.credential_auth_recovery import recover_auth_failure
+    return recover_auth_failure(agent, pool, **kwargs)
 
 
 def _recover_rate_limit(pool, *, has_retried_429, error_context, api_key_hint, credential_id, rotate_and_swap):
@@ -2377,7 +2340,7 @@ def _update_switch_compressor(agent, custom_providers, effective_context_length,
         raise
     # Outside the rollback guard: a probe hiccup must not undo a good switch. Eager, so the aux
     # clamp lands before the first compaction on the new window, not after it (#114707).
-    from agent.conversation_compression import revalidate_compression_feasibility
+    from agent.conversation_compression_feasibility import revalidate_compression_feasibility
     revalidate_compression_feasibility(agent)
 
 
@@ -3171,11 +3134,11 @@ def looks_like_codex_intermediate_ack(
 ) -> bool:
     """Detect a planning/ack message that should continue instead of ending the turn.
     ``require_workspace=False`` (opt-in for all api_modes) drops the filesystem/repo reference
-    requirement; short-content + no-prior-tools guardrails always apply. A response must then
-    contain either a first-person future acknowledgement with an action marker or a narrowly
-    bounded pronounless action clause with an explicit transition cue; this keeps ordinary
-    conversational replies such as "I'll help you brainstorm" from tripping it."""
-    if any(isinstance(msg, dict) and msg.get("role") == "tool" for msg in messages):
+    requirement; short-content + no-tool-results-this-turn guardrails always apply (every row after this
+    turn's own user row: ``messages`` is the whole session, #69778, and a nudge row starts no new turn).
+    A response then needs a future ack + action marker, or a bounded pronounless clause + transition cue."""
+    from agent.turn_context import reanchor_current_turn_user_idx as turn_user_idx
+    if any(isinstance(m, dict) and m.get("role") == "tool" for m in messages[turn_user_idx(messages, user_message) + 1:]):
         return False
     assistant_text = agent._strip_think_blocks(assistant_content or "").strip().lower()
     if not assistant_text or len(assistant_text) > 1200:

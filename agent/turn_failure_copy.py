@@ -75,6 +75,21 @@ OPEN_TURN_TAIL_ROLES = frozenset({"user", "tool"})
 FAILED_TURN_DISPLAY_KIND = "failed_turn"
 
 
+# ---- safety-refused turn, retained for display only -------------------------------------------
+# A content-policy refusal is deterministic for the unchanged conversation (the filter judges the
+# whole thread), so the whole refused turn leaves the MODEL's context — otherwise every later
+# message re-trips the filter and the chat locks (the "stuck session" report). But the user keeps
+# SEEING their message: the user row is retained in the DISPLAY projection (never the model read)
+# and tagged with this display_kind, while the raw tool rounds + refusal detail collapse into
+# CONTENT_REFUSED_NOTICE. Rendered cross-surface (Desktop, CLI/TUI, ACP) as a greyed block.
+CONTENT_REFUSED_DISPLAY_KIND = "content_refused"
+CONTENT_REFUSED_NOTICE = (
+    "This message was refused by the model's safety filter — try a different query."
+)
+# messages.display_metadata key carrying the stored notice, so every surface renders one copy.
+CONTENT_REFUSED_METADATA_KEY = "content_refused"
+
+
 def untyped_failed_turn_display_kind(role: Any, content: Any) -> Optional[str]:
     """``FAILED_TURN_DISPLAY_KIND`` for a boundary row persisted before the closers typed it
     (exact notice text, so a real reply quoting it stays a reply); read-side only."""
@@ -261,8 +276,9 @@ _AUTH_COPY: dict[str, str] = {
 }
 
 CONTENT_POLICY_NEXT_STEPS = (
-    "Try rewording your message or removing sensitive attachments, or switch to another "
-    "model with /model."
+    "That message has been left out of this conversation, so you're not stuck — just ask "
+    "something else and you can keep going. Rewording it, removing any sensitive attachments, "
+    "or switching models with /model can also help."
 )
 
 # ---- one reason → "what happened" gloss, shared by cron, subagent and chat notices ------------

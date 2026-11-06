@@ -29,9 +29,27 @@ import {
 import type { Msg, PanelSection } from '../../../types.js'
 import type { StatusBarMode } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
-import { patchUiState, sessionCwd } from '../../uiStore.js'
+import { getUiState, patchUiState, sessionCwd } from '../../uiStore.js'
+import { openRewindPicker } from '../canonicalRewindPicker.js'
 import { canonicalRewind, canonicalTitle } from '../canonicalSessionCommands.js'
 import type { SlashCommand, SlashRunCtx } from '../types.js'
+
+// The JSON spellings `session.save` (the pre-export RPC) can honour.
+const LEGACY_SAVE_FORMATS = new Set(['json', 'snapshot'])
+
+/** `/save [format] [filename] [redact|--redact]`: only a trailing token is the redact flag. */
+const parseSaveArgs = (arg: string) => {
+  const parts = arg.trim().split(/\s+/).filter(Boolean)
+  const redact = /^-{0,2}redact$/i.test(parts.at(-1) ?? '')
+
+  if (redact) {
+    parts.pop()
+  }
+
+  const [format = 'json', filename] = parts
+
+  return { filename, format, redact }
+}
 
 // Client display preferences: written to the profile's config.yaml by either backend (the shared
 // owner's config.set serves them profile-wide, like the sidecar). `/focus` names the session on the
@@ -200,12 +218,20 @@ export const coreCommands: SlashCommand[] = [
     help: 'start a new session',
     name: 'clear',
     run: (arg, ctx, cmd) => {
+      const isNew = cmd.startsWith('/new')
+      const requestedTitle = isNew ? arg.trim() : ''
+
+      // /new mid-turn leaves the running session alone: it keeps working in the background and
+      // stays in the session switcher. Nothing ends, so there is nothing to confirm.
+      if (isNew && getUiState().busy) {
+        ctx.ran?.()
+
+        return ctx.session.newLiveSession(t('slashCmd.core.clear.previousKeptRunning'), requestedTitle || undefined)
+      }
+
       if (ctx.session.guardBusySessionSwitch(t('slashCmd.core.clear.switchSessions'))) {
         return
       }
-
-      const isNew = cmd.startsWith('/new')
-      const requestedTitle = isNew ? arg.trim() : ''
 
       const commit = () => {
         ctx.ran?.()
@@ -651,7 +677,7 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
-    help: 'save the current transcript to JSON',
+    help: 'save the conversation: /save [json|md|html] [filename] [redact]',
     name: 'save',
     run: (arg, ctx) => {
       const hasConversation = ctx.local
@@ -669,15 +695,9 @@ export const coreCommands: SlashCommand[] = [
       // T10: the shared owner renders the transcript (session.export) and Ink writes the file on
       // the user's machine, as the classic CLI's `/save [json|md|html] [filename] [redact]` did.
       // The same verb serves a remote Desktop, where the gateway's disk is not the user's.
+      const { filename, format, redact } = parseSaveArgs(arg)
+
       if (ctx.gateway.gw?.isCanonical) {
-        const parts = arg.trim().split(/\s+/).filter(Boolean)
-        const redact = /^-{0,2}redact$/i.test(parts.at(-1) ?? '')
-
-        if (redact) {
-          parts.pop()
-        }
-
-        const [format = 'json', filename] = parts
         // The user's folder, fixed now: a local session's cwd, else the launch HERMES_CWD (a remote
         // session's folder names the gateway host's disk, not this one).
         const remote = Boolean(process.env.HERMES_TUI_GATEWAY_URL?.trim())
@@ -705,6 +725,13 @@ export const coreCommands: SlashCommand[] = [
           .catch(ctx.guardedErr)
       }
 
+      // A listener without session.export (HERMES_TUI_GATEWAY_URL on an older or non-authority
+      // gateway): its session.save writes default-named, unredacted JSON on the gateway host, so
+      // only a plain /save may use it, as the CLI and Desktop do.
+      if (redact || filename || !LEGACY_SAVE_FORMATS.has(format.toLowerCase())) {
+        return ctx.transcript.sys(t('slashCmd.core.save.legacyRefused'))
+      }
+
       ctx.gateway
         .rpc<SessionSaveResponse>('session.save', { session_id: ctx.sid })
         .then(
@@ -712,7 +739,7 @@ export const coreCommands: SlashCommand[] = [
             const file = r?.file
 
             if (file) {
-              ctx.transcript.sys(t('slashCmd.core.save.saved', file))
+              ctx.transcript.sys(t('slashCmd.core.save.savedOnHost', file))
             } else {
               ctx.transcript.sys(t('slashCmd.core.save.failed'))
             }
@@ -898,12 +925,22 @@ export const coreCommands: SlashCommand[] = [
             ctx.transcript.sys(
               t(r.removed === 1 ? 'slashCmd.core.undo.undidOne' : 'slashCmd.core.undo.undidOther', String(r.removed))
             )
+
+            if (r.undo_hint?.text) {
+              ctx.transcript.sys(r.undo_hint.text)
+            }
           } else {
             ctx.transcript.sys(t('slashCmd.core.undo.nothing'))
           }
         })
       )
     }
+  },
+
+  {
+    help: 'rewind to an earlier prompt: edit and resend it, or fork from it (also Esc Esc on an empty composer)',
+    name: 'rewind',
+    run: (_arg, ctx) => openRewindPicker(ctx)
   },
 
   {

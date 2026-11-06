@@ -18,6 +18,7 @@ from agent.turn_failure_copy import (
 from agent.session_activity import format_iteration_progress
 from contextlib import nullcontext, suppress
 from contextvars import copy_context
+from gateway.bot_peer_notices import automatic_notices_allowed
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
@@ -126,6 +127,10 @@ class GatewayTurnPersistenceMixin:
         _silence_kind = agent_result.get("queued_terminal_display_kind", persist_user_display_kind)
         _silence_reply_expected = agent_result.get("queued_terminal_reply_expected", reply_expected)
         _silence_source = agent_result.get("queued_terminal_source", source)
+        # A bot peer expects no reply even when it addressed us (a DM, a mention): its message may end
+        # the exchange in silence, and the visible fallback would be runtime text it answers (#137027).
+        if not automatic_notices_allowed(_silence_source):
+            _silence_reply_expected = False
         if _intentional_silence and not self._silence_allowed_for_source(
             _silence_source, _silence_kind, _silence_reply_expected, agent_result,
         ):
@@ -144,6 +149,10 @@ class GatewayTurnPersistenceMixin:
         # "(empty)" = the model produced no visible content after exhausting all retries. One
         # text with the CLI explainer and the desktop (agent/turn_explainers.py) so the user
         # reads the same words on every surface.
+        if not automatic_notices_allowed(source) and (response == "(empty)" or agent_result.get("failed")):
+            # A failed or empty turn's text is runtime failure copy, never the model's answer: a bot
+            # peer would take it as a message to answer (#137027).
+            response = ""
         if response == "(empty)" and not _intentional_silence:
             from agent.turn_explainers import EMPTY_RESPONSE_EXPLANATION
 
@@ -169,7 +178,10 @@ class GatewayTurnPersistenceMixin:
         # Fix for #18765.
         if not _intentional_silence:
             response = strip_trailing_silence_marker(response)
-            response = _normalize_empty_agent_response(agent_result, response, history_len=len(history))
+            # A bot peer gets the model's own words only: the runtime's retry hints and "not
+            # processed" lines are new inbound messages for its turn loop (#137027).
+            if automatic_notices_allowed(source):
+                response = _normalize_empty_agent_response(agent_result, response, history_len=len(history))
             response = _sanitize_gateway_final_response(source.platform, response)
 
         # The agent thread already updated the contextvar; propagate to SessionEntry + _save() only
@@ -251,7 +263,8 @@ class GatewayTurnPersistenceMixin:
         the printed answer itself."""
         from gateway.run import _load_gateway_config, _platform_config_key, _terminal_scope_cwd
         from gateway.session_finite import finite_turn_required
-        if finite_turn_required() is True:
+        # A bot peer gets the model's words only: a streamed reply sends the footer as its own message.
+        if finite_turn_required() is True or not automatic_notices_allowed(source):
             return ""
         try:
             from gateway.runtime_footer import build_footer_line as _bfl
@@ -513,6 +526,18 @@ class GatewayTurnPersistenceMixin:
 
         if is_context_overflow_failure:
             pass  # Skip all transcript writes — don't grow a broken session
+        elif agent_result.get("failure_reason") == "content_policy_blocked":
+            # A safety refusal is deterministic for the unchanged conversation (the filter judges the
+            # whole thread), so a persisted refused turn re-trips the filter on every later message and
+            # locks the chat — the "stuck session" report. The agent flushed the user row at turn start;
+            # drop that turn now that the lease is released (soft-delete, the same rewind /undo uses) so
+            # the next turn rebuilds from a clean transcript. The refusal was already delivered to the
+            # user. Only when the agent persisted the turn (``agent_persisted``) is there a durable row to
+            # drop; a non-persisting runtime wrote nothing, so rewinding would hit a prior accepted turn.
+            # Mirrors the context_overflow no-grow rule (#1630); only a non-retryable block drops.
+            if agent_persisted:
+                await self._hmwa_retain_content_policy_refused_turn(
+                    sid, session_key, agent_result.get("refused_turn_boundary_row_id"))
         else:
             if not history and source.platform != Platform.LOCAL:
                 # Fresh session: the tool definitions (as sent in the API request) make the transcript
@@ -582,6 +607,45 @@ class GatewayTurnPersistenceMixin:
         # trigger a rebuild next turn (destroying prompt caching).
         await self._refresh_agent_cache_message_count(session_key, sid)
 
+    async def _hmwa_retain_content_policy_refused_turn(self, sid, session_key, boundary_row_id=None):
+        """Retain a safety-refused turn for display while forcing the next turn to rebuild from the
+        clean (model) transcript. The ONE owner-side refusal cleanup for every durable gateway owner:
+        the in-process runner (this persist path), the managed worker (Bot Chat / safe-mode, via
+        ``execute_managed``) and the standalone tui_gateway finish path all funnel here so none can be
+        missed (#149708 review).
+
+        The agent flushed the turn-start user row before the refusal was known (a managed worker's
+        subprocess flushes to the SAME shared transcript, then exits); now that the turn lease is
+        released, take that whole turn out of the MODEL context owner-side — the same soft-delete
+        ``/undo`` uses — but KEEP the user's message visible in the chat as a greyed refused notice,
+        and evict any cached agent so the next turn rebuilds from the active-only transcript.
+        Otherwise the refused turn stays in the next build's in-memory history and the deterministic
+        filter re-refuses every later message (the "stuck session" report). The refusal was already
+        delivered to the user. ``boundary_row_id`` (the refused run's original durable boundary,
+        captured by the refusal handler) is the precise rewind target; without it the newest user
+        turn is guessed. ``session_key`` is ``None`` for the managed worker (its subprocess holds no
+        cached owner agent to evict).
+
+        ``retain_refused_turn_for_display`` reports failure by returning ``None`` (it swallows its own
+        errors), so only evict on a confirmed retention and warn otherwise — a silently-failed
+        un-stick leaves the chat locked, and that is the one outcome worth a visible signal.
+        """
+        from agent.turn_failure_copy import CONTENT_REFUSED_NOTICE
+        try:
+            outcome = await self.async_session_store.retain_refused_turn_for_display(
+                sid, notice=CONTENT_REFUSED_NOTICE, boundary_row_id=boundary_row_id)
+        except Exception as e:  # health: allow BLE001 -- best-effort; a refusal must never crash turn teardown
+            logger.warning("content-policy refusal: retaining the refused turn for %s raised: %s", sid, e)
+            return
+        if outcome is None:
+            logger.warning(
+                "content-policy refusal: could not retain the refused turn for %s (rewind found none); "
+                "the chat may stay locked until the user runs /undo", sid)
+            return
+        if session_key is not None:
+            with suppress(Exception):
+                self._evict_cached_agent(session_key)
+
     @staticmethod
     def _usage_window_chat_wording(agent_result: dict, response: str) -> str:
         """A usage-window refusal sent to a chat: credits steps point at the Portal (a chat's /topup has no
@@ -602,6 +666,8 @@ class GatewayTurnPersistenceMixin:
             event, source, session_entry, session_key, run_generation,
             agent_result, agent_messages, response, footer_line, intentional_silence,
         )
+        if (delivered or agent_result.get("already_sent")) and not intentional_silence:
+            self._note_bot_reply(source)
         if isinstance(agent_result.get("usage_limit"), dict):
             self._schedule_usage_limit_offer(event, agent_result["usage_limit"], session_key=session_key,
                                              generation=run_generation)
@@ -713,6 +779,10 @@ class GatewayTurnPersistenceMixin:
         elif status_code == 400:
             status_hint = t("gateway.errors.hint_rejected")
         from gateway.session_results import record_unexecuted_failure
+        if not automatic_notices_allowed(source):
+            # The failure is recorded for the operator; the bot peer gets no apology to answer (#137027).
+            record_unexecuted_failure(t("gateway.errors.generic_failed"))
+            return None
         if getattr(e, "reason", None) == "launch_credentials_unavailable":
             # The session's own route key is gone or changed: /retry repeats it, /new is the way out.
             from agent.turn_failure_copy import launch_credentials_copy

@@ -1,8 +1,8 @@
 name: penguin
 title: Penguin
 repo: https://github.com/Crystal32378/hermes-penguin
-sha: e0f4ae144117eeb7ea0a7ff42c5e2b76b8b5c0ba
-version: "0.2.0"
+sha: b4e9853dbfc0c9231fd541ac0955a921b6c6d1d0
+version: "0.2.1"
 requires_hermes: ">=0.23.0"
 maintainer: Crystal32378
 tier: community
@@ -14,9 +14,9 @@ description: >-
   non-executable IANA 2026f data and its own plugin state.
   No external runtime requests, shell commands, credentials, telemetry or calendar writes.
 screenshots:
-  - https://raw.githubusercontent.com/Crystal32378/hermes-penguin/e0f4ae144117eeb7ea0a7ff42c5e2b76b8b5c0ba/docs/native-planner-0.2.jpg
-  - https://raw.githubusercontent.com/Crystal32378/hermes-penguin/e0f4ae144117eeb7ea0a7ff42c5e2b76b8b5c0ba/docs/native-arrival-0.2.jpg
-  - https://raw.githubusercontent.com/Crystal32378/hermes-penguin/e0f4ae144117eeb7ea0a7ff42c5e2b76b8b5c0ba/docs/native-commander-0.2.jpg
+  - https://raw.githubusercontent.com/Crystal32378/hermes-penguin/b4e9853dbfc0c9231fd541ac0955a921b6c6d1d0/docs/native-planner-0.2.jpg
+  - https://raw.githubusercontent.com/Crystal32378/hermes-penguin/b4e9853dbfc0c9231fd541ac0955a921b6c6d1d0/docs/native-arrival-0.2.jpg
+  - https://raw.githubusercontent.com/Crystal32378/hermes-penguin/b4e9853dbfc0c9231fd541ac0955a921b6c6d1d0/docs/native-commander-0.2.jpg
 platforms: []
 capabilities:
   provides_tools: [penguin_convert, penguin_overlap, penguin_save_team, penguin_get_team]

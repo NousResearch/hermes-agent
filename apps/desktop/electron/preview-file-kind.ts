@@ -19,4 +19,3 @@ export function looksBinary(buffer: Uint8Array): boolean {
 
   return suspicious / buffer.length > 0.12
 }
-

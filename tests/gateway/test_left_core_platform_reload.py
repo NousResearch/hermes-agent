@@ -110,3 +110,34 @@ async def test_a_named_launch_stays_standalone_across_the_reload(tmp_path, monke
 
 async def _none():
     return None
+
+
+def test_the_launch_homes_migration_reads_its_own_secrets_on_a_multiplexing_start(tmp_path, monkeypatch):
+    """A default-profile gateway that multiplexes armed fail-closed secret reads while loading its
+    config, before the migration runs. The launch home's install (its required-env check) must read
+    the launch profile's own ``.env`` through its scope, not raise ``UnscopedSecretError``."""
+    root = tmp_path / ".hermes"
+    root.mkdir()
+    (root / ".env").write_text("YUANBAO_APP_ID=launch-app\n")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.delenv("YUANBAO_APP_ID", raising=False)
+    import hermes_constants
+    monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
+    from agent.secret_scope import get_secret, is_multiplex_active, set_multiplex_active
+    read = []
+
+    def recover_at_startup(*, say=None, gateway_start=False):
+        read.append((str(hermes_constants.get_hermes_home()), get_secret("YUANBAO_APP_ID")))
+        return []
+
+    monkeypatch.setattr("hermes_cli.left_core_migration.recover_at_startup", recover_at_startup)
+    from gateway.run_startup import recover_left_core_at_gateway_start
+    previous = is_multiplex_active()
+    set_multiplex_active(True)
+    try:
+        recover_left_core_at_gateway_start()
+    finally:
+        set_multiplex_active(previous)
+
+    assert read == [(str(root), "launch-app")]  # once: the launch home is the root

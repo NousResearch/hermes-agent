@@ -54,11 +54,14 @@ def recover_left_core_at_gateway_start() -> bool:
     secondary). Every secondary runs :func:`recover_left_core_in` before its plugins are discovered,
     so a platform plugin it gets starts its adapter in the same gateway start. True when a plugin
     that ships a gateway platform was installed: platform config loaded before it lacks the platform."""
-    from hermes_cli.left_core_migration import LEFT_CORE, recover_at_startup
+    from hermes_cli.left_core_migration import LEFT_CORE
     from hermes_constants import get_default_hermes_root, get_hermes_home
-    installed = recover_at_startup(gateway_start=True)
+    # The launch home too runs in its own scope: a multiplexing config load already armed fail-closed
+    # secret reads, so an unscoped install read of its own .env raised. Its sources were hydrated at boot.
+    launch = Path(get_hermes_home())
+    installed = recover_left_core_in(launch, hydrate_secrets=False)
     root = Path(get_default_hermes_root())
-    if root.resolve() != Path(get_hermes_home()).resolve():
+    if root.resolve() != launch.resolve():
         installed += recover_left_core_in(root)
     return any(feature.platform and feature.plugin in installed for feature in LEFT_CORE)
 

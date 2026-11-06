@@ -1541,6 +1541,89 @@ class TestRelativePathDoesNotDisableDataExemption:
         assert self._scan(command) is True
 
 
+class TestForeignUserScopeIsNotSelfTargeting:
+    """`sudo -u <other user> systemctl --user restart hermes-gateway` restarts a
+    sibling gateway owned by a DIFFERENT OS user (one Hermes per user on a
+    multi-agent host). That gateway is not this process and cannot SIGTERM it,
+    so blocking it only forces a human to paste the command. Every form that
+    could still reach THIS gateway's manager must stay blocked."""
+
+    @pytest.fixture(autouse=True)
+    def _current_user(self, monkeypatch):
+        monkeypatch.setattr("cron.lifecycle_guard._current_username", lambda: "tom")
+
+    def _scan(self, command):
+        from cron.lifecycle_guard import scan_gateway_lifecycle
+
+        return scan_gateway_lifecycle(command)[0]
+
+    @pytest.mark.parametrize("command", [
+        "sudo -u alfred systemctl --user restart hermes-gateway",
+        "sudo -u alfred systemctl --user stop hermes-gateway.service",
+        "sudo --user alfred systemctl --user restart hermes-gateway",
+        "sudo --user=alfred systemctl --user restart hermes-gateway",
+        "sudo -n -u alfred -- systemctl --user restart hermes-gateway",
+        "sudo -u alfred -D /tmp systemctl --user restart hermes-gateway",
+        "sudo -u alfred /usr/bin/systemctl --user restart hermes-gateway",
+        "sudo -u alfred systemctl restart --user hermes-gateway",
+        "sudo -u alfred systemctl --user restart hermes-gateway && echo ok",
+        "sudo -u alfred systemctl --user restart hermes-gateway\n"
+        "sudo -u alfred systemctl --user status hermes-gateway",
+    ])
+    def test_other_users_gateway_is_allowed(self, command):
+        assert self._scan(command) is False
+
+    @pytest.mark.parametrize("command", [
+        # Self target: sudo to the current user is this gateway.
+        "sudo -u tom systemctl --user restart hermes-gateway",
+        # Numeric uid may name the current user; not resolved, refused.
+        "sudo -u '#1000' systemctl --user restart hermes-gateway",
+        # System scope can reach a unit supervising this process.
+        "sudo -u alfred systemctl restart hermes-gateway",
+        "sudo -u alfred systemctl --user --system restart hermes-gateway",
+        "sudo systemctl --user restart hermes-gateway",
+        # Manager redirection back to any user, including this one.
+        "sudo -u alfred systemctl --user restart hermes-gateway -M tom@",
+        "sudo -u alfred systemctl --user restart hermes-gateway -Mtom@",
+        "sudo -u alfred systemctl --user restart hermes-gateway --machine=tom@",
+        "sudo -u alfred systemctl --user restart hermes-gateway --machine tom@",
+        "sudo -u alfred systemctl --user restart hermes-gateway -H localhost",
+        "sudo -u alfred systemctl --user restart hermes-gateway -qH localhost",
+        "sudo -u alfred systemctl --user restart hermes-gateway --host=localhost",
+        # Inner env/wrapper can point the user bus back at this user's manager.
+        "sudo -u alfred XDG_RUNTIME_DIR=/run/user/1000 systemctl --user restart hermes-gateway",
+        "sudo -u alfred env systemctl --user restart hermes-gateway",
+        "sudo -u alfred sudo systemctl --user restart hermes-gateway",
+        "sudo -u alfred bash -c 'systemctl --user restart hermes-gateway'",
+        # Exempting one segment never exempts its neighbours.
+        "sudo -u alfred systemctl --user restart hermes-gateway; systemctl --user restart hermes-gateway",
+        "sudo -u alfred systemctl --user restart hermes-gateway && hermes gateway restart",
+        "echo sudo -u alfred systemctl --user restart hermes-gateway | sh",
+        # Non-sudo prefixes are not exempt.
+        "runuser -u alfred -- systemctl --user restart hermes-gateway",
+        "systemctl --user restart hermes-gateway",
+    ])
+    def test_self_reachable_forms_stay_blocked(self, command):
+        assert self._scan(command) is True
+
+    def test_unknown_current_user_fails_closed(self, monkeypatch):
+        monkeypatch.setattr("cron.lifecycle_guard._current_username", lambda: None)
+        assert self._scan("sudo -u alfred systemctl --user restart hermes-gateway") is True
+
+    def test_cron_check_allows_other_users_gateway(self, tmp_path):
+        from cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
+
+        check_gateway_lifecycle("sudo -u alfred systemctl --user restart hermes-gateway")
+        script = tmp_path / "restart-alfred.sh"
+        script.write_text(
+            "#!/bin/sh\nsudo -u alfred systemctl --user restart hermes-gateway\n", encoding="utf-8"
+        )
+        check_gateway_lifecycle("", str(script))
+
+        script.write_text("#!/bin/sh\nsudo -u tom systemctl --user restart hermes-gateway\n", encoding="utf-8")
+        with pytest.raises(GatewayLifecycleBlocked):
+            check_gateway_lifecycle("", str(script))
+
 
 class TestCreateJobBlocksLifecycleCommands:
     """The regression the CLI-layer-only guard could not catch: the agent's

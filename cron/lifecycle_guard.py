@@ -758,13 +758,125 @@ def _mask_data_sink_arguments(text: str) -> str:
     return "\n".join(lines_out) if changed else text
 
 
+def _current_username() -> Optional[str]:
+    """Best-effort name of the user this process runs as."""
+    try:
+        import pwd  # POSIX only; absent on Windows.
+
+        return pwd.getpwuid(os.getuid()).pw_name
+    except Exception:
+        return os.environ.get("USER") or os.environ.get("LOGNAME") or None
+
+
+# sudo options that consume the next token (besides -u/--user, handled explicitly).
+_SUDO_VALUE_OPTIONS = frozenset({
+    "-g", "--group", "-p", "--prompt", "-C", "--close-from", "-h", "--host",
+    "-r", "--role", "-t", "--type", "-U", "--other-user", "-T", "--command-timeout",
+    "-D", "--chdir", "-R", "--chroot",
+})
+# systemctl options that could redirect a --user call to ANOTHER manager (incl. this user's).
+_SYSTEMCTL_REDIRECT_LONG_OPTIONS = frozenset({"--machine", "--host", "--system"})
+_SYSTEMCTL_REDIRECT_SHORT_OPTIONS = frozenset("MH")
+
+
+def _foreign_user_scope_target(segment: list[str]) -> bool:
+    """True when *segment* is ``sudo -u <other user> systemctl --user ...``.
+
+    Lifecycle commands are blocked inside a gateway because restarting THIS gateway self-SIGTERMs
+    the process issuing the command. A sibling gateway under a DIFFERENT user account (e.g. Jeeves
+    restarting Alfred's user-scoped ``hermes-gateway``) receives no signal from here, so blocking it
+    only forces a human to paste the command. Exempted only on a shape that provably cannot
+    self-target: sudo with an explicit, named, non-current target user AND ``systemctl --user`` with
+    no manager-redirecting option. Anything else (system scope, numeric ``#uid`` target, self
+    target, unknown shape) falls through to the normal block — fail closed.
+    """
+    index = _command_token_index(segment)
+    if index is None or _executable_name(segment[index]) != "sudo":
+        return False
+
+    arguments = segment[index + 1 :]
+    target_user: Optional[str] = None
+    cursor = 0
+    while cursor < len(arguments):
+        token = arguments[cursor]
+        if token in {"-u", "--user"}:
+            if cursor + 1 >= len(arguments):
+                return False
+            target_user = arguments[cursor + 1]
+            cursor += 2
+            continue
+        if token.startswith("--user="):
+            target_user = token.split("=", 1)[1]
+            cursor += 1
+            continue
+        if token == "--":
+            cursor += 1
+            break
+        if token.startswith("-"):
+            cursor += 2 if token in _SUDO_VALUE_OPTIONS else 1
+            continue
+        break
+
+    # `#<uid>` may name the current user numerically; refuse rather than resolve it.
+    if not target_user or target_user.startswith("#"):
+        return False
+    current = _current_username()
+    if not current or target_user == current:
+        return False
+
+    # The inner command must be systemctl itself: a `VAR=value` prefix (XDG_RUNTIME_DIR,
+    # DBUS_SESSION_BUS_ADDRESS) or a wrapper could point it back at this user's manager.
+    inner = arguments[cursor:]
+    if not inner or _executable_name(inner[0]) != "systemctl":
+        return False
+    options = inner[1:]
+    for option in options:
+        if option.startswith("--"):
+            if option.split("=", 1)[0] in _SYSTEMCTL_REDIRECT_LONG_OPTIONS:
+                return False
+        elif option.startswith("-") and set(option[1:]) & _SYSTEMCTL_REDIRECT_SHORT_OPTIONS:
+            # Short-option clusters (`-qM host`, `-Hhost`) included.
+            return False
+    # Require the explicit user scope: system scope could reach a unit supervising THIS process.
+    return "--user" in options
+
+
+def _mask_foreign_user_scope_segments(text: str) -> str:
+    """Drop segments that target another user's user-scoped services (see
+    ``_foreign_user_scope_target``). Same fail-closed discipline as ``_mask_data_sink_arguments``:
+    lines piping into an interpreter or that cannot be tokenized are left untouched. Masking can
+    only ALLOW what the plain regex would block, never block more."""
+    lines_out: list[str] = []
+    changed = False
+    for line in text.splitlines() or [text]:
+        if _PIPE_TO_INTERPRETER.search(line):
+            lines_out.append(line)
+            continue
+        try:
+            tokens = _shlex_tokens(line)
+        except ValueError:
+            lines_out.append(line)
+            continue
+
+        rebuilt: list[str] = []
+        for segment in _split_segments(tokens, keep_controls=True):
+            if _foreign_user_scope_target(segment):
+                changed = True
+                continue
+            rebuilt.extend(segment)
+        lines_out.append(" ".join(rebuilt))
+    return "\n".join(lines_out) if changed else text
+
+
 def _lifecycle_command_scan_with_data_exemption(text: str) -> bool:
-    """Lifecycle scan exempting matches inside data arguments: cheap regex first (no-match pays
-    nothing), then re-scan with data-sink arguments masked; only a surviving match blocks."""
+    """Lifecycle scan exempting matches inside data arguments and foreign-user-scope segments:
+    cheap regex first (no-match pays nothing), then re-scan with data-sink arguments and
+    ``sudo -u <other> systemctl --user`` segments masked; only a surviving match blocks."""
     if not contains_gateway_lifecycle_command(text):
         return False
     normalized = _SHELL_LINE_CONTINUATION.sub(" ", text)
-    return contains_gateway_lifecycle_command(_mask_data_sink_arguments(normalized))
+    masked = _mask_foreign_user_scope_segments(_mask_data_sink_arguments(normalized))
+    return contains_gateway_lifecycle_command(masked)
 
 
 def _direct_lifecycle_scan(command: str) -> bool:

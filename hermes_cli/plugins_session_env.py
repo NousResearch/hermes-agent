@@ -8,6 +8,7 @@ calls the resolvers of the active profile with the child's ``HERMES_SESSION_ID``
 from __future__ import annotations
 
 import logging
+import os
 import re
 import threading
 from typing import Callable, Iterable, Mapping, Optional
@@ -21,6 +22,12 @@ _LOCK = threading.Lock()
 _REGISTRATIONS: dict[object, tuple[str, frozenset[str], Resolver]] = {}
 
 
+def _env_key(name: str) -> str:
+    """The child-env key for ``name``: Windows' environment is case-insensitive and ``os.environ``
+    holds it upper-cased, so ``pane`` must replace or unset an inherited ``PANE``, never sit beside it."""
+    return name.upper() if os.name == "nt" else name
+
+
 def register_session_env(scope: str, names: Iterable[str], resolver: Resolver) -> Callable[[], None]:
     """Record ``resolver`` for ``names`` in profile ``scope``; return its release. ``HERMES_*`` stays core's."""
     names = [names] if isinstance(names, str) else list(names)
@@ -31,7 +38,7 @@ def register_session_env(scope: str, names: Iterable[str], resolver: Resolver) -
         raise TypeError("session env resolver must be callable")
     token = object()
     with _LOCK:
-        _REGISTRATIONS[token] = (scope, frozenset(names), resolver)
+        _REGISTRATIONS[token] = (scope, frozenset(_env_key(n) for n in names), resolver)
 
     def release() -> None:
         with _LOCK:
@@ -59,8 +66,8 @@ def resolve_session_env(session_id: str) -> dict[str, Optional[str]]:
         if owner != scope:
             continue
         try:
-            values = {k: v for k, v in (resolver(session_id) or {}).items()
-                      if k in names and (v is None or isinstance(v, str))}
+            values = {_env_key(k): v for k, v in (resolver(session_id) or {}).items()
+                      if isinstance(k, str) and _env_key(k) in names and (v is None or isinstance(v, str))}
         except Exception:
             logger.warning("Session env resolver %r failed for %s", resolver, session_id, exc_info=True)
             continue

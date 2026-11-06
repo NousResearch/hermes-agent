@@ -82,3 +82,18 @@ def test_a_plugin_cannot_set_core_or_credential_names(plugin, monkeypatch):
     assert plugin.REFUSED == ["HERMES_SESSION_ID"]
     assert (child["PANE"], child["HERMES_SESSION_ID"]) == ("pane-a", "a")
     assert not {"OPENAI_API_KEY", "ACME_SANDBOX_TOKEN"} & child.keys()
+
+
+@pytest.mark.platforms("windows")
+def test_a_lowercase_name_replaces_or_unsets_the_inherited_windows_variable(monkeypatch):
+    """Windows names are case-insensitive: ``pane`` acts on the inherited ``PANE``, with no second alias."""
+    from hermes_constants import hermes_home_key
+    from tools.environments.local import build_subprocess_env
+
+    monkeypatch.setattr(plugins_session_env, "_REGISTRATIONS", {})
+    monkeypatch.setenv("PANE", "gateway")
+    monkeypatch.setenv("WINDOW", "gateway-win")
+    values = {"a": {"pane": "pane-a", "window": None}}
+    plugins_session_env.register_session_env(hermes_home_key(), ["pane", "window"], values.get)
+    child = _as_session("a", build_subprocess_env)
+    assert [k for k in child if k.upper() in {"PANE", "WINDOW"}] == ["PANE"] and child["PANE"] == "pane-a"

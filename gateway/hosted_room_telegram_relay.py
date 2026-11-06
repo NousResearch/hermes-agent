@@ -41,6 +41,7 @@ def _bound_identity():
 
 def _identity_failure(identity, recipient, message):
     if not all(isinstance(v, str) and v for v in identity.values()):
+        logger.warning('relay identity incomplete: empty=%s', sorted(n for n, v in identity.items() if not (isinstance(v, str) and v)))
         return 'bound_context_incomplete'
     if identity['PLATFORM'] != 'telegram':
         return 'wrong_platform'

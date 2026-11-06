@@ -3959,7 +3959,7 @@ class GatewayRunner(
     def _set_session_env(self, context: SessionContext) -> list:
         """Set session context variables (contextvars, not os.environ, so concurrent messages can't
         overwrite each other). Returns reset tokens for ``_clear_session_env`` in a ``finally``."""
-        from gateway.session_context import set_session_vars
+        from gateway.session_context import set_session_vars, source_runtime_profile
         from gateway.session_detached import session_env_source
         source = session_env_source(self, context.source)
         # Can async tools wake a later turn here? Default True (CLI/unknown); api_server declares False.
@@ -3984,7 +3984,7 @@ class GatewayRunner(
             # (and a command it yields to the background) must still see its own session.
             session_id=context.session_id or "",
             message_id=str(source.message_id) if source.message_id else "",
-            profile=getattr(source, "profile", "") or "",
+            profile=source_runtime_profile(context.source),
             async_delivery=_async_delivery,
             cron_session="", session_history_delivery=_history_delivery)
 

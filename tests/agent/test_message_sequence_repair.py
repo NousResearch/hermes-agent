@@ -99,6 +99,35 @@ def test_repair_marker_user_merge_keeps_plain_row_addressable():
     assert "[System:" in merged["content"]
 
 
+def test_repair_marker_user_merge_keeps_current_turn_api_content():
+    """Regression for #121836: a model-switch marker must not discard the
+    following real user's already-stamped memory context before its first API call.
+    """
+    agent = _bare_agent()
+    messages = [
+        {"role": "assistant", "content": "reply"},
+        {
+            "role": "user",
+            "display_kind": "model_switch",
+            "_row_id": 12134,
+            "content": "[System: The active model for this chat has changed to ds4.]",
+        },
+        {
+            "role": "user",
+            "_row_id": 12135,
+            "content": "the user's real prompt",
+            "api_content": "the user's real prompt\n\n<memory-context>MEMORY</memory-context>",
+        },
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 1
+    assert messages[1]["api_content"] == (
+        "the user's real prompt\n\n<memory-context>MEMORY</memory-context>"
+    )
+
+
 def test_repair_plain_user_then_marker_stays_addressable():
     """The mirror shape (plain user, then a display marker) already keeps the
     plain row's identity; pin that the merge does not resurrect a display

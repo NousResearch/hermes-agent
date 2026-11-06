@@ -22,6 +22,12 @@ _PROP_KEY_BAD_CHARS = re.compile(r"[^a-zA-Z0-9_.-]")
 _UNION_KEYS = ("anyOf", "oneOf")
 _UNION_META_KEYS = ("title", "description", "default", "examples")  # copied onto replacements
 
+# OpenAI's Chat Completions schema allows only these keys inside ``tools[].function``. OpenAI
+# proper ignores extras, but stricter OpenAI-compatible gateways (GLM, other validating proxies)
+# reject the whole request with HTTP 400; ``outputSchema`` is the common offender because MCP
+# wire tool objects carry it and plugin/MCP schemas are registered near-verbatim (#137128).
+_FUNCTION_META_KEYS = frozenset({"name", "description", "parameters", "strict"})
+
 
 def _empty_object() -> dict:
     return {"type": "object", "properties": {}, "required": []}
@@ -140,6 +146,14 @@ def _sanitize_single_tool(tool: dict) -> dict:
     fn = out.get("function") if isinstance(out, dict) else None
     if not isinstance(fn, dict):
         return out
+    # Strip non-standard ``function`` keys BEFORE the parameters early-return so both branches
+    # produce a wire-legal object; the registry keeps the untouched schema for local use.
+    extras = [k for k in fn if k not in _FUNCTION_META_KEYS]
+    for key in extras:
+        del fn[key]
+    if extras:
+        logger.debug("schema_sanitizer[%s]: stripped non-standard function key(s) %r "
+                     "(strict OpenAI-compatible backends reject them)", fn.get("name", "<tool>"), extras)
     params = fn.get("parameters")
     if not isinstance(params, dict):  # missing / non-dict → minimal valid shape
         fn["parameters"] = _empty_object()

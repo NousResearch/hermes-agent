@@ -630,3 +630,62 @@ def test_registered_tool_schemas_stay_inside_llama_cpp_repetition_limit():
                 if isinstance(val, int) and val >= 2000:
                     offenders.append((name, key, val))
     assert not offenders, offenders
+
+
+# ---------------------------------------------------------------------------
+# #137128: non-standard keys inside tools[].function (e.g. MCP wire ``outputSchema``)
+# 400 the whole request on strict OpenAI-compatible gateways
+# ---------------------------------------------------------------------------
+
+
+def test_non_standard_function_keys_stripped():
+    """MCP-style ``outputSchema``/``annotations`` inside ``function`` must not reach the wire."""
+    tools = [{"type": "function", "function": {
+        "name": "osb_search",
+        "description": "search notes",
+        "parameters": {"type": "object", "properties": {"q": {"type": "string"}}, "required": ["q"]},
+        "outputSchema": {"type": "object", "properties": {"summary": {"type": "string"}}},
+        "annotations": {"readOnlyHint": True},
+    }}]
+    out = sanitize_tool_schemas(tools)
+    assert set(out[0]["function"]) == {"name", "description", "parameters"}
+    assert "outputSchema" not in out[0]["function"]
+
+
+def test_standard_function_keys_preserved_including_strict():
+    """``strict`` (structured outputs) is a legal ``function`` key and survives sanitization."""
+    tools = [{"type": "function", "function": {
+        "name": "t", "description": "d", "strict": True,
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    }}]
+    out = sanitize_tool_schemas(tools)
+    assert out[0]["function"]["strict"] is True
+    assert out[0]["function"]["name"] == "t"
+
+
+def test_non_standard_function_keys_stripped_even_with_missing_parameters():
+    """The strip runs on the missing-``parameters`` early-return branch too (#137128):
+    a malformed tool with extras still ends up wire-legal, not a 400."""
+    tools = [{"type": "function", "function": {"name": "t", "outputSchema": {"type": "object"}}}]
+    out = sanitize_tool_schemas(tools)
+    assert set(out[0]["function"]) == {"name", "parameters"}
+    assert out[0]["function"]["parameters"] == {"type": "object", "properties": {}, "required": []}
+
+
+def test_non_standard_function_key_strip_does_not_mutate_input():
+    """The registry's original schema (still used for local result checking) stays untouched."""
+    tools = [{"type": "function", "function": {
+        "name": "t", "parameters": {"type": "object", "properties": {}},
+        "outputSchema": {"type": "object"},
+    }}]
+    before = copy.deepcopy(tools)
+    sanitize_tool_schemas(tools)
+    assert tools == before
+
+
+def test_flat_responses_style_tool_untouched_by_function_strip():
+    """Responses-format tools (no ``function`` wrapper) pass through the strip unharmed."""
+    tools = [{"type": "function", "name": "t", "parameters": {"type": "object", "properties": {}}}]
+    out = sanitize_tool_schemas(tools)
+    assert out[0]["name"] == "t"
+    assert out[0]["type"] == "function"

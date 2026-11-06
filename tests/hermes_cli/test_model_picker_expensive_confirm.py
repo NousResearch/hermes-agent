@@ -48,6 +48,10 @@ def test_prompt_toolkit_model_picker_defers_confirmation_off_key_handler(monkeyp
         base_url="",
         api_key="",
         _restore_modal_input_snapshot=lambda: None,
+        # _close_model_picker paints via _paint_now() (user-blocking modal —
+        # see test_model_picker_paint.py), not the throttled _invalidate().
+        # _invalidate stays because the model->reasoning stage transition uses it.
+        _paint_now=lambda: None,
         _invalidate=lambda **_kwargs: None,
     )
     self_._close_model_picker = _bound(cli_mod.HermesCLI._close_model_picker, self_)

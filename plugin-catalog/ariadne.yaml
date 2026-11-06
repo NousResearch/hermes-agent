@@ -1,12 +1,12 @@
 name: ariadne
 repo: https://github.com/miracle352/hermes-ariadne
-sha: cff09aab26e0260c10a6a267a5f5954d71fdba59
+sha: 08de31fc806253f85ab4bfd4b31ae151e5f18d89
 title: Ariadne
 description: "Record a Hermes session once, then replay it with no model, no network and no tokens to see exactly what Hermes does differently: replay on a new build, compare two installs, bisect the Hermes commit that changed a session, fork a recorded session to a live model from any model call, export trajectories and preference pairs, and check Hermes's documented hook contracts on every run. Disclosure — recording is off until you turn it on; cassettes are written locally under plugin-data with secrets scrubbed (tool output can still hold private file contents); play, compare, bisect and fork start Hermes (python -m tui_gateway.entry) as a child process and drive it over JSON-RPC; replays copy this profile's config.yaml (credential-looking keys removed), SOUL.md, memories/ and skills/ into a throwaway home, never .env or auth.json, answer every approval with deny, neutralise tool arguments and block outbound network through a closed local proxy; fork makes real model calls with your configured provider inside your own home (the forked session appears in your history) and runs tools after the fork point only with --live-tools; bisect checks out commits in a Hermes checkout you name, refusing a dirty tree and restoring the original commit; no telemetry."
 maintainer: miracle352
 tier: community
 category: tools
-docs_url: https://github.com/miracle352/hermes-ariadne/tree/cff09aab26e0260c10a6a267a5f5954d71fdba59#readme
+docs_url: https://github.com/miracle352/hermes-ariadne/tree/08de31fc806253f85ab4bfd4b31ae151e5f18d89#readme
 version: "0.1.0"
 requires_hermes: ">=0.23.0"
 platforms: []

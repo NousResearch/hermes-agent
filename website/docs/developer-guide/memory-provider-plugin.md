@@ -288,7 +288,9 @@ subagents, the curator pass, the batch runner, the Feishu comment responder). Wi
 first compaction with `BLOCKED_MISSING_PREREQUISITE`, so it loads the
 configured provider, initialized with `agent_context="subagent"` (`platform`,
 plus `parent_session_id` where the fork has a parent session, tells the shapes
-apart). The detached review and `/btw` forks are different:
+apart). A delegated subagent loads it only when its parent holds one: the
+children of an `--ignore-rules` session stay provider-less and fail closed at
+compaction, as their parent does. The detached review and `/btw` forks are different:
 they persist nothing, so the gate does not apply to them. Two consequences:
 
 - **One `initialize()` per fork** — a round trip per spawn for a

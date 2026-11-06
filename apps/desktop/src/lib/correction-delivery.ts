@@ -41,5 +41,7 @@ export function notifyCorrectionRecovery(text?: string, notSent = false, id?: st
           })
     })
 
-  return show()
+  id = show()
+
+  return id
 }

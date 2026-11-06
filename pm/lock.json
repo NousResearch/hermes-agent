@@ -474,8 +474,8 @@
           "url": "https://nodejs.org/dist/v26.12.1/node-v26.12.1-linux-arm64.tar.xz"
         },
         "linux-arm64-bionic": {
-          "sha256": "eaf3ed8a6e4b72ebaa8c2cb3bad778c577cdf9ea87ca91761213d8a3940fc090",
-          "url": "https://packages.termux.dev/apt/termux-main/pool/main/n/nodejs/nodejs_26.4.0-1_aarch64.deb"
+          "sha256": "478b1ed7eb797b1525f6aacfdff6bc998cd4aee234d06d23ed456be2ac730105",
+          "url": "https://packages.termux.dev/apt/termux-main/pool/main/n/nodejs/nodejs_26.12.1_aarch64.deb"
         },
         "linux-arm64-musl": {
           "sha256": "87d822005776f222f2964c93df055f926d80595a63442b891d3aafe1f0a1dc67",

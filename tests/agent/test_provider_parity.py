@@ -875,3 +875,14 @@ class TestCodexReasoningPreflight:
         reasoning_items = [i for i in items if isinstance(i, dict) and i.get("type") == "reasoning"]
         assert len(reasoning_items) == 1
         assert reasoning_items[0]["encrypted_content"] == "enc123"
+
+
+def test_late_added_memory_tool_nullable_schema_is_normalized_at_send(monkeypatch):
+    agent = _make_agent(monkeypatch, "custom", base_url="http://127.0.0.1:13305/v1", model="gemma4-it-e4b-FLM")
+    tools = [{"type": "function", "function": {"name": "memory_recall", "parameters": {
+        "type": "object", "properties": {"weight": {"type": ["number", "null"]}}}}}]
+    kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}], tools_for_api=tools)
+    weight = kwargs["tools"][0]["function"]["parameters"]["properties"]["weight"]
+    assert weight["type"] == "number"
+    assert weight["nullable"] is True
+    assert tools[0]["function"]["parameters"]["properties"]["weight"]["type"] == ["number", "null"]

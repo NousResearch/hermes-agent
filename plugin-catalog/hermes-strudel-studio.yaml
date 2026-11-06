@@ -1,7 +1,7 @@
 name: hermes-strudel-studio
 title: Hermes Strudel Studio
 repo: https://github.com/mojomast/poptart
-sha: 27268c24021880a54b155075dc63a1049cfc017e
+sha: 13de04319ebafa64ea1960575717718b733527b4
 subdir: integration/hermes
 description: >-
   Local Strudel live-coding studio for Hermes: write patterns, hit Play, and
@@ -17,16 +17,16 @@ maintainer: mojomast
 tier: community
 category: desktop
 requires_hermes: ">=0.22.7"
-version: "0.2.3"
-docs_url: https://github.com/mojomast/poptart/blob/27268c24021880a54b155075dc63a1049cfc017e/INTEGRATION.md
+version: "0.2.4"
+docs_url: https://github.com/mojomast/poptart/blob/13de04319ebafa64ea1960575717718b733527b4/INTEGRATION.md
 readme: true
 platforms: []
-image: https://raw.githubusercontent.com/mojomast/poptart/27268c24021880a54b155075dc63a1049cfc017e/docs/assets/banner.png
+image: https://raw.githubusercontent.com/mojomast/poptart/13de04319ebafa64ea1960575717718b733527b4/docs/assets/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/mojomast/poptart/27268c24021880a54b155075dc63a1049cfc017e/docs/assets/hermes-webapp.png
-  - https://raw.githubusercontent.com/mojomast/poptart/27268c24021880a54b155075dc63a1049cfc017e/docs/assets/studio-playing.png
-  - https://raw.githubusercontent.com/mojomast/poptart/27268c24021880a54b155075dc63a1049cfc017e/docs/assets/layout-right-library.png
-  - https://raw.githubusercontent.com/mojomast/poptart/27268c24021880a54b155075dc63a1049cfc017e/docs/assets/plugin-card.png
+  - https://raw.githubusercontent.com/mojomast/poptart/13de04319ebafa64ea1960575717718b733527b4/docs/assets/hermes-webapp.png
+  - https://raw.githubusercontent.com/mojomast/poptart/13de04319ebafa64ea1960575717718b733527b4/docs/assets/studio-playing.png
+  - https://raw.githubusercontent.com/mojomast/poptart/13de04319ebafa64ea1960575717718b733527b4/docs/assets/layout-right-library.png
+  - https://raw.githubusercontent.com/mojomast/poptart/13de04319ebafa64ea1960575717718b733527b4/docs/assets/plugin-card.png
 known_issues:
   - "Physical speaker check and non-Chromium browsers are not fully covered in automated tests."
   - "License stack is AGPL-3.0-or-later plus toaster GPL notices; confirm redistributability for your use."

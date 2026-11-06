@@ -26,6 +26,7 @@ from hermes_state_compaction_display import later_tool_copy_ids, not_a_later_too
 from hermes_state_display_set import display_set
 from hermes_state_detached_results import SessionDetachedResultsMixin
 from hermes_state_todo import SessionTodoResultMixin
+from hermes_state_transcript_cursor import SessionTranscriptCursorMixin
 from hermes_state_identity import (
     _absorbed_uids_json, _restore_identity_columns, _stable_tool_key, _tool_call_uid_map, _tool_call_uid_or_none, _tool_call_uids_json, _uid_list)
 
@@ -121,7 +122,7 @@ def _stale_holder(row, now: float) -> bool:
     return float(row["expires_at"]) <= now or _compression_lock_holder_process_is_dead(row["holder"])
 
 
-class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
+class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, SessionTranscriptCursorMixin):
     """Message append/replace/rewind, reactions, resume conversations, replay dedupe (detached results: the base)."""
 
     def _bump_conversation_generation(self, conn, session_id: str, end_reason: str) -> None:

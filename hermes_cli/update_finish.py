@@ -8,7 +8,8 @@ import sys
 
 def finish_update(*, root, assume_yes, gateway_mode, pre_update_snapshot_id,
                   had_desktop_app_before_update, pre_update_version,
-                  plan, windows_resume, followups=None) -> None:
+                  plan, windows_resume, followups=None,
+                  no_gateway_restart=False) -> None:
     """Finish the selected checkout; never fetch, switch branches or restore a stash.
 
     Same contract as the current completion (C3): the code is committed, so a failed build,
@@ -24,7 +25,8 @@ def finish_update(*, root, assume_yes, gateway_mode, pre_update_snapshot_id,
         _write_gateway_update_exit_code, _resume_windows_gateways_and_merge_outcome,
     )
     from hermes_cli import update_receipt
-    from hermes_cli.update_receipt import TAIL_FOLLOWUPS, record_build_stage, record_followup
+    from hermes_cli.update_receipt import (TAIL_FOLLOWUPS, record_build_stage,
+                                       record_followup, record_skip, record_stage)
 
     owed = followups if followups is not None else []
     runtime_safe = False
@@ -57,6 +59,13 @@ def finish_update(*, root, assume_yes, gateway_mode, pre_update_snapshot_id,
         _write_gateway_update_exit_code(True)
     run = update_receipt._current.get()
     update_id = run.data.get("update_id") if run is not None else None
+    if no_gateway_restart:
+        # Mirrors the current completion path (update_completion): the flag defers the
+        # restart, the armed fleet obligation stays owed for the next launch.
+        record_skip("gateway_restart", "--no-gateway-restart: deferred, marker kept")
+        record_stage("restart", "skipped")
+        print("→ Gateway restart deferred (--no-gateway-restart); restart gateways separately.")
+        return
     try:
         restarted = _restart_gateway_fleet_after_update(plan, gateway_mode)
         _resume_windows_gateways_and_merge_outcome(restarted, windows_resume, gateway_mode)
@@ -156,6 +165,7 @@ def main(context: Path, result: Path) -> int:
                     had_desktop_app_before_update=desktop,
                     pre_update_version=request.get("pre_update_version"),
                     plan=plan, windows_resume=token, followups=owed,
+                    no_gateway_restart=request.get("no_gateway_restart", False),
                 )
         code = 0
     except SystemExit as exc:

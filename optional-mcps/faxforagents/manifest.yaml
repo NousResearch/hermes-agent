@@ -6,7 +6,7 @@ description: Prepare and quote faxes, send with approval, check delivery, cancel
 source: https://faxforagents.com/mcp/
 transport:
   type: http
-  url: https://mcp.faxforagents.com/mcp/
+  url: https://mcp.faxforagents.com/mcp/?auth=required
 auth:
   type: oauth
 suggest:
@@ -21,7 +21,8 @@ suggest:
     - app.faxforagents.com
     - mcp.faxforagents.com
 post_install: |
-  Complete the Fax for Agents browser consent flow when Hermes requests authentication.
+  Sign in with your Fax for Agents account when Hermes opens the browser consent page.
+  The URL ends in ?auth=required so Hermes runs the OAuth sign-in instead of an anonymous connection.
   Restart your Hermes session after authentication to load the tools.
   Run hermes mcp test faxforagents to check your connection.
   Review tool access with hermes mcp configure faxforagents.

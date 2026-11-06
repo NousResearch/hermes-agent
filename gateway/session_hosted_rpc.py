@@ -290,8 +290,10 @@ class HostedRoomAuthorityRPC:
         if row['status'] == 'unknown':
             await self.authority.resolve_unknown(
                 self.principal, self.ref, row['admission_id'], row['generation'])
-        return {'discarded': True, 'status': 'cancelled', 'task_id': task.task_id,
-                'execution_generation': generation}
+            # Resolution commits a retained captured answer as ``completed``, not interrupted:
+            # report the outcome it committed, so the room settles that answer, never a cancel.
+            row = next(r for r, _, _ in self._rows() if r['admission_id'] == row['admission_id'])
+        return {**self._terminal(row, task, generation), 'discarded': True}
 
     async def _approve(self, params):
         if params['choice'] not in {'once', 'deny'}:

@@ -258,7 +258,7 @@ class HostedRoomRuntime:
                         lease = self._ensure_lease(binding)
                         if self._peer_stop_acknowledged(binding, result) or (
                             not self._settle_stopping_completion(binding, result, lease)
-                            and self._interrupt_stopping_task(binding, result)):
+                            and self._stop_or_settle(binding, result, lease) is True):
                             self._complete_cancel(result, cancel_id=cancel_id)
                 except Exception as exc:
                     self._record_error(f"stop remains pending: {exc}")
@@ -436,10 +436,22 @@ class HostedRoomRuntime:
             raise
         except Exception as exc:  # health: allow BLE001 -- a member whose history fails can still take the interrupt
             self._record_error(_STOP_PENDING.format(exc=exc))
-        if self._interrupt_stopping_task(binding, task):
+        acknowledged = self._stop_or_settle(binding, task, lease)
+        if acknowledged:
             self._complete_acknowledged_stop(binding, task, lease)
-            return True
-        return False
+        return acknowledged is not False
+
+    def _stop_or_settle(
+        self, binding: HostedRoomBinding, task: Mapping[str, Any], lease: state.DriverLease
+    ) -> bool | None:
+        """True when the member acknowledged the Stop. None when resolving the lost attempt
+        committed its own retained answer instead: that receipt is settled (and published)
+        here, never reported cancelled. False while the Stop is unacknowledged."""
+        outcome = self._stop_outcome(binding, task)
+        if isinstance(outcome, _TerminalReceipt):
+            self._fenced(state.settle_stopping_task, binding, task, lease, **asdict(outcome))
+            return None
+        return outcome
 
     def _resume_exact(
         self, transport: InternalSessionRPC, room_id: str, profile: str) -> str | None:
@@ -482,13 +494,18 @@ class HostedRoomRuntime:
             and int(info.get("execution_generation") or 0) == int(task["execution_generation"]))
 
     def _interrupt_stopping_task(self, binding: HostedRoomBinding, task: Mapping[str, Any]) -> bool:
+        return self._stop_outcome(binding, task) is True
+
+    def _stop_outcome(
+        self, binding: HostedRoomBinding, task: Mapping[str, Any]) -> bool | _TerminalReceipt:
         transport, profile, session_id = self._open_session(binding, task)
         if session_id is None:
             # A local turn cannot survive without its canonical session, so an authoritative
             # absence is a safe Stop acknowledgement (errors raise); a peer stays uncertain.
             return transport is not None and transport is self.rpc
         info = transport.info(**_session_kw(profile, session_id))
-        if info.get("status") == "unknown":
+        if (info.get("status") == "unknown" and task["status"] == "stopping"
+                and callable(getattr(transport, "discard", None))):
             return self._discard_unknown_stop(transport, profile, session_id, task, info)
         if not _info_active(info):
             # History was checked just before this probe: an inactive exact session cannot
@@ -503,20 +520,23 @@ class HostedRoomRuntime:
             or str(result.get("status") or "") in _STOP_ACK_STATUSES)
 
     @staticmethod
-    def _discard_unknown_stop(transport, profile, session_id, task, info) -> bool:
-        """A persisted Stop resolves only its exact lost canonical attempt, not another head."""
+    def _discard_unknown_stop(transport, profile, session_id, task, info) -> bool | _TerminalReceipt:
+        """A persisted Stop resolves only its exact lost canonical attempt, not another head.
+        Resolution commits a retained captured answer as that attempt's own receipt."""
         generation = int(task["execution_generation"])
-        discard = getattr(transport, "discard", None)
-        if (_info_active(info) or not callable(discard) or info.get("task_id") != task["identity"].task_id
+        discard = transport.discard
+        if (_info_active(info) or info.get("task_id") != task["identity"].task_id
                 or type(info.get("execution_generation")) is not int
                 or info["execution_generation"] != generation):
             return False
         result = discard(**_session_kw(profile, session_id),
                          expected_task_id=task["identity"].task_id, execution_generation=generation)
-        return bool(result and result.get("discarded") is True and result.get("status") == "cancelled"
-                    and result.get("task_id") == task["identity"].task_id
-                    and type(result.get("execution_generation")) is int
-                    and result["execution_generation"] == generation)
+        if not (result and result.get("discarded") is True
+                and result.get("task_id") == task["identity"].task_id
+                and type(result.get("execution_generation")) is int
+                and result["execution_generation"] == generation):
+            return False
+        return discarded_receipt(result, task) or result.get("status") == "cancelled"
 
     def _settle_stopping_completion(
         self, binding: HostedRoomBinding, task: Mapping[str, Any], lease: state.DriverLease
@@ -821,11 +841,7 @@ class HostedRoomRuntime:
         if status == "cancelled":
             self.wakeup()
             return
-        terminal = _TerminalReceipt(
-            status="settled" if status == "settled" else "failed",
-            settlement_id=receipt.get("settlement_id")
-            or f"reply:{attempt.identity.task_id}:{attempt.execution_generation}",
-            result=_bounded_terminal_result(receipt))
+        terminal = _receipt_from(receipt, attempt.identity, attempt.execution_generation)
         try:
             self._publish(
                 binding,
@@ -1183,6 +1199,22 @@ def _truncate_utf8(value: Any, *, max_bytes: int) -> tuple[str, bool]:
         except UnicodeDecodeError:
             prefix = prefix[:-1]
     return _TERMINAL_TRUNCATION_NOTICE.strip(), True
+
+
+def _receipt_from(
+    receipt: Mapping[str, Any], identity: state.TaskIdentity, execution_generation: int) -> _TerminalReceipt:
+    return _TerminalReceipt(
+        status="settled" if receipt.get("status") == "settled" else "failed",
+        settlement_id=receipt.get("settlement_id") or f"reply:{identity.task_id}:{execution_generation}",
+        result=_bounded_terminal_result(receipt))
+
+
+def discarded_receipt(result: Mapping[str, Any], task: Mapping[str, Any]) -> _TerminalReceipt | None:
+    """The lost attempt's own receipt when its Discard committed a retained answer rather than
+    cancelling it (``resolve_unknown`` keeps a captured result), else None."""
+    if result.get("status") not in {"settled", "failed"}:
+        return None
+    return _receipt_from(result, task["identity"], int(task["execution_generation"]))
 
 
 def _bounded_terminal_result(receipt: Mapping[str, Any]) -> dict[str, Any]:

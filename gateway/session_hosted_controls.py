@@ -1,7 +1,7 @@
 """Exact operator controls for canonical hosted attempts, never legacy replay."""
 from gateway import hosted_room_driver as tasks
 from hermes_state_runtime import RuntimeStoreError
-from tui_gateway.hosted_room_driver import HostedRoomBinding
+from tui_gateway.hosted_room_driver import HostedRoomBinding, discarded_receipt
 from tui_gateway.hosted_room_prepare_stall import RETRY_TASK_PREFIX
 from tui_gateway.hosted_room_service import attempt_action, task_member_id
 
@@ -43,12 +43,17 @@ class HostedControls:
         rpc = self._resolve_member_transport(binding, task)
         # Canonical receipt commits first. If the driver write fails, exact
         # RPC replay must recover it rather than invent another execution.
-        rpc.discard(profile=task['payload']['target_profile'], source='bot_room',
-                    session_id=rpc.ref.session_id, expected_task_id=task['identity'].task_id,
-                    execution_generation=task['execution_generation'])
+        discarded = rpc.discard(profile=task['payload']['target_profile'], source='bot_room',
+                                session_id=rpc.ref.session_id, expected_task_id=task['identity'].task_id,
+                                execution_generation=task['execution_generation'])
         lease = self.runtime._ensure_lease(binding)
-        result = self.runtime._fenced(tasks.resolve_indeterminate_cancellation,
-            binding, task, lease, cancel_id=cancel_id)
+        # Resolving the lost attempt may commit its retained answer: settle and publish that.
+        receipt = discarded_receipt(discarded or {}, task)
+        if receipt is not None:
+            result = self.runtime._resolve_indeterminate(binding, task, lease, receipt)
+        else:
+            result = self.runtime._fenced(tasks.resolve_indeterminate_cancellation,
+                binding, task, lease, cancel_id=cancel_id)
         self.runtime._set_blocked(binding.room_id, False)
         self.runtime.wakeup()
         return result

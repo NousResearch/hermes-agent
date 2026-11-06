@@ -345,13 +345,16 @@ class SessionSessionsMixin:
         profile's store. None outside the profile tree — NULL beats a fabricated owner."""
         try:
             from hermes_constants import get_default_hermes_root
+            from hermes_state_sessions_linked_homes import linked_profile_name
             root = get_default_hermes_root().resolve()
             parent = Path(self.db_path).resolve().parent
+            linked = linked_profile_name(parent, root)
             if parent == root:
-                return "default"
+                return linked or "default"
             is_profile_dir = parent.parent == root / "profiles"
             if is_profile_dir and re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", parent.name):
                 return parent.name
+            return linked
         except Exception:
             logger.debug("own-profile derivation failed", exc_info=True)
         return None

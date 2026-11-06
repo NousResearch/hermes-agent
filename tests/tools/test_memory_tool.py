@@ -361,6 +361,19 @@ class TestMemoryConsolidationGracefulDegrade:
         assert r["done"] is True
         assert "current_entries" not in r
 
+    def test_empty_operations_batch_counts_toward_retry_budget(self, store):
+        """An explicitly empty batch must not bypass consolidation-loop protection.
+
+        Regression for #139436: the dispatcher treated ``[]`` as if the caller
+        had omitted ``operations``, so repeated malformed consolidations never
+        reached the batch failure counter.
+        """
+        result = json.loads(memory_tool(operations=[], store=store))
+
+        assert result["success"] is False
+        assert "operations list is empty" in result["error"]
+        assert store._consolidation_failures == 1
+
     def test_apply_batch_abort_does_not_echo_store(self, store):
         """A failed consolidation must not pay the whole MEMORY.md back (#97316)."""
         store.add("memory", "fact A that is unique and long enough to matter")

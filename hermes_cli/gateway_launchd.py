@@ -22,6 +22,12 @@ from hermes_cli import gateway_service_owner
 from agent.deadline import poll_until
 
 
+LAUNCHD_WRAPPER = "/usr/bin/python3"
+"""Alias for the gated wrapper: launchd spawns an Apple platform binary so the job carries a Local
+Network identity (#71206). ``/usr/bin/osascript`` is the shipped shape; ``/usr/bin/python3`` is the
+candidate that does NOT inherit the removable-volume denial (see ``launchd_program_arguments``)."""
+
+
 def _gw():
     from hermes_cli import gateway  # late: the facade imports this module
     return gateway
@@ -224,28 +230,68 @@ def _gateway_run_command() -> list[str]:
                            python=_gw().get_python_path())
 
 
-def launchd_program_arguments(command: list[str], stdout_log: Path, stderr_log: Path) -> list[str]:
+def _launchd_wrapper_mode() -> str:
+    """Which Apple platform binary the launchd job spawns: ``osascript`` (shipped) or ``python3``.
+
+    Read from config first and the environment second, because the choice must be stable across
+    ``hermes gateway start``: an env-only setting made the installer see its own plist as stale
+    (MEASURED 2026-11-03, the status line read "Service definition is stale" right after a start
+    that had generated the new shape) and would revert the wrapper on the next start.
+    """
+    value = ""
+    try:
+        from hermes_cli.config import load_config
+        node = (load_config() or {}).get("gateway") or {}
+        value = str(node.get("launchd_wrapper") or "")
+    except Exception:
+        value = ""
+    if not value:
+        value = os.environ.get("HERMES_LAUNCHD_WRAPPER", "")
+    return "python3" if value.strip().lower() == "python3" else "osascript"
+
+
+def launchd_program_arguments(command: list[str], stdout_log: Path, stderr_log: Path,
+                              *, mode: str | None = None) -> list[str]:
     """launchd ``ProgramArguments`` that run ``command`` with a Local Network identity macOS accepts (#71206).
 
     macOS Local Network Privacy attributes a socket to the process launchd spawned for the job. A bare
     venv Python has no application ID and is not platform-entitled, so every LAN connect from the
     launchd gateway dies with ``EHOSTUNREACH`` while the same code works from Terminal (whose grant it
     inherits). An ad-hoc-signed helper .app does not help: nehelper never prompts for it and denies
-    (#57812 dead-end table, re-verified live on macOS 26.3). ``/usr/bin/osascript`` spawning the child
-    makes it osascript-responsible — an Apple platform binary — so the child is exempt; ``/bin/sh -c
-    exec …`` and ``/usr/bin/time`` wrappers are NOT (the launchd job identity is the non-entitled first
-    executable).
+    (#57812 dead-end table, re-verified live on macOS 26.3).
+
+    The wrapper must be an APPLE PLATFORM BINARY, which is what carries the exemption. Two work, and the
+    choice is not free: ``/usr/bin/osascript`` holds **Full Disk Access but no removable-volume row**, so
+    every process it is responsible for is refused an external volume (MEASURED 2026-11-03: the kernel
+    named pid 88485 ``/usr/bin/osascript`` as responsible for a cron child, its AllFiles row read 2, and
+    the read returned EPERM). ``/usr/bin/python3`` is the same class of identity and holds no deny rows:
+    a child of it read the external volume from a launchd job while the osascript-wrapped child could not.
+    So the wrapper is Apple's Python, and the gateway's descendants keep both the LAN exemption and the
+    volume.
 
     Standard Additions' ``do shell script`` polls WindowServer for a user-cancel event while it waits.
     That is appropriate for a short interactive script but, for the gateway's process lifetime, burns CPU
     and keeps a WindowServer event connection busy (external-display wake stalls ~10s on macOS 27, #123595).
-    JXA calling libc ``system()`` waits in the kernel instead while retaining osascript as the responsible
+    ``subprocess.call(shell=True)`` waits in the kernel instead, with the wrapper still the responsible
     process. The shell's ``exec`` keeps the gateway in the launchd job's process group, so ``launchctl
     bootout`` / ``kickstart -k`` still deliver SIGTERM to it. stdout/stderr are appended inside the shell
-    command because ``system()`` otherwise inherits osascript's plist log handles. The encoded wait status
-    is translated back to a process exit code so KeepAlive's ``SuccessfulExit`` semantics are preserved.
+    command so the wrapper does not own the plist log handles. The child's wait status is translated back
+    to a process exit code so KeepAlive's ``SuccessfulExit`` semantics are preserved.
     """
     shell = f"exec {shlex.join(command)} >> {shlex.quote(str(stdout_log))} 2>> {shlex.quote(str(stderr_log))}"
+    if (mode or _launchd_wrapper_mode()) == "python3":
+        # Gated candidate. Verified end to end 2026-11-03 only up to "a child of /usr/bin/python3 reads
+        # the external volume from a launchd job while the osascript-wrapped child cannot"; the Local
+        # Network half is NOT yet verified, so this stays off unless the variable is set deliberately.
+        script = (
+            "import subprocess,sys;"
+            # ensure_ascii=False: json.dumps emits a JSON/JS literal, and with the default it turns a
+            # non-BMP character into a surrogate pair that Python then refuses to encode, killing the
+            # wrapper before the gateway starts (review finding, 2026-11-04).
+            f"rc=subprocess.call({json.dumps(shell, ensure_ascii=False)},shell=True);"
+            "sys.exit(rc if rc>=0 else 128-rc)"
+        )
+        return [LAUNCHD_WRAPPER, "-c", script]
     javascript = (
         'ObjC.import("stdlib"); '
         f"const status=$.system({json.dumps(shell)}); "

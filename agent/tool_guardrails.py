@@ -44,7 +44,7 @@ STALL_GUARD_IDENTICAL_CALL_THRESHOLD = 3
 # Longest cycle period detected; laps reuse the streak thresholds (notice at
 # STALL_GUARD_IDENTICAL_CALL_THRESHOLD laps, halt at no_progress_block_after laps).
 _STALL_GUARD_MAX_CYCLE_PERIOD = 4
-# History window: enough for block_after laps of the longest cycle plus slack.
+# Minimum history window; larger configured hard-stop thresholds need more complete laps.
 _STALL_GUARD_CYCLE_HISTORY = 64
 # From the 2nd byte-identical repeat the duplicate payload becomes a reference stub; smaller results
 # aren't worth it, errors never are. The args preview keeps WHAT was called if compression evicts the original.
@@ -337,7 +337,8 @@ class ToolCallGuardrailController:
         # Batch-cycle loop breaker (port of can1357/oh-my-pi#10521): sequence of
         # (signature, result_hash, repeatable) for every observed call this turn, so a repeating
         # multi-call cycle (A,B,A,B,...) is caught even though it resets the consecutive streak above.
-        self._call_history: deque[tuple[ToolCallSignature, str, bool]] = deque(maxlen=_STALL_GUARD_CYCLE_HISTORY)
+        history_size = max(_STALL_GUARD_CYCLE_HISTORY, _STALL_GUARD_MAX_CYCLE_PERIOD * self.config.no_progress_block_after)
+        self._call_history: deque[tuple[ToolCallSignature, str, bool]] = deque(maxlen=history_size)
         # tool_call_id -> spillover path, so a stub referencing a persisted-output preview can't dangle.
         self._persisted_result_paths: dict[str, str] = {}
         self._turn_web_search_count = 0

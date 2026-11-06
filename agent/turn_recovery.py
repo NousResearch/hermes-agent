@@ -36,6 +36,7 @@ from agent.turn_failure_copy import (
 )
 from agent.turn_retry_state import TurnRetryState
 from agent.turn_recovery_codex import _is_codex_token_expired, _recover_stale_codex_reasoning
+from agent.turn_recovery_schema import _recover_tool_schema_unions, _rewrite_agent_tools
 from hermes_constants import display_hermes_home
 from utils import base_url_host_matches
 
@@ -464,8 +465,8 @@ def _recover_format_errors(
     messages: list[dict[str, Any]], api_messages: Any,
 ) -> bool:
     """One-shot format-recovery strips: thinking-signature → invalid-encrypted-content
-    replay disable → native-compaction reject → llama.cpp grammar strip. Returns True when
-    the request was repaired and should be retried."""
+    replay disable → native-compaction reject → llama.cpp grammar strip → tool-schema union
+    flatten. Returns True when the request was repaired and should be retried."""
     # Upstream mutation can invalidate a thinking signature. Native Anthropic has multiple replay
     # carriers and preserved historical blocks, so suppress the rejected opaque blocks across all
     # carriers and persist that suppression. Other transports keep their established one-request
@@ -528,7 +529,7 @@ def _recover_format_errors(
         _retry.llama_cpp_grammar_retry_attempted = True
         try:
             from tools.schema_sanitizer import strip_pattern_and_format
-            _, _stripped = strip_pattern_and_format(agent.tools)
+            _stripped = _rewrite_agent_tools(agent, _retry, strip_pattern_and_format)
         except Exception as _strip_exc:  # pragma: no cover — defensive
             logger.warning("%sllama.cpp grammar recovery: strip helper failed: %s", agent.log_prefix, _strip_exc)
             _stripped = 0
@@ -546,7 +547,7 @@ def _recover_format_errors(
             "keywords to strip — falling through to normal retry",
             agent.log_prefix,
         )
-    return False
+    return _recover_tool_schema_unions(agent, classified, _retry)
 
 
 _WELCOME_ROUTE_HEAL_COPY = {

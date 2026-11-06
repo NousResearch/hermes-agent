@@ -38,6 +38,9 @@ class TurnRetryState:
     reasoning_mandatory_retry_attempted: bool = False
     oauth_1m_beta_retry_attempted: bool = False
     llama_cpp_grammar_retry_attempted: bool = False
+    tool_schema_union_retry_attempted: bool = False
+    # A schema rung rewrote ``agent.tools``: the next attempt rebuilds its request copy from it.
+    tools_rewritten: bool = False
 
     # Transport / rate-limit recovery
     primary_recovery_attempted: bool = False

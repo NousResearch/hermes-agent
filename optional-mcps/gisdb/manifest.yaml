@@ -1,0 +1,26 @@
+name: gisdb
+manifest_version: 1
+description: County property records, owner-name portfolios, geographic catalog discovery, saved lead searches, and CSV lead delivery over Streamable HTTP.
+source: https://github.com/mooshee/gisdb-mcp
+transport:
+  type: http
+  url: https://gisdb.io/mcp
+auth:
+  type: none
+tools:
+  default_enabled:
+    - gisdb_search_catalog
+    - gisdb_get_metadata
+    - gisdb_search_records
+    - gisdb_guide_search
+suggest:
+  keywords:
+    - gisdb
+    - county records
+    - property leads
+    - parcel search
+    - owner portfolio
+  hosts:
+    - gisdb.io
+post_install: |
+  No account or API key is required for public catalog discovery, product metadata, county record lookups, and guided lead search. Saving workflows, managing lead subscriptions, and reading account-inbox CSV deliveries require GISDB OAuth 2.1 sign-in.

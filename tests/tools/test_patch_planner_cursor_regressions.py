@@ -179,3 +179,10 @@ def test_newly_written_context_may_be_used_as_hint():
     result, files = apply(source, body)
     assert result.success, result.error
     assert files.source == 'a = 1\nb = 2\nc = 4\n'
+
+
+def test_empty_context_anchor_after_anchor_does_not_crash():
+    from tools.patch_parser import Hunk, HunkLine, _plan_hunks
+
+    plan = _plan_hunks('a\n\nb\n', [Hunk(lines=[HunkLine(' ', 'a')]), Hunk(lines=[HunkLine(' ', '')])])
+    assert plan.errors == []

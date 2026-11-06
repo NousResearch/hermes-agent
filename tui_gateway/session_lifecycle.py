@@ -612,6 +612,9 @@ def _teardown_session(session: dict | None, *, end_reason: str = "tui_close") ->
     # scope rule as _finalize_session (every caller here is an unscoped reaper/atexit/pool thread).
     with contextlib.suppress(Exception), _session_profile_runtime_scope(session):
         if hasattr(agent := session.get("agent"), "close"):
+            # Tells close() this is a session-level end, so a killed job the agent promised to
+            # report on keeps its completion notice (agent/client_lifecycle._kill_owned_process).
+            agent._close_reason = end_reason
             agent.close()
 
 

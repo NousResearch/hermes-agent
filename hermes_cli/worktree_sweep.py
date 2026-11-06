@@ -122,7 +122,11 @@ def _psutil_live_pids(roots: list[str], exclude: frozenset) -> dict[str, list[in
         try:
             if proc.pid in exclude:
                 continue
-            root = _inside(os.path.realpath(proc.cwd()), roots)
+            cwd = proc.cwd()
+            # macOS reports the kernel's resolved vnode path, so resolving it again only lstats the
+            # ancestors of every other process's cwd (other users' homes included). Elsewhere a cwd
+            # can still carry a symlink, junction or subst drive.
+            root = _inside(cwd if sys.platform == "darwin" else os.path.realpath(cwd), roots)
         except (psutil.Error, OSError):
             continue
         if root is not None:

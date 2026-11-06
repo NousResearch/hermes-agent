@@ -1,0 +1,29 @@
+"""A discussion's completion never ends a newer message on the same thread.
+
+When a member's reply lands, the room plans the next round. If the user sends a new
+message on that thread before the round settles, the settled status for the OLD
+discussion must not close the thread the newer message just reopened: the newer
+message would be silently dropped (the room shows idle and nobody answers).
+"""
+from gateway import hosted_rooms as rooms
+from gateway.hosted_room_policy_checkpoint import HostedRoomPolicyCheckpoint
+
+
+def _append(db, event_id, kind, payload, actor="user"):
+    return rooms.append_event(db, room_id="room", event_id=event_id, kind=kind,
+        actor={"kind": actor, "id": "home"}, authority_gateway_id="home", authority_epoch=1, payload=payload)
+
+
+def test_old_discussion_settling_after_a_newer_message_keeps_the_newer_one_active(tmp_path):
+    db = tmp_path / "shared-state.db"
+    rooms.create_room(db, room_id="room", name="Room", authority_gateway_id="home",
+                      members=[{"member_id": "reviewer", "profile": "reviewer", "handle": "reviewer"}])
+    _append(db, "first", "message.user", {"text": "@reviewer one", "thread_id": "thread"})
+    newer = _append(db, "second", "message.user", {"text": "@reviewer two", "thread_id": "thread"})
+    # The first discussion's settle was planned before the second message, appended after it.
+    last = _append(db, "dactivity:first:silent_round", "room.activity", {
+        "status": "settled", "reason_code": "silent_round", "thread_id": "thread",
+        "discussion_event_id": "first"}, "gateway")
+    snapshot = HostedRoomPolicyCheckpoint(db).snapshot(room_id="room", latest_seq=int(last["seq"]))
+    # The thread stays open for the newer message (earlier messages ride along as its transcript).
+    assert any(e["seq"] == newer["seq"] for e in snapshot.events)

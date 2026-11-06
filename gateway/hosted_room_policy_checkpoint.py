@@ -254,8 +254,12 @@ class HostedRoomPolicyCheckpoint:
     def _apply_room_activity(
         self, conn: sqlite3.Connection, event: Mapping[str, Any], payload: Mapping[str, Any]) -> None:
         room_id, thread_id = str(event["room_id"]), _text(payload, "thread_id")
-        conn.execute(_DELETE_ACTIVE_EVENTS_SQL, (room_id, _text(payload, "discussion_event_id")))
-        conn.execute("DELETE FROM hosted_room_policy_threads WHERE room_id=? AND thread_id=?", (room_id, thread_id))
+        discussion_event_id = _text(payload, "discussion_event_id")
+        conn.execute(_DELETE_ACTIVE_EVENTS_SQL, (room_id, discussion_event_id))
+        # A newer message on this thread may already have reopened it under its own discussion: the
+        # old discussion's completion (planned before that message) must not close the new one.
+        conn.execute("DELETE FROM hosted_room_policy_threads WHERE room_id=? AND thread_id=? AND discussion_event_id=?",
+                     (room_id, thread_id, discussion_event_id))
 
     def _apply_continued(
         self, conn: sqlite3.Connection, event: Mapping[str, Any], payload: Mapping[str, Any]) -> None:

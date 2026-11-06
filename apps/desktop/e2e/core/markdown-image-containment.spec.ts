@@ -107,6 +107,8 @@ test('markdown images stay inside stable frames and clear following prose on col
       expect.soft(boxes.img.width).toBeLessThanOrEqual(width)
       expect.soft(boxes.img.height).toBeLessThanOrEqual(height)
       expect.soft(boxes.img.width / boxes.img.height).toBeCloseTo(width / height, 2)
+      expect.soft(boxes.img.top, 'letterboxed images remain top-aligned').toBe(boxes.frame.top)
+      expect.soft(boxes.wrapper.width, 'image actions hug the painted image').toBeCloseTo(boxes.img.width, 0)
       expect
         .soft(boxes.img.bottom, `${name} ${state}: painted image exceeds reserved frame`)
         .toBeLessThanOrEqual(boxes.frame.bottom + 1)

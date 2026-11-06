@@ -115,6 +115,35 @@ describe('renamed bots stay taggable', () => {
     expect(names('ping @dealfinder please')).toEqual(['scout'])
     expect(names('hey @writer')).toEqual(['writer'])
   })
+
+  // The Bot Mode title may be CJK; after `hermes profile rename u753b-u5e08 graphicdesigner`
+  // the new slug is ASCII but the title stays "画师", and the user expects `@画师` to route.
+  it('routes CJK friendly names — `@画师` hits a bot titled 画师 (#110200 follow-up)', () => {
+    $botMeta.set({ painter: { title: '画师' } })
+
+    const roster = [
+      row({ connectionId: 'local', name: 'default' }),
+      row({ connectionId: 'local', name: 'painter', ui_meta: { 'hermes-bots': { title: '画师' } } })
+    ]
+
+    const live = { connectionId: 'local', name: 'default' }
+    const names = (text: string) => resolveRosterMentions(text, roster, live).map(bot => bot.name)
+
+    expect(mentionNameForms('画师')).toEqual(['画师'])
+    expect(names('@画师 hi')).toEqual(['painter'])
+    expect(names('hi @画师!')).toEqual(['painter'])
+    // Reserved ASCII tokens still drop even when mixed with CJK
+    expect(mentionNameForms('@everyone')).toEqual([])
+    expect(mentionNameForms('herMES')).toEqual([]) // bare `hermes` (case-insensitive) is reserved
+    // CJK + reserved ASCII does NOT collapse to reserved: '@画师hermes' is its own token
+    // (a mentioner must type '@hermes' or '@画师', not the concatenation).
+    expect(mentionNameForms('画师hermes')).toEqual(['画师hermes'])
+    expect(mentionNameForms('画师').concat(mentionNameForms('hermes'))).not.toContain('画师hermes')
+    // A mixed Latin+CJK title still yields one usable tag, and the ASCII forms
+    // that already worked keep working unchanged.
+    expect(mentionNameForms('Research Buddy')).toEqual(['research-buddy', 'researchbuddy'])
+    expect(mentionNameForms('画师 A')).toEqual(['画师-a', '画师a'])
+  })
 })
 
 describe('resolving @mentions against the roster', () => {

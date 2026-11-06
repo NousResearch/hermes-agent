@@ -74,9 +74,11 @@ def _rank_slash_completions(items: list[dict], usage, origin_of, *, browsing: bo
         fixed = [c for c in commands if name_of(c) in registry_command_names]
         other = [c for c in commands if name_of(c) not in registry_command_names]
         ranked_commands = fixed + other[:_SLASH_COMPLETION_LIMIT]
-    else:
-        ranked_commands = commands[:_SLASH_COMPLETION_LIMIT]
-    return ranked_commands + skills[:_SLASH_COMPLETION_LIMIT]
+        return ranked_commands + skills[:_SLASH_COMPLETION_LIMIT]
+    # A typed query is a SEARCH: every skill match comes back. The cap would keep a bare "/" from
+    # dumping the library, but on a search it silently dropped real matches — a skill whose name
+    # starts with the three characters typed could be absent from its own completion list.
+    return commands[:_SLASH_COMPLETION_LIMIT] + skills
 
 
 _DETAILS_SECTIONS = ("thinking", "tools", "subagents", "activity")
@@ -223,7 +225,9 @@ def command_catalog(load_cfg=None, module_loader=import_module, scope=None) -> d
     skills: dict[str, dict] = {}
     # Each loader is a degrade boundary: user config, third-party plugin registration and skill
     # files can raise anything, and one failing source must never blank the whole palette.
-    with scope if scope is not None else contextlib.nullcontext():
+    from tools.skills_tool import shared_scan_signature
+
+    with scope if scope is not None else contextlib.nullcontext(), shared_scan_signature():
         try:
             _catalog_quick_commands(cat, load_cfg)
         except Exception as e:
@@ -261,8 +265,10 @@ def slash_completions(text: str = "", scope=None) -> dict:
     from prompt_toolkit.formatted_text import to_plain_text
     from agent.skill_commands import get_interactive_skill_commands
     from agent.skill_bundles import get_skill_bundles
-    with scope if scope is not None else contextlib.nullcontext():
-        skill_commands, skill_bundles = dict(get_interactive_skill_commands()), dict(get_skill_bundles())
+    from tools.skills_tool import shared_scan_signature
+    with scope if scope is not None else contextlib.nullcontext(), shared_scan_signature():
+        skill_commands, skill_bundles = (
+            dict(get_interactive_skill_commands()), dict(get_skill_bundles()))
     completer = SlashCommandCompleter(
         skill_commands_provider=lambda: skill_commands, skill_bundles_provider=lambda: skill_bundles)
     # `kind` reaches the TUI as data (from the providers, not sniffed from ⚡/▣ glyphs):

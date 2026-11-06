@@ -34,6 +34,12 @@ _last_interactive_skill_commands_by_key: dict[tuple, dict[str, dict[str, Any]]] 
 # move this signature and rescan on the next lookup instead of waiting for /reload-skills (CFG-8).
 _skill_commands_sig_by_key: dict[tuple, tuple] = {}
 _publish_lock = threading.Lock()
+
+# Single-flight for the command-map scan and the generation it last published at: concurrent
+# completion RPCs (asyncio.to_thread workers) on a cold palette each ran a full scan; waiters
+# re-check the published map instead (measured: 6 concurrent complete.slash, 8-9 s -> ~1 scan).
+_SCAN_SINGLEFLIGHT = threading.Lock()
+_skill_commands_generation = 0
 # ``\w`` keeps Unicode letters (CJK, Cyrillic) so a ``name: 小说拆条`` skill registers ``/小说拆条``
 # instead of slugging to "" and being dropped (#12351); Telegram's ``[a-z0-9_]`` menu limit is
 # applied by hermes_cli/commands_platforms.py, not here.
@@ -458,9 +464,6 @@ def _scaffold_header(
     return "\n".join(lines)
 
 
-_SCAN_SKIP_PARTS = {'.git', '.github', '.hub', '.archive', '.locks'}
-
-
 def skill_command_collision_note(name: str) -> Optional[str]:
     """User-facing note when *name*'s slash slug is a core command (name or alias), else None.
 
@@ -476,22 +479,19 @@ def skill_command_collision_note(name: str) -> Optional[str]:
     return f"slash command /{cmd_name} unavailable — name taken by built-in; use /skill {name}"
 
 
-def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: dict[str, dict[str, Any]]) -> None:
-    """Register one SKILL.md in *commands* (no-op when filtered or colliding)."""
-    from tools.skills_tool import _parse_frontmatter, skill_matches_apps, skill_matches_platform, skill_matches_environment
-    if any(part in _SCAN_SKIP_PARTS for part in skill_md.parts):
-        return
-    frontmatter, body = _parse_frontmatter(skill_md.read_text(encoding='utf-8-sig'))
-    # OS gate is hard; environment gate (kanban/docker/s6) is offer-time only.
-    if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter) or not skill_matches_apps(frontmatter):
-        return
-    name = frontmatter.get('name', skill_md.parent.name)
+def _register_row_command(entry: dict, disabled: set, seen_names: set, commands: dict[str, dict[str, Any]]) -> None:
+    """Register one catalog row's slash command (no-op when filtered or colliding).
+
+    Parse-once: the shared catalog scan already read and parsed this SKILL.md and the
+    row carries the raw name (``_cmd_name``) and the command-map description
+    (``_cmd_desc``), so registration costs no file I/O. Platform/environment/apps
+    gates and the excluded-dir skip already ran in the catalog (its exclusions are a
+    superset of the old per-file skip set)."""
+    skill_md = Path(entry["path"])
+    name = entry.get("_cmd_name") or skill_md.parent.name
     if name in seen_names or name in disabled:
         return
-    description = frontmatter.get('description', '') or next(
-        (line.strip()[:80] for line in body.strip().split('\n') if line.strip() and not line.strip().startswith('#')),
-        '',
-    )
+    description = entry.get("_cmd_desc", "")
     seen_names.add(name)
     cmd_name = slugify_skill_name(name)
     if not cmd_name:
@@ -518,6 +518,7 @@ def scan_skill_commands() -> dict[str, dict[str, Any]]:
     Builds a local map and publishes once at the end: writing straight into the
     global exposed partial results to overlapping scans, which then logged
     bogus "already claimed" collisions against their own incumbents."""
+    global _skill_commands_generation
     from agent.safe_worker_policy import safe_worker_enabled
 
     if safe_worker_enabled():
@@ -541,7 +542,7 @@ def scan_skill_commands() -> dict[str, dict[str, Any]]:
         for entry in _skill_catalog():
             if entry["status"] == "unique":
                 try:
-                    _scan_skill_md(Path(entry["path"]), disabled, seen_names, commands)
+                    _register_row_command(entry, disabled, seen_names, commands)
                 except Exception:
                     continue
     except Exception:
@@ -555,6 +556,7 @@ def scan_skill_commands() -> dict[str, dict[str, Any]]:
         # (file I/O, deferred imports) stays outside it.
         _skill_commands_sig_by_key[key] = signature
         _publish_scope(_skill_commands_by_key, key, commands)
+        _skill_commands_generation += 1  # wakes single-flight waiters (get_skill_commands)
     return commands
 
 
@@ -644,15 +646,22 @@ def get_skill_commands() -> dict[str, dict[str, Any]]:
         scanned_at = _skill_commands_sig_by_key.get(key)
         if cached is not None:
             _publish_scope(None, key)
+        generation = _skill_commands_generation
     if cached is not None:
         # A skill installed or removed from another terminal moves the dir signature: rescan, so the
         # long-lived gateway's palette and dispatch see it without /reload-skills (CFG-8).
         current = _skill_dirs_signature()
         if current is None or scanned_at is None or current == scanned_at:
             return cached
-    # Scan outside the lock — file I/O and deferred imports; concurrent scans
-    # are safe since each builds its own map.
-    return scan_skill_commands()
+    with _SCAN_SINGLEFLIGHT:
+        # Single-flight: a caller that waited while another thread scanned reuses that scan's
+        # published map instead of walking and parsing the same tree again.
+        with _publish_lock:
+            if _skill_commands_generation != generation:
+                return _skill_commands_by_key.get(key) or scan_skill_commands()
+        # Scan outside the publish lock — file I/O and deferred imports; concurrent scans
+        # are safe since each builds its own map.
+        return scan_skill_commands()
 
 
 # Plugin projection cache. The projection re-parses every plugin SKILL.md and sits on the
@@ -826,7 +835,12 @@ def resolve_skill_command_key(command: str, *, interactive: bool = False) -> Opt
     where underscores and hyphens are interchangeable for Telegram. Native
     callers retain the filesystem-only lookup; plugin skills are interactive.
     """
-    return resolve_slash_key(command, get_interactive_skill_commands() if interactive else get_skill_commands())
+    if not interactive:
+        return resolve_slash_key(command, get_skill_commands())
+    # Filesystem first: only a /plugin:skill token needs the plugin projection (and its discovery,
+    # which imports every plugin). See _interactive_command_info.
+    key = resolve_slash_key(command, get_skill_commands())
+    return key if key is not None else resolve_slash_key(command, get_interactive_skill_commands())
 
 
 def resolve_slash_key(command: str, table: Mapping[str, Any]) -> Optional[str]:
@@ -840,11 +854,25 @@ def resolve_slash_key(command: str, table: Mapping[str, Any]) -> Optional[str]:
     return cmd_key if cmd_key in table else None
 
 
+def _interactive_command_info(cmd_key: str) -> Optional[dict[str, Any]]:
+    """One interactive command's info by key, paying plugin discovery only for a plugin key.
+
+    The merged map needs the plugin projection to RESOLVE ``/plugin:skill``, and building it imports
+    every plugin (~7 s on a large install). Plugin keys are namespaced, so a filesystem skill resolves
+    from the filesystem map alone — which is the overwhelmingly common invocation."""
+    info = get_skill_commands().get(cmd_key)
+    if info is not None:
+        return info
+    if ":" not in str(cmd_key).lstrip("/"):
+        return None
+    return get_plugin_skill_commands().get(cmd_key)
+
+
 def build_skill_invocation_message(
     cmd_key: str, user_instruction: str = "", task_id: str | None = None, runtime_note: str = "",
 ) -> Optional[str]:
     """Build the user message for a skill slash command, or None if not found."""
-    skill_info = get_interactive_skill_commands().get(cmd_key)
+    skill_info = _interactive_command_info(cmd_key)
     loaded = _load_skill_payload(skill_info.get("skill_identifier") or skill_info["skill_dir"], task_id=task_id) if skill_info else None
     if not loaded:
         return None
@@ -886,7 +914,10 @@ def build_stacked_skill_invocation_message(
     """Build the user message for a stacked multi-skill slash invocation:
     ``(message, loaded_skill_names, missing_skill_names)``, or ``None`` when no skill loaded.
     Keys come from ``split_stacked_skill_commands``; native callers only ever pass filesystem keys."""
-    commands = get_interactive_skill_commands()
+    commands = get_skill_commands()
+    # Plugin skill keys are namespaced ``<plugin>:<skill>``; a filesystem key never carries ``:``.
+    if any(":" in str(k).lstrip("/") for k in cmd_keys if k):
+        commands = _merge_interactive_skill_commands(commands, get_plugin_skill_commands())
     keys = [k for k in cmd_keys if k]
     loaded_names, missing, _disabled, skill_blocks = _load_skill_blocks(
         keys,

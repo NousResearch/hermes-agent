@@ -1091,6 +1091,12 @@ def clear_skills_system_prompt_cache(*, clear_snapshot: bool = False) -> None:
     with _SKILLS_PROMPT_CACHE_LOCK:
         _SKILLS_PROMPT_CACHE.clear()
     try:
+        # A skill write must not leave the catalog's change signature warm, whatever its TTL.
+        from tools.skills_tool import _clear_signature_memo
+        _clear_signature_memo()
+    except Exception:
+        pass
+    try:
         if clear_snapshot:
             _skills_prompt_snapshot_path().unlink(missing_ok=True)
     except OSError as e:
@@ -1104,7 +1110,9 @@ def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
     prefix_len = len(os.path.join(skills_dir_str, ""))
     for root, dirs, files in os.walk(skills_dir_str, followlinks=True):
         has_skill_md = "SKILL.md" in files
-        dirs[:] = [d for d in dirs if d not in EXCLUDED_SKILL_DIRS and not (has_skill_md and d in SKILL_SUPPORT_DIRS)]
+        # Skill dirs are leaves (iter_skill_index_files semantics): SKILL.md/DESCRIPTION.md
+        # live at the skill's top level, so descending the skill's own bulk only costs time.
+        dirs[:] = [] if has_skill_md else [d for d in dirs if d not in EXCLUDED_SKILL_DIRS]
         for filename in ("SKILL.md", "DESCRIPTION.md"):
             path = os.path.join(root, filename)
             try:

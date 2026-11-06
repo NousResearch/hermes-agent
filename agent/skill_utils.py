@@ -29,11 +29,17 @@ EXCLUDED_SKILL_DIRS = frozenset((
     ".git", ".github", ".hub", ".archive", ".curator_backups", ".locks", DIST_SWAP_DIR,
     ".venv", "venv", "node_modules", "site-packages", "__pycache__",
     ".tox", ".nox", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+    ".skillopt", ".skillloop-snapshots", "_sources",
+    # Caches are runtime state, never skill content: <hermes-home>/cache holds the
+    # catalog disk cache and scratch (both churn constantly — scratch writes were
+    # bumping a walked dir's mtime and invalidating the catalog mid-session).
+    "cache",
 ))
 
 # Progressive-disclosure support dirs inside a skill package: loaded explicitly
 # via skill_view(skill, file_path=...), never scanned as standalone skills.
-SKILL_SUPPORT_DIRS = frozenset(("references", "templates", "assets", "scripts"))
+# "fixtures" holds skill-improvement probe targets (nested SKILL.md copies).
+SKILL_SUPPORT_DIRS = frozenset(("references", "templates", "assets", "scripts", "fixtures"))
 
 def is_excluded_skill_path(path, *, root: Optional[Path] = None) -> bool:
     """True if *path* should be skipped by skill scanners (VCS/dependency/cache
@@ -132,7 +138,9 @@ def _detect_kanban() -> bool:
             return True
     try:
         from tools.kanban_tools import _profile_has_kanban_toolset
-        return bool(_profile_has_kanban_toolset())
+        # Offer-time gate: never import every plugin to decide whether a menu entry is relevant
+        # (~7 s on a large install). A stale key set costs a menu entry, never a tool.
+        return bool(_profile_has_kanban_toolset(await_plugin_discovery=False))
     except Exception:
         return False
 
@@ -881,7 +889,11 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
     matches: list[str] = []
     for root, dirs, files in os.walk(str(skills_dir), followlinks=True):
         has_skill_md = "SKILL.md" in files
-        dirs[:] = [d for d in dirs if d not in EXCLUDED_SKILL_DIRS and not (has_skill_md and d in SKILL_SUPPORT_DIRS)]
+        # A directory holding SKILL.md is a skill — a leaf. Descending its subdirectories
+        # taxed every scan with the skill's own bulk (docs/, fixtures/, _sources/...),
+        # and a SKILL.md nested below another skill was never a real skill (zero
+        # occurrences across stock, hub, and 850+ skill corpora).
+        dirs[:] = [] if has_skill_md else [d for d in dirs if d not in EXCLUDED_SKILL_DIRS]
         if filename in files:
             matches.append(os.path.join(root, filename))
     yield from map(Path, sorted(matches))

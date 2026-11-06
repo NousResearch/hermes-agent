@@ -329,6 +329,55 @@ invocation. `allow_task_override: true` is an explicit operator grant for
 using Hermes built-in auxiliary tasks; it does not permit another plugin's
 tasks. Omit `task=` (or use `"auto"`) to keep the active main provider/model.
 
+#### From the plugin's frontend: a plugin RPC method
+
+A plugin's frontend (a Desktop page, or a client attached to the shared
+gateway) does not call the model itself. It calls its own Python half
+through a [plugin RPC method](plugins/index.md#talk-to-your-own-frontend-plugin-rpc-methods-and-session-events),
+and the handler calls `ctx.llm` on the task the plugin registered:
+
+```python
+from agent.redact import redact_sensitive_text
+
+CHART = {"type": "object", "properties": {"kind": {"type": "string"}}, "required": ["kind"]}
+
+
+def register(ctx):
+    ctx.register_auxiliary_task("chart_writer", display_name="Charts", description="Pick chart kinds.")
+
+    def write_chart(params, *, session_id, **kwargs):
+        text = redact_sensitive_text(str(params.get("text", "")), force=True)
+        result = ctx.llm.complete_structured(
+            instructions="Pick a chart kind for this data.",
+            input=[{"type": "text", "text": text}],
+            json_schema=CHART,
+            task="chart_writer",
+        )
+        if result.parsed is None:
+            raise ValueError("the model did not answer with JSON")
+        return result.parsed
+
+    ctx.register_rpc("chart.write", write_chart)
+```
+
+The frontend sends
+`{"method": "plugin.<plugin_id>.chart.write", "params": {"session_id": "…", "text": "…"}}`
+and gets the parsed JSON back as the call's `result`. An exception in the
+handler answers the call with reason `plugin_rpc_failed`.
+
+- **Redact at the boundary.** `agent.redact.redact_sensitive_text` is part
+  of the [public plugin API](plugins/public-api.md). Pass `force=True` where
+  secrets must never leave the machine, such as text sent to a model: it then
+  masks secrets even when the operator turned redaction off with
+  `security.redact_secrets: false`. Without `force=True` it follows that
+  setting.
+- **The task is the route.** `task=` must name a task your plugin registered,
+  so the operator's `auxiliary.<task>` setting picks the model, and a
+  frontend cannot pick a different route.
+- **Check `parsed`.** It is `None` when the reply is not JSON. A reply that
+  does not match `json_schema` raises `ValueError` when the optional
+  `jsonschema` package is installed; without it, the schema is not checked.
+
 #### Inheriting a built-in slot
 
 `inherit_from` names a built-in auxiliary task (`compression`, `mcp`,

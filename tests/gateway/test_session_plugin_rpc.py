@@ -1,5 +1,7 @@
 """A plugin's frontend reaches its own Python half through the session authority, and back."""
 import asyncio
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
 import threading
 from types import SimpleNamespace
 
@@ -22,6 +24,44 @@ def register(ctx):
     ctx.register_rpc("pane.nan", lambda params, *, session_id, **kw: {"ratio": float("nan")})
     ctx.register_rpc("pane.where", lambda params, *, session_id, **kw: threading.current_thread().name)
 '''
+
+# A plugin's structured-output route: its frontend calls this RPC; the handler redacts, then asks its own task.
+_CHART_PLUGIN = '''
+from agent.redact import redact_sensitive_text
+
+SCHEMA = {"type": "object", "properties": {"kind": {"type": "string"}}, "required": ["kind"]}
+
+
+def register(ctx):
+    ctx.register_auxiliary_task("chart_writer", display_name="Charts", description="Writes chart specs")
+
+    def write_chart(params, *, session_id, **kwargs):
+        text = redact_sensitive_text(params["text"], force=True)
+        result = ctx.llm.complete_structured(task="chart_writer", instructions="Pick a chart kind.",
+                                             input=[{"type": "text", "text": text}], json_schema=SCHEMA)
+        return result.parsed
+
+    ctx.register_rpc("chart.write", write_chart)
+'''
+
+
+class _ChartModel(BaseHTTPRequestHandler):
+    """An OpenAI-compatible stub model: records each request, answers ``{"kind": "line"}``."""
+
+    def do_POST(self):
+        self.server.requests.append(json.loads(self.rfile.read(int(self.headers['Content-Length']))))
+        message = {'role': 'assistant', 'content': '{"kind": "line"}'}
+        payload = json.dumps({'id': 'stub', 'object': 'chat.completion', 'model': 'chart-model',
+                              'choices': [{'index': 0, 'message': message, 'finish_reason': 'stop'}],
+                              'usage': {'prompt_tokens': 1, 'completion_tokens': 1, 'total_tokens': 2}}).encode()
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, *args):
+        pass
 
 
 async def _answer(event):
@@ -207,3 +247,42 @@ def test_emit_from_a_plugin_thread_reaches_its_own_profile_on_a_multiplexed_gate
     assert from_thread(launch_ctx, 'in-launch') == [True]
     assert len(frames[launch]) == 1 and len(frames[secondary]) == 1
     assert get_hermes_home_override() is None
+
+
+@pytest.mark.asyncio
+async def test_plugin_frontend_gets_schema_checked_json_from_its_own_task_with_input_redacted(tmp_path, monkeypatch):
+    """The route for a plugin frontend's structured output: ``plugin.<id>.<name>`` reaches the plugin's
+    handler, which redacts its input and calls ``ctx.llm.complete_structured`` on the task it registered.
+    The client gets the parsed JSON; the model, on ``auxiliary.<task>``, never sees the secret, even
+    with ``security.redact_secrets: false`` (``force=True``)."""
+    from gateway.session_controls import AuthorityConnection
+    from hermes_cli import plugins
+
+    model = ThreadingHTTPServer(('127.0.0.1', 0), _ChartModel)
+    model.requests = []
+    threading.Thread(target=model.serve_forever, daemon=True).start()
+    authority = await _authority(tmp_path, monkeypatch, _answer)
+    plugin = tmp_path / 'plugins' / 'chart-demo'
+    plugin.mkdir(parents=True)
+    (plugin / 'plugin.yaml').write_text(yaml.safe_dump({'name': 'chart-demo', 'version': '0.1.0'}))
+    (plugin / '__init__.py').write_text(_CHART_PLUGIN)
+    (tmp_path / 'config.yaml').write_text(yaml.safe_dump({
+        'plugins': {'enabled': ['chart-demo']},
+        'auxiliary': {'chart_writer': {'provider': 'custom', 'model': 'chart-model', 'api_key': 'loopback-only',
+                                       'base_url': f'http://127.0.0.1:{model.server_port}/v1'}}}))
+    monkeypatch.setattr(plugins, '_plugin_manager', plugins.PluginManager())
+    monkeypatch.setattr('agent.redact._REDACT_ENABLED', False)  # what `security.redact_secrets: false` sets at boot
+    owner = AuthorityConnection(authority, object(), {'user_id': 'owner'})
+    secret = 'sk-proj-' + 'A1b2C3d4' * 5
+    try:
+        reply = await owner.dispatch({'id': 1, 'method': 'plugin.chart-demo.chart.write',
+                                      'params': {'session_id': 's', 'text': f'revenue by month, key {secret}'}})
+    finally:
+        await owner.close()
+        model.shutdown()
+    assert reply.get('result') == {'kind': 'line'}, reply
+    [request] = model.requests
+    assert request['model'] == 'chart-model'
+    assert request['response_format']['type'] == 'json_schema'
+    sent = json.dumps(request['messages'])
+    assert 'revenue by month' in sent and secret not in sent

@@ -145,6 +145,10 @@ CASES = {
         ["apps/shared/src/gateway-contract.openrpc.json"],
         _lanes(python=True, frontend=True, e2e_desktop_core=True),
     ),
+    "control-socket vectors → python + frontend": (
+        ["apps/shared/src/node/control-socket.vectors.json"],
+        _lanes(python=True, frontend=True, e2e_desktop_core=True),
+    ),
     "desktop slash-registry JSON → python + frontend": (
         ["apps/desktop/src/lib/desktop-slash-registry.json"],
         _lanes(python=True, frontend=True),

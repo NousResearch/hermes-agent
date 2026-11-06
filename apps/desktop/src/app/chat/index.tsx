@@ -43,7 +43,6 @@ import {
   $introSeed,
   $resumeExhaustedSessionId,
   $sessions,
-  getSessionOwnerHint,
   resolveComposerSessionKey,
   sessionMatchesStoredId,
   sessionPinId,
@@ -74,6 +73,7 @@ import { useHistoryWindow } from './history-window'
 import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-actions'
 import { useFileDropZone } from './hooks/use-file-drop-zone'
 import { shouldShowIntro } from './intro-visibility'
+import { paneOwnerRoute } from './pane-owner-route'
 import { ProfileTag } from './profile-tag'
 import { ResumeExhaustedOverlay } from './resume-exhausted-overlay'
 import { isRouteSessionMismatch } from './route-session-state'
@@ -263,9 +263,7 @@ export function ChatRuntimeBoundary({
   const activeProfile = useStore($activeGatewayProfile)
   const connectionId = connection?.connectionId || (connection?.mode === 'local' ? 'local' : '')
 
-  const ownerRoute = storedId
-    ? getSessionOwnerHint(storedId, connectionId ? { connectionId, profile: activeProfile } : undefined)
-    : undefined
+  const ownerRoute = paneOwnerRoute(storedId, connectionId ? { connectionId, profile: activeProfile } : null)
 
   const ownerConnection = ownerRoute?.connectionId
   const ownerProfile = ownerRoute?.targetProfile || ownerRoute?.profile

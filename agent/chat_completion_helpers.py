@@ -3213,8 +3213,8 @@ class _StreamingCall(StreamingWaitMonitor):
             refusal_parts=refusal_parts)
         carriers.apply(response)
         if runaway:
-            # Cut, not finished: the length path ends the turn on this mark instead of continuing.
-            response._runaway_repetition = True
+            # Cut, not finished: the length path acts on this mark (the cut channel) instead of continuing.
+            response._runaway_repetition = runaway
         return response
 
     def _log_runaway_cut(self, channel: str) -> None:
@@ -3481,7 +3481,7 @@ class _StreamingCall(StreamingWaitMonitor):
             # No message_stop, so no final message: the SDK's snapshot is what streamed so far.
             message = accumulator.response(_stream_context["stream"].current_message_snapshot)
             message.stop_reason = "max_tokens"
-            message._runaway_repetition = True  # same hand-off as the chat_completions wire
+            message._runaway_repetition = runaway  # same hand-off as the chat_completions wire
             return message
         if base_final_message is not None:
             self._check_anthropic_message(base_final_message, tool_drop=False)

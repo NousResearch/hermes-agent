@@ -24,6 +24,7 @@ from agent.memory_provider import is_trivial_prompt
 from agent.message_content import flatten_message_text
 from agent.lsp.deferred import forward_to_agent as forward_lsp_verdicts
 from agent.plugin_live_notes import pop_plugin_notices
+from agent.session_source import ONESHOT_SOURCE, session_source_for
 from agent.skills_index_delta import stage_skills_index_note
 from agent.prompt_refresh import refresh_warm_prompt
 from agent.message_metadata import (
@@ -207,7 +208,8 @@ def _maybe_title_session_at_turn_start(
     if not session_db or not session_id:
         return
     platform = str(getattr(agent, "platform", "") or "").lower()
-    if platform in _UNTITLED_PLATFORMS:
+    # Finite CLI runs already resolve to oneshot; do not add an auxiliary inference.
+    if platform in _UNTITLED_PLATFORMS or session_source_for(platform) == ONESHOT_SOURCE:
         return
     try:
         from agent.message_content import flatten_message_text

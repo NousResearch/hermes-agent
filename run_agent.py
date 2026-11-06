@@ -6,12 +6,16 @@
     response = agent.run_conversation("Tell me about the latest Python updates")
 """
 
-# hermes_bootstrap must be the very first import (UTF-8 stdio on Windows; no-op on POSIX).
-try:
-    import hermes_bootstrap
-except ModuleNotFoundError as exc:  # partial `hermes update` left the bootstrap unregistered
-    if exc.name != "hermes_bootstrap":
-        raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
+# Library importers (tests, tui_gateway, batch_runner) must not pay the
+# entry-point bootstrap: it activates PM dependencies at module import, which
+# reads real Hermes-home state. Only a real `python run_agent.py` process runs
+# it — the `hermes-agent` console script bootstraps through agent/legacy_cli.
+if __name__ == "__main__":
+    try:
+        import hermes_bootstrap
+    except ModuleNotFoundError as exc:  # partial `hermes update` left the bootstrap unregistered
+        if exc.name != "hermes_bootstrap":
+            raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
 
 import sys
 

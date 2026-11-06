@@ -16,11 +16,12 @@ resulting file**, including exact terminators; `REFUSE(code)`; or
 version: `NOT_FOUND` and `AMBIGUOUS`; these are stable categories, not source
 text or production diagnostic strings. Unsupported operations, syntax,
 features, encodings, or situations are `OUT_OF_DOMAIN`, never `REFUSE`.
-For baseline diagnostics, if `empty search text` appears, classify as
-`UNMAPPED`. Otherwise, a numeric `ambiguous (N matches)` or
+For baseline diagnostics, use case-sensitive substring matching on the entire
+diagnostic: if `empty search text` appears, classify as `UNMAPPED`. Otherwise,
+a substring matching numeric `ambiguous (N matches)` or
 `Found N matches for old_string` with N >= 2 maps to `AMBIGUOUS` before any
-`not found` label. A plain `not found` or `Could not find a match for old_string`
-with no count maps to `NOT_FOUND`;
+`not found` substring. Otherwise, `not found` or
+`Could not find a match for old_string` maps to `NOT_FOUND`;
 every other diagnostic is `UNMAPPED`. UNMAPPED is a finding, not either refusal
 code. Do not infer a count from the input to reinterpret a production error.
 
@@ -48,7 +49,9 @@ establish the style in the latter class). The patch is exactly one existing
 file update to path `f`, exactly one bare `@@` hunk, followed by either one
 `-<content>` and one `+<content>`, or one `-<content>` and no addition. Context
 is absent. Patch syntax itself uses LF. Search and replacement contents come
-from the same fixed alphabet and replacement differs from search. No line
+from the same fixed alphabet and replacement differs from search. A replacement
+that produces byte-identical output is allowed when its content differs from
+the search (for example normalized matching of `a b` to `a\tb`). No line
 contains a newline byte. The three search cardinalities are 0, 1, or 2+
 physical winning-tier whole-line candidates. Duplicate blank lines are generated as
 ordinary candidates. Matching first selects byte-exact lines; only if there are
@@ -80,9 +83,11 @@ compare site from a unified diff only when it has exactly one removed line:
 initialize a zero-based original cursor from the hunk's `-start` minus one;
 for every removed line record its cursor *before* advancing; advance the
 cursor after context and removed lines, not additions. The removed line's
-recorded cursor gives `(cursor,cursor+1)` only if that removed content equals
-exactly one original line content (empty equals only an empty content). If the
-diff has multiple removals, omits the change, or the content repeats, report
+recorded cursor gives `(cursor,cursor+1)` only if the removed payload, including
+its terminator or absence thereof, equals the complete original line pair at
+that cursor, and that pair's content occurs at exactly one original line index.
+If the diff has multiple removals, omits the change, fails either check, or the
+content repeats, report
 site comparison unavailable,
 not a pass. A production
 difference is a finding, never a
@@ -90,9 +95,11 @@ reason to discard a generated input or alter its expected value. Validate oracle
 membership using separately constructed negative cases too.
 
 For this grammar, an independently implemented recognizer first checks all
-structural constraints above and returns `OUT_OF_DOMAIN` if any fail, before
+structural constraints in this entire grammar, including the exact wrapper in
+the notation below, and returns `OUT_OF_DOMAIN` if any fail, before
 performing search. For example `b'a b\n'` with `-a/+new` is OOD due to a
-substring decoy; `b'old\n'` with `-old/+old` is OOD because it is a no-op.
+substring decoy; `b'old\n'` with `-old/+old` is OOD because replacement
+content equals search content, not merely because resulting bytes are unchanged.
 A blank `+` is replacement by a terminated blank line, distinct from no `+`,
 which deletes the line. For example `b'a\nold\nb\n'` with `-old/+` yields
 `WRITE((1,2), b'a\n\nb\n')`; deletion instead yields `b'a\nb\n'`.
@@ -101,8 +108,8 @@ For this grammar, enumerate all exact whole-line candidates globally; if none,
 enumerate candidates under the fixed normalization pair. No
 candidates gives `REFUSE(NOT_FOUND)`; multiple gives `REFUSE(AMBIGUOUS)`;
 exactly one gives `WRITE` using the splice above. There is no cursor or hint.
-A nonempty replacement always creates exactly one terminated line. No-op
-replacements are excluded. The initial grammar does not cover Unicode, even
+A nonempty replacement always creates exactly one terminated line. Replacements
+with content equal to search are excluded. The initial grammar does not cover Unicode, even
 though a later expansion may introduce a fixed normalization list after its
 semantics are proven. Blank search is allowed and uses identical cardinality.
 

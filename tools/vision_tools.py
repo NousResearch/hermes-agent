@@ -635,6 +635,17 @@ class _PreparedImage(NamedTuple):
     crop_offset: dict
 
 
+def _effective_region(region: Any) -> Any:
+    """``None`` for an empty or all-zero ``region``: models fill the optional array with
+    ``[0, 0, 0, 0]`` or ``[]`` to mean "whole image", and cropping to that is an error. Anything
+    else, malformed values included, passes through for ``_crop_image_region`` to judge."""
+    if isinstance(region, (list, tuple)) and all(
+        isinstance(v, (int, float)) and not isinstance(v, bool) and v == 0 for v in region
+    ):
+        return None
+    return region
+
+
 async def _prepare_image(
     image_url: str, task_id: Optional[str], region: Optional[list], *, validate_decode: bool,
 ) -> _PreparedImage:
@@ -665,6 +676,7 @@ async def _prepare_image(
                 _VISION_MAX_VALIDATED_FRAME_COUNT, _VISION_MAX_VALIDATED_AGGREGATE_PIXELS)
             if decode_error:
                 raise _ImagePrepError(decode_error)
+        region = _effective_region(region)
         if region is not None:
             cropped_path, cropped_mime, crop_err = await asyncio.to_thread(
                 _crop_image_region, path, region, offset_out=crop_offset)
@@ -989,7 +1001,7 @@ VISION_ANALYZE_SCHEMA = {
                     "coordinates, applied before any downscaling — the crop "
                     "keeps full resolution. Load the full image first, then "
                     "re-call with a region to zoom into small text or fine "
-                    "detail."
+                    "detail. Omit it for the whole image."
                 )
             }
         },

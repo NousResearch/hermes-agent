@@ -83,6 +83,7 @@ def build_dashboard_parser(
     _add_server_runtime_args(dashboard_parser)
     dashboard_parser.add_argument(
         "--no-open", action="store_true", help="Don't open browser automatically")
+    dashboard_parser.add_argument("--external-supervisor", action="store_true", help=argparse.SUPPRESS)
     # Compat shim: desktop shells <= 0.15.x spawn `hermes dashboard --no-open --tui ...`;
     # `--tui` was removed (embedded chat always on). Accept + ignore so an old app with a
     # new CLI doesn't die on "unrecognized arguments". Drop once the app floor is > 0.16.0.

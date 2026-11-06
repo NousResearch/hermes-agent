@@ -969,6 +969,9 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False,
         if carried and (repair or plugins is not None or not set(carried) <= set(extras or ())):
             raise ValueError("carried extras belong to a feature sync of the discovered selection")
         shipped, frozen = _feature_policy(extras, repair=repair)
+        from pm.generation_lifecycle import collect_unused
+
+        collect_unused(paths.repo_root())
         package = get_package("venv")
         from hermes_cli.runtime_state import recover_publication
         from functools import partial

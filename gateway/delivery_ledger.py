@@ -54,7 +54,16 @@ FLOOD_MARKER = ("♻️ Recovered reply — the messaging platform's rate limit 
 # used to strand the reply in ``failed`` until the next restart), but only after a backoff that grows
 # with the attempts already spent, so a platform-side outage is not hammered by the redelivery timer.
 # A whole-chat death (blocked bot, deleted group, deactivated user) is never retried: the target is gone.
-_RUNTIME_RETRYABLE_ERRORS = frozenset({"send_path_degraded"})
+RELAY_DISCONNECTED_ERRORS = frozenset(
+    {
+        "relay transport not connected",
+        "relay transport connection lost",
+        "relay transport closed",
+    }
+)
+_RUNTIME_RETRYABLE_ERRORS = (
+    frozenset({"send_path_degraded"}) | RELAY_DISCONNECTED_ERRORS
+)
 # One tier per in-process retry; the last budgeted attempt is left to the boot sweep (retry_not_before).
 _RETRY_BACKOFF_SECONDS = (30.0, 120.0)
 assert len(_RETRY_BACKOFF_SECONDS) == MAX_ATTEMPTS - 1

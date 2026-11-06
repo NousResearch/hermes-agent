@@ -569,3 +569,119 @@ def test_sign_in_is_refused_where_nobody_can_answer_the_browser(idp, monkeypatch
     with pytest.raises(SystemExit, match="your own terminal"):
         _auth("add")
     assert idp.token_requests == [] and idp.opened == []
+
+
+def _client_credentials_entry(idp: FakeIdP, **overrides) -> dict:
+    entry = _entry(idp)
+    entry.pop("authorize_url")
+    entry.pop("scopes")
+    entry.pop("authorize_params")
+    entry["grant_type"] = "client_credentials"
+    entry["token_params"] = {"audience": "payments-api"}
+    return {**entry, **overrides}
+
+
+def test_client_credentials_manifest_is_declarative_and_requires_secret(idp):
+    entry = _client_credentials_entry(idp)
+    clients, problems = plugin_oauth.parse_oauth_clients({"oauth": [entry]})
+    assert not problems
+    assert clients[0].grant_type == "client_credentials"
+    assert clients[0].authorize_url == ""
+    assert clients[0].token_params == (("audience", "payments-api"),)
+
+    entry.pop("client_secret_env")
+    _, problems = plugin_oauth.parse_oauth_clients({"oauth": [entry]})
+    assert any("client_secret_env" in problem for problem in problems)
+
+
+def test_client_credentials_is_acquired_and_attached_only_by_hermes(idp, api, monkeypatch):
+    import httpx
+
+    allowed, _ = api
+    token = "machine-access-token-canary"
+    calls = []
+
+    class TokenResponse:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"access_token": token, "expires_in": 600, "token_type": "Bearer"}
+
+    def token_post(url, *, data, **kwargs):
+        calls.append({"url": url, "data": dict(data), "kwargs": kwargs})
+        return TokenResponse()
+
+    monkeypatch.setattr(httpx, "post", token_post)
+    entry = _client_credentials_entry(idp)
+    plugin = _plugin("machine", oauth=[entry])
+    assert _auth("add", "machine:google") is True
+
+    grant = _grant("machine:google")
+    assert grant["access_token"] == token
+    assert grant["expires_at_ms"] > int(time.time() * 1000)
+    assert SECRET not in json.dumps(grant)
+    assert calls[0]["data"] == {
+        "audience": "payments-api", "grant_type": "client_credentials",
+        "client_id": CLIENT_ID, "client_secret": SECRET,
+    }
+    assert calls[0]["kwargs"]["follow_redirects"] is False
+
+    response = plugin.call("google", allowed.url + "/transactions", method="GET")
+    assert response.status == 200
+    assert allowed.seen[-1]["headers"]["Authorization"] == f"Bearer {token}"
+    assert token not in repr(response) and token not in json.dumps(response.headers)
+
+
+def test_client_credentials_expiry_reacquires_once_under_lock(idp, api, monkeypatch):
+    import httpx
+
+    allowed, _ = api
+    tokens = iter(["machine-token-one", "machine-token-two"])
+    calls = []
+
+    class TokenResponse:
+        status_code = 200
+
+        def __init__(self, token):
+            self.token = token
+
+        def json(self):
+            return {"access_token": self.token, "expires_in": 600}
+
+    def token_post(url, *, data, **kwargs):
+        calls.append(dict(data))
+        return TokenResponse(next(tokens))
+
+    monkeypatch.setattr(httpx, "post", token_post)
+    plugin = _plugin("machine", oauth=[_client_credentials_entry(idp)])
+    assert _auth("add", "machine:google") is True
+    _set_grant("machine:google", expires_at_ms=0)
+
+    plugin.call("google", allowed.url + "/one", method="GET")
+    plugin.call("google", allowed.url + "/two", method="GET")
+
+    assert len(calls) == 2
+    assert [r["headers"]["Authorization"] for r in allowed.seen] == [
+        "Bearer machine-token-two", "Bearer machine-token-two"
+    ]
+    assert _grant("machine:google")["access_token"] == "machine-token-two"
+
+
+def test_client_credentials_token_failure_does_not_persist_or_leak_secret(idp, monkeypatch, caplog):
+    import httpx
+
+    class FailureResponse:
+        status_code = 401
+
+        @staticmethod
+        def json():
+            return {"error": "invalid_client", "error_description": SECRET}
+
+    monkeypatch.setattr(httpx, "post", lambda *args, **kwargs: FailureResponse())
+    _plugin("machine", oauth=[_client_credentials_entry(idp)])
+    with pytest.raises(SystemExit) as excinfo:
+        _auth("add", "machine:google")
+    assert "invalid_client" in str(excinfo.value)
+    assert SECRET not in str(excinfo.value) + caplog.text
+    assert _grant("machine:google") is None

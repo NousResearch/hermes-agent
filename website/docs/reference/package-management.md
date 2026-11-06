@@ -659,10 +659,19 @@ without upload times, it stops with `has no publish time`; use
 `https://pypi.org/simple` for that step.
 
 JavaScript workspace dependencies follow the same rule through
-`minimumReleaseAge` in `pnpm-workspace.yaml` (in minutes: `20160` is 14 days),
-with exemptions listed in `minimumReleaseAgeExclude`. CI enforces it when it
-installs `pnpm-lock.yaml`; source, bundle and Docker installs trust the
-committed lock.
+`minimumReleaseAge` in `pnpm-workspace.yaml` (in minutes: `20160` is 14 days).
+When a range's only matches are younger than that, `hermes pm update --pnpm`
+stops and prints the entries that would let it through, for example
+`- pele@1.13.0  # <why it cannot wait>` (it lists them by repeating the update
+on a scratch copy of the manifests and lock). To exempt one, add it to
+`minimumReleaseAgeExclude` as that exact `name@version` (never a bare name or a
+glob, which would exempt every future release), with the reason as an inline
+comment on the same line, then run the update again. The update drops an entry
+once the lockfile no longer holds that version, in the same change as the lock.
+pnpm's own `minimumReleaseAgeExcludePrune` stays off, because it would rewrite
+`pnpm-workspace.yaml` on every install, users' builds included. CI enforces the
+policy when it installs `pnpm-lock.yaml`; source, bundle and Docker installs
+trust the committed lock.
 
 PM's own npm-hosted tools (pnpm and npm) are pinned to `registry.npmjs.org`
 URLs in `pm/lock.json`, but PM downloads them from your npm registry:

@@ -752,6 +752,7 @@ def _refresh_uv_lock() -> int:
 
 
 def _refresh_pnpm_lock() -> int:
+    from pm import pnpm_release_age
     from pm.install import env_for, installed_package
     from pm.packages import pnpm_env
 
@@ -762,15 +763,22 @@ def _refresh_pnpm_lock() -> int:
     # Every workspace and the root, within the declared ranges: --no-save keeps the manifests'
     # specifiers as written, and the release-age policy applies to every new pick.
     command = [str(pnpm.binary), "update", "--recursive", "--lockfile-only", "--no-save"]
-    code, tail = _run_live(command, cwd=str(repo_root()), env=pnpm_env(env_for("pnpm")))
+    env = pnpm_env(env_for("pnpm"))
+    code, tail = _run_live(command, cwd=str(repo_root()), env=env)
     if code != 0:
         print(f"✗ pnpm update failed:\n{tail}")
-        # --no-save turns the "only too-young versions match" case into the
-        # REQUIRES_SAVE error: pnpm would otherwise write the exclude itself.
-        if "ERR_PNPM_NO_MATURE_MATCHING_VERSION" in tail or "ERR_PNPM_STRICT_MIN_RELEASE_AGE_REQUIRES_SAVE" in tail:
-            print("  a range's only matches are newer than minimumReleaseAge (pnpm-workspace.yaml): "
-                  "wait for them to age, or add the package to minimumReleaseAgeExclude")
+        # --no-save turns "only too-young versions match" into an error that names no package.
+        if pnpm_release_age.is_release_age_failure(tail):
+            picks = pnpm_release_age.immature_picks(str(pnpm.binary), repo_root(), env)
+            print(pnpm_release_age.exclude_hint(picks))
         return 1
+    # pnpm's minimumReleaseAgeExcludePrune would fire on every install, user builds included, and
+    # rewrite the tracked pnpm-workspace.yaml there; the excludes the new lock no longer holds leave
+    # here instead, in the same commit as the lock change.
+    root = repo_root()
+    dropped = pnpm_release_age.prune_excludes(root / "pnpm-workspace.yaml", root / "pnpm-lock.yaml")
+    if dropped:
+        print(f"  dropped from minimumReleaseAgeExclude (no longer locked): {', '.join(dropped)}")
     print("✓ pnpm-lock.yaml refreshed")
     return 0
 

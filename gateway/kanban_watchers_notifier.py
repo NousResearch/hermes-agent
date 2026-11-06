@@ -717,11 +717,14 @@ class _KanbanNotification:
             # Non-push adapters (api_server) always report SendResult(success=False)
             # from send(); treating that as failure would drop the sub forever and
             # make the wake path unreachable. Skip the doomed send; the self-post
-            # IS the delivery and resolves the failure counter.
-            if not self.is_push_adapter and self.wake_agent:
+            # IS the delivery and resolves the failure counter. A passive (notify)
+            # sub on such an adapter has no channel at all (kanban.auto_subscribe_wake):
+            # the event is acknowledged and the API client reads it from the board.
+            if not self.is_push_adapter:
                 logger.debug(
-                    "kanban notifier: adapter %s has no push channel; skipping text ping for %s, relying "
-                    "on wake self-post instead", self.platform_str, self.task_id,
+                    "kanban notifier: adapter %s has no push channel; skipping text ping for %s, %s",
+                    self.platform_str, self.task_id,
+                    "relying on wake self-post instead" if self.wake_agent else "passive subscription",
                 )
                 continue
             if not self.send_passive:

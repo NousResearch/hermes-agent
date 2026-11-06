@@ -42,10 +42,11 @@ class _HeaderModel(Model):
 
 
 @contextmanager
-def _gateway(tmp_path, named=False, plugin_task=None):
+def _gateway(tmp_path, named=False, plugin_task=None, extra_auxiliary=None):
     """A real gateway on a loopback model whose ``BLOCK_STARTED`` requests wait for ``release``;
     ``named`` serves the model as a named custom provider that requires its ``extra_headers``;
-    ``plugin_task`` installs a plugin registering that auxiliary task, pinned to ``plugin-model``."""
+    ``plugin_task`` installs a plugin registering that auxiliary task, pinned to ``plugin-model``;
+    ``extra_auxiliary`` adds ``auxiliary`` blocks (their ``base_url`` is the loopback model)."""
     root = Path(__file__).resolve().parents[2]
     home, user, work = tmp_path / 'state', tmp_path / 'user', tmp_path / 'work'
     home.mkdir(mode=0o700)
@@ -70,6 +71,7 @@ def _gateway(tmp_path, named=False, plugin_task=None):
             f'def register(ctx):\n    ctx.register_auxiliary_task({plugin_task!r}, display_name="P", description="p")\n',
             encoding='utf-8')
         auxiliary[plugin_task] = {'provider': 'custom', 'base_url': url, 'model': 'plugin-model'}
+    auxiliary.update({task: {**block, 'base_url': url} for task, block in (extra_auxiliary or {}).items()})
     (home / 'config.yaml').write_text(json.dumps({
         'gateway': {'multiplex_profiles': False},
         'model': model,
@@ -217,18 +219,22 @@ def test_a_burst_of_slow_oneshots_never_starves_the_rest_of_the_gateway(tmp_path
 
 
 @pytest.mark.platforms("linux")
-def test_a_oneshot_task_is_a_registered_slot_never_a_silent_main_model_call(tmp_path):
-    """#141976: a plugin's registered task runs on ``auxiliary.<task>``; an unregistered key is
-    refused by name instead of running on the main model."""
+def test_a_oneshot_task_routes_like_the_released_gateway(tmp_path):
+    """``task`` names an ``auxiliary.<task>`` block, as in the last release: a plugin-registered task
+    runs on its block, so does one only configured in config.yaml, and an unknown key runs on the
+    default ``auto`` route (the profile's model) instead of being refused."""
     out = {}
 
     async def probe(home, work, peer, desc):
         async with websocket(home, desc) as ws:
-            out['typo'] = await rpc(ws, 'llm.oneshot', task='probe_chart', input='x')
-            out['task'] = await rpc(ws, 'llm.oneshot', task='probe_charts', input='x')
-            out['models'] = [request['model'] for request in peer.requests]
-    with _gateway(tmp_path, plugin_task='probe_charts') as served:
+            for key, task in (('typo', 'probe_chart'), ('configured', 'my_digest'), ('plugin', 'probe_charts')):
+                out[key] = await rpc(ws, 'llm.oneshot', task=task, input=f'ONESHOT_{key}')
+            out['models'] = {key: next(r['model'] for r in peer.requests
+                                       if any(m.get('content') == f'ONESHOT_{key}' for m in r['messages']))
+                             for key in ('typo', 'configured', 'plugin') if 'result' in out[key]}
+    with _gateway(tmp_path, plugin_task='probe_charts',
+                  extra_auxiliary={'my_digest': {'provider': 'custom', 'model': 'digest-model'}}) as served:
         asyncio.run(probe(*served))
-    assert out['typo']['error']['data'] == {
-        'reason': 'invalid_params', 'field': 'task', 'detail': 'unknown auxiliary task: probe_chart'}, out
-    assert 'result' in out['task'] and out['models'] == ['plugin-model'], out
+    assert {key: out[key].get('result') for key in ('typo', 'configured', 'plugin')} == {
+        key: {'text': f'RECOVERY_ACK_ONESHOT_{key}'} for key in ('typo', 'configured', 'plugin')}, out
+    assert out['models'] == {'typo': 'chat-model', 'configured': 'digest-model', 'plugin': 'plugin-model'}, out

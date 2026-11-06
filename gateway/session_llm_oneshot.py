@@ -203,11 +203,6 @@ def _validate(params):
         raise RuntimeStoreError('invalid_params', field='template', detail='unknown one-shot template')
     if not template and not (params.get('instructions') or '').strip() and not (params.get('input') or '').strip():
         raise RuntimeStoreError('invalid_params', field='input', detail='needs a template or instructions/input')
-    from agent.oneshot import client_task
-    try:
-        client_task(params.get('task'))
-    except KeyError as exc:
-        raise RuntimeStoreError('invalid_params', field='task', detail=exc.args[0]) from None
 
 
 def _session_runtime(authority, ref):

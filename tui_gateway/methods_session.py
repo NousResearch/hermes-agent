@@ -1355,11 +1355,11 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4030, "llm.oneshot requires a template or instructions/input")
     session = _sessions.get(params.get("session_id") or "")
     try:
-        from agent.oneshot import client_task, run_oneshot
+        from agent.oneshot import run_oneshot
         with (_session_profile_runtime_scope(session) if session else contextlib.nullcontext()):
             return _ok(rid, {"text": run_oneshot(
                 instructions=instructions, user_input=user_input, template=template, variables=variables,
-                task=client_task(params.get("task")),
+                task=(params.get("task") or "title_generation").strip() or "title_generation",
                 max_tokens=_int_param(params, "max_tokens", 1024) or 1024, temperature=temperature,
                 main_runtime=_main_runtime_from_agent(session.get("agent")) if session else None)})
     except (KeyError, ValueError) as e:

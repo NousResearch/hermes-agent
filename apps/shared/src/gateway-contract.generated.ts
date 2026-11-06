@@ -3755,7 +3755,7 @@ export interface SessionEventsStatsResult {
   max_bytes_per_session: number
   max_bytes_process: number
 }
-/** Needs a ``template`` or ``instructions`` / ``input``; a live ``session_id`` lends its model. ``task`` is a built-in auxiliary slot or a plugin-registered one (unknown keys are refused). */
+/** Needs a ``template`` or ``instructions`` / ``input``; a live ``session_id`` lends its model. */
 export interface LlmOneshotParams {
   profile?: string | null
   template?: string | null

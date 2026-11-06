@@ -2,10 +2,7 @@
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from agent.oneshot import (
-    client_task,
     render_template,
     run_oneshot,
     _truncate,
@@ -58,15 +55,6 @@ class TestRunOneshot:
             return_value=self._mock_response("```\nfix: bug\n```"),
         ):
             assert run_oneshot(instructions="x", user_input="y") == "fix: bug"
-
-    def test_a_client_task_is_a_built_in_or_plugin_registered_slot(self, monkeypatch):
-        """#141976: an unknown task key is refused instead of running on the main model."""
-        monkeypatch.setattr("hermes_cli.plugins.get_plugin_auxiliary_tasks",
-                            lambda: [{"key": "tern_charts", "display_name": "Charts", "description": "d"}])
-        assert client_task("tern_charts") == "tern_charts"
-        assert client_task(None) == "title_generation"
-        with pytest.raises(KeyError, match="tern_chart"):
-            client_task("tern_chart")
 
 class TestHelpers:
 

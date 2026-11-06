@@ -1,3 +1,4 @@
+import pytest
 """Wake-only (delivery_mode='wake') push-adapter delivery ordering.
 
 For a push-adapter subscription in wake-only mode the visible text ping is
@@ -17,6 +18,13 @@ from gateway.run import GatewayRunner
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
+
+
+# This suite drives the board's own kernel from the seat that advances cards
+# (dispatcher-side mechanics), so it declares that seat explicitly. The fixture
+# is never autouse: a write from a scope that did not ask for it still fails
+# closed with KanbanAuthorizationError.
+pytestmark = pytest.mark.usefixtures("kanban_maintenance_authority")
 
 
 class RecordingAdapter:

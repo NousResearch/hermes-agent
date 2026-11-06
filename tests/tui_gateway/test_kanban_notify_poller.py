@@ -11,6 +11,7 @@ These tests cover the delivery half that now lives in tui_gateway/server.py:
 unsubscribe) and ``_format_kanban_event_text``.
 """
 
+import pytest
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -21,6 +22,12 @@ from tui_gateway.server import (
     _collect_kanban_notifications,
     _format_kanban_event_text,
 )
+
+# This suite drives the board's own kernel from the seat that advances cards
+# (dispatcher-side mechanics), so it declares that seat explicitly. The fixture
+# is never autouse: a write from a scope that did not ask for it still fails
+# closed with KanbanAuthorizationError.
+pytestmark = pytest.mark.usefixtures("kanban_maintenance_authority")
 
 SESSION_KEY = "tui-session-key-1"
 

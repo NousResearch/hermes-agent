@@ -363,15 +363,23 @@ class TestCLI:
         # list on each board only shows its own.
         listA = _cli(["--board", "projA", "list", "--json"], env_extra=env)
         listB = _cli(["--board", "projB", "list", "--json"], env_extra=env)
-        listD = _cli(["list", "--json"], env_extra=env)
 
         titlesA = [t["title"] for t in json.loads(listA.stdout)]
         titlesB = [t["title"] for t in json.loads(listB.stdout)]
-        titlesD = [t["title"] for t in json.loads(listD.stdout)]
 
         assert titlesA == ["Task A"]
         assert titlesB == ["Task B"]
-        assert titlesD == []
+
+        # Observation is not scheduling: no task was ever created on the default
+        # board, so its DB must not exist — and `list` reports that clearly
+        # instead of minting an empty board (reads never create or migrate).
+        default_db = tmp_path / "kanban.db"
+        assert not default_db.exists()
+        listD = _cli(["list", "--json"], env_extra=env)
+        assert listD.returncode != 0
+        assert listD.stdout.strip() == ""
+        assert "does not exist yet" in listD.stderr
+        assert not default_db.exists()
 
 
 

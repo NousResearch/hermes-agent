@@ -501,6 +501,16 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
             # No exit trailer: the task log now belongs to the run that replaced this one.
             print(t("cli.single_query.kanban_run_reclaimed"), file=sys.stderr)
             sys.exit(0)
+        # Establish the trusted execution identity BEFORE any model or tool runs. Env
+        # coordinates are only lookup input here; OWNER is granted only when the board's
+        # task/run rows and the recorded process fingerprint agree with THIS process.
+        from agent.kanban_execution_identity import bootstrap_worker_identity
+        _identity = bootstrap_worker_identity()
+        if _identity.role != "OWNER":
+            logger.warning(
+                "kanban worker for %s started detached (%s): lifecycle handoffs will be refused",
+                os.environ.get("HERMES_KANBAN_TASK"), _identity.reason or "unknown",
+            )
     if not cli._claim_active_session("cli", stderr=bool(quiet)):
         exit_single_query(1)
     try:

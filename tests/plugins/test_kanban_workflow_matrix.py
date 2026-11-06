@@ -19,6 +19,13 @@ from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_workflow as kw
 
+
+# This suite drives the board's own kernel from the seat that advances cards
+# (dispatcher-side mechanics), so it declares that seat explicitly. The fixture
+# is never autouse: a write from a scope that did not ask for it still fails
+# closed with KanbanAuthorizationError.
+pytestmark = pytest.mark.usefixtures("kanban_maintenance_authority")
+
 W = kw.DEFAULT_WORKFLOW
 
 # Accepted moves whose card lands somewhere other than the requested column.
@@ -35,6 +42,23 @@ def _load_plugin_router():
     return mod.router
 
 
+def _dashboard_authenticated(app: FastAPI) -> FastAPI:
+    """Stand in for the dashboard's ``/api/`` auth middleware.
+
+    The plugin mints ``ADMIN_RECOVERY`` only for a middleware-verified request, so a
+    bare ``TestClient`` app has to look like the dashboard: ``web_server.py`` sets
+    this exact ``request.state.session`` once the session is verified.
+    """
+    from types import SimpleNamespace
+
+    @app.middleware("http")
+    async def _dashboard_session(request, call_next):
+        request.state.session = SimpleNamespace(email="operator@example.test")
+        return await call_next(request)
+
+    return app
+
+
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
@@ -42,7 +66,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
-    app = FastAPI()
+    app = _dashboard_authenticated(FastAPI())
     app.include_router(_load_plugin_router(), prefix="/k")
     return TestClient(app)
 

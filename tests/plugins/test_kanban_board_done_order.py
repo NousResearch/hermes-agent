@@ -30,6 +30,25 @@ def _load_plugin_router():
     return mod.router
 
 
+def _dashboard_authenticated(app: FastAPI) -> FastAPI:
+    """Stand in for the dashboard's ``/api/`` auth middleware.
+
+    ``kanban_admin_authority`` mints ``ADMIN_RECOVERY`` only for a
+    middleware-verified request; a bare ``TestClient`` app has no middleware, so
+    without this every lifecycle write is (correctly) refused as an unauthenticated
+    dashboard request. The real ``hermes_cli/web_server.py`` sets exactly this
+    ``request.state.session`` after it verifies the session cookie / OAuth session.
+    """
+    from types import SimpleNamespace
+
+    @app.middleware("http")
+    async def _dashboard_session(request, call_next):
+        request.state.session = SimpleNamespace(email="operator@example.test")
+        return await call_next(request)
+
+    return app
+
+
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
@@ -40,7 +59,7 @@ def client(tmp_path, monkeypatch):
 
     app = FastAPI()
     app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban")
-    return TestClient(app)
+    return TestClient(_dashboard_authenticated(app))
 
 
 def _column(client, name):

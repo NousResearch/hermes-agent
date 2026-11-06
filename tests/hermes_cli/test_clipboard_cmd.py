@@ -1,10 +1,12 @@
 """``hermes clipboard image --json``: the reply shapes and exit codes clients script against.
 
-The real clipboard is never read: ``save_clipboard_image`` is replaced by a fake, and the tool
-lookup is pointed at an executable that exists (this interpreter) or one that cannot.
+The real clipboard is never read: ``save_clipboard_image`` is replaced by a fake, or the real
+extractor runs against a stub ``xclip`` on PATH; the tool lookup is pointed at an executable that
+exists (this interpreter) or one that cannot.
 """
 
 import json
+import os
 import sys
 
 import pytest
@@ -83,3 +85,64 @@ def test_linux_tools_follow_the_extractor_fallback_order(monkeypatch):
     assert clipboard.clipboard_image_tools() == ("wl-paste", "xclip")
     monkeypatch.delenv("WAYLAND_DISPLAY")
     assert clipboard.clipboard_image_tools() == ("xclip",)
+
+
+def _stub_xclip(tmp_path, monkeypatch, *, output_ok):
+    """A stub ``xclip`` that advertises image/png; ``-o`` of the image succeeds or fails."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    payload = tmp_path / "payload.png"
+    payload.write_bytes(_PNG)
+    image = f'cat "{payload}"' if output_ok else "exit 1"
+    (bin_dir / "xclip").write_text(
+        f'#!/bin/sh\ncase "$*" in *TARGETS*) echo image/png;; *) {image};; esac\n')
+    (bin_dir / "xclip").chmod(0o755)
+    monkeypatch.setenv("PATH", os.pathsep.join((str(bin_dir), os.environ.get("PATH", ""))))
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.setattr(clipboard, "_is_wsl", lambda: False)
+
+
+def _existing(tmp_path, mode=0o644):
+    dest = tmp_path / "out" / "paste.png"
+    dest.parent.mkdir()
+    dest.write_bytes(b"keep me")
+    dest.chmod(mode)
+    return dest
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file modes")
+def test_read_only_destination_is_write_failed_and_kept(tmp_path, monkeypatch, capsys):
+    _stub_xclip(tmp_path, monkeypatch, output_ok=True)
+    dest = _existing(tmp_path, 0o444)
+
+    code, out, _ = _run(capsys, "--out", str(dest), "--json")
+
+    assert (code, json.loads(out)["reason"]) == (4, "write_failed")
+    assert dest.read_bytes() == b"keep me"
+    assert os.listdir(dest.parent) == ["paste.png"]
+
+
+@pytest.mark.platforms("linux")
+def test_failed_extraction_keeps_the_existing_destination(tmp_path, monkeypatch, capsys):
+    _stub_xclip(tmp_path, monkeypatch, output_ok=False)
+    dest = _existing(tmp_path)
+
+    code, out, _ = _run(capsys, "--out", str(dest), "--json")
+
+    assert (code, json.loads(out)["reason"]) == (1, "no_image")
+    assert dest.read_bytes() == b"keep me"
+    assert os.listdir(dest.parent) == ["paste.png"]
+
+
+@pytest.mark.platforms("linux")
+def test_real_extractor_replaces_a_writable_destination(tmp_path, monkeypatch, capsys):
+    _stub_xclip(tmp_path, monkeypatch, output_ok=True)
+    dest = _existing(tmp_path)
+
+    code, out, _ = _run(capsys, "--out", str(dest), "--json")
+
+    assert code == 0
+    assert json.loads(out) == {"ok": True, "path": str(dest), "mime": "image/png", "bytes": len(_PNG)}
+    assert dest.read_bytes() == _PNG
+    assert os.listdir(dest.parent) == ["paste.png"]

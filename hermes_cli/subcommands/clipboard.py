@@ -21,7 +21,8 @@ def build_clipboard_parser(subparsers) -> None:
     image_parser = actions.add_parser(
         "image", help="Write the clipboard image to a file as PNG",
         description="Write the clipboard image to --out (overwritten). Exit 0: written; "
-            "1: no image; 3: no clipboard tool installed; 4: --out not writable.")
+            "1: no image; 3: no clipboard tool installed; 4: --out not writable "
+            "(an existing --out is kept on any failure).")
     image_parser.add_argument("--out", required=True, metavar="PATH", help="File to write")
     add_json_flag(image_parser, "Print one JSON object on stdout")
     image_parser.set_defaults(func=_cmd_clipboard)

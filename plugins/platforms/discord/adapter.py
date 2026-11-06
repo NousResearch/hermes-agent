@@ -557,7 +557,7 @@ _GATE_ENV_KEYS = (
     "DISCORD_ALLOWED_USERS", "DISCORD_ALLOWED_ROLES", "DISCORD_ALLOWED_CHANNELS",
     "DISCORD_IGNORED_CHANNELS", "DISCORD_NO_THREAD_CHANNELS", "DISCORD_FREE_RESPONSE_CHANNELS",
     "DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS", "DISCORD_ALLOW_ALL_USERS", "DISCORD_ALLOW_BOTS",
-    "GATEWAY_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS",
+    "DISCORD_HISTORY_ALLOWED_BOTS", "GATEWAY_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS",
 )
 
 
@@ -4812,6 +4812,10 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
         raw = self._gate_raw("allow_bots", "DISCORD_ALLOW_BOTS")
         return str(raw or "none").lower().strip() or "none"
 
+    def _get_history_allowed_bots(self) -> set:
+        """Per-profile DISCORD_HISTORY_ALLOWED_BOTS: bot user/webhook ids kept in history backfill."""
+        return self._gate_csv_set(self._gate_raw("history_allowed_bots", "DISCORD_HISTORY_ALLOWED_BOTS"))
+
     @staticmethod
     def _bot_tag_debounce_key(message: Any) -> str:
         return (
@@ -4963,6 +4967,9 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
             return ""
         allow_bots_raw = self._get_allow_bots()
         include_other_bots = allow_bots_raw != "none"
+        # Bots enter history unverified (no [unverified] tag), so an allowlist narrows them by
+        # author id / webhook_id; empty = every bot allowed by allow_bots (prior behaviour).
+        history_allowed_bots = self._get_history_allowed_bots()
         # Narrow via cached last-self-message id (`after`) only if it predates the trigger; miss => full scan.
         channel_id = str(getattr(channel, "id", ""))
         _cached_id = self._last_self_message_id.get(channel_id)
@@ -4990,6 +4997,12 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
                 # DISCORD_ALLOW_BOTS: for history, "mentions" counts as "all" (context, not response).
                 is_bot_author = is_automated_message(msg)
                 if (is_bot_author and msg.author != self._client.user and not include_other_bots):
+                    return None
+                if (
+                    is_bot_author and msg.author != self._client.user and history_allowed_bots
+                    and str(getattr(msg.author, "id", "")) not in history_allowed_bots
+                    and str(getattr(msg, "webhook_id", None) or "") not in history_allowed_bots
+                ):
                     return None
                 if not content and msg.attachments:
                     content = "(attachment)"
@@ -7026,6 +7039,7 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     if hbl is not None:
         seeded_extra["history_backfill_limit"] = hbl
         _env_default("DISCORD_HISTORY_BACKFILL_LIMIT", str(hbl))
+    _gate("history_allowed_bots", "DISCORD_HISTORY_ALLOWED_BOTS", from_platform_extra=False)
     # allow_mentions: safe defaults live in the adapter; these keys only override when set.
     allow_mentions_cfg = discord_cfg.get("allow_mentions")
     if isinstance(allow_mentions_cfg, dict):

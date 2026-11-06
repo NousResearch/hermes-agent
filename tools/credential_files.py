@@ -63,6 +63,32 @@ def _contained_host_path(rel: str, hermes_home: Path, abs_msg: str, traversal_ms
     return host_path.resolve()
 
 
+def _is_master_store(resolved: Path, relative_path: str) -> bool:
+    """True (logged) when *resolved* must never be mounted or synced into a sandbox.
+
+    Master credential stores sit inside HERMES_HOME and therefore pass the containment check.
+    Fails CLOSED: if the canonical guard can't be consulted we refuse the mount rather than risk
+    bind-mounting auth.json into a sandbox. The import lives at module top (no circular-import
+    concern — file_safety is stdlib-only); the sentinel + logger.exception keep guard failures
+    debuggable instead of silently swallowed (#67665).
+    """
+    if get_read_block_error is None:
+        logger.error("credential_files: refusing %r — agent.file_safety could not be "
+                     "imported, so the master-store deny-list cannot be consulted", relative_path)
+        return True
+    try:
+        denied = get_read_block_error(str(resolved))
+    except Exception:
+        logger.exception("credential_files: refusing %r — read guard raised", relative_path)
+        return True
+    if denied:
+        logger.warning("credential_files: refused %r — it is a credential store the agent "
+                       "is denied from reading; a skill may mount its own service token, "
+                       "not the master key files", relative_path)
+        return True
+    return False
+
+
 def register_credential_file(relative_path: str, container_base: str = "/root/.hermes") -> bool:
     """Register a HERMES_HOME-relative credential file for mounting; True if it exists and was registered.
 
@@ -80,24 +106,7 @@ def register_credential_file(relative_path: str, container_base: str = "/root/.h
     if not resolved.is_file():
         logger.debug("credential_files: skipping %s (not found)", resolved)
         return False
-    # Master credential stores are never mountable, even though they sit inside HERMES_HOME and therefore
-    # pass the containment check above. Fails CLOSED: if the canonical guard can't be consulted we refuse
-    # the mount rather than risk bind-mounting auth.json into a sandbox. The import lives at module top (no
-    # circular-import concern — file_safety is stdlib-only); the sentinel + logger.exception keep guard
-    # failures debuggable instead of silently swallowed (#67665).
-    if get_read_block_error is None:
-        logger.error("credential_files: refusing %r — agent.file_safety could not be "
-                     "imported, so the master-store deny-list cannot be consulted", relative_path)
-        return False
-    try:
-        denied = get_read_block_error(str(resolved))
-    except Exception:
-        logger.exception("credential_files: refusing %r — read guard raised", relative_path)
-        return False
-    if denied:
-        logger.warning("credential_files: refused %r — it is a credential store the agent "
-                       "is denied from reading; a skill may mount its own service token, "
-                       "not the master key files", relative_path)
+    if _is_master_store(resolved, relative_path):
         return False
 
     container_path = f"{container_base.rstrip('/')}/{relative_path}"
@@ -143,7 +152,11 @@ def _load_config_files() -> list[dict[str, str]]:
                 rel, hermes_home,
                 "credential_files: rejected absolute config path %r",
                 "credential_files: rejected config path traversal %r (%s)")
-            if resolved_path is not None and resolved_path.is_file():
+            # The config list gets the same master-store refusal as skill registration: a
+            # config entry naming .env or auth.json would otherwise sync every provider key
+            # into the sandbox.
+            if (resolved_path is not None and resolved_path.is_file()
+                    and not _is_master_store(resolved_path, rel)):
                 result.append(_mount(resolved_path, f"/root/.hermes/{rel}"))
     except Exception as e:
         logger.warning("Could not read terminal.credential_files from config: %s", e)

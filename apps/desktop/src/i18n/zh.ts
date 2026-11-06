@@ -2749,7 +2749,10 @@ export const zhOverrides = {
       installDeviceTitle: '在此设备上安装 Hermes？',
       installDeviceDesc: '这将在本地安装 Hermes，然后在这台电脑上打开一个新会话。确认之前不会开始安装。',
       installDeviceConfirm: '本地安装',
-      connectExistingInstead: '改为连接现有环境'
+      connectExistingInstead: '改为连接现有环境',
+      working: (count: number) => (count === 1 ? '1 个工作中' : `${count} 个工作中`),
+      workingStale: (count: number) =>
+        count === 1 ? '1 个曾工作中（未确认）' : `${count} 个曾工作中（未确认）`
     },
     remoteOverride: {
       menuItem: '连接到远程主机…',

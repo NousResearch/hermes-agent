@@ -974,7 +974,7 @@ export const $profileScope = computed([$showAllProfiles, $activeGatewayProfile],
 // Switch the active context to `name`: leave "All profiles" mode, point new
 // chats at it, and swap the single live gateway onto its backend (which moves
 // $activeGatewayProfile → name, so $profileScope follows).
-export function selectProfile(name: string): void {
+export function selectProfile(name: string): Promise<void> {
   const target = normalizeProfileKey(name)
   // Switching profiles (or coming back from the all-profiles browse view) starts
   // fresh; re-tapping the profile you're already in leaves your session be.
@@ -1006,7 +1006,7 @@ export function selectProfile(name: string): void {
   // call instead (#79886). Decided now: the source is the one picked from.
   const shouldRememberStartupProfile = remembersProfilePick(target)
 
-  void Promise.all([activateOnCurrentSource(target), shouldRememberStartupProfile])
+  return Promise.all([activateOnCurrentSource(target), shouldRememberStartupProfile])
     .then(([, shouldRemember]) => {
       if (shouldRemember) {
         return window.hermesDesktop?.profile?.remember(target)
@@ -1014,6 +1014,7 @@ export function selectProfile(name: string): void {
 
       return undefined
     })
+    .then(() => undefined)
     .catch((error: unknown) => {
       if (!notifyRemoteOverrideAuthFailure(target, error)) {
         notifyError(error, `Failed to switch to profile "${target}"`)

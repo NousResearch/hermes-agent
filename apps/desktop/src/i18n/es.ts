@@ -3260,7 +3260,10 @@ export const esOverrides = {
       installDeviceDesc:
         'Esto instalará Hermes localmente y luego abrirá una sesión nueva en este equipo. No se instala nada hasta que confirmes.',
       installDeviceConfirm: 'Instalar localmente',
-      connectExistingInstead: 'Conectar uno existente en su lugar'
+      connectExistingInstead: 'Conectar uno existente en su lugar',
+      working: (count: number) => (count === 1 ? '1 trabajando' : `${count} trabajando`),
+      workingStale: (count: number) =>
+        count === 1 ? '1 estaba trabajando (sin confirmar)' : `${count} estaban trabajando (sin confirmar)`
     },
     status: {
       unread: (count: number) => (count === 1 ? '1 sesión sin leer' : `${count} sesiones sin leer`),

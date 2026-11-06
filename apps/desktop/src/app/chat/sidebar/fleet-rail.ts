@@ -1,5 +1,6 @@
-import type { DesktopAgentRoster, DesktopConnectionKind, DesktopRegistryConnection } from '@/global'
+import type { DesktopAgentRoster, DesktopAgentWork, DesktopConnectionKind, DesktopRegistryConnection } from '@/global'
 import { sortConnectionsForDisplay } from '@/lib/connection-display'
+import { fleetWorkState } from '@/lib/fleet-work'
 import { sortByProfileOrder } from '@/lib/profile-order'
 
 // Pure grouping for the fleet profile rail: which gateways sit "at rest"
@@ -15,6 +16,9 @@ export interface FleetAgent {
   /** Pre-computed @name-device mention handle from the roster. */
   handle: string
   isDefault: boolean
+  /** Freshest open worker session, when the roster carried one. The rail
+   *  decides liveness from `lastActive`, never from the fetch time. */
+  work?: DesktopAgentWork
 }
 
 export interface FleetGroup {
@@ -74,19 +78,20 @@ export function buildRestGroups({
       continue
     }
 
-    const toAgent = (profile: string, handle?: string): FleetAgent => ({
+    const toAgent = (profile: string, handle?: string, work?: DesktopAgentWork): FleetAgent => ({
       connectionId: connection.id,
       connectionKind: connection.kind,
       connectionLabel: connection.label,
       profile,
       handle: handle ?? profile,
-      isDefault: profile === DEFAULT_PROFILE
+      isDefault: profile === DEFAULT_PROFILE,
+      ...(work ? { work } : {})
     })
 
     const defaultRow = rows.find(row => row.profile === DEFAULT_PROFILE)
 
     const named = sortByProfileOrder(
-      rows.filter(row => row.profile !== DEFAULT_PROFILE).map(row => toAgent(row.profile, row.handle)),
+      rows.filter(row => row.profile !== DEFAULT_PROFILE).map(row => toAgent(row.profile, row.handle, row.work)),
       order,
       agent => agent.profile
     )
@@ -98,7 +103,7 @@ export function buildRestGroups({
       reachable: source?.reachable ?? true,
       ...(source?.error && source.error !== 'connect-on-demand' ? { error: source.error } : {}),
       ...(source?.needsSignIn ? { needsSignIn: true } : {}),
-      defaultAgent: toAgent(DEFAULT_PROFILE, defaultRow?.handle),
+      defaultAgent: toAgent(DEFAULT_PROFILE, defaultRow?.handle, defaultRow?.work),
       named
     })
   }
@@ -109,4 +114,38 @@ export function buildRestGroups({
 /** Every square on the rest side, for the condensed-menu threshold. */
 export function countRestAgents(groups: readonly FleetGroup[]): number {
   return groups.reduce((total, group) => total + 1 + group.named.length, 0)
+}
+
+export interface FleetWorkingCount {
+  working: number
+  /** True when every live claim rests on a roster page past the stale window. */
+  stale: boolean
+}
+
+/** How many of these agents are working right now, for the group header's
+ *  "N working". Idle agents are not counted; stale-only claims are counted but
+ *  flagged so the header can mute them. */
+export function countWorkingAgents(
+  agents: readonly { work?: DesktopAgentWork }[],
+  rosterFetchedAt: number,
+  nowMs: number
+): FleetWorkingCount {
+  let working = 0
+  let stale = 0
+
+  for (const agent of agents) {
+    const state = fleetWorkState(agent.work, rosterFetchedAt, nowMs)
+
+    if (state === 'idle') {
+      continue
+    }
+
+    working += 1
+
+    if (state === 'stale') {
+      stale += 1
+    }
+  }
+
+  return { working, stale: working > 0 && stale === working }
 }

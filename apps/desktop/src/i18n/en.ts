@@ -2834,7 +2834,10 @@ export const en: Translations = {
       installDeviceDesc:
         'This will install Hermes locally, then open a fresh session on this computer. Nothing is installed until you confirm.',
       installDeviceConfirm: 'Install locally',
-      connectExistingInstead: 'Connect to existing instead'
+      connectExistingInstead: 'Connect to existing instead',
+      working: (count: number) => (count === 1 ? '1 working' : `${count} working`),
+      workingStale: (count: number) =>
+        count === 1 ? '1 was working (not confirmed since)' : `${count} were working (not confirmed since)`
     },
     status: {
       unread: (count: number) => (count === 1 ? '1 unread session' : `${count} unread sessions`),

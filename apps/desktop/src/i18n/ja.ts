@@ -1830,7 +1830,10 @@ export const jaOverrides = {
       installDeviceDesc:
         'Hermes をローカルにインストールしてから、このコンピュータで新しいセッションを開きます。確認するまでインストールは始まりません。',
       installDeviceConfirm: 'ローカルにインストール',
-      connectExistingInstead: '代わりに既存環境へ接続'
+      connectExistingInstead: '代わりに既存環境へ接続',
+      working: (count: number) => (count === 1 ? '1 件作業中' : `${count} 件作業中`),
+      workingStale: (count: number) =>
+        count === 1 ? '1 件が作業中（未確認）' : `${count} 件が作業中（未確認）`
     },
     remoteOverride: {
       menuItem: 'リモートホストに接続…',

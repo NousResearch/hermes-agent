@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { DesktopAgentRoster, DesktopRegistryConnection } from '@/global'
 
-import { buildRestGroups, countRestAgents } from './fleet-rail'
+import { buildRestGroups, countRestAgents, countWorkingAgents } from './fleet-rail'
 
 const connections: DesktopRegistryConnection[] = [
   { id: 'pandora', kind: 'remote', label: 'Pandora', url: 'https://pandora.example' },
@@ -138,5 +138,58 @@ describe('buildRestGroups', () => {
 
     // local: default + omer; vps: default
     expect(countRestAgents(groups)).toBe(3)
+  })
+
+  it('carries a roster worker claim onto the square it belongs to', () => {
+    const working: DesktopAgentRoster = {
+      ...roster,
+      agents: roster.agents.map(agent =>
+        agent.connectionId === 'pandora' && agent.profile === 'scout'
+          ? { ...agent, work: { lastActive: 1_800_000_000, sessionId: 'sess-9', source: 'kanban' } }
+          : agent
+      )
+    }
+
+    const [pandora] = buildRestGroups({ activeConnectionId: 'local', connections, roster: working })
+    const scout = pandora.named.find(agent => agent.profile === 'scout')
+
+    expect(scout?.work).toEqual({ lastActive: 1_800_000_000, sessionId: 'sess-9', source: 'kanban' })
+    // A square with no claim carries no `work` key at all, so the rail can tell
+    // "idle" from "unknown".
+    expect(pandora.named.find(agent => agent.profile === 'omer')).not.toHaveProperty('work')
+  })
+})
+
+describe('countWorkingAgents', () => {
+  const now = 1_800_000_000_000
+
+  const agent = (lastActive?: number) => ({
+    ...(lastActive === undefined ? {} : { work: { lastActive, sessionId: `s-${lastActive}`, source: 'kanban' } })
+  })
+
+  it('counts nothing when no square carries a claim', () => {
+    expect(countWorkingAgents([agent(), agent()], now, now)).toEqual({ stale: false, working: 0 })
+  })
+
+  it('counts fresh claims and ignores expired heartbeats', () => {
+    const count = countWorkingAgents([agent(now / 1000 - 10), agent(now / 1000 - 400), agent()], now - 5_000, now)
+
+    expect(count).toEqual({ stale: false, working: 1 })
+  })
+
+  it('flags the count as stale only when every claim rests on an old roster page', () => {
+    const oldRoster = now - 200_000
+
+    expect(countWorkingAgents([agent(now / 1000 - 10)], oldRoster, now)).toEqual({ stale: true, working: 1 })
+    expect(countWorkingAgents([agent(now / 1000 - 10), agent(now / 1000 - 20)], now - 5_000, now)).toEqual({
+      stale: false,
+      working: 2
+    })
+  })
+
+  it('does not call a mixed fresh/stale count stale', () => {
+    // Both claims sit on the same roster page, so they age together: the flag
+    // is about the page, not the heartbeat.
+    expect(countWorkingAgents([agent(now / 1000 - 10)], 0, now)).toEqual({ stale: true, working: 1 })
   })
 })

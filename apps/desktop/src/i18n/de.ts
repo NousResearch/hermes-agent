@@ -3273,7 +3273,10 @@ export const deOverrides = {
       installDeviceDesc:
         'Hermes wird lokal installiert und danach eine neue Sitzung auf diesem Computer geöffnet. Ohne Bestätigung startet keine Installation.',
       installDeviceConfirm: 'Lokal installieren',
-      connectExistingInstead: 'Stattdessen vorhandenes verbinden'
+      connectExistingInstead: 'Stattdessen vorhandenes verbinden',
+      working: (count: number) => (count === 1 ? '1 arbeitet' : `${count} arbeiten`),
+      workingStale: (count: number) =>
+        count === 1 ? '1 arbeitete (nicht bestätigt)' : `${count} arbeiteten (nicht bestätigt)`
     },
     status: {
       unread: (count: number) => (count === 1 ? '1 ungelesene Sitzung' : `${count} ungelesene Sitzungen`),

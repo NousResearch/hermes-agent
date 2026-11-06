@@ -25,7 +25,13 @@
  *    the scope its socket proved (runtimeSessionOwner: the exact registry
  *    (connection, profile), or the legacy profile-only pool's bare name).
  *    No proven owner → no claim: no dot rather than a wrong one.
- * 3. PERSISTED UNREAD MARKERS — the cross-profile, cross-restart half. A
+ * 3. WORKER HEARTBEATS — the fleet roster's per-profile worker page. A bot
+ *    mid-card emits no gateway socket event at all (kanban/tool sessions are
+ *    deny-listed out of every conversation listing), so its square would stay
+ *    dark while the work happens. The claim is painted from the row's own
+ *    `lastActive`; when the roster itself is older than the stale window the
+ *    dot is marked stale (hollow) rather than confidently green.
+ * 4. PERSISTED UNREAD MARKERS — the cross-profile, cross-restart half. A
  *    marker with no loaded row is an unread session in a profile whose rows
  *    are not on screen. Markers are bucketed by BARE profile name (see
  *    session-unread.ts), so they are attributed to a (connection, profile)
@@ -39,6 +45,7 @@
 import { backendScopeKey, LOCAL_CONNECTION_ID } from '@hermes/shared'
 import { computed } from 'nanostores'
 
+import { fleetWorkState } from '@/lib/fleet-work'
 import { stableRecord } from '@/lib/stable-array'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -60,6 +67,9 @@ export interface ProfileDotSummary {
   readonly needsInputCount: number
   readonly workingCount: number
   readonly unreadCount: number
+  /** True when every working claim on this scope comes from a roster page old
+   *  enough that nobody has confirmed it since. The square paints hollow. */
+  readonly stale: boolean
 }
 
 /** The canonical scope key for a rail square or a session row: the same
@@ -80,8 +90,14 @@ const rowScopeOf = (row: Pick<SessionInfo, 'connection_id' | 'profile'>): string
 // gates the computed's emit.
 const summaryCache = new Map<string, ProfileDotSummary>()
 
-function internSummary(needsInputCount: number, workingCount: number, unreadCount: number): ProfileDotSummary {
-  const key = `${needsInputCount}\u0000${workingCount}\u0000${unreadCount}`
+function internSummary(
+  needsInputCount: number,
+  workingCount: number,
+  unreadCount: number,
+  staleWorkingCount: number
+): ProfileDotSummary {
+  const stale = workingCount > 0 && staleWorkingCount === workingCount
+  const key = `${needsInputCount}\u0000${workingCount}\u0000${unreadCount}\u0000${stale ? 1 : 0}`
   let summary = summaryCache.get(key)
 
   if (!summary) {
@@ -90,7 +106,8 @@ function internSummary(needsInputCount: number, workingCount: number, unreadCoun
         needsInputCount > 0 ? ('needs-input' as const) : workingCount > 0 ? ('working' as const) : ('unread' as const),
       needsInputCount,
       workingCount,
-      unreadCount
+      unreadCount,
+      stale
     })
     summaryCache.set(key, summary)
   }
@@ -102,6 +119,8 @@ interface Tally {
   needsInput: number
   unread: number
   working: number
+  /** Working claims whose only evidence is a stale roster page. */
+  staleWorking: number
 }
 
 let prev: Readonly<Record<string, ProfileDotSummary>> = {}
@@ -127,7 +146,7 @@ export const $profileDotStateByScope = computed(
       let tally = tallies.get(scope)
 
       if (!tally) {
-        tally = { needsInput: 0, unread: 0, working: 0 }
+        tally = { needsInput: 0, unread: 0, working: 0, staleWorking: 0 }
         tallies.set(scope, tally)
       }
 
@@ -209,7 +228,34 @@ export const $profileDotStateByScope = computed(
       claimRow(scope, state.needsInput ? 'needs-input' : 'working')
     }
 
-    // Pass 3: persisted unread markers with no loaded row — the sessions of a
+    // Pass 3: worker heartbeats from the fleet roster. A bot mid-card has no
+    // socket event to stream (worker sessions are deny-listed), so the roster's
+    // worker page is the only live source. The claim decays from the row's own
+    // lastActive; an old roster page makes it stale (hollow), not green.
+    const rosterFetchedAt = roster?.fetchedAt ?? 0
+    const nowMs = Date.now()
+
+    for (const agent of roster?.agents ?? []) {
+      if (!agent.work) {
+        continue
+      }
+
+      const workState = fleetWorkState(agent.work, rosterFetchedAt, nowMs)
+
+      if (workState === 'idle') {
+        continue
+      }
+
+      const scope = profileDotScopeKey(agent.connectionId, agent.profile)
+
+      claimRow(scope, 'working')
+
+      if (workState === 'stale') {
+        tallyFor(scope).staleWorking++
+      }
+    }
+
+    // Pass 4: persisted unread markers with no loaded row — the sessions of a
     // profile whose rows are not on screen (inactive profile, cold start).
     // The marker bucket is a BARE profile name; attribute it to a gateway scope
     // only when every source that names this profile agrees on which gateway
@@ -256,7 +302,7 @@ export const $profileDotStateByScope = computed(
 
     for (const [scope, tally] of tallies) {
       if (tally.needsInput || tally.working || tally.unread) {
-        next[scope] = internSummary(tally.needsInput, tally.working, tally.unread)
+        next[scope] = internSummary(tally.needsInput, tally.working, tally.unread, tally.staleWorking)
       }
     }
 

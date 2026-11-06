@@ -22,6 +22,11 @@ const recovered: DesktopAgentRoster = {
   sources: [{ connectionId: 'lab', label: 'Lab', kind: 'remote', reachable: true }]
 }
 
+// The store stamps every page with the moment it was confirmed (the work dots
+// read it to tell a live claim from an unconfirmed one), so identity with the
+// bridge payload is gone on purpose: assert the payload plus a stamp.
+const stamped = (roster: DesktopAgentRoster) => ({ ...roster, fetchedAt: expect.any(Number) })
+
 describe('fleet roster recovery', () => {
   it('queues one fresh enumeration when recovery overlaps an older request', async () => {
     let finish!: (roster: DesktopAgentRoster) => void
@@ -40,7 +45,7 @@ describe('fleet roster recovery', () => {
     finish(unreachable)
     await Promise.all([initial, recovery, repeated])
     expect(getAgentRoster).toHaveBeenCalledTimes(2)
-    expect($fleetRoster.get()).toBe(recovered)
+    expect($fleetRoster.get()).toEqual(stamped(recovered))
   })
   it('keeps on-demand sources cached but lets explicit recovery bypass the cooldown', async () => {
     vi.useFakeTimers()
@@ -60,7 +65,7 @@ describe('fleet roster recovery', () => {
 
     await refreshFleetRoster({ force: true })
     expect(getAgentRoster).toHaveBeenCalledTimes(2)
-    expect($fleetRoster.get()).toBe(recovered)
+    expect($fleetRoster.get()).toEqual(stamped(recovered))
   })
 
   it('retries incomplete rosters before the normal stale window without a focus-event hot loop', async () => {
@@ -71,12 +76,12 @@ describe('fleet roster recovery', () => {
     await refreshFleetRoster()
     await refreshFleetRoster()
     expect(getAgentRoster).toHaveBeenCalledTimes(1)
-    expect($fleetRoster.get()).toBe(unreachable)
+    expect($fleetRoster.get()).toEqual(stamped(unreachable))
 
     await vi.advanceTimersByTimeAsync(5_000)
     await Promise.all([refreshFleetRoster(), refreshFleetRoster()])
     expect(getAgentRoster).toHaveBeenCalledTimes(2)
-    expect($fleetRoster.get()).toBe(recovered)
+    expect($fleetRoster.get()).toEqual(stamped(recovered))
 
     await vi.advanceTimersByTimeAsync(5_000)
     await refreshFleetRoster()

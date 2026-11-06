@@ -2,13 +2,19 @@ import { atom } from 'nanostores'
 
 import type { DesktopAgentRoster } from '@/global'
 
+/** The roster plus the moment it was confirmed. The work dots read
+ *  `fetchedAt` to tell a live claim from one nobody has re-checked. */
+export type FleetRosterSnapshot = DesktopAgentRoster & { fetchedAt: number }
+
 // The union agent roster — every profile on every registered gateway — as
 // Electron enumerates it over REST/SSH (`hermes:agents:roster`). Bot Mode and
 // the Capabilities scope selector already read it; the Sessions profile rail
-// is its third consumer. Fetched on demand only (mount / focus / registry
-// change), never on a timer: the multi-connection docs rule out periodic
-// fleet polling from the sidebar.
-export const $fleetRoster = atom<DesktopAgentRoster | null>(null)
+// is its third consumer. Refreshed on demand (mount / focus / registry change)
+// and by one slow timer while the rail is mounted: worker heartbeats are
+// invisible to the gateway sockets, so a poll is the only truthful source for
+// "is a bot working?" — but it reuses pooled backends and the SSH inventory
+// cache, so it never spawns a gateway.
+export const $fleetRoster = atom<FleetRosterSnapshot | null>(null)
 
 const FLEET_ROSTER_STALE_MS = 60_000
 // Focus/mount may retry a partial result sooner, but never on every event.
@@ -49,7 +55,7 @@ export async function refreshFleetRoster(options: { force?: boolean } = {}): Pro
 
   inflight = bridge()
     .then(roster => {
-      $fleetRoster.set(roster)
+      $fleetRoster.set({ ...roster, fetchedAt: Date.now() })
       fetchedAt = Date.now()
     })
     .catch((error: unknown) => {

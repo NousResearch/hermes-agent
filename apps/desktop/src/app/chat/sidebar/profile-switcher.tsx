@@ -43,11 +43,12 @@ import { edgeMask, scrollEdges } from '@/components/ui/fade-scroll'
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 import { ProfileGlyph } from '@/components/ui/profile-glyph'
 import { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
-import type { DesktopRegistryConnection } from '@/global'
+import type { DesktopAgentWork, DesktopRegistryConnection } from '@/global'
 import { getProfileSoul, updateProfileSoul } from '@/hermes'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { type Translations, useI18n } from '@/i18n'
 import { sortConnectionsForDisplay } from '@/lib/connection-display'
+import { fleetWorkState } from '@/lib/fleet-work'
 import { triggerHaptic } from '@/lib/haptics'
 import { hostHas } from '@/lib/host-capabilities'
 import { Loader2 } from '@/lib/icons'
@@ -81,6 +82,7 @@ import {
   prewarmProfilePick,
   profileLabel,
   refreshActiveProfile,
+  resolveActiveSourceOwnerRoute,
   selectProfile,
   setProfileColor,
   setProfileOrder,
@@ -94,17 +96,26 @@ import {
   refreshProfileRemoteOverrides
 } from '@/store/profile-remote-override'
 import { runExportProfileFlow, runImportProfileFlow } from '@/store/profile-share'
+import { requestSessionResume } from '@/store/session'
 import type { ProfileInfo } from '@/types/hermes'
 
 import { CreateProfileDialog } from '../../profiles/create-profile-dialog'
 import { DeleteProfileDialog } from '../../profiles/delete-profile-dialog'
 import { RenameProfileDialog } from '../../profiles/rename-profile-dialog'
-import { PROFILES_ROUTE, SETTINGS_ROUTE } from '../../routes'
+import { PROFILES_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../routes'
 import { sessionDotClassName } from '../session-status-dot'
 
 import { ConnectionGlyph } from './connection-glyph'
 import { FleetGatewayMenuGroup } from './fleet-gateway-menu-group'
-import { buildRestGroups, countRestAgents, type FleetAgent, type FleetGroup, fleetRouteKey } from './fleet-rail'
+import {
+  buildRestGroups,
+  countRestAgents,
+  countWorkingAgents,
+  type FleetAgent,
+  type FleetGroup,
+  fleetRouteKey,
+  type FleetWorkingCount
+} from './fleet-rail'
 import { useLocalDeviceSwitch } from './local-device-switch'
 import { ProfileLaunchContextMenu, ProfileLaunchMenuSection } from './profile-launch-menu'
 import { ProfileRemoteOverrideDialog } from './profile-remote-override-dialog'
@@ -143,7 +154,11 @@ function railCondensed(profileCount: number, restGroups: readonly FleetGroup[]):
 // profile's loudest state reads the same as its sessions' dots below. The
 // `profile-status-dot` slot lets tests (and tours) find it.
 function ProfileStatusDot({ summary }: { summary: ProfileDotSummary }) {
-  return <span aria-hidden="true" className={sessionDotClassName(summary.state)} data-slot="profile-status-dot" />
+  // A working claim whose only evidence is a stale roster page paints hollow
+  // (the same fill/hollow axis the session rows use): never confidently green.
+  const state = summary.stale && summary.state === 'working' ? 'stalled' : summary.state
+
+  return <span aria-hidden="true" className={sessionDotClassName(state)} data-slot="profile-status-dot" />
 }
 
 /** The a11y/tooltip text for one square's summary — every non-zero count,
@@ -157,7 +172,7 @@ function profileStatusLabel(p: Translations['profiles'], summary: ProfileDotSumm
   }
 
   if (summary.workingCount > 0) {
-    parts.push(p.status.working(summary.workingCount))
+    parts.push(summary.stale ? p.fleet.workingStale(summary.workingCount) : p.status.working(summary.workingCount))
   }
 
   if (summary.unreadCount > 0) {
@@ -244,7 +259,10 @@ export function ProfileRail() {
   const [dragging, setDragging] = useState(false)
   const { dialog: localDeviceDialog, request: requestLocalDevice } = useLocalDeviceSwitch()
 
-  useFleetRoster(multipleConnections)
+  // The roster feeds the work dots for every profile on every source, so a
+  // single-gateway install with several profiles needs it too: a bot mid-card
+  // on this machine emits no socket event at all.
+  useFleetRoster(multipleConnections || profiles.length > 1)
   const unserved = useUnservedProfiles(profiles)
 
   const connections = registry?.connections
@@ -295,6 +313,20 @@ export function ProfileRail() {
     return sequence
   }, [activeConnectionId, connections, restGroups])
 
+  // The active gateway's live work count, for its group header. Roster agents
+  // for the legacy primary path carry the LOCAL id.
+  const rosterFetchedAt = roster?.fetchedAt ?? 0
+
+  const activeWorking = useMemo(
+    () =>
+      countWorkingAgents(
+        (roster?.agents ?? []).filter(agent => agent.connectionId === (activeConnectionId ?? LOCAL_CONNECTION_ID)),
+        rosterFetchedAt,
+        Date.now()
+      ),
+    [activeConnectionId, roster, rosterFetchedAt]
+  )
+
   // Too many profiles for the square strip → collapse to the select. Declared
   // ahead of the wheel effect, which re-binds when the strip mounts/unmounts.
   const condensed = railCondensed(profiles.length, restGroups)
@@ -331,6 +363,54 @@ export function ProfileRail() {
     return () => cancelAnimationFrame(frame)
   }, [locale, measureScroll])
 
+  // One-click landing for a pulsing square: the roster names the freshest open
+  // worker session, so the click ends on that session instead of a hunt.
+  const rosterWorkByRoute = useMemo(() => {
+    const byRoute = new Map<string, DesktopAgentWork>()
+
+    for (const agent of roster?.agents ?? []) {
+      if (agent.work) {
+        byRoute.set(fleetRouteKey(agent.connectionId, agent.profile), agent.work)
+      }
+    }
+
+    return byRoute
+  }, [roster])
+
+  const openAgentWork = useCallback(
+    (connectionId: string, profile: string, work?: DesktopAgentWork) => {
+      const claim = work ?? rosterWorkByRoute.get(fleetRouteKey(connectionId, profile))
+
+      if (!claim || fleetWorkState(claim, roster?.fetchedAt ?? 0, Date.now()) === 'idle') {
+        return
+      }
+
+      // Owner route first: the resume must target the profile the worker runs
+      // in even if the switch above is still settling. A worker session is
+      // deny-listed out of the conversation list, so the route is the only
+      // door to it.
+      requestSessionResume(claim.sessionId, { connectionId, profile })
+      navigate(sessionRoute(claim.sessionId))
+    },
+    [navigate, roster?.fetchedAt, rosterWorkByRoute]
+  )
+
+  // A pick on the active strip: switch, then land on the bot's live work when
+  // there is any. The owner route resolves per-profile remote overrides, so the
+  // session is resumed on the backend that actually owns it.
+  const activateProfile = useCallback(
+    (profile: string) => {
+      const owner = resolveActiveSourceOwnerRoute(profile)
+
+      void selectProfile(profile).then(() => {
+        if (owner) {
+          openAgentWork(owner.connectionId, owner.profile)
+        }
+      })
+    },
+    [openAgentWork]
+  )
+
   const switchToRest = (agent: FleetAgent) => {
     const commitRestSwitch = (target: FleetAgent) => {
       const key = fleetRouteKey(target.connectionId, target.profile)
@@ -338,6 +418,7 @@ export function ProfileRail() {
       setPendingRoute(key)
 
       void selectConnection(target.connectionId, { profile: target.profile })
+        .then(() => openAgentWork(target.connectionId, target.profile, target.work))
         .catch((error: unknown) => notifyError(error, p.switchConnectionFailed(target.connectionLabel)))
         .finally(() => setPendingRoute(current => (current === key ? null : current)))
     }
@@ -516,7 +597,7 @@ export function ProfileRail() {
                   onEditSoul={() => setPendingSoul(profile.name)}
                   onRecolor={color => setProfileColor(profile.name, color)}
                   onRename={() => setPendingRename(profile)}
-                  onSelect={() => selectProfile(profile.name)}
+                  onSelect={() => activateProfile(profile.name)}
                   remoteHost={remoteOverrides[normalizeProfileKey(profile.name)]?.host ?? null}
                 />
               ))}
@@ -564,7 +645,7 @@ export function ProfileRail() {
             connectionId={activeConnectionId ?? undefined}
             glyph={isAll ? 'layers' : 'home'}
             label={onDefault ? p.showAllProfiles : p.switchToProfile(profileLabel(homeProfile))}
-            onSelect={() => (onDefault ? setShowAllProfiles(true) : selectProfile(homeProfile.name))}
+            onSelect={() => (onDefault ? setShowAllProfiles(true) : activateProfile(homeProfile.name))}
             profile={homeProfile.name}
           />
         ) : (
@@ -578,7 +659,7 @@ export function ProfileRail() {
           connectionId={activeConnectionId ?? undefined}
           glyph="home"
           label={profileLabel(defaultProfile)}
-          onSelect={() => selectProfile(defaultProfile.name)}
+          onSelect={() => activateProfile(defaultProfile.name)}
           profile={defaultProfile.name}
         />
       )}
@@ -595,7 +676,7 @@ export function ProfileRail() {
             homeConnectionId={activeConnectionId}
             onCreate={() => setCreateOpen(true)}
             onImport={() => void runImportProfileFlow()}
-            onSelect={selectProfile}
+            onSelect={activateProfile}
             onSelectRest={switchToRest}
             // Fleet drops the home pill, so the menu is the active default's
             // only door; every at-rest group already lists its own (#106017, #131632).
@@ -625,6 +706,7 @@ export function ProfileRail() {
                           first={index === 0}
                           label={activeConnection ? p.fleet.gateway(activeConnection.label) : null}
                           reachable
+                          working={activeWorking}
                         />
                         <span
                           aria-label={activeConnection ? p.fleet.gateway(activeConnection.label) : undefined}
@@ -640,7 +722,7 @@ export function ProfileRail() {
                               connectionId={activeConnectionId ?? undefined}
                               glyph="home"
                               label={profileLabel(defaultProfile)}
-                              onSelect={() => selectProfile(defaultProfile.name)}
+                              onSelect={() => activateProfile(defaultProfile.name)}
                               profile={defaultProfile.name}
                             />
                           )}
@@ -659,6 +741,11 @@ export function ProfileRail() {
                         onRename={setPendingRestRename}
                         onSelect={switchToRest}
                         pendingRoute={pendingRoute}
+                        working={countWorkingAgents(
+                          [entry.group.defaultAgent, ...entry.group.named],
+                          rosterFetchedAt,
+                          Date.now()
+                        )}
                       />
                     )
                   )
@@ -1159,24 +1246,30 @@ function ProfilePill({
 
 // The gateway marker that heads every group on the fleet rail: its kind glyph
 // (device / network / terminal / cloud — the same glyph the statusbar readout
-// uses), an amber dot when the roster last found it unreachable, and a hairline
-// separating it from the previous group. The first group gets no hairline.
+// uses), an amber dot when the roster last found it unreachable, a live
+// "N working" count when bots on it are mid-task, and a hairline separating it
+// from the previous group. The first group gets no hairline.
 function FleetDivider({
   connection,
   first,
   label,
-  reachable
+  reachable,
+  working
 }: {
   connection: null | Pick<FleetGroup, 'connectionId' | 'kind'> | Pick<DesktopRegistryConnection, 'id' | 'kind'>
   first: boolean
   label: null | string
   reachable: boolean
+  working?: FleetWorkingCount
 }) {
+  const { t } = useI18n()
+
   if (!connection) {
     return null
   }
 
   const connectionId = 'connectionId' in connection ? connection.connectionId : connection.id
+  const workingCount = working?.working ?? 0
 
   const marker = (
     <span
@@ -1185,10 +1278,22 @@ function FleetDivider({
       data-connection-id={connectionId}
       data-reachable={reachable}
       data-slot="profile-rail-divider"
+      data-working={workingCount > 0 ? String(workingCount) : undefined}
     >
       {!first && <span className="h-3 w-px bg-(--ui-stroke-tertiary)" />}
       <ConnectionGlyph connection={connection} />
       {!reachable && <span className="size-1.5 rounded-full bg-amber-500" data-slot="profile-rail-unreachable" />}
+      {workingCount > 0 && (
+        <span
+          className={cn(
+            'whitespace-nowrap text-[0.6rem] font-medium leading-none tabular-nums',
+            working?.stale ? 'text-(--ui-text-tertiary)' : 'text-(--ui-accent)'
+          )}
+          data-slot="profile-rail-working"
+        >
+          {working?.stale ? t.profiles.fleet.workingStale(workingCount) : t.profiles.fleet.working(workingCount)}
+        </span>
+      )}
     </span>
   )
 
@@ -1208,7 +1313,8 @@ function FleetRestGroup({
   onRecolor,
   onRename,
   onSelect,
-  pendingRoute
+  pendingRoute,
+  working
 }: {
   colors: Record<string, string>
   first: boolean
@@ -1219,6 +1325,7 @@ function FleetRestGroup({
   onRename: (agent: FleetAgent) => void
   onSelect: (agent: FleetAgent) => void
   pendingRoute: null | string
+  working: FleetWorkingCount
 }) {
   const { t } = useI18n()
   const p = t.profiles
@@ -1234,7 +1341,13 @@ function FleetRestGroup({
 
   return (
     <>
-      <FleetDivider connection={group} first={first} label={dividerLabel} reachable={group.reachable} />
+      <FleetDivider
+        connection={group}
+        first={first}
+        label={dividerLabel}
+        reachable={group.reachable}
+        working={working}
+      />
       <span
         aria-label={p.fleet.gateway(group.label)}
         className="flex shrink-0 items-center gap-1"

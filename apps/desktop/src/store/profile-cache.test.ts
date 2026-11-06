@@ -2,8 +2,8 @@ import { atom } from 'nanostores'
 import { afterEach, expect, it, vi } from 'vitest'
 
 import { setApiRequestConnection } from '@/api/client'
-import type { DesktopAgentRoster, HermesConnection } from '@/global'
-import { $fleetRoster, _resetFleetRosterForTests } from '@/store/fleet-roster'
+import type { HermesConnection } from '@/global'
+import { $fleetRoster, _resetFleetRosterForTests, type FleetRosterSnapshot } from '@/store/fleet-roster'
 import type { ProfileInfo } from '@/types/hermes'
 
 vi.mock('@/store/gateway', () => ({ $gateway: atom(null) }))
@@ -83,8 +83,9 @@ it('lets a fresh active-source list land even when the fleet roster arrives firs
 
   // After a switch the registry change forces a roster refresh that races
   // the active source's own list read; both are reads of the same backend.
-  const roster: DesktopAgentRoster = {
+  const roster: FleetRosterSnapshot = {
     agents: [],
+    fetchedAt: Date.now(),
     sources: [{ connectionId: 'source-a', kind: 'remote', label: 'source-a', reachable: true }]
   }
 

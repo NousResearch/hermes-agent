@@ -2119,7 +2119,10 @@ export const ruOverrides = {
       installDeviceDesc:
         'Hermes будет установлен локально, затем откроется новая сессия на этом компьютере. Установка не начнётся, пока вы не подтвердите.',
       installDeviceConfirm: 'Установить локально',
-      connectExistingInstead: 'Вместо этого подключить существующий'
+      connectExistingInstead: 'Вместо этого подключить существующий',
+      working: (count: number) => (count === 1 ? '1 работает' : `${count} работают`),
+      workingStale: (count: number) =>
+        count === 1 ? '1 работал (не подтверждено)' : `${count} работали (не подтверждено)`
     },
     actions: 'Действия',
     color: 'Цвет…',

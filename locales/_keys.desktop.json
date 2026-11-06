@@ -2528,6 +2528,8 @@
     "profiles.fleet.localDevice",
     "profiles.fleet.onGateway",
     "profiles.fleet.switchTo",
+    "profiles.fleet.working",
+    "profiles.fleet.workingStale",
     "profiles.importProfile",
     "profiles.imported",
     "profiles.invalidName",

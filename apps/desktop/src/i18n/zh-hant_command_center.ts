@@ -360,7 +360,9 @@ export const zhHantCommandCenter = {
       installDeviceTitle: '在此裝置上安裝 Hermes？',
       installDeviceDesc: '這會在本機安裝 Hermes，然後在這台電腦上開啟新的工作階段。確認之前不會開始安裝。',
       installDeviceConfirm: '本機安裝',
-      connectExistingInstead: '改為連線現有環境'
+      connectExistingInstead: '改為連線現有環境',
+      working: (count: number) => (count === 1 ? '1 個工作中' : `${count} 個工作中`),
+      workingStale: (count: number) => (count === 1 ? '1 個曾工作中（未確認）' : `${count} 個曾工作中（未確認）`)
     },
     remoteOverride: {
       menuItem: '連線至遠端主機…',

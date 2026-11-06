@@ -146,6 +146,7 @@ describe('profile rail dot state ($profileDotStateByScope)', () => {
           profile: 'writer'
         }
       ],
+      fetchedAt: Date.now(),
       sources: []
     })
 
@@ -175,5 +176,56 @@ describe('profile rail dot state ($profileDotStateByScope)', () => {
 
     expect($unreadFinishedMarkers.get()['writer']).toBeDefined()
     expect($unreadFinishedMarkers.get()['default']).toBeUndefined()
+  })
+
+  // Pass 3: a bot mid-card emits no socket event at all (worker sessions are
+  // deny-listed from every listing), so the fleet roster's worker page is the
+  // only live claim the rail can paint.
+  const workerRoster = (lastActiveSeconds: number, fetchedAt: number) => ({
+    agents: [
+      {
+        connectionId: 'remote-1',
+        connectionKind: 'ssh' as const,
+        connectionLabel: 'Box',
+        handle: 'eng1',
+        profile: 'engineer1',
+        work: { lastActive: lastActiveSeconds, sessionId: 'worker-1', source: 'kanban' }
+      }
+    ],
+    fetchedAt,
+    sources: []
+  })
+
+  it('lights a profile from a live worker heartbeat', () => {
+    $fleetRoster.set(workerRoster(Date.now() / 1000 - 10, Date.now()))
+
+    const summary = summaryFor('remote-1', 'engineer1')
+
+    expect(summary?.state).toBe('working')
+    expect(summary?.workingCount).toBe(1)
+    expect(summary?.stale).toBe(false)
+  })
+
+  it('paints the worker claim hollow when the roster page is past the stale window', () => {
+    $fleetRoster.set(workerRoster(Date.now() / 1000 - 10, Date.now() - 200_000))
+
+    const summary = summaryFor('remote-1', 'engineer1')
+
+    expect(summary?.state).toBe('working')
+    expect(summary?.stale).toBe(true)
+  })
+
+  it('drops a worker claim whose heartbeat expired, even on a fresh roster page', () => {
+    $fleetRoster.set(workerRoster(Date.now() / 1000 - 400, Date.now()))
+
+    expect(summaryFor('remote-1', 'engineer1')).toBeUndefined()
+  })
+
+  it('does not let an old roster page fake a live worker', () => {
+    // The heartbeat is fresh but nothing has re-confirmed the page: the square
+    // must not paint confidently green (hollow instead).
+    $fleetRoster.set(workerRoster(Date.now() / 1000 - 10, 0))
+
+    expect(summaryFor('remote-1', 'engineer1')?.stale).toBe(true)
   })
 })

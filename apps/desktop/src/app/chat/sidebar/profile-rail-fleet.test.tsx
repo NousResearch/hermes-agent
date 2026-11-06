@@ -52,7 +52,10 @@ vi.mock('@/i18n', () => ({
           installDeviceTitle: 'Install Hermes on This device?',
           localDevice: 'This device (local backend — installs Hermes if missing, otherwise opens a fresh session)',
           onGateway: (name: string, gateway: string) => `${name} · ${gateway}`,
-          switchTo: (name: string, gateway: string) => `Open ${name} on ${gateway}`
+          switchTo: (name: string, gateway: string) => `Open ${name} on ${gateway}`,
+          working: (count: number) => (count === 1 ? '1 working' : `${count} working`),
+          workingStale: (count: number) =>
+            count === 1 ? '1 was working (not confirmed since)' : `${count} were working (not confirmed since)`
         },
         importProfile: 'Import profile…',
         manageProfiles: 'Manage profiles…',
@@ -67,6 +70,11 @@ vi.mock('@/i18n', () => ({
         setColor: (color: string) => `Set color ${color}`,
         showAllProfiles: 'Show all profiles',
         soulSaved: 'SOUL.md saved',
+        status: {
+          needsInput: (count: number) => (count === 1 ? '1 needs input' : `${count} need input`),
+          unread: (count: number) => (count === 1 ? '1 unread session' : `${count} unread sessions`),
+          working: (count: number) => (count === 1 ? '1 session running' : `${count} sessions running`)
+        },
         switchConnectionFailed: (name: string) => `Could not connect to ${name}`,
         switchToProfile: (name: string) => `Switch to ${name}`,
         title: 'Profiles'
@@ -94,7 +102,15 @@ vi.mock('@/store/profile', () => ({
   profileLabel: (profile: { display_name?: string; name: string }) =>
     (profile.display_name ?? '').trim() || profile.name,
   refreshActiveProfile: vi.fn().mockResolvedValue(undefined),
-  selectProfile: (name: string) => selectProfile(name),
+  // The rail asks which backend owns the profile before it can deep-link a
+  // live worker session; these tests assert the plain profile switch, so the
+  // owner route is null and no resume fires.
+  resolveActiveSourceOwnerRoute: vi.fn(() => null),
+  selectProfile: (name: string) => {
+    selectProfile(name)
+
+    return Promise.resolve()
+  },
   setProfileColor: vi.fn(),
   setProfileOrder: vi.fn(),
   setShowAllProfiles: vi.fn(),
@@ -148,7 +164,7 @@ const { $activeGatewayProfile, $profileOrder, $profiles, $profileScope } = await
 const activeGatewayProfile = $activeGatewayProfile as ReturnType<typeof atom<string>>
 const profiles = $profiles as ReturnType<typeof atom<Array<{ is_default: boolean; name: string }>>>
 const profileScope = $profileScope as ReturnType<typeof atom<string>>
-const { _resetFleetRosterForTests } = await import('@/store/fleet-roster')
+const { $fleetRoster, _resetFleetRosterForTests } = await import('@/store/fleet-roster')
 
 const registry: DesktopConnectionsRegistry = {
   connections: [
@@ -484,6 +500,89 @@ describe('ProfileRail fleet mode', () => {
     // Fleet pill: "all on this gateway" replaces the default↔all toggle.
     expect(screen.getByRole('button', { name: 'All profiles on this gateway' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Manage gateways…' })).toBeNull()
+  })
+
+  it('heads a gateway with its live "N working" count and mutes it when the page is stale', async () => {
+    armFleet()
+
+    const workingRoster: DesktopAgentRoster = {
+      ...roster,
+      agents: roster.agents.map(agent =>
+        agent.connectionId === 'gateway-a' && agent.profile === 'scout'
+          ? { ...agent, work: { lastActive: Date.now() / 1000 - 5, sessionId: 'sess-1', source: 'kanban' } }
+          : agent
+      )
+    }
+
+    getAgentRoster.mockResolvedValue(workingRoster)
+
+    const container = await renderFleet()
+
+    const divider = container.querySelector(
+      '[data-slot="profile-rail-divider"][data-connection-id="gateway-a"]'
+    ) as HTMLElement
+
+    expect(divider.getAttribute('data-working')).toBe('1')
+    expect(within(divider).getByText('1 working')).toBeTruthy()
+
+    // A page nobody has re-confirmed cannot keep the count confident: the same
+    // count renders muted and says so.
+    await act(async () => {
+      $fleetRoster.set({ ...workingRoster, fetchedAt: 0 })
+    })
+
+    expect(within(divider).getByText('1 was working (not confirmed since)')).toBeTruthy()
+
+    // The idle gateways stay silent.
+    const local = container.querySelector(
+      '[data-slot="profile-rail-divider"][data-connection-id="local"]'
+    ) as HTMLElement
+
+    expect(local.getAttribute('data-working')).toBeNull()
+  })
+
+  it('clicking a mid-card profile lands on the worker session it is running', async () => {
+    armFleet()
+
+    const workingRoster: DesktopAgentRoster = {
+      ...roster,
+      agents: roster.agents.map(agent =>
+        agent.connectionId === 'gateway-a' && agent.profile === 'scout'
+          ? { ...agent, work: { lastActive: Date.now() / 1000 - 5, sessionId: 'sess-9', source: 'kanban' } }
+          : agent
+      )
+    }
+
+    getAgentRoster.mockResolvedValue(workingRoster)
+
+    const profileStore = await import('@/store/profile')
+    const { $sessionResumeRequest } = await import('@/store/session')
+    const { sessionRoute } = await import('@/app/routes')
+
+    vi.mocked(profileStore.resolveActiveSourceOwnerRoute).mockReturnValueOnce({
+      connectionId: 'gateway-a',
+      profile: 'scout'
+    })
+
+    await renderFleet()
+
+    fireEvent.click(screen.getByRole('button', { name: /^scout/ }))
+
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(selectProfile).toHaveBeenCalledWith('scout')
+
+    // Visibility ends in one click: the rail resumes the worker session with
+    // its owning route and lands the user on it, instead of dropping them on
+    // the profile's default chat.
+    expect($sessionResumeRequest.get()).toMatchObject({
+      ownerRoute: { connectionId: 'gateway-a', profile: 'scout' },
+      sessionId: 'sess-9'
+    })
+    expect(navigate).toHaveBeenCalledWith(sessionRoute('sess-9'))
   })
 
   it('marks an unreachable gateway but never hides it', async () => {

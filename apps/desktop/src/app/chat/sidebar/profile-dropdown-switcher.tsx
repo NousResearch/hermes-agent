@@ -85,7 +85,7 @@ export function ProfileSwitcher({ compact = false }: { compact?: boolean }) {
   const [pendingRoute, setPendingRoute] = useState<null | string>(null)
   const { dialog: localDeviceDialog, request: requestLocalDevice } = useLocalDeviceSwitch()
 
-  useFleetRoster(multipleConnections)
+  useFleetRoster(multipleConnections || profiles.length > 1)
   const unserved = useUnservedProfiles(profiles)
   // The Webapp always takes this dropdown in place of the rail's squares
   // (profile-switcher.tsx), so there it keeps the list fresh the same way and

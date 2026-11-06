@@ -437,7 +437,9 @@ export const arCommandCenter = {
       installDeviceTitle: 'تثبيت Hermes على هذا الجهاز؟',
       installDeviceDesc: 'سيُثبَّت Hermes محليًا ثم تُفتح جلسة جديدة على هذا الحاسوب. لا يبدأ التثبيت قبل التأكيد.',
       installDeviceConfirm: 'تثبيت محليًا',
-      connectExistingInstead: 'الاتصال بموجود بدلًا من ذلك'
+      connectExistingInstead: 'الاتصال بموجود بدلًا من ذلك',
+      working: (count: number) => (count === 1 ? '1 يعمل' : `${count} يعملون`),
+      workingStale: (count: number) => (count === 1 ? '1 كان يعمل (غير مؤكَّد)' : `${count} كانوا يعملون (غير مؤكَّد)`)
     },
     remoteOverride: {
       menuItem: 'الاتصال بمضيف بعيد…',

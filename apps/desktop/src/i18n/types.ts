@@ -2497,6 +2497,10 @@ export interface Translations extends NoticeTranslations {
       installDeviceDesc: string
       installDeviceConfirm: string
       connectExistingInstead: string
+      /** Rail group header: how many of this gateway's bots have live work. */
+      working: (count: number) => string
+      /** Same count, but the roster page confirming it is stale. */
+      workingStale: (count: number) => string
     }
     status: {
       unread: (count: number) => string

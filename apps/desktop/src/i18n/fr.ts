@@ -3278,7 +3278,10 @@ export const frOverrides = {
       installDeviceDesc:
         'Hermes sera installé localement, puis une nouvelle session s’ouvrira sur cet ordinateur. Rien n’est installé tant que vous ne confirmez pas.',
       installDeviceConfirm: 'Installer localement',
-      connectExistingInstead: 'Connecter un existant à la place'
+      connectExistingInstead: 'Connecter un existant à la place',
+      working: (count: number) => (count === 1 ? '1 en cours' : `${count} en cours`),
+      workingStale: (count: number) =>
+        count === 1 ? '1 travaillait (non confirmé)' : `${count} travaillaient (non confirmé)`
     },
     status: {
       unread: (count: number) => (count === 1 ? '1 session non lue' : `${count} sessions non lues`),

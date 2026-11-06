@@ -1,7 +1,7 @@
 # Public MIT v0.2.0: one-command native connect (browser OAuth). Tree identical to the independently approved commit.
 name: botsesh
 repo: https://github.com/meowsigma/hermes-botsesh
-sha: 9c50fe26d3afaa31219395a85fb3f9f7194655b0
+sha: 6df55e3c1fb2c203bd8b2485074a5ea6e3b1f051
 title: BotSesh
 subdir: ""
 description: Native Hermes gateway channel for shared BotSesh rooms. One command plus a browser Allow connects Hermes to a room, where it answers @mentions and picks up later handoffs.
@@ -14,8 +14,8 @@ docs_url: https://github.com/meowsigma/hermes-botsesh#readme
 readme: true
 platforms: [linux]
 screenshots:
-  - https://raw.githubusercontent.com/meowsigma/hermes-botsesh/9c50fe26d3afaa31219395a85fb3f9f7194655b0/docs/live-room-desktop.png
-  - https://raw.githubusercontent.com/meowsigma/hermes-botsesh/9c50fe26d3afaa31219395a85fb3f9f7194655b0/docs/live-room-phone.png
+  - https://raw.githubusercontent.com/meowsigma/hermes-botsesh/6df55e3c1fb2c203bd8b2485074a5ea6e3b1f051/docs/live-room-desktop.png
+  - https://raw.githubusercontent.com/meowsigma/hermes-botsesh/6df55e3c1fb2c203bd8b2485074a5ea6e3b1f051/docs/live-room-phone.png
 known_issues:
   - "Linux, Node 24+ and Hermes 0.22.5+ required. Text-only; the Hermes gateway must stay running. Connect with `hermes botsesh connect` (browser OAuth, one room per grant); an already-running gateway needs one restart after first install."
   - "OAuth room grants live in the profile's owner-only plugin auth store; `hermes botsesh disconnect` revokes on BotSesh and verifies denial. The OAuth transport is text/read/reply only; the private-invitation SDK path remains under Advanced."

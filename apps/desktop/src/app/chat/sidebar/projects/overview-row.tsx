@@ -106,6 +106,21 @@ interface ProjectOverviewRowProps {
   style?: React.CSSProperties
 }
 
+interface ProjectCollapseRowProps {
+  expanded: null | SidebarProjectTree
+  label: string
+  onClick: () => void
+  showAllSessions: boolean
+}
+
+function ProjectCollapseRow({ expanded, label, onClick, showAllSessions }: ProjectCollapseRowProps) {
+  if (!expanded || showAllSessions) {
+    return null
+  }
+
+  return <WorkspaceShowMoreRow label={label} onClick={onClick} />
+}
+
 export function ProjectOverviewRow({
   project,
   onEnter,
@@ -175,6 +190,11 @@ export function ProjectOverviewRow({
       .then(tree => void (tree && setExpanded(tree)))
       .catch(() => onEnter?.(project.id))
       .finally(() => setExpanding(false))
+  }
+
+  const showFewer = () => {
+    page.reset()
+    setExpanded(null)
   }
 
   const lead = reorderable ? (
@@ -311,6 +331,12 @@ export function ProjectOverviewRow({
           {expanded && page.more > 0 && (
             <WorkspaceShowMoreRow label={s.showMoreIn(page.more, project.label)} onClick={page.showMore} />
           )}
+          <ProjectCollapseRow
+            expanded={expanded}
+            label={s.projects.showFewer}
+            onClick={showFewer}
+            showAllSessions={showAllSessions}
+          />
         </SidebarRowNest>
       )}
     </div>

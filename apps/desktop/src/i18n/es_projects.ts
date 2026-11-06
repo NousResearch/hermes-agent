@@ -82,5 +82,6 @@ export const esProjects: NonNullable<TranslationOverrides['sidebar']>['projects'
   reorder: label => `Reordenar ${label}`,
   toggle: (label, open) => `${open ? 'Mostrar' : 'Ocultar'} sesiones de ${label}`,
   showAllCount: (count: number) => `Mostrar las ${count} sesiones`,
+  showFewer: 'Mostrar menos sesiones',
   back: 'Todos los proyectos'
 }

@@ -693,7 +693,7 @@ def test_client_credentials_rejects_missing_or_unsupported_token_type(idp, monke
     with pytest.raises(SystemExit, match="token_type Bearer"):
         _auth("add", "machine:google")
 
-    assert _grant("machine:google") is None
+    assert not (_home() / "auth.json").exists()
 
 
 def test_client_credentials_token_failure_does_not_persist_or_leak_secret(idp, monkeypatch, caplog):

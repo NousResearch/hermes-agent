@@ -533,6 +533,7 @@ describe('BrowseSection', () => {
     Object.defineProperty(browse, 'scrollIntoView', { configurable: true, value: scroll })
     fireEvent.click(screen.getByRole('button', { name: /browse models/i }))
     expect(scroll).toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' })
+    expect(document.activeElement).toBe(search)
     expect(mocked.downloadLocalModel).not.toHaveBeenCalled()
 
     // The backend reports the completed download on refresh. Use must send

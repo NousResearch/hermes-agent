@@ -1,6 +1,7 @@
 import type { ReactElement } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { prefersReducedMotion } from '@/hooks/use-media-query'
 import { useI18n } from '@/i18n'
 import { Download, Search } from '@/lib/icons'
 import type { LocalCatalogModel, LocalModelsStatus, LocalRuntimeJob } from '@/types/hermes'
@@ -40,16 +41,19 @@ export function LocalModelsModelsSection({
   const copy = t.settings.localModels
   const hasRecommendation = catalog.some(c => c.recommended)
   const sortedCatalog = [...catalog].sort((a, b) => fitRank(a) - fitRank(b))
+  const sectionTitle = hasRecommendation ? `Nous · ${copy.recommended} · ${copy.modelsTitle}` : copy.modelsTitle
 
   return (
-    <SettingsSection icon={Download} meta={`${catalog.length}`} title={copy.modelsTitle}>
+    <SettingsSection icon={Download} meta={`${catalog.length}`} title={sectionTitle}>
       {!hasRecommendation && (
         <ListRow
           action={
             <Button
-              onClick={() =>
-                document.getElementById('local-model-browse')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-              }
+              onClick={() => {
+                const browse = document.getElementById('local-model-browse')
+                browse?.scrollIntoView({ behavior: prefersReducedMotion() ? 'auto' : 'smooth', block: 'start' })
+                browse?.querySelector<HTMLInputElement>('input')?.focus({ preventScroll: true })
+              }}
               size="sm"
             >
               <Search />

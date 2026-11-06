@@ -539,6 +539,38 @@ describe('Enter on an image prompt', () => {
     expect(composer.setInput).toHaveBeenCalledWith('What two colors?')
     expect(composer.attachImagePaths).toHaveBeenCalledWith(['/cache/native-inputs/a.png'], { followTyping: true })
   })
+
+  it("on a remote gateway whose files this machine cannot read, the notes stay in the text and it says so", async () => {
+    vi.stubEnv('HERMES_TUI_GATEWAY_URL', 'ws://gateway.example:9119')
+
+    const vision =
+      "[The user sent an image~ Here's what I can see:\nA blue square on red.]\n" +
+      '[If you need a closer look, use vision_analyze with image_url: /nonexistent-owner-cache/native-inputs/a.png ~]\n\n' +
+      'What two colors?'
+
+    const stored = [
+      { role: 'user', content: 'ALPHA please', text: 'ALPHA please', row_id: 11 },
+      { role: 'assistant', content: 'ALPHA', text: 'ALPHA', row_id: 12 },
+      { role: 'user', content: vision, text: vision, row_id: 13 },
+      { role: 'assistant', content: 'Blue and red.', text: 'Blue and red.', row_id: 14 }
+    ]
+
+    try {
+      const { composer, slash, sys } = slashHarness(stored)
+
+      slash('/rewind')
+      await flush()
+      const browse = $overlayState.get().rewind!
+
+      browse.onEdit(browse.targets[1]!)
+      expect(composer.attachImagePaths).not.toHaveBeenCalled()
+      // The model still gets the image the turn named: nothing is silently dropped.
+      expect(composer.setInput).toHaveBeenCalledWith(vision)
+      expect(sys.mock.calls.map(([text]) => String(text)).join('\n')).toContain('could not be re-attached')
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
 })
 
 describe('native pager paging', () => {

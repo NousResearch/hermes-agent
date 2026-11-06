@@ -230,9 +230,32 @@ async def _run_runner_command(runner, live, name, arg, kind, shell):
         return t('cli.plugin.command_error', error=str(e) or type(e).__name__)
 
 
-def _skill_directive(name, arg, route):
+def _bundle_directive(name, arg, route, platform):
+    """``/bundle`` for a local session: every member loads into one message, as the messaging
+    rewrite (``_hm_bundle_slash_rewrite``) and the CLI build it. ``None`` when ``name`` is not a
+    bundle's slug, so the individual-skill path decides — a bundle wins a shared slug."""
+    from agent.i18n import t
+    from agent.skill_bundles import build_bundle_invocation_message, get_skill_bundles, resolve_bundle_command_key
+    from agent.skill_commands import describe_skill_invocation
+    bundle_key = resolve_bundle_command_key(name)
+    if bundle_key is None:
+        return None
+    built = build_bundle_invocation_message(bundle_key, arg, task_id=route, platform=platform)
+    if built is None:  # every member uninstalled or disabled: never start an empty turn
+        raise RuntimeStoreError('command_unavailable')
+    message, _loaded, missing = built
+    info = get_skill_bundles().get(bundle_key) or {}
+    return {'type': 'skill', 'name': info.get('name') or bundle_key.lstrip('/'), 'message': message,
+            'display': describe_skill_invocation(message, separator=' '),
+            **({'notice': t('cli.skills.skipped_missing', names=', '.join(missing))} if missing else {})}
+
+
+def _skill_directive(name, arg, route, platform=None):
     """A local session's ``/skill`` (its plugin skills included, as on main's interactive surfaces),
-    stacked ``/skill-a /skill-b do X`` too: built here, so no client loads plugins to resolve one."""
+    stacked ``/skill-a /skill-b do X`` too: built here, so no client loads plugins to resolve one.
+    ``platform`` scopes the bundle member check; a bundle resolves before the skill table."""
+    if (bundle := _bundle_directive(name, arg, route, platform)) is not None:
+        return bundle
     from agent.i18n import t
     from agent.skill_commands import (
         build_skill_invocation_message, build_stacked_skill_invocation_message, describe_skill_invocation,
@@ -476,7 +499,8 @@ async def execute_command(connection, ref, params, *, dispatch=False):
     if definition is None:
         def build():  # in the session's folder: its trusted project skills, as its catalog lists them
             with _profile_runtime_scope(home), _session_workspace(authority.runner, live.source):
-                return _skill_directive(name, arg, live.route)
+                return _skill_directive(name, arg, live.route,
+                                        live.source.platform.value if live.source.platform else None)
         return await asyncio.to_thread(build)
 
     if canonical in _INFO_READS:

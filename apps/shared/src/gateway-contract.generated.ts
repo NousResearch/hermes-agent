@@ -5200,6 +5200,7 @@ export interface CanonicalSnapshotInfo {
   cwd?: string | null
   edit_approval_policy?: 'ask' | 'workspace_session' | 'session' | null
   launch_request?: Record<string, unknown> | null
+  client?: CanonicalClientLabel | null
   reasoning_effort?: string | null
   reasoning_effort_wire?: string | null
   service_tier?: string | null

@@ -10,7 +10,8 @@ from .base import JsonValue, Params, Result
 from .common import ProfileParams, TranscriptMessage
 from .connectors_operation import ConnectionRequestPayload
 from .sessions import OpenRequestEntry, TodoState
-from .canonical import AdmissionStatus, CanonicalSessionRef, PromptResponseResult, SessionInventoryFields
+from .canonical import (AdmissionStatus, CanonicalClientLabel, CanonicalSessionRef, PromptResponseResult,
+                        SessionInventoryFields)
 from .registry import canonical_method
 
 
@@ -129,6 +130,8 @@ class CanonicalSnapshotInfo(SessionInventoryFields):
     cwd: str | None = None
     edit_approval_policy: Literal['ask', 'workspace_session', 'session'] | None = None
     launch_request: dict[str, JsonValue] | None = None
+    # ``session.info``'s ``client``: create and resume return the same projection.
+    client: CanonicalClientLabel | None = None
     reasoning_effort: str | None = None
     reasoning_effort_wire: str | None = None
     service_tier: str | None = None

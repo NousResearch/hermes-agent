@@ -169,6 +169,28 @@ async def test_runtime_describe_advertises_the_client_parameter(tmp_path, monkey
         authority.db.close()
 
 
+@pytest.mark.asyncio
+async def test_a_named_create_and_resume_return_snapshots_that_match_their_contract(tmp_path, monkeypatch):
+    """``session.create`` / ``session.resume`` return ``local_session_info`` as the snapshot's ``info``."""
+    from gateway.session_controls import AuthorityConnection
+    from tests.gateway.test_local_source_labels import _authority
+    from tui_gateway.contracts.registry import CANONICAL_METHODS
+    authority, _store = await _authority(tmp_path, monkeypatch)
+    monkeypatch.setenv('HERMES_HOME', authority.profile_id)
+    conn = AuthorityConnection(authority, SimpleNamespace(write=lambda frame: None), {'user_id': 'owner'})
+    try:
+        created = await conn.dispatch({'id': 1, 'method': 'session.create', 'params': {
+            'request_id': 'named', 'source': 'tui', 'cwd': authority.profile_id, 'client': dict(TERN)}})
+        resumed = await conn.dispatch({'id': 2, 'method': 'session.resume',
+                                       'params': {'session_id': created['result']['session_id']}})
+        for method, reply in (('session.create', created), ('session.resume', resumed)):
+            CANONICAL_METHODS[method].result.model_validate(reply['result'])
+            assert reply['result']['info']['client'] == TERN
+    finally:
+        await conn.close()
+        authority.db.close()
+
+
 def test_the_classic_clis_new_does_not_repeat_another_clients_name():
     """``/new`` copies the frozen launch request; the creating client's label is not the terminal's."""
     import asyncio

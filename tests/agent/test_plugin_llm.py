@@ -243,6 +243,19 @@ class TestJsonParsing:
         wrapped = 'Here it is:\n```json\n{"code": "x"}\n```'
         assert _parse_structured_text(text=wrapped, json_mode=True, json_schema=None) == ({"code": "x"}, "json")
 
+    def test_a_fenced_block_that_parses_stays_the_answer_and_the_whole_reply_is_the_fallback(self):
+        """The released order first: a fenced block that parses (and fits the schema) is the answer,
+        even inside a JSON string. The whole reply is tried only when that fails; when both fail,
+        the error is the fenced block's, as before."""
+        assert _parse_structured_text(text='{"a": "```1```"}', json_mode=True, json_schema=None) == (1, "json")
+        schema = {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}
+        assert _parse_structured_text(text='{"code": "```1```"}', json_mode=False, json_schema=schema) == (
+            {"code": "```1```"}, "json")
+        with pytest.raises(ValueError, match="is not of type 'object'"):
+            _parse_structured_text(text='{"other": "```1```"}', json_mode=False, json_schema=schema)
+        assert _parse_structured_text(text='{"code": 1, "x": "```hello```"}', json_mode=False,
+                                      json_schema=schema) == (None, "text")
+
 # ---------------------------------------------------------------------------
 # End-to-end facade
 # ---------------------------------------------------------------------------

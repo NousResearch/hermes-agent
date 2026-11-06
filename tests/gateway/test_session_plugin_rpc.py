@@ -250,11 +250,15 @@ def test_emit_from_a_plugin_thread_reaches_its_own_profile_on_a_multiplexed_gate
 
 
 @pytest.mark.asyncio
-async def test_plugin_frontend_gets_schema_checked_json_from_its_own_task_with_input_redacted(tmp_path, monkeypatch):
+@pytest.mark.parametrize('isolation', ['in_process', pytest.param('host', marks=pytest.mark.platforms('posix'))])
+async def test_plugin_frontend_gets_schema_checked_json_from_its_own_task_with_input_redacted(
+        tmp_path, monkeypatch, isolation):
     """The route for a plugin frontend's structured output: ``plugin.<id>.<name>`` reaches the plugin's
     handler, which redacts its input and calls ``ctx.llm.complete_structured`` on the task it registered.
     The client gets the parsed JSON; the model, on ``auxiliary.<task>``, never sees the secret, even
-    with ``security.redact_secrets: false`` (``force=True``)."""
+    with ``security.redact_secrets: false`` (``force=True``). Under ``plugins.isolation: host`` the
+    plugin's code runs in the plugin host and the same call answers the same way."""
+    import sys
     from gateway.session_controls import AuthorityConnection
     from hermes_cli import plugins
 
@@ -267,20 +271,28 @@ async def test_plugin_frontend_gets_schema_checked_json_from_its_own_task_with_i
     (plugin / 'plugin.yaml').write_text(yaml.safe_dump({'name': 'chart-demo', 'version': '0.1.0'}))
     (plugin / '__init__.py').write_text(_CHART_PLUGIN)
     (tmp_path / 'config.yaml').write_text(yaml.safe_dump({
-        'plugins': {'enabled': ['chart-demo']},
+        'plugins': {'enabled': ['chart-demo'], 'isolation': isolation},
         'auxiliary': {'chart_writer': {'provider': 'custom', 'model': 'chart-model', 'api_key': 'loopback-only',
                                        'base_url': f'http://127.0.0.1:{model.server_port}/v1'}}}))
-    monkeypatch.setattr(plugins, '_plugin_manager', plugins.PluginManager())
-    monkeypatch.setattr('agent.redact._REDACT_ENABLED', False)  # what `security.redact_secrets: false` sets at boot
+    manager = plugins.PluginManager()
+    monkeypatch.setattr(plugins, '_plugin_manager', manager)
+    # What `security.redact_secrets: false` sets at boot (the env var also reaches the plugin host).
+    monkeypatch.setattr('agent.redact._REDACT_ENABLED', False)
+    monkeypatch.setenv('HERMES_REDACT_SECRETS', 'false')
     owner = AuthorityConnection(authority, object(), {'user_id': 'owner'})
     secret = 'sk-proj-' + 'A1b2C3d4' * 5
     try:
         reply = await owner.dispatch({'id': 1, 'method': 'plugin.chart-demo.chart.write',
                                       'params': {'session_id': 's', 'text': f'revenue by month, key {secret}'}})
+        hosted = not any('chart' in name for name in sys.modules)
     finally:
         await owner.close()
         model.shutdown()
+        if isolation == 'host':
+            manager.unload()
+            manager._plugin_host().shutdown()
     assert reply.get('result') == {'kind': 'line'}, reply
+    assert hosted is (isolation == 'host')
     [request] = model.requests
     assert request['model'] == 'chart-model'
     assert request['response_format']['type'] == 'json_schema'

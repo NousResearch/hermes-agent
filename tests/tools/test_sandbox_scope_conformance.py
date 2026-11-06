@@ -54,7 +54,7 @@ def host_dir(tmp_path):
 @pytest.mark.parametrize("name", [name for name, _ in conformance.checks()])
 def test_conformance(name, provider, host_dir):
     check = dict(conformance.checks())[name]
-    if name == "file_tools_never_touch_host":
+    if name in ("file_tools_never_touch_host", "media_never_read_on_host"):
         check(provider, A, host_dir)
     else:
         check(provider, A, B)
@@ -315,3 +315,27 @@ def test_a_recovered_hosted_process_stays_its_agents(tmp_path, monkeypatch):
         assert restarted.get("proc_hosted_ckpt") is None
     with bind_state(A):
         assert restarted.get("proc_hosted_ckpt") is not None
+
+
+def test_media_is_never_read_on_host_with_a_host_backend_configured(provider, monkeypatch, host_dir):
+    """With ``terminal.backend: local`` a hosted scope still never reads media on this host: vision,
+    video and image-generation sources resolve in the sandbox (which a host backend cannot provide,
+    so they fail closed)."""
+    import asyncio
+    from agent.runtime_scope import bind_state
+    from tools.image_generation_tool import _confine_source_images
+    from tools.image_source import ImageResolutionError, ResolveContext, resolve_image_source
+    from tools.vision_tools import _materialize_video
+
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    image, video = host_dir / "photo.png", host_dir / "clip.mp4"
+    image.write_bytes(conformance._PNG)
+    video.write_bytes(b"\0\0\0\x18ftypmp42" + b"\0" * 64)
+    with conformance._watch_host(host_dir) as touched, bind_state(A):
+        with pytest.raises(ImageResolutionError):
+            asyncio.run(resolve_image_source(str(image), ResolveContext(task_id="t")))
+        with pytest.raises(ValueError):
+            asyncio.run(_materialize_video(str(video), "t", []))
+        _, _, error = _confine_source_images(str(image), [str(image)], "t")
+        assert error is not None
+    assert not touched, f"media resolution touched the host: {touched}"

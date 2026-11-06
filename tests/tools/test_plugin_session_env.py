@@ -166,6 +166,39 @@ def test_a_second_plugin_cannot_take_a_declared_name(tmp_path, monkeypatch, isol
         plugins_mod._reset_plugin_managers_for_tests()
 
 
+_TWICE = """
+def register(ctx):
+    ctx.register_session_env(['PANE'], lambda sid: {'PANE': 'first'})
+    ctx.register_session_env(['PANE', 'WINDOW'], lambda sid: {'PANE': 'second', 'WINDOW': 'second'})
+"""
+
+
+@pytest.mark.parametrize("disposed", [0, 1])
+@pytest.mark.parametrize("isolation", ["in_process", pytest.param("host", marks=pytest.mark.platforms("posix"))])
+def test_one_plugin_declaring_a_name_twice_keeps_the_later_value(tmp_path, monkeypatch, isolation, disposed):
+    """Only another plugin is refused: one plugin's overlapping registrations load, the later one's value
+    wins, and disposing either one leaves the other's value."""
+    from hermes_cli import plugins as plugins_mod
+
+    monkeypatch.setattr(plugins_session_env, "_REGISTRATIONS", {})
+    monkeypatch.setattr(plugins_session_env, "_DECLARED", {})
+    monkeypatch.setattr(plugins_mod, "get_bundled_plugins_dir", lambda: tmp_path / "no-bundled")
+    monkeypatch.setenv("HOME", str(tmp_path / "os-home"))
+    monkeypatch.setenv("HERMES_HOME", str(_home(tmp_path / "home", {"twice": _TWICE}, isolation)))
+    plugins_mod._reset_plugin_managers_for_tests()
+    manager = plugins_mod.get_plugin_manager()
+    try:
+        manager.discover_and_load()
+        assert manager._plugins["twice"].error is None
+        assert plugins_session_env.resolve_session_env("s") == {"PANE": "second", "WINDOW": "second"}
+        regs = [r for r in manager._ownership_ledger["twice"] if r.kind == "session_env"]
+        regs[disposed].dispose()
+        assert plugins_session_env.resolve_session_env("s") == (
+            {"PANE": "second", "WINDOW": "second"} if disposed == 0 else {"PANE": "first"})
+    finally:
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
 @pytest.mark.platforms("posix")  # the shared bash snapshot path
 def test_a_profiles_names_never_reach_another_profiles_shells(tmp_path, monkeypatch):
     """A multiplexed gateway serves two homes: A's plugin declaring PANE leaves B's own PANE export alone

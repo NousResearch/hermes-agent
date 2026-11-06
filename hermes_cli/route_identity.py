@@ -44,6 +44,36 @@ def normalize_route_base_url(base_url: Any) -> str:
     return normalized
 
 
+def is_claimed_root_route(profile: Any, base_url: Any) -> bool:
+    """Whether *base_url* is the bare HTTPS root of a host that *profile* claims.
+
+    A profile claims hosts through ``hostnames`` (``providers.profile_for_host``): the host
+    itself and its subdomains. An account can carry such a host in ``model.base_url`` (a plan
+    or regional host), and that host is the provider's own endpoint, not a relay. A path, query,
+    user info, non-default port or plain HTTP keeps relay handling, so a relay mounted under a
+    claimed host is still a relay. A host that another profile claims, or none does, is no match.
+    A URL that does not parse is no match either, so it keeps relay handling.
+
+    ``provider_owns_route`` cannot serve here: it matches the host only, while discovery needs the
+    bare HTTPS root.
+    """
+    from providers import profile_for_host
+    from utils import base_url_hostname
+
+    if profile is None:
+        return False
+    normalized = normalize_route_base_url(str(base_url or "").strip())
+    try:
+        owner = profile_for_host(normalized)
+        return (
+            owner is not None
+            and owner.name == profile.name
+            and normalized == f"https://{base_url_hostname(normalized)}"
+        )
+    except ValueError:  # urllib rejects the host (``https://[broken``, a full-width colon)
+        return False
+
+
 def provider_owns_route(provider: Any, base_url: Any, config: Any = None) -> Optional[bool]:
     """Whether ``model.base_url`` is *provider*'s own endpoint.
 

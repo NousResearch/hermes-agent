@@ -684,10 +684,7 @@ class AIAgent(
                 return value
         return None
 
-    def _has_content_after_think_block(self, content: str) -> bool:
-        """True when text remains after stripping reasoning blocks (reasoning-only output is retried)."""
-        return bool(content) and bool(self._strip_think_blocks(content).strip())
-
+    _has_content_after_think_block = _forward("agent.agent_runtime_helpers_placeholders", "has_content_after_think_block")
     _strip_think_blocks = _forward("agent.agent_runtime_helpers", "strip_think_blocks")
 
     @staticmethod

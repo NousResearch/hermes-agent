@@ -141,6 +141,18 @@ def test_kanban_task_id_descriptions_state_the_non_worker_case():
     assert "kanban_show" in seen
 
 
+def test_kanban_create_optional_fields_accept_null():
+    """#38366 contract: a model that fills every optional field must be able to answer null
+    instead of a placeholder such as ``max_runtime_seconds: 0``, which kills the card."""
+    from tools import kanban_tools_schemas as kts
+
+    params = kts.KANBAN_CREATE_SCHEMA["parameters"]
+    for name, prop in params["properties"].items():
+        if name not in params["required"]:
+            assert "null" in prop["type"], name
+    assert params["properties"]["max_runtime_seconds"]["minimum"] == 1
+
+
 def test_list_filters_tasks(monkeypatch, worker_env):
     """kanban_list gives orchestrators filtered board discovery."""
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)

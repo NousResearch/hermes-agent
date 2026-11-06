@@ -201,15 +201,19 @@ def _profile_create(args):
     clone_config = clone or clone_from is not None
     cloned = clone_config or clone_all
     source_label = clone_from or get_active_profile_name()
+    parked = getattr(args, "parked", False)
     try:
         profile_dir = create_profile(
             name=name, clone_from=clone_from, clone_all=clone_all, clone_config=clone_config,
             no_alias=no_alias, no_skills=no_skills, description=getattr(args, "description", None),
             clone_channels=clone_channels, sync_imports=sync_imports,
+            parked=parked,
         )
     except (ValueError, FileExistsError, FileNotFoundError) as e:
         _die(f"Error: {e}")
     print(f"\nProfile '{name}' created at {profile_dir}")
+    if parked:
+        print("Profile created in parked state (offline, not served by host gateway until started).")
     if cloned:
         if clone_all:
             print(f"Full copy from {source_label} (excluding session history, cron jobs, backups, and snapshots).")

@@ -1079,6 +1079,7 @@ def profile_is_parked(home: Path) -> bool:
 
 
 _parked_default_warned: set[Path] = set()
+_many_profiles_warned: set[Path] = set()
 
 
 def profiles_to_serve(multiplex: bool, *, include_standalone: bool = False,
@@ -1106,6 +1107,14 @@ def profiles_to_serve(multiplex: bool, *, include_standalone: bool = False,
     serve.extend((entry.name, entry) for entry in _iter_named_profile_dirs()
                  if (include_standalone or not profile_is_standalone(entry))
                  and (include_parked or not profile_is_parked(entry)))
+    if len(serve) > 10 and default not in _many_profiles_warned and not include_parked:
+        logger.info(
+            "Gateway multiplexer is serving %d profiles. "
+            "To reduce descriptor and background concurrency, park inactive profiles with "
+            "'hermes -p <name> gateway stop' or add a gateway.parked marker.",
+            len(serve),
+        )
+        _many_profiles_warned.add(default)
     return serve
 
 
@@ -1337,6 +1346,7 @@ def create_profile(
     name: str, clone_from: Optional[str] = None, clone_all: bool = False, clone_config: bool = False,
     no_alias: bool = False, no_skills: bool = False, description: Optional[str] = None,
     clone_channels: bool = False, sync_imports: bool = False, soul: Optional[str] = None,
+    parked: bool = False,
 ) -> Path:
     """Create a new profile directory and return its path.
 
@@ -1406,6 +1416,8 @@ def create_profile(
             if stripped:
                 logger.info("profile %s: cloned without messaging channels %s", canon, stripped)
         finish_profile_layout(staging, no_skills=no_skills, clone_all=clone_all, description=description, soul=soul)
+        if parked or os.environ.get("HERMES_PROFILE_CREATE_PARKED") == "1":
+            (staging / "gateway.parked").write_text("parked on creation; start with hermes -p <name> gateway start\n")
         os.rename(staging, profile_dir)
     except BaseException:
         discard_unpublished_vault_key(clone_key)
@@ -1420,7 +1432,8 @@ def create_profile(
     _maybe_register_gateway_service(canon)
     # A running multiplexer enumerates profiles/ at boot: ask it to serve this one now (it also
     # rescans periodically, so a missed signal only delays serving).
-    _notify_multiplexer(canon)
+    if not (parked or os.environ.get("HERMES_PROFILE_CREATE_PARKED") == "1"):
+        _notify_multiplexer(canon)
     return profile_dir
 
 

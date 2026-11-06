@@ -135,10 +135,10 @@ def interactive(monkeypatch, tmp_path):
 def test_pack_install_asks_before_accepting_a_caution_verdict(tmp_path, interactive):
     """Same plugin, same commit, through a pack: the confirmed pack asks about the caution verdict.
 
-    The publication step after the scan needs PM runtime assets that the test fence blocks, so this
-    stops at the scan decision: the findings are shown, the question is asked, and the tree is not
-    refused. On ``main`` the pack printed "Security scan blocked ... Requires confirmation" and asked
-    nothing.
+    The findings are shown, the question is asked, and the tree is not refused. The publication step
+    after the scan needs PM runtime assets that some hosts block, in which case the command exits 1;
+    that exit is not what this test is about, so it is tolerated either way. On ``main`` the pack
+    printed "Security scan blocked ... Requires confirmation" and asked nothing.
     """
     from hermes_cli.plugin_packs import cmd_pack_install
 
@@ -148,8 +148,10 @@ def test_pack_install_asks_before_accepting_a_caution_verdict(tmp_path, interact
     pack.write_text(
         yaml.safe_dump({"name": "demo-pack", "plugins": [{"repo": source, "ref": sha}]}), encoding="utf-8")
 
-    with pytest.raises(SystemExit):
+    try:
         cmd_pack_install(str(pack))
+    except SystemExit:
+        pass  # a host that blocks the post-scan publication step exits 1; the scan decision stands
 
     assert any("Install anyway?" in prompt for prompt in asked), asked
     assert "Security scan flagged this plugin" in console.text, console.text

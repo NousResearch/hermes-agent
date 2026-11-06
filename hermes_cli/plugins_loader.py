@@ -354,6 +354,7 @@ class PluginLoaderMixin:
         """Register a lazy loader for a bundled platform: the adapter imports only when the
         ``platform_registry`` is first asked for it; a placeholder ``LoadedPlugin`` keeps it visible in
         ``hermes plugins list`` until then."""
+        refuse_if_frozen("plugin registry")  # the loader is published before the ledger would refuse its lease
         from hermes_cli.plugins import LoadedPlugin
         lookup_key = manifest_key(manifest)
         loaded = LoadedPlugin(manifest=manifest, enabled=True, deferred=True)
@@ -559,12 +560,13 @@ class PluginLoaderMixin:
 
     def _load_plugin(self, manifest: PluginManifest) -> None:
         """Import a plugin module and call its ``register(ctx)`` function."""
-        refuse_if_frozen("plugin registry")
         with self._discovery_lock, _plugin_home_scope(self.home_path):
             self._load_plugin_scoped(manifest)
 
     def _load_plugin_scoped(self, manifest: PluginManifest) -> None:
-        """Load one plugin with the manager's home bound as current."""
+        """Load one plugin with the manager's home bound as current. Also the body of a deferred platform's
+        loader, which runs on first registry lookup, long after boot: it refuses once the registries froze."""
+        refuse_if_frozen("plugin registry")
         from hermes_cli.plugins import LoadedPlugin, PluginContext, _PLUGINS_DEBUG
         loaded = LoadedPlugin(manifest=manifest)
         plugin_key = manifest_key(manifest)

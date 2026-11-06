@@ -1,0 +1,45 @@
+name: helm
+repo: https://github.com/ASV-Labs/hermes-helm
+sha: 01d3301b032d38ab779afb2ab8227d36374eeb14
+title: helm
+description: >-
+  A redesigned Hermes Desktop. A Desk home page (greeting and crew status, a prompt that hands work to any
+  bot, Continue, Needs you, Today's scheduled jobs); pending tool approvals and questions from every bot's
+  live chats answered in one place, on the Desk and in a sidebar pane, only on your click; a Session pane
+  with the focused chat's live task plan; a themeable redesign layer across the app (three bases, seven
+  accents, type, corners, density) on a Customize look page; status everywhere (titlebar, session rows,
+  status bar); and a Bots board of rendered robots (191 Blender-rendered PNG layers) that become each
+  bot's Hermes avatar. Disclosure — desktop half uses only Desktop SDK areas and public gateway calls the
+  app itself makes: host.profiles.list and host.listPersistedSessions (held in memory), session.active_list,
+  approval.pending, session.history (the focused chat's plan), cron.manage action list only (never adds,
+  pauses or removes a job), host.onEvent for approval/clarify/todo events; approval.respond and
+  clarify.respond only when you click Approve, Allow session, Deny or Send; profiles.create only from New
+  bot; profiles.set_asset to set a robot avatar, never over an uploaded photo; sends a chat message only
+  from the Desk prompt on Enter or Send. The theme layer is the SDK theme customCSS and selects the app's
+  data-slot names in CSS only (validate warns on these selectors); JS never queries, observes or edits app
+  markup. Writes its own ctx.storage and, when changed in its settings, the app's sessionListDensity and
+  chatTextScale. The dashboard half is a read-only FastAPI router serving the bundled PNGs
+  (fixed-pattern names, no writes, no Hermes internals imported). The agent half registers nothing. No
+  third-party network calls, no shell, no credentials, no telemetry, no self-updater. tools/render/ holds
+  the Blender source that produced the PNGs (not run by Hermes).
+maintainer: ASV-Labs
+tier: community
+category: desktop
+requires_hermes: ">=0.22.0"
+version: "1.0.0"
+docs_url: https://github.com/ASV-Labs/hermes-helm#readme
+image: https://raw.githubusercontent.com/ASV-Labs/hermes-helm/01d3301b032d38ab779afb2ab8227d36374eeb14/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/ASV-Labs/hermes-helm/01d3301b032d38ab779afb2ab8227d36374eeb14/docs/desk.png
+  - https://raw.githubusercontent.com/ASV-Labs/hermes-helm/01d3301b032d38ab779afb2ab8227d36374eeb14/docs/robots-dark.png
+  - https://raw.githubusercontent.com/ASV-Labs/hermes-helm/01d3301b032d38ab779afb2ab8227d36374eeb14/docs/robots.png
+platforms: []
+known_issues:
+  - "The robot renders come from the plugin's dashboard half, which mounts when the gateway starts; until one Hermes restart after install the Bots board shows flat SVG robots."
+  - "The theme layer's CSS targets data-slot names the app ships; if a Desktop release renames one, that rule stops applying and the palette alone remains."
+  - "Verified by hand on macOS (Apple silicon). Linux and Windows run the same code but were not exercised."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

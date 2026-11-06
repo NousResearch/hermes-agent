@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import shutil
 import socket
 import stat
@@ -62,6 +63,15 @@ _MIN_FIRST_LAUNCH_TIMEOUT_S = 120
 _UNRESPONSIVE_WAIT_S = 10  # how long a live browser whose endpoint went silent (paused, swapped out) is waited for
 _POLL_INTERVAL_S = 0.1
 _STDERR_TAIL_CHARS = 1500
+# A Windows Chromium launcher can exit 0 after relaunching itself (job-object/private-desktop startup,
+# Chrome's AutoDeElevate): the new browser process keeps the profile and writes DevToolsActivePort.
+# The launcher is still the Popen we spawned; these bound how long we wait for the hand-off.
+_HANDOFF_PORT_GRACE_S = 5.0      # exit-0 launcher with no port yet: a replacement gets this long to expose it
+_HANDOFF_QUIET_SETTLE_S = 0.3    # how long to watch a live launcher for a hand-off after the port appears
+_HANDOFF_SETTLE_S = 10.0         # ... and how long when a second browser process already names the profile
+# Every launch carries a random token in its argv; a relaunched Chromium inherits the command line, so a
+# process that carries this launch's token is provably part of it even when Windows parent links are gone.
+_LAUNCH_TOKEN_SWITCH = "--hermes-browser-launch-token="
 
 
 @dataclass
@@ -228,13 +238,17 @@ def _configured_chromium_args() -> list[str]:
 
 
 def build_chromium_argv(executable: str, user_data_dir: str, *, packaged: bool, headed: bool,
-                        sandbox_bypass: bool, extra_args=()) -> list[str]:
+                        sandbox_bypass: bool, extra_args=(), launch_token: Optional[str] = None) -> list[str]:
     """The launch argv (pure in its inputs + host sandbox facts + ``browser.chromium_args``).
 
     ``sandbox_bypass`` lets the host policy (root, Docker, AppArmor userns) add
     ``CHROMIUM_SANDBOX_BYPASS_ARGS``; it is False for the user's own browser binary, which is never
-    started without its sandbox."""
+    started without its sandbox. ``launch_token`` tags this one launch: Chromium's Windows hand-off
+    relaunches with the same command line, so the replacement can be told apart from an unrelated
+    browser that happens to name the same ``--user-data-dir``."""
     argv = [executable, "--remote-debugging-port=0", f"--user-data-dir={user_data_dir}", *_BASE_FLAGS]
+    if launch_token:
+        argv.append(f"{_LAUNCH_TOKEN_SWITCH}{launch_token}")
     if packaged:
         argv += _PACKAGED_ONLY_FLAGS
         if sys.platform == "darwin":
@@ -278,19 +292,59 @@ def _log_tail(user_data_dir: str) -> str:
     return raw.decode("utf-8", errors="replace").strip()
 
 
-def _wait_for_devtools(proc: subprocess.Popen, user_data_dir: str, deadline: float) -> tuple[Optional[tuple[int, str]], Optional[str]]:
+def _wait_for_devtools(proc: subprocess.Popen, user_data_dir: str, deadline: float,
+                       descendants: Optional[dict[int, Optional[int]]] = None) -> tuple[Optional[tuple[int, str]], Optional[str]]:
+    """Wait for DevToolsActivePort; an exit-0 launcher gets only a short hand-off grace, not the full deadline."""
+    exit_zero_at: Optional[float] = None
     while True:
+        if descendants is not None and os.name == "nt":
+            _record_descendants(proc.pid, descendants)  # a Windows hand-off can orphan the child's parent link
         found = _read_devtools_file(user_data_dir)
         if found:
             return found, None
         rc = proc.poll()
         if rc is not None:
-            tail = _log_tail(user_data_dir)
-            hint = (" Chromium's sandbox could not start; add --no-sandbox to browser.chromium_args."
-                    if "sandbox" in tail.lower() else "")
-            return None, f"Chromium exited with code {rc} during startup.{hint}" + (f"\n{tail}" if tail else "")
+            if rc != 0:
+                tail = _log_tail(user_data_dir)
+                hint = (" Chromium's sandbox could not start; add --no-sandbox to browser.chromium_args."
+                        if "sandbox" in tail.lower() else "")
+                return None, f"Chromium exited with code {rc} during startup.{hint}" + (f"\n{tail}" if tail else "")
+            now = time.monotonic()
+            if exit_zero_at is None:
+                exit_zero_at = now
+            if now >= min(deadline, exit_zero_at + _HANDOFF_PORT_GRACE_S):
+                tail = _log_tail(user_data_dir)
+                return None, ("Chromium exited with code 0 during startup and no replacement browser exposed "
+                              "a DevTools endpoint in time." + (f"\n{tail}" if tail else ""))
         if time.monotonic() >= deadline:
-            return None, "Chromium did not expose a DevTools endpoint in time."
+            tail = _log_tail(user_data_dir)
+            return None, "Chromium did not expose a DevTools endpoint in time." + (f"\n{tail}" if tail else "")
+        time.sleep(_POLL_INTERVAL_S)
+
+
+def _settle_launcher_after_port(proc: subprocess.Popen, user_data_dir: str, token: str,
+                                descendants: dict[int, Optional[int]], deadline: float) -> Optional[int]:
+    """Let a launcher that is about to hand off exit before we register its PID.
+
+    Returns its exit code once it exits, or None if it is still alive after the settle window. A second
+    process already naming the profile (a hand-off replacement) extends the short quiet window; a normal
+    Chromium launch has only ``--type=`` children, so the common path pays only ``_HANDOFF_QUIET_SETTLE_S``.
+    """
+    settle_deadline = time.monotonic() + _HANDOFF_QUIET_SETTLE_S
+    extended = False
+    if os.name != "nt" and not _handoff_candidates(proc, user_data_dir, token, descendants):
+        return proc.poll()  # Linux has no exit-0 launcher hand-off: no added latency on the normal path
+    while True:
+        if os.name == "nt":
+            _record_descendants(proc.pid, descendants)
+        rc = proc.poll()
+        if rc is not None:
+            return rc
+        if not extended and _handoff_candidates(proc, user_data_dir, token, descendants):
+            extended = True
+            settle_deadline = time.monotonic() + _HANDOFF_SETTLE_S
+        if time.monotonic() >= min(settle_deadline, deadline):
+            return None
         time.sleep(_POLL_INTERVAL_S)
 
 
@@ -356,6 +410,20 @@ def _record_names(records: Path, user_data_dir: str, pid) -> list[str]:
     return sorted(p.name for p in records.glob(f"{stem}*.json") if pattern.match(p.name))
 
 
+def _argv_names_dir(argv, user_data_dir: str) -> bool:
+    """True when ``argv`` carries ``--user-data-dir=`` naming ``user_data_dir`` (any spelling of either)."""
+    return any(tok.startswith("--user-data-dir=") and _same_profile(tok.split("=", 1)[1], user_data_dir)
+               for tok in argv)
+
+
+def _process_argv(pid: int) -> Optional[list[str]]:
+    try:
+        import psutil
+        return psutil.Process(pid).cmdline()
+    except Exception:  # health: allow BLE001 -- an unreadable identity is never a match
+        return None
+
+
 def _pid_naming_dir(user_data_dir: str) -> Optional[int]:
     """The browser (not a ``--type=`` helper) process whose argv carries ``--user-data-dir=<dir>``."""
     import psutil
@@ -364,14 +432,132 @@ def _pid_naming_dir(user_data_dir: str) -> Optional[int]:
             argv = proc.cmdline()
         except (psutil.Error, OSError):
             continue
-        if not any(tok.startswith("--type=") for tok in argv) and _cmdline_names_dir(proc.pid, user_data_dir):
+        if not any(tok.startswith("--type=") for tok in argv) and _argv_names_dir(argv, user_data_dir):
             return proc.pid
     return None
 
 
+def _profile_browser_pids(user_data_dir: str, *, exclude=()) -> list[int]:
+    """Every process that could be the browser for ``user_data_dir``: names it in argv, not a ``--type=`` helper."""
+    import psutil
+    found: list[int] = []
+    for proc in psutil.process_iter(["pid"]):
+        if proc.pid in exclude:
+            continue
+        try:
+            argv = proc.cmdline()
+        except (psutil.Error, OSError):
+            continue
+        if not any(tok.startswith("--type=") for tok in argv) and _argv_names_dir(argv, user_data_dir):
+            found.append(proc.pid)
+    return found
+
+
+def _same_user_process(pid: int) -> bool:
+    """``pid`` runs as this process's OS user (a different user's browser is never ours to claim)."""
+    try:
+        import psutil
+        mine, other = psutil.Process(os.getpid()), psutil.Process(pid)
+        if os.name == "nt":
+            return other.username().casefold() == mine.username().casefold()
+        return other.uids().real == mine.uids().real
+    except Exception:  # health: allow BLE001 -- unreadable owner fails closed
+        return False
+
+
+def _process_ppid(pid: int) -> Optional[int]:
+    try:
+        import psutil
+        return psutil.Process(pid).ppid()
+    except Exception:  # health: allow BLE001 -- a dead/unreadable process has no usable parent link
+        return None
+
+
+def _argv_launches_executable(argv, executable: str) -> bool:
+    """``executable`` (or the script a shebang runs) is one of ``argv``'s words."""
+    target = os.path.normcase(os.path.realpath(executable))
+    for token in argv:
+        if token.startswith("-"):
+            continue
+        try:
+            if os.path.normcase(os.path.realpath(token)) == target:
+                return True
+        except (OSError, ValueError):
+            continue
+    return False
+
+
+def _record_descendants(pid: int, seen: dict[int, Optional[int]]) -> None:
+    """Remember the launcher's descendants while it is alive (before a Windows hand-off can orphan them)."""
+    try:
+        import psutil
+        for child in psutil.Process(pid).children(recursive=True):
+            if child.pid not in seen:
+                seen[child.pid] = _start_time(child.pid)
+    except Exception:  # health: allow BLE001 -- the launcher may already be gone; token/ppid still identify
+        return
+
+
+def _handoff_candidates(proc: subprocess.Popen, user_data_dir: str, token: str,
+                        descendants: dict[int, Optional[int]]) -> list[tuple[int, bool]]:
+    """``(pid, carries_launch_token)`` for processes that could be THIS launch's replacement.
+
+    Ownership evidence is required, not just a shared profile: this launch's random argv token, or
+    descent from the launcher (observed child or ppid link, which Windows keeps after the parent exits).
+    An unrelated human browser on the same persistent profile has neither and is never claimed.
+    """
+    found: list[tuple[int, bool]] = []
+    for pid in _profile_browser_pids(user_data_dir, exclude=(proc.pid, os.getpid())):
+        argv = _process_argv(pid)
+        if not argv or not _same_user_process(pid):
+            continue
+        has_token = bool(token) and any(tok == f"{_LAUNCH_TOKEN_SWITCH}{token}" for tok in argv)
+        observed_birth = descendants.get(pid)
+        observed_child = (pid in descendants and observed_birth is not None
+                          and _start_time(pid) == observed_birth)
+        lineage = observed_child or _process_ppid(pid) == proc.pid
+        if has_token or lineage:
+            found.append((pid, has_token))
+    return found
+
+
+def _find_handoff_replacement(proc: subprocess.Popen, executable: str, user_data_dir: str, token: str,
+                              descendants: dict[int, Optional[int]],
+                              launcher_start: Optional[int] = None) -> tuple[list[tuple[int, int]], list[int]]:
+    """``(verified, unverified)`` replacement identities among this launch's candidates.
+
+    ``verified`` requires a live birth time no older than the launcher's; ``unverified`` are candidates
+    that carry this launch's token / descent but whose birth could not be read. Callers terminate only
+    a verified ``(pid, start_time)``; an unverified candidate is never signalled or guessed at.
+    """
+    launcher_start = _start_time(proc.pid) if launcher_start is None else launcher_start
+    verified: list[tuple[int, int]] = []
+    unverified: list[int] = []
+    for pid, has_token in _handoff_candidates(proc, user_data_dir, token, descendants):
+        argv = _process_argv(pid)
+        if not argv:
+            continue
+        if not has_token and not _argv_launches_executable(argv, executable):
+            continue  # a descendant that happens to name the profile but is another binary: not the browser
+        started = _start_time(pid)
+        if started is None or launcher_start is None or started < launcher_start:
+            unverified.append(pid)
+            continue
+        verified.append((pid, started))
+    return verified, unverified
+
+
 def _browser_running_on(user_data_dir: str) -> bool:
-    """A live Chromium still uses ``user_data_dir`` (by argv: a ``SingletonLock`` outlives a crashed browser)."""
-    return _pid_naming_dir(user_data_dir) is not None
+    """A live Chromium still uses ``user_data_dir`` (by argv or its answering DevTools endpoint).
+
+    A hand-off process may have an unreadable command line; deleting its profile on that basis alone
+    would remove an active browser's data. A stale port file is not enough: its endpoint must answer
+    with the same browser id.
+    """
+    if _pid_naming_dir(user_data_dir) is not None:
+        return True
+    found = _read_devtools_file(user_data_dir)
+    return found is not None and _devtools_endpoint_live(*found)
 
 
 def _devtools_endpoint_live(port: int, path: str) -> bool:
@@ -420,6 +606,12 @@ def _prepare_dir(user_data_dir: str, ephemeral: bool) -> None:
     if ephemeral:
         Path(user_data_dir).parent.mkdir(mode=0o700, parents=True, exist_ok=True)  # the private ephemeral root
         shutil.rmtree(user_data_dir, ignore_errors=True)  # fresh profile per launch
+    else:
+        # Last look inside the launch step: never wipe the DevToolsActivePort of a browser that came up
+        # between the attach probe and here (a human opening the same profile, another environment).
+        running = running_instance(user_data_dir)
+        if running is not None:
+            raise OSError(f"a Chromium is already running on this profile (pid {running[2]})")
     os.makedirs(user_data_dir, mode=0o700, exist_ok=True)
     try:
         os.unlink(os.path.join(user_data_dir, _DEVTOOLS_FILE))  # a stale port confuses the readiness poll
@@ -600,6 +792,75 @@ def _key_lock(key: str) -> threading.Lock:
         return _key_locks.setdefault(key, threading.Lock())
 
 
+def _kill_spawned(proc: subprocess.Popen) -> None:
+    """Kill a Popen we just spawned through its own handle (never a bare PID)."""
+    try:
+        proc.kill()
+    except (OSError, AttributeError):
+        pass
+    try:
+        proc.wait(timeout=5)
+    except (subprocess.TimeoutExpired, OSError, AttributeError):
+        pass
+
+
+def _preserve_launch_profile(proc: subprocess.Popen, starting: LaunchedBrowser) -> None:
+    """A lost hand-off identity: leave the profile alone (a live replacement may still use it).
+
+    Our launch record names the dead launcher, so it cannot identify the replacement later; dropping it
+    keeps a reaper from believing it can stop anything, while the DevTools endpoint keeps the browser
+    attachable by the next launch.
+    """
+    with _lock:
+        _launching.pop(proc.pid, None)
+    _remove_record(starting)
+
+
+def _handoff_identity_error(verified: list[tuple[int, int]], unverified: list[int]) -> str:
+    if len(verified) > 1:
+        return ("Chromium handed its profile off, but multiple replacement browser processes match this "
+                "launch; refusing to guess which one to track.")
+    if unverified:
+        return ("Chromium handed its profile off, but its replacement browser identity (start time) could "
+                "not be verified; the profile was left in place and no process was signalled.")
+    return ("Chromium exposed a DevTools endpoint, but no replacement browser process belonging to this "
+            "launch could be identified; the profile was left in place.")
+
+
+def _resolve_handoff_after_port(proc: subprocess.Popen, executable: str, udd: str, token: str,
+                                descendants: dict[int, Optional[int]], launcher_start: Optional[int],
+                                deadline: float, starting: LaunchedBrowser,
+                                ) -> tuple[Optional[int], Optional[int], Optional[str]]:
+    """Resolve the post-port hand-off: ``(replacement_pid, replacement_start, error)``.
+
+    A live launcher gets a short settle before its Popen PID is trusted; one that is still alive after
+    that is the browser itself. An exit-0 launcher is replaced only by a process carrying this launch's
+    token/lineage, and an unverifiable replacement fails closed with its profile left in place.
+    """
+    rc = proc.poll()
+    if rc is None:
+        rc = _settle_launcher_after_port(proc, udd, token, descendants, deadline)
+    if rc not in (None, 0):
+        tail = _log_tail(udd)
+        verified, unverified = _find_handoff_replacement(
+            proc, executable, udd, token, descendants, launcher_start=launcher_start)
+        if len(verified) == 1:
+            _terminate(verified[0][0], verified[0][1], None)
+        if unverified or len(verified) != 1:
+            _preserve_launch_profile(proc, starting)
+        else:
+            _abandon_launch(proc, starting)
+        return None, None, f"Chromium exited with code {rc} during startup." + (f"\n{tail}" if tail else "")
+    if rc != 0:  # still alive after the settle window: the Popen is the browser
+        return None, None, None
+    verified, unverified = _find_handoff_replacement(
+        proc, executable, udd, token, descendants, launcher_start=launcher_start)
+    if len(verified) != 1:
+        _preserve_launch_profile(proc, starting)
+        return None, None, _handoff_identity_error(verified, unverified)
+    return verified[0][0], verified[0][1], None
+
+
 def _launch_owned(key: str, executable: str, udd: str, *, ephemeral: bool, packaged: bool, headed,
                   extra_args, env, timeout, home_key: str, sandbox_bypass: bool,
                   ) -> tuple[Optional[LaunchedBrowser], Optional[str]]:
@@ -610,13 +871,26 @@ def _launch_owned(key: str, executable: str, udd: str, *, ephemeral: bool, packa
         _prepare_dir(udd, ephemeral)
     except OSError as exc:
         return None, f"Could not create the browser profile directory {udd}: {exc}"
+    token = secrets.token_hex(16)
     argv = build_chromium_argv(executable, udd, packaged=packaged, headed=_resolve_headed(headed, env),
-                               sandbox_bypass=sandbox_bypass, extra_args=extra_args)
+                               sandbox_bypass=sandbox_bypass, extra_args=extra_args, launch_token=token)
     try:
         proc = _spawn(argv, env, udd)
     except (OSError, subprocess.SubprocessError) as exc:
         return None, f"Failed to launch Chromium ({executable}): {exc}"
     start_time = _start_time(proc.pid)
+    if start_time is None:  # a psutil race on Windows: retry before refusing to track it
+        for _ in range(10):
+            time.sleep(0.05)
+            start_time = _start_time(proc.pid)
+            if start_time is not None:
+                break
+    if start_time is None:
+        _kill_spawned(proc)
+        if ephemeral and not _profile_browser_pids(udd, exclude=(os.getpid(),)):
+            shutil.rmtree(udd, ignore_errors=True)
+        return None, ("Chromium started, but its process start time could not be read; refusing to track "
+                      "a browser that cannot be told apart from a recycled PID.")
     starting = _make_browser(key, 0, "", pid=proc.pid, start_time=start_time, user_data_dir=udd, owned=True,
                              ephemeral=ephemeral, home_key=home_key)
     # Recorded before the readiness wait (a first launch may take 120 s): if this process dies in it, the
@@ -625,22 +899,51 @@ def _launch_owned(key: str, executable: str, udd: str, *, ephemeral: bool, packa
     with _lock:
         _launching[proc.pid] = starting
     _write_record(starting)
+    descendants: dict[int, Optional[int]] = {}
+    if os.name == "nt":  # Windows hand-offs can orphan the child's parent link; the token still identifies it
+        _record_descendants(proc.pid, descendants)
+    deadline = time.monotonic() + _launch_timeout(timeout)
     try:
-        found, err = _wait_for_devtools(proc, udd, time.monotonic() + _launch_timeout(timeout))
+        found, err = _wait_for_devtools(proc, udd, deadline, descendants)
     except BaseException:  # interrupted (Ctrl-C, shutdown): nobody else knows this browser exists
         _abandon_launch(proc, starting)
         raise
+    if found is None and proc.poll() == 0:
+        found = _read_devtools_file(udd)  # a port written just at the deadline is not lost
     if found is None:
+        rc = proc.poll()
+        if rc == 0:
+            verified, unverified = _find_handoff_replacement(
+                proc, executable, udd, token, descendants, launcher_start=start_time)
+            if len(verified) == 1:
+                _terminate(verified[0][0], verified[0][1], None)
+                _abandon_launch(proc, starting)
+                return None, err
+            _preserve_launch_profile(proc, starting)
+            return None, f"{err}\n{_handoff_identity_error(verified, unverified)}"
         _abandon_launch(proc, starting)
         return None, err
-    browser = _make_browser(key, found[0], found[1], pid=proc.pid, start_time=start_time, user_data_dir=udd,
-                            owned=True, ephemeral=ephemeral, home_key=home_key)
+    replacement, replacement_start, handoff_err = _resolve_handoff_after_port(
+        proc, executable, udd, token, descendants, start_time, deadline, starting)
+    if handoff_err:
+        return None, handoff_err
+    if replacement is not None:
+        # Chromium handed its profile off to a new browser process (not the exited Popen PID).
+        _remove_record(starting)
+        starting.pid, starting.start_time = replacement, replacement_start
+        with _lock:
+            _launching.pop(proc.pid, None)
+            _launching[replacement] = starting
+    browser = _make_browser(key, found[0], found[1], pid=starting.pid, start_time=starting.start_time,
+                            user_data_dir=udd, owned=True, ephemeral=ephemeral, home_key=home_key)
     _write_record(browser)  # now with its DevTools browser id: how another environment tells this launch apart
     with _lock:
-        _launching.pop(proc.pid, None)
+        _launching.pop(replacement if replacement is not None else proc.pid, None)
         _browsers[key] = browser
-        _procs[key] = proc
-    logger.info("browser: launched Chromium pid %s for %s (port %s)", proc.pid, key, found[0])
+        if replacement is None:
+            _procs[key] = proc
+    logger.info("browser: launched Chromium pid %s for %s (port %s%s)", browser.pid, key, found[0],
+                f", handed off from pid {proc.pid}" if replacement is not None else "")
     return browser, None
 
 
@@ -650,7 +953,7 @@ def _abandon_launch(proc: subprocess.Popen, starting: LaunchedBrowser) -> None:
     if proc.poll() is None:  # one that already exited is reaped by poll(); its pid is no longer ours
         _terminate(proc.pid, starting.start_time, proc)
     _remove_record(starting)
-    if starting.ephemeral:
+    if starting.ephemeral and not _browser_running_on(starting.user_data_dir):
         shutil.rmtree(starting.user_data_dir, ignore_errors=True)
 
 
@@ -736,13 +1039,16 @@ def _forget(key: str, browser: LaunchedBrowser, *, drop_record: bool = True) -> 
             drop_lease(record)
     if browser.owned and drop_record:
         _remove_record(browser)
-        if browser.ephemeral:
+        if browser.ephemeral and not _browser_running_on(browser.user_data_dir):
             shutil.rmtree(browser.user_data_dir, ignore_errors=True)
 
 
 def _terminate(pid: Optional[int], start_time: Optional[int], proc: Optional[subprocess.Popen]) -> None:
     """Parent-first teardown (tools/AGENTS.md): SIGTERM the browser alone, then its snapshot survivors."""
     if not pid:
+        return
+    if start_time is None and proc is None:
+        logger.warning("browser: refusing to terminate pid %s without a verified start time", pid)
         return
     from tools.process_registry import ProcessRegistry
     try:
@@ -956,13 +1262,8 @@ def _owner_alive(record: dict) -> bool:
 def _cmdline_names_dir(pid: int, user_data_dir: str) -> bool:
     """True only when ``pid``'s argv carries ``--user-data-dir=`` naming ``user_data_dir`` (however either is
     spelled: a symlink, a trailing slash)."""
-    try:
-        import psutil
-        argv = psutil.Process(pid).cmdline()
-    except Exception:  # health: allow BLE001 -- unreadable identity fails closed (no kill)
-        return False
-    return any(tok.startswith("--user-data-dir=") and _same_profile(tok.split("=", 1)[1], user_data_dir)
-               for tok in argv)
+    argv = _process_argv(pid)
+    return bool(argv) and _argv_names_dir(argv, user_data_dir)
 
 
 def _inside_ephemeral_root(user_data_dir: str, home: Optional[str]) -> bool:

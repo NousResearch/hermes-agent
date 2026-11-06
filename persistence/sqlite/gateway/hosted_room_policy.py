@@ -11,7 +11,6 @@ The first checkpoint verb on a file in a process opens it with the rooms step an
 
 from __future__ import annotations
 
-import json
 import sqlite3
 import threading
 from functools import partial
@@ -20,10 +19,11 @@ from typing import Any, Callable
 
 from persistence import JsonValue
 from persistence.gateway.hosted_rooms import HostedPlacement, PolicyProjectionError, PolicySnapshot, RoomNotFoundError
-from session_rules.hosted_rooms import MAX_LOG_LIMIT, compact_json
+from session_rules.hosted_rooms import MAX_LOG_LIMIT, MAX_THREAD_TRANSCRIPT_EVENTS, active_policy_within_budget, compact_json
 from session_rules.hosted_tasks import validate_task_input
 
 from .._backend import SQLiteStore, register_repository, translated
+from ._hosted_room_log_context import discussion_events, read_thread_messages
 from ._hosted_rooms_common import fenced_update
 from ._hosted_rooms_schema import ROOMS_STEP
 from ._hosted_store import HostedFiles, file_identity
@@ -35,8 +35,7 @@ MAX_ACTIVE_POLICY_EVENTS = 64
 # ``turn.deferred`` receipts come from explicit user retries, not from the configured reply
 # budget, so they are bounded on their own: sizing the reply budget exactly must leave room.
 MAX_ACTIVE_RETRY_RECEIPTS = 64
-MAX_THREAD_TRANSCRIPT_EVENTS = 24
-_TRANSCRIPT_SCHEMA_VERSION = 5  # 5: rebuild threads an old settle closed under a newer message
+_TRANSCRIPT_SCHEMA_VERSION = 6  # Rebuild watermarks and active anchors for log-backed file delivery.
 _TERMINAL_KINDS = frozenset({"turn.settled", "turn.failed", "turn.cancelled", "turn.deferred"})
 # What a Continue restores into a reopened discussion's active projection (the cap's activity is not one).
 _REOPENED_KINDS = (*sorted(_TERMINAL_KINDS), "message.member", "room.assignment", "room.routed", "room.continued")
@@ -196,16 +195,9 @@ def _discussion_events(
     max_active_events: int,
 ) -> list[dict[str, Any]]:
     """Merge the thread transcript with the active projection, ordered by seq."""
-    active_rows = []
-    for receipts, bound in ((0, max_active_events), (1, MAX_ACTIVE_RETRY_RECEIPTS)):
-        rows = conn.execute("""SELECT event_json FROM hosted_room_policy_events
-               WHERE room_id=? AND discussion_event_id=?
-                 AND (json_extract(event_json, '$.kind') = 'turn.deferred') = ?
-               ORDER BY seq LIMIT ?""",
-            (room_id, discussion_event_id, receipts, bound + 1)).fetchall()
-        if len(rows) > bound:
-            raise PolicyProjectionError(bound_error)
-        active_rows.extend(rows)
+    active = discussion_events(conn, room_id=room_id, discussion_event_id=discussion_event_id, kinds=_REOPENED_KINDS)
+    if not active_policy_within_budget(active, capacity=max_active_events, retry_limit=MAX_ACTIVE_RETRY_RECEIPTS):
+        raise PolicyProjectionError(bound_error)
     # LIMIT also reads one overflow sentinel; keep its parameter inside SQLite's integer range.
     max_transcript_policy_events = min(
         2**63 - 2, MAX_THREAD_TRANSCRIPT_EVENTS * (max_active_events + MAX_ACTIVE_RETRY_RECEIPTS + 2))
@@ -216,7 +208,7 @@ def _discussion_events(
         raise PolicyProjectionError("thread policy transcript exceeded its bound")
     events_by_seq = {
         int(event["seq"]): event
-        for event in (*map(_event_from_room_row, rows), *(json.loads(row["event_json"]) for row in active_rows))}
+        for event in (*map(_event_from_room_row, rows), *active)}
     for event in _settled_source_users(conn, room_id=room_id, thread_id=thread_id, events=events_by_seq):
         events_by_seq[int(event["seq"])] = event
     return [events_by_seq[seq] for seq in sorted(events_by_seq)]
@@ -245,12 +237,6 @@ def _apply_discussion_event(conn: sqlite3.Connection, event: Mapping[str, Any], 
     """Index member messages and terminal turn outcomes of a known discussion."""
     room_id, seq, kind = str(event["room_id"]), int(event["seq"]), _text(event, "kind")
     thread_id, discussion_event_id = _text(payload, "thread_id"), _text(payload, "discussion_event_id")
-    if conn.execute(
-        "SELECT 1 FROM hosted_room_policy_events WHERE room_id=? AND discussion_event_id=? LIMIT 1",
-        (room_id, discussion_event_id)).fetchone() is not None:
-        _store_active_event(conn, event=event, thread_id=thread_id, discussion_event_id=discussion_event_id)
-    # Late outcomes still need publication receipts and transcript commits,
-    # but must not resurrect a completed discussion's active projection.
     if kind not in _TERMINAL_KINDS:
         return
     task_id = _text(payload, "task_id")
@@ -265,7 +251,16 @@ def _apply_discussion_event(conn: sqlite3.Connection, event: Mapping[str, Any], 
     if kind == "turn.settled" and payload.get("message_event_id"):
         committed = _settled_message(conn, room_id, discussion_event_id, payload["message_event_id"])
         if committed is not None:
-            seen_through_seq = max(seen_through_seq, int(committed["seq"]))
+            # A skipped file batch or peer message remains unread after this reply.
+            skipped = conn.execute(
+                """SELECT 1 FROM hosted_room_events
+                    WHERE room_id=? AND json_extract(payload_json, '$.thread_id')=? AND seq>? AND seq<?
+                      AND (kind='message.user' OR (kind='message.member'
+                           AND json_extract(payload_json, '$.member_id') IS NOT ?))
+                    LIMIT 1""",
+                (room_id, thread_id, seen_through_seq, int(committed["seq"]), member_id)).fetchone()
+            if skipped is None:
+                seen_through_seq = max(seen_through_seq, int(committed["seq"]))
             _store_transcript_event(conn, event=committed, thread_id=thread_id, settled_seq=seq)
     else:
         # Non-visible receipts still supply historical reconstruction watermarks.
@@ -313,13 +308,6 @@ def _apply_continued(conn: sqlite3.Connection, event: Mapping[str, Any], payload
                latest_user_seq=excluded.latest_user_seq, completed=0""",
         (room_id, thread_id, discussion_event_id, int(source_event["seq"])))
     _store_active_event(conn, event=source_event, thread_id=thread_id, discussion_event_id=discussion_event_id)
-    for row in conn.execute(f"""SELECT {_ROOM_EVENT_COLUMNS} FROM hosted_room_events
-            WHERE room_id=? AND seq>? AND seq<=? AND kind IN ({",".join("?" * len(_REOPENED_KINDS))})
-              AND json_extract(payload_json, '$.discussion_event_id')=? ORDER BY seq""",
-            (room_id, int(source_event["seq"]), int(event["seq"]), *_REOPENED_KINDS,
-             discussion_event_id)).fetchall():
-        _store_active_event(conn, event=_event_from_room_row(row), thread_id=thread_id,
-                            discussion_event_id=discussion_event_id)
 
 
 def _apply_stop_requested(conn: sqlite3.Connection, event: Mapping[str, Any], payload: Mapping[str, Any]) -> None:
@@ -476,7 +464,8 @@ class SQLiteHostedRoomPolicyRepository:
                    WHERE room_id=? AND thread_id=?""", (room_id, thread_id)).fetchall()
             return PolicySnapshot(
                 through_seq=through_seq, stopped_through_seq=stopped_through_seq, events=tuple(events),
-                watermarks={(thread_id, str(row["member_id"])): int(row["seen_through_seq"]) for row in watermark_rows})
+                watermarks={(thread_id, str(row["member_id"])): int(row["seen_through_seq"]) for row in watermark_rows},
+                read_messages=partial(read_thread_messages, self._files, placement, room_id=room_id, through_seq=through_seq))
         with translated():
             capacity = self._prepare(placement, max_active_events)
             self._sync(placement, room_id=room_id, latest_seq=latest_seq)

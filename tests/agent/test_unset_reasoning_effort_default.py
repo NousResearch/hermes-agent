@@ -29,8 +29,7 @@ class _Agent:
         self.request_overrides = None
         self.service_tier = None
         self._fast_until = 0.0
-        self._ephemeral_reasoning_off = False
-        self._reasoning_effort_rejected = False
+        self._ephemeral_reasoning_omit = False
         self._reasoning_disable_rejected = False
         self._ollama_num_ctx: int | None = None
 
@@ -74,10 +73,13 @@ def test_unset_effort_default_keeps_the_field_off_where_it_would_be_wrong():
     with patch("agent.models_dev.get_model_capabilities", return_value=ModelCapabilities(supports_reasoning=False)):
         assert _wire_reasoning_config(_Agent(None)) is None
     with patch("agent.models_dev.get_model_capabilities", return_value=None):
-        # The route already rejected the reasoning field this session (#112781 ladder → route default).
+        # The route already rejected the reasoning field on THIS call's predecessor
+        # (#112781 ladder → route default, one-shot for the retry only).
         rejected = _Agent(None)
-        rejected._reasoning_effort_rejected = True
+        rejected._ephemeral_reasoning_omit = True
         assert _wire_reasoning_config(rejected) is None
+        # Consumed exactly once: the call after the retry carries the configured level again.
+        assert _wire_reasoning_config(rejected) == _wire_reasoning_config(_Agent(None))
         # A local Ollama model pulled without the thinking capability 400s on reasoning_effort.
         ollama = _Agent(None)
         ollama._ollama_num_ctx = 8192

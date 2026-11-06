@@ -197,6 +197,44 @@ Hermes automatically adds emoji reactions to your messages to show processing st
 
 These reactions work in both DMs and group chats.
 
+### Native Voice Replies
+
+DingTalk can receive Hermes audio replies as native voice messages, rather than
+links or file attachments. This uses the existing `send_voice()` / `play_tts()`
+platform interface and is independent of the configured TTS provider. It does
+not change when Hermes chooses to speak or add a new voice-cloning provider.
+
+Requirements:
+
+- A bot conversation with an authorized user and available inbound reply context.
+- DingTalk app permission to upload voice media and send robot messages to the
+  recipient. Session-webhook text access alone is not sufficient.
+- `ffprobe` on `PATH`, plus `ffmpeg` built with `libopencore_amrnb` for conversion
+  from WAV, MP3, OGG or other formats readable by ffmpeg. These system binaries
+  are not installed automatically. `ffmpeg -encoders` lists available encoders.
+
+The adapter prepares AMR-NB audio (8 kHz, mono), validates the actual encoding
+and probes its duration, then uploads it as `voice` and sends `sampleAudio`.
+Prepared media must fit the 2 MB upload limit. Existing `.amr` input is validated,
+not trusted solely by its extension; source files are never modified.
+
+Direct replies use the inbound sender's staff ID with `oToMessages/batchSend`;
+group replies use the inbound conversation ID with `groupMessages/send`.
+Missing, expired or inconsistent reply context fails rather than guessing a
+recipient. This implementation does not provide context-free proactive or cron
+voice delivery.
+
+`sampleAudio` has no caption field. A supplied caption is sent as a separate
+text reply after the voice is accepted. If that text reply fails, the successful
+voice receipt is retained and a warning is logged; the voice must not be resent
+just to retry its caption. API acceptance is not proof of client playback.
+
+To verify a setup, ask for an audio reply in an authorized bot DM and check that
+the client displays a native voice message with a nonzero duration and can play
+it. Missing binary/encoder errors name the required dependency; upload/send
+rejections require checking the app permissions and recipient access. Normal
+text replies continue to use the existing markdown / AI Card path.
+
 ### Display Settings
 
 You can customize DingTalk's display behavior independently from other platforms:

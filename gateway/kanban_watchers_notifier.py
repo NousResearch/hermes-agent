@@ -52,6 +52,10 @@ _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "revie
 
 def diagnostic_event(ev) -> bool:
     """Infrastructure attention is distinct from an explicit owner decision."""
+    # Reviewer-to-implementer rework is internal coordination. Preserve its
+    # wake/board receipt, but let the subscriber's diagnostic policy mute it.
+    if ev.kind == "changes_requested":
+        return True
     if ev.kind in {"crashed", "timed_out", "gave_up"}:
         return True
     if ev.kind in {"blocked", "block_loop_detected"}:
@@ -374,6 +378,65 @@ def _payload(ev: Any, key: str) -> Any:
     return ev.payload.get(key) if ev.payload and ev.payload.get(key) else None
 
 
+def _fresh_events(conn, task, events):
+    """Reject obsolete failure/decision envelopes using ordered board receipts.
+
+    Timestamps have second precision; lifecycle event IDs fence even an
+    unblock/reblock or two worker generations within the same second.
+    """
+    if task is None:
+        return []
+    guarded = {"timed_out", "crashed", "gave_up", "blocked", "block_loop_detected"}
+    kinds = (*TERMINAL_KINDS, "claimed", "promoted", "reclaimed")
+    latest = conn.execute(
+        "SELECT id FROM task_events WHERE task_id = ? AND kind IN ("
+        + ",".join("?" for _ in kinds) + ") ORDER BY id DESC LIMIT 1",
+        (task.id, *kinds),
+    ).fetchone()
+    latest_run = conn.execute(
+        "SELECT id, outcome, ended_at FROM task_runs WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+        (task.id,),
+    ).fetchone()
+    accepted = []
+    for ev in events:
+        if ev.kind not in guarded:
+            accepted.append(ev)
+            continue
+        if latest is None or ev.id != latest["id"] or task.current_run_id is not None:
+            continue
+        if ev.kind in {"timed_out", "crashed"}:
+            if (latest_run is None or ev.run_id != latest_run["id"]
+                    or latest_run["ended_at"] is None or latest_run["outcome"] != ev.kind
+                    or task.status not in {"ready", "review"}
+                    or _payload(ev, "retry_status") != task.status):
+                continue
+            original = conn.execute(
+                "SELECT id FROM task_events WHERE task_id = ? AND run_id = ? "
+                "AND kind = ? ORDER BY id LIMIT 1", (task.id, ev.run_id, ev.kind),
+            ).fetchone()
+            if original is None or original["id"] != ev.id:
+                continue
+        elif task.status not in {"blocked", "triage"}:
+            continue
+        accepted.append(ev)
+    return accepted
+
+
+def _refresh_delivery(d):
+    from hermes_cli import kanban_db as kb
+    # Same pin-first fence as collect/cursor ops: an enumerated board slug must
+    # resolve through HERMES_KANBAN_DB on a pinned box, or this re-read opens a
+    # per-slug empty DB and drops every envelope as missing.
+    with _pin_first():
+        conn = _kbc().connect(board=d.get("board"))
+        try:
+            task = kb.get_task(conn, d["sub"]["task_id"])
+            return task, _fresh_events(conn, task, d["events"])
+        finally:
+            conn.close()
+
+
+
 def _clip(ev: Any, key: str, msg_key: str, limit: int) -> str:
     """Catalog message ``msg_key`` (``{value}`` placeholder) rendered with the truncated payload
     value, or ``""`` when absent."""
@@ -394,9 +457,9 @@ def _fmt_completed(ev, n) -> tuple:
     wake_handoff = None
     payload_summary = _payload(ev, "summary")
     if payload_summary:
-        wake_handoff = _first_line(str(payload_summary), 200)
+        wake_handoff = str(payload_summary)
     elif n.task and n.task.result:
-        wake_handoff = _first_line(n.task.result, 160)
+        wake_handoff = n.task.result
     handoff = f"\n{wake_handoff}" if wake_handoff is not None else ""
     return t("gateway.kanban.ping.completed", head=n.head, title=n.title, handoff=handoff), wake_handoff, None
 
@@ -459,11 +522,17 @@ def _fmt_gave_up(ev, n) -> tuple:
     return t("gateway.kanban.ping.gave_up", head=n.head, count=count, last=last, task_id=n.task_id), None, None
 
 
-def _fmt_timed_out(ev, n) -> tuple:
-    limit = int(_payload(ev, "limit_seconds") or 0)
-    minutes = max(1, round(limit / 60)) if limit else 0
-    span = t("gateway.kanban.ping.limit_minutes", minutes=minutes) if minutes else t("gateway.kanban.ping.limit_generic")
-    return t("gateway.kanban.ping.timed_out", head=n.head, span=span), None, None
+def _fmt_timeout(ev, n) -> tuple:
+    used, maximum = _payload(ev, "budget_used"), _payload(ev, "budget_max")
+    payload = ev.payload or {}
+    if maximum:
+        detail = f"iteration budget {used}/{maximum}"
+    elif payload.get("limit_seconds") is not None:
+        detail = f"max_runtime={int(payload['limit_seconds'])}s"
+    else:
+        detail = "timeout limit unavailable"
+    retry = "retry queued" if n.task and n.task.status in {"ready", "review"} else "no automatic retry queued"
+    return f"⏱ {n.head} timed out ({detail}); {retry}", None, None
 
 
 # archived / unblocked are claimed (so the cursor advances past them) but
@@ -476,8 +545,8 @@ _EVENT_FORMATTERS: dict[str, Callable[[Any, _KanbanNotification], tuple]] = {
         None, None,
     ),
     "gave_up": _fmt_gave_up,
-    "crashed": lambda ev, n: (t("gateway.kanban.ping.crashed", head=n.head), None, None),
-    "timed_out": _fmt_timed_out,
+    "crashed": lambda ev, n: (f"✖ {n.head} worker crashed (pid gone); retry queued", None, None),
+    "timed_out": _fmt_timeout,
     "status": lambda ev, n: (t("gateway.kanban.ping.status", head=n.head, status=_payload(ev, "status") or ""), None, None),
     "review_requested": _fmt_review_requested,
     "changes_requested": _fmt_changes_requested,
@@ -746,6 +815,22 @@ class _KanbanNotification:
         return True
 
     async def deliver(self) -> None:
+        self.task, self.d["events"] = await _to_thread_process_service(_refresh_delivery, self.d)
+        if not self.d["events"]:
+            await self.advance()
+            return
+        try:
+            self.task, self.d["events"] = await _to_thread_process_service(_refresh_delivery, self.d)
+        except Exception as exc:
+            # Claim already advanced the cursor; a failed freshness re-read must
+            # rewind so the envelope can retry instead of vanishing forever.
+            logger.warning("kanban notifier: freshness re-read failed for %s on board %s: %s; rewinding claim",
+                           self.task_id, self.board_slug, exc)
+            await self.rewind()
+            return
+        if not self.d["events"]:
+            await self.advance()
+            return
         try:
             self.plat = self.platform_cls(self.platform_str)
         except ValueError:
@@ -769,6 +854,15 @@ class _KanbanNotification:
         # SUBSCRIBER profile's config; the notifier thread itself runs in the launch profile's scope.
         async with self._owner_scope():
             if not await self._send_pings():
+                return
+            # Transport awaits can overlap a human resolving an approval or a
+            # dispatcher claiming the retry. Never wake from the older snapshot.
+            try:
+                self.task, self.d["events"] = await _to_thread_process_service(_refresh_delivery, self.d)
+            except Exception as exc:
+                logger.warning("kanban notifier: post-send freshness re-read failed for %s on board %s: %s; rewinding claim",
+                               self.task_id, self.board_slug, exc)
+                await self.rewind()
                 return
             # All text pings delivered (or skipped for non-push / wake-only).
             original_events = self.d["events"]

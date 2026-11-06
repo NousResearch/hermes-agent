@@ -51,8 +51,8 @@ def source_build_env(base_env: dict | None = None, *, explicit: bool = False, ve
     hermes_npmrc = get_hermes_home() / "npmrc"
     if hermes_npmrc.is_file():
         env.setdefault("NPM_CONFIG_USERCONFIG", str(hermes_npmrc))
-    # pnpm reads the npmrc npm would (an explicit userconfig, else Hermes's, else ~/.npmrc) only
-    # for its registry and auth. npm also handed every other key to dependency install scripts
+    # pnpm reads the npmrc that user_npmrc selects (an explicit userconfig, else Hermes's, else
+    # ~/.npmrc) only for its registry and auth. npm also handed every other key to dependency install scripts
     # as npm_config_<key>, which is how node-pre-gyp finds a binary mirror
     # (node_get_windows_binary_host_mirror).
     inherited = {name.upper() for name in env}

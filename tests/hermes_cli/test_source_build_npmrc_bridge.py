@@ -165,3 +165,20 @@ def test_values_no_child_environment_can_carry_are_skipped(bridge):
     assert npm_registry({"NPM_CONFIG_USERCONFIG": str(npmrc)}) == "https://ok.invalid/"
     subprocess.run([sys.executable, "-c", ""], env=env, check=True)
 
+
+def test_hermes_home_npmrc_steers_pm_downloads_as_it_steers_builds(bridge, monkeypatch):
+    """The npm keys documented for ``$HERMES_HOME/npmrc`` reach the source build, so PM's own
+    npm downloads (pinned artifacts, dist-tags) must resolve against the same file."""
+    from pm.artifact_mirror import pinned_source
+    from pm.index_config import npm_registry
+
+    (bridge / "npmrc").write_text("registry=https://hermes-home.invalid/npm/\n", encoding="utf-8")
+    (bridge.parent / "user" / ".npmrc").write_text("registry=https://home-dir.invalid/\n", encoding="utf-8")
+
+    assert npm_registry({}) == "https://hermes-home.invalid/npm/"
+    source = pinned_source("https://registry.npmjs.org/pnpm/-/pnpm-12.15.0.tgz", bridge / "pnpm.tgz", "0" * 64)
+    assert source.url == "https://hermes-home.invalid/npm/pnpm/-/pnpm-12.15.0.tgz"
+
+    explicit = bridge.parent / "explicit-npmrc"
+    explicit.write_text("registry=https://explicit.invalid/\n", encoding="utf-8")
+    assert npm_registry({"npm_config_userconfig": str(explicit)}) == "https://explicit.invalid/"

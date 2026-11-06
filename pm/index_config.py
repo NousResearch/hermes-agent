@@ -113,9 +113,16 @@ NPM_PUBLIC_REGISTRY = "https://registry.npmjs.org/"
 
 
 def user_npmrc(env: Mapping[str, str]) -> Path:
-    """The user npmrc npm reads: ``npm_config_userconfig`` (any case), else ``~/.npmrc``."""
+    """The user npmrc Hermes's npm and pnpm children read: ``npm_config_userconfig`` (any case),
+    else the profile's ``$HERMES_HOME/npmrc`` when it exists (``source_build_env`` points
+    ``NPM_CONFIG_USERCONFIG`` at it), else ``~/.npmrc``."""
+    from hermes_constants import get_hermes_home
+
     explicit = next((value for key, value in env.items() if key.lower() == "npm_config_userconfig" and value), "")
-    return Path(explicit).expanduser() if explicit else Path.home() / ".npmrc"
+    if explicit:
+        return Path(explicit).expanduser()
+    hermes_npmrc = get_hermes_home() / "npmrc"
+    return hermes_npmrc if hermes_npmrc.is_file() else Path.home() / ".npmrc"
 
 
 # npm's line grammar (the ``ini`` package @npmcli/config parses with) and its ${VAR} / ${VAR?}
@@ -214,7 +221,7 @@ def _spawnable(text: str) -> bool:
 
 def npm_registry(env: Mapping[str, str]) -> str:
     """The npm registry the user configured, as npm resolves it: ``npm_config_registry`` (any
-    case) beats ``registry=`` in the user npmrc (``npm_config_userconfig`` or ``~/.npmrc``)."""
+    case) beats ``registry=`` in the user npmrc (``user_npmrc``)."""
     lowered = {key.lower(): value for key, value in env.items()}
     value = (lowered.get("npm_config_registry") or "").strip()
     if not value:

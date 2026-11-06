@@ -1193,6 +1193,24 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         )
         return True
 
+    def _stamp_secondary_adapter_connected(self, profile_name: str, platform: Platform, adapter) -> None:
+        """Stamp a connected secondary under its ``<profile>:<platform>`` status key.
+
+        The primary paths stamp this (startup + reconnect); the secondary *success* paths stamped
+        nothing, so a healthy secondary channel had no ``gateway_state.json`` row while every
+        failure path wrote one: measured 2026-10-25, a secondary profile's channel served traffic
+        for an hour with no row for it. The write also clears a failure's escalation
+        (``needs_attention``), as ``_install_reconnected_adapter`` does."""
+        # getattr: the seam is duck-typed (plugin/double adapters need not inherit the base).
+        degraded = getattr(adapter, "send_path_degraded", False)
+        self._update_platform_runtime_status(
+            f"{profile_name}:{platform.value}",
+            platform_state="retrying" if degraded else "connected",
+            error_code=None,
+            error_message=adapter.DEGRADED_STATUS_MESSAGE if degraded else None,
+            needs_attention=False, retrying_since=None,
+        )
+
     def _note_unserved_secondary_platform(self, profile_name: str, platform: Platform) -> None:
         """Report unpaired WhatsApp or secondary-only Relay. Log the reason and remedy and stamp a
         ``<profile>:<platform>`` status entry so ``hermes gateway status --profile X`` and the
@@ -1353,6 +1371,8 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
                     claimed[claim] = profile_name
 
             connected += 1
+            # Without this a healthy secondary channel has no gateway_state.json row at all.
+            self._stamp_secondary_adapter_connected(profile_name, platform, adapter)
             logger.info("✓ %s connected (profile: %s)", platform.value, profile_name)
         return connected
 

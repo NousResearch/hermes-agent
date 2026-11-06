@@ -155,6 +155,10 @@ Choose the highest (least-footprint) rung that correctly solves the problem:
 | **Node.js** | Use the PM pin or a version accepted by root `package.json` engines |
 | **pnpm** | Exactly the root `package.json` `devEngines` pin; `source ./activate` provides it |
 
+On native Windows, use the [Windows clone command](../reference/package-management.md#prepare-a-checkout)
+before preparing dependencies. A deeply nested checkout can otherwise fail with
+`Filename too long` while writing the repository's documentation paths.
+
 ### PM developer environment
 
 Use the [PM developer workflow](../reference/package-management.md#developer-workflow) for preparation, activation, everyday commands,

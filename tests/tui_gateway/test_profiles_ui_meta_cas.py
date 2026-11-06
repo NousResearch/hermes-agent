@@ -111,3 +111,141 @@ def test_two_concurrent_writers_cannot_both_replace_the_same_revision(home):
     loser = next(result for result in results if result["ui_meta"] is False)
     assert loser["ui_meta_conflicts"]["shared-room"]["actual"] == 1
     assert _default_profile()["ui_meta_revisions"]["shared-room"] == 1
+
+
+def test_bot_title_write_is_attributed_only_after_successful_cas(home, caplog):
+    import logging
+
+    caplog.set_level(logging.INFO)
+    first = _configure({"hermes-bots": {"title": "Fixture Bot"}}, {"hermes-bots": 0})
+    assert first["ui_meta"] is True
+    traces = [r.getMessage() for r in caplog.records if "ui_meta hermes-bots title" in r.getMessage()]
+    assert len(traces) == 1
+    assert "default" in traces[0] and "Fixture Bot" in traces[0] and "revision 1" in traces[0]
+    caplog.clear()
+    rejected = _configure({"hermes-bots": {"title": "Stale Bot"}}, {"hermes-bots": 0})
+    assert rejected["ui_meta"] is False
+    assert not [r for r in caplog.records if "ui_meta hermes-bots title" in r.getMessage()]
+    assert _default_profile()["ui_meta"]["hermes-bots"]["title"] == "Fixture Bot"
+
+def test_bot_title_removal_is_attributed_without_claiming_previous_title(home, caplog):
+    import logging
+
+    _configure({"hermes-bots": {"title": "Fixture Bot"}})
+    caplog.set_level(logging.INFO)
+    caplog.clear()
+    deleted = _configure({"hermes-bots": None}, {"hermes-bots": 1})
+    assert deleted["ui_meta"] is True
+    traces = [r.getMessage() for r in caplog.records if "ui_meta hermes-bots title" in r.getMessage()]
+    assert len(traces) == 1
+    assert "None" in traces[0] and "revision 2" in traces[0]
+    assert "Fixture Bot" not in traces[0]
+    assert "hermes-bots" not in _default_profile().get("ui_meta", {})
+
+
+_RACE_CHILD = '''
+import json
+import sys
+from pathlib import Path
+if sys.argv[1] == 'gateway':
+    import tui_gateway.server as srv
+else:
+    from hermes_cli.profiles_ui_meta import apply_ui_meta_cas
+print('ready', file=sys.__stdout__, flush=True)
+sys.stdin.readline()
+if sys.argv[1] == 'gateway':
+    result = srv._methods['profiles.configure']('cas-race', {
+        'name': 'default', 'ui_meta': {'shared-room': {'writer': 'gateway'}},
+        'ui_meta_expected_revisions': {'shared-room': 0}})['result']['applied']
+else:
+    result = apply_ui_meta_cas(Path(sys.argv[2]), {'shared-room': {'writer': 'helper'}},
+                               expected_revisions={'shared-room': 0})
+    result = {'ui_meta': result['applied'], 'ui_meta_revisions': result['revisions'],
+              'ui_meta_conflicts': result.get('conflicts')}
+print(json.dumps(result), file=sys.__stdout__, flush=True)
+'''
+
+
+def test_real_gateway_rpc_and_helper_processes_share_cas(home):
+    import subprocess
+    import sys
+    from pathlib import Path
+    import hermes_yaml as yaml
+
+    children = []
+    try:
+        for mode in ('gateway', 'helper'):
+            child = subprocess.Popen([sys.executable, '-c', _RACE_CHILD, mode, str(home)],
+                                     cwd=Path(__file__).resolve().parents[2],
+                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                     stderr=subprocess.PIPE, text=True)
+            children.append(child)
+        for child in children:
+            assert child.stdout.readline().strip() == 'ready'
+        for child in children:
+            child.stdin.write('\n')
+            child.stdin.flush()
+        results = []
+        for child in children:
+            out, err = child.communicate(timeout=60)
+            assert child.returncode == 0, err
+            results.append(json.loads(out.strip().splitlines()[-1]))
+        assert sum(r['ui_meta'] is True for r in results) == 1
+        loser = next(r for r in results if r['ui_meta'] is False)
+        assert loser['ui_meta_conflicts'] == {'shared-room': {'expected': 0, 'actual': 1}}
+        winner_index = next(i for i, r in enumerate(results) if r['ui_meta'] is True)
+        document = yaml.safe_load((home / 'profile.yaml').read_text())
+        assert document['ui_meta']['shared-room']['writer'] == ('gateway', 'helper')[winner_index]
+        assert document['_ui_meta_revisions']['shared-room'] == 1
+    finally:
+        for child in children:
+            if child.poll() is None:
+                child.kill()
+                _, err = child.communicate(timeout=30)
+                print(err)
+
+
+_GATEWAY_TIMEOUT_CHILD = '''
+import json
+import logging
+import sys
+import tui_gateway.server as srv
+import hermes_cli.profiles_ui_meta as profiles
+profiles._PROFILE_UI_META_LOCK_TIMEOUT_S = 0.1
+logging.basicConfig(level=logging.INFO)
+print('ready', file=sys.__stdout__, flush=True)
+sys.stdin.readline()
+result = srv._methods['profiles.configure']('lock-timeout', {
+    'name': 'default', 'ui_meta': {'hermes-bots': {'title': 'Rejected'}},
+    'ui_meta_expected_revisions': {'hermes-bots': 0}})['result']['applied']
+print(json.dumps(result), file=sys.__stdout__, flush=True)
+'''
+
+
+def test_gateway_refuses_while_canonical_helper_lock_is_held(home):
+    import subprocess
+    import sys
+    from pathlib import Path
+    from hermes_cli.profiles_ui_meta import _profile_ui_meta_file_lock
+
+    path = home / 'profile.yaml'
+    path.write_text('description: keep\n')
+    before = path.read_bytes()
+    child = None
+    try:
+        with _profile_ui_meta_file_lock(home):
+            child = subprocess.Popen([sys.executable, '-c', _GATEWAY_TIMEOUT_CHILD],
+                                     cwd=Path(__file__).resolve().parents[2],
+                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                     stderr=subprocess.PIPE, text=True)
+            assert child.stdout.readline().strip() == 'ready'
+            out, err = child.communicate('\n', timeout=60)
+            assert child.returncode == 0, err
+            assert json.loads(out.strip().splitlines()[-1]) == {'ui_meta': False}
+            assert 'ui_meta hermes-bots title' not in err
+            assert path.read_bytes() == before
+        assert _configure({'hermes-bots': {'title': 'Accepted'}}, {'hermes-bots': 0})['ui_meta'] is True
+    finally:
+        if child is not None and child.poll() is None:
+            child.kill()
+            child.communicate(timeout=30)

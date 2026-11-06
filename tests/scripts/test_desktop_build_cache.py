@@ -130,6 +130,56 @@ def test_keys_follow_dependency_inputs_not_checkout_or_release_identity(tmp_path
     assert describe_cache(source, cache, "payload-only")["restore_keys"][1] != rerun["restore_keys"][1]
 
 
+# The Node programs desktop preparation runs (scripts/bundles/desktop_prepare.py).
+_PREPARATION_PROGRAMS = (
+    "scripts/build/node-deps.mjs", "apps/desktop/scripts/stage-native-deps.mjs",
+    "apps/desktop/scripts/prepare-packaging-tools.mjs", "apps/desktop/scripts/probe-prepared-native.mjs",
+)
+_MODULE_GRAPH = """
+import { registerHooks } from 'node:module'
+const loaded = new Set()
+registerHooks({ resolve(specifier, context, next) {
+  const result = next(specifier, context)
+  if (result.url.startsWith('file:')) loaded.add(result.url)
+  return result
+} })
+// Programs arrive by env: argv[1] would make the first one run as main.
+for (const program of JSON.parse(process.env.PROGRAMS)) await import(new URL(program, `file://${process.cwd()}/`).href)
+console.log(JSON.stringify([...loaded]))
+"""
+
+
+def test_keys_follow_every_module_desktop_preparation_loads(tmp_path):
+    """Editing a module a preparation program imports must miss the input cache."""
+    import shutil
+    from urllib.parse import unquote, urlparse
+    from scripts.ci.desktop_build_cache import describe_cache
+
+    node = shutil.which("node")
+    assert node, "the module graph test requires the build's Node"
+    graph = subprocess.run([node, "--input-type=module", "-e", _MODULE_GRAPH], cwd=ROOT,
+                           env={**os.environ, "PROGRAMS": json.dumps(_PREPARATION_PROGRAMS)}, capture_output=True, text=True, encoding="utf-8", timeout=60, check=False)
+    assert graph.returncode == 0, graph.stdout + graph.stderr
+    modules = sorted({Path(unquote(urlparse(url).path)).resolve().relative_to(ROOT).as_posix()
+                      for url in json.loads(graph.stdout)})
+    modules = [module for module in modules if not module.startswith("node_modules/")]
+    assert set(_PREPARATION_PROGRAMS) < set(modules)
+
+    source = source_tree(tmp_path / "source")
+    for module in modules:
+        (source / module).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / module, source / module)
+    first = describe_cache(source, tmp_path / "cache", "desktop-production")["restore_keys"][0]
+    stale = []
+    for module in modules:
+        old = (source / module).read_bytes()
+        (source / module).write_bytes(old + b"\n")
+        if describe_cache(source, tmp_path / "cache", "desktop-production")["restore_keys"][0] == first:
+            stale.append(module)
+        (source / module).write_bytes(old)
+    assert not stale, f"desktop cache key ignores imported modules: {stale}"
+
+
 def test_cache_roots_cannot_select_private_state_or_follow_workspace_symlinks(tmp_path, monkeypatch):
     from scripts.ci.desktop_build_cache import describe_cache
 

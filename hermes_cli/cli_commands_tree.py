@@ -22,31 +22,27 @@ class CLICommandsTreeMixin:
         """
         import sys
         from hermes_cli.cli_commands_mixin import _db_unavailable_line
-        from hermes_cli.session_tree import empty_line, family_view, pick_session, usage_line
+        from hermes_cli.session_tree import empty_line, load_family, parse_show_all, pick_session, tree_lines, usage_line
 
-        arg = _command_arg(cmd_original).strip().lower()
-        if arg not in {"", "--all", "all"}:
+        show_all = parse_show_all(_command_arg(cmd_original))
+        if show_all is None:
             return _cp(f"  {usage_line()}")
-        show_all = bool(arg)
         if not self._session_db:
             return _cp(_db_unavailable_line())
         # The picker owns the screen: a streaming turn would repaint over it, so refuse mid-turn
         # rather than leave the user with a half-drawn menu (same guard /branch and /rewind take).
         if getattr(self, "_agent_running", False):
             return _cp(f"  {_t('shared.agent_busy', command='/tree')}")
-        family, lines = family_view(self._session_db, self.session_id,
-                                    show_compressions=show_all, show_subagents=show_all)
+        family = load_family(self._session_db, self.session_id, show_all=show_all)
         if not family.nodes:
             return _cp(f"  {empty_line()}")
-        # One surface at a time: a terminal gets the picker (which IS the family, rows and all) and
-        # nothing is printed first — painting rows and then taking the screen for curses races the
-        # prompt's queued repaints. Every other reader gets the same rows as text.
+        # A terminal gets the picker and nothing printed first (painting rows and then taking the
+        # screen for curses races the prompt's queued repaints); every other reader gets text.
         if not sys.stdin.isatty() or len(family.nodes) < 2:
-            for line in lines:
+            for line in tree_lines(family):
                 _cp(f"  {line}")
             return None
-        picked = pick_session(self._session_db, self.session_id,
-                              show_compressions=show_all, show_subagents=show_all)
+        picked = pick_session(family)
         if picked is None or picked == self.session_id:
             return None
         self._handle_resume_command(f"/resume {picked}")

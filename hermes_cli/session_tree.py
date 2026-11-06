@@ -16,7 +16,6 @@ from hermes_state_family import (
     KIND_BRANCH, KIND_COMPRESSION, KIND_ROOT, KIND_SUBAGENT, KIND_UNKNOWN, SessionFamily,
 )
 
-# What a kind is called in a row. The identifiers stay English; only the label is localized.
 _KIND_KEYS = {
     KIND_ROOT: "cli.tree.kind_root",
     KIND_BRANCH: "cli.tree.kind_branch",
@@ -26,34 +25,32 @@ _KIND_KEYS = {
 }
 
 _INDENT = "  "
+_ALL_ARGS = {"--all", "all"}
 
 
-def _t(key: str, default: str, **kwargs: Any) -> str:
-    """``t(key, **kwargs)`` with *default* when the catalog has no such key (an untranslated install)."""
-    value = t(key, **kwargs)
-    return default if value == key else value
+def parse_show_all(arg: str) -> Optional[bool]:
+    """``/tree [--all]`` argument: True for ``--all``, False for none, ``None`` for anything else."""
+    tokens = (arg or "").lower().split()
+    if any(token not in _ALL_ARGS for token in tokens):
+        return None
+    return bool(tokens)
+
+
+def usage_line() -> str:
+    return t("cli.tree.usage")
+
+
+def empty_line() -> str:
+    return t("cli.tree.empty")
 
 
 def node_title(node: dict[str, Any]) -> str:
     """The row's title, or an honest ``untitled <id>`` — never a made-up name."""
-    title = (node.get("title") or "").strip()
-    return title or _t("cli.tree.untitled", "untitled {id}", id=node["session_id"][:8])
-
-
-def usage_line() -> str:
-    """The one usage string every surface prints for a bad /tree argument."""
-    return _t("cli.tree.usage", "Usage: /tree [--all]")
-
-
-def empty_line() -> str:
-    """What every surface says when the session has no stored family yet."""
-    return _t("cli.tree.empty", "No stored family for this session yet — send a message first.")
+    return (node.get("title") or "").strip() or t("cli.tree.untitled", id=node["session_id"][:8])
 
 
 def _when(created_at: float) -> str:
-    if not created_at:
-        return ""
-    return datetime.fromtimestamp(created_at).strftime("%d/%m %H:%M")
+    return datetime.fromtimestamp(created_at).strftime("%d/%m %H:%M") if created_at else ""
 
 
 def node_line(node: dict[str, Any]) -> str:
@@ -62,97 +59,64 @@ def node_line(node: dict[str, Any]) -> str:
     ``after msg N`` is the parent's sealed message number, printed only where the store can prove
     it (a compression continuation). ``+N compressed`` is the segments folded into this row.
     """
-    parts = [node_title(node), _t(_KIND_KEYS.get(node["kind"], "cli.tree.kind_unknown"),
-                                 node["kind"])]
     count = node.get("message_count") or 0
-    parts.append(_t("cli.tree.messages", "{count} msgs", count=count) if count != 1
-                 else _t("cli.tree.messages_one", "1 msg", count=count))
-    when = _when(node.get("created_at") or 0)
-    if when:
-        parts.append(when)
+    parts = [
+        node_title(node),
+        t(_KIND_KEYS.get(node["kind"], "cli.tree.kind_unknown")),
+        t("cli.tree.messages_one" if count == 1 else "cli.tree.messages", count=count),
+        _when(node.get("created_at") or 0),
+    ]
     if node.get("branch_from") is not None:
-        parts.append(_t("cli.tree.after_message", "after msg {number}", number=node["branch_from"]))
+        parts.append(t("cli.tree.after_message", number=node["branch_from"]))
     if node.get("folded_segments"):
-        parts.append(_t("cli.tree.compressed_segments", "+{count} compressed",
-                        count=node["folded_segments"]))
+        parts.append(t("cli.tree.compressed_segments", count=node["folded_segments"]))
     if node.get("is_current"):
-        parts.append(_t("cli.tree.current", "current"))
+        parts.append(t("cli.tree.current"))
     return _INDENT * int(node.get("depth") or 0) + " · ".join(part for part in parts if part)
 
 
 def tree_lines(family: SessionFamily) -> list[str]:
-    """The family as indented text — the gateway's ``/tree`` and every non-curses CLI path.
-
-    *family* is already reduced to the caller's view (``SessionDB.session_family`` applies the
-    flags), so this only draws: re-applying the view here would re-parent it a second time.
-    """
+    """The family as indented text. *family* is already reduced to the caller's view."""
     lines = [node_line(node) for node in family.nodes]
     if family.truncated:
-        lines.append(_t("cli.tree.truncated", "(family truncated: more sessions than this view lists)"))
+        lines.append(t("cli.tree.truncated"))
     return lines
 
 
-def tree_header(family: SessionFamily) -> str:
-    """Title line for the text views: whose family this is, and how many rows it shows.
-
-    The count is the rows the caller asked for (a folded continuation is one row, a hidden subagent
-    run is none), so it never promises a row the view does not draw.
-    """
-    root = next((node for node in family.nodes if node["session_id"] == family.root_id), None)
-    name = node_title(root) if root else family.root_id
-    return _t("cli.tree.header", "Session tree · {title} · {count} session(s)",
-              title=name, count=len(family.nodes))
-
-
 def tree_text(family: SessionFamily) -> str:
-    """The whole text answer for a text surface: header, rows, or why there is nothing to show.
-
-    The messaging gateway's ``/tree`` and ``slash.exec`` print exactly this, so their output
-    reads like the classic CLI's.
-    """
+    """Header plus rows, or why there is nothing to show — what every text surface prints."""
     if not family.nodes:
         return empty_line()
-    return "\n".join([tree_header(family), *tree_lines(family)])
+    root = next((node for node in family.nodes if node["session_id"] == family.root_id), None)
+    header = t("cli.tree.header", title=node_title(root) if root else family.root_id,
+               count=len(family.nodes))
+    return "\n".join([header, *tree_lines(family)])
 
 
-def family_view(db: Any, session_id: str, *, show_compressions: bool = False,
-                show_subagents: bool = False) -> tuple[SessionFamily, list[str]]:
-    """``(family, lines)`` for *session_id* in this store, ready to print or pick from.
+def load_family(db: Any, session_id: str, *, show_all: bool = False) -> SessionFamily:
+    """The family around *session_id*; ``show_all`` also lists compressions and subagent runs.
 
-    Goes through ``SessionDB.session_family``, so the classic CLI's thin client store can answer it
-    from its own read-only handle (a free function over ``_read_one`` would be refused there).
+    Goes through ``SessionDB.session_family`` so the classic CLI's thin-client store can answer
+    it from its own read-only handle (a free function over ``_read_one`` is refused there).
     """
-    family = _family_from(db.session_family(session_id, show_compressions=show_compressions,
-                                            show_subagents=show_subagents))
-    return family, tree_lines(family)
-
-
-def _family_from(payload: dict[str, Any]) -> SessionFamily:
-    """The store's ``{root_id, nodes, truncated}`` as a :class:`SessionFamily`."""
+    payload = db.session_family(session_id, show_compressions=show_all, show_subagents=show_all)
     return SessionFamily(nodes=list(payload.get("nodes") or []),
                          root_id=str(payload.get("root_id") or ""),
                          truncated=bool(payload.get("truncated")))
 
 
-def pick_session(db: Any, session_id: str, *, show_compressions: bool = False,
-                 show_subagents: bool = False) -> Optional[str]:
-    """Pick a session in the family around *session_id*; ``None`` when cancelled or there is no choice.
+def pick_session(family: SessionFamily) -> Optional[str]:
+    """Pick a session from *family*; ``None`` when cancelled or there is nothing to switch to.
 
-    The rows are the ones :func:`tree_lines` prints, so a picker row and a printed row read the
-    same. ``curses_single_select`` gives arrows, ``/`` search, Enter and Esc; it cannot fold at a
-    keypress (its item list is fixed for the life of the menu), so folding is a view argument here
-    — the defaults fold compressions and hide subagents, and the TUI overlay toggles them live.
+    ``curses_single_select`` gives arrows, ``/`` search, Enter and Esc. It cannot fold at a
+    keypress (its item list is fixed for the life of the menu), so ``--all`` is the CLI's view
+    toggle and the TUI overlay folds live.
     """
-    family, _lines = family_view(db, session_id, show_compressions=show_compressions,
-                                 show_subagents=show_subagents)
-    if not family.nodes:
-        return None
     nodes = family.nodes
     if len(nodes) < 2:
         return None
-    labels = [node_line(node) for node in nodes]
     current = next((index for index, node in enumerate(nodes) if node["is_current"]), 0)
     choice = curses_single_select(
-        _t("cli.tree.title", "Session tree"), labels, default_index=current,
-        cancel_label=_t("cli.tree.cancel", "Cancel"), searchable=True)
+        t("cli.tree.title"), [node_line(node) for node in nodes], default_index=current,
+        cancel_label=t("cli.tree.cancel"), searchable=True)
     return nodes[choice]["session_id"] if choice is not None else None

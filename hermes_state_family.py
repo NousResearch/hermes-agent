@@ -24,9 +24,6 @@ KIND_COMPRESSION = "compression"
 KIND_SUBAGENT = "subagent"
 KIND_UNKNOWN = "unknown"
 
-# Every kind a node can carry, in the order a reader should read them.
-KINDS = (KIND_ROOT, KIND_BRANCH, KIND_COMPRESSION, KIND_SUBAGENT, KIND_UNKNOWN)
-
 # Hard stops: a corrupt store can point a row at itself, or two rows at each other.
 MAX_DEPTH = 200
 MAX_NODES = 500
@@ -87,42 +84,26 @@ def _markers(row: dict[str, Any]) -> dict[str, Any]:
     return config if isinstance(config, dict) else {}
 
 
-def _marker_points_at(row: dict[str, Any], name: str, parent_id: Optional[str]) -> bool:
-    """Whether *name* names this row's parent.
-
-    Same binding as ``SessionDB._is_explicit_fork_child_row``: a marker only counts when it
-    equals ``parent_session_id``, because compression copies ``model_config`` onto its
-    continuation. With no parent at all, any marker value is foreign and does not count as a link.
-    """
-    value = _markers(row).get(name)
-    return value == parent_id if parent_id else False
-
-
-def _is_explicit_fork(row: dict[str, Any], parent_id: Optional[str]) -> bool:
-    """Branch, delegate or reset child of *parent_id* — never a compression continuation."""
-    if row.get("source") == "tool":
-        return True
-    return any(_marker_points_at(row, marker, parent_id)
-               for marker in ("_branched_from", "_delegate_from", "_reset_from"))
+def _marker_points_at(row: dict[str, Any], name: str) -> bool:
+    """Whether marker *name* names this row's parent (compression copies ``model_config`` onto
+    its continuation, so a marker only counts when it equals ``parent_session_id``)."""
+    parent_id = row.get("parent_session_id")
+    return bool(parent_id) and _markers(row).get(name) == parent_id
 
 
 def classify_kind(db: Any, row: dict[str, Any], parent: Optional[dict[str, Any]]) -> str:
     """The kind the stored markers prove for *row*, or ``unknown``.
 
-    Order matters and mirrors the store's own helpers: a tool/delegate row is a subagent before
-    it can be anything else; an explicit branch marker wins over the compression rule because
-    ``_is_compression_child_row`` excludes explicit forks itself.
+    Mirrors the store's own helpers: a tool/delegate row is a subagent before anything else,
+    and the compression rule is ``_is_compression_child_row`` read against the parent in hand.
     """
-    parent_id = row.get("parent_session_id")
     if parent is None:
         return KIND_ROOT
-    if row.get("source") == "tool" or _marker_points_at(row, "_delegate_from", parent_id):
+    if row.get("source") == "tool" or _marker_points_at(row, "_delegate_from"):
         return KIND_SUBAGENT
-    if _marker_points_at(row, "_branched_from", parent_id):
+    if _marker_points_at(row, "_branched_from"):
         return KIND_BRANCH
-    # The store's rule (``_is_compression_child_row``), read against the parent row already in
-    # hand: a sealed segment of ``end_reason == 'compression'`` continues into this child.
-    if parent.get("end_reason") == "compression" and not _is_explicit_fork(row, parent_id):
+    if parent.get("end_reason") == "compression" and not db._is_explicit_fork_child_row(row, include_reset=True):
         return KIND_COMPRESSION
     return KIND_UNKNOWN
 
@@ -270,20 +251,17 @@ def visible_nodes(
 class SessionFamilyMixin:
     """``/tree``'s family read, bound onto ``SessionDB``.
 
-    It is a store METHOD, not a free function over a handle, because the classic CLI's session
-    store is a thin client: only names in ``gateway_session_store._READS`` reach its read-only
-    ``state.db`` reader, and anything else refuses. One method therefore serves all three
-    surfaces — the CLI's local reader, the gateway's store, and the TUI's RPC.
+    A store method rather than a free function because the classic CLI's store is a thin client
+    that only forwards names in ``gateway_session_store._READS`` to its read-only reader.
     """
 
     def session_family(
         self, session_id: str, *, show_compressions: bool = False,
         show_subagents: bool = False, folded: Iterable[str] = (),
     ) -> dict[str, Any]:
-        """``{root_id, nodes, truncated}`` for *session_id*, already reduced to the caller's view.
+        """``{root_id, nodes, truncated}`` for *session_id*, reduced to the caller's view.
 
-        Read-only: the walk reads rows and the view flags only drop rows. A session this store
-        does not hold yields empty ``nodes``, which is how another profile's request resolves.
+        A session this store does not hold yields empty ``nodes`` (another profile's request).
         """
         family = build_session_family(self, session_id)
         nodes = visible_nodes(family.nodes, show_compressions=show_compressions,

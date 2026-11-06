@@ -27,8 +27,8 @@ export const overlaysEn = {
       editHint: 'Enter rewind here and send · Esc back to the list'
     },
     tree: {
-      title: '⠪ session tree',
-      detail: 'the family around this session: its root, branches and continuations',
+      title: '├ session tree',
+      detail: 'where this chat started, and every branch made from it',
       listHint:
         '↑/↓ select · ←/→ fold · / search · c compressions · s subagents · Enter switch · Esc close',
       searchHint: 'type to filter titles · Esc clear',
@@ -44,8 +44,7 @@ export const overlaysEn = {
       current: 'current',
       untitled: (id: string) => `untitled ${id}`,
       empty: 'No stored family for this session yet — send a message first.',
-      truncated: '(family truncated: more sessions than this view lists)',
-      switched: (title: string) => `switched to ${title}`
+      truncated: '(family truncated: more sessions than this view lists)'
     },
     clarify: {
       other: 'Other (type your answer)',

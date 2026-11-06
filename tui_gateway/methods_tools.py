@@ -1004,10 +1004,10 @@ def _cmd_tree(rid, params, session, name, arg):
     overlay (the desktop, ACP, a gateway-local session) with the same text the classic CLI prints.
     Read-only: it builds the family and formats it, and never touches the session.
     """
-    from hermes_cli.session_tree import family_view, tree_text, usage_line
+    from hermes_cli.session_tree import load_family, parse_show_all, tree_text, usage_line
 
-    tokens = (arg or "").split()
-    if any(token not in {"--all", "all"} for token in tokens):
+    show_all = parse_show_all(arg)
+    if show_all is None:
         return _exec_out(rid, usage_line())
     session_id = params.get("session_id") or (session or {}).get("session_id") or ""
     if not session_id:
@@ -1015,8 +1015,7 @@ def _cmd_tree(rid, params, session, name, arg):
     with _profile_db(params) as db:
         if db is None:
             return _db_unavailable_error(rid, code=5017)
-        family, _lines = family_view(db, session_id, show_compressions=bool(tokens),
-                                     show_subagents=bool(tokens))
+        family = load_family(db, session_id, show_all=show_all)
     return _exec_out(rid, tree_text(family))
 
 

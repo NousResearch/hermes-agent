@@ -796,7 +796,7 @@ prompt.rewind.title: "↺ riavvolgi — scegli un prompt precedente da modificar
 prompt.tree.afterMsg: "after msg {0}"
 prompt.tree.compressed: "+{0} compressed"
 prompt.tree.current: "current"
-prompt.tree.detail: "the family around this session: its root, branches and continuations"
+prompt.tree.detail: "where this chat started, and every branch made from it"
 prompt.tree.empty: "No stored family for this session yet — send a message first."
 prompt.tree.kindBranch: "branch"
 prompt.tree.kindCompression: "compression"
@@ -807,8 +807,7 @@ prompt.tree.listHint: "↑/↓ select · ←/→ fold · / search · c compressi
 prompt.tree.msg: "{0} msg"
 prompt.tree.msgs: "{0} msgs"
 prompt.tree.searchHint: "type to filter titles · Esc clear"
-prompt.tree.switched: "switched to {0}"
-prompt.tree.title: "⠪ session tree"
+prompt.tree.title: "├ session tree"
 prompt.tree.truncated: "(family truncated: more sessions than this view lists)"
 prompt.tree.untitled: "untitled {0}"
 

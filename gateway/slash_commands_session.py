@@ -1205,9 +1205,9 @@ class GatewaySessionCommandsMixin:
         """
         if not self._session_db:
             return self._session_db_unavailable_reply()
-        from hermes_cli.session_tree import empty_line, family_view, tree_text, usage_line
-        args = event.get_command_args().strip().split()
-        if any(token not in {"--all", "all"} for token in args):
+        from hermes_cli.session_tree import empty_line, load_family, parse_show_all, tree_text, usage_line
+        show_all = parse_show_all(event.get_command_args())
+        if show_all is None:
             return usage_line()
         source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
         # Peek, never get_or_create: asking what the family is must not mint a session.
@@ -1215,8 +1215,7 @@ class GatewaySessionCommandsMixin:
         if not isinstance(session_id, str) or not session_id:
             return empty_line()
         db = getattr(self._session_db, "_db", self._session_db)
-        family, _lines = await asyncio.to_thread(
-            family_view, db, session_id, show_compressions=bool(args), show_subagents=bool(args))
+        family = await asyncio.to_thread(load_family, db, session_id, show_all=show_all)
         return tree_text(family)
 
     async def _handle_branch_command(self, event: MessageEvent) -> str:

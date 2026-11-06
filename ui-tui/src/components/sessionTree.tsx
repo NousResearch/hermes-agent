@@ -158,7 +158,6 @@ export function SessionTree({ cols = 80, onClose, overlay, t }: SessionTreeProps
           return (
             <Text key={node.session_id} wrap="truncate-end">
               <Text color={t.color.muted} {...chipRowProps(t, active)}>
-                {active ? '▸ ' : '  '}
                 {'  '.repeat(node.depth)}
                 {glyph}
                 {title(node)}

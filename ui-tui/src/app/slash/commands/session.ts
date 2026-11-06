@@ -253,7 +253,7 @@ export const sessionCommands: SlashCommand[] = [
     help: 'show this session’s branch family and switch to any session in it',
     name: 'tree',
     run: (arg, ctx) => {
-      const all = arg.trim() === '--all'
+      const all = ['--all', 'all'].includes(arg.trim().toLowerCase())
 
       return openSessionTree(
         ctx,

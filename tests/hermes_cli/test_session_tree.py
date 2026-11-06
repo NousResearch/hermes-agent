@@ -44,7 +44,7 @@ def test_a_row_reads_title_kind_size_and_when(db) -> None:
     line = session_tree.node_line(node).strip()
 
     assert line.startswith("side-main #2 · branch · 0 msgs · ")
-    assert line.endswith(" · " + session_tree._t("cli.tree.current", "current"))
+    assert line.endswith(" · " + session_tree.t("cli.tree.current"))
 
 
 def test_indentation_is_two_spaces_per_level(db) -> None:
@@ -70,7 +70,7 @@ def test_a_continuation_says_which_message_it_continues(db) -> None:
 
 
 def test_the_default_view_folds_continuations_and_hides_subagent_runs(db) -> None:
-    lines = session_tree.family_view(db, "branch")[1]
+    lines = session_tree.tree_lines(session_tree.load_family(db, "branch"))
 
     assert len(lines) == 2
     assert lines[0].startswith("untitled root · root")
@@ -79,14 +79,14 @@ def test_the_default_view_folds_continuations_and_hides_subagent_runs(db) -> Non
 
 
 def test_the_all_view_lists_the_folded_rows_too(db) -> None:
-    lines = session_tree.family_view(db, "branch", show_compressions=True, show_subagents=True)[1]
+    lines = session_tree.tree_lines(session_tree.load_family(db, "branch", show_all=True))
 
     assert [line.strip().split(" · ")[1] for line in lines] == [
         "root", "compression", "branch", "subagent"]
 
 
 def test_the_text_answer_carries_a_header_and_the_rows(db) -> None:
-    text = session_tree.tree_text(session_tree.family_view(db, "branch")[0])
+    text = session_tree.tree_text(session_tree.load_family(db, "branch"))
 
     header, *rows = text.splitlines()
     assert header.startswith("Session tree · untitled root · 2 session(s)")
@@ -96,7 +96,7 @@ def test_the_text_answer_carries_a_header_and_the_rows(db) -> None:
 def test_an_empty_family_says_so_rather_than_printing_a_blank_tree(tmp_path) -> None:
     empty = SessionDB(db_path=tmp_path / "empty.db")
     try:
-        text = session_tree.tree_text(session_tree.family_view(empty, "nope")[0])
+        text = session_tree.tree_text(session_tree.load_family(empty, "nope"))
     finally:
         empty.close()
 
@@ -112,7 +112,7 @@ def test_the_picker_returns_the_picked_session_id(db, monkeypatch) -> None:
 
     monkeypatch.setattr(session_tree, "curses_single_select", _choose)
 
-    assert session_tree.pick_session(db, "branch") == "branch"
+    assert session_tree.pick_session(session_tree.load_family(db, "branch")) == "branch"
     assert seen["searchable"] is True
     assert seen["default_index"] == 1
 
@@ -124,7 +124,7 @@ def test_the_picker_is_skipped_when_there_is_nothing_to_switch_to(db, monkeypatc
     monkeypatch.setattr(session_tree, "curses_single_select", _never)
     db.create_session("lonely", source="cli")
 
-    assert session_tree.pick_session(db, "lonely") is None
+    assert session_tree.pick_session(session_tree.load_family(db, "lonely")) is None
 
 
 class _TTY(io.StringIO):
@@ -178,6 +178,12 @@ def test_the_command_refuses_a_midway_turn_instead_of_drawing_over_it(db, monkey
 
     assert "busy" in capsys.readouterr().out.lower()
     assert cli.resumed == []
+
+
+@pytest.mark.parametrize("arg, expected", [("", False), ("--all", True), ("ALL", True),
+                                           ("--all all", True), ("nonsense", None), ("--all x", None)])
+def test_one_parser_reads_the_argument_for_every_surface(arg, expected) -> None:
+    assert session_tree.parse_show_all(arg) is expected
 
 
 def test_the_command_rejects_an_unknown_argument(db, capsys) -> None:

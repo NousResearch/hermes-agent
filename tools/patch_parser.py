@@ -276,8 +276,10 @@ def _select_span(content: str, pattern: str, hunk: Hunk, cursor: int, *, ordered
     tiers = [[s for s in tier if free(s)] for tier in _line_spans(content, pattern.split('\n'))]
     raw = [s for pos in _positions(content, pattern) if free(s := (pos, pos + len(pattern)))]
 
-    if raw and not any(tiers) and _consumed(pattern, removed):
-        return None, len(raw), "its search text was consumed by an earlier hunk"
+    if not any(tiers) and any(_consumed(line, removed) for line in pattern.split('\n') if line.strip()):
+        candidates = raw or _normalized_sites(content, pattern, free)
+        if any(content[content.rfind('\n', 0, start) + 1:start].strip() for start, _end in candidates):
+            return None, len(candidates), "its search text was consumed by an earlier hunk"
 
     norm: list[Span] = []
 
@@ -544,8 +546,8 @@ def _plan_hunks(content: str, hunks: list[Hunk]) -> _Plan:
             start, old_end, cursor = edit
             for later in hunks[index:]:
                 hint = later.context_hint or ''
-                if hint and any(_overlaps((pos, pos + len(hint)), (start, old_end))
-                                for pos in _positions(content, hint)):
+                if hint and len(_positions(new_content, hint)) < len(_positions(content, hint)) and any(
+                        _overlaps((pos, pos + len(hint)), (start, old_end)) for pos in _positions(content, hint)):
                     damaged_hints.add(hint)
             removed.append(content[start:old_end])
             landed.append((content[start:old_end], replacement))

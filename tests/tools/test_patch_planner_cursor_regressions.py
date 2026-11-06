@@ -254,3 +254,22 @@ def test_inserted_text_is_not_reedited_after_trimmed_eof():
     result, files = apply(source, '@@\n+X\n@@\n-X\n+Y')
     assert not result.success
     assert files.source == source and not files.writes
+
+
+@pytest.mark.parametrize('suffix', ['rename = "edge-1"\ntail = 1\n', 'rename  = "edge-1"\n'])
+def test_consumed_line_cannot_target_other_identifier_through_fuzzy_path(suffix):
+    source = 'hostname = "edge-1"\nkeep = marker\n' + suffix
+    old = 'name = "edge-1"\n-tail = 1' if 'tail' in suffix else 'name = "edge-1"'
+    body = '@@\n-hostname = "edge-1"\n+host = "marker"\n@@ marker @@\n-' + old + '\n+DONE'
+    result, files = apply(source, body)
+    assert not result.success
+    assert files.source == source and not files.writes
+
+
+def test_hint_preserved_by_earlier_hunk_can_still_anchor():
+    source = 'header marker\nvalue = old\nvalue = old\n'
+    body = ('@@\n-header marker\n+header marker\n+note\n@@ marker @@\n value = old\n'
+            '@@\n-value = old\n+FIRST\n@@\n-value = old\n+SECOND')
+    result, files = apply(source, body)
+    assert result.success, result.error
+    assert files.source == 'header marker\nnote\nFIRST\nSECOND\n'

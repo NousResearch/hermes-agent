@@ -455,6 +455,8 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
         )
         # Ready-lane task with the same fresh PR comment.
         ready_id = kb.create_task(conn, title="already PRed", assignee="worker")
+        kb.claim_task(conn, ready_id)
+        assert kb.reclaim_task(conn, ready_id, reason="retry after implementation")
         kb.add_comment(conn, ready_id, author="worker", body=pr_comment)
 
         assert kbd.check_respawn_guard(conn, ready_id) == "active_pr"
@@ -515,8 +517,12 @@ def test_active_pr_guard_lifts_for_profile_handed_the_card_after_the_pr(
 
     with kbc.connect() as conn:
         dev_id = kb.create_task(conn, title="dev own pr", assignee="dev")
+        kb.claim_task(conn, dev_id)
+        assert kb.reclaim_task(conn, dev_id, reason="retry after implementation")
         kb.add_comment(conn, dev_id, author="dev", body=pr_comment)
         closer_id = kb.create_task(conn, title="closer recovery", assignee="dev")
+        kb.claim_task(conn, closer_id)
+        assert kb.reclaim_task(conn, closer_id, reason="retry after implementation")
         kb.add_comment(conn, closer_id, author="dev", body=pr_comment)
         _backdate_comments(conn, closer_id)
         assert kb.assign_task(conn, closer_id, "closer") is True
@@ -553,6 +559,8 @@ def test_active_pr_guard_holds_through_same_profile_reassign_and_unassign(
     pr_comment = "Opened https://github.com/example/repo/pull/44 for review."
     with kbc.connect() as conn:
         tid = kb.create_task(conn, title="same assign", assignee="dev")
+        kb.claim_task(conn, tid)
+        assert kb.reclaim_task(conn, tid, reason="retry after implementation")
         kb.add_comment(conn, tid, author="dev", body=pr_comment)
         _backdate_comments(conn, tid)
         assert kb.assign_task(conn, tid, "dev") is True

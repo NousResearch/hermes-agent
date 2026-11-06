@@ -334,7 +334,7 @@ async def execute_admission(authority, ref, row):
     event._turn_marker_handoff = True
     handed = False
     try:
-        async with _admission_scope(authority, home, row, event, captured):
+        async with _admission_scope(authority, home, row, event, captured, ref=ref, policy=local_policy):
             if is_api:
                 # Committed media resolves under the owning profile's home, like admission did.
                 prepared = prepare_api_execution(authority, ref, row['payload'])
@@ -407,11 +407,14 @@ def _launch_body_if_launch_owner(authority):
 
 
 @asynccontextmanager
-async def _admission_scope(authority, home, row, event, captured):
+async def _admission_scope(authority, home, row, event, captured, *, ref, policy):
     """The execution scope, inside the adapter lifecycle the executor owns for a producer-admitted
     turn (``session_producer_lifecycle``; a no-op for every other admission)."""
     async with producer_turn(authority, row, event, captured):
-        with await _execution_scope(authority, home):
+        from gateway.hosted_room_outputs import hosted_turn_for, hosted_turn_scope
+        turn = (await asyncio.to_thread(hosted_turn_for, authority, ref, row)
+                if policy is not None and policy.source == 'bot_room' else None)
+        with await _execution_scope(authority, home), hosted_turn_scope(turn):
             yield
 
 

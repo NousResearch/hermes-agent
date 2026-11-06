@@ -161,6 +161,8 @@ def _authority(room: Mapping[str, Any]) -> tuple[str, int]:
 class HostedRoomService:
     """Own the hosted Discussion policy and its transport-free worker."""
 
+    shares_files = False
+
     def __init__(
         self, server: ModuleType, *, db_path: Path | str | None = None,
         peer_routes: Mapping[tuple[str, str], PeerMemberRoute] | None = None,
@@ -698,6 +700,8 @@ class HostedRoomService:
             if self.policy_checkpoint.publication_exists(
                 room_id=room_id, task_id=task["identity"].task_id, status=status,
                 execution_generation=execution_generation):
+                if status != "deferred":
+                    self._release_task_outputs(room, task)
                 continue
             task_events = self.policy_checkpoint.events_for_task(
                 room_id=room_id, source_event_seq=int(task["payload"]["source_event_seq"]),
@@ -709,16 +713,28 @@ class HostedRoomService:
                 # Finish an already visible immutable reply even if a later request arrived.
                 task_events = [event for event in task_events if event["kind"] != "message.user"
                                or int(event["seq"]) <= int(task["payload"]["source_event_seq"])]
+            outputs = self._bind_task_outputs(room, task) if status == "settled" else {}
+            result = task.get("result")
+            if outputs:
+                result = {**(result if isinstance(result, Mapping) else {}), **outputs}
             publication = discussion.plan_publication(
-                room, task_events, plan, status=status, result=task.get("result"),
+                room, task_events, plan, status=status, result=result,
                 execution_generation=execution_generation if status == "deferred" else None,
                 local_profiles=local_profiles)
             for event in publication.events:
                 appended = hosted_rooms.append_event(
                     self.db_path, **event.append_kwargs(room_id), expected_latest_seq=cursor)
                 cursor = max(cursor, int(appended["seq"]))
+            if status != "deferred":
+                self._release_task_outputs(room, task)
             changed = True
         return changed
+
+    def _bind_task_outputs(self, room: Mapping[str, Any], task: Mapping[str, Any]) -> dict[str, Any]:
+        return {}
+
+    def _release_task_outputs(self, room: Mapping[str, Any], task: Mapping[str, Any]) -> None:
+        """Canonical owners release unpublished files after a terminal outcome."""
 
     def _append_room_status(
         self, room: Mapping[str, Any], decision: discussion.DiscussionDecision) -> None:
@@ -761,6 +777,7 @@ class HostedRoomService:
                 room, list(snapshot.events), local_profiles=self.room_profiles(room),
                 initial_watermarks=snapshot.watermarks, read_messages=snapshot.read_messages,
                 freeze_input_context=True, limits=self.discussion_limits,
+                share_files=self.shares_files,
                 room_context=None if source_seq is None else room_context(
                     self.db_path, room_id=binding.room_id, before_seq=source_seq))
             if decision.status == "task" and decision.task is not None:
@@ -823,6 +840,7 @@ class HostedRoomService:
                     room, list(snapshot.events), local_profiles=self.room_profiles(room),
                     initial_watermarks=snapshot.watermarks, read_messages=snapshot.read_messages,
                     freeze_input_context=True, limits=self.discussion_limits,
+                    share_files=self.shares_files,
                     room_context=room_context(self.db_path, room_id=binding.room_id,
                                               before_seq=asked.source_event_seq))
                 if (current.status, current.discussion_event_id) != ("route", asked.discussion_event_id):

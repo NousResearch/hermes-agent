@@ -7,10 +7,12 @@ public submission parameters cannot supply it.
 """
 from gateway.owner_identity import same_owner
 from hermes_state_runtime import RuntimeStoreError
+from session_input_primitives import input_payload_fields
 
 # Fields ``SessionAuthority.submit`` commits for a local session's input; producers commit their own envelope.
+# A batch record (and the keys an older installation wrote) carries only text this surface authorized.
 LOCAL_INPUT_FIELDS = frozenset({'text', 'attachments_v1', 'finite', 'unattended', 'surface_v1', 'display_v1',
-                                'cli_turn_v1', 'kanban_card_v1'})
+                                'cli_turn_v1', 'kanban_card_v1'}) | input_payload_fields()
 
 
 def is_viewer_input(row):

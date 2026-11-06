@@ -64,6 +64,13 @@ async def admit_message(authority, event):
         messaging_admission.reset(ingress)
     if receipt.status == 'terminal':
         return None
+    from hermes_state_runtime import get_session_admission
+    from session_input_primitives import batch_record
+    inbox_row = get_session_admission(authority.db, admission_id=receipt.admission_id)
+    inbox_payload = inbox_row.get('payload') if inbox_row else None
+    if (inbox_payload and batch_record(inbox_payload)[1]
+            and inbox_row.get('request_id') != str(event.message_id)):
+        return None  # absorbed into an earlier batch: ACK it, but never create a second reply waiter
     # Only the delivery waiter is process-local; execution reads the committed snapshot.
     authority.native_waiters.add(receipt.admission_id)
     waiter = authority.waiters.setdefault(receipt.admission_id, asyncio.get_running_loop().create_future())

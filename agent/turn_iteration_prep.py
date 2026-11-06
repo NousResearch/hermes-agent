@@ -284,6 +284,9 @@ def _previous_tool_round(messages: Any) -> list:
 def _inject_steer_after_newest_tool_result(agent: Any, messages: Any, steer_text: str) -> None:
     """Append the steer marker as a standalone user row after the newest tool message; with no
     tool message, put the text back so the post-tool-execution drain delivers it later."""
+    from session_input_checkpoint import checkpoint_input
+    if checkpoint_input(agent, messages, stage="before_request", text=steer_text):
+        return
     for _si in range(len(messages) - 1, -1, -1):
         _sm = messages[_si]
         if isinstance(_sm, dict) and _sm.get("role") == "tool":

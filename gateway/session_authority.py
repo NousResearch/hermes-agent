@@ -525,13 +525,21 @@ class SessionAuthority:
         async with self._route_turn(event) as fence:
             with capture_lease(self) as scope:  # captured bytes are held until commit or refusal
                 try:
-                    return await self._admit_native(event, fence)
+                    receipt = await self._admit_native(event, fence)
                 except BaseException:
                     # Before the shielded write starts, no row can own these bytes. A cancelled copy
                     # arranges its own completion cleanup in prepare_native; other failures clean here.
                     if not scope.write_started:
                         await abandon_capture(scope)
                     raise
+        # Native ingress (platform and local Bot Chat messages) commits here, not through submit:
+        # one hand-over primitive serves both doors. A duck-typed receipt carries no route, so
+        # it is returned untouched rather than routed on a guess.
+        ref = getattr(receipt, 'ref', None)
+        if ref is None:
+            return receipt
+        from gateway.session_input_transfer import transfer_after_submit
+        return await transfer_after_submit(self, ref, receipt)
 
     @contextlib.asynccontextmanager
     async def _route_turn(self, event):
@@ -707,9 +715,11 @@ class SessionAuthority:
             self.authorize(actor, request.ref, 'session:submit')
             from gateway.session_ingress_media import capture_lease
             with capture_lease():  # captured bytes are held from capture until commit or refusal
-                return await self._submit(actor, request, _authorize_write=_authorize_write,
-                                          queue_only=queue_while_restarting is True, _replay_guard=_replay_guard,
-                                          _kanban_card=_kanban_card)
+                receipt = await self._submit(actor, request, _authorize_write=_authorize_write,
+                                             queue_only=queue_while_restarting is True, _replay_guard=_replay_guard,
+                                             _kanban_card=_kanban_card)
+        from gateway.session_input_transfer import transfer_after_submit
+        return await transfer_after_submit(self, request.ref, receipt)
 
     async def _submit(self, actor, request, *, _authorize_write=None, queue_only=False, _replay_guard=None,
                       _kanban_card=None):
@@ -1010,6 +1020,8 @@ class SessionAuthority:
         delivered to the cached agent for an earlier generation may have landed after that
         turn's finalizer cleared it, so it is dropped rather than cancelling this turn. A managed
         worker is a fresh process per turn and carries no earlier flag to drop."""
+        from session_input_checkpoint import bind_agent
+        bind_agent(self, agent)
         live = self.sessions.get(session_id)
         # The turn's executor thread runs this; the stream lock orders it against session.steer's latch.
         with live.event_stream.lock if live is not None else contextlib.nullcontext():
@@ -1222,6 +1234,8 @@ class SessionAuthority:
                     await self._refuse_head(ref, *refusing)
                     refusing = None
                 try:
+                    from session_input_primitives import wait_ready
+                    await wait_ready(self, ref)
                     row, first = await self._claim_next(ref, live)
                 except RuntimeStoreError as exc:
                     if exc.reason == 'unknown_execution':

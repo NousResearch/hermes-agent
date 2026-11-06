@@ -201,6 +201,22 @@ class RunIdempotencyStore:
             return None
         return {k: v for k, v in _record(None, *row).items() if k != "run_id"}
 
+    def unfinished_runs(self, scope: str) -> list[dict[str, Any]]:
+        """Snapshot unfinished receipts in one authenticated scope for offline recovery.
+
+        This does not establish that their owners are dead. A recovery caller must
+        fence previous writers before repairing sessions or changing run outcomes.
+        Terminal receipts are excluded without pruning their replay retention.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT run_id, status_json, owner_pid, owner_started, updated_at "
+                "FROM run_idempotency WHERE scope=? ORDER BY created_at, run_id",
+                (scope,),
+            ).fetchall()
+        records = [_record(*row) for row in rows]
+        return [record for record in records if record["status"]["status"] not in TERMINAL_STATUSES]
+
     def extend_retention(self, scope: str, run_id: str, until: float) -> bool:
         """Persist the latest verified recovery horizon for an active grant."""
         checked_until = max(0.0, float(until or 0))

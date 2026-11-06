@@ -1,0 +1,24 @@
+name: openrouter-everything
+title: OpenRouter Everything
+repo: https://github.com/dadhalfdev/openrouter-everything
+sha: ec6974a96f9965e59d23bf1d5c5e4f2eb7333338
+description: "One OpenRouter key for Hermes web search and fetch, image and video generation, voice, decisions, extraction, reranking and embeddings, with per-task model selection and compatibility checks. Disclosure — sends prompts, documents, search queries and media to OpenRouter or a configured API relay with the user's key; requests can incur charges. Reads local media, writes generated media, and can change Hermes provider settings and profile credentials; media URLs returned by the service may be downloaded from other hosts."
+maintainer: dadhalfdev
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+version: "1.0.0"
+docs_url: https://github.com/dadhalfdev/openrouter-everything#readme
+image: https://raw.githubusercontent.com/dadhalfdev/openrouter-everything/ec6974a96f9965e59d23bf1d5c5e4f2eb7333338/assets/openrouter-everything-banner.jpg
+readme: true
+capabilities:
+  provides_tools:
+    - openrouter_decide
+    - openrouter_extract_fields
+    - openrouter_rerank
+    - openrouter_embed
+    - openrouter_everything_config
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - OPENROUTER_API_KEY

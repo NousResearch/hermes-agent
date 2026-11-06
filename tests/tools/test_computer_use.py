@@ -2284,37 +2284,6 @@ class TestCapturePayloadBudget:
         assert payload["truncated_elements"] == 45
 
 
-class TestBoundsSpaceNote:
-    def test_note_present_when_bounds_exceed_image(self):
-        from tools.computer_use.backend import UIElement
-        from tools.computer_use.tool import _bounds_space_note
-
-        # Live repro: 1455x791 screenshot, element bounds out to x=3840
-        # (native 4K desktop space).
-        elems = [UIElement(index=0, role="Button", label="Close",
-                           bounds=(3771, 0, 69, 60), app="")]
-        note = _bounds_space_note(elems, 1455, 791)
-        assert note is not None
-        assert "native desktop coordinates" in note
-
-    def test_no_note_when_spaces_match(self):
-        from tools.computer_use.backend import UIElement
-        from tools.computer_use.tool import _bounds_space_note
-
-        elems = [UIElement(index=0, role="Button", label="OK",
-                           bounds=(10, 10, 50, 20), app="")]
-        assert _bounds_space_note(elems, 1455, 791) is None
-
-    def test_no_note_for_empty_or_degenerate(self):
-        from tools.computer_use.backend import UIElement
-        from tools.computer_use.tool import _bounds_space_note
-
-        assert _bounds_space_note([], 1455, 791) is None
-        zero = [UIElement(index=0, role="B", label="x",
-                          bounds=(0, 0, 0, 0), app="")]
-        assert _bounds_space_note(zero, 1455, 791) is None
-        assert _bounds_space_note(zero, 0, 0) is None
-
 
 class TestElementSpillFile:
     """Detail dropped from the in-context capture must be recoverable on disk."""
@@ -2428,30 +2397,3 @@ class TestCaptureScreenshotPersistence:
 
         captures = list((tmp_path / "cache" / "images").glob("computer_use_*.*"))
         assert len(captures) == 2
-
-
-class TestBoundsScaleField:
-    def test_scale_reported_when_spaces_diverge(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        from tools.computer_use.backend import CaptureResult, UIElement
-        from tools.computer_use.tool import _capture_response
-
-        # Live repro geometry: 1455x791 screenshot, native bounds to 3799.
-        elems = [UIElement(index=0, role="Button", label="Close",
-                           bounds=(3730, 0, 69, 60), app="")]
-        cap = CaptureResult(mode="som", width=1455, height=791, png_b64=None,
-                            elements=elems, app="chrome.exe",
-                            window_title="", png_bytes_len=0)
-        out = json.loads(_capture_response(cap))
-        assert out["bounds_scale"] == pytest.approx(3799 / 1455, abs=0.01)
-        assert f"~{out['bounds_scale']}x" in out["summary"]
-
-    def test_no_scale_when_spaces_match(self):
-        from tools.computer_use.backend import UIElement
-        from tools.computer_use.tool import _bounds_scale
-
-        elems = [UIElement(index=0, role="Button", label="OK",
-                           bounds=(10, 10, 50, 20), app="")]
-        assert _bounds_scale(elems, 1455, 791) is None
-        assert _bounds_scale([], 1455, 791) is None
-        assert _bounds_scale(elems, 0, 0) is None

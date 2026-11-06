@@ -81,7 +81,8 @@ def fallback_label(failure: Failure, *, rung_spent: bool = False) -> Optional[st
         return "connection error" if context.get("transport") == "connection" else "request timed out"
     if reason in _LABELS:
         return _LABELS[reason]
-    if not (verdict.retryable or verdict.should_fallback):  # terminal: every provider would get the same request
+    # Terminal: every provider would get the same request (a safety refusal is of the content itself).
+    if reason is _R.content_policy_blocked or not (verdict.retryable or verdict.should_fallback):
         return None
     if failure.rejects_parameter or reason in _REQUEST_SHAPE and not context.get("route_rejects_model"):
         if rung_spent:

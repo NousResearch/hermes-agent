@@ -22,7 +22,8 @@ def normalize_archive_parts(member_name: str) -> list[str]:
     windows_path = PureWindowsPath(member_name)
     parts = [part for part in posix_path.parts if part not in {"", "."}]
     if (not normalized_name or posix_path.is_absolute() or windows_path.is_absolute()
-            or windows_path.drive or not parts or ".." in parts):
+            or windows_path.drive or not parts or ".." in parts
+            or any(PureWindowsPath(part).drive for part in parts)):
         raise ValueError(f"Unsafe archive member path: {member_name}")
     return parts
 

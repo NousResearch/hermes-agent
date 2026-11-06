@@ -69,13 +69,7 @@ export function usePromptStash({
   setInput,
   setQueueEdit
 }: UsePromptStashOptions): { actions: PromptStashActions; state: PromptStashState } {
-  const stashRef = useRef<PromptStash | null>(null)
-
-  if (!stashRef.current) {
-    stashRef.current = new PromptStash()
-  }
-
-  const stash = stashRef.current
+  const stash = useRef(new PromptStash()).current
   const [, bumpVersion] = useState(0)
   const repaint = useCallback(() => bumpVersion(v => v + 1), [])
 
@@ -117,34 +111,26 @@ export function usePromptStash({
     return action
   }, [applyPayload, clear, getInput, getTokens, repaint, stash])
 
-  const actions = useMemo<PromptStashActions>(
-    () => ({
-      closePanel: () => {
-        stash.closePanel()
-        repaint()
-      },
-      deleteAtCursor: () => {
-        const deleted = stash.deleteAtCursor()
+  const actions = useMemo<PromptStashActions>(() => {
+    // Every panel action mutates the ref'd stash, then repaints the badge / panel / hint.
+    const thenRepaint =
+      <A extends unknown[], R>(fn: (...args: A) => R) =>
+      (...args: A): R => {
+        const result = fn(...args)
 
         repaint()
 
-        return deleted
-      },
-      moveCursor: delta => {
-        stash.moveCursor(delta)
-        repaint()
-      },
-      restoreAtCursor: () => {
-        const restored = applyPayload(stash.restoreAtCursor())
+        return result
+      }
 
-        repaint()
-
-        return restored
-      },
+    return {
+      closePanel: thenRepaint(() => stash.closePanel()),
+      deleteAtCursor: thenRepaint(() => stash.deleteAtCursor()),
+      moveCursor: thenRepaint((delta: number) => void stash.moveCursor(delta)),
+      restoreAtCursor: thenRepaint(() => applyPayload(stash.restoreAtCursor())),
       toggle
-    }),
-    [applyPayload, repaint, stash, toggle]
-  )
+    }
+  }, [applyPayload, repaint, stash, toggle])
 
   const stashStrings = messages().composer.stash
   const now = Date.now()

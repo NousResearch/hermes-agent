@@ -40,12 +40,15 @@ describe('buildPreview — same shaping as hermes_cli.prompt_stash.build_preview
 })
 
 describe('resolveCtrlS — same decision table as hermes_cli.prompt_stash.resolve_ctrl_s', () => {
-  it.each(VECTORS.resolve)('$buffer with $entries stashed → $action', ({ action, buffer, entries, panel_open, tokens }) => {
-    const stash = seed(entries, panel_open)
-    const chips = Array.from({ length: tokens }, (_, i) => token(i))
+  it.each(VECTORS.resolve)(
+    '$buffer with $entries stashed → $action',
+    ({ action, buffer, entries, panel_open, tokens }) => {
+      const stash = seed(entries, panel_open)
+      const chips = Array.from({ length: tokens }, (_, i) => token(i))
 
-    expect(resolveCtrlS(stash, buffer, chips).action).toBe(action)
-  })
+      expect(resolveCtrlS(stash, buffer, chips).action).toBe(action)
+    }
+  )
 
   it('hands back the exact draft and chips on restore', () => {
     const stash = new PromptStash()
@@ -73,11 +76,11 @@ describe('resolveCtrlS — same decision table as hermes_cli.prompt_stash.resolv
     resolveCtrlS(stash, 'second')
 
     expect(stash.length).toBe(2)
-    expect(stash.peek(0)?.text).toBe('second')
+    expect(stash.panelRows()[0]?.text).toBe('second')
     expect(resolveCtrlS(stash, '').action).toBe('open_panel')
 
     expect(stash.restoreAtCursor()?.text).toBe('second')
-    expect(stash.peek(0)?.text).toBe('first')
+    expect(stash.panelRows()[0]?.text).toBe('first')
   })
 
   it('closes an open panel instead of parking or restoring', () => {
@@ -119,7 +122,7 @@ describe('stack cap and panel editing', () => {
 
     expect(stash.length).toBe(expected_len)
     expect(MAX_STASH_ITEMS).toBe(expected_len)
-    expect(stash.peek(0)?.text).toBe(expected_newest)
+    expect(stash.panelRows()[0]?.text).toBe(expected_newest)
   })
 
   it('clamps the panel cursor and closes the panel when the last draft is deleted', () => {
@@ -146,7 +149,7 @@ describe('stack cap and panel editing', () => {
 
     stash.stash('', [token(1)])
 
-    expect(stash.peek(0)?.preview).toBe('(images only)')
+    expect(stash.panelRows()[0]?.preview).toBe('(images only)')
   })
 })
 

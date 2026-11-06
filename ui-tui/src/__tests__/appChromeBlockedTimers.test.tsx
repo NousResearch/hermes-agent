@@ -154,11 +154,7 @@ const layoutProps: AppLayoutProps = {
     pagerPageSize: 10,
     queueEditIdx: null,
     queuedDisplay: [],
-    stashHint: '',
-    stashIndicator: '',
-    stashPanelCursor: 0,
-    stashPanelOpen: false,
-    stashRows: [],
+    stash: { hint: '', indicator: '', panelCursor: 0, panelOpen: false, rows: [] },
     submit: () => {},
     updateInput: () => {},
     voiceRecordKey: DEFAULT_VOICE_RECORD_KEY
@@ -465,8 +461,11 @@ describe('Ctrl+S stash chrome — the parked-draft badge and the browse panel', 
       { interactive: true }
     )
 
+  const withStash = (patch: Partial<AppLayoutProps['composer']['stash']>) =>
+    withComposer({ stash: { ...layoutProps.composer.stash, ...patch } })
+
   it('shows the classic CLI badge while a draft is parked', () => {
-    const parked = withComposer({ stashIndicator: '📌 2' })
+    const parked = withStash({ indicator: '📌 2' })
 
     expect(parked.output()).toContain('📌 2')
   })
@@ -474,10 +473,10 @@ describe('Ctrl+S stash chrome — the parked-draft badge and the browse panel', 
   it('keeps the panel closed while a single draft is merely parked', () => {
     // A parked draft advertises itself with the badge and the placeholder; the browse list
     // only appears when the user opens it. Live proof caught the panel drawing itself here.
-    const parked = withComposer({
-      stashHint: 'Ctrl+S to restore: parked draft',
-      stashIndicator: '📌 1',
-      stashRows: [{ age: 'just now', preview: 'parked draft' }]
+    const parked = withStash({
+      hint: 'Ctrl+S to restore: parked draft',
+      indicator: '📌 1',
+      rows: [{ age: 'just now', preview: 'parked draft' }]
     })
 
     const out = parked.output()
@@ -491,11 +490,10 @@ describe('Ctrl+S stash chrome — the parked-draft badge and the browse panel', 
   })
 
   it('hands the composer zone to the browse panel, and keeps the badge out of its way', () => {
-    const browsing = withComposer({
-      stashIndicator: '📌 2 ▲',
-      stashPanelCursor: 0,
-      stashPanelOpen: true,
-      stashRows: [{ age: 'just now', preview: 'parked draft' }]
+    const browsing = withStash({
+      indicator: '📌 2 ▲',
+      panelOpen: true,
+      rows: [{ age: 'just now', preview: 'parked draft' }]
     })
 
     const out = browsing.output()

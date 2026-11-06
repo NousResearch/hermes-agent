@@ -7,6 +7,7 @@ import { DASHBOARD_TUI_MODE } from '../config/env.js'
 import { DOUBLE_ESC_MS, TYPING_IDLE_MS } from '../config/timing.js'
 import { applyCompletion } from '../domain/slash.js'
 import type { ConfigSetResponse, SharedControlRespondResponse, VoiceRecordResponse } from '../gatewayTypes.js'
+import type { PromptStashActions } from '../hooks/usePromptStash.js'
 import { t } from '../i18n/runtime.js'
 import { isAction, isCopyShortcut, isMac, isMacActionFallback, isVoiceToggleKey } from '../lib/platform.js'
 import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionWheel.js'
@@ -76,37 +77,6 @@ export function handleIdleHotkeyExit(
 }
 
 export type CtrlCComposerAction = 'clear' | 'interrupt' | 'exit'
-
-export type StashPanelKey = 'close' | 'delete' | 'down' | 'restore' | 'up'
-
-/**
- * Which browse-panel command a keystroke is, while the Ctrl+S panel is open. The classic CLI
- * binds these five keys eagerly over the composer (`_tui_bind_editor_and_stash`): ↑/↓ move the
- * highlight, Enter restores, D discards, Esc closes. The panel only opens on an empty composer,
- * so 'd' is unambiguous here.
- */
-export function resolveStashPanelKey(
-  key: { downArrow: boolean; escape: boolean; return: boolean; upArrow: boolean },
-  ch: string
-): StashPanelKey | null {
-  if (key.upArrow) {
-    return 'up'
-  }
-
-  if (key.downArrow) {
-    return 'down'
-  }
-
-  if (key.return) {
-    return 'restore'
-  }
-
-  if (ch === 'd' || ch === 'D') {
-    return 'delete'
-  }
-
-  return key.escape ? 'close' : null
-}
 
 /**
  * Ctrl+C (and terminals that rewrite Cmd+C to it) is clear / interrupt / exit
@@ -325,7 +295,7 @@ const CTRL_CHORDS: Record<string, (composer: InputHandlerContext['composer']) =>
   // that half of the gesture restores the newest draft or opens the browse panel. The table is
   // consulted after the `isBlocked` early return, so a modal prompt still owns the composer and
   // Ctrl+S can never stash a password.
-  s: ({ actions }) => void actions.stashToggle(),
+  s: ({ actions }) => void actions.stash.toggle(),
   t: () => patchOverlayState({ agents: true, agentsInitialHistoryIndex: 0 })
 }
 
@@ -405,34 +375,29 @@ export function runPagerKey(key: PagerKey, ch: string, pagerPageSize: number): v
 }
 
 /**
- * Ctrl+S stash browse panel: apply the key the panel owns. Returns true when it was consumed,
- * so the composer below never sees it. The panel only opens on an empty composer, so 'd' is
- * unambiguous. `onEscape` lets the caller drop the double-Esc clock so closing the panel can
- * never read as the first half of a rewind.
+ * Ctrl+S stash browse panel: apply one of the five keys it owns — ↑/↓ move, Enter restores,
+ * D discards, Esc closes — as the classic CLI binds them eagerly (`_tui_bind_editor_and_stash`).
+ * Returns false for any other key, which then reaches the composer. The panel only opens on an
+ * empty composer, so 'd' is unambiguous; the arrows win over it. `onEscape` drops the double-Esc
+ * clock so closing the panel can never read as the first half of a rewind.
  */
 export function runStashPanelKey(
   key: { downArrow: boolean; escape: boolean; return: boolean; upArrow: boolean },
   ch: string,
-  actions: Pick<ComposerActions, 'stashClose' | 'stashDelete' | 'stashMove' | 'stashRestore'>,
+  stash: Pick<PromptStashActions, 'closePanel' | 'deleteAtCursor' | 'moveCursor' | 'restoreAtCursor'>,
   onEscape: () => void
 ): boolean {
-  const panelKey = resolveStashPanelKey(key, ch)
-
-  if (!panelKey) {
-    return false
-  }
-
-  if (panelKey === 'up') {
-    actions.stashMove(-1)
-  } else if (panelKey === 'down') {
-    actions.stashMove(1)
-  } else if (panelKey === 'restore') {
-    actions.stashRestore()
-  } else if (panelKey === 'delete') {
-    actions.stashDelete()
-  } else {
+  if (key.upArrow || key.downArrow) {
+    stash.moveCursor(key.upArrow ? -1 : 1)
+  } else if (key.return) {
+    stash.restoreAtCursor()
+  } else if (ch === 'd' || ch === 'D') {
+    stash.deleteAtCursor()
+  } else if (key.escape) {
     onEscape()
-    actions.stashClose()
+    stash.closePanel()
+  } else {
+    return false
   }
 
   return true
@@ -504,7 +469,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       // legacy server→client request resolves its response frame locally.
       if (overlay.approval.sharedControl) {
         return gateway
-          .rpc<SharedControlRespondResponse>('approval.respond', { choice: 'deny', ...sharedControlParams(overlay.approval) })
+          .rpc<SharedControlRespondResponse>('approval.respond', {
+            choice: 'deny',
+            ...sharedControlParams(overlay.approval)
+          })
           .then(r => r && fresh() && settle())
       }
 
@@ -685,8 +653,8 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     // Ctrl+S stash browse panel owns ↑/↓/Enter/D/Esc while it is open — the classic CLI binds
     // the same five keys eagerly (`_tui_bind_editor_and_stash`). Above the Esc block on purpose:
     // an empty composer with the panel up must not read a double-Esc as a rewind request.
-    if (!isBlocked && cState.stashPanelOpen) {
-      const consumed = runStashPanelKey(key, ch, cActions, () => (lastEscRef.current = 0))
+    if (!isBlocked && cState.stash.panelOpen) {
+      const consumed = runStashPanelKey(key, ch, cActions.stash, () => (lastEscRef.current = 0))
 
       if (consumed) {
         return

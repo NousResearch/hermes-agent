@@ -662,11 +662,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       setInput,
       setInputBuf,
       setQueueEdit,
-      stashClose: promptStash.actions.closePanel,
-      stashDelete: promptStash.actions.deleteAtCursor,
-      stashMove: promptStash.actions.moveCursor,
-      stashRestore: promptStash.actions.restoreAtCursor,
-      stashToggle: promptStash.actions.toggle,
+      stash: promptStash.actions,
       takeQueue: takeQ,
       syncTokens,
       togglePaste
@@ -721,11 +717,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       pasteExpanded,
       queueEditIdx,
       queuedDisplay,
-      stashHint: promptStash.state.hint,
-      stashIndicator: promptStash.state.indicator,
-      stashPanelCursor: promptStash.state.panelCursor,
-      stashPanelOpen: promptStash.state.panelOpen,
-      stashRows: promptStash.state.rows,
+      stash: promptStash.state,
       tokens
     }),
     [compIdx, compReplace, completions, historyIdx, input, inputBuf, pasteExpanded, queueEditIdx, queuedDisplay, promptStash, tokens]

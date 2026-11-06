@@ -5,16 +5,11 @@ import { messages } from '../i18n/runtime.js'
 import { compactPreview } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 
+import { windowItems } from './overlayControls.js'
+
 /** Rows the panel shows before it windows. The classic panel draws every row; the TUI's
  *  composer zone is fixed-height, so it scrolls the window with the highlight instead. */
-export const STASH_WINDOW = 6
-
-export function getStashWindow(len: number, cursor: number): { end: number; showLead: boolean; showTail: boolean; start: number } {
-  const start = Math.max(0, Math.min(cursor - 1, Math.max(0, len - STASH_WINDOW)))
-  const end = Math.min(len, start + STASH_WINDOW)
-
-  return { end, showLead: start > 0, showTail: end < len, start }
-}
+const STASH_WINDOW = 6
 
 /**
  * The stash chrome above the prompt: the `📌 N` badge while drafts are parked, and the browse
@@ -78,7 +73,8 @@ export function StashPanel({
   }
 
   const s = messages().composer.stash
-  const win = getStashWindow(rows.length, cursor)
+  const { items, offset } = windowItems(rows, cursor, STASH_WINDOW)
+  const hidden = rows.length - offset - items.length
   const previewWidth = Math.max(16, cols - 24)
 
   return (
@@ -87,29 +83,30 @@ export function StashPanel({
         {s.header(rows.length)}
       </Text>
 
-      {win.showLead && (
+      {offset > 0 && (
         <Text color={t.color.muted} dimColor>
           {' '}
           …
         </Text>
       )}
 
-      {rows.slice(win.start, win.end).map((row, i) => {
-        const idx = win.start + i
+      {items.map((row, i) => {
+        const idx = offset + i
         const active = cursor === idx
 
         return (
           <Text color={active ? t.color.accent : t.color.muted} dimColor key={`${idx}-${row.preview.slice(0, 16)}`}>
-            {active ? '►' : ' '} [{idx + 1}] {row.age}{' '.repeat(Math.max(1, 11 - row.age.length))}
+            {active ? '►' : ' '} [{idx + 1}] {row.age}
+            {' '.repeat(Math.max(1, 11 - row.age.length))}
             {compactPreview(row.preview, previewWidth)}
           </Text>
         )
       })}
 
-      {win.showTail && (
+      {hidden > 0 && (
         <Text color={t.color.muted} dimColor>
           {'  '}
-          {s.more(rows.length - win.end)}
+          {s.more(hidden)}
         </Text>
       )}
 

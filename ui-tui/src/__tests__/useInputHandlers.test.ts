@@ -9,7 +9,7 @@ import {
   handleIdleHotkeyExit,
   resolveCtrlCComposerAction,
   resolveDoubleEscAction,
-  resolveStashPanelKey,
+  runStashPanelKey,
   shouldDetachEditedHistoryInput,
   shouldFallThroughForScroll
 } from '../app/useInputHandlers.js'
@@ -243,26 +243,38 @@ describe('dismissSensitivePrompt', () => {
   })
 })
 
-describe('resolveStashPanelKey — the Ctrl+S browse panel owns its five keys', () => {
+describe('runStashPanelKey — the Ctrl+S browse panel owns its five keys', () => {
   const base = { downArrow: false, escape: false, return: false, upArrow: false }
 
+  const press = (patch: Partial<typeof base>, ch = '') => {
+    const calls: string[] = []
+
+    const stash = {
+      closePanel: () => void calls.push('close'),
+      deleteAtCursor: () => (calls.push('delete'), true),
+      moveCursor: (delta: number) => void calls.push(`move ${delta}`),
+      restoreAtCursor: () => (calls.push('restore'), true)
+    }
+
+    const consumed = runStashPanelKey({ ...base, ...patch }, ch, stash, () => void calls.push('esc-clock'))
+
+    return { calls, consumed }
+  }
+
   it.each([
-    [{ upArrow: true }, '', 'up'],
-    [{ downArrow: true }, '', 'down'],
-    [{ return: true }, '', 'restore'],
-    [{ escape: true }, '', 'close'],
-    [{}, 'd', 'delete'],
-    [{}, 'D', 'delete']
-  ] as const)('%o + %s → %s', (patch, ch, expected) => {
-    expect(resolveStashPanelKey({ ...base, ...patch }, ch)).toBe(expected)
+    [{ upArrow: true }, '', ['move -1']],
+    [{ downArrow: true }, '', ['move 1']],
+    [{ return: true }, '', ['restore']],
+    [{ escape: true }, '', ['esc-clock', 'close']],
+    [{}, 'd', ['delete']],
+    [{}, 'D', ['delete']],
+    [{ upArrow: true }, 'd', ['move -1']]
+  ] as const)('%o + %s → %o', (patch, ch, expected) => {
+    expect(press(patch, ch)).toEqual({ calls: expected, consumed: true })
   })
 
   it('leaves every other key to the composer', () => {
-    expect(resolveStashPanelKey(base, 'x')).toBeNull()
-    expect(resolveStashPanelKey(base, '')).toBeNull()
-  })
-
-  it('prefers the arrows over a printable d, so a held arrow never deletes a draft', () => {
-    expect(resolveStashPanelKey({ ...base, upArrow: true }, 'd')).toBe('up')
+    expect(press({}, 'x')).toEqual({ calls: [], consumed: false })
+    expect(press({}, '')).toEqual({ calls: [], consumed: false })
   })
 })

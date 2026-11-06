@@ -5,7 +5,7 @@ import React from 'react'
 import stripAnsi from 'strip-ansi'
 import { expect, it } from 'vitest'
 
-import { getStashWindow, STASH_WINDOW, StashPanel } from '../components/stashPanel.js'
+import { StashPanel } from '../components/stashPanel.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 const paint = (element: React.ReactElement): string => {
@@ -27,8 +27,7 @@ const paint = (element: React.ReactElement): string => {
   return (first ?? '').trim()
 }
 
-const rows = (n: number) =>
-  Array.from({ length: n }, (_, i) => ({ age: 'just now', preview: `draft number ${i + 1}` }))
+const rows = (n: number) => Array.from({ length: n }, (_, i) => ({ age: 'just now', preview: `draft number ${i + 1}` }))
 
 it('draws nothing without a parked draft', () => {
   expect(paint(<StashPanel cols={60} cursor={0} rows={[]} t={DEFAULT_THEME} />)).toBe('')
@@ -60,8 +59,10 @@ it('windows a long stash around the highlight and says how many are left', () =>
   expect(out).not.toContain('[1] just now')
 })
 
-it('scrolls the window with the cursor instead of growing past its row budget', () => {
-  expect(getStashWindow(10, 0)).toEqual({ end: STASH_WINDOW, showLead: false, showTail: true, start: 0 })
-  expect(getStashWindow(10, 8)).toEqual({ end: 10, showLead: true, showTail: false, start: 4 })
-  expect(getStashWindow(2, 1)).toEqual({ end: 2, showLead: false, showTail: false, start: 0 })
+it('says how many drafts sit past the window', () => {
+  const out = paint(<StashPanel cols={70} cursor={0} rows={rows(10)} t={DEFAULT_THEME} />)
+
+  expect(out).toContain('► [1] just now')
+  expect(out).toContain('… 4 more')
+  expect(out).not.toContain('[7] just now')
 })

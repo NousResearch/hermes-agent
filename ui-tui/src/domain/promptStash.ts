@@ -98,11 +98,7 @@ export const DEFAULT_STASH_AGE: StashAgeStrings = {
  * Age column of one panel row, mirroring `_fmt_stash_age`: sub-10s reads "just now",
  * sub-90s counts seconds, then whole minutes, then whole hours.
  */
-export function formatStashAge(
-  stashedAt: number,
-  now: number,
-  strings: StashAgeStrings = DEFAULT_STASH_AGE
-): string {
+export function formatStashAge(stashedAt: number, now: number, strings: StashAgeStrings = DEFAULT_STASH_AGE): string {
   const secs = Math.trunc((now - stashedAt) / 1000)
 
   if (secs < 10) {
@@ -125,27 +121,16 @@ export interface StashPayload {
 }
 
 export class PromptStash {
-  private readonly clock: () => number
-  private readonly maxItems: number
   private items: StashEntry[] = []
 
   panelCursor = 0
   panelOpen = false
 
-  constructor(options: { clock?: () => number; maxItems?: number } = {}) {
-    this.clock = options.clock ?? Date.now
-    this.maxItems = Math.max(1, Math.trunc(options.maxItems ?? MAX_STASH_ITEMS))
-  }
-
   get length(): number {
     return this.items.length
   }
 
-  /** Newest-first list of entries (a copy — mutate through the methods). */
-  get entries(): StashEntry[] {
-    return [...this.items]
-  }
-
+  /** Newest-first rows for the browse panel (a copy — mutate through the methods). */
   panelRows(): StashEntry[] {
     return [...this.items]
   }
@@ -161,78 +146,39 @@ export class PromptStash {
   placeholderHint(hints: StashHintStrings = DEFAULT_STASH_HINTS): string {
     const n = this.items.length
 
-    if (n === 1) {
-      return hints.restore(this.items[0]!.preview)
-    }
-
-    return n === 0 ? '' : hints.browse(n)
+    return n === 0 ? '' : n === 1 ? hints.restore(this.items[0]!.preview) : hints.browse(n)
   }
 
-  /**
-   * Push a draft. A blank buffer with no chips is a no-op so Ctrl+S on an empty composer
-   * triggers the restore half of the gesture instead of pushing junk.
-   */
+  /** Push a draft, newest first, dropping the oldest past the cap. A blank buffer with no
+   *  chips is refused so Ctrl+S on an empty composer reaches the restore half instead. */
   stash(text: string, tokens: readonly ComposerToken[] = []): boolean {
-    if (!(text ?? '').trim() && tokens.length === 0) {
+    if (!text.trim() && tokens.length === 0) {
       return false
     }
 
-    const entry: StashEntry = {
-      preview: buildPreview(text ?? '') || '(images only)',
-      stashedAt: this.clock(),
-      text: text ?? '',
-      tokens: [...tokens]
-    }
+    const entry = { preview: buildPreview(text) || '(images only)', stashedAt: Date.now(), text, tokens: [...tokens] }
 
-    this.items.unshift(entry)
-    this.items = this.items.slice(0, this.maxItems) // drop the oldest past the cap
+    this.items = [entry, ...this.items].slice(0, MAX_STASH_ITEMS)
     this.closePanel()
 
     return true
   }
 
-  /** Remove and return the entry at `index`, or null. */
+  /** Remove and return the entry at `index` (null when there is none), closing the panel. */
   pop(index = 0): StashPayload | null {
-    if (index < 0 || index >= this.items.length) {
-      return null
-    }
+    const [entry] = index >= 0 ? this.items.splice(index, 1) : []
 
-    const [entry] = this.items.splice(index, 1)
-
-    if (!this.items.length) {
-      this.panelOpen = false
-    }
-
-    this.panelCursor = this.clampCursor(this.panelCursor)
+    this.closePanel()
 
     return entry ? { text: entry.text, tokens: [...entry.tokens] } : null
   }
 
-  peek(index = 0): StashEntry | null {
-    return index >= 0 && index < this.items.length ? this.items[index]! : null
-  }
-
-  clear(): void {
-    this.items = []
-    this.closePanel()
-  }
-
-  // ------------------------------------------------------------ panel state
-
-  private clampCursor(value: number): number {
-    return this.items.length ? Math.max(0, Math.min(Math.trunc(value), this.items.length - 1)) : 0
-  }
-
   /** Open the browse panel. False when there is nothing to browse. */
   openPanel(): boolean {
-    if (!this.items.length) {
-      return false
-    }
-
-    this.panelOpen = true
+    this.panelOpen = this.items.length > 0
     this.panelCursor = 0
 
-    return true
+    return this.panelOpen
   }
 
   closePanel(): void {
@@ -242,25 +188,23 @@ export class PromptStash {
 
   /** Move the panel cursor, clamped to the list bounds. Returns the new index. */
   moveCursor(delta: number): number {
-    this.panelCursor = this.clampCursor(this.panelCursor + Math.trunc(delta))
+    this.panelCursor = Math.max(0, Math.min(this.panelCursor + Math.trunc(delta), this.items.length - 1))
 
     return this.panelCursor
   }
 
-  /** Delete the highlighted entry. False when there was nothing to drop. */
+  /** Delete the highlighted entry, keeping the panel open on its neighbour. */
   deleteAtCursor(): boolean {
     if (!this.items.length) {
       return false
     }
 
-    const idx = this.clampCursor(this.panelCursor)
+    this.items.splice(this.panelCursor, 1)
 
-    this.items.splice(idx, 1)
-
-    if (!this.items.length) {
-      this.closePanel()
+    if (this.items.length) {
+      this.moveCursor(0)
     } else {
-      this.panelCursor = this.clampCursor(idx)
+      this.closePanel()
     }
 
     return true
@@ -268,26 +212,12 @@ export class PromptStash {
 
   /** Pop the highlighted entry and close the panel. */
   restoreAtCursor(): StashPayload | null {
-    if (!this.items.length) {
-      return null
-    }
-
-    const result = this.pop(this.clampCursor(this.panelCursor))
-
-    this.closePanel()
-
-    return result
+    return this.pop(this.panelCursor)
   }
 }
 
 /** Outcomes of a single Ctrl+S press. Same names as the Python action constants. */
 export type StashAction = 'close_panel' | 'noop' | 'open_panel' | 'restored' | 'stashed'
-
-export const ACTION_NOOP: StashAction = 'noop'
-export const ACTION_STASHED: StashAction = 'stashed'
-export const ACTION_RESTORED: StashAction = 'restored'
-export const ACTION_OPEN_PANEL: StashAction = 'open_panel'
-export const ACTION_CLOSE_PANEL: StashAction = 'close_panel'
 
 /**
  * Decide what one Ctrl+S press does, exactly as `resolve_ctrl_s` does:
@@ -306,24 +236,16 @@ export function resolveCtrlS(
   if (stash.panelOpen) {
     stash.closePanel()
 
-    return { action: ACTION_CLOSE_PANEL, payload: null }
+    return { action: 'close_panel', payload: null }
   }
 
-  if ((bufferText ?? '').trim() || tokens.length) {
-    return { action: stash.stash(bufferText, tokens) ? ACTION_STASHED : ACTION_NOOP, payload: null }
+  if (bufferText.trim() || tokens.length) {
+    return { action: stash.stash(bufferText, tokens) ? 'stashed' : 'noop', payload: null }
   }
 
-  const count = stash.length
-
-  if (count === 0) {
-    return { action: ACTION_NOOP, payload: null }
+  if (stash.length === 1) {
+    return { action: 'restored', payload: stash.pop(0) }
   }
 
-  if (count === 1) {
-    return { action: ACTION_RESTORED, payload: stash.pop(0) }
-  }
-
-  stash.openPanel()
-
-  return { action: ACTION_OPEN_PANEL, payload: null }
+  return { action: stash.openPanel() ? 'open_panel' : 'noop', payload: null }
 }

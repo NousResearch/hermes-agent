@@ -430,10 +430,10 @@ const ComposerPane = memo(function ComposerPane({
           live in StashChrome so this pane stays a plain render. */}
       <StashChrome
         cols={composer.cols}
-        cursor={composer.stashPanelCursor}
-        indicator={composer.stashIndicator}
-        open={composer.stashPanelOpen}
-        rows={composer.stashRows}
+        cursor={composer.stash.panelCursor}
+        indicator={composer.stash.indicator}
+        open={composer.stash.panelOpen}
+        rows={composer.stash.rows}
         t={ui.theme}
       />
 
@@ -511,7 +511,7 @@ const ComposerPane = memo(function ComposerPane({
                   cursorSnapshotRef={cursorSnapshotRef}
                   // The Ctrl+S browse panel owns ↑/↓/Enter/D/Esc while it is up, so the
                   // composer must not consume them (the classic CLI binds them eagerly).
-                  focus={!composer.stashPanelOpen}
+                  focus={!composer.stash.panelOpen}
                   mouseApiRef={inputMouseRef}
                   onChange={composer.updateInput}
                   onPaste={composer.handleTextPaste}
@@ -520,7 +520,7 @@ const ComposerPane = memo(function ComposerPane({
                     voicePartial,
                     composer.empty,
                     ui.busy ? T.composer.interruptHint : '',
-                    composer.stashHint
+                    composer.stash.hint
                   )}
                   // Exactly the "(and N more toolsets…)" tone. `muted` is a
                   // MID-luminance family tone, so it reads receded on both

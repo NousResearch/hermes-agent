@@ -66,8 +66,10 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         target_home = self.profile_homes().get(profile)
         claimed = params.get('_target_home')
         if (operation in _STOP_READS and claimed != str(target_home)
-                and claimed in self._stopping_attempt_homes(room_id, member)):
-            target_home = claimed  # the home that admitted a stopping attempt still answers for it
+                and claimed in self._stopping_attempt_homes(room_id, member, params.get('expected_task_id'))):
+            # The home that admitted a stopping attempt still answers for it; so does every home
+            # a turn from before attempt homes were recorded may have been admitted at.
+            target_home = claimed
         if target_home is None or claimed != str(target_home):
             raise RuntimeStoreError('permission_denied')
         result = {'owner': owner, 'target_home': str(target_home)}
@@ -226,9 +228,10 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
                 authorize_write=authorize_write)
         return self.member_rpcs[key]
 
-    def _stopping_attempt_homes(self, room_id, member):
-        from gateway.session_hosted_member_homes import stopping_attempt_homes
-        return stopping_attempt_homes(self.authority.db, room_id, member)
+    def _stopping_attempt_homes(self, room_id, member, task_id=None):
+        from gateway.session_hosted_member_homes import legacy_stop_homes, stopping_attempt_homes
+        db = self.authority.db
+        return stopping_attempt_homes(db, room_id, member) | legacy_stop_homes(db, room_id, member, task_id)
 
     def _stop_pending_refusal(self, room_id, deferred):
         """Name an unconfigured member profile whose unknown home keeps a turn deferred."""
@@ -240,9 +243,9 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
     def _stop_deferred_peer(self, room_id, task):
         """Also settle a local member's deferred turn once its profile is no longer served here and
         nothing on this host can run it (``unserved_member_stopped``): its daemon never answers."""
-        from gateway.session_hosted_member_homes import legacy_attempt_unproven, unserved_member_stopped
+        from gateway.session_hosted_member_homes import unsettled_legacy_homes, unserved_member_stopped
         if super()._stop_deferred_peer(room_id, task):
-            return not legacy_attempt_unproven(self, room_id, task)
+            return not unsettled_legacy_homes(self, room_id, task)
         from tui_gateway.hosted_room_service import task_member_id
         return (not self._member_is_peer(room_id, task_member_id(task))
                 and unserved_member_stopped(self, room_id, task))

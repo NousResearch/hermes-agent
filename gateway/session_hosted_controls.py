@@ -89,6 +89,11 @@ class HostedControls:
             # A stalled room preparation, not an attempt: the shared service retries it.
             return super().retry_room_task(
                 room_id, task_id=task_id, member_id=member_id, execution_generation=execution_generation)
+        local = not self._member_is_peer(room_id, member_id)
+        if local:
+            # Every daemon is asked before the policy lock (a reverse RPC under it deadlocks real
+            # gateways); a deferred turn is never admitted meanwhile, and the requeue is fenced.
+            self._local_retry_probe(room_id, member_id, task_id, execution_generation)
         with self._policy_lock:
             task, binding = self._control_task(room_id, member_id, task_id, execution_generation)
             # Unknown is not non-admission. Never advance its hosted generation
@@ -97,22 +102,36 @@ class HostedControls:
                 raise RuntimeStoreError('unknown_execution')
             if task['status'] != 'deferred':
                 raise RuntimeStoreError('stale_generation')
-            if not self._member_is_peer(room_id, member_id):
-                return self._retry_local(binding, task, room_id)
+            if local:
+                lease = self.runtime._ensure_lease(binding)
+                return self.runtime._requeue(tasks.requeue_deferred_task, task, lease, room_id)
         return self._retry_peer(binding, task)
 
-    def _retry_local(self, binding, task, room_id):
-        from gateway.session_hosted_member_homes import moved_attempt_gone
-        if not moved_attempt_gone(self, room_id, task):
-            rpc = self._resolve_member_transport(binding, task)
-            info = rpc.info(profile=task['payload']['target_profile'], source='bot_room',
-                            session_id=rpc.ref.session_id)
-            if info.get('status') == 'unknown':
-                raise RuntimeStoreError('unknown_execution')
-            if info.get('active'):
-                raise RuntimeStoreError('session_busy')
-        lease = self.runtime._ensure_lease(binding)
-        return self.runtime._requeue(tasks.requeue_deferred_task, task, lease, room_id)
+    def _local_retry_probe(self, room_id, member_id, task_id, execution_generation):
+        """Refuse Retry while any home could still run this generation. A turn from before attempt
+        homes were recorded may run at an older home of its profile, which must first answer that
+        it holds nothing; then the home the Stop is asked at must be idle (unless it is gone)."""
+        from gateway.session_hosted_member_homes import moved_attempt_gone, unsettled_legacy_homes
+        task, binding = self._control_task(room_id, member_id, task_id, execution_generation)
+        if task['status'] != 'deferred':
+            return  # refused under the lock
+        held = unsettled_legacy_homes(self, room_id, task)
+        if held:
+            raise RuntimeStoreError('session_busy', field='home', detail=(
+                f'an older home of this profile may still run this turn: {held[0]}'))
+        if moved_attempt_gone(self, room_id, task):
+            return
+        rpc, profile = self._resolve_member_transport(binding, task), task['payload']['target_profile']
+        ref = getattr(rpc, 'ref', None)
+        # A fresh transport to another profile's daemon learns its session id by resolving it.
+        session_id = ref.session_id if ref is not None else self.runtime._resume_exact(rpc, room_id, profile)
+        if session_id is None:
+            return  # that daemon answered: no room session, nothing runs
+        info = rpc.info(profile=profile, source='bot_room', session_id=session_id)
+        if info.get('status') == 'unknown':
+            raise RuntimeStoreError('unknown_execution')
+        if info.get('active'):
+            raise RuntimeStoreError('session_busy')
 
     def _retry_peer(self, binding, task):
         """A member on another gateway may still hold this generation: replay it under its own key

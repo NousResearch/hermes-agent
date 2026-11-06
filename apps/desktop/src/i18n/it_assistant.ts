@@ -286,6 +286,7 @@ export const itAssistant = {
       react: 'Reagisci',
       dismissError: 'Ignora errore',
       responseStopped: 'Risposta interrotta',
+      contentRefusedNotice: 'Questo messaggio è stato rifiutato dal filtro di sicurezza del modello — prova una query diversa.',
       errorLayers: {
         auth: 'Problema di accesso',
         billing: 'Crediti esauriti',

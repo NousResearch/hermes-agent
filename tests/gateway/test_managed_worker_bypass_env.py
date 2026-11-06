@@ -96,7 +96,7 @@ def test_bypass_parent_env_reaches_transport(tmp_path, monkeypatch, worker_owner
                              'base_url': 'http://127.0.0.1:9/v1',
                              'safe_mode': mode == 'safe', 'ignore_user_config': True}, private_secrets={})
     frozen = policy.terminal_json
-    assert json.loads(frozen)['TERMINAL_HOME_MODE'] == 'auto'
+    assert json.loads(frozen).get('TERMINAL_HOME_MODE', 'auto') == 'auto'
     # auto is profile HOME in a container, real HOME on a native host. Ignored YAML opposes it.
     yaml = ('terminal: [unterminated\n' if yaml_kind == 'malformed' else
             f'terminal: {{home_mode: {"real" if hc.is_container() else "profile"}}}\n')

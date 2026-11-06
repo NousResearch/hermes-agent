@@ -1,4 +1,4 @@
-"""Network retry policy keeps permanent errors immediate and attempts bounded."""
+"""Network retries preserve server delays, cancellation and bounded defaults."""
 
 import errno
 import http.client
@@ -116,8 +116,8 @@ def test_download_failure_names_only_a_cdn_firewall_refusal(status, headers, cdn
         assert f"mirror.example's CDN firewall ({cdn}) refused this network" in message, message
 
 
-@pytest.mark.parametrize("retry_after,expected", [("60", 60), ("600", None)])
-def test_resumable_transfer_honors_retry_after_or_stops(retry_after, expected):
+@pytest.mark.parametrize("retry_after,expected,fallback", [("60", 60, False), ("600", None, False), ("60", None, True)])
+def test_resumable_transfer_honors_retry_after_or_stops(retry_after, expected, fallback):
     attempts = []
     waits = []
 
@@ -129,8 +129,37 @@ def test_resumable_transfer_honors_retry_after_or_stops(retry_after, expected):
 
     if expected is None:
         with pytest.raises(urllib.error.HTTPError):
-            network.retry_network(request, wait=waits.append, progress=lambda: 0)
+            network.retry_network(request, wait=waits.append, progress=lambda: 0,
+                                  fallback_available=fallback, keep_retrying=fallback)
         assert len(attempts) == 1 and not waits
     else:
         assert network.retry_network(request, wait=waits.append, progress=lambda: 0) == "complete"
         assert waits == [expected]
+
+
+@pytest.mark.parametrize("retry_after,expected", [(None, None), ("120", 120), ("3600", 300), ("future-date", 300)])
+def test_unlimited_retries_cap_waits_without_exponent_overflow(monkeypatch, retry_after, expected):
+    now = datetime(2020, 1, 1, tzinfo=UTC).timestamp()
+    monkeypatch.setattr(network.time, "time", lambda: now)
+    monkeypatch.setattr(network.random, "uniform", lambda low, high: low)
+    if retry_after == "future-date":
+        retry_after = format_datetime(datetime.fromtimestamp(now + 3600, UTC), usegmt=True)
+    error = _http_error(503, retry_after)
+    waits = []
+
+    def fail():
+        raise error
+
+    def wait(delay):
+        waits.append(delay)
+        if len(waits) == 1100:
+            raise DownloadPaused("stop recovery")
+
+    with pytest.raises(DownloadPaused):
+        network.retry_network(fail, wait=wait, keep_retrying=True)
+    assert len(waits) == 1100
+    if retry_after is None:
+        assert waits[:6] == [1, 1, 2, 4, 8, 15]
+        assert all(delay == 15 for delay in waits[6:])
+    else:
+        assert waits == [expected] * 1100

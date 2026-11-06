@@ -49,7 +49,22 @@ export function ReasoningPill({ disabled, model }: { disabled: boolean; model: C
   // spells out the CLI's wording in the tooltip, so Ultra is never shown as a
   // distinct wire level the route does not have (#61634).
   const clamp = reasoningEffortClamp(effort, reasoningEffortWire)
-  const label = reasoningEffortLabel(effort, reasoningEffortWire)
+
+  const localizedLabels = {
+    minimal: copy.minimal,
+    low: copy.low,
+    medium: copy.medium,
+    high: copy.high,
+    xhigh: copy.xhigh,
+    max: copy.max,
+    ultra: copy.ultra
+  }
+
+  const localizedLabel = (level: string) => localizedLabels[level as keyof typeof localizedLabels]
+
+  const label = clamp
+    ? `${localizedLabel(clamp.effort) ?? reasoningEffortLabel(clamp.effort)}→${localizedLabel(clamp.wire) ?? reasoningEffortLabel(clamp.wire)}`
+    : localizedLabel(effort) ?? reasoningEffortLabel(effort, reasoningEffortWire)
 
   // Until the session reports its own effort, the profile default is a guess
   // about to be replaced (#79807). Show the model pill's quiet loader instead.

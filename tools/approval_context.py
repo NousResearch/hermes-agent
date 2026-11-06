@@ -28,6 +28,27 @@ _approval_tool_call_id: contextvars.ContextVar[str] = _ctx("approval_tool_call_i
 # hooks so observer plugins attach marks to the REAL session scope — otherwise they fall back to a synthetic "default"
 # session whose scope never closes, so close-time exporters never ship them.
 _approval_session_id: contextvars.ContextVar[str] = _ctx("approval_session_id")
+# Model-facing trace of a human grant in the current tool call (#142867): set by
+# the gate when a person actually approves, taken (read-and-clear) by the tool
+# executors and attached to the tool result the model sees. Without it, an
+# approved gated call is indistinguishable from an ungated one in the agent's
+# context, while a denial leaves a BLOCKED trace. Per-context like the
+# observability ids above, so concurrent tool threads never cross traces.
+_human_approval_note: contextvars.ContextVar[str | None] = _ctx("human_approval_note", None)
+
+
+def _set_human_approval_note(note: str) -> None:
+    _human_approval_note.set(note)
+
+
+def _take_human_approval_note() -> str | None:
+    """Read-and-clear the pending human-approval trace (``None`` when no human
+    granted anything in this context since the last take)."""
+    note = _human_approval_note.get()
+    _human_approval_note.set(None)
+    return note
+
+
 # Interactive-CLI flag. Concurrent ACP sessions share a ThreadPoolExecutor, so mutating
 # os.environ["HERMES_INTERACTIVE"] races: one session's `finally` restore can clobber another's set mid-run, dropping
 # it onto the non-interactive auto-approve path so a dangerous command runs without the approval callback firing

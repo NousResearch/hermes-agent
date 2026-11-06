@@ -23,11 +23,23 @@ from gateway.platforms._shared import (
     get_scoped_secret as _get_wsecret
 )
 from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
+from gateway.platforms.helpers import strip_markdown
 
 
 logger = logging.getLogger(__name__)
 
 _TRUTHY = {"true", "1", "yes", "on"}
+# Match complete sequences so keycap bases, selectors, skin tones and tag flags
+# cannot survive removal as orphan characters.
+_A11Y_EMOJI_RE = re.compile(
+    r"(?:[#*0-9][\uFE0E\uFE0F]?\u20E3|"
+    r"[\U0001F000-\U0001FAFF\u2600-\u27BF][\uFE0E\uFE0F]?"
+    r"[\U0001F3FB-\U0001F3FF]?[\U000E0020-\U000E007F]*)"
+    r"(?:\u200D[\U0001F000-\U0001FAFF\u2600-\u27BF\u2194\u2195]"
+    r"[\uFE0E\uFE0F]?[\U0001F3FB-\U0001F3FF]?)*"
+)
+_A11Y_EMOJI_RUN_RE = re.compile(r"[ \t]*(?:" + _A11Y_EMOJI_RE.pattern + r"[ \t]*)+")
+_A11Y_STATUS_TEXT = {"✅": "(done)", "⚠": "(warning)", "🔴": "(red)"}
 
 
 def _stash(pattern: str, text: str, tag: str) -> tuple[str, list[str]]:
@@ -39,6 +51,42 @@ def _stash(pattern: str, text: str, tag: str) -> tuple[str, list[str]]:
         return f"\x00{tag}{len(saved) - 1}\x00"
 
     return re.sub(pattern, keep, text), saved
+
+
+def _a11y_emoji_text(match: re.Match[str]) -> str:
+    labels = [
+        _A11Y_STATUS_TEXT.get(emoji.group().rstrip("\uFE0E\uFE0F"), "")
+        for emoji in _A11Y_EMOJI_RE.finditer(match.group())
+    ]
+    # Only whitespace touching emoji is normalized; unrelated prose spacing stays.
+    return " " + " ".join(label for label in labels if label) + " " if any(labels) else " "
+
+
+def _a11y_plain_text(text: str) -> str:
+    """Keep structure and literal code/URLs while simplifying surrounding prose."""
+    text, fences = _stash(r"```[\s\S]*?```", text, "FENCE")
+    # Protect indented code before looking for inline code inside its literals.
+    text, indented = _stash(
+        r"(?m)^(?: {4}|\t)(?![ \t]*(?:[-+*]|\d+[.)])[ \t]+)[^\n]*", text, "INDENT",
+    )
+    text, codes = _stash(r"`[^`\n]+`", text, "CODE")
+    text, urls = _stash(r"(?<=https://)[^\s)<>]+|(?<=http://)[^\s)<>]+", text, "URL")
+    lines = []
+    for line in text.split("\n"):
+        # Separate indentation and list markers before strip_markdown can eat them.
+        prefix = re.match(r"[ \t]*(?:(?:[-+*]|\d+[.)])[ \t]+)?", line).group()
+        body = _A11Y_EMOJI_RUN_RE.sub(_a11y_emoji_text, line[len(prefix):])
+        lines.append(prefix + strip_markdown(body, keep_link_targets=True))
+    result = "\n".join(lines)
+    for tag, saved in (("URL", urls), ("CODE", codes), ("INDENT", indented), ("FENCE", fences)):
+        for i, original in enumerate(saved):
+            if tag == "CODE":
+                original = original[1:-1]
+            elif tag == "FENCE":
+                original = re.sub(r"^```[a-zA-Z0-9_+-]*\n?", "", original)
+                original = re.sub(r"\n?```$", "", original)
+            result = result.replace(f"\x00{tag}{i}\x00", original)
+    return result
 
 
 def _header_to_bold(m: re.Match) -> str:
@@ -265,12 +313,24 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
         )
 
     # ------------------------------------------------------------------ formatting
+    def _whatsapp_a11y_plain_output(self) -> bool:
+        """Whether this channel opts into screen-reader-friendly plain text."""
+        configured = _extra_or_wsecret(
+            self.config.extra, "a11y_plain_output", "WHATSAPP_A11Y_PLAIN_OUTPUT",
+        )
+        if isinstance(configured, str):
+            return configured.lower() in _TRUTHY
+        return bool(configured)
+
     def format_message(self, content: str) -> str:
         """Convert markdown to WhatsApp syntax (*bold*, _italic_, ~strike~); fenced and
         inline code are protected via placeholder substitution."""
         if not content:
             return content
-        result, fences = _stash(r"```[\s\S]*?```", self._sanitize_outbound_text(content), "FENCE")
+        sanitized = self._sanitize_outbound_text(content)
+        if self._whatsapp_a11y_plain_output():
+            return _a11y_plain_text(sanitized)
+        result, fences = _stash(r"```[\s\S]*?```", sanitized, "FENCE")
         result, codes = _stash(r"`[^`\n]+`", result, "CODE")
         # Italic *text* → _text_ BEFORE bold so **bold** doesn't become italic;
         # lookarounds skip list bullets and bold delimiters.

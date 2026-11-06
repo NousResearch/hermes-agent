@@ -197,6 +197,9 @@ _COPIED = ("import builtins\nimport operator\nfrom builtins import delattr as dr
     "self.__reduce_ex__(2)[2].pop('values')",
     "object.__getattribute__(self, '__dict__').pop('values')",
     "o = object\n        o.__delattr__(self, 'values')",
+    "fetch = getattr\n        fetch(self, '__dic' + 't__').pop('values')",
+    "fetch = getattr\n        fetch(self, '__del' + 'attr__')('values')",
+    "fetch = getattr\n        name = '_' * 2 + 'dict' + '_' * 2\n        fetch(self, name).pop('values')",
     "pass\n    share = lambda self: self.__delattr__('values')\n    def unused(self):\n        pass",
 ])
 def test_namespace_change_leaves_no_own_copy(operation):

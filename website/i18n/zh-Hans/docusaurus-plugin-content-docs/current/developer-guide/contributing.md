@@ -32,7 +32,7 @@ description: "如何为 Hermes Agent 做贡献 — 开发环境配置、代码�
 ### 前置要求
 
 项目要求 Python 3.14（`>=3.14,<3.15`）。PM 提供固定版本的解释器和工具。
-准备 Git 和 git-lfs。JS 构建使用 PM 的 Node/npm，或满足相应 `package.json` engines 的版本。
+准备 Git 和 git-lfs。JS 构建使用 PM 的 Node 和 pnpm（pnpm 版本须与根 `package.json` 的 `devEngines` 完全一致），或满足相应 `package.json` engines 的 Node 版本。
 
 ### PM 开发环境
 
@@ -83,7 +83,7 @@ Windows 上通过 Bash 运行 `scripts/run_tests.sh`，并预先准备本机 C++
 运行开发实例前，选择临时的 `HERMES_HOME`，再使用 `hermes setup` 配置它。
 不要把生产凭据复制到 checkout。
 
-从仓库根目录运行 `npm ci` 安装 JS workspaces。网站单独使用：
+从仓库根目录运行 `pnpm install --frozen-lockfile` 安装 JS workspaces。网站是独立的 npm 项目：
 
 ```bash
 npm ci --prefix website

@@ -128,6 +128,8 @@ def _pin_tool(args) -> int:
     lockfile.set_pin(args.name, args.version, artifacts)
     lockfile.save()
     print(f"pinned {args.name} {args.version} ({len(artifacts)} targets)")
+    if args.name == "pnpm":
+        _sync_pnpm_dev_engines(lockfile)
     return _regenerate_bootstrap_pins(lockfile)
 
 
@@ -655,6 +657,28 @@ def _sync_venv_step() -> bool:
     return True
 
 
+def _sync_pnpm_dev_engines(lockfile) -> None:
+    """Carry the pnpm pin into root package.json's devEngines.
+
+    scripts/build/node-deps.mjs refuses any pnpm but the devEngines one, so a
+    pnpm re-pin that left it behind would break every install. A lock outside a
+    checkout (a test fixture) has no manifest.
+    """
+    import json
+
+    manifest_path = lockfile.path.parent.parent / "package.json"
+    version = lockfile.version("pnpm")
+    if not version or not manifest_path.is_file():
+        return
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    pin = manifest.get("devEngines", {}).get("packageManager", {})
+    if pin.get("name") != "pnpm" or pin.get("version") == version:
+        return
+    pin["version"] = version
+    manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    print(f"✓ package.json devEngines pnpm → {version}")
+
+
 def _regenerate_bootstrap_pins(lockfile) -> int:
     """Splice the new uv and Windows git pins into this checkout's installers.
 
@@ -696,6 +720,8 @@ def _apply_pins(changed: list, lockfile) -> int:
         print(f"✓ {d.name} pinned {d.locked or '—'} → {d.version}")
     if pinned:
         lockfile.save()
+        if "pnpm" in pinned:
+            _sync_pnpm_dev_engines(lockfile)
         fragments = _regenerate_bootstrap_pins(lockfile)
         rc = 1 if _install_names(pinned) or not _sync_venv_step() or fragments else 0
     else:
@@ -725,38 +751,43 @@ def _refresh_uv_lock() -> int:
     return 0 if _sync_venv_step() else 1
 
 
-def _refresh_npm_lock() -> int:
+def _refresh_pnpm_lock() -> int:
     from pm.install import env_for, installed_package
-    from pm.packages import npm_env
-    from pm.paths import writable_store_root
+    from pm.packages import pnpm_env
 
-    npm = installed_package("npm")
-    node = installed_package("node")
-    if npm is None or npm.binary is None or node is None or node.binary is None:
-        print("✗ npm or Node: not installed; run `hermes pm install`")
+    pnpm = installed_package("pnpm")
+    if pnpm is None or pnpm.binary is None:
+        print("✗ pnpm: not installed; run `hermes pm install`")
         return 1
-    env = npm_env(writable_store_root() / ".npm-cache", env_for("npm"))
-    code, tail = _run_live([str(npm.binary), "update"], cwd=str(repo_root()), env=env)
+    # Every workspace and the root, within the declared ranges: --no-save keeps the manifests'
+    # specifiers as written, and the release-age policy applies to every new pick.
+    command = [str(pnpm.binary), "update", "--recursive", "--lockfile-only", "--no-save"]
+    code, tail = _run_live(command, cwd=str(repo_root()), env=pnpm_env(env_for("pnpm")))
     if code != 0:
-        print(f"✗ npm update failed:\n{tail}")
+        print(f"✗ pnpm update failed:\n{tail}")
+        # --no-save turns the "only too-young versions match" case into the
+        # REQUIRES_SAVE error: pnpm would otherwise write the exclude itself.
+        if "ERR_PNPM_NO_MATURE_MATCHING_VERSION" in tail or "ERR_PNPM_STRICT_MIN_RELEASE_AGE_REQUIRES_SAVE" in tail:
+            print("  a range's only matches are newer than minimumReleaseAge (pnpm-workspace.yaml): "
+                  "wait for them to age, or add the package to minimumReleaseAgeExclude")
         return 1
-    print("✓ package-lock.json refreshed")
+    print("✓ pnpm-lock.yaml refreshed")
     return 0
 
 
 def cmd_update(args) -> int:
-    """`hermes pm update [names...] [--check] [--target T] [--skip-target T] [--uv] [--npm] [--termux]`.
+    """`hermes pm update [names...] [--check] [--target T] [--skip-target T] [--uv] [--pnpm] [--termux]`.
 
     Resolve each package's latest via its own latest_versions() hook,
     intersect across targets, and (real mode) re-pin the lockfile + install
     the changed ones. --check is dry-run: hits upstream indexes, writes
-    nothing. --uv / --npm also refresh uv.lock (+sync venv) / package-lock.
+    nothing. --uv / --pnpm also refresh uv.lock (+sync venv) / pnpm-lock.yaml.
     --termux is its own repair pass: it repins only the pool archives the
     rolling termux-main pool has retired under our pins.
     """
     if args.termux:
         ignored = [name for name, given in (("names", args.names), ("--target", args.target),
-                                            ("--uv", args.uv), ("--npm", args.npm)) if given]
+                                            ("--uv", args.uv), ("--pnpm", args.pnpm)) if given]
         if ignored:
             print(f"::warning::--termux repairs the termux pool pins only; ignoring {', '.join(ignored)}")
         return _termux_pass(check=args.check)
@@ -780,16 +811,16 @@ def cmd_update(args) -> int:
     if args.check:
         if args.uv:
             print("uv deps: would run `uv lock --upgrade` + venv sync")
-        if args.npm:
-            print("npm deps: would run `npm update`")
+        if args.pnpm:
+            print("pnpm deps: would run `pnpm update --recursive --lockfile-only --no-save`")
         return 1 if changed else 0
 
     if _apply_pins(changed, lockfile):
         return 1
     if args.uv and _refresh_uv_lock():
         return 1
-    if args.npm:
-        return _refresh_npm_lock()
+    if args.pnpm:
+        return _refresh_pnpm_lock()
     return 0
 
 
@@ -1039,7 +1070,7 @@ def main(argv=None) -> int:
                    help="leave TARGET's pins as they are, e.g. linux-arm64-bionic while the termux "
                         "pool lags upstream (repeatable)")
     p.add_argument("--uv", action="store_true", help="also refresh uv.lock + venv (uv update + sync)")
-    p.add_argument("--npm", action="store_true", help="also refresh package-lock.json (npm update)")
+    p.add_argument("--pnpm", action="store_true", help="also refresh pnpm-lock.yaml (pnpm update)")
     p.add_argument("--termux", action="store_true",
                    help="repin the termux pool archives the pool has retired (the runtime-lib "
                         "table + the bionic lock rows); --check reports without writing")

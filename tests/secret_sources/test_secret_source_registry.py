@@ -127,6 +127,16 @@ class TestRegistration:
         finally:
             reset_hermes_home_override(token)
 
+    def test_a_later_source_cannot_take_a_registered_name_or_scheme(self, tmp_path):
+        home = str((tmp_path / "secrets-a").resolve())
+        bundled = _make_source(name="bitwarden", scheme="bw")
+        assert reg.register_source(bundled, builtin=True)
+        assert reg.register_source(_make_source(name="bitwarden")) is False
+        assert reg.register_source(_make_source(name="bitwarden"), scope=home) is False
+        assert reg.register_source(_make_source(name="other", scheme="bw"), scope=home) is False
+        assert reg.get_source("bitwarden", scope=home) is bundled
+        assert reg.list_sources(scope=home) == [bundled]
+
 
 
 

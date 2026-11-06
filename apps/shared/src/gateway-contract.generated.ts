@@ -1881,6 +1881,7 @@ export interface GroupsPeerInviteParams {
   member_id?: string | null
   grant_id?: string | null
   ttl_seconds?: number | null
+  status_ttl_seconds?: number | null
 }
 export interface GroupsPeerInviteResult {
   grant: string
@@ -3525,6 +3526,12 @@ export interface SessionUndoParams {
 export type UndoIntent = 'retry' | 'undo'
 export interface SessionUndoResult {
   removed: number
+  undo_hint?: UndoRollbackHint | null
+}
+/** ``/undo``'s line naming the files the undone turns changed and pointing at ``/rollback``: ``files`` are the changed paths, ``text`` is the rendered line in the backend's language. */
+export interface UndoRollbackHint {
+  files?: string[]
+  text: string
 }
 export interface SessionSaveParams {
   session_id: string
@@ -3748,7 +3755,7 @@ export interface SessionEventsStatsResult {
   max_bytes_per_session: number
   max_bytes_process: number
 }
-/** Needs a ``template`` or ``instructions`` / ``input``; a live ``session_id`` lends its model. */
+/** Needs a ``template`` or ``instructions`` / ``input``; a live ``session_id`` lends its model. ``task`` is a built-in auxiliary slot or a plugin-registered one (unknown keys are refused); ``schema`` (a JSON Schema) makes the reply carry ``parsed``; ``redact`` masks secrets in ``input``. */
 export interface LlmOneshotParams {
   profile?: string | null
   template?: string | null
@@ -3759,9 +3766,12 @@ export interface LlmOneshotParams {
   temperature?: number | null
   max_tokens?: number | null
   session_id?: string | null
+  schema?: Record<string, unknown> | null
+  redact?: boolean | null
 }
 export interface LlmOneshotResult {
   text: string
+  parsed?: unknown | null
 }
 export interface SystemBatteryParams {
   profile?: string | null
@@ -3960,10 +3970,13 @@ export interface ConfigSection {
 export interface RollbackListParams {
   session_id: string
   profile?: string | null
+  undo_since?: number | null
+  undo_message_id?: number | null
 }
 export interface RollbackListResult {
   enabled: boolean
   checkpoints?: RollbackCheckpoint[]
+  undo_hint?: UndoRollbackHint | null
 }
 export interface RollbackCheckpoint {
   hash?: string
@@ -4824,6 +4837,7 @@ export interface CanonicalSessionInfo {
   service_tier?: string | null
   fast?: boolean | null
   title?: string | null
+  archived?: boolean | null
   started_at?: number | null
   last_active_at?: number | null
   yolo?: boolean | null
@@ -5050,6 +5064,29 @@ export interface WorkerPersistParams {
 }
 /** The operation's durable receipt (``message_id`` for an append, delegation results, …). */
 export type WorkerPersistResult = Record<string, unknown>
+export interface CanonicalGroupsPeerInviteParams {
+  profile?: string | null
+  room_id: string
+  home_install_id: string
+  authority_gateway_id: string
+  authority_epoch: number
+  member_id: string
+  ttl_seconds?: number
+  status_ttl_seconds?: number
+}
+export interface CanonicalGroupsPeerRevokeParams {
+  profile?: string | null
+  grant: string
+}
+export interface CanonicalGroupsPeerRegisterParams {
+  profile?: string | null
+  room_id: string
+  member_id: string
+  target_url: string
+  target_profile: string
+  grant: string
+  catalog: Record<string, unknown>
+}
 export interface CanonicalCreateParams {
   profile?: string | null
   request_id?: string | null
@@ -5159,6 +5196,7 @@ export interface CanonicalSnapshotInfo {
   service_tier?: string | null
   fast?: boolean | null
   title?: string | null
+  archived?: boolean | null
   started_at?: number | null
   last_active_at?: number | null
   yolo?: boolean | null
@@ -6967,6 +7005,12 @@ export interface CanonicalRpcMethods {
   'groups.create': { params: CanonicalRoomCreateParams; result: GroupsCreateResult }
   /** Discard one indeterminate room task after explicit user confirmation. */
   'groups.discard': { params: GroupsDiscardParams; result: GroupsDiscardResult }
+  /** Operator only: mint one room grant for a member of another gateway's room. */
+  'groups.peer.invite': { params: CanonicalGroupsPeerInviteParams; result: GroupsPeerInviteResult }
+  /** Bind a target grant to the room's pinned peer member after a live scoped probe. */
+  'groups.peer.register': { params: CanonicalGroupsPeerRegisterParams; result: GroupsPeerRegisterResult }
+  /** Operator only: revoke one grant this gateway issued, by its exact room scope. */
+  'groups.peer.revoke': { params: CanonicalGroupsPeerRevokeParams; result: GroupsPeerRevokeResult }
   'groups.retry': { params: CanonicalRoomAttemptParams; result: GroupsRetryResult }
   'image.attach_bytes': { params: ImageAttachBytesParams; result: CanonicalAttachedImageResult }
   /** Native-owner only: admit the dispatcher's current claim on a kanban task. */
@@ -7038,6 +7082,9 @@ export const CANONICAL_RPC_METHODS = [
   'groups.attachment.upload',
   'groups.create',
   'groups.discard',
+  'groups.peer.invite',
+  'groups.peer.register',
+  'groups.peer.revoke',
   'groups.retry',
   'image.attach_bytes',
   'kanban.run',

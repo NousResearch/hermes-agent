@@ -40,7 +40,7 @@ export async function buildDesktop({ source, out, icons, stamp, nativeDeps, type
     // Source children can be symlinks outside the checkout. Protect their
     // canonical paths, but leave generated dist/build trees to productOutput.
     ...readdirSync(join(resolve(source), app)).filter(name => !['dist', 'build'].includes(name)).map(name => `${app}/${name}`),
-    `${app}/scripts`, 'scripts/build', 'package.json', 'package-lock.json',
+    `${app}/scripts`, 'scripts/build', 'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml',
     'apps/shared', 'node_modules',
     ...[join(resolve(icons), app, 'public'), stamp, nativeDeps].map(input => relative(resolve(source), resolve(input))),
   ]))

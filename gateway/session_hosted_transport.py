@@ -308,6 +308,8 @@ def _check_remote_hosted_admission(authority, ref, row):
 
 class HostedRoomOwnerRPC(HostedRoomAuthorityRPC):
     """Driver-compatible producer; carries data, never a caller principal."""
+    served_elsewhere = True  # another profile's daemon, which can go away without this process
+
     def __init__(self, *, home, source_home, room_id, member_id, profile):
         self.home = Path(home)
         self.member_id = member_id

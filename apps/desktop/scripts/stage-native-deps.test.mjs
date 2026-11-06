@@ -653,7 +653,7 @@ test('darwin staging ships the Swift helper executable and the rewritten windows
 
 // ─── stageGetWindows (optionalDependency gate) ──────────────────────
 //
-// get-windows is an optionalDependency: npm omits it when its install script
+// get-windows is an optionalDependency: the install omits it when its install script
 // fails (no prebuilt for Linux / Windows ARM64) and a Windows in-place update
 // can leave it half-extracted when a running Desktop holds files open
 // (#90829). Either way only read_window_below is lost, so staging degrades

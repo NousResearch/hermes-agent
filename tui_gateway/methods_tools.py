@@ -1943,6 +1943,7 @@ def _(rid, params: dict) -> dict:
     cmd = params.get("command", "")
     if not cmd:
         return _err(rid, 4004, "empty command")
+    raw_stdout = bool(params.get("raw_stdout", False))
     try:
         approval = _tools_mod("tools.approval_detection")
         is_hardline, hardline_desc = approval.detect_hardline_command(cmd)
@@ -1955,12 +1956,17 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5001, "shell.exec unavailable: approval safety module not importable")
 
     def done(result):
-        redact = _tools_mod("agent.redact").redact_sensitive_text
-        # Unlike the interactive CLI, this output crosses the RPC boundary and can be persisted
-        # in the transcript. Redact before tailing so a credential crossing the slice boundary
-        # cannot survive as two unmatched fragments.
-        stdout = redact(result.stdout or "", force=True, redact_url_credentials=True)[-4000:]
-        stderr = redact(result.stderr or "", force=True, redact_url_credentials=True)[-2000:]
+        # raw_stdout callers (desktop plugin probes parsing structured output) opt out of
+        # redaction so verbatim bytes survive; the slice boundary still tails to the limits.
+        # Default callers keep force-redaction: this output crosses the RPC boundary and can
+        # be persisted in the transcript, so a credential cannot survive as two unmatched fragments.
+        if raw_stdout:
+            stdout = (result.stdout or "")[-4000:]
+            stderr = (result.stderr or "")[-2000:]
+        else:
+            redact = _tools_mod("agent.redact").redact_sensitive_text
+            stdout = redact(result.stdout or "", force=True, redact_url_credentials=True)[-4000:]
+            stderr = redact(result.stderr or "", force=True, redact_url_credentials=True)[-2000:]
         return _ok(rid, {"stdout": stdout, "stderr": stderr, "code": result.returncode})
 
     # shell=True preserves the user-facing !cmd grammar (pipes, redirects and interpolation).

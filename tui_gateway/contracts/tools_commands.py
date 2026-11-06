@@ -158,6 +158,10 @@ method("process.kill", params=ProcessKillParams, result=ProcessKillResult,
 class ShellExecParams(Params):
     command: str
     profile: str | None = None
+    # When true, skip redact_sensitive_text on stdout/stderr so callers that parse
+    # structured output (desktop plugin probes emitting JSON) receive verbatim bytes.
+    # Default false keeps force-redaction for user-facing !cmd output crossing the RPC boundary.
+    raw_stdout: bool = False
 
 
 class ShellExecResult(Result):
@@ -174,6 +178,7 @@ class CanonicalShellExecParams(Params):
     session_id: str
     command: str
     profile: str | None = None
+    raw_stdout: bool = False
 
 
 canonical_method("shell.exec", params=CanonicalShellExecParams, result=ShellExecResult,

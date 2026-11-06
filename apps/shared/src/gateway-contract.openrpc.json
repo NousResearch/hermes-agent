@@ -10542,6 +10542,11 @@
             ],
             "default": null,
             "title": "Profile"
+          },
+          "raw_stdout": {
+            "default": false,
+            "title": "Raw Stdout",
+            "type": "boolean"
           }
         },
         "required": [
@@ -41853,6 +41858,11 @@
             ],
             "default": null,
             "title": "Profile"
+          },
+          "raw_stdout": {
+            "default": false,
+            "title": "Raw Stdout",
+            "type": "boolean"
           }
         },
         "required": [

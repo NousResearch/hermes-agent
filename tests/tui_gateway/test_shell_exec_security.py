@@ -33,3 +33,41 @@ def test_shell_exec_scrubs_child_env_and_force_redacts_rpc_output(monkeypatch):
     assert secret not in response["result"]["stdout"]
     assert secret not in response["result"]["stderr"]
     assert "visible" in response["result"]["stdout"]
+
+
+def test_shell_exec_raw_stdout_preserves_structured_token(monkeypatch):
+    """raw_stdout=True opts out of redaction so plugin probes parsing structured
+    output receive verbatim bytes (#149778)."""
+    token = "1341a55f03ce51f23d46420e9bcd6226"
+    payload = '{"snapshot_token":"' + token + '","snapshots":[]}'
+
+    def fake_run(command, **kwargs):
+        return subprocess.CompletedProcess(command, 0, stdout=payload, stderr="")
+
+    monkeypatch.setattr(server.subprocess, "run", fake_run)
+
+    response = server.handle_request(
+        {"id": "raw", "method": "shell.exec", "params": {"command": "probe.py", "raw_stdout": True}}
+    )
+
+    assert response["result"]["stdout"] == payload
+    assert token in response["result"]["stdout"]
+
+
+def test_shell_exec_default_redacts_structured_token(monkeypatch):
+    """Without raw_stdout the default force-redaction still masks random-looking
+    tokens, preserving the security boundary for user-facing !cmd output (#149778)."""
+    token = "1341a55f03ce51f23d46420e9bcd6226"
+    payload = '{"snapshot_token":"' + token + '","snapshots":[]}'
+
+    def fake_run(command, **kwargs):
+        return subprocess.CompletedProcess(command, 0, stdout=payload, stderr="")
+
+    monkeypatch.setattr(server.subprocess, "run", fake_run)
+
+    response = server.handle_request(
+        {"id": "default", "method": "shell.exec", "params": {"command": "probe.py"}}
+    )
+
+    assert token not in response["result"]["stdout"]
+    assert "snapshot_token" in response["result"]["stdout"]

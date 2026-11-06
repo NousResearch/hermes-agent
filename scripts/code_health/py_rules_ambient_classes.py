@@ -11,7 +11,12 @@ constructor, a ``copy``, or a call to a capitalised constructor; never an alias 
 ``self.values = C.values``) as a top-level statement of its body, before anything else in that
 body reads or writes the attribute, calls a method on the instance or hands the instance out, and
 before any ``return``. A copy made on one path, or after the shared value was already touched,
-leaves an instance on the shared one.
+leaves an instance on the shared one. The copy stops counting once any method (``__init__``
+included) can put something else back or take the copy away: an assignment of anything but a
+fresh value (an alias, a tuple unpacking, a loop or ``with`` target), ``del``, ``setattr`` or
+``delattr`` of it; and every copy stops counting where an instance's namespace is changed
+opaquely (``setattr``/``delattr`` with a computed name, ``self.__dict__``, ``vars(self)``,
+``object.__setattr__(self, ...)``).
 
 A method is any function the class body defines while it runs, under an ``if`` or ``try`` too.
 """
@@ -105,6 +110,42 @@ class _Receivers:
                 break
         return own
 
+    def lost_copies(self, fresh: Callable[[ast.AST | None], bool]) -> set[str] | None:
+        """Attributes some method may later rebind to something not fresh, or delete (see the
+        module docstring); None when an opaque change of the instance's namespace may do that to
+        any of them."""
+        lost: set[str] = set()
+        kept: set[int] = set()  # attribute targets an assignment gives a fresh value
+        for method in self.methods:
+            nodes = list(ast.walk(method))
+            for node in nodes:
+                if isinstance(node, ast.Assign) and fresh(node.value):
+                    kept.update(id(t) for t in node.targets)
+                elif isinstance(node, ast.AnnAssign) and node.value is not None and fresh(node.value):
+                    kept.add(id(node.target))
+                elif isinstance(node, ast.AugAssign):
+                    kept.add(id(node.target))  # in place for a container: judged as a mutation
+            for node in nodes:
+                if isinstance(node, ast.Attribute) and self.kind(node.value) == "instance":
+                    if node.attr == "__dict__":
+                        return None
+                    if isinstance(node.ctx, (ast.Store, ast.Del)) and id(node) not in kept:
+                        lost.add(node.attr)
+                elif isinstance(node, ast.Call) and node.args:
+                    name = _call_name(node)
+                    if self.kind(node.args[0]) != "instance":
+                        continue
+                    if name in {"vars", "object.__setattr__", "object.__delattr__"}:
+                        return None
+                    if name in {"setattr", "delattr"}:
+                        key = node.args[1] if len(node.args) > 1 else None
+                        if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
+                            return None
+                        value = node.args[2] if name == "setattr" and len(node.args) > 2 else None
+                        if name == "delattr" or not fresh(value):
+                            lost.add(key.value)
+        return lost
+
     def _fresh_copies(self, stmt: ast.stmt, fresh: Callable[[ast.AST | None], bool]) -> set[str]:
         if isinstance(stmt, ast.Assign):
             targets, value = stmt.targets, stmt.value
@@ -154,6 +195,8 @@ def class_state(cls: ast.ClassDef, attrs: Attrs, writes: list[Write], bindings: 
     changed in place when its value can be (a container, or an object a call built)."""
     recv = _Receivers(cls, bindings)
     own = recv.own_copies(fresh)
+    lost = recv.lost_copies(fresh)
+    own = set() if lost is None else own - lost
     rebound: dict[str, int] = {}
     mutated: set[str] = set()
     for write in writes:

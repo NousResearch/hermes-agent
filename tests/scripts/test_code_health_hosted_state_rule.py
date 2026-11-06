@@ -114,6 +114,26 @@ _RUNTIME_WRITES = {
     "imported_object_item": "from state import X\ndef put(v):\n    X['v'] = v\n",
     "imported_object_method": "from state import X\ndef put(v):\n    X.append(v)\n",
     "imported_object_attribute": "from state import X as Y\ndef put(v):\n    Y.value = v\n",
+    # an own copy stops counting once anything can put the shared value back or remove the copy
+    "class_copy_then_realiased": "class C:\n    values = {}\n    def __init__(self):\n        self.values = {}\n"
+                                 "        self.values = C.values\n    def put(self, v):\n        self.values['v'] = v\n",
+    "class_copy_then_deleted": "class C:\n    values = {}\n    def __init__(self):\n        self.values = {}\n"
+                               "        del self.values\n    def put(self, v):\n        self.values['v'] = v\n",
+    "class_copy_realiased_elsewhere": "class C:\n    values = {}\n    def __init__(self):\n        self.values = {}\n"
+                                      "    def share(self):\n        self.values = C.values\n"
+                                      "    def put(self, v):\n        self.values['v'] = v\n",
+    "class_copy_deleted_elsewhere": "class C:\n    values = {}\n    def __init__(self):\n        self.values = {}\n"
+                                    "    def drop(self):\n        delattr(self, 'values')\n"
+                                    "    def put(self, v):\n        self.values['v'] = v\n",
+    "class_copy_setattr_alias": "class C:\n    values = {}\n    def __init__(self):\n        self.values = {}\n"
+                                "    def share(self, name):\n        setattr(self, name, C.values)\n"
+                                "    def put(self, v):\n        self.values['v'] = v\n",
+    "class_copy_dict_removed": "class C:\n    values = {}\n    def __init__(self):\n        self.values = {}\n"
+                               "    def drop(self):\n        self.__dict__.pop('values')\n"
+                               "    def put(self, v):\n        self.values['v'] = v\n",
+    "class_copy_unpacked_alias": "class C:\n    values = {}\n    def __init__(self):\n        self.values = {}\n"
+                                 "    def share(self):\n        self.values, n = C.values, 1\n"
+                                 "    def put(self, v):\n        self.values['v'] = v\n",
     # an imported object is one through whichever binding reaches it
     "relative_imported_object": "from . import X\ndef put(v):\n    X['v'] = v\n",
     "relative_imported_member": "from .state import X\ndef put(v):\n    X['v'] = v\n",
@@ -143,8 +163,13 @@ def test_imported_object_write_is_reported_on_its_import(src, line):
     # a module bound by ``import m.n as a`` is a module: its attribute is judged in that module
     "def put(v):\n    import state.X as X\n    X.value = v\n",
     "import state.X as X\ndef put(v):\n    X['v'] = v\n",
+    # an own copy kept fresh by every later assignment stays the instance's
+    "class C:\n    values = {}\n    def __init__(self):\n        self.values = {}\n"
+    "    def reset(self):\n        self.values = {}\n    def put(self, v):\n        self.values['v'] = v\n",
+    "class C:\n    values = {}\n    def __init__(self):\n        self.values = {}\n"
+    "    def grow(self, more):\n        self.values |= more\n",
 ])
-def test_module_aliases_pass(src):
+def test_module_aliases_and_kept_copies_pass(src):
     assert _hits(src) == []
 
 

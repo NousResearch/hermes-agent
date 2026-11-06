@@ -1,0 +1,21 @@
+name: hermes-crux
+title: Crux — Decision Atlas
+repo: https://github.com/asimons81/hermes-crux
+sha: 9ef205e8a39a3b6801f09f0000ef21b3d84a7787
+description: "Explore explicit assumptions, exact affine decision thresholds, hard-constraint conflicts, and a live visual atlas."
+maintainer: asimons81
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+version: "0.1.0"
+docs_url: https://github.com/asimons81/hermes-crux/blob/9ef205e8a39a3b6801f09f0000ef21b3d84a7787/README.md
+screenshots:
+  - https://raw.githubusercontent.com/asimons81/hermes-crux/9ef205e8a39a3b6801f09f0000ef21b3d84a7787/docs/screenshots/atlas.png
+  - https://raw.githubusercontent.com/asimons81/hermes-crux/9ef205e8a39a3b6801f09f0000ef21b3d84a7787/docs/screenshots/native-hermes.png
+  - https://raw.githubusercontent.com/asimons81/hermes-crux/9ef205e8a39a3b6801f09f0000ef21b3d84a7787/docs/screenshots/mobile.png
+readme: true
+capabilities:
+  provides_tools: [crux_create, crux_inspect, crux_evaluate, crux_snapshot]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

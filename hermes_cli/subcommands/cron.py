@@ -26,7 +26,7 @@ def _add_catch_up(parser) -> None:
              "cron.catch_up_missed for recurring jobs; one-shots skip.")
 
 
-def _add_wrap_response(parser) -> None:
+def _add_wrap_response(parser, *, allow_inherit: bool = False) -> None:
     parser.add_argument(
         "--wrap-response", dest="wrap_response", action="store_const", const=True, default=None,
         help="Wrap this job's output in the cron header/footer ('Cronjob Response: ...' / "
@@ -34,6 +34,10 @@ def _add_wrap_response(parser) -> None:
     parser.add_argument(
         "--no-wrap-response", dest="wrap_response", action="store_const", const=False,
         help="Deliver this job's output raw, without the cron header/footer.")
+    if allow_inherit:
+        parser.add_argument(
+            "--inherit-wrap-response", dest="wrap_response", action="store_const", const="inherit",
+            help="Remove this job's override so it follows the global cron.wrap_response again.")
 
 
 def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
@@ -139,7 +143,7 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
             "'local' suppresses; '' clears the override)")
     cron_edit.add_argument("--repeat", type=int, help="New repeat count")
     _add_catch_up(cron_edit)
-    _add_wrap_response(cron_edit)
+    _add_wrap_response(cron_edit, allow_inherit=True)
     cron_edit.add_argument("--skill", dest="skills", action="append",
         help="Replace the job's skills with this set. Repeat to attach multiple skills.")
     cron_edit.add_argument("--add-skill", dest="add_skills", action="append",

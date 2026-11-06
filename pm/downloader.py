@@ -244,6 +244,19 @@ def _existing_dest_ok(source: Source) -> bool:
         return False
 
 
+def _transport_allowed(url: str, sha256: str) -> bool:
+    """https always; plain http on loopback (test servers) or when the bytes are pinned.
+
+    A pinned SHA256 is verified before anything is published, so a LAN http mirror
+    (Verdaccio, Nexus) named by the user's npm registry cannot change what installs
+    (#150032). Unpinned downloads (model catalog) stay https-only. Redirects keep
+    their own rule in _HttpsRedirectHandler: never from https down to http.
+    """
+    if url.startswith(("https://", *_LOOPBACK)):
+        return True
+    return url.startswith("http://") and re.fullmatch(r"[a-f0-9]{64}", sha256 or "") is not None
+
+
 class Download:
     """One resumable download job: a plan of sources, run in parallel.
 
@@ -296,8 +309,8 @@ class Download:
             if source.fallbacks and not re.fullmatch(r"[a-f0-9]{64}", source.sha256):
                 raise ValueError("mirror fallback requires a full lowercase SHA256")
             for url in (source.url, *source.fallbacks):
-                if not (url.startswith("https://") or url.startswith(_LOOPBACK)):
-                    raise ValueError(f"refusing non-https url: {url}")
+                if not _transport_allowed(url, source.sha256):
+                    raise ValueError(f"refusing non-https url without a pinned sha256: {url}")
 
         # Probe the whole plan before reporting a denominator. A missing
         # Content-Length keeps the bar indeterminate until that file ends.

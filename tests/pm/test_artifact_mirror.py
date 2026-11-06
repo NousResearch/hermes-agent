@@ -1,8 +1,11 @@
 """PM installation and cross-target staging consume the public pinned mirror."""
+import contextlib
 import hashlib
+from http.server import HTTPServer
 import importlib
 import io
 import os
+import threading
 import zipfile
 
 import pytest
@@ -11,7 +14,8 @@ from pm import paths
 from pm.lock import Facts, Lockfile
 from pm.package import Package
 from pm.store import Store, current_target
-from tests.pm._range_server import RangeHandler, dl_server, url
+from tests.pm._range_server import RangeHandler, url
+from tests.pm._range_server import dl_server as dl_server  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
 
 
 @pytest.mark.parametrize("mode", ["install", "stage", "library"])
@@ -89,3 +93,47 @@ def test_both_pnpm_archives_follow_the_users_npm_registry(tmp_path, monkeypatch)
         assert path != artifact["url"]
         source = pinned_source(artifact["url"], tmp_path / "pnpm.tgz", artifact["sha256"])
         assert source.url == "https://npm.corp.example/npm/" + path
+
+
+@contextlib.contextmanager
+def _lan_mirror():
+    """A plain-http npm registry on an address the downloader does not treat as loopback."""
+    server = HTTPServer(("127.0.0.2", 0), RangeHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        yield f"http://127.0.0.2:{server.server_port}/"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.mark.platforms("linux")  # all of 127/8 answers on Linux; macOS binds only 127.0.0.1
+@pytest.mark.parametrize("tampered", [False, True])
+def test_plain_http_npm_mirror_serves_pinned_bytes(tmp_path, monkeypatch, dl_server, tampered):
+    """#150032: an http LAN registry in ~/.npmrc may serve a pinned artifact; the pin still decides."""
+    from pm.artifact_mirror import pinned_source
+    from pm.downloader import Download, HashError
+
+    body = b"pinned pnpm tarball"
+    RangeHandler.payloads["/@pnpm/exe.linux-x64/-/exe.linux-x64-12.15.0.tgz"] = b"tampered with mirror" if tampered else body
+    with _lan_mirror() as lan_mirror:
+        monkeypatch.setenv("NPM_CONFIG_REGISTRY", lan_mirror)
+        source = pinned_source("https://registry.npmjs.org/@pnpm/exe.linux-x64/-/exe.linux-x64-12.15.0.tgz",
+                               tmp_path / "pnpm.tgz", hashlib.sha256(body).hexdigest())
+        assert source.url.startswith(lan_mirror)
+        download = Download([source], partials_dir=tmp_path / "partials")
+        if tampered:
+            with pytest.raises(HashError):
+                download.run()
+            assert not source.dest.exists()
+        else:
+            assert download.run() == [source.dest]
+            assert source.dest.read_bytes() == body
+
+
+def test_plain_http_stays_refused_without_a_pin(tmp_path):
+    """Unpinned downloads (model catalog) have no hash to fall back on, so http is still refused."""
+    from pm.downloader import Download, Source
+
+    with pytest.raises(ValueError, match="non-https"):
+        Download([Source("http://192.168.1.20:4873/model.gguf", tmp_path / "m")], partials_dir=tmp_path / "p").run()

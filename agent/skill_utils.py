@@ -2,12 +2,15 @@
 Import-light by design: no tool registry, CLI config, or provider resolution."""
 
 import ast
+import errno as _errno
 import hashlib
 import logging
 import os
 import re
+import stat as _stat
 import sys
 import threading
+from dataclasses import dataclass, field
 from pathlib import Path, PurePath
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
@@ -337,9 +340,17 @@ def _config_str_list(raw) -> list[str]:
     return [e for e in (str(entry).strip() for entry in raw) if e]
 
 
-def get_external_skills_dirs() -> list[Path]:
-    """Validated, deduplicated ``skills.external_dirs`` (existing dirs only). Entries
-    are ``~``/``${VAR}`` expanded, relative to HERMES_HOME; the local skills dir is skipped."""
+def get_external_skills_dirs(*, strict: Optional[bool] = None) -> list[Path]:
+    """Validated, deduplicated ``skills.external_dirs``.
+
+    Entries are ``~``/``${VAR}`` expanded, relative to HERMES_HOME; the local skills dir is
+    skipped. Fail-closed (B5-F R1): a configured entry that is *not* a usable directory is
+    never dropped in silence — it is classified by errno, logged at WARNING and reported
+    through :func:`external_root_problems`. With *strict* (default: ``skills.fail_closed``)
+    an unreachable root raises instead of shrinking the effective skill set.
+    """
+    if strict is None:
+        strict = fail_closed_enabled()
     from hermes_cli.config_backend import config_exists
     config_path = get_config_path()
     if not config_exists(config_path):
@@ -354,14 +365,42 @@ def get_external_skills_dirs() -> list[Path]:
         return []
     local_skills = get_skills_dir().resolve()
     result: list[Path] = []
+    problems: list[ExternalRootProblem] = []
     for entry in _config_str_list(skills_cfg.get("external_dirs")):
-        p = _home_relative(_expand_path(entry)).resolve()
+        p = _home_relative(_expand_path(entry))
+        try:
+            p = p.resolve()
+        except OSError as e:
+            # A root that cannot even be resolved is NOT a root we may forget about: it is a
+            # configured entry whose skills silently vanished from the effective set (B5-F R1/N01).
+            problems.append(ExternalRootProblem(p, "unresolved", e.errno, e.strerror or str(e)))
+            continue
         if p == local_skills or p in result:
             continue
-        if p.is_dir():
+        status, err_no, err_text = classify_external_root(p)
+        if status == "dir":
             result.append(p)
-        else:
-            logger.debug("External skills dir does not exist, skipping: %s", p)
+            continue
+        # Fail-closed: every non-dir entry is reported at WARNING and kept out of any cache, so
+        # a transient failure can never become a permanent silent drop (R1.1/R1.2/R1.4).
+        problems.append(ExternalRootProblem(p, status, err_no, err_text))
+    del _EXTERNAL_ROOT_PROBLEMS[:]
+    _EXTERNAL_ROOT_PROBLEMS.extend(problems)
+    for prob in problems:
+        logger.warning("Configured external skills dir is unreachable (%s%s): %s — the skills it "
+                       "provides are NOT part of the effective set", prob.status,
+                       f" errno={prob.errno}" if prob.errno is not None else "", prob.path)
+    if problems:
+        # Negative cache would freeze the failure: next call must re-probe (R1.4).
+        _EXTERNAL_DIRS_CACHE.pop(cache_key, None)
+        if strict:
+            # R1.3: leaving the effective set short of what was configured must not be a
+            # silent success. The escape hatch is `skills.fail_closed: false`, not a debug log.
+            raise SkillResolutionError(
+                "Configured external skills dirs are unreachable: "
+                + ", ".join(f"{p.path} ({p.status})" for p in problems),
+                kind="external_root_unreachable")
+        return result
     if cache_key is not None:
         _EXTERNAL_DIRS_CACHE[cache_key] = list(result)
     return result
@@ -873,6 +912,550 @@ def extract_skill_description(frontmatter: dict[str, Any]) -> str:
 def is_skill_description_truncated_for_prompt(frontmatter: dict[str, Any]) -> bool:
     """True when the description will be truncated in the system prompt skill index."""
     return len(_normalize_skill_description(frontmatter)) > SKILL_PROMPT_DESC_LIMIT
+
+
+# ===========================================================================
+# Fail-closed resolver primitives (B5-F spec §7.4)
+# ===========================================================================
+# Every helper here answers the same question the resolver used to answer with a
+# fallback: "can I use this root / this file?" The old answers silently shrank the
+# effective skill set (DEBUG-only skips, ``except Exception: return compatible``,
+# ``followlinks=True``). These return either *the bytes plus the identity they came
+# from* or an explicit, unignorable error.
+
+SKILL_FAIL_CLOSED_CONFIG_KEY = "fail_closed"
+
+
+class SkillResolutionError(RuntimeError):
+    """A skill root or skill file could not be resolved *reliably*.
+
+    Raised instead of quietly reducing the skill set: the effective set must
+    either match what the caller expected or the caller must see this error.
+    """
+
+    def __init__(self, message: str, *, path: Optional[str] = None,
+                 errno: Optional[int] = None, kind: str = "unresolved") -> None:
+        super().__init__(message)
+        self.path = path
+        self.errno = errno
+        self.kind = kind
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"error": str(self), "path": self.path, "errno": self.errno, "kind": self.kind}
+
+
+@dataclass(frozen=True)
+class ExternalRootProblem:
+    """A configured ``skills.external_dirs`` entry that is not a usable root (R1)."""
+
+    path: Path
+    status: str            # missing | permission | not_a_dir | symlink | unresolved | other
+    errno: Optional[int]
+    strerror: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"path": str(self.path), "status": self.status,
+                "errno": self.errno, "strerror": self.strerror}
+
+
+@dataclass(frozen=True)
+class FileIdentity:
+    """``(dev, ino)`` of the object whose bytes were actually read (R4).
+
+    This — not the path — is what "the skill I validated is the skill I loaded"
+    means: a swap re-creates the path with a new inode, and comparing paths would
+    call that success.
+    """
+
+    dev: int
+    ino: int
+    size: int
+    mtime_ns: int
+
+    @property
+    def key(self) -> tuple[int, int]:
+        return (self.dev, self.ino)
+
+    @property
+    def full(self) -> tuple[int, int, int, int]:
+        """``(dev, ino, size, mtime_ns)`` — everything that must be unchanged for "same
+        object" to mean "same *content*" too. A rewrite in place keeps the inode, so
+        comparing ``(dev, ino)`` alone would accept a different skill at the same path."""
+        return (self.dev, self.ino, self.size, self.mtime_ns)
+
+    def same_as(self, other: "FileIdentity") -> bool:
+        return self.full == other.full
+
+    @classmethod
+    def from_fd(cls, fd: int) -> "FileIdentity":
+        st = os.fstat(fd)
+        return cls(st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"dev": self.dev, "ino": self.ino, "size": self.size, "mtime_ns": self.mtime_ns}
+
+
+# Problems from the most recent external-root resolution. Kept module-level (rather than
+# threaded through every caller) so that a gate or worker can ask "is anything missing?"
+# without re-implementing the scan — the resolver owns the answer, it just never told anyone.
+_EXTERNAL_ROOT_PROBLEMS: list[ExternalRootProblem] = []
+# Skill files that failed to load during the most recent scan (R2/R3 visibility).
+SKILL_LOAD_ERRORS: list[dict[str, Any]] = []
+_SKILL_LOAD_ERRORS_LOCK = threading.Lock()
+
+
+def take_external_root_problems() -> list[ExternalRootProblem]:
+    """Drain the unreachable-root report from the last :func:`get_external_skills_dirs`."""
+    problems = list(_EXTERNAL_ROOT_PROBLEMS)
+    del _EXTERNAL_ROOT_PROBLEMS[:]
+    return problems
+
+
+def external_root_problems() -> list[ExternalRootProblem]:
+    """Non-destructive read of the last report (diagnostics / logging)."""
+    return list(_EXTERNAL_ROOT_PROBLEMS)
+
+
+def record_skill_load_error(error: SkillResolutionError) -> None:
+    """Publish a load failure so prompt index, tools and gates all see it (R2/R3)."""
+    with _SKILL_LOAD_ERRORS_LOCK:
+        SKILL_LOAD_ERRORS.append(error.as_dict())
+
+
+def take_skill_load_errors() -> list[dict[str, Any]]:
+    """Drain the recorded skill-load failures."""
+    with _SKILL_LOAD_ERRORS_LOCK:
+        errors = list(SKILL_LOAD_ERRORS)
+        del SKILL_LOAD_ERRORS[:]
+    return errors
+
+
+def reset_skill_load_errors() -> None:
+    with _SKILL_LOAD_ERRORS_LOCK:
+        del SKILL_LOAD_ERRORS[:]
+
+
+def classify_external_root(path) -> tuple[str, Optional[int], str]:
+    """``(status, errno, strerror)`` for a configured external root — **by errno, not by
+    ``is_dir()``/``exists()``** (R1.1). ``exists()`` folds EACCES into False, which makes a
+    permission failure indistinguishable from a directory that was never created.
+    """
+    try:
+        st = os.lstat(str(path))
+    except OSError as e:
+        if e.errno == _errno.ENOENT:
+            return "missing", e.errno, e.strerror or "no such file or directory"
+        if e.errno == _errno.EACCES:
+            return "permission", e.errno, e.strerror or "permission denied"
+        if e.errno in (_errno.ELOOP, _errno.ENOTDIR, _errno.ENAMETOOLONG):
+            return "unresolved", e.errno, e.strerror or str(e)
+        return "other", e.errno, e.strerror or str(e)
+    if _stat.S_ISDIR(st.st_mode):
+        return "dir", None, ""
+    if _stat.S_ISLNK(st.st_mode):
+        return "symlink", None, "root is a symlink"
+    return "not_a_dir", None, "entry is not a directory"
+
+
+def require_external_dirs() -> None:
+    """Fail when any configured external root is unreachable (R1.3)."""
+    problems = external_root_problems()
+    if not problems:
+        return
+    raise SkillResolutionError(
+        "Configured external skills dirs are unreachable: "
+        + ", ".join(f"{p.path} ({p.status})" for p in problems),
+        kind="external_root_unreachable")
+
+
+@dataclass(frozen=True)
+class ParsedSkillFile:
+    """Outcome of one SKILL.md read: the verdict plus the error that produced it.
+
+    The *single* shape both consumers (prompt index and tool catalog) receive, so they
+    cannot disagree about whether a skill loaded (B5-F R3).
+    """
+
+    is_compatible: bool
+    frontmatter: dict
+    description: str
+    error: Optional[SkillResolutionError] = None
+
+    def as_error_dict(self) -> Optional[dict]:
+        return self.error.as_dict() if self.error is not None else None
+
+
+def load_skill_file_checked(skill_file) -> ParsedSkillFile:
+    """Read + parse one SKILL.md, fail-closed, and publish every failure (B5-F R2/R3).
+
+    The old prompt-index helper ended in ``except Exception: return True, {}, ""``: an
+    ``EACCES``/``ELOOP``/decode failure made the skill *compatible* and visible with an
+    empty description. Here a failure yields ``is_compatible=False`` plus a structured
+    error that is also recorded in :data:`SKILL_LOAD_ERRORS`, so prompt index, tool
+    catalog and any gate see the same fact. Only I/O and decoding are handled; anything
+    else is a bug in our own parser and propagates rather than degrading the index.
+    """
+    try:
+        raw, _identity = read_verified_text(skill_file)
+    except SkillResolutionError as e:
+        logger.warning("Failed to read skill file %s: %s", skill_file, e)
+        record_skill_load_error(e)
+        return ParsedSkillFile(False, {}, "", e)
+    try:
+        frontmatter, _ = parse_frontmatter(raw)
+        # Host-platform / runtime-environment gates are offer-time only; explicit loads bypass them.
+        if not (skill_matches_platform(frontmatter) and skill_matches_environment(frontmatter)
+                and skill_matches_apps(frontmatter)):
+            return ParsedSkillFile(False, frontmatter, extract_skill_description(frontmatter))
+        return ParsedSkillFile(True, frontmatter, extract_skill_description(frontmatter))
+    except SkillResolutionError as e:
+        logger.warning("Failed to parse skill file %s: %s", skill_file, e)
+        record_skill_load_error(e)
+        return ParsedSkillFile(False, {}, "", e)
+    except UnicodeDecodeError as e:
+        err = SkillResolutionError(f"skill file is not valid UTF-8: {skill_file}: {e}",
+                                   path=str(skill_file), kind="decode_failed")
+        logger.warning("Failed to decode skill file %s: %s", skill_file, e)
+        record_skill_load_error(err)
+        return ParsedSkillFile(False, {}, "", err)
+
+
+def read_verified_bytes(path, *, no_follow: bool = False) -> tuple[bytes, FileIdentity]:
+    """Read *path* once and return ``(bytes, identity-of-what-was-read)`` (R4.1).
+
+    There is no separate ``stat`` followed by a later ``open``: the identity comes from the
+    very fd the bytes were read through, and it is re-checked after the read, so a swap
+    mid-read is detected rather than served.
+    """
+    target = str(path)
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    if no_follow:
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(target, flags)
+    except OSError as e:
+        raise SkillResolutionError(f"cannot open skill file {target}: {e.strerror or e}",
+                                   path=target, errno=e.errno,
+                                   kind="open_failed") from e
+    try:
+        ident = FileIdentity.from_fd(fd)
+        chunks: list[bytes] = []
+        while True:
+            try:
+                chunk = os.read(fd, 1 << 16)
+            except OSError as e:
+                raise SkillResolutionError(f"read failed for {target}: {e.strerror or e}",
+                                           path=target, errno=e.errno, kind="read_failed") from e
+            if not chunk:
+                break
+            chunks.append(chunk)
+        try:
+            after = os.fstat(fd)
+        except OSError as e:  # pragma: no cover - fstat after a successful read
+            raise SkillResolutionError(f"cannot re-stat {target}: {e.strerror or e}",
+                                       path=target, errno=e.errno, kind="restat_failed") from e
+        if (after.st_dev, after.st_ino) != ident.key:
+            raise SkillResolutionError(
+                f"skill file replaced while being read: {target}", path=target,
+                kind="identity_mismatch")
+        data = b"".join(chunks)
+        if len(data) != ident.size:
+            raise SkillResolutionError(
+                f"skill file changed size during read: {target} "
+                f"(declared {ident.size}, read {len(data)})", path=target, kind="size_mismatch")
+    finally:
+        os.close(fd)
+    return data, ident
+
+
+def read_verified_text(path, *, encoding: str = "utf-8-sig",
+                       no_follow: bool = False) -> tuple[str, FileIdentity]:
+    """Text form of :func:`read_verified_bytes`; ``UnicodeDecodeError`` becomes an error too."""
+    data, ident = read_verified_bytes(path, no_follow=no_follow)
+    try:
+        return data.decode(encoding), ident
+    except UnicodeDecodeError as e:
+        raise SkillResolutionError(f"skill file is not valid {encoding}: {path}: {e}",
+                                   path=str(path), kind="decode_failed") from e
+
+
+def assert_same_identity(path, ident: FileIdentity) -> FileIdentity:
+    """Use-time recheck (R4.2/R4.3): the object behind *path* must still be the object
+    whose bytes were validated. Raises :class:`SkillResolutionError` on any change —
+    "same path" is not evidence.
+    """
+    try:
+        fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
+    except OSError as e:
+        raise SkillResolutionError(f"cannot re-verify {path}: {e.strerror or e}", path=str(path),
+                                   errno=e.errno, kind="use_time_recheck_failed") from e
+    try:
+        current = FileIdentity.from_fd(fd)
+    finally:
+        os.close(fd)
+    if not current.same_as(ident):
+        raise SkillResolutionError(
+            f"skill file identity changed between resolve and use: {path} "
+            f"({ident.full} -> {current.full})", path=str(path), kind="identity_mismatch")
+    return current
+
+
+def content_sha256(path) -> str:
+    """SHA-256 of what is actually on disk at *path* right now (R6-3 hash attestation)."""
+    data, _ident = read_verified_bytes(path)
+    return hashlib.sha256(data).hexdigest()
+
+
+def iter_skill_index_files_strict(root, filename: str = "SKILL.md", *,
+                                  allow_symlinks: bool = False) -> list[Path]:
+    """Sorted skill-index files under *root*, **fail-closed** (R5/R7).
+
+    Unlike :func:`iter_skill_index_files` this never follows links (``followlinks=True``
+    let a link reach outside the root and let ``os.walk`` track loops), rejects any symlink
+    component by ``lstat``, detects a scan that revisits an inode even when the kernel did
+    not report ``ELOOP``, and turns an unreadable directory into an error instead of an
+    empty root.
+    """
+    root = Path(root)
+    matches: list[Path] = []
+    chain: list[tuple[int, int]] = []
+
+    def _walk_error(e: OSError) -> None:
+        raise SkillResolutionError(f"cannot walk skill root {e.filename or root}: "
+                                   f"{e.strerror or e}", path=str(e.filename or root),
+                                   errno=e.errno, kind="walk_failed")
+
+    try:
+        root_lstat = os.lstat(str(root))
+    except OSError as e:
+        raise SkillResolutionError(f"cannot stat skill root {root}: {e.strerror or e}",
+                                   path=str(root), errno=e.errno, kind="root_unreachable") from e
+    if _stat.S_ISLNK(root_lstat.st_mode):
+        raise SkillResolutionError(f"skill root is a symlink: {root}", path=str(root),
+                                   kind="symlink_rejected")
+    if not _stat.S_ISDIR(root_lstat.st_mode):
+        raise SkillResolutionError(f"skill root is not a directory: {root}", path=str(root),
+                                   kind="root_unreachable")
+
+    real_root = root.resolve()
+    for dirpath, dirnames, filenames in os.walk(str(root), followlinks=False, onerror=_walk_error):
+        this = Path(dirpath)
+        try:
+            dstat = os.lstat(dirpath)
+        except OSError as e:
+            raise SkillResolutionError(f"cannot stat {dirpath}: {e.strerror or e}", path=dirpath,
+                                       errno=e.errno, kind="walk_failed") from e
+        key = (dstat.st_dev, dstat.st_ino)
+        if key in chain:
+            raise SkillResolutionError(f"skill scan revisits an inode in {root}: {dirpath}",
+                                       path=dirpath, errno=_errno.ELOOP, kind="loop_detected")
+        chain.append(key)
+        for name in list(dirnames):
+            full = this / name
+            try:
+                st = os.lstat(str(full))
+            except OSError as e:
+                raise SkillResolutionError(f"cannot stat {full}: {e.strerror or e}", path=str(full),
+                                           errno=e.errno, kind="walk_failed") from e
+            if _stat.S_ISLNK(st.st_mode):
+                if allow_symlinks:
+                    dirnames.remove(name)  # never descend through a link into an unknown tree
+                    continue
+                raise SkillResolutionError(
+                    f"symlink in skill root is not permitted: {full} -> {os.readlink(str(full))}",
+                    path=str(full), errno=_errno.ELOOP, kind="symlink_rejected")
+            if name in EXCLUDED_SKILL_DIRS:
+                dirnames.remove(name)
+        # §3: not one symlink anywhere in the view tree — references/, templates/, scripts/
+        # and stray files included, not just SKILL.md. A single link is enough to redirect
+        # whatever the resolver thought it attested to.
+        for name in filenames:
+            full = this / name
+            try:
+                st = os.lstat(str(full))
+            except OSError as e:
+                raise SkillResolutionError(f"cannot stat {full}: {e.strerror or e}", path=str(full),
+                                           errno=e.errno, kind="stat_failed") from e
+            if _stat.S_ISLNK(st.st_mode):
+                if allow_symlinks:
+                    continue
+                raise SkillResolutionError(
+                    f"symlink in skill root is not permitted: {full} -> {os.readlink(str(full))}",
+                    path=str(full), errno=_errno.ELOOP, kind="symlink_rejected")
+        if filename in filenames:
+            full = this / filename
+            try:
+                st = os.lstat(str(full))
+            except OSError as e:
+                raise SkillResolutionError(f"cannot stat {full}: {e.strerror or e}", path=str(full),
+                                           errno=e.errno, kind="stat_failed") from e
+            if _stat.S_ISLNK(st.st_mode):
+                if allow_symlinks:
+                    continue
+                raise SkillResolutionError(
+                    f"symlink skill file is not permitted: {full} -> {os.readlink(str(full))}",
+                    path=str(full), errno=_errno.ELOOP, kind="symlink_rejected")
+            matches.append(full)
+        # Containment: even without links, refuse anything that escaped the real root.
+        try:
+            Path(dirpath).resolve().relative_to(real_root)
+        except (ValueError, OSError):
+            raise SkillResolutionError(f"skill scan escaped its root {real_root}: {dirpath}",
+                                       path=dirpath, kind="escape_detected")
+    return sorted(matches)
+
+
+@dataclass
+class EffectiveSetReport:
+    """Result of comparing the resolved skill set against what was expected (R6-3/R6-4)."""
+
+    expected: dict[str, int] = field(default_factory=dict)
+    actual: dict[str, int] = field(default_factory=dict)
+    missing: list[str] = field(default_factory=list)
+    unexpected: list[str] = field(default_factory=list)
+    divergence: list[dict[str, Any]] = field(default_factory=list)
+    load_errors: list[dict[str, Any]] = field(default_factory=list)
+    root_problems: list[dict[str, Any]] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return not (self.missing or self.divergence or self.load_errors or self.root_problems)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"ok": self.ok, "expected": dict(self.expected), "actual": dict(self.actual),
+                "missing": list(self.missing), "unexpected": list(self.unexpected),
+                "divergence": list(self.divergence), "load_errors": list(self.load_errors),
+                "root_problems": list(self.root_problems)}
+
+
+def effective_set_report(expected: dict[str, int], resolved: list[dict[str, Any]]) -> EffectiveSetReport:
+    """Compare an expected ``{skill_name: tier}`` against a resolved catalog (R6-4/R8/R9).
+
+    A skill resolved from a *different tier* than expected (a local copy shadowing the
+    external one, say) counts as divergence rather than success: the name is present, but
+    not the skill the caller meant.
+    """
+    actual: dict[str, int] = {}
+    for entry in resolved or ():
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("load_name") or entry.get("name")
+        if name is None:
+            continue
+        tier = entry.get("tier")
+        if tier is None:
+            continue
+        prev = actual.get(str(name))
+        # Keep the winning (lowest) tier — the one skill_view() would load.
+        actual[str(name)] = int(tier) if prev is None else min(prev, int(tier))
+    report = EffectiveSetReport(expected={str(k): int(v) for k, v in (expected or {}).items()},
+                                actual=actual,
+                                load_errors=take_skill_load_errors(),
+                                root_problems=[p.as_dict() for p in external_root_problems()])
+    report.missing = sorted(n for n in report.expected if n not in actual)
+    report.unexpected = sorted(n for n in actual if n not in report.expected)
+    report.divergence = [
+        {"name": n, "expected_tier": t, "actual_tier": actual[n]}
+        for n, t in report.expected.items() if n in actual and actual[n] != t]
+    return report
+
+
+def require_effective_set(expected: dict[str, int], resolved: list[dict[str, Any]]) -> EffectiveSetReport:
+    """Fail-closed wrapper: raise unless the resolved set *is* the expected set (R6-3)."""
+    report = effective_set_report(expected, resolved)
+    if not report.ok:
+        raise SkillResolutionError(
+            "effective skill set does not match expectation: "
+            f"missing={report.missing} divergence={report.divergence} "
+            f"load_errors={len(report.load_errors)} root_problems={len(report.root_problems)}",
+            kind="effective_set_mismatch")
+    return report
+
+
+def fail_closed_enabled() -> bool:
+    """``skills.fail_closed`` — True unless explicitly disabled (default fail-closed)."""
+    raw = _skills_cfg_get(SKILL_FAIL_CLOSED_CONFIG_KEY)
+    if raw is None:
+        return True
+    if isinstance(raw, str):
+        return raw.strip().lower() not in ("false", "0", "no", "off")
+    return bool(raw)
+
+
+def exec_environment_report() -> dict[str, Any]:
+    """Self-reported execution environment (R8): uid/gid/mount namespace/HERMES_HOME/cwd.
+
+    A gate and a worker agreeing on the catalog means nothing if they resolved it in
+    different namespaces; this is what lets a gate prove they did not.
+    """
+    try:
+        from hermes_constants import get_hermes_home
+        hermes_home = str(get_hermes_home())
+    except Exception:  # pragma: no cover - config backend unavailable
+        hermes_home = None
+    try:
+        mount_ns = os.readlink("/proc/self/ns/mnt")
+    except OSError:
+        mount_ns = None
+    try:
+        cwd = os.getcwd()
+    except OSError:  # pragma: no cover - deleted cwd
+        cwd = None
+    return {"uid": os.getuid(), "gid": os.getgid(), "pid": os.getpid(),
+            "mount_namespace": mount_ns, "hermes_home": hermes_home, "cwd": cwd}
+
+
+def _mount_readonly(path) -> Optional[bool]:
+    """``True``/``False`` when */proc/self/mountinfo* names the mount serving *path*."""
+    try:
+        target = os.path.realpath(str(path))
+        rows: list[tuple[str, str]] = []
+        with open("/proc/self/mountinfo", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                parts = line.split()
+                if len(parts) >= 7 and parts[4]:
+                    opts = next((o for o in parts[6:] if o in ("ro", "rw")), None)
+                    rows.append((parts[4], opts or ""))
+        best: Optional[tuple[int, str]] = None
+        for mountpoint, opts in rows:
+            norm = mountpoint.rstrip("/") or "/"
+            if target == norm or target.startswith(norm + "/"):
+                if best is None or len(mountpoint) > best[0]:
+                    best = (len(mountpoint), opts)
+        return None if best is None else best[1] == "ro"
+    except OSError:  # pragma: no cover - non-Linux / no procfs
+        return None
+
+
+def root_immutability_report(root) -> dict[str, Any]:
+    """Owner/mode/mount-read-only for a resolved root — the immutability claim (R9)."""
+    try:
+        st = os.stat(str(root))
+    except OSError as e:
+        raise SkillResolutionError(f"cannot stat skill root {root}: {e.strerror or e}",
+                                   path=str(root), errno=e.errno, kind="root_unreachable") from e
+    return {"path": str(root), "owner_uid": st.st_uid, "gid": st.st_gid,
+            "mode": oct(_stat.S_IMODE(st.st_mode)), "mount_readonly": _mount_readonly(root)}
+
+
+def resolve_report(entries: list[dict[str, Any]], *, expected: Optional[dict[str, int]] = None,
+                   roots=()) -> dict[str, Any]:
+    """One resolution record: environment (R8) + root immutability (R9) + set check."""
+    report: dict[str, Any] = {
+        "environment": exec_environment_report(),
+        "root_problems": [p.as_dict() for p in external_root_problems()],
+        "load_errors": take_skill_load_errors(),
+        "immutability": [],
+    }
+    for root in roots or ():
+        try:
+            report["immutability"].append(root_immutability_report(root))
+        except SkillResolutionError as e:
+            report["immutability"].append({"path": str(root), "error": e.as_dict()})
+    if expected is not None:
+        report["effective_set"] = effective_set_report(expected, entries).as_dict()
+        report["effective_set_ok"] = report["effective_set"]["ok"]
+    return report
 
 
 def iter_skill_index_files(skills_dir: Path, filename: str):

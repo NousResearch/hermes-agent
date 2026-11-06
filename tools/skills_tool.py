@@ -232,7 +232,10 @@ def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False)
     Resolution runs over ALL files first — skill_view ignores platform/disabled gates when
     collecting candidates, so it asks for hidden rows too."""
     from agent.skill_utils import (
-        TIER_PROJECT, is_disabled_entry, iter_project_skill_files, iter_skill_index_files, resolve_skill_catalog)
+        TIER_CREATE_DIR, TIER_EXTERNAL, TIER_PROJECT, fail_closed_enabled, is_disabled_entry,
+        iter_project_skill_files, iter_skill_index_files,
+        iter_skill_index_files_strict, resolve_skill_catalog, SkillResolutionError,
+        record_skill_load_error, read_verified_bytes as _read_verified_bytes)
     cache_key = ("with_disabled" if skip_disabled else "filtered", include_hidden)
     disabled = set() if skip_disabled else _get_disabled_skill_names()
     roots, _ = skill_search_dirs()
@@ -245,12 +248,24 @@ def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False)
         return [dict(s) for s in cached[2]]
     scanned = []
     for tier, scan_dir in roots:  # project dirs go through the quarantine chokepoint
-        _iter = iter_project_skill_files if tier == TIER_PROJECT else lambda d: iter_skill_index_files(d, "SKILL.md")
+        if tier == TIER_PROJECT:
+            _iter = iter_project_skill_files
+        elif fail_closed_enabled() and tier in (TIER_CREATE_DIR, TIER_EXTERNAL):
+            # Same strict view enumeration the prompt index uses (B5-F R5/R7): no symlink,
+            # and an unreadable directory is an error rather than an empty root.
+            _iter = lambda d: iter_skill_index_files_strict(d, "SKILL.md")
+        else:
+            _iter = lambda d: iter_skill_index_files(d, "SKILL.md")
         for skill_md in _iter(scan_dir):
             if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
                 continue
             try:
-                frontmatter, body = _parse_frontmatter(_read_skill_text(skill_md)[:4000])
+                # Fail-closed read (B5-F R4): bytes + the (dev, ino) they came from, no separate
+                # stat-then-open window. Decoding keeps errors="replace" so a stray byte in a
+                # user-authored SKILL.md degrades exactly as it always did — a *disappearing* or
+                # unreadable file, by contrast, is now an error instead of a debug line.
+                raw_bytes, _ident = _read_verified_bytes(skill_md)
+                frontmatter, body = _parse_frontmatter(raw_bytes.decode("utf-8-sig", errors="replace")[:4000])
                 description = frontmatter.get("description", "")
                 if not description:  # first non-heading body line (a null value stays null)
                     description = next((ln for ln in map(str.strip, body.strip().split("\n"))
@@ -262,10 +277,23 @@ def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False)
                     "path": skill_md, "visible": bool(skill_matches_platform(frontmatter)
                                                       and skill_matches_environment(frontmatter)
                                                       and skill_matches_apps(frontmatter))})
-            except (UnicodeDecodeError, PermissionError) as e:
-                logger.debug("Failed to read skill file %s: %s", skill_md, e)
+            except SkillResolutionError as e:
+                # Same failure record the prompt index writes, from the same verified read:
+                # the two consumers can no longer disagree (B5-F R2/R3).
+                logger.warning("Failed to read skill file %s: %s", skill_md, e)
+                record_skill_load_error(e)
+            except (UnicodeDecodeError, PermissionError, OSError) as e:
+                # Fail-closed visibility (B5-F R2/R3): the tool path drops the skill, but now
+                # says so at WARNING and records it where the prompt index records it too.
+                logger.warning("Failed to read skill file %s: %s", skill_md, e)
+                record_skill_load_error(SkillResolutionError(
+                    f"failed to read skill file {skill_md}: {e}", path=str(skill_md),
+                    errno=getattr(e, "errno", None), kind="read_failed"))
             except Exception as e:
-                logger.debug("Skipping skill at %s: failed to parse: %s", skill_md, e, exc_info=True)
+                logger.warning("Skipping skill at %s: failed to parse: %s", skill_md, e, exc_info=True)
+                record_skill_load_error(SkillResolutionError(
+                    f"failed to parse skill file {skill_md}: {e}", path=str(skill_md),
+                    kind="parse_failed"))
     skills = [s for s in resolve_skill_catalog(scanned)
               if (s.pop("visible") or include_hidden) and not is_disabled_entry(s, disabled)]
     # Keyed by the signature computed BEFORE the scan: a write racing the scan changes the

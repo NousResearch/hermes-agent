@@ -27,6 +27,10 @@ from agent.skill_utils import (
     get_disabled_skill_names, get_skill_search_roots,
     iter_skill_index_files, parse_frontmatter, skill_matches_apps, skill_matches_environment,
     skill_matches_platform, skill_matches_platform_list,
+    # Fail-closed resolver helpers (B5-F §7.4)
+    SkillResolutionError, fail_closed_enabled, iter_skill_index_files_strict,
+    load_skill_file_checked, ParsedSkillFile, record_skill_load_error, take_skill_load_errors,
+    external_root_problems,
 )
 from tools.threat_patterns import scan_for_threats as _scan_for_threats
 from utils import atomic_json_write, file_cache_version
@@ -1152,17 +1156,16 @@ def _build_snapshot_entry(skill_file: Path, skills_dir: Path, frontmatter: dict,
 
 
 def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
-    """Read a SKILL.md once -> (is_compatible, frontmatter, description); errors yield (True, {}, "")."""
-    try:
-        raw = skill_file.read_text(encoding="utf-8-sig")
-        frontmatter, _ = parse_frontmatter(raw)
-        # Host-platform / runtime-environment gates are offer-time only; explicit loads bypass them.
-        if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter) or not skill_matches_apps(frontmatter):
-            return False, frontmatter, extract_skill_description(frontmatter)
-        return True, frontmatter, extract_skill_description(frontmatter)
-    except Exception as e:
-        logger.warning("Failed to parse skill file %s: %s", skill_file, e)
-        return True, {}, ""
+    """Read a SKILL.md once -> (is_compatible, frontmatter, description).
+
+    Fail-closed (B5-F R2): a file that cannot be read is NOT compatible and is NOT
+    offered to the model — the old ``except Exception: return True, {}, \"\"`` swallowed
+    EACCES/ELOOP/EISDIR and left the skill visible in the prompt index with an empty
+    description. Only I/O and decoding failures are handled here; anything else is a bug
+    in our own parser and propagates instead of degrading the index.
+    """
+    parsed = load_skill_file_checked(skill_file)
+    return parsed.is_compatible, parsed.frontmatter, parsed.description
 
 
 def _skill_should_show(
@@ -1269,15 +1272,57 @@ def _entry_name(entry: dict) -> str:
     return entry.get("frontmatter_name") or entry.get("skill_name") or ""
 
 
-def _scan_extra_root(root: Path, skill_files, tier: int, log_fmt: str) -> list[tuple[dict, bool]]:
+def _iter_view_root_files(root: Path, tier: int):
+    """Skill index files for one view root — fail-closed by default (B5-F R5/R7).
+
+    An external/create_dir view tree must contain no symlink at all, and a directory we
+    cannot read must surface as an error rather than as a silently empty root.
+    """
+    from agent.skill_utils import TIER_PROJECT
+    if tier == TIER_PROJECT:
+        from agent.skill_utils import iter_project_skill_files
+        return iter_project_skill_files(root)
+    if fail_closed_enabled():
+        return iter_skill_index_files_strict(root, "SKILL.md")
+    return iter_skill_index_files(root, "SKILL.md")
+
+
+def _fail_closed_load_errors(errors: list[dict]) -> None:
+    """Refuse a partially-degraded index (B5-F R2.3): one unreadable skill fails the build
+    instead of shipping a prompt index that quietly claims fewer, different skills."""
+    if not errors or not fail_closed_enabled():
+        return
+    paths = ", ".join(str(e.get("path")) for e in errors[:5] if e.get("path"))
+    raise SkillResolutionError(
+        f"skill index build refused: {len(errors)} skill file(s) failed to load"
+        + (f": {paths}" if paths else ""), kind="skill_load_failed")
+
+
+def _fail_closed_root_problems(problems: list) -> None:
+    """Refuse a build whose configured external roots are partly or wholly unreachable
+    (B5-F R1.3/R7): the index would otherwise describe a smaller world than the one the
+    operator configured, and nothing downstream could tell the difference."""
+    if not problems or not fail_closed_enabled():
+        return
+    raise SkillResolutionError(
+        "skill index build refused: configured external skill roots unreachable: "
+        + ", ".join(f"{p['path']} ({p['status']})" for p in problems),
+        kind="external_root_unreachable")
+
+
+def _scan_extra_root(root: Path, skill_files, tier: int, log_fmt: str,
+                     errors: Optional[list] = None) -> list[tuple[dict, bool]]:
     """``(entry tagged with tier/root, is_compatible)`` for every skill under a project/create_dir/external root."""
     rows = []
     for skill_file in skill_files:
         try:
-            is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
-            rows.append(({**_build_snapshot_entry(skill_file, root, frontmatter, desc), "tier": tier, "root": root}, is_compatible))
+            parsed = load_skill_file_checked(skill_file)
+            if parsed.error is not None and errors is not None:
+                errors.append(parsed.error.as_dict())
+            rows.append(({**_build_snapshot_entry(skill_file, root, parsed.frontmatter, parsed.description),
+                          "tier": tier, "root": root}, parsed.is_compatible))
         except Exception as e:
-            logger.debug(log_fmt, skill_file, e)
+            logger.warning(log_fmt, skill_file, e)
     return rows
 
 
@@ -1411,20 +1456,33 @@ def _build_skills_system_prompt_inner(
                       for entry in snapshot.get("skills", []) if isinstance(entry, dict)]
     else:
         candidates = []
+        _local_errors: list[dict] = []
         for skill_file in iter_skill_index_files(skills_dir, "SKILL.md"):
-            is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
-            candidates.append((_build_snapshot_entry(skill_file, skills_dir, frontmatter, desc), is_compatible))
+            parsed = load_skill_file_checked(skill_file)
+            if parsed.error is not None:
+                _local_errors.append(parsed.error.as_dict())
+            candidates.append((_build_snapshot_entry(skill_file, skills_dir, parsed.frontmatter, parsed.description), parsed.is_compatible))
+        _fail_closed_load_errors(_local_errors)
     # Every tier is resolved together, exactly as skill_view resolves names (agent.skill_utils precedence:
     # project > local > create_dir > external_dirs; same-tier duplicates listed by exact path). Hidden and
     # incompatible copies still take part — skill_view sees them too.
     from agent.skill_utils import TIER_PROJECT, is_disabled_entry, iter_project_skill_files, resolve_skill_catalog
     project_roots = [d for t, d in extra_roots if t == TIER_PROJECT and d.exists()]
     rows: list[tuple[dict, bool]] = []
+    build_errors: list[dict] = []
+    _fail_closed_root_problems([p.as_dict() for p in external_root_problems()])
     for root in project_roots:
         rows += _scan_extra_root(root, iter_project_skill_files(root), TIER_PROJECT, "Error reading project skill %s: %s")
     rows += [({**entry, "tier": TIER_LOCAL, "root": skills_dir}, ok) for entry, ok in candidates]
     for tier, root in ((t, d) for t, d in extra_roots if t != TIER_PROJECT and d.exists()):
-        rows += _scan_extra_root(root, iter_skill_index_files(root, "SKILL.md"), tier, "Error reading external skill %s: %s")
+        try:
+            view_files = _iter_view_root_files(root, tier)
+        except SkillResolutionError as e:
+            # A view root we cannot enumerate is not an empty root (B5-F R5/R7).
+            record_skill_load_error(e)
+            raise
+        rows += _scan_extra_root(root, view_files, tier, "Error reading external skill %s: %s", build_errors)
+    _fail_closed_load_errors(build_errors)
     resolved = resolve_skill_catalog([
         {**entry, "name": _entry_name(entry), "path": entry["root"] / entry["rel"],
          "visible": ok and not hides(entry.get("skill_name") or "", entry.get("conditions") or {})}

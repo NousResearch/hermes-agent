@@ -227,22 +227,33 @@ class TestParseSkillFile:
         assert desc.endswith("...")
 
 
-    def test_logs_parse_failures_and_returns_defaults(self, tmp_path, monkeypatch, caplog):
+    def test_unreadable_skill_is_not_offered_and_is_reported(self, tmp_path, monkeypatch, caplog):
+        """B5-F R2: a SKILL.md we cannot read is incompatible (NOT silently visible) and the
+        failure is recorded for both the prompt index and the tool catalog to see."""
+        from agent.skill_utils import SkillResolutionError, reset_skill_load_errors, take_skill_load_errors
+
         skill_file = tmp_path / "SKILL.md"
         skill_file.write_text("---\nname: broken\n---\n")
+        # The read now goes through os.open/os.read (never Path.read_text), so make the file
+        # genuinely unreadable rather than mocking a helper the resolver no longer calls.
+        if os.geteuid() == 0:
+            pytest.skip("running as root: mode 000 does not block the read")
+        os.chmod(skill_file, 0o000)
 
-        def boom(*args, **kwargs):
-            raise OSError("read exploded")
-
-        monkeypatch.setattr(type(skill_file), "read_text", boom)
+        reset_skill_load_errors()
         with caplog.at_level(logging.DEBUG, logger="agent.prompt_builder"):
             is_compat, frontmatter, desc = _parse_skill_file(skill_file)
 
-        assert is_compat is True
+        # Fail-closed: unreadable means unusable, and the empty frontmatter is not
+        # mistaken for "compatible, just undocumented".
+        assert is_compat is False
         assert frontmatter == {}
         assert desc == ""
-        assert "Failed to parse skill file" in caplog.text
+        assert "Failed to read skill file" in caplog.text
         assert str(skill_file) in caplog.text
+        errors = take_skill_load_errors()
+        assert errors and errors[0]["kind"] in ("open_failed", "read_failed", "restat_failed")
+        assert errors[0]["path"] == str(skill_file)
 
 
 

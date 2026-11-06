@@ -60,7 +60,7 @@ class TestPostFallbackOnFieldValidationError(unittest.TestCase):
 
         with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
             result = asyncio.run(
-                adapter.send(chat_id="oc_chat", content="这里有 **粗体** 文本。")
+                adapter.send(chat_id="oc_chat", content="Here is **bold** text.")
             )
 
         self.assertEqual([r.request_body.msg_type for r in captured], ["post", "text"])
@@ -104,7 +104,7 @@ class TestPostFallbackOnFieldValidationError(unittest.TestCase):
 
         with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
             result = asyncio.run(
-                adapter.send(chat_id="oc_chat", content="这里有 **粗体** 文本。")
+                adapter.send(chat_id="oc_chat", content="Here is **bold** text.")
             )
 
         self.assertTrue(result.success)
@@ -132,7 +132,7 @@ class TestPostFallbackOnFieldValidationError(unittest.TestCase):
                 adapter.edit_message(
                     chat_id="oc_chat",
                     message_id="om_progress",
-                    content="可以用 **粗体** 和 *斜体*。",
+                    content="Use **bold** and *italic* text.",
                 )
             )
 
@@ -141,7 +141,7 @@ class TestPostFallbackOnFieldValidationError(unittest.TestCase):
         self.assertEqual(captured[1].request_body.msg_type, "text")
         self.assertEqual(
             captured[1].request_body.content,
-            json.dumps({"text": "可以用 粗体 和 斜体。"}, ensure_ascii=False),
+            json.dumps({"text": "Use bold and italic text."}, ensure_ascii=False),
         )
 
     def test_send_keeps_original_error_when_text_fallback_also_fails(self):
@@ -161,7 +161,7 @@ class TestPostFallbackOnFieldValidationError(unittest.TestCase):
 
         with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
             result = asyncio.run(
-                adapter.send(chat_id="oc_chat", content="这里有 **粗体** 文本。")
+                adapter.send(chat_id="oc_chat", content="Here is **bold** text.")
             )
 
         self.assertFalse(result.success)

@@ -65,6 +65,7 @@ class ServerRequest:
         "replayable",
         "result",
         "sid",
+        "transport",
         "withdrawn",
         "writing",
     )
@@ -86,6 +87,8 @@ class ServerRequest:
         self.on_result = on_result
         # Client transports that answered NOT_SHOWN_CODE (no window there shows this session).
         self.declined: set = set()
+        # Set = the frame goes to this one client socket and only a response from it settles the request.
+        self.transport: Any = None
         # Published but frame not yet written; a cancel in that gap parks its reason in ``withdrawn`` for _register.
         self.writing = False
         self.withdrawn: str | None = None
@@ -192,7 +195,7 @@ def _register(req: ServerRequest) -> None:
         req.writing = True
         _open[req.id] = req
     try:
-        _write(frame)
+        (req.transport.write if req.transport is not None else _write)(frame)
     finally:
         with _lock:
             req.writing = False
@@ -203,17 +206,21 @@ def _register(req: ServerRequest) -> None:
 
 
 def send(method: str, sid: str, params: dict, *, timeout: float | None,
-         qids: list[str] | None = None) -> dict | None:
+         qids: list[str] | None = None, transport: Any = None) -> dict | None:
     """Send one request and block for the response ``result`` (a dict).
 
     Returns ``None`` when the renderer never answered (timeout, cancel, or an error response — e.g.
     a client without a handler for ``method``). ``timeout`` semantics: None → wait until answered or
     cancelled, 0 → return immediately, > 0 → bounded wait. A batch (``qids``) that settled returns
     ``{"answers": <locked so far>, "outcome"}`` (``submitted`` / ``cancelled`` / ``timed_out``).
+    ``transport`` pins a session-less request to the client socket that asked for it (an RPC handler
+    calling back into its own caller's window): the frame goes only there, only its response settles
+    it, and any error from it (a decline included) is a refusal.
     """
-    if _unanswerable(method, sid):
+    if transport is None and _unanswerable(method, sid):
         return None
     req = ServerRequest(sid, method, params, qids=qids)
+    req.transport = transport
     _register(req)
     try:
         req.event.wait(timeout)
@@ -299,7 +306,12 @@ def resolve_response(frame: dict, transport: Any = None) -> bool:
     rid = frame.get("id")
     if not isinstance(rid, str):
         return False
-    if _is_not_shown(frame):
+    with _lock:
+        pinned = _open.get(rid)
+    if pinned is not None and pinned.transport is not None and pinned.transport is not transport:
+        logger.debug("server request %s: response from a client it was not sent to dropped", rid)
+        return False
+    if _is_not_shown(frame) and (pinned is None or pinned.transport is None):
         return _decline(rid, transport)
     with _lock:
         req = _open.get(rid)
@@ -396,6 +408,18 @@ def pending_kind(sid: str) -> str:
     with _lock:
         reqs = [req for req in _open.values() if req.sid == sid]
     return min(reqs, key=lambda r: r.created_at).method if reqs else ""
+
+
+def resolve_pinned_response(frame: Any, transport: Any) -> bool:
+    """Settle *frame* when it answers a request pinned to *transport* (``send(transport=...)``); False for
+    anything else, which stays with its usual owner (a session authority's own registry, or the
+    unpinned path of :func:`resolve_response`)."""
+    if not is_response_frame(frame) or not isinstance(frame.get("id"), str):
+        return False
+    with _lock:
+        req = _open.get(frame["id"])
+    return req is not None and req.transport is not None and req.transport is transport and resolve_response(
+        frame, transport)
 
 
 def is_response_frame(obj: Any) -> bool:

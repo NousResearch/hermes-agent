@@ -54,3 +54,36 @@ def test_cancel_after_the_write_is_emitted_once(wire):
     assert server_requests.cancel("s1") == 1
     pending("resolved")
     assert [event for event, _ in wire] == ["request", "request.cancel"]
+
+
+class _Socket:
+    def __init__(self):
+        self.frames: list[dict] = []
+
+    def write(self, frame):
+        self.frames.append(frame)
+        return True
+
+
+def test_a_pinned_request_goes_to_and_is_settled_only_by_the_socket_that_asked(wire):
+    asker, bystander = _Socket(), _Socket()
+    params = {"action": "vault", "vault": {"operation": "close", "target": "t"}}
+    out: list = []
+    worker = threading.Thread(target=lambda: out.append(
+        server_requests.send("preview.act", "", params, timeout=10, transport=asker)))
+    worker.start()
+    for _ in range(1000):
+        if asker.frames:
+            break
+        threading.Event().wait(0.01)
+    rid = asker.frames[0]["id"]
+    assert wire == [] and bystander.frames == []  # never broadcast
+
+    forged = {"id": rid, "result": {"value": "from another window"}}
+    assert not server_requests.resolve_response(forged, bystander)
+    assert not server_requests.resolve_pinned_response(forged, bystander)
+    assert server_requests.open_request_count() == 1
+
+    assert server_requests.resolve_pinned_response({"id": rid, "result": {"value": "ok"}}, asker)
+    worker.join(timeout=10)
+    assert out == [{"value": "ok"}]

@@ -345,3 +345,14 @@ test.skipIf(process.platform === 'win32')('a pnpm other than the pm/lock.json pi
   prepareNodeDependencies(options)
   expect(readFileSync(pnpm.spawned, 'utf8')).toBe('install\n')
 }, 30000)
+
+test.skipIf(process.platform === 'win32')('a source without a pm/lock.json pnpm pin is refused with the reason, before anything is installed', () => {
+  const { source, env } = fixture()
+  const pnpm = fakePnpm({ manifest: '12.0.0' })
+  const options = { source, workspaces: ['web'], env: { ...env, PATH: `${pnpm.path}${delimiter}${env.PATH}` } }
+  json(join(source, 'pm/lock.json'), { schema: 1, packages: {} })
+  expect(() => prepareNodeDependencies(options)).toThrow(/pm\/lock\.json pins no pnpm/)
+  rmSync(join(source, 'pm/lock.json'))
+  expect(() => prepareNodeDependencies(options)).toThrow(/cannot read the pnpm pin from .*pm\/lock\.json: ENOENT/)
+  expect(existsSync(pnpm.spawned)).toBe(false)
+}, 30000)

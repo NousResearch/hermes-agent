@@ -35,6 +35,19 @@ function pnpmVersion(pnpm, { source, env }) {
   }
 }
 
+// PM's pnpm pin: the pnpm this checkout's lockfile is written and installed with.
+function pinnedPnpm(source) {
+  const path = join(source, 'pm/lock.json')
+  let version
+  try {
+    version = JSON.parse(readFileSync(path, 'utf8')).packages?.pnpm?.version
+  } catch (error) {
+    throw new Error(`cannot read the pnpm pin from ${path}: ${error.message}`)
+  }
+  if (typeof version !== 'string') throw new Error(`${path} pins no pnpm (packages.pnpm.version)`)
+  return version
+}
+
 // Every package directory pnpm linked: each locked direct dependency of an installed
 // project, and every entry of every virtual-store slot (the package itself plus links
 // to its dependencies, so a removed slot shows up as a dangling link). Optional
@@ -109,7 +122,7 @@ export function prepareNodeDependencies({ source, workspaces, env = process.env,
   const version = pnpmVersion(pnpm, { source, env })
   // pnpm never checks its own version here (pmOnFail: ignore keeps the lock one YAML
   // document): PM's pin is the one this checkout's lockfile was written with.
-  const pinned = JSON.parse(readFileSync(join(source, 'pm/lock.json'), 'utf8')).packages.pnpm.version
+  const pinned = pinnedPnpm(source)
   if (pinned !== version) {
     throw new Error(`pnpm ${pinned} is required (pm/lock.json), found ${version} at ${pnpm}`)
   }

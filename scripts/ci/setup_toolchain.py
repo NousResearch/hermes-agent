@@ -217,9 +217,11 @@ def install(args) -> None:
         })
         outputs["uv-cache-path"] = str(uv_cache_dir())
     if "npm" in names:
+        # Outside any checkout, so a project package.json or .npmrc in the
+        # caller's cwd can neither change the answer nor fail the query.
         cache = subprocess.check_output(
             [str(binaries["npm"]), "config", "get", "cache"],
-            env=environment, text=True, encoding="utf-8", timeout=60,
+            cwd=args.home.resolve(), env=environment, text=True, encoding="utf-8", timeout=60,
         ).strip()
         outputs["npm-cache-path"] = cache
     if "pnpm" in names:

@@ -1,0 +1,35 @@
+# Catalog entry for the Hermes plugin catalog (NousResearch/hermes-agent).
+#
+# This file is a ready-to-copy template, not part of the plugin runtime. Open the
+# catalog PR against NousResearch/hermes-agent and add it as
+# `plugin-catalog/context-steward.yaml`.
+#
+# Before opening that PR:
+#   1. Push this repository publicly.
+#   2. Replace FULL_SHA below with the full 40-character commit SHA you reviewed
+#      and tested (branch/tag/short SHA are rejected by the catalog loader).
+#   3. Re-run, against a checkout of that exact commit:
+#        hermes plugins validate /absolute/path/to/hermes-context-steward --install-deps
+#   4. Keep `version` in sync with plugin.yaml.
+#
+# Schema source: plugin-catalog/README.md in NousResearch/hermes-agent ("Entry schema").
+
+name: context-steward
+repo: https://github.com/jiangkoumo/hermes-context-steward
+sha: d72aa39a46fb18d7713f9f21c1be6ebb68a7cc23
+description: One auxiliary judgment chooses a checkpoint or a fresh context segment in the same chat.
+maintainer: jiangkoumo
+tier: community
+category: memory
+requires_hermes: ">=0.23.0"
+version: "0.4.0"
+readme: true
+known_issues:
+  - "Runs its judgment on the session model unless plugins.entries.context-steward.llm.allow_task_override is set (then auxiliary.compression)."
+  - "Handoff formatting relies on Hermes's long-lived summary prefix/end-marker text; a change upstream needs a plugin update."
+  - "Per-phase model overrides also need operator grants under plugins.entries.context-steward.llm; base_url/api_key_env are ignored in favour of custom_providers."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

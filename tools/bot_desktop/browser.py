@@ -39,6 +39,9 @@ def executable() -> Optional[str]:
     Playwright's bundle has no setuid ``chrome_sandbox`` and dies 'FATAL: No usable sandbox!' there, while
     a distro chromium ships the helper. The bundle stays the answer when it is the only browser — a dock
     icon that fails loudly beats a non-root ``--no-sandbox``.
+
+    Either order yields to the profile: a build older than the one that last wrote it would crash on it, so
+    a profile the system Chromium wrote before pm's older build was installed stays on the system Chromium.
     """
     from tools.browser_session_cloud import executable_path
     explicit = executable_path()
@@ -47,7 +50,12 @@ def executable() -> Optional[str]:
     finders = [_managed_executable, _system_executable]
     if not _is_root() and _userns_restricted():
         finders.reverse()
-    return next((exe for find in finders if (exe := find())), None)
+    found = [exe for find in finders if (exe := find())]
+    if len(found) > 1:
+        from tools.browser_launcher_version import can_open
+        udd = str(profile_dir())
+        found.sort(key=lambda exe: not can_open(exe, udd))  # stable: the order above among those that can
+    return found[0] if found else None
 
 
 def _managed_executable() -> Optional[str]:

@@ -104,6 +104,8 @@ _CLI_TIMEOUT = 30.0
 # Mention-resolution caches: member lists are hit on every publish containing "@"; names must not outlive a rename.
 _MEMBER_CACHE_TTL = 60.0
 _PROFILE_NAME_TTL = 300.0
+# Pre-authorization name lookups per inbound event (one CLI subprocess each; cached names are free); bound them.
+_MENTION_LOOKUP_CAP = 16
 # Inbound attachments download only after the gates pass and must match their declared NIP-94 size + SHA-256.
 _MAX_INBOUND_ATTACHMENTS = 4
 _MAX_INBOUND_ATTACHMENT_BYTES = 20 * 1024 * 1024
@@ -461,7 +463,7 @@ def _json_or(text: str, default):
     """``json.loads`` of CLI stdout, or *default* when empty/malformed."""
     try:
         return json.loads(text or json.dumps(default))
-    except ValueError:
+    except (ValueError, RecursionError):  # profile content is member-authored
         return default
 
 
@@ -745,11 +747,11 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
             return cached
         name = ""
         profiles = await self._cli_json(["users", "get", "--pubkey", pubkey], [])
-        if profiles and isinstance(p0 := profiles[0], dict):
+        if isinstance(profiles, list) and profiles and isinstance(p0 := profiles[0], dict):
             name = str(p0.get("display_name") or p0.get("name") or "").strip()
-            if not name and p0.get("content"):
-                prof = _json_or(p0["content"], {})
-                name = str(prof.get("display_name") or prof.get("name") or "").strip()
+            if not name and isinstance(p0.get("content"), str):
+                if isinstance(prof := _json_or(p0["content"], {}), dict):
+                    name = str(prof.get("display_name") or prof.get("name") or "").strip()
         cache[pubkey] = (time.monotonic(), name)
         return name
 
@@ -1463,22 +1465,25 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
             return
         # Reclassify a leaked DM before gating so its first un-mentioned message both latches and dispatches.
         self._maybe_latch_dm(channel_id, state, event)
+        # Senders that can never dispatch or earn a reaction don't get to spend CLI lookups.
+        can_act = not self._allowed_pubkeys or pubkey in self._allowed_pubkeys or pubkey in self._reaction_only_pubkeys
+        longer_names = await self._longer_member_names(channel_id, event) if can_act else []
         is_dm = state["chat_type"] == "dm"
         reply_parent_id = _event_reply_parent_id(event)
         reply_meta = self._lookup_event_meta(state, reply_parent_id) if reply_parent_id else None
         reply_to_is_own = bool(reply_meta is not None and reply_meta[0] == self._self_pubkey)
         # Channels dispatch only when addressed (@mention or p-tag) or replying to us (Signal/WhatsApp parity),
         # unless require_mention is off. DMs always dispatch.
-        if not is_dm and self.require_mention and not self._is_addressed(event) and not reply_to_is_own:
+        if not is_dm and self.require_mention and not self._is_addressed(event, longer_names) and not reply_to_is_own:
             return
         # Adapter-level allow-list (gateway also applies it centrally); empty = no filter.
         if self._allowed_pubkeys and pubkey not in self._allowed_pubkeys:
-            if pubkey in self._reaction_only_pubkeys and _p_tagged(event, self._self_pubkey) and self._is_mentioned(content):
+            if pubkey in self._reaction_only_pubkeys and _p_tagged(event, self._self_pubkey) and self._is_mentioned(content, longer_names):
                 await self.send_reaction(channel_id, event_id, "👀")
             logger.debug("Buzz: ignoring message from unauthorized pubkey %s…", pubkey[:8])
             return
         # Strip a leading @mention (DMs often open with one too) so "@Chip /whoami" is recognized as a command.
-        dispatch_text = self._strip_mention(content)
+        dispatch_text = self._strip_mention(content, longer_names)
         # NIP-10 root scopes the session; remember it so our reply joins the SAME thread instead of nesting.
         thread_id = self._extract_thread_root(event)
         self._record_thread_root(event_id, event)
@@ -1542,9 +1547,36 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
         self._channel_names.setdefault(channel_id, "DM")
         logger.info("Buzz: conversation %s reclassified as DM (message p-tagged to self)", channel_id)
 
-    def _is_mentioned(self, content: str) -> bool:
+    async def _longer_member_names(self, channel_id: str, event: dict) -> list[str]:
+        """Other members' display names that extend ours ("Chip Sales" for "Chip"): "@Chip Sales" addresses them, not us.
+        Lookups only run when the text has "@<our name>", at most _MENTION_LOOKUP_CAP uncached per event, p-tags limited to the roster when known; CLI failures yield []."""
+        content, own = event.get("content"), (self._display_name or "").lower()
+        if not own or not isinstance(content, str) or f"@{own}" not in content.lower():
+            return []
+        tags = event.get("tags") if isinstance(event.get("tags"), list) else []
+        pks = [str(t[1]).lower() for t in tags if isinstance(t, list) and len(t) > 1 and t[0] == "p"]
+        try:
+            roster = dict.fromkeys(await self._channel_member_pubkeys(channel_id))
+        except Exception:  # health: allow BLE001 -- a failed roster read is an unknown roster (CancelledError still propagates)
+            roster = {}
+        pks = [pk for pk in pks if pk in roster or not roster]  # p-tags are sender-controlled and read before authorization
+        budget, lookups = _MENTION_LOOKUP_CAP, []
+        for pk in dict.fromkeys(pks + list(roster)):
+            if pk == self._self_pubkey or not _HEX64_RE.fullmatch(pk):
+                continue
+            if _ttl_get(self._profile_name_cache, pk, _PROFILE_NAME_TTL) is None:
+                if budget <= 0:
+                    continue  # later pubkeys may still be cached
+                budget -= 1
+            lookups.append(pk)
+        resolved = await asyncio.gather(*(self._profile_display_name(pk) for pk in lookups), return_exceptions=True)  # concurrent (one CLI call per uncached name) so a cold roster doesn't stall intake; failures must not drop the event
+        return list({low for n in resolved if isinstance(n, str) and (low := n.lower()).startswith(own) and re.search(r"\w", low[len(own):])})
+
+    def _is_mentioned(self, content: str, longer_names=()) -> bool:
         """True when text explicitly addresses this agent (npub, hex, or @name)."""
         lowered = content.lower()
+        for name in sorted(longer_names, key=len, reverse=True):  # consume "@Chip Sales" so only a bare "@Chip" counts
+            lowered = re.sub(r"(?<![\w@])@" + re.escape(name.lower()) + r"(?!\w)", "\x00", lowered)
         patterns = []
         if self._self_pubkey and _HEX64_RE.fullmatch(self._self_pubkey):
             patterns.append(rf"(?<![0-9a-f]){re.escape(self._self_pubkey)}(?![0-9a-f])")
@@ -1554,14 +1586,16 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
             patterns.append(rf"(?<![\w@])@{re.escape(self._display_name.lower())}" + r"(?=$|[\s,;.!?:)\]}])")
         return any(re.search(p, lowered) for p in patterns)
 
-    def _is_addressed(self, event: dict) -> bool:
+    def _is_addressed(self, event: dict, longer_names=()) -> bool:
         """True when a group event carries an explicit text or p-tag address."""
         content = event.get("content")
-        return isinstance(content, str) and (self._is_mentioned(content) or self._p_tagged_to_self(event))
+        return isinstance(content, str) and (self._is_mentioned(content, longer_names) or self._p_tagged_to_self(event))
 
-    def _strip_mention(self, content: str) -> str:
+    def _strip_mention(self, content: str, longer_names=()) -> str:
         """Strip a LEADING @mention of this agent so ``is_command()`` sees "/whoami"; mid-sentence mentions stay."""
         text = content.strip()
+        if any(re.match(rf"@{re.escape(n)}(?!\w)", text, re.IGNORECASE) for n in longer_names):
+            return text
         # Display names require '@'; npub/hex identities are unambiguous without it.
         candidates = []
         if self._display_name:

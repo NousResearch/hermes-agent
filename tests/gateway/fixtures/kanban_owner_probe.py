@@ -44,6 +44,12 @@ class Model(BaseHTTPRequestHandler):
             continuation = has_result
             message = {'role': 'assistant', 'content': None, 'tool_calls': [{'index': 0, 'id': 'owned-complete',
                 'type': 'function', 'function': {'name': 'kanban_complete' if continuation else 'kanban_comment', 'arguments': json.dumps({'summary': 'Owned probe complete'} if continuation else {'body': 'Owned first turn'})}}]}
+            if not continuation:  # relative paths must land in the card's workspace, whatever the process cwd
+                message['tool_calls'] += [
+                    {'index': 1, 'id': 'owned-write', 'type': 'function', 'function': {'name': 'write_file',
+                        'arguments': json.dumps({'path': 'file-tool-probe.txt', 'content': 'ok'})}},
+                    {'index': 2, 'id': 'owned-shell', 'type': 'function', 'function': {'name': 'terminal',
+                        'arguments': json.dumps({'command': 'pwd > terminal-probe.txt'})}}]
             finish = 'tool_calls'
         payload = json.dumps({'id': 'owned', 'choices': [{'index': 0, 'message': message, 'finish_reason': finish}],
             'usage': {'prompt_tokens': 10, 'completion_tokens': 5, 'total_tokens': 15}}).encode()
@@ -191,7 +197,9 @@ def main():
             receipt.update(goal_continuation=len(turns) >= 4, stable_prefix=len(set(prefixes)) == 1,
                 retry_same_session=same, tools='kanban_complete' in wire,
                 task_context='KANBAN_TASK_SENTINEL' in wire, skill_context='KANBAN_SKILL_SENTINEL' in wire,
-                hook_effect=(home / 'hook-effect').exists())
+                hook_effect=(home / 'hook-effect').exists(),
+                workspace_tools=(workspace / 'file-tool-probe.txt').exists() and (workspace / 'terminal-probe.txt').exists()
+                    and Path((workspace / 'terminal-probe.txt').read_text().strip()).resolve() == workspace.resolve())
     finally:
         peer.release.set()
         for child in clients:

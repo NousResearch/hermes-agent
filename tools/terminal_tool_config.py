@@ -78,12 +78,12 @@ def profile_container_key(profile: str) -> str:
 
 
 def _safe_getcwd() -> str:
-    """``os.getcwd()`` tolerant of a deleted cwd (FileNotFoundError) or a macOS
-    TCC-protected one without Full Disk Access (PermissionError); falls back
+    """``os.getcwd()`` tolerant of a deleted cwd (FileNotFoundError), a macOS
+    TCC-protected one (PermissionError) or a stalled network mount (EINTR); falls back
     to TERMINAL_CWD, then the home directory."""
     try:
         return os.getcwd()
-    except (FileNotFoundError, PermissionError):
+    except OSError:
         return _tenv("TERMINAL_CWD") or os.path.expanduser("~")
 
 

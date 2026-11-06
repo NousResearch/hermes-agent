@@ -276,7 +276,7 @@ class AIAgent(
         checkpoint_max_total_size_mb: int = 500, checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False, requested_provider: str | None = None,
         capabilities: dict[str, bool] | None = None, cwd: str | None = None,
-        side_agent: bool = False, memory_manager=None,
+        side_agent: bool = False, memory_manager=None, memory_agent_context: str | None = None,
         tool_result_metadata_callback: Optional[Callable[..., dict]] = None,
     ):
         """Forwarder — see ``agent.agent_init.init_agent`` (same keyword parameters, minus ``tool_delay``)."""
@@ -1010,9 +1010,10 @@ class AIAgent(
 
     @staticmethod
     def _trim_process_memory() -> None:
-        """Collect cycles, then return freed heap pages to the OS (the page release is glibc-only)."""
-        from hermes_cli.mem_trim import trim_memory
-        trim_memory(force=True, reason="agent close")
+        """Return freed pages to the OS; no full GC here (it would freeze every other session), the idle one runs."""
+        from hermes_cli.mem_trim import note_agent_closed, trim_memory
+        note_agent_closed()
+        trim_memory(force=True, reason="agent close", collect=False)
 
     def _finalize_owned_session_row(self) -> None:
         """End the session row unless ownership was handed forward (compression helpers, review forks sharing

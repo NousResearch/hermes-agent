@@ -1411,6 +1411,8 @@ def create_profile(
         discard_unpublished_vault_key(clone_key)
         shutil.rmtree(staging, ignore_errors=True)
         raise
+    from hermes_cli.profile_memory_config import notify_memory_provider
+    notify_memory_provider(profile_dir, lambda p: p.on_profile_created(canon, str(profile_dir)))
 
     # Inside a container under s6, register the gateway as a runtime s6 service so
     # `hermes -p <profile> gateway start` supervises via `s6-svc -u` instead of a bare
@@ -2238,21 +2240,6 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
 
 # Rename
 
-def _record_profile_rename(new_dir: Path, old_canon: str) -> None:
-    """Append ``old_canon`` to the renamed profile's ``previous_names`` history.
-    Best-effort: never raises, so a metadata write failure cannot fail the rename.
-
-    Only reached for a real slug change — ``rename_profile`` returns early for the
-    default profile (display-name only) and refuses ``old == new`` (target exists)."""
-    try:
-        history = read_profile_meta(new_dir).get("previous_names") or []
-        if old_canon not in history:
-            history = [*history, old_canon]
-        write_profile_meta(new_dir, previous_names=history)
-    except Exception as exc:  # unwritable / corrupt profile.yaml — history is advisory
-        logger.debug("profile rename: could not record previous name %r in %s: %s", old_canon, new_dir, exc)
-
-
 def _refuse_rename_without_file_tooling(old_canon: str) -> None:
     """A remote config backend keys each profile's settings by its canonical name, and the plane
     has no rename: renaming the local home would leave the settings under the old name and read
@@ -2338,11 +2325,15 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     # 2b. Record the rename so Bot Mode group chats can re-link persisted
     # member descriptors to the new slug (#110200). Best-effort: a metadata
     # write failure must never fail the rename itself.
+    from hermes_cli.profile_identity import _record_profile_rename
     _record_profile_rename(new_dir, old_canon)
 
     # 3. Update profile-scoped Honcho host blocks, preserving aiPeer identity
     from hermes_cli.profiles_honcho import migrate_honcho_profile_host
     migrate_honcho_profile_host(old_canon, new_canon, new_dir)
+    # 3b. Let the profile's memory provider re-key what it stores under the old name.
+    from hermes_cli.profile_memory_config import notify_memory_provider
+    notify_memory_provider(new_dir, lambda p: p.on_profile_renamed(old_canon, new_canon, str(new_dir)))
 
     # 4. Update wrapper script
     remove_wrapper_script(old_canon)

@@ -5,12 +5,13 @@ from hermes_state_runtime import RuntimeStoreError
 BINDING_PREFIX = 'gateway.history_control.v1.'
 
 
-def _history_sources():
-    """Local surfaces whose unrouted rows are owner history: every source the native resume adopts
-    (``LEGACY_LOCAL_SOURCES``: old ``desktop`` chats and ``oneshot``/``tool`` CLI runs too) plus imports.
-    A row resume can adopt must also take a sidebar edit (pin/archive/hide/rename)."""
-    from hermes_state_local_migration import LEGACY_LOCAL_SOURCES
-    return LEGACY_LOCAL_SOURCES | {'import'}
+def _history_row(row):
+    """Local surfaces' unrouted rows are owner history: every row the native resume adopts
+    (``legacy_history_row``: old ``desktop`` chats, ``oneshot``/``tool`` CLI runs and phone apps'
+    self-labelled chats too) plus imports. A row resume can adopt must also take a sidebar edit
+    (pin/archive/hide/rename)."""
+    from hermes_state_local_migration import legacy_history_row
+    return row['source'] == 'import' or legacy_history_row(dict(row))
 
 
 def _owner_user(row):
@@ -85,7 +86,7 @@ def authorize_history(conn, actor, session_id, *, claim=False):
         if not _bound_to(saved[0], actor):
             raise RuntimeStoreError('permission_denied')
         return True
-    if row['source'] not in _history_sources():
+    if not _history_row(row):
         return False
     from gateway.owner_identity import same_owner
     if _owner_user(row) and not same_owner(row['user_id'], actor.subject):
@@ -125,5 +126,5 @@ def same_history_owner(conn, anchor_id, session_id):
     routeless_peer = row['source'] == anchor['source'] and not any(tuple(anchor)[2:5])
     from gateway.owner_identity import owners_agree
     return binding is not None or (
-        (row['source'] in _history_sources() or routeless_peer)
+        (_history_row(row) or routeless_peer)
         and (_owner_user(row) in (None, '') or owners_agree(_owner_user(row), anchor['user_id'])))

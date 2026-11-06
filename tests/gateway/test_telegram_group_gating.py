@@ -1046,6 +1046,7 @@ def _with_media(message, kind):
     (_replying_to(_group_message("agreed"), user_id=1087968824, sender_chat=-100), None),
     (_with_media(_group_message(None), "voice"), None),
     (_with_media(_group_message(None), "audio"), None),
+    (_with_media(_group_message(None), "video_note"), None),
     (_with_media(_group_message(None, caption="the fridge arrives on saturday"), "voice"), False),
     (_with_media(_group_message(None), "photo"), False),
 ], ids=[
@@ -1053,7 +1054,7 @@ def _with_media(message, kind):
     "reply-to-other-member", "opens-with-other-mention", "chatter",
     "question", "mentions-other-mid-question", "forum-topic-root", "reply-to-unknown-author",
     "reply-to-unknown-author-statement", "reply-to-channel-autoforward", "reply-to-anonymous-admin",
-    "voice-note", "audio-file", "captioned-voice-chatter", "photo-without-caption",
+    "voice-note", "audio-file", "video-note", "captioned-voice-chatter", "photo-without-caption",
 ])
 def test_reply_expected_follows_who_the_group_message_addresses(message, expected):
     adapter = _make_adapter(require_mention=False, mention_patterns=["hermes"])

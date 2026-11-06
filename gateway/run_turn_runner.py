@@ -354,7 +354,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         sync worker thread; hop onto the gateway loop. Fired-once latch lives on the cached agent."""
         from gateway.run import render_notice_line
         from gateway.warning_notifications import is_diagnostic_notice, render_notification
-        if self._ctx.mute_notification_reply or not self._status_live():
+        from gateway.bot_peer_notices import automatic_notices_allowed
+        if self._ctx.mute_notification_reply or not self._status_live() or not automatic_notices_allowed(self._ctx.source):
             return
         # A usage-window limit line repeats the turn's own reply, which carries the sentence and the
         # switch button (a chat message cannot be cleared, so it would only pile up). The 90% heads-up
@@ -490,6 +491,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         agent.notice_clear_callback = self._local_notice_clear_callback_sync if local_viewer_turn(self) else None
         agent.event_callback = ctx._event_callback_sync
         agent.reasoning_config, agent.service_tier = reasoning_config, runner._service_tier
+        _load_daybreak = getattr(runner, "_load_daybreak", None)  # absent on minimal test runners
+        agent.daybreak = callable(_load_daybreak) and _load_daybreak(ctx.source) is True
         self._merge_turn_request_overrides(agent, turn_route)
         from gateway.session_surface import arm_surface_turn
         # auxiliary.voice_chat route (a voice note, or an admission committed as a voice turn) and
@@ -1242,7 +1245,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         every rebind. session_key propagates via contextvars (_set_session_env / set_current_session_key)
         — never os.environ["HERMES_SESSION_KEY"], which would misroute approvals across sessions.
         """
-        from gateway.run import _current_max_iterations, _normalize_empty_agent_response, _sanitize_gateway_final_response
+        from gateway.run import (
+            _current_max_iterations, _normalize_empty_agent_response, _reload_runtime_env_preserving_config_authority,
+            _sanitize_gateway_final_response,
+        )
         ctx = self._ctx
         runner = self._runner
         # Platform.LOCAL ("local") maps to the "cli" hint key the agent understands.
@@ -1265,7 +1271,15 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         combined_ephemeral = self._combined_ephemeral_prompt()
         if policy and policy.skills_prompt:
             combined_ephemeral = "\n\n".join(p for p in (combined_ephemeral, policy.skills_prompt) if p)
-        max_iterations = policy.max_turns if policy else _current_max_iterations()
+        if policy:
+            # Rotated .env keys reach this turn's config reads (side tasks read config.yaml), as on the
+            # messaging path, where _current_max_iterations() does the same reload; the turn budget
+            # stays the session's own. A bypass session never reads the profile.
+            if not policy.ignore_user_config:
+                _reload_runtime_env_preserving_config_authority()
+            max_iterations = policy.max_turns
+        else:
+            max_iterations = _current_max_iterations()
         from gateway.hosted_room_execution_policy import current_room_execution_policy
         room = current_room_execution_policy()
         if room is not None:

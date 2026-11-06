@@ -409,6 +409,8 @@ def observe_api_controls(admitted, sink):
     either in the snapshot or arrives live (never both), and one already answered is absent."""
     from hermes_state_runtime import get_session_admission
     authority, ref, row = admitted
+    from gateway.session_retirement import restore_retired
+    restore_retired(authority, ref.session_id)  # idle between its bind and this admission's commit
     live = authority.sessions.get(ref.session_id)
     if live is None:
         # Deleted or pruned: only an exact retry of a settled (retired) receipt reaches here,

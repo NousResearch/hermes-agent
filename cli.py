@@ -47,6 +47,7 @@ from hermes_cli.cli_tui_mixin import CLITuiMixin
 from hermes_cli.cli_process_notifications import CLIProcessNotificationsMixin
 from hermes_cli.cli_init_mixin import CLIInitMixin
 from hermes_cli.cli_tui_runtime_mixin import CLITuiRuntimeMixin
+from hermes_cli.cli_backtrack import CLIBacktrackMixin
 # Extracted clusters (mechanical split, #116911); re-exported here so `cli.<name>` stays the seam.
 from hermes_cli.cli_shutdown import (
     _CLEANUP_STEPS,
@@ -877,7 +878,7 @@ from hermes_cli.cli_chat_turn_mixin import CLIChatTurnMixin
 _PASTE_REF_RE = re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
 
 
-class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMixin, CLIStatusBarMixin, CLIVoiceMixin, CLIModelSwitchMixin, CLISessionMixin, CLIStreamMixin, CLIModalMixin, CLITerminalMixin, CLIInfoMixin, CLILoopsMixin, CLIChatTurnMixin):
+class HermesCLI(CLIBacktrackMixin, CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMixin, CLIStatusBarMixin, CLIVoiceMixin, CLIModelSwitchMixin, CLISessionMixin, CLIStreamMixin, CLIModalMixin, CLITerminalMixin, CLIInfoMixin, CLILoopsMixin, CLIChatTurnMixin):
     """Interactive REPL for the Hermes Agent."""
 
     # Seeded -q first message (see _should_seed_interactive); run() re-creates
@@ -1602,6 +1603,8 @@ def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url
 def _run_legacy_gateway():
     """Legacy `cli.py --gateway` entry: arm the startup watchdog (before importing the gateway graph), then run it."""
     import asyncio
+    from hermes_cli.resource_limits import apply_malloc_arena_max
+    apply_malloc_arena_max()  # before the watchdog thread: glibc latches its arena limit
     with suppress(Exception):
         from hermes_startup_watchdog import arm_startup_watchdog
         arm_startup_watchdog()

@@ -16,7 +16,7 @@ import threading
 import time
 
 from gateway.hosted_room_driver import TaskIdentity
-from gateway.session_contract import Principal
+from gateway.session_contract import SessionActor
 from gateway.session_authorities import owner_scope
 from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
 from gateway.owner_identity import same_owner
@@ -169,10 +169,10 @@ def _attachment_data(binding, attested, params):
 
 def _principal(authority, binding):
     # Source-profile namespace prevents equal room owner strings on other owners
-    # from aliasing a target's principal. Never widen Principal.profile_id.
+    # from aliasing a target's principal. Never widen SessionActor.profile_id.
     identity = json.dumps([binding['source_home'], binding['owner']], separators=(',', ':'))
     subject = 'hosted-owner:' + hashlib.sha256(identity.encode()).hexdigest()
-    return Principal(subject, authority.profile_id, _CAPS, 'hosted-owner-transport')
+    return SessionActor(subject, authority.profile_id, _CAPS, 'hosted-owner-transport')
 
 
 def install_hosted_transport(server, authority, loop, *, attest):
@@ -308,6 +308,8 @@ def _check_remote_hosted_admission(authority, ref, row):
 
 class HostedRoomOwnerRPC(HostedRoomAuthorityRPC):
     """Driver-compatible producer; carries data, never a caller principal."""
+    served_elsewhere = True  # another profile's daemon, which can go away without this process
+
     def __init__(self, *, home, source_home, room_id, member_id, profile):
         self.home = Path(home)
         self.member_id = member_id

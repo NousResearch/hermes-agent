@@ -346,6 +346,10 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     },
     get: () => ipcRenderer.invoke('hermes:profile:get'),
     remember: name => ipcRenderer.invoke('hermes:profile:remember', name),
+    importConnections: (record: Record<string, string>) =>
+      ipcRenderer.invoke('hermes:profile:connections:import', record),
+    rememberConnection: (connectionId: string, profile: string) =>
+      ipcRenderer.invoke('hermes:profile:connections:remember', connectionId, profile),
     set: name => ipcRenderer.invoke('hermes:profile:set', name)
   },
   // The handler resolves an expected 404 with a sentinel instead of rejecting
@@ -398,6 +402,13 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   watchDirectory: dir => ipcRenderer.invoke('hermes:watchDirectory', dir),
   stopPreviewFileWatch: id => ipcRenderer.invoke('hermes:stopPreviewFileWatch', id),
   setActiveWork: payload => ipcRenderer.send('hermes:active-work', payload),
+  scheduleStreamWorkWake: (token, delayMs) => ipcRenderer.send('hermes:stream-work-wake', { token, delayMs }),
+  onStreamWorkWake: callback => {
+    const listener = (_event, token) => callback(token)
+    ipcRenderer.on('hermes:stream-work-ready', listener)
+
+    return () => ipcRenderer.removeListener('hermes:stream-work-ready', listener)
+  },
   setTitleBarTheme: payload => ipcRenderer.send('hermes:titlebar-theme', payload),
   setNativeTheme: mode => ipcRenderer.send('hermes:native-theme', mode),
   setTranslucency: payload => ipcRenderer.send('hermes:translucency', payload),
@@ -430,6 +441,9 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   setPreviewShortcutActive: active => ipcRenderer.send('hermes:previewShortcutActive', Boolean(active)),
   setPreviewGuestHidden: (webContentsId, hidden) =>
     ipcRenderer.send('hermes:preview-guest-hidden', { webContentsId, hidden: Boolean(hidden) }),
+  beginPreviewGuestActivity: webContentsId => ipcRenderer.invoke('hermes:preview-guest-activity:begin', webContentsId),
+  endPreviewGuestActivity: token => ipcRenderer.invoke('hermes:preview-guest-activity:end', token),
+  executePreviewGuestScript: (token, code) => ipcRenderer.invoke('hermes:preview-guest-activity:script', token, code),
   openExternal: url => ipcRenderer.invoke('hermes:openExternal', url),
   freeTierChallenge: {
     // Load the account service's challenge page in a hidden window (revealed

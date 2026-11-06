@@ -37,6 +37,8 @@ from gateway.session import (
     neutralize_untrusted_inline_text,
 )
 from gateway.turn_lease import TurnLeaseTimeoutError
+from hermes_cli.observability.shared_metrics_busy import (
+    note_busy_admitting, note_busy_outcome, settle_busy_arrival, stamp_busy_arrival)
 from typing import Any, Dict, List, Optional, Tuple
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
@@ -243,7 +245,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
                 logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
             return None
         # The busy path charged this event on arrival; a drained follow-up must not pay twice.
-        if not getattr(event, "_bot_loop_admitted", False) and not self._admit_bot_message_for_source(source):
+        if not getattr(event, "_bot_loop_admitted", False) and not (
+                self._admit_bot_message_for_source(source) and self._admit_bot_chain(event)):
             return None
         return event, source, False
 
@@ -628,10 +631,10 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
                 # The chat's first input, and a command's turn, not committed yet never commit.
                 authority.fence_route(_quick_key)
             return
-        from gateway.session_contract import Principal, SessionRef
+        from gateway.session_contract import SessionActor, SessionRef
         from hermes_state_runtime import RuntimeStoreError, list_session_admissions
         ref = SessionRef(authority.profile_id, sid)
-        actor = Principal('messaging-control', authority.profile_id,
+        actor = SessionActor('messaging-control', authority.profile_id,
                           frozenset({'session:submit', 'session:control'}), 'busy-command')
         rows = await asyncio.to_thread(list_session_admissions, authority.db, session_id=sid)
         # A FIFO paused on a lost (``unknown``) turn is the operator's to resume: its pause notice
@@ -739,6 +742,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
                     and self._effective_busy_text_mode(source) == "queue")):
             return False
         outcome = await self._resolve_busy_steer_or_redirect(event, _quick_key, mode, running_agent)
+        note_busy_outcome(event, outcome)
         await self._busy_interrupt_and_ack(event, _quick_key, adapter, state, running_agent, outcome)
         return bool(outcome.steered or outcome.redirected)
 
@@ -1215,33 +1219,48 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         from gateway.session_authorities import active_authority
         authority = active_authority(self)
         if authority is not None and not event.get_command() and not is_internal:
-            from gateway.session_ingress import admit_message, executing_admission
+            from gateway.session_ingress import executing_admission
             if not executing_admission.get():
-                # The durable FIFO only orders turns; busy_input_mode still decides what a follow-up
-                # does to the RUNNING one (steer into it, redirect it, or end it so the FIFO advances).
-                # Without this, ``interrupt`` degrades to ``queue`` behind a turn that may hang for
-                # its whole request timeout.
-                # A bare "yes"/"no" to a blocking dangerous-command approval answers it (#46866):
-                # never an interrupt (read as deny) nor a queued turn (auto-deny deadlock).
-                # A turn a slash command produced (``/queue yes``) is never live typing.
-                if self._is_session_running(_quick_key) and not getattr(event, "_fifo_only", False) and (
-                        await self._route_plaintext_approval_while_busy(event, _quick_key)
-                        or await self._hm_busy_preempt(event, source, _quick_key)):
-                    return True, None
-                _consumed, _consumer_reply = await self._hm_post_admission_consume(event, source, _quick_key)
-                if _consumed:
-                    return True, _consumer_reply
-                if getattr(event, "_fifo_only", False) and event._stop_epoch != self._route_stop_epoch(_quick_key):
-                    return True, None  # a /stop or /new came after its command, as it clears the slot
-                # A failed admit stays the authority's answer (refusal notice or turn error), never a
-                # pending legacy turn: that would run unadmitted, outside the FIFO's order.
-                return True, await admit_message(authority, event)
+                # A message the adapter saw as idle still waits when an earlier queued turn runs
+                # outside its session guard: the running-turn check is the busy test that counts.
+                busy = self._is_session_running(_quick_key) and not getattr(event, "_fifo_only", False)
+                if busy:
+                    stamp_busy_arrival(self._delivery_adapter_for(source), event)
+                try:
+                    return await self._hm_admit_to_fifo(authority, event, source, _quick_key, busy)
+                finally:
+                    settle_busy_arrival(event)  # never admitted, refused or dropped: its fate is known
         if (authority is None and not is_internal and not event.get_command()
                 and getattr(self, 'session_authority', None) is not None):
             # Scoped to a home this process does not serve: never fall back to the launch ledger.
             from hermes_state_runtime import RuntimeStoreError
             raise RuntimeStoreError('profile_mismatch')
         return False, None
+
+    async def _hm_admit_to_fifo(
+        self, authority: Any, event: MessageEvent, source: SessionSource, _quick_key: str, busy: bool,
+    ) -> tuple[bool, Optional[str]]:
+        """The authority-owned path of ``_hm_authority_admission`` (not inside a FIFO execution)."""
+        from gateway.session_ingress import admit_message
+        # The durable FIFO only orders turns; busy_input_mode still decides what a follow-up
+        # does to the RUNNING one (steer into it, redirect it, or end it so the FIFO advances).
+        # Without this, ``interrupt`` degrades to ``queue`` behind a turn that may hang for
+        # its whole request timeout.
+        # A bare "yes"/"no" to a blocking dangerous-command approval answers it (#46866):
+        # never an interrupt (read as deny) nor a queued turn (auto-deny deadlock).
+        # A turn a slash command produced (``/queue yes``) is never live typing.
+        if busy and (await self._route_plaintext_approval_while_busy(event, _quick_key)
+                     or await self._hm_busy_preempt(event, source, _quick_key)):
+            return True, None
+        _consumed, _consumer_reply = await self._hm_post_admission_consume(event, source, _quick_key)
+        if _consumed:
+            return True, _consumer_reply
+        if getattr(event, "_fifo_only", False) and event._stop_epoch != self._route_stop_epoch(_quick_key):
+            return True, None  # a /stop or /new came after its command, as it clears the slot
+        # A failed admit stays the authority's answer (refusal notice or turn error), never a
+        # pending legacy turn: that would run unadmitted, outside the FIFO's order.
+        note_busy_admitting(event)
+        return True, await admit_message(authority, event)
 
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """Handle an incoming message from any platform: auth → command check → running-agent
@@ -1471,7 +1490,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         self, adapter, source: SessionSource, transcripts: list[str], *, metadata=None, log_context: str = "Transcript"
     ) -> None:
         """Send each transcript back as ``🎙️ "…"`` (best-effort; failures are logged, never raised)."""
-        for tx in transcripts:
+        from gateway.bot_peer_notices import automatic_notices_allowed
+        for tx in transcripts if automatic_notices_allowed(source) else ():
             try:
                 await adapter.send(source.chat_id, t("gateway.voice.transcript_echo_short", text=tx), metadata=metadata)
             except Exception as echo_exc:
@@ -1668,7 +1688,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         expanded, refusal = await inbound_references(self, source, session_key, message_text)
         if refusal is None:
             return expanded
-        _adapter = self._delivery_adapter_for(source)
+        from gateway.bot_peer_notices import automatic_notices_allowed
+        _adapter = self._delivery_adapter_for(source) if automatic_notices_allowed(source) else None
         if _adapter:
             await _adapter.send(source.chat_id, refusal)
         return None

@@ -314,14 +314,21 @@ RUN /opt/hermes/.venv/bin/python -I scripts/generate_icons.py --source /opt/herm
 
 # Frontend dependencies never enter the runtime layers.
 FROM runtime_base AS frontend_build
-COPY package.json package-lock.json ./
+# pnpm installs the workspaces; nothing in the runtime image runs it, so only
+# the build stages (this one and webapp_build) stage it.
+RUN python3 -c 'from pathlib import Path; from pm import ensure, installed_package; ensure("pnpm", explicit=True); Path("/usr/local/bin/pnpm").symlink_to(installed_package("pnpm").binary)' && \
+    pnpm --version
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY web/package.json web/
 COPY ui-tui/package.json ui-tui/
 COPY ui-tui/packages/hermes-ink/ ui-tui/packages/hermes-ink/
 COPY apps/shared/ apps/shared/
-COPY scripts/build/node-deps.mjs scripts/build/electron-runtime.mjs scripts/build/
-ENV npm_config_install_links=false
-RUN node scripts/build/node-deps.mjs --source /opt/hermes --workspace ui-tui --workspace web
+COPY scripts/build/node-deps.mjs scripts/build/electron-runtime.mjs scripts/build/pnpm-lock.mjs scripts/build/
+# Root node_modules/typescript is a link into pnpm's virtual store, which never
+# reaches the runtime image: stage a dereferenced copy for it.
+RUN node scripts/build/node-deps.mjs --source /opt/hermes --workspace ui-tui --workspace web && \
+    mkdir -p /opt/products && \
+    cp -RL node_modules/typescript /opt/products/typescript
 
 COPY pyproject.toml uv.lock ./
 COPY web/ web/
@@ -337,12 +344,13 @@ RUN node scripts/build/tui.mjs --source /opt/hermes --out /opt/products/tui && \
 # which installs Desktop's dependencies in a private workspace. A stage of its
 # own so Desktop changes leave the TUI and dashboard layers cached.
 FROM runtime_base AS webapp_build
-COPY package.json package-lock.json .npmrc ./
+RUN python3 -c 'from pathlib import Path; from pm import ensure, installed_package; ensure("pnpm", explicit=True); Path("/usr/local/bin/pnpm").symlink_to(installed_package("pnpm").binary)' && \
+    pnpm --version
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/desktop/package.json apps/desktop/
 COPY apps/desktop/scripts/build-webapp.mjs apps/desktop/scripts/
 COPY apps/shared/package.json apps/shared/
 COPY scripts/build/*.mjs scripts/build/
-ENV npm_config_install_links=false
 # Dependencies first, keyed only by the manifests and the recipe, so a source
 # change reuses this layer and the build below reuses its install.
 RUN node apps/desktop/scripts/build-webapp.mjs --deps-only
@@ -351,7 +359,7 @@ RUN node apps/desktop/scripts/build-webapp.mjs
 
 FROM python_deps AS runtime
 # Standalone TypeScript linting is a runtime feature; Vite/esbuild are not.
-COPY --from=frontend_build /opt/hermes/node_modules/typescript /opt/hermes/node_modules/typescript
+COPY --from=frontend_build /opt/products/typescript /opt/hermes/node_modules/typescript
 RUN mkdir -p /opt/hermes/node_modules/.bin && \
     ln -s ../typescript/bin/tsc /opt/hermes/node_modules/.bin/tsc
 
@@ -447,10 +455,12 @@ RUN set -eu; \
     python3 -c 'import json, pathlib, tomllib; project = tomllib.loads(pathlib.Path("/opt/hermes/pyproject.toml").read_text(encoding="utf-8"))["project"]; stamp = json.loads(pathlib.Path("/opt/hermes/install-stamp.json").read_text(encoding="utf-8")); commit = stamp.get("commit"); revision = commit if commit and set(commit) != {"0"} else None; marker = pathlib.Path("/etc/hermes/image-provenance.json"); marker.write_text(json.dumps({"schema": 1, "deployment_kind": "image", "manager": "docker", "image": "nousresearch/hermes-agent", "version": project["version"], "revision": revision}, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8"); marker.chmod(0o444)'
 
 # ---------- s6-overlay service wiring ----------
-# Static services declared at build time: main-hermes + dashboard.
-# Per-profile gateway services are registered dynamically at runtime by
-# the profile create/delete hooks (Phase 4); they live under
-# /run/service/ (tmpfs) and are reconciled on container restart by
+# Static services declared at build time: main-hermes, dashboard and
+# profile-gateways. Per-profile gateway services are registered
+# dynamically at runtime by the profile create/delete hooks (Phase 4);
+# they live under /run/hermes-service/ (tmpfs), supervised by the
+# hermes-owned s6-svscan of the profile-gateways service, never in the
+# root /run/service scandir, and are reconciled on container restart by
 # /etc/cont-init.d/02-reconcile-profiles (Phase 4 Task 4.0).
 COPY docker/s6-rc.d/ /etc/s6-overlay/s6-rc.d/
 
@@ -461,7 +471,7 @@ COPY docker/s6-rc.d/ /etc/s6-overlay/s6-rc.d/
 #
 # 02-reconcile-profiles re-creates per-profile gateway s6 service
 # slots from $HERMES_HOME/profiles/<name>/ after a container restart
-# (the /run/service/ scandir is tmpfs and wiped on restart). Phase 4.
+# (the /run/hermes-service/ scandir is tmpfs and wiped on restart). Phase 4.
 RUN mkdir -p /etc/cont-init.d && \
     printf '#!/command/with-contenv sh\nexec /opt/hermes/docker/stage2-hook.sh\n' \
         > /etc/cont-init.d/01-hermes-setup && \
@@ -471,22 +481,21 @@ COPY --chmod=0755 docker/cont-init.d/02-reconcile-profiles /etc/cont-init.d/02-r
 
 # ---------- Runtime ----------
 ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
-# Point the TUI launcher at the prebuilt bundle baked at build time (Layer 8:
-# `ui-tui && npm run build`). This makes _make_tui_argv take the prebuilt-bundle
-# fast path (`node --expose-gc /opt/hermes/ui-tui/dist/entry.js`) and skip the
-# _tui_need_npm_install / runtime `npm install` branch entirely — exactly the
-# nix/packaged-release path the launcher was designed for.
+# Point the TUI launcher at the prebuilt bundle baked at build time (the
+# frontend_build stage's scripts/build/tui.mjs product). This makes
+# _make_tui_argv take the prebuilt-bundle fast path
+# (`node --expose-gc /opt/hermes/ui-tui/dist/entry.js`) and skip source
+# dependency preparation (scripts/build/node-deps.mjs, a pnpm install)
+# entirely — exactly the nix/packaged-release path the launcher was designed for.
 #
-# Why this is required (not just an optimization): the root package-lock.json
-# describes the WHOLE monorepo workspace set (root + web + ui-tui + apps/*),
-# but the image only installs root/web/ui-tui (apps/* — the desktop app — is
-# never `npm install`ed here). So the actualized node_modules permanently
-# disagrees with the canonical lock, _tui_need_npm_install() returns True on
-# every launch, and the runtime `npm install` it triggers (a) can never
-# converge against the partial monorepo and (b) races itself across concurrent
-# embedded-chat (/api/pty) connections → ENOTEMPTY → the chat tab dies with a
-# 502 / "[session ended]". Pointing at the prebuilt bundle sidesteps the whole
-# check. (A separate launcher hardening is tracked independently.)
+# Why this is required (not just an optimization): the runtime image carries
+# no workspace node_modules (frontend dependencies stay in frontend_build; only
+# a TypeScript copy ships) and no pnpm. So the launcher's install check fails on
+# every launch, and the install it triggers (a) can never converge here and
+# (b) races itself across concurrent embedded-chat (/api/pty) connections →
+# ENOTEMPTY → the chat tab dies with a 502 / "[session ended]". Pointing at the
+# prebuilt bundle sidesteps the whole check. (A separate launcher hardening is
+# tracked independently.)
 ENV HERMES_TUI_DIR=/opt/hermes/ui-tui
 ENV HERMES_HOME=/opt/data
 ENV HERMES_WRITE_SAFE_ROOT=/opt/data

@@ -50,7 +50,7 @@ export const zhHantSettings = {
       advancedOutput: '輸出限制',
       advancedDelegation: '子代理',
       advancedDesktop: '桌面與啟動',
-      gatewayConnection: '目前視窗',
+      gatewayConnection: '主要閘道',
       gatewayDevices: '已儲存的連線',
       gatewayManagedUpdates: '遠端更新',
       gatewayManagedUpdatesUnavailable: '遠端更新需要支援受管理 SSH 更新的桌面版本。',
@@ -1019,6 +1019,13 @@ export const zhHantSettings = {
         restartFailedBecause: reason => `閘道無法重新啟動：${reason}`,
         startTimedOut: '閘道未能在 90 秒內提供網頁應用程式。',
         stopTimedOut: '閘道未能在 90 秒內停止提供網頁應用程式。',
+        startStages: {
+          preparing: '正在準備網頁應用程式。建置可能需要幾分鐘。',
+          building: '正在建置網頁應用程式，可能需要幾分鐘。',
+          registering: '正在為此位址設定 Nous 登入。',
+          restarting: '正在重新啟動閘道以提供網頁應用程式。'
+        },
+        startElapsed: time => `已經過 ${time}`,
         start: '啟動',
         stop: '停止',
         restartGateway: '重新啟動閘道',
@@ -1129,7 +1136,6 @@ export const zhHantSettings = {
       tasks: {
         vision: { label: '視覺', hint: '圖片分析' },
         compression: { label: '壓縮', hint: '上下文壓縮' },
-        skills_hub: { label: '技能中心', hint: '技能搜尋' },
         approval: { label: '核准', hint: '智慧自動核准' },
         mcp: { label: 'MCP', hint: 'MCP 工具路由' },
         title_generation: { label: '標題生成', hint: '工作階段標題' },

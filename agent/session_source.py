@@ -21,6 +21,11 @@ UI_TRANSPORT_SOURCES = frozenset({"tui", "desktop"})
 ONESHOT_SOURCE = "oneshot"
 CLI_FAMILY_SOURCES = frozenset({"cli", ONESHOT_SOURCE})
 
+# The owner's own local surfaces: the only sources that carry OpenAI Daybreak (agent.daybreak). It is the
+# approved account's own access (no third-party or downstream use); a plugin session tagged ``telegram`` is
+# someone else's chat even when a local backend builds its agent.
+DAYBREAK_SOURCES = UI_TRANSPORT_SOURCES | {"cli"}
+
 # A person reads the turn as it runs: not cron, batch, a messaging chat, or a one-shot run.
 ATTENDED_SOURCES = UI_TRANSPORT_SOURCES | {"cli", "acp"}
 

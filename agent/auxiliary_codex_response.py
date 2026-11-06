@@ -16,13 +16,23 @@ def _parse_codex_final_response(
     from agent.codex_responses_adapter import _lower_or_none, _normalize_codex_response
 
     # The shared normalizer reads SDK-style items. Keep support for compatible hosts
-    # returning dict items, and the aux adapter's legacy empty completed response.
+    # returning dict items. bddd22be synthesized a placeholder only via the shared
+    # normalizer (output_text present or incomplete content_filter); an unconditional
+    # placeholder here hides a truly empty completed final from that guard, breaking
+    # 0049 (test_rejects_final_without_output_after_consumer). Keep output empty so
+    # _normalize_codex_response raises "Responses API returned no output items".
+    # Exception: failed/cancelled with empty output must still reach the provider-error
+    # branch (checked after the empty-output guard), so keep the legacy placeholder
+    # only there to preserve test_auxiliary_preserves_terminal_responses_status.
     output = [
         SimpleNamespace(**item) if isinstance(item, dict) else item
         for item in (getattr(final, "output", None) or [])
     ]
+    _aux_status = str(getattr(final, "status", "") or "").strip().lower()
+    if not output and _aux_status in {"failed", "cancelled"}:
+        output = [SimpleNamespace(type="message", content=[])]
     normalized_final = SimpleNamespace(
-        output=output or [SimpleNamespace(type="message", content=[])],
+        output=output,
         output_text=getattr(final, "output_text", None),
         status=getattr(final, "status", None),
         incomplete_details=getattr(final, "incomplete_details", None),

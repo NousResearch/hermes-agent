@@ -50,9 +50,24 @@ _SHIPPED_PLATFORM_TOOLSETS = (
     ("YUANBAO_APP_ID=a\n", "", False),  # half a credential set never enabled the adapter
     ("", _SHIPPED_PLATFORM_TOOLSETS, False),
     ("", "platforms:\n  yuanbao:\n    enabled: false\n", False),
+    # Core's _is_connected read the credentials from the platform block's extras too, per field.
+    ("", "platforms:\n  yuanbao:\n    extra: {app_id: a, app_secret: s}\n", True),
+    ("", "platforms:\n  yuanbao: {app_id: a, app_secret: s}\n", True),
+    ("YUANBAO_APP_SECRET=s\n", "platforms:\n  yuanbao:\n    extra: {app_id: a}\n", True),
+    ("", "platforms:\n  yuanbao:\n    extra: {app_id: a}\n", False),
+    # An explicit disable kept core's adapter off whatever credentials were set, legacy block included.
+    ("YUANBAO_APP_ID=a\nYUANBAO_APP_SECRET=s\n", "platforms:\n  yuanbao:\n    enabled: false\n", False),
+    ("YUANBAO_APP_ID=a\nYUANBAO_APP_SECRET=s\n", "gateway:\n  yuanbao:\n    enabled: false\n", False),
 ])
 def test_yuanbao_in_use_matches_what_core_ran(tmp_path, env, config, in_use):
     assert lcm.yuanbao_in_use(_home(tmp_path, env=env, config=config)) is in_use
+
+
+def test_a_disable_in_legacy_gateway_json_vetoes_env_credentials(tmp_path):
+    import json
+    home = _home(tmp_path, env="YUANBAO_APP_ID=a\nYUANBAO_APP_SECRET=s\n")
+    (home / "gateway.json").write_text(json.dumps({"platforms": {"yuanbao": {"enabled": False}}}))
+    assert lcm.yuanbao_in_use(home) is False
 
 
 def test_a_yuanbao_home_gets_the_plugin_once_with_the_labs_notice(tmp_path):
@@ -99,7 +114,7 @@ def test_a_secondary_whose_credentials_come_from_its_secret_scope_uses_yuanbao(t
             reset_secret_scope(token)
 
 
-@pytest.mark.parametrize("name", ["platforms/yuanbao", "yuanbao-platform", "yuanbao"])
+@pytest.mark.parametrize("name", ["platforms/yuanbao", "yuanbao-platform"])
 def test_plugins_disabled_naming_the_bundled_adapter_is_not_use_and_still_disables_the_plugin(tmp_path, name):
     from hermes_cli.plugins_discovery import gate_manifest
     from hermes_cli.plugins_manifest import PluginManifest
@@ -110,8 +125,26 @@ def test_plugins_disabled_naming_the_bundled_adapter_is_not_use_and_still_disabl
     assert gate_manifest(manifest, {"platforms/yuanbao"}, None).error == "disabled via config"
 
 
+def test_a_bare_yuanbao_in_plugins_disabled_is_still_use_and_the_notice_says_it_now_disables(tmp_path):
+    """Core's adapter was ``platforms/yuanbao`` / ``yuanbao-platform``: a bare ``yuanbao`` never stopped it.
+    The catalog plugin IS ``yuanbao``, so the install has to say that entry now turns it off."""
+    home = _home(tmp_path, env="YUANBAO_APP_ID=a\nYUANBAO_APP_SECRET=s\n",
+                 config="plugins:\n  disabled: [yuanbao]\n")
+    said = []
+
+    def install(name):
+        (home / "plugins" / name).mkdir(parents=True)
+        return {"ok": True}
+
+    assert lcm.migrate_home(home, install=install, say=said.append) == ["yuanbao"]
+    assert "plugins.disabled lists 'yuanbao', which now turns Yuanbao off; remove it to keep using Yuanbao" in said[0]
+
+
 def test_every_platform_core_knows_but_yuanbao_keeps_the_yb_tools_off():
+    from gateway.config import Platform
     from hermes_cli.platforms import PLATFORMS
     feature = next(f for f in lcm.LEFT_CORE if f.plugin == "yuanbao")
     assert "homeassistant" in feature.off_platforms and "yuanbao" not in feature.off_platforms
     assert set(PLATFORMS) <= set(feature.off_platforms)
+    # Gateway-only platforms (msgraph_webhook, relay) host sessions in the same process as the adapter.
+    assert {p.value for p in Platform} - {"local", "yuanbao"} <= set(feature.off_platforms)

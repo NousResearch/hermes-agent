@@ -58,24 +58,32 @@ def _read_config(home: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def platform_configured_on(home: Path, name: str) -> bool:
-    """Platform *name* is on in *home*'s config files as the gateway loader reads them: legacy
-    ``gateway.json`` base layer, then config.yaml's ``gateway.platforms`` / ``platforms`` /
-    ``gateway.<name>`` blocks merged in the loader's order (managed overlay and ``${VAR}`` applied),
-    so the last explicit ``enabled`` wins. A stored token with no ``enabled`` anywhere counts too.
-    Env credentials are the caller's to check. Read-only; works before the platform's plugin loads."""
+def _merged_platform_block(home: Path, name: str) -> Optional[dict]:
+    """Platform *name*'s block as the gateway loader merges it for *home*: legacy ``gateway.json`` base
+    layer, then config.yaml's ``gateway.platforms`` / ``platforms`` / ``gateway.<name>`` blocks in the
+    loader's order (managed overlay and ``${VAR}`` applied). ``None`` when no layer names it."""
     from gateway import config_loader
-    from gateway.config import PlatformConfig
     gw_data = config_loader.load_legacy_gateway_json(home)
     gw_data = gw_data if isinstance(gw_data, dict) else {}
     try:
         yaml_cfg = config_loader.read_yaml_layers(home)
     except Exception:  # malformed config.yaml: the gateway falls back to gateway.json alone too
+        logger.debug("left-core: unreadable config for %s", home, exc_info=True)
         yaml_cfg = {}
     yaml_cfg = yaml_cfg if isinstance(yaml_cfg, dict) else {}
     block = config_loader.merge_platform_sections(
         yaml_cfg, yaml_cfg.get("gateway"), gw_data, also=frozenset({name})).get(name)
-    if not isinstance(block, dict):
+    return block if isinstance(block, dict) else None
+
+
+def platform_configured_on(home: Path, name: str) -> bool:
+    """Platform *name* is on in *home*'s config files as the gateway loader reads them
+    (:func:`_merged_platform_block`), so the last explicit ``enabled`` wins. A stored token with no
+    ``enabled`` anywhere counts too. Env credentials are the caller's to check. Read-only; works before
+    the platform's plugin loads."""
+    from gateway.config import PlatformConfig
+    block = _merged_platform_block(home, name)
+    if block is None:
         return False
     platform = PlatformConfig.from_dict(block)
     return platform.enabled or ("enabled" not in block and bool(str(platform.token or "").strip()))
@@ -116,31 +124,46 @@ def homeassistant_in_use(home: Path, *, process_env: bool = False) -> bool:
         _read_config(home), frozenset({"homeassistant", "hermes-homeassistant"}), own_platform="homeassistant")
 
 
-# Yuanbao's env enablement (its ``gateway_env.ENV_OVERRIDES`` row): an App ID (or the legacy App Key) and
-# the App Secret, both set.
-_YUANBAO_ENV_GATE = (("YUANBAO_APP_ID", "YUANBAO_APP_KEY"), ("YUANBAO_APP_SECRET",))
-
-
 def yuanbao_in_use(home: Path, *, process_env: bool = False) -> bool:
-    """What made core run Yuanbao for *home*: its env enablement complete in the home's dotenv layers
-    (:func:`_home_env`; the process env too for the launch home with *process_env*), the platform on in its
-    gateway config (:func:`platform_configured_on`), or the ``yuanbao`` / ``hermes-yuanbao`` toolset selected
-    for another platform or in the top-level ``toolsets`` list. The shipped ``yuanbao: [hermes-yuanbao]``
-    platform_toolsets row is not use: it scoped Yuanbao's own sessions, which need the platform on. Nothing
-    counts when ``plugins.disabled`` names ``platforms/yuanbao``, core's manifest name ``yuanbao-platform`` or
-    ``yuanbao``: core never loaded the adapter there."""
-    if _plugin_lists(home, "yuanbao", also=("yuanbao-platform",))[1]:  # core's loader never ran it there
+    """What made core run Yuanbao for *home*. The adapter: unless the merged gateway config block says
+    ``enabled: false`` (core never re-enabled an explicitly disabled platform), the platform on there
+    (:func:`platform_configured_on`) or its credential gate passing as core's ``_is_connected`` read it,
+    per field: App ID from the block's ``app_id`` (``extra`` or top level), else ``YUANBAO_APP_ID``, else
+    the legacy ``YUANBAO_APP_KEY``; App Secret from the block's ``app_secret``, else ``YUANBAO_APP_SECRET``
+    (env read through :func:`_home_env`; the process env too for the launch home with *process_env*). The
+    tools: the ``yuanbao`` / ``hermes-yuanbao`` toolset selected for another platform or in the top-level
+    ``toolsets`` list. The shipped ``yuanbao: [hermes-yuanbao]`` platform_toolsets row is not use: it scoped
+    Yuanbao's own sessions, which need the platform on. Nothing counts when ``plugins.disabled`` names
+    ``platforms/yuanbao`` or core's manifest name ``yuanbao-platform``: core's loader never ran the adapter
+    there. A bare ``yuanbao`` there did not stop core's adapter, so it is still use (the notice says it
+    now turns the plugin off)."""
+    if _plugins_listed(home, ("platforms/yuanbao", "yuanbao-platform"))[1]:
         return False
-    if all(any(_home_env(home, name, process_env=process_env) for name in group) for group in _YUANBAO_ENV_GATE):
-        return True
+    from gateway.config import PlatformConfig
+    block = _merged_platform_block(home, "yuanbao")
+    if block is not None and "enabled" in block and not PlatformConfig.from_dict(block).enabled:
+        return _toolset_listed(_read_config(home), frozenset({"yuanbao", "hermes-yuanbao"}), own_platform="yuanbao")
     if platform_configured_on(home, "yuanbao"):
+        return True
+    extra = PlatformConfig.from_dict(block).extra if block is not None else {}
+
+    def field(key: str, *env_names: str) -> bool:
+        return bool(str(extra.get(key) or "").strip()) or any(
+            _home_env(home, env_name, process_env=process_env) for env_name in env_names)
+    if field("app_id", "YUANBAO_APP_ID", "YUANBAO_APP_KEY") and field("app_secret", "YUANBAO_APP_SECRET"):
         return True
     return _toolset_listed(_read_config(home), frozenset({"yuanbao", "hermes-yuanbao"}), own_platform="yuanbao")
 
 
+# ``gateway.config.Platform`` members in neither table above. Named, not imported: gateway.config imports
+# hermes_cli.config, which loads this module (the left-core test asserts every member is covered).
+_GATEWAY_ONLY_PLATFORMS = ("msgraph_webhook", "relay")
+
+
 def _core_platforms_except(platform: str, *others: str) -> tuple[str, ...]:
     """Every platform name core knows, minus *platform*: the ``hermes_cli.platforms`` table, the shipped
-    ``plugins/platforms/<name>`` dirs (the dir is the registered name), the ``acp`` surface and *others*
+    ``plugins/platforms/<name>`` dirs (the dir is the registered name), the gateway-only ``Platform``
+    members, the ``acp`` surface and *others*
     (platforms other rows moved out). Off-platforms derived here cover a platform added later too."""
     from hermes_cli.platforms import PLATFORMS
     try:
@@ -148,7 +171,7 @@ def _core_platforms_except(platform: str, *others: str) -> tuple[str, ...]:
                    if (p / "plugin.yaml").is_file()}
     except OSError:
         bundled = set()
-    return tuple(sorted({*PLATFORMS, *bundled, "acp", *others} - {platform}))
+    return tuple(sorted({*PLATFORMS, *bundled, *_GATEWAY_ONLY_PLATFORMS, "acp", *others} - {platform}))
 
 
 # Core put the yb_* tools in ``hermes-yuanbao`` only (toolsets.py before Yuanbao left core), so no other
@@ -160,6 +183,9 @@ _YUANBAO_NOTICE = ("Yuanbao is now a Hermes Labs plugin: built by Nous Research,
 
 
 def _yuanbao_notice(home: Path, *, process_env: bool = False) -> str:
+    if _plugins_listed(home, ("yuanbao",))[1]:  # core's adapter ignored it; the catalog plugin does not
+        return (f"{_YUANBAO_NOTICE} plugins.disabled lists 'yuanbao', which now turns Yuanbao off; "
+                "remove it to keep using Yuanbao.")
     return _YUANBAO_NOTICE
 
 
@@ -184,12 +210,10 @@ def spotify_in_use(home: Path, *, process_env: bool = False) -> bool:
     return _toolset_listed(_read_config(home), frozenset({"spotify"}))
 
 
-def _plugin_lists(home: Path, plugin: str, *, also: tuple[str, ...] = ()) -> tuple[bool, bool]:
-    """Whether *plugin*'s key or name (or a name in *also*) is in *home*'s ``plugins.enabled`` /
-    ``plugins.disabled``, read with the managed overlay applied like the loader's config, so an
-    administrator's pinned list counts."""
+def _plugins_listed(home: Path, names: tuple[str, ...]) -> tuple[bool, bool]:
+    """Whether a name in *names* is in *home*'s ``plugins.enabled`` / ``plugins.disabled``, read with the
+    managed overlay applied like the loader's config, so an administrator's pinned list counts."""
     from gateway import config_loader
-    feature = next(f for f in LEFT_CORE if f.plugin == plugin)
     try:
         plugins = config_loader.read_yaml_layers(home).get("plugins")
     except Exception:  # malformed config.yaml: the loader enables nothing from it either
@@ -198,9 +222,16 @@ def _plugin_lists(home: Path, plugin: str, *, also: tuple[str, ...] = ()) -> tup
     plugins = plugins if isinstance(plugins, dict) else {}
 
     def listed(key: str) -> bool:
-        names = plugins.get(key)
-        return isinstance(names, list) and any(str(n) in (feature.plugin_key, feature.plugin, *also) for n in names)
+        entries = plugins.get(key)
+        return isinstance(entries, list) and any(str(n) in names for n in entries)
     return listed("enabled"), listed("disabled")
+
+
+def _plugin_lists(home: Path, plugin: str, *, also: tuple[str, ...] = ()) -> tuple[bool, bool]:
+    """Whether *plugin*'s key or name (or a name in *also*) is in *home*'s ``plugins.enabled`` /
+    ``plugins.disabled`` (:func:`_plugins_listed`)."""
+    feature = next(f for f in LEFT_CORE if f.plugin == plugin)
+    return _plugins_listed(home, (feature.plugin_key, feature.plugin, *also))
 
 
 def _bundled_plugin_selected(home: Path, plugin: str) -> bool:

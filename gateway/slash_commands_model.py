@@ -256,8 +256,8 @@ class GatewayModelCommandsMixin:
             # A repeated --once before the turn runs must keep the EARLIEST snapshot: the later
             # command's snapshot is the first temporary model, not the user's standing override.
             self._claim_one_turn_restore(ctx.session_key, ctx.restore_snapshot)
-        elif not picker and hasattr(self, "_pending_one_turn_model_restores"):
-            self._pending_one_turn_model_restores.pop(ctx.session_key, None)
+        elif not picker and (_otr_state := self._peek_session_state(ctx.session_key)) is not None:
+            _otr_state.conversation.one_turn_restore = None
         # A --global switch has ONE durable authority: config.yaml. Write it first; on success drop
         # the session override (memory + store) — a redundant copy would shadow every later global
         # change after a restart (#100314: a stale override resumed `gpt-5.6-sol-900k` as the base
@@ -664,7 +664,8 @@ class GatewayModelCommandsMixin:
         # says "none active" while the store resurrects it on the next message.
         await asyncio.to_thread(self._rehydrate_session_model_override, session_key)
         previous = self._session_model_overrides.pop(session_key, None)
-        self._pending_one_turn_model_restores.pop(session_key, None)
+        if (_otr_state := self._peek_session_state(session_key)) is not None:
+            _otr_state.conversation.one_turn_restore = None
         try:
             await self.async_session_store.set_model_override(session_key, None)
         except Exception:

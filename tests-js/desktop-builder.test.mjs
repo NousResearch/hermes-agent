@@ -29,7 +29,7 @@ test('desktop development composition restages native inputs only when their rec
   const { buildSourceDesktop } = await import('../apps/desktop/scripts/build.mjs')
   const { recordNativeInputs } = await import('../apps/desktop/scripts/prepared-native-deps.mjs')
   const input = fixture()
-  put(join(input.source, 'package-lock.json'), '{}')
+  put(join(input.source, 'pnpm-lock.yaml'), "lockfileVersion: '9.0'\n")
   const nativeDeps = join(input.source, 'apps/desktop/build/native-deps')
   cpSync(input.nativeDeps, nativeDeps, { recursive: true })
   const staged = () => {
@@ -45,7 +45,7 @@ test('desktop development composition restages native inputs only when their rec
   recordNativeInputs({ source: input.source, out: nativeDeps, platform: process.platform, arch: process.arch, degraded: true })
   expect(staged()).toBe(true) // a soft-failed component restages until the host can complete it
   recordNativeInputs({ source: input.source, out: nativeDeps, platform: process.platform, arch: process.arch })
-  put(join(input.source, 'package-lock.json'), '{"lockfileVersion":3}')
+  put(join(input.source, 'pnpm-lock.yaml'), "lockfileVersion: '9.0'\n\nimporters: {}\n")
   expect(staged()).toBe(true) // a dependency pin moved
 })
 function put(path, text) { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, text) }
@@ -386,7 +386,7 @@ test('a prepared input changing during desktop compilation cannot publish a curr
 test('native preparation stages the selected source into an explicit tree before compilation', async () => {
   const { prepareDesktopNativeDependencies } = await import('../apps/desktop/scripts/stage-native-deps.mjs')
   const input = fixture()
-  cpSync(join(repo, 'package-lock.json'), join(input.source, 'package-lock.json'))
+  cpSync(join(repo, 'pnpm-lock.yaml'), join(input.source, 'pnpm-lock.yaml'))
   const nativeOut = join(dirname(input.out), 'prepared-native')
   await prepareDesktopNativeDependencies({ source: input.source, out: nativeOut })
   expect(existsSync(join(nativeOut, 'node-pty/package.json'))).toBe(true)

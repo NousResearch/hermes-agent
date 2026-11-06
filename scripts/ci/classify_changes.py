@@ -29,7 +29,8 @@ Lanes:
 * ``uv_lock``     — ``PM lock check``. Re-resolves the whole graph against
   PyPI, so a diff that touches neither ``pyproject.toml`` nor ``uv.lock``
   must not run it.
-* ``npm_lock``    — semantic package-lock.json diff PR comment.
+* ``npm_lock``    — semantic JS lockfile diff PR comment (pnpm-lock.yaml and
+  the standalone npm projects' package-lock.json).
 * ``bootstrap``   — the bootstrap installer lane: install.sh sandbox install,
   pin-fragment drift check, and shipped version-stamp verification.
 * ``desktop_updater`` — the Windows desktop-update hand-off script and the
@@ -99,7 +100,8 @@ _FRONTEND_FILES = {"scripts/desktop-update/ui.html"}
 # change to the bridge or to the Python adapter that speaks its protocol
 # selects ``frontend``.
 _WHATSAPP_BRIDGE = ("scripts/whatsapp-bridge/", "plugins/platforms/whatsapp/")
-_ROOT_NPM = {"package.json", "package-lock.json"}  # shifts every package's tree
+# Shift every package's tree (pnpm-workspace.yaml carries the overrides).
+_ROOT_NPM = {"package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"}
 _DOCKER_META = ("docker/", ".hadolint.yaml", "Dockerfile", ".dockerignore") # docker setup
 _NIX_PATHS = ("nix/",) # nix files
 _NIX_FILES = {"flake.nix", "flake.lock"} # base nix files
@@ -228,7 +230,7 @@ _REMOTE_BACKEND_PATHS = (
 # suite itself, its harness, and the product code the suite exists to guard.
 # Everything else reaches these lanes on the next push to main.
 _DEP_MANIFESTS = ("pyproject.toml", "uv.lock", "setup.py")
-_NPM_MANIFESTS = ("package.json", "package-lock.json")
+_NPM_MANIFESTS = ("package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml")
 # Shared pytest harness: a bad edit here can break every Python E2E suite.
 _PY_TEST_HARNESS = (
     "tests/conftest.py",
@@ -344,6 +346,7 @@ _UPDATE_DEPENDENCIES = (
     "agent/memory_provider.py",
     "pm/plugins_state.py",
     "pm/install.py",  # also sealed()/lazy_installs_allowed(): every update's default-tool install
+    "pm/packages.py",  # source_build's pnpm environment (pnpm_env)
     "hermes_cli/desktop_build_lock.py",
     "hermes_cli/desktop_build_reuse.py",  # source_build keeps the packaged app when no input changed
     "hermes_cli/desktop_release_holders.py",  # main_desktop names/closes a holder of release/ on a failed swap
@@ -641,7 +644,7 @@ def classify(files: list[str], run_e2e: bool = False) -> dict[str, bool]:
         for f in files
     )
     deps = any(f == "pyproject.toml" for f in files)
-    npm_lock = any(f.split("/")[-1] == "package-lock.json" for f in files)
+    npm_lock = any(f.split("/")[-1] in ("pnpm-lock.yaml", "package-lock.json") for f in files)
     docker_meta = any(f.startswith(_DOCKER_META) for f in files)
     
     ret = {

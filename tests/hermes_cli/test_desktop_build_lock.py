@@ -257,7 +257,7 @@ def test_update_path_waits_for_a_held_lock(tmp_path, monkeypatch, capsys):
 
     built: list[bool] = []
 
-    def fake_build_prepared_desktop(desktop_dir, *, source_mode, npm, env, icons=None):
+    def fake_build_prepared_desktop(desktop_dir, *, source_mode, pnpm, env, icons=None):
         built.append(True)
 
     monkeypatch.setattr(source_build_mod, "_install_configured_features_missing_deps", lambda *_: None, raising=False)

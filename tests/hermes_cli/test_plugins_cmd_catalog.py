@@ -433,6 +433,24 @@ def test_enable_of_a_recalled_plugin_installed_with_allow_removed_still_works(wo
     assert "killed" in pc._get_enabled_set()
 
 
+@pytest.mark.parametrize("exempt", [False, True])
+def test_plugins_picker_refuses_to_turn_on_a_recalled_plugin(world, tmp_path, monkeypatch, capsys, exempt):
+    """The bare `hermes plugins` picker saves ticked rows through admission, not `_set_plugin_enabled`, so it
+    checks the kill list itself before admission (real cmd_toggle, text fallback); --allow-removed still exempts."""
+    _recall_after_install(world, tmp_path, monkeypatch)
+    if exempt:
+        pc.cmd_install((tmp_path / "later-killed").as_uri(), force=True, enable=False, allow_removed=True)
+    monkeypatch.setattr(pc, "_provider_categories", list)
+    monkeypatch.setattr(pc.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setitem(pc.sys.modules, "curses", None)
+    keys = [entry[5] for entry in pc._discover_all_plugins()]
+    answers = iter([str(keys.index("killed") + 1), ""])
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+    pc.cmd_toggle()
+    assert ("killed" in pc._get_enabled_set()) is exempt
+    assert ("backdoor" in capsys.readouterr().out) is not exempt
+
+
 @pytest.mark.parametrize("exempt", [True, False])
 def test_update_of_a_recalled_subdir_install_honours_its_allow_removed_exemption(world, tmp_path, monkeypatch,
                                                                                  exempt):

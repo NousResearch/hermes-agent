@@ -348,9 +348,12 @@ class AuthorityConnection:
             # the scope is that profile's own home, so behaviour is unchanged.
             from gateway.session_authorities import async_owner_scope
             from gateway.session_connections import METHODS as CONNECTION_METHODS, session_owned
+            from gateway.session_plugin_rpc import call_plugin_rpc, resolve_plugin_rpc
             async with async_owner_scope(self.authority):
                 if method in GROUP_METHODS or method == 'profiles.list':
                     result = await dispatch_group_control(self, method, params)
+                elif method not in handlers and (plugin := await resolve_plugin_rpc(self, method)) is not None:
+                    return {'jsonrpc': '2.0', 'id': rid, 'result': await call_plugin_rpc(self, ref, method, plugin, params)}
                 elif method not in handlers or (method in CONNECTION_METHODS and not session_owned(params)):
                     # JSON-RPC's own verdict: clients key compat fallbacks on -32601, and a
                     # 4001 'invalid_params' would read as a bad argument on a method that exists.
@@ -580,6 +583,8 @@ class AuthorityConnection:
             # Title-as-identity lookup (the Bots roster's forever-chat registry): the same
             # resolver `session.resume title=` uses, so a hidden canonical chat answers here
             # instead of being re-minted. Never confirms another principal's titles.
+            # Deliberately archived rows are skipped inside get_session_by_title /
+            # resolve_session_by_title (#139779); recoverable auto-archives still resolve.
             from gateway.session_local_title import resolve_titled_session
             found = resolve_titled_session(self.authority, self.actor, params['title'], missing_ok=True)
             if found is None:

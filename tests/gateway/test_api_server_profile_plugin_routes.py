@@ -228,8 +228,9 @@ async def test_named_profile_plugin_routes_answer_from_that_profiles_plugin(serv
                                       json={"session_id": "default-session"}, headers=_auth(WORKER_KEY))
             assert other.status == 403
 
-            # Auth is the profile's own key: none, a wrong one, and the default's are all refused.
-            for headers in ({}, _auth("wrong-key-0123456789abcdef"), _auth(DEFAULT_KEY)):
+            # Auth is the profile's own key: none, a wrong one, the default's, and another
+            # named profile's are all refused.
+            for headers in ({}, _auth("wrong-key-0123456789abcdef"), _auth(DEFAULT_KEY), _auth(BARE_KEY)):
                 denied = await client.get(base + "/p/worker" + status_path, headers=headers)
                 assert denied.status == 401
             assert (await client.get(base + status_path, headers=_auth(WORKER_KEY))).status == 401

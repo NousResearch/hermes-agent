@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  closeSync, existsSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync,
+  writeFileSync, writeSync,
+} from 'node:fs'
+import { hostname } from 'node:os'
 import { basename, delimiter, dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
@@ -89,6 +93,106 @@ function completedInstallMatches({ source, receipt, installedLock, key, nativeKe
     && linkedPackageDirs(source, installedLock).every(dir => existsSync(join(dir, 'package.json')))
 }
 
+// One run at a time per checkout. The callers hold different locks or none (`hermes update`,
+// `hermes --tui`, the dashboard, Desktop, another profile), and a run moves trees in and out of
+// place, so even a reuse check must not run beside an install. The lock names its owner: a
+// killed run's lock is taken over (and its trees then recovered), a live one is waited for.
+const sleep = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+
+function readText(path) {
+  try {
+    return readFileSync(path, 'utf8')
+  } catch (error) {
+    if (error.code === 'ENOENT') return undefined
+    throw error
+  }
+}
+
+// Linux's process start time, so a dead owner's reused pid does not hold the lock forever.
+function startTime(pid) {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8')
+    return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19]
+  } catch {
+    return undefined
+  }
+}
+
+function ownerAlive(held, lock) {
+  let owner
+  try {
+    owner = JSON.parse(held)
+  } catch {
+    // Created but not yet written, or a writer killed in between.
+    try {
+      return Date.now() - statSync(lock).mtimeMs < 10_000
+    } catch {
+      return false
+    }
+  }
+  // Another machine's run on a shared checkout cannot be judged from here.
+  if (owner.host !== hostname()) return true
+  try {
+    process.kill(owner.pid, 0)
+  } catch (error) {
+    return error.code === 'EPERM'
+  }
+  return owner.start === undefined || owner.start === startTime(owner.pid)
+}
+
+function lockCheckout(source) {
+  const lock = join(source, '.cache/node-deps.lock')
+  const self = JSON.stringify({ pid: process.pid, host: hostname(), start: startTime(process.pid) })
+  let announced = false
+  for (;;) {
+    let fd
+    try {
+      mkdirSync(dirname(lock), { recursive: true })
+      fd = openSync(lock, 'wx')
+    } catch (error) {
+      // No run can write a checkout this process cannot write, so a reader needs no lock.
+      if (['EACCES', 'EPERM', 'EROFS'].includes(error.code)) return () => {}
+      if (error.code !== 'EEXIST') throw error
+    }
+    if (fd !== undefined) {
+      try {
+        writeSync(fd, self)
+      } catch (error) {
+        rmSync(lock, { force: true })
+        throw error
+      } finally {
+        closeSync(fd)
+      }
+      return () => { if (readText(lock) === self) rmSync(lock, { force: true }) }
+    }
+    const held = readText(lock)
+    if (held === undefined) continue
+    if (!ownerAlive(held, lock)) {
+      // Another waiter may have taken the dead lock over first: what was renamed is then
+      // its live lock, which goes back unless a third run has locked in the meantime.
+      const reap = `${lock}.${process.pid}.stale`
+      try {
+        renameSync(lock, reap)
+      } catch (error) {
+        if (error.code === 'ENOENT') continue
+        throw error
+      }
+      if (readText(reap) !== held) {
+        try {
+          linkSync(reap, lock)
+        } catch (error) {
+          if (error.code !== 'EEXIST') throw error
+        }
+      }
+      rmSync(reap, { force: true })
+      continue
+    }
+    if (!announced) console.log(`node-deps: waiting for another dependency install in this checkout (${held}); if none is running, delete ${lock}`)
+    announced = true
+    sleep(500)
+  }
+}
+
 // pnpm's frozen install is incremental: it trusts its record of what is installed,
 // so it neither restores a gutted package nor reruns dependency builds for a changed
 // toolchain or configuration. Every install starts from empty trees, as npm ci did;
@@ -96,31 +200,79 @@ function completedInstallMatches({ source, receipt, installedLock, key, nativeKe
 // move aside and leave behind.
 // The previous trees are moved aside, not deleted, until the install succeeds: the
 // first pnpm install runs on an empty store, so an unreachable registry would
-// otherwise leave no node_modules at all (#150031). `pnpm fetch` cannot fill the
-// store first: it takes no filter and rewrites node_modules/.pnpm itself.
-function previousTrees(source, projects) {
-  const aside = join(source, '.cache/node-deps-previous')
-  const moved = () => projects.filter(project => existsSync(join(aside, project, 'node_modules')))
-  const discard = () => rmSync(aside, { recursive: true, force: true, maxRetries: 3 })
+// otherwise leave no node_modules at all (#150031). Both generations are on disk
+// while pnpm runs. `pnpm fetch` would download every workspace (it takes no filter).
+// .cache/node-deps-previous holds trees.json (written first: the projects whose trees
+// move, and those with none, whose partial trees a restore removes), each
+// <project>/node_modules, and `complete` once every tree has moved.
+function previousTrees(source) {
+  const cache = join(source, '.cache')
+  const aside = join(cache, 'node-deps-previous')
+  const record = join(aside, 'trees.json')
+  const complete = join(aside, 'complete')
+  // pnpm writes this last, and only when an install succeeds.
+  const finished = join(source, 'node_modules/.pnpm-workspace-state-v1.json')
+  // Renamed away first: a delete killed halfway must never leave a partial set
+  // under the name restore reads.
+  const discard = () => {
+    if (existsSync(aside)) renameSync(aside, join(cache, `node-deps-discard-${process.pid}-${Date.now()}`))
+    for (const name of existsSync(cache) ? readdirSync(cache) : []) {
+      if (name.startsWith('node-deps-discard-')) rmSync(join(cache, name), { recursive: true, force: true, maxRetries: 3 })
+    }
+  }
+  const tree = project => join(source, project, 'node_modules')
+  // `complete` goes first, so a restore killed halfway is resumed, never mistaken
+  // for a set a finished install replaced. Each step can run again.
   const restore = () => {
-    for (const project of moved()) {
-      rmSync(join(source, project, 'node_modules'), { recursive: true, force: true, maxRetries: 3 })
-      renameSync(join(aside, project, 'node_modules'), join(source, project, 'node_modules'))
+    rmSync(complete, { force: true })
+    const { moved = [], absent = [] } = existsSync(record) ? JSON.parse(readFileSync(record, 'utf8')) : {}
+    for (const project of absent) rmSync(tree(project), { recursive: true, force: true, maxRetries: 3 })
+    for (const project of moved) {
+      const kept = join(aside, project, 'node_modules')
+      // Gone: already put back. A workspace the checkout no longer has (a pull
+      // dropped it) is discarded with the set.
+      if (!existsSync(kept) || !existsSync(join(source, project, 'package.json'))) continue
+      rmSync(tree(project), { recursive: true, force: true, maxRetries: 3 })
+      renameSync(kept, tree(project))
     }
     discard()
   }
-  const moveAside = () => {
+  // A set left aside means a run was killed. Once every tree had moved, a pnpm
+  // install that finished since (that run's, or a manual one) is newer than the set
+  // and stays; otherwise the move or a restore was cut short and is completed.
+  const recover = () => (existsSync(complete) && existsSync(finished) ? discard() : restore())
+  const moveAside = projects => {
+    const moved = projects.filter(project => existsSync(tree(project)))
+    mkdirSync(aside, { recursive: true })
+    writeFileSync(record, JSON.stringify({ moved, absent: projects.filter(project => !moved.includes(project)) }))
     try {
-      for (const project of projects.filter(project => existsSync(join(source, project, 'node_modules')))) {
+      for (const project of moved) {
         mkdirSync(join(aside, project), { recursive: true })
-        renameSync(join(source, project, 'node_modules'), join(aside, project, 'node_modules'))
+        renameSync(tree(project), join(aside, project, 'node_modules'))
       }
+      writeFileSync(complete, '')
     } catch (error) {
       restore()
       throw error
     }
   }
-  return { restore, discard, moveAside }
+  return { recover, restore, discard, moveAside }
+}
+
+// pnpm's record of the trees it just wrote (node_modules/.pnpm/lock.yaml) must be the source
+// lockfile's for the selected projects and every other project it installed: no other run's.
+// An optional dependency this host skips is left out of the record, never changed.
+function installedLockMatches(lockText, installedLock, selected) {
+  if (!existsSync(installedLock)) return false
+  const wanted = lockImporters(lockText)
+  const installed = lockImporters(readFileSync(installedLock, 'utf8'))
+  const same = (a = {}, b = {}) => JSON.stringify(a) === JSON.stringify(b)
+  return ['.', ...selected].every(project => project in installed)
+    && Object.entries(installed).every(([project, fields]) => project in wanted
+      && same(fields.dependencies, wanted[project].dependencies)
+      && same(fields.devDependencies, wanted[project].devDependencies)
+      && Object.entries(fields.optionalDependencies ?? {})
+        .every(([name, entry]) => same(entry, wanted[project].optionalDependencies?.[name])))
 }
 
 /** Install the full requested workspace union in one strict, locked operation.
@@ -176,32 +328,38 @@ export function prepareNodeDependencies({ source, workspaces, env = process.env,
     inputs.update(file).update('\0').update(existsSync(join(source, file)) ? readFileSync(join(source, file)) : '<missing>').update('\0')
   }
   const key = inputs.digest('hex')
-  const previous = previousTrees(source, projects)
-  // A run killed mid-install left the last complete trees aside: put them back
-  // over whatever partial trees the kill left, before judging reuse.
-  previous.restore()
-  if (reuse && completedInstallMatches({ source, receipt, installedLock, key, nativeKey })) {
-    if (prepareElectron) prepareElectronRuntime({ source, install, env })
-    console.log(`node-deps: reusing completed install (${selected.join(', ')})`)
-    return { source, workspaces: selected }
-  }
-  if (!install) throw new Error('Workspace dependencies are stale or missing and lazy installs are disabled; run an explicit build/update')
-  // The receipts live inside the trees, so they leave and return with them.
-  previous.moveAside()
+  const release = lockCheckout(source)
   try {
-    console.log(`node-deps: installing workspace dependencies with pnpm (${selected.join(', ')})...`)
-    execFileSync(pnpm, args, { cwd: source, env, stdio: 'inherit' })
-    if (prepareElectron) prepareElectronRuntime({ source, install, env })
-  } catch (error) {
-    previous.restore()
-    console.error('node-deps: install failed; restored the previously installed dependencies')
-    throw error
-  }
-  previous.discard()
-  if (reuse) {
-    const completed = `${key}\n${createHash('sha256').update(readFileSync(installedLock)).digest('hex')}\n`
-    writeFileSync(receipt, completed)
-    if (nativeKey !== undefined) writeFileSync(nativeReceipt, `${completed}${nativeKey}\n`)
+    const previous = previousTrees(source)
+    previous.recover()
+    if (reuse && completedInstallMatches({ source, receipt, installedLock, key, nativeKey })) {
+      if (prepareElectron) prepareElectronRuntime({ source, install, env })
+      console.log(`node-deps: reusing completed install (${selected.join(', ')})`)
+      return { source, workspaces: selected }
+    }
+    if (!install) throw new Error('Workspace dependencies are stale or missing and lazy installs are disabled; run an explicit build/update')
+    // The receipts live inside the trees, so they leave and return with them.
+    previous.moveAside(projects)
+    try {
+      console.log(`node-deps: installing workspace dependencies with pnpm (${selected.join(', ')})...`)
+      execFileSync(pnpm, args, { cwd: source, env, stdio: 'inherit' })
+      if (!installedLockMatches(lockText, installedLock, selected)) {
+        throw new Error(`pnpm did not record the locked install of ${selected.join(', ')} in ${installedLock}`)
+      }
+      if (prepareElectron) prepareElectronRuntime({ source, install, env })
+    } catch (error) {
+      previous.restore()
+      console.error('node-deps: install failed; restored the previously installed dependencies')
+      throw error
+    }
+    if (reuse) {
+      const completed = `${key}\n${createHash('sha256').update(readFileSync(installedLock)).digest('hex')}\n`
+      writeFileSync(receipt, completed)
+      if (nativeKey !== undefined) writeFileSync(nativeReceipt, `${completed}${nativeKey}\n`)
+    }
+    previous.discard()
+  } finally {
+    release()
   }
   return { source, workspaces: selected }
 }

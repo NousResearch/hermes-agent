@@ -75,7 +75,13 @@ root `engines` pin; the provider enforces the exact `pm/lock.json` pnpm version
 build scripts only for the packages `allowBuilds` in `pnpm-workspace.yaml` names
 (`strictDepBuilds` fails the install on any other). The lockfile is trusted
 here: the `minimumReleaseAge` policy is verified in CI, where it is written.
-A `node_modules` tree that npm installed is removed before the first pnpm install.
+Every install starts from empty trees, which also clears a `node_modules` tree that
+npm installed. The previous trees are moved to `.cache/node-deps-previous` and deleted
+only once the install and the Electron preparation succeed; a failed install puts them
+back, and the run after a killed one recovers them. Both generations are on disk while
+pnpm runs. Runs in one checkout
+are serialised by `.cache/node-deps.lock`, which names its owner's pid; a dead owner's
+lock is taken over.
 `--pnpm ARGS...` instead runs the same resolved pnpm with `ARGS`.
 
 The prepared source needs these inputs:
@@ -99,8 +105,10 @@ project `.npmrc`, `pnpm_config_*`/`npm_config_*` settings, Node/pnpm versions,
 OS/architecture, and the install arguments (the exact workspace union). It also
 checks pnpm's installed-tree lock (`node_modules/.pnpm/lock.yaml`) and the
 manifest of every package in the virtual store.
-A missing or mismatched receipt runs `pnpm install` again; failed installs cannot
-leave a reusable receipt. Omit `--reuse` to always run the install.
+A missing or mismatched receipt runs `pnpm install` again. A failed install leaves
+the previous trees and their receipt, which is reused only for the inputs it names;
+the receipt is written only when pnpm's installed-tree lock holds this lockfile's
+entries. Omit `--reuse` to always run the install.
 Source launchers add `--no-install` when PM's lazy-install policy is disabled.
 That mode still reuses a matching completed receipt, but rejects stale or missing
 dependencies before mutating the tree. Explicit build/update operations may install.

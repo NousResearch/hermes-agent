@@ -1,9 +1,9 @@
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { tmpdir } from 'node:os'
+import { hostname, tmpdir } from 'node:os'
 import { delimiter, dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, expect, test } from 'vitest'
 import { pnpmCommand, prepareNodeDependencies } from '../scripts/build/node-deps.mjs'
 
@@ -303,23 +303,140 @@ test('a failed install restores the previously installed trees', () => {
   expect(installs(source)).toBe(1)
 }, 30000)
 
-test('a run killed mid-install gets the previous trees back on the next run', () => {
+// A pnpm on PATH that announces each install in `started`, then waits `delay`
+// seconds before the real install runs: a slow download, or a window to kill in.
+function slowPnpm(delay) {
+  const dir = mkdtempSync(join(tmpdir(), 'slow pnpm-'))
+  roots.push(dir)
+  const started = join(dir, 'started')
+  writeFileSync(join(dir, 'pnpm'), ['#!/bin/sh',
+    `if [ "$1" = install ]; then echo "$$" >> '${started}'; sleep ${delay}; fi`,
+    `exec '${pnpmCommand()}' "$@"`, ''].join('\n'))
+  chmodSync(join(dir, 'pnpm'), 0o755)
+  json(join(dir, 'package.json'), { name: 'pnpm', version: execFileSync(pnpmCommand(), ['--version']).toString().trim() })
+  return { started, env: env => ({ ...env, PATH: `${dir}${delimiter}${env.PATH}` }) }
+}
+
+async function until(check) {
+  for (let tries = 0; !check(); tries++) {
+    if (tries > 300) throw new Error('timed out')
+    await new Promise(done => setTimeout(done, 50))
+  }
+}
+
+// The run and every child (the pnpm shim) in one process group, killed together.
+function background(source, env, ...args) {
+  const child = spawn(process.execPath, cli(source, ...args), { env, stdio: 'pipe', detached: true })
+  let output = ''
+  child.stdout.on('data', data => { output += data })
+  child.stderr.on('data', data => { output += data })
+  const exit = new Promise(done => child.on('exit', (code, signal) => done({ code, signal, output })))
+  return { exit, kill: () => process.kill(-child.pid, 'SIGKILL') }
+}
+
+// New web inputs (as after a pull): web gains extra-only.
+function addExtraOnly(source, env) {
+  vendor(source, 'extra-only')
+  json(join(source, 'web/package.json'), { name: 'web', version: '1.0.0',
+    dependencies: { 'web-only': 'file:../vendor/web-only-1.0.0.tgz', 'extra-only': 'file:../vendor/extra-only' } })
+  execFileSync(pnpmCommand(), ['install', '--lockfile-only'], { cwd: source, env, stdio: 'pipe' })
+}
+
+test.skipIf(process.platform === 'win32')('a run killed mid-install gets the previous trees back on the next run', async () => {
   const { source, env } = fixture()
   const options = { source, workspaces: ['web'], reuse: true, env }
   prepareNodeDependencies(options)
-  // What a kill during pnpm leaves: the complete trees aside, a partial tree in place.
-  const aside = join(source, '.cache/node-deps-previous')
-  for (const project of ['.', 'web']) {
-    mkdirSync(join(aside, project), { recursive: true })
-    cpSync(join(source, project, 'node_modules'), join(aside, project, 'node_modules'), { recursive: true, verbatimSymlinks: true })
-  }
-  rmSync(join(source, 'web/node_modules'), { recursive: true })
-  rmSync(join(source, 'node_modules/.hermes-node-deps'))
+  const old = { lock: readFileSync(join(source, 'pnpm-lock.yaml')), manifest: readFileSync(join(source, 'web/package.json')) }
+  addExtraOnly(source, env)
+  const pnpm = slowPnpm(30)
+  const run = background(source, pnpm.env(env), '--workspace', 'web', '--reuse')
+  await until(() => existsSync(pnpm.started))
+  run.kill()
+  expect((await run.exit).signal).toBe('SIGKILL')
+  // A launch on the old inputs (the pull rolled back): the trees that were in place are back.
+  writeFileSync(join(source, 'pnpm-lock.yaml'), old.lock)
+  writeFileSync(join(source, 'web/package.json'), old.manifest)
   prepareNodeDependencies({ ...options, install: false })
   expect(createRequire(join(source, 'web/package.json'))('web-only')).toBe('web-only')
-  expect(existsSync(aside)).toBe(false)
+  expect(readdirSync(join(source, '.cache'))).toEqual([])
   expect(installs(source)).toBe(1)
-}, 30000)
+}, 60000)
+
+// A read-only launch beside an install must neither swap trees under it nor let it certify
+// trees it did not write.
+test.skipIf(process.platform === 'win32')('a reuse check waits for an install running in the same checkout', async () => {
+  const { source, env } = fixture()
+  prepareNodeDependencies({ source, workspaces: ['web'], reuse: true, env })
+  addExtraOnly(source, env)
+  // A run killed while holding the lock does not block the next one.
+  const dead = spawn(process.execPath, ['-e', ''])
+  await new Promise(done => dead.on('exit', done))
+  mkdirSync(join(source, '.cache'), { recursive: true })
+  writeFileSync(join(source, '.cache/node-deps.lock'), JSON.stringify({ pid: dead.pid, host: hostname() }))
+  const pnpm = slowPnpm(2)
+  const install = background(source, pnpm.env(env), '--workspace', 'web', '--reuse')
+  await until(() => existsSync(pnpm.started))
+  const reader = background(source, env, '--workspace', 'web', '--reuse', '--no-install')
+  const { code, output } = await reader.exit
+  expect((await install.exit).code).toBe(0)
+  // It waited, then reused what the install completed.
+  expect(output).toMatch(/waiting for another dependency install/)
+  expect(output).toMatch(/reusing completed install/)
+  expect(code).toBe(0)
+  expect(createRequire(join(source, 'web/package.json'))('extra-only')).toBe('extra-only')
+  expect(readdirSync(join(source, '.cache'))).toEqual([])
+}, 60000)
+
+// The recovery text after a killed run tells the user to run pnpm install themselves.
+test.skipIf(process.platform === 'win32')('a run killed mid-install does not restore its old trees over a newer install', async () => {
+  const { source, env } = fixture()
+  prepareNodeDependencies({ source, workspaces: ['web'], reuse: true, env })
+  addExtraOnly(source, env)
+  const pnpm = slowPnpm(30)
+  const run = background(source, pnpm.env(env), '--workspace', 'web', '--reuse')
+  await until(() => existsSync(pnpm.started))
+  run.kill()
+  await run.exit
+  execFileSync(pnpmCommand(), ['install', '--frozen-lockfile'], { cwd: source, env, stdio: 'pipe' })
+  expect(() => prepareNodeDependencies({ source, workspaces: ['web'], reuse: true, env, install: false })).toThrow(/disabled/)
+  expect(createRequire(join(source, 'web/package.json'))('extra-only')).toBe('extra-only')
+  expect(readdirSync(join(source, '.cache'))).toEqual([])
+}, 60000)
+
+// The previous trees are deleted after a successful install, and that delete can be killed
+// halfway (a slow disk, antivirus): the half-deleted copy must never come back.
+test.skipIf(process.platform === 'win32')('a run killed while deleting the previous trees keeps the fresh ones', () => {
+  const { source, env } = fixture()
+  prepareNodeDependencies({ source, workspaces: ['web'], reuse: true, env, nativeToolchain: 'first' })
+  // At the first recursive delete under .cache: delete one file of the previous trees, then die.
+  const preload = join(dirname(source), 'kill-in-delete.mjs')
+  writeFileSync(preload, `
+    import fs from 'node:fs'
+    import { syncBuiltinESMExports } from 'node:module'
+    import { join } from 'node:path'
+    const rmSync = fs.rmSync
+    const find = dir => { for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name)
+      if (entry.isFile() && entry.name === 'index.cjs' && path.includes('web-only')) return path
+      if (entry.isDirectory()) { const found = find(path); if (found) return found } } }
+    fs.rmSync = (path, options) => {
+      if (options?.recursive && String(path).startsWith(process.env.KILL_UNDER) && fs.existsSync(path)) {
+        const victim = find(String(path))
+        if (victim) { rmSync(victim); process.kill(process.pid, 'SIGKILL') }
+      }
+      return rmSync(path, options)
+    }
+    syncBuiltinESMExports()
+  `)
+  // A changed native toolchain reinstalls on the same inputs.
+  const run = spawnSync(process.execPath, ['--import', pathToFileURL(preload).href,
+    ...cli(source, '--workspace', 'web', '--reuse', '--native-toolchain', 'second')],
+  { env: { ...env, KILL_UNDER: join(source, '.cache') }, stdio: 'pipe' })
+  expect(run.signal).toBe('SIGKILL')
+  prepareNodeDependencies({ source, workspaces: ['web'], reuse: true, env, install: false })
+  expect(execFileSync(process.execPath, ['-e', "console.log(require('web-only'))"], { cwd: join(source, 'web') }).toString().trim()).toBe('web-only')
+  expect(readdirSync(join(source, '.cache'))).toEqual([])
+}, 60000)
 
 // A stand-in pnpm on PATH that records each command and delegates to the real one.
 // `--version` probes exit with `probeExit`: the Job-Object failure lane from #123933,

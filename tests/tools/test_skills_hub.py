@@ -763,24 +763,24 @@ class TestCheckForSkillUpdates:
         """A lock entry whose recorded ``source_revision`` still matches the upstream tree
         sha is reported ``up_to_date`` with zero file GETs; a moved tree pays the full fetch (#101454)."""
         import tools.skills_hub as hub
+        from tools.skills_guard import content_hash
         (tmp_path / "skills" / "demo-skill").mkdir(parents=True)
         monkeypatch.setattr(hub, "SKILLS_DIR", tmp_path / "skills")
         lock = MagicMock()
         lock.list_installed.return_value = [{
             "name": "demo-skill", "source": "github", "identifier": "owner/repo/demo-skill",
-            "content_hash": "installed-hash", "install_path": "demo-skill",
+            "content_hash": content_hash(tmp_path / "skills/demo-skill"), "install_path": "demo-skill",
             "metadata": {"source_revision": recorded},
         }]
         calls: dict = {}
         source = self._github_source_with_tree("a" * 40, calls)
-
         results = check_for_skill_updates(lock=lock, sources=[source])
 
         assert [r["status"] for r in results] == [expected_status]
         assert calls.get("files", 0) == expected_gets
         assert ("bundle" in results[0]) == (expected_status == "update_available")
         if expected_status == "up_to_date":
-            assert results[0]["current_hash"] == results[0]["latest_hash"] == "installed-hash"
+            assert results[0]["current_hash"] == results[0]["latest_hash"] == content_hash(tmp_path / "skills/demo-skill")
 
     def test_bundle_with_a_failed_blob_fetch_records_no_revision(self):
         """A transient blob failure installs with a gap; the lock must NOT carry the tree sha, or the

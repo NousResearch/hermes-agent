@@ -1,0 +1,20 @@
+name: skysay
+title: Skysay
+repo: https://github.com/skysay-ai/skysay-mcp
+sha: 35251fc9d2aaa3cc1a9c75e9b58e974feac753ac
+subdir: plugins/hermes/skysay
+description: >-
+  Inspect your Skysay workspace, voice agents, phone numbers and call activity in Hermes.
+  Read-only remote MCP with one-time OAuth setup; no calls, messages, purchases or account changes.
+maintainer: Skysay
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/skysay-ai/skysay-mcp/blob/35251fc9d2aaa3cc1a9c75e9b58e974feac753ac/plugins/hermes/skysay/README.md
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -951,7 +951,7 @@ def _command_requires_pipe_stdin(command: str) -> bool:
 
 from tools.terminal_tool_guards import (
     _foreground_background_guidance, _safe_command_preview, _validate_workdir,
-    gateway_lifecycle_block, self_repo_block, trailing_amp_background_command,
+    gateway_lifecycle_block, locked_skill_block, self_repo_block, trailing_amp_background_command,
 )
 from tools.terminal_tool_background import _YIELDED_NOTE, spawn_background_process, yield_to_background_handler
 from tools.terminal_tool_result import finalize_foreground_result
@@ -1144,6 +1144,9 @@ def _run_approval_guards(command: str, env_type: str, config: dict[str, Any], *,
         )
     if approval.get("smart_approved"):
         return _ApprovalVerdict(note=f"Command was flagged ({desc}) and auto-approved by smart approval.")
+    if approval.get("pre_approved"):
+        from tools.approval_provenance import preapproval_note
+        return _ApprovalVerdict(note=preapproval_note(approval["pre_approved"]))
     return _ApprovalVerdict()
 
 
@@ -1431,7 +1434,8 @@ def _pre_exec_block(
                            workdir[:200], _safe_command_preview(command))
             raise _Rejected(_error_json(workdir_error, status="blocked"))
     if env_type == "local":
-        blocked = self_repo_block(command=command, cwd=cwd, workdir=workdir, session_key=session_key)
+        blocked = (self_repo_block(command=command, cwd=cwd, workdir=workdir, session_key=session_key)
+                   or locked_skill_block(command=command, cwd=cwd, workdir=workdir, session_key=session_key))
         if blocked:
             raise _Rejected(blocked)
 

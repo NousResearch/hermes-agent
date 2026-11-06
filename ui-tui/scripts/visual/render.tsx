@@ -1,4 +1,4 @@
-/* Visual self-verification tool: `npm run visual` renders real TUI surfaces
+/* Visual self-verification tool: `pnpm run visual` renders real TUI surfaces
  * across theme x background scenes to <tmpdir>/hermes-tui-visual/tui-visual.html,
  * then shot.mjs screenshots it to tui-visual.png for eyeball + agent review.
  *

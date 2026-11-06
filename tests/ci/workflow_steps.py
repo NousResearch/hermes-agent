@@ -25,7 +25,7 @@ record() {
 }
 source() { [[ "$1" == .venv/bin/activate ]]; }
 scripts/run_tests.sh() { record pytest "$@"; }
-npx() { record npx "$@"; }
+pnpm() { record pnpm "$@"; }
 xvfb-run() { shift 2; "$@"; }
 sleep() { return 1; }
 '''
@@ -124,10 +124,10 @@ def selected_files(step: dict, ctx: dict, repo: Path) -> set[str]:
     _, calls = _run(step, ctx, cwd, receipt=True)
     assert len(calls) == 1, f"expected one test invocation, got {calls}"
     command, *args = calls[0]
-    if command == "npx":
-        assert args[:3] == ["playwright", "test", "-c"], args
-        assert (cwd / args[3]).is_file(), args
-        paths = args[4:]
+    if command == "pnpm":
+        assert args[:4] == ["exec", "playwright", "test", "-c"], args
+        assert (cwd / args[4]).is_file(), args
+        paths = args[5:]
         assert paths and all(p.endswith(".spec.ts") for p in paths), args
         ignores = []
     else:

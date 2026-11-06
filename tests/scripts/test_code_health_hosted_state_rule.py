@@ -235,6 +235,15 @@ def test_graph_models_builtin_tool_discovery(tmp_path):
     assert "tools/shared.py" not in reachable(tmp_path / "g", None, ("tools.registry",))
 
 
+def test_dynamic_discovery_includes_package_init(tmp_path):
+    """Importing ``tools.pkg.tool`` runs ``tools/pkg/__init__.py`` first, and what it imports."""
+    root = _graph_repo(tmp_path, {
+        "model_tools.py": "", "tools/__init__.py": "", "tools/pkg/__init__.py": "import hidden\nX = {}\n",
+        "tools/pkg/tool.py": "registry.register()\n", "hidden.py": "X = {}\n"})
+    got = reachable(root, None, ("model_tools",))
+    assert {"tools/__init__.py", "tools/pkg/__init__.py", "tools/pkg/tool.py", "hidden.py"} <= got, sorted(got)
+
+
 def test_tool_discovery_mirror_agrees_with_the_registry():
     """The graph mirrors the registry's discovery predicate (the registry module is not importable
     from the lint without the tool stack); both must select the same modules on the real tree."""

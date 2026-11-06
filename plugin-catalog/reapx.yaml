@@ -1,0 +1,20 @@
+name: reapx
+title: "ReapX"
+repo: https://github.com/BigBossRabbit/reapx
+sha: 0d1d6818e0145ef48e0037159d53cabb31467c76
+description: "Harvest the bookmarks you saved on X into ready-to-load, registered Hermes skills — without the paid X API. `reapx_harvest` runs the whole pipeline — harvest, map, categorize into a fixed set of domains, two-track assess (integrate-into-your-makeup and business-opportunity), generate, register (`reapx:<name>`) — incrementally via a persistent seen-ledger (a bookmark is never processed twice); `reapx_import` runs the identical pipeline from a bookmarks file with zero browser reads; `reapx_status` is read-only state; `reapx_review` surfaces everything LLM-shaped item by item for the human before anything is relied on. The map / categorize / assess stages optionally run through the host LLM (`ctx.llm`, one registered auxiliary task) with a deterministic rules engine as the bit-for-bit fallback (`enrich: rules` = zero LLM calls); generate is never the LLM. Registration timing: handler-time `register_skill`, accepted and live in the same session (a skill view on a name the harvest just returned resolves the same second); a plugin reload re-registers everything generated before it. Disclosure — derived from starlearner-nexus (same owner, different transport, harvest engine, and capability): browser mode (the default) reads your own logged-in Chromium-family browser — a read-only copy of its Cookies SQLite into a temporary profile (never decrypted; no cookie value is ever read, logged, printed, or persisted), with your own browser binary launched headless on a random free port, reading pages of your own account (`x.com/i/history`) only, terminated with the temporary profile deleted in a finally block; no paid X API, no other websites, no keychain, no auth.json, no .env, no other tool's login, no telemetry; LLM enrichment (the default; off by setting `enrich: rules`) sends bookmark text (public tweet content) through the Hermes host (`ctx.llm`) to your active provider and model with host-owned credentials — the plugin never sees or stores a key; export mode = one file you point it at, nothing else; no background processes of its own (a harvest runs inside a bounded tool call; the optional automation blueprint is a ready-made cron job you must explicitly schedule); no stored credentials; everything written stays in its own plugin-data store, nothing uploaded (the optional LLM enrichment excepted)."
+maintainer: BigBossRabbit
+tier: community
+category: tools
+requires_hermes: ">=0.22.6"
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - reapx_harvest
+    - reapx_import
+    - reapx_status
+    - reapx_review
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

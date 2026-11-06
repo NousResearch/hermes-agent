@@ -2,6 +2,7 @@ import { mainChatOccupied } from '@/app/open-session'
 import { closeActiveTerminal } from '@/app/right-sidebar/terminal/terminals'
 import { $workspaceIsPage } from '@/app/routes'
 import { closeFocusedSessionTab, closeFocusedToolTab } from '@/components/pane-shell/tree/store'
+import { $workspaceMode } from '@/components/pane-shell/workspace-scope'
 import { isFocusWithin } from '@/lib/keybinds/combo'
 import { requestFreshSession } from '@/store/profile'
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
@@ -89,6 +90,14 @@ export function closeActiveTab(loadSessionIntoWorkspace?: (storedSessionId: stri
   // tabs close like any other. Without this ⌘W was dead over terminal / logs.
   if (closeFocusedToolTab()) {
     return true
+  }
+
+  // Bot Mode's canonical chat occupies the uncloseable workspace pane. Its
+  // close affordance is suppressed, and the keyboard path must agree rather
+  // than replacing the chat with a fresh draft that immediately looks like the
+  // tab came back (#139713).
+  if ($workspaceMode.get() === 'bots') {
+    return false
   }
 
   return closeWorkspaceTab(loadSessionIntoWorkspace)

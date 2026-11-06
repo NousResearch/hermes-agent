@@ -132,3 +132,66 @@ async def test_context_breakdown_measures_only_the_compression_tips_model_histor
     assert actual['categories'] == expected['categories'], actual
     assert actual['estimated_total'] == expected['estimated_total']
     assert '\n'.join(render_context_breakdown_lines(expected, grid=False)) in await reads._exec(owner, sid, 'context')
+
+
+@pytest.mark.asyncio
+async def test_agentless_breakdown_falls_back_to_the_stored_model_window(owner, monkeypatch):
+    """Stored usage carries no window size, so a session with no resident agent reported ``context_max: 0``
+    and every client dropped the meter (Desktop's ``contextBarLabel`` returns '' on a falsy max). The read
+    falls back to the window the session's own model resolves to, marked estimated."""
+    from gateway import run as gateway_run
+    from gateway.session_tui_reads import _stored_id
+
+    sid = (await owner.call('session.create', request_id='window', source='tui', cwd=str(owner.workdir)))['session_id']
+    db = owner.authority.db
+    stored = _stored_id(owner.authority, SimpleNamespace(session_id=sid))
+    db.update_session_model(stored, 'catalog/known-256k', provider='catalog')
+    db.append_message(stored, 'user', 'hello')
+    assert owner.authority.agent(SimpleNamespace(session_id=sid)) is None
+
+    seen = []
+
+    def fake_resolve(model=None, route=None):
+        seen.append(model)
+        return SimpleNamespace(model=model, context_length=262144, context_source='detected')
+
+    monkeypatch.setattr(gateway_run, '_resolve_gateway_model_context', fake_resolve)
+    payload = await owner.call('session.context_breakdown', session_id=sid)
+    assert seen == ['catalog/known-256k'], seen
+    assert payload['context_max'] == 262144, payload
+    assert payload['context_source'] == 'detected', payload
+    assert payload['context_estimated'] is True, payload
+
+
+@pytest.mark.asyncio
+async def test_agentless_breakdown_keeps_stored_window_over_the_fallback(owner, monkeypatch):
+    """A stored ``context_max`` is a provider report and wins: the fallback must not overwrite a window the
+    session already carries, nor relabel it as estimated."""
+    from gateway import run as gateway_run
+    from gateway.session_tui_reads import _stored_breakdown
+
+    def boom(*a, **k):
+        raise AssertionError('the fallback must not run when stored usage carries a window')
+
+    monkeypatch.setattr(gateway_run, '_resolve_gateway_model_context', boom)
+    payload = _stored_breakdown({'model': 'catalog/known-256k'}, [], {
+        'context_max': 131072, 'context_used': 65536, 'context_percent': 50,
+        'context_source': 'provider_usage'})
+    assert payload['context_max'] == 131072, payload
+    assert payload['context_source'] == 'provider_usage', payload
+    assert payload['context_estimated'] is False, payload
+
+
+@pytest.mark.asyncio
+async def test_agentless_breakdown_keeps_zeros_when_the_model_is_unknown(owner, monkeypatch):
+    """No model on the row, or a resolver that finds no window: the contract's zeros stay, rather than a
+    window nobody reported."""
+    from gateway import run as gateway_run
+    from gateway.session_tui_reads import _stored_breakdown
+
+    def no_window(model=None, route=None):
+        return SimpleNamespace(model=model, context_length=0, context_source='default')
+
+    monkeypatch.setattr(gateway_run, '_resolve_gateway_model_context', no_window)
+    assert _stored_breakdown({}, [], {})['context_max'] == 0
+    assert _stored_breakdown({'model': 'nowhere/unknown'}, [], {})['context_max'] == 0

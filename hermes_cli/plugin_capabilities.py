@@ -47,6 +47,9 @@ _CAPABILITY_ROWS = (
     ("llm.side_question", (),
      "Ask your agent a short question after each turn. It sees the "
      "whole session, including memory, and spends your main model's tokens."),
+    ("conversation.cards", (),
+     "Post cards into your conversations (no immediate model call; the text "
+     "is visible to your next model turn and may render as a card in Desktop)."),
     ("gateway.platform_actions", ("allow_platform_actions",),
      "Act on connected chat platforms as the gateway bot "
      "(add reactions, rename threads) via ctx.platform_actions"))

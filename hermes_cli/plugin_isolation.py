@@ -46,6 +46,8 @@ HOST_UNSUPPORTED_CTX_METHODS: dict[str, str] = {
     "register_approval_transport": "approval transports hold the live approval request/response channel",
     "post_message": "the returned handle is bound to the gateway's event loop and live adapter",
     "apost_message": "the returned handle is bound to the gateway's event loop and live adapter",
+    "post_card": "the card is admitted on the gateway's event loop into a session it owns",
+    "apost_card": "the card is admitted on the gateway's event loop into a session it owns",
 }
 
 # Registered in-process only; skipped (with a warning, the plugin still loads) inside the host

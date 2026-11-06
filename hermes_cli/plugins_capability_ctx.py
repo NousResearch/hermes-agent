@@ -35,7 +35,7 @@ class PluginCapabilityCtxMixin:
         returns None and leaves the attempt to a consented plugin."""
         from agent.side_question_lease import SIDE_QUESTION_CAPABILITY, redeem_side_question
 
-        if not self._side_question_granted(SIDE_QUESTION_CAPABILITY):
+        if not self._capability_granted(SIDE_QUESTION_CAPABILITY):
             if not getattr(self, "_side_question_denial_logged", False):
                 self._side_question_denial_logged = True
                 logger.info("Plugin %s called ctx.side_question without the %s capability; returning None",
@@ -44,7 +44,19 @@ class PluginCapabilityCtxMixin:
         return redeem_side_question(
             token, prompt, plugin_id=self.plugin_id, home=self._manager.home_path, timeout=timeout)
 
-    def _side_question_granted(self, capability: str) -> bool:
+    def post_card(self, card: dict, *, session_key: Optional[str] = None, origin=None) -> dict:
+        """Post *card* (``text``, ``directive``?, ``id``?) into a conversation of this plugin's
+        profile with no model turn; a result dict, never a raise. Needs ``conversation.cards``.
+        Contract: ``hermes_cli/plugin_cards.py`` and the plugin docs' "Posting a card"."""
+        from hermes_cli.plugin_cards import post
+        return post(self, card, session_key=session_key, origin=origin)
+
+    async def apost_card(self, card: dict, *, session_key: Optional[str] = None, origin=None) -> dict:
+        """``post_card`` for async code on the gateway loop."""
+        from hermes_cli.plugin_cards import apost
+        return await apost(self, card, session_key=session_key, origin=origin)
+
+    def _capability_granted(self, capability: str) -> bool:
         """Consent read from THIS manager's profile home: plugins call from their own threads,
         where the active profile may be the launch profile's."""
         try:

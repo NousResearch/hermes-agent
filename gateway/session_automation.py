@@ -414,9 +414,15 @@ def automation_display_metadata(metadata):
     from gateway.response_filters import PRODUCER_CARD_KINDS
     kind, text = metadata.get('display_kind'), metadata.get('display_text')
     if (kind not in PRODUCER_CARD_KINDS or not isinstance(text, str) or not text.strip()
-            or len(text) > _DISPLAY_TEXT_LIMIT):
+            or len(text) > _DISPLAY_TEXT_LIMIT or (kind == 'plugin_card') != ('plugin_card' in metadata)):
         raise RuntimeStoreError('invalid_params')
-    return {'display_kind': kind, 'display_text': text}
+    if kind != 'plugin_card':
+        return {'display_kind': kind, 'display_text': text}
+    from gateway.plugin_cards import card_descriptor
+    card = card_descriptor(metadata['plugin_card'])  # a plugin's card: its directive is data for renderers
+    if card is None:
+        raise RuntimeStoreError('invalid_params')
+    return {'display_kind': kind, 'display_text': text, 'plugin_card': card}
 
 # notification_origin / original_trigger_message_id are producer debug context (#52694) and are not
 # persisted; notification_category="diagnostic" rides the snapshot so the replayed wake still mutes,
@@ -428,7 +434,8 @@ def automation_display_metadata(metadata):
 # proof at execution from the target the pre-claim check validated, and the turn's resolver reads it.
 _AUTOMATION_METADATA = frozenset({'gateway_session_key', 'gateway_session_id', 'automation_identities',
     'turn_author', 'notification_origin', 'original_trigger_message_id', 'notification_category',
-    'display_kind', 'display_text', 'gateway_proven_session_id', 'gateway_completion_ids', 'heartbeat_tick'})
+    'display_kind', 'display_text', 'gateway_proven_session_id', 'gateway_completion_ids', 'heartbeat_tick',
+    'plugin_card'})
 
 
 def admission_display(payload):
@@ -438,8 +445,8 @@ def admission_display(payload):
     surface would. ``{}`` for every other input."""
     descriptor = payload.get('local_automation_v1') or (payload.get('native_text_v1') or {}).get('automation') or {}
     kind, text = descriptor.get('display_kind'), descriptor.get('display_text')
-    if not kind or not isinstance(text, str) or not text.strip():
-        return {}
+    if not kind or kind == 'plugin_card' or not isinstance(text, str) or not text.strip():
+        return {}  # a plugin card is a note, never a turn to paint a header for (``plugin.card`` shows it)
     card = {'display_kind': kind, 'display_text': text, 'text': str(payload.get('text') or '')}
     if descriptor.get('notification_category') == 'diagnostic':
         card['notification_category'] = 'diagnostic'
@@ -818,12 +825,13 @@ async def reset_and_rehome_messages(runner, session_key, old_session_id):
     return entry, release
 
 
-async def admit_route_wake(runner, adapter, source, text, producer, metadata=None):
+async def admit_route_wake(runner, adapter, source, text, producer, metadata=None, *, request_id=None):
     """Commit a producer wake (Kanban push wake, /loop tick) for ``source``'s route into the
     authority FIFO, like heartbeats and process completions, instead of a classic turn that
     interrupts or races the admitted one. ``False`` when no authority serves the scope or the
     route holds no committed human turn to borrow provenance from: the caller keeps the adapter
-    path (nothing is queued there either). Raises ``RuntimeStoreError`` on a refusal."""
+    path (nothing is queued there either). Raises ``RuntimeStoreError`` on a refusal. A producer
+    that names its own ``request_id`` (a plugin card's id) gets the admission's replay dedupe."""
     from gateway.session_authorities import active_authority
     from gateway.session_local_recovery import restore_completion_route
     from gateway.session_detached import detached_live, detached_route_of, route_entry
@@ -834,7 +842,7 @@ async def admit_route_wake(runner, adapter, source, text, producer, metadata=Non
     if authority is None or entry is None:
         return False
     import uuid
-    identity = json.dumps([producer, key, uuid.uuid4().hex], separators=(',', ':'))
+    identity = json.dumps([producer, key, request_id or uuid.uuid4().hex], separators=(',', ':'))
     if source.platform == Platform.LOCAL or detached_route_of(source):
         # A local route (or a conversation its chat moved past, answered by its app viewers) has no
         # messaging provenance to borrow: its wake rides local_automation_v1 on the live session's own

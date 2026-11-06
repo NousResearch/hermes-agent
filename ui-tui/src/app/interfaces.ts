@@ -405,6 +405,17 @@ export interface VirtualHistoryState {
 
 export interface ComposerPasteResult {
   cursor: number
+  /**
+   * Re-place this insertion on the composer's live value, which the caller
+   * then writes at once; null once the draft it was made for was edited away.
+   * `view` is the caller's own value and caret, used to keep the caret.
+   */
+  land?: (view?: ComposerView) => ComposerPasteResult | null
+  value: string
+}
+
+export interface ComposerView {
+  caret: number
   value: string
 }
 

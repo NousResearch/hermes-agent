@@ -927,7 +927,7 @@ After the [litellm supply chain compromise](https://github.com/BerriAI/litellm/i
 | **GitHub Actions** | Full commit SHA + version comment | Action tags are mutable refs (e.g. tj-actions/changed-files March 2025). Pin as `uses: owner/action@<sha>  # vX.Y.Z` |
 | **CI-only pip installs** | `==exact` | Hermetic CI builds; churn is acceptable. |
 
-**Every new PyPI dependency in a PR must have a `<next_major` upper bound.** PRs adding unbounded `>=X.Y.Z` specs will be rejected by reviewers. The `supply-chain-audit.yml` CI workflow also flags dependency manifest changes for manual review.
+**Every new PyPI dependency in a PR must have a `<next_major` upper bound.** PRs adding unbounded `>=X.Y.Z` specs will be rejected by reviewers. The supply-chain steps of the `repo-guards.yml` CI workflow also flag dependency manifest changes for manual review.
 
 **How to determine the ceiling:**
 - If the package is at version `1.x.y`, use `<2`.
@@ -955,7 +955,7 @@ After the [litellm supply chain compromise](https://github.com/BerriAI/litellm/i
 "some-package>=0.20,<1"
 ```
 
-**Reference PRs:** #2796 (litellm removal), #2810 (upper bounds pass), #9801 (SHA pinning + supply-chain-audit CI).
+**Reference PRs:** #2796 (litellm removal), #2810 (upper bounds pass), #9801 (SHA pinning + supply-chain audit CI, now steps of `repo-guards.yml`).
 
 ---
 

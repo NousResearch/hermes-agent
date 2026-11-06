@@ -1,7 +1,7 @@
 name: argos
 title: ARGOS (Godot editor)
 repo: https://github.com/Tormen28/argos
-sha: 5dec794291b7636f77298ae3174700042668586b
+sha: ab194154310cf4a44cee932d7c33f7fefb42c95d
 version: "1.2.0"
 description: >-
   Lets Hermes agents drive a live Godot 4 editor through a local MCP server
@@ -26,16 +26,15 @@ tier: community
 category: tools
 requires_hermes: ">=0.21.5"
 docs_url: https://github.com/Tormen28/argos#readme
-image: https://raw.githubusercontent.com/Tormen28/argos/5dec794291b7636f77298ae3174700042668586b/docs/screenshots/argos-scene-capture.png
+image: https://raw.githubusercontent.com/Tormen28/argos/ab194154310cf4a44cee932d7c33f7fefb42c95d/docs/screenshots/argos-scene-capture.png
 screenshots:
-  - https://raw.githubusercontent.com/Tormen28/argos/5dec794291b7636f77298ae3174700042668586b/docs/screenshots/argos-scene-capture.png
-  - https://raw.githubusercontent.com/Tormen28/argos/5dec794291b7636f77298ae3174700042668586b/docs/screenshots/argos-godot-editor.png
+  - https://raw.githubusercontent.com/Tormen28/argos/ab194154310cf4a44cee932d7c33f7fefb42c95d/docs/screenshots/argos-scene-capture.png
+  - https://raw.githubusercontent.com/Tormen28/argos/ab194154310cf4a44cee932d7c33f7fefb42c95d/docs/screenshots/argos-godot-editor.png
 readme: true
 platforms: []
 known_issues:
   - "Needs a Python on PATH with the websockets package (pip install websockets)."
   - "Editing tools need the Godot editor open with the ARGOS addon enabled (python tools/argos_install.py --project <project>)."
-  - "GitHub Actions CI on the Argos repo may be unavailable (billing lock); pytest is run locally (python -m pytest tools -q)."
 capabilities:
   provides_tools: []
   provides_hooks: []

@@ -22,6 +22,20 @@ The ACP viewer maps the admission to the host prompt ID. Only an owner-confirmed
 started snapshot produces `_ai.nous/guidanceTurn`; primary terminal metadata carries
 the ended snapshot. A failed receipt lookup leaves primary output/usage intact.
 
+Start snapshots and extension announcements are optional and bounded to three
+seconds. Read, projection or notification failures leave guidance unavailable;
+they neither replace a committed primary response nor stop its event pump.
+Terminal snapshot failure likewise omits auxiliary metadata. These boundaries
+catch ordinary exceptions, not primary cancellation. No failure resubmits input
+or invents an acceptance receipt.
+
+When load/resume resolves a saved ACP alias to a canonical owner session, all
+guidance RPCs retain the canonical session ID at the owner. The viewer projects
+notifications, admission/status receipts and terminal metadata (including nested
+receipts) back to its existing held ACP alias, just like ordinary updates. Only
+the expected canonical ID is translated: foreign identities remain uncorrelated.
+Owner authorization and host correlation checks are unchanged.
+
 `_ai.nous/steer` accepts `runtimeInstanceId`, `sessionId`, `expectedTurnId`,
 `messageId`, literal `text`; it forwards to `session.guidance.admit` with snake_case
 parameter names. Receipts echo those identities (`turnId` replaces `expectedTurnId`),
@@ -59,3 +73,6 @@ uses default stdio ACP. `guidance_gateway_fixture.py` launches an ordinary gatew
 for the companion Multica Go/HTTP/PostgreSQL tests, controlling only loopback model
 responses and lost ACP replies. It substitutes neither owner nor conversation loop.
 Multica's `docs/hermes-active-turn-guidance.md` contains the reproduction recipe.
+`tests/acp_adapter/test_guidance_boundaries.py` checks auxiliary failure isolation,
+cancellation propagation and alias boundaries; `tests/gateway/test_guidance_permissions.py`
+checks independent read/control permissions on the canonical dispatcher and SQLite.

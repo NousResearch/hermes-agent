@@ -593,6 +593,12 @@ def local_models_hardware():
         "gpu_name": None, "gpu_util_percent": None, "vram_used_bytes": None,
     }
     out.update(_quiet(_nvidia_smi_facts, {}))
+    # Display-only physical inventory: never sum it into the inference budget.
+    out["gpus"] = [
+        {"index": index, "name": gpu["gpu_name"], "util_percent": gpu["gpu_util_percent"],
+         "vram_used_bytes": gpu["used_bytes"], "vram_total_bytes": gpu["total_bytes"]}
+        for index, gpu in enumerate(_quiet(hardware._cached_nvidia_gpu_queries, None) or [])
+    ]
     return out
 
 

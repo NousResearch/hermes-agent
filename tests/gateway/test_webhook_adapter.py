@@ -902,6 +902,164 @@ class TestDeliverCrossPlatformThreadId:
         )
 
 
+class TestDeliverCrossPlatformMedia:
+    """A ``MEDIA:<path>`` tag in a webhook cross-platform delivery must route through the target
+    adapter's native per-kind sender (send_image_file/send_video/send_document), not get silently
+    dropped by a plain adapter.send() of the raw text (the bug this test pins)."""
+
+    def _setup_adapter_with_mock_target(self):
+        adapter = _make_adapter()
+        mock_target = AsyncMock()
+        mock_target.send = AsyncMock(return_value=SendResult(success=True))
+        mock_target.send_image_file = AsyncMock(return_value=SendResult(success=True, message_id="img1"))
+        mock_target.send_video = AsyncMock(return_value=SendResult(success=True, message_id="vid1"))
+        mock_target.send_document = AsyncMock(return_value=SendResult(success=True, message_id="doc1"))
+        mock_target.send_voice = AsyncMock(return_value=SendResult(success=True, message_id="voice1"))
+
+        mock_runner = MagicMock()
+        mock_runner.adapters = {Platform("telegram"): mock_target}
+        mock_runner._authorization_adapter = lambda platform, profile=None: mock_runner.adapters.get(platform)
+        mock_runner.config.get_home_channel.return_value = None
+
+        adapter.gateway_runner = mock_runner
+        return adapter, mock_target
+
+    @pytest.mark.asyncio
+    async def test_image_media_tag_routes_to_send_image_file(self, tmp_path):
+        adapter, mock_target = self._setup_adapter_with_mock_target()
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n")
+        delivery = {"deliver_extra": {"chat_id": "12345"}}
+        content = f"Visitor detected MEDIA:{img}"
+        result = await adapter._deliver_cross_platform("telegram", content, delivery)
+        assert result.success
+        mock_target.send_image_file.assert_awaited_once()
+        kwargs = mock_target.send_image_file.await_args.kwargs
+        assert kwargs["chat_id"] == "12345"
+        assert kwargs["image_path"] == str(img)
+        # Text rides as its own send before the image.
+        mock_target.send.assert_awaited_once()
+        assert mock_target.send.await_args.args[1] == "Visitor detected"
+
+    @pytest.mark.asyncio
+    async def test_text_only_delivery_still_uses_plain_send(self):
+        """No MEDIA tag -> unchanged behavior (plain adapter.send(), no media-path code engaged)."""
+        adapter, mock_target = self._setup_adapter_with_mock_target()
+        delivery = {"deliver_extra": {"chat_id": "12345"}}
+        await adapter._deliver_cross_platform("telegram", "just text", delivery)
+        mock_target.send.assert_awaited_once_with("12345", "just text", metadata=None)
+        mock_target.send_image_file.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_video_media_tag_routes_to_send_video(self, tmp_path):
+        adapter, mock_target = self._setup_adapter_with_mock_target()
+        clip = tmp_path / "clip.mp4"
+        clip.write_bytes(b"\x00\x00\x00\x18ftypmp42")
+        delivery = {"deliver_extra": {"chat_id": "12345"}}
+        result = await adapter._deliver_cross_platform("telegram", f"MEDIA:{clip}", delivery)
+        assert result.success
+        mock_target.send_video.assert_awaited_once()
+        assert mock_target.send_video.await_args.kwargs["video_path"] == str(clip)
+        mock_target.send.assert_not_awaited()  # no text, media-only message
+
+    @pytest.mark.asyncio
+    async def test_mixed_media_routes_each_attachment_and_succeeds(self, tmp_path):
+        adapter, mock_target = self._setup_adapter_with_mock_target()
+        image = tmp_path / "photo.webp"
+        video = tmp_path / "clip.webm"
+        document = tmp_path / "notes.pdf"
+        for path in (image, video, document):
+            path.write_bytes(b"media")
+        result = await adapter._deliver_cross_platform(
+            "telegram", f"MEDIA:{image} MEDIA:{video} MEDIA:{document}",
+            {"deliver_extra": {"chat_id": "12345"}},
+        )
+        assert result.success
+        assert mock_target.send_image_file.await_args.kwargs["image_path"] == str(image)
+        assert mock_target.send_video.await_args.kwargs["video_path"] == str(video)
+        assert mock_target.send_document.await_args.kwargs["file_path"] == str(document)
+
+    @pytest.mark.asyncio
+    async def test_voice_marker_and_telegram_audio_rule_use_voice_sender(self, tmp_path):
+        adapter, mock_target = self._setup_adapter_with_mock_target()
+        voice = tmp_path / "voice.ogg"
+        voice.write_bytes(b"audio")
+        telegram_audio = tmp_path / "audio.mp3"
+        telegram_audio.write_bytes(b"audio")
+        ordinary_audio = tmp_path / "recording.ogg"
+        ordinary_audio.write_bytes(b"audio")
+        delivery = {"deliver_extra": {"chat_id": "12345"}}
+        # The marker is message-global, so exercise its explicit route independently.
+        result = await adapter._deliver_cross_platform(
+            "telegram", f"MEDIA:{voice} [[audio_as_voice]]", delivery,
+        )
+        assert result.success
+        mock_target.send_voice.assert_awaited_once()
+        assert mock_target.send_voice.await_args.kwargs["audio_path"] == str(voice)
+        # Telegram's unmarked MP3 sendAudio rule also uses its voice sender.
+        result = await adapter._deliver_cross_platform("telegram", f"MEDIA:{telegram_audio}", delivery)
+        assert result.success
+        assert mock_target.send_voice.await_count == 2
+        assert mock_target.send_voice.await_args.kwargs["audio_path"] == str(telegram_audio)
+        # An unmarked OGG is not a voice bubble; it remains a document.
+        result = await adapter._deliver_cross_platform("telegram", f"MEDIA:{ordinary_audio}", delivery)
+        assert result.success
+        mock_target.send_document.assert_awaited_once()
+        assert mock_target.send_document.await_args.kwargs["file_path"] == str(ordinary_audio)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failure_mode", ["result", "exception"])
+    async def test_failed_image_is_preserved_when_following_document_succeeds(
+        self, tmp_path, failure_mode,
+    ):
+        adapter, mock_target = self._setup_adapter_with_mock_target()
+        image = tmp_path / "broken.png"
+        document = tmp_path / "report.pdf"
+        image.write_bytes(b"image")
+        document.write_bytes(b"pdf")
+        if failure_mode == "result":
+            mock_target.send_image_file.return_value = SendResult(success=False, error="upload rejected")
+        else:
+            mock_target.send_image_file.side_effect = RuntimeError("connection reset")
+        delivery = {"deliver_extra": {"chat_id": "12345"}, "mirror_to_session": "true"}
+        with patch.object(adapter, "_mirror_delivery") as mirror:
+            result = await adapter._deliver_cross_platform(
+                "telegram", f"MEDIA:{image} MEDIA:{document}", delivery,
+            )
+        assert not result.success
+        assert result.error
+        assert "broken.png" in result.error
+        expected_error = "upload rejected" if failure_mode == "result" else "connection reset"
+        assert expected_error in result.error
+        mock_target.send_document.assert_awaited_once()
+        assert mock_target.send_document.await_args.kwargs["file_path"] == str(document)
+        mirror.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_multiple_attachment_failures_are_all_returned(self, tmp_path):
+        adapter, mock_target = self._setup_adapter_with_mock_target()
+        image = tmp_path / "first.png"
+        video = tmp_path / "second.mp4"
+        document = tmp_path / "third.pdf"
+        for path in (image, video, document):
+            path.write_bytes(b"media")
+        mock_target.send_image_file.return_value = SendResult(success=False)
+        mock_target.send_video.side_effect = RuntimeError("video offline")
+        mock_target.send_document.return_value = SendResult(success=False, error="document refused")
+
+        result = await adapter._deliver_cross_platform(
+            "telegram", f"MEDIA:{image} MEDIA:{video} MEDIA:{document}",
+            {"deliver_extra": {"chat_id": "12345"}},
+        )
+        assert not result.success
+        for fragment in ("first.png", "send_image_file", "second.mp4", "video offline",
+                         "third.pdf", "document refused"):
+            assert fragment in result.error
+        mock_target.send_image_file.assert_awaited_once()
+        mock_target.send_video.assert_awaited_once()
+        mock_target.send_document.assert_awaited_once()
+
+
 class TestCrossPlatformDeliveryMirror:
     """An opted-in route's delivered response is appended to the TARGET chat's session (real state.db),
     so a follow-up reply there has context; without the opt-in the target transcript is untouched."""

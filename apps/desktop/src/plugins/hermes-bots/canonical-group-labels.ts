@@ -4,11 +4,12 @@ import { useBots } from './i18n'
 
 /** Hosted group copy stays plugin-owned; generic controls reuse the core catalog. */
 export function useCanonicalGroupLabels() {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const { canonical, group } = useBots()
 
   return {
     ...canonical,
+    locale,
     back: t.common.back,
     cancel: t.common.cancel,
     close: t.common.close,

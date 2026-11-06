@@ -646,21 +646,16 @@ jobs:
 
       # Catches what the behavioural docker smoke test can't: unquoted expansions, silently
       # failing RUN commands. Rules and ignores live in .hadolint.yaml at the repo root.
-      - name: Lint Dockerfile (hadolint)
+      # `docker run`, not hadolint/hadolint-action: the runner builds a Dockerfile action's image
+      # before the first step of every run, whatever the step's `if:`. Same hadolint, by digest.
+      - name: Lint Dockerfiles (hadolint)
         if: ${{ !cancelled() && inputs.docker_meta }}
-        uses: hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf # v3.1.0
-        with:
-          dockerfile: Dockerfile
-          config: .hadolint.yaml
-          failure-threshold: warning
-
-      - name: Lint Dockerfile (hadolint, sandbox desktop image)
-        if: ${{ !cancelled() && inputs.docker_meta }}
-        uses: hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf # v3.1.0
-        with:
-          dockerfile: docker/sandbox-desktop.Dockerfile
-          config: .hadolint.yaml
-          failure-threshold: warning
+        env:
+          HADOLINT_IMAGE: ghcr.io/hadolint/hadolint:v2.12.0-debian@sha256:27173fe25e062448490a32de410c08491c626a0bef360aa2ce5d5bdd9384b50d
+        run: |
+          docker run --rm --network none -v "$PWD:/repo:ro" -w /repo "$HADOLINT_IMAGE" \
+            hadolint --config .hadolint.yaml --failure-threshold warning \
+            Dockerfile docker/sandbox-desktop.Dockerfile
 
       - name: Lint shell scripts (shellcheck)
         if: ${{ !cancelled() && inputs.docker_meta }}

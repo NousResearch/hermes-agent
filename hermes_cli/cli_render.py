@@ -1026,9 +1026,10 @@ def _wrap_panel_text(text: str, width: int, subsequent_indent: str = "", *, keep
           else dict(break_long_words=break_long_words, break_on_hyphens=False))
     rows = []
     for part in (text.expandtabs(4).splitlines() if keep_ws else [text]):
-        # Only wide visible characters take the cell path: get_cwidth counts \n and \t as 0, which
-        # would send plain ASCII there and keep a raw newline inside the row.
-        if any(_cells(ch) != 1 for ch in part if not ch.isspace()):
+        # Wide characters, wide spaces (U+3000) included, take the cell path. Other whitespace never
+        # does: get_cwidth counts \n and \t as 0, which would send plain ASCII there and keep a raw
+        # newline inside the row.
+        if any(_cells(ch) > 1 if ch.isspace() else _cells(ch) != 1 for ch in part):
             if not keep_ws:
                 part = " ".join(part.split())  # textwrap's whitespace collapse
             rows.extend(_wrap_cells(part, width, subsequent_indent, keep_ws) or [""])

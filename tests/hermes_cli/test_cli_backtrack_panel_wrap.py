@@ -52,3 +52,10 @@ def test_a_long_cjk_prompt_wraps_in_one_pass(monkeypatch):
     rows = cli_render._wrap_panel_text(text, 92, break_long_words=True)
     assert len(rows) > 100 and all(get_cwidth(row) <= 92 for row in rows)
     assert sum(calls) <= 3 * len(text)
+
+
+@pytest.mark.parametrize("keep_ws", [False, True])
+def test_fullwidth_spaces_count_as_two_cells(keep_ws):
+    """U+3000 is whitespace but two cells wide: a row of them must still fit the panel."""
+    rows = _wrap_panel_text("a\u3000" * 30, 40, keep_ws=keep_ws)
+    assert len(rows) > 1 and all(get_cwidth(row) <= 40 for row in rows)

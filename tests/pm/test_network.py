@@ -4,7 +4,6 @@ import errno
 import http.client
 import socket
 import ssl
-import sys
 import urllib.error
 from datetime import datetime, timezone, UTC
 from email.message import Message
@@ -117,8 +116,8 @@ def test_download_failure_names_only_a_cdn_firewall_refusal(status, headers, cdn
         assert f"mirror.example's CDN firewall ({cdn}) refused this network" in message, message
 
 
-@pytest.mark.parametrize("retry_after,expected", [("60", 60), ("600", None)])
-def test_resumable_transfer_honors_retry_after_or_stops(retry_after, expected):
+@pytest.mark.parametrize("retry_after,expected,fallback", [("60", 60, False), ("600", None, False), ("60", None, True)])
+def test_resumable_transfer_honors_retry_after_or_stops(retry_after, expected, fallback):
     attempts = []
     waits = []
 
@@ -130,15 +129,16 @@ def test_resumable_transfer_honors_retry_after_or_stops(retry_after, expected):
 
     if expected is None:
         with pytest.raises(urllib.error.HTTPError):
-            network.retry_network(request, wait=waits.append, progress=lambda: 0)
+            network.retry_network(request, wait=waits.append, progress=lambda: 0,
+                                  fallback_available=fallback, keep_retrying=fallback)
         assert len(attempts) == 1 and not waits
     else:
         assert network.retry_network(request, wait=waits.append, progress=lambda: 0) == "complete"
         assert waits == [expected]
 
 
-@pytest.mark.parametrize("retry_after,expected", [(None, None), ("3600", 3600), ("future-date", 3600), ("9" * 400, sys.float_info.max)])
-def test_unlimited_retries_preserve_server_waits_without_exponent_overflow(monkeypatch, retry_after, expected):
+@pytest.mark.parametrize("retry_after,expected", [(None, None), ("120", 120), ("3600", 300), ("future-date", 300)])
+def test_unlimited_retries_cap_waits_without_exponent_overflow(monkeypatch, retry_after, expected):
     now = datetime(2020, 1, 1, tzinfo=UTC).timestamp()
     monkeypatch.setattr(network.time, "time", lambda: now)
     monkeypatch.setattr(network.random, "uniform", lambda low, high: low)
@@ -156,7 +156,7 @@ def test_unlimited_retries_preserve_server_waits_without_exponent_overflow(monke
             raise DownloadPaused("stop recovery")
 
     with pytest.raises(DownloadPaused):
-        network.retry_network(fail, wait=wait, attempts=None)
+        network.retry_network(fail, wait=wait, keep_retrying=True)
     assert len(waits) == 1100
     if retry_after is None:
         assert waits[:6] == [1, 1, 2, 4, 8, 15]

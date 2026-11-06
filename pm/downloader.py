@@ -39,7 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional, Sequence
 
-from pm.network import _ATTEMPTS, edge_block, is_transient, retry_network
+from pm.network import edge_block, is_transient, retry_network
 
 # GitHub's release-asset CDN (release-assets.githubusercontent.com, which
 # TUR's pool 302s to) 403s unknown tool UAs from CI runner IP ranges --
@@ -399,7 +399,7 @@ class Download:
                 size = retry_network(fetch, wait=self._wait_retry,
                                      progress=(lambda: self._durable_done) if self.resume and resumable else None,
                                      fallback_available=bool(source.fallbacks),
-                                     attempts=None if self.keep_retrying and resumable and not source.fallbacks else _ATTEMPTS)
+                                     keep_retrying=self.keep_retrying and resumable)
             except (OSError, http.client.HTTPException) as exc:
                 if isinstance(exc, urllib.error.URLError) or is_transient(exc):
                     raise DownloadTransportError(source.url, exc) from exc
@@ -418,11 +418,8 @@ class Download:
             raise DownloadPaused("download paused")
 
     def _wait_retry(self, delay: float) -> None:
-        while not self._paused.wait(min(delay, threading.TIMEOUT_MAX)):
-            delay -= min(delay, threading.TIMEOUT_MAX)
-            if delay <= 0:
-                return
-        raise DownloadPaused("download paused during retry backoff")
+        if self._paused.wait(delay):
+            raise DownloadPaused("download paused during retry backoff")
 
     def _probe(self, url: str, *, fallback_available: bool = False) -> _Remote:
         def request():
@@ -443,7 +440,7 @@ class Download:
                 return _Remote(int(response.headers.get("Content-Length") or 0), False, etag)
         try:
             return retry_network(request, wait=self._wait_retry,
-                                 attempts=None if self.keep_retrying and not fallback_available else _ATTEMPTS)
+                                 fallback_available=fallback_available, keep_retrying=self.keep_retrying)
         except (OSError, http.client.HTTPException) as exc:
             raise DownloadTransportError(url, exc) from exc
         except DownloadError:

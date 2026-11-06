@@ -164,8 +164,10 @@ listener keeps working.
   lineage (live and compaction-archived, each logical message once) in `session.resume`'s
   `display_messages` projection, oldest first within a page. `order: "latest"` starts at the newest
   rows and pages older. A page holds at most `limit` (1-500, default 100) rows plus up to 64 tool
-  results of the call at its edge, and at most 2 MiB of JSON (a single larger row has its text cut and
-  carries `truncated: true`); images read `[image]` unless `inline_images: true`. It can show fewer
+  results of the call at its edge, and at most 2 MiB of JSON, cut between tool groups (a tool result
+  whose call sits on another page is still labelled from it); a single larger row keeps only its role,
+  time, ids and the head of its text and carries `truncated: true`. Images read `[image]` unless
+  `inline_images: true`. It can show fewer
   rows than `limit`, so read until `next_cursor` is null. The cursor is opaque, bound to the session
   and order, and keyed by each message's first durable row, so a page boundary holds across later
   compactions (a carried tail included). A single-segment conversation is paged in SQL on its display

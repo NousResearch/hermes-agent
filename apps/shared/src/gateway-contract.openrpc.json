@@ -50148,7 +50148,7 @@
     },
     {
       "name": "session.transcript",
-      "summary": "One page of a stored conversation's display rows across its compression lineage (live rows and rows a compaction archived, each logical message once), from the oldest or the newest. Never attaches the caller. A page holds at most `limit` (1-500) rows plus up to 64 tool results of the call at its edge, and at most 2 MiB of JSON (a single larger row has its text cut and carries `truncated`); it can show fewer rows, even none, so read on until `next_cursor` is null. A cursor stays valid across later compactions and turns. A rotated lineage past `sessions.max_resume_messages` pages only its current segment. Refusals: invalid_params (a cursor issued for another session or order, or not by this read), not_found, permission_denied, profile_mismatch.",
+      "summary": "One page of a stored conversation's display rows across its compression lineage (live rows and rows a compaction archived, each logical message once), from the oldest or the newest. Never attaches the caller. A page holds at most `limit` (1-500) rows plus up to 64 tool results of the call at its edge, and at most 2 MiB of JSON, cut between tool groups (a single larger row keeps only its role, time, ids and the head of its text, and carries `truncated`); it can show fewer rows, even none, so read on until `next_cursor` is null. A cursor stays valid across later compactions and turns. A rotated lineage past `sessions.max_resume_messages` pages only its current segment. Refusals: invalid_params (a cursor issued for another session or order, or not by this read), not_found, permission_denied, profile_mismatch.",
       "params": [
         {
           "name": "params",

@@ -115,12 +115,26 @@ def _lineage_window(db, target, latest, after, count):
     return rows[start:start + count], keys[start:start + count], start + count < len(rows)
 
 
+# The current display slot of the message whose first durable row is :durable: that row while it is shown,
+# else the shown copy of its identity (a carried tail's copy; its original is removed).
+_CURRENT_POSITION_SQL = (
+    "SELECT display_order FROM messages WHERE session_id = :sid AND (active = 1 OR compacted = 1)"
+    " AND display_order IS NOT NULL AND (id = :durable OR display_identity = ("
+    "SELECT display_identity FROM messages WHERE id = :durable AND session_id = :sid))"
+    " ORDER BY active DESC, id DESC LIMIT 1")
+
+
 def _segment_window(db, segment, latest, after, count):
     """One segment, keyset-paged on its display index (position = ``display_order``): only the page's rows
-    are read. Read oldest first, a carried copy of a message an earlier page showed is skipped."""
+    are read. The keyset starts at the cursor message's current slot; read oldest first, a carried copy
+    of a message an earlier page showed is skipped."""
     def read(conn):
-        raw = db._display_rows_from_conn(conn, segment, limit=count, latest=latest,
-                                         after=None if after is None else after[0])
+        position = None
+        if after is not None:
+            # Where the cursor's message sits now: a compaction that carried it gave its copy a new slot.
+            found = conn.execute(_CURRENT_POSITION_SQL, {'sid': segment, 'durable': after[1]}).fetchone()
+            position = found[0] if found is not None else after[0]
+        raw = db._display_rows_from_conn(conn, segment, limit=count, latest=latest, after=position)
         # Superseded originals of the page's rows: removed rows with the same identity, which carries the
         # timestamp, so the (session_id, active, timestamp) index finds them without a segment scan.
         identities = list({row['display_identity'] for row in raw if row['display_identity'] is not None})
@@ -145,18 +159,20 @@ def _segment_window(db, segment, latest, after, count):
 
 
 def _window(db, target, latest, after, count):
-    """``(rows, keys, more beyond)``: up to *count* display rows past *after* in reading order, in display order."""
+    """``(rows, keys, more beyond, segments read)``: up to *count* display rows past *after* in reading
+    order, in display order."""
     from hermes_state import SessionResumeTooLargeError
-    if len(db._resume_lineage_ids(target)) > 1:
+    lineage = db._resume_lineage_ids(target)
+    if len(lineage) > 1:
         try:
             db.assert_resume_safe(target)
         except SessionResumeTooLargeError:
             pass  # past the resume's guard: the current segment only
         else:
-            return _lineage_window(db, target, latest, after, count)
+            return (*_lineage_window(db, target, latest, after, count), lineage)
     if not db._ensure_display_order(target):
         raise RuntimeStoreError('storage_unavailable', detail='the transcript has no display index')
-    return _segment_window(db, target, latest, after, count)
+    return (*_segment_window(db, target, latest, after, count), [target])
 
 
 def _take(rows, latest, limit):
@@ -173,22 +189,77 @@ def _take(rows, latest, limit):
     return taken
 
 
+def _cut(rows, latest, taken):
+    """Half of a page of *taken* rows, from its far edge, at a tool-group boundary when one exists: the
+    rows dropped never start with a tool result whose call stays (oldest first), and the rows kept never
+    start with one whose call goes (newest first)."""
+    keep = max(1, taken // 2)
+    if latest:
+        while keep > 1 and rows[-keep].get('role') == 'tool':
+            keep -= 1
+    else:
+        while keep > 1 and rows[keep].get('role') == 'tool':
+            keep -= 1
+    return keep
+
+
+# What survives of a row too large for a page on its own: who said it, when, and as much text as fits.
+_BOUNDED_KEYS = ('role', 'timestamp', 'row_id', 'display_kind', 'name', 'tool_call_id')
+
+
+def _size(value):
+    return len(json.dumps(value, default=str))
+
+
+def _bounded(message, budget):
+    """*message* cut to *budget* bytes of serialized JSON: its identity keys and the head of its text,
+    marked ``truncated``. Every other field (reasoning, tool arguments, metadata) is dropped."""
+    text = next((message[key] for key in ('text', 'content') if isinstance(message.get(key), str)), '')
+    kept = {key: message[key] for key in _BOUNDED_KEYS if message.get(key) is not None}
+    kept['truncated'] = True
+    chars = len(text)
+    while True:
+        trial = {**kept, 'text': text[:chars]}
+        if _size(trial) <= budget or chars == 0:
+            return trial
+        chars //= 2
+
+
+def _call_context(db, page, segments):
+    """The calls of the tool results that open *page* without them (the call sits on another page),
+    as one empty assistant row: projected first, it labels those results and shows nothing itself."""
+    called = {call.get('id') for row in page if row.get('role') == 'assistant'
+              for call in row.get('tool_calls') or () if isinstance(call, dict)}
+    wanted = {row['tool_call_id'] for row in page
+              if row.get('role') == 'tool' and row.get('tool_call_id') and row['tool_call_id'] not in called}
+    if not wanted:
+        return []
+    first = min(row['_row_id'] for row in page if row.get('tool_call_id') in wanted)
+    with db._read_ctx() as conn:
+        found = conn.execute(
+            "SELECT tool_calls FROM messages WHERE session_id IN (SELECT value FROM json_each(?)) AND role = 'assistant'"
+            " AND tool_calls IS NOT NULL AND id < ? ORDER BY id DESC LIMIT 16", (json.dumps(segments), first)).fetchall()
+    calls = []
+    for (raw,) in found:
+        try:
+            calls += [call for call in json.loads(raw) if isinstance(call, dict) and call.get('id') in wanted]
+        except (TypeError, ValueError):
+            continue
+    return [{'role': 'assistant', 'content': '', 'tool_calls': calls}] if calls else []
+
+
 def _fit(project, rows, latest, taken):
-    """``(projected rows, taken)``: halve the page from its far edge until its JSON fits ``PAGE_BYTES``;
-    a single row still over it has its text cut and carries ``truncated: true``."""
+    """``(projected rows, taken)``: halve the page from its far edge (``_cut``) until its JSON fits
+    ``PAGE_BYTES``; a single row still over it is ``_bounded``."""
     while True:
         page = rows[-taken:] if latest else rows[:taken]
         projected = project(page)
-        if len(json.dumps(projected, default=str)) <= PAGE_BYTES:
+        if _size(projected) <= PAGE_BYTES:
             return projected, taken
         if taken == 1:
-            for message in projected:
-                for key in ('text', 'content'):
-                    if isinstance(message.get(key), str) and len(message[key]) > PAGE_BYTES // 4:
-                        message[key] = message[key][:PAGE_BYTES // 4] + '…'
-                        message['truncated'] = True
-            return projected, taken
-        taken //= 2
+            budget = PAGE_BYTES // max(1, len(projected)) - 2
+            return [_bounded(message, budget) for message in projected], taken
+        taken = _cut(rows, latest, taken)
 
 
 def read_page(db, target, order, after, limit, *, profile_home, inline_images=False):
@@ -196,9 +267,11 @@ def read_page(db, target, order, after, limit, *, profile_home, inline_images=Fa
     from gateway.session_controls import display_projection
     latest = order == 'latest'
     count = limit + _TOOL_RUN
-    rows, keys, beyond = _window(db, target, latest, after, count)
-    projected, taken = _fit(partial(display_projection, profile_home=profile_home, image_urls=inline_images),
-                            rows, latest, _take(rows, latest, limit))
+    rows, keys, beyond, segments = _window(db, target, latest, after, count)
+
+    def project(page):
+        return display_projection(_call_context(db, page, segments) + page, profile_home, image_urls=inline_images)
+    projected, taken = _fit(project, rows, latest, _take(rows, latest, limit))
     if not (taken < len(rows) or beyond):
         return projected, None
     return projected, keys[-taken] if latest else keys[taken - 1]
@@ -240,17 +313,22 @@ def stored_compactions(db, target):
     """The lineage's compactions, oldest first. Not the display dedupe: a later compaction that reuses or
     unwraps a summary-bearing carrier keeps the human message's identity, so the display read shows one
     copy and an older handoff would be lost. Here a handoff's copies (a later generation or a rotated
-    segment carrying it) share its summary text and collapse into its first row; distinct compactions
-    never do. Reads only the rows that can hold a handoff."""
+    segment carrying it) are clones of its stored row, same ``message_uid`` and same stored content, and
+    collapse into its first row; two compactions never share both, even with the same prose. Reads only
+    the rows that can hold a handoff."""
     from agent.compaction_display import compaction_summary
+    lineage = json.dumps(db._resume_lineage_ids(target))  # its own read: never inside the one below
     with db._read_ctx() as conn:
-        rows = conn.execute(_HANDOFF_CANDIDATES_SQL, {'ids': json.dumps(db._resume_lineage_ids(target))}).fetchall()
+        rows = conn.execute(_HANDOFF_CANDIDATES_SQL, {'ids': lineage}).fetchall()
     found, seen = [], set()
     for row in rows:
+        occurrence = (row['message_uid'], row['content'])
+        if occurrence in seen:
+            continue
         message = db._row_to_message_dict(row, warn_context='session.compactions', summary_flag=True)
         summary = compaction_summary(message)
-        if summary is not None and summary['summary'] not in seen:
-            seen.add(summary['summary'])
+        if summary is not None:
+            seen.add(occurrence)
             found.append({'timestamp': message.get('timestamp'), **summary})
     return found
 

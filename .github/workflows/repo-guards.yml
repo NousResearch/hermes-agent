@@ -370,8 +370,9 @@ jobs:
 
       # Covers pnpm-lock.yaml and the standalone npm projects' package-lock.json. The raw
       # textual diff of a lockfile is unreadable (entries reorder and integrity hashes churn),
-      # so scripts/ci/lockfile_diff.py set-diffs the {package: version} maps at the merge base
-      # and at HEAD. Review signal, not enforcement.
+      # so scripts/ci/lockfile_diff.py set-diffs the locked package versions at the merge base
+      # and at HEAD, plus (pnpm) the project and package dependency edges those versions
+      # cannot show. Review signal, not enforcement.
       - name: Generate semantic lockfile diff
         id: lockfile-diff
         if: ${{ !cancelled() && inputs.event_name == 'pull_request' && inputs.npm_lock }}

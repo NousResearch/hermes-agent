@@ -1,23 +1,24 @@
 name: crashlab
 title: CrashLab
 repo: https://github.com/dolepee/crashlab
-sha: 683e82e86691390e7fde899c4ccd75850e72dbb2
-description: Reproduce lost-response duplicate writes and compare persisted state before and after repair.
+sha: 85c83ee10649ff9c6c5fed8dd6afa7181c566656
+description: Reproduce lost-response duplicate writes, verify repairs against persisted state, and run a last-unit capacity campaign.
 maintainer: dolepee
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
-version: "0.1.0"
-docs_url: https://github.com/dolepee/crashlab/blob/683e82e86691390e7fde899c4ccd75850e72dbb2/README.md
+version: "0.2.0"
+docs_url: https://github.com/dolepee/crashlab/blob/85c83ee10649ff9c6c5fed8dd6afa7181c566656/README.md
 platforms:
   - linux
 screenshots:
-  - https://raw.githubusercontent.com/dolepee/crashlab/683e82e86691390e7fde899c4ccd75850e72dbb2/docs/repair-report.png
-  - https://raw.githubusercontent.com/dolepee/crashlab/683e82e86691390e7fde899c4ccd75850e72dbb2/docs/booking-report.png
-  - https://raw.githubusercontent.com/dolepee/crashlab/683e82e86691390e7fde899c4ccd75850e72dbb2/docs/desktop-pane.png
+  - https://raw.githubusercontent.com/dolepee/crashlab/85c83ee10649ff9c6c5fed8dd6afa7181c566656/external/kist/evidence/buggy-after-retry.png
+  - https://raw.githubusercontent.com/dolepee/crashlab/85c83ee10649ff9c6c5fed8dd6afa7181c566656/external/kist/evidence/repaired-after-retry.png
+  - https://raw.githubusercontent.com/dolepee/crashlab/85c83ee10649ff9c6c5fed8dd6afa7181c566656/docs/desktop-pane.png
 known_issues:
-  - "Full browser test not run in this environment; Chromium startup failed with socket EPERM."
-  - "Requires Node.js 20+, playwright-core, and local Chromium; uses --no-sandbox, so run only trusted fixtures in isolation."
+  - "The Kist external example is one app and one Hermes one-shot repair; this is not a general autonomous-repair claim."
+  - "Browser campaigns are validation-only; the inventory campaign runs HTTP concurrency against a loopback fixture with a deliberate test-only scheduling gate."
+  - "Requires Node.js 20+, playwright-core and local Chromium; uses --no-sandbox, so run only trusted fixtures in isolation."
   - "Only the first matching request is interrupted; other fault.occurrence values are unsupported."
 capabilities:
   provides_tools:
@@ -25,6 +26,9 @@ capabilities:
     - crashlab_run
     - crashlab_compare
     - crashlab_list
+    - crashlab_campaign_list
+    - crashlab_campaign_validate
+    - crashlab_campaign_run
   provides_hooks: []
   provides_middleware: []
   requires_env: []

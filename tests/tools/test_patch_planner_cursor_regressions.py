@@ -227,3 +227,30 @@ def test_partially_consumed_hinted_line_does_not_select_other_copy():
     result, files = apply(source, body)
     assert not result.success
     assert files.source == source and not files.writes
+
+
+def test_consumed_hint_does_not_target_substring_of_other_identifier():
+    source = 'hostname = "edge-1"\nkeep = marker\nrename = "edge-1"\n'
+    body = '@@\n-hostname = "edge-1"\n+host = "marker"\n@@ marker @@\n-name = "edge-1"\n+name = "edge-2"'
+    result, files = apply(source, body)
+    assert not result.success
+    assert files.source == source and not files.writes
+
+
+@pytest.mark.parametrize('later', [
+    '@@ SECRET_A_EDIT @@\n SECRET_A_EDIT\n@@\n-near = old\n+near = new',
+    '@@ SECRET_A_EDIT @@\n+INSERTED',
+])
+def test_damaged_hint_rejects_anchor_and_addition(later):
+    source = 'prefix SECRET_A_EDIT\nnear = old\n' + 'y' * 100 + '\nSECRET_A_EDIT\nnear = old\n'
+    body = '@@\n-prefix SECRET_A\n+ZZ\n' + later
+    result, files = apply(source, body)
+    assert not result.success
+    assert files.source == source and not files.writes
+
+
+def test_inserted_text_is_not_reedited_after_trimmed_eof():
+    source = 'keep = 1\n\n\n\n'
+    result, files = apply(source, '@@\n+X\n@@\n-X\n+Y')
+    assert not result.success
+    assert files.source == source and not files.writes

@@ -276,6 +276,9 @@ def _select_span(content: str, pattern: str, hunk: Hunk, cursor: int, *, ordered
     tiers = [[s for s in tier if free(s)] for tier in _line_spans(content, pattern.split('\n'))]
     raw = [s for pos in _positions(content, pattern) if free(s := (pos, pos + len(pattern)))]
 
+    if raw and not any(tiers) and _consumed(pattern, removed):
+        return None, len(raw), "its search text was consumed by an earlier hunk"
+
     norm: list[Span] = []
 
     def sites(lo: int, hi: int) -> list[Span]:
@@ -469,6 +472,9 @@ def _plan_hunks(content: str, hunks: list[Hunk]) -> _Plan:
         search_lines, replace_lines = _split_hunk(hunk)
         free = lambda span: _unwritten(content, span, hunk, written)
         label = f"hunk {index} " + ("(with hint)" if hunk.context_hint else "(no hint)")
+        if hunk.context_hint in damaged_hints:
+            errors.append(f"{label} is ambiguous: its @@ hint was changed by an earlier hunk")
+            continue
         if search_lines == replace_lines:
             # Context-only anchor hunks (models emit these between changes) are inert; identical
             # -/+ lines are a no-op. An anchor that selects exactly one site moves the cursor.
@@ -490,18 +496,17 @@ def _plan_hunks(content: str, hunks: list[Hunk]) -> _Plan:
                 continue
             # The cursor and earlier edits keep marking the same sites: text inserted before
             # them shifts them. The inserted text is this patch's output too.
+            assert new_content is not None  # successful insertion always returns content
             delta = len(new_content) - len(content)
             if at < cursor:
                 cursor = min(len(new_content), cursor + delta)
-            written = _shift(written, at, delta) + [(at, at + max(0, delta))]
+            end = at + len(replacement) + 1 if hunk.context_hint and at < len(content) else len(new_content)
+            written = _shift(written, at, delta) + [(at, end)]
             content = new_content
             continue
         pattern = '\n'.join(search_lines)
         if not pattern:
             errors.append(f"{label} has empty search text — include surrounding context lines")
-            continue
-        if hunk.context_hint in damaged_hints:
-            errors.append(f"{label} is ambiguous: its @@ hint was changed by an earlier hunk")
             continue
         try:
             pattern, replacement, correction = maybe_correct_escape_drift(pattern, replacement, content)

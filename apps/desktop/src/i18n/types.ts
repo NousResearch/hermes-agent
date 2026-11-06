@@ -9,6 +9,7 @@
 import type { ErrorCodeKey } from '@/lib/error-surface'
 import type { TipId } from '@/lib/tips/catalog'
 
+import type { AccountUsagePanelCopy } from './types_account_usage'
 import type { AppTourTranslations } from './types_app_tour'
 import type { BillingTranslations } from './types_billing'
 import type { BootTranslations } from './types_boot'
@@ -3624,6 +3625,7 @@ export interface Translations extends NoticeTranslations {
       hideStatusbar: string
       resetStatusbar: string
       toggleApprovalMode: string
+      toggleAccountUsage: string
       toggleBackendVersion: string
       toggleCacheHitRate: string
       toggleCommandCenter: string
@@ -3652,6 +3654,9 @@ export interface Translations extends NoticeTranslations {
       starmap: string
       openStarmap: string
       turnRunning: string
+      accountUsage: string
+      accountUsageLeft: (remaining: string) => string
+      accountUsagePanel: AccountUsagePanelCopy
       contextUsage: string
       compressions: (count: number) => string
       systemResources: {

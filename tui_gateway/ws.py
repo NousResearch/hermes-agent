@@ -97,11 +97,10 @@ _WS_LOG_PAYLOAD_PREVIEW = 240
 # by a long compaction, a GIL-heavy turn): the client's heartbeat deadline measures the transport, not
 # handler latency (#108325). A full queue parks the reader — the old serial behaviour.
 _WS_DISPATCH_QUEUE_MAX = 256
-# These handlers only project already-owned state.  They may take seconds for a large stored
-# transcript, so running them through the serial control lane turns an inexpensive interrupt or
-# control read behind them into a client timeout.  Keep the exception deliberately narrow: mutating
-# RPCs still retain arrival order, and no more than two expensive reads consume a connection.
-_WS_CONCURRENT_READ_METHODS = frozenset({"session.context_breakdown"})
+# * Read-only projections may wait for a large transcript or a provider's quota API. A separate
+# * lane keeps their latency away from interrupts and controls; mutating RPCs retain arrival order,
+# * and no more than two expensive reads consume a connection.
+_WS_CONCURRENT_READ_METHODS = frozenset({"session.context_breakdown", "session.account_usage"})
 _WS_CONCURRENT_READ_LIMIT = 2
 # Reads admitted beyond the running ones; one more parks the reader (as the serial lane did).
 _WS_WAITING_READ_LIMIT = 8

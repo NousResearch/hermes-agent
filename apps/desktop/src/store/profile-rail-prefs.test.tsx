@@ -10,6 +10,7 @@ import '@/components/ui/sidebar'
 import '@/store/profile-rail-prefs'
 
 import { act, cleanup, render, renderHook } from '@testing-library/react'
+import type { ReactNode } from 'react'
 import { MemoryRouter } from 'react-router'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
@@ -38,22 +39,38 @@ async function importHost(webapp: boolean) {
 
   vi.resetModules()
 
-  const [{ ChatSidebar }, { SidebarProvider }, { useStatusbarItems }, { group }, { $layoutTree }, prefs] =
-    await Promise.all([
-      import('@/app/chat/sidebar'),
-      import('@/components/ui/sidebar'),
-      import('@/app/shell/hooks/use-statusbar-items'),
-      import('@/components/pane-shell/tree/model'),
-      import('@/components/pane-shell/tree/store'),
-      import('@/store/profile-rail-prefs')
-    ])
+  const [
+    { ChatSidebar },
+    { SidebarProvider },
+    { useStatusbarItems },
+    { group },
+    { $layoutTree },
+    prefs,
+    { QueryClient, QueryClientProvider }
+  ] = await Promise.all([
+    import('@/app/chat/sidebar'),
+    import('@/components/ui/sidebar'),
+    import('@/app/shell/hooks/use-statusbar-items'),
+    import('@/components/pane-shell/tree/model'),
+    import('@/components/pane-shell/tree/store'),
+    import('@/store/profile-rail-prefs'),
+    import('@tanstack/react-query')
+  ])
 
-  return { $layoutTree, ChatSidebar, group, prefs, SidebarProvider, useStatusbarItems }
+  return { $layoutTree, ChatSidebar, group, prefs, QueryClient, QueryClientProvider, SidebarProvider, useStatusbarItems }
 }
 
 type HostModules = Awaited<ReturnType<typeof importHost>>
 
-function renderDoors({ $layoutTree, ChatSidebar, group, SidebarProvider, useStatusbarItems }: HostModules) {
+function renderDoors({
+  $layoutTree,
+  ChatSidebar,
+  group,
+  QueryClient,
+  QueryClientProvider,
+  SidebarProvider,
+  useStatusbarItems
+}: HostModules) {
   // The sessions pane is on screen: both doors live with it.
   $layoutTree.set(group(['sessions'], { active: 'sessions', id: 'sessions-group' }))
 
@@ -78,6 +95,14 @@ function renderDoors({ $layoutTree, ChatSidebar, group, SidebarProvider, useStat
     </MemoryRouter>
   )
 
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>{children}</MemoryRouter>
+    </QueryClientProvider>
+  )
+
   const statusbar = renderHook(
     () =>
       useStatusbarItems({
@@ -96,7 +121,7 @@ function renderDoors({ $layoutTree, ChatSidebar, group, SidebarProvider, useStat
         statusSnapshot: null,
         toggleCommandCenter: noop
       }),
-    { wrapper: MemoryRouter }
+    { wrapper }
   )
 
   const doors = () => ({

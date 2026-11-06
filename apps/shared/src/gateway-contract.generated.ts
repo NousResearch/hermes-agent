@@ -5484,6 +5484,52 @@ export interface CanonicalBotCancelResult {
   status: 'cancelled' | 'stopping' | 'finished'
   receipt_status: string
 }
+export interface SessionAccountUsageParams {
+  profile?: string | null
+  session_id: string
+}
+export interface SessionAccountUsageResult {
+  status: 'ok' | 'unsupported' | 'unavailable'
+  provider?: 'openrouter' | 'openai-codex' | 'anthropic' | null
+  reason?: 'provider_unsupported' | 'route_unsupported' | 'oauth_required' | 'credentials_unavailable' | 'credentials_changed' | 'fetch_failed' | 'usage_unavailable' | null
+  snapshot?: AccountUsageSnapshotView | null
+}
+/** Only normalized numbers and fixed labels cross the wire; raw, account IDs and URLs stay private. */
+export interface AccountUsageSnapshotView {
+  provider: 'openrouter' | 'openai-codex' | 'anthropic'
+  fetched_at: string
+  plan?: string | null
+  windows: AccountUsageWindowView[]
+  rows: AccountUsageRowView[]
+  credits_balance?: number | null
+  usage_window?: boolean
+}
+export interface AccountUsageWindowView {
+  label: string
+  label_key: 'session' | 'weekly' | 'current_session' | 'current_week' | 'opus_week' | 'sonnet_week' | 'api_key_quota'
+  scope: 'account' | 'model'
+  used_percent?: number | null
+  remaining_percent?: number | null
+  reset_at?: string | null
+  limit?: number | null
+  limit_remaining?: number | null
+  reset_interval?: 'daily' | 'weekly' | 'monthly' | null
+}
+export interface AccountUsageRowView {
+  key: 'credits_balance' | 'banked_resets' | 'credits_unlimited' | 'extra_usage' | 'api_key_usage'
+  args: AccountUsageRowArgs
+}
+export interface AccountUsageRowArgs {
+  value?: number | null
+  currency?: string | null
+  count?: number | null
+  used?: number | null
+  limit?: number | null
+  total?: number | null
+  daily?: number | null
+  weekly?: number | null
+  monthly?: number | null
+}
 /** ``answers`` rides only on a reconnect replay (locks the server already accepted; null = skipped). */
 export interface ClarifyRequestParams {
   session_id: string
@@ -7029,6 +7075,8 @@ export interface CanonicalRpcMethods {
   'rollback.session_diff': { params: RollbackSessionDiffParams; result: RollbackSessionDiffResult }
   /** Owner identity and the canonical capabilities a client may rely on. */
   'runtime.describe': { params: RuntimeDescribeParams; result: RuntimeDescribeResult }
+  /** Read balance and quota for the exact retained session credential, without inference or auth rotation. */
+  'session.account_usage': { params: SessionAccountUsageParams; result: SessionAccountUsageResult }
   /** The classic CLI's /goal, /subgoal, /loop, /heartbeat manager calls (state writes, the goal judge, quality gates), run by the owner on the session's row. */
   'session.automation': { params: SessionAutomationParams; result: SessionAutomationResult }
   'session.create': { params: CanonicalCreateParams; result: CanonicalSnapshot }
@@ -7095,6 +7143,7 @@ export const CANONICAL_RPC_METHODS = [
   'prompt.submit',
   'rollback.session_diff',
   'runtime.describe',
+  'session.account_usage',
   'session.automation',
   'session.create',
   'session.detach',

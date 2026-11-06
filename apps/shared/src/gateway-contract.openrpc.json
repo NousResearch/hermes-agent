@@ -4839,6 +4839,359 @@
         "title": "AccountOwner",
         "type": "object"
       },
+      "AccountUsageRowArgs": {
+        "additionalProperties": false,
+        "properties": {
+          "value": {
+            "anyOf": [
+              {
+                "maximum": 1000000000000000.0,
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Value"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Z]{3}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Currency"
+          },
+          "count": {
+            "anyOf": [
+              {
+                "maximum": 1000000000000000,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Count"
+          },
+          "used": {
+            "anyOf": [
+              {
+                "maximum": 1000000000000000.0,
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Used"
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "maximum": 1000000000000000.0,
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Limit"
+          },
+          "total": {
+            "anyOf": [
+              {
+                "maximum": 1000000000000000.0,
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Total"
+          },
+          "daily": {
+            "anyOf": [
+              {
+                "maximum": 1000000000000000.0,
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Daily"
+          },
+          "weekly": {
+            "anyOf": [
+              {
+                "maximum": 1000000000000000.0,
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Weekly"
+          },
+          "monthly": {
+            "anyOf": [
+              {
+                "maximum": 1000000000000000.0,
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Monthly"
+          }
+        },
+        "title": "AccountUsageRowArgs",
+        "type": "object"
+      },
+      "AccountUsageRowView": {
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "enum": [
+              "credits_balance",
+              "banked_resets",
+              "credits_unlimited",
+              "extra_usage",
+              "api_key_usage"
+            ],
+            "title": "Key",
+            "type": "string"
+          },
+          "args": {
+            "$ref": "#/components/schemas/AccountUsageRowArgs"
+          }
+        },
+        "required": [
+          "key",
+          "args"
+        ],
+        "title": "AccountUsageRowView",
+        "type": "object"
+      },
+      "AccountUsageSnapshotView": {
+        "additionalProperties": false,
+        "description": "Only normalized numbers and fixed labels cross the wire; raw, account IDs and URLs stay private.",
+        "properties": {
+          "provider": {
+            "enum": [
+              "openrouter",
+              "openai-codex",
+              "anthropic"
+            ],
+            "title": "Provider",
+            "type": "string"
+          },
+          "fetched_at": {
+            "title": "Fetched At",
+            "type": "string"
+          },
+          "plan": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "pattern": "^[A-Za-z][A-Za-z0-9 _-]{0,63}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Plan"
+          },
+          "windows": {
+            "items": {
+              "$ref": "#/components/schemas/AccountUsageWindowView"
+            },
+            "title": "Windows",
+            "type": "array"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/AccountUsageRowView"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "credits_balance": {
+            "anyOf": [
+              {
+                "maximum": 1000000000000000.0,
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Credits Balance"
+          },
+          "usage_window": {
+            "default": false,
+            "title": "Usage Window",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "provider",
+          "fetched_at",
+          "windows",
+          "rows"
+        ],
+        "title": "AccountUsageSnapshotView",
+        "type": "object"
+      },
+      "AccountUsageWindowView": {
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "label_key": {
+            "enum": [
+              "session",
+              "weekly",
+              "current_session",
+              "current_week",
+              "opus_week",
+              "sonnet_week",
+              "api_key_quota"
+            ],
+            "title": "Label Key",
+            "type": "string"
+          },
+          "scope": {
+            "enum": [
+              "account",
+              "model"
+            ],
+            "title": "Scope",
+            "type": "string"
+          },
+          "used_percent": {
+            "anyOf": [
+              {
+                "maximum": 100,
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Used Percent"
+          },
+          "remaining_percent": {
+            "anyOf": [
+              {
+                "maximum": 100,
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Remaining Percent"
+          },
+          "reset_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reset At"
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "maximum": 1000000000000000.0,
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Limit"
+          },
+          "limit_remaining": {
+            "anyOf": [
+              {
+                "maximum": 1000000000000000.0,
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Limit Remaining"
+          },
+          "reset_interval": {
+            "anyOf": [
+              {
+                "enum": [
+                  "daily",
+                  "weekly",
+                  "monthly"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reset Interval"
+          }
+        },
+        "required": [
+          "label",
+          "label_key",
+          "scope"
+        ],
+        "title": "AccountUsageWindowView",
+        "type": "object"
+      },
       "ActiveIdResult": {
         "additionalProperties": false,
         "properties": {
@@ -35882,6 +36235,101 @@
         "title": "SeedMessage",
         "type": "object"
       },
+      "SessionAccountUsageParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "session_id": {
+            "minLength": 1,
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "SessionAccountUsageParams",
+        "type": "object"
+      },
+      "SessionAccountUsageResult": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "enum": [
+              "ok",
+              "unsupported",
+              "unavailable"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "enum": [
+                  "openrouter",
+                  "openai-codex",
+                  "anthropic"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Provider"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "provider_unsupported",
+                  "route_unsupported",
+                  "oauth_required",
+                  "credentials_unavailable",
+                  "credentials_changed",
+                  "fetch_failed",
+                  "usage_unavailable"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          },
+          "snapshot": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AccountUsageSnapshotView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "SessionAccountUsageResult",
+        "type": "object"
+      },
       "SessionActivateParams": {
         "additionalProperties": false,
         "properties": {
@@ -49499,6 +49947,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/RuntimeDescribeResult"
+        }
+      }
+    },
+    {
+      "name": "session.account_usage",
+      "summary": "Read balance and quota for the exact retained session credential, without inference or auth rotation.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionAccountUsageParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionAccountUsageResult"
         }
       }
     },

@@ -15,6 +15,8 @@ import threading
 import time
 import traceback
 
+from tests.waiting import async_wait_until
+
 ORCHESTRATOR = 'Subagent Spawning (Orchestrator Role)'
 SUBAGENT = 'You are a focused subagent'
 
@@ -92,17 +94,7 @@ class Viewer:
                 for e in self.events if e['type'].startswith('subagent.')]
 
 
-async def until(what, check, timeout=40):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        found = await check()
-        if found:
-            return found
-        await asyncio.sleep(0.1)
-    raise AssertionError(f'timed out waiting for {what}')
-
-
-async def probe(release):
+async def probe(release, started):
     import websockets
     from gateway.run import GatewayRunner
     from gateway.run_api import start_gateway_api, stop_gateway_api
@@ -131,25 +123,18 @@ async def probe(release):
         await foreign.rpc('session.resume', session_id=other)
         await owner.rpc('prompt.submit', session_id=sid, input_id='delegate', text='delegate it')
 
-        async def leaf_tool_running():
-            rows = (await peer.rpc('subagent.list', session_id=sid)).get('subagents') or []
-            leaf = next((r for r in rows if r.get('depth') == 1 and r.get('last_tool') == 'terminal'), None)
-            if leaf is None:
-                return None
-            reply = await peer.rpc('subagent.transcript', session_id=sid, subagent_id=leaf['subagent_id'])
-            return (rows, reply) if any(m.get('tool_calls') for m in reply['messages']) else None
-
-        rows, receipt['leaf_running'] = await until('the leaf tool call in its stored transcript', leaf_tool_running)
-        receipt['list'] = rows
+        # The leaf's command marks its start: its tool-call turn is stored before the tool runs.
+        await async_wait_until(started.exists, timeout=40, what='the leaf terminal command to start')
+        rows = receipt['list'] = (await peer.rpc('subagent.list', session_id=sid)).get('subagents') or []
         child = next(r for r in rows if r.get('depth') == 0)
         leaf = next(r for r in rows if r.get('depth') == 1)
+        receipt['leaf_running'] = await peer.rpc('subagent.transcript', session_id=sid, subagent_id=leaf['subagent_id'])
         receipt['child_running'] = await peer.rpc('subagent.transcript', session_id=sid, subagent_id=child['subagent_id'])
         release.write_text('go')
 
-        async def child_complete():
-            return any(f['type'] == 'subagent.complete' and f['subagent_id'] == child['subagent_id']
-                       for f in peer.subagent_frames())
-        await until('the child subagent.complete frame', child_complete)
+        await async_wait_until(lambda: any(f['type'] == 'subagent.complete' and f['subagent_id'] == child['subagent_id']
+                                           for f in peer.subagent_frames()),
+                               timeout=40, what='the child subagent.complete frame')
         receipt['leaf_after'] = await peer.rpc('subagent.transcript', session_id=sid, subagent_id=leaf['subagent_id'],
                                                after=receipt['leaf_running']['cursor'])
         receipt['leaf_done'] = await peer.rpc('subagent.transcript', session_id=sid, subagent_id=leaf['subagent_id'])
@@ -169,9 +154,10 @@ async def probe(release):
 
 def main():
     home = Path(os.environ['HERMES_HOME'])
-    release = home / 'release'
+    release, started = home / 'release', home / 'leaf-started'
     peer = ThreadingHTTPServer(('127.0.0.1', 0), Peer)
-    peer.command = (f'for i in $(seq 1 600); do [ -f {shlex.quote(str(release))} ] && break; sleep 0.05; done; '
+    peer.command = (f'touch {shlex.quote(str(started))}; '
+                    f'for i in $(seq 1 600); do [ -f {shlex.quote(str(release))} ] && break; sleep 0.05; done; '
                     'echo LEAF_TOOL_DONE')
     threading.Thread(target=peer.serve_forever, daemon=True).start()
     url = f'http://127.0.0.1:{peer.server_port}/v1'
@@ -181,7 +167,7 @@ def main():
         'streaming:\n  enabled: false\ndelegation:\n  max_spawn_depth: 2\n'
         'auxiliary:\n  title_generation:\n    enabled: false\n')
     try:
-        asyncio.run(probe(release))
+        asyncio.run(probe(release, started))
     finally:
         peer.shutdown()
 

@@ -14,9 +14,10 @@ with a ``dashboard/manifest.json``. Everything else under ``plugins/`` (``plugin
 every other file of the shipped packages (pyproject ``packages.find``) and the root ``*.py`` modules;
 tests, scripts, docs and skills are neither.
 
-Existing violations never fail anything. ``scripts/boundary_lint_baseline.json`` records the count per
-direction; ``--check`` (and ``tests/scripts/test_boundary_lint.py``) fails only when a count rises
-above it. Lower the baseline with ``--update`` when a change removes violations.
+Existing violations never fail anything. ``scripts/boundary_lint_baseline.json`` counts each crossing
+(``<module dir> <target>`` for a module, the target alone for core); ``--check`` (and
+``tests/scripts/test_boundary_lint.py``) fails only when a crossing's count rises above it, and names
+that crossing. Run ``--update`` to record an intended import, or to drop the entries a change removed.
 """
 
 from __future__ import annotations
@@ -25,11 +26,15 @@ import argparse
 import ast
 import json
 import sys
+from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 BASELINE = ROOT / "scripts" / "boundary_lint_baseline.json"
 DIRECTIONS = ("module_to_core", "core_to_module")
+FIX_HINT = ("Import the published plugin API (hermes_cli/data/plugin_api.json) or reach the module through"
+            " discovery; if the import is intended, run `python scripts/boundary_lint.py --update` and say why"
+            " in the PR.")
 _SKIP_PARTS = {"tests", "__pycache__", "node_modules", "dist", ".venv", "venv"}
 
 if str(ROOT) not in sys.path:
@@ -126,34 +131,50 @@ def collect(root: Path = ROOT) -> dict[str, list[str]]:
     return {"module_to_core": module_to_core(root), "core_to_module": core_to_module(root)}
 
 
-def read_baseline(path: Path = BASELINE) -> dict[str, int]:
-    return json.loads(path.read_text(encoding="utf-8-sig"))["counts"]
+def _key(direction: str, site: str, modules: list[str]) -> str:
+    """What a site couples: ``<module dir> <target>`` for a module's import, the target alone for
+    core's. Moving an import between files of one module, or between core files, keeps its key."""
+    loc, target = site.split(" ", 1)
+    if direction == "core_to_module":
+        return target
+    return f"{next(m for m in modules if loc.startswith(f'{m}/'))} {target}"
 
 
-def regressions(counts: dict[str, int], baseline: dict[str, int]) -> list[str]:
-    """One line per direction whose count rose above the baseline."""
-    return [f"{d}: {counts[d]} violations, baseline {baseline.get(d, 0)}" for d in DIRECTIONS
-            if counts[d] > baseline.get(d, 0)]
+def tally(found: dict[str, list[str]], root: Path = ROOT) -> dict[str, dict[str, int]]:
+    """Per direction, ``{key: count}`` with the keys of ``_key``."""
+    modules = [m.relative_to(root).as_posix() for m in module_dirs(root)]
+    return {d: dict(sorted(Counter(_key(d, site, modules) for site in found[d]).items())) for d in DIRECTIONS}
+
+
+def read_baseline(path: Path = BASELINE) -> dict[str, dict[str, int]]:
+    return json.loads(path.read_text(encoding="utf-8-sig"))
+
+
+def regressions(current: dict[str, dict[str, int]], baseline: dict[str, dict[str, int]]) -> list[str]:
+    """One line per key whose count rose above the baseline: a swap still fails, and the line names
+    the new import."""
+    return [f"{d}: {key} ({n}, baseline {baseline.get(d, {}).get(key, 0)})" for d in DIRECTIONS
+            for key, n in current[d].items() if n > baseline.get(d, {}).get(key, 0)]
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     parser.add_argument("--list", action="store_true", help="print every violation site")
     parser.add_argument("--check", action="store_true", help="exit 1 when a count rises above the baseline")
-    parser.add_argument("--update", action="store_true", help="rewrite the baseline with the current counts")
+    parser.add_argument("--update", action="store_true", help="rewrite the baseline with the current sites")
     args = parser.parse_args(argv)
     found = collect()
-    counts = {d: len(found[d]) for d in DIRECTIONS}
+    current = tally(found)
     for direction in DIRECTIONS:
-        print(f"{direction}: {counts[direction]}")
+        print(f"{direction}: {len(found[direction])}")
         if args.list:
             print("".join(f"  {site}\n" for site in found[direction]), end="")
     if args.update:
-        BASELINE.write_text(json.dumps({"counts": counts}, indent=2) + "\n", encoding="utf-8")
+        BASELINE.write_text(json.dumps(current, indent=2) + "\n", encoding="utf-8")
         print(f"wrote {BASELINE.relative_to(ROOT)}")
         return 0
-    if args.check and (rises := regressions(counts, read_baseline())):
-        print("boundary violations rose (see --list):\n  " + "\n  ".join(rises), file=sys.stderr)
+    if args.check and (rises := regressions(current, read_baseline())):
+        print("new boundary imports:\n  " + "\n  ".join(rises) + f"\n{FIX_HINT}", file=sys.stderr)
         return 1
     return 0
 

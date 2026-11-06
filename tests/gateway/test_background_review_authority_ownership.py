@@ -28,21 +28,21 @@ from gateway.config import GatewayConfig, Platform
 from gateway.platforms.event import MessageEvent
 from gateway.run import GatewayRunner
 from gateway.session_authority import initialize_session_authority
-from gateway.session_contract import Principal, SessionRef, Submission
+from gateway.session_contract import SessionActor, SessionRef, Submission
 from gateway.session_local import create_local_session
 from hermes_state import SessionDB
 from hermes_state_runtime import RuntimeStoreError, list_session_admissions
 from tests.gateway.test_shared_busy_receive_loop import Adapter, _statuses
 from tests.waiting import async_wait_until
 
-_VIEWER = Principal(
+_VIEWER = SessionActor(
     "viewer",
     "default",
     frozenset({"session:create", "session:submit", "session:read"}),
     "fixture",
 )
 # What messaging ``/stop`` cancels a queued follow-up as (``_hm_stop_owner_turn``).
-_CONTROL = Principal(
+_CONTROL = SessionActor(
     "messaging-control",
     "default",
     frozenset({"session:submit", "session:control"}),

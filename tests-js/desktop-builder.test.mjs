@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -68,13 +69,19 @@ function fixture() {
   for (const helper of ['scripts/msix-shared.mjs', 'scripts/release-content-types.json']) {
     cpSync(join(repo, helper), join(source, helper))
   }
-  symlinkSync(join(repo, 'node_modules'), join(app, 'node_modules'), 'junction')
+  // Mirror both install trees so the fixture app resolves its dependencies
+  // exactly as the checkout's desktop does, hoisted or not.
+  for (const dir of ['', 'apps/desktop']) {
+    if (existsSync(join(repo, dir, 'node_modules'))) {
+      symlinkSync(join(repo, dir, 'node_modules'), join(source, dir, 'node_modules'), 'junction')
+    }
+  }
   const icons = join(root, 'icons')
   put(join(icons, 'apps/desktop/public/apple-touch-icon.png'), 'fresh icon')
   put(join(app, 'public/apple-touch-icon.png'), 'stale icon')
   const nativeDeps = join(root, 'native')
   // The native input is the real host binding, not a fake compiler/dependency.
-  stageNodePtyInto(join(repo, 'node_modules/node-pty'), join(nativeDeps, 'node-pty'))
+  stageNodePtyInto(dirname(createRequire(join(repo, 'apps/desktop/package.json')).resolve('node-pty/package.json')), join(nativeDeps, 'node-pty'))
   stageGetWindows({ source: repo, out: nativeDeps })
   put(join(nativeDeps, 'native/helper-fixture'), 'prepared executable resource')
   const stamp = join(root, 'install-stamp.json')

@@ -20,6 +20,7 @@ const sidebars: SidebarsConfig = {
         'getting-started/nix-setup',
         'getting-started/updating',
         'getting-started/learning-path',
+        'getting-started/official-domains',
       ],
     },
     {
@@ -822,6 +823,7 @@ const sidebars: SidebarsConfig = {
                 'developer-guide/delegation-provider-plugin',
                 'developer-guide/plugins/application-declarations',
                 'developer-guide/plugins/catalog-submission',
+                'developer-guide/plugins/public-api',
               ],
             },
             'developer-guide/creating-skills',

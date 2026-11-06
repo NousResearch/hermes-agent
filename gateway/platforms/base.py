@@ -4694,8 +4694,8 @@ class BasePlatformAdapter(FollowupAdmissionMixin, ABC):
         parent_chat_id: Optional[str] = None, message_id: Optional[str] = None,
         role_authorized: bool = False, auto_thread_created: bool = False,
         auto_thread_initial_name: Optional[str] = None) -> SessionSource:
-        """Build a SessionSource; with ``gateway.profile_routes`` configured the matching
-        profile is stamped on ``source.profile`` for per-profile HERMES_HOME isolation."""
+        """Build a SessionSource (``gateway.profile_routes`` stamps the matching ``source.profile``)."""
+        from gateway.bot_loop_guard import configured_bot_user
         def _opt(value) -> Optional[str]:
             return str(value) if value else None
         fields = dict(
@@ -4703,8 +4703,8 @@ class BasePlatformAdapter(FollowupAdmissionMixin, ABC):
             user_id=None if user_id is None or user_id == "" else str(user_id),
             user_name=user_name, thread_id=_opt(thread_id),
             chat_topic=(chat_topic or "").strip() or None, user_id_alt=user_id_alt,
-            chat_id_alt=chat_id_alt, is_bot=is_bot, scope_id=_opt(scope_id),
-            guild_id=_opt(guild_id), parent_chat_id=_opt(parent_chat_id),
+            chat_id_alt=chat_id_alt, is_bot=is_bot or configured_bot_user(getattr(self, "config", None), user_id),
+            scope_id=_opt(scope_id), guild_id=_opt(guild_id), parent_chat_id=_opt(parent_chat_id),
             message_id=_opt(message_id))
         # Profile from configured routes, else the owning profile of a dedicated secondary bot (so no
         # later ``source.profile``-less fallback can re-route the message through the default bot's routes).

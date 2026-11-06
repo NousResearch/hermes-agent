@@ -152,11 +152,14 @@ replays, and a changed one is refused as a conflict. A request with no retained
 identity there, such as a fresh request or a retry whose identity was pruned, is refused
 with `not_found`.
 
-A Chat Completions request without `X-Hermes-Session-Id` derives its session from the
-system prompt and first user message. A deleted session's id is never reused, so a new
-conversation that opens like a deleted one gets a new session, and its later turns land
-on that same session, including after a restart. An exact keyed retry of a turn from the
-deleted conversation is not moved; it replays as described above.
+An unkeyed Chat Completions request without `X-Hermes-Session-Id` gets a fresh UUID4 session ID.
+A later unkeyed request starts a separate Hermes session even when it sends the same
+opening or includes the earlier transcript. An exact authenticated `Idempotency-Key`
+retry keeps its original result and session ID. Clients that need SessionDB and sandbox
+continuity must authenticate, capture the returned `X-Hermes-Session-Id`, and send it on
+the next request. Full-history clients can continue to send their transcript in `messages`.
+A deleted session ID stays retired, and an exact keyed retry of a turn from that session
+replays as described above.
 
 ## Endpoints
 

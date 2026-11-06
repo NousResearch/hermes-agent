@@ -1294,6 +1294,32 @@ A "wake" forges a synthetic inbound message to the destination gateway agent so 
 
 `--chat-type` (`dm` | `group` | `channel` | `thread`) records the originating chat's type so a woken turn resolves the operator's **real** session: `build_session_key` keys groups, channels, and threads differently from DMs, so an inaccurate `chat_type` would route the wake into a separate, context-less session. The `/kanban` auto-subscribe and slash-command paths capture this automatically — you only set it by hand when subscribing a chat from a script or cron. Omit it to leave an existing subscription unchanged (new subscriptions default to `dm`).
 
+#### Desktop/TUI local delivery
+
+Local `platform="tui"` subscriptions are delivered by the owning live session's
+notification poller, not a messaging adapter. `notify` emits a passive
+`status.update` without starting or buffering a model turn; `notify+wake` also
+buffers a turn until the session is idle; `wake` buffers the turn without the
+passive status. Desktop/TUI auto-subscriptions remain `notify`, including legacy
+TUI rows migrated from before delivery modes existed. Opt into a wake explicitly
+with `--delivery-mode notify+wake` (or `wake`). Diagnostic visibility settings
+still control presentation, independently of whether a wake was requested.
+
+Before claiming events, the local poller requires the exact saved session key,
+an empty root `thread_id`, and a matching `notifier_profile` when one is stamped.
+Unstamped legacy rows remain eligible for their exact session key. Non-empty
+thread anchors are unsupported on this local surface and remain unclaimed;
+they are not delivered to the root session instead. A foreign profile's cursor
+is likewise left untouched, even if its session key happens to match.
+
+This local path currently formats `completed`, `blocked`, `gave_up`, `crashed`,
+`timed_out`, and `status`; `archived` and `unblocked` advance silently. Its event
+coverage and wake-kind filtering are not the messaging notifier's full contract.
+It does not resolve older subscription keys through compaction lineage or replay
+history on first subscription. Claims precede delivery and pending wakes are
+in-memory only: failed admission, process exit, or an unavailable session/client
+is not covered by a crash-recoverable delivery guarantee.
+
 ### Multi-profile setups: delivery is profile-owned
 
 In a one-gateway-per-profile deployment (one dispatcher, separate gateway

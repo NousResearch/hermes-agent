@@ -93,7 +93,7 @@ import { GroupClarifyCard, GroupImageControls, GroupMentionInput } from './group
 import type { GroupRoomPrompt } from './group-chat-parts'
 import { GroupMemberPicker } from './group-chat-view-members'
 import { compressGroupMemberHistory } from './group-compress'
-import { stickyGroupEngine } from './group-engine'
+import { gatewayGroupEngine, type GatewayGroupEngine, stickyGroupEngine } from './group-engine'
 import { sweepExternalGroupWrites } from './group-external-writes'
 import { GroupHoldStatus } from './group-hold-status'
 import {
@@ -589,6 +589,7 @@ interface GroupChatWorkspaceProps {
   members: GroupMember[]
   onBack?: () => void
   visible?: boolean
+  owner?: Omit<GatewayGroupEngine, 'kind'>
 }
 
 export function GroupChatWorkspace(props: GroupChatWorkspaceProps) {
@@ -596,13 +597,18 @@ export function GroupChatWorkspace(props: GroupChatWorkspaceProps) {
   const connectionId = useValue(host.state.connectionId)
   const profile = useValue(host.state.profile)
   const record: GroupChatRoom | undefined = useValue($groupChats)[props.group]
-  const binding = canonicalGroupBindingFor(bindings, { connectionId: connectionId ?? '', profile }, props.group, props.origin ?? 'name')
+  const owner = canonicalGroupKeyRoute(props.group, props.origin ?? 'name') ?? gatewayGroupEngine(record).engine
+  const binding = canonicalGroupBindingFor(bindings, owner ?? { connectionId: connectionId ?? '', profile }, props.group, props.origin ?? 'name')
 
   // The in-panel fallback has no tab to close, so leaving deselects the room, as in the legacy view.
-  if (binding) {return <CanonicalGroupWorkspace binding={binding} onBack={props.onBack ?? (() => $groupChatWorkspace.set(null))} visible={props.visible} />}
+  if (binding && (!owner || (binding.connectionId === owner.connectionId && binding.profile === owner.profile && binding.roomId === owner.roomId))) {
+    return <CanonicalGroupWorkspace binding={binding} onBack={props.onBack ?? (() => $groupChatWorkspace.set(null))} visible={props.visible} />
+  }
 
-  // Created across machines: no gateway here can own the room, so this Desktop
-  // drives it, even after a membership edit leaves every bot on one machine.
+  // A recorded gateway owner takes precedence over membership inference.
+  if (owner) {return <GroupExecutionGate {...props} owner={owner} />}
+
+  // Desktop ownership survives subsequent membership edits.
   if (canonicalGroupKeyRoute(props.group, props.origin ?? 'name') === null && groupDrivenByDesktop(record, props.members, connectionId)) {
     return <LegacyGroupChatWorkspace {...props} />
   }
@@ -649,7 +655,7 @@ function groupGatePlan({ mode, unavailable, lookup, props, route, canonical, ope
 }): GatePlan {
   const plan = { classic: false, problem: '', canCreate: false, retry: null }
 
-  if (mode === 'legacy') {return { ...plan, classic: true, message: '' }}
+  if (mode === 'legacy' && !props.owner) {return { ...plan, classic: true, message: '' }}
 
   if (mode !== 'canonical') {
     return mode === 'checking' ? { ...plan, message: canonical.checkingDriver }
@@ -657,7 +663,7 @@ function groupGatePlan({ mode, unavailable, lookup, props, route, canonical, ope
   }
 
   // A `canonical:` key names an existing gateway room; it never seeds a new one.
-  const classicRoom = canonicalGroupKeyRoute(props.group, props.origin ?? 'name') === null
+  const classicRoom = !props.owner && canonicalGroupKeyRoute(props.group, props.origin ?? 'name') === null
 
   if (lookup !== 'missing') {
     const message = lookup === 'pending' ? open.opening : classicRoom ? canonical.groupsUnreachable : open.lookupFailed
@@ -698,9 +704,12 @@ function GateEarlierMessages({ room, labels }: { room: GroupChatRoom | undefined
 function GroupExecutionGate(props: GroupChatWorkspaceProps) {
   const b = useBots()
   const { t } = useI18n()
-  const connectionId = useValue(host.state.connectionId)
-  const profile = useValue(host.state.profile)
-  const gateway = useValue(host.state.gateway)
+  const foreground = useValue(host.state.connectionId)
+  const foregroundProfile = useValue(host.state.profile)
+  const foregroundGateway = useValue(host.state.gateway)
+  const connectionId = props.owner?.connectionId ?? foreground
+  const profile = props.owner?.profile ?? foregroundProfile
+  const gateway = connectionId === foreground ? foregroundGateway : 'open'
   const activationEpoch = useGatewayActivationEpoch()
   const source = JSON.stringify([connectionId, profile, gateway, activationEpoch])
   const [capability, setCapability] = useState<{ source: string; mode: GroupExecutionMode; unavailable: GateUnavailable } | null>(null)
@@ -722,7 +731,8 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
     setError('')
     const route = { connectionId: connectionId ?? '', profile }
     const origin = props.origin ?? 'name'
-    void resolveCanonicalGroup(route, props.group, origin)
+    const lookupKey = props.owner ? `canonical:${encodeURIComponent(connectionId ?? '')}:${encodeURIComponent(profile)}:${props.owner.roomId}` : props.group
+    void resolveCanonicalGroup(route, lookupKey, props.owner ? 'key' : origin)
       .then(resolved => {
         if (cancelled) {return}
 
@@ -736,7 +746,7 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
       })
 
     return () => { cancelled = true }
-  }, [mode, source, props.group, props.origin, lookupAttempt, connectionId, profile])
+  }, [mode, source, props.group, props.origin, lookupAttempt, connectionId, profile, props.owner])
   useEffect(() => {
     let cancelled = false
     setCapability(null)

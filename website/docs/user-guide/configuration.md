@@ -2672,6 +2672,15 @@ stt:
 | `stt.providers.<name>` with `type: command` | not supported | Logged at DEBUG, the request proceeds without the prompt |
 | Plugin-registered providers | `prompt` in the `transcribe(**extra)` kwargs | Only sent when a prompt is set, so providers that predate this key see unchanged calls |
 
+**Long local recordings.** Hermes sets `condition_on_previous_text=False` for local
+faster-whisper to reduce silence hallucinations. On that path, `initial_prompt`
+seeds only the first decoding window (normally up to 30 seconds); the model resets
+its prompt before later windows. This applies to both `stt.prompt` and
+`stt.local.initial_prompt`, including prompts supplied by `pre_transcription`.
+Vocabulary hints can therefore help at the start of a recording without improving
+the same terms later in it. This limitation concerns local faster-whisper; hosted
+providers apply their own prompting behavior.
+
 **Length.** Whisper-family models only condition on the final ~224 prompt tokens. For the whisper-family backends (`local`, `openai`, `groq`, `deepinfra`) Hermes enforces that cap client-side: an over-long final prompt is truncated to its tail with a logged warning — the request never errors because of prompt length. Other backends (`mistral`, plugin providers) receive the prompt unchanged and own their own validation. Keep hints short and specific either way.
 
 :::warning Prompts are uploaded with your audio

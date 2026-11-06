@@ -113,6 +113,7 @@ Every `ctx.*` API below is available inside a plugin's `register(ctx)` function.
 | Add CLI commands | `ctx.register_cli_command(name, help, setup_fn, handler_fn)` — adds `hermes <plugin> <subcommand>` |
 | Inject messages | `ctx.inject_message(content, role="user", session_key=... \| origin=...)` - see [Injecting Messages](#injecting-messages) |
 | Post and edit a status message | `handle = ctx.post_message(text)`, then `handle.edit(text)` — see [Posting a live message](#posting-a-live-message) |
+| Post a card with no model turn | `ctx.post_card({"text": ..., "directive": ...}, session_key=...)` — see [Posting a card](#posting-a-card) |
 | Ship data files | `Path(__file__).parent / "data" / "file.yaml"` |
 | Bundle skills | `ctx.register_skill(name, path)` — namespaced as `plugin:skill`, loaded via `skill_view("plugin:skill")` |
 | Gate on env vars | `requires_env: [API_KEY]` in plugin.yaml — prompted during `hermes plugins install` |
@@ -643,11 +644,12 @@ working but are **deprecated** in favor of the consent flow:
 | `llm.profile_override` | `llm.allow_profile_override` |
 | `llm.task_override` | `llm.allow_task_override` |
 | `gateway.platform_actions` | `allow_platform_actions` |
+| `llm.side_question` | — |
+| `conversation.cards` | — |
 
-A gate is open when *either* the capability is granted *or* the legacy key is
-set — existing configs keep working unchanged.
-`llm.side_question` has no legacy key: it is open only when declared and
-granted through the consent flow.
+A gate with a legacy key is open when either the capability is granted or that key is set, so existing
+configs keep working unchanged. Capabilities with no legacy key are open only when declared and granted
+through the consent flow.
 
 :::warning Not a sandbox
 Capabilities are a **consent and audit layer**, not isolation. Plugins run as
@@ -1054,6 +1056,63 @@ adapter may render its own formatting, but the plugin should not depend on it. N
 because the message can only reach the conversation that already invoked the plugin.
 `ctx.post_message` is not available to plugins running in the out-of-process plugin host
 (`plugins.isolation: host`): the handle is bound to the gateway's event loop and live adapter.
+
+## Posting a card
+
+A plugin can put a card into a conversation from anywhere, including a timer or its own background
+thread, without starting a model turn. The card is saved in the session's history, so it is still there
+after a reload, and the model sees one short line saying which plugin posted what:
+
+```python
+result = ctx.post_card(
+    {
+        "id": "sugg_8f2c1a",
+        "text": "Hermes thinks deploy-checklist could help your team.",
+        "directive": {"name": "wisdom-share", "attrs": {"id": "sugg_8f2c1a"}},
+    },
+    session_key=session_key,
+)
+```
+
+**Signature:** `ctx.post_card(card: dict, *, session_key: str | None = None, origin: Mapping | None = None) -> dict`,
+and `await ctx.apost_card(...)` on the gateway's event loop. It never raises.
+
+- `text` (1 to 2,000 characters) is required. It is what every surface without the plugin's card shows, and
+  what the model reads.
+- `directive` is optional. It names a [transcript directive](../../developer-guide/desktop-plugin-sdk.md) that
+  the plugin's Desktop half registers in `transcript.directives`. Desktop renders that component with
+  `attrs` (string values, at most 16 keys, 2,048 characters in all). If no plugin claims the name, the text
+  is shown. The model never sees `attrs`.
+- `id` is optional. Posting the same `id` again with the same card does nothing (`status: "duplicate"`).
+  Posting it with a different card is refused (`card_conflict`). A card is never edited: the plugin's
+  component shows the current state for its `id`.
+
+**Which conversation.** `session_key` names an existing session, and `origin` resolves an existing private-chat
+session of the plugin's own profile. Unlike [`inject_message`](#injecting-messages), a card does not create a
+new messaging session: there is no committed conversation to record it in yet. Without either target, the
+session bound in the calling context is used. With no bound session either, the call is refused with
+`no_conversation`. Group chats are refused (`group_not_allowed`).
+
+**When it appears.** The card waits its place in the session's queue. An idle session shows it at once. A
+running turn finishes first, and a message the person sent before the card runs before it. Posting a card
+does not stop the session's background review or plugin forks, because no turn starts.
+
+| Surface | What it shows |
+|---|---|
+| Desktop | the plugin's directive component inline in the transcript, or the text as a system row |
+| Ink TUI, Web dashboard chat, and classic CLI | the text as a system line |
+| Messaging platforms | nothing from core: the card is recorded in the session's history and the plugin sends its own native card through its adapter |
+
+Result: `{"ok": True, "card_id", "status": "queued" | "duplicate"}`, or `{"ok": False, "error"}`.
+Expected refusals are `consent_required`, `invalid_target`, `no_conversation`, `group_not_allowed`,
+`invalid_card`, `card_conflict`, `rate_limited` (more than 6 cards in 60 seconds for one session),
+`gateway_unavailable`, `on_event_loop`, and `timeout`. An internal admission failure is reported as
+`refused` or `post_failed`, not raised into the plugin.
+`ctx.post_card` is not available in the out-of-process plugin host (`plugins.isolation: host`).
+
+Cards need the `conversation.cards` capability. Declare it in `plugin.yaml` and grant it on the consent
+screen. It is separate from `allow_gateway_injection` because a card runs no model and no tools and sends
+nothing to a platform.
 
 ## Injecting Messages
 

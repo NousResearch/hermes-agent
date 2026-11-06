@@ -141,7 +141,22 @@ _MACHINE_PREFIXES = (
     # message titled the session "[System: The active model for this chat has…" instead of the user's actual
     # question.
     "[System: The active model for this chat has changed to ",
+    # Background-process / async-delegation notices (tools/process_registry_notifications.format_process_notification
+    # and gateway/run._format_gateway_process_notification) are persisted as role="user" and start follow-up
+    # turns; without these entries a notice turn could name the session after itself and counted as a real
+    # user turn, shifting the upgrade thresholds (#136716). Deliberately NOT a bare "[IMPORTANT: ": skill
+    # invocations (agent/skill_commands.py) and gateway skill auto-loads open with it too but carry the
+    # user's real request, and describe_skill_invocation recovers a good title from them.
+    "[IMPORTANT: Background process ",
+    "[IMPORTANT: Watch patterns disabled ",
+    "[IMPORTANT: Watch-pattern ",
+    "[Background process ",
+    "[ASYNC DELEGATION ",
 )
+
+# The batched completion header (ProcessNotificationBatch.render) carries a per-batch count,
+# so it needs a pattern rather than a prefix: "[IMPORTANT: 3 background processes completed. …]".
+_BATCHED_COMPLETIONS_HEADER_RE = re.compile(r"\[IMPORTANT: \d+ background processes completed\. ")
 
 
 def _title_config() -> dict:
@@ -333,6 +348,7 @@ def build_title_input(user_message: str, title_preview: str | None = None) -> st
 def is_titleable_user_message(user_message: str) -> bool:
     """False for machine-authored openers and turns that reduce to nothing once scaffolding is stripped."""
     return (isinstance(user_message, str) and bool(user_message.strip()) and not user_message.lstrip().startswith(_MACHINE_PREFIXES)
+            and not _BATCHED_COMPLETIONS_HEADER_RE.match(user_message.lstrip())
             and bool(_summarize_user_message(user_message).strip())
             # An attachment-only opener (manual attach, no paste preview) is a
             # file drop, not a request: deriving its "title" from the message

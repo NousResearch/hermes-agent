@@ -970,6 +970,12 @@ DEFAULT_CONFIG = {
             # deployment a routing proxy reported / Hermes' fallback route).
             "fields": ["model", "context_pct", "cwd"],
         },
+        # Built-in per-turn footer line (HH:MM:SS | turn mm:ss | m: model | t: turn/session tokens).
+        # Distinct from runtime_footer above; rendered by the interactive CLI at end of every turn.
+        # Per-profile opt-in via display.turn_footer.enabled (default true for interactive).
+        "turn_footer": {
+            "enabled": True,
+        },
         # CLI/TUI status bar fields. Non-empty = only listed fields show (built-in order kept,
         # config controls visibility not ordering); empty = default set. Available: model,
         # context_detail, context_pct, cache_hit, latency, tps, compressions, bg_tasks,

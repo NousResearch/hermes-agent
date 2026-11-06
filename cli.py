@@ -1781,6 +1781,21 @@ def main(
     cli.run()
 
 
+# Re-export built-in turn footer helpers for tests/callers.
+try:
+    from hermes_cli.turn_footer import (
+        compute_turn_footer_line,
+        compute_turn_footer,
+        render_turn_footer,
+        turn_footer_line,
+        get_turn_footer,
+        format_turn_footer,
+        print_turn_footer,
+        is_enabled as turn_footer_is_enabled,
+    )
+except Exception:  # pragma: no cover
+    pass
+
 if __name__ == "__main__":
     import fire
 

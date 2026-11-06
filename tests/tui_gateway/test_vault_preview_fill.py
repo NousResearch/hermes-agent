@@ -40,7 +40,7 @@ def window(monkeypatch):
 
     state = {"origin": ORIGIN, "calls": []}
 
-    def send(method, sid, params, *, timeout):
+    def send(method, sid, params, *, timeout, transport=None):
         assert method == "preview.act" and sid == "" and params["action"] == "vault"
         req = params["vault"]
         state["calls"].append(req)

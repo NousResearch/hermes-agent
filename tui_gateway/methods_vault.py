@@ -195,6 +195,7 @@ def _(rid, params: dict) -> dict:
     from tools.browser_vault_preview import run_preview_vault
     from tools.browser_vault_tool import browser_vault_fill
     from tui_gateway import server_requests
+    from tui_gateway.transport import current_transport
 
     from agent.vault_backends import UnlockRequired, backend_for_handle
 
@@ -210,8 +211,11 @@ def _(rid, params: dict) -> dict:
     if meta is None or meta.kind != "login":
         return _err(rid, 5095, "no saved login with this handle")
 
+    caller = current_transport()
+
     def ask(payload: dict):
-        answer = server_requests.send("preview.act", "", dict(payload), timeout=30)
+        # Pinned to the socket that asked: only the window that minted ``target`` gets the scripts.
+        answer = server_requests.send("preview.act", "", dict(payload), timeout=30, transport=caller)
         return (answer or {}).get("value", "")
 
     raw = run_preview_vault(ask, lambda: browser_vault_fill(handle, task_id="desktop-browser-bar", with_identifier=True),

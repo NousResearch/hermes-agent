@@ -1,13 +1,19 @@
+import { useCallback } from 'react'
+
 import {
   type ComposerInsertMode,
   type ComposerTarget,
+  markActiveComposer,
   requestComposerFocus,
   requestComposerGetDraft,
   requestComposerInsertAcked,
   requestComposerSetDraft,
   requestComposerSubmit
 } from '@/app/chat/composer/focus'
+import { useComposerScope } from '@/app/chat/composer/scope'
+import { chatMessageText } from '@/lib/chat-messages'
 import { freshDraftScope, takeSessionDraft } from '@/store/composer'
+import { holdComposerInput } from '@/store/composer-holds'
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
 import { $sessionStates } from '@/store/session-states'
 
@@ -126,6 +132,12 @@ export const composerHost = {
     return target !== null && requestComposerSubmit(text, { target })
   },
 
+  /** Make one composer's text input read-only until the returned release is
+   *  called (e.g. while a send from it is held for review, so nothing typed
+   *  meanwhile can be overwritten when the held draft is restored). Release
+   *  is idempotent; always release in a `finally`. */
+  hold: (target: string): (() => void) => holdComposerInput(target),
+
   /** Put the caret in a composer — the app's own focus bus, same address
    *  resolution as the verbs above. `insertText`/`setDraft` already focus a
    *  VISIBLE surface they paint; this is the standalone verb for the other
@@ -141,4 +153,48 @@ export const composerHost = {
       requestComposerFocus(target)
     }
   }
+}
+
+/** For a component rendered INSIDE a composer contribution slot
+ *  (`COMPOSER_AREAS.top` / `bottom` / `leading` / `actions` / `underside`).
+ *  `recentMessages(n)` reads THAT composer's chat: its last `n` visible user /
+ *  assistant messages as plain text (no tool rows, hidden or pending ones).
+ *  `target` is THAT composer's routing key (`main` or `tile:<id>`, the value
+ *  `host.composer.hold()` takes), and `activate()` makes it the active
+ *  composer — the one a `null` address in `host.composer` resolves to — and
+ *  gives it the caret, exactly as clicking into its text field does. Call
+ *  `activate()` first in a click handler, so a button in a session tile acts
+ *  on that tile's draft even when another composer was focused last. */
+export function useThisComposer(): {
+  activate: () => void
+  recentMessages: (limit: number) => ComposerTranscriptLine[]
+  target: string
+} {
+  const { $messages, target } = useComposerScope()
+
+  const activate = useCallback(() => {
+    markActiveComposer(target)
+    requestComposerFocus(target)
+  }, [target])
+
+  const recentMessages = useCallback(
+    (limit: number): ComposerTranscriptLine[] =>
+      limit > 0
+        ? $messages
+            .get()
+            .filter(message => (message.role === 'user' || message.role === 'assistant') && !message.hidden && !message.pending)
+            .map(message => ({ role: message.role as ComposerTranscriptLine['role'], text: chatMessageText(message) }))
+            .filter(line => line.text)
+            .slice(-limit)
+        : [],
+    [$messages]
+  )
+
+  return { activate, recentMessages, target }
+}
+
+/** One visible user or assistant message of a composer's chat, as plain text. */
+export interface ComposerTranscriptLine {
+  role: 'assistant' | 'user'
+  text: string
 }

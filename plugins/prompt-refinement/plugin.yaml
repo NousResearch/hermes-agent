@@ -1,0 +1,4 @@
+name: prompt-refinement
+version: 1.0.0
+description: "Adds a 'Prompt refinement' auxiliary model slot for Hermes Desktop's prompt review (Settings > Model > Auxiliary). Registers no tools or hooks."
+author: "shimshiam"

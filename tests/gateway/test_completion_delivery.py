@@ -376,6 +376,7 @@ def test_concurrent_process_watchers_coalesce_one_session_completion_turn(monkey
     adapter.handle_message.assert_awaited_once()
     delivered = adapter.handle_message.await_args.args[0]
     assert "3 background processes completed" in delivered.text
+    assert "newer user instructions take precedence" in delivered.text
     for index in range(3):
         assert f"proc_batch_{index}" in delivered.text
 

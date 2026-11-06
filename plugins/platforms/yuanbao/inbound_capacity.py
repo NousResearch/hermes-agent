@@ -310,13 +310,17 @@ class BoundedDispatchMixin:
         event = self._event_from_context(ctx)
         payload_bytes = self._retained_payload_bytes(ctx)
         ctx.raw_frames.clear()
-        if ctx.chat_type == "group" and not ctx.owner_command:
+        # An @bot group message goes straight to BasePlatformAdapter like a DM, so its busy-input
+        # policy (interrupt/queue/steer) applies to an active turn; the bounded per-group queue keeps
+        # custom pipelines that dispatch unaddressed group traffic.
+        addressed = ctx.chat_type == "group" and _is_at_bot(ctx)
+        if ctx.chat_type == "group" and not ctx.owner_command and not addressed:
             queue, is_new = await adapter._group_dispatch.admit(
                 adapter, session_key, event, payload_bytes, ctx.chat_id)
             if queue is not None and is_new:
                 self._track_inbound(adapter, self._consume_group_queue(adapter, session_key),
                                     f"yuanbao-group-consumer-{(session_key or '')[:30]}")
-        elif ctx.chat_type == "group":
+        elif ctx.chat_type == "group" and ctx.owner_command:
             # Only OwnerCommandMiddleware can set this flag after checking bot_owner_id.
             await self._dispatch_event(adapter, session_key, event)
         else:
@@ -354,3 +358,8 @@ class BoundedDispatchMixin:
                     adapter._group_dispatch.completed(payload_bytes)
         finally:
             adapter._group_dispatch.cleanup(session_key, queue)
+
+
+def _is_at_bot(ctx) -> bool:
+    from plugins.platforms.yuanbao.adapter import GroupAtGuardMiddleware
+    return GroupAtGuardMiddleware._is_at_bot(ctx.msg_body, ctx.adapter._bot_id)

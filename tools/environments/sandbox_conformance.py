@@ -14,6 +14,8 @@ the tool registry, then asserts one isolation invariant:
   open, write, list, stat or dereference anything on the host (a planted host file and a host symlink
   to it stay unread and unchanged; no ``open``/listing/``stat``/``lstat``/``readlink`` lands under
   their directory) and go to the sandbox instead;
+* :func:`check_media_never_read_on_host` — media a hosted agent names is read in its sandbox, never
+  on this host (not even the profile's media cache);
 * :func:`check_background_process_invisible` — a background process started by A is missing for B;
 * :func:`check_host_backend_refused` — with a host backend configured, a hosted scope's tools
   fail closed instead of running here (backend-independent: run it with ``terminal.backend: local``).
@@ -508,12 +510,46 @@ def check_oversized_results_stay_in_sandbox(provider: RecordingSandboxProvider, 
 
 PERSISTED_MARK = "Full output saved to:"
 
+# A 1x1 PNG: a real image, so a host read of it would succeed if one happened.
+_PNG = bytes.fromhex(
+    "89504e470d0a1a0a0000000d4948445200000001000000010802000000907753de0000000c49444154"
+    "08d763f8cfc0000003010100c9fe92ef0000000049454e44ae426082")
+
+
+def check_media_never_read_on_host(provider: RecordingSandboxProvider, a: Scope, host_dir: Path) -> None:
+    """Media sources a hosted agent names (vision, video, image-generation references) are read in
+    its sandbox and never on this host: not a workspace-looking path, and not the profile's media
+    cache either (that cache is the profile's, not the agent's)."""
+    import asyncio
+    from hermes_constants import get_hermes_home
+    from tools.image_source import ImageResolutionError, ResolveContext, resolve_image_source
+    cache = get_hermes_home() / "cache" / "images"
+    cache.mkdir(parents=True, exist_ok=True)
+    planted = [host_dir / "photo.png", cache / f"inbound-{uuid.uuid4().hex[:8]}.png"]
+    for path in planted:
+        path.write_bytes(_PNG)
+    with _bind(a):
+        call_tool("terminal", {"command": "true"}, task_id="t")
+    seen = len(provider.calls)
+    for path in planted:
+        with _watch_host(path.parent) as touched, _bind(a):
+            for src in (str(path), f"file://{path}"):
+                try:
+                    result = asyncio.run(resolve_image_source(src, ResolveContext(task_id="t")))
+                except ImageResolutionError:
+                    continue  # the sandbox (which runs nothing) has no such image: refused, not read here
+                assert result.origin == "container", f"{src} resolved from {result.origin}"
+        assert not touched, f"media resolution touched the host: {touched}"
+    reads = [c.command for c in provider.calls[seen:] if c.op == "execute" and c.sandbox == _identity(a)]
+    assert all(any(str(p) in r for r in reads) for p in planted), "a media path was not read in the sandbox"
+
 
 def checks() -> Iterator[tuple[str, Callable[..., None]]]:
     yield from (
         ("tools_address_own_sandbox", check_tools_address_own_sandbox),
         ("foreign_handle_refused", check_foreign_handle_refused),
         ("file_tools_never_touch_host", check_file_tools_never_touch_host),
+        ("media_never_read_on_host", check_media_never_read_on_host),
         ("background_process_invisible", check_background_process_invisible),
         ("process_notifications_private", check_process_notifications_private),
         ("oversized_results_stay_in_sandbox", check_oversized_results_stay_in_sandbox),

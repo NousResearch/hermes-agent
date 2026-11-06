@@ -186,8 +186,12 @@ export function PreviewVaultButton({ tabId, url }: PreviewVaultButtonProps) {
     }
   }
 
+  if (!origin) {
+    return null
+  }
+
   const openVaultSettings = () => {
-    const params = new URLSearchParams({ tab: 'vault', ...(origin ? { kind: 'login', origin } : {}) })
+    const params = new URLSearchParams({ tab: 'vault', kind: 'login', origin })
     requestRoute(`${SETTINGS_ROUTE}?${params.toString()}`)
   }
 
@@ -209,7 +213,6 @@ export function PreviewVaultButton({ tabId, url }: PreviewVaultButtonProps) {
               aria-label={copy.vaultFill}
               className="self-center bg-transparent opacity-60 select-none hover:opacity-100 data-[state=open]:opacity-100 [-webkit-app-region:no-drag]"
               data-slot="preview-vault-button"
-              disabled={!origin}
               onPointerDown={event => event.stopPropagation()}
               size="icon-xs"
               type="button"
@@ -220,7 +223,7 @@ export function PreviewVaultButton({ tabId, url }: PreviewVaultButtonProps) {
           </DropdownMenuTrigger>
         </Tip>
         <DropdownMenuContent align="end" className="min-w-60" data-slot="preview-vault-menu">
-          <DropdownMenuLabel>{origin ? copy.vaultTitle(origin.replace(/^https?:\/\//, '')) : copy.vaultFill}</DropdownMenuLabel>
+          <DropdownMenuLabel>{copy.vaultTitle(origin.replace(/^https?:\/\//, ''))}</DropdownMenuLabel>
           {logins === null ? (
             <DropdownMenuItem disabled>{copy.vaultLoading}</DropdownMenuItem>
           ) : logins.length === 0 ? (

@@ -58,7 +58,7 @@ import {
   waitAnnotateEvent
 } from './preview-annotate-host'
 import { ArtifactPreview } from './preview-artifact'
-import { PreviewBrowserBar } from './preview-browser-bar'
+import { externalOpenerFor, PreviewBrowserBar } from './preview-browser-bar'
 import { mountBrowserPreviewFrame, type PreviewNavigationSurface } from './preview-browser-frame'
 import { PreviewBrowserFrameHint } from './preview-browser-frame-hint'
 import {
@@ -1330,8 +1330,7 @@ export function PreviewPane({
     webview.addEventListener('devtools-closed', onDevToolsClosed)
     webview.addEventListener('devtools-opened', onDevToolsOpened)
     webview.addEventListener('did-fail-load', onFail)
-    // Vault fills pin one guest document; a main-frame replacement retires the pin.
-    const stopWatchingDocument = tabId ? watchPreviewDocumentLifecycle(webview, tabId) : undefined
+    const stopWatchingDocument = watchPreviewDocumentLifecycle(webview, tabId)
     webview.addEventListener('did-navigate', onNavigate)
     webview.addEventListener('did-navigate-in-page', onNavigate)
     webview.addEventListener('did-start-loading', onStart)
@@ -1363,7 +1362,7 @@ export function PreviewPane({
       webview.removeEventListener('devtools-closed', onDevToolsClosed)
       webview.removeEventListener('devtools-opened', onDevToolsOpened)
       webview.removeEventListener('did-fail-load', onFail)
-      stopWatchingDocument?.()
+      stopWatchingDocument()
       webview.removeEventListener('did-navigate', onNavigate)
       webview.removeEventListener('did-navigate-in-page', onNavigate)
       webview.removeEventListener('did-start-loading', onStart)
@@ -1488,11 +1487,7 @@ export function PreviewPane({
             onFlushComments={() => void flushComments()}
             onForward={goForward}
             onNavigate={navigateTo}
-            onOpenExternal={
-              !isBrowserWindow() && !canOpenBrowserWindow()
-                ? () => void window.hermesDesktop?.openExternal(currentUrl)
-                : undefined
-            }
+            onOpenExternal={externalOpenerFor(currentUrl)}
             onPopIn={isBrowserWindow() ? () => window.close() : undefined}
             onPopOut={
               target.kind !== 'url' || isBrowserWindow() || !tabId || !canOpenBrowserWindow()
@@ -1503,7 +1498,7 @@ export function PreviewPane({
             onToggleAnnotate={toggleAnnotate}
             onToggleConsole={() => consoleState.setOpen(open => !open)}
             onToggleDevTools={toggleDevTools}
-            tabId={target.kind === 'url' ? tabId : undefined}
+            tabId={tabId}
             url={currentUrl}
           />
         )}

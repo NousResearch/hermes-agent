@@ -1,40 +1,55 @@
 name: godseye
 title: Eye Of Hermes (EOH)
 repo: https://github.com/mojomast/EOH
-sha: 29de8b6fa24e1e1791180d32b31fef5dcd080fb9
+sha: feeac91516e7bd19bf3c50069aedf5a03be9d1ed
 description: >-
   Eye Of Hermes (EOH), built on God's Eye View (bilawalsidhu/gods-eye-view, MIT):
-  11 composable godseye_* tools (godseye_view, godseye_query, godseye_layers,
+  the same 11 composable godseye_* tools (godseye_view, godseye_query, godseye_layers,
   godseye_feeds, godseye_annotate, godseye_nav, godseye_track, godseye_scene,
   godseye_watch, godseye_capture, godseye_admin) for public data (aircraft, ships,
   satellites, quakes, fires, weather, infrastructure) backed by its MCP server, a
   live 3D globe pane in Hermes Desktop and the Webapp that Hermes can drive and
   read, and HUD summaries generated with the Hermes model (ctx.llm) instead of
-  OpenAI. Requires Node 24 or newer (God's Eye View documents 24.14 or later, or
-  26.x) and a running God's Eye View checkout. No named-person search, face
-  recognition, or tracking of individuals. Disclosure — starts one node MCP child
-  from the user's God's Eye View checkout; runs loopback-only HUD bridge
-  (127.0.0.1:18791) and live relay (127.0.0.1:18792) threads gated by a random
-  token stored 0600 in plugin-data; a pre_llm_call hook may add a short map line
-  and queued watch alerts; an active area watch polls USGS, NASA FIRMS, OpenSky,
-  the local app, or Overpass/Nominatim from a daemon thread; place search,
-  routes, isochrones, Wayback metadata, and pin research call public services
-  (Nominatim, Overpass, OSRM, Valhalla, Esri, Wikipedia, Wikidata, Wikimedia, and
-  venue sites); feed tools talk to the user's God's Eye View app, which itself
-  fetches public third-party data feeds; the pane backend adds a base tag, an
-  opt-in UI flag, a Cesium worker shim and the live agent script inside the
-  sandboxed frame only.
+  OpenAI. An Overlays sidebar (godseye_annotate op=overlays) lists pins, routes
+  and trails, lines, areas, watches, and scenes, and imports or exports
+  eoh.overlays.v1 JSON under plugin-data. godseye_scene director ops build,
+  update, list, play, and stop a Director scene on the pane; godseye_annotate
+  op=clip stores a YouTube or X URL on a pin; godseye_feeds op=fire_check runs
+  FIRMS, the clearest recent image, then imagery before/after, and does not
+  create a watch or a pin. The same 11 tools also carry the recent God's Eye
+  View v0.3-style ops (imagery before/after, a weather preset, GTFS-RT transit
+  on the app's transit layer, and fire-perimeter watches). Requires Node 24 or
+  newer (God's Eye View documents 24.14 or later, or 26.x) and a running God's
+  Eye View checkout. No named-person search, face recognition, or tracking of
+  individuals. Disclosure — starts one node MCP child from the user's God's Eye
+  View checkout; runs loopback-only HUD bridge (127.0.0.1:18791) and live relay
+  (127.0.0.1:18792) threads gated by a random token stored 0600 in plugin-data;
+  a pre_llm_call hook may add a short map line and queued watch alerts; an
+  active area watch polls USGS, NASA FIRMS, OpenSky, the local app, or
+  Overpass/Nominatim from a daemon thread; place search, routes, isochrones,
+  Wayback metadata, and pin research call public services (Nominatim, Overpass,
+  OSRM, Valhalla, Esri, Wikipedia, Wikidata, Wikimedia, and venue sites); feed
+  tools, including fire_check, talk to the user's God's Eye View app, which
+  itself fetches public third-party data feeds; overlay import and export stay
+  under plugin-data/godseye/overlays and are not uploaded; opening a pin drawer
+  that has a clip loads a www.youtube-nocookie.com/embed or
+  platform.twitter.com/embed iframe inside the sandboxed frame; user-called
+  godseye_admin app_start, app_stop, and app_restart may run systemctl --user
+  on gods-eye-view.service or start Node on the checkout's vite.js, and refuse
+  a foreign listener; the pane backend adds a base tag, an opt-in UI flag, a
+  Cesium worker shim, the overlay sidebar and Director bridge scripts, and the
+  live agent script inside the sandboxed frame only.
 maintainer: mojomast
 tier: community
 category: tools
 docs_url: https://github.com/mojomast/EOH#readme
-version: "0.2.0"
+version: "0.2.1"
 screenshots:
-  - https://raw.githubusercontent.com/mojomast/EOH/29de8b6fa24e1e1791180d32b31fef5dcd080fb9/docs/screenshots/hermes-chat-tokyo-nvg.jpg
-  - https://raw.githubusercontent.com/mojomast/EOH/29de8b6fa24e1e1791180d32b31fef5dcd080fb9/docs/screenshots/pane-full-ui.jpg
-  - https://raw.githubusercontent.com/mojomast/EOH/29de8b6fa24e1e1791180d32b31fef5dcd080fb9/docs/screenshots/live-fly-to-tokyo.jpg
-  - https://raw.githubusercontent.com/mojomast/EOH/29de8b6fa24e1e1791180d32b31fef5dcd080fb9/docs/screenshots/hud-via-hermes.jpg
-  - https://raw.githubusercontent.com/mojomast/EOH/29de8b6fa24e1e1791180d32b31fef5dcd080fb9/docs/screenshots/pane-globe-only.jpg
+  - https://raw.githubusercontent.com/mojomast/EOH/feeac91516e7bd19bf3c50069aedf5a03be9d1ed/docs/screenshots/hermes-chat-tokyo-nvg.jpg
+  - https://raw.githubusercontent.com/mojomast/EOH/feeac91516e7bd19bf3c50069aedf5a03be9d1ed/docs/screenshots/pane-full-ui.jpg
+  - https://raw.githubusercontent.com/mojomast/EOH/feeac91516e7bd19bf3c50069aedf5a03be9d1ed/docs/screenshots/live-fly-to-tokyo.jpg
+  - https://raw.githubusercontent.com/mojomast/EOH/feeac91516e7bd19bf3c50069aedf5a03be9d1ed/docs/screenshots/hud-via-hermes.jpg
+  - https://raw.githubusercontent.com/mojomast/EOH/feeac91516e7bd19bf3c50069aedf5a03be9d1ed/docs/screenshots/pane-globe-only.jpg
 platforms: []
 known_issues:
   - "Full UI in the pane and the in-app HUD via Hermes need two opt-in God's Eye View patches (shipped in patches/, upstream PRs #1571 and #1572); stock upstream gets the globe-only pane."

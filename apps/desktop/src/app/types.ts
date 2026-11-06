@@ -157,6 +157,8 @@ export interface ClientSessionState {
   cwd: string
   model: string
   provider: string
+  /** Local picker intent until the owner reports the selected route or refuses it. */
+  pendingModelSelection?: { model: string; provider: string }
   reasoningEffort: string
   /** Gateway-reported wire level for `reasoningEffort`; '' until the backend
    *  has stamped the current pick (so a clamp is never inferred client-side). */

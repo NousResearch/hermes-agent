@@ -20,8 +20,15 @@ function validateNativeTree(nativeDeps, platform) {
       throw new Error(`Prepared node-pty binding does not match ${platform}: ${binding}`)
     }
   }
+  // stage-native-deps treats a missing get-windows as fail-soft by design: on darwin pnpm skips the
+  // optionalDependency (its published metadata declares win32), and the runtime import fails soft,
+  // so only read_window_below is unavailable. Throwing here turned that optional tool into a stuck
+  // update tail — the Desktop build never finished and every launch reported an unfinished update.
   if (platform === 'darwin' && !existsSync(join(nativeDeps, 'get-windows/main'))) {
-    throw new Error('Prepared get-windows is missing its macOS helper')
+    console.warn(
+      '[build-desktop] no prepared get-windows helper (optional dependency skipped on this host); ' +
+        'read_window_below will be unavailable in this build'
+    )
   }
 }
 

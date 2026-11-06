@@ -7,6 +7,7 @@ message would be silently dropped (the room shows idle and nobody answers).
 """
 from gateway import hosted_rooms as rooms
 from gateway.hosted_room_policy_checkpoint import HostedRoomPolicyCheckpoint
+from gateway.hosted_room_router import paused_discussion
 
 
 def _append(db, event_id, kind, payload, actor="user"):
@@ -27,3 +28,17 @@ def test_old_discussion_settling_after_a_newer_message_keeps_the_newer_one_activ
     snapshot = HostedRoomPolicyCheckpoint(db).snapshot(room_id="room", latest_seq=int(last["seq"]))
     # The thread stays open for the newer message (earlier messages ride along as its transcript).
     assert any(e["seq"] == newer["seq"] for e in snapshot.events)
+
+
+def test_a_cap_notice_landing_after_a_newer_message_cannot_be_continued(tmp_path):
+    """Continue would hand the thread back to the capped discussion and strand the newer message."""
+    db = tmp_path / "shared-state.db"
+    rooms.create_room(db, room_id="room", name="Room", authority_gateway_id="home",
+                      members=[{"member_id": "reviewer", "profile": "reviewer", "handle": "reviewer"}])
+    _append(db, "first", "message.user", {"text": "@reviewer one", "thread_id": "thread"})
+    _append(db, "second", "message.user", {"text": "@reviewer two", "thread_id": "thread"})
+    _append(db, "dactivity:first:max_messages", "room.activity", {
+        "status": "bounded", "reason_code": "max_messages", "thread_id": "thread",
+        "discussion_event_id": "first"}, "gateway")
+    events = rooms.read_events(db, room_id="room")["events"]
+    assert paused_discussion(events, "first") is None

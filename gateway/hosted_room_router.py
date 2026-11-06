@@ -132,13 +132,13 @@ def paused_discussion(events: Sequence[Mapping[str, Any]], discussion_event_id: 
     if bounded is None:
         return None
     thread_id = bounded["payload"].get("thread_id")
-    # A Stop anywhere after the discussion's own message fences it for good, even one that landed
-    # before a cap notice computed from an older snapshot: Continue could not reopen it.
+    # A Stop or a newer message on its thread anywhere after the discussion's own message fences it
+    # for good, even one that landed before a cap notice computed from an older snapshot: the newer
+    # message owns the thread, and Continue reopening the old discussion would strand it.
     source_seq = next((int(event["seq"]) for event in events if event.get("event_id") == discussion_event_id),
                       int(bounded["seq"]))
-    if any((event.get("kind") == "room.stop_requested" and int(event["seq"]) > source_seq) or (
-            int(event["seq"]) > int(bounded["seq"]) and event.get("kind") == "message.user"
-            and (event.get("payload") or {}).get("thread_id") == thread_id)
+    if any(int(event["seq"]) > source_seq and (event.get("kind") == "room.stop_requested" or (
+            event.get("kind") == "message.user" and (event.get("payload") or {}).get("thread_id") == thread_id))
            for event in events):
         return None
     return {"thread_id": thread_id, "grant": grants + 1}

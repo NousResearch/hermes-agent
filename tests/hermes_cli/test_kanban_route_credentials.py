@@ -31,10 +31,10 @@ from hermes_cli.kanban_db_connect import connect
 PIN_MODEL = "deepseek/deepseek-v4.1-flash-1017"
 
 
-def _write_profile(home: Path, name: str, dotenv: str = "") -> Path:
+def _write_profile(home: Path, name: str, dotenv: str = "", config: str = "model: {}\n") -> Path:
     profile = home / "profiles" / name
     profile.mkdir(parents=True, exist_ok=True)
-    (profile / "config.yaml").write_text("model: {}\n", encoding="utf-8")
+    (profile / "config.yaml").write_text(config, encoding="utf-8")
     if dotenv:
         (profile / ".env").write_text(dotenv, encoding="utf-8")
     return profile
@@ -46,7 +46,7 @@ def fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     home = tmp_path / ".hermes"
     home.mkdir()
     _write_profile(home, "unkeyed")
-    _write_profile(home, "keyed", "OPENROUTER_API_KEY=fixture-key-not-real\n")
+    _write_profile(home, "keyed", "OPENROUTER_API_KEY=sk-or-v1-fixture-key-not-real\n")
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
@@ -146,7 +146,11 @@ def test_an_undecidable_provider_shape_is_admitted(fleet, no_profile_gate):
     # OAuth grants can arrive from the global-root pool, custom/local endpoints may need no key:
     # neither is provable from the home, so neither may be refused.
     assert rrc.provider_shape("openrouter")[0] == "api_key"
-    for provider in ("xai-oauth", "custom:house", "not-a-real-provider", "", None):
+    for provider in ("xai-oauth", "custom:house", "not-a-real-provider", "", None,
+                     # anthropic's token also resolves from the Claude Code / Hermes OAuth store,
+                     # and these local servers are served a no-auth placeholder: "nothing in
+                     # .env/auth.json" is not proof a worker would die.
+                     "anthropic", "lmstudio", "actual"):
         assert rrc.provider_shape(provider)[0] == "undecidable", provider
         assert rrc.route_credential_refusal("unkeyed", provider) is None
 
@@ -230,3 +234,141 @@ def test_the_probe_child_answers_for_the_assignee_home(fleet):
     assert keyed.kind == "api_key" and keyed.present is True, keyed.detail
     assert unkeyed.kind == "api_key" and unkeyed.present is False, unkeyed.detail
     assert unkeyed.decisive is True
+
+
+# --- the probe's "present" matches the runtime credential ladder ---------------------------------
+#
+# Round-1 review of t_c7d92b03: the first probe hand-rolled a three-source ladder (registry env
+# vars, the pool, ``model.api_key``) that did not match ``auth._resolve_api_key_provider_secret``,
+# so it admitted a profile with only an inline ``model.api_key`` (runtime reads none) and refused a
+# Desktop-saved ``model.key_env`` pointer and a keyless local server. One regression test per
+# direction, each checked against the resolver the worker itself runs.
+
+from contextlib import contextmanager
+
+
+@contextmanager
+def _profile_home(profile: str):
+    """Run in *profile*'s own home, the way a dispatched worker would."""
+    from hermes_cli.profiles import resolve_profile_env
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    token = set_hermes_home_override(resolve_profile_env(profile))
+    try:
+        yield
+    finally:
+        reset_hermes_home_override(token)
+
+
+def _payload_for(profile: str, provider: str) -> dict:
+    with _profile_home(profile):
+        return rrc.probe_payload(provider)
+
+
+def test_model_key_env_pointer_is_a_credential(fleet, monkeypatch):
+    """A Desktop-saved ``model.key_env`` pointer is read by runtime, so the probe must see it."""
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    _write_profile(
+        fleet, "pointed",
+        "HERMES_CUSTOM_DEEPSEEK_API_KEY=sk-deepseek-fixture\n",
+        "model:\n  default: deepseek-chat\n  provider: deepseek\n"
+        "  key_env: HERMES_CUSTOM_DEEPSEEK_API_KEY\n",
+    )
+
+    payload = _payload_for("pointed", "deepseek")
+    assert payload["present"] is True, payload
+    assert "env:HERMES_CUSTOM_DEEPSEEK_API_KEY" in payload["sources"]
+    assert rrc.route_credential_refusal("pointed", "deepseek") is None
+
+    # The runtime agrees for the same home; the probe is not asserting something it does not do.
+    with _profile_home("pointed"):
+        from hermes_cli.auth import resolve_api_key_provider_credentials
+        creds = resolve_api_key_provider_credentials("deepseek")
+    assert creds["source"] == "HERMES_CUSTOM_DEEPSEEK_API_KEY" and creds["api_key"]
+
+
+def test_inline_model_api_key_is_not_a_credential(fleet, monkeypatch):
+    """``model.api_key`` is not on the registry api_key ladder: counting it admitted a dead route."""
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    _write_profile(
+        fleet, "inline", "",
+        "model:\n  default: deepseek-chat\n  provider: deepseek\n  api_key: sk-deepseek-fixture\n",
+    )
+
+    payload = _payload_for("inline", "deepseek")
+    assert payload["present"] is False, payload
+    assert "config.yaml" not in payload["sources"]
+    assert rrc.route_credential_refusal("inline", "deepseek", "deepseek-chat") is not None
+
+    # ...and runtime reads no key from that home, which is exactly the crash this gate prevents.
+    with _profile_home("inline"):
+        from hermes_cli.auth import resolve_api_key_provider_credentials
+        creds = resolve_api_key_provider_credentials("deepseek")
+    assert creds["api_key"] == "" and creds["source"] == "default"
+
+
+def test_keyless_local_provider_is_admitted(fleet, monkeypatch):
+    """LM Studio is served a no-auth placeholder, so an empty home is not a dead route."""
+    monkeypatch.delenv("LM_API_KEY", raising=False)
+
+    assert rrc.provider_shape("lmstudio")[0] == "undecidable"
+    assert rrc.route_credential_refusal("unkeyed", "lmstudio") is None
+
+    with _profile_home("unkeyed"):
+        from hermes_cli.auth import LMSTUDIO_NOAUTH_PLACEHOLDER, resolve_api_key_provider_credentials
+        creds = resolve_api_key_provider_credentials("lmstudio")
+    assert creds["api_key"] == LMSTUDIO_NOAUTH_PLACEHOLDER
+
+
+def test_a_malformed_key_does_not_count_as_a_credential(fleet, monkeypatch):
+    """Runtime skips a key whose shape is wrong (#93593); the probe must not call it present."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    _write_profile(fleet, "malformed", "OPENROUTER_API_KEY=not-an-openrouter-key\n")
+
+    payload = _payload_for("malformed", "openrouter")
+    assert payload["present"] is False, payload
+    assert rrc.route_credential_refusal("malformed", "openrouter") is not None
+
+
+def test_a_legacy_openai_key_shaped_like_openrouter_counts(fleet, monkeypatch):
+    """``OPENAI_API_KEY`` is a legacy OpenRouter home; runtime accepts it when it is sk-or-shaped."""
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    _write_profile(fleet, "legacy", "OPENAI_API_KEY=sk-or-v1-legacy-fixture\n")
+
+    payload = _payload_for("legacy", "openrouter")
+    assert payload["present"] is True, payload
+    assert "env:OPENAI_API_KEY" in payload["sources"]
+    assert rrc.route_credential_refusal("legacy", "openrouter") is None
+
+
+def test_an_env_backed_pool_row_without_its_key_is_not_a_credential(fleet, monkeypatch):
+    """An ``env:`` pool row is persisted WITHOUT its secret and re-hydrated from that env var.
+
+    This is the live researcher shape: auth.json holds ``env:OPENROUTER_API_KEY`` but the home
+    resolves no such var, so the row is an empty shell and the worker would die.
+    """
+    import hermes_cli.auth as auth
+
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(auth, "read_credential_pool",
+                        lambda provider=None: [{"id": "abc123", "auth_type": "api_key",
+                                                "source": "env:OPENROUTER_API_KEY"}])
+    payload = _payload_for("unkeyed", "openrouter")
+    assert payload["present"] is False, payload
+    assert rrc.route_credential_refusal("unkeyed", "openrouter") is not None
+
+
+def test_an_env_backed_pool_row_is_a_credential_when_its_key_resolves(fleet, monkeypatch):
+    import hermes_cli.auth as auth
+
+    monkeypatch.setattr(auth, "read_credential_pool",
+                        lambda provider=None: [{"id": "abc123", "auth_type": "api_key",
+                                                "source": "env:OPENROUTER_API_KEY"}])
+    _write_profile(fleet, "pooled", "OPENROUTER_API_KEY=sk-or-v1-pooled-fixture\n")
+
+    payload = _payload_for("pooled", "openrouter")
+    assert payload["present"] is True, payload
+    assert "env:OPENROUTER_API_KEY" in payload["sources"]
+    assert rrc.route_credential_refusal("pooled", "openrouter") is None

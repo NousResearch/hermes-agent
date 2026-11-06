@@ -14,11 +14,18 @@ short-lived child process with the assignee's ``HERMES_HOME`` and the same scrub
 holds credential material for that provider — and never constructs a client: no network, no OAuth
 refresh, no single-use grant rotation, no pool write. A gate must not spend what it is measuring.
 
-**Decidable** providers are the ones whose failure mode is exactly this crash: ``openrouter`` and
-every registry provider with ``auth_type == "api_key"``. **Everything else is undecidable here and
-admitted**: OAuth and external-process providers can resolve a grant from the global-root pool or
-from the subprocess's own login store, and local/custom endpoints may need no key at all. A
-refusal has to be provable, so an undecidable shape is never parked.
+**Decidable** providers are the ones whose credential ladder is exactly ``model.key_env`` → the
+registry's ``api_key_env_vars`` → the credential pool (the order
+``auth._resolve_api_key_provider_secret`` reads), plus ``openrouter`` whose runtime adds the legacy
+``OPENAI_API_KEY`` home. The probe mirrors that ladder read-only and counts only a *usable* secret
+— the same ``has_usable_secret`` / key-prefix rules runtime applies, so a malformed key in ``.env``
+is not mistaken for a credential. ``model.api_key`` in ``config.yaml`` is **not** a source: the
+registry ``api_key`` runtime never reads it (only an Azure-base-url anthropic route does).
+**Everything else is undecidable here and admitted**: OAuth and external-process providers resolve
+a grant from the global-root pool or the subprocess's own login store, anthropic also reads the
+Claude Code / Hermes OAuth store, the local no-auth providers (``lmstudio``, ``actual``) are served
+a placeholder key by design, and local/custom endpoints may need no key at all. A refusal has to be
+provable, so an undecidable shape is never parked.
 
 A pool that HAS credentials but cannot serve right now (every entry cooling, quota exhausted) is a
 provider-health question rather than a credential gap, and is deliberately admitted: that failure
@@ -54,6 +61,17 @@ DEFAULT_PROBE_TIMEOUT_SECONDS = 45
 
 _OPENROUTER_ENV_VARS = ("OPENROUTER_API_KEY",)
 _OPENROUTER_ENV_URL_VARS: tuple[str, ...] = ()
+
+#: Local servers the runtime serves with a placeholder key and no credential at all
+#: (``resolve_api_key_provider_credentials``): ``lmstudio`` always, ``actual`` when its configured
+#: base URL is loopback. Nothing to refuse, and ``actual``'s loopback test needs a URL this probe
+#: does not resolve, so both are non-decisive.
+_NO_AUTH_LOCAL_PROVIDERS = frozenset({"lmstudio", "actual"})
+
+#: Providers whose token also resolves from a login store outside the env/pool ladder:
+#: ``agent.anthropic_credentials.resolve_anthropic_token`` also reads the Claude Code keychain/file
+#: and the Hermes OAuth file, so "nothing in ``.env`` or ``auth.json``" is not proof of a crash.
+_EXTERNAL_TOKEN_STORE_PROVIDERS = frozenset({"anthropic"})
 
 
 @dataclass(frozen=True)
@@ -136,11 +154,15 @@ class RouteCredentialRefusal:
 def provider_shape(provider: Optional[str]) -> tuple[str, tuple[str, ...], str]:
     """``(kind, api_key_env_vars, why)`` for a pinned provider id.
 
-    ``kind == "api_key"`` only where "no credential material" is a *complete* explanation for the
-    worker's death: OpenRouter (whose only credential is its pool) and registry providers declared
-    ``auth_type: api_key``. Every other shape answers ``"undecidable"`` with the reason, so the
-    refusal can never be invented from a provider whose credentials live somewhere this probe
-    cannot see.
+    ``kind == "api_key"`` only where "no usable credential material" is a *complete* explanation
+    for the worker's death: OpenRouter (whose runtime reads its env var plus the legacy
+    ``OPENAI_API_KEY`` home and the pool) and registry providers declared ``auth_type: api_key``
+    whose ladder is ``model.key_env`` → registry env vars → pool. A registry row is not enough on
+    its own — ``anthropic`` is declared ``api_key`` but also resolves the Claude Code / Hermes OAuth
+    token, and ``lmstudio``/``actual`` are served a no-auth placeholder. Those, provider-owned
+    secret resolution, OAuth, external-process and custom routes all answer ``"undecidable"`` with
+    the reason, so a refusal can never be invented from a provider whose credentials live somewhere
+    this probe cannot see.
     """
     key = (provider or "").strip().lower()
     if not key or key == "auto":
@@ -157,14 +179,111 @@ def provider_shape(provider: Optional[str]) -> tuple[str, tuple[str, ...], str]:
     auth_type = str(getattr(pconfig, "auth_type", "") or "")
     if auth_type != "api_key":
         return "undecidable", (), f"{key} is auth_type={auth_type or 'unknown'}"
+    if key in _NO_AUTH_LOCAL_PROVIDERS:
+        return "undecidable", (), f"{key} is a local no-auth provider (runtime supplies a placeholder key)"
+    if key in _EXTERNAL_TOKEN_STORE_PROVIDERS:
+        return "undecidable", (), (f"{key} also resolves a token from a login store outside the "
+                                   "env/pool ladder, which this probe does not read")
+    try:
+        from providers import get_provider_profile
+        from providers.base import ProviderProfile
+        profile = get_provider_profile(key)
+        owned_resolution = (profile is not None
+                            and type(profile).resolve_api_key_secret is not ProviderProfile.resolve_api_key_secret)
+    except Exception:  # a profile package that cannot load is not a verdict
+        owned_resolution = False
+    if owned_resolution:
+        return "undecidable", (), f"{key} resolves its own secret outside the env/pool ladder"
     return "api_key", tuple(getattr(pconfig, "api_key_env_vars", ()) or ()), ""
+
+
+def _local_endpoint_bypass() -> str:
+    """Why the runtime may skip the credential ladder for this home, or ``""``.
+
+    ``runtime_provider._local_endpoint_bypass`` short-circuits the ladder for an auto/unset
+    ``model.provider`` with a non-cloud ``model.base_url``, so a home in that shape can serve a pin
+    with no provider credential at all. Not producible from the env/pool files, so non-decisive.
+    """
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.runtime_provider import _LOCAL_BYPASS_CLOUD_HOSTS
+        from utils import base_url_host_matches
+
+        model_cfg = (load_config() or {}).get("model")
+        if not isinstance(model_cfg, dict):
+            return ""
+        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+        base_url = str(model_cfg.get("base_url") or "").strip()
+        if (base_url and cfg_provider in ("", "auto")
+                and not any(base_url_host_matches(base_url, host) for host in _LOCAL_BYPASS_CLOUD_HOSTS)):
+            return ("model.provider is auto with a local base_url, so the runtime may resolve "
+                    "without a provider credential")
+    except Exception:
+        return ""
+    return ""
+
+
+def _usable_sources(provider: str, env_vars: Sequence[str]) -> list[str]:
+    """Mirror ``auth._resolve_api_key_provider_secret`` read-only: key_env → env vars → pool."""
+    from hermes_cli.auth import _model_level_key_env, _usable_declared_secret, read_credential_pool
+    from hermes_cli.config import get_env_value_prefer_dotenv
+
+    sources: list[str] = []
+    # Desktop-saved pointer (#106336): consulted only when config.yaml's model targets this
+    # provider, exactly as ``_model_level_key_env`` decides it for the runtime.
+    key_env = _model_level_key_env(provider)
+    if key_env and _usable_declared_secret(provider, get_env_value_prefer_dotenv(key_env), key_env):
+        sources.append(f"env:{key_env}")
+    # ``_seed_from_env`` also backs a rotation pool with ``<VAR>_2``, ``<VAR>_3``, ... — the run
+    # stops at the first sibling the home does not define.
+    candidates = list(env_vars)
+    for base in env_vars:
+        n = 2
+        while True:
+            name = f"{base}_{n}"
+            if not (get_env_value_prefer_dotenv(name) or "").strip():
+                break
+            candidates.append(name)
+            n += 1
+    for env_var in candidates:
+        if _usable_declared_secret(provider, get_env_value_prefer_dotenv(env_var), env_var):
+            sources.append(f"env:{env_var}")
+    if provider == "openrouter":
+        # OPENAI_API_KEY is a legacy home for an OpenRouter key: runtime honours it only when it is
+        # OpenRouter-shaped and not bound to another origin by OPENAI_BASE_URL.
+        from hermes_cli.auth import looks_like_openrouter_key
+        legacy = get_env_value_prefer_dotenv("OPENAI_API_KEY")
+        if (legacy and not (get_env_value_prefer_dotenv("OPENAI_BASE_URL") or "").strip()
+                and looks_like_openrouter_key(legacy)):
+            sources.append("env:OPENAI_API_KEY")
+    # ``read_credential_pool`` is a file read; ``load_pool`` would heal/ingest/persist as a side
+    # effect of merely asking, which a gate must not do. An ``env:<VAR>`` row is persisted WITHOUT
+    # its secret and re-hydrated from that env var on every load (``_seed_from_env``), so the row's
+    # presence alone is not a credential.
+    for row in read_credential_pool(provider) or []:
+        if not isinstance(row, Mapping):
+            continue
+        value = row.get("access_token") or row.get("runtime_api_key") or ""
+        if _usable_declared_secret(provider, value, "auth.json"):
+            sources.append("auth.json")
+            break
+        source = str(row.get("source") or "")
+        if not source.startswith("env:"):
+            continue
+        env_name = source.split(":", 1)[1].strip()
+        if env_name and _usable_declared_secret(
+                provider, get_env_value_prefer_dotenv(env_name), source):
+            sources.append(f"auth.json:{env_name}")
+            break
+    return sources
 
 
 def probe_payload(provider: str) -> dict:
     """Child side: what this process's home holds for *provider*. Prints no credential.
 
-    Read-only on purpose (``read_credential_pool`` never seeds or persists; ``load_pool`` would
-    ingest an env key into a paid pool as a side effect of merely asking).
+    Read-only on purpose (``read_credential_pool`` never seeds or persists, ``load_pool`` would
+    ingest an env key into a paid pool as a side effect of merely asking). ``present is None`` is a
+    non-decisive answer — the caller admits the card rather than inventing a refusal.
     """
     key = (provider or "").strip().lower()
     kind, env_vars, why = provider_shape(key)
@@ -172,26 +291,15 @@ def probe_payload(provider: str) -> dict:
                "sources": []}
     if kind != "api_key":
         return payload
-    sources: list[str] = []
-    from agent.credential_pool import get_env_prefer_dotenv
-    for env_var in env_vars:
-        if (get_env_prefer_dotenv(env_var) or "").strip():
-            sources.append(f"env:{env_var}")
-    try:
-        from hermes_cli.auth import read_credential_pool
-        if read_credential_pool(key):
-            sources.append("auth.json")
-    except Exception as exc:
-        payload["why"] = f"credential pool unreadable: {type(exc).__name__}: {exc}"
+    why = _local_endpoint_bypass()
+    if why:
+        payload["why"] = why
         return payload
     try:
-        from hermes_cli.config import load_config
-        model_cfg = (load_config() or {}).get("model")
-        if isinstance(model_cfg, dict) and str(model_cfg.get("provider") or "").strip().lower() == key:
-            if str(model_cfg.get("api_key") or "").strip():
-                sources.append("config.yaml")
-    except Exception:  # config is one of three sources; its absence is not a verdict
-        _log.debug("route credential probe: config unreadable", exc_info=True)
+        sources = _usable_sources(key, env_vars)
+    except Exception as exc:
+        payload["why"] = f"credential ladder unreadable: {type(exc).__name__}: {exc}"
+        return payload
     payload["present"] = bool(sources)
     payload["sources"] = sources
     return payload

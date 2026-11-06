@@ -220,17 +220,50 @@ they are stale; rerun the generator and commit after changing any source SVG.
 
 ### Run tests
 
-Use the canonical runner on every host:
+Use the canonical runner on every host. Prefer `scripts/run_tests.sh` over bare
+`pytest` so local runs match CI (credentials cleared, `TZ=UTC` / `LANG=C.UTF-8`,
+temp `HERMES_HOME`, per-file subprocess isolation via
+`scripts/run_tests_parallel.py` — no xdist). See `AGENTS.md`.
 
 ```bash
+# Full suite
 scripts/run_tests.sh
+
+# One directory
 scripts/run_tests.sh tests/agent/ -v
+```
+
+#### Run a single test module quickly
+
+While iterating on a change, run only the tests you touched:
+
+```bash
+# One file
+scripts/run_tests.sh tests/agent/test_prompt_caching.py -q
+
+# Narrow further with -k (runner is file-granular; -k filters inside each file)
+scripts/run_tests.sh tests/agent/test_prompt_caching.py -k test_cache -q
+
+# Pytest flags pass through (no '--' required)
+scripts/run_tests.sh tests/agent/test_foo.py -v --tb=long
+```
+
+If you used the manual clone fallback and `hermes` / `pytest` are not already on
+`PATH`, activate the outside-tree venv first:
+
+```bash
+export VIRTUAL_ENV="$HOME/.hermes/venvs/hermes-dev"
+export PATH="$VIRTUAL_ENV/bin:$PATH"
+# or: source ~/.hermes/venvs/hermes-dev/bin/activate
 ```
 
 On Windows, run the script through Bash. When no local `.venv` or `venv`
 contains pytest, the runner accepts the explicit `HERMES_PYTHON` above. It
 clears credentials, isolates `HERMES_HOME`, and runs each test file in a separate
 subprocess through `scripts/run_tests_parallel.py`. It does not use xdist.
+
+Use bare `pytest` only for interactive debugging (`--pdb`, `--trace`). Re-run
+under `scripts/run_tests.sh` before opening a PR.
 
 Run the relevant JS workspace checks for JS changes. Native install/update
 E2E runs on disposable CI hosts, never against the developer's live app.

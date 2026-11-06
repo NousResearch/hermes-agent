@@ -153,7 +153,7 @@ export class PeerJoinError extends Error {
 
 interface PinnedPeer { kind: 'peer'; installation_id: string; capability_digest: string }
 type RoomAuthority = Pick<CanonicalRoom, 'room_id' | 'authority_gateway_id' | 'authority_epoch'>
-export interface PeerSeat { member: CanonicalRoomMember; route: ProfileRoute; renewal: boolean }
+export interface PeerSeat { member: CanonicalRoomMember; route: ProfileRoute; renewal: boolean; alreadyJoined?: boolean }
 
 const pinned = (member: CanonicalRoomMember) => member.target?.kind === 'peer' ? member.target as unknown as PinnedPeer : null
 
@@ -162,6 +162,7 @@ const pinned = (member: CanonicalRoomMember) => member.target?.kind === 'peer' ?
 export async function seatPeer(home: CanonicalGroupBinding, room: RoomAuthority, seat: PeerSeat): Promise<void> {
   try {
     await invitedAndRegistered(home, room, seat)
+    seatedAt.set(peerJoinKey(home, seat.member.member_id), Date.now())
     noteJoin(home, seat.member.member_id)
   } catch (error) {
     noteJoin(home, seat.member.member_id, error)
@@ -210,8 +211,8 @@ async function invitedAndRegistered(home: CanonicalGroupBinding, room: RoomAutho
     }
 
     if (typeof error?.code !== 'number') {
-      // A lost reply can follow a committed registration. Only this room's owner can confirm it.
-      if (sameRoom && peerMemberStates([seat.member], state?.driver_status?.peer_routes)[0]?.status === 'ready') {return}
+      // Readiness can confirm a first join, but an old route cannot prove a fresh grant.
+      if (!seat.alreadyJoined && sameRoom && peerMemberStates([seat.member], state?.driver_status?.peer_routes)[0]?.status === 'ready') {return}
       throw new PeerJoinError('registration_unconfirmed')
     }
 
@@ -361,14 +362,16 @@ export async function findPeerSeat(home: CanonicalGroupRoute, member: CanonicalR
   return { member, route: found.route, renewal: found.state.renewal }
 }
 
-/** Whether the home still holds `room` live under the authority it is seated against. */
-async function roomLive(home: CanonicalGroupBinding, room: RoomAuthority) {
-  const answer = await canonicalGroupRequest<{ room?: Partial<CanonicalRoom> }>(home, 'groups.state', {
+/** Check the room before inviting, and distinguish a first join from renewed access. */
+async function peerAlreadyJoined(home: CanonicalGroupBinding, room: RoomAuthority, member: CanonicalRoomMember) {
+  const answer = await canonicalGroupRequest<{ room?: Partial<CanonicalRoom>; driver_status?: { peer_routes?: unknown } }>(home, 'groups.state', {
     room_id: room.room_id, include_disbanded: true
   })
 
-  return answer?.room?.disbanded_at == null && answer?.room?.authority_gateway_id === room.authority_gateway_id &&
-    answer?.room?.authority_epoch === room.authority_epoch
+  if (answer?.room?.disbanded_at != null || answer?.room?.authority_gateway_id !== room.authority_gateway_id ||
+    answer?.room?.authority_epoch !== room.authority_epoch) {throw new PeerJoinError('room_ended')}
+
+  return peerMemberStates([member], answer.driver_status?.peer_routes)[0]?.status !== 'missing'
 }
 
 /** Seat a member of an existing room again (Retry): find its connection, invite, register. */
@@ -376,9 +379,7 @@ export async function rejoinPeer(binding: CanonicalGroupBinding, room: RoomAutho
   member: CanonicalRoomMember, roster: Partial<RosterRow>[]) {
   const seat = await findPeerSeat(binding, member, roster).then(async found => {
     // Finding the member's gateway can take a while: never ask it for a grant for a room that ended.
-    if (!await roomLive(binding, room)) {throw new PeerJoinError('room_ended')}
-
-    return found
+    return { ...found, alreadyJoined: await peerAlreadyJoined(binding, room, member) }
   }).catch(error => {
     noteJoin(binding, member.member_id, error)
     throw error
@@ -414,6 +415,73 @@ export async function startAgainWithout(binding: CanonicalGroupBinding, room: Ca
   })
 
   return { binding: replacement, room: next, unjoined, ended, disbandError }
+}
+
+/** When this Desktop last seated each member (`peerJoinKey`), in memory: after a restart, the first
+ *  open of a room seats its members again. */
+const seatedAt = new Map<string, number>()
+/** Renewals in flight, per room (`roomKey`) and member. */
+const renewing = new Map<string, Map<string, Promise<void>>>()
+/** For a member whose last renewal found no connection to its gateway: the roster's other connections
+ *  then. Its connection may just not have loaded, so a roster with another one tries it again at once. */
+const missedWith = new Map<string, ReadonlySet<string>>()
+const roomKey = (binding: CanonicalGroupBinding) => JSON.stringify([binding.connectionId, binding.profile, binding.roomId])
+
+/** A seat made here stays fresh for less than its grant's dispatch lifetime (`ttl_seconds`, one
+ *  day): until then the home can still renew the grant when it sends that member a turn. A failed
+ *  renewal is tried again a few minutes after it failed. */
+const SEAT_FRESH_MS = 20 * 60 * 60 * 1000
+const RENEW_AGAIN_MS = 5 * 60 * 1000
+/** How long a send waits for its room's renewals: past the home's probe of the member's gateway
+ *  (30 s, `PeerRunsHTTPClient`) and the invitation before it. The send is journaled before it waits. */
+const SEND_WAIT_MS = 45_000
+
+/** Seat again each member of another gateway whose last seat here is not fresh, when its room is open
+ *  and before a send (`peerRenewalSettled`). The home can renew a grant only while the grant still
+ *  allows dispatch, which it does for one day, and only when it sends the member a turn; so without
+ *  this, a member left a day without a turn needs a Retry. Only joined members, or members whose access
+ *  ended, are renewed: one that never joined or is away keeps its recovery row. A roster with no
+ *  Bot on another connection yet (still loading) renews nothing and counts as no attempt; one without
+ *  the member's connection yet is tried again as soon as it has another. A renewal that fails changes
+ *  nothing the member has now. */
+export function renewPeers(binding: CanonicalGroupBinding, room: CanonicalRoom, routes: unknown, roster: Partial<RosterRow>[]) {
+  const reach = new Set(roster.flatMap(bot => peerRoute(bot, binding.connectionId)?.connectionId ?? []))
+
+  if (!reach.size) {return}
+  const now = Date.now()
+  const inRoom = renewing.get(roomKey(binding)) ?? new Map<string, Promise<void>>()
+  renewing.set(roomKey(binding), inRoom)
+
+  for (const { member, status } of peerMemberStates(room.members, routes)) {
+    const key = peerJoinKey(binding, member.member_id)
+    const missed = missedWith.get(key)
+    const loaded = missed && [...reach].some(connection => !missed.has(connection))
+
+    if ((status !== 'ready' && status !== 'needs_reauthorization') || inRoom.has(member.member_id) ||
+      (now - (seatedAt.get(key) ?? 0) < SEAT_FRESH_MS && !loaded)) {continue}
+
+    seatedAt.set(key, now)
+    missedWith.delete(key)
+    inRoom.set(member.member_id, rejoinPeer(binding, room, member, roster)
+      .catch(error => {
+        seatedAt.set(key, Date.now() - SEAT_FRESH_MS + RENEW_AGAIN_MS)
+
+        if (error instanceof PeerJoinError && error.reason === 'peer_connection_missing') {missedWith.set(key, reach)}
+      })
+      .finally(() => inRoom.delete(member.member_id)))
+  }
+}
+
+/** A send waits, for up to `timeoutMs`, for the renewals its room has in flight, so its turns go out
+ *  under a fresh grant. */
+export function peerRenewalSettled(binding: CanonicalGroupBinding, timeoutMs = SEND_WAIT_MS): Promise<void> {
+  const inFlight = [...renewing.get(roomKey(binding))?.values() ?? []]
+
+  if (!inFlight.length) {return Promise.resolve()}
+  let timer: ReturnType<typeof setTimeout> | undefined
+
+  return Promise.race([Promise.all(inFlight), new Promise(resolve => { timer = setTimeout(resolve, timeoutMs) })])
+    .then(() => clearTimeout(timer))
 }
 
 /** A member the room pinned to another gateway, and whether it has joined (`ready`), as `groups.state`

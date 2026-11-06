@@ -31,7 +31,10 @@ def test_deferred_default_boundary_and_later_startup(tmp_path, monkeypatch, targ
     (root / "config.yaml").write_text("terminal:\n  backend: local\n" + (
         f"  home_mode: {target_mode}\n" if target_mode else ""))
     (root / ".env").write_text("PROFILE_MARKER=default\n")
-    (launch / "config.yaml").write_text("terminal: {backend: docker, home_mode: profile}\n")
+    # Explicit profile YAML wins over managed dotenv. Leave the launch mode
+    # unpinned for this control so the real loader can install administrator policy.
+    (launch / "config.yaml").write_text("terminal:\n  backend: docker\n" + (
+        "  home_mode: profile\n" if not managed_mode else ""))
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)

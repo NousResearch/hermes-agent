@@ -153,9 +153,11 @@ function spawnTokenPath(ownershipId, spawnNonce) {
   return `${ownershipDirectory(ownershipId)}/${validateSpawnNonce(spawnNonce)}.token`
 }
 
-// shell-single-quote a value for safe interpolation into a remote command.
+// shell-single-quote a value for a remote command. Backslash-free:
+// MSYS ssh (Git for Windows) collapses backslashes in the forwarded
+// command, so the classic form arrives corrupted; `'"'"'` needs none.
 function shq(value) {
-  return `'${String(value).replace(/'/g, `'\\''`)}'`
+  return `'${String(value).replace(/'/g, `'"'"'`)}'`
 }
 
 function validateRemotePath(p) {

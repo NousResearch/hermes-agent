@@ -439,9 +439,11 @@ pnpm --dir apps/desktop run dev
 ```
 
 Activation provides the pnpm version root `package.json` pins in `devEngines`.
-Hermes's builds and `hermes update` refuse any other pnpm version (a direct
-`pnpm install` does not check it), and the root `preinstall` script refuses
-`npm install` (npx and other npm commands only warn).
+Every install refuses any other pnpm version, a direct or filtered `pnpm install`
+included: pnpm 10 and 11 refuse the root `engines.pnpm` range (`^12`) themselves,
+and the root `preinstall` script refuses any pnpm but the `pm/lock.json` one (pnpm
+12 does not compare `engines.pnpm` with itself) and `npm install` (npx and other
+npm commands only warn).
 
 The website is a separate npm project: `npm ci --prefix website`, then
 `npm run build:fast --prefix website`. PM activation supplies tools, not these

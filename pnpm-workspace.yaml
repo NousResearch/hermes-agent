@@ -7,9 +7,10 @@ packages:
 
 engineStrict: true
 
-# The pinned pnpm (root package.json devEngines, kept equal to pm/lock.json) is enforced by
-# scripts/build/node-deps.mjs. Recording the pin in pnpm-lock.yaml would prepend a second YAML
-# document that lockfile scanners (osv-scanner) do not read past.
+# The pinned pnpm (root package.json devEngines, kept equal to pm/lock.json) is enforced by the
+# root preinstall and scripts/build/node-deps.mjs; engines.pnpm makes pnpm <= 11 refuse as well.
+# Recording the pin in pnpm-lock.yaml would prepend a second YAML document that lockfile scanners
+# (osv-scanner) do not read past.
 pmOnFail: ignore
 
 # `pnpm run` never installs: installs belong to scripts/build/node-deps.mjs (and CI's explicit steps).

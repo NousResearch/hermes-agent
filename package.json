@@ -4,7 +4,7 @@
   "description": "An AI agent with advanced tool-calling capabilities, featuring a flexible toolsets system for organizing and managing tools.",
   "private": true,
   "scripts": {
-    "preinstall": "node -e \"if(!/^pnpm\\//.test(process.env.npm_config_user_agent||'')){console.error('This repository installs with pnpm: run pnpm install --frozen-lockfile');process.exit(1)}\"",
+    "preinstall": "node -e \"const ua=(process.env.npm_config_user_agent||'').split(' ')[0];const want='pnpm/'+require('./pm/lock.json').packages.pnpm.version;if(ua!==want){console.error(ua.startsWith('pnpm/')?want+' is required, found '+ua+': source ./activate provides it':'This repository installs with pnpm: run pnpm install --frozen-lockfile');process.exit(1)}\"",
     "postinstall": "echo '✅ Node dependencies installed. Run: python run_agent.py --help'",
     "install:root": "pnpm install --filter .",
     "install:web": "pnpm install --filter web...",
@@ -41,7 +41,8 @@
     "typescript-eslint": "8.71.1"
   },
   "engines": {
-    "node": ">=26"
+    "node": ">=26",
+    "pnpm": "^12"
   },
   "devEngines": {
     "packageManager": {

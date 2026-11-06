@@ -69,8 +69,8 @@ def compression_publication_ids(conn, parent_session_id, child_session_id):
 
 
 def _import_ids(db, conn, session_id, operation, payload, prepared, reserved):
-    return {row['id'] for row in payload.get('sessions', ())
-            if isinstance(row, dict) and isinstance(row.get('id'), str)}
+    from hermes_state_portability import import_session_id
+    return {sid for row in payload.get('sessions', ()) if (sid := import_session_id(row))}
 
 
 def _metadata_ids(db, conn, session_id, operation, payload, prepared, reserved):

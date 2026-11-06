@@ -210,7 +210,8 @@ class GatewayModelCommandsMixin:
         return None
 
     async def _record_model_switch(
-        self, result, ctx: _ModelSwitchContext, *, source, one_turn: bool, picker: bool
+        self, result, ctx: _ModelSwitchContext, *, source, one_turn: bool, picker: bool,
+        persist_db: bool = True,
     ) -> Optional[str]:
         """Persist a committed switch: session DB, next-turn note, config write-through, override map.
 
@@ -221,7 +222,7 @@ class GatewayModelCommandsMixin:
 
         # Persist the new model to the session DB so the dashboard shows the updated model (#34850).
         _sess_db = getattr(self, "_session_db", None)
-        if _sess_db is not None and not picker:  # picker publishes the DB model with its mutation receipt
+        if _sess_db is not None and persist_db:  # receipt-backed picks publish in their own transaction
             try:
                 _sess_entry = await self.async_session_store.get_or_create_session(source)
                 # Typed path: consume the auto-reset flag so the next message's cleanup does not

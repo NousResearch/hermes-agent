@@ -77,7 +77,8 @@ async def _pick_model(authority, owner, live, payload, row):
         return refusal, None
     # No in-place swap of the cached agent: a turn may be running on it. The override is what the
     # next turn builds from, and the record step evicts the cached agent.
-    await runner._record_model_switch(result, ctx, source=live.source, one_turn=False, picker=True)
+    await runner._record_model_switch(
+        result, ctx, source=live.source, one_turn=False, picker=True, persist_db=False)
     fields = {'model': result.new_model, 'provider': result.target_provider}
     if 'reasoning' in payload:
         _apply_reasoning(runner, live, payload['reasoning'])

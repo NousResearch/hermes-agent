@@ -2600,6 +2600,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 "confirmed": bool(runtime_request.get("require_model_lock")),
                 "updated_at": time.time()}}
         title = body.get("title")
+        if title is not None:
+            try:
+                title = db.sanitize_title(str(title))
+            except ValueError as exc:
+                return _error_response(str(exc), 400, code="invalid_title")
 
         def _atomic(conn):
             from hermes_state_mutation_retirement import create_conflict
@@ -2612,7 +2617,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 (session_id, source, model_name, json.dumps(model_config) if model_config else None,
                  system_prompt, time.time()))
             if title is not None:
-                clean_title = db.sanitize_title(str(title))
+                clean_title = title
                 if clean_title:
                     try:
                         db._resolve_title_conflict(conn, session_id, clean_title)

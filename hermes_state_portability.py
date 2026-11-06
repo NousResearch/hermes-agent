@@ -79,6 +79,11 @@ _IMPORT_FLOAT_COLS = ("ended_at", "estimated_cost_usd", "actual_cost_usd")
 _IMPORT_FLAG_COLS = ("archived", "auto_archived", "pinned", "hidden")
 
 
+def import_session_id(raw: Any) -> str:
+    """Canonical persisted identity shared by import validation, fences and writes."""
+    return str(raw.get("id") or "").strip() if isinstance(raw, dict) else ""
+
+
 def _rich_select(select_cols: str, where: str, tail: str = "", prompt_select: Optional[str] = "") -> str:
     """``list_sessions_rich``-shaped SELECT: resolved prompt (``prompt_select`` fragment;
     None omits prompt columns AND the join), preview, last_active. Whitespace matches
@@ -782,7 +787,7 @@ class SessionPortabilityMixin:
         seen_ids: set[str] = set()
         totals = {"messages": 0, "bytes": 0}
         for index, raw in enumerate(sessions):
-            session_id = str(raw.get("id") or "").strip() if isinstance(raw, dict) else ""
+            session_id = import_session_id(raw)
             try:
                 item = self._validate_import_session(raw, session_id, seen_ids, totals)
             except ValueError as exc:
@@ -956,7 +961,7 @@ class SessionPortabilityMixin:
         parent_updates: list[tuple[str, str]] = []
         for item in normalized:
             raw = item["session"]
-            session_id = str(raw.get("id") or "").strip()
+            session_id = import_session_id(raw)
             if conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)).fetchone():
                 skipped_ids.append(session_id)
                 continue

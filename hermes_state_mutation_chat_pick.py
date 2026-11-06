@@ -52,6 +52,8 @@ def prepare_chat_pick(db, *, epoch, key, digest, session_id, params):
 def commit_chat_pick(db, *, epoch, key, digest, session_id, params, result, model_update=None):
     """Bump the mount's revision and store *result* (plus the new revision) as the receipt, in one
     write that re-checks the fences. Returns the committed receipt result."""
+    if model_update is not None and not db.flush_token_counts():
+        raise RuntimeStoreError('storage_unavailable')
     def write(conn):
         _epoch(conn, epoch)
         replay = replay_mutation_receipt(conn, key, digest)

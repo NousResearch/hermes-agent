@@ -48,7 +48,9 @@ def analyse(files):
     mods = {}; edges = collections.defaultdict(set)
     t0 = time.perf_counter()
     for p in files:
-        try: src = open(p, encoding="utf-8", errors="replace").read()
+        try:
+            with open(p, encoding="utf-8", errors="replace") as fh:
+                src = fh.read()
         except Exception: continue
         lines = src.count("\n") + (0 if src.endswith("\n") else 1)
         code, comm, doc = code_lines(src)

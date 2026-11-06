@@ -1,0 +1,55 @@
+name: zaprite
+repo: https://github.com/welliv/zaprite-hermes
+# Full SHA of the commit that landed this plugin tree on main.
+# Not the commit that writes this pin. Branches, tags, and short SHAs are rejected.
+sha: "04dd6325b9921aa5e4b7b1d0eebe36c2b470758d"
+description: Get paid from a Hermes chat. One checkoutUrl for card, bank, Lightning, on-chain bitcoin, and stablecoins, then re-fetch until Paid.
+maintainer: welliv
+tier: community
+category: tools
+requires_hermes: ">=0.21.0"
+docs_url: https://github.com/welliv/zaprite-hermes
+version: "0.1.0"
+title: Zaprite
+readme: true
+platforms: []
+known_issues:
+  - "Sandbox org for a first payment (no real money). A live org key opens real checkouts. The plugin cannot switch orgs."
+  - "Webhooks are id-only and unsigned. Re-fetch the order. A webhook is not a payment."
+  - "No Zaprite API for connections, checkout edits, payment-link create, POS create, event create, recurring invoices, refunds, or branding write. Logo, accent color, and display name are Settings → Profile. API invoices inherit them. zaprite_bridge_handoff gap branding_profile opens that page, not Connections or Checkouts."
+  - "Doctor and zaprite_bridge_handoff build dashboard links with org_links(orgId). Once an orgId is known those links use /org/{orgId}/. A first run or a missing key still uses /org/default/ until an orgId is stored."
+capabilities:
+  provides_tools:
+    - zaprite_create_order
+    - zaprite_create_invoice
+    - zaprite_get_order
+    - zaprite_list_orders
+    - zaprite_create_quote
+    - zaprite_watch_order
+    - zaprite_update_order
+    - zaprite_charge_profile
+    - zaprite_create_contact
+    - zaprite_get_contact
+    - zaprite_list_contacts
+    - zaprite_update_contact
+    - zaprite_delete_contact
+    - zaprite_report
+    - zaprite_list_overdue
+    - zaprite_doctor
+    - zaprite_list_webhooks
+    - zaprite_create_webhook
+    - zaprite_delete_webhook
+    - zaprite_bridge_handoff
+    - zaprite_sovereign_rails
+    - zaprite_list_payment_links
+    - zaprite_get_payment_link
+    - zaprite_list_tickets
+    - zaprite_get_ticket
+    - zaprite_issue_tickets
+    - zaprite_ticket_activity
+  provides_hooks:
+    - pre_tool_call
+    - post_approval_response
+  provides_middleware: []
+  requires_env:
+    - ZAPRITE_API_KEY

@@ -86,8 +86,8 @@ def _uint(value):
 
 def _encode_cursor(binding, key, poll):
     """*binding*: ``(session_id, subagent_id, order)``. *key*: the page edge ``(position, durable)``, None
-    for the start (an oldest-order read of an empty transcript), or ``(position, durable, sent)`` when the
-    page ended inside that row's group (its handoffs and the row, in reading order) after *sent* of them. *poll*: ``(segment, through, state)`` of an
+    for the start (an oldest-order read of an empty transcript), or ``(position, durable, n)`` when the
+    page ended inside that row's group (its handoffs and the row, in reading order; *n*: ``_sent``). *poll*: ``(segment, through, state)`` of an
     oldest-order read, else None."""
     segment, through, state = poll if poll is not None else (None, None, None)
     payload = [_CURSOR_TAG, *binding, list(key) if key is not None else [], segment, through,
@@ -217,23 +217,25 @@ def _window(db, target, latest, after, count, lineage, whole=None):
 def _items(rows, keys, handoffs, latest, after):
     """What the window can put on the page, in reading order: ``(row index, slot)``. A row's group is one
     item per handoff shown before it (slot: its index in ``handoffs[row]``) and one for the row itself
-    (slot: its handoff count), in reading order. When the cursor key has a third part (``sent``) and the
-    window starts at the row it names, that many items of the row's group were sent already."""
+    (slot: its handoff count), in reading order. When the cursor key has a third part (``_sent``) and the
+    window starts at the row it names, the items of the row's group that were sent already are skipped."""
     groups = []
     for index in (range(len(rows) - 1, -1, -1) if latest else range(len(rows))):
         group = [(index, slot) for slot in range(len(handoffs[index]) + 1)]
         groups.append(group[::-1] if latest else group)
     if groups and after is not None and len(after) > 2 and keys[groups[0][0][0]][1] == after[1]:
-        groups[0] = groups[0][after[2]:]
+        groups[0] = groups[0][len(groups[0]) - after[2]:] if latest else groups[0][after[2]:]
     return [item for group in groups for item in group]
 
 
 def _sent(handoffs, latest, item):
-    """How many items of its row's group *item* and the ones before it in reading order are; None when that
-    is the whole group (the row is done)."""
+    """Oldest first: how many items of its row's group *item* and the ones before it are. Newest first: how many
+    are left after it, the older handoffs, which a later compaction's re-wrap never shifts (it adds its
+    handoff next to the row, on the side already read). None when *item* ends the group (the row is done)."""
     index, slot = item
-    count = len(handoffs[index]) - slot + 1 if latest else slot + 1
-    return None if count == len(handoffs[index]) + 1 else count
+    if latest:
+        return slot or None
+    return None if slot == len(handoffs[index]) else slot + 1
 
 
 def _take(roles, latest, limit):

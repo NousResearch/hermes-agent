@@ -6,6 +6,7 @@ import logging
 import os
 import shlex
 import shutil
+import stat
 import subprocess
 import tempfile
 from pathlib import Path
@@ -25,6 +26,10 @@ logger = logging.getLogger(__name__)
 # Skip multiplexing there; each command pays a fresh connection but the backend works. See #73927.
 _SSH_MULTIPLEX = os.name != "nt"
 
+# 103 usable bytes on macOS, less /<16 hex>.sock and OpenSSH's .<16 random> listener suffix.
+_CONTROL_DIR_MAX_BYTES = 103 - 22 - 17
+_CONTROL_FALLBACK_ROOT = Path("/tmp")  # no-tmp: ok — short per-uid AF_UNIX fallback
+
 # Module-level binding: tests patch ``ssh._load_hermes_env_vars`` to fake the .env file.
 _load_hermes_env_vars = load_hermes_env_vars
 
@@ -40,6 +45,60 @@ def _ensure_ssh_available() -> None:
 def _sync_error(reason: str, subject: str, what: str = "the SSH connection") -> EnvironmentConnectionError:
     return EnvironmentConnectionError(
         reason, retry_hint=f"{subject} failed — verify {what} is healthy, then retry.")
+
+
+def _ensure_owned_dir(path: Path) -> Path:
+    """Create *path* 0700, or adopt an existing one only if it is a real directory owned by
+    this uid — fail closed.
+
+    ``lstat`` never dereferences, so a symlink planted at the predictable name is refused
+    instead of adopted or written through (#80284, #127862)."""
+    path.mkdir(mode=0o700, exist_ok=True)
+    st = path.lstat()
+    euid = os.geteuid()  # windows-footgun: ok — called only by the POSIX ControlMaster path
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != euid:
+        raise PermissionError(
+            f"{path} exists but is not a directory owned by uid {euid}"
+        )
+    # A reused directory must be private before a master can listen there.
+    os.chmod(path, 0o700)
+    return path
+
+
+def _open_control_dir() -> Path:
+    """Short, per-user directory for ControlMaster sockets (#133436).
+
+    A named profile re-homes the scratch TMPDIR to ``~/.hermes/profiles/<name>/cache/scratch``,
+    which blows the AF_UNIX ``sun_path`` cap (108 bytes Linux / 104 macOS) once
+    ``hermes-ssh/`` + the 16-hex socket name + OpenSSH's 17-byte ControlMaster suffix are
+    appended. Try XDG_RUNTIME_DIR, scratch, then a per-uid /tmp directory. Every
+    candidate must fit the complete listener path in bytes and be owned by this uid.
+    Never adopt a shared /tmp/hermes-ssh directory another uid could pre-create."""
+    # No ControlMaster/AF_UNIX on Windows; %TEMP% is already per-user.
+    if os.name == "nt":
+        control_dir = Path(tempfile.gettempdir()) / "hermes-ssh"
+        control_dir.mkdir(parents=True, exist_ok=True)
+        return control_dir
+    euid = os.geteuid()  # windows-footgun: ok — Windows returns above
+    candidates: list[Path] = []
+    xdg = os.environ.get("XDG_RUNTIME_DIR", "").strip()
+    if xdg and Path(xdg).is_absolute():
+        candidates.append(Path(xdg) / "hermes-ssh")
+    candidates.append(Path(tempfile.gettempdir()) / "hermes-ssh")
+    candidates.append(_CONTROL_FALLBACK_ROOT / f"hermes-ssh-{euid}")
+
+    failure: OSError | None = None
+    for control_dir in candidates:
+        if not control_dir.is_absolute() or len(os.fsencode(control_dir)) > _CONTROL_DIR_MAX_BYTES:
+            continue
+        try:
+            return _ensure_owned_dir(control_dir)
+        except OSError as exc:
+            failure = exc
+    raise EnvironmentConnectionError(
+        f"No usable SSH control-socket directory: {failure or 'all paths exceed the socket limit'}",
+        retry_hint="Provide a short, writable XDG_RUNTIME_DIR or temporary directory, then retry.",
+    ) from failure
 
 
 class SSHEnvironment(BaseEnvironment):
@@ -61,8 +120,7 @@ class SSHEnvironment(BaseEnvironment):
                  probe_only: bool = False, sync_files: bool = True, persistent: bool = True):
         super().__init__(cwd=cwd, timeout=timeout, persist_env=persistent)
         self.host, self.user, self.port, self.key_path = host, user, port, key_path
-        self.control_dir = Path(tempfile.gettempdir()) / "hermes-ssh"
-        self.control_dir.mkdir(parents=True, exist_ok=True)
+        self.control_dir = _open_control_dir()
         # Short, deterministic socket name: the path must stay under macOS's 104-byte sun_path
         # limit (raw user@host:port + SSH's 16-byte suffix under a deep $TMPDIR exceeds it), and
         # stability across reconnects keeps ControlMaster reuse working. A probe gets its own

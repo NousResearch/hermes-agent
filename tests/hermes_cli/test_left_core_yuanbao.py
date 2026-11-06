@@ -122,7 +122,10 @@ def test_plugins_disabled_naming_the_bundled_adapter_is_not_use_and_still_disabl
                  config=f"plugins:\n  disabled: [{name}]\n")
     assert lcm.yuanbao_in_use(home) is False
     manifest = PluginManifest(name="yuanbao", source="user", path=str(home / "plugins" / "yuanbao"), key="yuanbao")
-    assert gate_manifest(manifest, {"platforms/yuanbao"}, None).error == "disabled via config"
+    assert gate_manifest(manifest, {name}, None).error == "disabled via config"
+    # Installed and enabled (before the update, or by hand): core's old disable still wins.
+    assert gate_manifest(manifest, {name}, {"yuanbao"}).error == \
+        "listed in both plugins.enabled and plugins.disabled — disabled wins"
 
 
 def test_a_bare_yuanbao_in_plugins_disabled_is_still_use(tmp_path):
@@ -160,3 +163,15 @@ def test_every_platform_core_knows_but_yuanbao_keeps_the_yb_tools_off():
     assert set(PLATFORMS) <= set(feature.off_platforms)
     # Gateway-only platforms (msgraph_webhook, relay) host sessions in the same process as the adapter.
     assert {p.value for p in Platform} - {"local", "yuanbao"} <= set(feature.off_platforms)
+
+
+def test_a_legacy_hermes_list_kept_the_yb_tools_off_and_keeps_them_off(tmp_path):
+    """tools_config reads a saved ``[hermes]`` as hermes-cli + hermes-api-server, neither of which carried yb_*;
+    ``hermes-gateway`` included ``hermes-yuanbao``, so that row keeps them."""
+    home = _home(tmp_path, env="YUANBAO_APP_ID=a\nYUANBAO_APP_SECRET=s\n",
+                 config="platform_toolsets:\n  telegram: [hermes]\n  slack: [hermes-gateway]\n")
+    lcm.migrate_home(home, install=lambda name: (home / "plugins" / name).mkdir(parents=True) or {"ok": True},
+                     say=lambda message: None)
+    from hermes_cli.config import read_user_config_raw
+    known = read_user_config_raw(home / "config.yaml")["known_plugin_toolsets"]
+    assert known["telegram"] == ["yuanbao"] and "slack" not in known

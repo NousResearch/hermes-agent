@@ -256,9 +256,9 @@ def test_result_projection_excludes_unrelated_and_uncommitted_text():
 
 def test_ordinary_group_apis_still_deny_nonowner_after_relay(relay):
     from gateway.session_group_controls import _group
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     relay.call()
-    actor = Principal('fixture-sender', str(relay.home), frozenset({'session:read', 'session:submit'}), 'fixture')
+    actor = SessionActor('fixture-sender', str(relay.home), frozenset({'session:read', 'session:submit'}), 'fixture')
     before = events(relay)
     for method, params in [('groups.state', {}), ('groups.log', {}), ('groups.send', {
             'event_id': 'forged', 'payload': {'text': 'forged', 'thread_id': 'forged'}})]:

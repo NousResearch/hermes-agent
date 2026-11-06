@@ -121,7 +121,7 @@ describe('desktop filesystem facade', () => {
 
     expect(api).toHaveBeenCalledWith({ path: '/api/fs/list?path=%2Fbackend', profile: 'phone' })
     expect(api).toHaveBeenCalledWith({ path: '/api/fs/default-cwd', profile: 'phone' })
-    expect(remoteSelect).toHaveBeenCalledWith({ defaultPath: '/backend', directories: true, multiple: false })
+    expect(remoteSelect).toHaveBeenCalledWith({ defaultPath: '/backend', directories: true, multiple: false }, undefined)
     expect(readDir).not.toHaveBeenCalled()
     expect(selectPaths).not.toHaveBeenCalled()
   })
@@ -335,7 +335,7 @@ describe('desktop filesystem facade', () => {
       '/remote/project'
     ])
 
-    expect(remoteSelect).toHaveBeenCalledWith({ defaultPath: '/remote', directories: true, multiple: false })
+    expect(remoteSelect).toHaveBeenCalledWith({ defaultPath: '/remote', directories: true, multiple: false }, undefined)
     expect(selectPaths).not.toHaveBeenCalled()
   })
 
@@ -357,7 +357,7 @@ describe('desktop filesystem facade', () => {
 
     await expect(selectDesktopPaths({ directories: true })).resolves.toEqual(['/remote/project'])
 
-    expect(remoteSelect).toHaveBeenCalledWith({ directories: true, multiple: false })
+    expect(remoteSelect).toHaveBeenCalledWith({ directories: true, multiple: false }, undefined)
     expect(selectPaths).not.toHaveBeenCalled()
   })
 

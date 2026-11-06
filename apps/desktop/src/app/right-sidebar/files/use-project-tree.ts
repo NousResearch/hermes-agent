@@ -2,7 +2,7 @@ import { useStore } from '@nanostores/react'
 import { atom } from 'nanostores'
 import { useCallback, useEffect, useMemo } from 'react'
 
-import { desktopFsCacheKey } from '@/lib/desktop-fs'
+import { desktopFsCacheKey, type DesktopFsSessionScope } from '@/lib/desktop-fs'
 import { $connection } from '@/store/session'
 import { $workspaceChangeTick, consumeWorkspaceChange } from '@/store/workspace-events'
 
@@ -187,10 +187,11 @@ async function fallbackRootFor(cwd: string, sourceIsRemote: boolean): Promise<st
 async function loadRoot(
   cwd: string,
   {
-    connectionKey = desktopFsCacheKey(),
+    scope,
+    connectionKey = desktopFsCacheKey(undefined, scope),
     force = false,
     reset = false
-  }: { connectionKey?: string; force?: boolean; reset?: boolean } = {}
+  }: { connectionKey?: string; force?: boolean; reset?: boolean; scope?: DesktopFsSessionScope } = {}
 ) {
   if (!cwd) {
     clearProjectTree()
@@ -209,7 +210,7 @@ async function loadRoot(
   inflight.clear()
 
   if (force || current.cwd !== cwd) {
-    clearProjectDirCache(cwd)
+    clearProjectDirCache(cwd, scope)
   }
 
   // Re-reading the SAME root — the error retry below, the refresh button, a
@@ -240,13 +241,13 @@ async function loadRoot(
   let error: string | undefined
 
   try {
-    ;({ entries, error } = await readProjectDir(cwd, cwd))
+    ;({ entries, error } = await readProjectDir(cwd, cwd, scope))
 
-    if (error && desktopFsCacheKey() === connectionKey) {
+    if (error && desktopFsCacheKey(undefined, scope) === connectionKey) {
       const fallback = await fallbackRootFor(cwd, sourceIsRemote)
 
       if (fallback) {
-        const retry = await readProjectDir(fallback, fallback)
+        const retry = await readProjectDir(fallback, fallback, scope)
 
         if (!retry.error) {
           resolvedCwd = fallback
@@ -260,7 +261,7 @@ async function loadRoot(
   }
 
   setProjectTree(latest => {
-    if (latest.cwd !== cwd || latest.requestId !== requestId || desktopFsCacheKey() !== connectionKey) {
+    if (latest.cwd !== cwd || latest.requestId !== requestId || desktopFsCacheKey(undefined, scope) !== connectionKey) {
       return latest
     }
 
@@ -290,7 +291,8 @@ export function resetProjectTreeState() {
 async function revalidateTree(
   cwd: string,
   change: { dirs: string[]; full: boolean },
-  connectionKey: string
+  connectionKey: string,
+  scope?: DesktopFsSessionScope
 ): Promise<void> {
   const state = $projectTree.get()
 
@@ -301,7 +303,7 @@ async function revalidateTree(
     state.cwd !== cwd ||
     !state.loaded ||
     lastConnectionKey !== connectionKey ||
-    desktopFsCacheKey() !== connectionKey
+    desktopFsCacheKey(undefined, scope) !== connectionKey
   ) {
     return
   }
@@ -322,14 +324,14 @@ async function revalidateTree(
       return
     }
 
-    const reads = await Promise.all(targets.map(async dir => ({ dir, ...(await readProjectDir(dir, rootPath)) })))
+    const reads = await Promise.all(targets.map(async dir => ({ dir, ...(await readProjectDir(dir, rootPath, scope)) })))
 
     setProjectTree(latest => {
       if (
         latest.cwd !== cwd ||
         latest.requestId !== state.requestId ||
         !latest.loaded ||
-        desktopFsCacheKey() !== connectionKey ||
+        desktopFsCacheKey(undefined, scope) !== connectionKey ||
         showsIgnoredFiles(rootPath) !== filterAtRead
       ) {
         return latest
@@ -359,7 +361,7 @@ async function revalidateTree(
   // Opaque fallback: reconcile every loaded dir. Siblings read concurrently
   // (Promise.all keeps order); loaded subfolders recurse.
   const reconcile = async (dirPath: string, existing: TreeNode[]): Promise<TreeNode[]> => {
-    const { entries, error } = await readProjectDir(dirPath, rootPath)
+    const { entries, error } = await readProjectDir(dirPath, rootPath, scope)
 
     if (error) {
       return existing
@@ -386,7 +388,7 @@ async function revalidateTree(
     latest.cwd === cwd &&
     latest.requestId === state.requestId &&
     latest.loaded &&
-    desktopFsCacheKey() === connectionKey &&
+    desktopFsCacheKey(undefined, scope) === connectionKey &&
     showsIgnoredFiles(rootPath) === filterAtRead
       ? { ...latest, data: nextData }
       : latest
@@ -399,12 +401,17 @@ async function revalidateTree(
  * remounts cannot reset the browser. A placeholder leaf renders so the
  * disclosure caret shows for unloaded folders. `refreshRoot` invalidates the
  * whole tree (used after cwd change or manual refresh).
+ *
+ * `sessionId` is the session the cwd belongs to. Its owner (a Bot's profile, not the
+ * window's) answers every read, and keys the tree, so focusing another owner's chat
+ * on the same connection reloads the tree instead of reusing the other owner's view.
  */
-export function useProjectTree(cwd: string): UseProjectTreeResult {
+export function useProjectTree(cwd: string, sessionId?: null | string): UseProjectTreeResult {
   const state = useStore($projectTree)
   const connection = useStore($connection)
   const workspaceTick = useStore($workspaceChangeTick)
-  const connectionKey = desktopFsCacheKey(connection)
+  const scope = useMemo<DesktopFsSessionScope | undefined>(() => (sessionId ? { sessionId } : undefined), [sessionId])
+  const connectionKey = desktopFsCacheKey(connection, scope)
   // Subscribed so a toggle re-renders the header; the roots list itself is read
   // through showsIgnoredFiles so every caller shares one resolver.
   useStore($showIgnoredRoots)
@@ -412,7 +419,10 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
   const effectiveCwd = state.cwd === cwd && state.resolvedCwd ? state.resolvedCwd : cwd
   const showIgnored = showsIgnoredFiles(effectiveCwd)
 
-  const refreshRoot = useCallback(() => loadRoot(cwd, { connectionKey, force: true }), [connectionKey, cwd])
+  const refreshRoot = useCallback(
+    () => loadRoot(cwd, { connectionKey, force: true, scope }),
+    [connectionKey, cwd, scope]
+  )
 
   // Flipping the filter changes what every already-read directory contains, so
   // every loaded listing is stale by construction. `loadRoot(force)` is the
@@ -427,9 +437,9 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
         return
       }
 
-      void revalidateTree(cwd, { dirs: [], full: true }, connectionKey)
+      void revalidateTree(cwd, { dirs: [], full: true }, connectionKey, scope)
     },
-    [connectionKey, cwd, effectiveCwd]
+    [connectionKey, cwd, effectiveCwd, scope]
   )
 
   const setNodeOpen = useCallback(
@@ -478,7 +488,7 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
       inflight.add(inflightKey)
 
       setProjectTree(current => {
-        if (current.cwd !== cwd || desktopFsCacheKey() !== connectionKey) {
+        if (current.cwd !== cwd || desktopFsCacheKey(undefined, scope) !== connectionKey) {
           return current
         }
 
@@ -494,7 +504,7 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
       let error: string | undefined
 
       try {
-        ;({ entries, error } = await readProjectDir(id, rootPath))
+        ;({ entries, error } = await readProjectDir(id, rootPath, scope))
       } catch (cause) {
         error = readError(cause)
       } finally {
@@ -507,7 +517,7 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
         if (
           current.cwd !== cwd ||
           current.requestId !== requestId ||
-          desktopFsCacheKey() !== connectionKey ||
+          desktopFsCacheKey(undefined, scope) !== connectionKey ||
           showsIgnoredFiles(rootPath) !== filterAtRead
         ) {
           return current
@@ -524,16 +534,16 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
         }
       })
     },
-    [connectionKey, cwd]
+    [connectionKey, cwd, scope]
   )
 
   // Live, non-destructive refresh when the agent touches the tree (skip the
   // very first render: tick 0 is the initial value, not a real change).
   useEffect(() => {
     if (workspaceTick > 0) {
-      void revalidateTree(cwd, consumeWorkspaceChange(), connectionKey)
+      void revalidateTree(cwd, consumeWorkspaceChange(), connectionKey, scope)
     }
-  }, [connectionKey, cwd, workspaceTick])
+  }, [connectionKey, cwd, scope, workspaceTick])
 
   useEffect(() => {
     const connectionChanged = lastConnectionKey !== '' && lastConnectionKey !== connectionKey
@@ -543,13 +553,13 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
       clearProjectDirCache()
       // Same path, different machine: what is on screen was read from the old
       // backend, so it has to go even though the cwd string is unchanged.
-      void loadRoot(cwd, { connectionKey, force: true, reset: true })
+      void loadRoot(cwd, { connectionKey, force: true, reset: true, scope })
 
       return
     }
 
-    void loadRoot(cwd, { connectionKey })
-  }, [connectionKey, cwd])
+    void loadRoot(cwd, { connectionKey, scope })
+  }, [connectionKey, cwd, scope])
 
   // Self-heal: an errored root re-probes every few seconds while the tree is
   // mounted. Each attempt bumps requestId, so a persistent error re-arms the
@@ -559,10 +569,13 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
       return
     }
 
-    const timer = window.setTimeout(() => void loadRoot(cwd, { connectionKey, force: true }), ROOT_ERROR_RETRY_MS)
+    const timer = window.setTimeout(
+      () => void loadRoot(cwd, { connectionKey, force: true, scope }),
+      ROOT_ERROR_RETRY_MS
+    )
 
     return () => window.clearTimeout(timer)
-  }, [connectionKey, cwd, state.cwd, state.requestId, state.rootError])
+  }, [connectionKey, cwd, scope, state.cwd, state.requestId, state.rootError])
 
   // While showing the fallback root, quietly re-probe the session's real cwd
   // (a worktree re-created, a checkout restored) and switch back when it
@@ -577,10 +590,10 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
     let cancelled = false
 
     const timer = window.setInterval(() => {
-      void readProjectDir(cwd, cwd)
+      void readProjectDir(cwd, cwd, scope)
         .then(({ error }) => {
-          if (!cancelled && !error && desktopFsCacheKey() === connectionKey) {
-            void loadRoot(cwd, { connectionKey, force: true })
+          if (!cancelled && !error && desktopFsCacheKey(undefined, scope) === connectionKey) {
+            void loadRoot(cwd, { connectionKey, force: true, scope })
           }
         })
         .catch(() => undefined)
@@ -590,7 +603,7 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
       cancelled = true
       window.clearInterval(timer)
     }
-  }, [connectionKey, cwd, usingFallback])
+  }, [connectionKey, cwd, scope, usingFallback])
 
   return useMemo(
     () => ({

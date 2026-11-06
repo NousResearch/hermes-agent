@@ -9,6 +9,10 @@ generator was calibrated against the deployed server: ~400 RMS realistic speech 
 
 No network, no models, no audio devices. STT and the agent turn are the only things a test
 mocks; VAD, endpointing, WAV capture and PCM resampling all run for real.
+
+The signals are speech-SHAPED noise, so these helpers pin the ENERGY detector (the fallback when
+Silero can't load): this is that detector's regression wall. Silero, correctly, does not hear
+shaped noise as speech; its logic is covered with scripted probabilities instead.
 """
 from __future__ import annotations
 
@@ -97,7 +101,7 @@ def run_utterances(pcm_segments: list[np.ndarray], *, transcript: str = "heard",
 
     results: list[str] = []
     with mocked_stt(transcript):
-        session = ConverseSession(np, input_rate=input_rate)
+        session = ConverseSession(np, input_rate=input_rate, vad_model="energy")
         session.start()
         try:
             session.stream.feed(calibration().tobytes())
@@ -138,7 +142,8 @@ def collect_session_events(pcm_segments: list[np.ndarray], *, quiet_interval: fl
 
     events: list = []
     with mocked_stt("heard"):
-        session = ConverseSession(np, input_rate=input_rate, quiet_interval=quiet_interval)
+        session = ConverseSession(np, input_rate=input_rate, quiet_interval=quiet_interval,
+                                  vad_model="energy")
         session.start()
         try:
             session.stream.feed(calibration().tobytes())

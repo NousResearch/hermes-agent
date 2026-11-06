@@ -53,4 +53,8 @@ VOICE_DEFAULTS = {
     # model: "" = off (fixed silence endpoint); any truthy value enables it. threshold =
     # P(turn complete) at/above which the turn commits.
     "endpoint": {"model": "", "threshold": 0.5},
+    # Speech detector for the converse WS: "silero" (model-based; uses onnxruntime from the
+    # [voice] extra and a 1.3 MB model fetched once) or "energy" (RMS thresholds). Silero
+    # falls back to energy, with a warning, when it can't load.
+    "vad": {"model": "silero"},
 }

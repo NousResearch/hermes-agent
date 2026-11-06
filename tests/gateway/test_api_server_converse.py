@@ -89,8 +89,17 @@ def _speech_then_silence_pcm(block=480, speech_blocks=16, silence_blocks=60):
     return frames
 
 
+def _use_energy_vad():
+    """These tests drive speech-shaped noise (``speech_like``), which the energy detector hears
+    and Silero (correctly) does not; select it through the real config the gateway reads."""
+    from hermes_constants import get_hermes_home
+
+    (get_hermes_home() / "config.yaml").write_text("voice:\n  vad:\n    model: energy\n")
+
+
 def _patch_converse(monkeypatch, streamer, *, transcript="hello there"):
     """Wire fake STT / streaming-TTS so the loop runs end to end offline."""
+    _use_energy_vad()
     monkeypatch.setattr("tools.tts_streaming.resolve_streaming_provider", lambda cfg: streamer)
     monkeypatch.setattr("tools.tts_tool._load_tts_config", dict)
     monkeypatch.setattr("tools.tts_tool._get_provider", lambda cfg: "fake")
@@ -256,6 +265,7 @@ async def test_no_streaming_provider_uses_one_shot_fallback(monkeypatch, tmp_pat
     # No chunked API (edge): the converse loop falls back to one-shot synthesis +
     # server-side transcode instead of erroring. The client still gets ready + PCM.
     adapter = _adapter()
+    _use_energy_vad()
     monkeypatch.setattr("tools.tts_streaming.resolve_streaming_provider", lambda cfg: None)
     monkeypatch.setattr("tools.tts_tool._load_tts_config", dict)
     monkeypatch.setattr("tools.tts_tool._get_provider", lambda cfg: "fake")

@@ -1,6 +1,8 @@
 """Server-side proof that the converse voice pipeline hears speech — including QUIET speech.
 
-Everything here drives the REAL VAD, endpointer and WAV-capture path (only STT is mocked),
+Pinned to the energy detector (the fallback when Silero can't load; see
+``tests/support/converse_audio.py``). Everything here drives the REAL detector, endpointer and
+WAV-capture path (only STT is mocked),
 using audio whose block-RMS envelope mimics real speech across a range of volumes. This is
 the regression wall for "I'm talking and the server just reports idle": it fails if the
 detector stops hearing a soft voice, and it fails if it starts hearing silence/room noise.
@@ -86,7 +88,7 @@ class TestNoisyRoomSelfCalibrates:
 
         from tools.voice_converse_loop import ConverseSession
         with mocked_stt("heard"):
-            session = ConverseSession(np, input_rate=16000)
+            session = ConverseSession(np, input_rate=16000, vad_model="energy")
             session.start()
             try:
                 for seg in segments:
@@ -149,7 +151,7 @@ class TestQuietTracksReceivedSilence:
         # deterministically against the accounting (no worker thread / wall-clock).
         from tools.voice_converse_loop import ConverseSession, QuietTick
 
-        session = ConverseSession(np, quiet_interval=0.3)  # worker not started
+        session = ConverseSession(np, quiet_interval=0.3, vad_model="energy")  # worker not started
         session.begin_turn()
         for _ in range(60):  # ~1.8s of streamed silence DURING the turn
             session._account_received_silence()
@@ -173,7 +175,7 @@ class TestQuietTracksReceivedSilence:
         from tools.voice_converse_loop import ConverseSession, QuietTick
 
         with mocked_stt("unused"):
-            session = ConverseSession(np, quiet_interval=0.3)
+            session = ConverseSession(np, quiet_interval=0.3, vad_model="energy")
             session.start()
             try:
                 # health: allow HX013 -- elapsed wall-clock time with no audio IS the behaviour under test

@@ -9,12 +9,11 @@ in isolation.
 Pieces:
 
 * :class:`_NetworkMicStream` — a ``sounddevice``-shaped shim whose ``.read()``
-  pulls int16 blocks from a thread-safe queue fed by a WebSocket. It lets the
-  existing endpointer (:func:`tools.voice_mode._capture_until_quiet`) run
-  unchanged against a network source instead of a local microphone.
-* :class:`ConverseSession` — drives the reused VAD/STT loop on a worker thread:
-  read 30 ms blocks, feed :class:`tools.voice_mode._BargeDetector`, and on a
-  trip (speech onset) or silence endpoint capture the utterance, transcribe it
+  pulls int16 blocks from a thread-safe queue fed by a WebSocket, so the capture
+  loop reads a network source exactly as it would a local microphone.
+* :class:`ConverseSession` — drives the VAD/STT loop on a worker thread: read
+  30 ms blocks, feed the speech detector (:mod:`tools.voice_converse_vad`), and on
+  a trip (speech onset) capture the utterance to its endpoint, transcribe it
   and hand the transcript to the handler. It also owns the ``playing`` flag and
   barge-in (a trip while playing cuts TTS).
 * :func:`split_text_for_tts_stream` — a provider-cap-aware sentence splitter, so
@@ -36,6 +35,7 @@ from dataclasses import dataclass
 from typing import (
     Any, Awaitable, Callable, Dict, Iterator, List, Optional, Tuple)
 
+from tools.voice_converse_vad import VAD_SILERO, make_detector
 from tools.voice_tracing import PhaseRecorder, emit_turn_trace, start_turn
 
 logger = logging.getLogger(__name__)
@@ -280,13 +280,13 @@ class _Utterance(str):
 class ConverseSession:
     """Drives the reused VAD → STT loop against a :class:`_NetworkMicStream`.
 
-    A worker thread reads 30 ms blocks, computes RMS and feeds a
-    :class:`~tools.voice_mode._BargeDetector`.  On a trip (speech onset) it runs
-    the shared endpointer (:func:`~tools.voice_mode._capture_until_quiet`) →
-    ``_write_wav`` → ``transcribe_recording`` and puts the transcript on
-    :attr:`transcripts` for the handler.  The handler flips :meth:`set_playing`
-    around TTS playback so the detector rejects speaker bleed; a trip while
-    playing is a barge-in (TTS is cut and the interrupt latch is set).
+    A worker thread reads 30 ms blocks and feeds the speech detector (Silero by
+    default, energy as the fallback; :mod:`tools.voice_converse_vad`).  On a trip
+    (speech onset) it captures to the endpoint → ``_write_wav`` →
+    ``transcribe_recording`` and puts the transcript on :attr:`transcripts` for
+    the handler.  The handler flips :meth:`set_playing` around TTS playback so the
+    detector rejects speaker bleed; a trip while playing is a barge-in (TTS is
+    cut and the interrupt latch is set).
     """
 
     def __init__(
@@ -294,6 +294,7 @@ class ConverseSession:
         barge_multiplier: Optional[float] = None, input_rate: int = 16000,
         quiet_interval: float = 0.0, endpoint_model: bool = False,
         endpoint_threshold: float = _SMART_TURN_DEFAULT_THRESHOLD,
+        vad_model: str = VAD_SILERO,
     ) -> None:
         from tools import voice_mode as _vm
 
@@ -338,8 +339,8 @@ class ConverseSession:
 
         self._block = int(self._input_rate * 0.03)  # 30 ms of samples at the input rate
         mult = float(barge_multiplier) if barge_multiplier else _vm.DEFAULT_BARGE_MULTIPLIER
-        self._detector = _vm._BargeDetector(
-            np, mult=mult,
+        energy_kwargs = dict(
+            mult=mult,
             calib_blocks=max(1, _CALIBRATION_MS // 30),
             trip_blocks=max(1, _SUSTAINED_MS // 30),
             grace_blocks=max(0, _GRACE_MS // 30),
@@ -348,12 +349,17 @@ class ConverseSession:
             # RMS without loosening noise rejection (the floor + trigger gate noise).
             trip_fraction=_CONVERSE_TRIP_FRACTION,
             # Self-calibrating floor for noisy rooms (a TV at the mic): a MEDIAN floor so a loud
-            # burst doesn't lock the floor high, a gentle onset multiplier, and NO onset ceiling
-            # so the trigger rises with the floor above the noise instead of tripping every block.
+            # burst doesn't lock the floor high, and a gentle onset multiplier with no ceiling so
+            # the trigger rises with the floor above the noise instead of tripping every block.
             floor_percentile=_CONVERSE_FLOOR_PERCENTILE,
             onset_mult=_CONVERSE_ONSET_MULT,
-            onset_ceiling=None,
+            endpoint_floor_mult=_CONVERSE_ENDPOINT_FLOOR_MULT,
         )
+        self._detector, fallback_reason = make_detector(
+            vad_model, np, _vm, input_rate=self._input_rate, energy_kwargs=energy_kwargs)
+        if fallback_reason:
+            logger.warning("converse VAD: Silero unavailable (%s); using the energy detector",
+                         fallback_reason)
         from collections import deque
 
         self._pre_roll: deque = deque(maxlen=max(1, _PRE_ROLL_MS // 30))
@@ -413,7 +419,7 @@ class ConverseSession:
         # A run of silence blocks reaches the endpointer's quiet threshold; the
         # simplest cross-thread nudge is a stop of the network source, but that
         # would kill the whole loop.  Instead feed enough zero blocks to satisfy
-        # the endpoint-silence window so _capture_until_quiet returns promptly.
+        # the endpoint-silence window so the capture loop returns promptly.
         silence = self._np.zeros(self._block, dtype=self._np.int16).tobytes()
         for _ in range(self._endpoint_blocks + 1):
             self.stream.feed(silence)
@@ -428,7 +434,6 @@ class ConverseSession:
         self._worker.start()
 
     def _run(self) -> None:
-        np, vm = self._np, self._vm
         try:
             while not self._stop.is_set():
                 # Fallback: end a playback tail the client never closed with `drained` so quiet/VAD
@@ -440,7 +445,7 @@ class ConverseSession:
                     break
                 self._pre_roll.append(data.copy())
                 playing = self.playing()
-                phase = self._detector.feed(vm._rms(np, data), playing)
+                phase = self._detector.feed(data, playing=playing, tail=self._tail_active)
                 if phase is None:
                     # A block of received audio with no speech onset: 30 ms of real,
                     # client-sent silence. This is the ONLY place quiet time accrues, and it
@@ -545,25 +550,12 @@ class ConverseSession:
     def _capture_and_transcribe(self, recorder: Optional[PhaseRecorder] = None) -> str:
         """Endpoint the utterance from the pre-roll and return its transcript, recording the
         ``voice.capture`` and ``voice.stt`` phases into *recorder*."""
-        vm, np = self._vm, self._np
+        vm = self._vm
         recorder = recorder or PhaseRecorder()
-        # End the utterance when the level falls back toward the ambient floor, not below an
-        # absolute 200 — so with a TV on (floor ~1500) the utterance closes when the USER stops
-        # instead of running to the max cap. Quiet rooms (floor ~50) keep the 200 threshold via
-        # max(). The short endpoint window (_ENDPOINT_SILENCE_MS) keeps the "listening" tail snappy.
-        silence_rms = max(float(vm.SILENCE_RMS_THRESHOLD),
-                          self._detector.quiet_floor * _CONVERSE_ENDPOINT_FLOOR_MULT)
         with recorder.phase("voice.capture") as cap:
-            if self._turn_detector is not None:
-                cap.set(**{"endpoint.mode": "smart_turn"})
-                wav_path = self._capture_adaptive(silence_rms)
-            else:
-                cap.set(**{"endpoint.mode": "fixed"})
-                wav_path = vm._capture_until_quiet(
-                    self.stream, np, self._block, self._pre_roll,
-                    endpoint_blocks=self._endpoint_blocks, max_blocks=self._max_blocks,
-                    sample_rate=self._input_rate, silence_rms=silence_rms,
-                )
+            cap.set(**{"endpoint.mode": "smart_turn" if self._turn_detector is not None
+                       else "fixed"})
+            wav_path = self._capture_utterance()
         # capture drained the pre-roll into the WAV; start fresh.
         self._pre_roll.clear()
         with recorder.phase("voice.stt") as stt:
@@ -577,12 +569,13 @@ class ConverseSession:
             logger.debug("converse transcription failed: %s", result.get("error"))
         return transcript
 
-    def _capture_adaptive(self, silence_rms: float) -> str:
-        """Semantic endpoint: mirror the fixed-silence capture, but on reaching a candidate pause
-        ask Smart Turn whether the utterance *sounds* finished. If it doesn't (the user trailed off
-        mid-thought), keep listening for another window instead of committing — bounded by
-        ``_MAX_ENDPOINT_HOLDS`` consecutive holds and the ``_max_blocks`` hard cap. Returns a WAV
-        path, exactly like :func:`~tools.voice_mode._capture_until_quiet`."""
+    def _capture_utterance(self) -> str:
+        """Read from the pre-roll until the utterance ends; return a WAV path.
+
+        A run of ``_endpoint_blocks`` quiet blocks (per the detector) is a candidate pause. Without
+        Smart Turn it ends the utterance. With Smart Turn, the pause commits only if the utterance
+        *sounds* finished; otherwise (the user trailed off mid-thought) keep listening for another
+        window, bounded by ``_MAX_ENDPOINT_HOLDS`` consecutive holds and the ``_max_blocks`` cap."""
         vm, np = self._vm, self._np
         frames = list(self._pre_roll)
         quiet = 0
@@ -592,13 +585,15 @@ class ConverseSession:
             if self._stop.is_set():
                 break
             frames.append(data.copy())
-            if vm._rms(np, data) < silence_rms:
+            if self._detector.is_quiet(data):
                 quiet += 1
             else:
                 quiet = 0
                 holds = 0  # the user resumed talking — restore the full patience budget
             if quiet < self._endpoint_blocks:
                 continue
+            if self._turn_detector is None:
+                break
             # Candidate pause reached. Consult the semantic endpointer on the utterance so far.
             try:
                 prob = self._turn_detector.turn_complete_probability(

@@ -149,7 +149,7 @@ class _ScriptedDetector:
 
 
 def _adaptive_session(detector, *, endpoint_blocks=2, max_blocks=60):
-    session = ConverseSession(np)  # endpoint_model defaults off -> no real model load
+    session = ConverseSession(np, vad_model="energy")  # endpoint_model defaults off -> no real model load
     session._turn_detector = detector
     session._endpoint_threshold = detector.threshold
     session._endpoint_blocks = endpoint_blocks
@@ -184,7 +184,7 @@ def test_adaptive_commits_immediately_when_turn_sounds_complete():
     det = _ScriptedDetector([0.95])
     session = _adaptive_session(det)
     _feed_silence(session, session._endpoint_blocks + 4)
-    wav_path = session._capture_adaptive(silence_rms=float(vm.SILENCE_RMS_THRESHOLD))
+    wav_path = session._capture_utterance()
     assert det.calls == 1  # committed on the first candidate pause
     with wave.open(wav_path, "rb") as wf:
         assert wf.getnframes() > 0
@@ -196,7 +196,7 @@ def test_adaptive_holds_then_commits_capturing_more_audio():
     det = _ScriptedDetector([0.1, 0.2, 0.9])
     session = _adaptive_session(det)
     _feed_silence(session, session._endpoint_blocks * 4 + 4)
-    wav_path = session._capture_adaptive(silence_rms=float(vm.SILENCE_RMS_THRESHOLD))
+    wav_path = session._capture_utterance()
     assert det.calls == 3  # held twice, committed on the third check
     vm._unlink_quietly(wav_path)
 
@@ -206,7 +206,7 @@ def test_adaptive_gives_up_after_max_holds():
     det = _ScriptedDetector([0.0])
     session = _adaptive_session(det, max_blocks=500)
     _feed_silence(session, session._endpoint_blocks * 6 + 4)
-    wav_path = session._capture_adaptive(silence_rms=float(vm.SILENCE_RMS_THRESHOLD))
+    wav_path = session._capture_utterance()
     from tools.voice_converse_loop import _MAX_ENDPOINT_HOLDS
 
     assert det.calls == _MAX_ENDPOINT_HOLDS  # committed once the budget was spent
@@ -214,7 +214,7 @@ def test_adaptive_gives_up_after_max_holds():
 
 
 def test_frames_to_f32_resamples_non_16k_capture():
-    session = ConverseSession(np, input_rate=48000)
+    session = ConverseSession(np, input_rate=48000, vad_model="energy")
     frames = [np.full(session._block, 4000, dtype=np.int16) for _ in range(10)]
     out = session._frames_to_f32_16k(frames)
     total = session._block * 10
@@ -237,7 +237,7 @@ def test_capture_and_transcribe_returns_transcript(monkeypatch):
 # ── ConverseSession barge-in / playing flag ──
 
 def test_converse_session_barge_in_sets_interrupt_and_stops_tts():
-    session = ConverseSession(np)
+    session = ConverseSession(np, vad_model="energy")
     tts_stop = threading.Event()
     session.set_playing(True, tts_stop=tts_stop)
     assert session.playing() is True
@@ -250,7 +250,7 @@ def test_converse_session_barge_in_sets_interrupt_and_stops_tts():
 
 
 def test_converse_session_stop_pushes_sentinel():
-    session = ConverseSession(np)
+    session = ConverseSession(np, vad_model="energy")
     session.stop()
     assert session.stopped is True
     assert session.transcripts.get_nowait() is None
@@ -622,7 +622,7 @@ def test_stt_and_tts_threads_run_in_the_spawners_context(monkeypatch):
 
     monkeypatch.setattr(vm, "transcribe_recording", _transcribe)
     probe.set("request-scope")
-    session = ConverseSession(np)
+    session = ConverseSession(np, vad_model="energy")
     session.start()
     try:
         for pcm in (calibration(), speech_like(2000, seed=1), silence(seconds=1.8)):
@@ -729,7 +729,7 @@ def test_driver_tail_barge_emits_interrupted_not_a_turn():
 def test_playback_tail_suppresses_quiet_until_drained():
     from tools.voice_converse_loop import QuietTick
 
-    session = ConverseSession(np, quiet_interval=0.5)  # 0.03s of received-silence per call
+    session = ConverseSession(np, quiet_interval=0.5, vad_model="energy")  # 0.03s of received-silence per call
 
     def _drain_ticks():
         out = []

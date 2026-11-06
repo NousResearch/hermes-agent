@@ -457,12 +457,24 @@ def _probe_single_server(
             details["initialized"] = False
         try:
             server = await asyncio.wait_for(_connect_server(name, config), timeout=connect_timeout)
-        except TimeoutError:
-            # str(TimeoutError()) is '' — printed verbatim it was a blank "Authentication failed:".
-            raise TimeoutError(
-                f"Connecting to MCP server '{name}' timed out after {float(connect_timeout):.0f}s "
-                "(bounded by connect_timeout; an OAuth login also by oauth.timeout)"
-            ) from None
+        except BaseException as connect_exc:
+            # ``_connect_server`` skips its orphan-reap while a claim is installed: discovery adopts
+            # the parked task into ``_servers`` and owns its shutdown. A probe adopts nothing, so
+            # without this reap every failed probe (Connectors-panel test, card install,
+            # saved-OAuth reuse) leaked a parked MCPServerTask that re-probed the server every
+            # 300s for the life of the process; a rate-limited server collected one per probe.
+            for orphan in claimed:
+                try:
+                    await orphan.shutdown()
+                except Exception as shutdown_exc:  # best-effort reap; never mask the connect error
+                    logger.debug("MCP probe '%s': orphan reap failed: %s", name, shutdown_exc)
+            if isinstance(connect_exc, TimeoutError):
+                # str(TimeoutError()) is '' — printed verbatim it was a blank "Authentication failed:".
+                raise TimeoutError(
+                    f"Connecting to MCP server '{name}' timed out after {float(connect_timeout):.0f}s "
+                    "(bounded by connect_timeout; an OAuth login also by oauth.timeout)"
+                ) from None
+            raise
         finally:
             _core._connect_server_claim.reset(claim_token)
             if details is not None and claimed:

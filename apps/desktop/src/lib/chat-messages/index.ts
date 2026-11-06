@@ -9,26 +9,37 @@ export {
   completeOpenTimelineParts,
   dedupeRepeatedTextInParts,
   finalizeInterruptedMessages,
+  lastTextPartText,
   mergeFinalAssistantText,
   normalizeWs,
+  partsText,
   reasoningPart,
+  reasoningTextFromDetails,
   renderMediaTags,
   textPart
 } from './parts'
 export type { UnspokenTurnSpeech } from './parts'
 export {
   branchGroupForUser,
+  isLocalSystemNotice,
   preserveLocalAssistantErrors,
   preserveLocalSystemNotices,
   spliceOlderPreservedRows
 } from './reconciliation'
 export {
+  concatPartsByToolCall,
+  hasUnresolvedToolCall,
+  isRedeliveredToolEvent,
+  markQueuedPromptStarted,
+  QUESTION_CARD_TOOLS,
+  queuedPromptAwaitsNextTurn,
   restorePendingBlockingToolCall,
   restorePendingClarifyToolCall,
   sealOpenToolParts,
   settlePendingClarifyToolCall,
   stripPendingClarifyProjectionForCache,
   toolCallOwnerMessageId,
+  toolEventOwnerMessageId,
   upsertToolPart,
   withUniqueToolCallIdsWithinMessage
 } from './tool-parts'

@@ -8,7 +8,7 @@ description: "Authoritative reference for Hermes built-in tools, grouped by tool
 
 This page documents Hermes' built-in tools, grouped by toolset. Availability varies by platform, credentials, and enabled toolsets.
 
-**Quick counts (current registry):** ~100 tools — 10 browser tools (core) + 2 CDP-gated browser tools + 5 browser-vault tools + `browser_exec`, 4 file tools, 4 Home Assistant tools, 2 terminal tools (`terminal`, `process_manage`), 11 desktop-GUI tools (`read_terminal`, `close_terminal`, `desktop_preview`, `drive_preview`, `annotate_preview`, `read_window_below`, `focus_pane`, `react_to_message`, `gui_tour`, `show_tip`, `apply_layout` — desktop-app sessions only), 2 web tools, 5 Feishu tools, 7 Spotify tools (registered by the bundled `spotify` plugin), 5 Yuanbao tools, 14 kanban tools (registered when the kanban dispatcher spawns the agent), 1 project tool (`desktop_project`; desktop/GUI sessions), 2 Discord tools, 3 video tools (`video_generate`, `xai_video_edit`, `xai_video_extend`), and a handful of standalone tools (`memory`, `clarify`, `delegate_task`, `execute_code`, `cronjob_manage`, `session_search`, `skill_view`/`skill_manage`/`skills_list`, `text_to_speech`, `image_generate`, `vision_analyze`, `video_analyze`, `todo_list`, `computer_use`, `x_search`).
+**Quick counts (current registry):** ~85 tools — 4 browser tools (`browser_exec`, `browser_cdp`, `browser_dialog`, `browser_vault`), 4 file tools, 2 terminal tools (`terminal`, `process_manage`), 11 desktop-GUI tools (`read_terminal`, `close_terminal`, `desktop_preview`, `drive_preview`, `annotate_preview`, `read_window_below`, `focus_pane`, `react_to_message`, `gui_tour`, `show_tip`, `set_theme` — desktop-app sessions only), 2 web tools, 5 Feishu tools, 5 Yuanbao tools, 14 kanban tools (registered when the kanban dispatcher spawns the agent), 1 project tool (`desktop_project`; desktop/GUI sessions), 2 Discord tools, 3 video tools (`video_generate`, `xai_video_edit`, `xai_video_extend`), and a handful of standalone tools (`memory`, `clarify`, `delegate_task`, `execute_code`, `cronjob_manage`, `session_search`, `skill_view`/`skill_manage`/`skills_list`, `text_to_speech`, `image_generate`, `vision_analyze`, `video_analyze`, `todo_list`, `computer_use`, `x_search`).
 
 :::tip MCP Tools
 In addition to built-in tools, Hermes can load tools dynamically from MCP servers. MCP tools appear with the prefix `mcp__<server>__` (e.g., `mcp__github__create_issue` for the `github` MCP server). See [MCP Integration](../user-guide/features/mcp.md) for configuration.
@@ -16,27 +16,14 @@ In addition to built-in tools, Hermes can load tools dynamically from MCP server
 
 ## `browser` toolset
 
-| Tool | Description | Requires environment |
-|------|-------------|----------------------|
-| `browser_back` | Navigate back to the previous page in browser history. Requires browser_navigate to be called first. | — |
-| `browser_click` | Click on an element identified by its ref ID from the snapshot (e.g., '@e5'). The ref IDs are shown in square brackets in the snapshot output. Requires browser_navigate and browser_snapshot to be called first. | — |
-| `browser_console` | Get browser console output and JavaScript errors from the current page. Returns console.log/warn/error/info messages and uncaught JS exceptions. Use this to detect silent JavaScript errors, failed API calls, and application warnings. Requi… | — |
-| `browser_get_images` | Get a list of all images on the current page with their URLs and alt text. Useful for finding images to analyze with the vision tool. Requires browser_navigate to be called first. | — |
-| `browser_navigate` | Navigate to a URL in the browser. Initializes the session and loads the page. Must be called before other browser tools. For simple information retrieval, prefer a lightweight retrieval tool when one is available (faster, cheaper). Use browser tools when you need… | — |
-| `browser_press` | Press a keyboard key. Useful for submitting forms (Enter), navigating (Tab), or keyboard shortcuts. Requires browser_navigate to be called first. | — |
-| `browser_scroll` | Scroll the page in a direction. Use this to reveal more content that may be below or above the current viewport. Requires browser_navigate to be called first. | — |
-| `browser_snapshot` | Get a text-based snapshot of the current page's accessibility tree. Returns interactive elements with ref IDs (like @e1, @e2) for browser_click and browser_type. full=false (default): compact view with interactive elements. full=true: comp… | — |
-| `browser_type` | Type text into an input field identified by its ref ID. Clears the field first, then types the new text. Requires browser_navigate and browser_snapshot to be called first. | — |
-| `browser_vision` | Take a screenshot of the current page so you can inspect it visually. Use this when you need to understand what the page looks like — especially for CAPTCHAs, visual verification challenges, complex layouts, or cases where the text snapshot misses important visual information. On native-vision models the screenshot is attached directly; otherwise falls back to an auxiliary vision mo… | — |
-
-## `browser` toolset (CDP-gated tools)
-
-These two tools live in the `browser` toolset but only register when a Chrome DevTools Protocol endpoint is reachable at session start — via `/browser connect`, `browser.cdp_url` config, a Browserbase session, or Camofox.
+`browser_exec` and `browser_vault` drive the browser session — the Chromium Hermes launches, a cloud browser, or the browser attached with `/browser connect`. `browser_cdp` and `browser_dialog` are offered only while a CDP endpoint is configured (`/browser connect`, `BROWSER_CDP_URL` or `browser.cdp_url`) and act on that browser; they are absent for launched and cloud sessions. See [Browser Automation](../user-guide/features/browser.md).
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `browser_cdp` | Send a raw Chrome DevTools Protocol command. Escape hatch for browser operations not covered by the higher-level `browser_*` tools. See https://chromedevtools.github.io/devtools-protocol/ | CDP endpoint |
-| `browser_dialog` | Respond to a native JavaScript dialog (alert / confirm / prompt / beforeunload). Call `browser_snapshot` first — pending dialogs appear in its `pending_dialogs` field. Then call `browser_dialog(action='accept'\|'dismiss')`. | CDP endpoint |
+| `browser_exec` | Drive a real web browser by running Python with pre-imported helpers (`new_tab`, `goto_url`, `wait_for_load`, `page_info`, `js`, `fill_input`, `click_at_xy`, `capture_screenshot`, `cdp`, `ensure_real_tab`). Browser state persists across calls; Python variables do not. `session` isolates concurrent work; `timeout_s` defaults to 300 (max 1800). | `terminal` toolset |
+| `browser_cdp` | Send a raw Chrome DevTools Protocol command. Escape hatch for browser operations the `browser_exec` helpers don't cover. See https://chromedevtools.github.io/devtools-protocol/ | CDP endpoint |
+| `browser_dialog` | Respond to a native JavaScript dialog (alert / confirm / prompt / beforeunload) blocking the page: `browser_dialog(action='accept'\|'dismiss')`, with `prompt_text` for `prompt()` and `dialog_id` when several are queued. | CDP endpoint |
+| `browser_vault` | Use saved logins, passwords, cards, addresses and one-time codes on the current page without secrets entering the conversation. Actions: `list`, `fill`, `save_login`, `enter_code`, `unlock`. | — |
 
 ## `clarify` toolset
 
@@ -64,7 +51,7 @@ One tool for both kinds of external app. A target is a managed connector (`"gmai
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `manage_connections` | Managed actions: `status`, `connect`, `reconnect` (repairs only what is not connected; `force: true` restarts a working one). MCP actions, for `mcp: true` targets only: `install` a catalog entry, `enable` a disabled configured server, `authorize` (OAuth). In the desktop app, the terminal UI and the classic CLI every action shows a card and blocks until each target is connected, skipped, or the 300-second deadline passes; the result lists targets as `connected`, `skipped` or `not_connected` and carries no link. An MCP `install` collects the entry's setup values in the card, runs the entry's OAuth from the card when it has one (the user opens the link; nothing opens by itself), and saves configuration, tokens and values together when the server accepts the token. A connected MCP target carries `tools` (the registered names) and `tools_listing`, and those tools are callable through `tool_describe`/`tool_call` in the same turn. A target with `discovery_error` is authorized but its tools could not be listed; call `install` or `authorize` for it again to retry discovery without new consent. On surfaces with no card (messaging, scripted dispatch) managed targets return a `connect_url` per app for the user to open, and an MCP target runs at once: `authorize` and an OAuth `install` return the authorization URL, other installs and `enable` report the outcome, and a missing credential comes back as `failed` naming the variable to set. Cannot disconnect or revoke an account. | — |
+| `manage_connections` | Managed actions: `display` (desktop app only: a card of every hosted connector, most used apps first, where clicking an app starts its sign-in; any `connectors` slugs are pinned at the top as Suggested; it waits until the user presses Continue or 300 seconds pass and returns `connected`, `newly_connected` and `suggested` slugs, and adds `timed_out: true` when the deadline ended it; on other surfaces it returns the `status` list and tells the user to connect from the desktop app or the portal), `status` (each connector lists its `accounts`: alias, label, status, active), `connect`, `reconnect` (repairs only what is not connected; `force: true` restarts a working one), `rename`. A connect or reconnect target may carry an account name (`{"name": "gmail", "alias": "work"}`): connect with a new name adds another account, and reconnect with a name repairs only that account and deletes nothing. `rename` takes one target, `{"name": "gmail", "alias": "work", "to": "office"}`; `alias` may be the app label of an unnamed account. MCP actions, for `mcp: true` targets only: `install` a catalog entry, `enable` a disabled configured server, `authorize` (OAuth). In the desktop app, the terminal UI and the classic CLI every action shows a card and blocks until each target is connected, skipped, or the 300-second deadline passes; the result lists targets as `connected`, `skipped` or `not_connected` and carries no link. An MCP `install` collects the entry's setup values in the card, runs the entry's OAuth from the card when it has one (the user opens the link; nothing opens by itself), and saves configuration, tokens and values together when the server accepts the token. A connected MCP target carries `tools` (the registered names) and `tools_listing`, and those tools are callable through `tool_describe`/`tool_call` in the same turn. A target with `discovery_error` is authorized but its tools could not be listed; call `install` or `authorize` for it again to retry discovery without new consent. On surfaces with no card (messaging, scripted dispatch) managed targets return a `connect_url` per app for the user to open, and an MCP target runs at once: `authorize` and an OAuth `install` return the authorization URL, other installs and `enable` report the outcome, and a missing credential comes back as `failed` naming the variable to set. Cannot disconnect, remove or revoke an account; the user does that. | — |
 
 The deadline for one call is five minutes, fixed by the backend when the call starts;
 reopening the chat or restarting the desktop never extends it. The tool is present only when the
@@ -117,16 +104,7 @@ Scoped to the Feishu document-comment handler. Drives comment read/write operati
 | `search_files` | Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster than shell equivalents. Content search (target='content'): Regex search inside files. Output modes: full matches with line… | — |
 | `write_file` | Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. For an existing file, call read_file first: write_file refuses (file untouched) when the task has no current full read/write of the file or the file changed on disk since — on refusal, read_file, merge, retry. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by the write are surfaced. | — |
 
-For local files, a full unredacted read (including all pages of the same file version) or a successful `write_file` supplies a whole-file baseline. Reading a smaller region afterward does not discard that baseline while the bytes remain unchanged. A changed file, an unread file, or a view with hidden/redacted or clamped content still needs a full current read before replacement; `patch` remains available for targeted edits. Writes made through terminal commands or `execute_code` do not establish a `write_file` baseline.
-
-## `homeassistant` toolset
-
-| Tool | Description | Requires environment |
-|------|-------------|----------------------|
-| `ha_call_service` | Call a Home Assistant service to control a device. Use ha_list_services to discover available services and their parameters for each domain. | — |
-| `ha_get_state` | Get the detailed state of a single Home Assistant entity, including all attributes (brightness, color, temperature setpoint, sensor readings, etc.). | — |
-| `ha_list_entities` | List Home Assistant entities. Optionally filter by domain (light, switch, climate, sensor, binary_sensor, cover, fan, etc.) or by area name (living room, kitchen, bedroom, etc.). | — |
-| `ha_list_services` | List available Home Assistant services (actions) for device control. Shows what actions can be performed on each device type and what parameters they accept. Use this to discover how to control devices found via ha_list_entities. | — |
+For local files, a full unredacted read (including all pages of the same file version), a successful `write_file`, or your own `patch` of a file you had read in full supplies a whole-file baseline. Reading a smaller region afterward does not discard that baseline while the bytes remain unchanged. A file changed by another writer, an unread file, a file patched without a full read, or a view with hidden/redacted or clamped content still needs a full current read before replacement; `patch` remains available for targeted edits. Writes made through terminal commands or `execute_code` do not establish a `write_file` baseline.
 
 ## `computer_use` toolset
 
@@ -136,7 +114,11 @@ For local files, a full unredacted read (including all pages of the same file ve
 
 
 :::note
-**Honcho tools** (`honcho_profile`, `honcho_search`, `honcho_context`, `honcho_reasoning`, `honcho_conclude`) are no longer built-in. They are available via the Honcho memory provider plugin at `plugins/memory/honcho/`. See [Memory Providers](../user-guide/features/memory-providers.md) for installation and usage.
+**Honcho tools** (`honcho_profile`, `honcho_search`, `honcho_context`, `honcho_reasoning`, `honcho_conclude`) are no longer built-in. They are available via the Honcho memory provider plugin from the plugin catalog (`hermes plugins install honcho`). See [Memory Providers](../user-guide/features/memory-providers.md) for installation and usage.
+
+**Home Assistant tools** (`ha_list_entities`, `ha_get_state`, `ha_list_services`, `ha_call_service`, toolset `homeassistant`) are no longer built-in. They come from the `homeassistant` catalog plugin (`hermes plugins install homeassistant`). See [Home Assistant](../user-guide/messaging/homeassistant.md).
+
+**Spotify tools** (`spotify_playback`, `spotify_devices`, `spotify_queue`, `spotify_search`, `spotify_playlists`, `spotify_albums`, `spotify_library`, toolset `spotify`) are no longer built-in. They come from the `spotify` catalog plugin (`hermes plugins install spotify`, then `hermes spotify login`). See [Spotify](../user-guide/features/spotify.md).
 :::
 
 ## `image_gen` toolset
@@ -180,13 +162,13 @@ Tools for driving desktop [Projects](../user-guide/cli.md) — named, multi-fold
 |------|-------------|----------------------|
 | `memory` | Save important information to persistent memory that survives across sessions. Your memory appears in your system prompt at session start -- it's how you remember things about the user and your environment between conversations. WHEN TO SA… | — |
 
-## `setup` toolset
+## `catalog` toolset
 
-Granted only to sessions of the desktop setup profile (`role: setup` in its `profile.yaml`); never configurable.
+Enabled for sessions whose source is the desktop app, whichever backend it's connected to. CLI, TUI, `hermes -z`, cron, kanban and messaging sessions never get it, even when a config list names it. `all` does not include it. Remove it with `agent.disabled_toolsets: [catalog]`.
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `manage_catalog` | Setup profile only (the `setup` toolset), desktop chat only. `search` lists catalog plugins and hub skills matching `query` (optionally one `kind`) with `id`, `kind`, `display`, `tier`, `platforms` and `installed` (present in the `default` profile); it changes nothing. `install` takes `items: [{kind, id}]` and shows one approval card with a row per item (Install, Advanced, Skip); an id the catalog does not know, or a plugin this OS cannot run, is drawn failed with the reason. An approved row installs into `default` (or the profile chosen under Advanced) at the catalog's reviewed commit, with the same kill list, security scan and live activation as the Plugins tab, so the plugin's MCP tools and skills are usable in that profile's open chats at once. The result lists each row as `connected` (with `tools` and `skill`), `skipped`, `failed` (with `detail`) or `not_connected`. The model cannot pass a source, commit, profile or setting. Anywhere else the call returns the `hermes plugins install` / `hermes skills install` command to run instead. | — |
+| `manage_catalog` | Desktop sessions only, deferred behind `tool_search` by default. `search` lists catalog plugins and hub skills matching `query` (optionally one `kind`) with `id`, `kind`, `display`, `tier`, `platforms` and `installed` (present in this chat's profile); it changes nothing. `install` takes `items: [{kind, id}]` and shows one approval card with a row per item (Install, Advanced, Skip); an id the catalog does not know, or a plugin this OS cannot run, is drawn failed with the reason. An approved row installs into this chat's profile (or the profile chosen under Advanced) at the catalog's reviewed commit, with the same kill list, security scan and live activation as the Plugins tab, so the plugin's MCP tools and skills are usable in that profile's open chats at once. The result lists each row as `connected` (with `tools` and `skill`), `skipped`, `failed` (with `detail`) or `not_connected`; a failed row ends the wait like an installed or skipped one, and an install turns on a catalog plugin that is on disk but not enabled. The model cannot pass a source, commit, profile or setting. Anywhere else the call returns the `hermes plugins install` / `hermes skills install` command to run instead. | — |
 
 ## `session_search` toolset
 
@@ -225,13 +207,15 @@ messaging, and cron sessions.
 | `read_window_below` | Identify the OS window directly underneath the Hermes desktop window — app name, title, bounds (metadata only, never pixels). On macOS, other apps' titles appear only when Screen Recording is already granted; the tool never prompts for it. | — |
 | `focus_pane` | Reveal and focus a pane in the Hermes desktop app (chat, files, terminal, review, sessions). | — |
 | `react_to_message` | React to a message with a single emoji, iMessage-tapback style. Opt-in via Settings → Appearance (`display.message_reactions`). | — |
-| `gui_tour` | Give a live guided tour: dim the screen, highlight an element, and attach a narrated popover (driver.js). Works on the Hermes app's own UI and on any page open in the preview pane; `targets` discovers what's on screen, `show` narrates step-by-step, `start` hands the user Next/Prev controls. | — |
+| `gui_tour` | Give a live guided tour: dim the screen, highlight an element, and attach a narrated popover (driver.js). Works on the Hermes app's own UI and on any page open in the preview pane. `start` with no steps runs the app's built-in tour (`preset` `quick` or `full`, default `full`). For a custom tour, `targets` discovers what's on screen, `show` narrates step-by-step, and `start` with `steps` hands the user Next/Prev controls. | — |
 | `show_tip` | Point at one element with a small accent bubble and an arrow — the quiet sibling of `gui_tour`, with no dimming, no spotlight, and no Next/Prev. Same `data-tour` handles and the same `tour(action='targets')` discovery call. | — |
-| `apply_layout` | Apply a saved layout preset to the Hermes desktop app when the user asks to rearrange the workspace. Built-ins: default (chat + sidebars), focus (chat only), terminal-deck, quad; plugin/user presets by id. To reveal ONE pane, use `focus_pane` instead. | — |
+| `set_theme` | Set the Hermes desktop app's accent colour (a swatch id, `theme`, or `#rrggbb`), light/dark/system mode, and layout preset (Simple: `sidebar-left`, `sidebar-right`; Advanced: `default`, `basic`, `focus`, `terminal-deck`, `quad`; or a saved layout's id). The result reports what was applied; an unknown value comes back with the available ids. `picker` (`accent` or `layout`) shows a picker card in the chat and waits up to 5 minutes for the pick. | — |
 
 ### Tours
 
-The `gui_tour` tool discovers its own targets — call `action='targets'` and it returns every addressable element on screen with a selector, a label, and a `stable` flag. Stable selectors key off identity (`data-tour`, `id`, `data-testid`, `aria-label`) and survive a re-render; positional `nth-child` paths don't, so stable ones sort first and should be preferred.
+For a general look around the app, `gui_tour(action='start')` with no steps runs the desktop app's built-in tour. `preset='quick'` shows four essentials (sessions, composer, new session, model); `preset='full'` (the default) adds the stops for the current interface mode. Stops whose element is not on screen are skipped. The built-in tour runs only on `surface='app'`, and `preset` cannot be combined with `steps`.
+
+For a custom tour, the `gui_tour` tool discovers its own targets — call `action='targets'` and it returns every addressable element on screen with a selector, a label, and a `stable` flag. Stable selectors key off identity (`data-tour`, `id`, `data-testid`, `aria-label`) and survive a re-render; positional `nth-child` paths don't, so stable ones sort first and should be preferred.
 
 To give an element a durable handle of your own, mark it up:
 
@@ -376,20 +360,6 @@ Registered on the `hermes-discord` platform toolset. Moderation actions require 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
 | `discord_admin` | Manage a Discord server via the REST API: list guilds/channels/roles, create/edit/delete channels, manage role grants, timeouts, kicks, and bans. | `DISCORD_BOT_TOKEN` + bot permissions |
-
-## `spotify` toolset
-
-Registered by the bundled `spotify` plugin. Requires an OAuth token — run `hermes auth spotify` once to authorize.
-
-| Tool | Description | Requires environment |
-|------|-------------|----------------------|
-| `spotify_playback` | Control Spotify playback, inspect the active playback state, or fetch recently played tracks. | Spotify OAuth |
-| `spotify_devices` | List Spotify Connect devices or transfer playback to a different device. | Spotify OAuth |
-| `spotify_queue` | Inspect the user's Spotify queue or add an item to it. | Spotify OAuth |
-| `spotify_search` | Search the Spotify catalog for tracks, albums, artists, playlists, shows, or episodes. | Spotify OAuth |
-| `spotify_playlists` | List, inspect, create, update, and modify Spotify playlists. | Spotify OAuth |
-| `spotify_albums` | Fetch Spotify album metadata or album tracks. | Spotify OAuth |
-| `spotify_library` | List, save, or remove the user's saved Spotify tracks or albums. | Spotify OAuth |
 
 ## `hermes-yuanbao` toolset
 

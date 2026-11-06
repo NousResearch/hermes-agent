@@ -28,6 +28,11 @@ def profile_homes(tmp_path, monkeypatch, request):
     custom = tmp_path / "data"
     root = native if request.param == "native" else custom
     monkeypatch.setenv("HERMES_HOME", str(root))
+    # Bare-unit ownership is anchored to the OS ACCOUNT's native home (never a scratch process
+    # HOME), so point the account-home seam at the disposable tree like _SYSTEM_UNIT_DIR below:
+    # this fixture tests override-token hygiene, not host naming.
+    import hermes_cli.gateway as gateway_mod
+    monkeypatch.setattr(gateway_mod, "_native_service_homes", lambda: {native.resolve()})
     # Keep Linux's legacy bare-unit ownership lookup inside the disposable tree too.
     monkeypatch.setattr(gateway, "_SYSTEM_UNIT_DIR", tmp_path / "system-units")
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))

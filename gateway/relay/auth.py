@@ -29,7 +29,7 @@ def make_token(payload: str, secret: str, ttl_seconds: int = 0) -> str:
     """
     exp = int(time.time()) + ttl_seconds if ttl_seconds > 0 else 0
     signed = f"{payload}:{exp}"
-    raw = f"{signed}:{sign(signed, secret)}".encode("utf-8")
+    raw = f"{signed}:{sign(signed, secret)}".encode()
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 

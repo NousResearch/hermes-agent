@@ -22,9 +22,9 @@
 # nothing, behind/error reuse the last sandbox install when present because
 # a from-scratch install is minutes.
 #
-# npm entry points (apps/desktop/package.json):
-#   npm run update:shim / update:shim:fail / update:repro:fresh /
-#   update:repro:behind [-- N] / update:repro:error
+# pnpm entry points (apps/desktop/package.json):
+#   pnpm run update:shim / update:shim:fail / update:repro:fresh /
+#   update:repro:behind [N] / update:repro:error
 
 set -euo pipefail
 

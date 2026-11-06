@@ -48,6 +48,7 @@ reclaim object storage.  A size-cap pass drops the oldest checkpoints per
 project until total store size is under ``max_total_size_mb``.
 """
 
+import fnmatch
 import hashlib
 import json
 import logging
@@ -155,6 +156,10 @@ DEFAULT_EXCLUDES = [
     "Thumbs.db",
     # Logs
     "*.log",
+    # Hermes browser profiles (CDP / agent-browser user-data dirs): locked SQLite files and
+    # hundreds of MB of cache that are never project state.
+    "chrome_cdp_profile/",
+    "agent-browser-chrome-*/",
 ]
 
 # Git subprocess timeout (seconds).
@@ -233,6 +238,83 @@ def _index_path(store: Path, dir_hash: str) -> Path:
     return store / _INDEXES_DIRNAME / dir_hash
 
 
+def _store_pathspecs(base: Path, working_dir) -> list[str]:
+    """Pathspecs naming the checkpoint base and its ``store_lock`` file inside ``working_dir``.
+
+    Empty when the base is outside the working directory (or is the working directory
+    itself, where excluding ``.`` would stage nothing).
+    """
+    try:
+        rel = _normalize_path(str(base)).relative_to(_normalize_path(str(working_dir)))
+    except (OSError, ValueError):
+        return []
+    if not rel.parts:
+        return []
+    lock = rel.parent / f".{rel.name}.lock"
+    return [rel.as_posix(), lock.as_posix()]
+
+
+def _stage_all_args(base: Path, working_dir) -> list[str]:
+    """``git add -A`` that never stages the checkpoint base itself.
+
+    With HERMES_HOME (or a profile home) as the working directory the store sits inside
+    the snapshotted tree: every snapshot then staged the previous one's packfiles and
+    index, the store grew by about its own size per checkpoint, and the eventual
+    ``add -A`` timeout left ``indexes/<hash>.lock`` behind. Exclude the base and its
+    ``store_lock`` file by pathspec, which works at any nesting depth without rewriting
+    the store's ``info/exclude``.
+    """
+    return ["add", "-A", *_exclude_store_args(base, working_dir)]
+
+
+def _exclude_store_args(base: Path, working_dir) -> list[str]:
+    """``-- :(exclude)<base> :(exclude)<lock>`` for git commands, or ``[]`` when not needed."""
+    paths = _store_pathspecs(base, working_dir)
+    return ["--", *(f":(exclude){p}" for p in paths)] if paths else []
+
+
+def _unstage_store(store: Path, working_dir, index_file: Path) -> None:
+    """Drop the base from an index re-seeded from a checkpoint taken before it was excluded.
+
+    An exclude pathspec only stops ``add -A`` from staging new store paths; it leaves
+    entries already in the index alone, so a project whose earlier snapshots captured
+    the store would carry them into every later snapshot. ``--cached`` keeps the files on
+    disk; ``-f`` is needed because a live store's index/ref files always differ from the
+    copies the old snapshot recorded.
+    """
+    paths = _store_pathspecs(store.parent, working_dir)
+    if paths:
+        _run_git(
+            ["rm", "--cached", "-r", "-f", "-q", "--ignore-unmatch", "--", *paths],
+            store, working_dir, index_file=index_file,
+        )
+
+
+def _unstage_excluded(store: Path, working_dir, index_file: Path) -> bool:
+    """Drop paths the store's excludes now cover from an index re-seeded from an older checkpoint.
+
+    ``add -A`` honours ``info/exclude`` only for paths it is not already tracking, so a
+    directory excluded after it was first captured (browser profiles) would otherwise stay in
+    every later snapshot.
+    """
+    ok, out, _ = _run_git(
+        ["ls-files", "--cached", "--ignored", "-z", f"--exclude-from={store / 'info' / 'exclude'}"],
+        store, working_dir, index_file=index_file,
+    )
+    if not ok:
+        return False
+    paths = [p for p in out.split("\x00") if p]
+    for i in range(0, len(paths), 200):
+        ok, _, _ = _run_git(
+            ["rm", "--cached", "-f", "-q", "--ignore-unmatch", "--", *paths[i:i + 200]],
+            store, working_dir, index_file=index_file,
+            extra_env={"GIT_LITERAL_PATHSPECS": "1"},
+        )
+        if not ok:
+            return False
+    return True
+
+
 def _ledger_path(store: Path, dir_hash: str) -> Path:
     return store / _LEDGERS_DIRNAME / f"{dir_hash}.json"
 
@@ -249,7 +331,7 @@ def _hash_file(path: Path) -> Optional[str]:
         return None
 
 
-def _load_ledger(store: Path, dir_hash: str) -> Dict[str, Dict]:
+def _load_ledger(store: Path, dir_hash: str) -> dict[str, dict]:
     """Load the agent-write ledger: {relpath: {"sha256": ..., "ts": ...}}.
 
     The ledger records the content hash of every file the last successful
@@ -264,7 +346,7 @@ def _load_ledger(store: Path, dir_hash: str) -> Dict[str, Dict]:
         return {}
 
 
-def _save_ledger(store: Path, dir_hash: str, ledger: Dict[str, Dict]) -> None:
+def _save_ledger(store: Path, dir_hash: str, ledger: dict[str, dict]) -> None:
     """Persist the agent-write ledger, capped to the newest entries."""
     try:
         if len(ledger) > _LEDGER_MAX_ENTRIES:
@@ -287,7 +369,7 @@ def _ref_name(dir_hash: str) -> str:
     return f"{_REFS_PREFIX}/{dir_hash}"
 
 
-def _gitlink_paths(ls_tree_z: str) -> List[str]:
+def _gitlink_paths(ls_tree_z: str) -> list[str]:
     """Paths of gitlinks (nested repositories stored as a commit reference, not
     their files) in ``git ls-tree -r -z`` output."""
     return [
@@ -297,7 +379,7 @@ def _gitlink_paths(ls_tree_z: str) -> List[str]:
     ]
 
 
-def _uncaptured_note(nested_repos: List[str]) -> str:
+def _uncaptured_note(nested_repos: list[str]) -> str:
     """Checkpoint-message suffix naming nested repositories whose files were
     not captured, so every /rollback listing discloses it."""
     shown = ", ".join(nested_repos[:3])
@@ -355,14 +437,14 @@ def _git_env(
 
 
 def _run_git(
-    args: List[str],
+    args: list[str],
     store: Path,
     working_dir: str,
     timeout: int = _GIT_TIMEOUT,
-    allowed_returncodes: Optional[Set[int]] = None,
+    allowed_returncodes: Optional[set[int]] = None,
     index_file: Optional[Path] = None,
-    extra_env: Optional[Dict[str, str]] = None,
-) -> Tuple[bool, str, str]:
+    extra_env: Optional[dict[str, str]] = None,
+) -> tuple[bool, str, str]:
     """Run a git command against the shared store.  Returns (ok, stdout, stderr).
 
     ``allowed_returncodes`` suppresses error logging for known/expected non-zero
@@ -403,6 +485,7 @@ def _run_git(
             # console-less desktop/gateway backend; suppress the per-call
             # conhost flash on Windows (no-op on POSIX).
             creationflags=windows_hide_flags(),
+            check=False,
         )
         ok = result.returncode == 0
         stdout = os.fsdecode(result.stdout) if "-z" in args else result.stdout.strip()
@@ -430,7 +513,7 @@ def _run_git(
         return False, "", str(exc)
 
 
-def _git_out(args: List[str], store: Path, working_dir: str, rc: Optional[Set[int]] = None) -> str:
+def _git_out(args: list[str], store: Path, working_dir: str, rc: Optional[set[int]] = None) -> str:
     """stdout of a successful git call, else ``""``."""
     ok, out, _ = _run_git(args, store, working_dir, allowed_returncodes=rc)
     return out if ok else ""
@@ -441,7 +524,7 @@ def _ref_tip(store: Path, working_dir: str, ref: str) -> Optional[str]:
     return _git_out(["rev-parse", "--verify", ref + "^{commit}"], store, working_dir, {128}) or None
 
 
-def _list_project_refs(store: Path, working_dir: str) -> List[str]:
+def _list_project_refs(store: Path, working_dir: str) -> list[str]:
     out = _git_out(["for-each-ref", "--format=%(refname)", _REFS_PREFIX], store, working_dir, {128})
     return [r for r in out.splitlines() if r.strip()]
 
@@ -523,6 +606,7 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
         _migrate_legacy_store(base)
 
     if (store / "HEAD").exists():
+        _write_default_excludes(store)  # a store made by an older build gets new excludes too
         return None
 
     store.mkdir(parents=True, exist_ok=True)
@@ -552,6 +636,7 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
             env=init_env, timeout=_GIT_TIMEOUT,
             stdin=subprocess.DEVNULL,
             creationflags=windows_hide_flags(),
+            check=False,
         )
         if result.returncode != 0:
             return f"Shadow store init failed: {result.stderr.strip()}"
@@ -568,17 +653,26 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
     _run_git(["config", "tag.gpgSign", "false"], store, cfg_wd)
     _run_git(["config", "gc.auto", "0"], store, cfg_wd)
 
-    info_dir = store / "info"
-    info_dir.mkdir(exist_ok=True)
-    (info_dir / "exclude").write_text(
-        "\n".join(DEFAULT_EXCLUDES) + "\n", encoding="utf-8"
-    )
+    _write_default_excludes(store)
 
     logger.debug("Initialised checkpoint store at %s", store)
     return None
 
 
-def _volume_evidence(workdir: Path) -> Dict:
+def _write_default_excludes(store: Path) -> None:
+    """(Re)write the store's ``info/exclude`` when it differs from :data:`DEFAULT_EXCLUDES`."""
+    exclude = store / "info" / "exclude"
+    text = "\n".join(DEFAULT_EXCLUDES) + "\n"
+    try:
+        if exclude.is_file() and exclude.read_text(encoding="utf-8-sig") == text:
+            return
+        exclude.parent.mkdir(exist_ok=True)
+        exclude.write_text(text, encoding="utf-8")
+    except OSError as exc:
+        logger.debug("Could not write checkpoint excludes: %s", exc)
+
+
+def _volume_evidence(workdir: Path) -> dict:
     """Record the identity of ``workdir``'s parent while the project is live.
 
     ``(st_dev, st_ino)`` of the parent directory, captured at a moment when
@@ -616,7 +710,7 @@ def _register_project(store: Path, working_dir: str) -> None:
     dir_hash = _project_hash(working_dir)
     meta_path = _project_meta_path(store, dir_hash)
     now = time.time()
-    meta: Dict = {"workdir": str(_normalize_path(working_dir)),
+    meta: dict = {"workdir": str(_normalize_path(working_dir)),
                   "created_at": now, "last_touch": now}
     evidence = _volume_evidence(_normalize_path(working_dir))
     if evidence:
@@ -672,12 +766,12 @@ def _touch_project(store: Path, working_dir: str) -> None:
         logger.debug("Could not update project metadata %s: %s", meta_path, exc)
 
 
-def _list_projects(store: Path) -> List[Dict]:
+def _list_projects(store: Path) -> list[dict]:
     """Return all registered projects under the store."""
     projects_dir = store / _PROJECTS_DIRNAME
     if not projects_dir.exists():
         return []
-    out: List[Dict] = []
+    out: list[dict] = []
     for meta_path in projects_dir.glob("*.json"):
         dir_hash = meta_path.stem
         try:
@@ -691,7 +785,7 @@ def _list_projects(store: Path) -> List[Dict]:
     return out
 
 
-def _pre_v2_shadow_repos(base: Path) -> List[Dict]:
+def _pre_v2_shadow_repos(base: Path) -> list[dict]:
     """Return pre-v2 per-project shadow repos still directly under ``base``.
 
     Pre-v2 layout kept one shadow git repo per working directory directly
@@ -699,7 +793,7 @@ def _pre_v2_shadow_repos(base: Path) -> List[Dict]:
     single source of truth for that scan so a preview built from it (e.g.
     ``store_status``) always matches what ``prune_checkpoints`` deletes.
     """
-    out: List[Dict] = []
+    out: list[dict] = []
     if not base.exists():
         return out
     for child in base.iterdir():
@@ -730,16 +824,53 @@ def _pre_v2_shadow_repos(base: Path) -> List[Dict]:
 
 
 def _dir_file_count(path: str) -> int:
-    """Quick file count estimate (stops early if over _MAX_FILES)."""
+    """Count checkpoint candidates, pruning the default excludes."""
     count = 0
     try:
-        for _ in Path(path).rglob("*"):
-            count += 1
-            if count > _MAX_FILES:
-                return count
-    except (PermissionError, OSError):
+        root = _normalize_path(path)
+        if not root.is_dir():
+            return 0
+
+        directory_patterns = tuple(
+            pattern[:-1] for pattern in DEFAULT_EXCLUDES if pattern.endswith("/")
+        )
+        file_patterns = tuple(
+            pattern for pattern in DEFAULT_EXCLUDES if not pattern.endswith("/")
+        )
+
+        for current_dir, directory_names, file_names in os.walk(
+            root, followlinks=False
+        ):
+            retained_directories = []
+            for name in directory_names:
+                candidate = Path(current_dir) / name
+                if candidate.is_symlink():
+                    if not any(fnmatch.fnmatchcase(name, p) for p in file_patterns):
+                        count += 1
+                elif not any(
+                    # git applies slash-less patterns (``*.log``) to directories too
+                    fnmatch.fnmatchcase(name, p) for p in directory_patterns + file_patterns
+                ):
+                    retained_directories.append(name)
+                if count > _MAX_FILES:
+                    return count
+            directory_names[:] = retained_directories
+
+            for name in file_names:
+                if any(fnmatch.fnmatchcase(name, p) for p in file_patterns):
+                    continue
+                count += 1
+                if count > _MAX_FILES:
+                    return count
+    except OSError:
         pass
     return count
+
+
+def _too_broad(abs_dir: str) -> bool:
+    """``/``, the user's home and every ancestor of it: never a project, always huge."""
+    home = Path.home().resolve()
+    return Path(abs_dir) in {Path("/"), home, *home.parents}
 
 
 def _dir_size_bytes(path: Path) -> int:
@@ -780,7 +911,7 @@ class CheckpointManager:
         are dropped when the store exceeds this after a commit.
     max_file_size_mb : int
         Skip adding any single file larger than this to a checkpoint.
-        (Implemented via ``.gitignore`` excludes + a post-stage size check.)
+        (Implemented via pre-stage pathspec excludes + a post-stage size check.)
     """
 
     def __init__(
@@ -794,7 +925,7 @@ class CheckpointManager:
         self.max_snapshots = max(1, int(max_snapshots))
         self.max_total_size_mb = max(0, int(max_total_size_mb))
         self.max_file_size_mb = max(0, int(max_file_size_mb))
-        self._checkpointed_dirs: Set[str] = set()
+        self._checkpointed_dirs: set[str] = set()
 
     # ------------------------------------------------------------------
     # Turn lifecycle
@@ -850,7 +981,7 @@ class CheckpointManager:
         except Exception as exc:
             logger.debug("record_agent_write failed for %s: %s", file_path, exc)
 
-    def _safe_restore_plan(self, working_dir: str, commit_hash: str) -> Dict:
+    def _safe_restore_plan(self, working_dir: str, commit_hash: str) -> dict:
         """Classify files changed since ``commit_hash`` for a safe restore.
 
         Returns ``{"success", "restore": [rel...], "skipped": [rel...],
@@ -872,10 +1003,11 @@ class CheckpointManager:
         index_file = _index_path(store, dir_hash)
 
         # Stage the current tree so the name-only diff sees new files too.
-        _run_git(["add", "-A"], store, abs_dir,
+        _run_git(_stage_all_args(store.parent, abs_dir), store, abs_dir,
                  timeout=_GIT_TIMEOUT * 2, index_file=index_file)
         ok, names_out, err = _run_git(
-            ["diff", "--name-only", "-z", commit_hash, "--cached"],
+            ["diff", "--name-only", "-z", commit_hash, "--cached",
+             *_exclude_store_args(store.parent, abs_dir)],
             store, abs_dir, index_file=index_file,
         )
         # Reset the index back to the project ref so it doesn't drift.
@@ -893,8 +1025,8 @@ class CheckpointManager:
             # skipping every file.
             return {"success": True, "restore": [], "skipped": [],
                     "ledger_empty": True}
-        restore: List[str] = []
-        skipped: List[str] = []
+        restore: list[str] = []
+        skipped: list[str] = []
         for rel in filter(None, names_out.split("\x00")):
             abs_path = Path(abs_dir) / rel
             entry = ledger.get(str(abs_path))
@@ -927,7 +1059,7 @@ class CheckpointManager:
         abs_dir = str(_normalize_path(working_dir))
 
         # Skip root, home, and other overly broad directories
-        if abs_dir in {"/", str(Path.home())}:
+        if _too_broad(abs_dir):
             logger.debug("Checkpoint skipped: directory too broad (%s)", abs_dir)
             return False
 
@@ -945,7 +1077,7 @@ class CheckpointManager:
             logger.debug("Checkpoint failed (non-fatal): %s", e)
             return False
 
-    def list_checkpoints(self, working_dir: str) -> List[Dict]:
+    def list_checkpoints(self, working_dir: str) -> list[dict]:
         """List available checkpoints for a directory (most recent first)."""
         abs_dir = str(_normalize_path(working_dir))
         store = _store_path()
@@ -963,7 +1095,7 @@ class CheckpointManager:
         if not ok or not stdout:
             return []
 
-        results: List[Dict] = []
+        results: list[dict] = []
         for line in stdout.splitlines():
             parts = line.split("|", 3)
             if len(parts) == 4:
@@ -986,7 +1118,7 @@ class CheckpointManager:
                 results.append(entry)
         return results
 
-    def list_all_checkpoints(self) -> List[Dict]:
+    def list_all_checkpoints(self) -> list[dict]:
         """List checkpoints across every registered project (most recent first).
 
         Surgical reapply of PR #10633 by @nightq (#10505) onto the v2
@@ -998,7 +1130,7 @@ class CheckpointManager:
         store = _store_path()
         if not (store / "HEAD").exists():
             return []
-        results: List[Dict] = []
+        results: list[dict] = []
         for meta in _list_projects(store):
             workdir = meta.get("workdir") or ""
             if not workdir:
@@ -1010,7 +1142,7 @@ class CheckpointManager:
         return results
 
     @staticmethod
-    def _parse_shortstat(stat_line: str, entry: Dict) -> None:
+    def _parse_shortstat(stat_line: str, entry: dict) -> None:
         """Parse git --shortstat output into entry dict."""
         m = re.search(r'(\d+) file', stat_line)
         if m:
@@ -1022,7 +1154,7 @@ class CheckpointManager:
         if m:
             entry["deletions"] = int(m.group(1))
 
-    def diff(self, working_dir: str, commit_hash: str) -> Dict:
+    def diff(self, working_dir: str, commit_hash: str) -> dict:
         """Show diff between a checkpoint and the current working tree."""
         from tools.checkpoint_pruning import PruneError, store_lock
 
@@ -1032,7 +1164,7 @@ class CheckpointManager:
         except (PruneError, OSError) as exc:
             return {"success": False, "error": str(exc)}
 
-    def _diff(self, working_dir: str, commit_hash: str) -> Dict:
+    def _diff(self, working_dir: str, commit_hash: str) -> dict:
         hash_err = _validate_commit_hash(commit_hash)
         if hash_err:
             return {"success": False, "error": hash_err}
@@ -1043,7 +1175,7 @@ class CheckpointManager:
         if not (store / "HEAD").exists():
             return {"success": False, "error": "No checkpoints exist for this directory"}
 
-        ok, _, err = _run_git(
+        ok, _, _err = _run_git(
             ["cat-file", "-t", commit_hash], store, abs_dir,
         )
         if not ok:
@@ -1053,15 +1185,18 @@ class CheckpointManager:
         index_file = _index_path(store, dir_hash)
 
         # Stage current state into the per-project index to compare.
-        _run_git(["add", "-A"], store, abs_dir,
+        _run_git(_stage_all_args(store.parent, abs_dir), store, abs_dir,
                  timeout=_GIT_TIMEOUT * 2, index_file=index_file)
 
+        # A checkpoint taken before the store was excluded may still contain it; never
+        # report the store as a change against such a checkpoint.
+        store_excludes = _exclude_store_args(store.parent, abs_dir)
         ok_stat, stat_out, _ = _run_git(
-            ["diff", "--stat", commit_hash, "--cached"],
+            ["diff", "--stat", commit_hash, "--cached", *store_excludes],
             store, abs_dir, index_file=index_file,
         )
         ok_diff, diff_out, _ = _run_git(
-            ["diff", commit_hash, "--cached", "--no-color"],
+            ["diff", commit_hash, "--cached", "--no-color", *store_excludes],
             store, abs_dir, index_file=index_file,
         )
 
@@ -1081,7 +1216,7 @@ class CheckpointManager:
             "diff": diff_out if ok_diff else "",
         }
 
-    def session_diff(self, working_dir: str) -> Dict:
+    def session_diff(self, working_dir: str) -> dict:
         """Show the cumulative diff of everything changed in this directory.
 
         This powers ``/diff session``.  It answers "what has Hermes changed
@@ -1117,9 +1252,9 @@ class CheckpointManager:
         self,
         working_dir: str,
         commit_hash: str,
-        file_path: str = None,
+        file_path: str | None = None,
         safe: bool = False,
-    ) -> Dict:
+    ) -> dict:
         """Restore files to a checkpoint state.
 
         With ``safe=True`` (full-directory restores only), files the user
@@ -1138,7 +1273,7 @@ class CheckpointManager:
         except (PruneError, OSError) as exc:
             return {"success": False, "error": str(exc)}
 
-    def _restore(self, working_dir: str, commit_hash: str, file_path: str | None, safe: bool) -> Dict:
+    def _restore(self, working_dir: str, commit_hash: str, file_path: str | None, safe: bool) -> dict:
         hash_err = _validate_commit_hash(commit_hash)
         if hash_err:
             return {"success": False, "error": hash_err}
@@ -1168,7 +1303,7 @@ class CheckpointManager:
         if not ok:
             return {"success": False, "error": f"Could not inspect checkpoint: {err}"}
         nested_repos = _gitlink_paths(tree_out)
-        selected_paths: Optional[List[str]] = None
+        selected_paths: Optional[list[str]] = None
         if nested_repos:
             blocked_repos = nested_repos
             if file_path:
@@ -1221,10 +1356,11 @@ class CheckpointManager:
                         for record in selected.split("\x00")
                         if record.startswith("160000 ") and "\t" in record
                     ]
+                    store_paths = _store_pathspecs(store.parent, abs_dir)
                     selected_paths = [
-                        record.split("\t", 1)[1]
-                        for record in selected.split("\x00")
-                        if "\t" in record
+                        path for record in selected.split("\x00") if "\t" in record
+                        for path in [record.split("\t", 1)[1]]
+                        if not any(path == sp or path.startswith(sp + "/") for sp in store_paths)
                     ]
                     if not selected_paths:
                         # An exclusion-only spec can match nothing. Checkout
@@ -1246,10 +1382,10 @@ class CheckpointManager:
                     "nested_repositories": blocked_repos,
                 }
 
-        skipped_user_edits: List[str] = []
-        kept_oversize: List[str] = []
-        failed_deletes: List[str] = []
-        restore_paths: Optional[List[str]] = None
+        skipped_user_edits: list[str] = []
+        kept_oversize: list[str] = []
+        failed_deletes: list[str] = []
+        restore_paths: Optional[list[str]] = None
         if safe and not file_path:
             plan = self._safe_restore_plan(abs_dir, commit_hash)
             if not plan.get("success"):
@@ -1281,8 +1417,8 @@ class CheckpointManager:
         if restore_paths is not None:
             # Split into files present in the checkpoint (checkout) and
             # Hermes-created files absent from it (delete to restore state).
-            checkout_targets: List[str] = []
-            delete_targets: List[str] = []
+            checkout_targets: list[str] = []
+            delete_targets: list[str] = []
             for rel in restore_paths:
                 ok_in_commit, _, _ = _run_git(
                     ["cat-file", "-e", f"{commit_hash}:{rel}"],
@@ -1313,9 +1449,9 @@ class CheckpointManager:
                     )
                     failed_deletes.append(rel)
             if not checkout_targets:
-                ok, stdout, err = True, "", ""
+                ok, _stdout, err = True, "", ""
             else:
-                ok, stdout, err = _run_git(
+                ok, _stdout, err = _run_git(
                     ["checkout", commit_hash, "--", *checkout_targets],
                     store, abs_dir, timeout=_GIT_TIMEOUT * 2,
                     index_file=index_file,
@@ -1329,7 +1465,7 @@ class CheckpointManager:
             with tempfile.TemporaryDirectory(prefix="restore-select-", dir=store) as scratch:
                 spec_file = Path(scratch) / "pathspec"
                 spec_file.write_bytes(b"".join(os.fsencode(p) + b"\0" for p in selected_paths))
-                ok, stdout, err = _run_git(
+                ok, _stdout, err = _run_git(
                     ["checkout", commit_hash, f"--pathspec-from-file={spec_file}",
                      "--pathspec-file-nul"],
                     store, abs_dir, timeout=_GIT_TIMEOUT * 2,
@@ -1337,8 +1473,11 @@ class CheckpointManager:
                     extra_env={"GIT_LITERAL_PATHSPECS": "1"},
                 )
         else:
-            ok, stdout, err = _run_git(
-                ["checkout", commit_hash, "--", file_path if file_path else "."],
+            # A checkpoint taken before the store was excluded holds a copy of it: never check
+            # that out over the live store (it would rewind refs to the captured ones).
+            store_excludes = _exclude_store_args(store.parent, abs_dir)[1:]
+            ok, _stdout, err = _run_git(
+                ["checkout", commit_hash, "--", file_path if file_path else ".", *store_excludes],
                 store, abs_dir, timeout=_GIT_TIMEOUT * 2,
                 index_file=index_file,
             )
@@ -1459,20 +1598,21 @@ class CheckpointManager:
             # First snapshot for this project.
             index_file.parent.mkdir(parents=True, exist_ok=True)
 
-        # Stage with per-project index.  Include a per-stage file-size filter
-        # via ``core.bigFileThreshold`` is not what we want — instead, we
-        # rely on the exclude file for broad patterns and post-stage prune
-        # any path whose size exceeds max_file_size_mb.
-        ok, _, err = _run_git(
-            ["add", "-A"], store, working_dir,
-            timeout=_GIT_TIMEOUT * 2, index_file=index_file,
-        )
+        # Drop entries the old tree carries but this build excludes BEFORE staging: ``add -A``
+        # re-reads every tracked path, and a locked browser-profile file would fail it each time.
+        _unstage_store(store, working_dir, index_file)
+        if not _unstage_excluded(store, working_dir, index_file):
+            logger.debug("Checkpoint could not drop newly excluded paths from the index")
+            return False
+        ok, err = self._stage_with_oversize_preflight(store, working_dir, index_file)
         if not ok:
             logger.debug("Checkpoint git-add failed: %s", err)
             return False
 
         if self.max_file_size_mb > 0:
-            self._drop_oversize_from_index(store, working_dir, index_file)
+            if not self._drop_oversize_from_index(store, working_dir, index_file):
+                logger.debug("Checkpoint oversize index cleanup failed")
+                return False
 
         # Compare against the current ref tip (not HEAD — HEAD points to a
         # branch that doesn't exist on a bare store, so ``diff --cached``
@@ -1575,22 +1715,85 @@ class CheckpointManager:
         except OSError:
             return False
 
+    def _stage_with_oversize_preflight(
+        self, store: Path, working_dir: str, index_file: Path,
+    ) -> tuple[bool, str]:
+        """Stage the worktree without opening files already over the size cap."""
+        add_args = _stage_all_args(store.parent, working_dir)
+        oversize_pathspec: Optional[Path] = None
+        if self.max_file_size_mb > 0:
+            oversize = self._oversize_paths_for_staging(store, working_dir, index_file)
+            if oversize is None:
+                return False, "oversize preflight failed"
+            if oversize:
+                # git refuses command-line pathspecs beside --pathspec-from-file, so the
+                # store self-exclusion rides in the same file.
+                oversize_pathspec = self._write_oversize_pathspec(
+                    oversize + _store_pathspecs(store.parent, working_dir))
+                add_args = ["add", "-A"]
+                add_args.extend([
+                    f"--pathspec-from-file={oversize_pathspec}",
+                    "--pathspec-file-nul",
+                ])
+        try:
+            ok, _, err = _run_git(
+                add_args, store, working_dir,
+                timeout=_GIT_TIMEOUT * 2, index_file=index_file,
+            )
+            return ok, err
+        finally:
+            if oversize_pathspec is not None:
+                _unlink_quiet(oversize_pathspec)
+
+    def _oversize_paths_for_staging(
+        self, store: Path, working_dir: str, index_file: Path,
+    ) -> Optional[list[str]]:
+        """Return tracked or untracked paths that Git must not open for staging."""
+        ok, stdout, _ = _run_git(
+            ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+            store, working_dir, index_file=index_file,
+        )
+        if not ok:
+            return None
+        abs_workdir = _normalize_path(working_dir)
+        return [
+            rel for rel in stdout.split("\x00")
+            if rel and self._exceeds_size_cap(abs_workdir / rel)
+        ]
+
+    @staticmethod
+    def _write_oversize_pathspec(paths: list[str]) -> Path:
+        """Write NUL-delimited literal excludes suitable for ``git add``."""
+        fd, raw_path = tempfile.mkstemp(prefix="hermes-checkpoint-", suffix=".pathspec")
+        path = Path(raw_path)
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                for rel in paths:
+                    handle.write(os.fsencode(f":(exclude,top,literal){rel}"))
+                    handle.write(b"\0")
+        except Exception:
+            _unlink_quiet(path)
+            raise
+        return path
+
     def _drop_oversize_from_index(
         self, store: Path, working_dir: str, index_file: Path,
-    ) -> None:
+    ) -> bool:
         """Remove any staged file larger than ``max_file_size_mb`` from the index.
 
         Lets the agent keep snapshotting source code while refusing to
         swallow generated assets (datasets, model weights, logs, videos).
         """
         if self.max_file_size_mb <= 0:
-            return
+            return True
         ok, stdout, _ = _run_git(
             ["ls-files", "--cached", "-z"],
             store, working_dir, index_file=index_file,
         )
-        if not ok or not stdout:
-            return
+        if not ok:
+            return False
+        if not stdout:
+            return True
         # NUL separators preserve whitespace within each literal filename.
         paths = [p for p in stdout.split("\x00") if p]
         abs_workdir = _normalize_path(working_dir)
@@ -1602,7 +1805,7 @@ class CheckpointManager:
             rel for rel in paths if self._exceeds_size_cap(abs_workdir / rel)
         ]
         if not oversize:
-            return
+            return True
         logger.debug(
             "Checkpoint: dropping %d oversize file(s) (>%d MB) from index",
             len(oversize), self.max_file_size_mb,
@@ -1612,11 +1815,13 @@ class CheckpointManager:
         BATCH = 200
         for i in range(0, len(oversize), BATCH):
             chunk = oversize[i:i + BATCH]
-            _run_git(
-                ["rm", "--cached", "--quiet", "--"] + chunk,
+            ok, _, _ = _run_git(
+                ["update-index", "--force-remove", "--"] + chunk,
                 store, working_dir, index_file=index_file,
-                allowed_returncodes={128},
             )
+            if not ok:
+                return False
+        return True
 
     def _prune(self, store: Path, working_dir: str, ref: str) -> None:
         """Checkpoint-take path: snapshot-count budget plus one size round, gc deferred to the
@@ -1633,7 +1838,7 @@ class CheckpointManager:
             logger.warning("Checkpoint pruning stopped: %s", exc)
 
 
-def format_checkpoint_list(checkpoints: List[Dict], directory: str) -> str:
+def format_checkpoint_list(checkpoints: list[dict], directory: str) -> str:
     """Format checkpoint list for display to user."""
     if not checkpoints:
         return f"No checkpoints found for {directory}"

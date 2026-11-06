@@ -145,8 +145,33 @@ PM prepares core requirements, enabled extras, and enabled plugin requirements
 together. It seeds resolution from the existing lock. Compatible transitive
 versions can change, but declared constraints and exact pins remain binding.
 Each candidate gets a fresh workspace with explicit source, lock seed, and
-prepared environment inputs. The generated workspace and extended lock remain
-outside shipped source. Repair copies the recorded workspace and lock, including
+prepared environment inputs. Plugin snapshots keep a plugin's runtime dependencies
+and the optional extras this install selects (or the plugin's own requirements name);
+its `dependency-groups`, legacy uv development dependencies and unselected extras
+(`dev`, `test`) are left out, together with the `tool.uv.sources` entries scoped to
+them, because PM never installs them yet uv would still
+resolve them against core's pins. The original plugin metadata and core development
+pins are unchanged; genuine runtime conflicts still refuse admission. A plugin with no
+build backend gets a unique `hermes-plugin-…` name in its snapshot, and its references to
+its own extras (`myplugin[runtime]`) are renamed with it. Hermes itself always comes from
+the checkout: a plugin requirement naming `hermes-agent` (a runtime dependency in
+`pyproject.toml` or `plugin.yaml`, or an extra this install selects, such as
+`hermes-agent[web]>=0.20`) is satisfied by it, whatever its version specifier says. PM
+therefore checks that specifier itself against the running Hermes version (the one
+`requires_hermes` reads), with standard PEP 440 comparison and the requirement's environment
+marker; a requirement in an unselected extra or one whose marker is false on this machine is
+not checked, and with no known version (`unknown`) nothing is. A plugin that excludes the
+running version is treated like one whose `requires_hermes` does: enabling or installing it is
+refused, and one already enabled is left out of the environment and skipped at load, with its
+config untouched, until Hermes reaches a version it accepts. The two checks compare differently:
+`requires_hermes` compares only `major.minor.patch` (pre/post-release suffixes are dropped, and a
+clause it cannot parse passes), while a `hermes-agent` requirement is compared as any Python
+requirement would be (`>=0.27.0.post1` excludes 0.27.0). Either one can keep a plugin out.
+The generated workspace and extended lock remain
+outside shipped source. The workspace is solved only for the platform and
+architecture of the interpreter it installs into, so a plugin dependency with no
+wheels for another platform (onnxruntime or torch on Android) does not block it;
+the shipped lock keeps its full platform coverage. Repair copies the recorded workspace and lock, including
 plugin build inputs, rather than resolving against edited live manifests.
 
 Plugin enablement and staged code updates are submitted as data to the isolated
@@ -167,6 +192,18 @@ plugin updates can change the selected plugin's files. A wrapper with no Python
 dependency declaration does not join the shared environment. Its external
 sidecar remains separately owned. See the
 [plugin guide](../developer-guide/plugins/index.md).
+
+The first PM generation that replaces a pre-PM `venv/` or `.venv` also carries
+the extras that venv held (Matrix, FAL, ...), so features that worked keep
+working. Those extras are carried, not requested: if one no longer builds (a
+native package such as Matrix's `python-olm` whose compiler or CMake is
+missing), the update installs everything else, prints which extra it left out,
+and records that beside the install's dependency state, so a later scan of the
+old venv does not carry it again. `hermes pm install --extra NAME` adds it back
+once the build is fixed. A carried extra that fails only for the moment (a
+download or a missing tool) is never dropped: the update fails before it
+publishes anything, so the next update scans the old venv again and retries
+it. An extra you request yourself still fails the install when it cannot build.
 
 ### Lazy-install policy
 
@@ -189,22 +226,20 @@ requires trust in that plugin and its dependencies.
 
 ## Optional security tools
 
-PM owns the pinned `bws`, `tirith`, and `iron-proxy` packages in
+PM owns the pinned `bws` and `iron-proxy` packages in
 `pm/security_packages.py`. Their versions, artifact URLs, and SHA-256 hashes
 come from `pm/lock.json`. Downloads and publication use the shared tool store,
 not private installers under `$HERMES_HOME/bin`.
 
-For Tirith and iron-proxy, PM also acquires pinned signature files and checks
-that the release checksums cover the pinned archive. Package staging calls the
-integration's signature checker. Cosign and GPG checks remain conditional on
-available executables. Locked provenance files must still be available and
+For iron-proxy, PM also acquires pinned signature files and checks that the
+release checksums cover the pinned archive. Package staging calls the
+integration's signature checker. The GPG check remains conditional on an
+available executable. Locked provenance files must still be available and
 match their hashes. An explicit signature rejection aborts installation.
 External executables remain outside PM's hash and signature guarantees.
 
 `bws` and iron-proxy honor an executable on `PATH` before checking PM selection.
-Tirith honors `security.tirith_path`, then uses `PATH` before its PM selection
-for the default name. An explicit Tirith path never triggers a replacement
-download. Lazy installation obeys PM policy. Explicit install commands check
+Lazy installation obeys PM policy. Explicit install commands check
 and repair managed entries, including requests with `--force`.
 
 ## Developer workflow {#developer-workflow}
@@ -236,6 +271,14 @@ interpreter's sysconfig still points at its supplier's temporary LLVM directory.
 This applies to source and bundle builds alike. Explicit `AR` and `CC` values
 remain authoritative; PM does not change the toolchain of a caller-supplied
 interpreter such as Nix Python. No `CC` default is needed for the current pin.
+
+The pinned Linux Python records `clang`/`clang++` as `CC`/`CXX` and the same
+temporary `llvm-ar` as `AR`. When a recorded compiler is not on `PATH` but its
+GCC equivalent is (`gcc`/`g++`, as on stock Debian, Ubuntu and WSL), PM points
+`CC`/`CXX` and the matching `LDSHARED`/`LDCXXSHARED` at it, keeping flags such
+as `-pthread`, and defaults `AR` to the host's `ar`. A `CC`, `CXX`, `LDSHARED`,
+`LDCXXSHARED` or `AR` you set yourself wins. With no compiler at all, a source
+build fails with a hint to install one (`sudo apt install build-essential`).
 
 Clone the repository and select your branch before preparing dependencies:
 
@@ -315,12 +358,14 @@ Then activate it; there is no separate setup command to remember:
 | Shell | Enter | Leave |
 |---|---|---|
 | Bash | `source ./activate` | `deactivate` |
+| fish | `source ./activate.fish` | `deactivate` |
 | PowerShell | `. .\activate.ps1` | `deactivate` |
 
 The leading dot and space in PowerShell are required. Executing
 `.\activate.ps1` without dot-sourcing does not provide the same session scope.
-The POSIX script uses Bash syntax. Use Bash for this recipe rather than `sh`,
-fish, or assuming that a Zsh startup file has Bash semantics.
+`activate` uses Bash syntax. Use Bash for this recipe rather than `sh`, or
+assuming that a Zsh startup file has Bash semantics; fish has its own
+`activate.fish`, which behaves the same.
 
 Each activation invokes PM's install/sync path and trusts the recorded tool
 digest instead of re-hashing every entry. PM still installs a missing tool and
@@ -342,13 +387,24 @@ Start in a clean shell rather than nesting this inside another venv.
 and removes the function and the prompt prefix.
 It does not uninstall packages or stop processes that you started.
 
+To run one command or script in that environment without activating a shell,
+prefix it with `scripts/run-in-hermes-env`. It applies the same environment to
+that command only, syncing first when there is none to inherit or the inherited
+one is stale, and leaves your shell untouched. `scripts/run_tests.sh` re-runs
+itself this way, and the repo's Python scripts hand themselves to it from their
+shebang.
+
+```bash
+scripts/run-in-hermes-env python scripts/release.py --help
+```
+
 Verify the interpreter and source before doing work:
 
 ```bash
 python -c "import sys, pm; print(sys.executable); print(pm.__file__)"
 python -c "import httpx; print(httpx.__file__)"
 node --version
-npm --version
+pnpm --version
 hermes --version
 ```
 
@@ -374,15 +430,20 @@ These commands use the selected development home. A source-file edit is visible
 to the next process. Restart the affected CLI, gateway, or backend after edits.
 Reinstalling every dependency is unnecessary for a Python-only source change.
 
-For the JavaScript workspaces, run `npm ci` once at the repository root, then
-run the relevant workspace command. For example:
+For the JavaScript workspaces, run `pnpm install --frozen-lockfile` once at the
+repository root, then run the relevant workspace command. For example:
 
 ```bash
-npm run build --workspace ui-tui
-npm run dev --workspace apps/desktop
+pnpm --dir ui-tui run build
+pnpm --dir apps/desktop run dev
 ```
 
-The website is separate: `npm ci --prefix website`, then
+Activation provides the pnpm version root `package.json` pins in `devEngines`.
+Hermes's builds and `hermes update` refuse any other pnpm version (a direct
+`pnpm install` does not check it), and the root `preinstall` script refuses
+`npm install` (npx and other npm commands only warn).
+
+The website is a separate npm project: `npm ci --prefix website`, then
 `npm run build:fast --prefix website`. PM activation supplies tools, not these
 `node_modules` directories or built assets. Native desktop builds have additional
 requirements in the [desktop build guide](https://github.com/NousResearch/hermes-agent/blob/main/apps/desktop/BUILDING.md).
@@ -418,7 +479,7 @@ before starting another Python process.
 ### Syncing after you edit pyproject.toml
 
 1. Edit `pyproject.toml`. Pin every dependency as the
-   [Dependency Pinning Policy](https://github.com/NousResearch/hermes-agent/blob/main/AGENTS.md#dependency-pinning-policy)
+   [Dependency Pinning Policy](https://github.com/NousResearch/hermes-agent/blob/main/pm/AGENTS.md#dependency-pinning-policy)
    requires. Express platform limits with PEP 508 markers, or gate a whole
    extra in `[tool.hermes.extras-platforms]`.
 2. Relock:
@@ -428,7 +489,7 @@ before starting another Python process.
    ```
 
    This re-resolves `uv.lock` from `pyproject.toml` with the same settings CI
-   checks, including the 14-day `exclude-newer` quarantine. It changes no
+   checks, including the 3-day `exclude-newer` release-age check. It changes no
    environment. When the lock is already current, it says so and writes
    nothing. (`hermes pm lock --bump NAME VERSION` is a different operation: it
    pins a managed tool in `pm/lock.json` and does not touch `uv.lock`.)
@@ -485,6 +546,7 @@ Use the public `pm` module for Python dependency work:
 | `pm.build_environment(source=..., out=..., explicit=True)` | Build and validate a fresh caller-owned output. No plugin discovery or application selection. |
 | `pm.lock_project(source, explicit=True)` | Refresh an explicit project's lock without selecting an environment. |
 | `pm.ensure_environment(name, requirements, explicit=True)` | Prepare and select an isolated dependency generation. Return its Python path. |
+| `pm.ensure_project_environment(name, project, extras=..., explicit=True)` | Prepare and select an isolated generation of a project's locked dependencies, without installing the project. Return its Python path. |
 | `pm.ensure_python_tool(name, requirements, executable, explicit=True)` | Prepare an isolated tool and return its executable path. |
 | `pm.environment_python(name)` / `pm.python_tool(name, executable)` | Read selected paths without installing anything. |
 | `pm.venv_is_current()` | Ask a ready PM worker whether application dependencies are current. Return false if the manager runtime is unavailable. |
@@ -502,7 +564,11 @@ references. `--offline` and `--cache` control dependency acquisition.
 For application environment builds, PM must already be able to start in the
 invoking Python. These builds are not an interpreter bootstrap. They do not modify a running application's
 imports or replace its selected environment. Nix's declarative uv2nix builds
-remain Nix-owned. Package-manager commands for unrelated projects or agent
+remain Nix-owned: `nix develop` still builds its dependencies with uv2nix, then
+re-homes that venv onto the interpreter `pm/lock.json` pins (uv2nix cannot build
+against a tarball interpreter). The shell's uv, node, npm, ripgrep and ffmpeg are
+the lock's builds too.
+Package-manager commands for unrelated projects or agent
 sandboxes do not manage Hermes itself.
 
 ## Commands
@@ -517,14 +583,16 @@ hermes pm install chromium
 
 | Command | Effect |
 |---|---|
-| `pm install [names...]` | Install named packages. With no names, provision required tools plus Python, put those tools on PATH, and then sync the `all` extra. A bare install also installs the default optional tools (`agent-browser` and Chromium, `cua-driver`); a failed download of these prints a warning and does not fail the install. Naming a package you declined earlier undoes that choice. |
-| `pm install --without NAME` | Do a bare install without the default optional package `NAME` (`agent-browser` or `cua-driver`), and record that choice. Later bare installs and `hermes update` also leave it out. The installers' `--skip-browser` / `-SkipBrowser` and `--skip-computer-use` / `-SkipComputerUse` use this. |
+| `pm install [names...]` | Install named packages. With no names, provision required tools plus Python, put those tools on PATH, and then sync the `all` extra. A bare install also installs the default optional tools (`chromium`, the browser Hermes launches, and `cua-driver`); a failed download of these prints a warning and does not fail the install. Naming a package you declined earlier undoes that choice. |
+| `pm install --without NAME` | Do a bare install without the default optional package `NAME` (`chromium` or `cua-driver`), and record that choice. Later bare installs and `hermes update` also leave it out. The installers' `--skip-browser` / `-SkipBrowser` and `--skip-computer-use` / `-SkipComputerUse` (`--without cua-driver`) use this. The browser opt-out passes the legacy name `--without agent-browser`, which every PM release accepts and this one reads as `chromium`; a choice recorded under that name still skips `chromium`. |
+| `pm install --without EXTRA` | Drop a recorded Python extra that `[all]` does not include (for example `matrix`, which a migration from a pre-PM venv carries forward when that venv held its packages). The bare install's sync builds a generation without it, and the choice is recorded beside the install's dependency state: `hermes update`, the pre-PM venv scan, the update's install of configured platforms' extras, and a lazy install at first use never add it back. Packages another recorded extra also pulls in (a recorded `messaging` includes Slack, Telegram and Discord) stay until that extra goes too. `pm install --extra EXTRA` opts back in. Extras inside `[all]` (`web`, `mcp`, ...) are refused, since every sync selects them. |
 | `pm install --tools-only` | Install that tool closure and put it on PATH, then stop. The venv sync does not run. |
 | `pm env [names...]` | Print installed packages' PM-contributed environment values as JSON. It does not install missing packages, though a cold Hermes launch may prepare its own Python runtime first. |
-| `pm doctor` | Check installed tool identities, files, and digests against the lock. |
+| `pm doctor` | Check installed tool identities, files, and digests against the lock, and look for corrupt entries in PM's uv cache. `--repair` removes those entries so they are fetched again. |
 | `pm repair` | Rebuild the recorded Python dependency set in a new generation, validate it, then select it. Does not update pins, features, or plugin configuration. |
+| `pm environment NAME --extra EXTRA` / `--requirement REQ` | Make the isolated side environment `HERMES_HOME/environments/NAME` current and print only its Python path on stdout (progress goes to stderr), for shell callers such as skills: `PY="$(hermes pm environment documents --extra documents --extra documents-pdf)"`. `--extra` installs the pinned requirements of extras declared in `pyproject.toml`; `--requirement` takes bounded ad hoc requirements. The environment records its own lock, and only a changed requirement set or Python pin builds a new generation. Concurrent calls serialize on the environment's lock, and a rebuild lands in a new generation, so a caller already using the previous one keeps its files. An explicit install: it runs even where lazy installs are off. Never `pip install` into the result. |
 | `pm status` | Print the latest sync/update receipt as JSON, or report that no receipt exists. |
-| `pm gc` | Remove unreferenced tool-store entries, eligible download partials, and unused lease-managed Python generations. |
+| `pm gc` | Remove unreferenced tool-store entries, eligible download partials, unused lease-managed Python generations, and the `installs/INSTALL_KEY/` state of deleted checkouts (a worktree removed from a `.worktrees/` dir that still exists, or a clone under the data root; a missing checkout anywhere else, such as a host install viewed from a container sharing the data root, is kept until its state has gone unused, with no sync and no launch, for `worktrees.install_state_retention_days` (default 14, 0 = forever); state whose install lock or generation lease is still held is always kept). The worktree pruner that runs at startup reclaims those orphaned state dirs too. |
 
 `pm env` excludes inherited process variables, including credentials. Its
 output can still reveal local installation paths; review it before sharing.
@@ -537,11 +605,12 @@ not substitutes for an installed application's update mechanism.
 | Command | Effect |
 |---|---|
 | `pm lock` | Relock `uv.lock` from `pyproject.toml`. Changes no environment; writes nothing when the lock is current. |
-| `pm lock --bump NAME VERSION` | Resolve and hash supported target artifacts, then write the tool pin to `pm/lock.json`. |
-| `pm update [names...]` | Query upstream versions, change tool pins, and install changed tools. |
+| `pm lock --bump NAME VERSION` | Resolve and hash supported target artifacts, write the tool pin to `pm/lock.json`, and regenerate the bootstrap pins in `scripts/install.sh` and `scripts/install.ps1`. |
+| `pm update [names...]` | Query upstream versions, change tool pins, regenerate the installers' bootstrap pins, and install changed tools. |
 | `pm update --check` | Query without writing. Exit 1 can mean updates exist; inspect output to distinguish an error. |
 | `pm update --target TARGET` | Resolve versions for the specified target. |
-| `pm update --uv` / `--npm` | Also refresh the Python or npm dependency resolution. |
+| `pm update --skip-target TARGET` | Leave TARGET's pins unchanged (repeatable), for example `linux-arm64-bionic` while the termux pool lags upstream. Later runs still report the package as current. `pm lock --bump NAME VERSION` re-pins every target at a version, and `pm update --termux` repins a retired `linux-arm64-bionic` row. |
+| `pm update --uv` / `--pnpm` | Also refresh the Python dependency resolution (`uv.lock`) or the JavaScript one (`pnpm-lock.yaml`). |
 | `pm update --termux [--check]` | Repin the termux pool archives the rolling pool has retired (the runtime-lib pin table and the bionic lock rows). `--check` reports without writing and exits 1 when a pin is retired. |
 | `pm install --target TARGET NAME...` | Stage explicit cross-target packages without recording them as the host's installed runtime. The win32 `git` target pins a self-extracting PortableGit archive: staging it runs the vendor extractor and therefore requires a Windows host. |
 | `pm bundle --out DIR [--ref REF]` | Stage a source snapshot, native tools, facts, and Python dependencies. It does not produce a signed desktop installer. |
@@ -553,20 +622,47 @@ launchers, and invokes native packaging. Maintainers can read
 ## Network retries
 
 PM retries transient HTTP failures during tool downloads, artifact hashing and
-version lookups. Each probe or transfer gets at most four attempts. Backoff
-waits are 1, 2 and 4 seconds. A `Retry-After` header can extend a wait, up to
-30 seconds. Each retry reports its cause, delay and next attempt in the log.
+version lookups. Probes and non-resumable transfers get at most four attempts.
+Their backoff waits are 1, 2 and 4 seconds. A `Retry-After` header can extend
+these waits up to 30 seconds. Resumable transfers renew their retry budget
+when they save new progress; four failures without new progress stop retries.
+With a pinned mirror available, waits above 30 seconds switch to that mirror.
+The last source honors `Retry-After` up to five minutes and stops for longer waits.
+Each retry logs its cause, delay and consecutive failures without progress.
 
 Retryable HTTP statuses are 408, 429, 500, 502, 503 and 504. Connection resets,
 timeouts, temporary DNS failures and interrupted response bodies also retry.
-Ranged downloads retain completed bytes. Servers without range support require
-a fresh stream. Pause interrupts backoff and preserves the partial download.
+Ranged downloads checkpoint every five seconds and after each attempt. A failed
+periodic checkpoint logs a warning and retries later; the final checkpoint is required.
+Servers without range support require a fresh stream. Pause interrupts backoff
+and preserves the partial download.
 
 PM does not retry bad hashes, certificate failures, local filesystem errors or
 other permanent failures. A successful probe followed by a range GET 403 or 404
 retains the CDN fallback: one serial attempt at the missing ranges. Extraction,
-verification and publication are not repeated. Python and npm package requests
-remain under uv and npm's own retry policies.
+verification and publication are not repeated. Python and JavaScript package
+requests remain under uv and pnpm's own retry policies.
+
+## Release age and package mirrors
+
+Every Python package Hermes itself depends on must be at least three days old
+when Hermes locks it (uv's `exclude-newer`, enforced by CI's lock check), so a
+freshly published, possibly compromised release cannot reach `uv.lock`. Users
+install from that lock, and installing or enabling a plugin never re-checks
+dates, so package mirrors that publish no upload times work. The one exemption
+is CA trust stores (`certifi`): a release that distrusts a compromised CA is
+locked the day it ships, since waiting keeps the bad root trusted. Set a mirror with `index-url` in `pip.conf`,
+which Hermes passes to uv, or with `UV_INDEX_URL`.
+
+`hermes pm lock` is the one step that applies the check. Run against a mirror
+without upload times, it stops with `has no publish time`; use
+`https://pypi.org/simple` for that step.
+
+JavaScript workspace dependencies follow the same rule through
+`minimumReleaseAge` in `pnpm-workspace.yaml` (in minutes: `20160` is 14 days),
+with exemptions listed in `minimumReleaseAgeExclude`. CI enforces it when it
+installs `pnpm-lock.yaml`; source, bundle and Docker installs trust the
+committed lock.
 
 ## Diagnostics
 
@@ -575,6 +671,7 @@ remain under uv and npm's own retry policies.
 - **New environment requires restart:** restart the affected Hermes process. Do not add a second site-packages tree to its live imports.
 - **Dependency conflict:** read `hermes pm status`. Correct the plugin requirements before retrying admission.
 - **Damaged Python dependencies:** run `hermes pm repair`, then restart Hermes. Repair replays the selected generation's saved workspace and lock without parsing plugin configuration. An unreadable record or missing saved lock fails without selecting a reduced dependency set. Before a generation exists, repair uses the shipped or committed lock and recorded feature set.
+- **Corrupt cached package** (`The wheel is invalid`, `RECORD file is invalid`): a machine stop during an install can leave a uv cache entry whose files are empty or NUL-filled. Installs remove the damaged package from PM's uv cache and retry on their own; `hermes pm doctor` reports such entries and `hermes pm doctor --repair` removes them. If the same package is still invalid after a fresh download, the package source is serving a broken wheel.
 - **Interrupted dependency install:** startup requests the same PM repair before dependency activation. Automatic attempts are bounded; `pm repair` retries explicitly. A failed repair preserves the previous selection and its retry marker.
 - **Damaged Python executable or application source:** repair or reinstall through the package owner. PM cannot run without those files. Signed payload files are never modified by dependency repair.
 - **Unknown package or extra:** use the declared name. `pm install` takes package names, not Python extra names or pip specifications.

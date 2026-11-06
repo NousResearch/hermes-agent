@@ -86,9 +86,13 @@ def test_profile_list_warns_only_for_shared_active_resources(homes, capsys, case
                     if operation == "search":
                         assert args == (None, "UNSEEN")
                         return "OK", [b"" if self.seen else b"1"]
-                    assert operation == "fetch" and args == (b"1", "(RFC822)")
-                    self.seen = True
-                    return "OK", [(b"1", b"From: user@example.test\r\nSubject: hello\r\n\r\nhello")]
+                    assert operation == "fetch"
+                    if args == (b"1", "(RFC822)"):
+                        self.seen = True
+                        return "OK", [(b"1", b"From: user@example.test\r\nSubject: hello\r\n\r\nhello")]
+                    # Upstream's bounded pre-authorization header fetch: minimal parseable headers.
+                    assert args[0] == b"1" and "HEADER.FIELDS" in args[1]
+                    return "OK", [(b"1", b"From: user@example.test\r\nSubject: hello\r\n")]
 
             inbox = Inbox()
 
@@ -105,8 +109,10 @@ def test_profile_list_warns_only_for_shared_active_resources(homes, capsys, case
                         adapters.append(EmailAdapter(settings))
             assert adapters[0]._password != adapters[1]._password
             with patch.object(adapters[0], "_inbox", transport), patch.object(adapters[1], "_inbox", transport):
-                assert len(adapters[0]._fetch_new_messages()) == 1
-                assert adapters[1]._fetch_new_messages() == []
+                # preauthorize accepts every bounded header: the probe cares about UNSEEN consumption,
+                # not the download allow-list upstream added to the fetch pass.
+                assert len(adapters[0]._fetch_new_messages(lambda message: True)) == 1
+                assert adapters[1]._fetch_new_messages(lambda message: True) == []
     assert "shared-password" not in output and "shared-bot-token" not in output
     assert "app-password-" not in output and "bot@example.test" not in output
 

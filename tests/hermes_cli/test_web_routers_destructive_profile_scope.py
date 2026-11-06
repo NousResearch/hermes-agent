@@ -30,7 +30,7 @@ def _multiplex_state_is_per_test():
     request 400 by accident) and restored exactly as found, including the frozen launch
     env snapshot activation captures.
     """
-    import agent.secret_scope as secret_scope
+    from agent import secret_scope
     from tui_gateway import launch_profile_policy
 
     was_active = secret_scope.is_multiplex_active()
@@ -96,7 +96,7 @@ class _StubDB:
     def delete_sessions(self, ids, **_kwargs):
         return len(ids)
 
-    def delete_empty_sessions(self):
+    def delete_empty_sessions(self, sessions_dir=None):
         return 1
 
     def count_open_prune_matches(self, **_filters):
@@ -120,8 +120,8 @@ def seams(monkeypatch):
     session-store open names, ``pool_home`` = the home the credential-pool body resolves.
     A route that reaches any of them after a 400 shows up as a non-empty list.
     """
-    import agent.credential_pool as credential_pool
-    import agent.credential_sources as credential_sources
+    from agent import credential_pool
+    from agent import credential_sources
     from hermes_cli import web_server_gateway, web_server_sessions
     from hermes_cli.config import get_hermes_home
 

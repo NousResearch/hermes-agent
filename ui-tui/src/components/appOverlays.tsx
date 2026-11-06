@@ -3,7 +3,7 @@ import { useStore } from '@nanostores/react'
 import type { ReactNode } from 'react'
 
 import { useGateway } from '../app/gatewayContext.js'
-import type { AppOverlaysProps } from '../app/interfaces.js'
+import type { AppOverlaysProps, RewindTarget } from '../app/interfaces.js'
 import { $overlayState, hasFloatingPanel, patchOverlayState } from '../app/overlayStore.js'
 import { $uiSessionId, $uiTheme } from '../app/uiStore.js'
 
@@ -11,13 +11,15 @@ import { ActiveSessionSwitcher } from './activeSessionSwitcher.js'
 import { FloatBox } from './appChrome.js'
 import { BillingOverlay } from './billingOverlay.js'
 import { ConnectionSetupOverlay } from './connectionSetupOverlay.js'
-import { SecretPrompt, SudoPrompt, VaultUnlockPrompt } from './maskedPrompt.js'
+import { ConnectorsOverlay } from './connectorsOverlay.js'
+import { SecretPrompt, SudoPrompt, VaultCodePrompt, VaultSaveLoginPrompt, VaultUnlockPrompt } from './maskedPrompt.js'
 import { ModelPicker } from './modelPicker.js'
 import { OverlayHint } from './overlayControls.js'
 import { listRowStyle } from './overlayPrimitives.js'
 import { PetPicker } from './petPicker.js'
 import { PluginsHub } from './pluginsHub.js'
 import { ApprovalPrompt, ClarifyPrompt, ConfirmPrompt } from './prompts.js'
+import { RewindPicker } from './rewindPicker.js'
 import { SkillsHub } from './skillsHub.js'
 import { SubscriptionOverlay } from './subscriptionOverlay.js'
 import { WidgetGrid, type WidgetGridWidget } from './widgetGrid.js'
@@ -59,19 +61,25 @@ function PromptCell({ children, cols, id }: { children: ReactNode; cols: number;
 export function PromptZone({
   cols,
   onApprovalChoice,
+  onApprovalTell,
   onClarifyCancel,
   onClarifyQuestionAnswer,
   onSecretSubmit,
   onSudoSubmit,
+  onVaultCodeSubmit,
+  onVaultSaveLoginSubmit,
   onVaultUnlockSubmit
 }: Pick<
   AppOverlaysProps,
   | 'cols'
   | 'onApprovalChoice'
+  | 'onApprovalTell'
   | 'onClarifyCancel'
   | 'onClarifyQuestionAnswer'
   | 'onSecretSubmit'
   | 'onSudoSubmit'
+  | 'onVaultCodeSubmit'
+  | 'onVaultSaveLoginSubmit'
   | 'onVaultUnlockSubmit'
 >) {
   const overlay = useStore($overlayState)
@@ -80,7 +88,13 @@ export function PromptZone({
   if (overlay.approval) {
     return (
       <PromptCell cols={cols} id="approval">
-        <ApprovalPrompt cols={cols} onChoice={onApprovalChoice} req={overlay.approval} t={theme} />
+        <ApprovalPrompt
+          cols={cols}
+          onChoice={onApprovalChoice}
+          onTell={onApprovalTell}
+          req={overlay.approval}
+          t={theme}
+        />
       </PromptCell>
     )
   }
@@ -121,6 +135,33 @@ export function PromptZone({
     return (
       <PromptCell cols={cols} id="connection">
         <ConnectionSetupOverlay cols={cols} t={theme} />
+      </PromptCell>
+    )
+  }
+
+  if (overlay.rewind) {
+    const req = overlay.rewind
+
+    const onSubmit = (target: RewindTarget, text: string) => {
+      patchOverlayState({ rewind: null })
+      req.onSubmit(target, text)
+    }
+
+    const onFork = (target: RewindTarget) => {
+      patchOverlayState({ rewind: null })
+      req.onFork(target)
+    }
+
+    return (
+      <PromptCell cols={cols} id="rewind">
+        <RewindPicker
+          cols={cols}
+          onClose={() => patchOverlayState({ rewind: null })}
+          onFork={onFork}
+          onSubmit={onSubmit}
+          req={req}
+          t={theme}
+        />
       </PromptCell>
     )
   }
@@ -185,6 +226,33 @@ export function PromptZone({
           cols={cols}
           displayName={overlay.vaultUnlock.displayName}
           onSubmit={onVaultUnlockSubmit}
+          t={theme}
+        />
+      </PromptCell>
+    )
+  }
+
+  if (overlay.vaultSaveLogin) {
+    return (
+      <PromptCell cols={cols} id="vault-save-login">
+        <VaultSaveLoginPrompt
+          cols={cols}
+          onReady={onVaultSaveLoginSubmit}
+          site={overlay.vaultSaveLogin.site}
+          t={theme}
+        />
+      </PromptCell>
+    )
+  }
+
+  if (overlay.vaultCode) {
+    return (
+      <PromptCell cols={cols} id="vault-code">
+        <VaultCodePrompt
+          cols={cols}
+          hint={overlay.vaultCode.hint}
+          onSubmit={onVaultCodeSubmit}
+          site={overlay.vaultCode.site}
           t={theme}
         />
       </PromptCell>
@@ -315,6 +383,22 @@ export function FloatingOverlays({
       render: width => (
         <FloatBox color={theme.color.border}>
           <PluginsHub gw={gw} maxWidth={width} onClose={() => patchOverlayState({ pluginsHub: false })} t={theme} />
+        </FloatBox>
+      )
+    })
+  }
+
+  if (overlay.connectors) {
+    widgets.push({
+      id: 'connectors',
+      render: width => (
+        <FloatBox color={theme.color.border}>
+          <ConnectorsOverlay
+            gw={gw}
+            maxWidth={width}
+            onClose={() => patchOverlayState({ connectors: false })}
+            t={theme}
+          />
         </FloatBox>
       )
     })

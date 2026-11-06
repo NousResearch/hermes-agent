@@ -10,6 +10,7 @@ import threading
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional
+from registry_freeze import refuse_if_frozen
 from tools.mcp_tool_common import _parse_boolish, _core, _resolve_tool_timeout, mcp_field, mcp_server_enabled
 from tools import mcp_tool_config as _config
 from tools import mcp_tool_events as _events
@@ -134,6 +135,7 @@ def _deregister_mcp_tool_all_scopes(server, tool_name: str) -> None:
     live task or a connection key."""
     from tools.registry import registry
 
+    refuse_if_frozen("MCP registry")
     key = server if isinstance(server, (str, tuple)) else _server_key_for_task(server)
     with _core._lock:
         scopes = set(_core._server_tool_scopes.get(key, ()))
@@ -167,6 +169,7 @@ def _remove_server_scope(key, scope: str) -> None:
     """Remove one profile's MCP overlay for a shared live connection."""
     from tools.registry import registry
 
+    refuse_if_frozen("MCP registry")
     server_name = _key_name(key)
     for tool_name in registry.get_tool_names_for_toolset(f"mcp-{server_name}"):
         registry.deregister(tool_name, scope=scope)

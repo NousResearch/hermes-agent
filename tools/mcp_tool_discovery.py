@@ -12,7 +12,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
-from registry_freeze import refuse_if_frozen
+from registry_freeze import refuse_if_frozen, registries_frozen
 from tools.mcp_tool_common import _core, _parse_boolish, mcp_server_enabled
 from tools import mcp_tool_config as _config
 from tools import mcp_tool_errors as _errors
@@ -351,6 +351,16 @@ async def _discover_and_register_server(name: str, config: dict) -> list[str]:
         _core._server_connecting.discard(key)
         _core._server_connect_errors.pop(key, None)
     _adopt_server(name, server)
+    if registries_frozen():
+        # A lazy server's first use after the hosted boot froze the registries: the tools it
+        # registered from the schema cache at boot now route to this live connection, and nothing
+        # is published or withdrawn (a cached name the server no longer serves fails at call time).
+        with _core._lock:
+            owned_names = list(_core._lazy_server_tool_names.get(_server_key(name)) or [])
+        server._registered_tool_names = owned_names
+        logger.info("MCP server '%s': connected after the registries froze; kept its %d registered tool(s)",
+                    name, len(owned_names))
+        return owned_names
     registered_names = _registration._register_server_tools(name, server, config)
     server._registered_tool_names = list(registered_names)
     logger.info("MCP server '%s' (%s): registered %d tool(s): %s", name,
@@ -669,7 +679,12 @@ def reconcile_mcp_servers_with_config() -> dict[str, list[str]]:
     scope (one multiplexed profile's config prunes only its own connections). A lazily registered
     (schema-cache) server loses its cached tools; one still mid-connect cannot be torn down yet and
     is reported under ``"pending"`` so the caller retries. Returns
-    ``{"removed": [...], "added": [...], "pending": [...]}``; a no-op when nothing changed."""
+    ``{"removed": [...], "added": [...], "pending": [...]}``; a no-op when nothing changed.
+
+    After the hosted boot froze the registries, a reconcile that would remove or add anything raises
+    :class:`registry_freeze.RegistryFrozen` before its first teardown, so a refused pass leaves every
+    server, lazy registration and tool where it was; one with nothing to change still returns the
+    no-op result (it runs on a periodic tick)."""
     with _owner_secret_scope():
         servers = _config._load_mcp_config()
     wanted = {name for name, cfg in servers.items() if mcp_server_enabled(cfg)}
@@ -681,6 +696,8 @@ def reconcile_mcp_servers_with_config() -> dict[str, list[str]]:
         lazy = {key for key in _core._lazy_server_configs
                 if _key_scope(key) == scope and _key_name(key) not in wanted}
     stale = sorted(live - wanted)
+    if registries_frozen() and (stale or lazy or _awaiting_connect(wanted, scope)):
+        refuse_if_frozen("MCP registry")
     if stale:
         logger.info("MCP server(s) %s no longer in config (or disabled); disconnecting", ", ".join(stale))
         _lifecycle.shutdown_mcp_servers(scope=scope, names=set(stale))
@@ -771,7 +788,11 @@ def restart_mcp_servers_with_new_inputs(names: set[str]) -> list[str]:
     Serialized: a second save waits for the first reconnect, then compares against what THAT one
     connected with, so a newer key is never lost to an older in-flight start. A connection this
     profile only borrows (same inputs as another profile's) is left running for its owner; this
-    profile just detaches and connects its own."""
+    profile just detaches and connects its own.
+
+    A restart is a registry removal plus a registration: after the hosted boot froze the registries,
+    one with anything to restart raises :class:`registry_freeze.RegistryFrozen` before it disconnects
+    or detaches a server; one with nothing to restart still returns ``[]``."""
     with _RESTART_LOCK:
         scope = _core._mcp_registry_scope()
         owned, borrowed = [], []
@@ -790,6 +811,7 @@ def restart_mcp_servers_with_new_inputs(names: set[str]) -> list[str]:
                     (owned if key == _server_key(name, scope, current=False) else borrowed).append((name, key))
         if not owned and not borrowed:
             return []
+        refuse_if_frozen("MCP registry")
         changed = sorted(name for name, _key in owned + borrowed)
         logger.info("MCP server(s) %s: launch inputs changed; reconnecting", ", ".join(changed))
         if owned:
@@ -805,6 +827,7 @@ def restart_mcp_servers_with_new_inputs(names: set[str]) -> list[str]:
 def _forget_lazy_server(key) -> None:
     """Drop a schema-cache (lazy) registration whose config entry is gone: its cached tools would
     otherwise stay callable and spawn the server on first use."""
+    refuse_if_frozen("MCP registry")
     with _core._lock:
         _core._lazy_server_configs.pop(key, None)
         _core._lazy_server_fingerprints.pop(key, None)

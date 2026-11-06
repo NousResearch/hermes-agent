@@ -330,10 +330,10 @@ def main() -> int:
         fh.write(markdown)
 
     if markdown:
-        changed = sum(len(v) for d in diffs.values() for v in d.values())
-        print(f"{changed} package version change(s) — report written to {args.output}")
+        rows = sum(len(v) for d in diffs.values() for v in d.values())
+        print(f"{rows} lockfile change row(s) — report written to {args.output}")
     else:
-        print("No package version changes.")
+        print("No lockfile version changes.")
     return 0
 
 

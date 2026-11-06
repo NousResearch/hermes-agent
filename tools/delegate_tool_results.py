@@ -11,6 +11,8 @@ from tools.delegation_redaction import (
     parent_copy, redact_child_result, redact_child_text, redact_child_value, redact_summary,
 )
 
+from tools.delegation_output_schema import revalidate_entry
+
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
 
 def _stringify_tool_content(content: Any) -> str:
@@ -424,6 +426,11 @@ def _finalize_child_results(
             if isinstance(summary, str) and isinstance(entry.get("summary"), str):
                 entry["summary"] = parent_copy(entry["summary"], forced)
         _apply_summary_budget(results, parent_agent)
+        for entry in results:  # truncation turns a valid structured answer into head/tail text: re-check what the parent gets
+            if isinstance(entry, dict) and entry.get("summary_truncated"):
+                revalidate_entry(entry, getattr(child_by_index.get(entry.get("task_index", -1)), "_delegate_output_schema", None))
+                if "schema_errors" in entry:  # validator messages quote values: same projection as the parent copy above
+                    entry["schema_errors"] = redact_child_value(entry["schema_errors"], force=False)
         _notify_memory_manager(results, task_list, child_by_index, parent_agent)
         _rollup_children_cost(parent_agent, _fire_subagent_stop_hooks(results, child_by_index, parent_agent))
 

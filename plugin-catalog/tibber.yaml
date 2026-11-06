@@ -1,14 +1,14 @@
 name: tibber
 title: Tibber Electricity
 repo: https://github.com/mehdishahdoost/tibber-plugin
-sha: 0398dd6a44732a7b5c727aa4688d2a5ff5627970
+sha: 2d2df9c7c7d1c2112e0f925390107aadf4adef1f
 description: Read-only Tibber account, electricity prices, and consumption history via MCP, with a cached cost-summary skill.
 maintainer: mehdishahdoost
 tier: community
 category: tools
 requires_hermes: ">=0.21.6"
 docs_url: https://github.com/mehdishahdoost/tibber-plugin#readme
-version: "1.0.3"
+version: "1.0.4"
 readme: true
 known_issues:
   - Requires Node.js 18+, npx, and a Tibber personal access token.

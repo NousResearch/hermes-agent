@@ -718,8 +718,8 @@ External UIs can manage Hermes sessions over REST without standing up the dashbo
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/sessions` | List sessions (paginated — `limit`, `offset`, `source`, `include_children`) |
-| `POST` | `/api/sessions` | Create an empty session |
+| `GET` | `/api/sessions` | List sessions (paginated — `limit`, `offset`, `source`, `include_children`, `project_id`) |
+| `POST` | `/api/sessions` | Create an empty session (optionally bound to a project — see below) |
 | `GET` | `/api/sessions/{id}` | Read session metadata |
 | `PATCH` | `/api/sessions/{id}` | Update title or `end_reason` |
 | `DELETE` | `/api/sessions/{id}` | Delete a session |
@@ -741,6 +741,25 @@ curl -N -X POST http://localhost:8642/api/sessions/$ID/chat/stream \
   -H "Authorization: Bearer $API_SERVER_KEY" \
   -d '{"input": "what files changed in the last hour?"}'
 ```
+
+### Project-bound sessions
+
+A session can be bound to exactly one project (`sessions.project_id`). Pass `project_id` (a project id) or `project` (its slug) to `POST /api/sessions`:
+
+```bash
+curl -X POST http://localhost:8642/api/sessions \
+  -H "Authorization: Bearer ***" \
+  -d '{"project": "otto", "title": "fix the sidebar"}'
+```
+
+The server resolves the project in the profile's `projects.db` and writes the binding, the project's primary folder as `cwd`, and that folder's git branch / repo root in the same write as the session row. An unknown or archived project answers `400` with `code: "invalid_project"` and creates nothing. Every session payload (create, get, list, patch, fork) carries `project_id` and a `project` object (`null` when unbound):
+
+```json
+"project": {"id": "p_…", "slug": "otto", "name": "Otto", "icon": "sparkles",
+            "color": "#ff8800", "folder": "/Users/me/code/otto", "board_slug": "otto"}
+```
+
+`GET /api/sessions?project_id=` (id or slug) lists only that project's sessions. A `/v1/runs` turn for a session with a stored folder (a bound session's is its project folder) runs there, so terminal and file tools start there and the folder's `AGENTS.md` / `CLAUDE.md` load; the system prompt carries a stable `Project: <name> — <folder> (kanban board: <slug>).` line. Forks and compression continuations stay in the parent's project. Support is advertised as `features.session_projects: true` on `GET /v1/capabilities`.
 
 ## Skills and toolsets discovery
 

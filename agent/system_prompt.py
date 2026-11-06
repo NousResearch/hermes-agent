@@ -730,6 +730,28 @@ def _context_files_part(agent: Any, ctx_len: Optional[int], soul_loaded: bool) -
         allow_install_tree_fallback=agent.platform in ("cli", "tui"), home_override=_agent_home(agent))]
 
 
+def _session_project_part(agent: Any) -> list[str]:
+    """The bound project's one-line context (``sessions.project_id`` -> projects.db), read from the
+    session row so every client continuing the chat gets the same line. Lives in the context tier:
+    stable for the whole conversation (built once, re-rendered only at a compaction rebuild), and
+    after the cross-session stable prefix so another project's sessions keep sharing that prefix."""
+    db, session_id = getattr(agent, "_session_db", None), getattr(agent, "session_id", None)
+    if db is None or not isinstance(session_id, str) or not session_id:
+        return []
+    try:
+        project_id = (db.get_session(session_id) or {}).get("project_id")
+        if not project_id:
+            return []
+        from hermes_cli.projects_db import session_project_refs
+        home = _agent_home(agent)
+        refs = session_project_refs([project_id], db_path=home / "projects.db" if home is not None else None)
+        line = _pb.build_session_project_line(refs.get(project_id))
+    except Exception:
+        logger.debug("session project line skipped (session=%s)", session_id, exc_info=True)
+        return []
+    return [line] if line else []
+
+
 def _join_tier(parts: list[Optional[str]]) -> str:
     """Join non-empty parts; None/blank entries are dropped."""
     return "\n\n".join(p.strip() for p in parts if p and p.strip())
@@ -774,6 +796,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # ephemeral_system_prompt is injected at API-call time only, never cached.
     if system_message is not None:
         context_parts.append(system_message)
+    context_parts.extend(_session_project_part(agent))
     context_parts.extend(_context_files_part(agent, _ctx_len, _soul_loaded))
     if coding_workspace_parts:
         context_parts.extend([*coding_workspace_parts, *coding_trailing_parts, *post_workspace_parts])

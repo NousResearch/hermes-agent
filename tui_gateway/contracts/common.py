@@ -141,6 +141,20 @@ class StoredSessionRow(OpenModel):
     # #121148: provenance of a projected continuation tip — 'compression' when the row
     # continues a sealed segment (automatic rotation), None for plain rows and branches.
     continuation_kind: str | None = None
+    # Explicit project binding (``sessions.project_id``); null = unbound (folder inference only).
+    project_id: str | None = None
+
+
+class SessionProjectRef(Result):
+    """``hermes_cli/projects_db.py::session_project_ref`` — the project a session is bound to."""
+
+    id: str
+    slug: str
+    name: str
+    icon: str | None = None
+    color: str | None = None
+    folder: str | None = None
+    board_slug: str | None = None
 
 
 class ToolLabelKind(WireEnum):

@@ -1027,6 +1027,21 @@ def build_environment_hints() -> str:
 
 
 # Marks the runtime block after project prose for persisted-prompt cwd validation.
+def build_session_project_line(project: Optional[dict]) -> str:
+    """The server-owned project line for a session bound to ``project`` (a ``session_project_ref``
+    dict): ``Project: <name> — <folder> (kanban board: <slug>).``, built from the session row so
+    every client gets the same bytes; ``""`` for an unbound session. Folder / board are omitted
+    when the project has none."""
+    if not project or not str(project.get("name") or "").strip():
+        return ""
+    line = f"Project: {str(project['name']).strip()}"
+    if project.get("folder"):
+        line += f" — {project['folder']}"
+    if project.get("board_slug"):
+        line += f" (kanban board: {project['board_slug']})"
+    return line + "."
+
+
 RUNTIME_ENVIRONMENT_HEADING = "# Hermes runtime environment"
 RUNTIME_ENVIRONMENT_END = "<!-- End Hermes runtime environment -->"
 

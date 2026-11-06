@@ -30,6 +30,7 @@ from hermes_state_fts import (_drop_orphan_fts_shadow_tables, base_index_recogni
                               fts_layout_current)
 from hermes_state_holders import _read_proc_argv
 from hermes_state_search import _delete_meta, _meta_row
+from hermes_state_session_projects import SESSION_PROJECT_BACKFILL_DONE, run_session_project_backfill_once
 from hermes_state_errors import is_sqlite_lock_error
 from hermes_state_titles import next_title_in_lineage
 
@@ -1012,7 +1013,8 @@ class SessionSchemaMixin:
             cursor.executemany(
                 "INSERT OR IGNORE INTO state_meta (key, value) VALUES (?, ?)",
                 [("store_instance_id", str(uuid.uuid4())), ("store_created_at_utc", now_iso),
-                 (_MESSAGE_UID_BACKFILL_DONE, "1")],  # a fresh store has no legacy rows to backfill
+                 (_MESSAGE_UID_BACKFILL_DONE, "1"),  # a fresh store has no legacy rows to backfill
+                 (SESSION_PROJECT_BACKFILL_DONE, "1")],  # ...and binds sessions explicitly from birth
             )
         else:
             self._run_data_migrations(cursor, row[0], fts5_available)
@@ -1103,6 +1105,9 @@ class SessionSchemaMixin:
             # v25: de-duplicate system prompt snapshots (old column stays a read fallback).
             self._dedupe_legacy_system_prompts(cursor)
         self._advance_message_uid_backfill(cursor)
+        # One-time: legacy desktop/API/TUI sessions filed by cwd under a project's primary folder
+        # gain the explicit sessions.project_id binding (state_meta marker, not a version gate).
+        run_session_project_backfill_once(self, cursor)
         fts_migrations_complete = True
         if current_version < 30 and fts5_available:
             # v29: cron sessions leave the trigram substring index (they stay in the word index);

@@ -6,6 +6,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from agent.message_metadata import MESSAGE_UID
+
 # Demote tool results older than the newest N rounds so the tail budget binds
 # (the tool-group alignment floor otherwise keeps ~32K of tool output alive).
 _LEAN_TAIL_KEEP_TOOL_ROUNDS = 6
@@ -43,9 +45,27 @@ def is_demoted_stub(content: str) -> bool:
     return len(content) < 1_000 and _DEMOTED_STUB_RE.match(content) is not None
 
 
-def _lean_recovery_stub(tool_name: str, content_len: int, session_id: str) -> str:
+# Exact pointer to a message's original row, resolved by session_search(ref=...). Fixed width: a collision
+# takes the tool's ambiguity path; refs never lengthen dynamically.
+_MESSAGE_REF_HEX_CHARS = 12
+_MINTED_MESSAGE_UID_RE = re.compile(r"[0-9a-f]{32}")
+
+
+def _message_ref(msg: dict[str, Any]) -> str:
+    """``m:<12hex>`` for a dict carrying a minted ``message_uid``; "" when it has none (unflushed or legacy)."""
+    uid = msg.get(MESSAGE_UID)
+    if isinstance(uid, str) and _MINTED_MESSAGE_UID_RE.fullmatch(uid):
+        return f"m:{uid[:_MESSAGE_REF_HEX_CHARS]}"
+    return ""
+
+
+def _lean_recovery_stub(tool_name: str, content_len: int, session_id: str, message_uid: str | None = None) -> str:
     """One-line replacement for a demoted tail tool result."""
-    hint = f" Recover with session_search(query=..., session_id='{session_id}')" if session_id else ""
+    ref = _message_ref({MESSAGE_UID: message_uid})
+    if ref:
+        hint = f" Recover exactly with session_search(ref='{ref}')"
+    else:
+        hint = f" Recover with session_search(query=..., session_id='{session_id}')" if session_id else ""
     return (
         f"[{tool_name or 'tool'} output demoted at compaction — {content_len:,} "
         f"chars preserved in session history.{hint}]"
@@ -98,7 +118,7 @@ def demote_stale_tail_tools(
             continue
         if len(content) < _LEAN_TAIL_DEMOTE_MIN_CHARS or SKILL_PRUNED_MARKER_PREFIX in content or _is_summary_stub(content):
             continue
-        stub = _lean_recovery_stub(msg.get("tool_name") or "", len(content), session_id)
+        stub = _lean_recovery_stub(msg.get("tool_name") or "", len(content), session_id, msg.get(MESSAGE_UID))
         skills = skill_view_names_by_call_id(messages) if skills is None else skills
         if (skill := skills.get(str(msg.get("tool_call_id") or ""))) and not _result_failure_suffix(content):
             stub += " " + _skill_pruned_marker(skill)

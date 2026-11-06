@@ -24,7 +24,9 @@ from agent.message_metadata import (
 from agent.cache_bounds import publish_lru
 from agent.prompt_builder import STEER_DISPLAY_KIND, steer_user_row
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
-from agent.think_scrubber import THINK_TAG_NAMES
+from agent.think_scrubber import (
+    THINK_CHANNEL_OPEN_RE, THINK_CHANNEL_ORPHAN_CLOSE_RE, THINK_CHANNEL_PAIR_RES, THINK_TAG_NAMES,
+)
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import (
     STATUS_EXHAUSTED, _parse_absolute_timestamp, credential_pool_entry_serves_endpoint,
@@ -61,6 +63,12 @@ _UNTERMINATED_REASONING_BLOCK_PATTERN = re.compile(
 )
 _ORPHAN_REASONING_TAG_PATTERN = re.compile(
     rf'</?(?:{"|".join(THINK_TAG_NAMES)})>\s*', re.IGNORECASE
+)
+# Channel-format inline thinking (MiniMax-M3 `<|channel>thought…<channel|>`, Gemma 4
+# `<|turn|>thinking…<turn|>`) — unterminated open at a block boundary swallows the rest;
+# the closed-pair and orphan forms come precompiled from agent.think_scrubber.
+_CHANNEL_UNTERMINATED_REASONING_BLOCK_PATTERN = re.compile(
+    rf"(?:^|\n)[ \t]*(?:{THINK_CHANNEL_OPEN_RE.pattern})\n?.*$", re.DOTALL | re.IGNORECASE
 )
 _STRAY_TOOL_CALL_CLOSER_PATTERN = re.compile(
     rf'</(?:{_NS_PREFIX}(?:{"|".join(_TOOL_CALL_TAG_NAMES)}|function))>\s*', re.IGNORECASE
@@ -838,8 +846,10 @@ def _flatten_content_text(content: Any) -> str:
 # tool-call CLOSERS only (bare/unterminated <function> is kept: a truncated streaming tail may still
 # be valuable, matching OpenClaw's asymmetry).
 _THINK_STRIP_PATTERNS = (
-    *_REASONING_BLOCK_PATTERNS, *_TOOL_CALL_BLOCK_PATTERNS, _NAMED_FUNCTION_BLOCK_PATTERN,
+    *_REASONING_BLOCK_PATTERNS, *THINK_CHANNEL_PAIR_RES, *_TOOL_CALL_BLOCK_PATTERNS,
+    _NAMED_FUNCTION_BLOCK_PATTERN,
     _UNTERMINATED_REASONING_BLOCK_PATTERN, _ORPHAN_REASONING_TAG_PATTERN,
+    _CHANNEL_UNTERMINATED_REASONING_BLOCK_PATTERN, THINK_CHANNEL_ORPHAN_CLOSE_RE,
     _STRAY_TOOL_CALL_CLOSER_PATTERN, _UNTERMINATED_TOOL_CALL_PATTERN,
 )
 
@@ -1460,7 +1470,7 @@ _TRANSIENT_TRANSPORT_ERRORS = frozenset({
 _INLINE_REASONING_PATTERNS = tuple(
     re.compile(rf"<{tag}>(.*?)</{tag}>", re.DOTALL | re.IGNORECASE)
     for tag in THINK_TAG_NAMES
-)
+) + THINK_CHANNEL_PAIR_RES
 
 
 def extract_reasoning(agent, assistant_message) -> Optional[str]:

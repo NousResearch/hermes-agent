@@ -1580,6 +1580,13 @@ def _assistant_content_for_storage(agent, assistant_message):
     content = _sanitize_surrogates(flatten_message_text(getattr(assistant_message, "content", None)))
     if isinstance(content, str) and content:
         content = agent._strip_think_blocks(content).strip()
+        # Channel-format wrappers (MiniMax/Gemma inline thinking) never survive
+        # _strip_think_blocks, but a direct sweep here keeps this boundary independent
+        # of pattern ordering.
+        from agent.think_scrubber import THINK_CHANNEL_ORPHAN_CLOSE_RE, THINK_CHANNEL_PAIR_RES
+        for _pattern in THINK_CHANNEL_PAIR_RES:
+            content = _pattern.sub("", content).strip() if content else content
+        content = THINK_CHANNEL_ORPHAN_CLOSE_RE.sub("", content).strip() if content else content
         if content:
             from agent.redact import redact_sensitive_text
             content = redact_sensitive_text(content)

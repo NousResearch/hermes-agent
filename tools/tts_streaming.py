@@ -17,7 +17,9 @@ import time
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, Iterator, List, Optional
 
-from agent.think_scrubber import THINK_TAG_NAMES
+from agent.think_scrubber import (
+    THINK_CHANNEL_OPEN_RE, THINK_CHANNEL_ORPHAN_CLOSE_RE, THINK_CHANNEL_PAIR_RES, THINK_TAG_NAMES,
+)
 from tools.tool_backend_helpers import resolve_openai_audio_api_key
 from tools.tts_tool import _get_provider, _load_tts_config
 from tools.tts_tool_plugins import _plugin_pcm_streaming_provider, _plugin_voice_kwargs
@@ -70,6 +72,10 @@ SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])(?:\s|\n)|(?:\n\n)")
 _THINK_NAMES = "|".join(re.escape(name) for name in THINK_TAG_NAMES)
 _THINK_BLOCK_RE = re.compile(rf"<({_THINK_NAMES})[\s>].*?</\1>", flags=re.DOTALL | re.IGNORECASE)
 _THINK_OPEN_RE = re.compile(rf"<(?:{_THINK_NAMES})(?=[\s>]|$)", flags=re.IGNORECASE)
+# Channel-format inline thinking (MiniMax/Gemma) joins both shapes so speech never reads
+# the wrapper tokens aloud.
+_THINK_BLOCK_RES = (_THINK_BLOCK_RE, *THINK_CHANNEL_PAIR_RES)
+_THINK_OPEN_RES = (_THINK_OPEN_RE, THINK_CHANNEL_OPEN_RE)
 
 
 class SentenceChunker:
@@ -93,8 +99,11 @@ class SentenceChunker:
 
     def feed(self, delta: str) -> list[str]:
         """Absorb *delta*; return every complete sentence now ready to speak."""
-        self.buf = _THINK_BLOCK_RE.sub("", self.buf + delta)
-        if _THINK_OPEN_RE.search(self.buf):
+        text = self.buf + delta
+        for _rx in _THINK_BLOCK_RES:
+            text = _rx.sub("", text)
+        self.buf = text
+        if any(_rx.search(self.buf) for _rx in _THINK_OPEN_RES):
             return []  # open think tag — the closing tag may arrive next delta
         out: list[str] = []
         start = 0  # skip boundaries that would leave the head too short
@@ -110,9 +119,14 @@ class SentenceChunker:
 
     def flush(self) -> list[str]:
         """Drain the tail (end-of-text or long-idle flush)."""
-        tail, self.buf = _THINK_BLOCK_RE.sub("", self.buf), ""
-        if m := _THINK_OPEN_RE.search(tail):
-            tail = tail[: m.start()]  # unterminated reasoning block: never speak it
+        tail, self.buf = self.buf, ""
+        for _rx in _THINK_BLOCK_RES:
+            tail = _rx.sub("", tail)
+        for _rx in _THINK_OPEN_RES:
+            if m := _rx.search(tail):
+                tail = tail[: m.start()]  # unterminated reasoning block: never speak it
+                break
+        tail = THINK_CHANNEL_ORPHAN_CLOSE_RE.sub("", tail)
         tail = tail.strip()
         return [tail] if tail else []
 

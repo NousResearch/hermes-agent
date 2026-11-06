@@ -12,6 +12,7 @@ import {
   closePreviewVaultBinding,
   evaluatePreviewVaultBinding,
   openPreviewVaultBinding,
+  openUserPreviewVaultBinding,
   type PreviewVaultScope,
   resetPreviewVaultBindingsForTests
 } from './preview-vault'
@@ -57,7 +58,7 @@ describe('preview vault target binding', () => {
         isSessionActive: () => true
       })
     ).resolves.toEqual({ success: true, result: 'completion' })
-    expect(run).toHaveBeenCalledWith('return 42')
+    expect(run).toHaveBeenCalledWith('return 42', undefined)
   })
 
   it('refuses evaluation after the selected preview changes', async () => {
@@ -255,5 +256,36 @@ describe('preview vault target binding', () => {
 
     expect(closePreviewVaultBinding({ ...scope, target: binding.target })).toEqual({ success: true })
     expect(closePreviewVaultBinding({ ...scope, target: binding.target })).toEqual({ decline: true })
+  })
+
+  it('a user binding fills the clicked tab even when another tab is selected, and only session-less', async () => {
+    openPreview(target('https://one.example'))
+    const clicked = $rightRailActiveTabId.get()!
+    const run = vi.fn(async () => 'filled')
+    cleanups.push(registerPreviewScriptRunner(clicked, run))
+    const userTarget = openUserPreviewVaultBinding(clicked)
+    openPreview(target('https://two.example'))
+
+    if (!userTarget) {
+      throw new Error('expected a user binding')
+    }
+
+    // A session-scoped request (an agent turn) never answers through the user's binding.
+    await expect(
+      evaluatePreviewVaultBinding({ ...scope, target: userTarget, expression: 'x', isSessionActive: () => true })
+    ).resolves.toEqual({ decline: true })
+    expect(run).not.toHaveBeenCalled()
+
+    const sessionless = { connectionId: null, profile: '', sessionId: '' }
+    await expect(
+      evaluatePreviewVaultBinding({ ...sessionless, target: userTarget, expression: 'x', isSessionActive: () => false })
+    ).resolves.toEqual({ result: 'filled', success: true })
+
+    invalidatePreviewScriptRunner(clicked)
+    await expect(
+      evaluatePreviewVaultBinding({ ...sessionless, target: userTarget, expression: 'x', isSessionActive: () => false })
+    ).resolves.toMatchObject({ success: false })
+    expect(run).toHaveBeenCalledOnce()
+    expect(openUserPreviewVaultBinding(clicked)).toBeNull()
   })
 })

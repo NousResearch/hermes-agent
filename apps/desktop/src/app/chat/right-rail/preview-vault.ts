@@ -1,6 +1,33 @@
+/**
+ * PREVIEW VAULT BINDINGS — the renderer half of a vault fill into the in-app
+ * browser (`tools/browser_vault_preview.py`).
+ *
+ * The backend resolves the secret and builds the fill script; this window only
+ * carries that script into ONE pinned guest document. A binding is an opaque
+ * random target naming (tab, document generation, runner): every evaluate
+ * re-checks that the tab still shows that same document, so a navigation, a
+ * reload or a closed tab between the origin check and the write refuses
+ * instead of filling something else. Bindings are memory-only and short-lived;
+ * the script is request data and is never stored here, logged, or put in a
+ * store.
+ *
+ * Two kinds:
+ * - agent (`browser_vault` target=preview): pinned on `open` to the active tab
+ *   of the requesting session; evaluated only while that tab is still the
+ *   session's active tab and the session is still the one on screen.
+ * - user (the Browser bar's key button): minted for the tab whose bar was
+ *   clicked, before the `vault.preview.fill` RPC; the backend's evaluates come
+ *   back session-less on the same socket and are matched by target alone.
+ */
+
+import { randomUuid } from '@hermes/shared'
+
+import type { PreviewOwner } from '@/store/preview-ownership'
+
 import {
-  isActivePreviewScriptRunner,
-  type PreviewScriptRunner,
+  type ActivePreviewScriptRunner,
+  isSamePreviewDocument,
+  previewScriptRunnerFor,
   resolveActivePreviewScriptRunner
 } from './preview-script-runner'
 
@@ -17,15 +44,15 @@ export interface PreviewVaultBindingInput extends PreviewVaultScope {
 export type PreviewVaultOpenResult = { error: string; success: false } | { success: true; target: string }
 
 interface Binding extends PreviewVaultScope {
+  document: ActivePreviewScriptRunner
   expiresAt: number
-  generation: number
-  runner: PreviewScriptRunner
-  tabId: string
-  target: string
+  /** Agent bindings: whose active tab was pinned (null = the user's own tab). */
+  owner: null | PreviewOwner | undefined
 }
 
 const MAX_BINDINGS = 16
-const BINDING_TTL_MS = 5 * 60_000
+const AGENT_TTL_MS = 5 * 60_000
+const USER_TTL_MS = 60_000
 const NO_PAGE = 'No live preview page is available.'
 const CHANGED = 'The selected preview page changed. Open a new target.'
 const INTERRUPTED = 'The preview vault action was interrupted.'
@@ -50,7 +77,24 @@ function prune(now = Date.now(), makeRoom = false): void {
   }
 }
 
-function matchesScope(binding: Binding, input: PreviewVaultScope): boolean {
+function pin(binding: Omit<Binding, 'expiresAt'>, ttlMs: number): string {
+  prune(Date.now(), true)
+  const target = randomUuid()
+  bindings.set(target, { ...binding, expiresAt: Date.now() + ttlMs })
+
+  return target
+}
+
+const isUserBinding = (binding: Binding) => binding.owner === null
+
+/** A binding answers only the request scope it was minted for. A user binding
+ *  is session-less: its evaluates come back without a session id, and the
+ *  random target (never shown to the page or the model) is the capability. */
+function owns(binding: Binding, input: PreviewVaultScope): boolean {
+  if (isUserBinding(binding)) {
+    return !input.sessionId
+  }
+
   return (
     binding.connectionId === input.connectionId &&
     binding.profile === input.profile &&
@@ -58,30 +102,32 @@ function matchesScope(binding: Binding, input: PreviewVaultScope): boolean {
   )
 }
 
-/** Pin the exact reader-selected page and runner for one vault operation. */
-export function openPreviewVaultBinding(scope: PreviewVaultScope): PreviewVaultOpenResult {
-  const active = resolveActivePreviewScriptRunner()
-
-  if (!active) {
-    return { error: NO_PAGE, success: false }
+/** The pinned document is still live, and (agent) still the session's selected tab. */
+function stillPinned(binding: Binding): boolean {
+  if (!isSamePreviewDocument(binding.document)) {
+    return false
   }
 
-  prune(Date.now(), true)
-  const target = crypto.randomUUID()
-
-  bindings.set(target, {
-    ...scope,
-    expiresAt: Date.now() + BINDING_TTL_MS,
-    generation: active.generation,
-    runner: active.runner,
-    tabId: active.tabId,
-    target
-  })
-
-  return { success: true, target }
+  return isUserBinding(binding) || resolveActivePreviewScriptRunner(binding.owner ?? undefined)?.tabId === binding.document.tabId
 }
 
-/** Run backend-generated code only while this exact page and session still own the binding. */
+/** Agent path: pin the requesting session's active tab and its live document. */
+export function openPreviewVaultBinding(scope: PreviewVaultScope, owner?: PreviewOwner): PreviewVaultOpenResult {
+  const document = resolveActivePreviewScriptRunner(owner)
+
+  return document
+    ? { success: true, target: pin({ ...scope, document, owner }, AGENT_TTL_MS) }
+    : { error: NO_PAGE, success: false }
+}
+
+/** User path: pin the document of the tab whose Browser bar was clicked. */
+export function openUserPreviewVaultBinding(tabId: string): null | string {
+  const document = previewScriptRunnerFor(tabId)
+
+  return document ? pin({ connectionId: null, document, owner: null, profile: '', sessionId: '' }, USER_TTL_MS) : null
+}
+
+/** Run backend-generated code only while this exact document (and, for the agent, its session) still owns the binding. */
 export async function evaluatePreviewVaultBinding({
   connectionId,
   expression,
@@ -101,34 +147,28 @@ export async function evaluatePreviewVaultBinding({
 
   // An unknown target may belong to a different Electron window. Let the
   // backend ask its remaining windows instead of winning with an empty error.
-  if (!binding || !matchesScope(binding, { connectionId, profile, sessionId })) {
+  if (!binding || !owns(binding, { connectionId, profile, sessionId })) {
     return { decline: true }
   }
+
+  const stillOwned = () => stillPinned(binding) && (isUserBinding(binding) || isSessionActive())
 
   if (signal?.aborted) {
     return { error: INTERRUPTED, success: false }
   }
 
-  if (!isSessionActive()) {
-    return { error: CHANGED, success: false }
-  }
-
-  if (!isActivePreviewScriptRunner(binding)) {
+  if (!stillOwned()) {
     return { error: CHANGED, success: false }
   }
 
   try {
-    const result = await binding.runner(expression)
+    const result = await binding.document.runner(expression, signal)
 
     if (signal?.aborted) {
       return { error: INTERRUPTED, success: false }
     }
 
-    if (!isSessionActive()) {
-      return { error: CHANGED, success: false }
-    }
-
-    if (!isActivePreviewScriptRunner(binding)) {
+    if (!stillOwned()) {
       return { error: CHANGED, success: false }
     }
 
@@ -143,13 +183,18 @@ export async function evaluatePreviewVaultBinding({
 export function closePreviewVaultBinding(input: PreviewVaultBindingInput): { decline: true } | { success: true } {
   const binding = bindings.get(input.target)
 
-  if (!binding || !matchesScope(binding, input)) {
+  if (!binding || !owns(binding, input)) {
     return { decline: true }
   }
 
   bindings.delete(input.target)
 
   return { success: true }
+}
+
+/** Drop a user binding whose RPC failed before the backend could close it. */
+export function forgetPreviewVaultBinding(target: string): void {
+  bindings.delete(target)
 }
 
 /** Test-only state cleanup. */

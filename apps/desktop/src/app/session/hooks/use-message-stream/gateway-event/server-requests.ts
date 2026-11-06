@@ -600,7 +600,7 @@ const previewAct: Handler = ({ deps, isActiveSession, request, sessionId }) => {
             return { error: 'The session changed before the preview vault action.', success: false as const }
           }
 
-          return mod.openPreviewVaultBinding(scope)
+          return mod.openPreviewVaultBinding(scope, previewOwnerFor(sessionId))
         }
 
         if (operation === 'evaluate') {

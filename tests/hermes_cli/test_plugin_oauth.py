@@ -647,7 +647,7 @@ def test_client_credentials_expiry_reacquires_once_under_lock(idp, api, monkeypa
             self.token = token
 
         def json(self):
-            return {"access_token": self.token, "expires_in": 600}
+            return {"access_token": self.token, "expires_in": 600, "token_type": "Bearer"}
 
     def token_post(url, *, data, **kwargs):
         calls.append(dict(data))
@@ -672,6 +672,28 @@ def test_client_credentials_expiry_reacquires_once_under_lock(idp, api, monkeypa
         "Bearer machine-token-two", "Bearer machine-token-two"
     ]
     assert _grant("machine:google")["access_token"] == "machine-token-two"
+
+
+@pytest.mark.parametrize("token_type", [None, "", "MAC"])
+def test_client_credentials_rejects_missing_or_unsupported_token_type(idp, monkeypatch, token_type):
+    import httpx
+
+    class TokenResponse:
+        status_code = 200
+
+        def json(self):
+            payload = {"access_token": "must-not-be-stored", "expires_in": 600}
+            if token_type is not None:
+                payload["token_type"] = token_type
+            return payload
+
+    monkeypatch.setattr(httpx, "post", lambda *args, **kwargs: TokenResponse())
+    _plugin("machine", oauth=[_client_credentials_entry(idp)])
+
+    with pytest.raises(SystemExit, match="token_type Bearer"):
+        _auth("add", "machine:google")
+
+    assert _grant("machine:google") is None
 
 
 def test_client_credentials_token_failure_does_not_persist_or_leak_secret(idp, monkeypatch, caplog):

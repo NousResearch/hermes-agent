@@ -14,6 +14,7 @@ import threading
 import time
 import types
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from tools.delegate_tool import (
@@ -45,6 +46,7 @@ def _make_mock_parent(depth=0):
     parent.provider_sort = None
     parent._session_db = None
     parent._delegate_depth = depth
+    parent.valid_tool_names = {"delegate_task"}
     parent._active_children = []
     parent._active_children_lock = threading.Lock()
     parent._print_fn = None
@@ -1811,6 +1813,7 @@ class TestOrchestratorEndToEnd(unittest.TestCase):
                 m._session_db = None
                 m.platform = "cli"
                 m.enabled_toolsets = ["terminal", "file", "delegation"]
+                m.valid_tool_names = {"delegate_task"}
                 m.api_key = "***"
                 m.base_url = ""
                 m.provider = None
@@ -1927,6 +1930,65 @@ class TestSubagentApprovalCallback(unittest.TestCase):
         self.assertEqual(seen, [_subagent_auto_deny])
         # Parent's callback slot is still empty (TLS isolates threads).
         self.assertIsNone(_get_approval_callback())
+
+
+class TestParentDelegationAuthorization(unittest.TestCase):
+    def test_missing_tool_snapshot_resolves_enabled_and_disabled_toolsets(self):
+        from tools.delegate_tool_toolsets import _parent_allows_delegation
+
+        self.assertTrue(_parent_allows_delegation(SimpleNamespace(
+            enabled_toolsets=None,
+            disabled_toolsets=None,
+        )))
+        self.assertFalse(_parent_allows_delegation(SimpleNamespace(
+            enabled_toolsets=None,
+            disabled_toolsets=["delegation"],
+        )))
+
+    def test_denied_final_tool_set_rejects_spawn_before_child_construction(self):
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = None
+        parent.disabled_toolsets = ["delegation"]
+        parent.valid_tool_names = {"read_file"}
+
+        with patch("tools.delegate_tool._build_child_preserving_parent_tools") as build_child:
+            result = json.loads(delegate_task(goal="restricted work", parent_agent=parent))
+
+        self.assertIn("not available", result["error"].lower())
+        build_child.assert_not_called()
+
+    def test_empty_final_tool_set_rejects_spawn_before_child_construction(self):
+        parent = _make_mock_parent()
+        parent.valid_tool_names = set()
+
+        with patch("tools.delegate_tool._build_child_preserving_parent_tools") as build_child:
+            result = json.loads(delegate_task(goal="restricted work", parent_agent=parent))
+
+        self.assertIn("not available", result["error"].lower())
+        build_child.assert_not_called()
+
+    def test_control_action_remains_available_after_spawn_authority_is_revoked(self):
+        parent = _make_mock_parent()
+        parent.valid_tool_names = set()
+
+        for action, subagent_id, message in (
+            ("list", None, None),
+            ("steer", "sa-1", "continue safely"),
+            ("stop", "sa-1", None),
+        ):
+            with self.subTest(action=action), patch(
+                "tools.delegate_tool._handle_control_action",
+                return_value='{"status": "controlled"}',
+            ) as control:
+                result = delegate_task(
+                    action=action,
+                    subagent_id=subagent_id,
+                    message=message,
+                    parent_agent=parent,
+                )
+
+            self.assertEqual('{"status": "controlled"}', result)
+            control.assert_called_once_with(action, subagent_id, message, parent)
 
 
 class TestFallbackModelInheritance(unittest.TestCase):

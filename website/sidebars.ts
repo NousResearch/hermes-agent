@@ -451,8 +451,11 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-optional-gaming',
                   collapsed: true,
                   items: [
+                    'user-guide/skills/optional/gaming/gaming-game-asset-pipeline',
                     'user-guide/skills/optional/gaming/gaming-minecraft-modpack-server',
                     'user-guide/skills/optional/gaming/gaming-pokemon-player',
+                    'user-guide/skills/optional/gaming/gaming-skintokens-rigging',
+                    'user-guide/skills/optional/gaming/gaming-trellis-image-to-3d',
                   ],
                 },
                 {

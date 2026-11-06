@@ -2004,7 +2004,8 @@ listens for the event frame of type `plugin.<plugin_id>.pane.changed`:
 - **`plugins.isolation: host`:** handlers run in the plugin host process, and both emit calls are
   forwarded to the gateway process, looked up in the host's profile. There `emit_plugin_session_event`
   is sent as the plugin whose code made the call: it returns `False` and sends nothing when `plugin_id`
-  is not that plugin's own or the plugin is no longer loaded, and it may do the same from a thread you
+  is not that plugin's own or the code is from a load that has since unloaded (a task left running
+  across a reload too), and it may do the same from a thread you
   started (the host may not know which plugin it belongs to), so use `ctx.emit_to_session` there. In-process the helper takes
   `plugin_id` as given.
 - **Where it works:** on a gateway that owns sessions (its session authority, as on the shared

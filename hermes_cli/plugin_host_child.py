@@ -38,9 +38,10 @@ logger = logging.getLogger("hermes_cli.plugin_host_child")
 
 _ENTRY_POINTS_GROUP = "hermes_agent.plugins"
 
-# The plugin whose code this request runs (its ``plugin_key``): bound per incoming request, so it follows
-# that code onto the host loop's tasks; a thread the plugin starts itself has none.
-_EXECUTING_PLUGIN: contextvars.ContextVar[str] = contextvars.ContextVar("plugin_host_executing", default="")
+# The plugin whose code this request runs (its ``plugin_key``) and the load it runs in: bound per incoming
+# request, so it follows that code onto the host loop's tasks; a thread the plugin starts itself has none.
+_EXECUTING_PLUGIN: contextvars.ContextVar[tuple[str, Optional[int]]] = contextvars.ContextVar(
+    "plugin_host_executing", default=("", None))
 
 
 class RemoteRegistration:
@@ -140,6 +141,7 @@ class HostRuntime:
         self._lock = threading.Lock()
         self.unload_callbacks: dict[str, list[Callable[[], Any]]] = {}
         self.modules: dict[str, str] = {}
+        self.loads: dict[str, Optional[int]] = {}  # plugin_key -> its current load, as Hermes numbered it
         self.asgi_apps: dict[str, Any] = {}
         self.profiles: dict[str, dict[str, Any]] = {}
         self.instance_modules: dict[str, Any] = {}
@@ -219,7 +221,8 @@ class HostRuntime:
         """``emit_plugin_session_event`` in the gateway process, which holds the sessions, sent as the
         plugin whose code is running (``plugin``). ``payload`` is already plain JSON, so it travels as
         is (no ``encode``: its keys are the plugin's own)."""
-        return self.channel.call("session_event", {"plugin": _EXECUTING_PLUGIN.get(), "plugin_id": plugin_id,
+        plugin, load = _EXECUTING_PLUGIN.get()
+        return self.channel.call("session_event", {"plugin": plugin, "load": load, "plugin_id": plugin_id,
                                                    "session_id": session_id, "event": event, "payload": payload})
 
     def spawn(self, coro: Any, *, name: Optional[str] = None) -> Any:
@@ -233,8 +236,8 @@ class HostRuntime:
         if handler is None:
             raise ValueError(f"unknown plugin host request {method!r}")
         ref = params.get("ref")
-        token = _EXECUTING_PLUGIN.set(str(params.get("plugin_key") or "") if ref is None
-                                      else self.owners.get(int(ref), ""))
+        plugin = str(params.get("plugin_key") or "") if ref is None else self.owners.get(int(ref), "")
+        token = _EXECUTING_PLUGIN.set((plugin, params["load"] if "load" in params else self.loads.get(plugin)))
         try:
             return handler(self, params)
         finally:
@@ -270,6 +273,7 @@ class HostRuntime:
             raise AttributeError(f"Plugin '{params.get('name')}' has no register() function")
         module_name = getattr(target, "__name__", None) or getattr(register, "__module__", None)
         self.modules[plugin_key] = str(module_name or "")
+        self.loads[plugin_key] = params.get("load")
         self._run(register(RemotePluginContext(self, plugin_key, params)))
         return {"module": module_name}
 
@@ -284,6 +288,7 @@ class HostRuntime:
         if module is None:
             module = self.instance_modules[str(params["path"])] = _import_plugin(params)
         self.modules[plugin_key] = module.__name__
+        self.loads[plugin_key] = params.get("load")
         base = _import_base(str(params["base"]))
         capture = str(params["capture"])
         captured: list[Any] = []
@@ -421,6 +426,7 @@ class HostRuntime:
             for ref in [r for r, owner in self.owners.items() if owner == plugin_key]:
                 self.refs.pop(ref, None)
                 self.owners.pop(ref, None)
+        self.loads.pop(plugin_key, None)
         module_name = self.modules.pop(plugin_key, "")
         if module_name:
             for name in [m for m in sys.modules if m == module_name or m.startswith(module_name + ".")]:

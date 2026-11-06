@@ -30,11 +30,8 @@ def emit_to_session(self, session_id: str, event: str, payload: Optional[dict[st
 
     Looked up in the plugin's own profile (its manager's home), never the ambient scope: a thread the
     plugin started carries none, and on a multiplexed gateway that would read as the launch profile."""
-    home = getattr(self._manager, "home_path", None)
-    if home is None:
-        return emit_plugin_session_event(self.plugin_id, session_id, event, payload)
     from hermes_cli.plugins_loader import _plugin_home_scope
-    with _plugin_home_scope(home):
+    with _plugin_home_scope(self._manager.home_path):
         return emit_plugin_session_event(self.plugin_id, session_id, event, payload)
 
 

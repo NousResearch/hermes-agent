@@ -107,10 +107,15 @@ def test_plugin_rpc_and_session_events_in_either_isolation_mode(tmp_path, monkey
 
 
 SENDER = '''
-import asyncio
+import asyncio, sys, threading, types
 from hermes_cli.plugin_events import emit_plugin_session_event
 
-CTX, UNLOADED, LATE = [], [], []
+CTX, UNLOADED = [], threading.Event()  # this load's: set when it unloads
+# Gates the test opens, shared by every load of this plugin in the host (each load re-imports this module).
+GATES = sys.modules.setdefault("hostrpc_gates", types.ModuleType("hostrpc_gates")).__dict__
+
+def _gate(name):
+    return GATES.setdefault(name, threading.Event())
 
 def _own(params, *, session_id, **kw):
     return emit_plugin_session_event(CTX[0].plugin_id, session_id, "pane.own", {})
@@ -121,18 +126,23 @@ async def _own_async(params, *, session_id, **kw):
 def _foreign(params, *, session_id, **kw):
     return emit_plugin_session_event("not-loaded", session_id, "pane.changed", {})
 
-def _after_unload(params, *, session_id, **kw):
-    async def emit_later():
-        while not UNLOADED:
-            await asyncio.sleep(0.02)
-        LATE.append(emit_plugin_session_event(CTX[0].plugin_id, session_id, "pane.late", {}))
-    CTX[0].spawn_task(emit_later())
+def _later(params, *, session_id, **kw):
+    ctx, gate = CTX[0], UNLOADED if params["gate"] == "unload" else _gate(params["gate"])
+    async def emit_when_open():
+        await asyncio.get_running_loop().run_in_executor(None, gate.wait)
+        emit_plugin_session_event(ctx.plugin_id, session_id, "pane.late", {})
+    ctx.spawn_task(emit_when_open())
+    return True
+
+def _open(params, *, session_id, **kw):
+    _gate(params["gate"]).set()
     return True
 
 def register(ctx):
     CTX.append(ctx)
-    ctx.on_unload(lambda: UNLOADED.append(1))
-    for name, fn in (("own", _own), ("own_async", _own_async), ("foreign", _foreign), ("later", _after_unload)):
+    ctx.on_unload(UNLOADED.set)
+    for name, fn in (("own", _own), ("own_async", _own_async), ("foreign", _foreign), ("later", _later),
+                     ("open", _open)):
         ctx.register_rpc(f"pane.{name}", fn)
 '''
 
@@ -140,9 +150,9 @@ def register(ctx):
 @pytest.mark.platforms("any")  # the host is a child process: its env/home resolution is per-OS
 @pytest.mark.parametrize("profiles", ["single", "two"])
 def test_hosted_session_event_is_sent_only_as_the_live_plugin_running_it(tmp_path, monkeypatch, caplog, profiles):
-    """A hosted plugin's module-level emit goes out under its own id only while it is loaded: a
-    foreign ``plugin_id`` and a task still running after unload get False and publish nothing."""
-    import time
+    """A hosted plugin's module-level emit goes out under its own id only from its current load: a
+    foreign ``plugin_id``, and a task left running from a load since unloaded (a forced reload into the
+    same host too), get False and publish nothing."""
     from types import SimpleNamespace
 
     from gateway import run_api
@@ -151,6 +161,7 @@ def test_hosted_session_event_is_sent_only_as_the_live_plugin_running_it(tmp_pat
     from hermes_cli.plugins_dispatch import resolve_plugin_command_result
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from tests.gateway.test_session_plugin_rpc import _live
+    from tests.waiting import wait_until
 
     launch = tmp_path / "launch"
     home = launch if profiles == "single" else tmp_path / "secondary"
@@ -177,16 +188,19 @@ def test_hosted_session_event_is_sent_only_as_the_live_plugin_running_it(tmp_pat
     manager = PluginManager(str(home))
     manager.discover_and_load()
 
-    def call(name):
+    def call(name, params=None):
         token = set_hermes_home_override(home)
         try:
             handler = manager._plugin_rpc_methods[f"plugin.hostrpc.{name}"]
-            return resolve_plugin_command_result(handler({}, session_id="sess"))
+            return resolve_plugin_command_result(handler(params or {}, session_id="sess"))
         finally:
             reset_hermes_home_override(token)
 
     def sent():
         return [f["params"]["type"] for f in frames[home]]
+
+    def refused():
+        return [r.getMessage() for r in caplog.records if "refused" in r.getMessage()]
 
     try:
         assert manager._plugins["hostrpc"].error is None
@@ -194,14 +208,19 @@ def test_hosted_session_event_is_sent_only_as_the_live_plugin_running_it(tmp_pat
         assert sent() == ["plugin.hostrpc.pane.own", "plugin.hostrpc.pane.own_async"]
         caplog.set_level("WARNING", logger="hermes_cli.plugins")
         assert call("pane.foreign") is False
-        assert call("pane.later") is True
+        assert call("pane.later", {"gate": "reload"}) is True
+        pid = manager._plugin_host_instance.pid
+        manager.discover_and_load(force=True)  # reload-plugins: the same host loads the plugin again
+        assert manager._plugin_host_instance.pid == pid and manager._plugins["hostrpc"].error is None
+        assert call("pane.own") is True  # the new load sends
+        assert call("pane.open", {"gate": "reload"}) is True  # the first load's task emits now
+        wait_until(lambda: len(refused()) >= 2, what="the first load's task's emit refused")
+        assert call("pane.later", {"gate": "unload"}) is True
         manager.unload("hostrpc")
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline and sum("refused" in r.getMessage() for r in caplog.records) < 2:
-            time.sleep(0.05)
-        refused = [r.getMessage() for r in caplog.records if "refused" in r.getMessage()]
-        assert len(refused) == 2 and "'not-loaded'" in refused[0] and "'hostrpc'" in refused[1]
-        assert sent() == ["plugin.hostrpc.pane.own", "plugin.hostrpc.pane.own_async"]
+        wait_until(lambda: len(refused()) >= 3, what="the unloaded plugin's task's emit refused")
+        assert len(refused()) == 3 and "'not-loaded'" in refused()[0]
+        assert all("'hostrpc'" in message for message in refused()[1:])
+        assert sent() == ["plugin.hostrpc.pane.own", "plugin.hostrpc.pane.own_async", "plugin.hostrpc.pane.own"]
         assert all(frames[p] == [] for p in frames if p != home)
     finally:
         manager.unload()

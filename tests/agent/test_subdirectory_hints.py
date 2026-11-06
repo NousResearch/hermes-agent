@@ -365,6 +365,30 @@ class TestExcludedDirectories:
         assert "Personal backend override" in result
         assert "Committed backend rules" not in result
 
+    def test_discovers_hermes_md_in_subdirectory(self, tmp_path):
+        """HERMES.md is discovered progressively, like AGENTS.md."""
+        sub = tmp_path / "finance"
+        sub.mkdir()
+        (sub / "HERMES.md").write_text("Finance area rules", encoding="utf-8")
+
+        tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
+        result = tracker.check_tool_call("read_file", {"path": str(sub / "q3.md")})
+        assert result is not None
+        assert "Finance area rules" in result
+
+    def test_hermes_md_wins_in_subdirectory(self, tmp_path):
+        """Per directory, .hermes.md/HERMES.md take the startup priority over AGENTS.md."""
+        sub = tmp_path / "backend"
+        sub.mkdir()
+        (sub / "AGENTS.md").write_text("Generic agent rules", encoding="utf-8")
+        (sub / "HERMES.md").write_text("Hermes backend rules", encoding="utf-8")
+
+        tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
+        result = tracker.check_tool_call("read_file", {"path": str(sub / "f.py")})
+        assert result is not None
+        assert "Hermes backend rules" in result
+        assert "Generic agent rules" not in result
+
 
 class TestSymlinkedHintTargets:
     """A hint file's resolved target must stay inside the working tree and off

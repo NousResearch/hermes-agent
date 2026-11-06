@@ -1336,6 +1336,13 @@ export const ruOverrides = {
       clearDirFailed: 'Не удалось очистить папку по умолчанию'
     },
     toolsets: {
+      browserRealProfile: {
+        reimportSignins: 'Импортировать входы заново',
+        signinsImportedTitle: 'Входы во встроенном браузере',
+        signinsImported: count => `Встроенный браузер вошёл с cookie из профиля браузера: ${count}.`,
+        signinsRemote: 'Этот бэкенд работает на другом компьютере, поэтому его профиль браузера не импортируется во встроенный браузер.',
+        signinsFailed: 'Не удалось импортировать входы во встроенный браузер',
+      },
       loadingConfig: 'Загрузка конфигурации',
       savedTitle: 'Учётные данные сохранены',
       savedMessage: key => `${key} обновлён.`,

@@ -13,7 +13,9 @@ standalone npm projects (website/, the sidecars) keep a ``package-lock.json``
 (lockfileVersion 2/3). A pnpm lock has no install paths, so besides its
 ``{package: versions}`` rows the report lists a project's direct dependency
 (``semver *(web)*``) or a package's dependency (``semver *(via node-gyp@10.3.1)*``)
-that moved between versions locked on both sides, which the package rows miss.
+that moved, appeared or went between versions locked on both sides, which the
+package rows miss, and one ``project <path>`` row per workspace project that
+appears or disappears.
 
 Usage (from a checkout that still has the base ref available):
 
@@ -94,31 +96,58 @@ def _pnpm_package_versions(text: str) -> dict[str, str]:
     return _joined(versions)
 
 
-def _pnpm_importer_versions(text: str) -> dict[str, str]:
-    """``{"name *(project)*": version}`` for each workspace project's direct dependencies."""
-    found: dict[str, set[str]] = {}
+def _map(value: object, where: str) -> dict:
+    """``value`` as a block map; any other shape means a lock this reader does not know."""
+    if not isinstance(value, dict):
+        raise ValueError(f"pnpm-lock.yaml: {where} is not a block map: {value!r}")
+    return value
+
+
+def _reference(name: str, ref: object, where: str) -> str:
+    """A locked dependency reference without its peer suffix.
+
+    An ``npm:`` alias keeps the real package in front (``string-width@4.2.3``):
+    pnpm writes a reference as an alias when an ``@`` comes before any ``(`` or ``:``.
+    """
+    if not isinstance(ref, str):
+        raise ValueError(f"pnpm-lock.yaml: {where} {name} has no version: {ref!r}")
+    return _bare(ref)
+
+
+def _target(name: str, reference: str) -> tuple[str, str]:
+    """The ``packages`` entry a reference points to: ``(real name, version)``."""
+    if reference.startswith("@") or "@" in reference.split(":", 1)[0]:
+        return _split_key(reference)
+    return name, reference
+
+
+def _pnpm_projects(text: str) -> dict[str, dict[str, str]]:
+    """``{project: {dependency name: reference}}`` for each workspace project's direct dependencies."""
+    projects: dict[str, dict[str, str]] = {}
     for project, fields in section(text, "importers").items():
-        where = "root" if project == "." else project
+        fields = _map(fields, f"importer {project}")
+        found = projects[project] = {}
         for field in _DEP_FIELDS:
-            for name, entry in fields.get(field, {}).items():
-                if entry["version"].startswith("link:"):
-                    continue  # another workspace project, not a locked version
-                found.setdefault(f"{name} *({where})*", set()).add(_bare(entry["version"]))
-    return _joined(found)
+            for name, entry in _map(fields.get(field, {}), f"{project} {field}").items():
+                ref = _reference(name, _map(entry, f"{project} {field} {name}").get("version"), project)
+                if not ref.startswith("link:"):  # another workspace project, not a locked version
+                    found[name] = ref
+    return projects
 
 
 def _pnpm_snapshot_edges(text: str) -> dict[str, dict[str, str]]:
-    """``{"consumer@version": {dependency name: version}}`` from ``snapshots``.
+    """``{"consumer@version": {dependency name: references}}`` from ``snapshots``.
 
     Peer variants of one consumer collapse into one entry.
     """
     found: dict[str, dict[str, set[str]]] = {}
     for key, entry in section(text, "snapshots").items():
         name, version = _split_key(key)
+        entry = _map(entry, f"snapshot {key}")
         edges = found.setdefault(f"{name}@{_bare(version)}", {})
         for field in ("dependencies", "optionalDependencies"):
-            for dep, target in entry.get(field, {}).items():
-                edges.setdefault(dep, set()).add(_bare(target))
+            for dep, target in _map(entry.get(field, {}), f"{key} {field}").items():
+                edges.setdefault(dep, set()).add(_reference(dep, target, key))
     return {consumer: _joined(edges) for consumer, edges in found.items()}
 
 
@@ -136,32 +165,48 @@ def diff_pnpm_locks(base_text: str, head_text: str) -> dict[str, list]:
     """Diff two pnpm locks: package versions, plus the dependency moves those hide.
 
     The ``packages`` keys cannot show a dependency moving between two versions that
-    both stay locked (``semver`` 7.8.5 → 7.7.4 in one project). So each project's
-    direct dependencies are diffed too (``semver *(web)*``), and so are the
-    ``snapshots`` edges (``semver *(via node-gyp@10.3.1)*``). Such a row is shown
-    only when every version it names is locked on both sides, i.e. when the
-    package row cannot explain it: a bump otherwise repeats once per dependent.
+    both stay locked (``semver`` 7.8.5 → 7.7.4 in one project). So the direct
+    dependencies of each project present on both sides are diffed too (``semver
+    *(web)*``), and so are the ``snapshots`` edges of each package present on both
+    sides (``semver *(via node-gyp@10.3.1)*``), including edges that appear or go.
+    Such a row is shown only when every package version it names is locked on both
+    sides, i.e. when the package rows cannot explain it: a bump otherwise repeats
+    once per dependent. An ``npm:`` alias is checked against the package it points
+    to and shows it in its versions (``string-width-cjs`` ``string-width@4.2.3``).
+    A project that appears or disappears is one ``project <path>`` row, not a row
+    per dependency.
     """
     base = parse_pnpm_lockfile(base_text) if base_text else {}
     head = parse_pnpm_lockfile(head_text) if head_text else {}
     diff = diff_locks(base, head)
 
-    def hidden(name: str, *versions: str) -> bool:
-        kept = set(base.get(name, "").split(", ")) & set(head.get(name, "").split(", "))
-        return all(set(v.split(", ")) <= kept for v in versions)
+    def hidden(name: str, *references: str) -> bool:
+        for reference in references:
+            for one in reference.split(", "):
+                real, version = _target(name, one)
+                if version not in set(base.get(real, "").split(", ")) & set(head.get(real, "").split(", ")):
+                    return False
+        return True
 
-    projects = diff_locks(_pnpm_importer_versions(base_text) if base_text else {},
-                          _pnpm_importer_versions(head_text) if head_text else {})
-    for kind, rows in projects.items():
-        diff[kind] += [row for row in rows if hidden(row[0].split(" *(", 1)[0], *row[1:])]
+    def moves(old: dict[str, str], new: dict[str, str], where: str) -> None:
+        for kind, rows in diff_locks(old, new).items():
+            diff[kind] += [(f"{row[0]} *({where})*", *row[1:]) for row in rows if hidden(*row)]
+
+    base_projects = _pnpm_projects(base_text) if base_text else {}
+    head_projects = _pnpm_projects(head_text) if head_text else {}
+    for project in base_projects.keys() & head_projects.keys():
+        moves(base_projects[project], head_projects[project], "root" if project == "." else project)
+    for kind, projects in (("added", head_projects.keys() - base_projects.keys()),
+                           ("removed", base_projects.keys() - head_projects.keys())):
+        sides = head_projects if kind == "added" else base_projects
+        for project in projects:
+            count = len(sides[project])
+            diff[kind].append((f"project {project}", f"{count} locked dependenc{'y' if count == 1 else 'ies'}"))
 
     base_edges = _pnpm_snapshot_edges(base_text) if base_text else {}
     head_edges = _pnpm_snapshot_edges(head_text) if head_text else {}
     for consumer in base_edges.keys() & head_edges.keys():
-        old, new = base_edges[consumer], head_edges[consumer]
-        for name in old.keys() & new.keys():
-            if old[name] != new[name] and hidden(name, old[name], new[name]):
-                diff["updated"].append((f"{name} *(via {consumer})*", old[name], new[name]))
+        moves(base_edges[consumer], head_edges[consumer], f"via {consumer}")
 
     return {kind: sorted(rows) for kind, rows in diff.items()}
 

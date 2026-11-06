@@ -8,7 +8,9 @@ where in the file it appears.
 tests/fixtures/pnpm_lock/ holds real pnpm 12 lockfiles (``pnpm install
 --lockfile-only``) of two-project workspaces, single-document as the repo's is.
 base/head bump, add and remove packages; repin-base/repin-head only move
-dependencies between versions that both stay locked.
+dependencies between versions that both stay locked; so do alias-base/alias-head,
+through ``npm:`` aliases (a project's ``my-ms``, and ``@isaacs/cliui``'s
+``string-width-cjs`` via an override) and a packageExtensions edge added to debug.
 """
 
 from __future__ import annotations
@@ -32,6 +34,8 @@ PNPM_BASE = (_ROOT / "tests/fixtures/pnpm_lock/base.yaml").read_text(encoding="u
 PNPM_HEAD = (_ROOT / "tests/fixtures/pnpm_lock/head.yaml").read_text(encoding="utf-8")
 REPIN_BASE = (_ROOT / "tests/fixtures/pnpm_lock/repin-base.yaml").read_text(encoding="utf-8")
 REPIN_HEAD = (_ROOT / "tests/fixtures/pnpm_lock/repin-head.yaml").read_text(encoding="utf-8")
+ALIAS_BASE = (_ROOT / "tests/fixtures/pnpm_lock/alias-base.yaml").read_text(encoding="utf-8")
+ALIAS_HEAD = (_ROOT / "tests/fixtures/pnpm_lock/alias-head.yaml").read_text(encoding="utf-8")
 
 
 def _lock(packages: dict[str, dict]) -> str:
@@ -141,6 +145,28 @@ def test_pnpm_dependency_moving_between_locked_versions_is_reported(tmp_path):
     assert "| ms *(root)* | `2.1.2` | `2.1.3` |" in _mod.render_markdown(diffs)
 
 
+def test_pnpm_alias_and_new_edge_between_locked_versions_are_reported():
+    # Every version stays locked, so only the importer and snapshot edges move.
+    assert _mod.parse_pnpm_lockfile(ALIAS_BASE) == _mod.parse_pnpm_lockfile(ALIAS_HEAD)
+    assert _mod.diff_pnpm_locks(ALIAS_BASE, ALIAS_HEAD) == {
+        "added": [("string-width *(via debug@4.3.4)*", "4.2.3")],
+        "removed": [],
+        "updated": [
+            ("my-ms *(pkg)*", "ms@2.1.3", "ms@2.1.2"),
+            ("string-width-cjs *(via @isaacs/cliui@8.0.2)*", "string-width@4.2.3", "string-width@5.1.2"),
+        ],
+    }
+
+
+def test_pnpm_project_that_appears_or_disappears_is_one_row():
+    renamed = REPIN_BASE.replace("\n  pkg:\n", "\n  packages/pkg:\n")
+    assert _mod.diff_pnpm_locks(REPIN_BASE, renamed) == {
+        "added": [("project packages/pkg", "1 locked dependency")],
+        "removed": [("project pkg", "1 locked dependency")],
+        "updated": [],
+    }
+
+
 @pytest.mark.parametrize("stray", ["# a note", "<<<<<<< HEAD", "\tdependencies:", "unknownKey: 1"])
 def test_pnpm_section_ends_only_at_a_known_top_level_key(stray):
     # A column-0 line that is not a lock key would otherwise end importers early,
@@ -148,6 +174,18 @@ def test_pnpm_section_ends_only_at_a_known_top_level_key(stray):
     broken = REPIN_BASE.replace("\n  pkg:\n", f"\n{stray}\n  pkg:\n")
     with pytest.raises(ValueError, match="unreadable importers line"):
         _mod.diff_pnpm_locks(REPIN_BASE, broken)
+
+
+@pytest.mark.parametrize(("old", "new"), [
+    ("    dependencies:\n      ms:\n        specifier: 2.1.3\n        version: 2.1.3\n",
+     "    dependencies: {ms: {specifier: 2.1.3, version: 2.1.3}}\n"),  # a flow map
+    ("        specifier: 2.1.2\n        version: 2.1.2\n", "        specifier: 2.1.2\n"),  # no version
+    ("  debug@4.3.4:\n    dependencies:\n      ms: 2.1.2\n", "  debug@4.3.4:\n    dependencies: {ms: 2.1.2}\n"),
+])
+def test_pnpm_entry_of_unknown_shape_is_refused(old, new):
+    assert old in REPIN_BASE
+    with pytest.raises(ValueError, match="pnpm-lock.yaml: "):
+        _mod.diff_pnpm_locks(REPIN_BASE, REPIN_BASE.replace(old, new, 1))
 
 
 def test_pnpm_lock_refuses_what_it_cannot_read():

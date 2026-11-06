@@ -192,6 +192,17 @@ def _finish_opening(path: Path, opening: threading.Event) -> None:
     opening.set()
 
 
+def _db_file_is_missing(path: Path) -> bool:
+    """Whether *path* is absent, without treating other stat failures as absence."""
+    try:
+        os.stat(path)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return False
+
+
 def acquire(db_path: Optional[Path] = None) -> SessionDB:
     """Return the shared SessionDB for *db_path*, incrementing its refcount. If the file was
     replaced (different inode) since the generation opened, that generation is RETIRED
@@ -212,7 +223,11 @@ def acquire(db_path: Optional[Path] = None) -> SessionDB:
             generation = _generations.get(path)
             if generation is not None:
                 current = _stat_db_file_identity(path)
-                if current is not None and generation.identity is not None and current != generation.identity:
+                replaced = generation.identity is not None and (
+                    (current is not None and current != generation.identity)
+                    or (current is None and _db_file_is_missing(path))
+                )
+                if replaced:
                     # File replaced: retire this generation so it is never lent again, then elect one
                     # caller to open the replacement. It stays alive for its holders, tracked in
                     # ``_retired`` by ``id(db)`` so their releases find it after the path remaps.

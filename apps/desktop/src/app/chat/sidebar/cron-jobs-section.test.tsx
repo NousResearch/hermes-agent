@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { fmtDayTime } from '@/lib/time'
@@ -47,14 +47,12 @@ beforeEach(() => {
 
 afterEach(cleanup)
 
-async function renderRunsPeek(rows: SessionInfo[]) {
-  getCronJobRuns.mockResolvedValue(rows)
-
+function renderSection(jobs: CronJob[]) {
   const onOpenRun = vi.fn()
 
   render(
     <SidebarCronJobsSection
-      jobs={[job]}
+      jobs={jobs}
       label="Cron Jobs"
       onManageJob={vi.fn()}
       onOpenRun={onOpenRun}
@@ -64,8 +62,18 @@ async function renderRunsPeek(rows: SessionInfo[]) {
     />
   )
 
+  return { onOpenRun }
+}
+
+async function renderRunsPeek(rows: SessionInfo[]) {
+  getCronJobRuns.mockResolvedValue(rows)
+
+  const { onOpenRun } = renderSection([job])
+
+  // Folders start collapsed; open the prefix-less bucket that holds `job`.
+  fireEvent.click(screen.getByRole('button', { name: 'Uncategorized' }))
   // Expand the job row's run peek.
-  screen.getByRole('button', { name: 'Show runs' }).click()
+  fireEvent.click(screen.getByRole('button', { name: 'Show runs' }))
 
   return { onOpenRun }
 }
@@ -146,11 +154,70 @@ describe('SidebarCronJobsSection run peek — zombie cron runs (#88443)', () => 
   it('still shows the run time for script-only output rows', async () => {
     const output = run({ ended_at: null, id: 'cron_output:job-1:latest', is_active: false, source: 'cron_output' })
 
-    await renderRunsPeek([output])
+    const { onOpenRun } = await renderRunsPeek([output])
 
     await waitFor(() => expect(screen.getByText(runLabel(output))).toBeTruthy())
-    // No chat affordance to click, and nothing latched.
-    expect(screen.queryByRole('button', { name: runLabel(output) })).toBeNull()
+    // The output row expands the record itself; it is not a chat door.
+    const row = screen.getByRole('button', { name: runLabel(output) })
+    fireEvent.click(row)
+
+    expect(row.getAttribute('aria-expanded')).toBe('true')
+    expect(onOpenRun).not.toHaveBeenCalled()
     expect(isStoredTranscriptReadOnly(output.id)).toBe(false)
+  })
+})
+
+describe('SidebarCronJobsSection folders', () => {
+  const jobNamed = (id: string, name: string): CronJob => ({ ...job, id, name })
+
+  // Folder headers are the expandable row buttons that carry no action label
+  // (job rows are the ones labelled "Show runs" / "Hide runs").
+  const folderHeaders = () =>
+    screen
+      .getAllByRole('button')
+      .filter(button => button.hasAttribute('aria-expanded') && !button.hasAttribute('aria-label'))
+      .map(button => button.textContent)
+
+  const jobRows = () => screen.queryAllByRole('button', { name: 'Show runs' })
+
+  it('folds jobs into one folder per name prefix', () => {
+    renderSection([jobNamed('a-x', '【A】x'), jobNamed('a-y', '【A】y'), jobNamed('b-z', '【B】z')])
+
+    expect(folderHeaders()).toEqual(['【A】', '【B】'])
+    expect(screen.getByRole('button', { name: '【A】' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '【B】' })).toBeTruthy()
+  })
+
+  it('puts prefix-less jobs in an Uncategorized folder after the prefixed ones', async () => {
+    renderSection([jobNamed('loose', 'loose job'), jobNamed('a-x', '【A】x'), jobNamed('b-z', '【B】z')])
+
+    expect(folderHeaders()).toEqual(['【A】', '【B】', 'Uncategorized'])
+
+    fireEvent.click(screen.getByRole('button', { name: 'Uncategorized' }))
+
+    await waitFor(() => expect(jobRows()).toHaveLength(1))
+    expect(screen.getByText('loose job')).toBeTruthy()
+  })
+
+  it('starts every folder collapsed and reveals a folder on click', async () => {
+    renderSection([jobNamed('a-x', '【A】x'), jobNamed('a-y', '【A】y'), jobNamed('b-z', '【B】z')])
+
+    expect(jobRows()).toHaveLength(0)
+
+    fireEvent.click(screen.getByRole('button', { name: '【A】' }))
+
+    await waitFor(() => expect(jobRows()).toHaveLength(2))
+    expect(screen.getByText('【A】x')).toBeTruthy()
+    expect(screen.getByText('【A】y')).toBeTruthy()
+  })
+
+  it('keeps the other folders collapsed when one folder opens', async () => {
+    renderSection([jobNamed('a-x', '【A】x'), jobNamed('b-z', '【B】z')])
+
+    fireEvent.click(screen.getByRole('button', { name: '【A】' }))
+
+    await waitFor(() => expect(jobRows()).toHaveLength(1))
+    expect(screen.getByRole('button', { name: '【B】' }).getAttribute('aria-expanded')).toBe('false')
+    expect(screen.queryByText('【B】z')).toBeNull()
   })
 })

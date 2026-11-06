@@ -346,11 +346,14 @@ export function useComposerSubmit({
   const queueRetry = (retry: ComposerDraftRetry) => {
     const scope = draftScopeRef.current
 
-    void Promise.resolve(queueCurrentDraft(retry.id)).then(queued => {
-      if (!queued) {
-        rememberDraftRetry?.(scope, retry)
-      }
-    })
+    pendingSteers.current.add(scope)
+    void Promise.resolve(queueCurrentDraft(retry.id))
+      .then(queued => {
+        if (!queued) {
+          rememberDraftRetry?.(scope, retry)
+        }
+      })
+      .finally(() => pendingSteers.current.delete(scope))
   }
 
   // Returns false when the submit was refused and must not refocus the input.

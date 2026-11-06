@@ -1,6 +1,7 @@
 """Installed identity proofs at inert native supervisor executable boundaries."""
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -16,7 +17,9 @@ import pytest
     ("wrong_home", "profile_mismatch"), ("wrong_user", "service_account_mismatch"),
     ("missing_identity", "service_identity_unverified"),
     ("omitted_empty_exec_lists", "deadline"),
-    ("env_file", "service_identity_unverified"), ("dynamic_user", "service_identity_unverified"),
+    # An EnvironmentFile's KEY=VALUE pairs are folded into the effective env,
+    # so a HERMES_HOME there is precisely a profile mismatch, not unverified.
+    ("env_file", "profile_mismatch"), ("dynamic_user", "service_identity_unverified"),
     ("wrong_command", "service_identity_unverified"), ("command_profile", "profile_mismatch"),
     ("dropin_home", "profile_mismatch"), ("manager_home", "profile_mismatch"),
 ])
@@ -108,6 +111,42 @@ def test_ensure_checks_effective_service_binding_before_start(tmp_path, monkeypa
     assert all('--no-ask-password' in cmd for cmd in starts)
     assert unit.read_bytes() == original
     assert not (home / 'logs').exists()
+
+@pytest.mark.parametrize("case,reason", [
+    ("safe_cleanup", None), ("safe_script", None), ("env_files", None),
+    ("expansion_prehook", "service_identity_unverified"), ("unknown_prehook", "service_identity_unverified"),
+])
+def test_systemd_dropin_hooks_and_env_files_stay_verifiable(case, reason, tmp_path):
+    from hermes_cli.gateway_runtime_service_identity import verify_systemd
+    home = tmp_path / "requested"
+    command = f'{sys.executable} -m hermes_cli.main gateway run'
+    match = re.fullmatch(r"\{ path=(.*?) ; argv\[\]=(.*?) ; ignore_errors=(?:yes|no) ;(?:.*?)\}",
+                         f'{{ path={command.split()[0]} ; argv[]={command} ; ignore_errors=no ; }}')
+    props = {"User": "", "DynamicUser": "no", "ExecStart": match.group(0),
+             "Environment": f'HERMES_HOME={home}',
+             "EnvironmentFiles": "", "PassEnvironment": "", "UnsetEnvironment": "", "PAMName": "",
+             "RootDirectory": "", "RootImage": "", "ExecStartPre": "", "ExecCondition": "", "DropInPaths": ""}
+    if case == "safe_cleanup":
+        props["ExecStartPre"] = ('{ path=/bin/sh ; argv[]=/bin/sh -c rm -f %s ; exit 0 ; '
+                                 'ignore_errors=no ; }' % (tmp_path / "gateway.lock"))
+    if case == "safe_script":
+        hook = tmp_path / ".hermes" / "scripts" / "hook.sh"
+        hook.parent.mkdir(parents=True)
+        hook.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        props["ExecStartPre"] = f'{{ path={hook} ; argv[]={hook} ; ignore_errors=no ; }}'
+    if case == "env_files":
+        env_file = tmp_path / "secrets.env"
+        env_file.write_text("API_KEY=abc\n# comment\n\n", encoding="utf-8")
+        props["EnvironmentFiles"] = f'{env_file} (ignore_errors=no)'
+    if case == "expansion_prehook":
+        props["ExecStartPre"] = '{ path=/bin/sh ; argv[]=/bin/sh -c echo $HOME ; ignore_errors=no ; }'
+    if case == "unknown_prehook":
+        props["ExecStartPre"] = '{ path=/bin/bash ; argv[]=/bin/bash -c /opt/other.sh ; ignore_errors=no ; }'
+    if reason:
+        with pytest.raises(ValueError, match=reason):
+            verify_systemd(props, "", home, system=False)
+    else:
+        verify_systemd(props, "", home, system=False)
 
 
 @pytest.mark.parametrize("configured,command,reason", [

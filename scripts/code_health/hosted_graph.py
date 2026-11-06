@@ -1,15 +1,24 @@
 """The hosted entry point's import graph: which modules a hosted process loads.
 
-``reachable(repo, tree)`` walks the import statements that run at import time (module level,
-including top-level ``if``/``try``/``with`` blocks, excluding ``if TYPE_CHECKING:``) from the
-roots in ``config.HOSTED_ENTRY``, over one tree. Importing ``a.b.c`` loads ``a``, ``a.b`` and
-``a.b.c``, and ``from a import b`` loads ``a.b`` when it is a module, so each package
-``__init__`` on the way is in the graph too.
+``reachable(repo, tree)`` walks the import statements that run at import time from the roots in
+``config.HOSTED_ENTRY``, over one tree. Importing ``a.b.c`` loads ``a``, ``a.b`` and ``a.b.c``,
+and ``from a import b`` loads ``a.b`` when it is a module, so each package ``__init__`` on the
+way is in the graph too, a root's own included.
 
-Imports inside functions are not followed: they reach almost the whole tree (CLI setup wizards,
-installers) through code a hosted process never calls. A module the hosted process loads lazily
-is listed as a root instead. Plugins loaded by path (``plugins/*``, ``$HERMES_HOME/plugins``)
-are not Python imports and are not in the graph.
+Import time is every statement a module body runs: through ``if``/``else``, ``try``, ``with``,
+``for``/``while`` loops, ``match`` cases and class bodies (nested classes included), excluding
+``if TYPE_CHECKING:``. Imports inside functions are not followed: they reach almost the whole
+tree (CLI setup wizards, installers) through code a hosted process never calls. A module the
+hosted process loads lazily is listed as a root instead.
+
+Two dynamic imports are modelled. ``model_tools`` calls ``tools.registry.discover_builtin_tools()``
+while it imports, which imports every built-in tool module that registers a tool at module
+level: when ``model_tools`` is in the graph, so is each module discovery would select in the
+measured tree (``hosted_graph_tools``). And a forwarder declared at import time with
+``agent.lazy_forward`` (``switch_model = forward("agent.agent_runtime_helpers", ...)`` in the
+``AIAgent`` class body) imports its module on every call, so the declaration is an edge.
+Plugins loaded by path (``plugins/*``, ``$HERMES_HOME/plugins``) are not Python imports and are
+not in the graph.
 """
 
 from __future__ import annotations
@@ -21,12 +30,16 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from scripts.code_health import config, gitio
+from scripts.code_health.hosted_graph_tools import DISCOVERING_MODULE, discovered_tool_modules
+
+_LAZY_FORWARD = "agent.lazy_forward"
+_FORWARDER_FACTORIES = {"forward", "forward_static", "lazy_attr"}
 
 
 def _read_all(repo: Path, tree: str | None, paths: list[str]) -> dict[str, str]:
     if tree is None:
         return {p: t for p in paths if (t := gitio.read_file(repo, None, p)) is not None}
-    # One `git cat-file --batch` for the whole walk: a `git show` per module costs seconds.
+    # One `git cat-file --batch` per frontier: a `git show` per module costs seconds.
     request = "".join(f"{tree}:{p}\n" for p in paths).encode("utf-8")
     out = subprocess.run(["git", "cat-file", "--batch"], cwd=repo, input=request,
                          capture_output=True, timeout=120, check=True).stdout
@@ -59,19 +72,32 @@ class _Graph:
                 return candidate
         return None
 
+    def _found(self, names: Iterator[str]) -> Iterator[str]:
+        for name in names:
+            found = self.module_file(name)
+            if found:
+                yield found
+
     def walk(self, roots: tuple[str, ...]) -> frozenset[str]:
         seen: set[str] = set()
-        frontier = [f for f in (self.module_file(r) for r in roots) if f]
+        frontier = list(self._found(n for r in roots for n in _prefixes(r)))
+        discovered = False
         while frontier:
             batch = sorted(set(frontier) - seen)
             seen.update(batch)
             frontier = []
-            for path, text in _read_all(self.repo, self.tree, batch).items():
-                for name in _imported(path, text):
-                    found = self.module_file(name)
-                    if found and found not in seen:
-                        frontier.append(found)
+            texts = _read_all(self.repo, self.tree, batch)
+            for path, text in texts.items():
+                frontier += [f for f in self._found(_imported(path, text)) if f not in seen]
+            if not discovered and DISCOVERING_MODULE in seen:
+                discovered = True
+                frontier += [f for f in self._discovered() if f not in seen]
         return frozenset(seen)
+
+    def _discovered(self) -> list[str]:
+        """The built-in tool modules ``discover_builtin_tools()`` imports, in this tree."""
+        candidates = sorted(p for p in self.files if p.startswith("tools/"))
+        return discovered_tool_modules(self.files, _read_all(self.repo, self.tree, candidates))
 
 
 def _package(path: str) -> list[str]:
@@ -92,18 +118,43 @@ def _type_checking(node: ast.If) -> bool:
 
 
 def _import_time(body: list[ast.stmt]) -> Iterator[ast.stmt]:
+    """Every statement *body* runs: into each compound statement's blocks (loops, ``match``
+    cases, ``try`` handlers, class bodies), never into a function body or ``if TYPE_CHECKING:``."""
     for node in body:
-        if isinstance(node, ast.If):
-            if not _type_checking(node):
-                yield from _import_time(node.body)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if isinstance(node, ast.If) and _type_checking(node):
             yield from _import_time(node.orelse)
-        elif isinstance(node, (ast.Try, ast.With, ast.AsyncWith)):
-            for field in ("body", "orelse", "finalbody"):
-                yield from _import_time(getattr(node, field, []) or [])
-            for handler in getattr(node, "handlers", []):
-                yield from _import_time(handler.body)
-        else:
-            yield node
+            continue
+        yield node
+        for _, value in ast.iter_fields(node):
+            for item in value if isinstance(value, list) else []:
+                if isinstance(item, ast.stmt):
+                    yield from _import_time([item])
+                elif isinstance(item, (ast.ExceptHandler, ast.match_case)):
+                    yield from _import_time(item.body)
+
+
+def _forwarders(tree: ast.Module) -> set[str]:
+    """Local names bound to ``agent.lazy_forward``'s forwarder factories by a module-level import."""
+    return {alias.asname or alias.name for node in _import_time(tree.body)
+            if isinstance(node, ast.ImportFrom) and node.module == _LAZY_FORWARD
+            for alias in node.names if alias.name in _FORWARDER_FACTORIES}
+
+
+def _forwarded(node: ast.stmt, factories: set[str]) -> Iterator[str]:
+    """``forward("agent.x", "name")`` evaluated by *node* itself (a class-body forwarder): the
+    method it builds imports ``agent.x`` on every call, so the module is loaded by any process
+    that calls the method; the graph treats the declaration as the import."""
+    for _, value in ast.iter_fields(node):
+        for item in value if isinstance(value, list) else [value]:
+            if not isinstance(item, ast.expr):
+                continue
+            for call in ast.walk(item):
+                if (isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+                        and call.func.id in factories and call.args
+                        and isinstance(call.args[0], ast.Constant) and isinstance(call.args[0].value, str)):
+                    yield from _prefixes(call.args[0].value)
 
 
 def _imported(path: str, text: str) -> Iterator[str]:
@@ -113,7 +164,10 @@ def _imported(path: str, text: str) -> Iterator[str]:
             tree = ast.parse(text)
     except SyntaxError:
         return  # the measurer reports it; an unparseable module has no edges to follow
+    factories = _forwarders(tree)
     for node in _import_time(tree.body):
+        if factories:
+            yield from _forwarded(node, factories)
         if isinstance(node, ast.Import):
             for alias in node.names:
                 yield from _prefixes(alias.name)

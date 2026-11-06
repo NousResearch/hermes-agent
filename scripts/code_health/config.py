@@ -65,9 +65,15 @@ class Rule:
 # loop, the scope modules and the four registries ``registry_freeze`` freezes. The hosted boot,
 # when it lands, is added here (and any root it makes redundant dropped) in the same PR. A test
 # fails when a root no longer names a module, so a rename cannot silently empty the graph.
+# Modules a root loads lazily on the hosted path are roots too: the built-in platform adapters
+# ``gateway.run`` loads through ``importlib`` and the agent constructor ``AIAgent.__init__`` imports.
 HOSTED_ENTRY: tuple[str, ...] = (
     "gateway.run",
+    "gateway.platforms.api_server",
+    "gateway.platforms.webhook",
+    "gateway.platforms.msgraph_webhook",
     "run_agent",
+    "agent.agent_init",
     "model_tools",
     "hermes_scope",
     "hermes_scope_cache",

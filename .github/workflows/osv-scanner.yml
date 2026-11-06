@@ -12,7 +12,7 @@ name: OSV-Scanner
 # (full SHA / exact version) is preserved; only the notification signal
 # is added.
 #
-# Complements the supply-chain-audit.yml workflow (which scans for malicious
+# Complements the supply-chain steps of repo-guards.yml (which scan for malicious
 # code patterns in PR diffs) by covering the orthogonal "currently-pinned
 # dep became known-vulnerable" case.
 #

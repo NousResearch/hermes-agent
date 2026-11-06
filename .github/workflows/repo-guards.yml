@@ -1,0 +1,817 @@
+name: Repository guards
+
+# Every cheap repository check that ci.yaml starts right after `detect`, as ONE job on one runner.
+#
+# Each of these used to be its own job (most of them their own workflow file) on the same
+# blacksmith-4vcpu-ubuntu-2404 runner: a 2s checkout, 0-13s of work, and a full billed minute.
+# They share the trigger (after detect), the OS and the architecture, so they now share the
+# checkout. What told them apart is kept per step: the lane gate in each step's `if:`, the
+# step name, and the review-status-* artifact the live PR comment reads.
+#
+# Every check step runs with `!cancelled()`, so one failing guard never hides the others: the
+# log still names every red check, as the separate jobs did. Any failed step fails the job, and
+# `all-checks-pass` requires the job, so each check stays blocking (or advisory) as before.
+#
+# Steps that write files write under $RUNNER_TEMP, never the checkout: the icon check at the
+# end fails on any untracked file, and the profile-archive check walks the checkout.
+#
+# Ordering: the checks that need no toolchain run first, on the bare checkout. setup-pm comes
+# after them, because its dependency phase also verifies uv.lock against PyPI; a stale lock or a
+# registry blip there must not stop the guards that never needed Python dependencies.
+
+on:
+  workflow_call:
+    inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
+      event_name:
+        description: The event name from the calling orchestrator (pull_request, push, ...).
+        type: string
+        required: true
+      python:
+        description: detect's `python` lane (contributor attribution, prompt-surface diff).
+        type: boolean
+        default: false
+      catalog:
+        description: detect's `catalog` lane (contributor attribution).
+        type: boolean
+        default: false
+      scan:
+        description: detect's `scan` lane (supply-chain pattern scan, PRs only).
+        type: boolean
+        default: false
+      deps:
+        description: detect's `deps` lane (PyPI upper-bound check, PRs only).
+        type: boolean
+        default: false
+      npm_lock:
+        description: detect's `npm_lock` lane (package-lock.json semantic diff, PRs only).
+        type: boolean
+        default: false
+      uv_lock:
+        description: detect's `uv_lock` lane (uv.lock in sync with pyproject.toml).
+        type: boolean
+        default: false
+      docker_meta:
+        description: detect's `docker_meta` lane (hadolint + shellcheck of the container inputs).
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  guards:
+    name: Repository guards
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 15
+    steps:
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        with:
+          ref: ${{ inputs.commit }}
+          # Full history: merge bases (history, contributors, prompt surface, lockfile diff,
+          # supply chain) and the base branch tip (blob size compares against HEAD^1).
+          fetch-depth: 0
+
+      # ── Always: policy guards on the bare checkout ────────────────────────────────────────
+
+      # PR infographics are rendered to an image-provider URL and embedded in the PR
+      # *description*; the binary never belongs in git history. This leaked twice (#48261,
+      # #54564) and `.gitignore` cannot stop `git add -f` or a differently-spelled directory
+      # (#70552), so this check, not an ignore rule, enforces the policy.
+      - id: infographic-check
+        name: Reject committed PR-infographic images
+        if: ${{ !cancelled() }}
+        run: |
+          # Match on the IMAGE, not on a directory name.  Keying this to
+          # `infographic/` is what let `infograficos/` through in #70552 —
+          # any localized or typo'd directory would sidestep it again.
+          # Instead: find tracked raster images whose path contains an
+          # infographic-ish segment, in any spelling, at any depth.
+          #
+          # `docs/assets` and `website/` legitimately hold product imagery
+          # and are excluded; those are referenced from shipped docs pages.
+          OFFENDERS=$(git ls-files -z \
+            | tr '\0' '\n' \
+            | grep -iE '(^|/)(infograph|infograf)[^/]*/' \
+            | grep -iE '\.(png|jpe?g|webp|gif)$' \
+            || true)
+
+          if [ -n "$OFFENDERS" ]; then
+            COUNT=$(printf '%s\n' "$OFFENDERS" | wc -l | tr -d ' ')
+            STATUS='[{"source":"committed infographics","results":[{"kind":"action_required","title":"PR infographic committed to the repo","summary":"Infographic images belong in the PR description, never in git.","detail":"","how_to_fix":"Untrack the image and reference the provider URL from the PR body instead:\n```\ngit rm --cached <path-to-image>\n```\nThen put it in the PR description:\n```\n## Infographic\n\n![slug](https://<provider-url>)\n```\n"}]}]'
+            echo "review_status=${STATUS}" >> "$GITHUB_OUTPUT"
+            echo ""
+            echo "::error::${COUNT} PR-infographic image(s) are tracked in git."
+            echo ""
+            printf '%s\n' "$OFFENDERS" | sed 's/^/  /'
+            echo ""
+            echo "PR infographics are rendered to an image-provider URL and"
+            echo "embedded in the PR DESCRIPTION.  The PR body is the archive —"
+            echo "the binary never enters git history."
+            echo ""
+            echo "This rule has been re-established twice already (#48261,"
+            echo "#54564) and leaked both times, because .gitignore cannot stop"
+            echo "'git add -f' or a differently-spelled directory (#70552)."
+            echo ""
+            echo "To fix:"
+            echo "  git rm --cached <path>   # keeps your local copy"
+            echo "  # then embed the provider URL in the PR description"
+            exit 1
+          fi
+          echo "::notice::No committed PR-infographic images."
+          echo "review_status=[]" >> "$GITHUB_OUTPUT"
+
+      # The incident class in #92457: ignore files reduce accidental staging; this is the
+      # enforcement boundary that still catches `git add -f` and files generated during a build.
+      # Before setup-pm, so it judges the checkout as cloned.
+      - name: Reject profile exports in the checkout
+        if: ${{ !cancelled() }}
+        run: python3 scripts/ci/check_profile_archive_boundary.py
+
+      # Two tracked paths that differ only by case live fine on Linux and break every clone on a
+      # case-insensitive host (Windows, default macOS). Git only warns, client-side, at checkout
+      # time; CI on Linux against the index is the only enforcement point.
+      - name: Reject case-colliding filenames
+        if: ${{ !cancelled() }}
+        run: python3 scripts/check-case-collisions.py
+
+      # Any binary over 500 KiB added or modified, or any new file over 500 KiB: every blob a
+      # merge adds stays in every clone forever. Exact-path exceptions live in
+      # .github/blob-size-allowlist.txt (CODEOWNERS-reviewed). Local: `python scripts/check --only blob-size`.
+      - name: Judge files added or modified against the base branch tip
+        if: ${{ !cancelled() }}
+        run: python3 scripts/ci/check_blob_size.py --base HEAD^1
+
+      # tools/lazy_deps.py is an old-updater stub that only raises or stops for relaunch
+      # (pm.extras is the only lazy-install surface), so a production import never gets its
+      # dependencies. AST-based, fails on inventory errors; contract tests in
+      # tests/pm/test_no_lazy_deps.py.
+      - name: Check tools.lazy_deps imports in tracked production code
+        if: ${{ !cancelled() }}
+        run: python3 scripts/ci/check_lazy_deps_imports.py
+
+      # ── Pull requests: unrelated histories ────────────────────────────────────────────────
+
+      # PR #25045 was merged from a branch disconnected from main's history; GitHub's merge UI
+      # accepted it and ~1500 files' `git blame` collapsed onto its parent-less root commit.
+      - id: merge-base-check
+        name: Reject PRs with no common ancestor on main
+        if: ${{ !cancelled() && inputs.event_name == 'pull_request' }}
+        run: |
+          STATUS_DIR="$RUNNER_TEMP/review-status/history-check"
+          mkdir -p "$STATUS_DIR"
+          # `git merge-base` exits non-zero AND prints nothing when the two
+          # commits share no ancestor.  We check both conditions explicitly
+          # so the failure message is clear regardless of which signal fires
+          # first.
+          if ! BASE=$(git merge-base origin/main HEAD 2>/dev/null) || [ -z "$BASE" ]; then
+            STATUS='[{"source":"unrelated histories","results":[{"kind":"action_required","title":"Unrelated histories","summary":"This PR has no common ancestor with main.","detail":"","how_to_fix":"Rebase your changes onto current main:\n```\ngit fetch origin main\ngit checkout -b fix-branch origin/main\n# re-apply your changes (cherry-pick, copy files, etc.)\ngit push -f origin fix-branch\n```\n"}]}]'
+            echo "review_status=${STATUS}" >> "$GITHUB_OUTPUT"
+            echo "review_status=${STATUS}" > "$STATUS_DIR/review-status.json"
+            echo ""
+            echo "::error::This PR has no common ancestor with main."
+            echo ""
+            echo "Your branch's history is disconnected from main.  Common causes:"
+            echo "  - the branch was created with 'git checkout --orphan'"
+            echo "  - '.git/' was re-initialized at some point during the work"
+            echo "  - the branch was force-pushed from an unrelated repository"
+            echo ""
+            echo "Merging an unrelated-history PR grafts a parent-less root commit"
+            echo "into main and collapses git blame for every file in that snapshot."
+            echo "Reference: PR #25045 caused this and re-rooted blame on ~1500"
+            echo "files to a single orphan commit."
+            echo ""
+            echo "To fix, rebase your changes onto current main:"
+            echo "  git fetch origin main"
+            echo "  git checkout -b fix-branch origin/main"
+            echo "  # re-apply your changes (cherry-pick, copy files, etc.)"
+            echo "  git push -f origin fix-branch"
+            exit 1
+          fi
+          echo "::notice::Common ancestor with main: $BASE"
+          echo "review_status=[]" >> "$GITHUB_OUTPUT"
+          echo "review_status=[]" > "$STATUS_DIR/review-status.json"
+
+      - name: Upload review status artifact (history check)
+        if: always() && steps.merge-base-check.outcome != 'skipped'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: review-status-history-check
+          path: ${{ runner.temp }}/review-status/history-check/review-status.json
+          retention-days: 1
+          overwrite: true
+          if-no-files-found: ignore
+
+      # ── python or catalog lane: contributor attribution ───────────────────────────────────
+
+      - name: Check for unmapped contributor emails
+        id: check-emails
+        if: ${{ !cancelled() && (inputs.python || inputs.catalog) }}
+        run: |
+          STATUS_DIR="$RUNNER_TEMP/review-status/contributor-check"
+          mkdir -p "$STATUS_DIR"
+
+          # Get the merge base between this PR and main
+          MERGE_BASE=$(git merge-base origin/main HEAD)
+
+          # Find any new author emails in this PR's commits
+          NEW_EMAILS=$(git log ${MERGE_BASE}..HEAD --format='%ae' --no-merges | sort -u)
+
+          if [ -z "$NEW_EMAILS" ]; then
+            echo "No new commits to check."
+            echo "review_status=[]" >> "$GITHUB_OUTPUT"
+            echo "review_status=[]" > "$STATUS_DIR/review-status.json"
+            exit 0
+          fi
+
+          # An email is mapped if it has a file in contributors/emails/
+          # (one file per email — conflict-free) or an entry in the frozen
+          # legacy AUTHOR_MAP in scripts/releases/authors_legacy.py.
+          MISSING=""
+          while IFS= read -r email; do
+            # Skip teknium and bot emails
+            case "$email" in
+              *teknium*|*noreply@github.com*|*dependabot*|*github-actions*|*anthropic.com*|*cursor.com*)
+                continue ;;
+            esac
+
+            if echo "$email" | grep -qP '\+.*@users\.noreply\.github\.com'; then
+              continue  # GitHub id+login noreply emails auto-resolve
+            fi
+
+            if [ -f "contributors/emails/${email}" ]; then
+              continue  # mapped via the contributors directory
+            fi
+
+            if ! grep -qF "\"${email}\"" scripts/releases/authors_legacy.py 2>/dev/null; then
+              AUTHOR=$(git log --author="$email" --format='%an' -1)
+              MISSING="${MISSING}\n  ${email} (${AUTHOR})"
+            fi
+          done <<< "$NEW_EMAILS"
+
+          if [ -n "$MISSING" ]; then
+            echo ""
+            echo "⚠️  New contributor email(s) without a mapping:"
+            echo -e "$MISSING"
+            echo ""
+            echo "Add a mapping file (do NOT edit AUTHOR_MAP in scripts/releases/authors_legacy.py):"
+            echo "  python3 scripts/audit_pr_attribution.py --fix   # auto-resolve + create files"
+            echo "or manually:"
+            echo -e "$MISSING" | while read -r line; do
+              email=$(echo "$line" | sed 's/^ *//' | cut -d' ' -f1)
+              [ -z "$email" ] && continue
+              echo "    python3 scripts/add_contributor.py ${email} <github-username>"
+            done
+            echo ""
+            echo "To find the GitHub username for an email:"
+            echo "  gh api 'search/users?q=EMAIL+in:email' --jq '.items[0].login'"
+
+            # Emit review_status for unmapped emails
+            DETAIL=$(echo -e "$MISSING" | sed '/^$/d; s/^  //')
+            HOW_TO_FIX=$'Run from the PR branch:\n```\npython3 scripts/audit_pr_attribution.py --fix\ngit add contributors && git commit -m "chore: map contributor emails" && git push\n```\nOr map one email manually (do NOT edit AUTHOR_MAP in scripts/releases/authors_legacy.py):\n```\npython3 scripts/add_contributor.py <email> <github-username>\n```\nTo find the GitHub username for an email:\n```\ngh api \'search/users?q=EMAIL+in:email\' --jq \'.items[0].login\'\n```\n'
+            REVIEW_STATUS=$(jq -nc \
+              --arg detail "$DETAIL" \
+              --arg how_to_fix "$HOW_TO_FIX" \
+              '[{"source":"contributor attribution","results":[{"kind":"action_required","title":"Unmapped contributor email(s)","summary":"New contributor email(s) are not in AUTHOR_MAP.","detail":$detail,"how_to_fix":$how_to_fix}]}]')
+            echo "review_status=$REVIEW_STATUS" >> "$GITHUB_OUTPUT"
+            echo "review_status=$REVIEW_STATUS" > "$STATUS_DIR/review-status.json"
+
+            exit 1
+          else
+            echo "✅ All contributor emails are mapped."
+            echo "review_status=[]" >> "$GITHUB_OUTPUT"
+            echo "review_status=[]" > "$STATUS_DIR/review-status.json"
+          fi
+
+      - name: Upload review status artifact (contributor check)
+        if: always() && steps.check-emails.outcome != 'skipped'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: review-status-contributor-check
+          path: ${{ runner.temp }}/review-status/contributor-check/review-status.json
+          retention-days: 1
+          overwrite: true
+          if-no-files-found: ignore
+
+      # ── Pull requests, python lane: prompt-surface diff (advisory summary) ────────────────
+
+      # Summarises the committed tests/fixtures/prompt_surface/ snapshot's base->head diff into the
+      # unified CI review comment. Never blocking on content: tests/ci/test_prompt_surface.py is the
+      # staleness gate and the prompt-surface-review ruleset is the review requirement. Reads only
+      # the two committed snapshots (no PR code runs).
+      - name: Summarise the prompt-surface snapshot diff
+        id: prompt-diff
+        if: ${{ !cancelled() && inputs.event_name == 'pull_request' && inputs.python }}
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          # Merge base, not the base tip: surface changes that landed on main after the branch
+          # point are not this PR's doing.
+          BASE_SHA=$(git merge-base "origin/${BASE_REF}" HEAD)
+          SNAP=tests/fixtures/prompt_surface
+          mkdir -p "$RUNNER_TEMP/base"
+          if git cat-file -e "${BASE_SHA}:${SNAP}" 2>/dev/null; then
+            git archive "$BASE_SHA" "$SNAP" | tar -x -C "$RUNNER_TEMP/base"
+          fi
+          python3 scripts/ci/prompt_surface.py diff "$RUNNER_TEMP/base/$SNAP" "$SNAP" \
+            --output "$RUNNER_TEMP/prompt-surface.md"
+          if [ -s "$RUNNER_TEMP/prompt-surface.md" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            { echo "## Prompt surface"; echo; cat "$RUNNER_TEMP/prompt-surface.md"; } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Emit review_status (prompt surface)
+        id: prompt-emit
+        if: ${{ !cancelled() && steps.prompt-diff.outcome == 'success' }}
+        env:
+          CHANGED: ${{ steps.prompt-diff.outputs.changed }}
+        run: |
+          set -euo pipefail
+          STATUS_DIR="$RUNNER_TEMP/review-status/prompt-surface"
+          mkdir -p "$STATUS_DIR"
+          python3 - <<'PY' > "$STATUS_DIR/review-status.json"
+          import json, os
+          from pathlib import Path
+          status = []
+          if os.environ["CHANGED"] == "true":
+              detail = Path(os.environ["RUNNER_TEMP"], "prompt-surface.md").read_text(encoding="utf-8")
+              status = [{"source": "prompt-surface", "results": [{
+                  "kind": "action_required",
+                  "title": "Prompt surface changed",
+                  "summary": "This PR changes the system prompt or tool schemas every session sends.",
+                  "detail": detail,
+                  "how_to_fix": "Read the rendered change below (full text under tests/fixtures/prompt_surface/ "
+                                "in the Files tab). Merging needs a hermes-agent-core approval.",
+              }]}]
+          print("review_status=" + json.dumps(status))
+          PY
+          cat "$STATUS_DIR/review-status.json" >> "$GITHUB_OUTPUT"
+
+      - name: Upload review status artifact (prompt surface)
+        if: always() && steps.prompt-emit.outcome != 'skipped'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: review-status-prompt-surface
+          path: ${{ runner.temp }}/review-status/prompt-surface/review-status.json
+          retention-days: 1
+          overwrite: true
+          if-no-files-found: ignore
+
+      # ── Pull requests, npm_lock lane: package-lock.json semantic diff (advisory) ──────────
+
+      # The raw textual diff of a lockfile is unreadable (npm reorders entries and rewrites
+      # integrity hashes), so scripts/ci/lockfile_diff.py set-diffs the {install path: version}
+      # maps at the merge base and at HEAD. Review signal, not enforcement.
+      - name: Generate semantic lockfile diff
+        id: lockfile-diff
+        if: ${{ !cancelled() && inputs.event_name == 'pull_request' && inputs.npm_lock }}
+        run: |
+          set -euo pipefail
+          # Three-dot semantics by hand: diff from the merge base with the
+          # target branch to the PR head, so changes that landed on main
+          # after the branch point don't show up as this PR's doing.
+          BASE_SHA=$(git merge-base "origin/${{ github.base_ref }}" HEAD)
+          echo "Merge base: ${BASE_SHA}"
+          python3 scripts/ci/lockfile_diff.py \
+            --base "$BASE_SHA" \
+            --head HEAD \
+            --output "$RUNNER_TEMP/lockfile-diff.md"
+          if [ -s "$RUNNER_TEMP/lockfile-diff.md" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "## package-lock.json semantic diff"
+              echo ""
+              cat "$RUNNER_TEMP/lockfile-diff.md"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            : > "$RUNNER_TEMP/lockfile-diff.md"
+          fi
+
+      - name: Emit review_status (lockfile diff)
+        id: lockfile-emit
+        if: ${{ !cancelled() && steps.lockfile-diff.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          STATUS_DIR="$RUNNER_TEMP/review-status/lockfile-diff"
+          mkdir -p "$STATUS_DIR"
+          CHANGED="${{ steps.lockfile-diff.outputs.changed }}"
+          STATUS="[]"
+
+          if [ "$CHANGED" = "true" ]; then
+            CONTENT=$(cat "$RUNNER_TEMP/lockfile-diff.md" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))")
+            STATUS="[{\"source\":\"lockfile-diff\",\"results\":[{\"kind\":\"action_required\",\"title\":\"package-lock.json\",\"summary\":\"Locked npm dependency versions changed.\",\"detail\":${CONTENT},\"how_to_fix\":\"Verify the version changes are expected. package-lock.json changes need a hermes-agent-core review.\"}]}]"
+          else
+            STATUS="[]"
+          fi
+
+          echo "review_status=${STATUS}" >> "$GITHUB_OUTPUT"
+          echo "review_status=${STATUS}" > "$STATUS_DIR/review-status.json"
+
+      - name: Upload review status artifact (lockfile diff)
+        if: always() && steps.lockfile-emit.outcome != 'skipped'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: review-status-lockfile-diff
+          path: ${{ runner.temp }}/review-status/lockfile-diff/review-status.json
+          retention-days: 1
+          overwrite: true
+          if-no-files-found: ignore
+
+      - name: Upload lockfile diff artifact
+        if: ${{ !cancelled() && steps.lockfile-emit.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: lockfile-diff
+          path: ${{ runner.temp }}/lockfile-diff.md
+          retention-days: 1
+          overwrite: true
+
+      # ── Pull requests, scan / deps lanes: supply-chain audit ──────────────────────────────
+
+      # Narrow, high-signal scanner: only critical indicators of supply chain attacks (the
+      # litellm-style payloads). Low-signal heuristics were removed on purpose because they fired
+      # on nearly every PR and trained reviewers to ignore the scanner; keep it ruthlessly narrow
+      # and put WARNING-tier patterns in a separate advisory workflow instead. Files that run at
+      # install/startup (.pth, setup.py, ...) and the MCP catalog are not scanned here:
+      # .github/CODEOWNERS requires a maintainer review for them.
+      - name: Scan diff for critical supply-chain patterns
+        id: scan
+        if: ${{ !cancelled() && inputs.event_name == 'pull_request' && inputs.scan }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+
+          # Added lines only, excluding lockfiles.
+          # Three-point diff (base...head) diffs from the merge base to HEAD,
+          # so only changes introduced by this PR are included — not changes
+          # that landed on main after the PR branched off.
+          DIFF=$(git diff "$BASE"..."$HEAD" -- . ':!uv.lock' ':!*.lock' ':!package-lock.json' ':!yarn.lock' || true)
+
+          FINDINGS=""
+
+          # --- base64 decode + exec/eval on the same line (the litellm attack pattern) ---
+          B64_EXEC_HITS=$(echo "$DIFF" | grep -n '^+' | grep -iE 'base64\.(b64decode|decodebytes|urlsafe_b64decode)' | grep -iE 'exec\(|eval\(' | head -10 || true)
+          if [ -n "$B64_EXEC_HITS" ]; then
+            FINDINGS="${FINDINGS}
+          ### 🚨 CRITICAL: base64 decode + exec/eval combo
+          Base64-decoded strings passed directly to exec/eval — the signature of hidden credential-stealing payloads.
+
+          **Matches:**
+          \`\`\`
+          ${B64_EXEC_HITS}
+          \`\`\`
+          "
+          fi
+
+          # --- subprocess with encoded/obfuscated command argument ---
+          PROC_HITS=$(echo "$DIFF" | grep -n '^+' | grep -E 'subprocess\.(Popen|call|run)\s*\(' | grep -iE 'base64|\\x[0-9a-f]{2}|chr\(' | head -10 || true)
+          if [ -n "$PROC_HITS" ]; then
+            FINDINGS="${FINDINGS}
+          ### 🚨 CRITICAL: subprocess with encoded/obfuscated command
+          Subprocess calls whose command strings are base64- or hex-encoded are a strong indicator of payload execution.
+
+          **Matches:**
+          \`\`\`
+          ${PROC_HITS}
+          \`\`\`
+          "
+          fi
+
+          if [ -n "$FINDINGS" ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "$FINDINGS" > "$RUNNER_TEMP/supply-chain-findings.md"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Emit review_status (supply-chain scan)
+        id: emit-scan
+        if: always() && steps.scan.outcome != 'skipped'
+        env:
+          FOUND: ${{ steps.scan.outputs.found }}
+        run: |
+          python3 - <<'PYEOF'
+          import json, os
+
+          found = os.environ.get("FOUND", "") == "true"
+
+          if found:
+              with open(os.path.join(os.environ["RUNNER_TEMP"], "supply-chain-findings.md"), encoding="utf-8") as f:
+                  detail = f.read()
+              status = [{
+                  "source": "supply chain",
+                  "results": [{
+                      "kind": "action_required",
+                      "title": "Critical supply chain risk",
+                      "summary": "Critical supply chain risk patterns detected in this PR.",
+                      "detail": detail,
+                      "how_to_fix": "Review the flagged code carefully. If it is a false positive, narrow the pattern in .github/workflows/repo-guards.yml."
+                  }]
+              }]
+          else:
+              status = []
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"review_status={json.dumps(status)}\n")
+          PYEOF
+
+      - name: Fail on critical supply-chain findings
+        if: ${{ !cancelled() && steps.scan.outputs.found == 'true' }}
+        run: |
+          echo "::error::CRITICAL supply chain risk patterns detected in this PR. See the review comment for details."
+          exit 1
+
+      - name: Check for unbounded PyPI deps
+        id: bounds
+        if: ${{ !cancelled() && inputs.event_name == 'pull_request' && inputs.deps }}
+        run: |
+          set -euo pipefail
+
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+
+          # Only check added lines in pyproject.toml
+          ADDED=$(git diff "$BASE"..."$HEAD" -- pyproject.toml | grep '^+' | grep -v '^+++' || true)
+
+          if [ -z "$ADDED" ]; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Match PyPI dep specs that have >= and no < ceiling.
+          # Pattern: "package>=version" without a following ",<" bound.
+          # Excludes git+ URLs (which use commit SHAs) and comments.
+          UNBOUNDED=$(echo "$ADDED" | grep -oE '"[a-zA-Z0-9_-]+(\[[^\]]*\])?>=[ 0-9.]+"' | grep -v ',<' || true)
+
+          if [ -n "$UNBOUNDED" ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "$UNBOUNDED" > "$RUNNER_TEMP/supply-chain-unbounded.txt"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Emit review_status (dependency bounds)
+        id: emit-deps
+        if: always() && steps.bounds.outcome != 'skipped'
+        env:
+          FOUND: ${{ steps.bounds.outputs.found }}
+        run: |
+          python3 - <<'PYEOF'
+          import json, os
+
+          found = os.environ.get("FOUND", "") == "true"
+
+          if found:
+              with open(os.path.join(os.environ["RUNNER_TEMP"], "supply-chain-unbounded.txt"), encoding="utf-8") as f:
+                  detail = f.read()
+              status = [{
+                  "source": "supply chain",
+                  "results": [{
+                      "kind": "action_required",
+                      "title": "Unbounded PyPI dependencies",
+                      "summary": "This PR adds PyPI dependencies without upper bounds.",
+                      "detail": detail,
+                      "how_to_fix": 'Add a `<next_major` upper bound, e.g. `"package>=1.2.0,<2"`. See CONTRIBUTING.md dependency pinning policy.'
+                  }]
+              }]
+          else:
+              status = []
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"review_status={json.dumps(status)}\n")
+          PYEOF
+
+      - name: Fail on unbounded deps (supply-chain policy)
+        if: ${{ !cancelled() && steps.bounds.outputs.found == 'true' }}
+        run: |
+          echo "::error::PyPI dependencies without upper bounds detected. Add <next_major ceiling per CONTRIBUTING.md policy."
+          exit 1
+
+      - name: Merge supply-chain review statuses
+        id: supply-chain-merge
+        if: always() && (steps.scan.outcome != 'skipped' || steps.bounds.outcome != 'skipped')
+        env:
+          SCAN_STATUS: ${{ steps.emit-scan.outputs.review_status }}
+          DEP_STATUS: ${{ steps.emit-deps.outputs.review_status }}
+        run: |
+          python3 - <<'PYEOF'
+          import json, os
+
+          merged = []
+          for key in ("SCAN_STATUS", "DEP_STATUS"):
+              raw = os.environ.get(key, "")
+              if not raw:
+                  continue
+              try:
+                  data = json.loads(raw)
+              except (json.JSONDecodeError, TypeError):
+                  continue
+              if isinstance(data, list):
+                  merged.extend(data)
+
+          # review-status.json for the live comment poller artifact.
+          status_dir = os.path.join(os.environ["RUNNER_TEMP"], "review-status", "supply-chain")
+          os.makedirs(status_dir, exist_ok=True)
+          with open(os.path.join(status_dir, "review-status.json"), "w", encoding="utf-8") as f:
+              f.write(f"review_status={json.dumps(merged)}\n")
+          PYEOF
+
+      - name: Upload review status artifact (supply chain)
+        if: always() && steps.supply-chain-merge.outcome != 'skipped'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: review-status-supply-chain
+          path: ${{ runner.temp }}/review-status/supply-chain/review-status.json
+          retention-days: 1
+          overwrite: true
+          if-no-files-found: ignore
+
+      # ── docker_meta lane: Dockerfile and docker/ shell lint ───────────────────────────────
+
+      # Catches what the behavioural docker smoke test can't: unquoted expansions, silently
+      # failing RUN commands. Rules and ignores live in .hadolint.yaml at the repo root.
+      # `docker run`, not hadolint/hadolint-action: the runner builds a Dockerfile action's image
+      # before the first step of every run, whatever the step's `if:`. Same hadolint, by digest.
+      - name: Lint Dockerfiles (hadolint)
+        if: ${{ !cancelled() && inputs.docker_meta }}
+        env:
+          HADOLINT_IMAGE: ghcr.io/hadolint/hadolint:v2.12.0-debian@sha256:27173fe25e062448490a32de410c08491c626a0bef360aa2ce5d5bdd9384b50d
+        run: |
+          docker run --rm --network none -v "$PWD:/repo:ro" -w /repo "$HADOLINT_IMAGE" \
+            hadolint --config .hadolint.yaml --failure-threshold warning \
+            Dockerfile docker/sandbox-desktop.Dockerfile
+
+      - name: Lint shell scripts (shellcheck)
+        if: ${{ !cancelled() && inputs.docker_meta }}
+        uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # v2.0.0
+        env:
+          # Severity = error: SC1091 (can't follow sourced script) is info-
+          # level and would otherwise fail when the venv activate script
+          # doesn't exist at lint time.
+          SHELLCHECK_OPTS: --severity=error
+        with:
+          scandir: ./docker
+
+      # ── Always: icon assets freshness (needs a Hermes runtime interpreter) ────────────────
+
+      # The generator runs on a Hermes runtime interpreter; [] exports one as HERMES_PYTHON.
+      # Its dependency phase also runs the frozen-lock check, so a stale uv.lock fails this step;
+      # the uv.lock step below still runs and says why.
+      - uses: ./.github/actions/setup-pm
+        id: setup-pm
+        if: ${{ !cancelled() }}
+        with:
+          toolchain: all
+          extras: '[]'
+          cache-python: true
+          prune-python-cache: true
+
+      # ── uv_lock lane: uv.lock in sync with pyproject.toml ─────────────────────────────────
+
+      # Blocking: the Docker build's `uv sync --frozen` fails on a stale lockfile, so catch it
+      # here rather than in docker.yml on main. On PRs this runs against the MERGED state
+      # (refs/pull/<N>/merge): main's pyproject.toml plus the PR's changes. A branch that passes
+      # `python -m pm.build_env --source . --check-lock` locally but fails here is usually behind
+      # main; fix with `git fetch origin main && git rebase origin/main && hermes pm lock`.
+      # Gated on uv_lock: only pyproject.toml / uv.lock can desync the lock, and the check
+      # re-resolves against PyPI. Needs only the toolchain, so it runs even when setup-pm's
+      # dependency phase failed on that same stale lock.
+      - name: Verify uv.lock is up-to-date
+        id: verify-lock
+        if: ${{ !cancelled() && inputs.uv_lock }}
+        run: |
+          STATUS_DIR="$RUNNER_TEMP/review-status/uv-lockfile"
+          mkdir -p "$STATUS_DIR"
+          LOG="$RUNNER_TEMP/lock-check.log"
+          # python -m pm.build_env --source . --check-lock re-resolves against PyPI (network). Retry so a
+          # registry blip doesn't read as "lockfile stale". A genuinely stale
+          # lockfile fails all attempts (deterministic), costing only seconds.
+          #
+          # Backoff rather than a flat 10s: three attempts inside ~20s all
+          # land in the same blip. 5/15/45s spans ~65s instead.
+          #
+          # Network failure and a real desync are also reported differently.
+          # uv says "Request failed after N retries" when it can't reach the
+          # registry, versus "lockfile needs to be updated" when the lock is
+          # genuinely stale. Only the second is the contributor's to fix, so
+          # an unreachable registry says so instead of sending them to
+          # `hermes pm lock` with nothing to regenerate.
+          ok=false
+          net_fail=false
+          delays=(5 15 45)
+          for i in 1 2 3; do
+            if python -m pm.build_env --source . --check-lock >"$LOG" 2>&1; then
+              ok=true
+              net_fail=false
+              cat "$LOG"
+              break
+            fi
+            cat "$LOG"
+            if grep -qiE "Request failed after|Failed to fetch|error sending request|connection (reset|closed)|timed out" "$LOG"; then
+              net_fail=true
+            else
+              # Deterministic failure (a real desync) — retrying just prints
+              # the same error twice more.
+              net_fail=false
+              break
+            fi
+            [ "$i" = 3 ] && break
+            echo "::warning::python -m pm.build_env --source . --check-lock could not reach the registry (attempt $i); retrying in ${delays[$((i-1))]}s"
+            sleep "${delays[$((i-1))]}"
+          done
+          if [ "$ok" != true ] && [ "$net_fail" = true ]; then
+            echo "::error title=uv.lock check could not reach PyPI::Registry unreachable after 3 attempts — infrastructure failure, not a stale lockfile. Re-run the job."
+            review_status='[{"source":"uv.lock check","results":[{"kind":"action_required","title":"uv.lock check could not reach PyPI","summary":"`python -m pm.build_env --source . --check-lock` could not reach the package registry after 3 attempts. This is an infrastructure failure, not a stale lockfile.","how_to_fix":"Re-run the failed job. No change to `uv.lock` is needed."}]}]'
+            echo "review_status=${review_status}" >> "$GITHUB_OUTPUT"
+            echo "review_status=${review_status}" > "$STATUS_DIR/review-status.json"
+            exit 1
+          fi
+          if [ "$ok" != true ]; then
+            cat <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+          ## ❌ uv.lock is out of sync with pyproject.toml
+
+          **If this is a PR:** this check runs against the merged state
+          (your branch + current `main`), not just your branch.  If
+          `python -m pm.build_env --source . --check-lock` passes locally, your branch is likely behind
+          `main` — recent changes to `pyproject.toml` on `main` aren't
+          reflected in your branch's `uv.lock` yet.
+
+          To fix, sync with main and regenerate the lockfile:
+
+          ```bash
+          git fetch origin main
+          git rebase origin/main   # or `git merge origin/main`
+          hermes pm lock                  # regenerate against new pyproject.toml
+          git add uv.lock
+          git commit -m "chore: refresh uv.lock after syncing with main"
+          git push --force-with-lease  # drop --force-with-lease if you merged
+          ```
+
+          **If you only changed pyproject.toml:** run `hermes pm lock` locally
+          and commit the result.
+
+          This check is blocking because the Docker image build uses
+          `uv sync --frozen --extra all`, which rejects stale lockfiles
+          — catching it here avoids a ~15 min failed docker run
+          on `main` post-merge.
+          EOF
+            echo "::error title=uv.lock out of sync::Run \`hermes pm lock\` locally and commit the result. If on a PR, sync with main first."
+            review_status='[{"source":"uv.lock check","results":[{"kind":"action_required","title":"uv.lock out of sync","summary":"uv.lock is out of sync with pyproject.toml.","how_to_fix":"Run `hermes pm lock` locally and commit the result. If on a PR, sync with main first:\n```\ngit fetch origin main\ngit rebase origin/main\nhermes pm lock\ngit add uv.lock\ngit commit -m \"chore: refresh uv.lock\"\n```\n"}]}]'
+            echo "review_status=${review_status}" >> "$GITHUB_OUTPUT"
+            echo "review_status=${review_status}" > "$STATUS_DIR/review-status.json"
+            exit 1
+          fi
+          review_status='[]'
+          echo "review_status=${review_status}" >> "$GITHUB_OUTPUT"
+          echo "review_status=${review_status}" > "$STATUS_DIR/review-status.json"
+
+      - name: Upload review status artifact (uv.lock)
+        if: always() && steps.verify-lock.outcome != 'skipped'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: review-status-uv-lockfile
+          path: ${{ runner.temp }}/review-status/uv-lockfile/review-status.json
+          retention-days: 1
+          overwrite: true
+          if-no-files-found: ignore
+
+      # ── Always: icon assets freshness ─────────────────────────────────────────────────────
+
+      # The committed icon outputs must match what scripts/generate_icons.py renders from
+      # assets/nous-girl-*.svg + assets/backgrounds/*.svg. Regular builds and user installs consume
+      # the committed files and never render, so this is what keeps them honest. Fix a red run
+      # with `node scripts/generate-icons.mjs` on a Hermes runtime interpreter and commit.
+      #
+      # Byte-determinism note: resvg renders the same SVG to identical bytes on any host for
+      # pure-shape artwork. If the master ever contains <text>, font rendering can differ across
+      # OSes — pin fonts via resvg's font_files/font_dirs and commit a known font first.
+      - name: Regenerate every icon target, verify structure, diff against committed
+        if: ${{ !cancelled() && steps.setup-pm.outcome == 'success' }}
+        env:
+          HERMES_PAYLOAD_TAG: ''
+          HERMES_BUILD_COMMIT: ''
+        run: |
+          node scripts/generate-icons.mjs
+          node scripts/generate-icons.mjs --check
+          if ! git diff --exit-code --stat || [ -n "$(git status --porcelain --untracked-files=all)" ]; then
+            git status --porcelain --untracked-files=all
+            echo "::error::Committed icons are stale. Run 'node scripts/generate-icons.mjs' and commit the result."
+            exit 1
+          fi

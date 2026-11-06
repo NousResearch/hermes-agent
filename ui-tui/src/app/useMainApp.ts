@@ -1565,6 +1565,7 @@ export function useMainApp(gw: GatewayClient) {
           : null,
       queueEditIdx: composerState.queueEditIdx,
       queuedDisplay: composerState.queuedDisplay,
+      stash: composerState.stash,
       submit,
       updateInput,
       voiceRecordKey

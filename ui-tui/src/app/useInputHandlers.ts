@@ -7,6 +7,7 @@ import { DASHBOARD_TUI_MODE } from '../config/env.js'
 import { DOUBLE_ESC_MS, TYPING_IDLE_MS } from '../config/timing.js'
 import { applyCompletion } from '../domain/slash.js'
 import type { ConfigSetResponse, SharedControlRespondResponse, VoiceRecordResponse } from '../gatewayTypes.js'
+import type { PromptStashActions } from '../hooks/usePromptStash.js'
 import { t } from '../i18n/runtime.js'
 import { isAction, isCopyShortcut, isMac, isMacActionFallback, isVoiceToggleKey } from '../lib/platform.js'
 import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionWheel.js'
@@ -289,7 +290,117 @@ const CTRL_CHORDS: Record<string, (composer: InputHandlerContext['composer']) =>
   // of messages already sent.
   p: ({ actions, state }) =>
     void (actions.togglePaste(getInputSelection()?.cursor ?? state.input.length) || togglePasteSections()),
+  // Ctrl+S parks the draft so a side question can be sent without losing it — the classic CLI
+  // binding (`c-s` in `_tui_bind_editor_and_stash`). Reachable on purpose from an empty composer:
+  // that half of the gesture restores the newest draft or opens the browse panel. The table is
+  // consulted after the `isBlocked` early return, so a modal prompt still owns the composer and
+  // Ctrl+S can never stash a password.
+  s: ({ actions }) => void actions.stash.toggle(),
   t: () => patchOverlayState({ agents: true, agentsInitialHistoryIndex: 0 })
+}
+
+export type PagerKey = {
+  ctrl: boolean
+  downArrow: boolean
+  escape: boolean
+  pageDown: boolean
+  pageUp: boolean
+  return: boolean
+  upArrow: boolean
+}
+
+/**
+ * Pager overlay keys: Esc/q close, j/k and ↑/↓ step a line, b/PgUp and space/PgDn page, g/G jump
+ * to an end. Enter pages on, and closes once the last page is showing.
+ *
+ * Extracted verbatim from the global input handler — the pager is a closed key set, and keeping
+ * it out of that handler is what stops its branch count growing every time a panel gains keys.
+ */
+export function runPagerKey(key: PagerKey, ch: string, pagerPageSize: number): void {
+  if (key.escape || isCtrl(key, ch, 'c') || ch === 'q') {
+    return patchOverlayState({ pager: null })
+  }
+
+  const move = (delta: number | 'top' | 'bottom') =>
+    patchOverlayState(prev => {
+      if (!prev.pager) {
+        return prev
+      }
+
+      const { lines, offset } = prev.pager
+      const max = Math.max(0, lines.length - pagerPageSize)
+      const step = delta === 'top' ? -lines.length : delta === 'bottom' ? lines.length : delta
+      const next = Math.max(0, Math.min(offset + step, max))
+
+      return next === offset ? prev : { ...prev, pager: { ...prev.pager, offset: next } }
+    })
+
+  if (key.upArrow || ch === 'k') {
+    return move(-1)
+  }
+
+  if (key.downArrow || ch === 'j') {
+    return move(1)
+  }
+
+  if (key.pageUp || ch === 'b') {
+    return move(-pagerPageSize)
+  }
+
+  if (ch === 'g') {
+    return move('top')
+  }
+
+  if (ch === 'G') {
+    return move('bottom')
+  }
+
+  if (key.return || ch === ' ' || key.pageDown) {
+    patchOverlayState(prev => {
+      if (!prev.pager) {
+        return prev
+      }
+
+      const { lines, offset } = prev.pager
+      const max = Math.max(0, lines.length - pagerPageSize)
+
+      // Auto-close only when already at the last page — otherwise clamp
+      // to `max` so the offset matches what the line/page-back handlers
+      // can reach (prevents a snap-back jump on the next ↑/↓/PgUp).
+      return offset >= max
+        ? { ...prev, pager: null }
+        : { ...prev, pager: { ...prev.pager, offset: Math.min(offset + pagerPageSize, max) } }
+    })
+  }
+}
+
+/**
+ * Ctrl+S stash browse panel: apply one of the five keys it owns — ↑/↓ move, Enter restores,
+ * D discards, Esc closes — as the classic CLI binds them eagerly (`_tui_bind_editor_and_stash`).
+ * Returns false for any other key, which then reaches the composer. The panel only opens on an
+ * empty composer, so 'd' is unambiguous; the arrows win over it. `onEscape` drops the double-Esc
+ * clock so closing the panel can never read as the first half of a rewind.
+ */
+export function runStashPanelKey(
+  key: { downArrow: boolean; escape: boolean; return: boolean; upArrow: boolean },
+  ch: string,
+  stash: Pick<PromptStashActions, 'closePanel' | 'deleteAtCursor' | 'moveCursor' | 'restoreAtCursor'>,
+  onEscape: () => void
+): boolean {
+  if (key.upArrow || key.downArrow) {
+    stash.moveCursor(key.upArrow ? -1 : 1)
+  } else if (key.return) {
+    stash.restoreAtCursor()
+  } else if (ch === 'd' || ch === 'D') {
+    stash.deleteAtCursor()
+  } else if (key.escape) {
+    onEscape()
+    stash.closePanel()
+  } else {
+    return false
+  }
+
+  return true
 }
 
 export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
@@ -358,7 +469,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       // legacy server→client request resolves its response frame locally.
       if (overlay.approval.sharedControl) {
         return gateway
-          .rpc<SharedControlRespondResponse>('approval.respond', { choice: 'deny', ...sharedControlParams(overlay.approval) })
+          .rpc<SharedControlRespondResponse>('approval.respond', {
+            choice: 'deny',
+            ...sharedControlParams(overlay.approval)
+          })
           .then(r => r && fresh() && settle())
       }
 
@@ -536,6 +650,17 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   useInput((ch, key, event) => {
     const live = getUiState()
 
+    // Ctrl+S stash browse panel owns ↑/↓/Enter/D/Esc while it is open — the classic CLI binds
+    // the same five keys eagerly (`_tui_bind_editor_and_stash`). Above the Esc block on purpose:
+    // an empty composer with the panel up must not read a double-Esc as a rewind request.
+    if (!isBlocked && cState.stash.panelOpen) {
+      const consumed = runStashPanelKey(key, ch, cActions.stash, () => (lastEscRef.current = 0))
+
+      if (consumed) {
+        return
+      }
+    }
+
     if (key.escape) {
       // Escape-configured voice bindings (ctrl/alt/super+escape PTT) must win
       // over the double-Esc interrupt, exactly as they win over the generic
@@ -591,63 +716,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       }
 
       if (overlay.pager) {
-        if (key.escape || isCtrl(key, ch, 'c') || ch === 'q') {
-          return patchOverlayState({ pager: null })
-        }
-
-        const move = (delta: number | 'top' | 'bottom') =>
-          patchOverlayState(prev => {
-            if (!prev.pager) {
-              return prev
-            }
-
-            const { lines, offset } = prev.pager
-            const max = Math.max(0, lines.length - pagerPageSize)
-            const step = delta === 'top' ? -lines.length : delta === 'bottom' ? lines.length : delta
-            const next = Math.max(0, Math.min(offset + step, max))
-
-            return next === offset ? prev : { ...prev, pager: { ...prev.pager, offset: next } }
-          })
-
-        if (key.upArrow || ch === 'k') {
-          return move(-1)
-        }
-
-        if (key.downArrow || ch === 'j') {
-          return move(1)
-        }
-
-        if (key.pageUp || ch === 'b') {
-          return move(-pagerPageSize)
-        }
-
-        if (ch === 'g') {
-          return move('top')
-        }
-
-        if (ch === 'G') {
-          return move('bottom')
-        }
-
-        if (key.return || ch === ' ' || key.pageDown) {
-          patchOverlayState(prev => {
-            if (!prev.pager) {
-              return prev
-            }
-
-            const { lines, offset } = prev.pager
-            const max = Math.max(0, lines.length - pagerPageSize)
-
-            // Auto-close only when already at the last page — otherwise clamp
-            // to `max` so the offset matches what the line/page-back handlers
-            // can reach (prevents a snap-back jump on the next ↑/↓/PgUp).
-            return offset >= max
-              ? { ...prev, pager: null }
-              : { ...prev, pager: { ...prev.pager, offset: Math.min(offset + pagerPageSize, max) } }
-          })
-        }
-
-        return
+        return runPagerKey(key, ch, pagerPageSize)
       }
 
       // Widget apps (SDK): the active app owns every key while open. This

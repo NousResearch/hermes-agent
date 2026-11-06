@@ -154,6 +154,7 @@ const layoutProps: AppLayoutProps = {
     pagerPageSize: 10,
     queueEditIdx: null,
     queuedDisplay: [],
+    stash: { hint: '', indicator: '', panelCursor: 0, panelOpen: false, rows: [] },
     submit: () => {},
     updateInput: () => {},
     voiceRecordKey: DEFAULT_VOICE_RECORD_KEY
@@ -448,5 +449,58 @@ describe('AppLayout status-rule visibility', () => {
     await flush()
 
     expect(oneSecondTimers(intervalSpy)).toBe(2)
+  })
+})
+
+describe('Ctrl+S stash chrome — the parked-draft badge and the browse panel', () => {
+  const withComposer = (patch: Partial<AppLayoutProps['composer']>) =>
+    mountTree(
+      <GatewayProvider value={gatewayStub}>
+        <AppLayout {...{ ...layoutProps, composer: { ...layoutProps.composer, ...patch } }} />
+      </GatewayProvider>,
+      { interactive: true }
+    )
+
+  const withStash = (patch: Partial<AppLayoutProps['composer']['stash']>) =>
+    withComposer({ stash: { ...layoutProps.composer.stash, ...patch } })
+
+  it('shows the classic CLI badge while a draft is parked', () => {
+    const parked = withStash({ indicator: '📌 2' })
+
+    expect(parked.output()).toContain('📌 2')
+  })
+
+  it('keeps the panel closed while a single draft is merely parked', () => {
+    // A parked draft advertises itself with the badge and the placeholder; the browse list
+    // only appears when the user opens it. Live proof caught the panel drawing itself here.
+    const parked = withStash({
+      hint: 'Ctrl+S to restore: parked draft',
+      indicator: '📌 1',
+      rows: [{ age: 'just now', preview: 'parked draft' }]
+    })
+
+    const out = parked.output()
+
+    expect(out).toContain('📌 1')
+    expect(out).not.toContain('📌 Stash (')
+  })
+
+  it('draws nothing extra when the stash is empty', () => {
+    expect(withComposer({}).output()).not.toContain('📌')
+  })
+
+  it('hands the composer zone to the browse panel, and keeps the badge out of its way', () => {
+    const browsing = withStash({
+      indicator: '📌 2 ▲',
+      panelOpen: true,
+      rows: [{ age: 'just now', preview: 'parked draft' }]
+    })
+
+    const out = browsing.output()
+
+    expect(out).toContain('📌 Stash (1 item)')
+    expect(out).toContain('► [1] just now')
+    expect(out).toContain('parked draft')
+    expect(out).not.toContain('📌 2 ▲')
   })
 })

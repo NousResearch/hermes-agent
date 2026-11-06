@@ -1,0 +1,41 @@
+{
+  "_comment": [
+    "Shared behaviour vectors for the Ctrl+S prompt stash.",
+    "Both implementations read this file: the classic CLI's (tests/hermes_cli/test_prompt_stash_vectors.py",
+    "against hermes_cli/prompt_stash.py) and the Ink composer's (ui-tui/src/__tests__/promptStash.test.ts",
+    "against ui-tui/src/domain/promptStash.ts). Change one side, and the other's suite fails."
+  ],
+  "build_preview": [
+    { "expected": "", "text": "" },
+    { "expected": "hello", "text": "hello" },
+    { "expected": "line one ⏎ line two", "text": "line one\nline two" },
+    { "expected": "a ⏎ ⏎ b", "text": "a\r\n\r\nb" },
+    { "expected": "tabbed", "text": "\ttabbed" },
+    { "expected": "", "text": "   " },
+    { "expected": "one two", "text": "  one   two  " },
+    { "expected": "abcdefghi…", "text": "abcdefghijk", "width": 10 },
+    { "expected": "abcdefghijk", "text": "abcdefghijk", "width": 1 },
+    { "expected": "😀😀…", "text": "😀😀😀😀😀", "width": 3 }
+  ],
+  "cap": {
+    "expected_len": 20,
+    "expected_newest": "draft 25",
+    "push": 25
+  },
+  "placeholder_hint": [
+    { "entries": [], "expected": "" },
+    { "entries": ["only draft"], "expected": "Ctrl+S to restore: only draft" },
+    { "entries": ["older", "newest"], "expected": "Ctrl+S to browse 2 stashed drafts" }
+  ],
+  "resolve": [
+    { "action": "close_panel", "buffer": "typed", "entries": ["a", "b", "c"], "panel_open": true, "tokens": 0 },
+    { "action": "stashed", "buffer": "hello", "entries": [], "panel_open": false, "tokens": 0 },
+    { "action": "stashed", "buffer": " hello ", "entries": [], "panel_open": false, "tokens": 0 },
+    { "action": "noop", "buffer": "   ", "entries": [], "panel_open": false, "tokens": 0 },
+    { "action": "noop", "buffer": "", "entries": [], "panel_open": false, "tokens": 0 },
+    { "action": "restored", "buffer": "", "entries": ["only"], "panel_open": false, "tokens": 0 },
+    { "action": "open_panel", "buffer": "", "entries": ["older", "newer"], "panel_open": false, "tokens": 0 },
+    { "action": "stashed", "buffer": "", "entries": [], "panel_open": false, "tokens": 1 },
+    { "action": "stashed", "buffer": "   ", "entries": [], "panel_open": false, "tokens": 2 }
+  ]
+}

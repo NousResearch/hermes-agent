@@ -13,6 +13,7 @@ import type {
   SubscriptionStateResponse,
   SubscriptionUpgradeResponse
 } from '../gatewayTypes.js'
+import type { PromptStashActions, PromptStashState } from '../hooks/usePromptStash.js'
 import type { QueueItem } from '../hooks/useQueue.js'
 import type { ParsedVoiceRecordKey } from '../lib/platform.js'
 import type { RpcResult } from '../lib/rpc.js'
@@ -443,6 +444,8 @@ export interface ComposerActions {
   collapsePaste: (value?: string) => string
   /** Ctrl+P: expand the paste chip at `cursor` / collapse the expanded one. False = nothing to toggle. */
   togglePaste: (cursor: number) => boolean
+  /** Ctrl+S stash: park / restore / browse, and the browse panel's keys. */
+  stash: PromptStashActions
 }
 
 export interface ComposerRefs {
@@ -465,6 +468,7 @@ export interface ComposerState {
   pasteExpanded: boolean
   queueEditIdx: null | number
   queuedDisplay: string[]
+  stash: PromptStashState
   tokens: ComposerToken[]
 }
 
@@ -658,6 +662,8 @@ export interface AppLayoutComposerProps {
   pasteHint: null | 'collapse' | 'expand'
   queueEditIdx: null | number
   queuedDisplay: string[]
+  /** Ctrl+S stash: badge, placeholder hint and browse-panel rows. */
+  stash: PromptStashState
   submit: (value: string) => void
   updateInput: StateSetter<string>
   voiceRecordKey: ParsedVoiceRecordKey

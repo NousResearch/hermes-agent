@@ -9,6 +9,7 @@ import {
   handleIdleHotkeyExit,
   resolveCtrlCComposerAction,
   resolveDoubleEscAction,
+  runStashPanelKey,
   shouldDetachEditedHistoryInput,
   shouldFallThroughForScroll
 } from '../app/useInputHandlers.js'
@@ -239,5 +240,41 @@ describe('dismissSensitivePrompt', () => {
     expect(getOverlayState().vaultCode).toBeNull()
     expect(sys).toHaveBeenCalledWith('verification code for github.com skipped')
     expect(respond).toHaveBeenCalledWith({ value: '' })
+  })
+})
+
+describe('runStashPanelKey — the Ctrl+S browse panel owns its five keys', () => {
+  const base = { downArrow: false, escape: false, return: false, upArrow: false }
+
+  const press = (patch: Partial<typeof base>, ch = '') => {
+    const calls: string[] = []
+
+    const stash = {
+      closePanel: () => void calls.push('close'),
+      deleteAtCursor: () => (calls.push('delete'), true),
+      moveCursor: (delta: number) => void calls.push(`move ${delta}`),
+      restoreAtCursor: () => (calls.push('restore'), true)
+    }
+
+    const consumed = runStashPanelKey({ ...base, ...patch }, ch, stash, () => void calls.push('esc-clock'))
+
+    return { calls, consumed }
+  }
+
+  it.each([
+    [{ upArrow: true }, '', ['move -1']],
+    [{ downArrow: true }, '', ['move 1']],
+    [{ return: true }, '', ['restore']],
+    [{ escape: true }, '', ['esc-clock', 'close']],
+    [{}, 'd', ['delete']],
+    [{}, 'D', ['delete']],
+    [{ upArrow: true }, 'd', ['move -1']]
+  ] as const)('%o + %s → %o', (patch, ch, expected) => {
+    expect(press(patch, ch)).toEqual({ calls: expected, consumed: true })
+  })
+
+  it('leaves every other key to the composer', () => {
+    expect(press({}, 'x')).toEqual({ calls: [], consumed: false })
+    expect(press({}, '')).toEqual({ calls: [], consumed: false })
   })
 })

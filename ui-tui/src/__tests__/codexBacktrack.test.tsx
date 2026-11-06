@@ -53,7 +53,7 @@ function escHarness(messages: unknown[] = rows) {
   const prompts = messages.filter((row: any) => row.role === 'user').length
   const actions = { appendMessage: vi.fn(), countPrompts: () => prompts, openBacktrack: vi.fn(), sys: vi.fn() } as any
   const cActions = { clearIn: vi.fn(), pushHistory: vi.fn() } as any
-  const cState = { input: '', inputBuf: [] } as any
+  const cState = { input: '', inputBuf: [], queueEditIdx: null } as any
 
   const esc = (over: Record<string, unknown> = {}) =>
     handleEscBacktrack({

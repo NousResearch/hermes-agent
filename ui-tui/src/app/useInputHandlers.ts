@@ -185,9 +185,10 @@ function runBacktrackEsc(o: {
 }): boolean {
   const { actions, cState, gw, live } = o
 
-  // A transcript selection keeps its Esc (clear the selection) below.
+  // A transcript selection and a queue edit (even one whose text was erased) keep their Esc below:
+  // clear the selection, cancel the queue edit.
   const eligible = shouldOpenRewindOnDoubleEsc({
-    blocked: o.isBlocked || o.hasSelection,
+    blocked: o.isBlocked || o.hasSelection || cState.queueEditIdx !== null,
     busy: live.busy,
     canonical: gw.isCanonical,
     hasDraft: Boolean(cState.input || cState.inputBuf.length),

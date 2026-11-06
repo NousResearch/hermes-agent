@@ -1097,23 +1097,31 @@ def cmd_mcp_configure(args):
 
     config = load_config()
     server_entry = cfg_get(config, "mcp_servers", name, default={})
+    # ``prompts``/``resources`` live in the same block, so only the filters change here.
+    tools_cfg = server_entry.get("tools")
+    if not isinstance(tools_cfg, dict):
+        tools_cfg = {}
     exclude_mode = bool(exclude) and include is None
 
     if len(chosen) == total and not exclude_mode:
-        server_entry.pop("tools", None)  # all selected → register all
+        # all selected → register all
+        tools_cfg.pop("include", None)
+        tools_cfg.pop("exclude", None)
     elif exclude_mode:
         new_exclude = _rebuild_exclude_list(name, exclude, tool_names, chosen, matches_name_filter)
-        if not new_exclude:
-            server_entry.pop("tools", None)
+        if new_exclude:
+            tools_cfg["exclude"] = new_exclude
         else:
-            server_entry.setdefault("tools", {})
-            server_entry["tools"]["exclude"] = new_exclude
-            server_entry["tools"].pop("include", None)
+            tools_cfg.pop("exclude", None)
+        tools_cfg.pop("include", None)
     else:
-        server_entry.setdefault("tools", {})
-        server_entry["tools"]["include"] = [tool_names[i] for i in sorted(chosen)]
-        server_entry["tools"].pop("exclude", None)
+        tools_cfg["include"] = [tool_names[i] for i in sorted(chosen)]
+        tools_cfg.pop("exclude", None)
 
+    if tools_cfg:
+        server_entry["tools"] = tools_cfg
+    else:
+        server_entry.pop("tools", None)
     config.setdefault("mcp_servers", {})[name] = server_entry
     save_config(config)
     _success(f"Updated config: {len(chosen)}/{total} tools enabled")

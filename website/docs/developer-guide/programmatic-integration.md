@@ -67,7 +67,19 @@ gw.drain()
 const session = await gw.request('session.create', {})
 ```
 
-`hermes gateway attach` exits non-zero with the verdict on stdout when there is no owner to attach, so `execFile` rejects and the client retries on its backoff. Sessions are created with `source: "tui"`, the gateway's terminal-client policy, and `session.create` refuses an owner whose `runtime.describe` does not offer it. Other options (`terminalConnectFailure`, `attachUrl`, `sidecarUrl`, timeouts, `toolProgress`, `onLifecycle`, `text`, `fallbackWebSocket`) are documented on `GatewayClientOptions`. Browser-safe modules stay in `apps/shared/src/`; Node-only ones (the client, `prompt-history`) are in `apps/shared/src/node/`, and `apps/shared/src/node/boundary.test.ts` fails if the package's program ever includes a file from another workspace.
+`hermes gateway attach` exits non-zero with the verdict on stdout when there is no owner to attach, so `execFile` rejects and the client retries on its backoff. Sessions are created with `source: "tui"`, the gateway's terminal-client policy, and `session.create` refuses an owner whose `runtime.describe` does not offer it.
+
+Two options say who is launching. `source` picks another policy label from `runtime.describe`'s `session_create.sources` (`session.create` is refused if the owner does not list it). `client` is your client's own name, sent on `session.create` only when the owner lists `client` in `session_create.parameters`; an older owner gets the request without it. The name is a label for attribution: Hermes never grants anything because of it.
+
+```ts
+const gw = new GatewayClient({
+  connect,                                           // as above
+  source: 'tui',                                     // the default: the terminal-client policy
+  client: { name: 'my-client', version: '1.4.0' }    // version is optional
+})
+```
+
+Other options (`terminalConnectFailure`, `attachUrl`, `sidecarUrl`, timeouts, `toolProgress`, `onLifecycle`, `text`, `fallbackWebSocket`) are documented on `GatewayClientOptions`. Browser-safe modules stay in `apps/shared/src/`; Node-only ones (the client, `prompt-history`) are in `apps/shared/src/node/`, and `apps/shared/src/node/boundary.test.ts` fails if the package's program ever includes a file from another workspace.
 
 ### Method catalog (selected)
 

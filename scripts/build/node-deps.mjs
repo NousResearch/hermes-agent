@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync, spawnSync } from 'node:child_process'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import {
   closeSync, existsSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync,
   writeFileSync, writeSync,
@@ -9,6 +9,7 @@ import { hostname } from 'node:os'
 import { basename, delimiter, dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
+import { Worker } from 'node:worker_threads'
 
 import { prepareElectronRuntime } from './electron-runtime.mjs'
 import { lockImporters } from './pnpm-lock.mjs'
@@ -95,8 +96,13 @@ function completedInstallMatches({ source, receipt, installedLock, key, nativeKe
 
 // One run at a time per checkout. The callers hold different locks or none (`hermes update`,
 // `hermes --tui`, the dashboard, Desktop, another profile), and a run moves trees in and out of
-// place, so even a reuse check must not run beside an install. The lock names its owner: a
-// killed run's lock is taken over (and its trees then recovered), a live one is waited for.
+// place, so even a reuse check must not run beside an install. The owner refreshes the lock's
+// mtime from a worker thread (the main thread blocks in pnpm), so liveness never depends on pids,
+// hosts or PID namespaces: a lock a waiter has seen unchanged (content and mtime) for `stale` ms
+// of its own monotonic clock is dead and broken; no clock is compared across machines. A live
+// owner is waited for at most `wait` ms; then the run fails, and a launch can fall back to its
+// previous build. Exported for tests only.
+export const lockTiming = { beat: 1_000, stale: 30_000, wait: 10 * 60_000 }
 const sleep = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
 
 function readText(path) {
@@ -108,86 +114,129 @@ function readText(path) {
   }
 }
 
-// Linux's process start time, so a dead owner's reused pid does not hold the lock forever.
-function startTime(pid) {
+function mtimeOf(path) {
   try {
-    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8')
-    return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19]
-  } catch {
-    return undefined
+    return statSync(path).mtimeMs
+  } catch (error) {
+    if (error.code === 'ENOENT') return undefined
+    throw error
   }
 }
 
-function ownerAlive(held, lock) {
-  let owner
+// flags[0]: released; flags[1]: the lock is no longer this owner's (it was broken while this
+// process was stopped, e.g. by Ctrl-Z, for longer than lockTiming.stale).
+const HEARTBEAT = `
+const { readFileSync, utimesSync } = require('node:fs')
+const { workerData: { lock, token, state, beat } } = require('node:worker_threads')
+const flags = new Int32Array(state)
+const timer = setInterval(() => {
+  if (Atomics.load(flags, 0)) return clearInterval(timer)
   try {
-    owner = JSON.parse(held)
+    if (!readFileSync(lock, 'utf8').includes(token)) throw new Error('replaced')
+    const now = new Date()
+    utimesSync(lock, now, now)
   } catch {
-    // Created but not yet written, or a writer killed in between.
+    Atomics.store(flags, 1, 1)
+    clearInterval(timer)
+  }
+}, beat)
+`
+
+// Every removal of the lock (a release, or breaking a dead one) runs under a guard held for a
+// few syscalls and checks the content it removes under it, so it can never remove a lock another
+// run has just created; creating needs no guard (an exclusive create cannot replace a lock). A
+// guard left by a killed remover is cleared after a minute.
+function underGuard(lock, fn) {
+  const guard = `${lock}.guard`
+  for (;;) {
+    let fd
     try {
-      return Date.now() - statSync(lock).mtimeMs < 10_000
-    } catch {
-      return false
+      fd = openSync(guard, 'wx')
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error
+      if (Date.now() - (mtimeOf(guard) ?? Date.now()) > 60_000) rmSync(guard, { force: true })
+      sleep(20)
+      continue
+    }
+    try {
+      return fn()
+    } finally {
+      closeSync(fd)
+      rmSync(guard, { force: true })
     }
   }
-  // Another machine's run on a shared checkout cannot be judged from here.
-  if (owner.host !== hostname()) return true
+}
+
+const removeIf = (lock, holds) => underGuard(lock, () => {
+  const text = readText(lock)
+  if (text !== undefined && holds(text)) rmSync(lock, { force: true })
+})
+
+function describeOwner(text) {
   try {
-    process.kill(owner.pid, 0)
-  } catch (error) {
-    return error.code === 'EPERM'
+    const { pid, host } = JSON.parse(text)
+    return `pid ${pid} on ${host}`
+  } catch {
+    return 'another run'
   }
-  return owner.start === undefined || owner.start === startTime(owner.pid)
+}
+
+function takeLock(lock, token) {
+  const flags = new Int32Array(new SharedArrayBuffer(8))
+  const fd = openSync(lock, 'wx')
+  try {
+    writeSync(fd, JSON.stringify({ token, pid: process.pid, host: hostname() }))
+  } catch (error) {
+    rmSync(lock, { force: true })
+    throw error
+  } finally {
+    closeSync(fd)
+  }
+  const worker = new Worker(HEARTBEAT, { eval: true, workerData: { lock, token, state: flags.buffer, beat: lockTiming.beat } })
+  worker.unref()
+  return {
+    locked: true,
+    lost: () => Atomics.load(flags, 1) === 1,
+    release: () => {
+      Atomics.store(flags, 0, 1)
+      void worker.terminate()
+      removeIf(lock, text => text.includes(token))
+    },
+  }
 }
 
 function lockCheckout(source) {
   const lock = join(source, '.cache/node-deps.lock')
-  const self = JSON.stringify({ pid: process.pid, host: hostname(), start: startTime(process.pid) })
+  const token = randomUUID()
+  const started = performance.now()
+  let seen
   let announced = false
   for (;;) {
-    let fd
     try {
       mkdirSync(dirname(lock), { recursive: true })
-      fd = openSync(lock, 'wx')
+      return takeLock(lock, token)
     } catch (error) {
       // No run can write a checkout this process cannot write, so a reader needs no lock.
-      if (['EACCES', 'EPERM', 'EROFS'].includes(error.code)) return () => {}
+      if (['EACCES', 'EPERM', 'EROFS'].includes(error.code)) return { locked: false, lost: () => false, release: () => {} }
       if (error.code !== 'EEXIST') throw error
     }
-    if (fd !== undefined) {
-      try {
-        writeSync(fd, self)
-      } catch (error) {
-        rmSync(lock, { force: true })
-        throw error
-      } finally {
-        closeSync(fd)
-      }
-      return () => { if (readText(lock) === self) rmSync(lock, { force: true }) }
-    }
-    const held = readText(lock)
-    if (held === undefined) continue
-    if (!ownerAlive(held, lock)) {
-      // Another waiter may have taken the dead lock over first: what was renamed is then
-      // its live lock, which goes back unless a third run has locked in the meantime.
-      const reap = `${lock}.${process.pid}.stale`
-      try {
-        renameSync(lock, reap)
-      } catch (error) {
-        if (error.code === 'ENOENT') continue
-        throw error
-      }
-      if (readText(reap) !== held) {
-        try {
-          linkSync(reap, lock)
-        } catch (error) {
-          if (error.code !== 'EEXIST') throw error
-        }
-      }
-      rmSync(reap, { force: true })
+    const text = readText(lock)
+    const mtime = mtimeOf(lock)
+    if (text === undefined || mtime === undefined) continue
+    const now = performance.now()
+    if (seen?.text !== text || seen.mtime !== mtime) {
+      seen = { text, mtime, since: now }
+    } else if (now - seen.since > lockTiming.stale) {
+      removeIf(lock, current => current === text && mtimeOf(lock) === mtime)
+      seen = undefined
       continue
     }
-    if (!announced) console.log(`node-deps: waiting for another dependency install in this checkout (${held}); if none is running, delete ${lock}`)
+    // What matters comes first: a progress line cut to the terminal width still says it.
+    const limit = lockTiming.wait >= 120_000 ? `${Math.round(lockTiming.wait / 60_000)} min` : `${Math.round(lockTiming.wait / 1000)} s`
+    if (now - started > lockTiming.wait) {
+      throw new Error(`node-deps: another install in this checkout is still running after ${limit}; run again once it finishes (${describeOwner(text)}, ${lock})`)
+    }
+    if (!announced) console.log(`node-deps: waiting up to ${limit} for another install in this checkout (${describeOwner(text)})`)
     announced = true
     sleep(500)
   }
@@ -244,7 +293,10 @@ function previousTrees(source) {
   const moveAside = projects => {
     const moved = projects.filter(project => existsSync(tree(project)))
     mkdirSync(aside, { recursive: true })
-    writeFileSync(record, JSON.stringify({ moved, absent: projects.filter(project => !moved.includes(project)) }))
+    // Renamed into place: a run killed (or out of space) mid-write must never leave a record
+    // that every later run fails to parse.
+    writeFileSync(`${record}.tmp`, JSON.stringify({ moved, absent: projects.filter(project => !moved.includes(project)) }))
+    renameSync(`${record}.tmp`, record)
     try {
       for (const project of moved) {
         mkdirSync(join(aside, project), { recursive: true })
@@ -342,7 +394,7 @@ export function prepareNodeDependencies({ source, workspaces, env = process.env,
     inputs.update(file).update('\0').update(existsSync(join(source, file)) ? readFileSync(join(source, file)) : '<missing>').update('\0')
   }
   const key = inputs.digest('hex')
-  const release = lockCheckout(source)
+  const lock = lockCheckout(source)
   try {
     const previous = previousTrees(source)
     previous.recover()
@@ -366,14 +418,23 @@ export function prepareNodeDependencies({ source, workspaces, env = process.env,
       console.error('node-deps: install failed; restored the previously installed dependencies')
       throw error
     }
+    // Stopped (Ctrl-Z) past the stale limit, this run's lock was broken and another run may be
+    // moving the trees now: certify nothing.
+    if (lock.lost()) throw new Error('node-deps: this run was suspended and another run took over the checkout; run again')
     if (reuse) {
       const completed = `${key}\n${createHash('sha256').update(readFileSync(installedLock)).digest('hex')}\n`
       writeFileSync(receipt, completed)
       if (nativeKey !== undefined) writeFileSync(nativeReceipt, `${completed}${nativeKey}\n`)
     }
-    previous.discard()
+    // The install succeeded: a set that cannot be deleted now (an antivirus or indexer handle on
+    // Windows) is discarded by the next run's recovery instead of failing this one.
+    try {
+      previous.discard()
+    } catch (error) {
+      console.warn(`node-deps: could not delete the previous dependencies yet (${error.code ?? error.message}); the next run removes them`)
+    }
   } finally {
-    release()
+    lock.release()
   }
   return { source, workspaces: selected }
 }

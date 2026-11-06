@@ -63,3 +63,18 @@ test.each(process.platform === 'win32' ? ['EXDEV'] : ['EXDEV', 'EBUSY'])('a tree
   prepareNodeDependencies({ ...options, install: false })
   expect(readdirSync(join(source, '.cache'))).toEqual([])
 }, 30000)
+
+// After a successful install the previous set is only garbage: a delete Windows refuses (an
+// antivirus or indexer handle) must not fail the run; the next run's recovery removes it.
+test('a previous set that cannot be deleted after a successful install is left for the next run', () => {
+  const { source, env } = fixture()
+  const options = { source, workspaces: ['web'], reuse: true, env }
+  prepareNodeDependencies(options)
+  rmSync(join(source, 'node_modules/.hermes-node-deps'))
+  faults.set(join(source, '.cache/node-deps-previous'), 'EPERM')
+  prepareNodeDependencies(options)
+  expect(createRequire(join(source, 'web/package.json'))('web-only')).toBe('web-only')
+  faults.clear()
+  prepareNodeDependencies({ ...options, install: false })
+  expect(readdirSync(join(source, '.cache'))).toEqual([])
+}, 30000)

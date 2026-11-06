@@ -5,7 +5,7 @@ import { hostname, tmpdir } from 'node:os'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, expect, test } from 'vitest'
-import { pnpmCommand, prepareNodeDependencies } from '../scripts/build/node-deps.mjs'
+import { lockTiming, pnpmCommand, prepareNodeDependencies } from '../scripts/build/node-deps.mjs'
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const roots = []
@@ -368,11 +368,6 @@ test.skipIf(process.platform === 'win32')('a reuse check waits for an install ru
   const { source, env } = fixture()
   prepareNodeDependencies({ source, workspaces: ['web'], reuse: true, env })
   addExtraOnly(source, env)
-  // A run killed while holding the lock does not block the next one.
-  const dead = spawn(process.execPath, ['-e', ''])
-  await new Promise(done => dead.on('exit', done))
-  mkdirSync(join(source, '.cache'), { recursive: true })
-  writeFileSync(join(source, '.cache/node-deps.lock'), JSON.stringify({ pid: dead.pid, host: hostname() }))
   const pnpm = slowPnpm(2)
   const install = background(source, pnpm.env(env), '--workspace', 'web', '--reuse')
   await until(() => existsSync(pnpm.started))
@@ -380,10 +375,77 @@ test.skipIf(process.platform === 'win32')('a reuse check waits for an install ru
   const { code, output } = await reader.exit
   expect((await install.exit).code).toBe(0)
   // It waited, then reused what the install completed.
-  expect(output).toMatch(/waiting for another dependency install/)
+  expect(output).toMatch(/waiting up to 10 min for another install in this checkout/)
   expect(output).toMatch(/reusing completed install/)
   expect(code).toBe(0)
   expect(createRequire(join(source, 'web/package.json'))('extra-only')).toBe('extra-only')
+  expect(readdirSync(join(source, '.cache'))).toEqual([])
+}, 60000)
+
+// A lock nobody refreshes is dead whatever it names: a killed run's pid now reused by another
+// user's process, another host's name (a container, a renamed Mac) or another PID namespace.
+test.each([
+  ['a pid reused by another process', { pid: 1, host: hostname() }],
+  ['another host', { pid: 4242, host: 'devcontainer-3f1a9c' }],
+  ['the current process', { pid: process.pid, host: hostname() }],
+])('a lock left by a killed run is broken: %s', (_, owner) => {
+  const { source, env } = fixture()
+  mkdirSync(join(source, '.cache'), { recursive: true })
+  writeFileSync(join(source, '.cache/node-deps.lock'), JSON.stringify(owner))
+  const timing = { ...lockTiming }
+  Object.assign(lockTiming, { stale: 500 })
+  try {
+    prepareNodeDependencies({ source, workspaces: ['web'], reuse: true, env })
+  } finally {
+    Object.assign(lockTiming, timing)
+  }
+  expect(createRequire(join(source, 'web/package.json'))('web-only')).toBe('web-only')
+  expect(readdirSync(join(source, '.cache'))).toEqual([])
+}, 30000)
+
+// A live owner is waited for, but not forever: a launch must fail (and fall back) rather than
+// hang, and the line says what to do before anything a narrow terminal would cut.
+test.skipIf(process.platform === 'win32')('waiting for a live install gives up with the remedy first', async () => {
+  const { source, env } = fixture()
+  prepareNodeDependencies({ source, workspaces: ['web'], reuse: true, env })
+  addExtraOnly(source, env)
+  const pnpm = slowPnpm(30)
+  const install = background(source, pnpm.env(env), '--workspace', 'web', '--reuse')
+  await until(() => existsSync(pnpm.started))
+  const timing = { ...lockTiming }
+  // Longer than the stale limit, so the heartbeat is what keeps the live owner's lock.
+  Object.assign(lockTiming, { stale: 1_500, wait: 4_000 })
+  try {
+    expect(() => prepareNodeDependencies({ source, workspaces: ['web'], reuse: true, env, install: false }))
+      .toThrow(/^node-deps: another install in this checkout is still running after 4 s; run again once it finishes/)
+  } finally {
+    Object.assign(lockTiming, timing)
+    install.kill()
+    await install.exit
+  }
+}, 60000)
+
+// The record of a moved set is renamed into place: a run killed while writing it (or out of
+// space) leaves nothing a later run fails to parse.
+test.skipIf(process.platform === 'win32')('a run killed while recording the moved trees does not break later runs', () => {
+  const { source, env } = fixture()
+  prepareNodeDependencies({ source, workspaces: ['web'], reuse: true, env, nativeToolchain: 'first' })
+  const preload = join(dirname(source), 'kill-in-record.mjs')
+  writeFileSync(preload, `
+    import fs from 'node:fs'
+    import { syncBuiltinESMExports } from 'node:module'
+    const writeFileSync = fs.writeFileSync
+    fs.writeFileSync = (path, data, options) => {
+      if (String(path).includes('trees.json')) { writeFileSync(path, ''); process.kill(process.pid, 'SIGKILL') }
+      return writeFileSync(path, data, options)
+    }
+    syncBuiltinESMExports()
+  `)
+  const run = spawnSync(process.execPath, ['--import', pathToFileURL(preload).href,
+    ...cli(source, '--workspace', 'web', '--reuse', '--native-toolchain', 'second')], { env, stdio: 'pipe' })
+  expect(run.signal).toBe('SIGKILL')
+  prepareNodeDependencies({ source, workspaces: ['web'], reuse: true, env, install: false })
+  expect(createRequire(join(source, 'web/package.json'))('web-only')).toBe('web-only')
   expect(readdirSync(join(source, '.cache'))).toEqual([])
 }, 60000)
 

@@ -81,8 +81,10 @@ only once the install and the Electron preparation succeed; a failed install put
 back, and the run after a killed one recovers them. Both generations are on disk while
 pnpm runs. A tree that cannot be moved (a mount point, or a `.cache` on another
 filesystem) is deleted in place as before and cannot be restored. Runs in one checkout
-are serialised by `.cache/node-deps.lock`, which names its owner's pid; a dead owner's
-lock is taken over.
+are serialised by `.cache/node-deps.lock`. Its owner refreshes the lock's mtime every
+second, and a lock that nobody has refreshed for 30 s is broken, whatever pid, host or
+PID namespace it names. A live owner is waited for at most 10 minutes; then the run
+fails.
 `--pnpm ARGS...` instead runs the same resolved pnpm with `ARGS`.
 
 The prepared source needs these inputs:

@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 import pytest
 
 from hermes_cli import gateway_side
+from hermes_cli.gateway_client import GatewayRPCError
 from hermes_cli.gateway_connection import GatewayConnection
 
 SID = "local-side"
@@ -24,6 +25,27 @@ class _Client:
         await self.events.put({"jsonrpc": "2.0", "method": "event", "params": {
             "type": kind, "session_id": SID, "payload": {"task_id": "bg_1", "text": self.text}}})
         return {"task_id": "bg_1"}
+
+
+class _RefusingClient(_Client):
+    """A client whose first side verb is refused: the socket holds no subscription for the
+    session, so the owner answers ``permission_denied`` until the socket resumes it."""
+
+    def __init__(self, text, reason="permission_denied"):
+        super().__init__(text)
+        self.reason = reason
+        self.refused = False
+
+    async def rpc(self, method, *, _timeout=None, **params):
+        if method == "session.resume":
+            self.calls.append((method, params))
+            return {"session_id": SID, "stored_session_id": SID, "messages": [],
+                    "subscription_id": "sub-1", "revision": 1, "execution_generation": 1}
+        if not self.refused:
+            self.refused = True
+            self.calls.append((method, params))
+            raise GatewayRPCError(self.reason)
+        return await super().rpc(method, _timeout=_timeout, **params)
 
 
 def _connection(client):
@@ -57,3 +79,41 @@ def test_a_failed_side_task_raises_the_gateways_error():
             wait()
     finally:
         conn.close()
+
+
+@pytest.mark.parametrize("reason", ["permission_denied", "not_found"])
+def test_a_refused_side_task_reattaches_and_retries_once(reason):
+    """The owner refuses a socket that holds no subscription for the session; one resume
+    registers it, so the side task is admitted instead of surfacing as a refusal."""
+    client = _RefusingClient("DOG14 answer after re-attach", reason)
+    conn = _connection(client)
+    try:
+        task_id, wait = gateway_side.start(conn, SID, "btw", "compute something")
+        assert task_id == "bg_1"
+        assert wait() == "DOG14 answer after re-attach"
+        methods = [method for method, _ in client.calls]
+        assert methods == ["prompt.btw", "session.resume", "prompt.btw"]
+    finally:
+        conn.close()
+
+
+def test_a_refusal_that_a_reattach_cannot_clear_is_raised():
+    class _Gone(_Client):
+        async def rpc(self, method, *, _timeout=None, **params):
+            self.calls.append((method, params))
+            raise GatewayRPCError("session_busy")
+
+    client = _Gone("x")
+    conn = _connection(client)
+    try:
+        with pytest.raises(GatewayRPCError, match="session_busy"):
+            gateway_side.start(conn, SID, "btw", "compute something")
+        assert [method for method, _ in client.calls] == ["prompt.btw"]
+    finally:
+        conn.close()
+
+
+def test_a_refusal_never_surfaces_as_a_traceback():
+    assert "no longer attached" in gateway_side.refusal_message(GatewayRPCError("permission_denied"))
+    assert "no longer knows" in gateway_side.refusal_message(GatewayRPCError("not_found"))
+    assert "session_busy" in gateway_side.refusal_message(GatewayRPCError("session_busy"))

@@ -13,6 +13,10 @@ import queue
 
 SIDE_EVENTS = frozenset({"background.complete", "btw.complete"})
 _POLL_SECONDS = 1.0
+#: Owner refusals a re-attach can clear: the socket no longer holds the session's subscription
+#: (a redial, a restarted owner, a session that moved to another id). The owner registers a
+#: subscription on the connection that resumes the session, so one resume clears both.
+_REATTACHABLE = frozenset({"permission_denied", "not_found"})
 
 
 def connection_for(cli):
@@ -25,10 +29,42 @@ def connection_for(cli):
     return store.connection
 
 
+def _reattach(connection, session_id):
+    """Re-attach this socket to the session: the owner registers a subscription on the connection
+    that resumes it, which is what the side verbs require. Returns the id the owner resolved the
+    session to (a compressed session's lineage root, not the id asked for)."""
+    snapshot = connection.resume(connection.call, session_id, typed=connection.launch_api_key_typed)
+    resolved = str((snapshot or {}).get("session_id") or session_id)
+    connection.state(resolved).adopt_snapshot(snapshot)
+    return resolved
+
+
+def refusal_message(exc):
+    """One line for a side task the owner refused: what it means and what to do. Never a traceback."""
+    reason = str(exc)
+    if reason == "permission_denied":
+        return ("the gateway refused the side question for this session: this CLI is no longer "
+                "attached to it (or the session belongs to another chat). Send a message first — "
+                "that re-attaches — or resume the session.")
+    if reason == "not_found":
+        return "the gateway no longer knows this session; resume it (or start a new one) first."
+    return f"the gateway refused the side question ({reason})."
+
+
 def start(connection, session_id, verb, text):
-    """Admit the side task on the owner: ``(task_id, wait)``; ``wait()`` -> the answer (raises on failure)."""
-    # The epoch of the socket that admitted it: a redial before the waiter exists must still end it.
-    result, epoch = connection.call_tagged(f"prompt.{verb}", session_id=session_id, text=text)
+    """Admit the side task on the owner: ``(task_id, wait)``; ``wait()`` -> the answer (raises on failure).
+
+    A socket that lost its subscription (a redial, a restarted owner, a session that moved) is
+    refused ``permission_denied``: one re-attach clears it, so the side task is admitted on the
+    session the owner resolves, not abandoned to the caller."""
+    from hermes_cli.gateway_client import GatewayRPCError
+    try:
+        result, epoch = connection.call_tagged(f"prompt.{verb}", session_id=session_id, text=text)
+    except GatewayRPCError as exc:
+        if str(exc) not in _REATTACHABLE:
+            raise
+        resolved = _reattach(connection, session_id)
+        result, epoch = connection.call_tagged(f"prompt.{verb}", session_id=resolved, text=text)
     task_id = (result or {}).get("task_id")
     if not task_id:
         raise RuntimeError(f"prompt.{verb} returned no task id")

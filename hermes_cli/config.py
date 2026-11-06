@@ -1783,7 +1783,7 @@ def _worker_config_snapshot() -> Optional[dict[str, Any]]:
     try:
         from agent.safe_worker_policy import worker_config_snapshot
     except ModuleNotFoundError as exc:
-        if exc.name != "agent":
+        if exc.name != "agent" and not "agent".startswith(f"{exc.name}."):
             raise
         return None
     return worker_config_snapshot()

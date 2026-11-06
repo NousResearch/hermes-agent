@@ -9,6 +9,8 @@ rendezvous actually uses it, and that the host lock still works on that path.
 
 import pytest
 
+from pathlib import Path
+
 from gateway import host_rendezvous as hr
 
 pytestmark = pytest.mark.platforms("windows")
@@ -74,3 +76,40 @@ def test_rewriting_an_existing_token_keeps_it_private(host_dir):
     _assert_private_dacl(path)
     record = hr.read_record(hr.ROLE_SERVE, include_stale=True)
     assert record is not None and hr.record_token_is_consistent(record)
+
+
+def _make_junction(target: Path, link: Path) -> bool:
+    """Create a directory junction ``link`` -> ``target``; False on privilege/sandbox refusal."""
+    import subprocess
+    try:
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)],
+                       check=True, capture_output=True)
+    except Exception:
+        return False
+    return link.exists()
+
+
+def test_token_write_through_a_junctioned_parent(tmp_path):
+    """Regression: a junction/symlink in the parent chain of the token file must not trip the
+
+    'Windows SSH runtime handle escaped its expected path' guard.
+
+    Reproduces a relocated state tree (a junction/symlink in the parent chain of the token file):
+    ``GetFinalPathNameByHandle`` returns the OS-resolved target, which used to differ from the
+    literal ``abspath`` of the path-as-passed, raising OSError on every token write. The guard now
+    compares against ``realpath`` so a link in the parent chain is tolerated, while a handle that
+    truly points elsewhere still mismatches and is refused.
+    """
+    from hermes_cli import windows_ssh_runtime as wsr
+
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    if not _make_junction(real, link):
+        pytest.skip("cannot create a directory junction in this environment")
+
+    token_path = link / "host-desktop-serve.token"
+    # Before the fix this raised OSError("...handle escaped its expected path").
+    wsr.write_private_file(token_path, b"junction-scoped-token")
+    assert token_path.read_bytes() == b"junction-scoped-token"
+    _assert_private_dacl(token_path)

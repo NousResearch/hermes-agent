@@ -128,7 +128,12 @@ def _open(path: Path, access: int, creation: int, flags: int, share: int = 0):
     handle = win32file.CreateFile(str(path), access, share, _security_attributes(), creation, flags, None)
     try:
         actual = win32file.GetFinalPathNameByHandle(handle, 0).removeprefix("\\\\?\\")
-        if os.path.normcase(actual) != os.path.normcase(os.path.abspath(str(path))):
+        # Compare against the RESOLVED path, not the literal abspath: a legitimate junction or
+        # symlink anywhere in the parent chain (e.g. a state dir relocated onto another volume)
+        # makes the OS-resolved final path differ from the path as written, which is not an escape.
+        # ``realpath`` follows exactly the links the OS followed, so a handle that truly points
+        # somewhere unexpected still mismatches and is still refused.
+        if os.path.normcase(actual) != os.path.normcase(os.path.realpath(str(path))):
             raise OSError("Windows SSH runtime handle escaped its expected path")
         if win32file.GetFileInformationByHandle(handle)[0] & 0x400:  # FILE_ATTRIBUTE_REPARSE_POINT
             raise OSError("Windows SSH runtime path contains a reparse point")

@@ -56,14 +56,19 @@ def guess_mime_type(filename: str) -> str:
     return _EXT_TO_MIME.get(_ext(filename), "application/octet-stream")
 
 
+def _normalize_mime_type(mime_type: str) -> str:
+    """Normalize a MIME value for classification."""
+    return (mime_type or "").split(";", 1)[0].strip().lower()
+
+
 def is_image(filename: str, mime_type: str = "") -> bool:
     """MIME 前缀或扩展名判断是否为图片。"""
-    return mime_type.startswith("image/") or _ext(filename) in _IMAGE_EXTS
+    return _normalize_mime_type(mime_type).startswith("image/") or _ext(filename) in _IMAGE_EXTS
 
 
 def get_image_format(mime_type: str) -> int:
     """TIM 图片格式编号（未知 → 255）。"""
-    return _MIME_TO_IMAGE_FORMAT.get(mime_type.lower(), 255)
+    return _MIME_TO_IMAGE_FORMAT.get(_normalize_mime_type(mime_type), 255)
 
 
 def md5_hex(data: bytes) -> str:
@@ -281,7 +286,7 @@ async def upload_to_cos(
         resp = await client.put(cos_url, content=file_bytes, headers=put_headers)
         resp.raise_for_status()
     result: dict[str, Any] = {"url": credentials.get("resourceUrl", "") or cos_url, "uuid": md5_hex(file_bytes), "size": file_size}
-    if content_type.startswith("image/"):
+    if _normalize_mime_type(content_type).startswith("image/"):
         result.update(parse_image_size(file_bytes) or {})
     logger.info("COS 上传成功: url=%s size=%d", result["url"], file_size)
     return result

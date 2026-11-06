@@ -1,6 +1,8 @@
 """Tests for hermes_cli.logs — log viewing and filtering."""
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
+
+import pytest
 
 from hermes_cli.logs import (
     LOG_FILES,
@@ -41,10 +43,10 @@ class TestParseLineTimestamp:
     def test_iso_t_separated_update_and_handoff_stamps(self):
         # posix.sh: date +%Y-%m-%dT%H:%M:%S%z; windows.ps1: yyyy-MM-ddTHH:mm:ssK
         assert _parse_line_timestamp("2026-09-29T21:36:18+08:00 update| step done") == datetime(
-            2026, 9, 29, 21, 36, 18
+            2026, 9, 29, 21, 36, 18, tzinfo=timezone(timedelta(hours=8))
         )
         assert _parse_line_timestamp("2026-09-29T21:36:18Z step stalled") == datetime(
-            2026, 9, 29, 21, 36, 18
+            2026, 9, 29, 21, 36, 18, tzinfo=UTC
         )
 
 class TestExtractLevel:
@@ -121,6 +123,46 @@ class TestMatchesFilters:
 # ---------------------------------------------------------------------------
 # File reading
 # ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("stamp_format", ["local", "Z", "+08:00", "+0800", "-05:00", "-0500"])
+def test_since_filter_uses_the_instant_in_each_log_stamp(tmp_path, monkeypatch, capsys, stamp_format):
+    from hermes_cli.logs import tail_log
+
+    now = datetime.now(UTC)
+
+    def stamp(instant):
+        if stamp_format == "local":
+            return instant.astimezone().strftime("%Y-%m-%d %H:%M:%S,%f")
+        if stamp_format == "Z":
+            return instant.isoformat().replace("+00:00", "Z")
+        hours = 8 if stamp_format.startswith("+") else -5
+        local = instant.astimezone(timezone(timedelta(hours=hours)))
+        return local.strftime("%Y-%m-%dT%H:%M:%S") + stamp_format
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    old_record = f"{stamp(now - timedelta(hours=2))} old record\n  old continuation\n"
+    recent_record = f"{stamp(now - timedelta(minutes=30))} recent record\n  recent continuation\n"
+    (log_dir / LOG_FILES["handoff"]).write_text(old_record + recent_record)
+
+    tail_log("handoff", since="1h")
+
+    output = capsys.readouterr().out
+    assert old_record not in output
+    assert "old continuation" not in output
+    assert recent_record in output
+
+
+@pytest.mark.parametrize("aware_cutoff", [False, True])
+def test_since_filter_preserves_fractional_seconds(aware_cutoff):
+    cutoff = datetime(2026, 10, 18, 12, 0, 0, 500000, tzinfo=UTC)
+    if not aware_cutoff:
+        cutoff = cutoff.astimezone().replace(tzinfo=None)
+    assert not _matches_filters("2026-10-18T12:00:00.499Z old", since=cutoff)
+    assert _matches_filters("2026-10-18T12:00:00.500Z boundary", since=cutoff)
+    assert _matches_filters("2026-10-18T12:00:00.501Z recent", since=cutoff)
+
 
 class TestReadTail:
     def test_read_small_file(self, tmp_path):

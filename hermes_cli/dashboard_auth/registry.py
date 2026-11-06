@@ -11,19 +11,13 @@ from __future__ import annotations
 import logging
 from typing import List, Optional
 
-from agent.provider_registry import ProviderRegistry
+from agent.provider_registry import ProviderRegistry, exact_key
 from hermes_constants import hermes_home_key, normalize_scope
 from hermes_cli.dashboard_auth.base import DashboardAuthProvider, assert_protocol_compliance
 
 _log = logging.getLogger(__name__)
-
-
-def _exact(name: str) -> str:
-    return name
-
-
 _registry: ProviderRegistry[DashboardAuthProvider] = ProviderRegistry(
-    label="Dashboard-auth", provider_cls=DashboardAuthProvider, logger=_log, normalize=_exact,
+    label="Dashboard-auth", provider_cls=DashboardAuthProvider, logger=_log, normalize=exact_key,
 )
 # Bound by hand rather than via ``export()``: register/get/list below keep this registry's own
 # contract, so only the storage and the snapshot/restore pair come from the shared engine.

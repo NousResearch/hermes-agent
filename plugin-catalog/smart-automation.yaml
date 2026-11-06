@@ -1,6 +1,6 @@
 name: smart-automation
 repo: https://github.com/buttercode101/smart-automation
-sha: d22bfad47510ca475821a86642041068bfdb2813
+sha: 00d6feec7a9c8e52377e752318ec86d69ff9b2b6
 description: >-
   Visual dependency-aware automation timeline with optional calendar constraints on top of Hermes cron.
   Manual chain-runner: jobs advance only via orchestrator_trigger_chain after verified success.

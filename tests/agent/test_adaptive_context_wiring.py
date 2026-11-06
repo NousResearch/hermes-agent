@@ -99,3 +99,26 @@ def test_usage_line_states(monkeypatch):
 def test_usage_line_renders_english_catalog():
     tracker = AdaptiveContextTracker()
     assert adaptive_context.usage_line(tracker).startswith("Adaptive ctx:")
+
+
+def test_stable_router_backend_rebudgets_once(monkeypatch):
+    """A router that keeps resolving to one backend still re-budgets away from the configured id."""
+    monkeypatch.setattr("agent.model_metadata.get_model_context_length", lambda *a, **k: 65536)
+    agent = _agent(AdaptiveContextTracker(baseline="openrouter/auto"))
+    for _ in range(3):
+        rebudget_on_backend_change(agent, SimpleNamespace(model="meta-llama/llama-3.3-70b"))
+    assert [c["model"] for c in agent.context_compressor.calls] == ["meta-llama/llama-3.3-70b"]
+    assert agent.context_compressor.calls[0]["context_length"] == 65536
+
+
+def test_backend_matching_configured_model_never_rebudgets(monkeypatch):
+    monkeypatch.setattr("agent.model_metadata.get_model_context_length", lambda *a, **k: 65536)
+    agent = _agent(AdaptiveContextTracker(baseline="qwen-2.5-72b"))
+    rebudget_on_backend_change(agent, SimpleNamespace(model="qwen-2.5-72b"))
+    assert agent.context_compressor.calls == []
+
+
+def test_init_seeds_tracker_with_configured_model():
+    agent = SimpleNamespace(model="openrouter/auto")
+    init_adaptive_context(agent, {"compression": {"adaptive_context_window": True}})
+    assert agent._adaptive_context.last_seen == "openrouter/auto"

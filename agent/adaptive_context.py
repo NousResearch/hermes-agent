@@ -38,8 +38,11 @@ class AdaptiveContextTracker:
             compressor.update_model(model=new_model, context_length=ctx, ...)
     """
 
-    def __init__(self) -> None:
-        self._last_seen: str | None = None
+    def __init__(self, baseline: str | None = None) -> None:
+        # ``baseline`` is the model id the agent was configured with. Seeding it means the
+        # first concrete backend a router resolves to counts as a change when it differs,
+        # so a router that keeps picking the same backend still gets one re-budget.
+        self._last_seen: str | None = baseline if isinstance(baseline, str) and baseline else None
         self._last_changed_at: float = 0.0
         self._change_count: int = 0
 
@@ -47,17 +50,17 @@ class AdaptiveContextTracker:
         """Record the model id reported by an LLM response.
 
         Returns the new id when it differs from the previously seen
-        value, so callers know to rebudget. Returns ``None`` on the
-        first observation, when the value is unchanged, or when the
+        value (or from the configured baseline), so callers know to
+        rebudget. Returns ``None`` when the value is unchanged, when the
         input is missing/non-string (defensive: response objects in
-        some adapters may not carry ``model``).
+        some adapters may not carry ``model``), and on the first
+        observation only when no baseline was given.
         """
         if not response_model or not isinstance(response_model, str):
             return None
         if self._last_seen is None:
-            # First observation: adopt silently. The agent was already
-            # configured with some model id at startup; this is the
-            # baseline against which subsequent changes are detected.
+            # No configured baseline: adopt the first id silently and
+            # detect changes against it from here on.
             self._last_seen = response_model
             return None
         if response_model == self._last_seen:
@@ -108,7 +111,9 @@ def init_adaptive_context(agent: Any, agent_cfg: dict) -> None:
 
     compression_cfg = agent_cfg.get("compression") or {}
     enabled = is_truthy_value(compression_cfg.get("adaptive_context_window"), default=False)
-    agent._adaptive_context = AdaptiveContextTracker() if enabled else None
+    agent._adaptive_context = (
+        AdaptiveContextTracker(baseline=getattr(agent, "model", None)) if enabled else None
+    )
 
 
 def rebudget_on_backend_change(agent: Any, response: Any) -> None:

@@ -215,13 +215,18 @@ export interface WorkerLog {
   truncated: boolean
 }
 
-/** GET /orchestration — dispatcher knobs from config.yaml + resolved values. */
+/** GET /orchestration — dispatcher knobs from config.yaml + resolved values.
+ *  With a board in scope the profile fields carry the board-first effective
+ *  value; the ``board_*`` fields carry that board's raw override ('' = inherited). */
 export interface OrchestrationSettings {
   orchestrator_profile: string
   default_assignee: string
   auto_decompose: boolean
   resolved_orchestrator_profile: string
   resolved_default_assignee: string
+  board?: null | string
+  board_orchestrator_profile?: string
+  board_default_assignee?: string
 }
 
 /** GET /profiles — the roster the decomposer routes across. */

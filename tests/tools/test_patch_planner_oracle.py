@@ -309,59 +309,61 @@ def enumerate_corpus(seed: int = SEED, sample_n: int = SAMPLE_N):
     witnesses = {}
     reservoir = []
     seen = 0
-    for n in range(1, 5):
-        for combo in itertools.product(range(len(alpha)), repeat=n):
-            for unterminated in (False, True):
-                if unterminated and (n == 1 or alpha[combo[-1]] == b""):
+    for combo in itertools.chain.from_iterable(
+        itertools.product(range(len(alpha)), repeat=n) for n in range(1, 5)
+    ):
+        n = len(combo)
+        for unterminated in (False, True):
+            if unterminated and (n == 1 or alpha[combo[-1]] == b""):
+                continue
+            contents = tuple(alpha[i] for i in combo)
+            for si, search in enumerate(alpha):
+                if decoy[search].intersection(contents):
                     continue
-                contents = tuple(alpha[i] for i in combo)
-                for si, search in enumerate(alpha):
-                    if decoy[search].intersection(contents):
+                exact = [i for i, c in enumerate(combo) if c == si]
+                other = norm_at[si]
+                norm = [i for i, c in enumerate(combo) if c == other] if other is not None else []
+                if exact:
+                    winners, tier = exact, "exact"
+                elif norm:
+                    winners, tier = norm, "normalized"
+                else:
+                    winners, tier = [], "none"
+                card = "zero" if not winners else "one" if len(winners) == 1 else "many"
+                if card == "zero":
+                    tier = "none"
+                pos = "none" if card != "one" else (
+                    "final" if winners[0] == n - 1 else "nonfinal"
+                )
+                final = "unterminated" if unterminated else "terminated"
+                target = "blank" if search == b"" else "nonblank"
+                repl_ood = bool(winners) and unterminated and (n - 1) in winners
+                for kind, blocked in (("delete", False), ("replace", repl_ood)):
+                    if blocked:
                         continue
-                    exact = [i for i, c in enumerate(combo) if c == si]
-                    other = norm_at[si]
-                    norm = [i for i, c in enumerate(combo) if c == other] if other is not None else []
-                    if exact:
-                        winners, tier = exact, "exact"
-                    elif norm:
-                        winners, tier = norm, "normalized"
-                    else:
-                        winners, tier = [], "none"
-                    card = "zero" if not winners else "one" if len(winners) == 1 else "many"
-                    if card == "zero":
-                        tier = "none"
-                    pos = "none" if card != "one" else (
-                        "final" if winners[0] == n - 1 else "nonfinal"
-                    )
-                    final = "unterminated" if unterminated else "terminated"
-                    target = "blank" if search == b"" else "nonblank"
-                    repl_ood = bool(winners) and unterminated and (n - 1) in winners
-                    for kind, blocked in (("delete", False), ("replace", repl_ood)):
-                        if blocked:
-                            continue
-                        seen += 1
-                        take = len(reservoir) < sample_n
-                        slot = None
-                        if not take:
-                            slot = rng.randrange(seen)
-                            take = slot < sample_n
-                        repl = _canon_repl(kind, search)
-                        _add_witnesses(witnesses, contents, unterminated, search, repl,
-                                       final, kind, target, tier, pos, card)
-                        if take:
-                            style = "CRLF" if (slot or 0) % 2 else "LF"
-                            sample_repl = repl
-                            if kind == "replace" and slot is not None:
-                                sample_repl = rng.choice([a for a in alpha if a != search])
-                            key = _key(style, final, kind, target, tier, pos, card)
-                            item = (
-                                *_render(contents, style, unterminated, search, sample_repl),
-                                key,
-                            )
-                            if len(reservoir) < sample_n:
-                                reservoir.append(item)
-                            else:
-                                reservoir[slot] = item
+                    seen += 1
+                    take = len(reservoir) < sample_n
+                    slot = None
+                    if not take:
+                        slot = rng.randrange(seen)
+                        take = slot < sample_n
+                    repl = _canon_repl(kind, search)
+                    _add_witnesses(witnesses, contents, unterminated, search, repl,
+                                   final, kind, target, tier, pos, card)
+                    if take:
+                        style = "CRLF" if (slot or 0) % 2 else "LF"
+                        sample_repl = repl
+                        if kind == "replace" and slot is not None:
+                            sample_repl = rng.choice([a for a in alpha if a != search])
+                        key = _key(style, final, kind, target, tier, pos, card)
+                        item = (
+                            *_render(contents, style, unterminated, search, sample_repl),
+                            key,
+                        )
+                        if len(reservoir) < sample_n:
+                            reservoir.append(item)
+                        else:
+                            reservoir[slot] = item
     return witnesses, reservoir, {"seed": seed, "enumerated_parameter_sets": seen}
 
 

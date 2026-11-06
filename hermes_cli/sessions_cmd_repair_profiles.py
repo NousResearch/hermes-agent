@@ -14,6 +14,7 @@ from hermes_cli.sessions_repair_profiles import (
 )
 
 _KIND_LABELS = {
+    "dual_home": "session ids present in multiple state.db files",
     "mislabelled": "profile_name disagrees with the row's own session key",
     "wrong_store": "rows in another profile's store",
     "legacy_main": "legacy agent:main rows inside a named profile's store",
@@ -81,11 +82,15 @@ def cmd_repair_profiles(args) -> int:
                   "Re-run with --apply to perform them.")
             return 0
         if not repairable:
+            has_dual_home = any(f.kind == "dual_home" for f in findings)
             if as_json:
                 print(json.dumps({"findings": [f.as_dict() for f in findings], "applied": {}}, indent=2))
             else:
-                print("\nNothing to repair.")
-            return 0
+                if has_dual_home:
+                    print("\nNo automatic repair: cross-store session ids require an explicit canonical-owner decision.")
+                else:
+                    print("\nNothing to repair.")
+            return 1 if has_dual_home else 0
 
         if not getattr(args, "yes", False) and not as_json:
             from hermes_cli.sessions_cmd import _confirm_or_exit_code
@@ -108,4 +113,5 @@ def cmd_repair_profiles(args) -> int:
         for failure in result["failures"]:
             print(f"  ✗ {failure['kind']} {failure['subject']}: {failure['error']}")
         print("Re-run without --apply to confirm the stores are clean.")
-    return 1 if result["failures"] else 0
+    unresolved_dual_home = any(f.kind == "dual_home" for f in findings)
+    return 1 if result["failures"] or unresolved_dual_home else 0

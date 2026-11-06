@@ -1,9 +1,8 @@
 """Commit a prepared summary, physical target, generation and receipt atomically."""
-import uuid
 from hermes_state_mutation_prepared import validate_prepared
 
 
-def compress_in_transaction(db, conn, session_id, payload, prepared):
+def compress_in_transaction(db, conn, session_id, payload, prepared, *, reserved=None):
     snapshot = validate_prepared(db, conn, session_id, prepared)
     policy = snapshot['receipt']['policy']
     target = snapshot['target']
@@ -15,7 +14,7 @@ def compress_in_transaction(db, conn, session_id, payload, prepared):
         archive_on_connection(db, conn, target, prepared['messages'])
         affected = {session_id, target}
     else:
-        child = uuid.uuid4().hex
+        child = reserved['child']
         publish_on_connection(db, conn, parent_session_id=target, child_session_id=child,
             source=policy['source'], model=policy['model'], messages=prepared['messages'],
             model_config={'_compressed_from': target}, cwd=policy['cwd'], require_compression_lease=False)

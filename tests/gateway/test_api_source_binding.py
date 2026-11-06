@@ -1,9 +1,12 @@
 """API source restoration cannot mint a parallel native conversation."""
 
+from pathlib import Path
+
 import pytest
 
 from gateway.config import Platform
 from gateway.session_contract import SessionActor, SessionRef, Submission
+from hermes_state import SessionDB
 from hermes_state_runtime import RuntimeStoreError
 
 
@@ -24,6 +27,27 @@ def test_private_api_binding_restores_exact_route(owner):
     with pytest.raises(RuntimeStoreError, match='permission_denied'):
         bind_api_session(owner, 'foreign-native')
     assert 'foreign-native' not in owner.sessions
+
+
+def test_private_api_binding_refuses_sibling_profile_owner(owner, monkeypatch):
+    from gateway.session_api import bind_api_session
+
+    session_id = 'api-sibling-owned'
+    root = Path(owner.db.db_path).parent
+    monkeypatch.setenv('HERMES_HOME', str(root))
+    profile_home = root / 'profiles' / 'science'
+    profile_home.mkdir(parents=True)
+    profile_db = SessionDB(profile_home / 'state.db')
+    try:
+        profile_db.create_session(session_id, source='api_server',
+                                  session_key=f'agent:science:api:dm:{session_id}')
+    finally:
+        profile_db.close()
+
+    with pytest.raises(RuntimeStoreError) as refused:
+        bind_api_session(owner, session_id)
+    assert refused.value.reason == 'admission_conflict'
+    assert owner.db.get_session(session_id) is None
 
 
 def test_private_api_binding_adopts_matching_legacy_declared_key(owner):

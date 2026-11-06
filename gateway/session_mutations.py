@@ -10,6 +10,7 @@ from contextlib import nullcontext
 from functools import partial
 
 from gateway.session_messaging_picks import CHAT_PICKS, is_chat_pick
+from hermes_state_lineage import SessionLineageError, SessionLineageInventoryError
 from hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS
 from hermes_state_runtime import RuntimeStoreError, mutate_runtime_session
 
@@ -169,7 +170,8 @@ async def _mutate_session(authority, actor, ref, params, *, commit_lock=None, ow
     if is_chat_pick(live, operation):
         # No frozen policy to commit into: the chat's own /model and /reasoning override (#141152).
         from gateway.session_messaging_picks import apply_chat_pick
-        return await apply_chat_pick(authority, ref, owner or ref, live, params, principal_id=actor.subject)
+        async with commit_lock or nullcontext():
+            return await apply_chat_pick(authority, ref, owner or ref, live, params, principal_id=actor.subject)
 
     def authorize_write(conn):
         from hermes_state_mutation_binding import authorize_history, import_history_control
@@ -269,7 +271,11 @@ async def write_mutation(authority, ref, params, editor_servers, *, principal_id
                 from gateway.session_onboarding import ending_run_on_delete
                 commit = partial(ending_run_on_delete, authority.db, ref.session_id, commit)
             try:
-                result = await asyncio.to_thread(commit)
+                try:
+                    result = await asyncio.to_thread(commit)
+                except SessionLineageError as exc:
+                    reason = 'storage_unavailable' if isinstance(exc, SessionLineageInventoryError) else 'admission_conflict'
+                    raise RuntimeStoreError(reason) from exc
             finally:
                 if operation == 'compress':
                     # Before the projection's boundary eviction ends the resident agent's engine

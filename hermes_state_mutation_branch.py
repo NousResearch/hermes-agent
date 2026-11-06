@@ -1,6 +1,5 @@
 """An independent local route, transcript and frozen policy in one receipt commit."""
 import json
-import uuid
 
 from hermes_state_local import POLICY_PREFIX
 from hermes_state_local_lineage import validate_local_lineage
@@ -49,7 +48,7 @@ def _child_policy(policy, child, prepared):
             'config_secret_ref': prepared['config_secret_ref']}
 
 
-def branch_in_transaction(db, conn, session_id, payload, prepared=None):
+def branch_in_transaction(db, conn, session_id, payload, prepared=None, *, reserved=None):
     row = conn.execute('SELECT value FROM state_meta WHERE key=?',
                        (POLICY_PREFIX + session_id,)).fetchone()
     if row is None:
@@ -61,7 +60,7 @@ def branch_in_transaction(db, conn, session_id, payload, prepared=None):
     from gateway.session import SessionEntry, SessionSource
     from gateway.config import Platform
     from hermes_state_keys import local_identity, profile_from_session_key
-    request_id = prepared['request_id'] if prepared else 'branch:' + uuid.uuid4().hex
+    request_id = prepared['request_id'] if prepared else reserved['request_id']
     child = local_identity(saved['profile_id'], saved['principal_id'], request_id)
     policy = _child_policy(saved['policy'], child, prepared)
     # The child keeps the parent's owning profile: a served secondary's origin names it

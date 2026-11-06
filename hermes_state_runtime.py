@@ -12,6 +12,7 @@ from agent.message_metadata import (
     CANONICAL_ROW, DATA_USE, DB_ROW_SNAPSHOT, MESSAGE_UID, PERSISTENCE_ONLY_MESSAGE_FIELDS, TOOL_CALL_UID, TOOL_CALL_UIDS,
 )
 from hermes_state_keys import admission_fingerprint
+from hermes_state_lineage import session_lineage_guard
 
 
 class SessionGoneEvent(NamedTuple):
@@ -510,6 +511,9 @@ def mutate_runtime_session(db, *, epoch: int, principal_id: str, session_id: str
     payload = json.loads(_json(payload))
     key, digest = mutation_receipt_key(principal_id, session_id, request_id, operation=operation, payload=payload,
                                        expected_revision=expected_revision, expected_generation=expected_generation)
+    # Generated targets must stay fixed across ownership discovery, expansion and SQLite retries.
+    reserved = ({'child': uuid.uuid4().hex} if operation in {'reset', 'compress'} else
+                {'request_id': 'branch:' + uuid.uuid4().hex} if operation == 'branch' and not _prepared else {})
 
     def write(conn) -> tuple[dict, Optional[SessionGoneEvent]]:
         """The receipt result plus the on_session_delete event this commit owes (None on replay)."""
@@ -539,7 +543,8 @@ def mutate_runtime_session(db, *, epoch: int, principal_id: str, session_id: str
                 from hermes_state_mutation_guards import require_idle
                 require_idle(db, conn, list({session_id, snapshot['target']}))
             return {'snapshot': snapshot}, None
-        affected, projection = apply_action(db, conn, session_id, operation, payload, prepared=_prepared)
+        affected, projection = apply_action(db, conn, session_id, operation, payload,
+                                            prepared=_prepared, reserved=reserved)
         event = None
         if operation == 'delete':
             event = SessionGoneEvent(tuple(projection.get('deleted_ids') or (session_id,)), 'delete')
@@ -554,7 +559,14 @@ def mutate_runtime_session(db, *, epoch: int, principal_id: str, session_id: str
         conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)',
                      (key, _json({'digest': digest, 'result': result})))
         return result, event
-    result, event = db._execute_write(write)
+    if _prepare_only:
+        result, event = db._execute_write(write)
+    else:
+        from hermes_state_lineage import guarded_discovered_session_write
+        from hermes_state_mutation_ownership import mutation_write_ids
+        result, event = guarded_discovered_session_write(
+            db, (session_id,), lambda conn: mutation_write_ids(
+                db, conn, session_id, operation, payload, prepared=_prepared, reserved=reserved), write)
     if event is not None:
         from hermes_state_common import emit_session_deleted
         emit_session_deleted(db, event.session_ids, reason=event.reason, primary=session_id)
@@ -922,6 +934,13 @@ def _worker_finish(db, conn, session_id, payload):
     return {'status': 'terminal'}
 
 
+def _worker_receipt_lineage_ids(operation, payload) -> tuple[str, ...]:
+    if operation != "compression.publish" or not isinstance(payload, dict):
+        return ()
+    child = payload.get("child_session_id")
+    return (child,) if isinstance(child, str) and 0 < len(child) <= 1024 else ()
+
+
 def mutate_worker_execution(db, *, epoch, execution_id, session_id, generation,
                             sequence, operation, payload):
     """One closed durable mutation and receipt; never call a self-committing API here."""
@@ -947,11 +966,12 @@ def mutate_worker_execution(db, *, epoch, execution_id, session_id, generation,
     }
     return apply_worker_receipt(db, epoch=epoch, execution_id=execution_id, session_id=session_id,
                                 generation=generation, sequence=sequence, operation=operation,
-                                payload=payload, handlers=handlers)
+                                payload=payload, handlers=handlers,
+                                lineage_ids=_worker_receipt_lineage_ids(operation, payload))
 
 
 def apply_worker_receipt(db, *, epoch, execution_id, session_id, generation, sequence,
-                         operation, payload, handlers):
+                         operation, payload, handlers, lineage_ids=()):
     """The one worker receipt transaction every ``worker.persist`` family shares.
 
     An exact (execution, sequence, digest) retry returns the stored result; otherwise the
@@ -1002,4 +1022,9 @@ def apply_worker_receipt(db, *, epoch, execution_id, session_id, generation, seq
             from hermes_state_runtime_workers import compact_terminal_receipts
             compact_terminal_receipts(conn, execution_id)
         return result
-    return db._execute_write(write, patience_s=db._TRANSCRIPT_WRITE_PATIENCE_S)
+    from hermes_state_lineage import guarded_discovered_session_write
+    from hermes_state_mutation_ownership import worker_receipt_write_ids
+    return guarded_discovered_session_write(
+        db, (session_id, *lineage_ids),
+        lambda conn: worker_receipt_write_ids(conn, session_id, operation, json.loads(encoded)),
+        write, patience_s=db._TRANSCRIPT_WRITE_PATIENCE_S)

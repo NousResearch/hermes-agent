@@ -31,6 +31,8 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import sqlite3
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
@@ -73,24 +75,26 @@ class Finding:
 
 
 class _Session:
-    """Open store handles for one run; every store opened at most once, all released at the end."""
+    """Open store handles for one run; cache each access mode and release all at the end."""
 
     def __init__(self, *, read_only: bool) -> None:
         self.read_only = read_only
-        self._dbs: dict[Path, Any] = {}
+        self._dbs: dict[tuple[Path, bool], Any] = {}
 
-    def db(self, store: Store):
+    def db(self, store: Store, *, inventory_only: bool = False):
         """The store's SessionDB. Read-only runs never create a file: a live profile that has no
         ``state.db`` yet reads as empty; an apply run opens it for real when a move lands there."""
         path = store.db_path
-        if path not in self._dbs:
-            if self.read_only:
+        read_only = self.read_only or inventory_only
+        key = (path, read_only)
+        if key not in self._dbs:
+            if read_only:
                 from hermes_state import SessionDB
-                self._dbs[path] = SessionDB(path, read_only=True) if path.exists() else _EMPTY_STORE
+                self._dbs[key] = SessionDB(path, read_only=True) if path.exists() else _EMPTY_STORE
             else:
                 from hermes_state_registry import acquire
-                self._dbs[path] = acquire(path)
-        return self._dbs[path]
+                self._dbs[key] = acquire(path)
+        return self._dbs[key]
 
     def close(self) -> None:
         from hermes_state_registry import release_or_close
@@ -98,7 +102,7 @@ class _Session:
             if db is _EMPTY_STORE:
                 continue
             with contextlib.suppress(Exception):
-                release_or_close(db) if not self.read_only else db.close()
+                db.close() if db.read_only else release_or_close(db)
         self._dbs.clear()
 
 
@@ -111,6 +115,9 @@ class _EmptyStore:
         return []
 
     def list_gateway_routing_rows(self):
+        return []
+
+    def list_session_lineage_rows(self):
         return []
 
     def key_profiles_for_chat(self, platform, chat_id):
@@ -157,7 +164,7 @@ def live_gateway_homes(stores: Iterable[Store]) -> list[tuple[str, int]]:
 # ── scan ──────────────────────────────────────────────────────────────────────
 
 class RepairPlan:
-    def __init__(self, stores: list[Store], *, legacy_main: str = "report") -> None:
+    def __init__(self, stores: list[Store], *, legacy_main: str = "report", root: Path | None = None) -> None:
         if legacy_main not in _LEGACY_MAIN_CHOICES:
             raise ValueError(f"legacy_main must be one of {_LEGACY_MAIN_CHOICES}")
         self.stores = stores
@@ -168,10 +175,34 @@ class RepairPlan:
         self.multiplexes = _gateway_multiplexes(self.routing_store.home) if self.routing_store else False
         self.findings: list[Finding] = []
         self._moves: dict[tuple[Path, Path], _MoveBatch] = {}
+        self._dual_home_ids: set[str] = set()
+        self._held_lineages: dict[Path, set[str]] = {}
+        # The dual-home scan must see every physical store the ownership fence can be
+        # blocked by — including tombstoned profile dirs that enumerate_stores() skips
+        # (review finding 3): one shared physical inventory, fence and repair. Root-only
+        # mode: repair never demands a writer/current database, so an empty or profile-only
+        # home inventories fine (an absent db is "empty", not "unsafe"). Real inventory
+        # errors — unreadable or unsafe EXISTING stores — still propagate: silently
+        # degrading to live-only enumeration would recreate finding 3's blind spot.
+        from hermes_state_lineage import physical_store_candidates
+        physical = physical_store_candidates(root)
+        seen = {s.db_path.resolve(strict=False) for s in stores if s.db_path.exists()}
+        self.physical_stores = list(stores) + [
+            Store(profile, db_path.parent) for db_path, profile in physical
+            if db_path.exists() and db_path.resolve(strict=False) not in seen
+        ]
 
     # -- helpers --
     def _add(self, finding: Finding) -> None:
         self.findings.append(finding)
+
+    def _add_session_fix(self, finding: Finding, store: Store, held: dict[str, str], write) -> None:
+        if finding.subject in held:
+            finding.action = None
+            finding.reason = held[finding.subject]
+        else:
+            finding._fix = _session_fix(store, finding.subject, write)
+        self._add(finding)
 
     @property
     def repairable(self) -> list[Finding]:
@@ -179,6 +210,7 @@ class RepairPlan:
 
     # -- scan --
     def scan(self, session: _Session) -> RepairPlan:
+        self._scan_dual_home(session)
         for store in self.stores:
             self._scan_sessions(session, store)
             self._scan_topics(session, store)
@@ -189,12 +221,58 @@ class RepairPlan:
             self._scan_sessions_json(self.routing_store)
         return self
 
+    def _scan_dual_home(self, session: _Session) -> None:
+        """Report cross-store copies before ordinary repair planning; never auto-move them.
+
+        Scans the full physical inventory (``self.physical_stores``): a tombstoned profile
+        dir with a state.db still blocks fenced writes, so its copies must be named here
+        even though ordinary per-store scans stay on live profiles.
+        """
+        by_id: dict[str, list[tuple[Store, dict[str, Any]]]] = {}
+        store_rows = {}
+        live_paths = {store.db_path for store in self.stores}
+        for store in self.physical_stores:
+            try:
+                store_rows[store.db_path] = session.db(
+                    store, inventory_only=store.db_path not in live_paths).list_session_lineage_rows()
+            except sqlite3.DatabaseError as exc:
+                raise type(exc)(f"Could not inventory {store.db_path}: {exc}") from exc
+            for row in store_rows[store.db_path]:
+                by_id.setdefault(str(row["id"]), []).append((store, row))
+        for session_id, copies in sorted(by_id.items()):
+            if len(copies) < 2:
+                continue
+            self._dual_home_ids.add(session_id)
+            details = []
+            for store, row in sorted(copies, key=lambda pair: pair[0].profile):
+                state = "live" if row.get("ended_at") is None else "ended"
+                details.append(
+                    f"{store.profile}={state}, messages={row.get('message_count')}, "
+                    f"profile_name={row.get('profile_name')!r}"
+                )
+            self._add(Finding(
+                "dual_home", ",".join(sorted(store.profile for store, _ in copies)), session_id,
+                "; ".join(details),
+                reason=("session ids present in multiple state.db files require an explicit canonical-owner "
+                        "decision; automatic move/relabel could fork a live Bot Chat"),
+            ))
+
+        for db_path, rows in store_rows.items():
+            groups = _connected_lineages(rows)
+            self._held_lineages[db_path] = set().union(
+                *(groups[sid] for sid in self._dual_home_ids if sid in groups))
+
     def _scan_sessions(self, session: _Session, store: Store) -> None:
         db = session.db(store)
         crossed = db.find_crossed_profile_sessions(store.profile)
         moving: set[str] = set()
         held = _ledgered_lineages([r for r in crossed["foreign"] if self._would_move(store, r)])
+        held.update({sid: "its linked lineage contains an excluded dual_home row"
+                     for sid in self._held_lineages.get(store.db_path, ())})
         for row in crossed["foreign"]:
+            if row["id"] in self._dual_home_ids:
+                moving.add(row["id"])
+                continue
             if row["id"] in held:
                 moving.add(row["id"])  # neither relabelled nor severed in place: it is a stray
                 self._add(Finding(
@@ -206,20 +284,21 @@ class RepairPlan:
         for row in crossed["mislabelled"]:
             if row["id"] in moving:
                 continue  # the move stamps the right label
-            self._add(Finding(
+            self._add_session_fix(Finding(
                 "mislabelled", store.profile, row["id"],
                 f"profile_name={row['profile_name']!r} but key {row['session_key']!r} belongs to "
                 f"{row['key_profile']!r}", action=f"relabel to {row['key_profile']!r}",
-                _fix=lambda s, st=store, sid=row["id"]: {
-                    "relabelled": s.db(st).relabel_sessions_to_key_profile([sid])}))
+                ), store, held, lambda db, sid=row["id"]: {
+                    "relabelled": db.relabel_sessions_to_key_profile([sid])})
         for row in crossed["crossed_parents"]:
             if row["id"] in moving:
                 continue  # the import drops a parent that is not in the target store
-            self._add(Finding(
+            self._add_session_fix(Finding(
                 "crossed_parent", store.profile, row["id"],
                 f"{row['key_profile']!r} row inherits from parent {row['parent_session_id']} keyed under "
                 f"{row['parent_profile']!r}", action="sever parent_session_id",
-                _fix=lambda s, st=store, sid=row["id"]: {"severed": s.db(st).sever_crossed_parents([sid])}))
+                ), store, held, lambda db, sid=row["id"]: {
+                    "severed": db.sever_crossed_parents([sid])})
 
     def _would_move(self, store: Store, row: dict[str, Any]) -> bool:
         """Mirror of :meth:`_plan_foreign_row`: does the plan copy this row to another store?"""
@@ -251,7 +330,8 @@ class RepairPlan:
         if self.legacy_main == "rekey":
             self._add(Finding(
                 "legacy_main", store.profile, sid, detail, action=f"rekey to agent:{store.profile}:",
-                _fix=lambda s, st=store, i=sid: {"rekeyed": s.db(st).rekey_legacy_main_sessions([i], st.profile)}))
+                _fix=_session_fix(store, sid, lambda db, i=sid, profile=store.profile: {
+                    "rekeyed": db.rekey_legacy_main_sessions([i], profile)})))
         elif self.legacy_main == "move" and self.routing_store is not None:
             moving.add(sid)
             self._add(Finding(
@@ -380,10 +460,11 @@ class RepairPlan:
 class _MoveBatch:
     """Every session moving from one store to another, moved together: export all, import all
     (parents before children, so a moved child keeps its moved parent), then delete from the source.
-    Row by row, deleting a parent would detach the children still waiting in the source. Copy
-    precedes delete, so a crash between the two leaves a duplicate the next run settles
-    (``present`` on import, then the delete). A row that fails is that row's failure alone: the
-    rest of the batch still moves, and only its lineage (descendants, and the parent it still
+    The batch holds each lineage lock across export, import and source deletion, so writers cannot
+    race the transfer. A crash after import can still leave a duplicate; the cross-store fence then
+    fails closed rather than guessing which copy is canonical. Row by row, deleting a parent would
+    detach the children still waiting in the source. A row that fails is that row's failure alone:
+    the rest of the batch still moves, and only its lineage (descendants, and the parent it still
     points at in the source) waits with it for the next run."""
 
     def __init__(self, src: Store, dst: Store) -> None:
@@ -406,6 +487,9 @@ class _MoveBatch:
         if self._result is not None:
             return self._result
         src_db, dst_db = session.db(self.src), session.db(self.dst)
+        return _guarded_component_action(src_db, self.ids, lambda: self._run_locked(session, src_db, dst_db))
+
+    def _run_locked(self, session: _Session, src_db: Any, dst_db: Any) -> dict[str, dict[str, int]]:
         from hermes_state_profile_repair import SessionLedgeredError
         payloads: dict[str, Optional[dict[str, Any]]] = {}
         for sid in self.ids:
@@ -424,8 +508,11 @@ class _MoveBatch:
                     f"its parent {parent} did not move; kept in the {self.src.profile} store with it")
                 continue
             try:
-                outcome = dst_db.import_moved_session(payload, profile_name=self.dst.profile)
+                outcome = dst_db.import_moved_session(
+                    payload, profile_name=self.dst.profile, transfer_from=self.src.db_path)
             except Exception as exc:
+                logger.warning("repair-profiles: moving %s into %s failed; source row kept",
+                               sid, self.dst.profile, exc_info=True)
                 self._errors[sid] = exc
                 continue
             if dst_db.count_messages_all(sid) < len(payload["messages"]):
@@ -445,9 +532,58 @@ class _MoveBatch:
                 if src_db.delete_moved_session(sid):
                     result[sid]["moved"] = 1
             except Exception as exc:
+                logger.warning("repair-profiles: deleting moved %s from %s failed; copied row stays",
+                               sid, self.src.profile, exc_info=True)
                 self._errors[sid] = exc
         self._result = result
         return result
+
+
+def _guarded_component_action(db: Any, ids: Iterable[str], action: Callable[[], Any]) -> Any:
+    from hermes_state_lineage import SessionLineageInventoryError, session_lineage_guard
+    wanted = set(ids)
+    guarded = set(wanted)
+    deadline = time.monotonic() + db._WRITE_PATIENCE_S
+    for _ in range(8):
+        groups = _connected_lineages(db.list_session_lineage_rows())
+        for sid in wanted:
+            guarded.update(groups.get(sid, ()))
+        with session_lineage_guard(db.db_path, guarded,
+                                   timeout_s=max(0.0, deadline - time.monotonic())):
+            current = _connected_lineages(db.list_session_lineage_rows())
+            if any(current.get(sid, {sid}) - guarded for sid in wanted):
+                continue
+            return action()
+    raise SessionLineageInventoryError("Repair lineage changed during ownership discovery")
+
+
+def _session_fix(store: Store, sid: str, write: Callable[[Any], dict[str, int]]) -> Callable[[_Session], dict[str, int]]:
+    def fix(session: _Session) -> dict[str, int]:
+        db = session.db(store)
+        return _guarded_component_action(db, [sid], lambda: write(db))
+    return fix
+
+
+def _connected_lineages(rows: list[dict[str, Any]]) -> dict[str, set[str]]:
+    neighbors: dict[str, set[str]] = {row["id"]: set() for row in rows}
+    for row in rows:
+        sid, parent = row["id"], row.get("parent_session_id")
+        if parent in neighbors:
+            neighbors[sid].add(parent)
+            neighbors[parent].add(sid)
+    groups: dict[str, set[str]] = {}
+    for sid in neighbors:
+        if sid in groups:
+            continue
+        component, pending = set(), [sid]
+        while pending:
+            current = pending.pop()
+            if current not in component:
+                component.add(current)
+                pending.extend(neighbors[current] - component)
+        for member in component:
+            groups[member] = component
+    return groups
 
 
 def _ledgered_lineages(foreign: list[dict[str, Any]]) -> dict[str, str]:
@@ -457,13 +593,7 @@ def _ledgered_lineages(foreign: list[dict[str, Any]]) -> dict[str, str]:
     with it, since moving a parent detaches the child left behind and a moved child loses its
     parent. Whether a move should carry the ledger is a separate policy decision."""
     by_id = {row["id"]: row for row in foreign}
-    groups: dict[str, set[str]] = {sid: {sid} for sid in by_id}
-    for row in foreign:
-        parent = row.get("parent_session_id")
-        if parent in by_id and groups[parent] is not groups[row["id"]]:
-            merged = groups[parent] | groups[row["id"]]
-            for sid in merged:
-                groups[sid] = merged
+    groups = _connected_lineages(foreign)
     held: dict[str, str] = {}
     for sid, row in by_id.items():
         anchors = sorted(m for m in groups[sid] if by_id[m].get("ledgered"))

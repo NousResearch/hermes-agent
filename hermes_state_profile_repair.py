@@ -22,6 +22,7 @@ the target holds at least as many messages). The reverse order would lose the ro
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from hermes_state_common import (
@@ -29,6 +30,7 @@ from hermes_state_common import (
     _placeholders as _session_ids_placeholders,
     emit_session_deleted,
 )
+from hermes_state_lineage import session_lineage_guard
 
 logger = logging.getLogger(__name__)
 
@@ -234,7 +236,9 @@ class SessionProfileRepairMixin:
             raise SessionLedgeredError(session_id)
         return payload
 
-    def import_moved_session(self, payload: dict[str, Any], *, profile_name: str) -> str:
+    def import_moved_session(
+        self: Any, payload: dict[str, Any], *, profile_name: str, transfer_from: str | Path | None = None,
+    ) -> str:
         """Insert a moved session into THIS store as *profile_name*'s. ``present`` when the id already
         exists (an earlier run copied but did not delete), else ``imported``. The parent link survives
         only when the parent is already here — a moved row must never point across stores or at a
@@ -246,6 +250,10 @@ class SessionProfileRepairMixin:
         session_id = session["id"]
 
         def _do(conn) -> str:
+            from hermes_state_mutation_retirement import retired_in
+            from hermes_state_runtime import RuntimeStoreError
+            if retired_in(conn, session_id):
+                raise RuntimeStoreError("session_deleted")
             if conn.execute("SELECT 1 FROM sessions WHERE id = ?", (session_id,)).fetchone():
                 return "present"
             session["profile_name"] = profile_name
@@ -266,7 +274,8 @@ class SessionProfileRepairMixin:
             for usage in payload.get("usage") or []:
                 self._insert_row(conn, "session_model_usage", {**usage, "session_id": session_id}, skip=frozenset())
             return "imported"
-        return self._execute_write(_do)
+        with session_lineage_guard(self.db_path, session_id, transfer_from=transfer_from, timeout_s=self._WRITE_PATIENCE_S):
+            return self._execute_write(_do)
 
     @staticmethod
     def _insert_row(conn, table: str, values: dict[str, Any], *, skip: frozenset) -> None:

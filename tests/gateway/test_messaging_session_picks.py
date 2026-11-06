@@ -11,6 +11,121 @@ import pytest
 from gateway.run import GatewayRunner
 
 
+@pytest.mark.asyncio
+async def test_foreign_owned_chat_pick_refuses_before_changing_reasoning(tmp_path, monkeypatch):
+    from hermes_state import SessionDB
+    runner, _source, route, viewer, root, fences = await _compressed_chat(tmp_path)
+    try:
+        db = runner.session_store._db
+        home = db.db_path.parent
+        monkeypatch.setenv('HERMES_HOME', str(home))
+        named = home / 'profiles' / 'science'
+        named.mkdir(parents=True)
+        with SessionDB(named / 'state.db') as sibling:
+            sibling._conn.execute("INSERT INTO sessions(id,source,started_at,profile_name) "
+                                  "VALUES (?,'telegram',1,'science')", (root,))
+            sibling._conn.commit()
+            before = db.get_session(root), sibling.get_session(root)
+            prior = runner._session_state(route).conversation.reasoning_override
+            refused = await viewer.dispatch(_mutate(root, fences, 'reasoning', {'effort': 'high'}, 'contested'))
+            assert refused.get('error', {}).get('data', {}).get('reason') == 'admission_conflict', refused
+            assert runner._session_state(route).conversation.reasoning_override == prior
+            assert (db.get_session(root), sibling.get_session(root)) == before
+    finally:
+        await viewer.close()
+        runner.session_store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_chat_pick_owner_change_before_commit_restores_reasoning(tmp_path, monkeypatch):
+    import sqlite3
+    from hermes_state import SessionDB
+    import hermes_state_mutation_chat_pick as picks
+
+    runner, _source, route, viewer, root, fences = await _compressed_chat(tmp_path)
+    try:
+        db = runner.session_store._db
+        home = db.db_path.parent
+        monkeypatch.setenv('HERMES_HOME', str(home))
+        named = home / 'profiles' / 'science'
+        named.mkdir(parents=True)
+        with SessionDB(named / 'state.db'):
+            pass
+        original = picks.commit_chat_pick
+        def changed_owner(*args, **kwargs):
+            with sqlite3.connect(named / 'state.db') as conn:
+                conn.execute("INSERT INTO sessions(id,source,started_at,profile_name) "
+                             "VALUES (?,'telegram',1,'science')", (root,))
+            return original(*args, **kwargs)
+        monkeypatch.setattr(picks, 'commit_chat_pick', changed_owner)
+        before = db.get_session(root)
+        prior = runner._session_state(route).conversation.reasoning_override
+        refused = await viewer.dispatch(_mutate(root, fences, 'reasoning', {'effort': 'high'}, 'raced'))
+        assert refused.get('error', {}).get('data', {}).get('reason') == 'admission_conflict', refused
+        assert runner._session_state(route).conversation.reasoning_override == prior
+        assert db.get_session(root) == before
+    finally:
+        await viewer.close()
+        runner.session_store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_chat_model_pick_owner_change_rolls_back_override_and_database(tmp_path, monkeypatch):
+    import sqlite3
+    from hermes_cli import model_selection_guards, model_switch
+    from hermes_state import SessionDB
+    import hermes_state_mutation_chat_pick as picks
+
+    monkeypatch.setattr(model_switch, 'switch_model', lambda **k: model_switch.ModelSwitchResult(
+        success=True, new_model=k['raw_input'], target_provider='custom', base_url='http://127.0.0.1:9/v1'))
+    monkeypatch.setattr(model_selection_guards, 'selection_warnings', lambda *a, **k: [])
+    runner, _source, route, viewer, root, fences = await _compressed_chat(tmp_path)
+    try:
+        db = runner.session_store._db
+        home = db.db_path.parent
+        monkeypatch.setenv('HERMES_HOME', str(home))
+        named = home / 'profiles' / 'science'
+        named.mkdir(parents=True)
+        with SessionDB(named / 'state.db'):
+            pass
+        original = picks.commit_chat_pick
+        def changed_owner(*args, **kwargs):
+            with sqlite3.connect(named / 'state.db') as conn:
+                conn.execute("INSERT INTO sessions(id,source,started_at,profile_name) "
+                             "VALUES (?,'telegram',1,'science')", (root,))
+            return original(*args, **kwargs)
+        monkeypatch.setattr(picks, 'commit_chat_pick', changed_owner)
+        before_root, before_tip = db.get_session(root), db.get_session('seg-1')
+        saved_before = runner.session_store.get_model_override(route)
+        memory_before = runner._session_model_override(route)
+        refused = await viewer.dispatch(_mutate(root, fences, 'model', {'model': 'picked'}, 'raced-model'))
+        assert refused.get('error', {}).get('data', {}).get('reason') == 'admission_conflict', refused
+        assert (db.get_session(root), db.get_session('seg-1')) == (before_root, before_tip)
+        assert runner.session_store.get_model_override(route) == saved_before
+        assert runner._session_model_override(route) == memory_before
+    finally:
+        await viewer.close()
+        runner.session_store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_chat_model_reset_commits_tip_model_with_receipt(tmp_path):
+    runner, source, route, viewer, root, fences = await _compressed_chat(tmp_path)
+    try:
+        runner.session_store.set_model_override(route, {'model': 'prior-model', 'provider': 'custom'})
+        runner._session_model_overrides[route] = {'model': 'prior-model', 'provider': 'custom'}
+        from hermes_constants import get_hermes_home
+        expected_model, _ = runner._channel_default_route(source, get_hermes_home() / 'config.yaml')
+        reset = await viewer.dispatch(_mutate(root, fences, 'model', {'model': 'reset'}, 'reset-model'))
+        assert reset.get('result', {}).get('model') == expected_model, reset
+        assert runner.session_store.get_model_override(route) is None
+        assert runner.session_store._db.get_session('seg-1')['model'] == expected_model
+        assert runner.session_store._db.get_session(root)['runtime_revision'] == fences['revision'] + 1
+    finally:
+        await viewer.close()
+        runner.session_store.close_all_db_handles()
+
+
 @pytest.fixture(autouse=True)
 def _home(tmp_path, monkeypatch):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))

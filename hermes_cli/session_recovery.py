@@ -35,12 +35,18 @@ def _init_delivery_ledger_schema(conn: sqlite3.Connection) -> None:
     _initialize_schema(conn)
 
 
+def _init_adoption_transfer_schema(conn: sqlite3.Connection) -> None:
+    from hermes_state_adoption_records import ensure_schema
+    ensure_schema(conn)
+
+
 # state.db tables created lazily by a gateway module (base ``SessionDB`` never creates them on a fresh
 # destination) -> the initializer owning their DDL. Recovery creates them before copying so owed rows
 # don't silently vanish from a "complete" salvage. Register new lazy tables HERE, not as ``if table ==``.
 # See #100313, #86236.
 _AUXILIARY_TABLE_SCHEMAS: dict[str, Callable[[sqlite3.Connection], None]] = {
     "delivery_obligations": _init_delivery_ledger_schema,
+    "adoption_transfers": _init_adoption_transfer_schema,
 }
 _AUXILIARY_TABLES = tuple(_AUXILIARY_TABLE_SCHEMAS)
 # Salvage is a transcript output, not a runnable clone of accepted work. Copying

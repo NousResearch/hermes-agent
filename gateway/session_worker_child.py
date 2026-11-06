@@ -39,8 +39,8 @@ def delegation_limits(authority, execution_id, session_id):
     return _limit(section, 'max_concurrent_children'), _limit(section, 'max_spawn_depth')
 
 
-def reserve_child_execution(db, conn, session_id, payload, *, epoch, execution_id, identity, principal, limits, refused):
-    from hermes_state_ids import new_session_id
+def reserve_child_execution(db, conn, session_id, payload, *, epoch, execution_id, identity, principal, limits, refused,
+                            reserved_session_id=None):
     from hermes_state_keys import admission_fingerprint
     from hermes_state_runtime import _secret_digest
     from hermes_state_worker_lifecycle import insert_session_row_in_transaction
@@ -59,7 +59,10 @@ def reserve_child_execution(db, conn, session_id, payload, *, epoch, execution_i
     if refused is not None:
         return {'refused': refused}
     parent = conn.execute('SELECT profile_name FROM sessions WHERE id=?', (session_id,)).fetchone()
-    child_sid, child_eid = new_session_id(), prefix + secrets.token_hex(8)
+    if reserved_session_id is None:
+        from hermes_state_ids import new_session_id
+        reserved_session_id = new_session_id()
+    child_sid, child_eid = reserved_session_id, prefix + secrets.token_hex(8)
     insert_session_row_in_transaction(db, conn, child_sid, 'subagent', model_config={'_delegate_from': session_id},
                                       parent_session_id=session_id, profile_name=parent['profile_name'])
     scope = dict(identity, session_id=child_sid, execution_id=child_eid, generation=0, secret=secret)
@@ -82,16 +85,20 @@ async def worker_child_request(connection, ref, params):
     authority = connection.authority
 
     def reserve():
+        from hermes_state_ids import new_session_id
         refused, limits = None, (0, 0)
         try:
             authority._require_admission_open()
             limits = delegation_limits(authority, params['execution_id'], params['session_id'])
         except RuntimeStoreError as exc:
             refused = exc.reason
+        child_sid = new_session_id()
         handler = partial(reserve_child_execution, epoch=params['epoch'], execution_id=params['execution_id'],
                           identity={key: params[key] for key in ('profile_id', 'pid', 'birth')},
+                          reserved_session_id=child_sid,
                           principal=connection.actor.subject, limits=limits, refused=refused)
-        return apply_worker_receipt(authority.db, **{key: params[key] for key in (
-            'epoch', 'execution_id', 'session_id', 'generation', 'sequence', 'operation', 'payload')},
-            handlers={'child.reserve': handler})
+        return apply_worker_receipt(
+            authority.db, **{key: params[key] for key in (
+                'epoch', 'execution_id', 'session_id', 'generation', 'sequence', 'operation', 'payload')},
+            handlers={'child.reserve': handler}, lineage_ids=(child_sid,))
     return await asyncio.to_thread(reserve)

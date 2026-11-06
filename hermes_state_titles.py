@@ -87,9 +87,12 @@ class SessionTitlesMixin:
         re-running the titler on an llm row is a no-op). No writer may move a hidden
         canonical Bot Chat off its title. Read and write are one compare-and-swap
         transaction, so a manual ``/title`` racing an in-flight generation is not clobbered."""
-        return bool(self._execute_write(
-            lambda conn: self._set_session_title_in_transaction(conn, session_id, title, source=source)
-        ))
+        from hermes_state_lineage import guarded_discovered_session_write
+        from hermes_state_mutation_ownership import mutation_write_ids
+        return bool(guarded_discovered_session_write(
+            self, (session_id,), lambda conn: mutation_write_ids(
+                self, conn, session_id, 'rename', {'title': title}),
+            lambda conn: self._set_session_title_in_transaction(conn, session_id, title, source=source)))
 
     def _set_session_title_in_transaction(self, conn, session_id: str, title: str, *, source: str):
         """Reuse title rules within an authority-owned transaction; never commit here."""
@@ -188,9 +191,11 @@ class SessionTitlesMixin:
         compression rotation keeps the original's authority)."""
         if source not in self._TITLE_SOURCE_RANK:
             raise ValueError(f"invalid title source: {source!r}")
-        return self._write_rowcount(
-            "UPDATE sessions SET title_source = ? WHERE id = ? AND title IS NOT NULL", (source, session_id)
-        ) > 0
+        from hermes_state_lineage import session_lineage_guard
+        with session_lineage_guard(self.db_path, session_id, timeout_s=self._WRITE_PATIENCE_S):
+            return self._write_rowcount(
+                "UPDATE sessions SET title_source = ? WHERE id = ? AND title IS NOT NULL", (source, session_id)
+            ) > 0
 
     def get_session_by_title(self, title: str) -> Optional[dict[str, Any]]:
         """Look up a session by exact title. Returns session dict or None."""

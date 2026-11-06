@@ -264,7 +264,16 @@ def bind_api_steps(authority, session_id, *, hosted_dispatch=None, declared_key=
                      (route, _json(entry.to_dict()), now.timestamp()))
         conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)',
                      (_BINDING_PREFIX + session_id, _json(receipt)))
-    yield partial(authority.db._execute_write, write)
+    from hermes_state_lineage import SessionLineageError, SessionLineageInventoryError, guarded_session_write
+
+    def guarded_write():
+        try:
+            return guarded_session_write(authority.db, session_id, write)
+        except SessionLineageError as exc:
+            reason = 'storage_unavailable' if isinstance(exc, SessionLineageInventoryError) else 'admission_conflict'
+            raise RuntimeStoreError(reason) from exc
+
+    yield guarded_write
     return restore_api_session(authority, session_id)
 
 

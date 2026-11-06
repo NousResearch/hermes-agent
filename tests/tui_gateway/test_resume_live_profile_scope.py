@@ -14,6 +14,9 @@ A's runtime — the turn then ran with A's persona and wrote A's memory
 
 from __future__ import annotations
 
+import sqlite3
+from contextlib import closing
+
 import pytest
 
 from tui_gateway import server
@@ -24,6 +27,9 @@ class _DB:
 
     def __init__(self, db_path=None, **_kwargs):
         self.db_path = db_path
+
+    def _read_ctx(self):
+        return closing(sqlite3.connect(":memory:"))
 
     def close(self):
         pass

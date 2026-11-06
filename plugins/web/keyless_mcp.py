@@ -279,9 +279,14 @@ def exa_search_keyless(query: str, limit: int = 5) -> dict[str, Any]:
 
 def exa_extract_keyless(urls: list[str]) -> list[dict[str, Any]]:
     """Called per-URL; the tool returns one combined text payload."""
+    # Exa's hosted tool defaults to 3,000 chars per page and would silently cut every page
+    # mid-word, below where Hermes' own truncate-and-store pipeline (tools/web_tools_truncate.py)
+    # would notice. Ask for the full page up to the store cap so truncation stays ours.
+    from tools.web_tools_truncate import MAX_STORED_TEXT_CHARS
+
     def _fetch(url: str) -> dict[str, Any]:
         try:
-            text = mcp_call(EXA_MCP_URL, "web_fetch_exa", {"urls": [url]})
+            text = mcp_call(EXA_MCP_URL, "web_fetch_exa", {"urls": [url], "maxCharacters": MAX_STORED_TEXT_CHARS})
         except KeylessMCPError as exc:
             # ``...: CRAWL_HTTP_429`` is the page's answer, not Exa throttling this client.
             if origin := origin_http_error(exa_crawl_status(exc)):

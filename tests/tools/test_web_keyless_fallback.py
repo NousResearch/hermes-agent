@@ -247,6 +247,17 @@ class TestKeylessCalls:
         assert out[0]["title"] == "Page Title"
         assert out[0]["content"].startswith("# Page Title")
 
+    def test_exa_extract_requests_the_full_page(self):
+        """Without ``maxCharacters`` the hosted Exa tool applies its own 3,000-char default and
+        silently cuts every page below where Hermes' truncate-and-store pipeline would notice."""
+        from tools.web_tools_truncate import MAX_STORED_TEXT_CHARS
+
+        body = "# Page Title\n" + "x" * 5000
+        with patch.object(keyless_mcp, "mcp_call", return_value=body) as call:
+            out = keyless_mcp.exa_extract_keyless(["https://a"])
+        assert call.call_args.args[2] == {"urls": ["https://a"], "maxCharacters": MAX_STORED_TEXT_CHARS}
+        assert out[0]["content"] == body  # long pages reach the truncator uncut
+
 
 # ---------------------------------------------------------------------------
 # Provider routing: keyless vs keyed

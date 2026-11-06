@@ -654,6 +654,61 @@ def _sandbox_status(profile: Optional[str], where) -> DesktopStatus:
     """Status of a sandbox-placed screen. Package presence is only known once the sandbox exists; before
     that the pane shows "installed" with the image hint carried in ``install_command`` so Start can explain."""
     from tools.bot_desktop import sandbox_host
+    # A sandbox that publishes the screen's RFB socket on a filesystem this process can see gives a
+    # direct answer: the marker plus a live socket is the whole truth about "is this screen up",
+    # independent of whether this process owns the sandbox's terminal environment. Without it, a
+    # pane request (which runs in a process that owns nothing) reports every such screen as stopped.
+    _rec = sandbox_host._read_marker()
+    _dir = _rec.get("dir")
+    if _dir:
+        import socket as _socket
+        _sock = os.path.join(_dir, "rfb.sock")
+        # Xvnc counts a bare connect/close as a failed security handshake and, after a few of them,
+        # blacklists the client: every later pane connection is then refused and the screen stays
+        # black until the X server is rebuilt. So finish the RFB handshake before closing the probe.
+        _live = False
+        _probe = None
+        try:
+            _probe = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+            _probe.settimeout(0.5)
+            _probe.connect(_sock)
+            _banner = _probe.recv(12)
+            if _banner.startswith(b"RFB 003."):
+                _probe.sendall(b"RFB 003.008\n")
+                if _probe.recv(64):
+                    _probe.sendall(b"\x01")
+                    if _probe.recv(4) == b"\x00\x00\x00\x00":
+                        _probe.sendall(b"\x01")
+                        # ServerInit: closing before it arrives leaves a failed write behind, the
+                        # same signal the blacklist is built from.
+                        _live = bool(_probe.recv(4096))
+        except OSError:
+            _live = False
+        finally:
+            if _probe is not None:
+                try:
+                    _probe.close()
+                except OSError:
+                    pass
+        if _live:
+            return DesktopStatus(
+                profile=profile or _profile_name(),
+                supported=True,
+                installed=True,
+                missing=[],
+                running=True,
+                pid=None,
+                display=_rec.get("display"),
+                socket=_sock,
+                geometry=geometry(),
+                install_command=None,
+                browser=None,
+                blocker=None,
+                memory_available_mb=None,
+                memory_limit_mb=None,
+                placement=f"{placement.TERMINAL}:{where.backend}",
+                image_switch=None,
+            )
     env = _owned_sandbox_env() or _sandbox_env(create=False)
     missing = sandbox_host.missing_binaries(env) if env is not None else []
     published = sandbox_host.published_env(env, profile or _profile_name()) if env is not None else {}

@@ -1,0 +1,191 @@
+import shlex
+
+import pytest
+
+from gateway.hooks import HookRegistry
+from tests.gateway.test_slash_access_dispatch import _make_event, _make_runner, _make_source
+
+
+def _runner(extra):
+    runner = _make_runner(platform_extra=extra)
+    runner._draining = False
+    runner._restart_requested = False
+    runner.hooks = HookRegistry()
+    return runner
+
+
+def _rewrite(runner, tmp_path, target):
+    hook_dir = tmp_path / 'hooks' / 'rewrite'
+    hook_dir.mkdir(parents=True)
+    (hook_dir / 'HOOK.yaml').write_text('name: rewrite\nevents: ["command:help"]\n')
+    (hook_dir / 'handler.py').write_text(
+        f'def handle(event, context):\n    return {{"decision": "rewrite", "command_name": {target!r}}}\n'
+    )
+    runner.hooks.discover_and_load()
+
+
+@pytest.mark.platforms('posix')
+@pytest.mark.asyncio
+@pytest.mark.parametrize('listed,denied', [
+    ('safe_cmd', 'safe-cmd'), ('safe-cmd', 'safe_cmd'), ('quit', 'exit'), ('exit', 'quit'),
+])
+@pytest.mark.parametrize('chat_type', ['dm', 'group'])
+async def test_exec_quick_command_grants_keep_exact_keys(tmp_path, listed, denied, chat_type):
+    prefix = '' if chat_type == 'dm' else 'group_'
+    runner = _runner({prefix + 'allow_admin_from': ['owner'], prefix + 'user_allowed_commands': [listed]})
+    markers = {name: tmp_path / name for name in (listed, denied)}
+    runner.config.quick_commands = {
+        name: {'type': 'exec', 'command': f'printf {shlex.quote(name)} > {shlex.quote(str(marker))}; printf {shlex.quote(name)}'}
+        for name, marker in markers.items()
+    }
+    source = _make_source(user_id='reader', chat_type=chat_type)
+    result = await runner._handle_message(_make_event('/' + denied, source))
+    assert f'/{denied} is admin-only here' in result
+    assert not markers[denied].exists()
+    result = await runner._handle_message(_make_event('/' + listed, source))
+    assert result == listed
+    assert markers[listed].read_text() == listed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['denied', 'admin', 'allowlisted', 'ungated'])
+@pytest.mark.parametrize('chat_type', ['dm', 'group'])
+async def test_hook_rewrite_authorizes_restart_target(tmp_path, monkeypatch, mode, chat_type):
+    import gateway.run
+    monkeypatch.setattr(gateway.run, '_hermes_home', tmp_path)
+    monkeypatch.setattr('gateway.hooks.HOOKS_DIR', tmp_path / 'hooks')
+    prefix = '' if chat_type == 'dm' else 'group_'
+    extra = {prefix + 'allow_admin_from': ['owner']} if mode != 'ungated' else {}
+    if mode == 'allowlisted':
+        extra[prefix + 'user_allowed_commands'] = ['restart']
+    runner = _runner(extra)
+    _rewrite(runner, tmp_path, 'restart')
+    requests = []
+    runner.request_restart = lambda **kwargs: requests.append(kwargs)
+    source = _make_source(user_id='owner' if mode == 'admin' else 'reader', chat_type=chat_type)
+    result = await runner._handle_message(_make_event('/help', source))
+    if mode == 'denied':
+        assert '/restart is admin-only here' in result
+        assert requests == []
+        assert not (tmp_path / '.restart_notify.json').exists()
+    else:
+        assert 'Restarting' in str(result)
+        assert len(requests) == 1
+        assert (tmp_path / '.restart_notify.json').is_file()
+
+
+@pytest.mark.asyncio
+async def test_hook_rewrite_to_unknown_command_keeps_guidance(tmp_path, monkeypatch):
+    monkeypatch.setattr('gateway.hooks.HOOKS_DIR', tmp_path / 'hooks')
+    runner = _runner({'allow_admin_from': ['owner']})
+    _rewrite(runner, tmp_path, 'not-a-real-capability')
+    result = await runner._handle_message(_make_event('/help', _make_source(user_id='reader')))
+    assert 'Unknown command' in result
+    assert '/not-a-real-capability' in result
+
+
+def _plugin(monkeypatch):
+    from hermes_cli import plugins
+    manager = plugins.PluginManager()
+    manager._discovered = True
+    calls = []
+
+    def handler(args):
+        calls.append(args)
+        return 'PLUGIN-RAN'
+
+    context = plugins.PluginContext(plugins.PluginManifest(name='probe', source='user'), manager)
+    context.register_command('my-cmd', handler)
+    monkeypatch.setattr(plugins, 'get_plugin_manager', lambda: manager)
+    return calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('spelling', ['my-cmd', 'my_cmd'])
+@pytest.mark.parametrize('mode', ['denied', 'admin', 'allowlisted', 'ungated', 'hook-denied'])
+@pytest.mark.parametrize('chat_type', ['dm', 'group'])
+async def test_plugin_alias_uses_registered_policy_and_hook(tmp_path, monkeypatch, spelling, mode, chat_type):
+    calls = _plugin(monkeypatch)
+    prefix = '' if chat_type == 'dm' else 'group_'
+    extra = {prefix + 'allow_admin_from': ['owner']} if mode != 'ungated' else {}
+    if mode in {'allowlisted', 'hook-denied'}:
+        extra[prefix + 'user_allowed_commands'] = ['my-cmd']
+    runner = _runner(extra)
+    if mode == 'hook-denied':
+        hook_dir = tmp_path / 'hooks' / 'deny'
+        hook_dir.mkdir(parents=True)
+        (hook_dir / 'HOOK.yaml').write_text('name: deny\nevents: ["command:my-cmd"]\n')
+        (hook_dir / 'handler.py').write_text(
+            'def handle(event, context):\n    return {"decision": "deny", "message": "HOOK-DENIED"}\n'
+        )
+        monkeypatch.setattr('gateway.hooks.HOOKS_DIR', tmp_path / 'hooks')
+        runner.hooks.discover_and_load()
+    source = _make_source(user_id='owner' if mode == 'admin' else 'reader', chat_type=chat_type)
+    result = await runner._handle_message(_make_event('/' + spelling + ' payload', source))
+    if mode == 'denied':
+        assert '/my-cmd is admin-only here' in result
+        assert calls == []
+    elif mode == 'hook-denied':
+        assert result == 'HOOK-DENIED'
+        assert calls == []
+    else:
+        assert result == 'PLUGIN-RAN'
+        assert calls == ['payload']
+
+
+@pytest.mark.platforms('posix')
+@pytest.mark.asyncio
+@pytest.mark.parametrize('quick_name,plugin_spelling', [('my_cmd', 'my-cmd'), ('my-cmd', 'my_cmd')])
+async def test_exec_quick_key_takes_precedence_over_plugin_alias(
+    tmp_path, monkeypatch, quick_name, plugin_spelling,
+):
+    calls = _plugin(monkeypatch)
+    runner = _runner({'allow_admin_from': ['owner'], 'user_allowed_commands': [quick_name]})
+    marker = tmp_path / 'quick'
+    runner.config.quick_commands = {
+        quick_name: {'type': 'exec', 'command': f'printf QUICK > {shlex.quote(str(marker))}; printf QUICK'}
+    }
+    source = _make_source(user_id='reader')
+    result = await runner._handle_message(_make_event('/' + quick_name, source))
+    assert result == 'QUICK'
+    assert marker.read_text() == 'QUICK'
+    assert calls == []
+    result = await runner._handle_message(_make_event('/' + plugin_spelling, source))
+    assert '/my-cmd is admin-only here' in result
+    assert calls == []
+
+
+@pytest.mark.parametrize('listed', ['reload-mcp', 'reload_mcp'])
+@pytest.mark.parametrize('typed', ['reload-mcp', 'reload_mcp'])
+def test_builtin_allowlist_resolves_registered_aliases(listed, typed):
+    extra = {'allow_admin_from': ['owner'], 'user_allowed_commands': [listed]}
+    runner = _runner(extra)
+    source = _make_source(user_id='reader')
+    assert runner._check_slash_access(source, typed) is None
+    assert '/restart is admin-only here' in runner._check_slash_access(source, 'restart')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['denied', 'admin', 'allowlisted', 'ungated'])
+async def test_hook_alias_target_uses_plugin_grant(tmp_path, monkeypatch, mode):
+    calls = _plugin(monkeypatch)
+    extra = {} if mode == 'ungated' else {
+        'allow_admin_from': ['owner'], 'user_allowed_commands': ['outer', 'my_cmd'],
+    }
+    if mode == 'allowlisted':
+        extra['user_allowed_commands'].append('my-cmd')
+    runner = _runner(extra)
+    runner.config.quick_commands = {
+        'outer': {'type': 'alias', 'target': '/my_cmd'},
+        'my_cmd': {'type': 'exec', 'command': 'printf QUICK'},
+    }
+    monkeypatch.setattr('gateway.hooks.HOOKS_DIR', tmp_path / 'hooks')
+    _rewrite(runner, tmp_path, 'outer')
+    source = _make_source(user_id='owner' if mode == 'admin' else 'reader')
+    result = await runner._handle_message(_make_event('/help', source))
+    if mode == 'denied':
+        assert '/my-cmd is admin-only here' in result
+        assert calls == []
+    else:
+        assert result == 'PLUGIN-RAN'
+        assert calls == ['']

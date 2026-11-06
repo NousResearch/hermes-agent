@@ -2,10 +2,7 @@ import importlib
 import sys
 from unittest.mock import MagicMock, patch
 
-
-
 _cli_mod = None
-
 
 def _make_cli(user_message_preview=None):
     global _cli_mod
@@ -49,7 +46,6 @@ def _make_cli(user_message_preview=None):
         with patch.object(mod, "get_tool_definitions", return_value=[]), patch.dict(mod.__dict__, {"CLI_CONFIG": clean_config}):
             return mod.HermesCLI()
 
-
 class TestSubmittedUserMessagePreview:
     def test_default_preview_shows_first_two_lines_and_last_two_lines(self):
         cli = _make_cli()
@@ -78,4 +74,3 @@ class TestSubmittedUserMessagePreview:
         assert "line5" not in rendered
         assert "line6" not in rendered
         assert "(+4 more lines)" in rendered
-

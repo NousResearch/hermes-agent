@@ -3,11 +3,10 @@ import asyncio
 
 import pytest
 
-from gateway.platforms.signal_rate_limit import (
+from plugins.platforms.signal.signal_rate_limit import (
     SignalAttachmentScheduler,
     _reset_scheduler,
 )
-
 
 @pytest.fixture(autouse=True)
 def _reset_signal_scheduler():
@@ -15,7 +14,6 @@ def _reset_signal_scheduler():
     _reset_scheduler()
     yield
     _reset_scheduler()
-
 
 def _patch_sleep_and_time(monkeypatch, capture: list):
     """Replace asyncio.sleep inside the scheduler module so tests don't
@@ -28,14 +26,11 @@ def _patch_sleep_and_time(monkeypatch, capture: list):
         offset += seconds
 
     monkeypatch.setattr(
-        "gateway.platforms.signal_rate_limit.asyncio.sleep", _fake_sleep
+        "plugins.platforms.signal.signal_rate_limit.asyncio.sleep", _fake_sleep
     )
     monkeypatch.setattr(
-        "gateway.platforms.signal_rate_limit.time.monotonic", lambda: offset
+        "plugins.platforms.signal.signal_rate_limit.time.monotonic", lambda: offset
     )
-
-
-
 
 class TestEstimateWait:
 
@@ -45,12 +40,11 @@ class TestEstimateWait:
         s.tokens = 0.0
         frozen = s.last_refill
         monkeypatch.setattr(
-            "gateway.platforms.signal_rate_limit.time.monotonic", lambda: frozen
+            "plugins.platforms.signal.signal_rate_limit.time.monotonic", lambda: frozen
         )
         # 32 tokens at 0.25 tokens/sec = 128s
         assert s.estimate_wait(32) == pytest.approx(32 / s.refill_rate)
         assert s.estimate_wait(1) == pytest.approx(1 / s.refill_rate)
-
 
 class TestAcquire:
 
@@ -84,7 +78,6 @@ class TestAcquire:
         # After sleep+acquire+rpc call, the bucket is empty again.
         assert s.tokens == pytest.approx(0.0)
 
-
 class TestFeedback:
     def test_calibrates_refill_rate_from_retry_after(self):
         s = SignalAttachmentScheduler()
@@ -93,7 +86,6 @@ class TestFeedback:
         assert s.refill_rate == pytest.approx(1.0 / 42.0)
         assert s.refill_rate != original
 
-
 class TestRefillClamping:
     def test_refill_does_not_exceed_capacity(self, monkeypatch):
         """Even after a long elapsed window, refill clamps at capacity."""
@@ -101,12 +93,11 @@ class TestRefillClamping:
         s.tokens = 0.0
         # Pretend a year passed.
         monkeypatch.setattr(
-            "gateway.platforms.signal_rate_limit.time.monotonic",
+            "plugins.platforms.signal.signal_rate_limit.time.monotonic",
             lambda: s.last_refill + 365 * 24 * 3600,
         )
         s._refill()
         assert s.tokens == s.capacity
-
 
 class TestFifoAcquire:
     @pytest.mark.asyncio
@@ -132,6 +123,3 @@ class TestFifoAcquire:
         # A had a full bucket (no wait). B waited a full refill.
         assert results[0][1] == 0.0
         assert results[1][1] == pytest.approx(s.capacity / s.refill_rate)
-
-
-

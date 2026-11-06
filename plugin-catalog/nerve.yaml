@@ -1,21 +1,13 @@
 name: nerve
 repo: https://github.com/keeltrace/hermes-nerve
-sha: a8e117347617ca7d445dcb8483186202a03b28f1
-description: >-
-  Nerve is a supervisory nervous system for Hermes Agent with provider-neutral Jev, Laya, and
-  OpenJev Reflex backends, evidence-backed Kanban supervision, context governance, token-budget
-  trajectory control, and durable SSH workers. Disclosure — the default Reflex backend is hosted
-  Jev; with the default settings (enabled / admission_enabled on) each turn's user prompt (up to
-  12k characters) and redacted tool/result previews are sent to the configured Jev provider
-  (OpenRouter Decisions / TypeSafe Jev) using your OPENROUTER_API_KEY or TYPESAFE_API_KEY,
-  spending your credits on every turn. Laya and OpenJev can be configured as local/self-hosted
-  backends.
+sha: 76320ec5d764d588d9042baac60702f333896b1a
+description: "Nerve is a supervisory nervous system for Hermes Agent with provider-neutral Jev, Laya, OpenJev, SystemOne, and Liquid D1 Reflex backends, evidence-backed Kanban supervision, context governance, token-budget trajectory control, and durable SSH workers. Disclosure — the default Reflex backend is hosted Jev; with the default settings (enabled / admission_enabled on) each turn's user prompt (up to 12k characters) and redacted tool/result previews are sent to the configured Jev provider (OpenRouter Decisions / TypeSafe Jev) using your OPENROUTER_API_KEY or TYPESAFE_API_KEY, spending your credits on every turn. Laya, OpenJev, SystemOne, and D1 can be configured as local/self-hosted backends. The Operator/Lean/Marie Kondo/Fat Cat presets (Operator is what `nerve setup` / the control panel picks for new homes) rewrite each outgoing model request to trim deferred tool schemas and skill descriptions to the current task, which can change the prompt-cache prefix between turns. The operator-only `nerve ui` control panel (127.0.0.1, per-run token) can replace the installed Nerve plugin with a local source checkout and run `hermes plugins validate/enable`, and, after an explicit confirmation, can create a Python venv under HERMES_HOME, pip-install Laya or PyTorch/transformers from PyPI, download model weights, and start a long-running localhost model server (D1 runs Hugging Face `trust_remote_code` model code). The operator-only nerve setup CLI can copy a local HermesContextBus checkout into HERMES_HOME/plugins/hermes-context-bus and runs hermes plugins enable/disable for that plugin when a profile is saved; the model cannot trigger any of this."
 maintainer: keeltrace
 tier: community
 category: automation
 requires_hermes: '>=0.21'
 docs_url: https://github.com/keeltrace/hermes-nerve#readme
-version: 0.2.2
+version: 0.4.15
 capabilities:
   provides_tools:
   - nerve_decide
@@ -24,6 +16,7 @@ capabilities:
   - nerve_assess
   - nerve_context_curate
   - nerve_context_rehydrate
+  - nerve_context_explain
   - nerve_stats
   - nerve_nervous_event
   - nerve_supervise_card

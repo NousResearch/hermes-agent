@@ -103,6 +103,7 @@ def test_non_running_value_ignored(
         subprocess.run(
             ["docker", "rm", "-f", name],
             capture_output=True, timeout=10,
+            check=False,
         )
 
 
@@ -130,6 +131,7 @@ def _cleanup_bind_mount(built_image: str, container_name: str, host_dir: Path) -
     subprocess.run(
         ["docker", "rm", "-f", container_name],
         capture_output=True, timeout=10,
+        check=False,
     )
     subprocess.run(
         ["docker", "run", "--rm",
@@ -137,6 +139,7 @@ def _cleanup_bind_mount(built_image: str, container_name: str, host_dir: Path) -
          "--entrypoint", "sh", built_image,
          "-c", "chown -R 0:0 /clean 2>/dev/null; rm -rf /clean/* /clean/.* 2>/dev/null; chown 0:0 /clean; true"],
         capture_output=True, timeout=15,
+        check=False,
     )
 
 
@@ -185,6 +188,7 @@ def test_does_not_seed_gateway_state_through_symlink(
         r = subprocess.run(
             ["docker", "logs", container_name],
             capture_output=True, text=True, timeout=10,
+            check=False,
         )
         combined = r.stdout + r.stderr
         assert "refusing" in combined and "gateway_state.json" in combined, (

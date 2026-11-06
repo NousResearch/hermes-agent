@@ -21,7 +21,7 @@ Hermes discovers memory providers from four sources, in this precedence order:
 | Bundled | `plugins/memory/<name>/` | Ships with Hermes. Closed to new providers — see [CONTRIBUTING](https://github.com/NousResearch/hermes-agent/blob/main/CONTRIBUTING.md). |
 | User | `$HERMES_HOME/plugins/<name>/` | Dropped in by the user, per profile. |
 | Project | `./.hermes/plugins/<name>/` | Opt-in via `HERMES_ENABLE_PROJECT_PLUGINS=1`. |
-| Package | `hermes_agent.memory_providers` entry point | `pip install`, nothing to copy. |
+| Package | `hermes_agent.memory_providers` entry point | Distribution supplied by the installation owner; nothing to copy. |
 
 Earlier sources win on a name collision, so a directory dropped into a working
 tree can never shadow a shipped provider.
@@ -34,6 +34,20 @@ silently redirect the agent's memory rather than merely override a tool.
 
 Discovery only *enumerates* — it never imports a provider. Nothing runs until
 `memory.provider` names it.
+
+Entry-point discovery does not install packages. Do not inject a provider into
+Hermes's selected environment with pip. On PM-managed installations, ship a
+directory provider with declared Python dependencies; plugin admission and
+`hermes memory setup` prepare them through PM before use. Owner-managed builds
+(such as Nix) can include an entry-point distribution declaratively.
+
+CLI and dashboard setup share candidate preparation. PM includes the provider's
+`pyproject.toml` or legacy `pip_dependencies` / `python_dependencies` alongside
+the active plugin union; an importable module does not bypass declared version
+constraints. Dashboard readiness checks the same inputs without installing
+anything. A successful preparation may require restarting Hermes before the
+running process can use the selected dependency generation. External sidecar
+checks and setup commands remain separate from the Python union.
 
 ### Directory Provider
 
@@ -76,6 +90,7 @@ Your plugin implements the `MemoryProvider` abstract base class from `agent/memo
 
 ```python
 from agent.memory_provider import MemoryProvider
+from agent.secret_scope import get_secret
 
 class MyMemoryProvider(MemoryProvider):
     @property
@@ -84,7 +99,7 @@ class MyMemoryProvider(MemoryProvider):
 
     def is_available(self) -> bool:
         """Check if this provider can activate. NO network calls."""
-        return bool(os.environ.get("MY_API_KEY"))
+        return bool(get_secret("MY_API_KEY"))
 
     def initialize(self, session_id: str, **kwargs) -> None:
         """Called once at agent startup.
@@ -92,7 +107,7 @@ class MyMemoryProvider(MemoryProvider):
         kwargs always includes:
           hermes_home (str): Active HERMES_HOME path. Use for storage.
         """
-        self._api_key = os.environ.get("MY_API_KEY", "")
+        self._api_key = get_secret("MY_API_KEY") or ""
         self._session_id = session_id
 
     # ... implement remaining methods
@@ -163,6 +178,14 @@ workspace; absent or empty cwd remains unpinned.
 | `on_pre_compress(messages)` | Before context compression | Save insights before discard |
 | `on_memory_write(action, target, content, metadata=None)` | Built-in memory writes | Mirror to your backend |
 | `shutdown()` | Process exit | Clean up connections |
+| `on_profile_created(profile_name, hermes_home)` | A profile selecting your provider was created (a clone carries `memory.provider`), from the CLI, dashboard or Desktop | Per-profile state: a peer, a host entry |
+| `on_profile_renamed(old_name, new_name, hermes_home)` | That profile was renamed (`hermes_home` is the new directory) | Re-key state stored under the old name |
+
+The two profile hooks run on an uninitialized instance with that profile's home and its own
+secrets bound: its `.env` plus its configured secret sources (1Password and the like). A key it
+lacks reads as unset: the caller's environment is never used. An exception (`SystemExit` included) is logged and never fails the create or rename. They run inside the
+create/rename request on every surface, so do network work on a background thread. Under
+`plugins.isolation: host`, a plugin host started only for the hook is stopped when it returns.
 
 For native `replace` and `remove`, `metadata["previous_content"]` contains the full
 entry selected under the native-store lock. Notifications are emitted only after
@@ -174,13 +197,29 @@ identity should skip destructive mirroring when it is absent.
 
 ### Oversized prefetch results
 
-External `prefetch()` results above the configured spill threshold are written
-to a private spill file and replaced with the configured head/tail preview.
-The preview includes the path so the agent can read the full result when it is
-actually needed. Results at or below the threshold are returned unchanged.
+External `prefetch()` results are returned in full by default, preserving the
+provider's relevance-ranked recall, up to a safety ceiling of 10×
+`hooks.output_spill.max_chars` (at least 100,000 characters) above which they
+still spill. Keep your own recall budget well under that. To opt into spilling oversized results for
+the active profile, set:
 
-This uses the shared `hooks.output_spill` settings (`10,000` characters by
-default); see [Plugins — oversized-context spill](./plugins/index.md#oversized-context-spill).
+```yaml
+memory:
+  prefetch_spill_enabled: true  # default: false
+```
+
+When enabled, results above the shared `hooks.output_spill.max_chars` threshold
+(default `10,000` characters) are written to a private spill file and replaced
+with the configured head/tail preview plus its path. The default preview keeps
+only the first and last `500` characters; the model must read the file to recover
+the middle. Results at or below the threshold remain unchanged.
+
+The shared `hooks.output_spill` preview lengths and directory still apply, and
+`hooks.output_spill.enabled: false` disables spilling even with memory opt-in.
+Both settings are snapshotted when the external provider is registered; restart
+Hermes to apply changes to existing sessions. Built-in memory and normal
+plugin-hook spilling are unaffected. See
+[Plugins — oversized-context spill](./plugins/index.md#oversized-context-spill).
 
 ## Pre-Compress Checkpoints (fail-closed)
 
@@ -226,15 +265,49 @@ contract is opt-in and exists for third-party archiving providers. Enabling
 (manual and automatic): agent init logs a warning naming the active provider,
 and each refusal names `compression.checkpoint_required` as the key to disable.
 
-The gate binds to every compaction authority, not just the Hermes
-summarizer: server-side native compaction (`compression.codex_responses_native`)
+The gate binds to every compaction authority the host runs, not just the
+Hermes summarizer: server-side native compaction (`compression.codex_responses_native`)
 is suppressed while the gate is armed, post-turn micro-compaction
 (`compression.micro_compact`) is forced off at agent init (it absorbs old
-exchanges into a rolling summary with no checkpoint hook in its path), and
-the `codex_app_server` API mode is refused at agent init — the codex agent
-compacts its own thread with no truthful pre-compaction boundary, so a
-required checkpoint cannot be guaranteed there. The checkpoint-aware Hermes
-compressor stays the only lossy authority.
+exchanges into a rolling summary with no checkpoint hook in its path), the
+proactive tool-result prune (`compression.proactive_prune_tokens`) is
+suppressed at its call site (off by default, so a default install has nothing
+to suppress there), and the `codex_app_server` API mode is refused at agent
+init — the codex agent compacts its own thread with no truthful
+pre-compaction boundary, so a required checkpoint cannot be guaranteed there.
+A plugin context engine's `compress()` is covered too: the host calls
+`on_pre_compress()` before it. Not covered: a plugin context engine that
+removes or rewrites host-transcript messages outside `compress()` (from
+`on_turn_complete()`, say). The host cannot checkpoint that path and does not
+refuse such an engine yet.
+
+### Forks under an armed gate
+
+Hermes runs a second agent without a provider in four places (delegated
+subagents, the curator pass, the batch runner, the Feishu comment responder). With the gate off they stay provider-less. With
+`checkpoint_required` armed such a fork arms the same gate and would fail its
+first compaction with `BLOCKED_MISSING_PREREQUISITE`, so it loads the
+configured provider, initialized with `agent_context="subagent"` (`platform`,
+plus `parent_session_id` where the fork has a parent session, tells the shapes
+apart). The detached review and `/btw` forks are different:
+they persist nothing, so the gate does not apply to them. Two consequences:
+
+- **One `initialize()` per fork** — a round trip per spawn for a
+  network-backed store.
+- **Fork transcripts reach the archive** through `on_pre_compress()`.
+
+The fork's prompt stays as it was with `skip_memory=True`: the built-in
+MEMORY.md/USER.md store is not loaded for `agent_context="subagent"`, unless
+the fork requests the `memory` toolset (then it gets the store, gate or no
+gate).
+
+The host keeps everything else off for `agent_context="subagent"`, whether or
+not your provider reads the label: no `prefetch()`/`queue_prefetch()`, no
+`sync_turn()`, `on_turn_start()`, `on_session_end()` or `on_delegation()`.
+`initialize()`, `on_session_switch()` and `on_pre_compress()` still run, so a
+checkpoint provider must save on `on_pre_compress()` regardless of how it
+scopes non-primary writes — skipping it there either breaks the checkpoint
+contract (success without a save) or kills the fork at its first compaction.
 
 What your provider receives depends on its declared API version. Version 1
 providers (the implicit default — every pre-existing provider) keep the
@@ -305,8 +378,30 @@ def get_config_schema(self):
 Fields with `secret: True` and `env_var` go to `.env`. Non-secret fields are passed to `save_config()`.
 
 :::tip Minimal vs Full Schema
-Every field in `get_config_schema()` is prompted during `hermes memory setup`. Providers with many options should keep the schema minimal — only include fields the user **must** configure (API key, required credentials). Document optional settings in a config file reference (e.g. `$HERMES_HOME/myprovider.json`) rather than prompting for them all during setup. This keeps the setup wizard fast while still supporting advanced configuration. See the Supermemory provider for an example — it only prompts for the API key; all other options live in `supermemory.json`.
+Every field in `get_config_schema()` is prompted during `hermes memory setup`. Providers with many options should keep the schema minimal — only include fields the user **must** configure (API key, required credentials). Document optional settings in a config file reference (e.g. `$HERMES_HOME/myprovider.json`) rather than prompting for them all during setup. This keeps the setup wizard fast while still supporting advanced configuration. See the [Supermemory provider](https://github.com/supermemoryai/hermes-supermemory) (a plugin catalog entry) for an example — it only prompts for the API key; all other options live in `supermemory.json`.
 :::
+
+### Provider-owned storage
+
+`config_schema.py` defaults to `storage=STORAGE_FLAT_JSON`: core reads and writes
+`$HERMES_HOME/<name>/config.json` for the panel. A provider whose config has its own layout
+(several profiles in one file, OAuth tokens beside settings) declares `storage=STORAGE_PROVIDER`
+and implements two methods; core never opens the file:
+
+```python
+def read_config_fields(self, hermes_home: str) -> dict:
+    # Stored natives by field key (absent = unset), plus what a blank field resolves to.
+    return {"values": {"workspace": "ws1"}, "placeholders": {"aiPeer": "hermes_coder"}}
+
+def write_config_fields(self, values: dict, hermes_home: str) -> None:
+    # Only submitted keys; None clears one. Non-blank secrets arrive here too; core saves them to
+    # .env under env_key only after this returns. Raise ValueError (a subclass such as
+    # json.JSONDecodeError counts) to refuse the save (shown as a 400), e.g. when your file does not parse.
+    ...
+```
+
+Declaring `storage=STORAGE_PROVIDER` without `write_config_fields` makes a save return 501; a
+provider that fails to load returns 503; an unknown `storage` value shows no panel and refuses saves.
 
 ## Save Config
 
@@ -397,13 +492,25 @@ workspace data.
 All storage paths **must** use the `hermes_home` kwarg from `initialize()`, not hardcoded `~/.hermes`:
 
 ```python
-# CORRECT — profile-scoped
-from hermes_constants import get_hermes_home
-data_dir = get_hermes_home() / "my-provider"
+# CORRECT — profile-scoped, bound on the instance
+def initialize(self, session_id, **kwargs):
+    self._data_dir = Path(kwargs["hermes_home"]) / "my-provider"
 
 # WRONG — shared across all profiles
 data_dir = Path("~/.hermes/my-provider").expanduser()
 ```
+
+### Multiplexed gateways
+
+One gateway process can serve several profiles at once, and their turns run concurrently on different threads. Each agent gets its own `MemoryManager` and its own provider instance, initialized for one profile. Your provider must:
+
+- **Return a new instance per load.** `register(ctx)` should construct the provider (`ctx.register_memory_provider(MyProvider())`), not hand back a module-level singleton. The manager refuses to initialize an instance that another profile's manager already bound, and logs `memory_provider_instance_shared`.
+- **Bind from `initialize()`.** Derive every store, path, client, bank and tenant from the `hermes_home` keyword (and secrets read through `get_secret()` during `initialize`), and keep that binding on `self`.
+- **Keep nothing profile-specific at module or class level.** No global "current store", and no rebinding a shared binding on each call. Two profiles' calls interleave, so a per-call rebind races.
+
+The manager enforces the other half. It runs tool calls and every lifecycle hook (`prefetch`, `queue_prefetch`, `sync_turn`, `on_memory_write`, `on_session_end`, …) only from the profile the instance was initialized for. On a multiplexed gateway a caller that names no profile is refused, and the refusal is logged as `memory_caller_profile_unresolved` in the profile's `errors.log` (`hermes logs errors`) and in `gateway.log`. Background hooks run under the owning profile's `HERMES_HOME`. `handle_tool_call(..., **kwargs)` also receives `hermes_home`, `agent_identity` and `caller_gsk`. They name the profile your instance is already bound to, so you can assert on them, but don't rebind from them.
+
+Hermes can't verify a provider's internals. A provider that keeps a process-wide binding still mixes profiles' memories, even with these checks in place.
 
 ## Testing
 
@@ -466,7 +573,7 @@ def register_cli(subparser) -> None:
 
 ### Reference implementation
 
-See `plugins/memory/honcho/cli.py` for a full example with 13 subcommands, cross-profile management (`--target-profile`), and config read/write.
+See the Honcho plugin's [`cli.py`](https://github.com/plastic-labs/honcho/blob/main/hermes-plugin-honcho/cli.py) for a full example with 13 subcommands, cross-profile management (`--target-profile`), and config read/write.
 
 ### Directory structure with CLI
 
@@ -481,3 +588,13 @@ plugins/memory/my-provider/
 ## Single Provider Rule
 
 Only **one** external memory provider can be active at a time. If a user tries to register a second, the MemoryManager rejects it with a warning. This prevents tool schema bloat and conflicting backends.
+
+## `HERMES_HOME` survival contract (what wrappers can rely on)
+
+For wrapper-style providers that keep their runtime in a sidecar venv outside Hermes-managed Python (no dependency surface — no `pyproject.toml`, `pip_dependencies`, or `python_dependencies` — at the scanned plugin root; a `pyproject.toml` belonging solely to an external or nested sidecar is not scanned):
+
+- **Location.** `$HERMES_HOME/plugins/<name>/` is the profile-scoped plugin location, and `HERMES_HOME` follows the active context override, then `$HERMES_HOME`, then the platform default. Propagate `HERMES_HOME` when launching the wrapper or sidecar so profile isolation holds; `MemoryManager.initialize_all` injects the active `hermes_home` into every provider.
+- **Survival.** Ordinary Hermes updates — including managed-venv rebuild/replacement by pm — do not delete or rewrite `$HERMES_HOME/plugins/**`. An installed wrapper directory and its marker file (e.g. `mnemosyne-wrapper.json`) survive. Explicit plugin updates and deletion flows (`hermes uninstall`, `hermes plugins remove`, profile deletion, user deletion) are excluded from this guarantee.
+- **Sidecar isolation.** A plugin root with no dependency surface never joins the pm workspace dependency union; a resync or venv rebuild neither provisions deps for it nor touches its tree.
+- **Conflicts.** For native shared-venv plugins, an unsatisfiable dependency union fails loudly: the candidate plugin stays unenabled and unimported (the admission authority refuses before publishing config, reporting the plugin identity plus the resolver's reason, with a re-enable/retry path and a machine-readable pm receipt). Dependency resolution does not automatically disable other plugins or run a bisect. Explicit plugin updates, removal, and independent security gates are separate operations.
+

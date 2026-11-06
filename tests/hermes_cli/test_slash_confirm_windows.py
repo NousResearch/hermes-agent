@@ -16,7 +16,7 @@ These tests verify:
    (on win32, off-thread) a scheduling failure degrades to a clean cancel.
 4. Empty choices returns None.
 
-**Why the Windows cases are ``windows_only`` rather than ``sys.platform``
+**Why the Windows cases are ``platforms("windows")`` rather than ``sys.platform``
 patches.** The deadlock #33961 fixed is a real property of the Windows console:
 a raw ``input()`` off the main thread blocks forever against prompt_toolkit's
 stdin ownership. On Linux the same call returns immediately (or EOFs), so a test
@@ -159,7 +159,7 @@ class TestConfirmDestructiveSlash:
     This is the flow bug #33961 froze on native Windows.  The fix made it
     platform-agnostic (modal via the app loop), so the assertion holds on
     whichever host runs it.  The class carries no OS marker, so the
-    ``windows_only`` lane deselects it — the deadlock tests above are the
+    ``-m platforms`` Windows lane deselects it — the deadlock tests above are the
     Windows-side regression guard.
     """
 
@@ -198,7 +198,7 @@ class TestConfirmDestructiveSlash:
         assert outcome["result"] == expected
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 class TestNativeWindowsNoRawInputDeadlock:
     """Anti-regression guard exercising the REAL ``_prompt_text_input``.
 
@@ -214,7 +214,7 @@ class TestNativeWindowsNoRawInputDeadlock:
     pre-#33961 code (win32 → ``_prompt_text_input`` → off-main ``input()``)
     and pass once the modal path / clean-cancel fallback is in place.
 
-    ``windows_only``: the deadlock is a property of the Windows console's stdin
+    ``platforms("windows")``: the deadlock is a property of the Windows console's stdin
     ownership.  Running this with a patched ``sys.platform`` on Linux exercises
     a blocking ``input()`` that does not actually deadlock there, so it could
     never have caught the regression it is named for.

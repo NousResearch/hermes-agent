@@ -107,9 +107,8 @@ status` report the result as `micState` (`unmuted`, `unmuted_clicked`, `unknown`
 
 On the node machine (e.g. user's Mac with a signed-in Chrome):
 ```bash
-pip install playwright websockets
-python -m playwright install chromium
 hermes plugins enable google_meet
+hermes meet install
 hermes meet node run --display-name my-mac --host 0.0.0.0 --port 18789
 # prints the bearer token on first run; copy it
 ```

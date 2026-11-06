@@ -4,6 +4,8 @@ Tests the _handle_background_command handler (run a prompt in a separate
 background session) across gateway messenger platforms.
 """
 
+import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -11,7 +13,6 @@ import pytest
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
-
 
 def _make_event(text="/bg", platform=Platform.TELEGRAM,
                 user_id="12345", chat_id="67890"):
@@ -23,7 +24,6 @@ def _make_event(text="/bg", platform=Platform.TELEGRAM,
         user_name="testuser",
     )
     return MessageEvent(text=text, source=source)
-
 
 def _make_runner():
     """Create a bare GatewayRunner with minimal mocks."""
@@ -50,20 +50,59 @@ def _make_runner():
 
     return runner
 
-
 # ---------------------------------------------------------------------------
 # _handle_background_command
 # ---------------------------------------------------------------------------
-
 
 # ---------------------------------------------------------------------------
 # _run_background_task
 # ---------------------------------------------------------------------------
 
-
 class TestRunBackgroundTask:
     """Tests for GatewayRunner._run_background_task (the actual execution)."""
 
+    @pytest.mark.asyncio
+    async def test_delegated_result_is_delivered_before_background_task_ends(self, monkeypatch):
+        """A /bg session has no consumer for a detached completion (#140569)."""
+        import tools.delegate_tool as dt
+        from gateway.session_context import async_delivery_supported, clear_session_vars, set_session_vars
+
+        runner = _make_runner()
+        adapter = AsyncMock()
+        adapter.toolsets_for_source = MagicMock(return_value=None)
+        adapter.extract_media = lambda text: ([], text)
+        adapter.extract_images = lambda text: ([], text)
+        runner.adapters[Platform.TELEGRAM] = adapter
+        parent = SimpleNamespace(_delegate_depth=0, _subagent_id=None)
+        monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: SimpleNamespace(_subagent_id="child"))
+        monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **kw: {
+            "model": "test", "provider": None, "base_url": None, "api_key": None,
+            "api_mode": None, "command": None, "args": None,
+        })
+        monkeypatch.setattr(dt, "_run_single_child", lambda **kw: {
+            "task_index": 0, "status": "completed", "summary": "child work product",
+            "api_calls": 1, "duration_seconds": 0, "model": "test", "exit_reason": "completed",
+        })
+        detached = MagicMock(return_value={"delegation_id": "detached"})
+        monkeypatch.setattr("tools.async_delegation.dispatch_async_delegation_batch", detached)
+        agent = MagicMock()
+        agent.run_conversation.side_effect = lambda **kw: {
+            "final_response": dt.delegate_task(goal="inspect workspace", background=True, parent_agent=parent),
+            "messages": [],
+        }
+        tokens = set_session_vars(platform="telegram", chat_id="67890", async_delivery=True)
+        try:
+            with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
+                 patch("gateway.run._load_gateway_config", return_value={}), \
+                 patch("run_agent.AIAgent", return_value=agent):
+                await runner._run_background_task("inspect workspace", _make_event().source, "bg_test")
+            assert async_delivery_supported() is True
+        finally:
+            clear_session_vars(tokens)
+
+        detached.assert_not_called()
+        assert "child work product" in json.dumps(adapter.send.call_args.kwargs)
+        agent.close.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_successful_task_sends_result(self):
@@ -116,25 +155,20 @@ class TestRunBackgroundTask:
         mock_agent_instance.shutdown_memory_provider.assert_called_once()
         mock_agent_instance.close.assert_called_once()
 
-
 # ---------------------------------------------------------------------------
 # /bg in help and known_commands
 # ---------------------------------------------------------------------------
-
 
 # ---------------------------------------------------------------------------
 # CLI /bg command definition
 # ---------------------------------------------------------------------------
 
-
 # ---------------------------------------------------------------------------
 # _handle_btw_command
 # ---------------------------------------------------------------------------
 
-
 class TestHandleBtwCommand:
     """Tests for GatewayRunner._handle_btw_command (context-aware side question)."""
-
 
     @pytest.mark.asyncio
     async def test_dispatches_side_question_and_sends_answer(self):
@@ -177,4 +211,3 @@ class TestHandleBtwCommand:
         mock_adapter.send.assert_called_once()
         sent_text = mock_adapter.send.call_args[0][1]
         assert "it was foo.py" in sent_text
-

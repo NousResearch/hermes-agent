@@ -35,29 +35,24 @@ import pytest
 
 from hermes_state import SessionDB
 
-
 @pytest.fixture
 def db(tmp_path: Path) -> SessionDB:
     d = SessionDB(tmp_path / "state.db")
     d.create_session("sess1", source="test")
     return d
 
-
 def _seed(db: SessionDB, n: int = 6) -> None:
     for i in range(n):
         role = "user" if i % 2 == 0 else "assistant"
         db.append_message("sess1", role=role, content=f"turn {i}")
-
 
 SUMMARY = [
     {"role": "user", "content": "[CONTEXT COMPACTION] summary of earlier turns"},
     {"role": "assistant", "content": "Continuing from the summary."},
 ]
 
-
 def _recall(db: SessionDB, query: str, include_inactive: bool = False):
     return db.search_messages(query, include_inactive=include_inactive)
-
 
 def _rows(db: SessionDB):
     """All rows of the fixture session with lifecycle flags via the public API.
@@ -75,7 +70,6 @@ def _rows(db: SessionDB):
             "content": r.get("content"),
         })
     return out
-
 
 class TestTailCountArchivesAsRewindSemantics:
     def test_tail_originals_hidden_from_recall(self, db: SessionDB) -> None:

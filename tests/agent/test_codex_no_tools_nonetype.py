@@ -33,18 +33,15 @@ from typing import Any, Dict, List
 
 import pytest
 
-
 # Stub optional deps the parent module imports at top level — keeps this
 # test file runnable in the same environment as the existing Codex tests.
 sys.modules.setdefault("fire", types.SimpleNamespace(Fire=lambda *a, **k: None))
 sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
 
 @pytest.fixture
 def transport():
@@ -54,9 +51,8 @@ def transport():
 
     return ResponsesApiTransport()
 
-
 @pytest.fixture
-def codex_messages() -> List[Dict[str, Any]]:
+def codex_messages() -> list[dict[str, Any]]:
     """Minimal Codex-shaped chat history mirroring the #32892 reproducer:
     one system + one short user message, with no tool calls in history."""
     return [
@@ -64,8 +60,7 @@ def codex_messages() -> List[Dict[str, Any]]:
         {"role": "user", "content": "Hey! What can I help you with?"},
     ]
 
-
-def _build_kwargs_no_tools(transport, messages) -> Dict[str, Any]:
+def _build_kwargs_no_tools(transport, messages) -> dict[str, Any]:
     """Exercise the real ``build_kwargs`` for the codex backend with no tools."""
     return transport.build_kwargs(
         model="gpt-5.5",
@@ -74,11 +69,9 @@ def _build_kwargs_no_tools(transport, messages) -> Dict[str, Any]:
         is_codex_backend=True,
     )
 
-
 # ---------------------------------------------------------------------------
 # build_kwargs: the "tools=None" key must never appear
 # ---------------------------------------------------------------------------
-
 
 def test_build_kwargs_omits_tools_key_when_no_tools(transport, codex_messages):
     """``build_kwargs`` must not place ``tools=None`` in the outgoing dict.
@@ -94,9 +87,6 @@ def test_build_kwargs_omits_tools_key_when_no_tools(transport, codex_messages):
         f"got kwargs={sorted(kwargs)}"
     )
 
-
-
-
 def test_build_kwargs_keeps_required_codex_fields_without_tools(transport, codex_messages):
     """The toolless build must still emit the non-negotiable Codex fields
     (model / instructions / input / store) — otherwise we'd just be moving
@@ -109,12 +99,5 @@ def test_build_kwargs_keeps_required_codex_fields_without_tools(transport, codex
     assert isinstance(kwargs["input"], list)
     assert kwargs["input"] and kwargs["input"][0]["role"] == "user"
 
-
-
-
-
-
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
-
-

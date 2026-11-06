@@ -107,6 +107,14 @@ describe('buildToolView error confidence', () => {
       [{ result: { meta: { error: 'a previous attempt' }, data: { count: 1 } } }, 'success'],
       [{ toolName: 'read_file', result: { error: 'Permission denied reading /repo/private.ts' } }, 'error'],
       [{ toolName: 'patch', result: { error: 'File not found: /repo/session-view.ts' } }, 'error'],
+      [
+        {
+          toolName: 'skill_manage',
+          result: { success: false, error: 'SKILL.md content is over the limit', file_preview: 'ROLLBACK FAILED notes' }
+        },
+        'notice'
+      ],
+      [{ toolName: 'skill_manage', result: { success: false, error: "batch aborted, ROLLBACK FAILED for 'demo'" } }, 'error'],
       [{ result: { success: false, result: { output: { error: { message: 'Connection refused' } } } } }, 'error']
     ]
 
@@ -447,6 +455,27 @@ describe('buildToolView title actions', () => {
     expect(view.title).toBe('Ran sleep 70 + 2 commands')
     expect(view.terminalCommand).toBe(command)
     expect(view.detail).toBe('')
+  })
+
+  it('does not double the action verb when the context already starts with it', () => {
+    // A model-authored `context` that opens with the same verb the template
+    // prepends ("Running grep …") otherwise renders as "Running Running grep …".
+    const view = buildToolView(
+      part({
+        args: { context: 'Running grep -rn -i "bedrock" ~/.hermes/' },
+        result: undefined,
+        toolName: 'terminal'
+      }),
+      ''
+    )
+
+    expect(view.title.startsWith('Running Running')).toBe(false)
+    expect(view.title).toBe('Running grep -rn -i "bedrock" ~/.hermes/')
+    expect(view.titleAction).toEqual({
+      prefix: '',
+      text: 'Running',
+      suffix: ' grep -rn -i "bedrock" ~/.hermes/'
+    })
   })
 
   it('uses the runtime locale for title text and action placement', () => {

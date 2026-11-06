@@ -10,6 +10,7 @@ lane = the worktree path. Linked worktrees fold under their MAIN repo (common-di
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Any, Callable, Optional
 
 # cwd -> ``{"repo_root", "worktree_root"}`` (COMMON main root / this cwd's checkout root);
@@ -62,10 +63,19 @@ def _is_windows_path(path: str) -> bool:
 
 
 def _comparison_segments(path: str) -> list[str]:
-    """Segments for identity comparison: Windows paths casefold (even on POSIX); display
-    paths and emitted IDs keep their spelling."""
-    segs = _segments(path)
-    return [s.casefold() for s in segs] if _is_windows_path(path) else segs
+    """Path segments suitable for identity comparisons on any host.
+
+    Windows paths remain case-insensitive even when tests or remote backends run
+    on POSIX. Display paths and emitted IDs keep their original spelling.
+
+    Segments are NFC-normalized before comparing: the same on-disk folder can
+    reach us as NFC (typed paths, os.getcwd()) or NFD (macOS file pickers,
+    HFS+/APFS round-trips), and ``casefold()`` does not unify the two forms —
+    an accented project folder would otherwise render empty (#65014). Mirrors
+    ``comparisonSegments`` in the desktop's ``workspace-groups.ts``.
+    """
+    segs = [unicodedata.normalize("NFC", segment) for segment in _segments(path)]
+    return [segment.casefold() for segment in segs] if _is_windows_path(path) else segs
 
 
 def _path_key(path: str) -> str:
@@ -111,12 +121,13 @@ def _last_active(sessions: list[dict]) -> float:
 
 
 def _placement(
-    repo_root: str, lane_key: str, lane_label: str, lane_path: str, is_main: bool, is_kanban: bool
+    repo_root: str, lane_key: str, lane_label: str, lane_path: str, is_main: bool, is_kanban: bool,
+    is_git: bool = True,
 ) -> dict:
     return {
         "repo_key": repo_root, "repo_label": base_name(repo_root) or repo_root,
         "lane_key": lane_key, "lane_label": lane_label, "lane_path": lane_path,
-        "is_main": is_main, "is_kanban": is_kanban}
+        "is_main": is_main, "is_kanban": is_kanban, "is_git": is_git}
 
 
 def _trunk_placement(repo_root: str, branch: str) -> dict:
@@ -159,7 +170,9 @@ def _place_by_heuristic(path: str) -> Optional[dict]:
     m = re.match(r"^(.+)-wt-(.+)$", base)
     if m:
         return _placement(_with_base_name(path, m.group(1)), path, m.group(2), path, False, False)
-    return _placement(path, _branch_lane_id(path, DEFAULT_BRANCH_LABEL), base, path, True, False)
+    # No git knowledge at all: the lane is the folder itself, not a branch —
+    # is_git=False tells the renderer never to `git switch` it (#61362).
+    return _placement(path, _branch_lane_id(path, DEFAULT_BRANCH_LABEL), base, path, True, False, is_git=False)
 
 
 def _place(
@@ -236,8 +249,8 @@ def _disambiguate_labels(items: list[dict]) -> None:
 
 
 # Lane group wire fields <- placement keys (same order).
-_LANE_FIELDS = ("id", "label", "path", "isMain", "isKanban")
-_PLACEMENT_LANE_KEYS = ("lane_key", "lane_label", "lane_path", "is_main", "is_kanban")
+_LANE_FIELDS = ("id", "label", "path", "isMain", "isKanban", "isGit")
+_PLACEMENT_LANE_KEYS = ("lane_key", "lane_label", "lane_path", "is_main", "is_kanban", "is_git")
 
 
 def _repo_node(root: str, label: str) -> dict:

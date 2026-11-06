@@ -23,13 +23,12 @@ def test_supervisor_spawns_llama_server_without_credentials_but_keeps_runtime_en
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
     monkeypatch.setenv("OMP_NUM_THREADS", "4")
     monkeypatch.setattr(supervisor, "runtimes_root", lambda: tmp_path / "runtime")
-    monkeypatch.setattr(supervisor, "server_binary", lambda _: tmp_path / "engine" / "llama-server")
     monkeypatch.setattr(supervisor, "_direct_io_args", lambda exe: [])
     spawns = []
     monkeypatch.setattr(supervisor, "spawn_server", lambda argv, **kwargs: (
         spawns.append(kwargs) or SimpleNamespace(pid=123, poll=lambda: 0), None,
     ))
-    sup = supervisor.LlamaServerSupervisor(tmp_path / "engine", tmp_path / "models", port=19002)
+    sup = supervisor.LlamaServerSupervisor(tmp_path / "engine" / "llama-server", tmp_path / "models", port=19002)
     monkeypatch.setattr(sup, "_write_state", lambda: None)
     try:
         sup._spawn()

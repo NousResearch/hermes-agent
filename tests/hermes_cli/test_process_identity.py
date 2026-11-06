@@ -17,7 +17,9 @@ from __future__ import annotations
 import json
 import os
 import stat
+import subprocess
 import sys
+import time
 import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -228,6 +230,29 @@ def test_ledger_entries_filters_dead_reused_and_foreign(tmp_path):
     assert [e["pid"] for e in live] == [100]
 
 
+@pytest.mark.platforms("posix")
+def test_ledger_entries_excludes_a_killed_but_unreaped_process(tmp_path):
+    """A zombie is dead even though it keeps its create_time until reaped: ``hermes update``
+    books the stopped dashboard gone, then must not find it again as a pre-update survivor."""
+    import psutil
+
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        created = psutil.Process(child.pid).create_time()
+        child.terminate()
+        deadline = time.monotonic() + 10
+        while psutil.Process(child.pid).status() != psutil.STATUS_ZOMBIE:
+            assert time.monotonic() < deadline, "child never became a zombie"
+            time.sleep(0.05)
+        ledger = tmp_path / "spawn-ledger.json"
+        ledger.write_text(json.dumps([_entry(child.pid, created, purpose="dashboard")]), encoding="utf-8")
+        with patch.object(pi, "_ledger_path", return_value=ledger):
+            assert pi.ledger_entries(project_root=Path("/x/install")) == []
+    finally:
+        child.kill()
+        child.wait()
+
+
 def test_spawner_is_dead_tristate():
     fake = _fake_psutil({500: 5.0})
     with patch.dict(sys.modules, {"psutil": fake}):
@@ -236,6 +261,49 @@ def test_spawner_is_dead_tristate():
         # PID reuse: recorded spawner create differs from live process → dead.
         assert pi.spawner_is_dead(_entry(1, 1.0, spawner_pid=500, spawner_create=999.0)) is True
         assert pi.spawner_is_dead(_entry(1, 1.0)) is None
+
+
+class TestStrictBranchStatusRead:
+    """#142085: the strict branch of ``_pid_alive_matches`` read ``Process.status()`` on Windows,
+    where psutil's NtQuerySystemInformation path does not release the GIL — under load that froze
+    every other Python thread in the process for minutes. The non-strict branch already skipped
+    the read on Windows; the strict branch must too (Windows has no POSIX zombies, so the
+    STATUS_ZOMBIE comparison had nothing to contribute there). Tested on the real host: faking
+    ``os.name`` on POSIX proves nothing about the cost on Windows."""
+
+    @staticmethod
+    def _spy_status(monkeypatch):
+        psutil = pytest.importorskip("psutil")
+        calls = []
+        real_status = psutil.Process.status
+
+        def spy(self):
+            calls.append(self.pid)
+            return real_status(self)
+
+        monkeypatch.setattr(psutil.Process, "status", spy)
+        return calls
+
+    @pytest.mark.platforms("windows")
+    def test_windows_strict_branch_skips_status(self, monkeypatch):
+        calls = self._spy_status(monkeypatch)
+        psutil = pytest.importorskip("psutil")
+        pid = os.getpid()
+        create_time = pi.process_birth(psutil.Process(pid))
+
+        assert pi._pid_alive_matches(pid, create_time, strict=True) is True
+        assert calls == []
+
+    @pytest.mark.platforms("posix")
+    def test_posix_strict_branch_still_probes_status(self, monkeypatch):
+        # Control: on POSIX a zombie keeps its create_time, so the status read is load-bearing.
+        calls = self._spy_status(monkeypatch)
+        psutil = pytest.importorskip("psutil")
+        pid = os.getpid()
+        create_time = pi.process_birth(psutil.Process(pid))
+
+        assert pi._pid_alive_matches(pid, create_time, strict=True) is True
+        assert calls == [pid]
 
 
 # ---------------------------------------------------------------------------
@@ -247,7 +315,7 @@ def _holders(*pids):
 
 
 def test_updater_reaps_ledger_proven_orphans():
-    from hermes_cli import main as cli_main
+    from hermes_cli import update_cmd_windows
 
     entries = [
         _entry(200, 2.0, spawner_pid=700, spawner_create=7.0),   # spawner dead → reap
@@ -258,16 +326,16 @@ def test_updater_reaps_ledger_proven_orphans():
     with patch.dict(sys.modules, {"psutil": fake}), \
          patch.object(pi, "ledger_entries", return_value=entries), \
          patch.object(pi, "spawner_is_dead", wraps=pi.spawner_is_dead):
-        assert cli_main._ledger_reapable_backend_pids(_holders(200, 201, 202, 203)) == [200]
+        assert update_cmd_windows._ledger_reapable_backend_pids(_holders(200, 201, 202, 203)) == [200]
 
 
 
 
 def test_updater_ledger_rung_never_raises():
-    from hermes_cli import main as cli_main
+    from hermes_cli import update_cmd_windows
 
     with patch.object(pi, "ledger_entries", side_effect=RuntimeError("boom")):
-        assert cli_main._ledger_reapable_backend_pids(_holders(200)) == []
+        assert update_cmd_windows._ledger_reapable_backend_pids(_holders(200)) == []
 
 
 def test_desktop_ssh_backend_spawn_shape_is_desktop_owned(monkeypatch):
@@ -284,3 +352,172 @@ def test_desktop_ssh_backend_spawn_shape_is_desktop_owned(monkeypatch):
     assert pi.is_desktop_owned_backend() is True
     # The bare inherited flag (a Desktop terminal pane running `hermes serve`) is still not ownership.
     assert pi.is_desktop_owned_backend(["serve", "--host", "127.0.0.1", "--port", "0"]) is False
+
+
+# ---------------------------------------------------------------------------
+# Host-reclaim rung: reap_orphaned_backend_owner (#121964)
+# ---------------------------------------------------------------------------
+
+def _reap(entry_pid=555, create=55.0, procs=None, kill_fn=None, **entry_kw):
+    """Run the reclaim predicate with a faked psutil world; returns (result, kills)."""
+    entry = _entry(entry_pid, create, **entry_kw)
+    kills = []
+    fake = _fake_psutil({} if procs is None else procs)
+    with patch.dict(sys.modules, {"psutil": fake}), \
+         patch.object(pi, "ledger_entries", return_value=[entry]):
+        result = pi.reap_orphaned_backend_owner(
+            entry_pid, create, kill_fn=(kills.append if kill_fn is None else kill_fn))
+    return result, kills
+
+
+def test_reclaim_reaps_dead_spawner_owner():
+    result, kills = _reap(spawner_pid=700, spawner_create=7.0, procs={555: 55.0})
+    assert result == 555
+    assert kills == [555]
+
+
+def test_reclaim_spares_live_spawner_owner():
+    result, kills = _reap(spawner_pid=500, spawner_create=5.0, procs={555: 55.0, 500: 5.0})
+    assert result is None
+    assert kills == []
+
+
+def test_reclaim_spares_unprovable_spawner():
+    # Spawner probe itself fails (permission): unprovable means never touch.
+    import types
+
+    from unittest.mock import MagicMock
+
+    def _process(pid):
+        if pid == 500:
+            raise PermissionError(pid)
+        proc = MagicMock()
+        proc.create_time.return_value = 55.0
+        return proc
+
+    fake = types.SimpleNamespace(Process=_process, NoSuchProcess=_FakeNoSuchProcess)
+    with patch.dict(sys.modules, {"psutil": fake}), \
+         patch.object(pi, "ledger_entries",
+                      return_value=[_entry(555, 55.0, spawner_pid=500, spawner_create=5.0)]):
+        assert pi.reap_orphaned_backend_owner(555, 55.0, kill_fn=lambda pid: None) is None
+
+
+def test_reclaim_reaps_null_spawner_orphan_to_init():
+    from hermes_cli import dashboard_procs
+
+    with patch.object(dashboard_procs, "_process_ppid", return_value=1), \
+         patch.object(dashboard_procs, "_lock_owned_serve_pids", return_value=set()):
+        # Ancient orphan: create_time far past vs real clock → past the lock-write grace.
+        result, kills = _reap(procs={555: 1000.0}, create=1000.0)
+    assert result == 555
+    assert kills == [555]
+
+
+def test_reclaim_spares_null_spawner_with_live_parent():
+    from hermes_cli import dashboard_procs
+
+    with patch.object(dashboard_procs, "_process_ppid", return_value=1234):
+        result, kills = _reap(procs={555: 55.0})
+    assert result is None
+    assert kills == []
+
+
+def test_reclaim_spares_lock_claimed_orphan():
+    """A valid backend.lock.json claims the PID: another session owns it, never kill."""
+    from hermes_cli import dashboard_procs
+
+    with patch.object(dashboard_procs, "_process_ppid", return_value=1), \
+         patch.object(dashboard_procs, "_lock_owned_serve_pids", return_value={555}):
+        result, kills = _reap(procs={555: 1000.0}, create=1000.0)
+    assert result is None
+    assert kills == []
+
+
+def test_reclaim_spares_interactive_purposes_and_self():
+    result, kills = _reap(purpose="chat", spawner_pid=700, spawner_create=7.0,
+                          procs={555: 55.0})
+    assert (result, kills) == (None, [])
+    with patch.object(pi.os, "getpid", return_value=555):
+        result, kills = _reap(spawner_pid=700, spawner_create=7.0, procs={555: 55.0})
+    assert (result, kills) == (None, [])
+
+
+def test_reclaim_ignores_unknown_pid_and_never_raises():
+    with patch.dict(sys.modules, {"psutil": _fake_psutil({555: 55.0})}), \
+         patch.object(pi, "ledger_entries", return_value=[_entry(555, 55.0)]):
+        assert pi.reap_orphaned_backend_owner(999, 9.0, kill_fn=lambda pid: None) is None
+    with patch.object(pi, "ledger_entries", side_effect=RuntimeError("boom")):
+        assert pi.reap_orphaned_backend_owner(555, 55.0, kill_fn=lambda pid: None) is None
+
+
+_CONCURRENT_WRITER = r"""
+import os, subprocess, sys, time
+sys.path.insert(0, sys.argv[1])
+from hermes_cli.process_identity import register_child
+start_at, n = float(sys.argv[2]), int(sys.argv[3])
+kids = [subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"], stdin=subprocess.DEVNULL)
+        for _ in range(n)]
+while time.time() < start_at:
+    time.sleep(0.001)
+for kid in kids:
+    register_child(kid.pid, "ledger-race")
+print(" ".join(str(k.pid) for k in kids), flush=True)
+sys.stdin.read()  # keep the children alive until the test has read the ledger
+for kid in kids:
+    kid.kill()
+"""
+
+
+def test_concurrent_processes_never_drop_each_others_ledger_rows(tmp_path):
+    """Every spawn_owned writes the machine-wide ledger; three processes registering at once lost
+    about two thirds of their rows to each other's read-modify-write before the cross-process lock."""
+    import json
+    import time
+    from pathlib import Path
+
+    repo = str(Path(__file__).resolve().parents[2])
+    env = {**os.environ, "HERMES_HOME": str(tmp_path / "home")}
+    start_at = time.time() + 2.0
+    writers = [subprocess.Popen([sys.executable, "-c", _CONCURRENT_WRITER, repo, str(start_at), "15"],
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=env)
+               for _ in range(3)]
+    try:
+        pids = {int(p) for w in writers for p in w.stdout.readline().split()}
+        assert len(pids) == 45
+        rows = json.loads((tmp_path / "home" / "spawn-ledger.json").read_text(encoding="utf-8"))
+        kept = {r["pid"] for r in rows if r.get("purpose") == "ledger-race"}
+        assert kept == pids, f"{len(pids - kept)} of 45 rows lost to a concurrent writer"
+    finally:
+        for w in writers:
+            w.stdin.close()
+            w.wait(timeout=30)
+
+
+@pytest.mark.platforms("posix")  # an fcntl lock holder
+def test_a_stalled_ledger_lock_holder_never_blocks_register_child(tmp_path, monkeypatch, caplog):
+    """A holder stopped mid-write (SIGSTOP, a debugger) kept the lock: every spawn_owned on the
+    machine then waited forever. Past the timeout the row is written under the thread lock alone, and
+    that is logged once at WARNING (rows of concurrent writers can be lost meanwhile)."""
+    import fcntl
+    import logging
+    import threading
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(pi, "_LEDGER_LOCK_TIMEOUT_S", 0.3)
+    monkeypatch.setattr(pi, "_ledger_lock_warned", False)
+    caplog.set_level(logging.DEBUG, logger=pi.logger.name)
+    ledger = pi._ledger_path()
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    with open(ledger.with_name(ledger.name + ".lock"), "a+b") as holder:
+        fcntl.flock(holder.fileno(), fcntl.LOCK_EX)  # the stalled holder
+        done = []
+        writer = threading.Thread(target=lambda: done.append(pi.register_child(os.getpid(), "stalled-lock")),
+                                  daemon=True)
+        writer.start()
+        writer.join(timeout=10)
+        assert done == [True], "register_child waited on a stalled lock holder"
+        assert pi.register_child(os.getpid(), "stalled-again") is True  # a second write past the lock
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING and "spawn ledger lock" in r.getMessage()]
+    assert len(warnings) == 1, f"{len(warnings)} warnings for two writes past a stalled lock"
+    rows = json.loads(ledger.read_text(encoding="utf-8"))
+    assert any(r.get("purpose") == "stalled-again" for r in rows), "the row was not written past the timeout"

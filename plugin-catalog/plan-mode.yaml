@@ -1,24 +1,70 @@
 name: plan-mode
 title: Plan mode
 repo: https://github.com/100yenadmin/hermes-plan-mode
-sha: b2516184698d030131f6aec4020fe55ffb65cb56
-description: 'Enforced per-session plan mode: /planmode on blocks mutating Hermes tools dispatched through pre_tool_call (writes outside
-  .hermes/plans, terminal, code execution, delegation, MCP) until you /planmode approve the plan. Fails closed. Enforced in the classic CLI on
-  released Hermes (<= 0.21.4); gateway, TUI and Desktop need a build with hermes-agent commits 5943347a2a and 35fdb4608a (after v2026.9.21) and
-  refuse /planmode on until then. Disclosure: Codex app-server native exec and TUI side agents bypass pre_tool_call and are not enforced.'
+sha: ee4a245fbc2b2d874f3a5021963bef6c358d17fb
+description: 'Claude Code-style plan mode for Hermes: the agent explores and writes a plan, and edits nothing else until you
+  approve it. It works on every interactive Hermes surface: /plan or /planmode on blocks mutating Hermes tools dispatched
+  through pre_tool_call (writes outside .hermes/plans, terminal, code execution, delegation, MCP) while the agent
+  explores, asks clarifying questions and writes a plan. The agent shows the complete plan, submits it with
+  plan_mode(submit) and one approval card asks: approve and auto-accept edits, approve and review each file edit
+  (when Hermes approvals are on, every write_file and patch then gets Hermes'' approval prompt with its path and a
+  preview), or keep planning; Other sends feedback, and the revised plan says what changed since the last revision.
+  Once approved, it implements in the same turn and tracks todo_list progress. To change the plan yourself, keep
+  planning, run /planmode edit, save, then /planmode show and /planmode approve; the text you were shown is saved as
+  an approved snapshot, so later edits to the file do not change the approval. The classic profile
+  (plan_profile: classic), approval_card: false and surfaces without a card use Hermes'' own approval prompt
+  (gateway buttons, the TUI/Desktop card, the CLI panel or /approve). When yolo or approvals.mode: off would
+  auto-approve, it asks through clarify instead, so a person still decides. By default plans are compact and
+  decision-complete, the lean profile asks at most three targeted questions, and the agent does not commit unless
+  asked (plan_style, plan_profile, allow_commits and plan_skill settings). Classic CLI enforced on every supported
+  Hermes; gateway, TUI and Desktop from Hermes v2026.9.24 (0.21.5), and refused on older builds; 0.21.6 recommended.
+  On the interactive classic CLI, Hermes'' inline diff shows a new plan file in full, so the agent does not retype it
+  (write_once). A report-a-problem skill drafts a bug report and files it with gh only after you approve the draft.
+  Disclosure — plan-mode does not enforce Codex app-server exec/applyPatch or TUI /background and btw side agents.
+  A plan is approved only on its approval card (a clarify question only the plugin issues and checks), through
+  Hermes'' own approval prompt, or with /planmode approve. It reads nine groups of internal Hermes seams for session
+  identity, workspace, profile, skills.inline_shell and the classic CLI''s inline diff, each guarded with a documented fallback. It creates
+  .hermes/plans under the session working directory, reads plan files there, saves the approved text of an edited
+  plan as a new file under .hermes/plans/approved, and keeps per-session state in plugin state. It adds a turn note
+  while planning or executing, a ≤200-char system-prompt hint, and a one-line footer to short replies on chat
+  platforms. When a turn ends while a submitted plan still awaits approval and no approval card was answered, it adds
+  one line to that reply on any surface, whatever its length, saying how to approve (unless footer is off). When you
+  pick "Always" on a plan approval or a per-edit review, Hermes core writes a
+  plugin_rule:plan-mode entry to command_allowlist in config.yaml; each entry is keyed to one plan revision, so it
+  cannot approve another plan. With allow_gateway_injection: true it queues one message to start work after a typed
+  /planmode approve. On TUI, Desktop and hermes serve sessions (lean profile, plan_once) it reads the visible reply
+  text from post_api_request while planning and saves its <proposed_plan> block as the plan file. On the interactive
+  classic CLI (lean, write_once) it checks that Hermes printed a newly written plan file in full, then tells the agent
+  not to retype it. Its report-a-problem skill has the agent file to the plugin repository with gh only after the user
+  approves the exact saved draft. The plugin itself makes no network calls, launches no subprocesses and has no
+  self-updater.'
 maintainer: 100yenadmin
 tier: community
 category: tools
-requires_hermes: '>=0.21.2'
+requires_hermes: '>=0.21.3'
 docs_url: https://github.com/100yenadmin/hermes-plan-mode#readme
-version: "0.1.6"
+version: "1.0.0"
+image: https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/ee4a245fbc2b2d874f3a5021963bef6c358d17fb/docs/media/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/ee4a245fbc2b2d874f3a5021963bef6c358d17fb/docs/media/cli-card.png
+  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/ee4a245fbc2b2d874f3a5021963bef6c358d17fb/docs/media/cli-edit-review.png
+  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/ee4a245fbc2b2d874f3a5021963bef6c358d17fb/docs/media/cli-card-implement.png
+  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/ee4a245fbc2b2d874f3a5021963bef6c358d17fb/docs/media/cli-edit-approve.png
 platforms: []
 capabilities:
-  provides_tools: []
+  provides_tools:
+    - plan_mode
   provides_hooks:
     - pre_tool_call
+    - post_tool_call
     - pre_llm_call
+    - transform_llm_output
+    - pre_approval_request
+    - post_approval_response
     - on_session_finalize
     - on_session_reset
+    - post_llm_call
+    - transform_tool_result
+    - post_api_request
   provides_middleware: []
   requires_env: []

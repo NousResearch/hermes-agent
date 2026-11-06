@@ -17,6 +17,7 @@ def run(script: str, *args: str, expect: int = 0) -> subprocess.CompletedProcess
     proc = subprocess.run(
         [sys.executable, str(SCRIPTS / script), *args],
         capture_output=True, text=True, encoding="utf-8", env=env,
+        check=False,
     )
     assert proc.returncode == expect, f"{script} {args}: rc={proc.returncode}\n{proc.stderr}"
     return proc
@@ -119,6 +120,39 @@ def test_form_fill_unicode_roundtrip(form_pdf: Path, workdir: Path):
     assert fields["agree"]["value"] in ("/Yes", "/On", "True", "/1")
     assert fields["color"]["value"] == "/red"
     assert fields["size"]["value"] == "large"
+
+
+def test_form_fill_flatten_removes_widgets(form_pdf: Path, workdir: Path):
+    values = workdir / "flat_values.json"
+    values.write_text(json.dumps({"surname": "Ada", "agree": True}),
+                      encoding="utf-8")
+    flattened = workdir / "flattened.pdf"
+    result = json.loads(run(
+        "pdf_fill_form.py", str(form_pdf), "--fields-json", str(values),
+        "-o", str(flattened), "--flatten").stdout)
+    assert result["flattened"] is True
+
+    from pypdf import PdfReader
+    reader = PdfReader(str(flattened))
+    assert reader.get_fields() in (None, {})
+    annots = reader.pages[0].get("/Annots", [])
+    assert all(ref.get_object().get("/Subtype") != "/Widget" for ref in annots)
+    assert "Ada" in (reader.pages[0].extract_text() or "")
+
+
+def test_form_fill_flatten_keeps_fields_left_out_of_the_json(form_pdf: Path, workdir: Path):
+    prefilled = workdir / "prefilled.pdf"
+    first = workdir / "first.json"
+    first.write_text(json.dumps({"surname": "KEEPME"}), encoding="utf-8")
+    run("pdf_fill_form.py", str(form_pdf), "--fields-json", str(first), "-o", str(prefilled))
+    partial = workdir / "partial.json"
+    partial.write_text(json.dumps({"agree": True}), encoding="utf-8")
+    flattened = workdir / "partial_flat.pdf"
+    run("pdf_fill_form.py", str(prefilled), "--fields-json", str(partial),
+        "-o", str(flattened), "--flatten")
+
+    from pypdf import PdfReader
+    assert "KEEPME" in (PdfReader(str(flattened)).pages[0].extract_text() or "")
 
 
 def test_merge_split_rotate(report_pdf: Path, workdir: Path):
@@ -278,7 +312,7 @@ def test_form_layout_detects_problems(workdir: Path):
 def _raster_available() -> bool:
     import shutil
     try:
-        import pypdfium2  # noqa: F401
+        import pypdfium2
         return True
     except ImportError:
         return shutil.which("pdftoppm") is not None

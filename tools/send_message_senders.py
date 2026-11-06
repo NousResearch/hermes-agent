@@ -1,5 +1,6 @@
 """Standalone per-platform senders and error helpers for send_message."""
 
+from pm import install_hint
 import asyncio
 import contextlib
 import logging
@@ -218,7 +219,7 @@ async def _telegram_send_one_media(bot, chat_id, media_path, is_voice, *, captio
                 if thumb_path:
                     media_kwargs["thumbnail"] = thumb_path
     try:
-        with open(media_path, "rb") as f:
+        with open(media_path, "rb") as f:  # noqa: ASYNC230 -- file handle is streamed to the upload; a local open() is non-blocking in practice
             try:
                 return await _telegram_send_media(bot, chat_id, f, ext, is_voice, force_document, **media_kwargs)
             except Exception as media_err:
@@ -303,7 +304,8 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             return {"error": _NO_DELIVERABLE, **({"warnings": warnings} if warnings else {})}
         return _success("telegram", chat_id, warnings, message_id=str(last_msg.message_id))
     except ImportError:
-        return {"error": "python-telegram-bot not installed. Run: pip install python-telegram-bot"}
+        return {"error": "python-telegram-bot not installed. Run: "
+                f"{install_hint('telegram')}"}
     except Exception as e:
         return _error(f"Telegram send failed: {e}")
 
@@ -365,7 +367,8 @@ async def _resolve_slack_user_target(token, chat_id):
     try:
         import aiohttp
     except ImportError:
-        return None, {"error": "aiohttp not installed. Run: pip install aiohttp"}
+        return None, {"error": "aiohttp not installed. Run: "
+                      f"{install_hint('messaging')}"}
     try:
         from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
         _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(resolve_proxy_url())
@@ -405,116 +408,6 @@ async def _resolve_slack_user_target(token, chat_id):
         return None, _error(f"Slack DM resolution failed: {e}")
 
 
-async def _signal_send_batch(post, scheduler, rl, idx, n_batches, att_batch, batch_message):
-    """One Signal batch under the scheduler with rate-limit retries: None on success, False when
-    retries were exhausted (batch lost), error dict for a non-rate-limit RPC error."""
-    n, max_attempts = len(att_batch), rl.SIGNAL_RATE_LIMIT_MAX_ATTEMPTS
-    for attempt in range(1, max_attempts + 1):
-        try:
-            await scheduler.acquire(n)
-            _rpc_t0 = time.monotonic()
-            data = await post(att_batch, batch_message)
-            if "error" not in data:
-                await scheduler.report_rpc_duration(time.monotonic() - _rpc_t0, n)
-                return None
-            err = data["error"]
-            if not rl._is_signal_rate_limit_error(err):
-                return _error(f"Signal RPC error on batch {idx + 1}/{n_batches}: {err}")
-            server_retry_after = rl._extract_retry_after_seconds(err)
-            scheduler.feedback(server_retry_after, n)
-            retry_after_label = f"{server_retry_after:.0f}s" if server_retry_after else "unknown"
-            if attempt >= max_attempts:
-                logger.error("Signal: rate-limit retries exhausted on batch %d/%d (%d attachments lost, "
-                             "server retry_after=%s)", idx + 1, n_batches, n, retry_after_label)
-                return False
-            logger.warning("Signal: rate-limited on batch %d/%d (attempt %d/%d, server retry_after=%s); "
-                           "scheduler will pace the retry",
-                           idx + 1, n_batches, attempt, max_attempts, retry_after_label)
-        except Exception as e:
-            if attempt >= max_attempts:
-                logger.error("Signal: send error on batch %d/%d after %d attempts: %s",
-                             idx + 1, n_batches, attempt, str(e))
-                return False
-            logger.warning("Signal: transient error on batch %d/%d (attempt %d/%d): %s; will retry",
-                           idx + 1, n_batches, attempt, max_attempts, str(e))
-
-
-async def _send_signal(extra, chat_id, message, media_files=None):
-    """signal-cli JSON-RPC send; attachments go in SIGNAL_MAX_ATTACHMENTS_PER_MSG batches metered
-    by the process-wide SignalAttachmentScheduler (shared with the gateway adapter's rate-limit state)."""
-    try:
-        import httpx
-    except ImportError:
-        return {"error": "httpx not installed"}
-    from gateway.platforms import signal_rate_limit as rl
-    from gateway.platforms.signal_format import markdown_to_signal
-    try:
-        http_url, account = extra.get("http_url", "http://127.0.0.1:8080").rstrip("/"), extra.get("account", "")
-        if not account:
-            return {"error": "Signal account not configured"}
-        valid_media = media_files or []
-        attachment_paths = []
-        for media_path, _is_voice in valid_media:
-            if os.path.exists(media_path):
-                attachment_paths.append(media_path)
-            else:
-                logger.warning("Signal media file not found, skipping: %s", media_path)
-        # No attachments still means one (text-only) batch; text rides on batch #0 only.
-        per_batch = rl.SIGNAL_MAX_ATTACHMENTS_PER_MSG
-        att_batches = [attachment_paths[i:i + per_batch] for i in range(0, len(attachment_paths), per_batch)] or [[]]
-        n_batches, (plain_text, text_styles) = len(att_batches), markdown_to_signal(message)
-        recipient = {"groupId": chat_id[6:]} if chat_id.startswith("group:") else {"recipient": [chat_id]}
-
-        async def _rpc_send(text, *, id_prefix, timeout, attachments=None, styled=False):
-            params = {"account": account, "message": text, **recipient}
-            if styled and text and text_styles:
-                params["textStyle" if len(text_styles) == 1 else "textStyles"] = (
-                    text_styles[0] if len(text_styles) == 1 else text_styles)
-            if attachments:
-                params["attachments"] = attachments
-            payload = {"jsonrpc": "2.0", "method": "send", "params": params,
-                       "id": f"{id_prefix}_{int(time.time() * 1000)}"}
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                return await client.post(f"{http_url}/api/v1/rpc", json=payload)
-
-        async def _post(batch_attachments, batch_message):
-            resp = await _rpc_send(batch_message, id_prefix="send", attachments=batch_attachments, styled=True,
-                                   timeout=rl._signal_send_timeout(len(batch_attachments)))
-            resp.raise_for_status()
-            return resp.json()
-        scheduler = rl.get_scheduler()
-        logger.info("send_message Signal: scheduler state=%s, %d attachment(s) in %d batch(es)",
-                    scheduler.state(), len(attachment_paths), n_batches)
-        failed_batches: list[int] = []
-        for idx, att_batch in enumerate(att_batches):
-            n = len(att_batch)
-            if n > 0 and (estimated := scheduler.estimate_wait(n)) >= rl.SIGNAL_BATCH_PACING_NOTICE_THRESHOLD:
-                # Best-effort one-shot RPC for a user-facing pacing notice.
-                try:
-                    await _rpc_send(f"(More images coming — pausing ~{rl._format_wait(estimated)} "
-                                    f"for Signal rate limit, batch {idx + 1}/{n_batches}.)", id_prefix="notice", timeout=30.0)
-                except Exception as _e:
-                    logger.warning("Signal: inline notice failed: %s", _e)
-            outcome = await _signal_send_batch(_post, scheduler, rl, idx, n_batches, att_batch,
-                                               plain_text if idx == 0 else "")
-            if outcome is False:
-                failed_batches.append(idx + 1)
-            elif outcome is not None:
-                return outcome
-        warnings = []
-        if len(attachment_paths) < len(valid_media):
-            warnings.append("Some media files were skipped (not found on disk)")
-        if failed_batches:
-            warnings.append(f"Signal rate-limited {len(failed_batches)} batch(es) "
-                            f"(#{', #'.join(str(b) for b in failed_batches)})")
-        if failed_batches and len(failed_batches) == n_batches:
-            return _error(f"Signal: every batch ({n_batches}) hit rate limit; no attachments delivered")
-        # Result-safe chat identifier for tool transcripts/log consumers.
-        return _success("signal", "group:***" if str(chat_id).startswith("group:") else chat_id, warnings)
-    except Exception as e:
-        return _error(f"Signal send failed: {e}")
-
-
 # "ephemeral connect (may re-init E2EE per send, see #46310)",
 async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, thread_id=None):
     """Matrix adapter send (native media preserved). Prefer the live gateway adapter's persistent
@@ -537,7 +430,8 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
     try:
         from plugins.platforms.matrix.adapter import MatrixAdapter
     except ImportError:
-        return {"error": "Matrix dependencies not installed. Run: pip install 'mautrix[encryption]'"}
+        return {"error": "Matrix dependencies not installed. Run: "
+                f"{install_hint('matrix')}"}
     adapter = MatrixAdapter(pconfig)
     try:
         if not await adapter.connect():
@@ -566,104 +460,3 @@ async def _matrix_send_core(adapter, chat_id, message, media_files, metadata):
         if not last_result.success:
             return _error(f"Matrix media send failed: {last_result.error}")
     return {"error": _NO_DELIVERABLE} if last_result is None else _success("matrix", chat_id, message_id=last_result.message_id)
-
-
-def _gateway_platform_module(name, *, unavailable, unmet):
-    """``(gateway.platforms.<name>, None)`` once its ``check_<name>_requirements`` passes, else ``(None, error)``."""
-    import importlib
-    try:
-        module = importlib.import_module(f"gateway.platforms.{name}")
-    except ImportError:
-        return None, {"error": unavailable}
-    return (module, None) if getattr(module, f"check_{name}_requirements")() else (None, {"error": unmet})
-
-
-async def _send_weixin(pconfig, chat_id, message, media_files=None):
-    """Send via Weixin iLink using the native adapter helper."""
-    wx, err = _gateway_platform_module("weixin", unavailable="Weixin adapter not available.",
-                                       unmet="Weixin requirements not met. Need aiohttp + cryptography.")
-    if err:
-        return err
-    try:
-        return await wx.send_weixin_direct(extra=pconfig.extra, token=pconfig.token, chat_id=chat_id,
-                                           message=message, media_files=media_files)
-    except Exception as e:
-        return _error(f"Weixin send failed: {e}")
-
-
-async def _send_bluebubbles(extra, chat_id, message):
-    """Send via BlueBubbles iMessage server using the adapter's REST API."""
-    bb, err = _gateway_platform_module("bluebubbles", unavailable="BlueBubbles adapter not available.",
-                                       unmet="BlueBubbles requirements not met (need aiohttp + httpx).")
-    if err:
-        return err
-    try:
-        from gateway.config import PlatformConfig
-        adapter = bb.BlueBubblesAdapter(PlatformConfig(extra=extra))
-        if not await adapter.connect():
-            return _error("BlueBubbles: failed to connect to server")
-        try:
-            result = await adapter.send(chat_id, message)
-        finally:
-            await adapter.disconnect()
-        if not result.success:
-            return _error(f"BlueBubbles send failed: {result.error}")
-        return _success("bluebubbles", chat_id, message_id=result.message_id)
-    except Exception as e:
-        return _error(f"BlueBubbles send failed: {e}")
-
-
-async def _send_qqbot(pconfig, chat_id, message):
-    """Send via the QQ Bot Open Platform REST API (no WebSocket needed)."""
-    try:
-        import httpx
-    except ImportError:
-        return _error("QQBot direct send requires httpx. Run: pip install httpx")
-
-    # Profile-scoped lookup so a multiplex profile never borrows another's QQ credentials.
-    from gateway.config import _getenv
-    extra = pconfig.extra or {}
-    appid = extra.get("app_id") or _getenv("QQ_APP_ID", "")
-    secret = pconfig.token or extra.get("client_secret") or _getenv("QQ_CLIENT_SECRET", "")
-    if not appid or not secret:
-        return _error("QQBot: QQ_APP_ID / QQ_CLIENT_SECRET not configured.")
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            token_resp = await client.post("https://bots.qq.com/app/getAppAccessToken",
-                                           json={"appId": str(appid), "clientSecret": str(secret)})
-            if token_resp.status_code != 200:
-                return _error(f"QQBot token request failed: {token_resp.status_code}")
-            access_token = token_resp.json().get("access_token")
-            if not access_token:
-                return _error("QQBot: no access_token in response")
-
-            # Separate endpoints for guild channels, C2C (private) and groups; first 2xx wins.
-            headers = {"Authorization": f"QQBot {access_token}", "Content-Type": "application/json"}
-            payload = {"content": message[:4000], "msg_type": 0}
-            endpoints = (("channel", f"https://api.sgroup.qq.com/channels/{chat_id}/messages"),
-                         ("c2c", f"https://api.sgroup.qq.com/v2/users/{chat_id}/messages"),
-                         ("group", f"https://api.sgroup.qq.com/v2/groups/{chat_id}/messages"))
-            statuses = []
-            for kind, url in endpoints:
-                resp = await client.post(url, json=payload, headers=headers)
-                if resp.status_code in {200, 201}:
-                    return _success("qqbot", chat_id, message_id=resp.json().get("id"))
-                statuses.append(f"{kind}={resp.status_code}")
-            return _error(f"QQBot send failed: {' '.join(statuses)}")
-    except Exception as e:
-        return _error(f"QQBot send failed: {e}")
-
-
-async def _send_yuanbao(chat_id, message, media_files=None):
-    """Send via the running Yuanbao adapter's persistent WebSocket (no throwaway client possible)."""
-    try:
-        from gateway.platforms.yuanbao import YuanbaoAdapter
-    except ImportError:
-        return _error("Yuanbao adapter module not available.")
-    adapter = YuanbaoAdapter.get_active()
-    if adapter is None:
-        return _error("Yuanbao adapter is not running. Start the gateway with yuanbao platform enabled first.")
-    try:
-        return await adapter._outbound.sender.send_direct(chat_id, message, media_files)
-    except Exception as e:
-        return _error(f"Yuanbao send failed: {e}")

@@ -36,7 +36,38 @@ hermes acp --setup          # interactive provider/model setup for ACP terminal 
 
 ## TUI Gateway JSON-RPC
 
-`tui_gateway/server.py` is the protocol the Ink TUI (`hermes --tui`) and the embedded dashboard PTY bridge talk to. Any external host can speak the same protocol over stdio (or WebSocket via `tui_gateway/ws.py`).
+`tui_gateway/server.py` is the method and event catalog behind the Ink TUI (`hermes --tui`), the Desktop app and the embedded dashboard PTY bridge. The Ink TUI reaches it on the profile's shared gateway over WebSocket (`/api/ws`, protocol `hermes-gateway-v1`, a single-use ticket per connection); any external host can speak the same frames over stdio (`tui_gateway/entry.py`) or a WebSocket (`tui_gateway/ws.py`).
+
+### A Node client: `@hermes/shared/gateway-client`
+
+The Ink TUI's gateway client lives in `apps/shared` (`@hermes/shared`), so another Node frontend can use it without compiling Ink's source. It dials the owner with a ticket, reads `runtime.describe` before `session.create`, translates requests and results for `hermes-gateway-v1` (`@hermes/shared/gateway-canonical`), reconnects with backoff, re-ensures a gone owner a bounded number of times per minute, and emits typed events (`@hermes/shared/gateway-types`).
+
+The client does not know where its connection comes from. The caller passes `connect(start, recover)`, which returns `{url, protocols, profile_id, instance_id}` and runs again for every reconnect (tickets are single-use). Ink passes its `gateway_bootstrap.py` helper; any other local client can run `hermes gateway attach --json` (added with this client's split, #142159) (with `--start` on the first call and `--recover` when asked to recover) and pass its `url` and `protocols`:
+
+```ts
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+
+import { GatewayClient } from '@hermes/shared/gateway-client'
+import type { AnyGatewayEvent } from '@hermes/shared/gateway-types'
+
+const gw = new GatewayClient({
+  connect: async (start, recover) => {
+    const flags = start ? ['--start'] : recover ? ['--recover'] : []
+    const { stdout } = await promisify(execFile)('hermes', ['gateway', 'attach', '--json', ...flags])
+    const { url, protocols, endpoint } = JSON.parse(stdout)
+
+    return { url, protocols, profile_id: endpoint.profile_id, instance_id: endpoint.instance_id }
+  }
+})
+
+gw.on('event', (event: AnyGatewayEvent) => { /* … */ })
+gw.start()
+gw.drain()
+const session = await gw.request('session.create', {})
+```
+
+`hermes gateway attach` exits non-zero with the verdict on stdout when there is no owner to attach, so `execFile` rejects and the client retries on its backoff. Sessions are created with `source: "tui"`, the gateway's terminal-client policy, and `session.create` refuses an owner whose `runtime.describe` does not offer it. Other options (`terminalConnectFailure`, `attachUrl`, `sidecarUrl`, timeouts, `toolProgress`, `onLifecycle`, `text`, `fallbackWebSocket`) are documented on `GatewayClientOptions`. Browser-safe modules stay in `apps/shared/src/`; Node-only ones (the client, `prompt-history`) are in `apps/shared/src/node/`, and `apps/shared/src/node/boundary.test.ts` fails if the package's program ever includes a file from another workspace.
 
 ### Method catalog (selected)
 
@@ -55,9 +86,11 @@ spawn_tree.save / list / load
 terminal.resize         clipboard.paste         image.attach
 ```
 
+Plugins add `plugin.<plugin_id>.<name>` methods (`ctx.register_rpc`) and session events of type `plugin.<plugin_id>.<event>` (`ctx.emit_to_session`); see [plugin RPC methods and session events](./plugins/index.md#talk-to-your-own-frontend-plugin-rpc-methods-and-session-events).
+
 `session.active_list`, `session.activate`, and `session.close` are the process-local live-session controls used by the TUI session switcher. Use `session.list` / `/resume` for saved transcript discovery; use the active-session methods only for sessions that are currently open in the TUI gateway process.
 
-Within one authenticated gateway, resuming or activating a live session attaches another event subscriber rather than replacing the previous connection. Streaming and terminal events go to all attached clients; disconnecting one client does not end a session another client is viewing. Existing submit exclusivity and configured busy-input policy remain in force. Attached clients can steer the session's subagents; browser-controller results still require the connection that registered that controller. This does not enable independent gateway processes to write the same session, nor does it imply durable prompt admission across an owner restart.
+Within one authenticated gateway, resuming or activating a live session attaches another event subscriber rather than replacing the previous connection. Streaming and terminal events go to all attached clients; disconnecting one client does not end a session another client is viewing. Existing submit exclusivity and configured busy-input policy remain in force. Attached clients can steer the session's subagents. This does not enable independent gateway processes to write the same session, nor does it imply durable prompt admission across an owner restart.
 
 ### Model overrides on `session.create`
 
@@ -73,6 +106,7 @@ A rewind / edit / regenerate is a `prompt.submit` that drops part of the stored 
 | `truncate_before_row_id` | Integer SQLite row ID (`messages.id` / `row_id`) of the target user turn to cut at. Preferred durable address. When both ordinal and row ID are provided, gateway verifies they match (returning `4030` on mismatch). An unknown/stale row ID is refused with `4018` — it does **not** fall back to the ordinal. |
 | `confirm_truncate` | Required whenever an ordinal, message ID, or row ID is sent. Declares that this submit really is a rewind, not an ordinary send that happens to carry leftover parameters. Sending it without a target is refused with code `4004`. |
 | `confirm_empty_truncate` | Additionally required when the cut would leave the transcript empty (ordinal `0`). |
+| `confirm_deep_truncate` | Send it when the cut would archive more than one user turn (anything deeper than regenerating or editing the last turn), after asking the user. This release logs an unconfirmed deep cut and still runs it, so older clients keep working. The next release will refuse it with code `4033` (`error.data` carries `archived_messages` and `archived_user_turns`, and nothing is written). |
 
 A truncation parameter without `confirm_truncate` is refused with code `4004` or `4029` and nothing is written. Hosts that implement rewind must set the flag at the moment the user asks for it, and must never keep truncation parameters in state across ordinary submits. Prefer `truncate_before_row_id` (from resume `row_id` / `_row_id`) over ordinals; keep the ordinal as a back-compat / optimistic-row path only when no durable id is available yet.
 
@@ -93,7 +127,7 @@ Approvals, clarify questions, sudo/secret prompts, vault unlock, MCP setup and t
 → {"jsonrpc":"2.0","id":"srq-7","result":{"choice":"once"}}
 ```
 
-Methods: `approval` → `{choice}`; `clarify` → `{answer}` (single) or `{answers}` / `{}` cancel (batch, with `clarify.lock` to lock one answer early); `sudo`, `secret`, `vault.code`, `vault.unlock_prompt` → `{value}`; `connection` → `{settled_by, targets}` (the `manage_connections` card: one outcome per target); `terminal.read`, `window.read`, `preview.act`, `tour` → `{value}` (JSON text). Respond with a JSON-RPC error (`-32601`) for a method your host does not implement so the agent fails fast instead of waiting out the timeout.
+Methods: `approval` → `{choice}`; `clarify` → `{answers}` keyed by question id, or `{}` to cancel (`clarify.lock` locks one answer early; `null` skips that question); `sudo`, `secret`, `vault.code`, `vault.unlock_prompt` → `{value}`; `connection` → `{settled_by, targets}` (the `manage_connections` card: one outcome per target); `terminal.read`, `window.read`, `preview.act`, `tour` → `{value}` (JSON text). Respond with a JSON-RPC error (`-32601`) for a method your host does not implement so the agent fails fast instead of waiting out the timeout.
 
 **Advertise that you answer them (breaking for existing WebSocket integrations).** Once per connection, after `gateway.ready`, call `client.capabilities` with `{"server_requests": true}`; the result lists the request methods this backend may send. A WebSocket client that never does is treated as a build that predates server→client requests: the gateway fails every such request for it immediately (the agent sees the same "no answer" an error response produces; an approval is withdrawn, not denied) instead of stalling for the full deadline. There is no grace path — a third-party WebSocket client that answered `clarify`/`approval`/`sudo`/… before this change but never sends `client.capabilities` now has every such request refused until it adds the one call. A session with no client attached is not affected — its open questions wait in `open_requests` for the reconnect replay. The stdio TUI, the desktop app and the dashboard advertise through the shared `JsonRpcRequestChannel`.
 
@@ -137,10 +171,9 @@ GET  /v1/runs/{id}               Run status
 GET  /v1/runs/{id}/events        SSE stream of lifecycle events
 POST /v1/runs/{id}/approval      Resolve a pending approval
 POST /v1/runs/{id}/steer         Inject mid-run guidance at the next tool boundary
+POST /v1/runs/{id}/resolve-unknown Acknowledge an exact restart-unknown admission
 POST /v1/runs/{id}/stop          Interrupt the run
 GET  /v1/capabilities            Machine-readable feature flags
-POST /v1/browser-control/register Register a browser controller
-GET  /v1/browser-control/ws       Browser-controller WebSocket
 GET  /v1/models                  Lists hermes-agent
 GET  /api/model/options          Provider-aware picker inventory
 GET  /health, /health/detailed
@@ -148,10 +181,8 @@ GET  /health, /health/detailed
 
 Setup, headers (`X-Hermes-Session-Id`, `X-Hermes-Session-Key`), and frontend wiring: [API Server](../user-guide/features/api-server).
 
-Browser extensions can opt into the disabled-by-default controller protocol to
-drive the exact browser session that opened the Hermes conversation. The API
-and dashboard transports share one principal-bound broker and one explicit
-capability allowlist; see [Browser-extension control](../user-guide/features/api-server#browser-extension-control).
+The browser-extension controller protocol has been removed; to let Hermes drive a browser you
+already run, use `browser.cdp_url` or `/browser connect` — see [Browser-extension control (removed)](../user-guide/features/api-server#browser-extension-control-removed).
 
 ### Model catalog surfaces
 
@@ -196,6 +227,27 @@ The terminal status of a run is derived from how the agent's turn actually ended
 | Ended without finishing (iteration budget, truncated or partial reply) | `failed` | `run.failed` | `completed: false`, `partial` when applicable, `turn_exit_reason` (e.g. `max_iterations_reached(60/60)`), `output` with any fallback text |
 
 A run is never reported as `completed` with `completed: false` or `partial: true` in the same payload. The same rule applies to `/api/sessions/{id}/chat/stream`, whose `assistant.completed` payload carries the real `completed` / `partial` / `interrupted` flags and whose terminal event is `run.completed`, `run.failed`, or `run.cancelled`.
+
+`POST /v1/runs/{id}/resolve-unknown` is a canonical-authority recovery
+operation, not a generic status mutation. Send exactly the `admission_id` and
+integer `execution_generation` projected by the run status. The server binds the
+authenticated owner, selected profile, path run, API principal, target session,
+admission, and generation before the authority performs its compare-and-set.
+Resolution settles the lost head as interrupted and releases the next FIFO item;
+it never requeues the head. Feature-detect
+`features.run_unknown_resolution` because legacy execution mode does not
+advertise this endpoint.
+
+New canonical API admissions retain an opaque owner scope in the admission row,
+so keyed and non-keyed runs can be authorized after an adapter restart for as
+long as that canonical admission remains available. This does not change
+non-keyed request semantics: identical submissions still create distinct runs.
+Pre-upgrade non-keyed admissions contain no owner scope and remain deliberately
+unresolvable after restart; there is no safe credential ownership to backfill.
+Existing keyed records retain their replay-ledger recovery path. Explicit
+session retirement removes the canonical payload and therefore ends this owner
+recovery path. Replay reservation and canonical admission still use separate
+databases, so this endpoint does not provide a global exactly-once guarantee.
 
 ---
 

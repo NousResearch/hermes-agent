@@ -11,8 +11,7 @@ const classifier = path.resolve(import.meta.dirname, '../tests/install/e2e-asset
 
 const lockedLog = [
   'error: failed to remove file `C:/install/venv/Lib/site-packages/../../Scripts/hermes.exe`: Access is denied. (os error 5)',
-  'File "C:/install/venv/Scripts/hermes.exe/__main__.py", line 10, in <module>',
-  "subprocess.CalledProcessError: Command '['uv', 'pip', 'install', '-e', '.', '--quiet']' returned non-zero exit status 2.",
+  "⚠ Git update failed: Command '['uv', 'pip', 'install', '-e', '.', '--quiet']' returned non-zero exit status 2.",
 ].join('\n')
 
 const base = {
@@ -49,6 +48,41 @@ describe('known install failures', () => {
     expect(matchKnownFailure({ ...sample, installMethod: 'desktop-installer@latest' })).toBeNull()
     expect(matchKnownFailure({ ...sample, error: 'onboarding timed out' })).toBeNull()
     expect(matchKnownFailure({ ...sample, logs: { desktop: '[updates] manual: hermes update' } })).toBeNull()
+  })
+
+  it('matches the June dmg updater refusal only on macOS from v2026.7.30 with fresh evidence', () => {
+    const refusal = '2026-11-02T11:30:17.477693Z  INFO bootstrap.log: ✗ Another Hermes update is already running (PID 22416, started 6s ago). stage=update'
+    const failed = '2026-11-02T11:30:17.520111Z  INFO hermes_bootstrap_lib::update: update stage stage=update state=Failed duration_ms=Some(1016) error=Some("Hermes is still running. Close all Hermes windows and try the update again.")'
+
+    const sample = {
+      platform: 'macos', phase: 'update', commit: 'cc4cab2f592e60a197e796506de9168f74baf3ea',
+      installMethod: 'desktop-installer@latest', updateMethod: 'open-app-update',
+      error: 'E2E ASSERTION FAILED: app-driven update exited 1; transcript above',
+      logs: { bootstrap: `${refusal}\n${failed}\n` },
+    }
+
+    expect(matchKnownFailure(sample)?.id).toBe('macos-june-setup-update-self-lock')
+    expect(matchKnownFailure({ ...sample, updateMethod: 'hermes-desktop-app-update' })?.id).toBe('macos-june-setup-update-self-lock')
+    expect(matchKnownFailure({ ...sample, logs: { bootstrap: failed } })).toBeNull()
+    expect(matchKnownFailure({ ...sample, commit: 'f'.repeat(40) })).toBeNull()
+    expect(matchKnownFailure({ ...sample, platform: 'windows' })).toBeNull()
+    expect(matchKnownFailure({ ...sample, updateMethod: 'hermes-update' })).toBeNull()
+    expect(matchKnownFailure({ ...sample, error: 'E2E ASSERTION FAILED: app-driven update exited 2; transcript above' })).toBeNull()
+
+    const root = mkdtempSync(path.join(os.tmpdir(), 'known-install-mac-'))
+
+    try {
+      mkdirSync(path.join(root, 'home/.hermes/logs'), { recursive: true })
+      writeFileSync(path.join(root, 'shas.env'), `OLD_SHA=${sample.commit}\nOLD_REF=v2026.7.30\nTARGET_SHA=${'f'.repeat(40)}\n`)
+      writeFileSync(path.join(root, 'home/.hermes/logs/bootstrap-installer.log'), sample.logs.bootstrap)
+      const args = [classifier, root, sample.installMethod, sample.updateMethod, sample.error, 'macos']
+      expect(spawnSync(process.execPath, args).status).toBe(0)
+      expect(JSON.parse(readFileSync(path.join(root, 'known-failure.json'), 'utf8')).installRef).toBe('v2026.7.30')
+      writeFileSync(path.join(root, 'home/.hermes/logs/bootstrap-installer.log'), failed)
+      expect(spawnSync(process.execPath, args).status).toBe(1)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 
   it('CLI writes a receipt and exits zero only on a confirmed match', () => {

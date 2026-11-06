@@ -110,7 +110,11 @@ def test_persistence_failure_error_fallback_is_pinned_and_leaves_final_response_
     memory sync and the background-review gate still see the turn as having produced nothing."""
     from hermes_constants import profile_cli_selector
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes" / "profiles" / "research"))
+    # A named profile home must exist before an agent is built inside it: setup_logging() now
+    # opens agent.log under the ACTIVE home and refuses to materialize a missing profile.
+    profile_home = tmp_path / ".hermes" / "profiles" / "research"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
     selector = profile_cli_selector()
     assert selector.strip()
     agent = _make_agent()

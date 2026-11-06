@@ -32,10 +32,14 @@ STICKER_VISION_PROMPT = (
 
 
 def _load_cache() -> dict:
-    try:
-        return json.loads(_resolve_cache_path().read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return {}
+    """Load the sticker cache from disk (utf-8-sig: BOM-tolerant read fix)."""
+    path = _resolve_cache_path()
+    if path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8-sig"))
+        except (json.JSONDecodeError, OSError):  # OSError covers FileNotFoundError
+            return {}
+    return {}
 
 
 def _save_cache(cache: dict) -> None:
@@ -99,12 +103,3 @@ def build_animated_sticker_injection(emoji: str = "") -> str:
         return (f"[The user sent an animated sticker {emoji}~ "
                 f"I can't see animated ones yet, but the emoji suggests: {emoji}]")
     return "[The user sent an animated sticker~ I can't see animated ones yet]"
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import os  # noqa: F401,E402
-import tempfile  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

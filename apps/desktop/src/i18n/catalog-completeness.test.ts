@@ -1,12 +1,16 @@
 import { describe, expect, it } from 'vitest'
 
 import { TRANSLATIONS } from './catalog'
-import type { Locale } from './types'
+import { deOverrides } from './de'
+import { esOverrides } from './es'
+import { frOverrides } from './fr'
+import type { BundledLocale } from './types'
 
 // Locales that shipped fully translated. They are `defineLocale` overlays like
 // ja/ru, so an English key added later falls back to English instead of
 // failing typecheck; these checks keep the translated copy structurally sound.
-const COMPLETE_LOCALES = ['fr', 'de', 'es'] as const satisfies readonly Locale[]
+const COMPLETE_LOCALES = ['fr', 'de', 'es'] as const satisfies readonly BundledLocale[]
+const completeOverrides = { fr: frOverrides, de: deOverrides, es: esOverrides }
 
 type Leaf = { path: string; value: unknown }
 
@@ -28,7 +32,7 @@ const kindOf = (value: unknown) => (Array.isArray(value) ? 'array' : typeof valu
 
 // `intro` is display-only: English lives in intro-copy.jsonl, so its catalog
 // entry is an empty shell. intro.test.tsx covers the translated rotation.
-const catalogLeaves = (locale: Locale) =>
+const catalogLeaves = (locale: BundledLocale) =>
   new Map(
     leaves(TRANSLATIONS[locale])
       .filter(leaf => !leaf.path.startsWith('intro.'))
@@ -37,8 +41,20 @@ const catalogLeaves = (locale: Locale) =>
 
 const english = catalogLeaves('en')
 
+it.each(['de', 'es', 'fr', 'ja', 'ru', 'zh', 'zh-hant', 'ar'] as const)(
+  '%s renders localized retirement copy instead of English fallback',
+  locale => {
+    expect(TRANSLATIONS[locale].updates.discontinuedTitle).not.toBe(TRANSLATIONS.en.updates.discontinuedTitle)
+    expect(TRANSLATIONS[locale].updates.discontinuedBody).not.toBe(TRANSLATIONS.en.updates.discontinuedBody)
+  }
+)
+
 describe.each(COMPLETE_LOCALES)('%s desktop catalog', locale => {
   const catalog = catalogLeaves(locale)
+
+  it('keeps Updates copy in the locale overlay rather than falling back to English', () => {
+    expect(Object.keys(completeOverrides[locale].updates).sort()).toEqual(Object.keys(TRANSLATIONS.en.updates).sort())
+  })
 
   it('covers exactly the English key set with matching value kinds', () => {
     expect([...catalog.keys()].sort()).toEqual([...english.keys()].sort())

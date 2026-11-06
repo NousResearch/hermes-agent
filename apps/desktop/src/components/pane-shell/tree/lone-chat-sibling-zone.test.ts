@@ -40,7 +40,7 @@ afterEach(() => disposers.splice(0).forEach(dispose => dispose()))
 const zoneOf = (paneId: string) => findGroupOfPane($layoutTree.get()!, paneId)!
 
 describe('dragging a session tab into its own zone', () => {
-  it('leaves BOTH chat zones with a strip, and main chromeless again once the tile is gone', () => {
+  it('leaves BOTH chat zones with a strip, and main keeps its own once the tile is gone', () => {
     expect(tabStripVisibleForGroup(zoneOf('workspace'))).toBe(true)
 
     moveTreePane('session-tile:b', { groupId: 'grp-main', pos: 'right' })
@@ -53,6 +53,7 @@ describe('dragging a session tab into its own zone', () => {
 
     removeTreePane('session-tile:b')
 
-    expect(tabStripVisibleForGroup(zoneOf('workspace'))).toBe(false)
+    // A lone workspace is the session switcher's home: tab and "+" stay (#89350).
+    expect(tabStripVisibleForGroup(zoneOf('workspace'))).toBe(true)
   })
 })

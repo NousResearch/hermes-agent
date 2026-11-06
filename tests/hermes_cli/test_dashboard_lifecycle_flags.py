@@ -17,7 +17,6 @@ import pytest
 
 from hermes_cli.main import cmd_dashboard
 
-
 def _ns(**kw):
     """Build an argparse.Namespace with dashboard defaults plus overrides."""
     defaults = dict(
@@ -26,7 +25,6 @@ def _ns(**kw):
     )
     defaults.update(kw)
     return argparse.Namespace(**defaults)
-
 
 class TestDashboardStatus:
     def test_status_no_processes(self, capsys):
@@ -58,6 +56,30 @@ class TestDashboardStatus:
         assert "PID 12346" in out
         assert "PID 12347" in out and "[serve]" in out
 
+    def test_status_lists_os_assigned_port_serve_that_stop_targets(self, capsys, monkeypatch):
+        """A ``--port 0`` serve (Desktop SSH backend) is listed on the port the ledger recorded,
+        so ``--status`` shows every backend ``--stop`` would kill (#81564)."""
+        import socket
+
+        from hermes_cli import dashboard_procs, process_identity
+        from hermes_cli.main_dashboard import _find_stale_dashboard_pids
+
+        pid = 424242
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            real_port = listener.getsockname()[1]
+            monkeypatch.setattr(dashboard_procs, "_iter_process_table", lambda: [
+                (pid, "/usr/local/bin/hermes serve --host 127.0.0.1 --port 0 --ssh-isolated")])
+            monkeypatch.setattr(process_identity, "ledger_entries", lambda: [
+                {"pid": pid, "purpose": "serve", "host": "127.0.0.1", "port": real_port}])
+            monkeypatch.setattr("gateway.status._pid_exists", lambda p: p == pid)
+
+            assert _find_stale_dashboard_pids() == [pid]
+            with pytest.raises(SystemExit) as exc:
+                cmd_dashboard(_ns(status=True))
+        assert exc.value.code == 0
+        assert f"PID {pid} [serve]" in capsys.readouterr().out
 
     def test_status_does_not_try_to_import_fastapi(self):
         """`--status` must not require dashboard runtime deps — it's a
@@ -74,7 +96,6 @@ class TestDashboardStatus:
              pytest.raises(SystemExit) as exc:
             cmd_dashboard(_ns(status=True))
         assert exc.value.code == 0
-
 
 class TestDashboardStop:
 
@@ -146,14 +167,12 @@ class TestDashboardStop:
             cmd_dashboard(_ns(stop=True))
         assert exc.value.code == 0
 
-
 class TestLifecycleFlagsTakePrecedence:
     """If both --stop and --status are set, --status wins (it's listed
     first in cmd_dashboard).  Neither is allowed to fall through to the
     server-start path, which is the critical safety property — a user
     who typed ``hermes dashboard --stop`` must not end up ALSO starting
     a new server."""
-
 
     def test_stop_does_not_fall_through_to_server_start(self):
         """Covers the worst-case regression: if --stop ever stopped exiting
@@ -172,5 +191,3 @@ class TestLifecycleFlagsTakePrecedence:
              pytest.raises(SystemExit):
             cmd_dashboard(_ns(stop=True))
         assert called["start"] is False
-
-

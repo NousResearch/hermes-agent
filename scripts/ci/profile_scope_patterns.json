@@ -108,7 +108,7 @@
     {
       "id": "P22",
       "class": "C3",
-      "pattern_regex": "scan_skill_commands\\(|get_skill_bundles\\(|resolve_bundle_command_key\\(|_is_profile_skill_command\\(|def _dispatch_(skill|bundle)\\(",
+      "pattern_regex": "scan_skill_commands\\(|get_skill_bundles\\(|resolve_bundle_command_key\\(|_profile_skill_command\\(|_is_profile_skill_command\\(|def _dispatch_(skill|bundle)\\(",
       "scope_hint": "command.dispatch's whole stage loop (quick -> plugin -> bundle -> skill) and slash.exec bundle routing must run under the session's profile home; use the home-keyed get_skill_commands().",
       "why": "The router bound the profile and said 'skill exists', the dispatcher scanned the launch home and answered 4018 'not a skill command' for every secondary-only skill."
     },

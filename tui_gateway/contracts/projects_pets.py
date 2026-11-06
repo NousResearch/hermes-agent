@@ -9,6 +9,8 @@ The pet wire predates the snake_case rule and travels camelCase (``displayName``
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import Field
 
 from .base import JsonValue, Params, Result
@@ -246,6 +248,10 @@ class ProjectTreeLane(Result):
     path: str | None = None
     isMain: bool = False
     isKanban: bool = False
+    # True only when the placement saw git (probe or persisted repo root). The
+    # path-only heuristic lane for a non-git folder is isMain but isGit=False,
+    # so the renderer never offers `git switch` on it (#61362).
+    isGit: bool = True
     sessions: list[ProjectTreeSession] = Field(default_factory=list)
 
 
@@ -356,6 +362,8 @@ class PetCellsParams(ProfileParams):
     state: str | None = None
     cols: int | None = None
     graphics: bool = False
+    # The client's own ``auto`` pick from its terminal's env (ui-tui lib/terminalGraphics.ts).
+    terminal: Literal["kitty", "unicode"] = "unicode"
 
 
 class PetCellsResult(Result):

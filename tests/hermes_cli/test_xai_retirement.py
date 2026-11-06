@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli.xai_retirement import (
     RetirementIssue,
@@ -32,14 +32,12 @@ def test_apply_migration_preserves_long_double_quoted_scalar(tmp_path, monkeypat
     assert loaded["model"]["model"] == "grok-4"
     assert loaded["approvals"]["smart_policy"] == value
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 def _paths(issues):
     return [i.config_path for i in issues]
-
 
 # ---------------------------------------------------------------------------
 # _normalize / _looks_like_xai
@@ -49,14 +47,12 @@ class TestNormalize:
     def test_strips_x_ai_prefix(self):
         assert _normalize("x-ai/grok-4") == "grok-4"
 
-
 class TestLooksLikeXai:
 
     def test_non_grok_returns_false(self):
         assert not _looks_like_xai("gpt-4")
         assert not _looks_like_xai("claude-sonnet-4-6")
         assert not _looks_like_xai("openrouter/openai/gpt-4")
-
 
 # ---------------------------------------------------------------------------
 # find_retired_xai_refs — config scanning
@@ -78,7 +74,6 @@ class TestFindRetiredEdgeCases:
         }
         assert find_retired_xai_refs(cfg) == []
 
-
 class TestFindRetiredPerSlot:
     def test_principal_retired(self):
         cfg = {"principal": {"model": "grok-code-fast-1"}}
@@ -89,13 +84,11 @@ class TestFindRetiredPerSlot:
         assert issues[0].replacement == "grok-4.3"
         assert issues[0].reasoning_effort is None
 
-
 # ---------------------------------------------------------------------------
 # Migration semantics
 # ---------------------------------------------------------------------------
 
 class TestMigrationSemantics:
-
 
     def test_imagine_pro_maps_to_imagine_quality(self):
         cfg = {"plugins": {"image_gen": {"xai": {"model": "grok-imagine-image-pro"}}}}
@@ -106,14 +99,10 @@ class TestMigrationSemantics:
         for name, entry in _RETIRED_MODELS.items():
             assert entry.get("replacement"), f"{name} has no replacement"
 
-
 # ---------------------------------------------------------------------------
 # format_issue
 # ---------------------------------------------------------------------------
 
-
-
 # ---------------------------------------------------------------------------
 # Module-level constants sanity
 # ---------------------------------------------------------------------------
-

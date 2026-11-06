@@ -22,7 +22,14 @@ def thumbnail_data_url(max_size: tuple[int, int] = THUMB_MAX, quality: int = 72)
     """``data:image/jpeg;base64,...`` of the running screen, or ``None`` when no screen is up."""
     env = runtime.published_env()
     display = env.get("DISPLAY")
-    if not display or runtime._launcher_pid() is None:
+    if not display:
+        return None
+    if runtime.sandbox_screen_running():
+        from tools.bot_desktop import sandbox_host
+        sandbox = runtime._owned_sandbox_env()
+        jpeg = sandbox_host.grab_jpeg(sandbox, env, max_size, quality) if sandbox is not None else None
+        return "data:image/jpeg;base64," + base64.b64encode(jpeg).decode("ascii") if jpeg else None
+    if runtime._launcher_pid() is None:
         return None
     from PIL import ImageGrab  # Pillow is a hard dependency; import lazily to keep status calls cheap
 

@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
+import { writeEnvFile, writeMockProviderConfig } from '../../../tests-js/scripts/mock-provider-config'
 import { startMockServer } from '../../../tests-js/scripts/mock-server'
 
 import {
@@ -8,9 +9,7 @@ import {
   createSandbox,
   launchDesktop,
   type MockBackendFixture,
-  waitForAppReady,
-  writeEnvFile,
-  writeMockProviderConfig
+  waitForAppReady
 } from './fixtures'
 import { RealSessionBuilder } from './real-session-builder'
 import { expect, test } from './test'
@@ -168,6 +167,43 @@ const pushEvent = (page: Page, type: string, payload: unknown) =>
 
 const hero = (page: Page) => page.locator('button[aria-label^="Screen:"]').first()
 
+async function revealScreenHero(page: Page): Promise<void> {
+  const tab = page
+    .getByRole('button', { name: 'Bots', exact: true })
+    .or(page.getByRole('tab', { name: 'Bots', exact: true }))
+    .first()
+
+  await tab.click()
+  await expect(page.getByRole('button', { name: 'New bot or group chat' })).toBeVisible()
+
+  const row = page.locator('[data-slot="bots-roster"] [data-roster-key="local::alpha"]')
+  await expect(row).toBeVisible({ timeout: 30_000 })
+
+  for (let attempt = 1; ; attempt += 1) {
+    await row.click()
+
+    try {
+      await expect(page.getByText('Hello alpha', { exact: true }).filter({ visible: true }).first()).toBeVisible({ timeout: 45_000 })
+
+      break
+    } catch (error) {
+      if (attempt >= 3) {
+        throw error
+      }
+    }
+  }
+
+  await page
+    .getByText(/Waking up/i)
+    .first()
+    .waitFor({ state: 'hidden', timeout: 90_000 })
+    .catch(() => undefined)
+
+  if ((await hero(page).count()) === 0) {
+    await page.getByRole('tab', { name: 'Scheduled jobs' }).first().click()
+  }
+}
+
 test.beforeAll(async () => {
   const mock = await startMockServer()
   const sandbox = createSandbox('bots-screen-stale')
@@ -203,42 +239,8 @@ test('a stale portal display.status reply does not roll back the newer stopped s
   const page = fixture!.page
 
   await installScreenProbe(page)
-
-  const tab = page
-    .getByRole('button', { name: 'Bots', exact: true })
-    .or(page.getByRole('tab', { name: 'Bots', exact: true }))
-    .first()
-
-  await tab.click()
-  await expect(page.getByRole('button', { name: 'New bot or group chat' })).toBeVisible()
-
-  const row = page.locator('[data-slot="bots-roster"] [data-roster-key="local::alpha"]')
-  await expect(row).toBeVisible({ timeout: 30_000 })
-
-  for (let attempt = 1; ; attempt += 1) {
-    await row.click()
-
-    try {
-      await expect(page.getByText('Hello alpha', { exact: true }).filter({ visible: true }).first()).toBeVisible({ timeout: 45_000 })
-
-      break
-    } catch (error) {
-      if (attempt >= 3) {
-        throw error
-      }
-    }
-  }
-
-  await page
-    .getByText(/Waking up/i)
-    .first()
-    .waitFor({ state: 'hidden', timeout: 90_000 })
-    .catch(() => undefined)
-
   // Reveal the routines pane: the Screen hero mounts and fires the portal's one-shot fetch.
-  if ((await hero(page).count()) === 0) {
-    await page.getByRole('tab', { name: 'Scheduled jobs' }).first().click()
-  }
+  await revealScreenHero(page)
 
   await expect(hero(page)).toHaveAttribute('aria-label', 'Screen: Checking the screen…', { timeout: 15_000 })
   await expect.poll(async () => (await probe(page)).held, { timeout: 15_000 }).toBe(1)
@@ -270,6 +272,7 @@ test('pushed display.status / display.lease events keep updating the shipped lis
   const page = fixture!.page
 
   await installScreenProbe(page)
+  await revealScreenHero(page)
   await expect(hero(page)).toBeVisible({ timeout: 15_000 })
 
   // A start made outside this window is pushed as a token-less status: authoritative.

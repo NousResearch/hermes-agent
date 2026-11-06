@@ -27,6 +27,9 @@
  * these into the IPC layer and owns file I/O + secret encryption.
  */
 
+// Relative, not `@hermes/shared`: esbuild bundles electron/ without tsconfig paths.
+import { HERMES_CLOUD_MANAGED, isHermesCloudUrl } from '../../shared/src/hermes-cloud'
+
 import {
   hostLabelFromBaseUrl,
   modeIsRemoteLike,
@@ -220,6 +223,8 @@ export interface RegistryLocalRoute {
   delegate: boolean
   /** Pool key for the forced-local child when not delegating. */
   poolKey: string
+  /** Set when a concrete remote-only profile must not spawn a local child. */
+  refuse?: string
 }
 
 export interface ResolvedConnectionSshDescriptor {
@@ -451,6 +456,41 @@ export function registrySourceOwnsPrimaryBackend(
   return Boolean(id) && id === registry.primary && resolvedConnectionId(registry, descriptor) === id
 }
 
+export interface ReuseMatchingPrimaryRemoteBackendOptions<T extends ResolvedConnectionDescriptor> {
+  connectionId: string
+  ensurePrimary: (profile: null | string | undefined) => Promise<T>
+  profile: null | string | undefined
+  registry: ConnectionRegistry
+  source: RegistryConnection
+}
+
+export interface SharedRegistryProfileScope {
+  connectionId: string
+  profile: string
+  sharedRemote: true
+}
+
+/** Reuse the live URL/cloud primary without losing the caller's REST profile scope. */
+export async function reuseMatchingPrimaryRemoteBackend<T extends ResolvedConnectionDescriptor>({
+  connectionId,
+  ensurePrimary,
+  profile,
+  registry,
+  source
+}: ReuseMatchingPrimaryRemoteBackendOptions<T>): Promise<(T & SharedRegistryProfileScope) | null> {
+  if (connectionId !== registry.primary || source.kind === 'local' || source.kind === 'ssh') {
+    return null
+  }
+
+  const descriptor: T = await ensurePrimary(profile)
+
+  if (!registrySourceOwnsPrimaryBackend(registry, connectionId, descriptor)) {
+    return null
+  }
+
+  return { ...descriptor, profile: String(profile ?? '').trim() || 'default', connectionId, sharedRemote: true }
+}
+
 function normalizedSshTarget(route: { host?: unknown; port?: unknown; user?: unknown }): null | string {
   const ssh = normalizeSshConfig({ ...route, mode: 'ssh' })
 
@@ -487,13 +527,18 @@ function normalizedSshTarget(route: { host?: unknown; port?: unknown; user?: unk
  * the BARE profile key by design, and that slot may already hold the v1
  * route's REMOTE descriptor — so the forced-local child pools under the
  * `conn:local::<profile>` form instead (colons are invalid in profile names,
- * so it cannot collide).
+ * so it cannot collide). A concrete named profile that does not exist on
+ * this machine is refused instead of spawned. `default` is `$HERMES_HOME`
+ * itself, so it always exists here and is never refused. A per-profile
+ * remote override still delegates to the legacy profile route.
  */
 export function resolveRegistryLocalRoute(
   profile: null | string | undefined,
-  opts: { globalRemote?: boolean; profileRemoteOverride?: boolean } = {}
+  opts: { globalRemote?: boolean; localProfileExists?: boolean; profileRemoteOverride?: boolean } = {}
 ): RegistryLocalRoute {
-  const profileKey = String(profile ?? '').trim() || 'default'
+  const raw = String(profile ?? '').trim()
+  const profileKey = raw || 'default'
+  const concrete = raw.length > 0
 
   // A per-profile SSH/remote override is an explicit per-profile routing
   // decision: the override owns this profile's backend, so the 'local' entry
@@ -506,10 +551,39 @@ export function resolveRegistryLocalRoute(
   }
 
   if (opts.globalRemote) {
-    return { delegate: false, poolKey: `${backendScopePrefix(LOCAL_CONNECTION_ID)}${profileKey}` }
+    const poolKey = `${backendScopePrefix(LOCAL_CONNECTION_ID)}${profileKey}`
+
+    // A concrete named profile that does not exist on this machine is
+    // remote-only. Spawning it locally is the #90477 loop, so refuse. An
+    // unprofiled call is enumeration, not a dial. `default` lives at
+    // $HERMES_HOME, not profiles/default, so This device -> default always
+    // force-locals. A profile that exists locally still force-locals so
+    // "This device" does not dial the remote.
+    if (concrete && profileKey !== 'default' && opts.localProfileExists === false) {
+      return { delegate: false, poolKey, refuse: `Profile "${profileKey}" no longer exists.` }
+    }
+
+    return { delegate: false, poolKey }
   }
 
   return { delegate: true, poolKey: profileKey }
+}
+
+/**
+ * Connection id for a registry dial. A missing id is not `registry.primary`:
+ * substituting primary opens another SSH host when a scoped caller drops the
+ * id (#90477). `primary` is accepted so that substitution stays visible at the
+ * call site and cannot sneak back in.
+ */
+export function registryDialConnectionId(connectionId: unknown, primary: unknown): string {
+  const id = String(connectionId ?? '').trim()
+
+  if (!id) {
+    void primary
+    throw new Error('No connection with id "".')
+  }
+
+  return id
 }
 
 /**
@@ -570,9 +644,54 @@ export interface RosterAgent {
 
 export interface RosterProfileMetadata {
   display_name?: string
+  description?: string
   title?: string
   ui_meta?: Record<string, unknown>
   has_avatar?: boolean
+}
+
+/** Project credential-free `/api/profiles` fields into the metadata carried by
+ * the cross-connection roster. Empty strings are meaningful: they clear stale
+ * renderer values from a prior enumeration. */
+export function profileMetadataFromApiProfiles(profiles: unknown[]): Record<string, RosterProfileMetadata> {
+  return Object.fromEntries(
+    profiles
+      .map(profile => {
+        const record = profile && typeof profile === 'object' ? (profile as Record<string, unknown>) : {}
+        const name = String(record.name || '').trim()
+
+        if (!name) {
+          return null
+        }
+
+        const metadata: RosterProfileMetadata = {}
+
+        if (typeof record.display_name === 'string' && record.display_name.trim()) {
+          metadata.display_name = record.display_name.trim()
+        }
+
+        // `/api/profiles` names the Bot Mode title `bot_title`. Carry it even
+        // when empty so a refreshed remote row can clear stale renderer state.
+        if (typeof record.bot_title === 'string') {
+          metadata.title = record.bot_title.trim()
+        }
+
+        if (typeof record.description === 'string') {
+          metadata.description = record.description.trim()
+        }
+
+        if (record.ui_meta && typeof record.ui_meta === 'object') {
+          metadata.ui_meta = record.ui_meta as Record<string, unknown>
+        }
+
+        if (typeof record.has_avatar === 'boolean') {
+          metadata.has_avatar = record.has_avatar
+        }
+
+        return [name, metadata] as const
+      })
+      .filter((entry): entry is readonly [string, RosterProfileMetadata] => Boolean(entry))
+  )
 }
 
 /**
@@ -778,18 +897,18 @@ function pickCanonicalConnection<T extends { connection: RegistryConnection; ord
 export interface UpdateEligibility {
   eligible: boolean
   /** Present when not eligible: 'cloud-managed' (platform updates it). */
-  reason?: 'cloud-managed'
+  reason?: typeof HERMES_CLOUD_MANAGED
 }
 
 /**
  * Whether "Update all instances" may drive this connection. Hermes Cloud
- * instances are platform-managed — we never run `hermes update` against them.
- * Local, remote, and ssh sources are all eligible (reachability and busy
- * checks happen at dispatch time, not here).
+ * instances are platform-managed — we never run `hermes update` against them,
+ * including one saved as a plain URL remote. Local, remote, and ssh sources
+ * are all eligible (reachability and busy checks happen at dispatch time).
  */
 export function updateEligibility(connection: RegistryConnection): UpdateEligibility {
-  if (connection.kind === 'cloud') {
-    return { eligible: false, reason: 'cloud-managed' }
+  if (connection.kind === 'cloud' || isHermesCloudUrl(connection.url)) {
+    return { eligible: false, reason: HERMES_CLOUD_MANAGED }
   }
 
   return { eligible: true }
@@ -811,6 +930,34 @@ export function connectionIdForLabel(label: string, taken: Iterable<string>): st
       return candidate
     }
   }
+}
+
+/**
+ * Settle the connection id a pre-save OAuth login must write its session for.
+ * The registry editor can open the sign-in window BEFORE the draft is saved,
+ * and the login window's cookie partition is derived from this id
+ * (oauth-partition.ts) — so it must equal the id the eventual save uses. An
+ * explicit draft id wins; otherwise mint from the label exactly like
+ * normalizeConnectionInput will (labelSlug maps an empty label to
+ * 'connection', so even an unnamed draft gets a stable, unique id). The
+ * editor's save path never promotes a fresh entry to primary, so a pending
+ * draft always ends up on its own partition.
+ */
+export function connectionIdForPendingLogin(opts: {
+  connectionId?: unknown
+  label?: unknown
+  registry: ConnectionRegistry
+}): string {
+  if (typeof opts.connectionId === 'string' && opts.connectionId.trim()) {
+    return opts.connectionId.trim()
+  }
+
+  const label = typeof opts.label === 'string' ? opts.label : ''
+
+  return connectionIdForLabel(
+    label,
+    opts.registry.connections.map(c => c.id)
+  )
 }
 
 // ── Validation ──────────────────────────────────────────────────────────────
@@ -1598,20 +1745,40 @@ export function reconcileRegistryDrift(
 
     const target = normalizedSshTarget(ssh)
 
-    const alreadyRegistered = registry.connections.some(
+    const registered = registry.connections.find(
       connection =>
         connection.kind === 'ssh' &&
         normalizedSshTarget(connection) === target &&
         (connection.port ?? 22) === (ssh.port ?? 22)
     )
 
-    if (alreadyRegistered) {
+    const { mode: _mode, ...sshFields } = ssh
+
+    if (registered) {
       // Route is known; if primary names another source, that is the user's
       // Connections-panel choice, not drift.
-      return unchanged
-    }
+      //
+      // Known by target is not enough, though: the router tags the live
+      // window by the FULL route identity (matchingConnectionId also compares
+      // keyPath, remoteHermesPath and remoteProfile). A v1 route carrying a
+      // keyPath the registered entry never had resolves to no connectionId,
+      // the renderer treats the untagged window as the unscoped local backend
+      // ("This device") and the roster force-spawns a phantom local child.
+      // Align the registered entry's identity fields with the route the app
+      // actually dials so both sides compare equal.
+      if (matchingConnectionId(registry, { ...ssh, kind: 'ssh' }, 'unique')) {
+        return unchanged
+      }
 
-    const { mode: _mode, ...sshFields } = ssh
+      const { host: _host, user: _user, port: _port, ...identityFields } = sshFields
+      const aligned: RegistryConnection = { ...registered }
+      delete aligned.keyPath
+      delete aligned.remoteHermesPath
+      delete aligned.remoteProfile
+      Object.assign(aligned, identityFields)
+
+      return { changed: true, registry: upsertConnection(registry, aligned) }
+    }
 
     let entry: RegistryConnection
 

@@ -202,10 +202,21 @@ python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/youtube_quiz.py
 
 This returns `{"title": "...", "transcript": "..."}` or an error.
 
-If the script reports `missing_dependency`, tell the user to install it:
+If the script reports `missing_dependency`, use `terminal` with a PM-prepared
+Hermes checkout to prepare the declared `youtube` extra, then reactivate:
+
 ```bash
-pip install youtube-transcript-api
+python -c "import pm; pm.sync_venv(['youtube'], explicit=True)"
+source ./activate
+python -c "import youtube_transcript_api; print(youtube_transcript_api.__file__)"
 ```
+
+Follow the isolated development-home setup in
+[Package Management](https://hermes-agent.nousresearch.com/docs/reference/package-management#developer-workflow)
+before preparation. Retry `youtube_quiz.py` with that Python and the actual
+skill directory returned by `skill_view`. For a remote or sandbox terminal,
+prepare an independent helper environment on that host. Never pip-install into
+Hermes's selected environment.
 
 **Step 3:** Generate 5 quiz questions from the transcript. Use these rules:
 
@@ -295,7 +306,7 @@ Returns JSON with:
 
 - **Never edit `cards.json` directly** — always use the script subcommands to avoid corruption
 - **Transcript failures** — some YouTube videos have no English transcript or have transcripts disabled; inform the user and suggest another video
-- **Optional dependency** — `youtube_quiz.py` needs `youtube-transcript-api`; if missing, tell the user to run `pip install youtube-transcript-api`
+- **Optional dependency** — `youtube_quiz.py` needs `youtube-transcript-api`; use the PM preparation and interpreter check above if missing.
 - **Large imports** — CSV imports with thousands of rows work fine but the JSON output may be verbose; summarize the result for the user
 - **Video ID extraction** — support both `youtube.com/watch?v=ID` and `youtu.be/ID` URL formats
 
@@ -312,7 +323,7 @@ python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.p
 If you are testing from the repo checkout, run:
 
 ```bash
-pytest tests/skills/test_memento_cards.py tests/skills/test_youtube_quiz.py -q
+scripts/run_tests.sh tests/skills/test_memento_cards.py tests/skills/test_youtube_quiz.py -q
 ```
 
 Agent-level verification:

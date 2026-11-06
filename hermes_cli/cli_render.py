@@ -16,6 +16,8 @@ import textwrap
 import threading
 import time
 from contextlib import contextmanager, suppress
+from agent.i18n import t
+from agent.think_scrubber import THINK_TAG_NAMES
 from hermes_cli.banner import format_banner_version_label
 from rich.console import Console
 from rich.text import Text as _RichText
@@ -28,7 +30,7 @@ def _cli():
     return cli
 
 
-_REASONING_TAGS = ("REASONING_SCRATCHPAD", "think", "thinking", "reasoning", "thought")
+_REASONING_TAGS = THINK_TAG_NAMES
 
 
 _TOOL_CALL_TAGS = ("tool_call", "tool_calls", "tool_result", "function_call", "function_calls")
@@ -59,19 +61,10 @@ def _strip_reasoning_tags(text: str) -> str:
         r'(?:(?<=^)|(?<=[\n\r.!?:]))[ \t]*<function\b[^>]*\bname\s*=[^>]*>(?:(?:(?!</function>).)*)</function>\s*',
         '', cleaned, flags=re.DOTALL | re.IGNORECASE,
     )
-    cleaned = re.sub(
-        r'</(?:(?:[\w.-]+:)?(?:tool_call|tool_calls|tool_result|function_call|function_calls|function))>\s*', '', cleaned,
-        flags=re.IGNORECASE,
-    )
-    # Unterminated opener / stray <arg_key>/<arg_value> markup = stream cut
-    # mid tool-call serialization (#101899); strip to end of text.
-    cleaned = re.sub(
-        r'(?:^|\n)[ \t]*<(?:[\w.-]+:)?(?:tool_call|tool_calls|tool_result|function_call|function_calls)\b[^>]*>.*$'
-        r'|(?:^|\n)[^\n<]*</?arg_(?:key|value)\b.*$',
-        '',
-        cleaned,
-        flags=re.DOTALL | re.IGNORECASE,
-    )
+    # Stray closers and cut tool-call fragments share storage's compiled patterns (#101899, #102303).
+    from agent.agent_runtime_helpers import _STRAY_TOOL_CALL_CLOSER_PATTERN, _UNTERMINATED_TOOL_CALL_PATTERN
+    cleaned = _STRAY_TOOL_CALL_CLOSER_PATTERN.sub('', cleaned)
+    cleaned = _UNTERMINATED_TOOL_CALL_PATTERN.sub('', cleaned)
     return cleaned.strip()
 
 
@@ -469,7 +462,7 @@ def _post_stream_transform_output(response: str, result: dict | None) -> str:
     if original and response.startswith(original):
         return response[len(original):]
 
-    return f"\n[Response transformed after streaming]\n{response}"
+    return f"\n{t('cli.render.response_transformed')}\n{response}"
 
 
 def _coerce_output_history_limit(value) -> int:
@@ -528,7 +521,9 @@ def _record_output_history(text: str, *, force: bool = False) -> None:
         _cli()._OUTPUT_HISTORY.extend(lines)
 
 
-_ANSI_SEQUENCE_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])")
+# prompt_toolkit's zero-width ``\001…\002`` brackets first: a crop that split one would leak its
+# escape to the ANSI parser (which quantizes an inline image's id color) or as text.
+_ANSI_SEQUENCE_RE = re.compile(r"\001[^\002]*\002|\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])")
 
 
 def _ansi_drop_cells(line: str, cells: int) -> str:
@@ -645,15 +640,24 @@ def _output_history_rows(limit: int, columns: int, painted: bool):
     return total
 
 
-def _pt_print_ansi(text: str) -> None:
+def _ansi_with_raw(text: str, raw: str = ""):
+    """``ANSI(text)``, then *raw* as one zero-width fragment prompt_toolkit writes verbatim."""
+    from cli import _PT_ANSI
+    if not raw:
+        return _PT_ANSI(text)
+    from prompt_toolkit.formatted_text import to_formatted_text
+    return [*to_formatted_text(_PT_ANSI(text)), ("[ZeroWidthEscape]", raw)]
+
+
+def _pt_print_ansi(text: str, raw: str = "") -> None:
     """``_pt_print(ANSI(text))``, falling back to ``print`` when stdout is not a real console."""
-    from cli import _PT_ANSI, _pt_print
+    from cli import _pt_print
     try:
-        _pt_print(_PT_ANSI(text))
+        _pt_print(_ansi_with_raw(text, raw))
     except Exception:
         # NoConsoleScreenBufferError (Windows) / OSError when stdout is e.g. a worker log file.
         with suppress(Exception):
-            print(text)
+            print(text + raw)
 
 
 _HELD_PAINTS: list | None = None
@@ -740,13 +744,17 @@ def _paint_held(seq: int, paint, app=None) -> bool:
         return True
 
 
-def _cprint(text: str):
+def _cprint(text: str, *, raw: str = ""):
     """Print ANSI text through prompt_toolkit's renderer (patch_stdout swallows raw ANSI).
 
     From a background thread while an Application runs, a direct print races the input
     redraw and gets buried, so those are painted on the app's loop via ``call_soon_threadsafe``.
+
+    *raw* is an escape sequence written verbatim right after *text* (an inline image's
+    transmit): never parsed as ANSI, counted as zero cells, and kept out of the output
+    history, so a resize replay repaints *text* alone and never crops or re-sends it.
     """
-    from cli import _PT_ANSI, _output_history_recording, _pt_print, _pt_print_ansi, _record_output_history
+    from cli import _output_history_recording, _pt_print, _pt_print_ansi, _record_output_history
     recording = _output_history_recording()
     seq = next(_PAINT_SEQ)
 
@@ -758,8 +766,8 @@ def _cprint(text: str):
                 _record_output_history(text, force=True)
             paint()
         return _paint
-    paint_pt = _painted(lambda: _pt_print(_PT_ANSI(text)))
-    paint_fallback = _painted(lambda: _pt_print_ansi(text))
+    paint_pt = _painted(lambda: _pt_print(_ansi_with_raw(text, raw)))
+    paint_fallback = _painted(lambda: _pt_print_ansi(text, raw))
 
     try:
         from prompt_toolkit.application import get_app_or_none, run_in_terminal
@@ -800,7 +808,7 @@ def _cprint(text: str):
         from prompt_toolkit.formatted_text import to_formatted_text
         from prompt_toolkit.renderer import print_formatted_text as _paint_formatted_text
         from prompt_toolkit.styles import Style
-        _paint_formatted_text(app.output, to_formatted_text(_PT_ANSI(text)) + [("", "\n")], Style([]))
+        _paint_formatted_text(app.output, to_formatted_text(_ansi_with_raw(text, raw)) + [("", "\n")], Style([]))
     paint_now = _painted(_print_now)
 
     def _schedule():
@@ -927,13 +935,13 @@ def _build_compact_banner() -> str:
         tiny_line = "☤ NOUS HERMES"
     else:
         tiny_line = _skin.get_branding("agent_name", "Hermes Agent") if _skin else "Hermes Agent"
-    line1 = f"{tiny_line} - AI Agent Framework"
+    line1 = t("cli.render.banner_tagline", name=tiny_line)
 
     if os.environ.get("HERMES_FAST_STARTUP_BANNER") == "1":
         from hermes_cli import __release_date__ as _release_date
-        from hermes_cli import __version__ as _version
+        from hermes_cli.version_info import get_version_info
 
-        version_line = f"Hermes Agent v{_version} ({_release_date})"
+        version_line = t("cli.render.banner_version", version=get_version_info().derived_version, date=_release_date)
     else:
         version_line = format_banner_version_label()
 
@@ -964,18 +972,78 @@ def _panel_box_width(title: str, content_lines: list[str], min_width: int = 46, 
     return inner + 2  # leading/trailing space inside the borders
 
 
-def _wrap_panel_text(text: str, width: int, subsequent_indent: str = "", *, keep_ws: bool = False) -> list[str]:
-    """Wrap panel text; ``keep_ws`` preserves whitespace (command/detail previews)."""
-    kw = dict(replace_whitespace=False, drop_whitespace=False) if keep_ws else dict(break_long_words=False, break_on_hyphens=False)
-    wrapped = textwrap.wrap(text, width=max(8, width), subsequent_indent=subsequent_indent, **kw)
-    return wrapped or [""]
+def _cells(text: str) -> int:
+    """Terminal cells ``text`` takes: a CJK or emoji character is two, a combining mark none."""
+    from prompt_toolkit.utils import get_cwidth
+    return get_cwidth(text)
+
+
+def _clip_cells(text: str, limit: int) -> str:
+    """``text`` cut to ``limit`` terminal cells, ending in ``…`` when cut."""
+    if _cells(text) <= limit:
+        return text
+    out, used = [], 0
+    for ch in text:
+        used += _cells(ch)
+        if used > max(0, limit - 1):
+            break
+        out.append(ch)
+    return "".join(out) + "…"
+
+
+def _wrap_cells(part: str, width: int, indent: str, keep_ws: bool) -> list[str]:
+    """Greedy wrap by terminal cells, for text holding wide characters: CJK text has no spaces to
+    break at, so a word wider than the row is split wherever the row ends, never between a base
+    character and the combining marks after it. One pass that reads each character's width once,
+    so a long prompt wraps in linear time."""
+    indent_cells = _cells(indent)
+    rows, row, used = [], "", 0
+    for token in re.findall(r"\s+|\S+", part):
+        sizes = [_cells(ch) for ch in token]
+        if used + sum(sizes) > width and row.strip():
+            rows.append(row if keep_ws else row.rstrip())
+            if not keep_ws:
+                kept = token.lstrip()
+                token, sizes = kept, sizes[len(sizes) - len(kept):]
+            row, used = indent, indent_cells
+        for ch, size in zip(token, sizes):
+            if size and row and used + size > width:
+                rows.append(row)
+                row, used = indent, indent_cells
+            row += ch
+            used += size
+    return [*rows, row] if row.strip() or not rows else rows
+
+
+def _wrap_panel_text(text: str, width: int, subsequent_indent: str = "", *, keep_ws: bool = False,
+                     break_long_words: bool = False) -> list[str]:
+    """Wrap panel text to ``width`` terminal cells; ``keep_ws`` preserves whitespace (command/detail
+    previews). Each source line wraps on its own: a newline inside a row would break the panel's
+    right border. ``break_long_words`` hard-splits a word wider than the row (a URL or hash), for
+    panels that never clip their rows."""
+    width = max(8, width)
+    kw = (dict(replace_whitespace=False, drop_whitespace=False) if keep_ws
+          else dict(break_long_words=break_long_words, break_on_hyphens=False))
+    rows = []
+    for part in (text.expandtabs(4).splitlines() if keep_ws else [text]):
+        # Wide characters, wide spaces (U+3000) included, take the cell path. Other whitespace never
+        # does: get_cwidth counts \n and \t as 0, which would send plain ASCII there and keep a raw
+        # newline inside the row.
+        if any(_cells(ch) > 1 if ch.isspace() else _cells(ch) != 1 for ch in part):
+            if not keep_ws:
+                part = " ".join(part.split())  # textwrap's whitespace collapse
+            rows.extend(_wrap_cells(part, width, subsequent_indent, keep_ws) or [""])
+        else:
+            rows.extend(textwrap.wrap(part, width=width, subsequent_indent=subsequent_indent, **kw) or [""])
+    return rows or [""]
 
 
 _wrap_panel_text_keep_ws = functools.partial(_wrap_panel_text, keep_ws=True)
 
 
 def _append_panel_line(lines, border_style: str, content_style: str, text: str, box_width: int) -> None:
-    lines.extend(((border_style, "│ "), (content_style, text.ljust(max(0, box_width - 2))), (border_style, " │\n")))
+    pad = " " * max(0, box_width - 2 - _cells(text))  # by cells: a CJK row would push the border out
+    lines.extend(((border_style, "│ "), (content_style, text + pad), (border_style, " │\n")))
 
 
 def _append_blank_panel_line(lines, border_style: str, box_width: int) -> None:

@@ -73,7 +73,7 @@ def _thumb_path(slug: str) -> Path:
 def _read_pet_json(directory: Path) -> dict:
     pet_json = directory / "pet.json"
     try:
-        return json.loads(pet_json.read_text(encoding="utf-8")) if pet_json.is_file() else {}
+        return json.loads(pet_json.read_text(encoding="utf-8-sig")) if pet_json.is_file() else {}
     except (OSError, ValueError) as exc:
         logger.debug("unreadable pet.json in %s: %s", directory, exc)
         return {}
@@ -153,7 +153,7 @@ def install_pet(slug: str, *, force: bool = False, timeout: float = _DOWNLOAD_TI
     if entry.pet_json_url and _is_petdex_host(entry.pet_json_url):
         try:
             meta = data if isinstance(data := _http_get(entry.pet_json_url, timeout).json(), dict) else {}
-        except Exception as exc:  # noqa: BLE001 - non-fatal, fall back below
+        except Exception as exc:
             logger.debug("pet.json fetch failed for %s: %s", slug, exc)
     meta = meta or {"id": slug, "displayName": entry.display_name, "description": ""}
     meta["spritesheetPath"] = sprite_path.name  # key order matters: pet.json is written verbatim
@@ -190,7 +190,7 @@ def register_local_pet(spritesheet, *, slug: str, display_name: str = "", descri
             from agent.pet.generate.atlas import _load_rgba
 
             _load_rgba(spritesheet).save(sprite_path, format="WEBP", lossless=True, quality=100, method=6, exact=True)
-    except Exception as exc:  # noqa: BLE001 - normalize to one error type
+    except Exception as exc:
         raise PetStoreError(f"could not write spritesheet for '{slug}': {exc}") from exc
     meta = {"id": slug, "displayName": display_name or slug, "description": description or "", "spritesheetPath": sprite_path.name}
     _write_pet_json(directory, {**meta, "createdBy": "generator"})
@@ -240,7 +240,7 @@ def thumbnail_png(slug: str, *, source_url: str = "", timeout: float = 30.0) -> 
     if sheet_bytes is None and source_url and _is_petdex_host(source_url):
         try:
             sheet_bytes = _http_get(source_url, timeout).content
-        except Exception as exc:  # noqa: BLE001 - cosmetic, degrade to placeholder
+        except Exception as exc:
             logger.debug("thumb fetch failed for %s: %s", slug, exc)
     if not sheet_bytes:
         return None
@@ -252,7 +252,7 @@ def thumbnail_png(slug: str, *, source_url: str = "", timeout: float = 30.0) -> 
         frame = frame.resize((_THUMB_W, round(_THUMB_W * _THUMB_FRAME_H / _THUMB_FRAME_W)), Image.NEAREST)
         buf = io.BytesIO()
         frame.save(buf, format="PNG")
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug("thumb crop failed for %s: %s", slug, exc)
         return None
     with contextlib.suppress(OSError):
@@ -333,5 +333,5 @@ def _download(url: str, dest: Path, *, timeout: float) -> None:
                 for chunk in resp.iter_bytes():
                     fh.write(chunk)
             tmp.replace(dest)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise PetStoreError(f"download failed for {url}: {exc}") from exc

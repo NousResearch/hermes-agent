@@ -10,7 +10,6 @@ from unittest.mock import patch
 from agent.credits_tracker import CreditsState
 from run_agent import AIAgent
 
-
 def _agent_with_state(*, paid_access: bool = False) -> AIAgent:
     """Bare agent with a depleted-shaped state that would normally emit."""
     agent = object.__new__(AIAgent)
@@ -21,10 +20,8 @@ def _agent_with_state(*, paid_access: bool = False) -> AIAgent:
     agent.base_url = ""
     return agent
 
-
 def _cfg(enabled):
     return {"display": {"credits_notices": enabled}}
-
 
 class TestCreditsNoticesToggle:
     def test_disabled_emits_nothing(self):
@@ -35,8 +32,6 @@ class TestCreditsNoticesToggle:
             agent._emit_credits_notices()
         assert received == []
 
-
-
     def test_config_error_fails_open(self):
         agent = _agent_with_state()
         received = []
@@ -44,5 +39,3 @@ class TestCreditsNoticesToggle:
         with patch("hermes_cli.config.load_config", side_effect=RuntimeError("boom")):
             agent._emit_credits_notices()
         assert any(getattr(n, "key", None) == "credits.depleted" for n in received)
-
-

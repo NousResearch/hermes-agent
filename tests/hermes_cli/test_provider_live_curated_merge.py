@@ -19,7 +19,6 @@ from hermes_cli.models import (
     provider_model_ids,
 )
 
-
 class TestGenericProviderLiveCuratedMerge:
     """provider_model_ids merges live + curated for generic api_key providers."""
 
@@ -57,7 +56,6 @@ class TestGenericProviderLiveCuratedMerge:
         assert result.index("glm-6-preview") >= len(curated)
         # No duplicates for models present in both.
         assert result.count("glm-5") == 1
-
 
     def test_no_models_dropped_either_direction(self):
         """Every live AND curated model survives the merge for both modes."""
@@ -142,7 +140,3 @@ class TestGenericProviderLiveCuratedMerge:
 
         assert "x-preview-f-free" not in result
         assert "kimi-k3" in result
-
-
-
-

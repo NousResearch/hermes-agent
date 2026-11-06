@@ -141,8 +141,10 @@ def test_iteration_summary_path_hands_the_sdk_only_the_placeholder(monkeypatch):
     transport = types.SimpleNamespace(normalize_response=lambda response, **kw: types.SimpleNamespace(content="ok", tool_calls=None))
     agent = types.SimpleNamespace(
         provider="p", model="m", api_mode="chat_completions", _force_ascii_payload=False,
-        _build_api_kwargs=lambda messages: dict(body), _ensure_primary_openai_client=lambda reason: client,
+        _build_api_kwargs=lambda messages: dict(body),
         _get_transport=lambda: transport)
+    agent._interruptible_api_call = lambda request: chat_completion_helpers._dispatch_nonstreaming_api_request(
+        agent, request, make_client=lambda *args, **kwargs: client)
 
     assert chat_completion_helpers._chat_summary_attempt(agent, body["messages"], "req-1")(0) == "ok"
     assert len(seen) == 1

@@ -9,12 +9,24 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from agent.message_metadata import append_message
-from agent.turn_empty_response import recover_empty_response
+from agent.reasoning_promotion import answer_in_reasoning_capability
+from agent.repetition_guard import STOP_PATH_MIN_CHARS, is_runaway_repetition
+from agent.stream_delivery import publish_held_final_row
+from agent.turn_failure_copy import stamp_failure
+from agent.turn_empty_response import (
+    housekeeping_reply_line, recover_empty_response, take_housekeeping_reply_line,
+)
 from agent.turn_stop_gates import apply_stop_gates
+from agent.turn_truncation import partial_result, repetition_copy
 
+_REPETITION_STOPPED = repetition_copy(
+    "before delivery",
+    "so the repeated output was discarded.",
+    "; refusing to return a",
+)
 logger = logging.getLogger("agent.conversation_loop")
 
 # Ephemeral retry scaffolding rows popped before the final answer becomes durable.
@@ -40,7 +52,55 @@ class FinalResponseVerdict:
     length_continue_retries: Any
     _pending_verification_response: Any
     _pending_verification_response_previewed: Any
-    result: Optional[Dict[str, Any]] = None
+    api_call_count: int
+    result: Optional[dict[str, Any]] = None
+
+
+def _bare_marker_after_reply(agent: Any, final_response: Any, *, truncated_parts: Any = None,
+                             promoted: Any = None) -> bool:
+    """End this turn on the reply written beside a housekeeping round instead of its bare marker:
+    only when the host says a marker may not stay silent (``_silence_marker_needs_reply``), for a
+    complete uninterrupted response, and only when a real (non-marker) reply line exists."""
+    from gateway.response_filters import is_intentional_silence_response
+
+    if (getattr(agent, "_silence_marker_needs_reply", False) is not True or truncated_parts or promoted
+            or getattr(agent, "_interrupt_requested", False)):
+        return False
+    reply = housekeeping_reply_line(agent)
+    return (bool(reply) and not is_intentional_silence_response(reply)
+            and is_intentional_silence_response(agent._strip_think_blocks(final_response or "").strip()))
+
+
+def _recover_marker_reply(
+    agent: Any, final_response: Any, verdict: Callable[[str], FinalResponseVerdict], *,
+    truncated_parts: Any, promoted: Any,
+) -> Optional[FinalResponseVerdict]:
+    """Select a completed housekeeping reply before output transforms and persistence.
+
+    Keep the caller's loop state, changing only the chosen final and its exit reason.
+    Other hosts and permitted silence continue through normal text handling.
+    """
+    if not _bare_marker_after_reply(agent, final_response, truncated_parts=truncated_parts, promoted=promoted):
+        return None
+    result = verdict("break")
+    result.final_response = take_housekeeping_reply_line(agent)
+    result._turn_exit_reason = "fallback_prior_turn_content"
+    logger.info("Silence marker after a written reply: using that reply as the final response")
+    return result
+
+
+def _absorb_continuation_fragments(final_response: Any, parts: Any, messages: Any) -> tuple[Any, bool]:
+    """Stitch length-continuation fragments in front of the closing piece; True when there were
+    any. The continuation recovered, so the fragment rows stay in the transcript, unflagged."""
+    if not parts:
+        return final_response, False
+    from agent.conversation_loop import _join_truncated_parts
+
+    for frag in messages:
+        if isinstance(frag, dict):
+            frag.pop("_length_continuation_fragment", None)
+            frag.pop("_length_continuation_nudge", None)
+    return _join_truncated_parts([*parts, (final_response, False)]), True
 
 
 def finish_text_response(
@@ -50,6 +110,7 @@ def finish_text_response(
     _preflight_compression_blocked: Any, codex_ack_continuations: Any,
     truncated_response_parts: Any, length_continue_retries: Any,
     _pending_verification_response: Any, _pending_verification_response_previewed: Any,
+    effective_task_id: Any,
 ) -> FinalResponseVerdict:
     """Finish (or defer) a text-only assistant response in the original guard order. Every
     continuation path sets ``final_response = None`` so an acknowledgment never suppresses
@@ -57,10 +118,9 @@ def finish_text_response(
     stop gates accept it."""
     from agent.conversation_loop import (
         _CODEX_ACK_CONTINUATION_NUDGE, _DEGENERATE_FINAL_NUDGE, _DROPPED_TOOLCALL_NUDGE_CONTENT,
-        _join_truncated_parts
     )
 
-    def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> FinalResponseVerdict:
+    def _verdict(action: str, result: Optional[dict[str, Any]] = None) -> FinalResponseVerdict:
         return FinalResponseVerdict(
             action=action, active_system_prompt=active_system_prompt, final_response=final_response,
             _turn_exit_reason=_turn_exit_reason,
@@ -70,26 +130,36 @@ def finish_text_response(
             length_continue_retries=length_continue_retries,
             _pending_verification_response=_pending_verification_response,
             _pending_verification_response_previewed=_pending_verification_response_previewed,
+            api_call_count=api_call_count,
             result=result,
         )
 
-    # Reasoning-only clean stop: some reasoning parsers (vLLM nemotron_v3 past ~500K
-    # prompt tokens) file the whole answer as reasoning when the model omits the closing
-    # delimiter. ``finish_reason == "stop"`` means the provider considers generation
-    # complete, so the empty-response ladder would only re-bill the same input to arrive
-    # at a truncated preview of this text; promote the reasoning to the visible answer
-    # BEFORE the ladder. ``length`` (cut off mid-thought) stays on the continuation path.
+    # Reasoning-only clean stop on a trusted route (elsewhere reasoning is private and takes the
+    # ladder): some parsers (vLLM nemotron_v3 past ~500K prompt tokens) file the whole answer as
+    # reasoning when the closing delimiter is missing; ``stop`` means generation is complete, so
+    # promote it BEFORE the ladder. ``length`` (cut off mid-thought) stays on the continuation path.
     # The promoted text is RETURNED as the answer but never written into the assistant
     # row's ``content``: chain-of-thought stored as ordinary content is indistinguishable
     # from a real reply on every history surface (#111761). The row keeps ``content``
     # empty with the text in its reasoning fields and carries the promoted text as the
     # ``api_content`` sidecar, so the next turn still replays it byte-identically.
+    # Anthropic thinking (signed ``thinking`` block, or a plugin's ``*.native_assistant`` carrier
+    # of native Claude turns) is a summary written by a separate model, never the answer: it
+    # takes the empty-response continuation below instead.
     _content = assistant_message.content
     _promoted = None
     if (
         finish_reason == "stop"
         and not assistant_message.tool_calls
         and (_content is None or (isinstance(_content, str) and not _content.strip()))
+        and not any(
+            isinstance(d, dict) and (
+                (d.get("type") in ("thinking", "redacted_thinking") and (d.get("signature") or d.get("data")))
+                or str(d.get("type") or "").endswith(".native_assistant")
+            )
+            for d in getattr(assistant_message, "reasoning_details", None) or ()
+        )
+        and answer_in_reasoning_capability(agent)
     ):
         _promoted = agent._extract_reasoning(assistant_message) or None
         if _promoted:
@@ -119,11 +189,8 @@ def finish_text_response(
         _turn_exit_reason = _ev.turn_exit_reason
         active_system_prompt = _ev.active_system_prompt
         _preflight_compression_blocked = _ev.preflight_compression_blocked
-        if _ev.action == "return":
-            return _verdict("return", _ev.result)
-        if _ev.action == "break":
-            return _verdict("break")
-        return _verdict("continue")
+        api_call_count = _ev.api_call_count
+        return _verdict(_ev.action, _ev.result)
 
     agent._empty_content_retries = 0
     agent._thinking_prefill_retries = 0
@@ -131,6 +198,10 @@ def finish_text_response(
     # provider/model switch stays visible on success.
     agent._emit_pending_fallback_notice()
     agent._clear_status_buffer()
+
+    if marker_verdict := _recover_marker_reply(
+            agent, final_response, _verdict, truncated_parts=truncated_response_parts, promoted=_promoted):
+        return marker_verdict
 
     # Defensive: repair malformed role-alternation before API call. Catches cases where the history got
     # wedged into a ``tool → user`` or ``user → user`` tail (e.g. after empty- response scaffolding was
@@ -228,17 +299,29 @@ def finish_text_response(
 
     codex_ack_continuations = 0
 
-    if truncated_response_parts:
-        final_response = _join_truncated_parts([*truncated_response_parts, final_response])
-        truncated_response_parts = []
-        length_continue_retries = 0
-        # The continuation recovered, so the fragments stay in the transcript.
-        for _frag in messages:
-            if isinstance(_frag, dict):
-                _frag.pop("_length_continuation_fragment", None)
-                _frag.pop("_length_continuation_nudge", None)
+    final_response, _joined = _absorb_continuation_fragments(final_response, truncated_response_parts, messages)
+    if _joined:
+        truncated_response_parts, length_continue_retries = [], 0
 
     final_response = agent._strip_think_blocks(final_response).strip()
+
+    # A provider may end a degenerate loop normally with finish_reason="stop" instead of
+    # exhausting its output cap (#100716). Check every completed visible text response before
+    # any verify/kanban interim emission or durable transcript write.
+    # Runaway scale and shape only: a completed answer the user asked to be repetitive is
+    # delivered, unlike a length-truncated fragment that burned the whole budget.
+    if (
+        final_response
+        and len(final_response) >= STOP_PATH_MIN_CHARS
+        and is_runaway_repetition(final_response)
+    ):
+        line, user_response, error = _REPETITION_STOPPED
+        agent._vprint(f"{agent.log_prefix}{line}", force=True, diagnostic=True)
+        agent._cleanup_task_resources(effective_task_id)
+        agent._persist_session(messages, conversation_history)
+        return _verdict("return", stamp_failure(
+            partial_result(messages, api_call_count, user_response, error), "truncated", True,
+        ))
 
     final_msg = agent._build_assistant_message(assistant_message, finish_reason)
     if _promoted:
@@ -246,7 +329,7 @@ def finish_text_response(
         # real reply; ``build_api_messages`` substitutes ``api_content`` on the wire.
         final_msg["api_content"] = final_response
 
-    # Dropped tool-call recovery (copilot/Claude): finish_reason="tool_calls" with empty
+    # Dropped tool-call recovery (seen with Claude via gateways): finish_reason="tool_calls" with empty
     # tool_calls would end the turn unstarted; re-prompt (max 3 CONSECUTIVE stalls).
     if (
         finish_reason == "tool_calls"
@@ -316,6 +399,7 @@ def finish_text_response(
             final_msg["api_content"] = final_response
         else:
             final_msg["content"] = final_response
+    publish_held_final_row(agent, final_msg, final_response, _joined)
 
     append_message(messages, final_msg)
     # Make the answer durable before leaving the loop (_DB_PERSISTED_MARKER keeps

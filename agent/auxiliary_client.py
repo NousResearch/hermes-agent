@@ -2607,6 +2607,32 @@ def _relay_auxiliary_metadata(
     }
 
 
+def _provider_outcome(response: Any, error: Optional[Exception], judged: list) -> Any:
+    """``response``, else raise the provider's own ``error``: a failure its attempt already classified (a judged
+    stream negotiation, a credit-limited 402) is unwrapped for Relay and the aux hooks and kept in ``judged``,
+    which the attempt boundary raises to recovery."""
+    if error is None:
+        return response
+    if isinstance(error, _ClassifiedAttempt):
+        judged.append(error)
+        error = error.failure.error
+    raise error
+
+
+def _provider_callback(create: Callable[[dict[str, Any]], Any], judged: list) -> Callable[[dict[str, Any]], Any]:
+    def call(request: dict[str, Any]) -> Any:
+        judged.clear()
+        return _provider_outcome(*_outcome(create, request), judged)
+    return call
+
+
+def _provider_callback_async(create: Callable[[dict[str, Any]], Any], judged: list) -> Callable[[dict[str, Any]], Any]:
+    async def call(request: dict[str, Any]) -> Any:
+        judged.clear()
+        return _provider_outcome(*await _aoutcome(create(request)), judged)
+    return call
+
+
 def _relay_sync_completion(
     client: Any, kwargs: dict[str, Any], *, provider: str | None = None,
     api_mode: str | None = None, create: Callable[[dict[str, Any]], Any] | None = None,
@@ -2621,7 +2647,9 @@ def _relay_sync_completion(
     relay_context = _RELAY_AUX_CALL_CONTEXT.get() or {}
     task = relay_context.get("task")
     relay_context["stream_provider"] = provider or relay_context.get("provider")
-    callback = create or (lambda request: _create_with_progress(client, request, task, provider=provider or ""))
+    judged: list[_ClassifiedAttempt] = []
+    callback = _provider_callback(
+        create or (lambda request: _create_with_progress(client, request, task, provider=provider or "")), judged)
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     # Isolate only the provider callback so the owning thread can unwind its lease/DB
     # transaction on hard cancel without touching the shared client.
@@ -2641,8 +2669,11 @@ def _relay_sync_completion(
             aux_task=str(metadata.get("auxiliary_task") or ""), metadata=metadata, client=client, kwargs=kwargs,
             provider=provider_name, model=model_name, api_mode=str(metadata.get("api_mode") or ""),
         )
-    except Exception as exc:  # health: allow BLE001 -- recorded on the logical call and re-raised (typed once classified)
-        raise _note_relay_auxiliary_error(exc)
+    except Exception as exc:
+        if judged:  # classified where it failed: recorded there, and Relay and the hooks saw the provider's error
+            raise judged[-1]
+        _note_relay_auxiliary_error(exc)
+        raise
 
 
 async def _relay_async_completion(
@@ -2653,7 +2684,9 @@ async def _relay_async_completion(
 
     kwargs = prepare_chat_messages(client, kwargs)
     # Async twin of the seam default above (#98466).
-    callback = create or (lambda request: _acreate_with_progress(client, request, provider=provider or ""))
+    judged: list[_ClassifiedAttempt] = []
+    callback = _provider_callback_async(
+        create or (lambda request: _acreate_with_progress(client, request, provider=provider or "")), judged)
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     if route is None:
         return await callback(kwargs)
@@ -2670,8 +2703,11 @@ async def _relay_async_completion(
             aux_task=str(metadata.get("auxiliary_task") or ""), metadata=metadata, client=client, kwargs=kwargs,
             provider=provider_name, model=model_name, api_mode=str(metadata.get("api_mode") or ""),
         )
-    except Exception as exc:  # health: allow BLE001 -- recorded on the logical call and re-raised (typed once classified)
-        raise _note_relay_auxiliary_error(exc)
+    except Exception as exc:
+        if judged:
+            raise judged[-1]
+        _note_relay_auxiliary_error(exc)
+        raise
 
 
 def _relay_sync_stream(
@@ -3555,8 +3591,9 @@ def _prepare_same_provider_retry(
 
 
 class _ClassifiedAttempt(Exception):
-    """A failed request already classified on the client/model it was sent to (a rebuilt same-provider retry, a judged
-    stream negotiation): recovery reads ``failure`` instead of classifying again; ``_rung`` re-raises its error."""
+    """A failed request, raised where it was classified on the client/model it was sent to (a rebuilt same-provider
+    retry, a judged stream negotiation, a credit-limited 402): recovery reads ``failure`` instead of classifying
+    again, and ``_rung`` re-raises its error. Relay and the aux hooks only see that error (``_provider_outcome``)."""
 
     def __init__(self, failure: aux_errors.Failure) -> None:
         super().__init__(str(failure.error))
@@ -6612,26 +6649,38 @@ def _complete_relay_auxiliary_call(*, outcome: str = "success", error_class: Opt
     if context is None:
         return
     from agent import relay_llm
-    error, provider, model, failure, _attempt = context.get("attempt", (None,) * 5)
-    ladder = failure and not isinstance(getattr(error, auxiliary_call_outcome.PROVIDER_ERROR_ATTR, None), dict)
+    noted: Optional[_RelayAttempt] = context.get("attempt")
+    if not error_class and noted is not None:  # the ladder's verdict, else one classification
+        embedded = isinstance(getattr(noted.error, auxiliary_call_outcome.PROVIDER_ERROR_ATTR, None), dict)
+        error_class = (noted.failure.verdict.reason.value if noted.failure and not embedded else
+                       auxiliary_call_outcome.error_class(noted.error, provider=noted.provider, model=noted.model))
     relay_llm.complete_logical_call(
         str(context.get("request_id") or ""), outcome=outcome,
         model_name=str(context.get("model") or "unknown"),
         provider_name=str(context.get("provider") or "auxiliary"),
-        response_model_name=context.get("response_model"),
-        error_class=error_class or (failure.verdict.reason.value if ladder else error and auxiliary_call_outcome.error_class(
-            error, provider=provider, model=model)) or "none",  # the ladder's verdict, else one classification
+        response_model_name=context.get("response_model"), error_class=error_class or "none",
     )
 
 
-def _note_relay_auxiliary_error(exc: BaseException, failure: Optional[aux_errors.Failure] = None) -> BaseException:
-    """Record a failed attempt (with the ladder's ``failure`` once classified) on the logical call. Returns what
-    the relay attempt raises: a ``_ClassifiedAttempt`` when its stream negotiation already classified it."""
-    context = _RELAY_AUX_CALL_CONTEXT.get() or {}
-    noted, count = context.get("attempt", (None,) * 5), context.get("attempt_count")
-    if context and isinstance(exc, Exception) and (failure or noted[0] is not exc or noted[4] != count):
-        context["attempt"] = noted = (exc, context["provider"], context["model"], failure, count)
-    return _ClassifiedAttempt(noted[3]) if noted[0] is exc and noted[3] else exc
+class _RelayAttempt(NamedTuple):
+    """A logical call's latest failed attempt, kept for its completion record; recovery never reads it."""
+    error: Exception
+    provider: str
+    model: str
+    failure: Optional[aux_errors.Failure]
+    attempt: Any
+
+
+def _note_relay_auxiliary_error(exc: BaseException, failure: Optional[aux_errors.Failure] = None) -> None:
+    """Record a failed attempt (with the ladder's ``failure`` once classified) on the logical call. A note without
+    a verdict keeps the one already recorded for the same error and attempt."""
+    context = _RELAY_AUX_CALL_CONTEXT.get()
+    if not context or not isinstance(exc, Exception):
+        return
+    noted, count = context.get("attempt"), context.get("attempt_count")
+    if failure is None and noted is not None and noted.error is exc and noted.attempt == count:
+        return
+    context["attempt"] = _RelayAttempt(exc, context["provider"], context["model"], failure, count)
 
 
 def _fail_relay_auxiliary_call(exc: BaseException) -> None:
@@ -6811,11 +6860,13 @@ def _create_with_progress(
         return _create_with_progress_once(client, kwargs, task, force_stream=force_stream, provider=provider)
     except Exception as exc:
         affordable = _affordable_max_tokens_from_error(exc)
-        if affordable is None or not aux_errors.benches_provider(_attempt_verdict(client, kwargs, exc, provider)):
+        if affordable is None:
             raise
+        failure = _attempt_failure(client, kwargs, exc, provider)
         existing_cap = kwargs.get("max_tokens") or kwargs.get("max_completion_tokens")
-        if isinstance(existing_cap, (int, float)) and 0 < existing_cap <= affordable:
-            raise  # Already within budget — the error is something else; don't spin.
+        if not aux_errors.benches_provider(failure.verdict) or (
+                isinstance(existing_cap, (int, float)) and 0 < existing_cap <= affordable):
+            raise _ClassifiedAttempt(failure)  # Not a credit limit, or already within budget; don't spin.
         rejection = exc
     retry_kwargs = dict(kwargs)
     retry_kwargs.pop("max_tokens", None)
@@ -6827,10 +6878,10 @@ def _create_with_progress(
     return _create_with_progress_once(client, retry_kwargs, task, force_stream=force_stream, provider=provider)
 
 
-def _attempt_verdict(client: Any, kwargs: dict[str, Any], exc: Exception, provider: str) -> Any:
-    """The recovery ladder's verdict on this attempt: classified on the provider it was sent to."""
-    noted = _note_relay_auxiliary_error(exc)  # a stream negotiation's verdict is reused, not re-classified
-    return (noted.failure if isinstance(noted, _ClassifiedAttempt) else _classify_failure(exc, provider, client, kwargs.get("model"), None)).verdict
+def _attempt_failure(client: Any, kwargs: dict[str, Any], exc: Exception, provider: str) -> aux_errors.Failure:
+    """The recovery ladder's failure for this attempt, classified on the provider it was sent to (an attempt raised
+    as a ``_ClassifiedAttempt`` already carries it)."""
+    return _classify_failure(exc, provider, client, kwargs.get("model"), None)
 
 
 _STREAM_REJECTED = object()  # the stream negotiation failed: re-send the request non-streaming
@@ -6884,8 +6935,11 @@ def _create_with_progress_once(
     except Exception as exc:
         # Genuine provider failures aren't streaming's fault — surface unchanged so the
         # recovery chains see the same error as a plain call.
-        if force_stream or aux_errors.stream_negotiation_reraises(_attempt_verdict(client, kwargs, exc, provider)):
+        if force_stream:
             raise
+        failure = _attempt_failure(client, kwargs, exc, provider)
+        if aux_errors.stream_negotiation_reraises(failure.verdict):
+            raise _ClassifiedAttempt(failure)
         # Possibly a streaming-specific rejection: retry non-streaming once; a genuinely bad
         # request reproduces the real error for the except-chains.
         logger.debug("Auxiliary %s: streamed request failed (%s); retrying non-streaming",
@@ -7117,8 +7171,11 @@ async def _acreate_with_progress(
         # Only a rejected stream NEGOTIATION falls back to a plain call (mirrors the sync wrapper); a
         # failure mid-consumption below reaches the classified recovery ladder instead of silently
         # re-sending the whole prompt non-streaming.
-        if force_stream or aux_errors.stream_negotiation_reraises(_attempt_verdict(client, kwargs, exc, provider)):
+        if force_stream:
             raise
+        failure = _attempt_failure(client, kwargs, exc, provider)
+        if aux_errors.stream_negotiation_reraises(failure.verdict):
+            raise _ClassifiedAttempt(failure)
         logger.debug("Auxiliary %s: streamed async request failed (%s); retrying non-streaming",
                      task or "call", exc)
         chunks = _STREAM_REJECTED

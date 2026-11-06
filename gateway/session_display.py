@@ -91,6 +91,29 @@ def admission_display(event):
     return bound[1]
 
 
+# Inputs whose ``text`` is not what someone typed into a Hermes surface: an automation or
+# notification wake (its card rides ``session_automation.admission_display``), a Kanban card
+# attempt, and a messaging envelope, which replays through the platform's message pipeline
+# (``run_inbound`` prefixes the sender's name in a shared chat), so its stored row need not match.
+_NOT_TYPED_HERE = ('local_automation_v1', 'kanban_card_v1', 'native_text_v1')
+
+
+def admitted_input(row):
+    """The typed input of a claimed admission, for its ``message.start``: ``{'input': {'text',
+    'submission_id'}}``, else ``{}`` (hidden sends and the inputs in ``_NOT_TYPED_HERE``).
+
+    A viewer that did not submit the turn (Desktop beside an editor's ACP client, the CLI, another
+    window) otherwise streams a reply under no prompt. ``submission_id`` is the admission's
+    ``request_id``: the sending window knows its own bubble by it, and the completion's
+    ``persisted_turn.submission_id`` names the same input."""
+    payload = row.get('payload') or {}
+    text = payload.get('text')
+    if (not isinstance(text, str) or not text.strip() or (payload.get('display_v1') or {}).get('kind') == HIDDEN
+            or any(key in payload for key in _NOT_TYPED_HERE)):
+        return {}
+    return {'input': {'text': text, 'submission_id': row['request_id']}}
+
+
 def worker_display_kwargs():
     """``run_conversation`` persistence kwargs of the managed child's single admitted turn."""
     bound = _display_turn.get()

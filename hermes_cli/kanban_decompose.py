@@ -27,7 +27,8 @@ from hermes_cli.kanban_db_graph import decompose_triage_task
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import profiles as profiles_mod
 from hermes_cli.kanban_specify import (
-    _call_aux, _extract_json_blob, _load_triage_task, _task_prompt_fields, _title_body,
+    _call_aux, _extract_json_blob, _load_triage_task, _restore_title_label,
+    _task_prompt_fields, _title_body,
 )
 from hermes_cli.kanban_specify import _profile_author as _specify_author
 
@@ -228,6 +229,11 @@ def _apply_single(task: kb.Task, parsed: dict, routing: _Routing, author: str) -
         )
     if title_val is None and body_val is None:
         return DecomposeOutcome(task.id, False, "decomposer returned fanout=false with no title/body")
+    if title_val:
+        # Same contract as `specify`: a leading routing label on the card's
+        # title survives the rewrite — the model's prose replaces the title,
+        # the ORIGINAL label is carried over untouched.
+        title_val = _restore_title_label(task.title or "", title_val)
     with kbc.connect_closing() as conn:
         ok = kb.specify_triage_task(
             conn, task.id, title=title_val, body=body_val, assignee=assignee_val, author=author,

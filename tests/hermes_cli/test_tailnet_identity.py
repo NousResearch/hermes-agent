@@ -1,6 +1,6 @@
 """``webapp.tailscale_logins`` (hermes_cli/tailnet_identity.py): a listed tailnet login that ``tailscale
-serve`` proxied gets the ts.net Host accepted and the page's sign-in, like a launch link; it is never a
-credential on its own, and nothing else reaches it (another login, another peer, a rebinding page,
+serve`` proxied gets the ts.net Host accepted and the page's sign-in, like a launch link; it is the owner on
+the API and sockets too (native clients), and nothing else reaches it (another login, another peer, a rebinding page,
 another site, another local account)."""
 import os
 import types
@@ -221,24 +221,27 @@ def test_the_ts_net_host_is_accepted_for_the_owner_only(logins, webapp_server):
     assert client.get("/api/status", headers=_owner()).status_code != 400
 
 
-def test_the_identity_is_not_a_credential(logins, webapp_server):
-    # Past the Host check, every API call still needs the browser credential the page handed over.
+def test_the_owner_reaches_the_api_without_a_token(logins, webapp_server):
+    # Native clients (the iOS app) have no page to read the token from: the listed login is the owner,
+    # as the page that hands that same request the token already treats it.
     from fastapi.testclient import TestClient
 
     logins(OWNER)
     client = TestClient(webapp_server.app, client=("127.0.0.1", 50000))
-    assert client.get("/api/sessions", headers=_owner()).status_code == 401
-    token = {"x-hermes-session-token": webapp_server._SESSION_TOKEN}
-    assert client.get("/api/sessions", headers=_owner(**token)).status_code != 401
+    assert client.get("/api/sessions", headers=_owner()).status_code != 401
+    assert client.get("/api/sessions", headers={"host": "127.0.0.1:9120"}).status_code == 401
 
 
-def test_the_identity_opens_no_socket(logins, webapp_server):
+def test_the_owner_opens_a_socket_and_no_one_else(logins, webapp_server):
     from hermes_cli.web_server_chat import _ws_auth_reason
 
     logins(OWNER)
-    ws = WebSocket(_scope("websocket", _owner(origin=f"https://{TS_HOST}"), state=webapp_server.app.state),
-                   _no_io, _no_io)
-    assert _ws_auth_reason(ws)[0] is not None
+    def reason(headers):
+        return _ws_auth_reason(WebSocket(_scope("websocket", headers, state=webapp_server.app.state),
+                                         _no_io, _no_io))[0]
+    assert reason(_owner(origin=f"https://{TS_HOST}")) is None
+    assert reason(_owner(**{"tailscale-user-login": "kamel@example.com", "origin": f"https://{TS_HOST}"})) is not None
+    assert reason(_owner(origin="https://evil.example")) is not None
 
 
 @pytest.mark.parametrize("headers,ok", [

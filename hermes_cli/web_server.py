@@ -301,6 +301,8 @@ def _has_valid_session_token(request: Request) -> bool:
     ``Authorization`` (Caddy ``basic_auth``); the legacy Bearer path stays for
     older dashboard bundles.
     """
+    if tailnet_connection_login(request, request.app.state):
+        return True  # listed tailnet login behind tailscale serve (webapp.tailscale_logins): the owner
     session_header = request.headers.get(_SESSION_HEADER_NAME, "")
     if session_header and hmac.compare_digest(session_header.encode(), _SESSION_TOKEN.encode()):
         return True
@@ -321,6 +323,8 @@ def _has_valid_query_token(request: Request, path: str) -> bool:
         return True
     if path not in _QUERY_TOKEN_API_PATHS:
         return False
+    if tailnet_connection_login(request, request.app.state):
+        return True
     token = request.query_params.get("token", "")
     return bool(token) and hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode())
 

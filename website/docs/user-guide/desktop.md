@@ -188,8 +188,8 @@ forwards, and replaces any login the client sent. The Webapp accepts it only und
 - the address is a `ts.net` name, so a web page that points its own name at `127.0.0.1` gets nothing;
 - the request comes from the Webapp's own page, not from another site.
 
-A login that passes is treated like a one-use launch link: the page signs the tab in. Every request
-after that needs the tab's sign-in, as usual. **Sign out** in Web Access still closes every tab, and a
+A login that passes signs the page in, like a one-use launch link, and the same login is accepted on the
+API and sockets, so native clients (the iOS app) connect without a token. **Sign out** in Web Access still closes every tab, and a
 tab signs in again when it reloads the page. To revoke a login, remove it from the list and restart the
 gateway.
 

@@ -13,6 +13,8 @@ import re
 import textwrap
 from pathlib import Path
 
+from markdown_it import MarkdownIt
+
 from hermes_cli.plugin_validate_private_imports import (
     _core_module_exists,
     _hermes_packages,
@@ -23,7 +25,6 @@ from hermes_cli.plugin_validate_private_imports import (
 
 _ROOT = Path(__file__).resolve().parents[2]
 _SEAMS = Path(__file__).with_name("plugin_docs_import_seams.json")
-_FENCE = re.compile(r"(?P<indent>[ \t]*)(?P<fence>(?P<ch>[`~])(?P=ch){2,})(?P<info>.*)")
 # An ``...`` or ``…`` standing alone as an argument / item / body, e.g. ``f(name="x", ...)``.
 _PLACEHOLDER = re.compile(r"(?<![\w.])(?:\.\.\.|…)(?![\w.])")
 
@@ -35,25 +36,11 @@ def _plugin_docs() -> list[Path]:
 
 
 def _fences(markdown: str):
-    """``(opening line, language, body)`` per fenced block, as CommonMark reads it: the next line of only the same
-    character, at least as long, closes it at any indent up to 3 columns past the opener's (so the two indents need
-    not match, and a fence nested in a list item still closes); an unclosed fence runs to the end of the page."""
-    lines = markdown.splitlines(keepends=True)
-    fences = [_FENCE.fullmatch(line.rstrip("\r\n").expandtabs(4)) for line in lines]
-    i = 0
-    while i < len(lines):
-        opener, i = fences[i], i + 1
-        if not opener or (opener["ch"] == "`" and "`" in opener["info"]):
-            continue
-        start, end = i, len(lines)
-        for j in range(start, len(lines)):
-            closer = fences[j]
-            if (closer and closer["fence"][0] == opener["ch"] and len(closer["fence"]) >= len(opener["fence"])
-                    and not closer["info"].strip() and len(closer["indent"]) <= len(opener["indent"]) + 3):
-                end = j
-                break
-        i = end + 1
-        yield start, re.match(r"\w*", opener["info"].lstrip())[0], "".join(lines[start:end])
+    """``(opening line, language, body)`` per fenced block, as markdown-it-py's CommonMark parser reads it
+    (closer indent, fence length, list items, block quotes and unclosed fences all follow the spec)."""
+    for token in MarkdownIt("commonmark").parse(markdown):
+        if token.type == "fence":
+            yield token.map[0] + 1, re.match(r"\w*", token.info.lstrip())[0], token.content
 
 
 def _parse(block: str) -> ast.AST | None:
@@ -175,10 +162,12 @@ def test_scanner_closes_fences_whose_indent_differs_from_the_opener():
     markdown = ("```python\nfrom tools.approval import _hidden\n ```\n\n"
                 "  ```python\nfrom tools.approval import _opener_indented\n```\n\n"
                 "1. step\n\n   ```python\n   from tools.approval import _in_list_item\n     ```\n\n"
-                "```python\nEXAMPLE = '''\n    ```\n'''\nfrom tools.approval import _after_indented_code\n```\n")
+                "```python\nEXAMPLE = '''\n    ```\n'''\nfrom tools.approval import _after_indented_code\n```\n\n"
+                '  ```python\n  EXAMPLE = """\n    ```\n  """\n  from tools.approval import _after_closer_two_past_opener\n  ```\n')
 
     assert scan(markdown) == ({"tools.approval._hidden", "tools.approval._opener_indented",
-                               "tools.approval._in_list_item", "tools.approval._after_indented_code"}, [])
+                               "tools.approval._in_list_item", "tools.approval._after_indented_code",
+                               "tools.approval._after_closer_two_past_opener"}, [])
 
 
 def test_plugin_docs_import_only_the_published_plugin_api():

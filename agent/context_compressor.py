@@ -936,6 +936,17 @@ _LEAN_RECOVERY_HEADING = "## Context Recovery"
 _SYNTHETIC_USER_ROW_PREFIXES = (
     "[System:", "[CONTEXT", "[PRIOR CONTEXT", "[IMPORTANT: Background", "[Your active task list",
     "[Planning state preserved", "[ASYNC DELEGATION", "[OUT-OF-BAND", "Cronjob Response:",
+    "You've reached the maximum number of tool-calling iterations allowed",
+)
+
+# The batched plumbing rows a count opens — ``[IMPORTANT: 3 background processes
+# completed …`` (tools/process_registry_notifications.py, gateway/run_notifications.py) and
+# ``[IMPORTANT: 2 background subagent delegations …`` — so no fixed prefix can match
+# them (#126286). Mirrored by the desktop group-room filter
+# ``apps/desktop/src/plugins/hermes-bots/group-external-writes.ts::SYNTHETIC_USER_ROW_PATTERNS``.
+_SYNTHETIC_USER_ROW_PATTERNS = (
+    re.compile(r"\[IMPORTANT: \d+ background process"),
+    re.compile(r"\[IMPORTANT: \d+ background subagent delegation"),
 )
 
 
@@ -943,7 +954,10 @@ def _synthetic_user_row(content: str) -> bool:
     """True for scaffolding user rows that carry no real user words."""
     if not isinstance(content, str) or not content.strip():
         return True
-    return content.lstrip().startswith(_SYNTHETIC_USER_ROW_PREFIXES)
+    stripped = content.lstrip()
+    return stripped.startswith(_SYNTHETIC_USER_ROW_PREFIXES) or any(
+        pattern.match(stripped) for pattern in _SYNTHETIC_USER_ROW_PATTERNS
+    )
 
 
 def _typed_user_text(content: str) -> str:

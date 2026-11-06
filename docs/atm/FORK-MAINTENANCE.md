@@ -86,10 +86,15 @@ For each new upstream release `vX` with no `vX-atm` yet:
    the annotated tag); `git worktree add -b release/vX-atm <path> $BASE`.
 3. **Cherry-pick the linear stack:** `git cherry-pick $(git merge-base origin/atm/stack
    upstream/main)..origin/atm/stack` — replays ONLY the stack commits onto the tag.
-4. **Gate (all three):** `git diff --stat $BASE..HEAD` == exactly the 5-file stack
-   (`gateway/run.py`, `gateway/run_startup.py`, `tests/gateway/test_inject_internal_message.py`,
-   `docs/atm/PATCH-REQUIREMENTS.md`, `docs/atm/FORK-MAINTENANCE.md`); `git diff --check`
-   clean; frozen-venv 38/38 (`uv sync --frozen --no-dev --extra messaging` then
+4. **Gate (all three):** `git diff --stat $BASE..HEAD` == exactly the 11-file stack
+   as of v0.23.0 (6 ATM/banner: `gateway/run.py`, `gateway/run_startup.py`,
+   `tests/gateway/test_inject_internal_message.py`, `docs/atm/PATCH-REQUIREMENTS.md`,
+   `docs/atm/FORK-MAINTENANCE.md`, `README.md`; + 5 kanban-fix: `hermes_cli/kanban_db.py`,
+   `hermes_cli/kanban_db_termination.py`, `tests/hermes_cli/test_kanban_complete_worker_termination.py`,
+   `tests/tools/test_kanban_worker_self_exit.py`, `tools/kanban_tools.py` — see
+   PATCH-REQUIREMENTS §stack-shape; the kanban 5 retire when the fix lands upstream);
+   `git diff --check` clean; frozen-venv contract tests ZERO FAILURES (count drifts —
+   37 at v0.22.4-v0.23.0, never hardcode; `uv sync --frozen --no-dev --extra messaging` then
    `uv run --frozen --no-dev --extra messaging --with pytest --with pytest-asyncio python -m pytest
    tests/gateway/test_inject_internal_message.py tests/gateway/test_hooks.py -q`).
 5. **Publish (tags only, never force-push):** `git push origin release/vX-atm`;

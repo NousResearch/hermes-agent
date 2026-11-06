@@ -1,5 +1,6 @@
 """Plugin tool handlers and tool hooks get a ``conversation_id`` that compression rotation keeps and a
 delegated child shares with its delegator; ``session_id`` stays the physical segment id."""
+import asyncio
 import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -125,3 +126,37 @@ def test_delegated_child_reports_its_delegators_conversation(tmp_path, probe, mo
     finally:
         child.close()
         parent.close()
+
+
+def test_lineage_walks_leave_a_running_loop_and_a_failed_rotation_walk_is_retried():
+    """A Relay tool callback runs on an event loop, where WorkerRPC refuses a synchronous read
+    (#139029): the walks run off it. A rotation walk that fails is not memoized as the answer."""
+    class Store:
+        def __init__(self):
+            self.threads, self.busy = [], True
+
+        def _note(self):
+            try:
+                asyncio.get_running_loop()
+                self.threads.append("loop")
+            except RuntimeError:
+                self.threads.append("off-loop")
+
+        def get_compression_lineage(self, sid):
+            self._note()
+            return [sid]
+
+        def get_tool_rotation_root(self, sid):
+            self._note()
+            if self.busy:
+                self.busy = False
+                raise OSError("store busy")
+            return "tool-root"
+
+    agent = SimpleNamespace(session_id="tool-seg-2", _session_db=Store())
+
+    async def from_a_callback():
+        return conversation_id(agent), conversation_id(agent)
+
+    assert asyncio.run(from_a_callback()) == ("tool-seg-2", "tool-root")
+    assert set(agent._session_db.threads) == {"off-loop"}

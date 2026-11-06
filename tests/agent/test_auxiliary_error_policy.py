@@ -300,6 +300,16 @@ def test_pinned_custom_provider_entitlement_benches_only_the_model():
         assert [_try_openrouter(model=m)[0] is None for m in ("gpt-ok", "gpt-gated")] == [False, True]
 
 
+def test_codex_entitlement_cooldown_keeps_the_key_for_its_other_models():
+    """A ChatGPT account refused one Codex model (#71970) still serves aux calls on its other models."""
+    from agent.auxiliary_client import _build_codex_client
+
+    key = Key("openai-codex", "k1", "k1", "api_key", 0, "manual", "tok", model_cooldowns={"gpt-5.5-pro": 9e9})
+    with (patch("agent.auxiliary_client.load_pool", lambda _p: CredentialPool("openai-codex", [key])),
+          patch("agent.auxiliary_client._read_codex_singleton_token", return_value=None)):
+        assert [_build_codex_client(m)[0] is None for m in ("gpt-5.4-mini", "gpt-5.5-pro")] == [False, True]
+
+
 def test_missing_model_on_a_candidate_hides_only_that_model(monkeypatch):
     from agent import auxiliary_client as aux
 

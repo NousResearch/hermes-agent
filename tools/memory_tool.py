@@ -309,6 +309,38 @@ def get_builtin_memory_store_flags(config: Optional[dict[str, Any]] = None) -> t
     return tuple(is_truthy_value(section.get(k), default=True) for k in ("memory_enabled", "user_profile_enabled"))
 
 
+def resolve_builtin_memory_store_flags(
+    config: Optional[dict[str, Any]] = None,
+    *,
+    memory_agent_context: Optional[str] = None,
+    memory_toolset_requested: bool = False,
+) -> tuple[bool, bool]:
+    """Effective ``(memory_enabled, user_profile_enabled)`` for agent init.
+
+    Config flags via :func:`get_builtin_memory_store_flags`, then two
+    overrides. A ``memory_agent_context="subagent"`` fork without a requested
+    memory toolset keeps MEMORY.md/USER.md out of its prompt, as
+    ``skip_memory=True`` did. Otherwise a configured external
+    ``memory.provider`` forces both on — the additive contract of #85622 —
+    so a config left at ``memory_enabled: false`` by the blank-slate setup
+    wizard cannot silently drop durable notes when a provider is enabled.
+    """
+    if memory_agent_context == "subagent" and not memory_toolset_requested:
+        return False, False
+    memory_enabled, user_profile_enabled = get_builtin_memory_store_flags(config)
+    section = get_builtin_memory_config(config)
+    provider = section.get("provider", "")
+    if provider and str(provider).strip():
+        if not memory_enabled:
+            logger.info(
+                "External memory provider '%s' configured; enabling "
+                "built-in MEMORY.md injection (additive contract, issue #85622).",
+                provider,
+            )
+        memory_enabled = user_profile_enabled = True
+    return memory_enabled, user_profile_enabled
+
+
 @no_cache_check_fn
 def check_memory_requirements() -> bool:
     """Snapshot store flags and report whether the built-in tool is available."""

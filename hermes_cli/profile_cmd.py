@@ -406,9 +406,23 @@ def _profile_show(args):
 def _profile_alias(args):
     from hermes_cli.profiles import (
         _get_wrapper_dir, _is_wrapper_dir_in_path, check_alias_collision, create_wrapper_script,
-        profile_exists, remove_wrapper_script, validate_alias_name,
+        list_wrapper_aliases, profile_exists, remove_wrapper_script, validate_alias_name,
     )
+    if getattr(args, "list_aliases", False):
+        if args.profile_name or getattr(args, "remove", False) or getattr(args, "alias_name", None):
+            _die("Error: --list cannot be combined with an alias name or mutation options.")
+        aliases = list_wrapper_aliases()
+        if not aliases:
+            print("No profile aliases found.")
+            return
+        print("\nProfile aliases:")
+        for alias, profile in aliases:
+            status = "ok" if profile_exists(profile) else "orphan"
+            print(f"  {alias} → {profile} ({status})")
+        return
     name = args.profile_name
+    if name is None:
+        _die("Error: profile name is required unless using --list.")
     remove = getattr(args, "remove", False)
     custom_name = getattr(args, "alias_name", None)
     alias_name = custom_name or name

@@ -77,7 +77,8 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
     profile_show.add_argument("profile_name", help="Profile to show")
 
     profile_alias = profile_subparsers.add_parser("alias", help="Manage wrapper scripts")
-    profile_alias.add_argument("profile_name", help="Profile name")
+    profile_alias.add_argument("profile_name", nargs="?", help="Profile name")
+    profile_alias.add_argument("--list", dest="list_aliases", action="store_true", help="List wrapper aliases")
     profile_alias.add_argument("--remove", action="store_true", help="Remove the wrapper script")
     profile_alias.add_argument(
         "--name", dest="alias_name", metavar="NAME",

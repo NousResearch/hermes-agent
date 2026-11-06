@@ -48,7 +48,8 @@ from pathlib import Path
 from typing import Any
 
 from providers.base import ProviderProfile
-from registry_freeze import refuse_if_frozen
+from registry_freeze import refuse_if_frozen, seal_at_freeze
+from registry_sealed import seal, seal_instance
 
 logger = logging.getLogger(__name__)
 
@@ -169,6 +170,21 @@ def register_provider(profile: ProviderProfile) -> None:
         _PROVIDER_LIST_CACHE = None
     if _discovered and not _discovering:  # post-discovery registration: mirror it immediately
         _sync_auth_registry()
+
+
+def _seal_registered() -> None:
+    """At the hosted freeze: every registered profile (process-wide and each home's layer) is sealed
+    in place, its nested containers detached from the ones the plugin passed, and the process-wide
+    maps become read-only, so a profile a lookup returned cannot change what other tenants see."""
+    global _REGISTRY, _ALIASES, _SOURCES
+    with _HOME_LAYERS_LOCK:
+        layers = list(_HOME_LAYERS.values())
+    for profile in [*_REGISTRY.values(), *(p for layer in layers for p in layer.registry.values())]:
+        seal_instance(profile)
+    _REGISTRY, _ALIASES, _SOURCES = seal(_REGISTRY), seal(_ALIASES), seal(_SOURCES)
+
+
+seal_at_freeze(_seal_registered)
 
 
 def provider_source(name: str) -> str | None:

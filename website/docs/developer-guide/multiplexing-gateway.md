@@ -222,8 +222,16 @@ schema is replaced by a detached copy, so the dict a module passed to
 `register()` is no longer the registered one. Writing through a getter's
 result, a retained entry or a map raises `RegistryFrozen`. `get_definitions()`
 and `copy.deepcopy` return writable copies for request shaping, and an entry
-keeps its identity. `bundled_profiles()` still reads the provider catalog after
-the freeze, because collecting into a private list is not a registration.
+keeps its identity. A sealed dict, list or set also refuses being
+reinitialised (`schema.__init__({...})`) and cannot be cast back to a plain one.
+
+Provider profiles are sealed the same way, in place: a profile
+`get_provider_profile()` returns is still the registered object, but its fields
+refuse rebinding, its dict/list/set fields (`default_headers`, `model_aliases`,
+...) are detached read-only copies of what the plugin passed, and the
+process-wide name and alias maps are read-only. `bundled_profiles()` still reads
+the provider catalog after the freeze, because collecting into a private list
+is not a registration.
 
 For MCP, every path that would change the served set refuses before its first
 side effect: reconciling with a changed `mcp_servers`, restarting a server on

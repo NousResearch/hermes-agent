@@ -416,6 +416,18 @@ it.each([{ status: 'queued' }, { status: 'rejected' }])(
   }
 )
 
+// Adapted from BearHuddleston, PR #149707 discussion_r4488989564.
+it.each([{ status: 'queued' }, { status: 'rejected' }])(
+  'a second Steer click while a %j steer is pending sends nothing',
+  async reply => {
+    const h = fixture(reply, true)
+    await act(async () => h.hook.result.current.steerDraft('steer'))
+    await act(async () => h.hook.result.current.steerDraft('steer'))
+    await act(async () => h.release())
+    expect(h.request).toHaveBeenCalledTimes(1)
+  }
+)
+
 it.each(['navigation', 'profile', 'connection'] as const)(
   'known-undelivered steer after %s queues nothing',
   async change => {
@@ -582,6 +594,42 @@ it.each([true, false].flatMap(busy => [true, false].map(settle => ({ busy, settl
     }
   }
 )
+
+it('retry scope A/B/A holds each admission until its own settlement', async () => {
+  const h = fixture({ status: 'queued' })
+  const a = deferred<boolean>()
+  const b = deferred<boolean>()
+  h.retry.current = { id: 'retry-A', text: h.draft.current, attachmentIds: [] }
+  h.queue.mockImplementationOnce(() => a.promise).mockImplementationOnce(() => b.promise)
+  await act(async () => h.hook.result.current.steerDraft('steer'))
+  act(() => h.navigate())
+  h.retry.current = { id: 'retry-B', text: h.draft.current, attachmentIds: [] }
+  await act(async () => h.hook.result.current.submitDraft())
+  expect(h.queue.mock.calls).toEqual([['retry-A'], ['retry-B']])
+  act(() => {
+    h.selected.current = 'A'
+    h.runtime.current = 'rt-A'
+    h.type('  exact draft\n你好  ')
+    h.hook.rerender()
+  })
+  await act(async () => h.hook.result.current.steerDraft('steer'))
+  expect(h.request).not.toHaveBeenCalled()
+  expect(h.queue).toHaveBeenCalledTimes(2)
+  await act(async () => a.resolve(true))
+  act(() => h.navigate())
+  await act(async () => {
+    h.hook.result.current.submitDraft()
+    h.hook.result.current.queueDraft()
+    h.hook.result.current.steerDraft('steer')
+  })
+  expect(h.queue).toHaveBeenCalledTimes(2)
+  expect(h.request).not.toHaveBeenCalled()
+  expect(h.draft.current).toBe('B draft')
+  await act(async () => b.resolve(false))
+  expect(h.retry.current).toEqual({ id: 'retry-B', text: 'B draft', attachmentIds: [] })
+  await act(async () => h.hook.result.current.steerDraft('steer'))
+  expect(h.queue).toHaveBeenLastCalledWith('retry-B')
+})
 
 // Adolanium #6678917819: exercise composer -> prompt action -> real request-hook reconnect.
 it.each(

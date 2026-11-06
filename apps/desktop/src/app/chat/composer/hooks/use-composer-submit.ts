@@ -624,6 +624,7 @@ export function useComposerSubmit({
     const activation = gatewayActivationEpoch()
     const connectionId = activeGatewayConnectionId()
     const routeProfile = activeGatewayProfileKey()
+
     const sameOwner = () => {
       const current = $connection.get()
 
@@ -642,6 +643,7 @@ export function useComposerSubmit({
         current?.authMode === connection?.authMode
       )
     }
+
     const stillHere = () => draftScopeRef.current === submittedScope && sameOwner()
     pendingSteers.current.add(submittedScope)
 

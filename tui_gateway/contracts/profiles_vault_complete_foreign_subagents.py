@@ -460,6 +460,7 @@ class VaultItem(Result):
     identifier: str | None = None
     identifier_type: str | None = None
     has_otp: bool | None = None
+    allowed_origins: list[str] | None = None
     backend: str
 
 
@@ -516,6 +517,27 @@ class VaultUnlockResult(Result):
 
 method("vault.unlock", params=VaultUnlockParams, result=VaultUnlockResult,
        doc="Unlock a password manager for this session with its master password.")
+
+
+class VaultPreviewFillParams(ProfileParams):
+    """``target`` is the opaque binding the renderer minted for one in-app browser tab."""
+
+    handle: str
+    target: str
+
+
+class VaultPreviewFillResult(Result):
+    """Counts and the page origin only: never a secret."""
+
+    success: bool
+    filled_fields: int | None = None
+    origin: str | None = None
+    error: str | None = None
+    error_type: str | None = None
+
+
+method("vault.preview.fill", params=VaultPreviewFillParams, result=VaultPreviewFillResult,
+       doc="Fill a saved login into the in-app browser tab the renderer pinned (never submits).")
 
 
 class VaultLockParams(ProfileParams):

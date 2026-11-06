@@ -3816,6 +3816,16 @@ export interface Translations extends NoticeTranslations {
       commentTitle: (n: number) => string
       saveComment: string
       cancelComment: string
+      vaultFill: string
+      vaultTitle: (site: string) => string
+      vaultLoading: string
+      vaultEmpty: string
+      vaultUnlock: (name: string) => string
+      vaultOpenSettings: string
+      vaultFilled: (label: string) => string
+      vaultFillFailed: string
+      vaultLoadFailed: string
+      vaultPageNotReady: string
     }
   }
 

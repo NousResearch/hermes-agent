@@ -6,7 +6,7 @@
 # the user passes one, the public https document URL being read.
 name: minicpm-ocr
 repo: https://github.com/PovedaAqui/minicpm-ocr-hermes
-sha: a2387b99b66142752ee1ee0155c3f4fbc24eb82a
+sha: 364db83f7b2e14210722b4464b164066d490a7ae
 subdir: minicpm_ocr
 title: MiniCPM-OCR
 version: "0.6.0"

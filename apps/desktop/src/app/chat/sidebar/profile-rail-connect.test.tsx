@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -119,6 +119,25 @@ describe('ProfileRail multi-gateway entry point', () => {
     // gated behind multiProfile the way the default↔all toggle is.
     expect(screen.getByRole('button', { name: 'Manage gateways…' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Manage profiles…' })).toBeTruthy()
+  })
+
+  it('lists the default profile as a row of the condensed dropdown on a single gateway', async () => {
+    // Past PROFILE_DROPDOWN_THRESHOLD on one gateway → the condensed dropdown.
+    // The default must be a row (the statusbar switcher pins it first; the
+    // fleet dropdown lists it too), not an invisible home-pill-only door.
+    profiles.set([
+      { is_default: true, name: 'default' },
+      ...Array.from({ length: 13 }, (_, index) => ({ is_default: false, name: `p${index + 1}` }))
+    ])
+    render(<ProfileRail />)
+
+    await act(async () => {
+      fireEvent.pointerDown(screen.getByRole('button', { name: 'Profiles' }), { button: 0, ctrlKey: false })
+    })
+
+    const radios = screen.getAllByRole('menuitemradio')
+    expect(radios).toHaveLength(14)
+    expect(radios[0].textContent).toContain('default')
   })
 
   it('keeps the active profile explicit when gateway identity moves to the statusbar', () => {

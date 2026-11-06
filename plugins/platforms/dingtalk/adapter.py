@@ -6,6 +6,7 @@ Requires ``pip install "dingtalk-stream>=0.20" httpx``. config.yaml ``platforms.
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 import traceback
@@ -130,6 +131,22 @@ _EMOTION_SDK = {recall: (f"Robot{v}EmotionRequestTextEmotion", f"Robot{v}Emotion
                 for recall, v in ((True, "Recall"), (False, "Reply"))}
 _NUMBERED_RE = re.compile(r"^\d+\.\s")
 _NO_LOCAL_UPLOAD = "DingTalk session webhook replies do not support local %s. Only markdown/text replies are supported without OpenAPI %s."
+
+# The reply webhook carries markdown only, so media goes through the OpenAPI instead: upload the
+# local file, then send it as its own message type (sampleImageMsg / sampleFile).
+_MEDIA_UPLOAD_URL = "https://oapi.dingtalk.com/media/upload"
+_MEDIA_UPLOAD_MAX_BYTES = 20 * 1024 * 1024
+_ROBOT_DM_SEND_URL = "https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend"
+_ROBOT_GROUP_SEND_URL = "https://api.dingtalk.com/v1.0/robot/groupMessages/send"
+_ROBOT_FILE_TYPES = frozenset({"xlsx", "pdf", "zip", "rar", "doc", "docx"})
+# Which download code to try first. The v1 code works; the legacy picture code answers 500.
+_DOWNLOAD_CODE_RANK = {"downloadCode": 0, "download_code": 1, "pictureDownloadCode": 2}
+
+
+def _read_bytes(path: str) -> bytes:
+    """Read a file for upload; called in a worker thread so the event loop keeps running."""
+    with open(path, "rb") as fh:
+        return fh.read()
 
 
 def _csv_set(raw: Any) -> set[str]:
@@ -550,12 +567,101 @@ class DingTalkAdapter(BasePlatformAdapter):
         return await self.send(chat_id=chat_id, content=f"{caption}\n\n{image_block}" if caption else image_block, reply_to=reply_to, metadata=metadata)
 
     async def send_image_file(self, chat_id: str, image_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None, metadata=None, **kwargs) -> SendResult:
-        """Webhook replies cannot upload local images."""
-        return SendResult(success=False, error=_NO_LOCAL_UPLOAD % ("image uploads", "media upload"))
+        """Upload the image and send it as ``sampleImageMsg`` (the reply webhook has no image type)."""
+        media_id, err = await self._upload_media(image_path, "image")
+        if err:
+            logger.warning("[%s] Image upload failed path=%s: %s", self.name, image_path, err)
+            return SendResult(success=False, error=err)
+        result = await self._send_robot_media(chat_id, "sampleImageMsg", {"photoURL": media_id})
+        if result.success and caption:
+            await self.send(chat_id=chat_id, content=caption, metadata=metadata)
+        return result
 
     async def send_document(self, chat_id: str, file_path: str, caption: Optional[str] = None, file_name: Optional[str] = None, reply_to=None, metadata=None, **kwargs) -> SendResult:
-        """Webhook replies cannot upload local files."""
-        return SendResult(success=False, error=_NO_LOCAL_UPLOAD % ("file attachments", "message send"))
+        """Upload the file and send it as ``sampleFile``."""
+        name = file_name or os.path.basename(file_path)
+        ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+        if ext not in _ROBOT_FILE_TYPES:
+            return SendResult(success=False,
+                              error=f"DingTalk files support only {', '.join(sorted(_ROBOT_FILE_TYPES))}, got '{ext or name}'")
+        media_id, err = await self._upload_media(file_path, "file")
+        if err:
+            logger.warning("[%s] File upload failed path=%s: %s", self.name, file_path, err)
+            return SendResult(success=False, error=err)
+        result = await self._send_robot_media(chat_id, "sampleFile",
+                                             {"mediaId": media_id, "fileName": name, "fileType": ext})
+        if result.success and caption:
+            await self.send(chat_id=chat_id, content=caption, metadata=metadata)
+        return result
+
+    async def _upload_media(self, path: str, media_type: str) -> tuple[Optional[str], Optional[str]]:
+        """Upload a local file to DingTalk's media store; returns ``(media_id, error)``."""
+        if not HTTPX_AVAILABLE:
+            return None, "httpx is not installed"
+        token = await self._get_access_token()
+        if not token:
+            return None, "no DingTalk access token"
+        try:
+            size = await asyncio.to_thread(os.path.getsize, path)
+            if size > _MEDIA_UPLOAD_MAX_BYTES:
+                return None, f"file too large: {size} bytes (max {_MEDIA_UPLOAD_MAX_BYTES})"
+            payload = await asyncio.to_thread(_read_bytes, path)
+        except OSError as exc:
+            return None, f"cannot read {path}: {exc}"
+        try:
+            async with httpx.AsyncClient(timeout=90.0) as client:
+                resp = await client.post(
+                    _MEDIA_UPLOAD_URL,
+                    params={"access_token": token, "type": media_type},
+                    files={"media": (os.path.basename(path), payload)},
+                )
+            data = resp.json() if resp.content else {}
+        except Exception as exc:  # network, TLS, non-JSON body
+            return None, f"upload failed: {exc}"
+        media_id = data.get("media_id") or data.get("mediaId")
+        if resp.status_code >= 300 or data.get("errcode", 0) != 0 or not media_id:
+            return None, f"upload rejected HTTP {resp.status_code}: {str(data)[:200]}"
+        logger.info("[%s] Media uploaded (%s, %d bytes)", self.name, media_type, len(payload))
+        return str(media_id), None
+
+    async def _send_robot_media(self, chat_id: str, msg_key: str, msg_param: dict) -> SendResult:
+        """Send one media message through the robot OpenAPI (works outside the webhook window)."""
+        if not HTTPX_AVAILABLE:
+            return SendResult(success=False, error="httpx is not installed")
+        message = self._message_contexts.get(chat_id)
+        if message is None:
+            return SendResult(success=False, error="media send needs a recent inbound message on this chat")
+        token = await self._get_access_token()
+        if not token:
+            return SendResult(success=False, error="no DingTalk access token")
+        if str(getattr(message, "conversation_type", "1")) == "2":
+            url = _ROBOT_GROUP_SEND_URL
+            body = {
+                "robotCode": self._robot_code,
+                "openConversationId": getattr(message, "conversation_id", "") or chat_id,
+                "msgKey": msg_key,
+                "msgParam": json.dumps(msg_param, ensure_ascii=False),
+            }
+        else:
+            staff_id = str(getattr(message, "sender_staff_id", "") or "")
+            if not staff_id:
+                return SendResult(success=False, error="DingTalk DM media send needs sender_staff_id")
+            url = _ROBOT_DM_SEND_URL
+            body = {
+                "robotCode": self._robot_code,
+                "userIds": [staff_id],
+                "msgKey": msg_key,
+                "msgParam": json.dumps(msg_param, ensure_ascii=False),
+            }
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(url, json=body, headers={"x-acs-dingtalk-access-token": token})
+        except Exception as exc:
+            return SendResult(success=False, error=f"robot send failed: {exc}")
+        if resp.status_code >= 300:
+            logger.warning("[%s] Robot media send HTTP %d: %s", self.name, resp.status_code, resp.text[:200])
+            return SendResult(success=False, error=f"HTTP {resp.status_code}: {resp.text[:200]}")
+        return SendResult(success=True, message_id=uuid.uuid4().hex[:12])
 
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         """Return basic info about a DingTalk conversation."""
@@ -666,34 +772,71 @@ class DingTalkAdapter(BasePlatformAdapter):
             logger.debug("[%s] _send_emotion %s failed", self.name, action, exc_info=True)
 
     async def _resolve_media_codes(self, message: ChatbotMessage) -> None:
-        """Resolve download codes in the message to real URLs (in place, in parallel)."""
+        """Resolve download codes to cached local files.
+
+        A richText picture carries both the v1 ``downloadCode`` and the legacy
+        ``pictureDownloadCode``; the legacy one answers ``unknownError 500`` while the v1 code
+        succeeds for the same file. Resolve in that order and stop at the first success — firing
+        them together loses the message whenever the legacy candidate is the one that fails.
+
+        The bytes must land on disk: the gateway's media admission keeps only absolute local
+        paths and rewrites a remote URL into a "could not be retrieved" note.
+        """
         token = await self._get_access_token()
         if not token:
             return
         robot_code = getattr(message, "robot_code", None) or self._client_id
-        pairs = [(getattr(obj, key, None) if hasattr(obj, key) else obj.get(key), obj, key) for obj, key in collect_download_codes(message)]
-        tasks = [self._fetch_download_url(code, robot_code, token, obj, key) for code, obj, key in pairs if code]
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        pairs: list[tuple[str, Any, str]] = []
+        for obj, key in collect_download_codes(message):
+            code = getattr(obj, key, None) if hasattr(obj, key) else obj.get(key)
+            if isinstance(code, str) and code:
+                pairs.append((code, obj, key))
+        pairs.sort(key=lambda pair: _DOWNLOAD_CODE_RANK.get(pair[2], len(_DOWNLOAD_CODE_RANK)))
+        for code, obj, key in pairs:
+            if await self._fetch_media(code, robot_code, token, obj, key):
+                return
 
-    async def _fetch_download_url(self, code: str, robot_code: str, token: str, obj, key: str) -> None:
-        """Fetch the download URL for one code via the robot SDK and write it back to ``obj[key]``."""
+    async def _fetch_media(self, code: str, robot_code: str, token: str, obj, key: str) -> bool:
+        """Download one code's file into the media cache and write the local path to ``obj[key]``."""
         if not self._robot_sdk:
-            return logger.warning("[%s] Robot SDK not initialized, cannot resolve media code", self.name)
+            logger.warning("[%s] Robot SDK not initialized, cannot resolve media code", self.name)
+            return False
         try:
             response = await self._sdk_call(self._robot_sdk.robot_message_file_download_with_options_async,
                                             dingtalk_robot_models.RobotMessageFileDownloadRequest(download_code=code, robot_code=robot_code),
                                             dingtalk_robot_models.RobotMessageFileDownloadHeaders, token)
             body = response.body if response else None
             url = getattr(body, "download_url", None) if body else None
-            if not body:
-                logger.warning("[%s] Failed to download media: empty response for code %s", self.name, code)
-            elif url and hasattr(obj, key):
-                setattr(obj, key, url)
-            elif url and isinstance(obj, dict):
-                obj[key] = url
         except Exception as e:
-            logger.error("[%s] Error resolving media code %s: %s", self.name, code, e)
+            logger.warning("[%s] Media resolve failed on %s: %s", self.name, key, str(e)[:200])
+            return False
+        if not url:
+            logger.warning("[%s] Media resolve returned no download_url for %s", self.name, key)
+            return False
+        local = await self._cache_media(str(url))
+        if not local:
+            return False
+        if hasattr(obj, key):
+            setattr(obj, key, local)
+        elif isinstance(obj, dict):
+            obj[key] = local
+        return True
+
+    async def _cache_media(self, url: str) -> Optional[str]:
+        """Download a resolved media URL into the local cache; returns the absolute path."""
+        if not HTTPX_AVAILABLE:
+            return None
+        try:
+            async with httpx.AsyncClient(timeout=90.0, follow_redirects=True) as client:
+                resp = await client.get(url)
+            if resp.status_code >= 300 or not resp.content:
+                return logger.warning("[%s] Media download HTTP %d", self.name, resp.status_code)
+            from gateway.platforms.media_cache import cache_media_bytes
+            mime = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
+            return str(cache_media_bytes(resp.content, mime or "application/octet-stream",
+                                         filename_hint=url.rsplit("/", 1)[-1].split("?")[0] or ""))
+        except Exception as e:
+            return logger.warning("[%s] Media download failed: %s", self.name, str(e)[:200])
 
     @staticmethod
     def _normalize_markdown(text: str) -> str:

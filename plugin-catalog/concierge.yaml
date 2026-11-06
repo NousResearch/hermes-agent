@@ -1,0 +1,33 @@
+name: concierge
+title: Concierge
+repo: https://github.com/dresraz/hermes-concierge
+sha: c2b83e3faccb75992791cbb538bd2b4238b9fb98
+description: >-
+  Install a plugin or a skill like an app: one card, one yes, a receipt, one undo. Say what you want
+  in a sentence and Concierge matches it against both marketplace shelves, the plugin catalog and
+  the skill registries, then installs through Hermes's own installer and scan gate, into this
+  profile or a named bot, then reads the result back off the disk; /concierge undo removes exactly
+  what it added, and /concierge hire turns a sentence into a working profile with a role, a set of
+  catalog skills and a SOUL.md. Disclosure: registers one /concierge command and one
+  pre_gateway_dispatch hook (reply words in the messaging gateway). Network calls: it fetches the
+  plugin catalog index from GitHub, the skill registries behind a skill search, and one plugin
+  manifest at its pinned commit for the dependency line on the card. It reads the active
+  HERMES_HOME (profiles, plugin and skill directories) and writes there: a new profile per hire,
+  skills, a SOUL.md, and the install records. An install aimed at another bot runs `hermes -p
+  <bot>` as a short-lived child process. Listing, resetting and deleting profiles are limited to
+  profiles Concierge made, and the default profile can be reset but never deleted. No credentials,
+  no telemetry, no self-updater, nothing runs at load time. Memory plugins are not recommended,
+  since they can need a hosted service or a paid plan, so those are left to a manual install.
+maintainer: dresraz
+tier: community
+category: general
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/dresraz/hermes-concierge#readme
+version: "0.1.6"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_gateway_dispatch
+  provides_middleware: []
+  requires_env: []

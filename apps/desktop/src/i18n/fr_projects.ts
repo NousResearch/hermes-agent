@@ -27,6 +27,13 @@ export const frProjects: NonNullable<TranslationOverrides['sidebar']>['projects'
   menuAppearance: 'Apparence',
   noColor: 'Aucune couleur',
   menuAddFolder: 'Ajouter un dossier',
+  menuRemoveFolder: 'Retirer le dossier…',
+  removeFolderTitle: 'Retirer le dossier',
+  removeFolderDesc:
+    'Retire le dossier de ce projet. Aucun fichier n’est supprimé ; les conversations lancées dedans n’apparaissent plus dans ce projet.',
+  removeFolderNewPrimary: path => `${path} devient le dossier principal.`,
+  removeFolderLast: 'Un projet doit contenir au moins un dossier.',
+  removeFolderFailed: 'Impossible de retirer le dossier',
   menuSetActive: 'Définir comme actif',
   menuDelete: 'Supprimer',
   moveToProject: 'Déplacer vers un projet',

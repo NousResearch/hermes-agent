@@ -95,3 +95,70 @@ def test_minimax_missing_percent_fields_are_skipped():
     snap = _fetch_with(payload)
     assert snap is not None
     assert not snap.windows, "a window with no percent must not be fabricated"
+
+
+def test_minimax_per_family_windows_are_model_scoped():
+    """An exhausted ``video`` family must NOT bench the whole MiniMax credential.
+
+    MiniMax reports a SEPARATE allowance per model family (``general`` text vs
+    ``video``). While these windows were account-scoped, the picker
+    (``hermes_cli/inventory.py``: "a quota-exhausted account ... Model-scoped windows
+    never reset an account") marked the whole credential *limited* and pinned its
+    recovery to the video window -- while the text allowance was untouched.
+
+    Regression: the video family is 100% used, the general family 0% used, and every
+    window is model-scoped.
+    """
+    payload = {
+        "base_resp": {"status_code": 0, "status_msg": "success"},
+        "model_remains": [
+            {"model_name": "general",
+             "current_interval_remaining_percent": 100, "end_time": 1793750400000,
+             "current_weekly_remaining_percent": 100, "weekly_end_time": 1794182400000},
+            {"model_name": "video",
+             "current_interval_remaining_percent": 0, "end_time": 1793750400000,
+             "current_weekly_remaining_percent": 0, "weekly_end_time": 1794182400000},
+        ],
+    }
+    snap = _fetch_with(payload)
+    assert snap is not None
+    by_label = {w.label: w for w in snap.windows}
+    assert by_label["5-hour (video)"].used_percent == 100.0, "0% remaining == 100% used"
+    assert by_label["5-hour (video)"].scope == "model", "a per-family window is model-scoped"
+    assert by_label["Weekly (video)"].used_percent == 100.0
+    assert by_label["Weekly (video)"].scope == "model"
+    assert by_label["5-hour (general)"].used_percent == 0.0
+    assert by_label["5-hour (general)"].scope == "model"
+    assert by_label["Weekly (general)"].used_percent == 0.0
+    assert by_label["Weekly (general)"].scope == "model"
+    assert all(w.scope == "model" for w in snap.windows), \
+        "no MiniMax window may bench the account"
+
+
+def test_minimax_exhausted_family_does_not_bench_the_account():
+    """The picker's rule, against the real snapshot: only an ACCOUNT-scoped exhausted
+    window benches a credential, so an exhausted video family leaves MiniMax ready."""
+    from hermes_cli import inventory
+
+    payload = {
+        "base_resp": {"status_code": 0},
+        "model_remains": [
+            {"model_name": "general",
+             "current_interval_remaining_percent": 100, "end_time": 1793750400000,
+             "current_weekly_remaining_percent": 100, "weekly_end_time": 1794182400000},
+            {"model_name": "video",
+             "current_interval_remaining_percent": 0, "end_time": 1793750400000,
+             "current_weekly_remaining_percent": 0, "weekly_end_time": 1794182400000},
+        ],
+    }
+    snap = _fetch_with(payload)
+    assert snap is not None
+    windows = [{"label": w.label, "used_percent": w.used_percent, "scope": w.scope}
+               for w in snap.windows]
+    # the rule as hermes_cli/inventory.py applies it to picker rows
+    benched = any(
+        w["scope"] == "account" and w["used_percent"] is not None
+        and float(w["used_percent"]) >= inventory._EXHAUSTED_WINDOW_PERCENT
+        for w in windows
+    )
+    assert not benched, f"an exhausted video family benched the MiniMax credential: {windows}"

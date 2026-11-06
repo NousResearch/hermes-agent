@@ -921,15 +921,44 @@ def _fetch_minimax_account_usage(
                 continue
             reset_ms = entry.get(reset_key)
             reset_at = _parse_dt(float(reset_ms) / 1000.0) if _is_finite_num(reset_ms) else None
+            # ``scope="model"``: each ``model_remains`` entry carries its OWN allowance, so an
+            # exhausted ``video`` family says nothing about the ``general`` (text) allowance.
+            # An account-scoped window here made the picker mark the whole credential
+            # "limited" (``hermes_cli/inventory.py``: any exhausted account-scoped window
+            # benches the account) while its text quota was untouched.
             windows.append(AccountUsageWindow(
                 label=label, used_percent=max(0.0, 100.0 - float(remaining)),
-                reset_at=reset_at, scope="account",
+                reset_at=reset_at, scope="model",
             ))
     return _snapshot("minimax-oauth", "token_plan_remains", windows, details, raw=payload)
 
 
 def _fetch_xai_account_usage(
     base_url: Optional[str] = None, api_key: Optional[str] = None
+) -> Optional[AccountUsageSnapshot]:
+    """The live-agent fetch: it owns the credential, so it may refresh it.
+
+    See ``_fetch_xai_account_usage_read_only`` for the picker's per-credential read.
+    """
+    return _fetch_xai_account_usage_impl(base_url, api_key, read_only=False)
+
+
+def _fetch_xai_account_usage_read_only(
+    base_url: Optional[str] = None, api_key: Optional[str] = None
+) -> Optional[AccountUsageSnapshot]:
+    """Picker-cache variant: a usage READ never rotates or refreshes the credential.
+
+    The live path may refresh an expiring token because the session it serves owns that
+    credential; a per-credential read of the pool must NOT rotate it -- it just marks
+    that account unknown. So this path resolves the token with
+    ``refresh_if_expiring=False`` (no auth-store lock, no refresh) and lets a 401
+    surface as a failure.
+    """
+    return _fetch_xai_account_usage_impl(base_url, api_key, read_only=True)
+
+
+def _fetch_xai_account_usage_impl(
+    base_url: Optional[str] = None, api_key: Optional[str] = None, *, read_only: bool = False
 ) -> Optional[AccountUsageSnapshot]:
     """Grok / X Premium+ subscription credit usage from the Grok CLI chat proxy.
 
@@ -953,7 +982,11 @@ def _fetch_xai_account_usage(
     if not token:
         try:
             from hermes_cli.auth_xai import resolve_xai_oauth_runtime_credentials
-            token = str(resolve_xai_oauth_runtime_credentials().get("api_key") or "").strip()
+            # A read must not take the auth-store lock or rotate the xAI refresh token:
+            # ``refresh_if_expiring`` defaults to True, so the default would repair (and
+            # mutate) the credential a read-only pick merely wants to look at.
+            token = str(resolve_xai_oauth_runtime_credentials(
+                refresh_if_expiring=not read_only).get("api_key") or "").strip()
         except Exception:
             return None
     if not token:
@@ -1040,6 +1073,7 @@ _USAGE_FETCHERS: dict[str, Callable[[Optional[str], Optional[str]], Optional[Acc
 # rotating/refreshing a credential (see ``fetch_account_usage(read_only=True)``).
 _READ_ONLY_USAGE_FETCHERS: dict[str, Callable[[Optional[str], Optional[str]], Optional[AccountUsageSnapshot]]] = {
     "openai-codex": _fetch_codex_account_usage_read_only,
+    "xai-oauth": _fetch_xai_account_usage_read_only,
 }
 
 

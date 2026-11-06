@@ -110,3 +110,83 @@ def test_xai_missing_credit_percent_yields_no_fabricated_window():
 
 def test_xai_fetcher_is_registered():
     assert account_usage._USAGE_FETCHERS.get("xai-oauth") is account_usage._fetch_xai_account_usage
+
+
+def test_xai_weekly_window_stays_account_scoped():
+    """Negative control for the MiniMax scope change: the xAI weekly pool IS the account.
+
+    MiniMax's per-family allowances are model-scoped; the xAI weekly credit pool is a
+    single account-wide allowance and must stay account-scoped, or an exhausted pool
+    would fail to bench the credential.
+    """
+    snap, _ = _fetch_with(_CREDITS)
+    assert snap is not None
+    assert snap.windows[0].scope == "account"
+
+
+def _fetch_read_only_with(monkey_calls):
+    """Resolve the credential through a stub so the refresh flag is observable."""
+    from hermes_cli import auth_xai
+
+    original_resolver = auth_xai.resolve_xai_oauth_runtime_credentials
+    original_get_json = account_usage._get_json
+
+    def _resolver(**kwargs):
+        monkey_calls.append(kwargs)
+        return {"api_key": "peeked-token"}
+
+    def _fake_get_json(url, headers=None, timeout=None):
+        if "settings" in url:
+            return _SETTINGS
+        return _CREDITS
+
+    auth_xai.resolve_xai_oauth_runtime_credentials = _resolver
+    account_usage._get_json = _fake_get_json
+    try:
+        return account_usage._fetch_xai_account_usage_read_only()
+    finally:
+        auth_xai.resolve_xai_oauth_runtime_credentials = original_resolver
+        account_usage._get_json = original_get_json
+
+
+def test_xai_read_only_fetch_never_refreshes_the_credential():
+    """A usage READ must not take the auth-store lock or rotate the xAI refresh token.
+
+    ``resolve_xai_oauth_runtime_credentials`` defaults to ``refresh_if_expiring=True``,
+    so the live fetch may repair the credential it owns -- but the picker's per-credential
+    read only wants to LOOK at it. This path must resolve with refreshing off.
+    """
+    calls = []
+    snap = _fetch_read_only_with(calls)
+    assert calls, "the read-only path must resolve the credential"
+    assert calls[0].get("refresh_if_expiring") is False, \
+        f"a usage read must not refresh the credential, got {calls[0]}"
+    assert snap is not None
+    assert snap.windows[0].used_percent == 11.0
+
+
+def test_xai_live_fetch_may_refresh_the_credential():
+    """Negative control: the live path keeps its repair path for the credential it owns."""
+    from hermes_cli import auth_xai
+
+    original_resolver = auth_xai.resolve_xai_oauth_runtime_credentials
+    original_get_json = account_usage._get_json
+    calls = []
+
+    auth_xai.resolve_xai_oauth_runtime_credentials = lambda **kw: (calls.append(kw), {"api_key": "live-token"})[1]
+    account_usage._get_json = lambda url, headers=None, timeout=None: (_SETTINGS if "settings" in url else _CREDITS)
+    try:
+        snap = account_usage._fetch_xai_account_usage()
+    finally:
+        auth_xai.resolve_xai_oauth_runtime_credentials = original_resolver
+        account_usage._get_json = original_get_json
+    assert calls and calls[0].get("refresh_if_expiring") is True, calls
+    assert snap is not None
+
+
+def test_xai_read_only_fetcher_is_registered_for_the_picker():
+    """The picker's read-only path must have its own xAI fetcher, not the refreshing one."""
+    assert account_usage._READ_ONLY_USAGE_FETCHERS.get("xai-oauth") is \
+        account_usage._fetch_xai_account_usage_read_only
+    assert account_usage._READ_ONLY_USAGE_FETCHERS.get("xai-oauth") is not \
+        account_usage._USAGE_FETCHERS.get("xai-oauth")

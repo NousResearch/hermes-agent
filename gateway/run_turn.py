@@ -429,6 +429,9 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         base_url = resolved.base_url
         if base_url and base_url_hostname(base_url) in ("localhost", "127.0.0.1", "0.0.0.0"):
             lines.append(t("gateway.session.info_endpoint", url=base_url))
+        if resolved.fallback_notice:
+            # Runtime-built user-facing string; no i18n key (#139992).
+            lines.append(resolved.fallback_notice)
         return "\n".join(lines)
 
     def _resolve_enabled_toolsets_for_source(

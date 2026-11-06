@@ -1,0 +1,35 @@
+manifest_version: 1
+name: kling-ai
+description: Create and monitor Kling AI image and video generations.
+source: https://kling.ai/
+
+transport:
+  type: http
+  url: "https://kling.ai/mcp/plugin"
+
+auth:
+  type: oauth
+
+suggest:
+  keywords:
+    - kling
+    - kling ai
+    - klingai
+    - 可灵
+    - 可灵ai
+  hosts:
+    - klingai.com
+    - kling.ai
+
+post_install: |
+  Install all three companion Skills with:
+    hermes skills install official/creative/kling-ai
+    hermes skills install official/creative/kling-ai-generate-image
+    hermes skills install official/creative/kling-ai-generate-video
+
+  Before first OAuth login, copy oauth.client_name, the integration header,
+  and the serial-call hint from the standalone Kling Hermes package into the
+  generated server config. The current catalog schema cannot carry these
+  required fields; this entry must not be advertised as production-ready
+  until Hermes supports them or maintainers approve an equivalent flow.
+  After applying the configuration, complete Hermes-native browser OAuth.

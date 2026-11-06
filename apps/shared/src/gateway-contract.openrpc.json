@@ -1088,7 +1088,7 @@
     },
     {
       "name": "groups.attachment.download",
-      "summary": "Read one committed attachment for a live room viewer.",
+      "summary": "Read one committed attachment for a live group chat viewer. A published version whose bytes are gone here is refused with attachment_unavailable.",
       "params": [
         {
           "name": "params",
@@ -1101,6 +1101,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/RoomAttachmentBytes"
+        }
+      }
+    },
+    {
+      "name": "groups.attachment.list",
+      "summary": "List a live group chat's published file versions, newest share first, with stable snapshot paging, search and a sharer filter. available=false keeps a version listed whose bytes are unavailable here; omitted means downloadable.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsAttachmentListParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsAttachmentListResult"
         }
       }
     },
@@ -19577,6 +19595,140 @@
         "title": "GroupsAttachmentDownloadParams",
         "type": "object"
       },
+      "GroupsAttachmentListParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cursor"
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Limit"
+          },
+          "query": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Query"
+          },
+          "producer_member_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Producer Member Id"
+          },
+          "you_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "You Label"
+          }
+        },
+        "required": [
+          "room_id"
+        ],
+        "title": "GroupsAttachmentListParams",
+        "type": "object"
+      },
+      "GroupsAttachmentListResult": {
+        "additionalProperties": false,
+        "properties": {
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "authority": {
+            "$ref": "#/components/schemas/RoomAuthority"
+          },
+          "snapshot_seq": {
+            "title": "Snapshot Seq",
+            "type": "integer"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RoomFileItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "has_more": {
+            "title": "Has More",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "room_id",
+          "authority",
+          "snapshot_seq",
+          "items",
+          "next_cursor",
+          "has_more"
+        ],
+        "title": "GroupsAttachmentListResult",
+        "type": "object"
+      },
       "GroupsAttachmentUploadParams": {
         "additionalProperties": false,
         "properties": {
@@ -35524,6 +35676,93 @@
         "title": "RoomExecutionPolicy",
         "type": "object"
       },
+      "RoomFileItem": {
+        "additionalProperties": false,
+        "properties": {
+          "available": {
+            "default": true,
+            "title": "Available",
+            "type": "boolean"
+          },
+          "attachment_id": {
+            "title": "Attachment Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "mime": {
+            "title": "Mime",
+            "type": "string"
+          },
+          "event_id": {
+            "title": "Event Id",
+            "type": "string"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          },
+          "manifest_index": {
+            "title": "Manifest Index",
+            "type": "integer"
+          },
+          "producer": {
+            "$ref": "#/components/schemas/RoomFileProducer"
+          },
+          "shared_at": {
+            "title": "Shared At",
+            "type": "number"
+          }
+        },
+        "required": [
+          "attachment_id",
+          "kind",
+          "name",
+          "size",
+          "mime",
+          "event_id",
+          "seq",
+          "manifest_index",
+          "producer",
+          "shared_at"
+        ],
+        "title": "RoomFileItem",
+        "type": "object"
+      },
+      "RoomFileProducer": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "label"
+        ],
+        "title": "RoomFileProducer",
+        "type": "object"
+      },
       "RoomLinkCatalog": {
         "additionalProperties": false,
         "description": "``gateway/hosted_room_peer.py::GatewayRoomCatalog.as_mapping``.",
@@ -49902,7 +50141,7 @@
     },
     {
       "name": "groups.attachment.download",
-      "summary": "Read one committed attachment for a live room viewer.",
+      "summary": "Read one committed attachment for a live group chat viewer. A published version whose bytes are gone here is refused with attachment_unavailable.",
       "params": [
         {
           "name": "params",
@@ -49915,6 +50154,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/RoomAttachmentBytes"
+        }
+      }
+    },
+    {
+      "name": "groups.attachment.list",
+      "summary": "List a live group chat's published file versions, newest share first, with stable snapshot paging, search and a sharer filter. available=false keeps a version listed whose bytes are unavailable here; omitted means downloadable.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsAttachmentListParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsAttachmentListResult"
         }
       }
     },

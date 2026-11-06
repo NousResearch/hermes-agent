@@ -5,7 +5,9 @@ import os
 from pathlib import Path
 import tempfile
 
-from gateway.hosted_room_attachments import HostedRoomAttachmentStore, MAX_ATTACHMENT_BYTES
+from gateway.hosted_room_attachments import (
+    AttachmentIntegrityError, AttachmentNotFoundError, HostedRoomAttachmentStore, MAX_ATTACHMENT_BYTES,
+)
 from gateway.session_ingress_media import HOSTED_DOCUMENT_LINE
 from hermes_state_runtime import RuntimeStoreError
 
@@ -49,10 +51,35 @@ def read_download(service, room_id, params):
     if not params.get('event_id'):
         raise RuntimeStoreError('invalid_params')
     gateway_id, epoch = service._owned_authority(room_id)
-    saved = HostedRoomAttachmentStore(service.db_path).read_viewer(
-        room_id=room_id, attachment_id=params.get('attachment_id'), event_id=params['event_id'],
-        authority_gateway_id=gateway_id, authority_epoch=epoch)
+    try:
+        saved = HostedRoomAttachmentStore(service.db_path).read_viewer(
+            room_id=room_id, attachment_id=params.get('attachment_id'), event_id=params['event_id'],
+            authority_gateway_id=gateway_id, authority_epoch=epoch)
+    except (AttachmentNotFoundError, AttachmentIntegrityError):
+        # A version the room log still publishes has its own reason, so a client marks it
+        # unavailable instead of offering Retry; every other refusal is unchanged.
+        from gateway.hosted_room_attachment_catalog import published_reference, PublishedFileUnavailableError
+        if published_reference(service.db_path, room_id=room_id, event_id=params['event_id'],
+                               attachment_id=params.get('attachment_id'),
+                               authority_gateway_id=gateway_id, authority_epoch=epoch):
+            raise PublishedFileUnavailableError('This version can no longer be downloaded.') from None
+        raise
     return {**saved.attachment, 'data_base64': base64.b64encode(saved.data).decode('ascii')}
+
+
+def list_files(service, actor, params):
+    """``groups.attachment.list``: one page of a room's published file versions."""
+    return read_catalog(service, _authorize(service, actor, params, 'session:read'), params)
+
+
+def read_catalog(service, room_id, params):
+    """Published file metadata for an authorized viewer on either route."""
+    from gateway.hosted_room_attachment_catalog import list_published
+    gateway_id, epoch = service._owned_authority(room_id)
+    return list_published(
+        service.db_path, room_id=room_id, authority_gateway_id=gateway_id, authority_epoch=epoch,
+        **{key: params[key] for key in ('cursor', 'limit', 'query', 'producer_member_id', 'you_label')
+           if key in params})
 
 
 def append_user_event(service, *, room_id, event_id, payload, gateway_id, epoch):

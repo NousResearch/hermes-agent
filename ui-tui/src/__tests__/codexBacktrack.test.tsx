@@ -357,6 +357,18 @@ describe('RewindBrowse keys', () => {
     instance.unmount()
   })
 
+  it('a pasted "f" or "q" is text: it types into the composer, never forks or closes', async () => {
+    const { handlers, instance, key } = mountBrowse()
+
+    await settle()
+    await key('\x1b[200~f\x1b[201~')
+    await key('\x1b[200~q\x1b[201~')
+    expect(handlers.onFork).not.toHaveBeenCalled()
+    expect(handlers.onClose).not.toHaveBeenCalled()
+    expect(handlers.onType.mock.calls.map(([text]) => text)).toEqual(['f', 'q'])
+    instance.unmount()
+  })
+
   it('native mode draws a transcript pager with the selected prompt in reverse video and the hint', async () => {
     const { frames, instance, key } = mountBrowse(true)
 

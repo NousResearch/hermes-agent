@@ -364,6 +364,9 @@ class CLIBacktrackMixin:
         for key in _BROWSE_KEYS:
             kb.add("escape", key, filter=primed_chord)(self._backtrack_primed_chord)
         kb.add(Keys.Any, filter=picker)(self._backtrack_close_and_replay)
+        # A paste is text, never a browse key: close browse and let the normal (eager) paste
+        # handler take it, or the pasted text vanishes with browse still open.
+        kb.add(Keys.BracketedPaste, filter=picker, eager=True)(self._backtrack_close_and_replay)
         for keys, handler in (
                 (("left",), lambda event: self._backtrack_step(1)), (("h",), lambda event: self._backtrack_step(1)),
                 (("right",), lambda event: self._backtrack_step(-1)), (("l",), lambda event: self._backtrack_step(-1)),

@@ -168,3 +168,18 @@ def test_unprimed_alt_enter_with_a_trailing_key_in_one_read_is_a_newline_then_th
         await _until(lambda: editor.text == expected)
         assert cli._backtrack_state is None and cli._backtrack_primed is None and cli._backtrack_edit is None
     _drive(cli, script)
+
+
+def test_a_bracketed_paste_in_browse_is_text_never_a_fork_or_close(cli):
+    async def script(pipe, editor):
+        pipe.send_text("\x1b")
+        await _until(lambda: cli._backtrack_primed == "hint")
+        pipe.send_text("\x1b")
+        await _until(lambda: cli._backtrack_state is not None)
+        sessions = cli._session_db.list_sessions_rich() if hasattr(cli._session_db, "list_sessions_rich") else None
+        pipe.send_text("\x1b[200~f\x1b[201~")
+        await _until(lambda: cli._backtrack_state is None and "f" in editor.text)
+        assert cli._backtrack_edit is None
+        if sessions is not None:
+            assert len(cli._session_db.list_sessions_rich()) == len(sessions)
+    _drive(cli, script)

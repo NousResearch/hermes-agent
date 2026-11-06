@@ -6429,7 +6429,7 @@ export interface RpcMethods {
   'groups.replicate': { params: GroupsReplicateParams; result: GroupsReplicateResult }
   /** Retry one indeterminate room task after explicit user confirmation. */
   'groups.retry': { params: GroupsRetryParams; result: GroupsRetryResult }
-  /** Append one inert message.user event idempotently; the actor is server-owned. */
+  /** Append one inert message.user event idempotently; the actor is server-owned. A payload without thread_id starts its own thread. */
   'groups.send': { params: GroupsSendParams; result: GroupsSendResult }
   /** One hosted room's replay cursor and fenced authority state, plus live driver status. */
   'groups.state': { params: GroupsStateParams; result: GroupsStateResult }

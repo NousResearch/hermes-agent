@@ -916,6 +916,8 @@ class HostedRoomService:
     def send(self, *, room_id: str, event_id: str, payload: Any) -> dict[str, Any]:
         from gateway.session_hosted_attachments import append_user_event
         try:
+            if isinstance(payload, Mapping) and "thread_id" not in payload:
+                payload = {**payload, "thread_id": event_id}
             normalized = discussion.validate_user_payload(payload)
             gateway_id, epoch = self._owned_authority(room_id)
             event = append_user_event(

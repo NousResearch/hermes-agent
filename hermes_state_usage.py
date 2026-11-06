@@ -396,7 +396,11 @@ class SessionUsageMixin:
                         return False
                     self._token_queue_cond.wait(remaining)
             if batch:
-                return self._apply_claimed_batch(batch)
+                if not self._apply_claimed_batch(batch):
+                    return False
+                with self._token_queue_cond:
+                    return not (self._token_queue or self._token_writer_busy
+                                or self._token_writer_uncertain or self._token_pending_marker is not None)
             return True
 
         finally:
@@ -511,7 +515,11 @@ class SessionUsageMixin:
                 # busy BEFORE clearing the queue (same ordering as the writer loop).
                 batch = self._claim_token_batch_locked() if self._token_queue else []
             if batch:
-                return self._apply_claimed_batch(batch)
+                if not self._apply_claimed_batch(batch):
+                    return False
+                with self._token_queue_cond:
+                    return not (self._token_queue or self._token_writer_busy
+                                or self._token_writer_uncertain or self._token_pending_marker is not None)
             with self._token_queue_cond:
                 try:
                     self._release_idle_token_marker()

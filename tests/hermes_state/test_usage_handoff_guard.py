@@ -636,3 +636,60 @@ def test_interrupt_during_close_drain_retains_unknown_and_handle(stores, monkeyp
     assert a._conn is not None
     with pytest.raises(TimeoutError):
         a.close()
+
+
+@pytest.mark.parametrize("operation", ["flush", "close"])
+def test_public_drain_does_not_report_success_with_new_accepted_tail(stores, monkeypatch, operation):
+    a, _ = stores
+    a.create_session("one", "cli")
+    a.create_session("two", "cli")
+    monkeypatch.setattr(a, "_token_writer_loop", lambda: None)
+    a.queue_token_counts("one", input_tokens=3)
+    a._token_writer_thread.join(5)
+    entered, release = threading.Event(), threading.Event()
+    original = a.update_token_counts
+    def paused(sid, **kwargs):
+        original(sid, **kwargs)
+        if sid == "one":
+            entered.set()
+            assert release.wait(10)
+    monkeypatch.setattr(a, "update_token_counts", paused)
+    outcomes = []
+    def drain():
+        try:
+            outcomes.append(a.flush_token_counts() if operation == "flush" else a.close())
+        except TimeoutError:
+            outcomes.append(False)
+    worker = threading.Thread(target=drain)
+    worker.start()
+    assert entered.wait(5)
+    a.queue_token_counts("two", input_tokens=7)
+    release.set()
+    worker.join(10)
+    assert not worker.is_alive() and len(outcomes) == 1
+    # Success is allowed only when the accepted successor is durably drained.
+    if outcomes[0] is not False:
+        assert not a._token_queue and not a._token_writer_busy
+    else:
+        assert a._conn is not None and a.has_pending_token_counts()
+
+
+def test_background_worker_continues_after_accepted_successor(stores, monkeypatch):
+    a, _ = stores
+    a.create_session("one", "cli")
+    a.create_session("two", "cli")
+    entered, release = threading.Event(), threading.Event()
+    original = a.update_token_counts
+    def paused(sid, **kwargs):
+        original(sid, **kwargs)
+        if sid == "one":
+            entered.set()
+            assert release.wait(10)
+    monkeypatch.setattr(a, "update_token_counts", paused)
+    a.queue_token_counts("one", input_tokens=3)
+    assert entered.wait(5)
+    a.queue_token_counts("two", input_tokens=7)
+    release.set()
+    assert a.flush_token_counts(timeout=10)
+    assert a.get_session("one")["input_tokens"] == 3
+    assert a.get_session("two")["input_tokens"] == 7

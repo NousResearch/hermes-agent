@@ -1,8 +1,8 @@
 name: samskara
 title: Samskara
 repo: https://github.com/SebaWag/hermes-samskara
-sha: 2ae5375d821a2b43e047b89768439709400fe9f3
-version: "0.2.0"
+sha: 4f4d51375560ef0aa30af6b2938143a1327b6d35
+version: "0.2.1"
 description: >-
   Relational memory provider backed by a knowledge graph (MillenniumDB or any
   SPARQL endpoint): multi-hop recall with provenance on every fact, an ontology
@@ -20,12 +20,12 @@ maintainer: SebaWag
 requires_hermes: ">=0.19.0"
 tier: community
 category: memory
-docs_url: https://github.com/SebaWag/hermes-samskara/blob/2ae5375d821a2b43e047b89768439709400fe9f3/README.md
-image: https://raw.githubusercontent.com/SebaWag/hermes-samskara/2ae5375d821a2b43e047b89768439709400fe9f3/docs/demo/banner.png
+docs_url: https://github.com/SebaWag/hermes-samskara/blob/4f4d51375560ef0aa30af6b2938143a1327b6d35/README.md
+image: https://raw.githubusercontent.com/SebaWag/hermes-samskara/4f4d51375560ef0aa30af6b2938143a1327b6d35/docs/demo/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/SebaWag/hermes-samskara/2ae5375d821a2b43e047b89768439709400fe9f3/docs/demo/01-status.jpg
-  - https://raw.githubusercontent.com/SebaWag/hermes-samskara/2ae5375d821a2b43e047b89768439709400fe9f3/docs/demo/02-weights.jpg
-  - https://raw.githubusercontent.com/SebaWag/hermes-samskara/2ae5375d821a2b43e047b89768439709400fe9f3/docs/demo/03-conflict.jpg
+  - https://raw.githubusercontent.com/SebaWag/hermes-samskara/4f4d51375560ef0aa30af6b2938143a1327b6d35/docs/demo/01-status.jpg
+  - https://raw.githubusercontent.com/SebaWag/hermes-samskara/4f4d51375560ef0aa30af6b2938143a1327b6d35/docs/demo/02-weights.jpg
+  - https://raw.githubusercontent.com/SebaWag/hermes-samskara/4f4d51375560ef0aa30af6b2938143a1327b6d35/docs/demo/03-conflict.jpg
 readme: true
 capabilities:
   provides_tools:

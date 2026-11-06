@@ -1,0 +1,18 @@
+name: joinsandwich-directory
+title: Sandwich Directory
+repo: https://github.com/Terahertz-Inc/sandwich-public
+sha: 4e29beaf60639f4d6f09ac37cc53eca3a3f6125c
+version: "0.1.2"
+description: "Public caregiving directory through joinsandwich's remote MCP (https://www.joinsandwich.com/api/mcp): search care resources and channels, estimate long-term care costs. Portable Agent Plugins v1 (plugin.json + mcp.json + skills/). Disclosure — hosted-only connector; every tool call goes to joinsandwich.com. Public directory data; no account required. The live tool set is served by the remote server and is not covered by the pinned sha."
+maintainer: Terahertz, Inc.
+tier: community
+category: tools
+docs_url: https://joinsandwich.com/agents
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -43,11 +43,20 @@ def bootstrap(start: bool, recover: bool = False) -> dict:
         raise ImportError(f"dependency environment unavailable: {exc}") from exc
     from hermes_constants import get_hermes_home
     from hermes_cli.gateway_client import gateway_ws_target
-    from hermes_cli.gateway_runtime_attach import attach_gateway, failure_message, scrub_client_launch_env
+    from hermes_cli.gateway_runtime_attach import (TicketUnavailable, attach_gateway, failure_message,
+                                                   scrub_client_launch_env)
+    from hermes_cli.gateway_runtime_discovery import DiscoveryError
 
     scrub_client_launch_env()
     # The same attach `hermes gateway attach` runs; Ink keeps its own 30 s start budget.
-    attached = attach_gateway(get_hermes_home().resolve(), start=start, recover=recover, timeout=30)
+    try:
+        attached = attach_gateway(get_hermes_home().resolve(), start=start, recover=recover, timeout=30)
+    except TicketUnavailable as exc:
+        # A refused mint (the multiplexer's control home is unsafe, say) prints its own line with the
+        # repair command, ``reason: detail; fix``, not the bare ``ticket_unavailable: <reason>``.
+        if isinstance(exc.__cause__, DiscoveryError):
+            raise RuntimeError(str(exc.__cause__)) from exc
+        raise
     if attached.ticket is None:
         raise RuntimeError(failure_message(attached.receipt))
     endpoint = attached.receipt.endpoint

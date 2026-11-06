@@ -144,6 +144,13 @@ async def test_slash_confirm_renders_three_options():
 
 
 @pytest.mark.asyncio
+async def test_slash_confirm_hides_always_when_persistence_is_disabled():
+    adapter, stub = _adapter()
+    await adapter.send_slash_confirm("c1", "Reset", "Discard history.", "sess:1", "cf-no-always", allow_persistent=False)
+    assert [option["id"] for option in stub.sent[-1]["options"]] == ["once", "cancel"]
+
+
+@pytest.mark.asyncio
 async def test_clarify_renders_choices_plus_other_with_positional_ids():
     adapter, stub = _adapter()
     result = await adapter.send_clarify(

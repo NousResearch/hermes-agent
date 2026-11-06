@@ -35,7 +35,7 @@ def _runner():
     obj._typed_command_prefix_for = lambda platform: "/"
     captured = {}
 
-    async def _request_slash_confirm(*, event, command, title, message, handler):
+    async def _request_slash_confirm(*, event, command, title, message, handler, allow_persistent=True):
         captured["handler"] = handler
         return "prompted"
 

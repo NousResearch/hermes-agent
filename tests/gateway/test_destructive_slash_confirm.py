@@ -145,3 +145,31 @@ async def test_resolve_always_persists_opt_out_and_runs_execute(monkeypatch):
     assert resolved is not None
     assert "✨ fresh" in resolved
     assert "config.yaml" in resolved
+
+
+@pytest.mark.asyncio
+async def test_disabling_persistent_choices_hides_and_refuses_always(monkeypatch):
+    """A shared gateway must neither offer nor honor a destructive-slash opt-out."""
+    from tools import slash_confirm as slash_confirm_mod
+
+    runner = _make_runner()
+    runner._read_user_config = lambda: {
+        "approvals": {"destructive_slash_confirm": True, "allow_persistent": False}
+    }
+    session_key = build_session_key(_make_source())
+    runner._session_key_for_source = lambda src: session_key
+    slash_confirm_mod.clear(session_key)
+    execute = AsyncMock(return_value="should not run")
+
+    prompt = await runner._maybe_confirm_destructive_slash(
+        event=_make_event("/new"), command="new", title="/new", detail="Discards history.", execute=execute,
+    )
+
+    assert "Always Approve" not in prompt
+    assert "always" not in prompt.lower()
+    assert runner.adapters[Platform.TELEGRAM].send_slash_confirm.call_args.kwargs["allow_persistent"] is False
+    pending = slash_confirm_mod.get_pending(session_key)
+    assert pending is not None
+    resolved = await slash_confirm_mod.resolve(session_key, pending["confirm_id"], "always")
+    assert "disabled" in resolved.lower()
+    execute.assert_not_awaited()

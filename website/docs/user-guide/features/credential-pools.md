@@ -176,6 +176,11 @@ credential_pool_strategies:
 | `least_used` | Always pick the key with the lowest request count |
 | `random` | Random selection among healthy keys |
 
+Delegated child agents lease credentials from the same pool. With `fill_first`,
+parallel children continue to lease the first healthy credential; a soft lease
+does not move a child to the next credential. Other strategies retain
+least-leased child allocation to distribute concurrent work.
+
 ### Demoting a healthy credential {#demoting-a-healthy-credential}
 
 The pool only benches a credential *after* the provider rejects it (429/402/401). To keep a

@@ -2335,9 +2335,10 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
     def acquire_lease(self, credential_id: Optional[str] = None) -> Optional[str]:
         """Acquire a soft lease on a credential.
 
-        With *credential_id*, lease that entry directly. Otherwise prefer the
+        With *credential_id*, lease that entry directly. ``fill_first`` keeps
+        leasing the first healthy credential. Other strategies prefer the
         least-leased available credential (priority as tie-breaker); when
-        every credential is at the soft cap, still return the least-leased
+        every credential is at the soft cap, they still return the least-leased
         one instead of blocking.
         """
         chosen_id, pending_refresh = self._acquire_lease_under_lock(credential_id)
@@ -2363,11 +2364,14 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             if not available:
                 return None, pending_refresh
 
-            below_cap = [e for e in available if self._active_leases.get(e.id, 0) < self._max_concurrent]
-            chosen = min(
-                below_cap or available,
-                key=lambda entry: (self._active_leases.get(entry.id, 0), entry.priority),
-            )
+            if self._strategy == STRATEGY_FILL_FIRST:
+                chosen = available[0]
+            else:
+                below_cap = [e for e in available if self._active_leases.get(e.id, 0) < self._max_concurrent]
+                chosen = min(
+                    below_cap or available,
+                    key=lambda entry: (self._active_leases.get(entry.id, 0), entry.priority),
+                )
             self._active_leases[chosen.id] = self._active_leases.get(chosen.id, 0) + 1
             self._current_id = chosen.id
             return chosen.id, pending_refresh

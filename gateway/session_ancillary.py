@@ -240,13 +240,15 @@ async def read(connection, ref, params, *, kind):
     # event lock, which every streamed token takes too, reads state.db (compression lineage, local
     # receipt, control meta) and the process registry under its lock. Clients poll these every 1-5 s per
     # open session, so on the loop they were a large share of loop time with many sessions running.
-    return await asyncio.to_thread(_read_projection, authority, authority.sessions[ref.session_id], ref, params, kind)
+    return await asyncio.to_thread(locked_projection, authority, authority.sessions[ref.session_id], ref,
+                                   partial(_project, authority, ref, params, kind))
 
 
-def _read_projection(authority, live, ref, params, kind):
+def locked_projection(authority, live, ref, project):
+    """``project()`` under the session's event lock, off the loop (``subagent.transcript`` reads its roster here)."""
     with live.event_stream.lock:
         try:
-            return _project(authority, ref, params, kind)
+            return project()
         except KeyError:
             # Popped from authority.sessions before or during the projection (retire_live_sessions runs
             # on the loop without this lock): the projection re-indexes the map, and a popped session is

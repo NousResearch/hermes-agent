@@ -62,25 +62,30 @@ async def subagent_transcript(connection, ref, params):
     if ref.session_id not in authority.sessions:
         raise RuntimeStoreError('not_found')
     authorize(connection, ref, params, 'session:read')
-    from gateway.session_ancillary import _compression_lineage, _owner_objects, _require_current_route, physical_target
-    live, subagent_id = authority.sessions[ref.session_id], params['subagent_id']
-    with live.event_stream.lock:
+    session_id, record, rows, cursor, reset = await asyncio.to_thread(
+        _transcript, authority, authority.sessions[ref.session_id], ref, params['subagent_id'], after)
+    return {'subagent_id': params['subagent_id'], 'available': session_id is not None, 'child_session_id': session_id,
+            'running': record is not None, 'messages': rows, 'cursor': cursor, 'reset': reset}
+
+
+def _transcript(authority, live, ref, subagent_id, after):
+    """In a worker thread, like ``subagent.list``: the roster is read under the session's event lock, which
+    every streamed token takes too, and clients poll this once a second per open child."""
+    from gateway.session_ancillary import (
+        _compression_lineage, _owner_objects, _require_current_route, locked_projection, physical_target)
+    from gateway.session_authorities import owner_scope
+    from tools.delegate_tool_sessions import stored_child_session
+
+    def roster():
         _require_current_route(authority, ref)
-        _, records = _owner_objects(authority, ref, include_fallback_evicted=True)
-        target = physical_target(authority, ref)
+        return _owner_objects(authority, ref, include_fallback_evicted=True)[1], physical_target(authority, ref)
+
+    records, target = locked_projection(authority, live, ref, roster)
     record = next((r for r in records if r.get('subagent_id') == subagent_id), None)
     child = getattr(record.get('agent'), 'session_id', None) if record else None
-
-    def load():
-        # Off the loop, so the explicit owner scope (dispatch's is only a contextvar copy here);
-        # every read goes through the owning authority's own store.
-        from gateway.session_authorities import owner_scope
-        from tools.delegate_tool_sessions import stored_child_session
-        with owner_scope(authority):
-            session_id = child if isinstance(child, str) and child else stored_child_session(
-                authority.db, subagent_id, _compression_lineage(authority.db, target))
-            return (session_id, *_read(authority.db, session_id, after)) if session_id else (None, [], None, True)
-
-    session_id, rows, cursor, reset = await asyncio.to_thread(load)
-    return {'subagent_id': subagent_id, 'available': session_id is not None, 'child_session_id': session_id,
-            'running': record is not None, 'messages': rows, 'cursor': cursor, 'reset': reset}
+    # The explicit owner scope: every read goes through the owning authority's own store.
+    with owner_scope(authority):
+        session_id = child if isinstance(child, str) and child else stored_child_session(
+            authority.db, subagent_id, _compression_lineage(authority.db, target))
+        return (session_id, record, *_read(authority.db, session_id, after)) if session_id else (
+            None, record, [], None, True)

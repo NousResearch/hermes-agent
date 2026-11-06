@@ -29,8 +29,8 @@ def _fmt_pending(pending: list) -> str:
 
 def _resolve_origin() -> Optional[dict[str, Any]]:
     """Best-effort current-chat origin from session env (cron's ``_origin_from_env``, which also
-    withholds non-push surfaces such as api_server) so an accepted job delivers back to the
-    accepting chat; None lets create_job use the home channel."""
+    withholds non-push surfaces such as api_server unless the request reads server history) so an
+    accepted job delivers back to the accepting chat; None lets create_job use the home channel."""
     try:
         from tools.cronjob_job_args import _origin_from_env
         return _origin_from_env()

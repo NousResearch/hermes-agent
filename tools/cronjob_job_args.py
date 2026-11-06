@@ -59,7 +59,8 @@ def _first_fire_within_thread_horizon(
 def _origin_from_env(
     schedule: str | dict[str, Any] | None = None,
 ) -> Optional[dict[str, str]]:
-    from gateway.session_context import async_delivery_supported, get_session_env
+    from gateway.session_context import (async_delivery_supported, get_session_env,
+                                         session_history_delivery_supported)
     origin_platform = get_session_env("HERMES_SESSION_PLATFORM")
     origin_chat_id = get_session_env("HERMES_SESSION_CHAT_ID")
     if not (origin_platform and origin_chat_id):
@@ -68,6 +69,11 @@ def _origin_from_env(
     # fire-time report, so an origin stamp would make ``deliver=origin`` fail silently on every
     # fire (#69304). No origin => the home-channel fallback + creation-time notice apply.
     if not async_delivery_supported():
+        # Except an api_server request that declared a server-history consumer (the async
+        # delegate_task gate, #98619): the result is appended to that session's transcript at
+        # fire time (cron/scheduler_delivery_session.py), never pushed and never a new agent turn.
+        if origin_platform == "api_server" and session_history_delivery_supported():
+            return {"platform": origin_platform, "chat_id": origin_chat_id, "session_history": True}
         return None
     thread_id = get_session_env("HERMES_SESSION_THREAD_ID") or None
     # Slack stamps every TOP-LEVEL message's own id as the session thread (a per-message
@@ -125,6 +131,10 @@ def _local_delivery_notice(job: dict[str, Any], user_deliver: Optional[str]) -> 
         from cron.scheduler import _resolve_delivery_targets
         targets = _resolve_delivery_targets(job)
         if targets:
+            if any(t.get("_resolved_from") == "origin_session" for t in targets):
+                return ("Note: this session cannot receive a pushed message, so when the job runs its "
+                        "result is added to this session's history. The client sees it the next time "
+                        "it loads the history or sends a message.")
             # _origin_from_env() dropped a non-push origin (api_server) and the job rerouted to a
             # home channel: tell the creating client where the report goes (#69304).
             from gateway.session_context import async_delivery_supported, get_session_env

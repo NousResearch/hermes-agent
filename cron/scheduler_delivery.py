@@ -618,6 +618,10 @@ def _resolve_single_delivery_target(
                 "thread_id": _origin_delivery_thread(origin),
                 "_resolved_from": "origin",  # provenance for _target_mirror_eligible
             }
+        # An api_server session whose client reads server history: append to its transcript.
+        session = _session.session_target(job)
+        if session:
+            return session
         # No origin (API/script job): fall back to a home channel instead of silently dropping.
         for platform_name in _iter_home_target_platforms():
             chat_id = _get_home_target_chat_id(platform_name)
@@ -1917,6 +1921,15 @@ def _deliver_result(
                 delivery_errors.append(local_error)
             continue
 
+        # No send lane can reach a non-push session; its result is a transcript row instead.
+        if target.get("_resolved_from") == _session.SESSION_ORIGIN:
+            session_error = _session.deliver_to_session(
+                job, target, cleaned_delivery_content, adapters=adapters, loop=loop, config=config,
+                for_failure=for_failure)
+            if session_error:
+                delivery_errors.append(session_error)
+            continue
+
         t = _prepare_target_delivery(
             job, target, adapters=adapters, loop=loop, config=config,
             notify_delivery=notify_delivery,
@@ -1949,5 +1962,6 @@ from cron import scheduler as _sched
 from cron.scheduler_delivery_room import (
     ROOM_PLATFORM, deliver_to_room, parse_room_deliver_token, resolve_room_target)
 from cron import scheduler_delivery_origin as _origin
+from cron import scheduler_delivery_session as _session
 from cron import scheduler_preflight as _preflight
 from cron import scheduler_script as _script

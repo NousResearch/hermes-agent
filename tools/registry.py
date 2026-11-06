@@ -6,6 +6,7 @@ tools/*.py import it at module level; model_tools.py imports both; run_agent/cli
 model_tools."""
 
 import ast
+import copy
 import functools
 import importlib
 import inspect
@@ -21,7 +22,8 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set
 
 from hermes_constants import hermes_home_key, normalize_scope
-from registry_freeze import refuse_if_frozen
+from registry_freeze import refuse_if_frozen, seal_at_freeze
+from tools.registry_sealed import STORAGE, seal
 
 logger = logging.getLogger(__name__)
 
@@ -231,6 +233,30 @@ class ToolEntry:
     # — for fields tracking runtime config (delegate_task's description reflects limits).
     dynamic_schema_overrides: Optional[Callable] = None
     execution_timeout: float | None = None
+
+
+class _SealedToolEntry(ToolEntry):
+    """A :class:`ToolEntry` after the freeze: same slots and identity, attributes fixed."""
+
+    __slots__ = ()
+
+    def __setattr__(self, name: str, value) -> None:
+        refuse_if_frozen(STORAGE)
+        object.__setattr__(self, name, value)
+
+    def __delattr__(self, name: str) -> None:
+        refuse_if_frozen(STORAGE)
+        object.__delattr__(self, name)
+
+
+def _seal_entry(entry: ToolEntry) -> ToolEntry:
+    """Seal *entry* in place (identity-keyed restore/CAS paths keep working): its schema and
+    ``requires_env`` become detached read-only copies, and its attributes refuse rebinding."""
+    if not isinstance(entry, _SealedToolEntry):
+        object.__setattr__(entry, "schema", seal(entry.schema))
+        object.__setattr__(entry, "requires_env", seal(entry.requires_env))
+        entry.__class__ = _SealedToolEntry
+    return entry
 
 
 class _PluginOverridePolicy:
@@ -504,6 +530,20 @@ class ToolRegistry:
         self._lock = threading.RLock()
         # Bumped on every mutation; get_tool_definitions memoizes against it.
         self._generation: int = 0
+        seal_at_freeze(self._seal_storage)
+
+    def _seal_storage(self) -> None:
+        """At the hosted freeze: every map, entry and schema a caller can reach becomes read-only
+        (``tools.registry_sealed``), so a retained reference cannot change what other tenants see."""
+        with self._lock:
+            for entry in [*self._tools.values(), *(e for m in self._scoped_tools.values() for e in m.values())]:
+                _seal_entry(entry)
+            self._tools = seal(self._tools)
+            self._scoped_tools = seal(self._scoped_tools)
+            self._toolset_checks = seal(self._toolset_checks)
+            self._toolset_aliases = seal(self._toolset_aliases)
+            self._plugin_override_policy = seal(self._plugin_override_policy)
+            self._plugin_module_scopes = seal(self._plugin_module_scopes)
 
     @staticmethod
     def current_scope_key() -> str:
@@ -941,7 +981,10 @@ class ToolRegistry:
                 if not quiet:
                     logger.debug("Tool %s unavailable (check failed)", name)
                 continue
-            schema_with_name = {**entry.schema, "name": entry.name}
+            # A sealed (frozen) schema is handed out as a detached writable copy: the caller owns
+            # the definitions it gets, and request shaping may rewrite them in place.
+            base = copy.deepcopy(entry.schema) if isinstance(entry, _SealedToolEntry) else entry.schema
+            schema_with_name = {**base, "name": entry.name}
             # Runtime-dynamic overrides (e.g. delegate_task limits); the caller's memo is
             # keyed on config.yaml mtime+size, so config changes invalidate it automatically.
             if entry.dynamic_schema_overrides is not None:

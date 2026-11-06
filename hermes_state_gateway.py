@@ -38,6 +38,63 @@ _COMPRESSION_LINEAGE_CTE = f"""
                     )
                 """
 
+# A persisted bare custom/proxy route can carry another provider's endpoint: a client can switch
+# the model (slug from the proxy catalog) and the provider independently, so the stored base_url
+# stays behind on whatever provider was selected before. Resuming such a session then re-sent every
+# turn to the wrong host — HTTP 400 "<proxy-model> is not a valid model ID" from the aggregator,
+# forever, because the poisoned route lives in the row. Bare names (custom/litellm/auto) own no
+# endpoint of their own, so the endpoint the config resolves for them is authoritative.
+_BARE_ROUTE_PROVIDERS = frozenset({"custom", "litellm", "auto"})
+_KNOWN_PROVIDER_ENDPOINTS: Optional[frozenset] = None
+
+
+def _known_provider_endpoints() -> frozenset:
+    """Canonical inference endpoints of every known provider.
+
+    ``OPENROUTER_BASE_URL`` is added explicitly: openrouter is a first-class picker provider but
+    has no ``PROVIDER_REGISTRY`` entry, which is exactly the endpoint a stale stored route keeps.
+    """
+    global _KNOWN_PROVIDER_ENDPOINTS
+    if _KNOWN_PROVIDER_ENDPOINTS is None:
+        urls = set()
+        try:
+            from hermes_cli.runtime_provider import PROVIDER_REGISTRY
+            urls.update(
+                str(getattr(cfg, "inference_base_url", "") or "").strip().rstrip("/")
+                for cfg in PROVIDER_REGISTRY.values()
+            )
+        except Exception:
+            pass
+        try:
+            from hermes_constants import OPENROUTER_BASE_URL
+            urls.add(str(OPENROUTER_BASE_URL).strip().rstrip("/"))
+        except Exception:
+            pass
+        urls.discard("")
+        _KNOWN_PROVIDER_ENDPOINTS = frozenset(urls)
+    return _KNOWN_PROVIDER_ENDPOINTS
+
+
+def _drop_foreign_persisted_endpoint(runtime: dict) -> bool:
+    """Drop ``base_url`` from a persisted bare-custom route that points at another provider's
+    canonical endpoint. Returns True when it was dropped.
+
+    A genuine proxy/custom endpoint (nothing in the known set) is never touched — only the
+    "endpoint left over from the previous provider" shape is healed.
+    """
+    provider = str(runtime.get("provider") or "").strip().lower()
+    stored = str(runtime.get("base_url") or "").strip().rstrip("/")
+    if provider not in _BARE_ROUTE_PROVIDERS or not stored:
+        return False
+    if stored not in _known_provider_endpoints():
+        return False
+    runtime.pop("base_url", None)
+    logger.warning(
+        "Session runtime: dropped foreign endpoint %s on bare provider %r — resume follows the "
+        "endpoint configured for that provider again", stored, provider)
+    return True
+
+
 # Projection shared by both peer-recovery queries (exact key, then peer tuple).
 _PEER_SELECT_HEAD = """
                 SELECT s.*,
@@ -873,7 +930,11 @@ class SessionGatewayMixin:
         # Filter None: the persist path writes or-None to trigger deletion in the top-level
         # merge, but gateway_runtime is replaced whole (not deep-merged), so None survives here.
         if isinstance(runtime, dict) and runtime.get("provider"):
-            return {k: v for k, v in runtime.items() if v is not None}
+            healed = {k: v for k, v in runtime.items() if v is not None}
+            # A stored route pairing a bare provider with another provider's endpoint is left over
+            # from a switch that kept the previous URL; keep the provider, re-resolve the endpoint.
+            _drop_foreign_persisted_endpoint(healed)
+            return healed
         top_level = {key: raw.get(key) for key in ("provider", "base_url", "api_mode") if raw.get(key)}
         # billing_provider is COALESCE-written on the first accounted API call — the only durable
         # record for sessions that never ran /model. Bare buckets ("auto"/"custom") are not

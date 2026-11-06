@@ -2,6 +2,8 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { useState } from 'react'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
+import { stubVisibleMenuAnchors } from '@/test/jsdom'
+
 import { Dialog, DialogContent } from './dialog'
 import {
   DropdownMenu,
@@ -24,6 +26,7 @@ beforeAll(() => {
 
 afterEach(() => {
   cleanup()
+  vi.restoreAllMocks()
   vi.useRealTimers()
 })
 
@@ -206,6 +209,7 @@ describe('DropdownMenuSubContent portal', () => {
   })
 
   it('selects a submenu row inside a dialog without dismissing the parent menu', async () => {
+    stubVisibleMenuAnchors()
     const onMenuOpenChange = vi.fn()
     const onSelect = vi.fn((event: Event) => event.preventDefault())
 

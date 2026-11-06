@@ -256,6 +256,13 @@ class TestJsonParsing:
         assert _parse_structured_text(text='{"code": 1, "x": "```hello```"}', json_mode=False,
                                       json_schema=schema) == (None, "text")
 
+    def test_a_whole_reply_fallback_that_exhausts_recursion_keeps_the_released_answer(self):
+        """A recursive schema over a deeply nested reply makes validation hit the recursion limit.
+        The released parser answered text here; the whole-reply fallback must not raise instead."""
+        text = "[" * 300 + '"```hello```"' + "]" * 300
+        schema = {"type": ["array", "string"], "items": {"$ref": "#"}}
+        assert _parse_structured_text(text=text, json_mode=False, json_schema=schema) == (None, "text")
+
 # ---------------------------------------------------------------------------
 # End-to-end facade
 # ---------------------------------------------------------------------------

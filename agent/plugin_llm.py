@@ -360,8 +360,14 @@ def _check_schema(parsed: Any, json_schema: Optional[Any]) -> None:
 
 
 def _whole_reply(whole: str, json_schema: Optional[Any]) -> Any:
-    """The whole reply parsed and fitting the schema, else ``_NOT_JSON`` (never raises)."""
-    parsed = _json_or_missing(whole)
+    """The whole reply parsed and fitting the schema, else ``_NOT_JSON`` (never raises).
+
+    A fallback only: any failure here (including a recursive schema or deeply nested reply that
+    exhausts the recursion limit) leaves the released outcome of the fenced-block path in place."""
+    try:
+        parsed = _json_or_missing(whole)
+    except RecursionError:
+        return _NOT_JSON
     if parsed is _NOT_JSON:
         return parsed
     try:
@@ -371,7 +377,7 @@ def _whole_reply(whole: str, json_schema: Optional[Any]) -> Any:
         schema_errors = ()
     try:
         _check_schema(parsed, json_schema)
-    except (ValueError, *schema_errors):
+    except (ValueError, RecursionError, *schema_errors):
         return _NOT_JSON
     return parsed
 

@@ -2,14 +2,14 @@
 # Pinned to the plugin's current commit; bump sha and version together.
 name: creature-workshop
 repo: https://gitlab.creature-workshop.com/ksoft/hermes/creature-workshop-plugin
-sha: 6137245203551ff9ff34c2998a1d1e5d69494e92
+sha: 5df524291547cab870f71ad6a2ccb218f175284f
 title: Creature Workshop
 description: "Manage your project's development lifecycle all in one place: the project. A project describes itself once in its shellops .ops/ declaration, and the plugin reads it, runs the project's own shell/ops, and hands the result to the agent. Tools: workshop_project (the declaration, the release record, which declared tools are installed), workshop_install (check, or install the missing ones), workshop_test (the test plan of changed paths, or run them), workshop_lint. A system prompt section names the project when the session is in one, and a session above its projects finds the first one below. Disclosure: the tools run the project's own shell/ops as a subprocess in the project directory with its .envrc loaded, and nothing outside it; workshop_install with check false installs tools, fetching from the channel the declaration names (the host's package manager, cargo, npm, go, a git repository, Flathub, or an installer script the project ships); the plugin reads files under the project only; no network calls of the plugin's own, no telemetry, no credentials. Only projects with shell/ops and .ops/config/ are recognised."
 maintainer: jerrod-storm
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
-version: "0.1.0"
+version: "0.0.0"
 docs_url: https://gitlab.creature-workshop.com/ksoft/hermes/creature-workshop-plugin/-/blob/main/README.md
 platforms:
   - linux

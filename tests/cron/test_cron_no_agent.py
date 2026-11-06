@@ -110,6 +110,126 @@ def test_run_job_no_agent_success_returns_script_stdout(hermes_env):
     assert "RAM 92% on host" in doc
 
 
+def test_no_agent_typed_busy_deferral_is_a_silent_deferred_outcome(hermes_env, monkeypatch):
+    """A bounded worker-deferred result is not an operational script failure.
+
+    The script contract deliberately requires exit 75 plus the exact sanitized JSON
+    envelope.  It must not invoke an agent, emit an inline failure delivery, or
+    increment the persisted failure streak.
+    """
+    from cron.jobs import create_job, get_job
+    from cron import scheduler
+    from tools import terminal_scope
+
+    # The scheduler boundary is under test, not the repository's terminal-policy
+    # manifest resolver; the fixture's isolated home has no project manifest.
+    monkeypatch.setattr(terminal_scope, "install_profile_terminal_scope", lambda _home: None)
+
+    script_path = hermes_env / "scripts" / "gmail-worker.sh"
+    script_path.write_text("#!/usr/bin/env bash\nexit 0\n")
+    monkeypatch.setattr(
+        scheduler,
+        "_run_job_script_with_claim_heartbeat",
+        lambda *_args, **_kwargs: (
+            False,
+            'Script exited with code 75\nstderr:\n'
+            '{"status":"deferred","reason":"busy","next_attempt_at":null,"operator_alert":false}',
+        ),
+    )
+    job = create_job(
+        prompt=None, schedule="every 5m", script="gmail-worker.sh", no_agent=True, deliver="local"
+    )
+    assert scheduler.run_one_job(job) is True
+
+    saved = get_job(job["id"])
+    assert saved["last_status"] == "deferred"
+    assert saved["failure_streak"] == 0
+    assert saved["last_error"] is None
+
+
+def test_no_agent_exit_75_without_strict_deferred_envelope_is_a_failure(hermes_env):
+    """Exit 75 alone is never upgraded to a deferred/nonfailure result."""
+    from cron.jobs import create_job, get_job
+    from cron import scheduler
+
+    script_path = hermes_env / "scripts" / "bad-worker.py"
+    script_path.write_text("import sys\nprint('busy', file=sys.stderr)\nraise SystemExit(75)\n")
+    job = create_job(
+        prompt=None, schedule="every 5m", script="bad-worker.py", no_agent=True, deliver="local"
+    )
+    assert scheduler.run_one_job(job) is True
+
+    saved = get_job(job["id"])
+    assert saved["last_status"] == "error"
+    assert saved["failure_streak"] == 1
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        'Script exited with code 75\nstderr:\n{',
+        'Script exited with code 75\nstderr:\n'
+        '{"status":"deferred","reason":"busy","next_attempt_at":null,"operator_alert":false}\nstdout:\nleak',
+        'Script exited with code 75\nstderr:\n'
+        '{"status":"deferred","reason":"busy","next_attempt_at":null}',
+        'Script exited with code 75\nstderr:\n'
+        '{"status":"deferred","reason":"busy","next_attempt_at":null,"operator_alert":false,"extra":true}',
+        'Script exited with code 75\nstderr:\n'
+        '{"status":"deferred","reason":"exhausted","next_attempt_at":null,"operator_alert":false}',
+        'Script exited with code 75\nstderr:\n'
+        '{"status":"deferred","reason":"busy","next_attempt_at":null,"operator_alert":true}',
+        'Script exited with code 75\nstderr:\n'
+        '{"status":"deferred","reason":"busy","next_attempt_at":NaN,"operator_alert":false}',
+        'Script exited with code 75\nstderr:\n'
+        '{"status":"deferred","reason":"busy","next_attempt_at":Infinity,"operator_alert":false}',
+        'Script exited with code 75\nstderr:\n'
+        '{"status":"deferred","reason":"busy","next_attempt_at":-Infinity,"operator_alert":false}',
+        'Script exited with code 75\nstderr:\n'
+        '{"status":"deferred","reason":"busy","next_attempt_at":true,"operator_alert":false}',
+        'Script exited with code 75\nstderr:\n'
+        '{"status":"error","status":"deferred","reason":"busy",'
+        '"next_attempt_at":null,"operator_alert":false}',
+    ],
+)
+def test_no_agent_noncanonical_typed_deferral_envelope_is_a_failure(hermes_env, monkeypatch, output):
+    """Every rejected envelope remains an error and emits the watchdog alert."""
+    from cron.jobs import create_job, get_job
+    from cron import scheduler
+
+    script_path = hermes_env / "scripts" / "gmail-worker.sh"
+    script_path.write_text("#!/usr/bin/env bash\nexit 0\n")
+    monkeypatch.setattr(
+        scheduler,
+        "_run_job_script_with_claim_heartbeat",
+        lambda *_args, **_kwargs: (False, output),
+    )
+    job = create_job(
+        prompt=None, schedule="every 5m", script="gmail-worker.sh", no_agent=True, deliver="local"
+    )
+    success, _doc, alert, error = scheduler.run_job(job)
+    assert success is False
+    assert error == output
+    assert alert.startswith("⚠ Cron watchdog")
+    assert output in alert
+
+    delivered = []
+    monkeypatch.setattr(
+        scheduler,
+        "_deliver_result",
+        lambda _job, content, **kwargs: delivered.append((content, kwargs)) or None,
+    )
+    assert scheduler.run_one_job(job) is True
+    assert len(delivered) == 1
+    delivered_content, delivered_kwargs = delivered[0]
+    assert delivered_kwargs["for_failure"] is True
+    assert delivered_content.startswith("⚠️ Cron")
+    assert "Script exited with code 75" in delivered_content
+
+    saved = get_job(job["id"])
+    assert saved["last_status"] == "error"
+    assert saved["failure_streak"] == 1
+
+
 def test_run_job_no_agent_reloads_dotenv_before_script(hermes_env, monkeypatch):
     """Regression: a standalone cron tick process starts without home-channel
     vars in its environment, and the agent path's per-run dotenv reload never

@@ -15,7 +15,11 @@
 
 /** A scroller the reset should target: scrollable in the block axis, taller than the viewport. */
 function isScrollable(el: HTMLElement): boolean {
-	return el.scrollHeight > el.clientHeight;
+	const overflowY = getComputedStyle(el).overflowY;
+	return (
+		(overflowY === "auto" || overflowY === "scroll") &&
+		el.scrollHeight > el.clientHeight
+	);
 }
 
 /**

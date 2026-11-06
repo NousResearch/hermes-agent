@@ -13,6 +13,7 @@ function makeChain(): {
 	// ConfigPage's root sits in under the layout scroller.
 	const outer = document.createElement("div");
 	const scroller = document.createElement("div");
+	scroller.style.overflowY = "auto";
 	Object.defineProperty(scroller, "scrollHeight", { value: 2000, configurable: true });
 	Object.defineProperty(scroller, "clientHeight", { value: 500, configurable: true });
 	scroller.scrollTop = 1341;
@@ -41,6 +42,7 @@ describe("closestScroller", () => {
 
 	it("treats the element itself as a candidate scroller", () => {
 		const scroller = document.createElement("div");
+		scroller.style.overflowY = "auto";
 		Object.defineProperty(scroller, "scrollHeight", { value: 900, configurable: true });
 		Object.defineProperty(scroller, "clientHeight", { value: 300, configurable: true });
 		scroller.scrollTop = 50;
@@ -54,6 +56,24 @@ describe("resetNearestScroller", () => {
 		const { scroller, child, cleanup } = makeChain();
 		try {
 			expect(scroller.scrollTop).toBe(1341);
+			expect(resetNearestScroller(child)).toBe(scroller);
+			expect(scroller.scrollTop).toBe(0);
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("skips an overflowing wrapper that cannot scroll", () => {
+		const { scroller, child, cleanup } = makeChain();
+		const wrapper = document.createElement("div");
+		wrapper.style.overflowY = "visible";
+		Object.defineProperty(wrapper, "scrollHeight", { value: 2600, configurable: true });
+		Object.defineProperty(wrapper, "clientHeight", { value: 250, configurable: true });
+		scroller.replaceChildren(wrapper);
+		wrapper.appendChild(child);
+		try {
+			// The route <main> is the actual scroll container; a taller wrapper
+			// with overflow: visible must not intercept the category reset.
 			expect(resetNearestScroller(child)).toBe(scroller);
 			expect(scroller.scrollTop).toBe(0);
 		} finally {

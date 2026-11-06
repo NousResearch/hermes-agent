@@ -76,7 +76,8 @@ pass it back as `after` to receive only the rows written since (`reset: false`, 
 none). When `reset` is true the messages are the whole transcript and replace what the
 caller holds: on the first read (no `after`), and whenever anything but an append
 changed the child (it compacted in place, rotated to a new `child_session_id`, rewound or
-rewrote a row, its metadata included: a reaction, checkpoint pruning), including rows written
+rewrote a row, its metadata included: a reaction, checkpoint pruning, also on an archived row of
+an earlier segment), including rows written
 and compacted between two polls. A cursor the owner did not issue for that segment is a fresh
 read too. A cursored poll costs a count and a keyset read of the new rows
 (`transcript_cursor_state`, `conversation_tail`), not a transcript

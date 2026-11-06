@@ -174,6 +174,11 @@ async def probe():
             receipt['live_ended'] = await transcript(ws, sid, 'sa-0-live')
             for name in ('sa-1-done', 'sa-0-nested', 'sa-0-foreign', 'sa-0-branch', 'sa-9-unknown'):
                 receipt[name] = await transcript(ws, sid, name)
+            # A reaction on a row of the segment before the rotation: shown archived, owned by the ancestor.
+            ancestor = next(m['row_id'] for m in receipt['sa-1-done']['messages'] if m['content'] == 'done goal')
+            authority.db.set_message_reaction('done-child-2', ancestor, '\U0001f44d')
+            receipt['done_ancestor_reacted'] = await transcript(ws, sid, 'sa-1-done',
+                                                                after=receipt['sa-1-done']['cursor'])
             receipt['unknown_session'] = await transcript(ws, 'no-such-session', 'sa-1-done')
             receipt['foreign_profile'] = await transcript(ws, sid, 'sa-1-done', profile='foreign')
             receipt['bad_cursor'] = await transcript(ws, sid, 'sa-1-done', after=-1)

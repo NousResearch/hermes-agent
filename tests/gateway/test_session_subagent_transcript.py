@@ -131,3 +131,10 @@ def test_a_running_worker_of_an_orchestrator_stays_running_after_the_parent_is_r
     deep = receipt['rebuilt_deep']
     assert deep['running'] and deep['child_session_id'] == 'deep-child', deep
     assert receipt['rebuilt_list'] == ['sa-0-deep', 'sa-1-orch'], receipt['rebuilt_list']
+
+
+def test_a_rewrite_of_a_row_from_before_a_rotation_resets_the_viewer(receipt):
+    reacted = receipt['done_ancestor_reacted']
+    assert reacted['reset'] and reacted['child_session_id'] == 'done-child-2', reacted
+    [row] = [m for m in reacted['messages'] if m['content'] == 'done goal']
+    assert row['archived'] and [r['emoji'] for r in row['display_metadata']['reactions']] == ['\U0001f44d'], row

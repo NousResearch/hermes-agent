@@ -114,12 +114,38 @@ _RUNTIME_WRITES = {
     "imported_object_item": "from state import X\ndef put(v):\n    X['v'] = v\n",
     "imported_object_method": "from state import X\ndef put(v):\n    X.append(v)\n",
     "imported_object_attribute": "from state import X as Y\ndef put(v):\n    Y.value = v\n",
+    # an imported object is one through whichever binding reaches it
+    "relative_imported_object": "from . import X\ndef put(v):\n    X['v'] = v\n",
+    "relative_imported_member": "from .state import X\ndef put(v):\n    X['v'] = v\n",
+    "imported_object_unrelated_module_alias": "from state import X\ndef unrelated():\n    import state.X as unused\n"
+                                              "def put(v):\n    X['v'] = v\n",
+    "imported_object_local_alias": "def put(v):\n    from state import X\n    X['v'] = v\n",
+    "imported_object_closure": "def outer():\n    from state import X as Y\n    def put(v):\n"
+                               "        Y.append(v)\n    return put\n",
 }
 
 
 @pytest.mark.parametrize("name", sorted(_RUNTIME_WRITES))
 def test_detects_state_whatever_its_initializer(name):
     assert _hits(_RUNTIME_WRITES[name]), name
+
+
+@pytest.mark.parametrize("src, line", [
+    ("from . import X\ndef put(v):\n    X['v'] = v\n", 1),
+    ("from state import X\ndef unrelated():\n    import state.X as unused\ndef put(v):\n    X['v'] = v\n", 1),
+    ("import os\ndef put(v):\n    from .state import X\n    X['v'] = v\n", 3),
+])
+def test_imported_object_write_is_reported_on_its_import(src, line):
+    assert _hits(src) == [line]
+
+
+@pytest.mark.parametrize("src", [
+    # a module bound by ``import m.n as a`` is a module: its attribute is judged in that module
+    "def put(v):\n    import state.X as X\n    X.value = v\n",
+    "import state.X as X\ndef put(v):\n    X['v'] = v\n",
+])
+def test_module_aliases_pass(src):
+    assert _hits(src) == []
 
 
 # A mutation is the module's only through its lexical binding.

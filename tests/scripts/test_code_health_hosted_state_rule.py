@@ -173,6 +173,83 @@ def test_module_aliases_and_kept_copies_pass(src):
     assert _hits(src) == []
 
 
+_COPIED = ("import builtins\nimport operator\nfrom builtins import delattr as drop\n"
+           "from builtins import setattr as put_attr\n"
+           "class C:\n    values = {}\n    def __init__(self):\n        self.values = {}\n"
+           "    def share(self):\n        {op}\n"
+           "    def put(self, v):\n        self.values['v'] = v\n")
+
+
+@pytest.mark.parametrize("operation", [
+    "self.__delattr__('values')",
+    "self.__setattr__('values', C.values)",
+    "builtins.delattr(self, 'values')",
+    "drop(self, 'values')",
+    "put_attr(self, 'values', C.values)",
+    "object.__delattr__(self, 'values')",
+    "vars(self).pop('values')",
+    "getattr(self, '__dict__').pop('values')",
+    "getattr(self, '__del' + 'attr__')('values')",
+    "operator.methodcaller('__delattr__', 'values')(self)",
+    "builtins.vars(self).pop('values')",
+    "exec('del self.values')",
+    "self.__getstate__().pop('values')",
+    "self.__reduce_ex__(2)[2].pop('values')",
+    "object.__getattribute__(self, '__dict__').pop('values')",
+    "o = object\n        o.__delattr__(self, 'values')",
+    "pass\n    share = lambda self: self.__delattr__('values')\n    def unused(self):\n        pass",
+])
+def test_namespace_change_leaves_no_own_copy(operation):
+    """Each operation really puts two instances back on the class's dict; none is a plain
+    ``self.values = v`` the rule can see, so the class gets no copy credit."""
+    source = _COPIED.replace("{op}", operation)
+    namespace: dict = {}
+    exec(source, namespace)
+    a, b = namespace["C"](), namespace["C"]()
+    a.share()
+    b.share()
+    a.put("tenant-A")
+    assert a.values is b.values and b.values == {"v": "tenant-A"}
+    assert _hits(source) == [6]
+
+
+@pytest.mark.parametrize("share", [
+    # a namespace operation anywhere in the class costs every copy, whatever it names
+    "def share(self):\n        setattr(self, 'other', 1)\n",
+    "def share(self):\n        delattr(self, 'other')\n",
+    "def share(self):\n        return self.__dict__\n",
+    "def share(self, name):\n        return getattr(self, name)\n",
+    "def share(self):\n        hook = setattr\n        hook(self, 'values', C.values)\n",
+    "def share(self):\n        o = object\n        o.__setattr__(self, 'values', C.values)\n",
+    "def share(self):\n        for op in (setattr,):\n            op(self, 'values', C.values)\n",
+    "def share(self):\n        def inner():\n            self.__dict__.clear()\n        inner()\n",
+    "def share(self):\n        import gc\n        return gc.get_referents(self)\n",
+    "def share(self, mod):\n        return mod.__dict__\n",
+    # a non-fresh store of the attribute through any receiver but the class revokes it
+    "def share(self, other):\n        other.values = C.values\n",
+    "def share(self):\n        self.values, n = C.values, 1\n",
+    "def share(self):\n        with open('p') as self.values:\n            pass\n",
+    "def share(self):\n        del self.values\n",
+])
+def test_own_copy_is_denied_by_default(share):
+    source = ("class C:\n    values = {}\n    def __init__(self):\n        self.values = {}\n"
+              "    " + share + "    def put(self, v):\n        self.values['v'] = v\n")
+    assert _hits(source) == [2]
+
+
+@pytest.mark.parametrize("extra", [
+    "",
+    "    def name(self):\n        return getattr(self, 'values', None)\n",
+    "    def size(self):\n        return len(self.values) + self.values.get('n', 0)\n",
+    "    @classmethod\n    def default(cls):\n        return cls.values.get('v')\n",
+    "    def renew(self):\n        self.values = dict(C.values)\n",
+])
+def test_own_copy_with_only_plain_uses_passes(extra):
+    source = ("class C:\n    values = {}\n    def __init__(self):\n        self.values = {}\n"
+              "    def put(self, v):\n        self.values['v'] = v\n" + extra)
+    assert _hits(source) == []
+
+
 # A mutation is the module's only through its lexical binding.
 _TABLE = "TABLE = {'a': 1}\n"
 

@@ -191,7 +191,14 @@ instance without its own copy from `__init__`. An own copy counts only when it
 is a fresh value (a container literal or constructor, a copy, a capitalised
 constructor; never an alias such as `self.values = C.values`) assigned by a
 top-level statement of `__init__` before anything there reads or writes that
-attribute, uses the instance, or returns. A walrus through `global` is a
+attribute, uses the instance, or returns, and only while nothing else in the
+class can replace it: every other store or `del` of that attribute through any
+receiver but the class must be a fresh value, and the class may use no
+namespace operation at all (`setattr`, `delattr`, `vars`, `eval`/`exec`, a
+`getattr` of a computed name, a dunder such as `__dict__`, `__setattr__` or
+`__delattr__` on any receiver, or anything from `builtins`, `operator`,
+`importlib`, `gc` or `ctypes`); otherwise no attribute of the class has an own
+copy. A walrus through `global` is a
 rebind, a method defined under a class-body `if`/`try` is a method, and an
 object bound by `from m import X` that a function changes in place is reported
 on the importer's import line, since `m` cannot see the write. A parameter or
@@ -238,7 +245,8 @@ hits in 174 files on the same 685 modules; with the audited lazy imports as
 roots, 823 modules and 678 enforced hits in 232 files; with an own copy
 revoked by any later non-fresh rebind or deletion, and an imported-object write
 reported on the import line of the binding it resolves to (relative imports
-included), 684 hits in 232 files. All of it is existing debt the ratchet
+included), 684 hits in 232 files; with own copies denied by default as above,
+still 684 (no hosted-path class relies on the credit). All of it is existing debt the ratchet
 credits; none of it has been reviewed as tenant-neutral.
 
 The tool, MCP, provider and plugin registries are frozen once the hosted boot

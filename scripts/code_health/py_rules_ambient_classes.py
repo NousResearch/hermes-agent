@@ -11,12 +11,14 @@ constructor, a ``copy``, or a call to a capitalised constructor; never an alias 
 ``self.values = C.values``) as a top-level statement of its body, before anything else in that
 body reads or writes the attribute, calls a method on the instance or hands the instance out, and
 before any ``return``. A copy made on one path, or after the shared value was already touched,
-leaves an instance on the shared one. The copy stops counting once any method (``__init__``
-included) can put something else back or take the copy away: an assignment of anything but a
-fresh value (an alias, a tuple unpacking, a loop or ``with`` target), ``del``, ``setattr`` or
-``delattr`` of it; and every copy stops counting where an instance's namespace is changed
-opaquely (``setattr``/``delattr`` with a computed name, ``self.__dict__``, ``vars(self)``,
-``object.__setattr__(self, ...)``).
+leaves an instance on the shared one. Beyond that the copy is credited only where nothing else
+in the class can replace it: every other store of the attribute, through any receiver but the
+class, must be a fresh value (or an augmented assignment), so an alias, a tuple unpacking, a loop
+or ``with`` target, or ``del`` of it revokes it; and no copy in the class counts if the class
+uses any namespace operation at all (``setattr``, ``delattr``, ``vars``, ``eval``/``exec``, a
+``getattr`` of a computed name, any dunder but the ordinary protocol ones (``__dict__``,
+``__setattr__``, ``__getstate__``, ...), anything from ``builtins``, ``operator``,
+``importlib``, ``gc`` or ``ctypes``), through whatever receiver, alias or string.
 
 A method is any function the class body defines while it runs, under an ``if`` or ``try`` too.
 """
@@ -32,6 +34,44 @@ from scripts.code_health.py_rules_ambient_bindings import Bindings, Write, impor
 _CLASS_FIRST_PARAM = {"__new__", "__init_subclass__", "__class_getitem__"}
 
 Attrs = dict[str, tuple[ast.AST | None, int]]  # class-body name -> (value, line)
+
+# Names through which code can change an instance's namespace without a plain ``self.x = v``.
+# Matched by text wherever they appear (a call, a reference, an alias, a string such as
+# ``getattr(self, "__dict__")``) and after imports are spelled out, so ``from builtins import
+# delattr as drop`` is ``builtins.delattr``. Any dunder outside ``_PLAIN_DUNDERS`` counts too
+# (``__setattr__``, ``__dict__``, ``__getstate__``, ``__getattribute__``, ...), whatever its
+# receiver: ``object.__setattr__``, ``o = object; o.__delattr__``.
+_NAMESPACE_OPS = frozenset({"vars", "setattr", "delattr", "eval", "exec", "globals", "locals"})
+# Modules whose members can reach a namespace: any use of them is treated as one.
+_NAMESPACE_MODULES = frozenset({"builtins", "operator", "importlib", "gc", "ctypes"})
+_PLAIN_DUNDERS = frozenset({
+    "__init__", "__new__", "__init_subclass__", "__post_init__", "__class__", "__name__",
+    "__qualname__", "__module__", "__doc__", "__file__", "__version__", "__all__",
+    "__enter__", "__exit__", "__aenter__", "__aexit__", "__iter__", "__next__", "__aiter__",
+    "__anext__", "__len__", "__contains__", "__call__", "__repr__", "__str__", "__eq__",
+    "__hash__", "__bool__", "__lt__", "__le__", "__gt__", "__ge__", "__ne__",
+})
+
+
+def _namespace_name(name: object) -> bool:
+    if not isinstance(name, str):
+        return False
+    dunder = len(name) > 4 and name.startswith("__") and name.endswith("__")
+    return name in _NAMESPACE_OPS or (dunder and name not in _PLAIN_DUNDERS)
+
+
+def _dynamic(node: ast.AST) -> bool:
+    """Whether *node* may change an instance's namespace by a route other than a plain
+    attribute assignment or ``del`` (see ``_NAMESPACE_OPS``); a ``getattr`` whose name is not a
+    literal (it may fetch any of them) counts too."""
+    if isinstance(node, ast.Call) and _call_name(node) == "getattr":
+        name = node.args[1] if len(node.args) > 1 else None
+        return not (isinstance(name, ast.Constant) and isinstance(name.value, str))
+    if isinstance(node, ast.Name):
+        return _namespace_name(node.id) or node.id in _NAMESPACE_MODULES
+    if isinstance(node, ast.Attribute):
+        return _namespace_name(node.attr)
+    return isinstance(node, ast.Constant) and _namespace_name(node.value)
 
 
 def _receiver_kind(method: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
@@ -110,41 +150,24 @@ class _Receivers:
                 break
         return own
 
-    def lost_copies(self, fresh: Callable[[ast.AST | None], bool]) -> set[str] | None:
-        """Attributes some method may later rebind to something not fresh, or delete (see the
-        module docstring); None when an opaque change of the instance's namespace may do that to
-        any of them."""
-        lost: set[str] = set()
+    def revoked(self, fresh: Callable[[ast.AST | None], bool]) -> set[str] | None:
+        """Attributes whose own copy does not count (see the module docstring): any the class
+        stores anything but a fresh value into, or deletes, through any receiver but the class;
+        None, for every attribute, when the class can change a namespace dynamically."""
+        nodes = list(ast.walk(self.cls))
+        if any(_dynamic(node) for node in nodes):
+            return None
         kept: set[int] = set()  # attribute targets an assignment gives a fresh value
-        for method in self.methods:
-            nodes = list(ast.walk(method))
-            for node in nodes:
-                if isinstance(node, ast.Assign) and fresh(node.value):
-                    kept.update(id(t) for t in node.targets)
-                elif isinstance(node, ast.AnnAssign) and node.value is not None and fresh(node.value):
-                    kept.add(id(node.target))
-                elif isinstance(node, ast.AugAssign):
-                    kept.add(id(node.target))  # in place for a container: judged as a mutation
-            for node in nodes:
-                if isinstance(node, ast.Attribute) and self.kind(node.value) == "instance":
-                    if node.attr == "__dict__":
-                        return None
-                    if isinstance(node.ctx, (ast.Store, ast.Del)) and id(node) not in kept:
-                        lost.add(node.attr)
-                elif isinstance(node, ast.Call) and node.args:
-                    name = _call_name(node)
-                    if self.kind(node.args[0]) != "instance":
-                        continue
-                    if name in {"vars", "object.__setattr__", "object.__delattr__"}:
-                        return None
-                    if name in {"setattr", "delattr"}:
-                        key = node.args[1] if len(node.args) > 1 else None
-                        if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
-                            return None
-                        value = node.args[2] if name == "setattr" and len(node.args) > 2 else None
-                        if name == "delattr" or not fresh(value):
-                            lost.add(key.value)
-        return lost
+        for node in nodes:
+            if isinstance(node, ast.Assign) and fresh(node.value):
+                kept.update(id(t) for t in node.targets)
+            elif isinstance(node, ast.AnnAssign) and node.value is not None and fresh(node.value):
+                kept.add(id(node.target))
+            elif isinstance(node, ast.AugAssign):
+                kept.add(id(node.target))  # in place for a container: judged as a mutation
+        return {node.attr for node in nodes
+                if isinstance(node, ast.Attribute) and isinstance(node.ctx, (ast.Store, ast.Del))
+                and id(node) not in kept and self.kind(node.value) != "class"}
 
     def _fresh_copies(self, stmt: ast.stmt, fresh: Callable[[ast.AST | None], bool]) -> set[str]:
         if isinstance(stmt, ast.Assign):
@@ -194,9 +217,8 @@ def class_state(cls: ast.ClassDef, attrs: Attrs, writes: list[Write], bindings: 
     body, or the first write's line for an attribute the write itself creates. An attribute is
     changed in place when its value can be (a container, or an object a call built)."""
     recv = _Receivers(cls, bindings)
-    own = recv.own_copies(fresh)
-    lost = recv.lost_copies(fresh)
-    own = set() if lost is None else own - lost
+    revoked = recv.revoked(fresh)
+    own = set() if revoked is None else recv.own_copies(fresh) - revoked
     rebound: dict[str, int] = {}
     mutated: set[str] = set()
     for write in writes:

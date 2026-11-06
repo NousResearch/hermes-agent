@@ -250,6 +250,27 @@ class TestClassifyApiError:
         assert result.retryable is False
         assert result.should_fallback is True
 
+    def test_404_no_active_credentials_is_permanent_auth_not_missing_model(self):
+        # A relay/proxy 404 when its provider entry has no active credentials is a
+        # credential-layer refusal (#141820): permanent auth, not a missing model —
+        # without this rule the 404 falls through to unknown and burns the retry
+        # budget on a route that can only fail identically.
+        e = MockAPIError(
+            "Not Found",
+            status_code=404,
+            body={
+                "status": 404,
+                "message": (
+                    "No active credentials for provider: "
+                    "openai-compatible-chat-bb116dda-b924-4023-93a8-d449038cdc69"
+                ),
+            },
+        )
+        result = classify_api_error(e, provider="custom", model="key/openai/gpt-6.1-sol")
+        assert result.reason == FailoverReason.auth_permanent
+        assert result.retryable is False
+        assert result.should_fallback is True
+
     def test_wrapped_402_uses_nested_body_message(self):
         inner = MockAPIError(
             "inner",

@@ -14,6 +14,7 @@ plugin lands in the host log instead of corrupting the wire.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import functools
 import importlib
 import importlib.metadata
@@ -36,6 +37,10 @@ from hermes_cli.plugin_host_wire import (
 logger = logging.getLogger("hermes_cli.plugin_host_child")
 
 _ENTRY_POINTS_GROUP = "hermes_agent.plugins"
+
+# The plugin whose code this request runs (its ``plugin_key``): bound per incoming request, so it follows
+# that code onto the host loop's tasks; a thread the plugin starts itself has none.
+_EXECUTING_PLUGIN: contextvars.ContextVar[str] = contextvars.ContextVar("plugin_host_executing", default="")
 
 
 class RemoteRegistration:
@@ -211,10 +216,11 @@ class HostRuntime:
                                                       "args": args, "kwargs": kwargs}, allow_objects=False)
 
     def session_event(self, plugin_id: str, session_id: str, event: str, payload: dict) -> Any:
-        """``emit_plugin_session_event`` in the gateway process, which holds the sessions. ``payload``
-        is already plain JSON, so it travels as is (no ``encode``: its keys are the plugin's own)."""
-        return self.channel.call("session_event", {"plugin_id": plugin_id, "session_id": session_id,
-                                                   "event": event, "payload": payload})
+        """``emit_plugin_session_event`` in the gateway process, which holds the sessions, sent as the
+        plugin whose code is running (``plugin``). ``payload`` is already plain JSON, so it travels as
+        is (no ``encode``: its keys are the plugin's own)."""
+        return self.channel.call("session_event", {"plugin": _EXECUTING_PLUGIN.get(), "plugin_id": plugin_id,
+                                                   "session_id": session_id, "event": event, "payload": payload})
 
     def spawn(self, coro: Any, *, name: Optional[str] = None) -> Any:
         if not inspect.iscoroutine(coro):
@@ -226,7 +232,13 @@ class HostRuntime:
         handler = _HANDLERS.get(method)
         if handler is None:
             raise ValueError(f"unknown plugin host request {method!r}")
-        return handler(self, params)
+        ref = params.get("ref")
+        token = _EXECUTING_PLUGIN.set(str(params.get("plugin_key") or "") if ref is None
+                                      else self.owners.get(int(ref), ""))
+        try:
+            return handler(self, params)
+        finally:
+            _EXECUTING_PLUGIN.reset(token)
 
     def _run(self, result: Any) -> Any:
         """Await plugin coroutines on the host loop, still attributed to the request being served

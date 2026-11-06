@@ -100,8 +100,11 @@ def emit_plugin_session_event(plugin_id: str, session_id: str, event: str,
     none did, or when this process holds no session authority with that session.
 
     Under ``plugins.isolation: host`` the call is forwarded to the gateway process and looked up in the
-    host's profile. In-process, the session is looked up in the caller's profile scope: from a thread
-    the plugin started (no scope), use ``ctx.emit_to_session``, which knows the plugin's profile.
+    host's profile, sent as the plugin whose code is running in that host request: False, and nothing
+    sent, when ``plugin_id`` is not that loaded plugin's own (and, usually, from a thread the plugin
+    started: it carries no request the host can attribute). In-process ``plugin_id`` is taken as given, and the session is looked
+    up in the caller's profile scope: from a thread the plugin started (no scope), use
+    ``ctx.emit_to_session``, which knows the plugin's profile.
     """
     if not isinstance(session_id, str) or not session_id:
         raise ValueError("plugin session event needs a session_id")

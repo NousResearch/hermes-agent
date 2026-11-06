@@ -2001,16 +2001,20 @@ listens for the event frame of type `plugin.<plugin_id>.pane.changed`:
   your plugin's own profile, also from a thread you started. `hermes_cli.plugin_events.emit_plugin_session_event(plugin_id, session_id, event, payload)`
   is the same call for code without `ctx`; it uses the caller's profile scope, so from your own thread on
   a gateway that serves several profiles, use `ctx.emit_to_session`.
-- **`plugins.isolation: host`:** both work the same. Handlers run in the plugin host process, and both
-  emit calls are forwarded to the gateway process, looked up in the host's profile.
+- **`plugins.isolation: host`:** handlers run in the plugin host process, and both emit calls are
+  forwarded to the gateway process, looked up in the host's profile. There `emit_plugin_session_event`
+  is sent as the plugin whose code made the call: it returns `False` and sends nothing when `plugin_id`
+  is not that plugin's own or the plugin is no longer loaded, and it may do the same from a thread you
+  started (the host may not know which plugin it belongs to), so use `ctx.emit_to_session` there. In-process the helper takes
+  `plugin_id` as given.
 - **Where it works:** on a gateway that owns sessions (its session authority, as on the shared
   `hermes gateway run` gateway that attached frontends use). A backend without one answers the method
   with `-32601`. In a process without one (`hermes chat`, cron, a
   `dashboard.turn_isolation` compute child) `emit_to_session` returns `False`.
 - **Detect it first.** An owner that serves plugin methods lists `plugin-rpc-v1` in
-  `runtime.describe`'s `capabilities`. Call `plugin.*` only when it does: then `-32601` means that plugin
-  method is not loaded (the plugin is disabled, not installed, or has no such method), while a backend
-  without the capability serves no plugin methods at all. The contract declares the namespace once as
+  `runtime.describe`'s `capabilities`. With it, `-32601` means that plugin method is not loaded (the
+  plugin is disabled, not installed, or has no such method). Without `plugin-rpc-v1`, clients must not
+  assume plugin RPC is supported (an older owner may still serve it without listing the capability). The contract declares the namespace once as
   `plugin.{plugin_id}.{name}` (`CanonicalRpcNamespaces` in the generated TypeScript,
   `x-canonical-namespaces` in the OpenRPC document): params are an open object with an optional
   `session_id`, and the result is whatever JSON your handler returns.

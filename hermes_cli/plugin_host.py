@@ -428,9 +428,17 @@ class PluginHost:
 
     def _serve_session_event(self, params: dict[str, Any]) -> bool:
         """A hosted plugin's ``emit_plugin_session_event``: looked up in this host's profile, the one
-        every plugin it runs belongs to (a plugin thread's call has no caller scope of its own)."""
+        every plugin it runs belongs to (a plugin thread's call has no caller scope of its own).
+
+        Sent as the plugin whose code made the call (``plugin``); False, as before this was forwarded,
+        unless that plugin is loaded here and ``plugin_id`` is its own."""
         from hermes_cli.plugin_events import emit_plugin_session_event
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        ctx = self._contexts.get(str(params.get("plugin") or ""))
+        if ctx is None or getattr(ctx, "plugin_id", None) != params.get("plugin_id"):
+            logger.warning("Plugin host session event %r refused: sender %r is not that loaded plugin",
+                           params.get("plugin_id"), params.get("plugin"))
+            return False
         token = set_hermes_home_override(self._home)
         try:
             return emit_plugin_session_event(str(params.get("plugin_id")), params.get("session_id"),

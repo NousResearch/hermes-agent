@@ -513,6 +513,12 @@ Without ffmpeg, Edge TTS audio is sent as a regular audio file (still playable, 
 
 Configure the TTS provider in your `config.yaml` under the `tts.provider` key.
 
+## Checklists
+
+A checklist sent to the bot reaches the agent as a text message: the title, then one `- [ ]` or `- [x]` line per task (and who completed it, when Telegram includes that). It goes through the same allowlists and group triggers as text: with `require_mention: true`, an @mention or a `mention_patterns` wake word in the title or a task counts, as does a reply to the bot. Replying to a checklist, for example with "do these", gives the agent the checklist as reply context; replying to one of its tasks gives just that task.
+
+Ticking or unticking tasks and adding tasks are not requests to the bot, so they never start an agent turn. They are logged, and in a group that [observes unmentioned messages](#observe-group-chatter-without-auto-replying) they are added to the observed context, for example `[Checklist update] Groceries` / `Marked done: "milk"`. Edits to a checklist are not new requests either.
+
 ## Large Files (>20MB) via Local Bot API Server
 
 Telegram's **public** Bot API caps `getFile` downloads at **20 MB**, so any voice note, audio file, video, or document larger than that is silently rejected by Hermes with a "too large" reply. The documented way around this is to run a **local** [telegram-bot-api](https://github.com/tdlib/telegram-bot-api) daemon — the same server software Telegram uses, but running on your network. A local server raises the file ceiling to **2 GB** and Hermes auto-lifts its own internal cap when it sees a custom `base_url` configured.

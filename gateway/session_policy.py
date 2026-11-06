@@ -12,7 +12,7 @@ from hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
 
-CREATE_FIELDS = frozenset({'request_id', 'source', 'cwd', 'model', 'toolsets',
+CREATE_FIELDS = frozenset({'request_id', 'source', 'cwd', 'desktop_project_id', 'model', 'toolsets',
                            'provider', 'base_url', 'reasoning', 'max_turns', 'ignore_rules', 'api_key', 'editor',
                            'yolo', 'safe_mode', 'ignore_user_config',
                            'skills', 'checkpoints', 'accept_hooks', 'pass_session_id', 'follow_profile_config',
@@ -1117,6 +1117,11 @@ def policy_scope(policy, *, authority=None):
         return
     if not workspace_ready(policy):
         raise RuntimeStoreError('workspace_unavailable', field='cwd', detail=policy.cwd)
+    try:
+        from hermes_cli.desktop_project_authority import validate_session_desktop_project
+        desktop_project = validate_session_desktop_project(policy, authority)
+    except (ValueError, TypeError) as exc:
+        raise RuntimeStoreError('invalid_params', field='desktop_project_id', detail=str(exc)) from exc
     from agent.runtime_cwd import set_session_cwd
     from tools.terminal_scope import set_terminal_scope, reset_terminal_scope
     terminal = json.loads(policy.terminal_json)
@@ -1135,6 +1140,7 @@ def policy_scope(policy, *, authority=None):
     terminal_token = set_terminal_scope(terminal)
     policy_token = _ACTIVE_POLICY.set(active)
     from gateway.session_local_editor import editor_scope
+    from gateway.session_context import scoped_desktop_project
     try:
         from agent.auxiliary_task_config import session_auxiliary_scope
         from gateway.session_local_mcp import editor_mcp_scope
@@ -1143,7 +1149,9 @@ def policy_scope(policy, *, authority=None):
         aux_scope = (session_auxiliary_scope(policy.config(authority, secrets=False).get('auxiliary'))
                      if policy.ignore_user_config else contextlib.nullcontext())
         with (editor_scope(policy), editor_mcp_scope(authority, policy), aux_scope,
-              policy.client_env_scope()):
+              policy.client_env_scope(), scoped_desktop_project(
+                  desktop_project.to_dict() if desktop_project is not None else None
+              )):
             yield
     finally:
         _ACTIVE_POLICY.reset(policy_token)

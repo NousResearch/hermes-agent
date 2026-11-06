@@ -8599,6 +8599,18 @@
             "default": null,
             "title": "Cwd"
           },
+          "desktop_project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Desktop Project Id"
+          },
           "row_cwd": {
             "anyOf": [
               {

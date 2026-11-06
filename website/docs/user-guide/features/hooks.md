@@ -392,8 +392,8 @@ def register(ctx):
 **General rules for all hooks:**
 
 - Callbacks receive **keyword arguments**. Always accept `**kwargs` for forward compatibility.
-- Callback exceptions are logged and skipped; later callbacks continue. A callback that fails the same way on every call (typically a signature naming a field the hook does not send, e.g. `tool_data` instead of `tool_name`/`args`) is reported **once** at WARNING — the message lists the fields the hook provides — and identical repeats go to DEBUG, so a mis-declared plugin cannot flood the log.
-- If a Python plugin callback on a **timeout-bounded** hook (hot-path observers such as `post_tool_call` / `pre_llm_call`, plus the policy hook `pre_tool_call`) **blocks** longer than `plugins.hook_callback_timeout` (default 30s, set `0` to disable, max 600), it is abandoned without joining the worker so the agent loop continues. Timed-out or still-running `pre_tool_call` callbacks **fail closed** (block the tool); other bounded hooks fail open (skip). Hooks with a documented caller-thread contract (`subagent_stop`) are never moved onto a timeout worker. Shell hooks keep their own per-entry `timeout`.
+- Callback exceptions are logged and skipped for observer/transform hooks; later callbacks continue. Exceptions from `pre_tool_call` and `pre_agent_turn` become fail-closed block decisions. A callback that fails the same way on every call (typically a signature naming a field the hook does not send, e.g. `tool_data` instead of `tool_name`/`args`) is reported **once** at WARNING — the message lists the fields the hook provides — and identical repeats go to DEBUG, so a mis-declared plugin cannot flood the log.
+- If a Python plugin callback on a **timeout-bounded** hook (hot-path observers such as `post_tool_call` / `pre_llm_call`, plus the policy hook `pre_tool_call`) **blocks** longer than `plugins.hook_callback_timeout` (default 30s, set `0` to disable, max 600), it is abandoned without joining the worker so the agent loop continues. Timed-out or still-running `pre_tool_call` callbacks **fail closed**. `pre_agent_turn` runs synchronously and fails closed on callback errors, so a late callback cannot create lifecycle state after a refusal. Other bounded hooks fail open (skip). Hooks with a documented caller-thread contract (`subagent_stop`) are never moved onto a timeout worker. Shell hooks keep their own per-entry `timeout`.
 - The catalog below is descriptive: **observers** ignore returns, **transforms** accept the first valid string replacement, and **directive/control** hooks consume documented return shapes. Plugin middleware is a separate registry and surface, not another hook category.
 - Correlation fields such as `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count` are hook-specific and may be absent. Treat IDs as opaque.
 - Tool hooks also carry `conversation_id`: the conversation's first session id, which stays the same when a rotating compression replaces `session_id`, and which a delegated subagent shares with its delegator. Key per-conversation state on it.
@@ -450,6 +450,8 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | Hook | Category | Exact timing and return behavior | Explicit payload fields | Privacy / sensitivity |
 |---|---|---|---|---|
 | [`pre_tool_call`](#pre_tool_call) | Directive/control | Once before execution; any valid `block` wins over any `approve` (then the first valid `approve`), and `modify` returns are shallow-merged into the tool arguments. | `tool_name`, `args`, `task_id`, `session_id`, `conversation_id`, `tool_call_id`, `turn_id`, `api_request_id`, `middleware_trace` | Raw arguments may contain user content, paths, commands, or secrets. |
+| [`pre_agent_turn`](#pre_agent_turn) | Directive/control | After durable turn admission and before inference or tool execution. `{"action": "allow"}` opts this plugin into one matching `post_agent_turn`; `{"action": "block", "message": ...}` refuses the turn. Invalid decisions and callback failures also refuse it. | `session_id`, `turn_id`, `task_id`, `platform`, `model`, `desktop_project`, `workspace_candidate` | Identifiers and backend-selected workspace metadata only; no prompt, answer, process-cwd guess for Desktop, or exception text. Runs synchronously on the turn thread. |
+| [`post_agent_turn`](#post_agent_turn) | Settlement | After an opted-in turn on every normal exit, including block after a prior plugin allowed, completion, interruption, and exceptions. Return ignored. | `session_id`, `turn_id`, `task_id`, `platform`, `desktop_project`, `outcome`, `error_type` | Identifiers, backend-verified project metadata, outcome, and exception class only; no prompt, answer, or exception message. Runs synchronously. |
 | `post_tool_call` | Observer | After blocked, error, or successful result; return ignored. | `tool_name`, `args`, `result`, `task_id`, `session_id`, `conversation_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type`, `error_message`, `middleware_trace` | Result/error text may contain arbitrary tool or user content and secrets. |
 | `transform_tool_result` | Transform | After `post_tool_call`, before conversation append; first string replaces the result. | `tool_name`, `args`, `result`, `task_id`, `session_id`, `conversation_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type`, `error_message` | Exposes the full model-bound result and arguments. |
 | `transform_terminal_output` | Transform | After bounded foreground process capture, before final output limiting; first string replaces output. | `command`, `output`, `returncode`, `task_id`, `env_type` | Command/output may contain credentials. |
@@ -1018,6 +1020,46 @@ def register(ctx):
     ctx.register_hook("on_session_start", on_start)
     ctx.register_hook("on_session_end", on_end)
 ```
+
+---
+
+### `pre_agent_turn`
+
+Runs after Hermes admits the durable session-turn lease and before the conversation loop can call a model or tool. A plugin can reject the turn before any model work starts. It runs synchronously on the turn thread; a stalled callback stalls that turn rather than continuing in the background after a timeout.
+
+**Callback signature:**
+
+```python
+def before_turn(session_id, turn_id, task_id, platform, model, desktop_project, workspace_candidate, **kwargs):
+    return {"action": "allow"}
+```
+
+`desktop_project` is `None` for ordinary sessions. For a Desktop session it contains only the backend-verified Host Project identity and root (`project_id`, `primary_path`); the gateway validates the ID against that profile's `projects.db` and derives the root itself. Renderer-supplied paths and attached-folder lists are not exposed as authority.
+
+`workspace_candidate` is `None` when Hermes has no trusted workspace for that surface; otherwise it is `{source, path}`. The source is `desktop_project_root` for a verified Desktop project, `cli_process_cwd` or `tui_process_cwd` for CLI/TUI, and `session_context_cwd` for a backend-bound session workspace. Desktop never falls back to the process cwd. This is a candidate path, not a project identity; plugins must apply their own canonical exact resolver before managing project-specific work.
+
+**Return value:** Every registered callback must return `{"action": "allow"}` to opt into the matching `post_agent_turn`. `{"action": "block", "message": "..."}` refuses the turn. A callback exception, an invalid result, or a dispatch failure also refuses it. A plugin that has no admission policy can omit this hook.
+
+**Privacy:** The payload contains no user message, conversation history, model response, or exception message.
+
+---
+
+### `post_agent_turn`
+
+Runs synchronously from the turn finalizer when at least one `pre_agent_turn` callback returned `{"action": "allow"}`. All registered `post_agent_turn` callbacks receive that turn's settlement, including when another admission callback later refused it. It runs on the turn's exit, including model success, model/tool failure, cancellation, or a later plugin's refusal. A turn with no admission callback opting in does not produce a post callback.
+
+**Callback signature:**
+
+```python
+def after_turn(session_id, turn_id, task_id, platform, desktop_project, outcome, error_type, **kwargs):
+    ...
+```
+
+`outcome` is one of the turn finalizer's bounded outcomes (`success`, `failed`, `cancelled`, `timed_out`, or `blocked`); `error_type` is an exception class name or `None`.
+
+**Return value:** Ignored. Callback failures are logged and do not replace the turn result or interrupt Hermes cleanup.
+
+**Privacy:** The payload contains no user message, conversation history, model response, or exception message.
 
 ---
 

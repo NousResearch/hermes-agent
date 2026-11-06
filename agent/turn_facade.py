@@ -76,6 +76,9 @@ class TurnFacadeMixin:
         token = affinity_token = acct_token = None
         task_started = task_finished = False
         relay_outcome = "failed"
+        plugin_lifecycle_started = False
+        plugin_turn_outcome = None
+        plugin_turn_error_type = None
 
         try:
             # First statement of the try so the finally's note_turn_finished balances every exit.
@@ -96,6 +99,30 @@ class TurnFacadeMixin:
                 return admission.early_result
             lease = admission.lease
             conversation_history = admission.conversation_history
+
+            from agent.turn_lifecycle_hooks import begin_agent_turn_hooks
+            plugin_lifecycle_started, plugin_block = begin_agent_turn_hooks(
+                self,
+                session_id=session_id,
+                turn_id=relay_turn_id,
+                task_id=effective_task_id,
+            )
+            if plugin_block is not None:
+                relay_outcome = "failed"
+                plugin_turn_outcome = "blocked"
+                from agent.error_surface import build_error_surface_from_result
+                from agent.turn_failure_copy import stamp_failure
+                blocked = stamp_failure({
+                    "final_response": plugin_block,
+                    "messages": conversation_history or [],
+                    "api_calls": 0,
+                    "tools": [],
+                    "failed": True,
+                    "completed": False,
+                    "error": plugin_block,
+                }, "host_error", False)
+                blocked["error_surface"] = build_error_surface_from_result(blocked)
+                return blocked
 
             relay_session_cwd, relay_turn_cwd = resolve_relay_scope_cwds(
                 self,
@@ -173,6 +200,7 @@ class TurnFacadeMixin:
                 finish_task_run(**task_context, result=result)
             return result
         except BaseException as exc:
+            plugin_turn_error_type = type(exc).__name__
             if isinstance(exc, (KeyboardInterrupt, InterruptedError)) or (
                 type(exc).__name__ == "CancelledError"
             ):
@@ -189,33 +217,45 @@ class TurnFacadeMixin:
             raise
         finally:
             try:
-                if relay_turn is not None:
-                    relay_runtime.SESSION_COORDINATOR.end_turn(relay_turn, outcome=relay_outcome)
+                from agent.turn_lifecycle_hooks import finish_agent_turn_hooks
+                finish_agent_turn_hooks(
+                    self,
+                    enabled=plugin_lifecycle_started,
+                    session_id=session_id,
+                    turn_id=relay_turn_id,
+                    task_id=effective_task_id,
+                    outcome=plugin_turn_outcome or relay_outcome,
+                    error_type=plugin_turn_error_type,
+                )
             finally:
                 try:
-                    if relay_lease is not None:
-                        relay_runtime.SESSION_COORDINATOR.release_conversation(relay_lease)
+                    if relay_turn is not None:
+                        relay_runtime.SESSION_COORDINATOR.end_turn(relay_turn, outcome=relay_outcome)
                 finally:
-                    if lease is not None:
-                        lease.stop_refresher()
-                        lease.join_threads()
-                        lease.clear_interrupt()  # refresher interrupt between stop and join; AFTER join
-                        lease.release()
-                    # Always clear mid-turn labels on exit — including interrupted early returns
-                    # that skip finalize_turn. Keep ts.
-                    with suppress(Exception):
-                        self._reset_activity_labels_after_turn()
-                    if getattr(self, "_relay_pending_turn_id", None) == relay_turn_id:
-                        self._relay_pending_turn_id = None
-                    if acct_token is not None:
-                        reset_accounting_context(acct_token)
-                    if token is not None:
-                        reset_conversation_context(token)
-                    if affinity_token is not None:
-                        reset_affinity_scope(affinity_token)
-                    # Balance note_turn_started so the idle queue's live-turn count cannot leak.
-                    with suppress(Exception):
-                        _review_queue.note_turn_finished()
+                    try:
+                        if relay_lease is not None:
+                            relay_runtime.SESSION_COORDINATOR.release_conversation(relay_lease)
+                    finally:
+                        if lease is not None:
+                            lease.stop_refresher()
+                            lease.join_threads()
+                            lease.clear_interrupt()  # refresher interrupt between stop and join; AFTER join
+                            lease.release()
+                        # Always clear mid-turn labels on exit — including interrupted early returns
+                        # that skip finalize_turn. Keep ts.
+                        with suppress(Exception):
+                            self._reset_activity_labels_after_turn()
+                        if getattr(self, "_relay_pending_turn_id", None) == relay_turn_id:
+                            self._relay_pending_turn_id = None
+                        if acct_token is not None:
+                            reset_accounting_context(acct_token)
+                        if token is not None:
+                            reset_conversation_context(token)
+                        if affinity_token is not None:
+                            reset_affinity_scope(affinity_token)
+                        # Balance note_turn_started so the idle queue's live-turn count cannot leak.
+                        with suppress(Exception):
+                            _review_queue.note_turn_finished()
 
     def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:
         """Final response string of one turn; ``stream_callback`` receives each text delta."""

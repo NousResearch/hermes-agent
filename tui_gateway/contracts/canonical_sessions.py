@@ -22,6 +22,9 @@ class CanonicalCreateParams(ProfileParams):
     request_id: str | None = None
     source: Literal['cli', 'tui', 'gui', 'acp', 'tool', 'oneshot'] = 'cli'
     cwd: str | None = None
+    # Stable Desktop Host Project identity; the owner validates it against its profile projects.db
+    # and derives the workspace root instead of trusting a renderer-supplied path.
+    desktop_project_id: str | None = None
     # The sessions-row ``cwd`` when it differs from the execution ``cwd`` (the classic CLI records
     # main's stamp: the launch dir, ``""`` = none); ``cwd`` stays where the tools run.
     row_cwd: str | None = None

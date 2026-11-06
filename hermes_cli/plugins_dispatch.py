@@ -56,8 +56,8 @@ _HOOK_CALL_IDENTITY_FIELDS: dict[str, tuple[str, ...]] = {
     "pre_command": ("session_key",), "post_compaction": ("session_id",),
 }
 
-# Policy hooks: timeout / still-running must fail closed (block the tool).
-_HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: set[str] = {"pre_tool_call"}
+# Policy callbacks fail closed; ``pre_tool_call`` also fails closed on timeout.
+_HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: set[str] = {"pre_tool_call", "pre_agent_turn"}
 # Documented parent-thread serialization contract — never run on a timeout worker (hooks.md).
 _HOOK_CALLER_THREAD_HOOKS: set[str] = {"subagent_stop"}
 # After a timeout, suppress the same callback this long so a hung hook cannot pile up threads.
@@ -203,6 +203,10 @@ def _hook_call_identity(kwargs: dict[str, Any], hook_name: str = "") -> Optional
 
 def _hook_uses_callback_timeout(hook_name: str, timeout: float) -> bool:
     """Whether *hook_name* should run under the non-blocking timeout path."""
+    # A late pre_agent_turn callback could create lifecycle state after the caller has refused the
+    # turn. Keep admission on the turn thread until it returns; fail-closed alone is not sufficient.
+    if hook_name == "pre_agent_turn":
+        return False
     if timeout <= 0 or hook_name in _HOOK_CALLER_THREAD_HOOKS:
         return False
     return hook_name in _HOOK_TIMEOUT_BOUNDED_HOOKS or hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
@@ -313,7 +317,9 @@ class PluginDispatchMixin:
                         continue
                 else:
                     ret = self._invoke_hook_callback(cb, kwargs)
-                if ret is not None:
+                if ret is not None or hook_name == "pre_agent_turn":
+                    # A registered admission callback that falls through without a decision is a
+                    # malformed gate, not the same as having no gate registered at all.
                     results.append(ret)
             except (Exception, SystemExit) as exc:  # health: allow BLE001 -- moved from invoke_hook: plugin callbacks are untrusted; each failure is reported and isolated
                 self._report_hook_failure(hook_name, cb, kwargs, exc)

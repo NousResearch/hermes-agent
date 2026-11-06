@@ -1536,6 +1536,8 @@ Each hook is documented in full on the **[Event Hooks reference](../../user-guid
 | Hook | Fires when | Callback signature | Returns |
 |------|-----------|-------------------|---------|
 | [`pre_tool_call`](../../user-guide/features/hooks.md#pre_tool_call) | Before any tool executes | `tool_name: str, args: dict, task_id: str` | optional directive: `{"action": "block", "message": ...}` vetoes the call; `{"action": "approve", "message": ...}` escalates to the human-approval gate |
+| [`pre_agent_turn`](../../user-guide/features/hooks.md#pre_agent_turn) | After durable turn admission, before model/tool execution | `session_id, turn_id, task_id, platform, model, desktop_project, workspace_candidate` | required `{"action": "allow"}` opts into turn settlement; `{"action": "block", "message": ...}` or callback failure refuses the turn |
+| [`post_agent_turn`](../../user-guide/features/hooks.md#post_agent_turn) | Broadcast on exit when at least one admission callback opted in | `session_id, turn_id, task_id, platform, desktop_project, outcome, error_type` | ignored; synchronous settlement callback |
 | [`post_tool_call`](../../user-guide/features/hooks.md#post_tool_call) | After any tool returns | `tool_name: str, args: dict, result: str, task_id: str, duration_ms: int` | ignored |
 | [`pre_llm_call`](../../user-guide/features/hooks.md#pre_llm_call) | Once per turn, before the tool-calling loop | `session_id: str, user_message: str, conversation_history: list, is_first_turn: bool, model: str, platform: str` | [context injection](#pre_llm_call-context-injection) |
 | [`post_llm_call`](../../user-guide/features/hooks.md#post_llm_call) | Once per turn, after the tool-calling loop (successful turns only) | `session_id: str, user_message: str, assistant_response: str, conversation_history: list, model: str, platform: str` | ignored |
@@ -1555,9 +1557,9 @@ Each hook is documented in full on the **[Event Hooks reference](../../user-guid
 | `kanban_task_completed` | A kanban task completes (worker process) | `task_id, board, assignee, run_id, profile_name, summary: str \| None` | ignored |
 | `kanban_task_blocked` | A kanban task is blocked (worker process) | `task_id, board, assignee, run_id, profile_name, reason: str \| None` | ignored |
 
-Most hooks are fire-and-forget observers — their return values are ignored. The exceptions are `pre_llm_call`, which can inject context into the conversation or block the turn before it reaches the model, and `pre_tool_call`, which can return a block/approve directive.
+Most hooks are fire-and-forget observers — their return values are ignored. The exceptions are `pre_llm_call`, which can inject context into the conversation or block the turn before it reaches the model; `pre_tool_call`, which can return a block/approve directive; and `pre_agent_turn`, which is a synchronous fail-closed admission gate paired with `post_agent_turn` settlement.
 
-All callbacks should accept `**kwargs` for forward compatibility. If a hook callback crashes, it's logged and skipped. Other hooks and the agent continue normally.
+All callbacks should accept `**kwargs` for forward compatibility. If an observer or transform callback crashes, it is logged and skipped. A failing `pre_agent_turn` callback returns a block decision because admission gates fail closed; a failure in `post_agent_turn` is logged and does not replace the already-computed turn result.
 
 The kanban lifecycle hooks fire **after** the board DB change commits, so a callback always sees durable state and can never hold the SQLite write lock. Because kanban workers run as separate `hermes -p <profile> chat -q` subprocesses, `kanban_task_claimed` fires in the **dispatcher** process while `kanban_task_completed` / `kanban_task_blocked` fire in the **worker** process — hook in the dispatcher to observe every transition centrally, or in the worker for per-task in-session context.
 

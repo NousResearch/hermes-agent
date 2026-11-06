@@ -31,6 +31,7 @@ const CASES: Array<[string, Record<string, unknown>, Record<string, unknown> | R
   ['room plumbing flag alone', { ...BASE, title: 'Group: r-2 · t1', room_plumbing: true }, { profile: 'default', title: 'Group: r-2 · t1', follow_profile_config: true }],
   ['Fast speed', { ...BASE, cwd: '/w', cwd_explicit: false, fast: true }, { profile: 'default', cwd: '/w', service_tier: 'priority' }],
   ['Ultrafast speed', { ...BASE, fast: true, service_tier: 'ultrafast' }, { profile: 'default', service_tier: 'ultrafast' }],
+  ['entered Host Project', { ...BASE, desktop_project_id: 'p_host-1' }, { profile: 'default', desktop_project_id: 'p_host-1' }],
   // KoNit-K P1: a manual model pick ships its provider; the owner's create contract admits both.
   ['manual model + provider', { ...BASE, model: 'gpt-5', provider: 'openrouter', fast: false }, { profile: 'default', model: 'gpt-5', provider: 'openrouter', service_tier: 'normal' }]
 ]
@@ -44,7 +45,13 @@ test.each(CASES)('%s: the Desktop create frame is admitted by the owner contract
   server.on('connection', (socket: any) => {
     socket.on('message', (bytes: Buffer) => {
       const frame = JSON.parse(bytes.toString())
-      if (frame.method === 'client.capabilities') { socket.send(JSON.stringify({ jsonrpc: '2.0', id: frame.id, result: { server_requests: [] } })); return }
+
+      if (frame.method === 'client.capabilities') {
+        socket.send(JSON.stringify({ jsonrpc: '2.0', id: frame.id, result: { server_requests: [] } }))
+
+        return
+      }
+
       sent.push(frame)
       const fields = Object.keys(frame.params).filter(key => !CREATE_KEYS.has(key))
 

@@ -8,6 +8,7 @@ import {
   normalizeProfileKey,
   resolveNewChatOwnerRoute
 } from '@/store/profile'
+import { $projectScope } from '@/store/project-scope'
 import {
   $currentCwdExplicit,
   $currentFastMode,
@@ -27,6 +28,8 @@ type RequestGateway = <T>(method: string, params?: Record<string, unknown>) => P
  *  updates from main (#128971). Each field below is safe to drop for them:
  *  - `cwd_explicit` (#122899): those backends always honoured the client `cwd`.
  *  - `service_tier` (Ultrafast): `fast` still rides, so they get Priority.
+ *  `desktop_project_id` is intentionally NOT droppable: an older backend must refuse the
+ *  create rather than silently open a project chat without Host Project authority.
  *  Matched on the stable prefix, not `isOutOfSyncRpcParams`: v0.21.3 already
  *  rejects but predates the "out of sync" suffix.
  *  Delete a field once no supported backend predates it. */
@@ -116,6 +119,12 @@ export async function desktopSessionCreateParams(
     provider: isManualSelection ? $currentProvider.get().trim() : ''
   }
 
+  const projectScope = $projectScope.get()
+
+  // Only persisted Host Projects have a backend-owned identity. Path-based
+  // discovery groups stay local UI scopes and must not be promoted to authority.
+  const desktopProjectId = projectScope.startsWith('p_') ? projectScope : undefined
+
   const profile =
     capturedRoute?.profile ||
     requestedProfile ||
@@ -134,6 +143,7 @@ export async function desktopSessionCreateParams(
     cols: 96,
     source: 'desktop',
     ...(cwd && { cwd }),
+    ...(desktopProjectId ? { desktop_project_id: desktopProjectId } : {}),
     // #52589: explicit provenance for the shipped cwd — an inherited app-global
     // workspace must not override the target profile's configured terminal.cwd.
     ...(cwd && { cwd_explicit: $currentCwdExplicit.get() }),

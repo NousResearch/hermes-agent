@@ -91,7 +91,7 @@ def _count_list(obj: object, *path: str) -> int | None:
 
 # tool name -> (count-from-result, verb, singular, plural) for the tool.complete summary line.
 _SUMMARY_COUNTERS = {
-    "web_search": (lambda d: _count_list(d, "data", "web"), "Did", "search", "searches"),
+    "web_search": (lambda d: _count_list(d, "data", "web"), "Found", "web result", "web results"),
     "web_extract": (lambda d: _count_list(d, "results") or _count_list(d, "data", "results"), "Extracted", "page", "pages"),
 }
 

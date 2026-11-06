@@ -155,7 +155,7 @@ def _handle_project(args, **kw):
     action = _ACTIONS.get((args.get("action") or "").strip())
     if action is None:
         return json.dumps({"success": False, "error": "action must be one of: create, switch, list."})
-    return action(args, kw.get("task_id"))
+    return action(args, kw.get("session_id") or kw.get("task_id"))
 
 
 # One action enum instead of three tools: each re-taught "desktop Projects" (244 -> ~145 tok).

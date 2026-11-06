@@ -58,7 +58,7 @@ def pin_reasoning_effort(config, effort, *, session=False):
 def profile_config(authority):
     """The owning profile's current ``config.yaml`` (its present sections), read fresh."""
     from gateway.run import _load_gateway_config
-    return present_sections(_load_gateway_config(Path(authority.db.db_path).resolve().parent / 'config.yaml'))
+    return present_sections(_load_gateway_config(Path(str(authority.profile_id)) / 'config.yaml'))
 
 
 def unpin_reasoning(config, profile):

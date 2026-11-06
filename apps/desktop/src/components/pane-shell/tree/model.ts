@@ -651,10 +651,12 @@ export function arrangeChatGroups(
   spec: ChatArrangement,
   isChat: (paneId: string) => boolean
 ): LayoutNode | null {
-  const isChatZone = (g: GroupNode) => g.panes.length > 0 && g.panes.every(isChat)
-  const zones = groupsOf(root).filter(isChatZone)
+  // A zone holding any chat is a chat zone. Other tabs in it (e.g. the Preview
+  // pane or a plugin workspace parked beside the main chat, often invisible
+  // when the strip hides a lone visible tab) travel with the zone.
+  const zones = groupsOf(root).filter(g => g.panes.some(isChat))
 
-  if (zones.length === 0 || groupsOf(root).some(g => !isChatZone(g) && g.panes.some(isChat))) {
+  if (zones.length === 0) {
     return null
   }
 

@@ -162,6 +162,23 @@ describe('arrangeChatGroups', () => {
     expect(arrangeChatGroups(t, spec, isChat)).toBeNull()
   })
 
+  it('treats a zone holding a chat beside other tabs as a chat zone and moves it whole', () => {
+    const t = split('row', [
+      group(['sessions']),
+      split('column', [group(['preview', 'plugin-workspace:x', 'workspace']), group(['session-tile:a'])]),
+      group(['session-tile:b'])
+    ])
+
+    const spec: ChatArrangement = {
+      orientation: 'row',
+      children: [{ pane: 'session-tile:b' }, { pane: 'workspace' }, { pane: 'session-tile:a' }]
+    }
+
+    const next = arrangeChatGroups(t, spec, isChat) as SplitNode
+
+    expect(shape(next)).toBe('(r sessions session-tile:b preview|plugin-workspace:x|workspace session-tile:a)')
+  })
+
   it('arranges a chat area nested below the root', () => {
     const t = split(
       'row',

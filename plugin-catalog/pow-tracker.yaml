@@ -1,0 +1,16 @@
+name: pow-tracker
+title: "POW Tracker"
+repo: https://github.com/BigBossRabbit/pow-tracker
+sha: 69eeea530187d4654080b56a11582946df937b21
+description: "Multi-client proof-of-work time tracking for the Hermes web dashboard — live OPEN/CLOSED timers, file-activity auto-capture, invoicing with per-entry rate overrides, and per-client SQLite billing, in a dashboard pane/tab (track / entries / tasks / invoice / rate views, updating live over a WebSocket) backed by a FastAPI plugin API the dashboard host mounts. Every client keeps its own time database inside its own folder, so billable data travels with the client folder; invoices aggregate billable time per task, exportable as CSV (PDF through an optional, lazily-imported extra); and a background auto-capture thread (per-client, switchable off) opens and closes `auto` entries from file activity while you work. It has run a real multi-client operation in production since August, and no client data ships with the tree. Disclosure — registers nothing (no tools, hooks, or middleware; `capabilities` is empty; its whole surface is the dashboard block) and makes no outbound network requests of any kind: no third-party calls, no telemetry, no usage data, no credentials (none used, stored, or read), nothing uploaded; the auto-capture thread walks the configurable clients root inside the gateway process while the plugin is loaded and looks at file modification times only — file names and contents are never read, recorded, or sent anywhere; everything it stores (the client registry and every per-client time database) lives in plain SQLite inside your own clients tree."
+maintainer: BigBossRabbit
+tier: community
+category: web
+requires_hermes: ">=0.22.6"
+version: "0.3.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

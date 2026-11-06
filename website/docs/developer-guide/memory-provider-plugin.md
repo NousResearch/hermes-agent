@@ -269,9 +269,12 @@ Hermes summarizer: server-side native compaction (`compression.codex_responses_n
 is suppressed while the gate is armed, post-turn micro-compaction
 (`compression.micro_compact`) is forced off at agent init (it absorbs old
 exchanges into a rolling summary with no checkpoint hook in its path), the
-proactive tool-result prune (`compression.proactive_prune_tokens`) is
-suppressed at its call site (off by default, so a default install has nothing
-to suppress there), and the `codex_app_server` API mode is refused at agent
+proactive tool-result prune (`compression.proactive_prune_tokens`, and a plugin
+context engine's own `prune_tool_results_only()` override) is suppressed at its
+call site (the built-in prune is off by default, so a default install has
+nothing to suppress there; a hosted engine's override, under
+`plugins.isolation: host`, is withheld without the warning), and the
+`codex_app_server` API mode is refused at agent
 init — the codex agent compacts its own thread with no truthful
 pre-compaction boundary, so a required checkpoint cannot be guaranteed there.
 A plugin context engine's `compress()` is covered too: the host calls
@@ -280,21 +283,33 @@ removes or rewrites host-transcript messages outside `compress()` (from
 `on_turn_complete()`, say). The host cannot checkpoint that path and does not
 refuse such an engine yet.
 
+That leaves compaction as the only way to reclaim context. In a turn where it
+does not run (below the threshold, in cooldown, held by anti-thrash, or out of
+attempts) nothing reclaims context, even with a healthy checkpoint provider.
+
 ### Forks under an armed gate
 
-Hermes runs a second agent without a provider in four places (delegated
+Four fork sites build a second agent without a provider (delegated
 subagents, the curator pass, the batch runner, the Feishu comment responder). With the gate off they stay provider-less. With
 `checkpoint_required` armed such a fork arms the same gate and would fail its
 first compaction with `BLOCKED_MISSING_PREREQUISITE`, so it loads the
 configured provider, initialized with `agent_context="subagent"` (`platform`,
 plus `parent_session_id` where the fork has a parent session, tells the shapes
-apart). A delegated subagent loads it only when its parent holds one: the
+apart; the Feishu responder sets no platform, so it reports `cli`). A
+delegated subagent loads it only when its parent holds one: the
 children of an `--ignore-rules` session stay provider-less and fail closed at
-compaction, as their parent does. The detached review and `/btw` forks are different:
-they persist nothing, so the gate does not apply to them. Two consequences:
+compaction, as their parent does. The detached review and `/btw` forks are
+different: they are persistence-isolated (no session DB, no provider), so
+neither the compaction gate nor the prune gate applies to them. Not covered
+yet: the hidden `preview.restart` helper agents also run with
+`skip_memory=True` and no session DB, but they are not persistence-isolated,
+so under the armed gate they fail their first compaction. Two consequences:
 
 - **One `initialize()` per fork** — a round trip per spawn for a
-  network-backed store.
+  network-backed store. Delegated subagents are built one after another
+  under a process-wide construction lock, so a batch of N pays N round trips
+  in series before the first child starts, and other sessions in the same
+  process wait on that lock.
 - **Fork transcripts reach the archive** through `on_pre_compress()`.
 
 The fork's prompt stays as it was with `skip_memory=True`: the built-in
@@ -309,6 +324,9 @@ not your provider reads the label: no `prefetch()`/`queue_prefetch()`, no
 checkpoint provider must save on `on_pre_compress()` regardless of how it
 scopes non-primary writes — skipping it there either breaks the checkpoint
 contract (success without a save) or kills the fork at its first compaction.
+Whatever it returns there goes into the fork's compaction summary, as for a
+primary agent, so for `agent_context="subagent"` return `""` (archive only)
+rather than recalled memory: recall is off for forks everywhere else.
 
 What your provider receives depends on its declared API version. Version 1
 providers (the implicit default — every pre-existing provider) keep the

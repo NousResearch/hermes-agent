@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from hermes_cli import kanban_db as kb
+from hermes_cli.kanban_db_boards import read_board_metadata
 from hermes_cli.kanban_db_graph import decompose_triage_task
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import profiles as profiles_mod
@@ -126,12 +127,18 @@ def _profile_author() -> str:
     return _specify_author("decomposer")
 
 
-def _resolve_profile_from_cfg(cfg: dict, key: str, *, fallback: Optional[str] = None) -> str:
+def _resolve_profile_from_cfg(cfg: dict, key: str, *, fallback: Optional[str] = None,
+                              board_override: Optional[str] = None) -> str:
     """``kanban.<key>`` if it names an existing profile, else ``fallback``
     (the root task's own assignee) if that does, else the active default
     profile — so a task is never stranded for lack of an owner.
     ``orchestrator_profile`` owns the root after fan-out; ``default_assignee``
     catches children the decomposer can't route.
+
+    ``board_override`` is this board's own value for *key* (``board.json``), and
+    it outranks the global ``kanban.<key>``: two boards on one install can route
+    to different orchestrators, and a board that has set nothing keeps the global
+    behaviour exactly (#34977).
 
     The root's assignee sits before the active profile because the decomposer
     runs inside whatever profile hosts the dispatcher — an operator's
@@ -139,7 +146,7 @@ def _resolve_profile_from_cfg(cfg: dict, key: str, *, fallback: Optional[str] = 
     silently become the owner of work the card was assigned away from (#114294).
     """
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
-    explicit = (kanban_cfg.get(key) or "").strip()
+    explicit = (board_override or kanban_cfg.get(key) or "").strip()
     for candidate in (explicit, (fallback or "").strip()):
         if candidate:
             try:
@@ -209,9 +216,22 @@ def _load_routing(*, root_assignee: Optional[str] = None) -> _Routing:
         cfg = {}
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
     roster, valid_names = _build_roster()
+    # This board's own routing overrides (board.json), read per decomposition so a
+    # `boards switch` or a board edit takes effect on the next card rather than
+    # being frozen at import time.
+    board_meta = read_board_metadata(kb.get_current_board())
+    board_overrides = {
+        key: board_meta.get(key)
+        for key in ("orchestrator_profile", "default_assignee")
+        if isinstance(board_meta.get(key), str) and board_meta.get(key, "").strip()
+    }
     return _Routing(
-        orchestrator=_resolve_profile_from_cfg(cfg, "orchestrator_profile", fallback=root_assignee),
-        default_assignee=_resolve_profile_from_cfg(cfg, "default_assignee", fallback=root_assignee),
+        orchestrator=_resolve_profile_from_cfg(
+            cfg, "orchestrator_profile", fallback=root_assignee,
+            board_override=board_overrides.get("orchestrator_profile")),
+        default_assignee=_resolve_profile_from_cfg(
+            cfg, "default_assignee", fallback=root_assignee,
+            board_override=board_overrides.get("default_assignee")),
         auto_promote=bool(kanban_cfg.get("auto_promote_children", True)),
         roster=roster,
         valid_names=valid_names,

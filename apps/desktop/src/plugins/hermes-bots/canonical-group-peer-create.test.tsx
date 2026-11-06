@@ -4,16 +4,17 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import {
-  answerGroupRequests, CANONICAL_GROUP_CAPABILITIES, PEER_HOME as HOME, PEER_MINI as MINI, PEER_REGISTERED, peerInvitation, peerRosterRow,
+  answerGroupRequests, CANONICAL_GROUP_CAPABILITIES, DISBAND_FAILURES, PEER_HOME as HOME, PEER_MINI as MINI, PEER_REGISTERED, peerInvitation, peerRosterRow,
   STANDALONE_GROUP_CAPABILITIES, strictGroupCreation
 } from './canonical-group-contract-test-utils'
 import { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
 import { peerTargetState } from './canonical-group-peers'
-import { $canonicalGroupBindings, CanonicalGroupList, publishCanonicalGroup } from './canonical-group-registry'
+import { $canonicalGroupBindings, publishCanonicalGroup } from './canonical-group-registry'
 import { canonicalGroupCreateError, canonicalGroupRoster } from './canonical-groups'
 import { CreateGroupChatDialog } from './create-dialog'
 import { $botMeta } from './data'
-import { $groupChats, updateGroupChat } from './group-chat'
+import { renderGatewayRooms } from './gateway-group-rooms-test-harness'
+import { $groupChats, $groupChatWorkspace, updateGroupChat } from './group-chat'
 import type * as GroupChatParts from './group-chat-parts'
 import { GroupChatWorkspace } from './group-chat-view'
 import { scriptedStorage } from './group-test-utils'
@@ -210,14 +211,22 @@ it('reads whether another gateway can host a Bot here from its own capabilities'
   expect(peerTargetState({ ...MINI, features: STANDALONE_GROUP_CAPABILITIES.features })).toMatchObject({ ready: true, renewal: false })
 })
 
-
 /** Canonical lifecycle behind the creation dialog; all writes use the requested room identity. */
-function lifecycleGateway(older: Array<{ room_id: string; name: string; members: never[] }> = []) {
+function lifecycleGateway(older: Array<{ room_id: string; name: string; members: never[] }> = [], disband = 'matching') {
   const state = { room: { room_id: '', name: 'Team', members: [], authority_gateway_id: HOME.authority_gateway_id, authority_epoch: 1 }, ended: false }
   gateways(home((method, params) => {
     if (method === 'groups.create') {state.room = { ...state.room, room_id: params.room_id, name: params.name, members: params.members }}
 
-    if (method === 'groups.disband') {state.ended = true}
+    if (method === 'groups.disband') {
+      if (disband === 'empty') {return {}}
+
+      const failure = DISBAND_FAILURES.find(({ name }) => name === disband)
+
+      if (failure) {return failure.error}
+
+      if (disband === 'another room') {return { tombstone: { room_id: 'another-room', disbanded_at: 1 } }}
+      state.ended = true
+    }
 
     return ({
       'groups.create': { room: state.room },
@@ -250,17 +259,19 @@ it('opens and sends to the created owner despite a cached same-name alias', asyn
   await waitFor(() => expect(request.mock.calls.find(call => call[1] === 'groups.send')?.[2]).toMatchObject({ room_id: state.room.room_id }))
 })
 
-it.each(['header', 'sidebar'])('reuses Team after confirmed %s Disband and a storage reload', async entry => {
+it.each(['header', 'sidebar'].flatMap(entry => ['empty', 'another room', 'peer unreachable', 'matching'].map(answer => [entry, answer])))('retires ownership only after confirmed %s Disband (%s)', async (entry, answer) => {
   const values = new Map<string, unknown>()
   setPluginCtx(scriptedStorage(values))
-  lifecycleGateway()
+  lifecycleGateway([], answer)
   const first = await openDialog()
   await createWithMini(first)
   first.unmount()
   const saved = $groupChats.get().Team
   const otherOwner = { ...(saved.engine as object), ...(entry === 'header' ? { connectionId: 'another-gateway' } : { profile: 'another-profile' }) }
   updateGroupChat('Other owner', () => ({ ...saved, engine: otherOwner as typeof saved.engine }), { sync: false })
-  const view = entry === 'header' ? render(<GroupChatWorkspace group="Team" members={roster} />) : render(<CanonicalGroupList onOpen={vi.fn()} />)
+  const stored = structuredClone((values.get('group-chats') as ReturnType<typeof $groupChats.get>).Team)
+  $groupChatWorkspace.set('Team')
+  const view = entry === 'header' ? render(<GroupChatWorkspace group="Team" members={roster} />) : renderGatewayRooms()
 
   if (entry === 'header') {
     fireEvent.click(await screen.findByRole('button', { name: 'Disband' }))
@@ -269,7 +280,21 @@ it.each(['header', 'sidebar'])('reuses Team after confirmed %s Disband and a sto
     fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete' }))
   }
 
-  fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Disband' }))
+  const confirm = within(await screen.findByRole('dialog')).getByRole('button', { name: 'Disband' })
+  await act(async () => { fireEvent.click(confirm) })
+
+  if (answer !== 'matching') {
+    expect($groupChats.get().Team).toEqual(saved)
+    const failure = DISBAND_FAILURES.find(({ name }) => name === answer)
+    await within(screen.getByRole('dialog')).findByText(failure ? words.disbandKept.replace('{reason}', words[failure.detail]) : words.disbandUnconfirmed)
+    expect((values.get('group-chats') as ReturnType<typeof $groupChats.get>).Team).toEqual(stored)
+    expect(Object.values($canonicalGroupBindings.get()).some(binding => binding.roomId === saved.roomId)).toBe(true)
+    expect($groupChatWorkspace.get()).toBe('Team')
+    expect(notify).not.toHaveBeenCalled()
+
+    return
+  }
+
   await waitFor(() => expect($groupChats.get().Team).toBeUndefined())
   view.unmount()
   $canonicalGroupBindings.set({})

@@ -1,6 +1,7 @@
 import { host, randomUuid } from '@hermes/plugin-sdk'
 
 import { canonicalApprovalPreview } from './canonical-group-approval'
+import type { CanonicalGroupMessages } from './canonical-group-locales'
 import type { GroupMember } from './types'
 
 export interface CanonicalGroupRoute {
@@ -79,6 +80,33 @@ export async function canonicalGroupRequest<T>(
     targetProfile: route.profile,
     mode: route.connectionId === 'local' ? 'local' : 'remote'
   }, method, { ...params, profile: route.profile })
+}
+
+/** A resolved RPC alone does not prove this room ended; only its matching tombstone does. */
+export async function disbandCanonicalGroup(binding: CanonicalGroupBinding, labels: CanonicalGroupMessages, keptMessage = labels.disbandKept): Promise<boolean> {
+  const answer = await canonicalGroupRequest<{ tombstone?: { room_id?: unknown; disbanded_at?: unknown } }>(binding, 'groups.disband', {
+    room_id: binding.roomId, cancel_id: randomUuid()
+  }).catch(error => {
+    // These two refusal reasons come from revoking access, after Disband's acknowledged Stop.
+    // Other failures (including untyped errors) do not prove that work stopped.
+    const reasons = new Map([
+      ['peer_unreachable', labels.disbandPeerUnreachable],
+      ['room_stop_pending', labels.disbandStopPending],
+      ['member_home_unknown', labels.disbandMemberHomeUnknown],
+      ['room_disbanding_retry', labels.disbandInProgress],
+      ['peer_revoke_unsupported', labels.disbandRevokeUnsupported],
+      ['runtime_coordination_required', labels.disbandServiceRequired]
+    ])
+
+    const reason = reasons.get(error?.data?.reason) ??
+      (typeof error?.message === 'string' && error.message.includes('still stopping') ? labels.disbandStopPending : labels.disbandUnconfirmed)
+
+    throw new Error(keptMessage.replace('{reason}', reason))
+  })
+
+  const tombstone = answer?.tombstone
+
+  return tombstone?.room_id === binding.roomId && typeof tombstone.disbanded_at === 'number' && Number.isFinite(tombstone.disbanded_at)
 }
 
 export async function discoverCanonicalGroups(

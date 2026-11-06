@@ -46,6 +46,7 @@ export interface RoomStatusLabels {
   cycleBounded: string
   cycleMessageCap: string
   cycleStopped: string
+  roomStopped: string
   typing: string
   typingTool: string
 }
@@ -177,7 +178,7 @@ export function RoomTypingRow({ avatar, labels, name, status }: {
 /** `Round 2 of 3 · Working: builder (terminal, 1m20s)` while members work, else how it ended. */
 export function roomCycleText(cycle: RoomCycle, labels: RoomStatusLabels, working: string[]): string {
   if (cycle.kind !== 'working') {
-    return labels[({ settled: 'cycleSettled', bounded: 'cycleBounded', messageCap: 'cycleMessageCap', stopped: 'cycleStopped' } as const)[cycle.kind]]
+    return labels[({ settled: 'cycleSettled', bounded: 'cycleBounded', messageCap: 'cycleMessageCap', stopped: 'cycleStopped', stopRequested: 'roomStopped' } as const)[cycle.kind]]
   }
 
   const round = cycle.maxRounds ? fill(labels.roundOf, { n: cycle.round, max: cycle.maxRounds }) : fill(labels.round, { n: cycle.round })

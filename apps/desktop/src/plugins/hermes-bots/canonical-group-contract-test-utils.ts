@@ -10,9 +10,12 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import type * as HermesSdk from '@hermes/plugin-sdk'
+// eslint-disable-next-line no-restricted-imports -- Wire fixtures use the real client decoder, not a plugin capability.
+import { jsonRpcErrorFromFrame } from '@hermes/shared'
 import { afterEach } from 'vitest'
 
 import type { CanonicalRoom } from './canonical-groups'
+import peerControlWire from './fixtures/peer-control-responses.json'
 
 interface Schema {
   properties: Record<string, unknown>
@@ -115,6 +118,23 @@ export const PEER_MINI = peerGroupCapabilities('install:3f2a00000000000000000000
 export const PEER_REGISTERED = { registered: true, mode: 'direct', transport_security: 'tls', target_install_id: 'install:3f2a0000000000000000000000000000', target_profile: 'default' }
 export const peerInvitation = (grant = 'grant', endpoint: unknown = PEER_MINI.room_link.endpoint) =>
   ({ grant, target_profile: 'default', catalog: PEER_MINI.room_link.catalog, endpoint })
+
+const peerControlError = (key: keyof typeof peerControlWire) => jsonRpcErrorFromFrame(JSON.parse(peerControlWire[key]).error)
+
+/** Decode the wire errors as Desktop does; an untyped RuntimeError loses its text in ws.py. */
+export const DISBAND_FAILURES = [
+  { name: 'internal error', error: peerControlError('internalError'), detail: 'disbandUnconfirmed' },
+  { name: 'peer unreachable', error: peerControlError('peer_unreachable'), detail: 'disbandPeerUnreachable' },
+  { name: 'stop pending', error: peerControlError('room_stop_pending'), detail: 'disbandStopPending' },
+  { name: 'already disbanding', error: peerControlError('disbanding'), detail: 'disbandInProgress' },
+  { name: 'held grants', error: peerControlError('room_disbanding_retry'), detail: 'disbandInProgress' },
+  { name: 'revoke unsupported', error: peerControlError('peer_revoke_unsupported'), detail: 'disbandRevokeUnsupported' },
+  { name: 'service required', error: peerControlError('runtime_coordination_required'), detail: 'disbandServiceRequired' },
+  { name: 'legacy stopping', error: jsonRpcErrorFromFrame({ code: 5114, message: 'room work is still stopping; retry deletion after Stop completes' }), detail: 'disbandStopPending' },
+  { name: 'short stopping', error: jsonRpcErrorFromFrame({ code: 5114, message: 'room work is still stopping' }), detail: 'disbandStopPending' },
+  { name: 'other refusal', error: jsonRpcErrorFromFrame({ code: 4001, message: 'Disband refused', data: { reason: 'invalid_params' } }), detail: 'disbandUnconfirmed' },
+  { name: 'connection closed', error: new Error('Connection closed'), detail: 'disbandUnconfirmed' }
+] as const
 
 /** A roster row for Bot `name` on another connection. */
 export const peerRosterRow = (connectionId: string, connectionLabel: string, name = 'default') => ({

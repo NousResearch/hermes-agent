@@ -81,11 +81,12 @@ def _absolute(rel: Path, node: ast.ImportFrom) -> str:
     return ".".join(base + ([node.module] if node.module else []))
 
 
-def _targets(rel: Path, node: ast.AST) -> list[str]:
+def _targets(rel: Path, node: ast.AST) -> list[list[str]]:
+    """Per imported alias, the dotted spellings it could name (``pkg.name`` and ``pkg`` for a from-import)."""
     if isinstance(node, ast.ImportFrom) and node.level:
         module = _absolute(rel, node)
-        return [module] + [f"{module}.{alias.name}" for alias in node.names]
-    return [f"{m}.{n}" if n else m for m, n in _imported(node)] + [m for m, n in _imported(node) if n]
+        return [[f"{module}.{alias.name}", module] for alias in node.names]
+    return [[f"{m}.{n}", m] if n else [m] for m, n in _imported(node)]
 
 
 def _in_module(target: str, root: Path, modules: list[Path]) -> bool:
@@ -114,9 +115,10 @@ def core_to_module(root: Path = ROOT) -> list[str]:
         for node in ast.walk(tree):
             if id(node) in skipped:
                 continue
-            hits = [t for t in _targets(rel, node) if _in_module(t, root, modules)]
-            if hits:
-                found.add((rel.as_posix(), getattr(node, "lineno", 0), min(hits, key=len)))
+            for spellings in _targets(rel, node):
+                # Collapse the spellings of one alias to one target; distinct aliases count separately.
+                if hits := [t for t in spellings if _in_module(t, root, modules)]:
+                    found.add((rel.as_posix(), getattr(node, "lineno", 0), min(hits, key=len)))
     return [f"{rel}:{line} {target}" for rel, line, target in sorted(found)]
 
 

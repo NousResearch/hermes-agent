@@ -32,11 +32,14 @@ def worker_owner(tmp_path, monkeypatch):
                        'AUXILIARY_VISION_API_KEY': 'internal-never-forward'}.items():
         monkeypatch.setenv(key, value)
     multiplex = secret_scope.is_multiplex_active()
+    secret_token = secret_scope.set_secret_scope(secret_scope.build_profile_secret_scope(launch),
+                                                profile_home=str(launch))
     secret_scope.set_multiplex_active(True)
     try:
         yield launch, real
     finally:
         secret_scope.set_multiplex_active(multiplex)
+        secret_scope.reset_secret_scope(secret_token)
 
 
 def _exercise_spawn(monkeypatch, worker_owner, *, routed, policy, yaml, outer, captured):

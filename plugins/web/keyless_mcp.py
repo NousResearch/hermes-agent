@@ -15,7 +15,7 @@ import uuid
 from typing import Any, Callable, Dict, List, Optional
 
 from plugins.web._common import (
-    document as _page, exa_crawl_status, is_origin_http_error, keenable_origin_error, origin_http_error, page_error as _page_error, search_fail,
+    document as _page, exa_crawl_status, is_origin_http_error, keenable_fetch_params, keenable_origin_error, origin_http_error, page_error as _page_error, search_fail,
     search_ok, vendor_error_entry, web_hit as _row,
 )
 
@@ -303,7 +303,7 @@ def firecrawl_search_keyless(query: str, limit: int = 5) -> dict[str, Any]:
 
 def firecrawl_extract_keyless(urls: list[str]) -> list[dict[str, Any]]:
     from plugins.web.firecrawl.provider import (
-        _KeylessFirecrawlClient, _extract_scrape_payload, _final_url, _max_age_kwargs, _with_scrape_status,
+        _KeylessFirecrawlClient, _extract_scrape_payload, _final_url, _freshness_for, _max_age_kwargs, _with_scrape_status,
     )
     try:
         freshness = _max_age_kwargs()
@@ -312,7 +312,7 @@ def firecrawl_extract_keyless(urls: list[str]) -> list[dict[str, Any]]:
     client = _KeylessFirecrawlClient()
 
     def _fetch(url: str) -> dict[str, Any]:
-        payload = _extract_scrape_payload(client.scrape(url=url, formats=["markdown"], **freshness)) or {}
+        payload = _extract_scrape_payload(client.scrape(url=url, formats=["markdown"], **_freshness_for(url, freshness))) or {}
         metadata = payload.get("metadata")
         metadata = metadata if isinstance(metadata, dict) else {}
         content = payload.get("markdown") or payload.get("html") or ""
@@ -351,7 +351,7 @@ def keenable_search_keyless(query: str, limit: int = 5) -> dict[str, Any]:
 def keenable_extract_keyless(urls: list[str]) -> list[dict[str, Any]]:
     def _fetch(url: str) -> dict[str, Any]:
         try:
-            data = _keenable_request("get", "/v1/fetch/public", params={"url": url})
+            data = _keenable_request("get", "/v1/fetch/public", params=keenable_fetch_params(url))
         except KeylessMCPError as exc:
             if is_origin_http_error(str(exc)):  # the target's answer, relayed by Keenable
                 return _page_error(url, str(exc))

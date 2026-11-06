@@ -95,6 +95,8 @@ web:
     - "*.ngrok-free.app"
 ```
 
+Extract backends keep page caches of their own, so for these URLs (and local ones) Hermes also asks the backend for a live copy: Firecrawl gets `maxAge: 0`, Keenable `live=true`, Exa `max_age_hours: 0`, and Parallel its freshest policy (a copy at most 10 minutes old, with no fallback to an older one). The keyless Exa and Parallel endpoints, Tavily and Perplexity expose no such switch and may still answer from their caches.
+
 ```yaml
 # ~/.hermes/config.yaml
 web:

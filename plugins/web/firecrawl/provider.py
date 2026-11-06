@@ -17,6 +17,7 @@ from plugins.web._common import BaseWebSearchProvider, keyless_extract, keyless_
 from tools import managed_tool_gateway as _gateway
 from tools import tool_backend_helpers as _backend_helpers
 from tools.url_safety import is_safe_url
+from tools.web_result_cache import must_fetch_live
 # Module-level (cheap import) so tests can monkeypatch the policy gate on this module.
 from tools.website_policy import check_website_access
 
@@ -158,6 +159,11 @@ def _max_age_kwargs() -> dict[str, int]:
             f"web.firecrawl_max_age_hours must be a number of hours >= 0 (0 = always fetch the page live), got {raw!r}"
         )
     return {"max_age": int(hours * _MS_PER_HOUR)}
+
+
+def _freshness_for(url: str, configured: dict[str, int]) -> dict[str, int]:
+    """``maxAge`` 0 for a URL that must come from the origin (``must_fetch_live``), else the configured window."""
+    return {"max_age": 0} if must_fetch_live(url) else configured
 
 
 def _get_firecrawl_gateway_url() -> str:
@@ -322,7 +328,7 @@ async def _scrape_one(url: str, formats: list[str], format: Optional[str]) -> di
         return _error_entry(url, blocked["message"], blocked=blocked)
     try:
         logger.info("Firecrawl scraping: %s", url)
-        freshness = _max_age_kwargs()
+        freshness = _freshness_for(url, _max_age_kwargs())
         try:
             # Pass timeout (ms) to Firecrawl so the server-side deadline
             # matches our asyncio deadline. Without this the API uses its

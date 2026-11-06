@@ -49,6 +49,16 @@ def subagent_listing_scope(
     return True, [s for s in excluded if s != SUBAGENT_SOURCE] or None
 
 
+def split_session_args(raw_args: str) -> list[str]:
+    """Words of a ``/resume`` or ``/sessions`` argument. Quotes group words, but a title is free text, so
+    an apostrophe (``Mom's plan``) is not an unclosed quote: unbalanced quoting falls back to plain
+    whitespace words, as the CLI's raw ``/resume`` argument does."""
+    try:
+        return shlex.split(raw_args or "")
+    except ValueError:
+        return (raw_args or "").split()
+
+
 def parse_session_listing_args(raw_args: str) -> tuple[bool, bool, str, str | None]:
     """Parse `/sessions`-style args into ``(include_all_sources, include_unnamed, target, search_query)``.
 
@@ -57,7 +67,7 @@ def parse_session_listing_args(raw_args: str) -> tuple[bool, bool, str, str | No
     before the first positional word so titles containing "all" aren't misparsed; anything else is
     a target so `/sessions <id-or-title>` can delegate to `/resume`.
     """
-    parts = shlex.split(raw_args or "")
+    parts = split_session_args(raw_args)
     flags = {"all": False, "full": False}
     target_parts: list[str] = []
     for i, part in enumerate(parts):

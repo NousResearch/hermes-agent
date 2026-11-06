@@ -2440,6 +2440,7 @@ class MessageSender:
         for attempt in range(retry):
             try:
                 if chat_id.startswith("group:"):
+                    await self._ensure_member_cache(text, chat_id[len("group:"):])
                     msg_body = self._build_msg_body_with_mentions(text, chat_id[len("group:"):])
                 else:
                     msg_body = [_text_elem(text)]
@@ -2461,6 +2462,16 @@ class MessageSender:
         if chat_id.startswith("group:"):
             return await self.send_group_msg_body(chat_id[len("group:"):], msg_body, reply_to)
         return await self.send_c2c_msg_body(chat_id.removeprefix("direct:"), msg_body, group_code=group_code)
+
+    async def _ensure_member_cache(self, text: str, group_code: str) -> None:
+        """Refresh a cold or expired member cache before resolving @mentions: nothing else fills it
+        on the send path, so mentions in replies would otherwise go out as plain text."""
+        if not self._AT_USER_RE.search(text):
+            return
+        cached = self._adapter._member_cache.get(group_code)
+        if cached and cached[1] and time.time() - cached[0] < self._adapter.MEMBER_CACHE_TTL_S:
+            return
+        await self._adapter.get_group_member_list(group_code)  # populates _member_cache on success
 
     def _build_msg_body_with_mentions(self, text: str, group_code: str) -> list:
         """Parse @nickname patterns against the (unexpired) member cache into mixed TIMTextElem +

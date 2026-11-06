@@ -276,4 +276,30 @@ describe('mergeDelegateRows', () => {
       ['B', 'mB']
     ])
   })
+
+  // One call may repeat a goal; only the task index tells those children apart.
+  it('keeps repeated goals of one call on their own task index', () => {
+    const rows = delegateRowsFromCall(
+      { tasks: [{ goal: 'Run the suite' }, { goal: 'Run the suite' }] },
+      { delegation_id: 'deleg_x', status: 'dispatched' }
+    )
+
+    const merged = mergeDelegateRows(rows, [
+      subagent({ id: 'other', delegationId: 'deleg_y', goal: 'Something else', model: 'other' }),
+      subagent({ id: 's1', delegationId: 'deleg_x', goal: 'Run the suite', taskIndex: 1, model: 'm1' }),
+      subagent({ id: 's0', delegationId: 'deleg_x', goal: 'Run the suite', taskIndex: 0, model: 'm0' })
+    ])
+
+    expect(merged.map(r => r.model)).toEqual(['m0', 'm1'])
+  })
+
+  // A foreground call still running has no result, so no delegation id yet,
+  // while its children already carry one.
+  it('still joins a stamped child to a call whose result has not arrived', () => {
+    const rows = delegateRowsFromCall({ tasks: [{ goal: 'A' }] }, undefined)
+
+    const merged = mergeDelegateRows(rows, [subagent({ id: 's0', delegationId: 'deleg_x', goal: 'A', model: 'm0' })])
+
+    expect(merged[0]).toMatchObject({ model: 'm0', status: 'running' })
+  })
 })

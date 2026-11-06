@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import type { WritableAtom } from 'nanostores'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
+import { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
 import { $canonicalGroupBindings } from './canonical-group-registry'
 import { CreateGroupChatDialog } from './create-dialog'
 import { CROSS_GATEWAY_GROUP_LOCALES } from './cross-gateway-locales'
@@ -96,9 +97,16 @@ afterEach(() => {
   localStorage.clear()
 })
 
-async function pick(roster: RosterRow[], names: string[]) {
+async function pick(roster: RosterRow[], names: string[], previous?: ReturnType<typeof render>) {
   const onCreated = vi.fn()
-  const view = render(<CreateGroupChatDialog onClose={vi.fn()} onCreated={onCreated} open roster={roster} />)
+  const dialog = <CreateGroupChatDialog onClose={vi.fn()} onCreated={onCreated} open roster={roster} />
+  const view = previous ?? render(dialog)
+
+  if (previous) {
+    view.rerender(<CreateGroupChatDialog onClose={vi.fn()} open={false} roster={roster} />)
+    view.rerender(dialog)
+  }
+
   await waitFor(() => expect(request.mock.calls.map(call => call[1])).toContain('groups.capabilities'))
   await act(async () => {})
 
@@ -147,6 +155,84 @@ it('a selection on this connection alone still creates the gateway-owned room (c
   expect(request.mock.calls.filter(call => call[1] === 'groups.create')).toHaveLength(1)
   expect(onCreated.mock.calls[0][1]).toBe('key')
   expect(Object.values($canonicalGroupBindings.get())).toHaveLength(1)
+})
+
+it.each(['unchanged', 'reopened after disband', 'disbanded', 'renamed', 'disbanded, named refusal'])(
+  'keeps an uncertain create only for its open dialog and live identity: %s', async scenario => {
+    const stored = new Map<string, { room_id: string; name: string; members: unknown; ended?: boolean }>()
+    const normal = request.getMockImplementation()!
+    let loseReply = true
+    request.mockImplementation(async (route, method, params) => {
+      if (method !== 'groups.create') {return normal(route, method, params)}
+      const previous = stored.get(params.room_id)
+
+      const reason = previous?.ended ? 'room_id belongs to a disbanded room'
+        : previous && (previous.name !== params.name || JSON.stringify(previous.members) !== JSON.stringify(params.members))
+          ? 'room_id already exists with different state' : null
+
+      // A canonical gateway only says invalid_params; a standalone one names the conflict.
+      if (reason && scenario.includes('named')) {throw Object.assign(new Error(reason), { code: 4110 })}
+
+      if (reason) {throw Object.assign(new Error('invalid_params'), { code: 4001, data: { reason: 'invalid_params' } })}
+      const room = previous ?? { room_id: params.room_id, name: params.name, members: params.members }
+      stored.set(params.room_id, room)
+
+      if (loseReply) {loseReply = false; throw new Error('request timed out')}
+
+      return { room }
+    })
+    let { view, onCreated } = await pick([alpha, beta], ['alpha', 'beta'])
+    const submit = () => act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Create Group (2)' })) })
+    await submit()
+    expect(onCreated).not.toHaveBeenCalled()
+    screen.getByText(CANONICAL_GROUP_LOCALES.en.createUncertain)
+    expect(notify).not.toHaveBeenCalledWith(expect.objectContaining({ kind: 'error' }))
+    const first = [...stored.values()][0]
+
+    if (scenario.includes('disband')) {first.ended = true}
+
+    if (scenario === 'renamed') {first.name = 'Changed elsewhere'}
+
+    if (scenario === 'reopened after disband') {
+      ;({ view, onCreated } = await pick([alpha, beta], ['alpha', 'beta'], view))
+    }
+
+    await submit()
+
+    if (scenario.includes('disbanded') || scenario === 'renamed') {
+      expect(onCreated).not.toHaveBeenCalled()
+      screen.getByText(CANONICAL_GROUP_LOCALES.en.createEnded)
+      await submit()
+    }
+
+    expect(onCreated).toHaveBeenCalledTimes(1)
+    const creates = request.mock.calls.filter(call => call[1] === 'groups.create')
+
+    if (scenario === 'unchanged') {
+      expect(creates[1][2]).toEqual(creates[0][2])
+      expect(stored.size).toBe(1)
+    } else {
+      expect(creates.at(-1)![2].room_id).not.toBe(first.room_id)
+      expect(stored.size).toBe(2)
+    }
+  }
+)
+
+it.each(['reopened', 'edited'])('a late answer says nothing about the current draft: %s', async change => {
+  const normal = request.getMockImplementation()!
+  let fail: (error: Error) => void = () => undefined
+  request.mockImplementation(async (route, method, params) => method === 'groups.create'
+    ? new Promise((_, reject) => { fail = reject })
+    : normal(route, method, params))
+  const { view } = await pick([alpha, beta], ['alpha', 'beta'])
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Create Group (2)' })) })
+
+  if (change === 'reopened') {await pick([alpha, beta], ['alpha', 'beta'], view)} else {
+    fireEvent.change(screen.getByRole('textbox', { name: translateBots('group.nameLabel') }), { target: { value: 'Other' } })
+  }
+
+  await act(async () => { fail(new Error('request timed out')) })
+  expect(screen.queryByText(CANONICAL_GROUP_LOCALES.en.createUncertain)).toBeNull()
 })
 
 it('a selection wholly on another connection is not offered for creation from here', async () => {

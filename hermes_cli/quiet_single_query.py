@@ -30,12 +30,33 @@ _MAX_QUIET_NOTIFY_ROUNDS = 8
 KANBAN_WORKER_EXIT_TRAILER = "[kanban-worker-exit] rc="
 
 
-def exit_single_query(code: int) -> None:
-    """``sys.exit(code)`` for a one-shot turn; a Kanban worker first writes the exit trailer to its log."""
+def exit_single_query(code: int, *, result: dict | None = None) -> None:
+    """``sys.exit(code)`` for a one-shot turn; a Kanban worker first reconciles an
+    exit without a terminal board call and writes the exit trailer to its log.
+
+    ``result`` is the settled turn result when the caller has one. Reconciliation
+    is skipped when it is ``None``: an early exit (interrupt, credentials/init
+    failure) has no turn result and the task may still be ``running``, so
+    recording a violation there would be a false positive.
+    """
     if os.environ.get("HERMES_KANBAN_TASK"):
+        if result is not None:
+            with contextlib.suppress(Exception):
+                from agent.kanban_terminal_guard import reconcile_worker_exit
+
+                action = reconcile_worker_exit(
+                    completed=bool(isinstance(result, dict) and result.get("completed")),
+                    result=result if isinstance(result, dict) else None,
+                )
+                if action == "recorded":
+                    # stderr: stdout may be the ``--stream-json`` record stream, and the
+                    # worker log captures both streams.
+                    print(
+                        "kanban: run ended without a terminal board call — recorded protocol_violation",
+                        file=sys.stderr,
+                        flush=True,
+                    )
         with contextlib.suppress(Exception):
-            # stderr: stdout may be the ``--stream-json`` record stream, and the worker log
-            # captures both streams.
             print(f"\n{KANBAN_WORKER_EXIT_TRAILER}{int(code)}", file=sys.stderr, flush=True)
     sys.exit(code)
 

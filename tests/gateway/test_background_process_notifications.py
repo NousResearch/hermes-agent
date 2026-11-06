@@ -90,6 +90,58 @@ def _watch_event(session_id="proc_watch", thread_id="42"):
     }
 
 
+def _assert_authorized_task_contract(text):
+    """Machine provenance must constrain scope, not forbid the task's result."""
+    assert "not human input, a new request, or approval" in text
+    assert "originating background task" in text
+    assert "reconcile and verify" in text
+    assert "continue or report already-authorized work" in text
+    assert "completion, failure, or a real blocker" in text
+    assert "grants no new permissions" in text
+    assert "unrelated earlier chat messages or use stale quote/reply anchors" in text
+    assert "explicit user quiet policy, cancellation, consumed/duplicate events" in text
+    assert "missing owner, or delivery prohibition" in text
+    assert "NO_REPLY for duplicate/no-news acknowledgments" in text
+    assert "do not reply to any earlier chat message because of it" not in text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event_type,count", [("completion", 1), ("completion", 2), ("watch_match", 1)])
+async def test_task_contract_reaches_gateway_admission(monkeypatch, tmp_path, event_type, count):
+    """Real formatters and injection retain payload, provenance and the authorized scope."""
+    from gateway.run import _format_gateway_process_notification
+    from gateway.run_notifications import _mark_internal_notification
+    from tools.process_registry_notifications import format_process_notification
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    entries = []
+    for index in range(count):
+        event = dict(_watch_event(f"proc_{index}"), type=event_type, exit_code=1,
+                     output=f"original failure output {index}", message_id="777", thread_id="42")
+        entries.append((format_process_notification(event), event, asyncio.get_running_loop().create_future()))
+    if count > 1:
+        text = runner._format_coalesced_process_completions(entries)
+    elif event_type == "watch_match":
+        text = _format_gateway_process_notification(entries[0][1])
+    else:
+        text = entries[0][0]
+    assert text.startswith("[IMPORTANT:")
+    await runner._inject_watch_notification(text, entries[0][1])
+    injected = runner.adapters[Platform.TELEGRAM].handle_message.await_args.args[0]
+    _assert_authorized_task_contract(injected.text)
+    assert injected.text.startswith(text)
+    for index in range(count):
+        assert f"original failure output {index}" in injected.text
+    assert injected.internal is True
+    assert injected.metadata["notification_origin"] == "process_registry_synthetic"
+    assert injected.metadata["original_trigger_message_id"] == "777"
+    assert injected.source.thread_id == "42"
+    assert injected.message_id is None
+    assert injected.source.message_id is None
+    assert _mark_internal_notification(injected.text + "\n") == injected.text
+    assert injected.text.count(INTERNAL_NOTIFICATION_FOOTER) == 1
+
+
 # ---------------------------------------------------------------------------
 # _load_background_notifications_mode unit tests
 # ---------------------------------------------------------------------------

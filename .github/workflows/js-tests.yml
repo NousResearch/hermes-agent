@@ -94,6 +94,12 @@ jobs:
         if: steps.node-modules-cache.outputs.cache-hit == 'true'
         run: pnpm install --frozen-lockfile --lockfile-only
 
+      # tests-js/pnpm-workspace-policy.test.mjs reads pnpm-workspace.yaml after the install above; an
+      # install that rewrites it (an exclude prune, say) would hide what was committed, and the
+      # clean-checkout step at the end only warns.
+      - name: Check the install kept pnpm-workspace.yaml as committed
+        run: git diff --exit-code -- pnpm-workspace.yaml
+
       - name: Prepare locked Electron runtime before parallel checks
         run: node scripts/build/electron-runtime.mjs --source .
 

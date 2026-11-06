@@ -80,11 +80,27 @@ FLOOD_RETRY_SLACK_SECONDS = 2.0
 # Matching requires the "flood control" wording as well as the delay, so an unrelated error that
 # merely suggests retrying is never mistaken for a flood.
 _RAW_FLOOD_RE = re.compile(r"flood control exceeded.*?retry in\s+(\d+(?:\.\d+)?)", re.IGNORECASE)
+# The canonical marker is only read from the START of the row's error by ``flood_wait_seconds``; a
+# platform that states its refusal in its own wording (Discord's 429 body carries no number — the wait
+# lives in the Retry-After header) can still carry the canonical wait as a trailing marker, so the
+# deadline uses the server's number instead of the generic default.
+_CANONICAL_FLOOD_RE = re.compile(r"flood_control:\s*(\d+(?:\.\d+)?)", re.IGNORECASE)
 
 
 def _raw_flood_wait(text: str) -> Optional[float]:
     """Seconds asked for by a flood error still carrying the platform's own wording, else ``None``."""
     match = _RAW_FLOOD_RE.search(text or "")
+    if not match:
+        return None
+    try:
+        return float(match.group(1))
+    except (TypeError, ValueError):
+        return None
+
+
+def _canonical_flood_wait(text: str) -> Optional[float]:
+    """Seconds carried by a canonical ``flood_control:<seconds>`` marker anywhere in the error."""
+    match = _CANONICAL_FLOOD_RE.search(text or "")
     if not match:
         return None
     try:
@@ -102,7 +118,8 @@ def is_flood_error(error: Any) -> bool:
     """True for a flood refusal: the adapters' fail-closed ``flood_control:<seconds>`` result, or a
     row still carrying the platform's own flood wording (see ``_RAW_FLOOD_RE``)."""
     text = str(error or "").strip().lower()
-    return text.startswith(FLOOD_ERROR_PREFIX) or _raw_flood_wait(text) is not None
+    return text.startswith(FLOOD_ERROR_PREFIX) or _raw_flood_wait(text) is not None \
+        or _canonical_flood_wait(text) is not None
 
 
 def flood_wait_seconds(error: Any, default: float = FLOOD_RETRY_DEFAULT_SECONDS) -> float:
@@ -116,8 +133,11 @@ def flood_wait_seconds(error: Any, default: float = FLOOD_RETRY_DEFAULT_SECONDS)
             wait = default
     else:
         # A row still carrying the platform's own flood wording states its delay just as precisely,
-        # and the deadline must use it rather than the generic default.
+        # and the deadline must use it rather than the generic default. A canonical marker appended to
+        # that wording (Discord states its wait in a header, not its body) is just as precise.
         raw = _raw_flood_wait(text)
+        if raw is None:
+            raw = _canonical_flood_wait(text)
         if raw is not None:
             wait = raw
     return wait if wait > 0 else default

@@ -898,14 +898,12 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         except WakeNotAccepted as exc:
             logger.warning("Watch notification not admitted for %s chat=%s: %s",
                            platform_name, source.chat_id, exc)
-            # Durable callers refund the claim; ordinary watch callers just requeue.
-            # admission_conflict is a stale route (the chat's session moved). Retrying
-            # the same event never succeeds and the watcher requeues it every tick.
+            # Durable callers settle the claim; ordinary watch callers requeue unless the
+            # refusal is terminal, which the watcher would otherwise requeue every tick.
             if raise_not_accepted:
                 raise
-            if str(exc) == "admission_conflict":
-                return None
-            return False
+            from gateway.wake import TERMINAL_REFUSALS
+            return None if str(exc) in TERMINAL_REFUSALS else False
         except Exception as e:
             logger.error("Watch notification injection error: %s", e)
             return False
@@ -1201,9 +1199,14 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 with self._completion_delivery_lock:
                     self._mark_completions_delivered_locked((identity,))
             return True
-        except WakeNotAccepted:
-            refused = True
-            return False
+        except WakeNotAccepted as exc:
+            from gateway.wake import TERMINAL_REFUSALS
+            if str(exc) not in TERMINAL_REFUSALS:
+                refused = True  # Transient: defer without spending an attempt.
+                return False
+            # Terminal: release spends an attempt, so the row converges to dropped instead of
+            # deferring forever. An unclaimed event has no budget and is not requeued.
+            return False if claim.claim_id else None
         finally:
             if identity_claimed and not accepted:
                 with self._completion_delivery_lock:

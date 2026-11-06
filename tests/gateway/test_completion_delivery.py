@@ -989,3 +989,38 @@ def test_watch_drain_retries_transport_failure(monkeypatch, isolated_registry):
     asyncio.run(runner._async_delegation_watcher(interval=0))
     assert adapter.handle_message.await_count == 2
     assert isolated_registry.completion_queue.empty()
+
+
+def _refuse_admission(monkeypatch, code):
+    from gateway import wake
+
+    async def _refuse(_adapter, _event):
+        raise wake.WakeNotAccepted(code)
+    monkeypatch.setattr(wake, "admit_internal_event", _refuse)
+
+
+@pytest.mark.parametrize("code", ["admission_conflict", "invalid_params"])
+def test_watch_drain_drops_terminal_refusal(monkeypatch, isolated_registry, code):
+    """A refusal that retrying cannot fix is not requeued every watcher tick."""
+    _refuse_admission(monkeypatch, code)
+    runner = _runner(SimpleNamespace(handle_message=AdmittingHandler()))
+    runner._load_background_notifications_mode = lambda: "concise"
+    isolated_registry.completion_queue.put(
+        dict(_completion_event(started_at=1), type="watch_match", pattern="READY", output="READY"))
+    _stop_after_sleeps(monkeypatch, runner, count=3)
+    asyncio.run(runner._async_delegation_watcher(interval=0))
+    assert isolated_registry.completion_queue.empty()
+
+
+@pytest.mark.parametrize("code, state", [("admission_conflict", "dropped"), ("session_busy", "pending")])
+def test_terminal_completion_refusal_spends_budget(monkeypatch, isolated_registry, code, state):
+    """A terminal refusal converges to dropped; a transient one keeps its budget."""
+    from tools import async_delegation
+
+    _refuse_admission(monkeypatch, code)
+    event = _async_event("deleg_refused")
+    _persist_pending_completion(event)
+    runner = _runner(SimpleNamespace(handle_message=AdmittingHandler()))
+    for _tick in range(async_delegation._MAX_DELIVERY_ATTEMPTS + 1):
+        asyncio.run(runner._deliver_async_delegation_group([dict(event)]))
+    assert async_delegation.get_durable_delegation("deleg_refused")["delivery_state"] == state

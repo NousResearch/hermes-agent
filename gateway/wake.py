@@ -39,6 +39,11 @@ class WakeNotAccepted(RuntimeError):
     """No adapter admission: retry without treating a healthy chat as dead."""
 
 
+# Refusals that retrying the same event cannot change: the route moved or the payload is malformed.
+# Requeuing them every watcher tick spins the gateway.
+TERMINAL_REFUSALS = frozenset({"admission_conflict", "invalid_params"})
+
+
 def session_owned_by_profile(config: Any, profile: Optional[str], session_id: Any) -> bool:
     """True when a stateless (``api_server``) destination's raw session id is canonically owned by
     served *profile*'s own session store.

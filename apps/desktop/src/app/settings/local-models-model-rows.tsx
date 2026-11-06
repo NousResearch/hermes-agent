@@ -37,6 +37,40 @@ function residencyOf(status: LocalModelsStatus, modelId: null | string | undefin
   }
 }
 
+// The planner's refusal for a downloaded model: it will not start with the memory free right now.
+function launchRefusalOf(status: LocalModelsStatus, model: LocalCatalogModel, modelId: null | string | undefined): null | string {
+  if (!model.downloaded || !modelId) {
+    return null
+  }
+
+  return status.models.find(m => m.id === modelId)?.launch_refusal || null
+}
+
+interface LaunchRefusalProps {
+  label: string
+  reason: null | string | undefined
+}
+
+// Red pill plus the planner's reason, so a model that will not start says why.
+function LaunchRefusal({ label, reason }: LaunchRefusalProps): null | ReactElement {
+  if (!reason) {
+    return null
+  }
+
+  return (
+    <span className="mt-1.5 flex flex-wrap items-center gap-1.5">
+      <Tip label={reason}>
+        <Pill tone="destructive">
+          <Cpu className="mr-1 size-3" />
+          {label}
+        </Pill>
+      </Tip>
+
+      <span className="text-destructive">{reason}</span>
+    </span>
+  )
+}
+
 function runningActivation(jobs: readonly LocalRuntimeJob[], modelId: null | string | undefined): boolean {
   return jobs.some(
     (job: LocalRuntimeJob): boolean =>
@@ -146,6 +180,7 @@ export function CatalogModelRow({ model, status, jobs }: CatalogModelRowProps): 
   const residency: Residency = residencyOf(status, activateTarget)
   const { isLoaded, isLoadingNow } = residency
   const activating: boolean = runningActivation(jobs, activateTarget)
+  const noRoom: null | string = launchRefusalOf(status, model, activateTarget)
 
   return (
     <ListRow
@@ -258,6 +293,8 @@ export function CatalogModelRow({ model, status, jobs }: CatalogModelRowProps): 
             {model.vision && <Pill>{copy.pillVision}</Pill>}
           </span>
 
+          <LaunchRefusal label={copy.pillNoRoomNow} reason={noRoom} />
+
           {isActive && !isLoaded && !isLoadingNow && status.server_running && (
             <span className="mt-0.5 block text-(--ui-text-tertiary)">{copy.activeNotLoaded}</span>
           )}
@@ -325,7 +362,13 @@ export function SideloadedModelRow({ model: m, status, jobs }: SideloadedModelRo
           <DeleteModelButton modelId={m.id} />
         </div>
       }
-      description={<span>{copy.addedByYou}</span>}
+      description={
+        <>
+          <span>{copy.addedByYou}</span>
+
+          <LaunchRefusal label={copy.pillNoRoomNow} reason={m.launch_refusal} />
+        </>
+      }
       title={
         <span className="inline-flex items-center gap-2">
           <span className="truncate font-mono text-[0.8rem]">{m.id}</span>

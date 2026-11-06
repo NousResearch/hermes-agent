@@ -90,6 +90,7 @@ export const frLocalModels: TranslationOverride<Translations['settings']['localM
   pillFitsGpu: 'Tient dans votre GPU',
   pillUsesRam: 'Utilise la RAM système',
   pillTooBig: 'Trop volumineux pour cette machine',
+  pillNoRoomNow: 'Pas assez de mémoire pour démarrer',
   browseTitle: 'Trouver davantage de modèles',
   browseHint:
     'Recherchez dans tout Hugging Face. La taille des modèles téléchargés ici est automatiquement adaptée à votre machine, mais ils ne sont pas testés par notre équipe.',

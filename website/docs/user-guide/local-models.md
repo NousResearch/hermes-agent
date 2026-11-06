@@ -109,6 +109,10 @@ end-to-end and exposes no knobs:
   Hermes compresses instead of claiming a window the server did not receive.
 - Idle models are unloaded after 15 minutes to free GPU memory; they
   reload automatically on the next message.
+- **A downloaded model Hermes will not start says why.** Its row in Local
+  Models shows a red *Not enough memory to start* pill with the reason, such
+  as how much memory it needs and how much is free. Close other apps, or pick
+  a smaller model.
 
 ## The status bar
 

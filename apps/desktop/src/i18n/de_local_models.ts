@@ -89,6 +89,7 @@ export const deLocalModels: TranslationOverride<Translations['settings']['localM
   pillFitsGpu: 'Passt auf Ihre GPU',
   pillUsesRam: 'Verwendet Arbeitsspeicher',
   pillTooBig: 'Zu groß für diesen Rechner',
+  pillNoRoomNow: 'Nicht genug Speicher zum Starten',
   browseTitle: 'Weitere Modelle finden',
   browseHint:
     'Durchsuchen Sie ganz Hugging Face. Hier heruntergeladene Modelle werden automatisch an Ihren Rechner angepasst, aber nicht von uns getestet.',

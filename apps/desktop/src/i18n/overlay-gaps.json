@@ -1578,6 +1578,7 @@
   "settings.localModels.pillFullContext": ["ar","ru"],
   "settings.localModels.pillFullContextTip": ["ar","ru"],
   "settings.localModels.pillGrowsTip": ["ar","ru"],
+  "settings.localModels.pillNoRoomNow": ["ar","ru"],
   "settings.localModels.pillTooBig": ["ar","ru"],
   "settings.localModels.pillUpTo": ["ar","ru"],
   "settings.localModels.pillUsesRam": ["ar","ru"],

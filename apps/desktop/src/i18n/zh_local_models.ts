@@ -87,6 +87,7 @@ export const zhLocalModels: TranslationOverride<Translations['settings']['localM
   pillFitsGpu: '完全在 GPU 上运行',
   pillUsesRam: '使用系统内存',
   pillTooBig: '超出本机内存',
+  pillNoRoomNow: '内存不足，无法启动',
   browseTitle: '发现更多模型',
   browseHint: '搜索整个 Hugging Face。在这里下载的模型会自动适配你的机器，但未经我们测试。',
   browsePlaceholder: '按名称或作者搜索模型…',

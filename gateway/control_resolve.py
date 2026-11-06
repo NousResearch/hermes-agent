@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 import os
+import re
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -31,9 +32,29 @@ def _requested_home(request: dict) -> str:
     params = request["params"]
     home = params.get("home")
     if (set(params) != {"home"} or not isinstance(home, str) or not 0 < len(home) <= _MAX_HOME_CHARS
-            or "\0" in home or not os.path.isabs(home)):
+            or "\0" in home or not os.path.isabs(home) or not _plain_spelling(home)):
         raise PermissionError("invalid resolve parameters")
     return home
+
+
+def _plain_spelling(home: str) -> bool:
+    """No ``.``/``..`` component, repeated separator or trailing separator: the home is checked
+    against this gateway's root before anything under it is read, so no spelling may walk."""
+    _drive, rest = os.path.splitdrive(home)
+    parts = re.split(r"[\\/]", rest) if os.name == "nt" else rest.split("/")
+    return parts[0] == "" and all(part not in {"", ".", ".."} for part in parts[1:])
+
+
+def _in_scope(home: Path, own: Path) -> bool:
+    """*home* (canonical) is this gateway's own home or a named profile directly under it.
+
+    Decided from the path alone plus ``named_profile_home``'s read of *own*'s markers, so nothing
+    under a foreign or not-yet-trusted home is opened before the answer is known."""
+    from hermes_cli.gateway_runtime_multiplex import multiplexer_root_for
+    if home == own:
+        return True
+    return (home.parent == own / "profiles" and not home.name.startswith(".")
+            and multiplexer_root_for(home) == own)
 
 
 def _install_code_sha() -> Optional[str]:
@@ -49,34 +70,53 @@ def _install_code_sha() -> Optional[str]:
     return _run_git(repo_dir, "rev-parse", "HEAD") if repo_dir is not None else None
 
 
-def _verdict(payload: dict, requested: Path, own: Path):
+def _verdict(payload: dict, requested: Optional[Path], own: Path):
     """``(control, verdict)`` exactly as discovery would reach this socket for *requested*.
 
     ``self``: this is the profile's own socket (discovery's first ``identify``). ``host``: this
     gateway's home is the multiplexer root of *requested*, the socket discovery asks when the
-    profile has none of its own (``_served_by_multiplexer``, then the lock verdict). Any other home
-    is not this gateway's to judge."""
+    profile has none of its own (``_served_by_multiplexer``, then the lock verdict). None (a home
+    outside this gateway's root, see :func:`_contained_home`) is not this gateway's to judge."""
     from hermes_cli import gateway_runtime as runtime
-    from hermes_cli.gateway_runtime_multiplex import multiplexer_root_for
+    if requested is None:
+        return None, runtime.GatewayDiscovery("inaccessible", reason_code="profile_mismatch")
     if requested == own:
         return "self", runtime._endpoint(payload, requested)
-    if multiplexer_root_for(requested) != own:
-        return None, runtime.GatewayDiscovery("inaccessible", reason_code="profile_mismatch")
     verdict = runtime._endpoint(payload, requested, control_home=own)
     if verdict.state == "inaccessible" and verdict.reason_code == "profile_mismatch":
         verdict = runtime._parked_by_multiplexer(payload, requested) or runtime._missing_owner_verdict(requested)
     return "host", verdict
 
 
+def _contained_home(home: str, own: Path) -> Optional[Path]:
+    """The canonical home discovery would serve for *home*, or None when it is not this gateway's.
+
+    Containment comes first: the resolved spelling must be *own* or a named profile directly under
+    it (a symlinked component leading out of the root resolves outside and fails). Only then is a
+    private overlay lock followed, and its owner home must pass the same check before it is read or
+    tightened, so a rejected request leaves every path outside the root untouched."""
+    from hermes_cli import gateway_runtime as runtime
+    requested = Path(runtime._canonical_home(home))
+    if not _in_scope(requested, own):
+        return None
+    try:
+        owner = runtime._overlay_owner_home(
+            requested, within=lambda target: _in_scope(Path(runtime._canonical_home(target)), own))
+    except runtime.OverlayOutsideScope:
+        return None
+    return Path(runtime._canonical_home(owner))
+
+
 def resolve_profile(home: str, *, identify: Callable[[], dict[str, Any]], own_home: Path) -> dict[str, Any]:
-    """The ``resolve-profile`` result for the client's profile *home* (any spelling)."""
+    """The ``resolve-profile`` result for the client's profile *home* (an absolute spelling with no
+    ``.``/``..`` or empty component; symlinks are resolved)."""
     from hermes_cli import gateway_runtime as runtime
     from hermes_cli.gateway_client import GATEWAY_WS_PROTOCOL, GATEWAY_WS_TICKET_PREFIX, gateway_ws_target
     from hermes_cli.gateway_runtime_attach import failure_message
     from hermes_constants import get_default_hermes_root
 
-    requested = runtime._overlay_owner_home(Path(runtime._canonical_home(home)))
     own = Path(runtime._canonical_home(own_home))
+    requested = _contained_home(home, own)
     control, verdict = _verdict(identify(), requested, own)
     # The set ``ensure`` checks for this client ({its home, its process home, the default root}).
     fence_homes = {own, get_default_hermes_root()} | ({requested} if control else set())

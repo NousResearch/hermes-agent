@@ -213,14 +213,120 @@ def test_a_restarted_owner_refuses_the_old_instance_and_resolves_the_new_one(lay
     assert renewed["result"]["endpoint"]["instance_id"] == "instance-b"
 
 
-def test_any_spelling_of_the_home_resolves_to_the_served_profile_id(layout, tmp_path):
+def test_a_symlinked_spelling_of_the_home_resolves_to_the_served_profile_id(layout, tmp_path):
     """The client sends its home as it knows it; ``profile_id`` comes back in the owner's spelling,
     which is what ``session-ticket`` compares byte for byte."""
     solo, _root, _secondary = layout
     alias = tmp_path / "alias"
     alias.symlink_to(solo)
-    _verdict, result = _parity(solo, _descriptor(solo), alias / ".." / "solo")
+    _verdict, result = _parity(solo, _descriptor(solo), alias)
     assert result["endpoint"]["profile_id"] == str(solo)
+
+
+def _tree(top: Path) -> dict:
+    """Every node under *top*: kind, mode and content (or link target), without following links."""
+    import os
+    import stat as st
+    nodes = {}
+    for dirpath, dirnames, filenames in os.walk(top):
+        for name in dirnames + filenames:
+            path = Path(dirpath) / name
+            info = path.lstat()
+            body = (os.readlink(path) if st.S_ISLNK(info.st_mode)
+                    else path.read_bytes() if st.S_ISREG(info.st_mode) else None)
+            nodes[str(path)] = (st.S_IFMT(info.st_mode), st.S_IMODE(info.st_mode), body)
+    return nodes
+
+
+def _resolve_line(server_home: Path, home: str) -> dict:
+    """``resolve-profile`` straight through the dispatcher, as from a peer with no credentials."""
+    server = GatewayControlServer(server_home)
+    server.resolve_handler = resolve_profile_handler(lambda: _descriptor(server_home))
+    return json.loads(server.handle_request_line(json.dumps(
+        {"protocol": 1, "id": 1, "verb": "resolve-profile", "params": {"home": home}}).encode(), None))
+
+
+@pytest.fixture()
+def foreign(tmp_path):
+    """A home outside every root: a same-user owner whose upgraded lock is still 0644."""
+    owner = tmp_path / "foreign" / "owner"
+    owner.mkdir(parents=True, mode=0o700)
+    (owner / "gateway.lock").write_text('{"pid": 1}')
+    (owner / "gateway.lock").chmod(0o644)
+    return owner
+
+
+def _escaping_profile(root: Path, foreign: Path) -> str:
+    """``<root>/profiles/evil``, a symlink that leads out of the root to an overlay of *foreign*."""
+    overlay = foreign.parent / "overlay"
+    overlay.mkdir(mode=0o700)
+    (overlay / "gateway.lock").symlink_to(foreign / "gateway.lock")
+    (root / "profiles" / "evil").symlink_to(overlay)
+    return str(root / "profiles" / "evil")
+
+
+def _foreign_overlay(root: Path, foreign: Path) -> str:
+    overlay = foreign.parent / "overlay"
+    overlay.mkdir(mode=0o700)
+    (overlay / "gateway.lock").symlink_to(foreign / "gateway.lock")
+    return str(overlay)
+
+
+def _overlay_profile(root: Path, foreign: Path) -> str:
+    """An in-root profile whose ``gateway.lock`` is a link to the foreign owner's lock."""
+    (root / "profiles" / "work" / "gateway.lock").symlink_to(foreign / "gateway.lock")
+    return str(root / "profiles" / "work")
+
+
+@pytest.mark.parametrize("make_home", [_foreign_overlay, _escaping_profile, _overlay_profile],
+                         ids=["foreign-overlay", "in-root-symlink-escaping-root", "in-root-lock-linking-out"])
+def test_a_home_outside_the_root_is_refused_before_anything_there_is_touched(layout, foreign, make_home):
+    """Containment is decided before any overlay lock is followed: a request finally answered
+    ``profile_mismatch`` must not have narrowed (or read through) a lock outside the root."""
+    _solo, root, _secondary = layout
+    home = make_home(root, foreign)
+    before = _tree(foreign.parent)
+    answer = _resolve_line(root, home)
+    assert answer["ok"] is True, answer
+    assert (answer["result"]["reason_code"], answer["result"]["control"]) == ("profile_mismatch", None)
+    assert _tree(foreign.parent) == before
+    assert (foreign / "gateway.lock").stat().st_mode & 0o777 == 0o644
+
+
+@pytest.mark.parametrize("spell", [
+    lambda h: f"{h}/../{h.name}", lambda h: f"{h}/.", lambda h: f"{h.parent}//{h.name}",
+    lambda h: f"/{h}", lambda h: f"{h}/", lambda h: h.name,
+], ids=["dot-dot", "dot", "duplicate-slash", "leading-double-slash", "trailing-slash", "relative"])
+def test_a_walking_spelling_is_invalid_and_reads_nothing(layout, spell):
+    """Only a plain absolute spelling is checked against the root; anything else is refused as a
+    bad parameter before any path is resolved."""
+    solo, _root, _secondary = layout
+    (solo / "gateway.lock").write_text("{}")
+    (solo / "gateway.lock").chmod(0o644)
+    before = _tree(solo)
+    answer = _resolve_line(solo, spell(solo))
+    assert answer == {"ok": False, "error": "PermissionError: invalid resolve parameters", "protocol": 1, "id": 1}
+    assert _tree(solo) == before
+
+
+def test_an_allowed_home_changes_exactly_what_discovery_changes(layout):
+    """Inside the root the lookup does what discovery does on main and nothing more: an unserved
+    secondary's upgraded 0644 lock is narrowed to 0600 by both, an in-root overlay is followed."""
+    _solo, root, secondary = layout
+    other = root / "profiles" / "other"
+    other.mkdir(mode=0o700)
+    for home in (secondary, other):
+        (home / "gateway.lock").write_text("{}")
+        (home / "gateway.lock").chmod(0o644)
+    discovered = discover_gateway_endpoint(other)  # no socket anywhere: the lock verdict
+    answer = _resolve_line(root, str(secondary))
+    assert (answer["result"]["state"], discovered.state) == ("absent", "absent")
+    assert _tree(secondary) == {k.replace(str(other), str(secondary)): v for k, v in _tree(other).items()}
+    overlay = root / "profiles" / "overlay"
+    overlay.mkdir(mode=0o700)
+    (overlay / "gateway.lock").symlink_to(secondary / "gateway.lock")
+    followed = _resolve_line(root, str(overlay))["result"]
+    assert (followed["control"], followed["state"]) == ("host", "absent")
 
 
 def test_a_server_without_the_handler_keeps_the_unknown_verb_answer(layout):

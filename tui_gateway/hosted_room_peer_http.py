@@ -681,6 +681,21 @@ class PeerRunsHTTPClient:
         return hosted_rooms.drop_remote_run_receipt(self.receipt_db_path, record={
             **self._room_scope, "task_id": key[0], "execution_generation": key[1]}, run_id=run_id)
 
+    def refresh_receipt(self, *, dispatch: Mapping[str, Any], grant: str) -> None:
+        """Explicit Retry checks its saved run still exists before trusting it to recover the turn."""
+        # Binds the group chat's scope first: a client new since a restart has none yet.
+        checked = self._checked_dispatch(dispatch, grant)
+        record = self._receipt(checked.task_id, checked.execution_generation)
+        if record is None:
+            return
+        try:
+            self._request(_run_path(record), room_grant=self._require_room_grant(grant))
+        except PeerRunsHTTPError as exc:
+            if exc.status_code != 404 or exc.error_code != "run_not_found":
+                raise
+            self.forget_receipt(task_id=checked.task_id, execution_generation=checked.execution_generation,
+                                run_id=str(record["run_id"]))
+
     def stop_receipt(
         self, *, task_id: str, execution_generation: int, grant: str) -> Mapping[str, Any] | None:
         """Stop the exact durable remote run after a home restart."""

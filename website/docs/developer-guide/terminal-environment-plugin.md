@@ -341,7 +341,9 @@ def stop_process(self, name, *, scope): ...                          # -> bool
 ```
 
 `ProcessStream` (from `sandbox_scope`) holds byte pipes `stdin` and `stdout`
-and a `poll()` that returns the exit status or `None`. A later call in the same
+and a `poll()` that returns the exit status or `None`. The stream Hermes hands
+back wraps yours: every pipe operation and `poll()` checks the bound scope, so
+a stream acquired by one agent is refused to any other holder. A later call in the same
 session attaches with the `ProcessRef` from the first stream; a reference that
 names another agent's sandbox is refused before your method runs. The built-in
 backends implement these too (`tools/environments/base_processes.py`: the

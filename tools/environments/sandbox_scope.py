@@ -23,7 +23,7 @@ import functools
 import inspect
 import os
 import posixpath
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import IO, Any, Callable, Optional
 from urllib.parse import quote
 
@@ -254,18 +254,24 @@ class ScopedEnvironment:
         """Start *argv* in this sandbox as the long-lived process *name*, stdio open both ways."""
         scope = require_identity(self.sandbox, "start_process")
         stream = self._inner.start_process(name, argv, child_env=child_env, scope=scope)
-        return replace(stream, ref=ProcessRef(self.sandbox.key, name))
+        return self._guard_stream(stream, name)
 
     def attach_process(self, ref: ProcessRef | str) -> Optional[ProcessStream]:
         """The running process *ref* started earlier in this sandbox, or ``None``."""
         name = self._own_name(ref, "attach_process")
         stream = self._inner.attach_process(name, scope=require_identity(self.sandbox, "attach_process"))
-        return None if stream is None else replace(stream, ref=ProcessRef(self.sandbox.key, name))
+        return None if stream is None else self._guard_stream(stream, name)
 
     def stop_process(self, ref: ProcessRef | str) -> bool:
         """Stop *ref*; ``False`` when no such process was running."""
         name = self._own_name(ref, "stop_process")
         return self._inner.stop_process(name, scope=require_identity(self.sandbox, "stop_process"))
+
+    def _guard_stream(self, stream: ProcessStream, name: str) -> ProcessStream:
+        """*stream* with every pipe and ``poll`` behind this sandbox's identity check: a stream once
+        acquired by A stays A's, whoever holds the object later."""
+        return ProcessStream(ProcessRef(self.sandbox.key, name), ScopedPipe(stream.stdin, self.sandbox),
+                             ScopedPipe(stream.stdout, self.sandbox), _scoped_call(stream.poll, self.sandbox, "poll"))
 
     def _own_name(self, ref: ProcessRef | str, what: str) -> str:
         if isinstance(ref, ProcessRef):
@@ -276,3 +282,48 @@ class ScopedEnvironment:
 
     def __repr__(self) -> str:
         return f"ScopedEnvironment({self._inner!r}, {self.sandbox.key})"
+
+
+def _scoped_call(fn: Callable[..., Any], identity: SandboxIdentity, what: str) -> Callable[..., Any]:
+    @functools.wraps(fn)
+    def call(*args: Any, **kwargs: Any) -> Any:
+        require_identity(identity, what)
+        return fn(*args, **kwargs)
+    return call
+
+
+class ScopedPipe:
+    """One stdio pipe of a hosted long-lived process. Every operation (read, write, flush, close,
+    fileno, iteration, ...) is refused unless the bound scope is the sandbox's own agent."""
+
+    def __init__(self, raw: Any, identity: SandboxIdentity) -> None:
+        object.__setattr__(self, "_raw", raw)
+        object.__setattr__(self, "_identity", identity)
+
+    def __getattr__(self, name: str) -> Any:
+        require_identity(self._identity, f"stream {name}")
+        value = getattr(self._raw, name)
+        return _scoped_call(value, self._identity, f"stream {name}") if callable(value) else value
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        require_identity(self._identity, f"stream {name}")
+        setattr(self._raw, name, value)
+
+    def __iter__(self) -> Any:
+        require_identity(self._identity, "stream iteration")
+        return self
+
+    def __next__(self) -> Any:
+        require_identity(self._identity, "stream iteration")
+        return next(self._raw)
+
+    def __enter__(self) -> ScopedPipe:
+        require_identity(self._identity, "stream")
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+    def __repr__(self) -> str:
+        return f"ScopedPipe({self._identity.key})"
+

@@ -88,16 +88,9 @@ import { isPidAliveWindows, waitForBackendRelease } from './backend-release-gate
 import { createInstalledRuntimeGate } from './backend-resolution'
 import { desktopBackendSpawnEnv } from './backend-spawn-env'
 import {
-  isHostKeyChangedBootFailure,
-  isRetryableRemoteBootFailure,
-  isSshAuthFailedBootFailure,
-  isSshClientFailedBootFailure,
+  classifyPrimaryBootFailure,
+  createRemoteBootRetryWindow,
   shouldHoldBootProgressForReauth,
-  shouldLatchBackendStartFailure,
-  shouldLatchHostKeyChangedFailure,
-  shouldLatchRemoteReauthFailure,
-  shouldLatchSshAuthFailure,
-  shouldLatchSshClientFailure,
   sshClientFailedError
 } from './backend-start-failure'
 import { describeBootstrapFailure } from './bootstrap-failure-copy'
@@ -1949,6 +1942,9 @@ let backendStartFailure = null
 // the boot-failure overlay, so the "Sign in" button flickers away before it
 // can be clicked. Cleared on every recovery path and on a confirmed sign-in.
 let remoteReauthFailure = null
+// A TRANSIENT remote failure never latches, but only the boot's owner re-drives
+// it at once; every other caller gets it back until this window closes (#123225).
+const remoteBootRetry = createRemoteBootRetryWindow()
 // Active first-launch install, so the renderer's Cancel button (and app quit)
 // can abort the in-flight install.sh/ps1 instead of leaving it running.
 let bootstrapAbortController = null
@@ -10343,6 +10339,7 @@ function resetBootProgressForReconnect() {
 function resetHermesConnectionState({ soft = false }: { soft?: boolean } = {}): void {
   backendStartFailure = null
   remoteReauthFailure = null
+  remoteBootRetry.clear()
   remoteLiveness.clear()
   // The next startHermes() re-reads active-profile.json for its launch profile.
   primaryProfilePin.clear()
@@ -10498,9 +10495,15 @@ async function forgetRegistryLocalGatewayDescriptor(connectionId, profile) {
   }
 }
 
+// Only owners of the primary's boot pass `redial` (see remoteBootRetry).
 async function ensureBackend(
   profile,
-  opts: { inheritsPrimary?: boolean; passive?: boolean; request?: { method?: string; path?: string } } = {}
+  opts: {
+    inheritsPrimary?: boolean
+    passive?: boolean
+    redial?: boolean
+    request?: { method?: string; path?: string }
+  } = {}
 ) {
   const request = primaryBootRequest(profile, primaryProfileKey(), opts.inheritsPrimary)
   const key = request.key
@@ -10519,7 +10522,7 @@ async function ensureBackend(
     const joined = await joinPrimaryBoot(request, route, {
       primaryKey: primaryProfileKey,
       resolveRoute: next => resolveProfileBackendRoute(next, profileRouteOptions(next, opts.request)),
-      start: boot => startHermes(boot.key, boot.inheritsPrimary)
+      start: boot => startHermes(boot.key, boot.inheritsPrimary, Boolean(opts.redial))
     })
 
     setWslBridgeProfileState(joined.key, joined.connection.mode !== 'remote')
@@ -10566,9 +10569,10 @@ async function ensureRegistryBackend(
   connectionId,
   profile,
   managedUpdateCorrelation = '',
-  opts: { passive?: boolean } = {}
+  opts: { passive?: boolean; redial?: boolean } = {}
 ) {
   const passive = Boolean(opts.passive)
+  const redial = Boolean(opts.redial)
   const registry = readDesktopConnectionsRegistry()
   const id = registryDialConnectionId(connectionId, registry.primary)
   const source = registry.connections.find(c => c.id === id)
@@ -10617,7 +10621,7 @@ async function ensureRegistryBackend(
   const primary = await reuseMatchingPrimarySshBackend({
     connectionId: id,
     effectiveFingerprint: resolveRegistryEffectiveFingerprint,
-    ensurePrimary: () => ensureBackend(profile, { passive }),
+    ensurePrimary: () => ensureBackend(profile, { passive, redial }),
     profile,
     registry,
     source
@@ -10634,7 +10638,7 @@ async function ensureRegistryBackend(
   const sharedPrimary: (ResolvedConnectionDescriptor & SharedRegistryProfileScope) | null =
     await reuseMatchingPrimaryRemoteBackend({
       connectionId: id,
-      ensurePrimary: ensureBackend,
+      ensurePrimary: primaryProfile => ensureBackend(primaryProfile, { redial }),
       profile,
       registry,
       source
@@ -10675,7 +10679,7 @@ async function ensureRegistryBackend(
     }
 
     if (localRoute.delegate) {
-      return ensureBackend(profile, { passive })
+      return ensureBackend(profile, { passive, redial })
     }
 
     const existingLocal = backendPool.get(localRoute.poolKey)
@@ -11700,7 +11704,9 @@ function latchedBootFailure(): Error | null {
   return bootstrapFailure ?? backendStartFailure ?? remoteReauthFailure ?? null
 }
 
-async function startHermes(requestedProfile?: string, inheritsPrimary = false) {
+// `redial`: may re-drive a remote boot inside its retry window. Direct callers
+// are lifecycle steps; ensureBackend() passes its caller's intent.
+async function startHermes(requestedProfile?: string, inheritsPrimary = false, redial = true) {
   // Only the single-instance lock holder may reap/spawn/claim the desktop
   // backend. A lock-losing instance must stay inert even if some path reaches
   // here (e.g. the deferred-quit window before `ready`): its reapOrphans()
@@ -11748,6 +11754,14 @@ async function startHermes(requestedProfile?: string, inheritsPrimary = false) {
 
   if (existingConnectionPromise) {
     return existingConnectionPromise
+  }
+
+  // Only the boot's owner re-drives a transient remote failure inside its retry
+  // window; others get it back silently, with no boot progress (#123225).
+  const deferredRemoteFailure = remoteBootRetry.deferredFailure({ redial })
+
+  if (deferredRemoteFailure) {
+    throw deferredRemoteFailure
   }
 
   // Seed active-profile.json from legacy signals BEFORE the first
@@ -11876,6 +11890,7 @@ async function startHermes(requestedProfile?: string, inheritsPrimary = false) {
     backendConnectionState.assertCurrentAttempt(connectionAttempt)
 
     if (setup.kind === 'remote') {
+      remoteBootRetry.clear()
       // Paths from the remote backend belong to a host the Windows desktop
       // cannot open via wsl.exe — disable WSL path bridging so native dialogs
       // and file panels don't spawn wsl.exe (or the interactive install prompt
@@ -11930,9 +11945,7 @@ async function startHermes(requestedProfile?: string, inheritsPrimary = false) {
     }
 
     const message = error instanceof Error ? error.message : String(error)
-    const hostKeyChanged = isHostKeyChangedBootFailure(error)
-    const sshAuthFailed = isSshAuthFailedBootFailure(error)
-    const sshClientFailed = isSshClientFailedBootFailure(error)
+    const failure = error instanceof Error ? error : new Error(message)
 
     // Carry structured Cloud-down metadata through the boot-progress / IPC
     // boundary when present, so the renderer overlay can key on it rather than
@@ -11946,46 +11959,27 @@ async function startHermes(requestedProfile?: string, inheritsPrimary = false) {
         : NaN
     )
 
-    // Only latch LOCAL boot failures. A remote failure (lapsed session / mint
-    // timeout / host briefly unreachable across sleep) is transient and has no
-    // child 'exit' handler to clear the cache — latching it would wedge the app
-    // on "session expired" until a full restart, defeating reconnect, the
-    // "Sign out & sign in" reload, and the wake-recovery revalidate path.
-    // A supervisor-owned respawn never latches (see the predicate).
-    if (shouldLatchBackendStartFailure({ attemptedRemote })) {
-      backendStartFailure = error instanceof Error ? error : new Error(message)
+    // Local failures, and remote ones that cannot self-heal (changed host key,
+    // rejected SSH credentials, a broken local ssh client), latch until
+    // reset/repair/apply-config; a confirmed reauth rejection latches until
+    // sign-in, so the overlay holds still and its buttons stay clickable. A
+    // transient remote failure never latches — it has no child 'exit' to clear
+    // the cache, and a latch would defeat reconnect, "Sign out & sign in" and
+    // wake recovery. It stays retryable for the renderer's bounded self-heal
+    // (#82679) and, until the boot hook redials it, answers background callers
+    // from the retry window (#123225).
+    const verdict = classifyPrimaryBootFailure(error, { attemptedRemote, isReauth: isReauthRequiredError(error) })
+
+    if (verdict.latchStart) {
+      backendStartFailure = failure
     }
 
-    // A host-key CHANGE is the terminal exception among remote failures: SSH
-    // fails closed until the user verifies the change and clears the stale
-    // known_hosts entry, so retrying re-drives the identical doomed boot (one
-    // bundle showed 157 consecutive failures over 2.5h). Latch it like a local
-    // failure — reset/repair/apply-config clear the latch after the user fixes
-    // known_hosts.
-    if (shouldLatchHostKeyChangedFailure({ attemptedRemote, isReauth: false, isHostKeyChanged: hostKeyChanged })) {
-      backendStartFailure = error instanceof Error ? error : new Error(message)
+    if (verdict.latchReauth) {
+      remoteReauthFailure = failure
     }
 
-    // Rejected SSH credentials are just as terminal (#72698): BatchMode ssh
-    // keeps failing until the user loads the key or edits the connection, and
-    // an unlatched failure lets every api call re-drive boot and hide the
-    // overlay out from under its Gateway settings button.
-    if (shouldLatchSshAuthFailure({ attemptedRemote, isReauth: false, isSshAuthFailed: sshAuthFailed })) {
-      backendStartFailure = error instanceof Error ? error : new Error(message)
-    }
-
-    // A dead local ssh client (`ssh -G` failed) is terminal too (#103288):
-    // every retry re-runs the same local probe, so boot looped every ~2s and
-    // the user never reached Settings. Latch it so the overlay holds still;
-    // reset/repair/apply-config release it (desktop.ssh_path needs a restart).
-    if (shouldLatchSshClientFailure({ attemptedRemote, isReauth: false, isSshClientFailed: sshClientFailed })) {
-      backendStartFailure = error instanceof Error ? error : new Error(message)
-    }
-
-    // A confirmed reauth rejection latches separately: it can't self-heal, and
-    // leaving it unlatched hides the overlay's "Sign in" button on every retry.
-    if (shouldLatchRemoteReauthFailure({ attemptedRemote, isReauth: isReauthRequiredError(error) })) {
-      remoteReauthFailure = error instanceof Error ? error : new Error(message)
+    if (verdict.retryable) {
+      remoteBootRetry.fail(failure)
     }
 
     updateBootProgress(
@@ -11994,19 +11988,7 @@ async function startHermes(requestedProfile?: string, inheritsPrimary = false) {
         isCloudBackendDown: isCloudBackendDown || undefined,
         message: `Desktop boot failed: ${message}`,
         phase: 'backend.error',
-        // Renderer contract for the self-heal loop (#82679): a transient
-        // REMOTE failure (dropped SSH/HTTP registered connection, mint
-        // timeout) is retryable — the renderer re-attempts the boot with
-        // bounded backoff. Local failures, confirmed reauth rejections,
-        // host-key changes, and rejected SSH credentials are not: those end in
-        // the recovery overlay / sign-in affordance.
-        retryable: isRetryableRemoteBootFailure({
-          attemptedRemote,
-          isReauth: isReauthRequiredError(error),
-          isHostKeyChanged: hostKeyChanged,
-          isSshAuthFailed: sshAuthFailed,
-          isSshClientFailed: sshClientFailed
-        }),
+        retryable: verdict.retryable,
         running: false,
         statusCode: Number.isInteger(statusCode) ? statusCode : undefined
       },
@@ -13985,15 +13967,26 @@ function createWindow() {
   })
 }
 
-ipcMain.handle('hermes:connection', async (event, profile) => {
+ipcMain.handle('hermes:connection', async (event, profile, opts) => {
   const source = windowConnectionRoutes.get(event.sender.id) ?? null
   const route = resolveDesktopConnectionRequest(profile, source, primaryProfileKey())
 
   // A profile-less request follows the primary even though the route carries its name.
-  return connectDesktopProfileRoute(route, event.sender, desktopConnectionRequestInheritsPrimary(profile, source))
+  return connectDesktopProfileRoute(
+    route,
+    event.sender,
+    desktopConnectionRequestInheritsPrimary(profile, source),
+    opts?.redial === true
+  )
 })
 
-async function connectDesktopProfileRoute(route: DesktopProfileRoute, sender?: Electron.WebContents, inherits = false) {
+// `redial` is on for main's startup dial; renderer IPC passes the boot hook's flag.
+async function connectDesktopProfileRoute(
+  route: DesktopProfileRoute,
+  sender?: Electron.WebContents,
+  inherits = false,
+  redial = true
+) {
   // Coalesce concurrent renderer dials for one profile scope (#90812): the
   // renderer-side reconnect lock is per-window, so two windows waking at once
   // both land here. The claim key mirrors ensureBackend()'s own profile
@@ -14003,8 +13996,8 @@ async function connectDesktopProfileRoute(route: DesktopProfileRoute, sender?: E
 
   const connection = await backendDialClaims.run(scopeKey, () =>
     route.connectionId
-      ? ensureRegistryBackend(route.connectionId, route.profile)
-      : ensureBackend(route.profile, { inheritsPrimary })
+      ? ensureRegistryBackend(route.connectionId, route.profile, '', { redial })
+      : ensureBackend(route.profile, { inheritsPrimary, redial })
   )
 
   // Every republish carries LIVE window state (#102451): the backend pool entry
@@ -14039,11 +14032,16 @@ async function connectDesktopProfileRoute(route: DesktopProfileRoute, sender?: E
 // canonical gateway when the v1 global mode is remote (the registry 'local'
 // entry always means this machine) unless the profile is remote-only.
 ipcMain.handle('hermes:connection:for', async (event, payload) => {
-  const { connectionId, profile } = payload && typeof payload === 'object' ? (payload as any) : ({} as any)
+  const { connectionId, profile, redial } = payload && typeof payload === 'object' ? (payload as any) : ({} as any)
   const registry = readDesktopConnectionsRegistry()
   const id = registryDialConnectionId(connectionId, registry.primary)
 
-  return connectDesktopProfileRoute({ connectionId: id, profile: String(profile ?? '').trim() || 'default' }, event.sender)
+  return connectDesktopProfileRoute(
+    { connectionId: id, profile: String(profile ?? '').trim() || 'default' },
+    event.sender,
+    false,
+    redial === true
+  )
 })
 
 const windowConnectionRoutes = new WindowConnectionRouteRegistry()

@@ -570,6 +570,7 @@ class ProviderProfile:
                     return None
                 url = effective_base.rstrip("/") + "/models"
 
+        import gzip
         import json
         import urllib.request
 
@@ -588,7 +589,12 @@ class ProviderProfile:
 
         try:
             with open_credentialed_url(req, timeout=timeout) as resp:
-                data = json.loads(resp.read().decode())
+                body = resp.read()
+                # urllib leaves gzip negotiated by provider headers compressed.
+                # Sniff the wire bytes so missing Content-Encoding headers work too.
+                if body.startswith(b"\x1f\x8b"):
+                    body = gzip.decompress(body)
+                data = json.loads(body.decode())
             items = data if isinstance(data, list) else data.get("data", [])
             from hermes_cli.chat_catalog import chat_catalog_ids
 

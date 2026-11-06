@@ -18,7 +18,7 @@ import { useSubmission } from '../app/useSubmission.js'
 import { useQueue } from '../hooks/useQueue.js'
 import * as journal from '../lib/pendingInputs.js'
 
-const scratch = join(tmpdir(), 'hermes-opsx-apply-20261105', 'finish-queue-slash')
+const scratch = join(tmpdir(), 'hermes-queue-slash-tests')
 const cleanups: Array<() => void> = []
 const noop = () => {}
 const flush = () => new Promise(resolve => setImmediate(resolve))

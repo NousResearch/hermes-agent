@@ -807,17 +807,17 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         if len(target) >= 2 and target[0] + target[-1] in {"<>", "[]", '""', "''"}:
             target = target[1:-1].strip()
         if not target:
-            _cp(f"  {_t('resume.usage')}")
-            if self._show_recent_sessions(reason="resume"):
-                # Arm a one-shot bare-number selection; must be the same list the table showed
-                # and the numbered branch resolves (all use _list_recent_sessions(limit=10)).
-                # Arm a one-shot pending-resume selection so the user can type just the number (`3`) on the
-                # next line instead of having to retype `/resume 3`. The list here must match the one shown
-                # by _show_recent_sessions and used for index resolution below — all three go through
-                # _list_recent_sessions(limit=10). See #34584.
-                self._pending_resume_sessions = self._list_recent_sessions(limit=10)
-                return
-            return _cp(f"  {_t('resume.tip_find_sessions')}")
+            import sys
+            if sys.stdin.isatty() and sys.stdout.isatty():
+                from hermes_cli.sessions_cmd_browse import pick_interactive_session
+                if not (target := pick_interactive_session(self._session_db, exclude_sources=["tool"])):
+                    return _cp("  Cancelled.") if target is None else None
+            if not target:
+                _cp(f"  {_t('resume.usage')}")
+                if self._show_recent_sessions(reason="resume"):
+                    self._pending_resume_sessions = self._list_recent_sessions(limit=10)
+                    return
+                return _cp(f"  {_t('resume.tip_find_sessions')}")
         # Any explicit /resume <target> supersedes a previously-armed bare numbered prompt.
         self._pending_resume_sessions = None
         if not self._session_db:

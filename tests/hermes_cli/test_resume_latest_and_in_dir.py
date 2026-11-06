@@ -80,6 +80,28 @@ def test_chat_subparser_accepts_in_flag():
     assert args.resume == "latest"
 
 
+def test_top_level_parser_accepts_bare_resume():
+    from hermes_cli._parser import build_top_level_parser
+
+    parser, _subparsers, _chat = build_top_level_parser()
+    args = parser.parse_args(["--resume"])
+    assert args.resume is True
+
+    args_short = parser.parse_args(["-r"])
+    assert args_short.resume is True
+
+
+def test_chat_subparser_accepts_bare_resume():
+    from hermes_cli._parser import build_top_level_parser
+
+    parser, _subparsers, _chat = build_top_level_parser()
+    args = parser.parse_args(["chat", "--resume"])
+    assert args.resume is True
+
+    args_short = parser.parse_args(["chat", "-r"])
+    assert args_short.resume is True
+
+
 def test_top_level_in_value_not_mistaken_for_subcommand(monkeypatch):
     # `hermes --in chat` — "chat" is the flag's value, not the subcommand.
     import sys

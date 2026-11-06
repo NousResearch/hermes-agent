@@ -26,6 +26,7 @@ const parseToggle = (v?: string): boolean | null => {
 export const TERMUX_TUI_MODE: boolean = isTermuxTuiMode()
 
 export const STARTUP_RESUME_ID = (process.env.HERMES_TUI_RESUME ?? '').trim()
+export const STARTUP_OPEN_SESSIONS = truthy(process.env.HERMES_TUI_OPEN_SESSIONS)
 export const STARTUP_QUERY = (process.env.HERMES_TUI_QUERY ?? '').trim()
 export const STARTUP_IMAGE = (process.env.HERMES_TUI_IMAGE ?? '').trim()
 // Workspace the dashboard user picked for a fresh chat (`/api/pty?cwd=`). Sent as the explicit

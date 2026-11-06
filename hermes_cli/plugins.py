@@ -1495,7 +1495,9 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         return dict(self._portable_mcp_server_plugins)
 
     def remove_plugin_skill(self, qualified_name: str) -> None:
-        """Remove a stale registry entry (silently ignores missing keys)."""
+        """Remove a stale registry entry (silently ignores missing keys). Refused once the hosted boot
+        froze the registries: a reader that finds the file gone reports it missing instead."""
+        refuse_if_frozen("plugin registry")
         self._plugin_skills.pop(qualified_name, None)
 
 

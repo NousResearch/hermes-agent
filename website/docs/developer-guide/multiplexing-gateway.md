@@ -233,6 +233,12 @@ process-wide name and alias maps are read-only. `bundled_profiles()` still reads
 the provider catalog after the freeze, because collecting into a private list
 is not a registration.
 
+For plugins, a retained `ctx` or registration handle refuses after the freeze:
+`handle.dispose()` and its alias `handle.release()` raise, and a handle's `kind`
+and inverse cannot be rebound, so only a supervised task's lease (which cancels
+the plugin's own task) still releases. `remove_plugin_skill` refuses too; a
+plugin skill whose file was deleted reads as missing and stays registered.
+
 For MCP, every path that would change the served set refuses before its first
 side effect: reconciling with a changed `mcp_servers`, restarting a server on
 new launch inputs, a scoped or named `shutdown_mcp_servers`, and the removal

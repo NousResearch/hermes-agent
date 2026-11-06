@@ -248,3 +248,71 @@ def test_unfrozen_context_registers_disposes_and_unloads(manager, context):
     context.register_hook("post_tool_call", _callback)
     assert manager.unload("probe") is True
     assert "post_tool_call" not in manager._hooks
+
+
+def test_registration_release_refuses_after_freeze(manager, context):
+    """``release`` is the public name of a handle's inverse; it is the guarded ``dispose``."""
+    handle = context.register_hook("post_tool_call", _callback)
+    freeze_registries()
+    with pytest.raises(RegistryFrozen, match="plugin registry"):
+        handle.release()
+    assert handle.active
+    assert manager._hooks["post_tool_call"] == [_callback]
+
+
+def test_registration_kind_and_inverse_cannot_be_rebound(manager, context):
+    """``kind`` decides the background-task exemption; rebinding it (or the inverse) on a retained
+    handle would let the plugin release a registry entry after the freeze."""
+    handle = context.register_hook("post_tool_call", _callback)
+    for name, value in (("kind", "background_task"), ("_release", lambda: None), ("key", "other")):
+        with pytest.raises(AttributeError):
+            setattr(handle, name, value)
+    freeze_registries()
+    with pytest.raises(RegistryFrozen):
+        handle.dispose()
+    assert manager._hooks["post_tool_call"] == [_callback]
+
+
+def test_remove_plugin_skill_refuses_after_freeze(manager, context, tmp_path):
+    path = tmp_path / "SKILL.md"
+    path.write_text("skill")
+    context.register_skill("probe", path)
+    freeze_registries()
+    with pytest.raises(RegistryFrozen, match="plugin registry"):
+        manager.remove_plugin_skill("probe:probe")
+    assert manager.find_plugin_skill("probe:probe") == path
+
+
+def test_stale_plugin_skill_read_reports_missing_without_changing_the_registry(manager, context, tmp_path,
+                                                                                monkeypatch):
+    """A skill file deleted out of band reads as missing after the freeze; the frozen entry stays."""
+    import json
+    import hermes_cli.plugins as plugins_mod
+    from tools.skills_tool import skill_view
+    path = tmp_path / "SKILL.md"
+    path.write_text("---\nname: probe\ndescription: d\n---\nbody\n")
+    context.register_skill("probe", path)
+    monkeypatch.setattr(plugins_mod, "get_plugin_manager", lambda: manager)
+    monkeypatch.setattr(plugins_mod, "discover_plugins", lambda *a, **k: None)
+    freeze_registries()
+    path.unlink()
+    result = json.loads(skill_view("probe:probe"))
+    assert result["success"] is False and "no longer exists" in result["error"]
+    assert manager.find_plugin_skill("probe:probe") == path
+
+
+def test_memory_skill_prune_is_skipped_after_freeze(manager, context, tmp_path, monkeypatch):
+    """Pruning an inactive memory provider's skills is a plugin-registry change: after the freeze it
+    leaves the registry (and its own bookkeeping) as they are instead of raising into the read."""
+    import hermes_cli.plugins as plugins_mod
+    from plugins import memory
+    path = tmp_path / "SKILL.md"
+    path.write_text("skill")
+    context.register_skill("probe", path)
+    monkeypatch.setattr(plugins_mod, "get_plugin_manager", lambda: manager)
+    tracked = {"probe:probe": path}
+    monkeypatch.setattr(memory, "_registered_skills_for_active_home", lambda: tracked)
+    freeze_registries()
+    memory._prune_inactive_memory_provider_skills("other-provider")
+    assert manager.find_plugin_skill("probe:probe") == path
+    assert tracked == {"probe:probe": path}

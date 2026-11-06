@@ -454,7 +454,7 @@ class SessionUndoParams(SessionParams):
 
 class SessionUndoResult(Result):
     removed: int
-    # Present only when checkpoints are on and the undone turn took one (``rollback.list``'s field).
+    # Present only when checkpoints are on and the undone turns changed files (``rollback.list``'s field).
     undo_hint: UndoRollbackHint | None = None
 
 

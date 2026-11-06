@@ -50,30 +50,29 @@ def _resolve_checkpoint_hash(mgr, cwd: str, ref: str) -> str:
 
 
 
-def undo_rollback_hint_for(session: dict, target_message: dict, kept_history: list, history: list) -> dict | None:
-    """``/undo``'s ``/rollback`` pointer for a sidecar session (``tools/checkpoint_undo_hint.py``): the same
+def undo_rollback_hint_for(session: dict, target_message: dict, kept_history: list) -> dict | None:
+    """``/undo``'s changed-files line for a sidecar session (``tools/checkpoint_undo_hint.py``): the same
     manager, cwd and container refusal its ``rollback.*`` methods use. None: no line.
 
     The store is the SESSION's profile's (``_resolve_checkpoint_base`` reads the bound HERMES_HOME), so the
-    whole read runs under that profile's runtime scope: an RPC thread otherwise holds the launch profile's.
-    ``history``: the pre-undo transcript, so a stamp two turns share names no turn."""
+    whole read runs under that profile's runtime scope: an RPC thread otherwise holds the launch profile's."""
     mgr = getattr(session.get("agent"), "_checkpoint_mgr", None)
     if mgr is None or not mgr.enabled:
         return None
-    from tools.checkpoint_undo_hint import undo_hint_payload
+    from tools.checkpoint_undo_hint import undo_hint_payload, undo_span_start
     from tui_gateway import server  # method bodies are bound onto server.py's globals (method_ctx.py)
 
     def hint(mgr, cwd):  # under the same profile scope rollback.restore runs in (_with_checkpoints)
         if server._container_checkpoint_refusal(session, mgr, cwd):
             return None
-        return undo_hint_payload(mgr, cwd, (target_message or {}).get("timestamp"), kept_history,
-                                 history=history, task_id=None)
+        since = undo_span_start((target_message or {}).get("timestamp"), kept_history)
+        return undo_hint_payload(mgr, cwd, since, task_id=None)
     return server._with_checkpoints(session, hint)
 
 
-def undo_hint_fields(session: dict, rewound, params: dict, history: list) -> dict:
+def undo_hint_fields(session: dict, rewound, params: dict) -> dict:
     """``session.undo``'s ``undo_hint`` field for a rewind ``(kept, live_view, count)``; ``{}`` for none or /retry."""
     if not rewound or not rewound[2] or params.get("intent") == "retry":
         return {}
-    hint = undo_rollback_hint_for(session, rewound[1], rewound[0], history)
+    hint = undo_rollback_hint_for(session, rewound[1], rewound[0])
     return {"undo_hint": hint} if hint else {}

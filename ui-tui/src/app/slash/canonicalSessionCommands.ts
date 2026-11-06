@@ -191,7 +191,7 @@ export function canonicalRewind(intent: 'retry' | 'undo', ctx: SlashRunCtx) {
     })
 }
 
-/** `/undo`'s pointer at the `/rollback` that restores the undone turns' files; silent when the owner has none. */
+/** `/undo`'s line naming the files the undone turns changed (and pointing at `/rollback`); silent when none. */
 function showUndoRollbackHint(ctx: SlashRunCtx, sid: string, target?: { id?: unknown; timestamp?: unknown }) {
   if (typeof target?.timestamp !== 'number') {
     return

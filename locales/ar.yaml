@@ -3982,9 +3982,7 @@ plan_usage:
   large_notice_limit_stops: "نموذج كبير: تم بلوغ حدك {name} ({resets})، لذا لن يعمل حتى ذلك الحين."
   large_notice_percent: "نموذج كبير: يستهلك المزيد من استخدام خطتك لكل رسالة. الحد الشهري للنماذج الكبيرة: {percent} مستخدم."
 shared:
-  # /undo's pointer at the /rollback command that restores the undone turns' files
-  # (tools/checkpoint_undo_hint.py).
+  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
   undo_rollback:
-    restore: "↶ الملفات التي تغيّرت في الأدوار التي تم التراجع عنها: {files}. لاستعادتها: /rollback {ref}"
     list: "↶ الملفات التي تغيّرت في الأدوار التي تم التراجع عنها: {files}. شغّل /rollback لعرض نقاط الحفظ واستعادة إحداها."
     more: "+{count} أخرى"

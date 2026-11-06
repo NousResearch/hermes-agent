@@ -3982,9 +3982,7 @@ plan_usage:
   large_notice_limit_stops: "大型模型：已達{name}上限（{resets}），在此之前無法執行。"
   large_notice_percent: "大型模型：每則訊息消耗更多方案用量。每月大型模型上限：已用 {percent}。"
 shared:
-  # /undo's pointer at the /rollback command that restores the undone turns' files
-  # (tools/checkpoint_undo_hint.py).
+  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
   undo_rollback:
-    restore: "↶ 已復原回合中變更的檔案：{files}。還原它們：/rollback {ref}"
     list: "↶ 已復原回合中變更的檔案：{files}。執行 /rollback 列出檢查點並還原其中一個。"
     more: "另外 {count} 個"

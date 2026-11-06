@@ -854,7 +854,7 @@ def _cmd_undo(rid, params, session, name, arg):
     except (ValueError, IndexError):
         return _err(rid, 4004, f"undo: invalid count {arg_str!r} — use /undo or /undo N")
     with session["history_lock"]:
-        history, user_indices, err = _rewind_prelude(rid, session, "undo", "no user messages to undo")
+        _history, user_indices, err = _rewind_prelude(rid, session, "undo", "no user messages to undo")
         if err:
             return err
         turns_undone = min(n, len(user_indices))
@@ -880,7 +880,7 @@ def _cmd_undo(rid, params, session, name, arg):
     _tui_model_friction("undo", session, turns_undone)
     turn_word = "turn" if turns_undone == 1 else "turns"
     notice = f"↶ Undid {turns_undone} {turn_word} ({rewound_count} message(s)). Edit and resubmit, or send a new message."
-    if hint := _tools_mod("tui_gateway.checkpoints").undo_rollback_hint_for(session, live_view, active, history):
+    if hint := _tools_mod("tui_gateway.checkpoints").undo_rollback_hint_for(session, live_view, active):
         notice += "\n" + hint["text"]
     return _ok(rid, {"type": "prefill", "message": target_text, "notice": notice})
 

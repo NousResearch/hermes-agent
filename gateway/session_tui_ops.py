@@ -261,18 +261,13 @@ async def rollback(connection, ref, params, *, kind):
                 # whose newest row bounds the span from below, so a turn started since cannot move it;
                 # without it ``undo_since`` is already bounded by the client (the rewired classic CLI).
                 from gateway.session_local_recovery import transcript_target
-                from tools.checkpoint_takes import stored_turn_key
-                from tools.checkpoint_undo_hint import undo_rollback_hint, undo_span_start
+                from tools.checkpoint_undo_hint import undo_hint_payload, undo_span_start
                 kept, transcript = [], transcript_target(authority, ref)
                 if (cut := params.get('undo_message_id')) is not None:
                     kept = [m for m in authority.db.get_messages_as_conversation(
                         transcript, include_row_ids=True) if m.get('_row_id', cut) < cut]
-                # ``undo_since`` is the first undone user row's stamp (the CLI's is bounded already and equal
-                # to it unless a kept row is later: then no take matches and the line names no hash).
-                if hint := undo_rollback_hint(mgr, cwd, undo_span_start(params['undo_since'], kept),
-                                              first_turn=stored_turn_key(authority.db, transcript, params['undo_since']),
-                                              task_id=None):
-                    listed['undo_hint'] = hint.as_dict()
+                if hint := undo_hint_payload(mgr, cwd, undo_span_start(params['undo_since'], kept), task_id=None):
+                    listed['undo_hint'] = hint
             return listed
         if kind == 'session_diff':
             return _session_diff(mgr, cwd, refusal)

@@ -254,7 +254,7 @@ export function sessionCommandHandlers<C extends { arg: string }>(env: SessionCo
     return { ...receipt, derivedRowId: target.row_id as number }
   }
 
-  // Main's /undo never touches files: the owner names the /rollback that restores what the undone turns changed.
+  // Main's /undo never touches files: the owner names the files the undone turns changed and points at /rollback.
   // The rewound row's id pins the span to the rewind's own boundary: a turn started since cannot move it.
   async function undoRollbackHint(out: SlashOutput, target: { id?: unknown; timestamp?: unknown }): Promise<string> {
     if (typeof target.timestamp !== 'number') {

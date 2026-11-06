@@ -51,11 +51,11 @@ async function freePort(): Promise<number> {
 
 /** A real second gateway: its own HOME (the host singleton is per HOME) and
  *  HERMES_HOME, this tree's code, the runtime venv's interpreter. */
-async function startRemoteGateway(root: string, mockUrl: string) {
+async function startRemoteGateway(root: string, mockUrl: string, config = MULTIPLEX) {
   const fakeHome = path.join(root, 'homelab-root')
   const home = path.join(fakeHome, '.hermes')
   fs.mkdirSync(home, { recursive: true })
-  writeMockProviderConfig(home, mockUrl, undefined, MULTIPLEX)
+  writeMockProviderConfig(home, mockUrl, undefined, config)
   writeEnvFile(home, undefined, mockUrl)
   const port = await freePort()
   const url = `http://127.0.0.1:${port}`
@@ -128,7 +128,7 @@ async function openBots(page: Page): Promise<void> {
 
 /** Every picker row as { text, checkbox index }. */
 async function pickerRows(page: Page) {
-  const dialog = page.getByRole('dialog', { name: 'New Group Chat' })
+  const dialog = page.getByRole('dialog', { name: 'New group chat' })
 
   return dialog.locator('label:has([role="checkbox"])').evaluateAll(nodes => nodes.map(node => (node as HTMLElement).innerText.replace(/\s+/g, ' ').trim()))
 }
@@ -183,10 +183,10 @@ test.describe('cross-gateway group chat', () => {
     await expect(page.getByText(/scribe/i).first()).toBeVisible({ timeout: 90_000 })
     await shot(page, '0-roster')
     await page.getByRole('button', { name: 'New bot or group chat' }).click()
-    const menuItem = page.getByRole('menuitem', { name: 'New Group Chat' })
+    const menuItem = page.getByRole('menuitem', { name: 'New group chat' })
     await expect(menuItem).toBeEnabled({ timeout: 30_000 })
     await menuItem.click()
-    const dialog = page.getByRole('dialog', { name: 'New Group Chat' })
+    const dialog = page.getByRole('dialog', { name: 'New group chat' })
     await expect(dialog).toBeVisible()
     // Let groups.capabilities settle so the picker shows its final roster.
     await page.waitForTimeout(3_000)
@@ -234,6 +234,7 @@ test.describe('cross-gateway group chat', () => {
     }, ROOM)
 
     const replies = async () => (await roomLog()).filter((entry: any) => entry.from !== 'You').map((entry: any) => [entry.from, entry.text])
+
     // Each member's own scripted line, authored by that member, once.
     const dump = async () => {
       console.log('PROBE_RESULT room log', JSON.stringify(await roomLog()))
@@ -249,6 +250,7 @@ test.describe('cross-gateway group chat', () => {
     await expect(page.getByText('REMOTE_OK answered from Homelab', { exact: true }).filter({ visible: true })).toHaveCount(1)
     const log = await roomLog()
     console.log('PROBE_RESULT room log', JSON.stringify(log))
+
     // Each reply was produced on its own machine: read both gateways' state.db.
     const owner = (home: string, marker: string) => spawnSync('python3', ['-c', [
       'import glob, sqlite3, sys',
@@ -258,10 +260,12 @@ test.describe('cross-gateway group chat', () => {
       '    n += c.execute("select count(*) from messages where role = \'assistant\' and content like ?", ("%" + sys.argv[2] + "%",)).fetchone()[0]',
       'print(n)'
     ].join(String.fromCharCode(10)), home, marker], { encoding: 'utf8' }).stdout.trim()
+
     const ownership = {
       thisDevice: { LOCAL_OK: owner(sandbox.hermesHome, 'LOCAL_OK answered'), REMOTE_OK: owner(sandbox.hermesHome, 'REMOTE_OK answered') },
       homelab: { LOCAL_OK: owner(remote.home, 'LOCAL_OK answered'), REMOTE_OK: owner(remote.home, 'REMOTE_OK answered') }
     }
+
     console.log('PROBE_RESULT assistant rows per gateway state.db', JSON.stringify(ownership))
     expect([Number(ownership.thisDevice.LOCAL_OK) > 0, ownership.thisDevice.REMOTE_OK, Number(ownership.homelab.REMOTE_OK) > 0, ownership.homelab.LOCAL_OK]).toEqual([true, '0', true, '0'])
     const prompts = mock.receivedPrompts.filter(prompt => prompt.includes('E2E_SAY('))
@@ -281,8 +285,8 @@ test.describe('cross-gateway group chat', () => {
     test.setTimeout(180_000)
     await openBots(page)
     await page.getByRole('button', { name: 'New bot or group chat' }).click()
-    await page.getByRole('menuitem', { name: 'New Group Chat' }).click()
-    const dialog = page.getByRole('dialog', { name: 'New Group Chat' })
+    await page.getByRole('menuitem', { name: 'New group chat' }).click()
+    const dialog = page.getByRole('dialog', { name: 'New group chat' })
     await expect(dialog).toBeVisible()
     await page.waitForTimeout(3_000)
     const rows = await pickerRows(page)
@@ -301,4 +305,148 @@ test.describe('cross-gateway group chat', () => {
     console.log('PROBE_RESULT control room opened in the gateway-owned workspace')
     await shot(page, '5-control-gateway-owned')
   })
+})
+
+/** Run a persistent lender behind the same remote connection used by the courier test. */
+async function startPeerGateway(root: string, mockUrl: string) {
+  const apiPort = await freePort()
+  const fakeHome = path.join(root, 'homelab-root')
+  const home = path.join(fakeHome, '.hermes')
+  fs.mkdirSync(home, { recursive: true })
+
+  const config = [MULTIPLEX.trimEnd(), `  room_link_url: http://127.0.0.1:${apiPort}`,
+    '  platforms:', '    api_server:', '      enabled: true', `      port: ${apiPort}`, '      host: 127.0.0.1', 'approvals:', '  mode: manual', ''].join('\n')
+
+  writeMockProviderConfig(home, mockUrl, undefined, config)
+  writeEnvFile(home, undefined, mockUrl)
+  const python = process.env.CROSS_GATEWAY_PYTHON || path.join(REPO_ROOT, '.venv', 'bin', 'python')
+
+  const child = spawn(python, ['-m', 'hermes_cli.main', 'gateway', 'run'], {
+    cwd: REPO_ROOT,
+    env: { ...process.env, HOME: fakeHome, HERMES_HOME: home, PYTHONPATH: REPO_ROOT,
+      API_SERVER_KEY: REMOTE_TOKEN, API_SERVER_ENABLED: 'true', API_SERVER_PORT: String(apiPort) },
+    stdio: ['ignore', 'pipe', 'pipe']
+  })
+
+  let log = ''
+  child.stdout.on('data', (chunk: Buffer) => { log += chunk.toString() })
+  child.stderr.on('data', (chunk: Buffer) => { log += chunk.toString() })
+  let viewer: Awaited<ReturnType<typeof startRemoteGateway>> | undefined
+
+  const close = async () => {
+    await viewer?.close()
+
+    if (child.exitCode === null && child.signalCode === null) {
+      const exited = new Promise<void>(resolve => child.once('exit', () => resolve()))
+      child.kill('SIGTERM')
+      const killTimer = setTimeout(() => child.kill('SIGKILL'), 5_000)
+      await exited.finally(() => clearTimeout(killTimer))
+    }
+  }
+
+  try {
+    await expect.poll(async () => {
+      if (child.exitCode !== null || child.signalCode !== null) {throw new Error(`peer gateway exited: ${log}`)}
+
+      try { return (await fetch(`http://127.0.0.1:${apiPort}/v1/models`, { headers: { Authorization: `Bearer ${REMOTE_TOKEN}` } })).ok } catch { return false }
+    }, { timeout: 90_000 }).toBe(true)
+    // Keep the lender's gateway config when adding the authenticated WebSocket viewer.
+    viewer = await startRemoteGateway(root, mockUrl, config)
+
+    return { ...viewer, close }
+  } catch (error) {
+    await close()
+    throw error
+  }
+}
+
+/** Read the authoritative event log while no Electron process is running. */
+function peerRoomLog(home: string, name: string): Array<{ kind: string; payload: Record<string, unknown> }> {
+  const query = spawnSync('python3', ['-c', [
+    'import json, sqlite3, sys',
+    'c = sqlite3.connect("file:" + sys.argv[1] + "/state.db?mode=ro", uri=True)',
+    'rows = c.execute("select e.kind, e.payload_json from hosted_room_events e join hosted_rooms r using(room_id) where r.name = ? order by e.seq", (sys.argv[2],))',
+    'print(json.dumps([{"kind": k, "payload": json.loads(p)} for k, p in rows]))'
+  ].join('\n'), home, name], { encoding: 'utf8' })
+
+  if (query.status !== 0) {throw new Error(query.stderr || `room log read exited ${query.status}`)}
+
+  return JSON.parse(query.stdout)
+}
+
+test('gateway peers finish both turns after Electron quits and reopen once', async () => {
+  test.setTimeout(420_000)
+  const marker = 'PEER_DESKTOP_CLOSED'
+  const name = 'Persistent two machines'
+  const localReply = 'LOCAL_PERSISTENT_REPLY'
+  const peerReply = 'HOMELAB_PERSISTENT_REPLY'
+  const localModel = await startMockServer({ holdFirstCompletionContaining: marker, replyForPrompt: () => localReply })
+  const peerModel = await startMockServer({ holdFirstCompletionContaining: marker, replyForPrompt: () => peerReply })
+  const sandbox = createSandbox('peer-gateway')
+  let remote: Awaited<ReturnType<typeof startPeerGateway>> | undefined
+  let app: ElectronApplication | undefined
+
+  try {
+    writeMockProviderConfig(sandbox.hermesHome, localModel.url, undefined, MULTIPLEX)
+    writeEnvFile(sandbox.hermesHome, undefined, localModel.url)
+    remote = await startPeerGateway(sandbox.root, peerModel.url)
+    writeConnectionsRegistry(sandbox, remote.url)
+    const env = buildAppEnv(sandbox)
+    let launched = await launchDesktop(env)
+    app = launched.app
+    let page = launched.page
+    await waitForAppReady(launched as MockBackendFixture, 120_000)
+    await openBots(page)
+    await expect(page.getByText(REMOTE_LABEL).first()).toBeVisible({ timeout: 90_000 })
+    await page.getByRole('button', { name: 'New bot or group chat' }).click()
+    await page.getByRole('menuitem', { name: 'New group chat' }).click()
+    const dialog = page.getByRole('dialog', { name: 'New group chat' })
+    const checks = dialog.locator('label:has([role="checkbox"]) [role="checkbox"]')
+    await expect(checks).toHaveCount(2)
+    await checks.nth(0).click()
+    await checks.nth(1).click()
+    await expect(dialog.locator('[data-group-engine="gateway-peer"]')).toHaveText(
+      'Runs on this device, including when this Desktop is closed. Only text is sent to bots on other computers.')
+    await dialog.getByRole('textbox', { name: 'Group name' }).fill(name)
+    await dialog.getByRole('button', { name: 'Create Group (2)' }).click()
+    await expect(dialog).toBeHidden()
+    const composer = page.getByRole('textbox', { name: 'Group message' }).filter({ visible: true })
+    await composer.fill(`@all ${marker}`)
+    await expect(page.getByRole('button', { name: 'Send' }).filter({ visible: true })).toBeEnabled({ timeout: 30_000 })
+    await composer.press('Enter')
+    // Discussion admits one member at a time: quit with the first held and the second outstanding.
+    await expect.poll(() => localModel.heldCompletionCount() + peerModel.heldCompletionCount(), { timeout: 120_000 }).toBe(1)
+    expect(peerRoomLog(sandbox.hermesHome, name).filter(event => event.kind === 'message.member')).toEqual([])
+    await app.close()
+    app = undefined
+    // Releasing also opens the gate for the provider whose turn has not started yet.
+    localModel.releaseHeldStream()
+    peerModel.releaseHeldStream()
+    const replies = () => peerRoomLog(sandbox.hermesHome, name).filter(event => event.kind === 'message.member').map(event => event.payload.text).sort()
+    await expect.poll(replies, { timeout: 120_000, intervals: [1_000] }).toEqual([peerReply, localReply])
+    launched = await launchDesktop(env)
+    app = launched.app
+    page = launched.page
+    await waitForAppReady(launched as MockBackendFixture, 120_000)
+    await openBots(page)
+
+    if (!await page.getByRole('textbox', { name: 'Group message' }).filter({ visible: true }).count()) {
+      await page.getByText(name, { exact: true }).first().click()
+    }
+
+    for (const reply of [localReply, peerReply]) {
+      await expect(page.getByText(reply, { exact: true }).filter({ visible: true })).toHaveCount(1, { timeout: 30_000 })
+    }
+
+    await expect(page.locator('li[data-phase="working"], li[data-phase="queued"]')).toHaveCount(0, { timeout: 30_000 })
+    expect(replies()).toEqual([peerReply, localReply])
+  } finally {
+    localModel.releaseHeldStream()
+    peerModel.releaseHeldStream()
+    await app?.close()
+    await remote?.close()
+    await localModel.close()
+    await peerModel.close()
+    sandbox.cleanup()
+  }
 })

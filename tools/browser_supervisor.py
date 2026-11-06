@@ -286,16 +286,22 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         async def _focus() -> dict[str, Any]:
             from agent.vault_store import normalize_origin
             targets = (await self._cdp("Target.getTargets", timeout=timeout)).get("result", {}).get("targetInfos", [])
-            candidates = []
+            candidates, frames = [], []
             for t in targets:
                 url = str(t.get("url") or "")
                 try:
                     # origin="" = any http(s) page (used to FIND the login tab before its origin is known)
-                    if t.get("type") == "page" and url.startswith(("http://", "https://")) \
+                    if t.get("type") in ("page", "iframe") and url.startswith(("http://", "https://")) \
                             and (not origin or normalize_origin(url) == origin):
-                        candidates.append((t["targetId"], url))
+                        (candidates if t["type"] == "page" else frames).append((t["targetId"], url))
                 except Exception:
                     continue
+            # Cross-origin iframes (OOPIFs: an embedded identity-provider login or code prompt) are their own
+            # targets and the top page cannot see their inputs. Try them after every page and only with an
+            # ``accept`` probe, so focus lands in a frame only when it really holds the form. Fills stay
+            # origin-bound: the frame's own origin is what the vault checks.
+            if accept:
+                candidates += frames
             for target_id, url in candidates:
                 sid = await _attach(target_id)
                 if accept:

@@ -6,6 +6,7 @@
 
 import { accessSync, constants } from 'node:fs'
 
+import type { SessionInfo } from '@hermes/shared/gateway-types'
 import { JsonRpcGatewayError } from '@hermes/shared/json-rpc-channel'
 
 import { introMsg, toTranscriptMessages } from '../../domain/messages.js'

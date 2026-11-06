@@ -999,13 +999,14 @@ class HostedRoomService:
             "task_id": task["identity"].task_id, "execution_generation": int(task["execution_generation"])})
 
     def _stop_deferred_peer(self, room_id: str, task: Mapping[str, Any]) -> bool:
-        """Whether a deferred task may be cancelled here: always for a member on this gateway. For a
-        member on another gateway, only once that gateway answers that the exact run this home holds
-        a receipt for has ended. Without a receipt nothing is sent: the admission is uncertain, and
-        replaying it to find the run could start it. Deferral freed the room, so it is not held."""
+        """Whether a deferred task may be cancelled here: for a member on this gateway, once the
+        process serving it confirms (``deferred_stop_confirmed``). For a member on another
+        gateway, only once that gateway answers that the exact run this home holds a receipt for
+        has ended. Without a receipt nothing is sent: the admission is uncertain, and replaying it
+        to find the run could start it. Deferral freed the room, so it is not held."""
         member = _member_of(task)
         if not self._member_is_peer(room_id, member):
-            return True
+            return self.runtime.deferred_stop_confirmed(room_id, task)
         route, client = self.peer_routes.get((room_id, member)), self.peer_clients.get((room_id, member))
         stop, bind_scope = _hook(client, "stop_receipt"), _hook(client, "bind_room_scope")
         if route is None or stop is None:

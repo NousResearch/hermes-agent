@@ -67,6 +67,17 @@ def _db_returning(rows: dict) -> MagicMock:
 class TestPruneStaleSessionsLocked:
 
 
+    def test_prunes_route_whose_session_row_is_missing(self, tmp_path):
+        """A hard-deleted session must not leave an unusable routing entry."""
+        db = _db_returning({})
+        store = _make_store_with_db(tmp_path, db)
+        store._entries["orphan_key"] = _make_entry("orphan_key", "sid_missing")
+
+        store._prune_stale_sessions_locked()
+
+        assert "orphan_key" not in store._entries
+
+
     def test_prunes_multiple_stale_entries(self, tmp_path):
         db = _db_returning({
             "sid_a": {"end_reason": "agent_close", "id": "sid_a"},

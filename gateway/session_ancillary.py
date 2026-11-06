@@ -457,7 +457,8 @@ def _owner_objects(authority, ref, *, include_fallback_evicted=False):
     session_db = getattr(authority, 'db', None) if include_fallback_evicted else None
     return agent, subagent_records(
         agent, session_id=session_id, session_db=session_db, route=route,
-        include_fallback_evicted=include_fallback_evicted)
+        include_fallback_evicted=include_fallback_evicted,
+        session_owner=authority.sessions[ref.session_id])
 
 
 def physical_target(authority, ref):
@@ -526,18 +527,22 @@ def _has_fallback_evicted_ancestor(agent, target_sids, expected_db, route, regis
     return False
 
 
-def subagent_records(parent, session_id=None, *, session_db=None, route=None, include_fallback_evicted=True):
+def subagent_records(parent, session_id=None, *, session_db=None, route=None, include_fallback_evicted=True, session_owner=None):
     registry = sys.modules.get('tools.delegate_tool_registry')
     target_sid = (session_id or getattr(parent, 'session_id', None)) if include_fallback_evicted else None
-    if registry is None or (parent is None and not target_sid):
+    if registry is None or (parent is None and not target_sid and session_owner is None):
         return []
     expected_db = session_db if session_db is not None else getattr(parent, '_session_db', None)
     effective_route = route if route is not None else getattr(parent, 'gateway_session_key', None)
     # A rotating /compress moves the conversation to a new stored id; an evicted parent keeps its earlier one.
     target_sids = _compression_lineage(expected_db, target_sid)
     with registry._active_subagents_lock:
+        # The gateway-issued LiveSession token survives parent cache rebuilds but not a replaced
+        # conversation, so it is the exact owner match; the lineage and fallback-evicted rows below
+        # follow read-only roster convenience and never authenticate control or tail.
         return [dict(record) for record in registry._active_subagents.values()
-                if (parent is not None and registry._is_descendant_of(record.get('agent'), parent))
+                if (session_owner is not None and record.get('owner_session_record') is session_owner)
+                or (parent is not None and registry._is_descendant_of(record.get('agent'), parent))
                 or _has_fallback_evicted_ancestor(record.get('agent'), target_sids, expected_db, effective_route, registry)
                 or _owned_by_lineage(record, target_sids, expected_db)]
 

@@ -98,7 +98,8 @@ async def probe(mode):
                 processes = []
                 gate = home / 'release-process'
                 try:
-                    for name, ancestor in [('owned', parent), ('stale', old_parent), ('sibling', other_parent)]:
+                    for name, ancestor in [('owned', parent), ('rebound', old_parent),
+                                           ('stale', old_parent), ('sibling', other_parent)]:
                         child = Agent()
                         child._subagent_id = name
                         child._delegate_parent_ref = weakref.ref(ancestor)
@@ -106,7 +107,7 @@ async def probe(mode):
                         child._live_transcript_path = home / (name + '.txt')
                         child._live_transcript_path.write_text(name.upper() + '_PRIVATE\n' + 'x' * 18000 + '\n' + name.upper() + '_TAIL')
                         _register_child(child, ancestor, name + '-goal', owner_session_id=None,
-                                        owner_transport=None, owner_session_record=None)
+                                        owner_transport=None, owner_session_record=live if name == 'rebound' else None)
                         children.append(child)
                     command = (shlex.quote(sys.executable) + ' -c ' + shlex.quote(
                         "import pathlib,time;print('PROCESS_OWNED',flush=True);p=pathlib.Path(" + repr(str(gate)) + ");\nwhile not p.exists(): time.sleep(.02)"))
@@ -127,14 +128,14 @@ async def probe(mode):
                     handed = await rpc(ws, 'process.list', session_id=sid)
                     assert {p['session_id'] for p in handed['result']['processes']} == {p.id for p in processes[:2]}, handed
                     roster = await rpc(ws, 'subagent.list', session_id=sid)
-                    assert [r['subagent_id'] for r in roster.get('result', {}).get('subagents', [])] == ['owned'], roster
+                    assert [r['subagent_id'] for r in roster.get('result', {}).get('subagents', [])] == ['owned', 'rebound'], roster
                     assert 'agent' not in roster['result']['subagents'][0]
                     for child in children:
                         tail = await rpc(ws, 'subagent.tail', session_id=sid, subagent_id=child._subagent_id)
                         data = tail['result']
-                        assert data['available'] == (child._subagent_id == 'owned'), tail
+                        assert data['available'] == (child._subagent_id in {'owned', 'rebound'}), tail
                         if data['available']:
-                            assert data['text'].endswith('OWNED_TAIL') and data['truncated']
+                            assert data['text'].endswith(child._subagent_id.upper() + '_TAIL') and data['truncated']
                             assert len(data['text'].encode()) <= 16384
                         else:
                             assert data['text'] == ''
@@ -155,7 +156,7 @@ async def probe(mode):
                     with runner._agent_cache_lock:
                         runner._agent_cache[live.route] = (Agent(), 'new-generation')
                     roster = await rpc(ws, 'subagent.list', session_id=sid)
-                    assert roster['result']['subagents'] == [], roster
+                    assert [r['subagent_id'] for r in roster['result']['subagents']] == ['rebound'], roster
                     tail = await rpc(ws, 'subagent.tail', session_id=sid, subagent_id='owned')
                     assert not tail['result']['available']
                     from dataclasses import replace

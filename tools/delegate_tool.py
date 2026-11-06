@@ -341,6 +341,8 @@ def _build_child_agent(
     from agent.prompt_cache_scope import conversation_id
     child._inherited_conversation_id = conversation_id(parent_agent)
     child._subagent_id, child._parent_subagent_id = subagent_id, parent_subagent_id
+    # Capture before the parent turn unwires; detached registration can run later.
+    child._canonical_session_owner = getattr(parent_agent, "_canonical_session_owner", None)
     _apply_child_compression_cap(child, delegation_cfg)
     # Ownership chain for action=list/steer/stop; weakref so a finished parent
     # can be collected while a detached child record lingers in the registry.

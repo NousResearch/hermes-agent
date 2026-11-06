@@ -268,13 +268,14 @@ export function isFocusWithin(selector: string): boolean {
 export const OVERLAY_SURFACE =
   '[role="dialog"],[role="alertdialog"],[role="menu"],[role="listbox"],[data-radix-popper-content-wrapper],[data-overlay-surface]'
 
-// True when focus is in a text-entry surface, so bare-key shortcuts don't fire
-// while the user is typing.
+// Text controls and read-only file documents keep their typing/navigation keys
+// instead of handing them to the surrounding chat chrome.
 export function isEditableTarget(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null
 
   return Boolean(
     el?.isContentEditable ||
+    el?.closest?.('[data-preview-text]') ||
     el instanceof HTMLInputElement ||
     el instanceof HTMLTextAreaElement ||
     el instanceof HTMLSelectElement

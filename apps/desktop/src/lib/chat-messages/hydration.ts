@@ -17,6 +17,7 @@ import {
   renderMediaTags,
   textPart
 } from './parts'
+import { parsePluginCard } from './plugin-card'
 import {
   applyStoredToolResult,
   applyStoredToolResultToParts,
@@ -182,7 +183,9 @@ const NOTICE_DISPLAY_KINDS = [
   'auto_continue',
   'personality_switch',
   // Hermes closing a failed turn, not the model speaking.
-  'failed_turn'
+  'failed_turn',
+  // A plugin's card (`ctx.post_card`): a note no one typed, rendered by the plugin.
+  'plugin_card'
 ] as const
 
 function isMachineNotice(displayKind: SessionMessage['display_kind']): boolean {
@@ -242,6 +245,16 @@ function timelineDisplayText(metadata: SessionMessage['display_metadata']): stri
 
 function messageInterrupted(metadata: SessionMessage['display_metadata']): boolean {
   return parseDisplayMetadata(metadata)?.interrupted === true
+}
+
+function pluginCardField(message: SessionMessage): Pick<ChatMessage, 'pluginCard'> {
+  if (message.display_kind !== 'plugin_card') {
+    return {}
+  }
+
+  const pluginCard = parsePluginCard(parseDisplayMetadata(message.display_metadata)?.plugin_card)
+
+  return pluginCard ? { pluginCard } : {}
 }
 
 /** An assistant row read into the tool bubble before it. A reply stopped after a
@@ -332,6 +345,11 @@ function timelineDisplayContent(message: SessionMessage, content: string): strin
 
   if (message.display_kind === 'process_complete') {
     return timelineDisplayText(message.display_metadata) ?? 'background process finished'
+  }
+
+  if (message.display_kind === 'plugin_card') {
+    // The row's content is the model's factual line; people read the card's own text.
+    return timelineDisplayText(message.display_metadata) ?? content
   }
 
   return content
@@ -663,6 +681,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
         ? { asyncResult: asyncResultBody(displayContentForMessage(message.role, message.content || content)) }
         : {}),
       ...(message.display_kind === 'process_complete' ? { asyncResultKind: 'process' as const } : {}),
+      ...pluginCardField(message),
       timestamp: earliestTimestamp(message.timestamp, ...parts.map(part => part.timestamp)),
       ...(rowId !== undefined ? { rowId } : {}),
       ...(pendingAbsorbedRows > 0 ? { serverRowSpan: pendingAbsorbedRows + 1 } : {}),

@@ -425,6 +425,10 @@ export function messageCreatedAt(message: Pick<ChatMessage, 'timestamp'>, nowMs 
     : new Date(nowMs)
 }
 
+function pluginCardMeta(message: ChatMessage): { pluginCard?: ChatMessage['pluginCard'] } {
+  return message.pluginCard ? { pluginCard: message.pluginCard } : {}
+}
+
 export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
   const role =
     message.role === 'user' || message.role === 'assistant' || message.role === 'system' ? message.role : 'assistant'
@@ -466,7 +470,8 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
         custom: {
           ...timelineMeta,
           ...(message.asyncResult ? { asyncResult: message.asyncResult } : {}),
-          ...(message.asyncResultKind ? { asyncResultKind: message.asyncResultKind } : {})
+          ...(message.asyncResultKind ? { asyncResultKind: message.asyncResultKind } : {}),
+          ...pluginCardMeta(message)
         }
       }
     } as ThreadMessage

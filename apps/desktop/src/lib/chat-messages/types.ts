@@ -32,6 +32,15 @@ export interface TimelinePartMetadata {
 
 export type ChatMessagePart = Exclude<ThreadMessageLike['content'], string>[number] & TimelinePartMetadata
 
+/** A card a plugin posted into the conversation (display kind `plugin_card`).
+ *  `directive` names a transcript directive the plugin's Desktop half claims;
+ *  its attrs are untrusted strings. Without a claim the row is its text. */
+export interface PluginCard {
+  pluginId: string
+  cardId: string
+  directive?: { name: string; attrs: Record<string, string> }
+}
+
 export type ChatMessage = {
   id: string
   role: SessionMessage['role']
@@ -39,6 +48,8 @@ export type ChatMessage = {
   /** Result body only; the system text remains the compact completion label. */
   asyncResult?: string
   asyncResultKind?: 'process'
+  /** A plugin's card (`ctx.post_card`): the directive its Desktop half renders. */
+  pluginCard?: PluginCard
   timestamp?: number
   completedAt?: number
   pending?: boolean

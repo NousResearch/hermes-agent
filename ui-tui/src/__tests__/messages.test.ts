@@ -97,6 +97,19 @@ describe('toTranscriptMessages', () => {
     expect(result[0]?.text).toBeTruthy()
     expect(result[0]?.text).not.toBe('event')
   })
+
+  it("shows a plugin card as a system line with the card's own text, not the model's line", () => {
+    const [message] = toTranscriptMessages([
+      {
+        role: 'user',
+        text: '[cwplug posted a card: Share it?]',
+        display_kind: 'plugin_card',
+        display_metadata: { display_text: 'Share "deploy-checklist" with your team?' }
+      }
+    ])
+
+    expect(message).toMatchObject({ kind: 'event', role: 'system', text: 'Share "deploy-checklist" with your team?' })
+  })
 })
 
 describe('MessageLine', () => {

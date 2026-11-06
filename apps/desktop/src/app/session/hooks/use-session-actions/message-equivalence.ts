@@ -29,6 +29,7 @@ const COMPARED_FIELDS = [
   'recovered',
   'asyncResult',
   'asyncResultKind',
+  'pluginCard',
   'id',
   'role',
   'pending',
@@ -162,6 +163,7 @@ export function chatReactionsEquivalent(a: ChatMessage['reactions'], b: ChatMess
 const FLAG_FIELDS = ['interim', 'queuedTurnStarted'] as const
 
 const flagsDiffer = (a: ChatMessage, b: ChatMessage) =>
+  a.pluginCard?.cardId !== b.pluginCard?.cardId ||
   FLAG_FIELDS.some(field => (a[field] ?? false) !== (b[field] ?? false))
 
 export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean {

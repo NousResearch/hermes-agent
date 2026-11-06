@@ -336,6 +336,17 @@ class TestPayload:
         body = outbound_webhooks._serialize_payload("on_session_end", {}, "did_2")
         assert json.loads(body)["profile"] == "default"
 
+    def test_kanban_task_id_is_the_owned_task_only(self, monkeypatch):
+        from agent.delegation_context import delegated_child_context
+
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_owner")
+        monkeypatch.delenv("HERMES_DELEGATED_CHILD_CONTEXT", raising=False)
+        body = outbound_webhooks._serialize_payload("post_tool_call", {}, "did_1")
+        assert json.loads(body)["extra"]["kanban_task_id"] == "t_owner"
+        with delegated_child_context():
+            body = outbound_webhooks._serialize_payload("post_tool_call", {}, "did_2")
+        assert json.loads(body)["extra"]["kanban_task_id"] == ""
+
     def test_unserialisable_values_stringified(self):
         body = outbound_webhooks._serialize_payload(
             "on_session_end", {"weird": object()}, "did_1"

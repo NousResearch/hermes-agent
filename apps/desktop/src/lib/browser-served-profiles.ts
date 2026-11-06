@@ -1,5 +1,6 @@
 import type { HermesApiRequest } from '@/global'
 import { browserLaunchProfileOrDefault } from '@/lib/platform'
+import { isSignedOutStatus } from '@/lib/signed-out-status'
 
 // The multiplexer applies a park, unpark or standalone change on its 30 s profile rescan, and none
 // of those changes the installed list, so a known served set is re-read on that cadence.
@@ -46,6 +47,15 @@ export function createServedProfiles(api: <T>(request: HermesApiRequest) => Prom
         path: '/api/status',
         timeoutMs: SERVED_SET_READ_TIMEOUT_MS
       })
+
+      // An access token that expired since the tab's last gated request reads as signed out here,
+      // and that body omits the set; it is no answer about which profiles are served. Keep the last
+      // set, and let the next inventory read ask again once a gated request has rotated the cookies.
+      if (isSignedOutStatus(status)) {
+        readFor = null
+
+        return
+      }
 
       const shared = status?.gateway_shared_with
 

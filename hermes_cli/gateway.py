@@ -1177,13 +1177,13 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
     popen_env = {"env": watcher_env} if watcher_env is not None else {}
     # Same detach for the watcher itself, so closing the terminal doesn't kill it.
     try:
-        subprocess.Popen(watcher_argv, **devnull, **popen_env, **windows_detach_popen_kwargs())
+        subprocess.Popen(watcher_argv, **devnull, **popen_env, **windows_detach_popen_kwargs())  # detached-spawn: ok — restart watcher, must outlive the process that asked for the restart
     except OSError:
         # Parent job object rejected CREATE_BREAKAWAY_FROM_JOB; retry without it (Windows only —
         # ``start_new_session=True`` cannot raise OSError on POSIX).
         fallback_kwargs: dict = (
             {"creationflags": windows_detach_flags_without_breakaway()} if sys.platform == "win32"
-            else {"start_new_session": True}
+            else {"start_new_session": True}  # detached-spawn: ok — restart watcher, must outlive the process that asked for the restart
         )
         try:
             subprocess.Popen(watcher_argv, **devnull, **popen_env, **fallback_kwargs)
@@ -4844,7 +4844,7 @@ def _dispatch_via_service_manager_if_s6(action: str, profile: str | None = None)
             getattr(mgr, action)(service)
         except GatewayNotRegisteredError:
             # A profile created from the HOST against a bind-mounted home has a directory but no
-            # slot (`profile create` cannot reach the container's /run/service). Only `start`
+            # slot (`profile create` cannot reach the container's /run/hermes-service). Only `start`
             # repairs that; stop/restart on a missing slot stay an error.
             if action != "start" or not register_unregistered_profile_gateway(mgr, profile):
                 raise

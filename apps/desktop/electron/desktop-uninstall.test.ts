@@ -2,7 +2,7 @@
  * Tests for electron/desktop-uninstall.ts.
  *
  * Run with: node --test electron/desktop-uninstall.test.ts
- * (Wired into npm test:desktop:platforms in package.json.)
+ * (Wired into pnpm run test:desktop:platforms in package.json.)
  *
  * These are the pure helpers behind the desktop Chat GUI uninstaller: the
  * mode → CLI-flag mapping, the running-app-bundle resolution per OS, and the

@@ -118,7 +118,6 @@ hermes-agent/
 │   ├── hooks.py              # Hook discovery and lifecycle events
 │   ├── mirror.py             # Cross-session message mirroring
 │   ├── status.py             # Token locks, profile-scoped process tracking
-│   ├── builtin_hooks/        # Extension point for always-registered hooks (none shipped)
 │   └── platforms/            # Core ingress adapters: api_server, webhook,
 │                             #   msgraph_webhook
 │

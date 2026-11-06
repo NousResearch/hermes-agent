@@ -5,7 +5,7 @@
  * provider). The mock server returns a canned reply, so we verify the
  * response text shows up in the chat transcript.
  *
- * Prerequisite: `npm run build` must have been run so dist/ exists.
+ * Prerequisite: `pnpm run build` must have been run so dist/ exists.
  */
 
 import { runDesktopChatSmoke } from '../../../tests-js/scripts/desktop-chat-smoke'

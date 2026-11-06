@@ -411,6 +411,25 @@ class TestScanSkillCached:
         assert prov_second["fresh"] is False
         assert second.verdict == first.verdict == "safe"
 
+    def test_cached_trust_follows_current_trusted_repos(self, tmp_path, monkeypatch):
+        """A repo joining or leaving TRUSTED_REPOS re-scans unchanged content under the new trust level
+        instead of serving the trust the cache recorded (a stale 'trusted' would loosen install policy)."""
+        from tools import skills_guard
+
+        skill_dir = tmp_path / "vendor-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text("# Vendor\nNothing to see.\n", encoding="utf-8")
+        source = "acme/skills/vendor-skill"
+
+        monkeypatch.setattr(skills_guard, "TRUSTED_REPOS", {"acme/skills"})
+        first, _ = skills_guard.scan_skill_cached(skill_dir, source=source, cache_dir=tmp_path / "cache")
+        assert first.trust_level == "trusted"
+
+        monkeypatch.setattr(skills_guard, "TRUSTED_REPOS", set())
+        second, prov = skills_guard.scan_skill_cached(skill_dir, source=source, cache_dir=tmp_path / "cache")
+        assert prov["fresh"] is True
+        assert second.trust_level == "community"
+
 
 # ---------------------------------------------------------------------------
 # scan_skill — directory scanning

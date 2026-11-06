@@ -285,7 +285,7 @@ _CLI_FAMILIES: dict[str, tuple[_CliSurface, str]] = {
         _sub("skills", "build_skills_parser", "cmd_skills"),
         "browse, search, inspect, list, check, list-modified, diff, *install, *update, *audit, "
         "*uninstall, *reset, *opt-in, *opt-out, *repair-official, *snapshot export, "
-        "*snapshot import, tap list, *tap add, *tap remove"),
+        "*snapshot import, tap list, *tap add, *tap remove, doctor"),
     "mcp": (
         _sub("mcp", "build_mcp_parser", "cmd_mcp"),
         "list, catalog, test, *add, *remove, *install, *login, *reauth, *configure, *picker"),

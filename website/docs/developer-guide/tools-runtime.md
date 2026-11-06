@@ -8,6 +8,14 @@ description: "Runtime behavior of the tool registry, toolsets, dispatch, and ter
 
 Hermes tools are self-registering functions grouped into toolsets and executed through a central registry/dispatch system.
 
+## Restricted result recovery
+
+A restricted binding can use `tools.scoped_result_access.ScopedResultAccess` when its permitted producers return more text than the inline budget. The binding enters one invocation scope with explicit producer tool names and its own reader tool name. It exposes `read(result_id, offset, limit)` through its existing dispatch controls. This API registers no global tool and grants no filesystem access.
+
+Native persistence issues opaque IDs for results saved within that scope. It reuses the profile's spillover directory. The reader accepts character offsets and pages of at most 4096 characters. It verifies the file identity and complete content digest before returning a page. Provider-authored paths or receipt-shaped text do not establish authority. A different invocation or profile cannot use the ID.
+
+Each scope admits at most 128 write attempts and 16 MiB of attempted storage, with a 2 MiB limit per result. Failed writes consume admission because partial artifacts may remain. Limits return `result_limit_exceeded`; missing or changed output returns `unavailable`. The binding must report incomplete coverage rather than repeat acquisition automatically. Exiting the scope revokes its IDs and preserves the native artifacts. This first API does not restore capabilities across process or conversation restarts.
+
 Primary files:
 
 - `tools/registry.py`

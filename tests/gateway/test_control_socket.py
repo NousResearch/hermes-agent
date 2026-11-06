@@ -81,9 +81,9 @@ def test_client_resolution_prefers_direct_then_pointer(home: Path, tmp_path: Pat
     target.touch()
     (home / "gateway.sock.path").write_text(str(target))
     assert resolve_client_socket_path(home) == target
-    # direct file wins over pointer
+    # A private direct file wins over the pointer.
     direct = home / "gateway.sock"
-    direct.touch()
+    direct.touch(mode=0o600)
     assert resolve_client_socket_path(home) == direct
 
 

@@ -10,10 +10,14 @@ import tempfile
 
 import pytest
 
-from gateway.control_socket import GatewayControlServer, identify_gateway
+from gateway.control_socket import (
+    GatewayControlServer,
+    identify_gateway,
+    resolve_client_socket_path,
+)
 from hermes_cli.gateway_runtime_discovery import (
     DiscoveryError,
-    _socket_path,
+    resolve_private_socket_path,
     query_identify,
 )
 
@@ -125,7 +129,9 @@ def test_private_socket_does_not_need_chmod_support(short_root, monkeypatch):
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("untrusted", ["pointer", "directory", "socket", "profile"])
+@pytest.mark.parametrize(
+    "untrusted", ["pointer", "directory", "socket", "profile", "missing"]
+)
 def test_unprivate_direct_socket_does_not_bypass_pointer_checks(short_root, untrusted):
     from gateway.control_socket import _home_hash
 
@@ -146,12 +152,15 @@ def test_unprivate_direct_socket_does_not_bypass_pointer_checks(short_root, untr
         target.chmod(0o600)
         pointer.write_text(str(target), encoding="utf-8")
         pointer.chmod(0o600)
-        if untrusted != "profile":
+        if untrusted == "missing":
+            pointer.unlink()
+        elif untrusted != "profile":
             {"pointer": pointer, "directory": directory, "socket": target}[
                 untrusted
             ].chmod(0o755)
         with pytest.raises(DiscoveryError, match="unsafe_control_permissions"):
-            _socket_path(home)
+            resolve_private_socket_path(home)
+        assert resolve_client_socket_path(home) is None
 
 
 def test_fallback_that_cannot_stay_private_fails_closed(short_root, monkeypatch):

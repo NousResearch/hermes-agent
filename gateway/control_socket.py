@@ -126,9 +126,11 @@ def resolve_client_socket_path(home: Path) -> Optional[Path]:
         if direct.exists():
             if not _IS_WINDOWS and direct.lstat().st_mode & 0o077:
                 # A shared mount can retain the unusable direct inode after fallback.
-                from hermes_cli.gateway_runtime_discovery import _socket_path
-                with contextlib.suppress(OSError, ValueError):
-                    return _socket_path(Path(home).resolve())
+                from hermes_cli.gateway_runtime_discovery import resolve_private_socket_path
+                try:
+                    return resolve_private_socket_path(Path(home).resolve())
+                except (OSError, ValueError):
+                    return None
             return direct
     with contextlib.suppress(OSError):
         pointer = Path(home) / _POINTER_FILENAME
@@ -297,8 +299,10 @@ class GatewayControlServer:
         old_umask = os.umask(0o177)
         try:
             # Our inode-checked cleanup tolerates a mount refusing unlink on close.
+            # Before 3.13 asyncio leaves socket cleanup to its caller already.
+            cleanup_options = {"cleanup_socket": False} if sys.version_info >= (3, 13) else {}
             self._server = await asyncio.start_unix_server(
-                self._handle_connection, path=str(bind_path), cleanup_socket=False
+                self._handle_connection, path=str(bind_path), **cleanup_options
             )
         finally:
             os.umask(old_umask)

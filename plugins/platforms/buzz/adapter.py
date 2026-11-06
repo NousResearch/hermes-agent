@@ -141,11 +141,29 @@ def _attachment_origin(value: str) -> Optional[tuple[str, int]]:
 
 # WebSocket transport (NIP-42 authenticated Nostr subscription).
 _WS_AUTH_TIMEOUT = 20.0
-# Last-resort read bound: an unsurfaced relay-side close (CLOSE_WAIT) would leave us "connected" with inbound stopped.
-# The library keepalive (ping_interval/ping_timeout below) should catch a dead relay first, but a relay-side
-# close the transport never surfaces (observed as a CLOSE_WAIT socket with the loop parked on recv, #98097)
-# leaves the gateway "connected" while inbound stops; this timeout forces the normal reconnect path instead.
+# Liveness bound for the read loop. The bound must be measured against the TRANSPORT, not against data
+# flow: `frame_iter.__anext__()` yields DATA frames only, and the `websockets` library answers PING with
+# PONG internally without surfacing either through the iterator. The relay pings every 30s and we ping it
+# every 20s, so a healthy-but-quiet channel produces 300s of DATA silence while the socket is fine — the
+# previous data-frame timer therefore tore down a healthy connection every 5 minutes (69 occurrences).
+# Liveness is now proven with an explicit PING/PONG round trip; this bound is the deadline for THAT
+# round trip, so it must exceed the library keepalive (20s + 20s) with margin.
+#
+# The original reason for the bound still holds: an unsurfaced relay-side close (CLOSE_WAIT) leaves us
+# "connected" with inbound stopped (#98097). A stalled read is detected by the PING/PONG probe below,
+# which forces the normal reconnect path instead of parking forever on recv.
 _WS_READ_IDLE_TIMEOUT = 300.0
+# How often to probe liveness with an explicit PING while the read loop waits for data. Comfortably
+# inside the read-idle bound so a PONG can always satisfy it.
+_WS_LIVENESS_PROBE_INTERVAL = 60.0
+# How long to wait for the PONG that answers a probe PING.
+#
+# This MUST be shorter than the remaining read-idle budget, otherwise the outer wait
+# (which shares the `_WS_READ_IDLE_TIMEOUT` deadline) fires first and reports a generic
+# "no WebSocket frame" timeout, masking the actual cause — a PING that was never
+# answered. The probe's worst case is PROBE_INTERVAL + PONG_TIMEOUT, which has to stay
+# below the read-idle bound so the probe's own error is the one that surfaces.
+_WS_PONG_TIMEOUT = 60.0
 _WS_MAX_MESSAGE_BYTES = 2_000_000
 _WS_MEMBERSHIP_KIND = 44100  # Buzz channel-membership event — live DM discovery
 _WS_MEMBERSHIP_SUB_ID = "hermes-buzz-membership"
@@ -1154,9 +1172,10 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
         frame_iter = websocket.__aiter__()
         while True:
             read_task = asyncio.ensure_future(frame_iter.__anext__())
+            probe_task = asyncio.ensure_future(self._probe_ws_liveness(websocket))
             try:
                 done, _ = await asyncio.wait(
-                    {read_task}, timeout=_WS_READ_IDLE_TIMEOUT, return_when=asyncio.FIRST_COMPLETED
+                    {read_task, probe_task}, timeout=_WS_READ_IDLE_TIMEOUT, return_when=asyncio.FIRST_COMPLETED
                 )
                 if not done:
                     # wait_for() cancels and then waits for its awaitable to acknowledge the cancellation.
@@ -1165,7 +1184,27 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
                     raise ConnectionError(
                         f"no WebSocket frame for {_WS_READ_IDLE_TIMEOUT:.0f}s; assuming the connection went silent"
                     )
-                raw = read_task.result()
+                if probe_task in done and not probe_task.cancelled():
+                    # The liveness probe may have failed even though a data frame arrived in the same
+                    # wake-up. A dead connection must not be masked by a frame that happened to land at
+                    # the same moment — surface the probe's failure BEFORE dispatching the frame.
+                    # (Without this the probe's exception would be dropped, and asyncio would log
+                    # "exception was never retrieved".)
+                    probe_error = probe_task.exception()
+                    if probe_error is not None:
+                        raise probe_error
+                if read_task in done:
+                    raw = read_task.result()
+                else:
+                    # The liveness probe finished first. A healthy connection produces no data frame, so
+                    # there is nothing to parse — but the PONG proved the transport is alive, so keep
+                    # reading. The `finally` block cancels the pending read; that is safe here because
+                    # cancelling a pending `__anext__()` does NOT kill the iterator in this library
+                    # (recv() is cancel-safe and the next recv() returns the next message), and no
+                    # frame is lost: a frame that arrived during the probe is still buffered and the
+                    # next `__anext__()` returns it.
+                    await probe_task
+                    continue
             except StopAsyncIteration:
                 # A clean relay close is still a disconnect: raising sends it through the same
                 # backoff + "retrying" path instead of reconnecting in a hot loop.
@@ -1174,6 +1213,9 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
                 if not read_task.done():
                     read_task.cancel()
                     read_task.add_done_callback(_consume_ws_read_task)
+                if not probe_task.done():
+                    probe_task.cancel()
+                    probe_task.add_done_callback(_consume_ws_read_task)
             try:
                 message = json.loads(raw)
             except (ValueError, TypeError):
@@ -1181,6 +1223,35 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
                 continue
             if isinstance(message, list) and message:
                 await self._handle_ws_message(websocket, subscriptions, message)
+
+    @staticmethod
+    async def _probe_ws_liveness(websocket) -> None:
+        """Prove the transport is alive with an explicit PING/PONG round trip.
+
+        The data-frame read cannot serve as a liveness signal: `__anext__()` yields DATA frames only,
+        while the `websockets` library answers PING with PONG internally and surfaces neither through
+        the iterator. A quiet channel therefore looks identical to a dead socket, and the read loop
+        used to tear down a healthy connection every 300s (69 occurrences in one night).
+
+        A PONG proves the peer received our PING and replied, so the socket is alive regardless of
+        message flow. The relay answers client Pings with a Pong (buzz-relay
+        `connection.rs` recv_loop), and the library's own keepalive already fails the connection on a
+        missed PONG, so this probe only has to observe that a PONG still comes back.
+
+        Raises ConnectionError if the round trip does not complete within the PONG bound — that
+        is the genuine "the socket went silent" case (#98097) this bound was written for.
+        """
+        await asyncio.sleep(_WS_LIVENESS_PROBE_INTERVAL)
+        try:
+            pong_waiter = await websocket.ping()
+        except Exception as exc:  # noqa: BLE001 - transport errors mean "not alive"
+            raise ConnectionError(f"WebSocket liveness probe failed to send PING: {exc}") from exc
+        try:
+            await asyncio.wait_for(pong_waiter, timeout=_WS_PONG_TIMEOUT)
+        except asyncio.TimeoutError:
+            raise ConnectionError(
+                f"no WebSocket PONG within {_WS_PONG_TIMEOUT:.0f}s; the connection went silent"
+            ) from None
 
     async def _handle_ws_message(self, websocket, subscriptions: dict[str, Optional[str]], message: list) -> None:
         """Route one parsed relay frame (EVENT / CLOSED / NOTICE)."""

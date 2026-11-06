@@ -1,7 +1,7 @@
 name: godseye
 title: Eye Of Hermes (EOH)
 repo: https://github.com/mojomast/EOH
-sha: feeac91516e7bd19bf3c50069aedf5a03be9d1ed
+sha: 14a787e6142553d07238f81a0ac062c478adbee5
 description: >-
   Eye Of Hermes (EOH), built on God's Eye View (bilawalsidhu/gods-eye-view, MIT):
   the same 11 composable godseye_* tools (godseye_view, godseye_query, godseye_layers,
@@ -16,7 +16,7 @@ description: >-
   update, list, play, and stop a Director scene on the pane; godseye_annotate
   op=clip stores a YouTube or X URL on a pin; godseye_feeds op=fire_check runs
   FIRMS, the clearest recent image, then imagery before/after, and does not
-  create a watch or a pin. The same 11 tools also carry the recent God's Eye
+  create a watch or a pin. v0.2.2 hardens Wayback imagery releases, overlays when the relay is out-of-process, pane routing timeouts, and layer/user-pref behavior. The same 11 tools also carry the recent God's Eye
   View v0.3-style ops (imagery before/after, a weather preset, GTFS-RT transit
   on the app's transit layer, and fire-perimeter watches). Requires Node 24 or
   newer (God's Eye View documents 24.14 or later, or 26.x) and a running God's
@@ -43,13 +43,13 @@ maintainer: mojomast
 tier: community
 category: tools
 docs_url: https://github.com/mojomast/EOH#readme
-version: "0.2.1"
+version: "0.2.2"
 screenshots:
-  - https://raw.githubusercontent.com/mojomast/EOH/feeac91516e7bd19bf3c50069aedf5a03be9d1ed/docs/screenshots/hermes-chat-tokyo-nvg.jpg
-  - https://raw.githubusercontent.com/mojomast/EOH/feeac91516e7bd19bf3c50069aedf5a03be9d1ed/docs/screenshots/pane-full-ui.jpg
-  - https://raw.githubusercontent.com/mojomast/EOH/feeac91516e7bd19bf3c50069aedf5a03be9d1ed/docs/screenshots/live-fly-to-tokyo.jpg
-  - https://raw.githubusercontent.com/mojomast/EOH/feeac91516e7bd19bf3c50069aedf5a03be9d1ed/docs/screenshots/hud-via-hermes.jpg
-  - https://raw.githubusercontent.com/mojomast/EOH/feeac91516e7bd19bf3c50069aedf5a03be9d1ed/docs/screenshots/pane-globe-only.jpg
+  - https://raw.githubusercontent.com/mojomast/EOH/14a787e6142553d07238f81a0ac062c478adbee5/docs/screenshots/hermes-chat-tokyo-nvg.jpg
+  - https://raw.githubusercontent.com/mojomast/EOH/14a787e6142553d07238f81a0ac062c478adbee5/docs/screenshots/pane-full-ui.jpg
+  - https://raw.githubusercontent.com/mojomast/EOH/14a787e6142553d07238f81a0ac062c478adbee5/docs/screenshots/live-fly-to-tokyo.jpg
+  - https://raw.githubusercontent.com/mojomast/EOH/14a787e6142553d07238f81a0ac062c478adbee5/docs/screenshots/hud-via-hermes.jpg
+  - https://raw.githubusercontent.com/mojomast/EOH/14a787e6142553d07238f81a0ac062c478adbee5/docs/screenshots/pane-globe-only.jpg
 platforms: []
 known_issues:
   - "Full UI in the pane and the in-app HUD via Hermes need two opt-in God's Eye View patches (shipped in patches/, upstream PRs #1571 and #1572); stock upstream gets the globe-only pane."

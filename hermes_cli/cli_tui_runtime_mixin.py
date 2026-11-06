@@ -97,7 +97,7 @@ class CLITuiRuntimeMixin:
 
     def _tui_process_one_input(self, user_input):
         """Route one submitted input: file drop, /resume pick, ! shell, slash command, or a chat turn."""
-        from cli import _DIM, _PASTE_REF_RE, _RST, _cprint, _detect_file_drop, _looks_like_slash_command, _strip_leaked_bracketed_paste_wrappers, _strip_leaked_terminal_responses_with_meta
+        from cli import _DIM, _PASTE_REF_RE, _RST, _apply_inline_image_paths, _cprint, _detect_file_drop, _looks_like_slash_command, _strip_leaked_bracketed_paste_wrappers, _strip_leaked_terminal_responses_with_meta
         from tools.process_registry_notifications import TimelineNotification
         self._tui_dock_drop_dequeued()
         user_input, is_voice_input, is_seeded_query = self._tui_unwrap_input(user_input)
@@ -143,6 +143,12 @@ class CLITuiRuntimeMixin:
                     user_input = self._tui_run_slash_input(user_input)
                     if user_input is None:
                         return
+
+        # Mid-prompt image paths ("look at shot.png"). Leading drops already
+        # consumed the path; seeded -q text stays literal.
+        user_input = _apply_inline_image_paths(
+            user_input, submit_images, _file_drop, is_seeded_query,
+        )
 
         if isinstance(user_input, str) and _PASTE_REF_RE.search(user_input):
             user_input = self._expand_paste_references(user_input)

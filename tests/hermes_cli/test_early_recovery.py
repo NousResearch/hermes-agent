@@ -70,6 +70,89 @@ def test_failed_repair_keeps_marker_and_stops_at_retry_limit(tmp_path, monkeypat
     assert "hermes pm repair" in output.err
 
 
+@pytest.mark.platforms("posix")
+def test_automatic_repair_records_attempt_before_sigkill(tmp_path, monkeypatch):
+    """A build killed with its launcher must consume the durable retry budget (#123860)."""
+    import signal
+
+    root = _project(tmp_path)
+    marker = root / ".update-incomplete"
+    marker.write_text('{"attempts": 0}', encoding="utf-8")
+    script = """
+import os, signal, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[2])
+from hermes_cli import _early_recovery as er
+from pm import recovery
+
+def killed(project):
+    os.kill(os.getpid(), signal.SIGKILL)
+
+recovery.repair_dependencies = killed
+er.recover_if_needed(Path(sys.argv[1]), argv=[])
+"""
+    for expected in range(1, er._EARLY_CORE_INSTALL_MAX_ATTEMPTS + 2):
+        result = subprocess.run(
+            [sys.executable, "-c", script, str(root), str(REPO_ROOT)],
+            cwd=tmp_path, capture_output=True, text=True, timeout=30, check=False,
+        )
+        if expected <= er._EARLY_CORE_INSTALL_MAX_ATTEMPTS:
+            assert result.returncode == -signal.SIGKILL, result.stderr
+            assert er._read_marker_attempts(marker) == expected
+        else:
+            assert result.returncode == 0, result.stderr
+            assert "retry limit reached" in result.stderr
+
+    calls = []
+    monkeypatch.setattr(recovery, "repair_dependencies", calls.append)
+    assert er.recover_if_needed(root, argv=[], explicit=True) is True
+    assert calls == [root]
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_repair_import_failure_consumes_one_attempt(tmp_path, monkeypatch, explicit):
+    """A damaged PM import must still count, without double-counting a normal failure."""
+    import builtins
+
+    root = _project(tmp_path)
+    marker = root / ".update-incomplete"
+    marker.write_text('{"attempts": 0}', encoding="utf-8")
+    real_import = builtins.__import__
+
+    def broken_recovery(name, *args, **kwargs):
+        if name == "pm.recovery":
+            raise ImportError("incomplete PM installation")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", broken_recovery)
+    assert er.recover_if_needed(root, argv=[], explicit=explicit) is False
+    assert er._read_marker_attempts(marker) == 1
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_repair_permission_error_preserves_error_and_releases_lock(tmp_path, monkeypatch, capsys, explicit):
+    from pm.environments import install_state_dir
+
+    root = _project(tmp_path)
+    marker = root / ".update-incomplete"
+    marker.write_text('{"attempts": 0}', encoding="utf-8")
+    error = PermissionError(13, "permission denied", str(install_state_dir(root) / "facts.json"))
+
+    def denied(project):
+        raise error
+
+    monkeypatch.setattr(recovery, "repair_dependencies", denied)
+    with pytest.raises(PermissionError) as caught:
+        er.recover_if_needed(root, argv=[], explicit=explicit)
+    assert caught.value is error
+    assert er._read_marker_attempts(marker) == (0 if explicit else 1)
+    assert "run `hermes pm repair`" not in capsys.readouterr().err
+    lock = er._claim_recovery_lock(root)
+    assert lock is not None
+    os.close(lock)
+
+
 def test_recovery_obeys_live_owner_and_single_flight(tmp_path, monkeypatch):
     root = _project(tmp_path)
     marker = root / ".update-incomplete"

@@ -12,13 +12,14 @@ interactive CLI only) or **stages** the write under
 from __future__ import annotations
 
 import difflib
+import hashlib
 import json
 import logging
 import os
 import re
 import time
 import uuid
-from contextlib import suppress
+from contextlib import ExitStack, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -83,9 +84,95 @@ def stage_write(subsystem: str, payload: dict[str, Any], *, summary: str, origin
         "created_at": time.time(), "payload": payload,
     }
     try:
+        if subsystem == SKILLS:
+            return _stage_skill_record(record)
         atomic_json_write(_pending_path(subsystem, pid), record)
     except Exception as e:  # pragma: no cover - disk failure path
         logger.error("Failed to stage pending %s write: %s", subsystem, e, exc_info=True)
+    return record
+
+
+def _skill_proposal_target(operation: dict[str, Any], created: dict[str, Path]) -> Optional[Path]:
+    """Use the skill manager's path guards before reading any proposed target."""
+    from tools.skill_manager_tool import (
+        _resolve_skill_dir, _resolve_supporting_file, _validate_category, _validate_name,
+    )
+
+    action, name = operation.get("action"), operation.get("name")
+    if not isinstance(name, str) or not name:
+        return None
+    if action == "create":
+        if _validate_name(name) or _validate_category(operation.get("category")) or _find_skill_path(name):
+            return None
+        skill_dir = _resolve_skill_dir(name, operation.get("category"))
+        created[name] = skill_dir
+    elif action in {"patch", "edit", "write_file", "remove_file"}:
+        skill_dir = created.get(name) or _find_skill_path(name)
+        if skill_dir is None:
+            return None
+    else:
+        return None  # Deletion proposals are deliberately never coalesced.
+    if action in {"create", "edit"} or (action == "patch" and operation.get("content")):
+        file_path = "SKILL.md"  # Full rewrites ignore file_path in the skill manager too.
+    else:
+        file_path = operation.get("file_path") or "SKILL.md"
+    if not isinstance(file_path, str):
+        return None
+    target, error = _resolve_supporting_file(skill_dir, file_path)
+    return target if not error else None
+
+
+def _skill_proposal_base(payload: dict[str, Any]) -> Optional[list[dict[str, Any]]]:
+    """Fingerprint validated target files, not just payload text, before reusing a proposal."""
+    operations = payload.get("operations") if payload.get("action") == "batch" else [payload]
+    if not isinstance(operations, list) or not operations:
+        return None
+    files, created = {}, {}
+    for operation in operations:
+        if not isinstance(operation, dict):
+            return None
+        target = _skill_proposal_target(operation, created)
+        if target is None or (target.exists() and not target.is_file()):
+            return None
+        if target.is_symlink() and not target.exists():
+            return None  # dangling or looping link; Python 3.13+ resolve() no longer raises on loops
+        data = target.read_bytes() if target.exists() else None
+        path = str(target.resolve())
+        files[path] = {"path": path, "sha256": hashlib.sha256(data).hexdigest() if data is not None else None}
+    return [files[path] for path in sorted(files)]
+
+
+def _stage_skill_record(record: dict[str, Any]) -> dict[str, Any]:
+    """Serialize profile-local duplicate detection and creation without changing old records."""
+    from tools.skill_usage import skill_file_lock
+
+    pending_dir = _pending_path(SKILLS, "").parent
+    # ponytail: one profile queue lock; use per-target locks only if staging throughput warrants it.
+    with ExitStack() as locks:
+        try:
+            locks.enter_context(skill_file_lock(pending_dir / ".intake.lock"))
+        except OSError as exc:
+            logger.warning("Skill intake lock unavailable; staging without deduplication: %s", exc)
+            atomic_json_write(_pending_path(SKILLS, record["id"]), record)
+            return record
+        try:
+            base = _skill_proposal_base(record["payload"])
+            previous_records = list_pending(SKILLS) if base is not None else []
+        except Exception as exc:
+            # Optional read-only metadata must not prevent the ordinary staged write below.
+            logger.warning("Skill proposal base or queue unavailable; staging without deduplication: %s", exc,
+                           exc_info=True)
+            base = None
+            previous_records = []
+        if base is not None:
+            record["base_files"] = base
+            for previous in previous_records:
+                previous_id = previous.get("id")
+                if (previous.get("base_files") == base and previous.get("payload") == record["payload"]
+                        and isinstance(previous_id, str) and re.fullmatch(r"[a-f0-9]{8}", previous_id)
+                        and get_pending(SKILLS, previous_id) == previous):
+                    return previous
+        atomic_json_write(_pending_path(SKILLS, record["id"]), record)
     return record
 
 

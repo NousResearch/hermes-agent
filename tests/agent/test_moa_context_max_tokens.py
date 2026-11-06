@@ -65,3 +65,24 @@ def test_aggregator_call_never_receives_reference_max_tokens(hermes_home, monkey
     # The aggregator's synthesis call must be uncapped — not even max_tokens=None,
     # the kwarg must be absent entirely (matches call_llm's omit-when-None contract).
     assert "max_tokens" not in aggregator_calls[0]
+
+
+def test_turn_assembly_passes_preset_reference_cap(monkeypatch):
+    from agent.turn_request_assembly import _append_moa_context
+
+    captured = {}
+
+    def fake_aggregate(**kwargs):
+        captured.update(kwargs)
+        return "advice"
+
+    monkeypatch.setattr("agent.moa_loop.aggregate_moa_context", fake_aggregate)
+    messages = [{"role": "user", "content": "smoke"}]
+    _append_moa_context(
+        object(), messages,
+        {"reference_models": [], "aggregator": {}, "reference_max_tokens": 512},
+        "smoke",
+    )
+
+    assert captured["reference_max_tokens"] == 512
+    assert "advice" in messages[-1]["content"]

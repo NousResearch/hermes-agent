@@ -133,8 +133,9 @@ function fromSubagent(live: SubagentProgress, fallbackId: string, fallbackGoal: 
  * next best key. Failing both, task order is how the delegate tool numbers its
  * children — but only trust it when the two sides agree on how many there are,
  * or a second delegation in the same turn will claim the first one's workers.
- * A row that knows its delegation id trusts it exclusively: a live child not
- * carrying it is another call's worker, and a fuzzy join would only misfile it.
+ * A live child stamped with a different delegation id is another call's
+ * worker, so no join may hand it to this row; a child with no id at all (its
+ * batch had no live-transcript id) can still be matched by goal or order.
  *
  * Live state wins wherever it exists: a settled result tells you a child
  * finished, but only the store knows what it is doing right now.
@@ -170,19 +171,21 @@ export function mergeDelegateRows(
       : undefined
   )
 
-  const fuzzy = rows.map(row => !row.delegationId)
+  // A child stamped with another call's delegation id is never this row's. A
+  // child with no id (its batch had no live-transcript id) stays fuzzy-joinable.
+  const ours = (row: DelegateRow, c: SubagentProgress): boolean =>
+    !row.delegationId || !c.delegationId || sameDelegation(c.delegationId, row.delegationId)
 
   const byGoal = rows.map(
     (row, index) =>
-      byId[index] ??
-      byDelegation[index] ??
-      (fuzzy[index] ? claim(c => normalize(c.goal) === normalize(row.goal)) : undefined)
+      byId[index] ?? byDelegation[index] ?? claim(c => ours(row, c) && normalize(c.goal) === normalize(row.goal))
   )
 
   const sameShape = rows.length === live.length
 
   return rows.map((row, index) => {
-    const matched = byGoal[index] ?? (sameShape && fuzzy[index] ? claim(c => c.taskIndex === index) : undefined)
+    const matched =
+      byGoal[index] ?? (sameShape ? claim(c => ours(row, c) && c.taskIndex === index) : undefined)
 
     return matched ? fromSubagent(matched, row.id, row.goal) : row
   })

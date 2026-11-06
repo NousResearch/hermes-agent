@@ -239,4 +239,20 @@ describe('mergeDelegateRows', () => {
     expect(merged.map(r => r.model)).toEqual([undefined, undefined])
     expect(merged.map(r => r.status)).toEqual(['completed', 'completed'])
   })
+
+  // A batch without a live-transcript id leaves its children unstamped while
+  // its dispatch handle still names a generated id: goal and order still join.
+  it('refuses a same-goal child of another call but joins an unstamped one', () => {
+    const rows = delegateRowsFromCall(
+      { tasks: [{ goal: 'A' }, { goal: 'B' }] },
+      { delegation_id: 'deleg_mine', goals: ['A', 'B'], status: 'dispatched' }
+    )
+
+    const merged = mergeDelegateRows(rows, [
+      subagent({ id: 'f1', delegationId: 'deleg_other', goal: 'A', taskIndex: 0, model: 'foreign' }),
+      subagent({ id: 'u1', goal: 'A', taskIndex: 0, model: 'mine' })
+    ])
+
+    expect(merged.map(r => r.model)).toEqual(['mine', undefined])
+  })
 })

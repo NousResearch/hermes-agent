@@ -1288,6 +1288,9 @@ def check_gateway_lifecycle(prompt: Optional[str], script: Optional[str] = None)
             "Blocked: cron job contains a gateway lifecycle command or persistent "
             "launchctl submit operation. This is blocked to prevent agent-driven "
             "SIGTERM-respawn loops under launchd/systemd supervision "
-            "(#30719). Run `hermes gateway restart` from a shell outside "
-            "the running gateway instead."
+            "(#30719). From a chat, ask the user to send `/restart`, which drains "
+            "active runs and restarts without cutting the conversation. From a "
+            "terminal, run `hermes gateway restart` in a shell outside the running "
+            "gateway. Do not work around this guard with systemd-run, timers, or a "
+            "detached helper."
         )

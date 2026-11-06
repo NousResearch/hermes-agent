@@ -27,6 +27,8 @@ def _frame(kind, text):
 class Backlog:
     """A socket whose frames are all buffered already: iterating them never yields to the loop."""
 
+    state = State.OPEN
+
     def __init__(self, frames):
         self.frames = frames
 

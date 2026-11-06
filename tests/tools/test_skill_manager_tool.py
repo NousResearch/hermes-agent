@@ -564,6 +564,66 @@ class TestDeleteSkill:
             _delete_skill("my-skill")
         assert not (tmp_path / "devops").exists()
 
+    def test_foreground_delete_is_recoverable_from_archive(self, tmp_path):
+        """skill_manage delete RELOCATES the skill into the curator archive
+        (``skills/.archive/``, flattened by name) instead of rmtree'ing it:
+        a degraded model emission can satisfy the delete branch (a fabricated
+        ``absorbed_into=""`` is accepted as an explicit prune), so an
+        accidental delete must stay restorable with ``hermes curator restore``."""
+        from tools.skill_usage import restore_skill
+        from hermes_constants import get_hermes_home
+
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            _write_file("my-skill", "references/api.md", "# API\nEndpoint docs.")
+            result = _delete_skill("my-skill")
+        assert result["success"] is True, result
+        # Gone from the skills tree...
+        assert not (tmp_path / "my-skill").exists()
+        # ...but restorable from the archive the curator commands read.
+        archive_dir = get_hermes_home() / "skills" / ".archive"
+        archived = archive_dir / "my-skill"
+        assert (archived / "SKILL.md").is_file()
+        assert (archived / "references" / "api.md").is_file()
+        assert str(archive_dir) in result["message"]
+        assert "curator restore my-skill" in result["message"]
+        # A plain delete makes no absorption claim — absorbed_note stays conditional
+        # (a regression here printed ``Content absorbed into ''.``).
+        assert "absorbed into" not in result["message"].lower()
+        ok, restore_msg = restore_skill("my-skill")
+        assert ok, restore_msg
+        assert (get_hermes_home() / "skills" / "my-skill" / "SKILL.md").is_file()
+
+    def test_delete_relocation_preserves_existing_archive_copy(self, tmp_path):
+        """A second delete of a same-named skill must not clobber the previous
+        archived copy — timestamp suffix on collision, same as archive_skill."""
+        from hermes_constants import get_hermes_home
+
+        archive_dir = get_hermes_home() / "skills" / ".archive"
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            (archive_dir / "my-skill").mkdir(parents=True)
+            (archive_dir / "my-skill" / "SKILL.md").write_text("earlier copy")
+            result = _delete_skill("my-skill")
+        assert result["success"] is True, result
+        assert (archive_dir / "my-skill" / "SKILL.md").read_text() == "earlier copy"
+        dupes = [p for p in archive_dir.iterdir() if p.name.startswith("my-skill-")]
+        assert len(dupes) == 1
+        assert (dupes[0] / "SKILL.md").is_file()
+
+    def test_delete_fails_closed_when_relocation_fails(self, tmp_path):
+        """If the skill cannot be moved to the archive, the delete is refused —
+        the skill must never be destroyed as a fallback (an unrecoverable
+        delete is the exact failure mode this contract exists to prevent)."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            with patch("pathlib.Path.rename", side_effect=OSError("cross-device")), \
+                 patch("tools.skill_manager_tool.shutil.move",
+                       side_effect=RuntimeError("no fallback")):
+                result = _delete_skill("my-skill")
+        assert result["success"] is False
+        assert "relocate" in result["error"].lower()
+        assert (tmp_path / "my-skill" / "SKILL.md").is_file()
 
     def test_delete_with_absorbed_into_equals_self_rejected(self, tmp_path):
         with _skill_dir(tmp_path):
@@ -571,6 +631,18 @@ class TestDeleteSkill:
             result = _delete_skill("narrow", absorbed_into="narrow")
         assert result["success"] is False
         assert (tmp_path / "narrow").exists()
+
+    def test_delete_with_absorbed_into_reports_absorption(self, tmp_path):
+        """The absorption note appears only when absorbed_into is set — a real
+        consolidation still says what absorbed the skill, while a plain delete
+        must not claim an absorption that never happened."""
+        with _skill_dir(tmp_path):
+            _create_skill("umbrella", VALID_SKILL_CONTENT)
+            _create_skill("narrow", VALID_SKILL_CONTENT)
+            result = _delete_skill("narrow", absorbed_into="umbrella")
+        assert result["success"] is True, result
+        assert "Content absorbed into 'umbrella'." in result["message"]
+        assert not (tmp_path / "narrow").exists()
 
 # ---------------------------------------------------------------------------
 # write_file / remove_file
@@ -1143,7 +1215,8 @@ class TestPinnedGuard:
 
 
 class TestDeleteSkillRmtreeGuard:
-    """Defense-in-depth before ``shutil.rmtree`` in ``_delete_skill``.
+    """Defense-in-depth before the destructive delete in ``_delete_skill`` (a
+    relocation, formerly an rmtree).
 
     Mirrors the Kilo Code #11227 fix: never let a recursive skill delete
     escape the skills tree, target a skills root, or follow a symlink.

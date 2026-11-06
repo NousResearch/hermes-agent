@@ -65,7 +65,10 @@ _PREVIEW_CONTENT_SQL = "REPLACE(REPLACE(m.content, '\n', ' '), '\r', ' ')"
 _PREVIEW_SCAFFOLDED_SQL = (
     f"(m.content LIKE '{SKILL_SCAFFOLD_SQL_LIKE}'"
     f" OR m.content LIKE '{AUTO_LOAD_SCAFFOLD_SQL_LIKE}')")
-_SQL_WHITESPACE = "'\t\n\r '"
+# Strip set: the TAB, LF, CR and SPACE control characters. The literal must carry the real
+# bytes: SQL string literals in neither SQLite nor PostgreSQL interpret backslash escapes,
+# so an escaped sequence would be stripped as the letters t, n, r and backslash.
+_SQL_WHITESPACE = "'" + "\t\n\r " + "'"
 
 
 def _sql_literal(text: str) -> str:

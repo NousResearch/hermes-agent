@@ -1,0 +1,18 @@
+name: ndaa
+title: NDAA.AI
+repo: https://github.com/Terahertz-Inc/ndaa-mcp
+sha: ae126e817732839b00c80c51097449e274a06cfa
+version: "0.1.1"
+description: "Public FY2027 NDAA tracker through NDAA.AI's remote MCP (https://mcp.ndaa.ai/mcp): bill status, section text, House vs Senate diffs, news, updates and guides. Portable Agent Plugins v1 (plugin.json + mcp.json + skills/). Disclosure — hosted-only connector; every tool call goes to mcp.ndaa.ai. All tools are read-only on public legislative data; no account required. The live tool set is served by the remote server and is not covered by the pinned sha."
+maintainer: Terahertz, Inc.
+tier: community
+category: tools
+docs_url: https://ndaa.ai/mcp
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

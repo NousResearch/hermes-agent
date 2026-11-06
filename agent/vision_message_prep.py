@@ -144,13 +144,25 @@ class VisionMessagePrepMixin:
 
     def _provider_supports_vision_tool_messages(self) -> bool:
         """True if the active provider accepts list-type tool content (some, e.g. Xiaomi MiMo, take
-        multimodal user messages but 400 on list-type tool content; profile ``supports_vision_tool_messages``)."""
+        multimodal user messages but 400 on list-type tool content; profile ``supports_vision_tool_messages``).
+
+        A config-declared ``supports_vision_tool_messages: false`` vetoes it too: the endpoint
+        accepts a tool-role image part and then silently drops the pixels, so the model would
+        see only the envelope's text placeholder.
+        """
+        provider = (getattr(self, "provider", "") or "").strip()
+        model = (getattr(self, "model", "") or "").strip()
+        try:
+            from hermes_cli.config import load_config
+            from agent.image_routing import lookup_supports_vision_tool_messages
+
+            if lookup_supports_vision_tool_messages(provider, model, load_config()) is False:
+                return False
+        except Exception:
+            pass
         try:
             from providers import routed_model_rejects_vision_tool_messages
-            return not routed_model_rejects_vision_tool_messages(
-                (getattr(self, "provider", "") or "").strip(),
-                (getattr(self, "model", "") or "").strip(),
-            )
+            return not routed_model_rejects_vision_tool_messages(provider, model)
         except Exception:
             pass
         return True  # default: assume compatible

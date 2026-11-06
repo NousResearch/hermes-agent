@@ -98,7 +98,8 @@ export const debugCommands: SlashCommand[] = [
             ['text', theme.color.text],
             ['completionBg', theme.color.completionBg],
             ['selectionBg', theme.color.selectionBg],
-            ['statusBg', theme.color.statusBg]
+            ['statusBg', theme.color.statusBg],
+            ['userMessageBg', theme.color.userMessageBg]
           ]
         }
       ])

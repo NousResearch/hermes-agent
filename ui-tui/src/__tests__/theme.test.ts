@@ -230,6 +230,31 @@ describe('fromSkin', () => {
     expect(theme.color.selectionBg).toBe('#654321')
   })
 
+  it('derives a user-message shade one step off the background, per polarity', async () => {
+    const dark = await importThemeWithEnv({ HERMES_TUI_BACKGROUND: '#1e1e1e' })
+    const darkBg = dark.fromSkin({}, {}).color.userMessageBg
+    expect(luminance(darkBg)).toBeGreaterThan(luminance('#1e1e1e'))
+    expect(luminance(darkBg)).toBeLessThanOrEqual(0.35)
+
+    const light = await importThemeWithEnv({ HERMES_TUI_BACKGROUND: '#ffffff' })
+    const lightBg = light.fromSkin({}, {}).color.userMessageBg
+    expect(luminance(lightBg)).toBeLessThan(luminance('#ffffff'))
+    expect(luminance(lightBg)).toBeGreaterThanOrEqual(0.4)
+  })
+
+  it('tracks an authored skin background for the user-message shade', async () => {
+    const { fromSkin } = await importThemeWithCleanEnv()
+    const theme = fromSkin({ background: '#002b36' }, {})
+
+    expect(luminance(theme.color.userMessageBg)).toBeGreaterThan(luminance('#002b36'))
+  })
+
+  it('lets user_message_bg override the derived shade', async () => {
+    const { fromSkin } = await importThemeWithCleanEnv()
+
+    expect(fromSkin({ user_message_bg: '#2a2a33' }, {}).color.userMessageBg).toBe('#2a2a33')
+  })
+
   it('overrides branding', async () => {
     const { fromSkin } = await importThemeWithCleanEnv()
     const { brand } = fromSkin({}, { agent_name: 'TestBot', prompt_symbol: '$' })

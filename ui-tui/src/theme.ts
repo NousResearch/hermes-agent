@@ -41,6 +41,9 @@ export interface ThemeColors {
   statusBad: string
   statusCritical: string
   selectionBg: string
+  /** Shade bar behind the user's own transcript messages. A slight lift of
+   *  the terminal background, derived per polarity; skin key `user_message_bg`. */
+  userMessageBg: string
 
   diffAdded: string
   diffRemoved: string
@@ -363,6 +366,7 @@ export function buildPalette(seeds: ThemeSeeds, isLight: boolean): ThemeColors {
     statusBad: seeds.statusBad,
     statusCritical: seeds.statusCritical,
     selectionBg: seeds.selection ?? tones.selection,
+    userMessageBg: tones.userMessage,
 
     ...(isLight ? DIFF_LIGHT : DIFF_DARK),
     shellDollar: seeds.shellDollar
@@ -506,7 +510,8 @@ const ADAPTIVE_BACKGROUNDS: readonly (keyof ThemeColors)[] = [
   'completionMetaBg',
   'completionMetaCurrentBg',
   'statusBg',
-  'selectionBg'
+  'selectionBg',
+  'userMessageBg'
 ]
 
 // Fill polarity limits: on light terminals a fill must stay light, and vice
@@ -584,6 +589,9 @@ export interface ThemeTones {
   selection: string
   /** Border fallback: accent receded toward the background. */
   border: string
+  /** User-message shade bar: background nudged one step off the canvas
+   *  (lighter on dark, darker on light), accent-free so prose stays neutral. */
+  userMessage: string
 }
 
 /**
@@ -634,7 +642,8 @@ export function deriveTones(seeds: {
     surface,
     activeRow: mix(surface, accent, 0.25),
     selection: isLight && seeds.shellDollar ? mix(bg, seeds.shellDollar, 0.2) : mix(surface, accent, 0.28),
-    border: mix(accent, bg, 0.25)
+    border: mix(accent, bg, 0.25),
+    userMessage: mix(bg, isLight ? '#000000' : '#ffffff', isLight ? 0.05 : 0.07)
   }
 }
 
@@ -822,6 +831,10 @@ const authoredBackground = (raw: string | undefined): null | string => {
   return backgroundLuminance(v) === null ? null : v.startsWith('#') ? v : `#${v}`
 }
 
+/** The user-message shade: the skin's `user_message_bg`, else the derived lift. */
+const userMessageBgFor = (colors: SkinColors, derived: ThemeColors): string =>
+  colors['user_message_bg'] ?? derived.userMessageBg
+
 /**
  * A skin that authors a background OWNS its polarity: the TUI paints the
  * terminal with it (applySkin → OSC-11), so contrast adaptation, the derived
@@ -915,6 +928,7 @@ export function fromSkin(
     statusBg: c('status_bar_bg') ?? surface,
     statusFg: c('status_bar_text') ?? c('ui_text') ?? c('banner_text') ?? derived.statusFg,
     selectionBg: c('selection_bg') ?? c('completion_menu_current_bg') ?? derived.selectionBg,
+    userMessageBg: userMessageBgFor(colors, derived),
     // Element tokens + skinnable diffs (theme-sdk): overridable, else the
     // derived defaults (tool→accent, thinking→muted, diff_* → DIFF_* ladder).
     // thinking tracks the EFFECTIVE muted (banner_dim override included), not

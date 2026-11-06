@@ -3,6 +3,7 @@ import { INLINE_IMAGE_MAX_ROWS } from '../config/limits.js'
 import type { Msg } from '../types.js'
 
 import { transcriptBodyWidth } from './inputMetrics.js'
+import { isUserPrompt, USER_PROMPT_SHADE_ROWS } from './userPromptShade.js'
 
 const hashText = (text: string) => {
   let h = 5381
@@ -74,6 +75,17 @@ const imageRows = (msg: Msg, inlineImages: boolean) =>
   inlineImages && msg.images?.length ? 1 + msg.images.length * INLINE_IMAGE_MAX_ROWS : 0
 
 // Rows whose height doesn't depend on wrapped text; null for the rest.
+// Rows a message's own chrome paints around it in MessageLine: user and diff
+// rows keep a blank line above and below, user prompts add their shade bar's
+// padding rows inside that, and slash echoes get a top margin.
+const ownMarginRows = (msg: Msg): number => {
+  if (msg.role === 'user' || msg.kind === 'diff') {
+    return 2 + (isUserPrompt(msg) ? USER_PROMPT_SHADE_ROWS : 0)
+  }
+
+  return msg.kind === 'slash' ? 1 : 0
+}
+
 const fixedKindHeight = (msg: Msg, leadGap: boolean, inlineImages: boolean): null | number => {
   if (msg.kind === 'intro') {
     return msg.info?.version ? 9 : 5
@@ -157,12 +169,7 @@ export const estimatedMsgHeight = (
 
   h += imageRows(msg, inlineImages)
 
-  if (msg.role === 'user' || msg.kind === 'diff') {
-    // Top + bottom blank line.
-    h += 2
-  } else if (msg.kind === 'slash') {
-    h++
-  }
+  h += ownMarginRows(msg)
 
   // Group-boundary blank line owned by BlockSlot: model prose, reasoning/tool
   // trails, and notes/errors each start a new visual group when the block

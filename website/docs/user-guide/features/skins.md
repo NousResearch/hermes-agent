@@ -76,6 +76,7 @@ Controls all color values throughout the CLI. Values are hex color strings.
 | `status_bar_bg` | Background color for the TUI status / usage bar | `#1a1a2e` |
 | `voice_status_bg` | Background color for the voice-mode status badge | `#1a1a2e` |
 | `selection_bg` | Background color for the TUI mouse-selection highlighter. Falls back to `completion_menu_current_bg` when unset. | `#3a3a55` |
+| `user_message_bg` | Shade bar behind your own messages in the TUI transcript. When unset, derived from the terminal background (a few percent lighter on dark terminals, darker on light ones). | derived |
 | `completion_menu_bg` | Background color for the completion menu list | `#1a1a2e` |
 | `completion_menu_current_bg` | Background color for the active completion row | `#333355` |
 | `completion_menu_meta_bg` | Background color for the completion meta column | `#1a1a2e` |

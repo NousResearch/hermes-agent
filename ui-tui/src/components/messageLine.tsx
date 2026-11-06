@@ -13,6 +13,7 @@ import { useT } from '../i18n/useT.js'
 import { transcriptBodyWidth, transcriptGutterWidth } from '../lib/inputMetrics.js'
 import { boundedLiveRenderText, compactPreview, isPasteBackedText } from '../lib/text.js'
 import { type GaugeStyle, hasUsageGauge, splitUsageGaugeLine } from '../lib/usageGauge.js'
+import { userPromptShade } from '../lib/userPromptShade.js'
 import type { Theme } from '../theme.js'
 import type { ActiveTool, DetailsMode, Msg, SectionVisibility } from '../types.js'
 
@@ -278,6 +279,7 @@ export const MessageLine = memo(function MessageLine({
       flexDirection="column"
       marginBottom={msg.role === 'user' || isDiffSegment ? 1 : 0}
       marginTop={msg.role === 'user' || msg.kind === 'slash' || isDiffSegment || leadGap ? 1 : 0}
+      {...userPromptShade(msg, t)}
     >
       {showDetails && (
         <Box flexDirection="column" marginBottom={1}>

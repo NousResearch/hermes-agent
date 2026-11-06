@@ -99,3 +99,32 @@ export function resetSttLeasesForTests() {
   intent.clear()
   tails.clear()
 }
+
+// How long one take may sit in "transcribing" waiting on the mic-open
+// warm-up. The lease request's own budget is 180 s (a cold first-use model
+// download legitimately takes minutes), so an acquire against a backend whose
+// model load is wedged under the shared loader lock never answers for the
+// full budget — and every later request queues behind it with no log and no
+// error, so the take is silently swallowed until the user kills the app
+// (#137318). Warm-up is an optimization: past this budget the caller abandons
+// the take with a visible "unavailable" notice instead of holding it hostage.
+export const STT_WARMUP_BUDGET_MS = 30_000
+
+/**
+ * Race one warm-up promise against the take budget. Resolves `'ready'` when
+ * the warm-up settles (the normal path — a cache hit is instant) or
+ * `'unavailable'` when the budget elapsed first. The warm-up itself is never
+ * cancelled: it keeps settling in the background, so the next take on a
+ * recovered backend starts hot.
+ */
+export function awaitSttWarmup(warmup: Promise<void>): Promise<'ready' | 'unavailable'> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+
+  const budget = new Promise<'unavailable'>(resolve => {
+    timer = setTimeout(() => resolve('unavailable'), STT_WARMUP_BUDGET_MS)
+  })
+
+  return Promise.race<'ready' | 'unavailable'>([warmup.then((): 'ready' => 'ready'), budget]).finally(() =>
+    clearTimeout(timer)
+  )
+}

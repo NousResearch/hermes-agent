@@ -72,6 +72,64 @@ class TestTelegramModelPicker:
         assert "`model_1`" in edit_kwargs["text"]
 
 
+def _picker_providers(*slugs):
+    return [{"slug": s, "name": s, "models": ["m"], "total_models": 1} for s in slugs]
+
+
+def _keyboard_buttons(keyboard):
+    return [b for row in keyboard.inline_keyboard for b in row]
+
+
+@pytest.fixture
+def plain_keyboards(monkeypatch):
+    """Inspectable stand-ins for PTB's keyboard types (the module mock records nothing)."""
+    import plugins.platforms.telegram.adapter as tg
+
+    monkeypatch.setattr(tg, "InlineKeyboardButton",
+                        lambda text, callback_data=None, **_: SimpleNamespace(text=text, callback_data=callback_data))
+    monkeypatch.setattr(tg, "InlineKeyboardMarkup", lambda rows: SimpleNamespace(inline_keyboard=rows))
+
+
+def test_provider_keyboard_keeps_a_provider_whose_config_key_has_uppercase(plain_keyboards):
+    """#149672: ``group_providers`` lowercases slugs, so a raw-cased lookup dropped ``Axonhub``."""
+    keyboard, _ = _make_adapter()._build_provider_keyboard(_picker_providers("Axonhub", "cnb2api"), 0)
+    callbacks = [b.callback_data for b in _keyboard_buttons(keyboard)]
+    assert "mp:Axonhub" in callbacks
+    assert "mp:cnb2api" in callbacks
+
+
+def test_provider_keyboard_folds_a_group_member_written_with_uppercase(plain_keyboards):
+    keyboard, _ = _make_adapter()._build_provider_keyboard(_picker_providers("Kimi-Coding", "kimi-coding-cn"), 0)
+    buttons = _keyboard_buttons(keyboard)
+    assert [b.callback_data for b in buttons if b.callback_data.startswith("mp")] == ["mpg:kimi"]
+    assert "(2)" in buttons[0].text
+
+
+@pytest.mark.asyncio
+async def test_group_callback_lists_a_member_written_with_uppercase(plain_keyboards):
+    adapter = _make_adapter()
+    adapter._model_picker_state["12345"] = {
+        "providers": _picker_providers("Kimi-Coding", "kimi-coding-cn"),
+        "current_model": "m",
+        "current_provider": "kimi-coding-cn",
+        "session_key": "s",
+        "on_model_selected": AsyncMock(),
+        "msg_id": 42,
+    }
+    query = AsyncMock()
+    query.data = "mpg:kimi"
+    query.message = MagicMock()
+    query.message.chat_id = 12345
+    query.from_user = MagicMock()
+
+    await adapter._handle_model_picker_callback(query, "mpg:kimi", "12345")
+
+    markup = query.edit_message_text.call_args[1]["reply_markup"]
+    callbacks = [b.callback_data for b in _keyboard_buttons(markup)]
+    assert "mp:Kimi-Coding" in callbacks
+    assert "mp:kimi-coding-cn" in callbacks
+
+
 def _gateway_wired_adapter():
     """Real adapter with the real gateway auth callback, as ``GatewayRunner`` wires it."""
     from gateway.config import GatewayConfig, Platform

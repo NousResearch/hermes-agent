@@ -4258,7 +4258,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
             from hermes_cli.models_catalog_static import group_providers
         except Exception:
             group_providers = None
-        by_slug = {p.get("slug"): p for p in providers}
+        by_slug = {str(p.get("slug") or "").lower(): p for p in providers}  # group_providers lowercases (#149672)
         buttons: list = []
         if group_providers is not None:
             for row in group_providers([p.get("slug") for p in providers]):
@@ -4435,7 +4435,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
                 _label, _desc, member_slugs = PROVIDER_GROUPS.get(group_id, ("", "", []))
             except Exception:
                 _label, member_slugs = "", []
-            by_slug = {p["slug"]: p for p in state["providers"]}
+            by_slug = {str(p["slug"]).lower(): p for p in state["providers"]}  # PROVIDER_GROUPS slugs are lowercase
             members = [by_slug[m] for m in member_slugs if m in by_slug]
             if not members:
                 await answer_callback(query, _toast("platform.telegram.picker.group_not_found"))

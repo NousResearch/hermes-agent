@@ -1,24 +1,40 @@
-"""PluginContext's ``register_<category>_provider`` methods are written out with ``def`` (greppable,
-visible to type checkers) while their data and docstrings stay in the registrar table."""
+"""PluginContext's explicit ``register_<category>_provider`` methods each run their own row of the
+registrar table: same registry, kind, docstring and signature as the generated methods they replace."""
 
-import ast
+import importlib
 import inspect
-import sys
 
-from hermes_cli.plugins import PluginContext, PluginManifest
+import pytest
+
+from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 from hermes_cli.plugins_registrars import _SCOPED_PROVIDER_REGISTRARS
 
 
-def _class_defs() -> dict[str, ast.FunctionDef]:
-    tree = ast.parse(inspect.getsource(sys.modules[PluginContext.__module__]))
-    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "PluginContext")
-    return {n.name: n for n in cls.body if isinstance(n, ast.FunctionDef)}
+def _provider_for(base_ref: str, name: str):
+    module, attr = base_ref.split(":")
+    base = getattr(importlib.import_module(module), attr)
+    cls = type(f"Probe{attr}", (base,), {"name": name, "prefix": f"{name}:"})
+    cls.__abstractmethods__ = frozenset()
+    return cls()
 
 
-def test_every_scoped_provider_registrar_is_an_explicit_def():
-    defs = _class_defs()
-    missing = [row[0] for row in _SCOPED_PROVIDER_REGISTRARS if row[0] not in defs]
-    assert missing == []
+@pytest.mark.parametrize("row", _SCOPED_PROVIDER_REGISTRARS, ids=lambda row: row[0])
+def test_each_registrar_registers_into_its_rows_registry(row):
+    method, kind, registry_mod, base_ref = row[:4]
+    name = "probe" + kind.replace("_", "")
+    provider = _provider_for(base_ref, name)
+    manager = PluginManager()
+    ctx = PluginContext(PluginManifest(name="probe", source="bundled"), manager)
+    registry = importlib.import_module(registry_mod)
+
+    handle = getattr(ctx, method)(provider)
+    try:
+        assert handle is not None and handle.kind == kind
+        assert registry.snapshot_registration(name, scope=manager.scope_key) is provider
+    finally:
+        if handle is not None:
+            handle.dispose()
+    assert registry.snapshot_registration(name, scope=manager.scope_key) is None
 
 
 def test_explicit_registrars_keep_the_row_docstring_and_parameter():

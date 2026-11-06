@@ -41,23 +41,24 @@ async def call_plugin_rpc(connection, ref, method, handler, params):
         # Resolved in the worker: an ``async def`` handler's body must not run on the gateway loop.
         result = await asyncio.to_thread(lambda: resolve_plugin_command_result(
             handler(dict(params), session_id=ref.session_id or None)))
-        return json.loads(json.dumps(result))
+        return json.loads(json.dumps(result, allow_nan=False))  # NaN/Infinity: not JSON, an error
     except Exception as exc:  # the call's only answer: a plugin failure is the client's error, not a crash
         logger.warning('plugin RPC %s failed', method, exc_info=True)
         raise RuntimeStoreError('plugin_rpc_failed', field=method, detail=f'{type(exc).__name__}: {exc}') from exc
 
 
 def publish_session_event(session_id, event_type, payload) -> bool:
-    """Publish on the event stream of the live session ``session_id`` names; True when a live viewer
-    took the frame (it is in the session's replay either way). False too when no authority here holds it."""
+    """Publish on the event stream of the live session ``session_id`` names in the caller's profile;
+    True when a live viewer took the frame (it is in the session's replay either way). False too when
+    that profile's authority does not hold it: session ids are per-profile, so no other is searched."""
     from gateway.run_api import _ACTIVE_RUNNER
-    from gateway.session_authorities import all_authorities
-    for authority in all_authorities(_ACTIVE_RUNNER) if _ACTIVE_RUNNER is not None else ():
-        found = _live(authority, session_id)
-        if found is not None:
-            key, live = found
-            return live.event_stream.publish(key, payload, event_type=event_type)
-    return False
+    from gateway.session_authorities import active_authority
+    authority = active_authority(_ACTIVE_RUNNER) if _ACTIVE_RUNNER is not None else None
+    found = _live(authority, session_id) if authority is not None else None
+    if found is None:
+        return False
+    key, live = found
+    return live.event_stream.publish(key, payload, event_type=event_type)
 
 
 def _live(authority, session_id):

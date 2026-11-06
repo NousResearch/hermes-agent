@@ -19,6 +19,7 @@ async def _thread(params, *, session_id, **kw):
 def register(ctx):
     ctx.register_rpc("pane.state", lambda params, *, session_id, **kw: {"n": params["n"], "session_id": session_id})
     ctx.register_rpc("pane.thread", _thread)
+    ctx.register_rpc("pane.nan", lambda params, *, session_id, **kw: {"ratio": float("nan")})
 '''
 
 
@@ -59,6 +60,9 @@ async def test_plugin_method_is_gated_like_a_session_verb_and_leaves_with_its_pl
         assert (await call(reader, session_id='s', n=3))['data']['reason'] == 'permission_denied'
         assert (await call(owner, session_id='local-x', n=3))['data']['reason'] == 'permission_denied'
         assert (await call(owner, session_id='s'))['data']['reason'] == 'plugin_rpc_failed'
+        # NaN is not JSON: an error, never a frame the client's JSON.parse would drop unanswered.
+        nan = await owner.dispatch({'id': 3, 'method': 'plugin.pane-demo.pane.nan', 'params': {}})
+        assert nan['error']['data']['reason'] == 'plugin_rpc_failed'
         # An async handler's body runs in the worker too, so blocking work in it never stalls the loop.
         reply = await owner.dispatch({'id': 2, 'method': 'plugin.pane-demo.pane.thread', 'params': {}})
         assert reply['result'] != threading.get_ident()
@@ -111,3 +115,19 @@ async def test_plugin_session_event_reaches_only_that_sessions_viewers(tmp_path,
         ('plugin.pane-demo.pane.changed', 's', {'n': 1})]
     assert frames['t'] == []
     assert ctx.emit_to_session('nobody', 'pane.changed') is False
+    with pytest.raises(ValueError):
+        ctx.emit_to_session('s-compressed', 'pane.changed', {'ratio': float('inf')})
+    # Session ids are per profile: another profile's 's' never gets this profile's event.
+    other = SimpleNamespace(sessions={'s': _live(Platform.TELEGRAM, 's')}, agent=lambda ref: None)
+    seen_elsewhere = []
+    other.sessions['s'].event_stream.observers.add(seen_elsewhere.append)
+
+    class Registry:  # serves both profiles; this caller's scope is `authority`'s
+        def active(self):
+            return authority
+
+        def __iter__(self):
+            return iter([other, authority])
+    authority.runner.session_authorities = Registry()
+    assert ctx.emit_to_session('s', 'pane.changed', {'n': 2}) is True
+    assert seen_elsewhere == [] and frames['s'][-1]['params']['payload'] == {'n': 2}

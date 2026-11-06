@@ -4571,6 +4571,25 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
     if _absorb:
         _absorb_windows_console_controls()
 
+    # Approach A (BRIEF-1023-002): Scheduled Task / VBS launcher sets
+    # HERMES_GATEWAY_DETACHED=1 but still runs inside an attached console, so the
+    # gateway inherits that console and dies (STATUS_CONTROL_C_EXIT) when the
+    # session ends. When we detect that mismatch, re-launch through the real
+    # detached spawn mechanism and exit this console-bound instance.
+    if (
+        is_windows()
+        and _gateway_detached_env()
+        and _windows_console_window_attached()
+    ):
+        try:
+            from hermes_cli.gateway_windows import _spawn_detached
+
+            _spawn_detached()
+            print("Gateway re-launched detached (console-bound instance exiting).")
+        except Exception as _exc:
+            print(f"Failed to re-launch detached gateway: {_exc}")
+        sys.exit(0)
+
     # A system-level unit execs us without XDG_RUNTIME_DIR/DBUS_SESSION_BUS_ADDRESS; adopt our own
     # user bus before any worker env snapshot so `systemd-run --user --scope` works (#104893).
     if is_linux() and os.environ.get("INVOCATION_ID"):

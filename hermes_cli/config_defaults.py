@@ -31,6 +31,8 @@ DEFAULT_CONFIG = {
     # journal_mode: SQLite journal mode for every Hermes DB. "wal" default; use "delete" on
     # weak-fsync/shared filesystems where WAL is not crash-safe (macOS virtiofs, NFS, SMB).
     "database": {
+        "backend": "sqlite",
+        "schema": None,
         "journal_mode": "wal",
         # WAL sizing pragmas (ints). None = SQLite defaults (autocheckpoint 1000 pages, no limit).
         "wal_autocheckpoint": None,
@@ -2717,6 +2719,9 @@ from hermes_cli.config_defaults_env import OptionalEnvVars, _base_url, _env, _ms
 # checklists; category: provider|tool|skill|messaging|setting, advanced=True hides from checklists,
 # tools=[...] lists the model tools the key unlocks. Provider entries: config_provider_env (on first read).
 OPTIONAL_ENV_VARS = OptionalEnvVars({
+    "HERMES_DATABASE_URL": _setting(
+        "PostgreSQL connection URL for this profile's session database",
+        "PostgreSQL connection URL", password=True),
     # ── Provider (handled in provider selection, not shown in checklists) ──
     "NOUS_BASE_URL": _base_url("Nous Portal"),
     "HERMES_ANON_API_SECRET": _env(

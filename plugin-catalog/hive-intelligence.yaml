@@ -1,0 +1,31 @@
+name: hive-intelligence
+title: Hive Intelligence
+repo: https://github.com/hive-intel/hive-sdk
+sha: 22cfd73d05b889f264fcb031f42215a04a707f36
+description: >-
+  Crypto data for AI agents through Hive's hosted MCP server (Streamable HTTP at
+  https://mcp.hiveintelligence.xyz/mcp, OAuth sign-in, no keys in config): find a token, get its
+  price, check token safety, research a token, analyze a wallet, read market positioning and the
+  market overview, and look up DeFi yields and prediction markets. Portable Agent Plugins v1
+  package (plugin.json + mcp.json + the hive and hive-setup skills), no Python or executables.
+  Needs a free Hive account (Free plan: 10,000 credits a month). Read-only: never trades, moves
+  funds or signs anything. Disclosure: every tool call sends the tool name and its inputs (a
+  token, wallet address or query) to mcp.hiveintelligence.xyz and spends the account's credits;
+  the tool list comes from Hive's server at run time, so the pinned commit doesn't cover it.
+  Sign in once with
+  `hermes mcp add hive --url https://mcp.hiveintelligence.xyz/mcp --auth oauth --connect-timeout 300`;
+  the bundled mcp.json alone yields 401.
+maintainer: hive-intel
+tier: community
+category: tools
+docs_url: https://docs.hiveintelligence.xyz
+version: "1.20.1"
+readme: true
+platforms: []
+known_issues:
+  - "Sign in once after installing: hermes mcp add hive --url https://mcp.hiveintelligence.xyz/mcp --auth oauth --connect-timeout 300"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

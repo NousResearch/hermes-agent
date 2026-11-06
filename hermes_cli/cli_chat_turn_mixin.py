@@ -727,6 +727,22 @@ class CLIChatTurnMixin:
             already_streamed = (
                 (self._stream_started and self._stream_box_opened) or _interrupted_streamed
             ) and not is_error_response
+            # A tool-call turn may have carried substantive answer text alongside its tool call.
+            # That text survives the tool-call boundary in _streamed_text_this_turn but is NOT part
+            # of final_response (only the last assistant message). When final_response is just a
+            # suffix of the accumulated streamed text (e.g. a footer line appended after the
+            # answer), render the accumulated text so the answer is not silently dropped. Only
+            # applies when the box was not already streamed (otherwise the text is already on
+            # screen and re-rendering would duplicate it).
+            _render_response = response
+            if (not already_streamed and response and not is_error_response):
+                _streamed = getattr(self, "_streamed_text_this_turn", "") or ""
+                _norm_streamed = " ".join(_streamed.split())
+                _norm_response = " ".join(response.split())
+                if (_norm_streamed and _norm_response
+                        and _norm_streamed != _norm_response
+                        and len(_norm_streamed) > len(_norm_response)):
+                    _render_response = _streamed.strip()
             modern = getattr(self, "_modern_layout", False)
             # A gateway refusal is Hermes's own copy (quoted user text, a /discard line to copy):
             # markdown stripping or rendering would rewrite the quote and merge the lines.
@@ -748,12 +764,12 @@ class CLIChatTurnMixin:
             elif modern:
                 from hermes_cli.cli_modern_layout import answer_label, closing_separator
                 _cprint(answer_label())
-                ChatConsole().print(_render_final_assistant_content(response, mode=mode),
+                ChatConsole().print(_render_final_assistant_content(_render_response, mode=mode),
                                     style=_resp_text, soft_wrap=True)  # terminal wraps; resize re-flows
                 _cprint(closing_separator(True))
             else:
                 ChatConsole().print(Panel(
-                    _render_final_assistant_content(response, mode=mode),
+                    _render_final_assistant_content(_render_response, mode=mode),
                     title=f"[{_resp_color} bold]{label}[/]", title_align="left", border_style=_resp_color,
                     style=_resp_text, box=rich_box.HORIZONTALS, padding=(1, 0),
                     width=self._scrollback_box_width(),

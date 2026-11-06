@@ -2840,9 +2840,24 @@ class _StreamingCall(StreamingWaitMonitor):
 
     def _route_suppressed_text(self, text: str) -> None:
         """Tool-call turns suppress content streaming (no chatty preamble), but
-        reasoning tags inside it must still reach the display: route through
-        the delta callback for tag extraction (the CLI drops non-reasoning text
-        once the stream box is closed)."""
+        reasoning tags inside it must still reach the display: route through the
+        delta callback for tag extraction (the CLI drops non-reasoning text once
+        the stream box is closed).
+
+        Substantive answer text that shares a message with a tool call is NOT a
+        chatty preamble: deliver it normally so it is not silently dropped. Only
+        short/empty preambles keep the suppressed (tag-extraction-only) route.
+        """
+        _visible = (text or "").strip()
+        try:
+            _strip = getattr(self.agent, "_strip_think_blocks", None)
+            if callable(_strip):
+                _visible = _strip(_visible)
+        except Exception:
+            pass
+        if len(_visible) >= 24:
+            self._emit_text(text)
+            return
         if self.agent.stream_delta_callback and not getattr(self.agent, "_hold_stream", False):
             self._quiet(lambda: (self.agent.stream_delta_callback(text), self.agent._record_streamed_assistant_text(text)))
 

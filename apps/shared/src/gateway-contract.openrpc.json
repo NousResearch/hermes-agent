@@ -5063,6 +5063,26 @@
         "title": "AdmissionStatus",
         "type": "object"
       },
+      "AdmittedInput": {
+        "additionalProperties": false,
+        "description": "What someone typed into the surface that sent the turn (``gateway/session_display.admitted_input``).",
+        "properties": {
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "submission_id": {
+            "title": "Submission Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "submission_id"
+        ],
+        "title": "AdmittedInput",
+        "type": "object"
+      },
       "AgentPluginRow": {
         "additionalProperties": false,
         "description": "``methods_tools._plugin_rows`` + ``plugins_cmd_catalog.catalog_row_fields`` provenance.",
@@ -24755,7 +24775,7 @@
       },
       "MessageStartPayload": {
         "additionalProperties": false,
-        "description": "``message.start``. Empty from the TUI gateway's emitters and for an ordinary admission;\n``gateway/session_authority._stamp_claim`` adds an automation admission's async-result card\n(``session_automation.admission_display``: a background-process completion) and its model\ntext, so a viewer that did not submit the turn paints the same header the submitter would.",
+        "description": "``message.start``. Empty from the TUI gateway's emitters; ``gateway/session_authority._stamp_claim``\nadds an automation admission's async-result card (``session_automation.admission_display``: a\nbackground-process completion) and its model text, or else the admission's typed ``input``, so a\nviewer that did not submit the turn paints the same header the submitter would.",
         "properties": {
           "display_kind": {
             "anyOf": [
@@ -24804,6 +24824,17 @@
             ],
             "default": null,
             "title": "Text"
+          },
+          "input": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AdmittedInput"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "turn_id": {
             "anyOf": [
@@ -51162,7 +51193,7 @@
     },
     {
       "name": "message.start",
-      "summary": "A turn began streaming; an automation turn carries its async-result card.",
+      "summary": "A turn began streaming; a claimed turn carries its typed input or an automation's async-result card.",
       "params": [
         {
           "name": "payload",

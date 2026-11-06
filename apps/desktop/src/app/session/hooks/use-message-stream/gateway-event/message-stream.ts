@@ -1,9 +1,15 @@
-import { type BillingBlock, mergeUsage } from '@hermes/shared'
+import { type AdmittedInput, type BillingBlock, mergeUsage } from '@hermes/shared'
 
 import { noteTurnSettled } from '@/app/session/hooks/use-session-actions/settled-turns'
 import { burstVibeHearts } from '@/components/chat/vibe-hearts'
 import { translateNow } from '@/i18n'
-import { type GatewayEventPayload, markQueuedPromptStarted } from '@/lib/chat-messages'
+import {
+  type ChatMessage,
+  finalizeInterruptedMessages,
+  type GatewayEventPayload,
+  markQueuedPromptStarted,
+  textPart
+} from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText } from '@/lib/chat-runtime'
 import { playCompletionSound } from '@/lib/completion-sound'
 import { parseErrorSurface } from '@/lib/error-surface'
@@ -133,9 +139,41 @@ function lightOwnMessagingTurn(runtimeId: string, admissionId: string | undefine
   lightDesktopMessagingCompletion(storedId, admissionId, storedId === $focusedStoredSessionId.get(), profile)
 }
 
+/**
+ * The started turn's typed input as its user bubble, in a window that did not
+ * send it: Desktop beside an editor's ACP client, the CLI or another window on
+ * the same session. Without it the reply streams under no prompt until the
+ * transcript is read again. The sending window already shows
+ * `user-<submission_id>` (submit.ts seedOptimistic); the bubble takes that same
+ * id, so a re-sent start adds nothing and the completion receipt binds the
+ * stored row to it (`bindReceiptUserRows`). Like seedOptimistic, it settles a
+ * leftover pending reply first instead of stranding it above the prompt.
+ */
+function withAdmittedInput(
+  messages: ChatMessage[],
+  streamId: string | null,
+  input: unknown,
+  at: number
+): ChatMessage[] {
+  const { text, submission_id: submissionId } = (input ?? {}) as Partial<AdmittedInput>
+
+  if (typeof text !== 'string' || !text.trim() || typeof submissionId !== 'string' || !submissionId) {
+    return messages
+  }
+
+  const id = `user-${submissionId}`
+
+  return messages.some(message => message.id === id)
+    ? messages
+    : [
+        ...finalizeInterruptedMessages(messages, streamId, at),
+        { id, role: 'user', parts: [textPart(text)], timestamp: at }
+      ]
+}
+
 /** message.start: arm the session for a new turn, unless it re-sends the current one. */
 function handleMessageStart(ctx: GatewayEventContext): boolean {
-  const { deps, payload, sessionId, isActiveEvent } = ctx
+  const { deps, payload, sessionId, isActiveEvent, occurredAt } = ctx
   const { compactedTurnRef, flushQueuedDeltas, dropQueuedDeltas, nativeSubagentSessionsRef } = deps
   const { sessionStateByRuntimeIdRef, updateSessionState } = deps
 
@@ -199,8 +237,12 @@ function handleMessageStart(ctx: GatewayEventContext): boolean {
     }
 
     // A projected queued prompt drawn before this start is this turn's
-    // prompt from here on, even while its row is still on screen.
-    const messages = markQueuedPromptStarted(state.messages)
+    // prompt from here on, even while its row is still on screen; otherwise
+    // the turn shows the input it was claimed with.
+    const queued = markQueuedPromptStarted(state.messages)
+
+    const messages =
+      queued === state.messages ? withAdmittedInput(queued, state.streamId, payload?.input, occurredAt) : queued
 
     return {
       ...state,

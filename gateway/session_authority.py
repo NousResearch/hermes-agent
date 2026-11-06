@@ -1170,8 +1170,9 @@ class SessionAuthority:
                     'admission_id': row['admission_id']}
                 self.executing[ref.session_id] = row['generation']
                 from gateway.session_automation import admission_display
-                live.event_stream.publish(ref.session_id, admission_display(row.get('payload') or {}),
-                                          event_type='message.start')
+                from gateway.session_display import admitted_input
+                start = admission_display(row.get('payload') or {}) or admitted_input(row)
+                live.event_stream.publish(ref.session_id, start, event_type='message.start')
                 self._publish_pending(ref)
         return row
 

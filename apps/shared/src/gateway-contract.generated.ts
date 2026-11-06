@@ -5865,13 +5865,19 @@ export interface ErrorPayload {
 export interface NoticePayload {
   message: string
 }
-/** ``message.start``. Empty from the TUI gateway's emitters and for an ordinary admission; ``gateway/session_authority._stamp_claim`` adds an automation admission's async-result card (``session_automation.admission_display``: a background-process completion) and its model text, so a viewer that did not submit the turn paints the same header the submitter would. */
+/** ``message.start``. Empty from the TUI gateway's emitters; ``gateway/session_authority._stamp_claim`` adds an automation admission's async-result card (``session_automation.admission_display``: a background-process completion) and its model text, or else the admission's typed ``input``, so a viewer that did not submit the turn paints the same header the submitter would. */
 export interface MessageStartPayload {
   display_kind?: string | null
   display_text?: string | null
   notification_category?: string | null
   text?: string | null
+  input?: AdmittedInput | null
   turn_id?: string | null
+}
+/** What someone typed into the surface that sent the turn (``gateway/session_display.admitted_input``). */
+export interface AdmittedInput {
+  text: string
+  submission_id: string
 }
 /** ``message.delta``. A session-authority local-viewer turn also publishes ``text: null``: the reply segment boundary (the agent's ``stream_delta_callback(None)``, before tool lines) that closes the classic CLI's reply box. Every other viewer ignores an empty chunk. A prompt turn stamps ``turn_id`` + ``segment`` (interim seals before it) + ``offset`` (UTF-16 code units of that segment already sent): a client drops a re-sent chunk it already applied. */
 export interface MessageDeltaPayload {
@@ -7317,7 +7323,7 @@ export interface BackendGatewayEventMap {
   'message.interim': MessageInterimPayload
   /** The agent reacted to a message; paint it live. */
   'message.reaction': MessageReactionPayload
-  /** A turn began streaming; an automation turn carries its async-result card. */
+  /** A turn began streaming; a claimed turn carries its typed input or an automation's async-result card. */
   'message.start': MessageStartPayload
   /** The MoA aggregator started. */
   'moa.aggregating': MoaAggregatingPayload

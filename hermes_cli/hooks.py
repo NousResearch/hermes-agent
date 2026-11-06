@@ -100,6 +100,11 @@ def _mtime_drift(shell_hooks, spec, entry) -> tuple[bool | None, str, str]:
 # agent.shell_hooks.run_once() -> the same _serialize_payload() production uses, so the
 # stdin a script sees under `hooks test` / `hooks doctor` has the runtime shape.
 _DEFAULT_PAYLOADS = {
+    # NOTE: credential_scope appears in the pre/post test payloads because
+    # ``hooks test`` renders the full dispatch shape; on real dispatch the
+    # field is capability-gated (llm.credential_scope) and stripped for shell
+    # hooks, which are ownerless. Test output may therefore show a field a
+    # shell hook never receives live -- the safe direction.
     "pre_tool_call": {
         "tool_name": "terminal", "args": {"command": "echo hello"},
         "session_id": "test-session", "task_id": "test-task", "tool_call_id": "test-call",

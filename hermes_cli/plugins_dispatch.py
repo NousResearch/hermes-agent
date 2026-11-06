@@ -307,37 +307,50 @@ class PluginDispatchMixin:
             return None
         plugin_id, ref = entry
         alive = ref() if isinstance(ref, weakref.ReferenceType) else ref
-        return plugin_id if alive is cb else None
+        if alive is not cb:
+            return None
+        # A stale entry (e.g. after a targeted unload that left a strong-ref
+        # entry) must never re-grant a callback no longer registered for this
+        # hook: ownership is honored only while the callback is live in _hooks.
+        live_hooks = getattr(self, "_hooks", None) or {}
+        if not any(existing is cb for existing in live_hooks.get(hook_name, ())):
+            return None
+        return plugin_id
 
     def _kwargs_for_hook_callback(
         self, hook_name: str, cb: Callable, kwargs: dict[str, Any],
-        _granted_cache: Optional[dict[str, bool]] = None,
+        _granted_cache: "Optional[dict[tuple[str, str], bool]]" = None,
     ) -> dict[str, Any]:
         """``kwargs`` for one callback, with ungranted gated fields removed.
 
         Returns ``kwargs`` itself when nothing is gated or the owner is
-        granted; otherwise a shallow copy without the gated fields. Grant
-        checks are cached per dispatch (``_granted_cache``) so a multi-plugin
-        fire does not re-read config per callback.
+        granted every gated field present; otherwise a shallow copy without
+        the ungranted gated fields. Grant checks are cached per dispatch
+        (``_granted_cache``, keyed by (owner, field)) so a multi-plugin fire
+        does not re-read config per callback.
         """
         gated = {f: cap for f, cap in self._GATED_HOOK_FIELDS.items() if f in kwargs}
         if not gated:
             return kwargs
         owner = self._hook_owner_id(hook_name, cb)
-        if owner is None:
-            granted = False
-        else:
+        denied: set[str] = set()
+        for field, capability in gated.items():
+            if owner is None:
+                denied.add(field)
+                continue
             cache = _granted_cache if _granted_cache is not None else {}
-            if owner not in cache:
+            cache_key = (owner, field)
+            if cache_key not in cache:
                 try:
                     from hermes_cli.plugin_capabilities import plugin_capability_granted
-                    cache[owner] = bool(plugin_capability_granted(owner, "llm.credential_scope"))
+                    cache[cache_key] = bool(plugin_capability_granted(owner, capability))
                 except Exception:
-                    cache[owner] = False
-            granted = cache[owner]
-        if granted:
+                    cache[cache_key] = False
+            if not cache[cache_key]:
+                denied.add(field)
+        if not denied:
             return kwargs
-        return {k: v for k, v in kwargs.items() if k not in gated}
+        return {k: v for k, v in kwargs.items() if k not in denied}
 
     def _run_hook_callbacks(self, hook_name: str, callbacks: Any, kwargs: dict[str, Any],
                             failed: Optional[list] = None) -> list[Any]:
@@ -348,7 +361,7 @@ class PluginDispatchMixin:
         timeout = _resolve_hook_callback_timeout()
         use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
         fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
-        _granted_cache: dict[str, bool] = {}
+        _granted_cache: dict[tuple[str, str], bool] = {}
         for cb in callbacks:
             cb_kwargs = self._kwargs_for_hook_callback(hook_name, cb, kwargs, _granted_cache)
             try:
@@ -638,6 +651,17 @@ class PluginDispatchMixin:
                 owners[callback_id] = (context.plugin_id, weakref.ref(callback, _drop_owner))
             except TypeError:
                 owners[callback_id] = (context.plugin_id, callback)
+            # Drop the owner entry when this registration is disposed
+            # (targeted unload / reload), so a surviving callable object can
+            # never inherit the grant when re-appended outside track_hook().
+            _prev_dispose = handle._on_dispose
+
+            def _dispose_hook_owner(disposed, _prev=_prev_dispose, _owners=owners, _cid=callback_id):
+                _owners.pop(_cid, None)
+                if _prev is not None:
+                    _prev(disposed)
+
+            handle._on_dispose = _dispose_hook_owner
         except Exception:
             pass
         if hold_stream and hook_name != STREAM_HOLDING_HOOK:
@@ -697,7 +721,7 @@ class PluginDispatchMixin:
         timeout = _resolve_hook_callback_timeout()
         use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
         fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
-        _granted_cache: dict[str, bool] = {}
+        _granted_cache: dict[tuple[str, str], bool] = {}
         for cb in self._hooks.get(hook_name, []):
             cb_kwargs = self._kwargs_for_hook_callback(hook_name, cb, kwargs, _granted_cache)
             callback_name = getattr(cb, "__name__", repr(cb))

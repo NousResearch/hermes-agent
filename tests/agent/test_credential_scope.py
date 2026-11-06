@@ -205,6 +205,19 @@ def _register(manager, plugin_id, sink):
     return _cb
 
 
+def _register_with_handle(manager, plugin_id, sink):
+    from hermes_cli.plugins import PluginContext, PluginManifest
+
+    manifest = PluginManifest(name=plugin_id, source="user", key=plugin_id)
+    ctx = PluginContext(manifest, manager)
+
+    def _cb(**kwargs):
+        sink.append(kwargs)
+
+    handle = ctx.register_hook("pre_api_request", _cb)
+    return _cb, handle
+
+
 class TestCapabilityGate:
     def test_capability_registered_consent_only(self):
         from hermes_cli.plugin_capabilities import CAPABILITY_REGISTRY
@@ -249,6 +262,43 @@ class TestCapabilityGate:
                               "identity_status": "known"},
         )
         assert seen and "credential_scope" not in seen[0]
+
+    def test_stale_owner_entry_never_regrants_disposed_callback(self, hermes_home):
+        """After a registration is disposed (targeted unload), re-appending the
+        same callable outside track_hook() must not restore its grant."""
+        from hermes_cli.plugin_capabilities import record_consent
+        from hermes_cli.plugins import PluginManager
+
+        record_consent("quota-plugin", ["llm.credential_scope"], ["llm.credential_scope"])
+        manager = PluginManager()
+        seen = []
+        cb, handle = _register_with_handle(manager, "quota-plugin", seen)
+        handle.dispose()
+        assert cb not in manager._hooks.get("pre_api_request", [])
+        assert not any(
+            pid == "quota-plugin"
+            for owners in manager._hook_callback_owners.values()
+            for pid, _ref in owners.values()
+        )
+        manager._hooks.setdefault("pre_api_request", []).append(cb)  # ownerless re-append
+        manager.invoke_hook(
+            "pre_api_request", api_request_id="req-1",
+            credential_scope={"provider_id": _PROVIDER,
+                              "credential_scope_id": "scope-xyz",
+                              "identity_status": "known"},
+        )
+        assert seen and "credential_scope" not in seen[0]
+
+    def test_unload_all_clears_hook_owners(self, hermes_home):
+        from hermes_cli.plugin_capabilities import record_consent
+        from hermes_cli.plugins import PluginManager
+
+        record_consent("quota-plugin", ["llm.credential_scope"], ["llm.credential_scope"])
+        manager = PluginManager()
+        _register(manager, "quota-plugin", [])
+        assert any(manager._hook_callback_owners.values())
+        manager.unload()
+        assert not any(manager._hook_callback_owners.values())
 
     def test_scope_field_survives_hook_payload_sanitization(self):
         """The sanitizer must not redact the (non-secret) scope dict."""

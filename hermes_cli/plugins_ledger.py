@@ -328,6 +328,11 @@ class PluginLedgerMixin:
         ):
             container.clear()
         self._context_engine = None
+        # Hook-owner map (capability-gated payload fields): drop it with the
+        # callbacks it describes so stale owners cannot outlive an unload-all.
+        _owners = getattr(self, "_hook_callback_owners", None)
+        if _owners is not None:
+            _owners.clear()
         with self._hook_timeout_lock:
             self._hook_running_callbacks.clear()
             self._hook_abandoned.clear()

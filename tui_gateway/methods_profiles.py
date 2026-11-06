@@ -108,7 +108,9 @@ def _clean_revisions(raw: dict) -> dict:
 
 def _latest_message_preview(db, session_id):
     """≤80-char excerpt of the NEWEST active user/assistant message, or "" (roster semantics).
-    Same query shape as ``SessionDB.latest_message_row_id``; keep them in step."""
+    Same query shape as ``SessionDB.latest_message_row_id``; keep them in step. Machine-authored
+    wrappers (cron delivery banner, cron run hint) are cut — a roster row shows content, not
+    system scaffolding."""
     try:
         with db._lock:
             row = db._conn.execute(
@@ -119,7 +121,11 @@ def _latest_message_preview(db, session_id):
                 (session_id,)).fetchone()
     except Exception:
         return ""
-    text = " ".join(str(row[0] or "").split()).strip() if row else ""
+    text = str(row[0] or "") if row else ""
+    # Strip the wrapper BEFORE collapsing whitespace: the collapse merges the flattened
+    # terminator's two spaces into one and the cut would no longer anchor.
+    text = _lazy("agent.system_wrappers", "strip_system_wrappers")(text)
+    text = " ".join(text.split()).strip()
     return text[:80] + "..." if len(text) > 80 else text
 
 

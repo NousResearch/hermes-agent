@@ -1,0 +1,18 @@
+name: daygauge-agent-plugin
+title: daygauge sleep midpoint
+repo: https://github.com/jlucwright/daygauge-agent-plugin
+sha: b1f9ef5844cb03f87a38a86cdf0dc05d70e182e0
+version: "1.0.0"
+description: "Calculate sleep midpoint from manually supplied onset and wake times using daygauge's public method, with midnight and ambiguous-interval handling. Agent Plugins v1 skill only: no app or Apple Health connection and no diagnosis. Disclosure: Hermes and its configured model service process the supplied times; the package has no executable code, network client, install script, credential store, background process or telemetry."
+maintainer: Studea Limited
+tier: community
+category: tools
+docs_url: https://github.com/jlucwright/daygauge-agent-plugin#readme
+requires_hermes: ">=0.21.5"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

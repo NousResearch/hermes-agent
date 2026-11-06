@@ -1,18 +1,18 @@
 name: hermes-mark-words
 title: Mark Words
 repo: https://github.com/hey-yx/hermes-mark-words
-sha: 4057a9778ee2250bd12d3971cb30c1c148ef7f39
-version: "0.24.3"
-description: "Underlines the words in Desktop assistant replies that are worth doubting (suspected inventions, unclear or ambiguous usages) and explains them on hover, with zero to two follow-up questions that fill the composer without sending. Disclosure - the plugin reads finished assistant replies from the Desktop transcript, stores its marks, ignored words and settings in the app's localStorage, and calls no third-party service: marks come in-band from the reply itself, and replies without them fall back to one batched call through Hermes's own llm.oneshot helper. No telemetry, no credentials."
+sha: 49c4fc17355ec4f4968418d9fe473bcd9b2f58a8
+version: "0.24.4"
+description: "Underlines the words in Desktop assistant replies that are worth doubting (suspected inventions, unclear or ambiguous usages) and explains them on hover, with zero to two follow-up questions that fill the composer without sending. Disclosure - the plugin reads finished assistant replies and the last user message from the Desktop transcript, stores its marks, ignored words and settings in the app's localStorage, and calls no third-party service: marks come in-band from the reply itself, and replies without them fall back to one batched call through Hermes's own llm.oneshot helper whose request carries the reply text together with the last user message, so the auxiliary model can judge which words are new to this reader. No telemetry, no credentials."
 maintainer: hey-yx
 tier: community
 category: desktop
 requires_hermes: ">=0.22.0"
 docs_url: https://github.com/hey-yx/hermes-mark-words#readme
-image: "https://raw.githubusercontent.com/hey-yx/hermes-mark-words/4057a9778ee2250bd12d3971cb30c1c148ef7f39/assets/cover-en.png"
+image: "https://raw.githubusercontent.com/hey-yx/hermes-mark-words/49c4fc17355ec4f4968418d9fe473bcd9b2f58a8/assets/cover-en.png"
 screenshots:
-  - https://raw.githubusercontent.com/hey-yx/hermes-mark-words/4057a9778ee2250bd12d3971cb30c1c148ef7f39/assets/chat-popover.png
-  - https://raw.githubusercontent.com/hey-yx/hermes-mark-words/4057a9778ee2250bd12d3971cb30c1c148ef7f39/assets/chat-marks.png
+  - https://raw.githubusercontent.com/hey-yx/hermes-mark-words/49c4fc17355ec4f4968418d9fe473bcd9b2f58a8/assets/chat-popover.png
+  - https://raw.githubusercontent.com/hey-yx/hermes-mark-words/49c4fc17355ec4f4968418d9fe473bcd9b2f58a8/assets/chat-marks.png
 readme: true
 platforms: []
 capabilities:

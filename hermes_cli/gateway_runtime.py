@@ -7,7 +7,7 @@ import ipaddress
 import math
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Callable, Literal
 from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
@@ -74,8 +74,15 @@ def gateway_profile_home(home: str | Path) -> Path:
     return _overlay_owner_home(Path(home).expanduser().resolve())
 
 
-def _overlay_owner_home(home: Path) -> Path:
-    """Return the owner named by a private overlay's gateway lock, if it has one."""
+class OverlayOutsideScope(Exception):
+    """An overlay lock names an owner home outside the caller's ``within`` scope."""
+
+
+def _overlay_owner_home(home: Path, *, within: Callable[[Path], bool] | None = None) -> Path:
+    """Return the owner named by a private overlay's gateway lock, if it has one.
+
+    With *within*, an owner home that fails it raises :class:`OverlayOutsideScope` before that
+    home or its lock is inspected or tightened (``resolve-profile`` stays inside its own root)."""
     if os.name == "nt":
         return home
     from hermes_cli.gateway_runtime_discovery import DiscoveryError, _private_lock, _private_node
@@ -88,6 +95,8 @@ def _overlay_owner_home(home: Path) -> Path:
         target = lock.resolve(strict=True)
         if not lock.is_symlink() or target.name != "gateway.lock":
             return home
+        if within is not None and not within(target.parent):
+            raise OverlayOutsideScope(str(target.parent))
         _private_node(target.parent, kind="directory", home=True)
         _private_lock(target)
     except (FileNotFoundError, OSError, DiscoveryError):

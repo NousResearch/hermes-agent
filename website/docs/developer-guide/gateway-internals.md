@@ -454,9 +454,10 @@ refuse any other top-level key and `params` that is not an object. The reply is 
 `{"ok": false, "protocol": 1, "id": <your id>, "error": "<text>"}`. The `error` strings below are
 part of the contract.
 
-**`resolve-profile`** takes `{"home": "<absolute profile home>"}` in any spelling and answers with
-the verdict `hermes gateway attach` discovery gives for that home (a verdict that is not
-attachable is still `ok: true`):
+**`resolve-profile`** takes `{"home": "<absolute profile home>"}` and answers with the verdict
+`hermes gateway attach` discovery gives for that home (a verdict that is not attachable is still
+`ok: true`). Send a plain absolute path: one with a `.` or `..` component, a repeated separator or
+a trailing separator is refused as invalid parameters. Symlinks in it are resolved.
 
 | Field | Meaning |
 |---|---|
@@ -524,8 +525,17 @@ SID to equal the gateway's. A ticket is 256 random bits, stored only as a hash, 
 seconds, single-use, bound to the gateway instance, the profile and the purpose, and revoked when
 the gateway stops. It authenticates `/api/ws` only. The gateway never logs it; a client must not
 log it, the subprotocol list or the CLI's stdout, or put it in a URL. `resolve-profile` carries no
-credential and answers any peer that can connect, like `identify`. None of this protects against
-code already running as your user, or root.
+credential and answers any peer that can connect, like `identify`. It checks the home against
+the answering gateway's root before it looks inside it: the resolved home must be the gateway's
+own home or a named profile `<root>/profiles/<name>` directly under it, so a symlink that leads
+out of the root resolves outside and is refused. Only then does it follow a private overlay's
+`gateway.lock` link, and only to an owner home that passes the same check. Any other home gets
+`profile_mismatch` with `control: null`, and nothing outside the root is opened, created or
+changed (the only calls that reach outside are resolving the home's path and an in-root
+`gateway.lock` link). For a home it accepts it does what discovery does: an unserved profile's
+same-user lock left at mode 0644 by an older Hermes is narrowed to 0600, as
+`hermes gateway attach` does. None of this protects against code already running as your user,
+or root.
 
 The contract is pinned by `apps/shared/src/node/control-socket.vectors.json`: request and reply
 pairs a client in any language can replay, run against the gateway by

@@ -1,0 +1,17 @@
+name: greyridge-llm-inference
+repo: https://github.com/rezearcher/greyridge-llm-inference-skill
+sha: 479c63a838ad88d2168ea40e171fc81a3abb4b98
+description: "Skill that gives an agent keyless, OpenAI-compatible LLM inference by curling the Grey Ridge x402 API — POST /v1/chat/completions (Llama 3.3 70B fp8, streaming; or llama-3.2-3b-instruct), standard choices[0].message.content shape. Skill-only: no tools, hooks or env vars. Use as a fallback/provider lane when no OpenAI/Anthropic key is configured, or for pay-per-call inference with no account. Disclosure — the skill has the agent run curl/fetch against Grey Ridge Signals Group LLC's API (api.greyridgesignals.ai); there is a free real-model preview (rate-limited per IP/day) and a paid route ($0.002 USDC per call on Base via x402, no API key). Model output is not financial advice."
+maintainer: rezearcher
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/rezearcher/greyridge-llm-inference-skill
+version: "0.1.0"
+known_issues:
+  - Llama 3.3 70B fp8 on Workers AI; paid responses cap at ~400 output tokens. Free preview is rate-limited per IP/day; unattended use needs the paid x402 route ($0.002/call). Base/USDC only; payment is the only auth.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

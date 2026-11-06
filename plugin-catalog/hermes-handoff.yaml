@@ -1,0 +1,36 @@
+name: hermes-handoff
+title: Hermes Handoff
+repo: https://github.com/yuzushi-dev/hermes-handoff
+sha: 2bab6cf77a436544f58f5b528cd0d838e6d60309
+version: "0.3.0"
+description: >-
+  Profile-bound semantic session handoffs for CLI and Desktop with independent
+  destination and optional summary-writer models. Derived from yuzushi-dev/session-handoff.
+  Disclosure — reads bounded persisted session evidence from the originating profile's
+  state.db and project/Git metadata; runs local Git and foreground Hermes subprocesses
+  without a shell; stores private handoff/journal sidecars under that profile; optional
+  writer and new chat turns use configured model providers and may incur inference costs.
+  No telemetry or plugin-owned credential store. Four internal tool-policy imports
+  remain version-coupled; no runtime overrides or self-updater.
+maintainer: yuzushi-dev
+tier: community
+category: automation
+# Conservative support boundary: admission validated on official stable v0.22.5.
+# Not a certification of full UI/CLI behavior or the oldest working release.
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/yuzushi-dev/hermes-handoff/blob/2bab6cf77a436544f58f5b528cd0d838e6d60309/README.md
+readme: true
+platforms: [linux]
+# Historical configuration-controls crop from a synthetic policy-rejection scenario
+# (opening rejected with HTTP409); not a fresh end-to-end run.
+screenshots:
+  - https://raw.githubusercontent.com/yuzushi-dev/hermes-handoff/2bab6cf77a436544f58f5b528cd0d838e6d60309/assets/hermes-handoff-ui-controls.png
+known_issues:
+  - Four private core imports for tool-policy preflight may break on a Hermes release.
+  - Named-profile and bot workflows through another profile socket are not certified.
+  - Plugin-host isolation skips the handoff-open CLI registration; CLI-host operation is not certified here.
+capabilities:
+  provides_tools: [hermes_handoff]
+  provides_hooks: [pre_api_request]
+  provides_middleware: []
+  requires_env: []

@@ -1,0 +1,23 @@
+name: hermes-vitals-light
+title: Hermes Vitals Light
+repo: https://github.com/atostivint/hermes-vitals-light
+sha: 635efe9fb0514cf318ef5ac1aca0222d9fe05b58
+version: "0.1.1"
+description: "CPU, load, free RAM, Linux PSI CPU pressure, active sessions, running Hermes processes and round-trip time of the connected Hermes server in the Desktop status bar, plus an optional TUI card. Disclosure — the Desktop chip's backend route reads CPU/memory figures via psutil, Linux /proc/pressure/cpu and /proc/meminfo, every process's command line (only per-command Hermes process counts are returned) and the server's own loopback /api/status, and reports the server hostname to the Desktop; the optional TUI card, copied by hand into tui-widgets/, runs the same code as a long-lived `python3 -c` child of the TUI and saves its options to <HERMES_HOME>/vitals.json; no third-party network call, no telemetry, no credentials."
+maintainer: atostivint
+tier: community
+category: desktop
+requires_hermes: ">=0.22"
+docs_url: https://github.com/atostivint/hermes-vitals-light#readme
+screenshots:
+  - https://raw.githubusercontent.com/atostivint/hermes-vitals-light/635efe9fb0514cf318ef5ac1aca0222d9fe05b58/docs/images/desktop-chip.png
+  - https://raw.githubusercontent.com/atostivint/hermes-vitals-light/635efe9fb0514cf318ef5ac1aca0222d9fe05b58/docs/images/desktop-tooltip.png
+  - https://raw.githubusercontent.com/atostivint/hermes-vitals-light/635efe9fb0514cf318ef5ac1aca0222d9fe05b58/docs/images/desktop-offline.png
+  - https://raw.githubusercontent.com/atostivint/hermes-vitals-light/635efe9fb0514cf318ef5ac1aca0222d9fe05b58/docs/images/tui-card.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

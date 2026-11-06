@@ -1,0 +1,14 @@
+{
+  "name": "example",
+  "label": "Example",
+  "description": "Test-only dashboard plugin fixture — installed by tests that need a stable plugin API endpoint to verify auth + static-asset behaviour",
+  "icon": "Sparkles",
+  "version": "1.0.0",
+  "tab": {
+    "path": "/example",
+    "position": "after:skills"
+  },
+  "slots": [],
+  "entry": "dist/index.js",
+  "api": "plugin_api.py"
+}

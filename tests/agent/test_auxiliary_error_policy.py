@@ -214,6 +214,24 @@ def test_each_failed_request_is_classified_once(monkeypatch, is_async, stream):
     assert len(set(map(id, seen))) == len(seen) == outcome.attempts + outcome.fallback_attempts
 
 
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+def test_observers_see_the_providers_own_error_when_its_stream_was_judged(monkeypatch, is_async):
+    """A stream negotiation is classified where it failed; ``post_auxiliary_call`` still reports the provider's error."""
+    from hermes_cli import plugins
+    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+
+    manager = PluginManager()
+    monkeypatch.setattr(plugins, "_plugin_manager", manager)
+    monkeypatch.setattr(plugins, "_plugin_managers_by_home", {})
+    seen = []
+    PluginContext(PluginManifest(name="aux-observer", source="user"), manager).register_hook(
+        "post_auxiliary_call", lambda **kw: seen.append(kw["error_type"]))
+    with patch("agent.auxiliary_client._aux_progress_active", return_value=True):
+        run_ladder([sdk(503, "down"), sdk(503, "down")], is_async=is_async,
+                   fallback_error=[sdk(404, "model not found"), sdk(404, "model not found")])
+    assert set(seen) == {"InternalServerError", "NotFoundError"}
+
+
 def test_plugin_verdict_steers_and_retryable_false_is_honoured(monkeypatch):
     from hermes_cli import plugins
 

@@ -263,6 +263,34 @@ class TestJsonParsing:
         schema = {"type": ["array", "string"], "items": {"$ref": "#"}}
         assert _parse_structured_text(text=text, json_mode=False, json_schema=schema) == (None, "text")
 
+    def test_a_whole_reply_fallback_never_adds_an_error_of_its_own(self, monkeypatch):
+        """The fenced block does not parse, and the whole reply cannot be used either: parsing it hits
+        the recursion limit, or the plugin's schema is invalid or holds a ``$ref`` that does not
+        resolve. The released parser answered text in each case; the fallback must not raise instead."""
+        import json
+
+        text = '{"a": "```hello```"}'
+        loads = json.loads
+
+        def nested_too_deep(candidate, *args, **kwargs):
+            if candidate == text:
+                raise RecursionError("maximum recursion depth exceeded while decoding a JSON array")
+            return loads(candidate, *args, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(json, "loads", nested_too_deep)
+            assert _parse_structured_text(text=text, json_mode=True, json_schema=None) == (None, "text")
+        pytest.importorskip("jsonschema")
+        for schema in ({"type": "nonsense"}, {"$ref": "#/missing"}):
+            assert _parse_structured_text(text=text, json_mode=False, json_schema=schema) == (None, "text")
+
+    def test_a_reply_that_breaks_the_schema_is_an_error(self):
+        """With ``jsonschema`` installed, parsed JSON that does not match ``json_schema`` raises."""
+        pytest.importorskip("jsonschema")
+        schema = {"type": "object", "properties": {"kind": {"type": "string"}}, "required": ["kind"]}
+        with pytest.raises(ValueError, match="did not match schema"):
+            _parse_structured_text(text='{"kind": 1}', json_mode=False, json_schema=schema)
+
 # ---------------------------------------------------------------------------
 # End-to-end facade
 # ---------------------------------------------------------------------------

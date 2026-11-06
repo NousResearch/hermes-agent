@@ -1,7 +1,7 @@
 """Exact operator controls for canonical hosted attempts, never legacy replay."""
 from gateway import hosted_room_driver as tasks
 from hermes_state_runtime import RuntimeStoreError
-from tui_gateway.hosted_room_driver import HostedRoomBinding
+from tui_gateway.hosted_room_driver import ROOM_SESSION_SOURCE, HostedRoomBinding, room_session_title
 from tui_gateway.hosted_room_prepare_stall import RETRY_TASK_PREFIX
 from tui_gateway.hosted_room_service import attempt_action, task_member_id
 
@@ -26,6 +26,21 @@ class HostedControls:
             raise RuntimeStoreError('permission_denied')
         return task, HostedRoomBinding(room_id, gateway, epoch)
 
+    @staticmethod
+    def _member_session_id(rpc, room_id, profile):
+        """The member's room session id, or None when that member has no session yet.
+
+        A member in another profile is reached through ``HostedRoomOwnerRPC``, which only learns its
+        session ref from a create/resume/resolve_exact reply, so a fresh one has no ``ref``. Resolve
+        the session the way the driver does before probing it; never read ``rpc.ref`` blind.
+        """
+        ref = getattr(rpc, 'ref', None)
+        if ref is not None:
+            return ref.session_id
+        session = rpc.resolve_exact(profile=profile, title=room_session_title(room_id),
+                                    source=ROOM_SESSION_SOURCE)
+        return None if session is None else session['session_id']
+
     def discard_room_task(self, room_id, *, member_id, task_id, execution_generation):
         with self._policy_lock:
             task, binding = self._control_task(room_id, member_id, task_id, execution_generation)
@@ -41,10 +56,16 @@ class HostedControls:
         if task['status'] != 'indeterminate':
             raise RuntimeStoreError('stale_generation')
         rpc = self._resolve_member_transport(binding, task)
+        profile = task['payload']['target_profile']
+        session_id = self._member_session_id(rpc, binding.room_id, profile)
+        if session_id is None:
+            # An indeterminate attempt has a member admission; no session means the binding
+            # changed under us. Fail closed rather than cancel unseen work.
+            raise RuntimeStoreError('stale_generation')
         # Canonical receipt commits first. If the driver write fails, exact
         # RPC replay must recover it rather than invent another execution.
-        rpc.discard(profile=task['payload']['target_profile'], source='bot_room',
-                    session_id=rpc.ref.session_id, expected_task_id=task['identity'].task_id,
+        rpc.discard(profile=profile, source='bot_room',
+                    session_id=session_id, expected_task_id=task['identity'].task_id,
                     execution_generation=task['execution_generation'])
         lease = self.runtime._ensure_lease(binding)
         result = self.runtime._fenced(tasks.resolve_indeterminate_cancellation,
@@ -103,8 +124,12 @@ class HostedControls:
 
     def _retry_local(self, binding, task, room_id):
         rpc = self._resolve_member_transport(binding, task)
-        info = rpc.info(profile=task['payload']['target_profile'], source='bot_room',
-                        session_id=rpc.ref.session_id)
+        profile = task['payload']['target_profile']
+        session_id = self._member_session_id(rpc, room_id, profile)
+        # No member session yet: nothing was ever admitted there, so nothing can be active or
+        # unknown, and the deferred task is plain queued work again.
+        info = {} if session_id is None else rpc.info(
+            profile=profile, source='bot_room', session_id=session_id)
         if info.get('status') == 'unknown':
             raise RuntimeStoreError('unknown_execution')
         if info.get('active'):

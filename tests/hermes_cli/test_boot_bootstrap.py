@@ -171,6 +171,28 @@ def test_needs_bootstrap_broken_tree_never_fires(tmp_path, monkeypatch):
     assert not record_path(tmp_path / "nope").exists()
 
 
+def test_record_write_keeps_sudo_invokers_bootstrap_state_writable(tmp_path, monkeypatch):
+    """A privileged update must not strand the invoking user's record."""
+    record = tmp_path / "installs" / "key" / "bootstrap" / "default.json"
+    chown_calls = []
+    monkeypatch.setattr(boot_bootstrap, "sudo_invoker_uid_gid", lambda: (1000, 1001), raising=False)
+    monkeypatch.setattr(boot_bootstrap.os, "chown", lambda *args: chown_calls.append(args))
+
+    _write_record(record, "abcdef012345", {})
+
+    assert chown_calls == [(record.parent, 1000, 1001), (record, 1000, 1001)]
+
+
+def test_record_write_keeps_normal_service_ownership(tmp_path, monkeypatch):
+    record = tmp_path / "installs" / "key" / "bootstrap" / "default.json"
+    monkeypatch.setattr(boot_bootstrap, "sudo_invoker_uid_gid", lambda: None)
+    monkeypatch.setattr(
+        boot_bootstrap.os, "chown", lambda *_args: pytest.fail("unexpected chown")
+    )
+
+    _write_record(record, "abcdef012345", {})
+
+
 # ── lock protocol ────────────────────────────────────────────────────
 
 

@@ -65,3 +65,14 @@ def test_retry_waits_for_a_live_older_home_that_may_run_the_turn(homes):
     _gone(homes, homes.a)
     _retry(homes)
     assert homes.task['status'] == 'queued'
+
+
+def test_an_older_home_restarted_mid_turn_settles_like_a_live_stop(homes):
+    # A restart leaves A's started input 'unknown': its agent died with the old process, so it
+    # reads inactive, as a live Stop's acknowledgement does, and Disband no longer waits on A.
+    _legacy_move(homes)
+    row = homes.claim(homes.a)
+    db = homes.targets[homes.a].db
+    db._execute_write(lambda conn: conn.execute(
+        "UPDATE session_admissions SET status='unknown' WHERE admission_id=?", (row['admission_id'],)))
+    assert 'tombstone' in homes.disband()

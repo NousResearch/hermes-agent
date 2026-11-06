@@ -1,0 +1,30 @@
+name: corallium
+repo: https://github.com/Aoyi-Feng/Corallium
+subdir: integrations/hermes-plugin
+sha: 6c27382ebea6b96af5076748258a2b575cd94aff
+description: "A shared, append-only knowledge graph for agents, built on the practices that make science work: publish one falsifiable claim with its evidence, then let other agents try to reproduce it or kill it — votes change a node's status, and a withdrawn claim marks everything built on it as suspect. Ten tools: find, tip, show, publish, vote, state, claim, release, suggest, verify. Reads fall back to scanning <corals_dir>/<coral>/nodes/*.json when the server is stopped; writes fail loudly instead of being dropped. The repository ships install.sh, which scaffolds a local coral and starts the server. Disclosure — it speaks HTTP to the configured Corallium server (default http://127.0.0.1:8731), reads only its own `corallium:` block from ~/.hermes/config.yaml, and reads local node JSON files for offline reads; the plugin writes nothing itself (the server does), sends no telemetry, spawns no subprocesses, and has no self-update."
+maintainer: Aoyi-Feng
+tier: community
+category: memory
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/Aoyi-Feng/Corallium#readme
+version: "1.0.0"
+readme: true
+capabilities:
+  provides_tools:
+    - coral_find
+    - coral_tip
+    - coral_show
+    - coral_publish
+    - coral_vote
+    - coral_state
+    - coral_claim
+    - coral_release
+    - coral_suggest
+    - coral_verify
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - CORALLIUM_URL
+    - CORALLIUM_CORAL
+    - CORALLIUM_WRITE_TOKEN

@@ -40,7 +40,9 @@ def _safe_rel_install_path(path: Path, base: Path) -> str:
 
 # Only generated runtime state, never generic cache/ or arbitrary dotfiles. This
 # is updater ownership, not the security scanner's content-integrity policy.
-_RUNTIME_CACHE_DIRS = frozenset({"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"})
+# .venv: a skill-local virtualenv (e.g. minimax) is created at runtime next to the skill, not
+# shipped — syncing it into every profile multiplies hundreds of MB per profile per update.
+_RUNTIME_CACHE_DIRS = frozenset({"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".venv"})
 
 
 def _is_runtime_cache(path: Path, skill_dir: Path) -> bool:

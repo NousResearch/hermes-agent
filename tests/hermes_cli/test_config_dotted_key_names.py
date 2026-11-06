@@ -263,6 +263,48 @@ class TestAtomicRoundtripYamlUpdate:
         saved = yaml.safe_load(text)
         assert saved["display"]["personality"] == "hacker"
 
+    def test_update_refuses_phantom_when_dotted_sibling_exists(self, tmp_path):
+        """Same refusal as ``_set_nested``: creating the intermediate mapping
+        ``glm-5`` beside the existing literal key ``glm-5.3`` would write a
+        phantom sibling the runtime never reads."""
+        from utils import atomic_roundtrip_yaml_update
+
+        path = tmp_path / "config.yaml"
+        original = (
+            "model_overrides:\n"
+            "  zai:\n"
+            "    glm-5.3:\n"
+            "      context_length: 128000\n"
+        )
+        path.write_text(original)
+        with pytest.raises(ValueError) as excinfo:
+            atomic_roundtrip_yaml_update(
+                path, "model_overrides.zai.glm-5.context_length", 64000
+            )
+        assert "Refusing to create nested key 'glm-5'" in str(excinfo.value)
+        assert "'glm-5.3'" in str(excinfo.value)
+        assert path.read_bytes() == original.encode()
+
+    def test_update_creates_new_nested_key_without_dotted_sibling(self, tmp_path):
+        """No dotted sibling to shadow: creating a new intermediate mapping
+        through the update path still works."""
+        from utils import atomic_roundtrip_yaml_update
+
+        path = tmp_path / "config.yaml"
+        path.write_text(
+            "model_overrides:\n"
+            "  zai:\n"
+            "    plain-model:\n"
+            "      context_length: 32000\n"
+        )
+        atomic_roundtrip_yaml_update(
+            path, "model_overrides.zai.glm-5.context_length", 64000
+        )
+        saved = yaml.safe_load(path.read_text())
+        overrides = saved["model_overrides"]["zai"]
+        assert overrides["glm-5"] == {"context_length": 64000}
+        assert overrides["plain-model"] == {"context_length": 32000}
+
 
 # ---------------------------------------------------------------------------
 # #99124 — dotted LEAF keys (glm-5.3-flash) round-trip through set/get/unset

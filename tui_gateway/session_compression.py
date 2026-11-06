@@ -180,6 +180,15 @@ def _apply_live_context_length_pin(agent: Any, cfg: dict | None, cc: Any) -> Non
     from agent.agent_init import config_context_length_for_runtime, set_config_context_length
 
     new_ctx = config_context_length_for_runtime(agent, cfg)
+    if new_ctx is None and isinstance(cfg, dict) and cfg.get("custom_providers"):
+        # Construction and /model also honor provider-specific model context pins.
+        from hermes_cli.config import get_compatible_custom_providers, get_custom_provider_context_length
+
+        new_ctx = get_custom_provider_context_length(
+            model=getattr(agent, "model", "") or "",
+            base_url=getattr(agent, "base_url", "") or "",
+            custom_providers=get_compatible_custom_providers(cfg),
+        )
     if new_ctx is not None:
         if cc is None:
             agent._config_context_length = new_ctx

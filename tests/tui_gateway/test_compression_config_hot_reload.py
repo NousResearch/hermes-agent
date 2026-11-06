@@ -512,3 +512,46 @@ def test_live_sync_against_a_real_abc_engine(monkeypatch, caplog):
     assert engine.model_thresholds == {}
     assert not hasattr(engine, "tail_mode")
     assert session["config_compression_seen"] == server._tui_compression_config_signature(cfg)
+
+def test_external_engine_retains_custom_provider_context_pin(monkeypatch):
+    """The live LCM sync must retain a pin supplied by a custom provider's model config.
+
+    An external engine owns compression policy, but the AGENT's context pin still
+    follows construction and /model resolution when model.context_length is absent.
+    """
+    engine = SimpleNamespace(
+        name="lcm",
+        threshold_tokens=100_000,
+        threshold_percent=0.65,
+        model_thresholds={},
+    )
+    agent = SimpleNamespace(
+        model="lcm-model",
+        provider="custom:acme",
+        base_url="http://127.0.0.1:8123/v1",
+        context_compressor=engine,
+        _config_context_length=512_000,
+        compression_enabled=True,
+        compression_idle_compact_after_seconds=0,
+        codex_responses_native_compaction=False,
+        codex_responses_compact_threshold=200_000,
+    )
+    cfg = {
+        "model": {"default": "lcm-model", "provider": "custom:acme"},
+        "custom_providers": [{
+            "name": "acme",
+            "base_url": "http://127.0.0.1:8123/v1",
+            "models": {"lcm-model": {"context_length": 512_000}},
+        }],
+        "compression": {"tail_mode": "legacy"},
+    }
+
+    _sync_with_cfg(
+        monkeypatch,
+        {"agent": agent, "session_key": "external-provider-pin"},
+        cfg,
+    )
+
+    assert agent._config_context_length == 512_000
+    assert engine.threshold_tokens == 100_000
+    assert not hasattr(engine, "tail_mode")

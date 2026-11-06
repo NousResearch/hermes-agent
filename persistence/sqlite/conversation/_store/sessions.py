@@ -328,13 +328,16 @@ def _own_profile_name(holder: StoreHolder) -> Optional[str]:
     profile's store. None outside the profile tree — NULL beats a fabricated owner."""
     try:
         from hermes_constants import get_default_hermes_root
+        from persistence.sqlite.conversation._store.linked_profile_homes import linked_profile_name
         root = get_default_hermes_root().resolve()
         parent = Path(holder.db_path).resolve().parent
+        linked = linked_profile_name(parent, root)
         if parent == root:
-            return "default"
+            return linked or "default"
         is_profile_dir = parent.parent == root / "profiles"
         if is_profile_dir and re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", parent.name):
             return parent.name
+        return linked
     except Exception:  # health: allow BLE001 -- an underivable profile is None
         logger.debug("own-profile derivation failed", exc_info=True)
     return None

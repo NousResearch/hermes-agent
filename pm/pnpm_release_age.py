@@ -90,6 +90,21 @@ def _kept_versions(entry: str, locked: dict[str, set[str]]) -> list[str] | None:
     return [v for v in (part.strip() for part in versions.split("||")) if v in locked.get(name, set())]
 
 
+def _yaml_scalar(value: str) -> str:
+    """`value` as a YAML list item pnpm reads back unchanged: plain when that round-trips, else quoted.
+
+    A plain scalar can't start with `@` (every scoped name), `!`, `&`, `*`, `?`, `%`, a quote and the
+    like, and `: ` or ` #` inside one changes its meaning; pnpm then refuses to load the workspace.
+    """
+    import hermes_yaml
+
+    try:
+        plain = hermes_yaml.safe_load(f"- {value}") == [value]
+    except hermes_yaml.YAMLError:
+        plain = False
+    return value if plain else "'" + value.replace("'", "''") + "'"
+
+
 def prune_excludes(workspace_yaml: Path, lock_yaml: Path) -> list[str]:
     """Drop the minimumReleaseAgeExclude versions `lock_yaml` no longer holds; returns the dropped entries.
 
@@ -115,7 +130,10 @@ def prune_excludes(workspace_yaml: Path, lock_yaml: Path) -> list[str]:
                 if not kept:
                     continue
                 newline = line[len(line.rstrip("\r\n")):]
-                line = f"{item.group(1)}{entry.rpartition('@')[0]}@{' || '.join(kept)}{item.group(4)}{newline}"
+                narrowed = f"{entry.rpartition('@')[0]}@{' || '.join(kept)}"
+                quote = item.group(2)
+                value = f"{quote}{narrowed}{quote}" if quote else _yaml_scalar(narrowed)
+                line = f"{item.group(1)}{value}{item.group(4)}{newline}"
         lines.append(line)
     if dropped:
         workspace_yaml.write_text("".join(lines), encoding="utf-8")
@@ -126,6 +144,6 @@ def exclude_hint(picks: list[str]) -> str:
     if not picks:
         return ("  a range's only matches are newer than minimumReleaseAge (pnpm-workspace.yaml): wait for them\n"
                 "  to age, or add each exact name@version to minimumReleaseAgeExclude")
-    entries = "\n".join(f"    - {pick}  # <why it cannot wait>" for pick in picks)
+    entries = "\n".join(f"    - {_yaml_scalar(pick)}  # <why it cannot wait>" for pick in picks)
     return ("  only versions newer than minimumReleaseAge (pnpm-workspace.yaml) match: wait for them to age,\n"
             f"  or add them to minimumReleaseAgeExclude:\n{entries}")

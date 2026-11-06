@@ -1,0 +1,29 @@
+name: dirtside
+repo: https://github.com/the-ai-entrepreneur-ai-hub/hermes-dirtside
+sha: dd8044fe87b54562ecdcd86ad2c7afade64b33a1
+description: >
+  Remote brain, local hands: run the terminal and file tools on a device you
+  own, chosen per conversation with /dirtside use, while Hermes keeps running on
+  the server. A foreground device agent polls the gateway outbound only; every
+  message is Ed25519-signed and replay-guarded; pairing pins the device key and
+  one command revokes it. Disclosure: adds a terminal backend that executes
+  shell scripts with the device user's privileges, signed device routes and
+  dashboard-session controls on the gateway, /dirtside commands, a hermes
+  dirtside CLI and a Desktop pane. Device policy enforces deny patterns and
+  timeout, output and parallelism caps, not a filesystem sandbox. Approvals stay
+  enabled. One Python dependency, PyNaCl. No telemetry.
+maintainer: the-ai-entrepreneur-ai-hub
+tier: community
+category: tools
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/the-ai-entrepreneur-ai-hub/hermes-dirtside#readme
+version: "0.1.0"
+image: https://raw.githubusercontent.com/the-ai-entrepreneur-ai-hub/hermes-dirtside/dd8044fe87b54562ecdcd86ad2c7afade64b33a1/docs/assets/card.png
+screenshots:
+  - https://raw.githubusercontent.com/the-ai-entrepreneur-ai-hub/hermes-dirtside/dd8044fe87b54562ecdcd86ad2c7afade64b33a1/docs/assets/architecture.png
+platforms: [linux, macos]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

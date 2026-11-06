@@ -273,6 +273,31 @@ class TestIdleReapAndCapEviction(RemoteKernelBase):
             self.assertIn("owner-1", owners)
             self.assertIn("owner-2", owners)
 
+    def test_evicted_and_reaped_owners_are_told_their_state_was_lost(self):
+        def call(owner):
+            return execute_in_remote_kernel(
+                "print(1)", env=env, env_type="ssh", task_env_id=owner,
+                sandbox_tools=frozenset(), timeout=10, max_tool_calls=5,
+                reset=False, idle_exit=1800,
+            )
+
+        with patch("tools.code_kernel._lifecycle_limits", return_value=(2, 1800)):
+            env = ScriptedEnv(_spawn_ok_handlers([_cell() for _ in range(10)]))
+            for i in range(3):
+                call(f"owner-{i}")
+            evicted = call("owner-0")
+            again = call("owner-0")
+            for kernel in _REMOTE_KERNELS.values():
+                if kernel.owner == "owner-2":
+                    kernel.last_used -= 2000
+            call("owner-0")  # sweeps owner-2 on entry
+            reaped = call("owner-2")
+        self.assertTrue(evicted["kernel"].get("state_lost"), evicted["kernel"])
+        self.assertIn("max_session_kernels", evicted["kernel"]["note"])
+        self.assertNotIn("state_lost", again["kernel"])
+        self.assertTrue(reaped["kernel"].get("state_lost"), reaped["kernel"])
+        self.assertIn("kernel_idle_timeout", reaped["kernel"]["note"])
+
     def test_eviction_skips_kernels_with_a_running_cell(self):
         """Cap eviction must never kill a kernel mid-cell (the local-kernel
         race from hermes-agent#101861): a busy kernel stays put and a

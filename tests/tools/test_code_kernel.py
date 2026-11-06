@@ -449,6 +449,59 @@ class TestKernelOwnershipAndLifecycle(unittest.TestCase):
             stale.proc.wait(timeout=10)
             self.assertFalse(stale.alive())
 
+    def _assert_lost(self, result, note_fragment):
+        self.assertEqual(result["status"], "success", result)
+        self.assertIn("False", result["output"])  # earlier state really is gone
+        self.assertFalse(result["kernel"]["reused"])
+        self.assertFalse(result["kernel"]["state_reset"])
+        self.assertTrue(result["kernel"].get("state_lost"), result["kernel"])
+        self.assertIn(note_fragment, result["kernel"].get("note", ""))
+
+    def test_an_evicted_owner_is_told_its_state_was_lost(self):
+        with _kernel_config(max_session_kernels=2):
+            for index in range(3):
+                self._run_as(f"conv-{index}", "x = 1", task_id=f"turn-{index}")
+            after = self._run_as("conv-0", "print('x' in dir())", task_id="turn-3")
+            self._assert_lost(after, "max_session_kernels")
+            # Reported once: the next call reuses the new kernel without a loss note.
+            again = self._run_as("conv-0", "print(1)", task_id="turn-4")
+        self.assertTrue(again["kernel"]["reused"])
+        self.assertNotIn("state_lost", again["kernel"])
+
+    def test_an_idle_reaped_owner_is_told_its_state_was_lost(self):
+        from tools.code_kernel import _reap_once
+
+        with _kernel_config(kernel_idle_timeout=1):
+            self._run_as("conv-a", "x = 41", task_id="turn-1")
+            next(iter(_KERNELS.values())).last_used -= 5  # idle past the window
+            _reap_once()
+            after = self._run_as("conv-a", "print('x' in dir())", task_id="turn-2")
+        self._assert_lost(after, "kernel_idle_timeout")
+
+    def test_a_dead_kernel_is_reported_as_lost_not_as_a_reset(self):
+        with _kernel_config():
+            self._run_as("conv-a", "x = 41", task_id="turn-1")
+            kernel = next(iter(_KERNELS.values()))
+            kernel.proc.kill()
+            kernel.proc.wait(timeout=10)
+            after = self._run_as("conv-a", "print('x' in dir())", task_id="turn-2")
+        self._assert_lost(after, "had exited")
+
+    def test_deliberate_disposal_reports_no_loss(self):
+        from tools.approval import clear_session
+
+        with _kernel_config(max_session_kernels=1):
+            self._run_as("conv-a", "x = 1", task_id="turn-1")
+            self._run_as("conv-b", "x = 1", task_id="turn-2")  # evicts conv-a
+            reset = self._run_as("conv-a", "print(1)", task_id="turn-3", reset=True)
+            follow_up = self._run_as("conv-a", "print(1)", task_id="turn-4")
+            self._run_as("conv-b", "x = 1", task_id="turn-5")  # evicts conv-a again
+            clear_session("conv-a")  # /new: the user asked for a fresh start
+            after_clear = self._run_as("conv-a", "print(1)", task_id="turn-6")
+        for result in (reset, follow_up, after_clear):
+            self.assertEqual(result["status"], "success", result)
+            self.assertNotIn("state_lost", result["kernel"])
+
     def test_parallel_cells_share_one_kernel_process(self):
         """Parallel cells for one owner race the first spawn. Each racer
         used to see proc=None as 'dead', replace the registry entry, and

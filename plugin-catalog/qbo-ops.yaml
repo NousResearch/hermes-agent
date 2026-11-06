@@ -3,8 +3,8 @@ repo: https://github.com/blackghostosint/qbo-ops
 sha: e5fe895d4c16aa6f401938b3ad86abede06eacd4
 description: 'QuickBooks Online operations for Hermes: connection health, P&L reports,
   close audits, deposit tracing and a guarded read-only SQL query tool — with a desktop
-  status pane and bundled reconciliation skill. 5 registered agent tools + desktop pane
-  (Agent + Desktop). Reconciliation tradecraft (close-audit reading, deposit-wash detection,
+  status pane (local-mode desktop installs) and a bundled reconciliation skill. 5 registered
+  agent tools. Reconciliation tradecraft (close-audit reading, deposit-wash detection,
   month-end sanity chain, failure diagnosis) ships as executable tools AND a bundled skill
   (qbo-ops:qbo-ops-reconciliation), earned from closing real store books. Setup is guided:
   the health tool doubles as a setup wizard and a turn-by-turn guided script (docs/SETUP.md)
@@ -15,7 +15,8 @@ description: 'QuickBooks Online operations for Hermes: connection health, P&L re
   through Hermes secret scope (requires_env), never read from .env files or other token
   stores; the BYO-refresh-token path refreshes tokens through the plugin''s flock-guarded
   refresher (disclosed tradeoff pending upstream redirect_port support, #149642); the
-  desktop pane reads only the plugin''s own backend routes.'
+  desktop pane (desktop/plugin.js, SDK-only surface) renders on local-mode desktop
+  installs; on remote-backend connections the agent tools remain fully available.'
 maintainer: blackghostosint
 tier: community
 category: tools

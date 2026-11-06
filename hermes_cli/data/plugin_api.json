@@ -59,7 +59,7 @@
       ]
     },
     {
-      "source": "PluginContext (hermes_cli/plugin_context.py)",
+      "source": "PluginContext (hermes_cli/plugins_context.py)",
       "entries": [
         "agent.context_references",
         "agent.plugin_llm",

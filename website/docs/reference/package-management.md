@@ -664,6 +664,16 @@ with exemptions listed in `minimumReleaseAgeExclude`. CI enforces it when it
 installs `pnpm-lock.yaml`; source, bundle and Docker installs trust the
 committed lock.
 
+PM's own npm-hosted tools (pnpm and npm) are pinned to `registry.npmjs.org`
+URLs in `pm/lock.json`, but PM downloads them from your npm registry:
+`npm_config_registry`, else `registry=` in the npmrc that `npm_config_userconfig`
+names, else `~/.npmrc`. That registry may be plain `http://` (a LAN Verdaccio or
+Nexus). The bytes must match the lock's SHA256 before PM uses them, a plain-http
+download over 256 MiB is abandoned, and a plain-http redirect must stay on the
+registry's host. When the registry is unreachable, lacks the file, sends too much
+or redirects elsewhere, PM falls back to its own pinned HTTPS archive. Every other
+download stays HTTPS-only.
+
 ## Diagnostics
 
 - **Slow Python dependency builds:** PM's streamed uv commands enable verbose output. Bundle and build logs show package activity and build-backend stdout/stderr while the build runs, not only after failure.

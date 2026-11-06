@@ -351,6 +351,13 @@ export interface SessionTreeNode {
   is_current: boolean
   has_children: boolean
   folded_segments: number
+  /** Shared row cells from the builder, drawn the same by the classic CLI's browser. */
+  guide?: string
+  last_active?: number
+  age?: string
+  parent_title?: string
+  last_prompt?: string
+  last_reply?: string
 }
 
 /** The viewer state the shared builder needs; every change is re-fetched so both terminal

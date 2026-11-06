@@ -38147,6 +38147,36 @@
             "default": 0,
             "title": "Folded Segments",
             "type": "integer"
+          },
+          "guide": {
+            "default": "",
+            "title": "Guide",
+            "type": "string"
+          },
+          "last_active": {
+            "default": 0,
+            "title": "Last Active",
+            "type": "number"
+          },
+          "age": {
+            "default": "",
+            "title": "Age",
+            "type": "string"
+          },
+          "parent_title": {
+            "default": "",
+            "title": "Parent Title",
+            "type": "string"
+          },
+          "last_prompt": {
+            "default": "",
+            "title": "Last Prompt",
+            "type": "string"
+          },
+          "last_reply": {
+            "default": "",
+            "title": "Last Reply",
+            "type": "string"
           }
         },
         "required": [

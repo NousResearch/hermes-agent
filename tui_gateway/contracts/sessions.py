@@ -288,6 +288,14 @@ class SessionFamilyNode(Result):
     is_current: bool = False
     has_children: bool = False
     folded_segments: int = 0
+    # Drawn the same by every surface: the tree guide (``├─ `` ...), the relative age of the last
+    # activity, the parent's title and the row's newest live prompt and reply for the preview.
+    guide: str = ""
+    last_active: float = 0
+    age: str = ""
+    parent_title: str = ""
+    last_prompt: str = ""
+    last_reply: str = ""
 
 
 class SessionFamilyResult(Result):

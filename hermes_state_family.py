@@ -18,6 +18,9 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, Iterable, Optional
 
+from hermes_cli.timefmt import relative_time
+from hermes_state_common import _sql_session_last_active
+
 KIND_ROOT = "root"
 KIND_BRANCH = "branch"
 KIND_COMPRESSION = "compression"
@@ -28,8 +31,14 @@ KIND_UNKNOWN = "unknown"
 MAX_DEPTH = 200
 MAX_NODES = 500
 
-# Only what the tree draws: no prompts, no message bodies, no cost totals.
-_COLUMNS = "id, parent_session_id, title, started_at, message_count, end_reason, source, model_config"
+# Only what the tree draws; message text is read separately, for the rows a view shows.
+_COLUMNS = ("id, parent_session_id, title, started_at, message_count, end_reason, source, model_config, "
+            f"{_sql_session_last_active('sessions')} AS last_active")
+PREVIEW_CHARS = 160
+# The newest live user prompt and assistant reply of one session (rewound rows excluded).
+_PREVIEW_SQL = ("SELECT role, content FROM messages WHERE session_id = ? AND active = 1 "
+                "AND role IN ('user', 'assistant') AND content IS NOT NULL AND content != '' "
+                "ORDER BY id DESC LIMIT 12")
 
 
 @dataclass(frozen=True)
@@ -130,6 +139,7 @@ def _node(db: Any, row: dict[str, Any], parent: Optional[dict[str, Any]], depth:
         "depth": depth,
         "title": row.get("title") or "",
         "created_at": float(row.get("started_at") or 0),
+        "last_active": float(row.get("last_active") or row.get("started_at") or 0),
         "message_count": int(row.get("message_count") or 0),
         "kind": kind,
         "branch_from": _branch_from(kind, parent),
@@ -245,7 +255,61 @@ def visible_nodes(
         # foldable — count the fold itself, or the ▸ arrow would appear on leaf rows only.
         node["has_children"] = bool(following and following["depth"] > node["depth"]) or (
             node["session_id"] in folded_ids and node["session_id"] in family_parents)
+    _attach_guides(out)
     return out
+
+
+def _attach_guides(rows: list[dict[str, Any]]) -> None:
+    """Give each row its tree guide (``├─ ``, ``│  └─ `` ...) so every surface draws the same lines.
+
+    A row's visible parent is the nearest earlier row one level up; a child is ``└─`` when no
+    later sibling follows, and each ancestor contributes ``│`` while it still has siblings below.
+    """
+    parent: list[Optional[int]] = []
+    path: list[int] = []
+    for index, row in enumerate(rows):
+        del path[row["depth"]:]
+        parent.append(path[-1] if path else None)
+        path.append(index)
+    last_child = {parent[index]: index for index in range(len(rows))}
+    for index, row in enumerate(rows):
+        if parent[index] is None:
+            row["guide"] = ""
+            continue
+        trail, ancestor = [], parent[index]
+        while ancestor is not None and parent[ancestor] is not None:
+            trail.append("   " if last_child[parent[ancestor]] == ancestor else "│  ")
+            ancestor = parent[ancestor]
+        row["guide"] = "".join(reversed(trail)) + ("└─ " if last_child[parent[index]] == index else "├─ ")
+
+
+def _flatten(text: Any) -> str:
+    """One line of plain text from a stored message body (multimodal JSON keeps its text parts)."""
+    if not isinstance(text, str):
+        return ""
+    if text.startswith("["):
+        try:
+            parts = json.loads(text)
+            text = " ".join(part.get("text", "") for part in parts if isinstance(part, dict))
+        except (TypeError, ValueError, AttributeError):
+            pass
+    text = " ".join(text.split())
+    return text if len(text) <= PREVIEW_CHARS else text[: PREVIEW_CHARS - 1] + "…"
+
+
+def _attach_details(db: Any, rows: list[dict[str, Any]]) -> None:
+    """What the preview pane shows for each drawn row: age, parent's title, last prompt and reply."""
+    titles = {row["session_id"]: row["title"] for row in rows}
+    for row in rows:
+        row["age"] = relative_time(row["last_active"], session_id=row["session_id"])
+        row["parent_title"] = titles.get(row.get("parent_session_id") or "", "")
+        latest: dict[str, str] = {}
+        for message in db._read_all(_PREVIEW_SQL, (row["session_id"],)):
+            role = message["role"]
+            if role not in latest and (text := _flatten(message["content"])):
+                latest[role] = text
+        row["last_prompt"] = latest.get("user", "")
+        row["last_reply"] = latest.get("assistant", "")
 
 
 class SessionFamilyMixin:
@@ -266,4 +330,5 @@ class SessionFamilyMixin:
         family = build_session_family(self, session_id)
         nodes = visible_nodes(family.nodes, show_compressions=show_compressions,
                               show_subagents=show_subagents, folded=folded)
+        _attach_details(self, nodes)
         return {"root_id": family.root_id, "nodes": nodes, "truncated": family.truncated}

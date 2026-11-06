@@ -3385,6 +3385,12 @@ export interface SessionFamilyNode {
   is_current?: boolean
   has_children?: boolean
   folded_segments?: number
+  guide?: string
+  last_active?: number
+  age?: string
+  parent_title?: string
+  last_prompt?: string
+  last_reply?: string
 }
 /** What a stored marker proves about a node's link to its parent; ``unknown`` is never a guess. */
 export type SessionFamilyKind = 'root' | 'branch' | 'compression' | 'subagent' | 'unknown'

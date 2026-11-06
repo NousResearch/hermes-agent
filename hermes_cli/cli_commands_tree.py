@@ -22,7 +22,8 @@ class CLICommandsTreeMixin:
         """
         import sys
         from hermes_cli.cli_commands_mixin import _db_unavailable_line
-        from hermes_cli.session_tree import empty_line, load_family, parse_show_all, pick_session, tree_lines, usage_line
+        from hermes_cli.session_tree import empty_line, load_family, parse_show_all, tree_lines, usage_line
+        from hermes_cli.session_tree_browser import browse_tree
 
         show_all = parse_show_all(_command_arg(cmd_original))
         if show_all is None:
@@ -36,13 +37,13 @@ class CLICommandsTreeMixin:
         family = load_family(self._session_db, self.session_id, show_all=show_all)
         if not family.nodes:
             return _cp(f"  {empty_line()}")
-        # A terminal gets the picker and nothing printed first (painting rows and then taking the
-        # screen for curses races the prompt's queued repaints); every other reader gets text.
+        # A terminal gets the full-screen browser and nothing printed first (painting rows and then
+        # taking the screen for curses races the prompt's queued repaints); every other reader gets text.
         if not sys.stdin.isatty() or len(family.nodes) < 2:
             for line in tree_lines(family):
                 _cp(f"  {line}")
             return None
-        picked = pick_session(family)
+        picked = browse_tree(self._session_db, self.session_id, show_all=show_all)
         if picked is None or picked == self.session_id:
             return None
         self._handle_resume_command(f"/resume {picked}")

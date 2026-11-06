@@ -24,10 +24,14 @@ const node = (patch: Partial<SessionTreeNode>): SessionTreeNode => ({
 })
 
 const family: SessionTreeNode[] = [
-  node({ depth: 0, has_children: true, kind: 'root', session_id: 'root', title: 'side-main' }),
+  node({ age: '5m ago', depth: 0, has_children: true, kind: 'root', session_id: 'root', title: 'side-main' }),
   node({
     depth: 1,
+    guide: '├─ ',
     is_current: true,
+    last_prompt: 'try the other approach',
+    last_reply: 'switched to the second approach',
+    parent_title: 'side-main',
     kind: 'branch',
     message_count: 1,
     parent_session_id: 'root',
@@ -37,6 +41,7 @@ const family: SessionTreeNode[] = [
   node({
     depth: 1,
     folded_segments: 2,
+    guide: '└─ ',
     kind: 'branch',
     parent_session_id: 'root',
     session_id: 'other',
@@ -104,21 +109,41 @@ function mount(options: { nodes?: SessionTreeNode[]; truncated?: boolean; view?:
   }
 }
 
-it('draws each row with its kind, size, time and the current-session mark', () => {
+it('draws each row with its mark, kind, size, age and where you are', () => {
   const { output } = mount()
 
-  expect(output()).toContain('session tree')
-  expect(output()).toContain('side-main · root')
-  expect(output()).toContain('side-main #2 · branch · 1 msg')
-  expect(output()).toContain('current')
+  expect(output()).toContain('☤ session tree · side-main')
+  expect(output()).toContain('3 in view')
+  expect(output()).toContain('◆ side-main')
+  expect(output()).toContain('original')
+  expect(output()).toContain('1 msg')
+  expect(output()).toContain('5m ago')
+  expect(output()).toContain('you are here')
   expect(output()).toContain('+2 compressed')
 })
 
-it('indents each level and marks a foldable row', () => {
+it("draws the builder's tree guides and marks the current row with the caduceus", () => {
   const { output } = mount()
 
-  expect(output()).toContain('▾ side-main')
-  expect(output()).toContain('  · side-main #2')
+  expect(output()).toContain('├─ ☤ side-main #2')
+  expect(output()).toContain('└─ ◇ side-main #3')
+})
+
+it('previews the highlighted chat: where it came from and its last exchange', () => {
+  const { output } = mount()
+
+  expect(output()).toContain('branch of “side-main”')
+  expect(output()).toContain('try the other approach')
+  expect(output()).toContain('switched to the second approach')
+})
+
+it('jumps from a leaf to its parent with the left arrow instead of folding', async () => {
+  const { onView, output, stdin } = mount()
+
+  await press(stdin, '\u001B[D') // the current branch is a leaf: ← moves to the original
+
+  await vi.waitFor(() => expect(output()).toContain('original · 2 msgs'))
+  expect(onView).not.toHaveBeenCalled()
 })
 
 it('resumes the row Enter lands on, and not the session it is already on', async () => {

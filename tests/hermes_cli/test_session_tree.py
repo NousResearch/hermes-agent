@@ -11,7 +11,7 @@ import io
 
 import pytest
 
-from hermes_cli import session_tree
+from hermes_cli import session_tree, session_tree_browser
 from hermes_cli.cli_commands_tree import CLICommandsTreeMixin
 from hermes_state import SessionDB
 from hermes_state_family import build_session_family
@@ -36,30 +36,28 @@ def db(tmp_path):
         session_db.close()
 
 
-def test_a_row_reads_title_kind_size_and_when(db) -> None:
+def test_a_row_reads_mark_title_kind_size_and_age(db) -> None:
     db.set_session_title("branch", "side-main #2")  # a title follows the live tip of a lineage
-    node = next(node for node in build_session_family(db, "branch").nodes
-                if node["session_id"] == "branch")
+    rows = session_tree.load_family(db, "branch").nodes
+    line = session_tree.node_line(next(row for row in rows if row["session_id"] == "branch"))
 
-    line = session_tree.node_line(node).strip()
-
-    assert line.startswith("side-main #2 · branch · 0 msgs · ")
-    assert line.endswith(" · " + session_tree.t("cli.tree.current"))
+    assert line.startswith("└─ ☤ side-main #2 · branch · 0 msgs · just now")
+    assert line.endswith(" · " + session_tree.t("cli.tree.here"))
 
 
-def test_indentation_is_two_spaces_per_level(db) -> None:
-    nodes = build_session_family(db, "sub").nodes
-    sub = next(node for node in nodes if node["session_id"] == "sub")
+def test_the_builder_draws_tree_guides_for_every_level(db) -> None:
+    rows = session_tree.load_family(db, "sub", show_all=True).nodes
 
-    assert sub["depth"] == 3
-    assert session_tree.node_line(sub).startswith("      ")
+    assert [row["guide"] for row in rows] == ["", "└─ ", "   └─ ", "      └─ "]
+    assert session_tree.node_line(rows[3]).startswith("      └─ ☤ untitled sub · subagent")
+    assert session_tree.node_line(rows[2]).startswith("   └─ ◇ untitled branch · branch")
 
 
 def test_an_untitled_row_names_its_id_instead_of_inventing_a_title(db) -> None:
     node = next(node for node in build_session_family(db, "branch").nodes
                 if node["session_id"] == "cont")
 
-    assert session_tree.node_line(node).strip().startswith("untitled cont · compression")
+    assert session_tree.node_line(node).startswith("≋ untitled cont · compressed")
 
 
 def test_a_continuation_says_which_message_it_continues(db) -> None:
@@ -73,23 +71,52 @@ def test_the_default_view_folds_continuations_and_hides_subagent_runs(db) -> Non
     lines = session_tree.tree_lines(session_tree.load_family(db, "branch"))
 
     assert len(lines) == 2
-    assert lines[0].startswith("untitled root · root")
+    assert lines[0].startswith("◆ untitled root · original")
     assert "+1 compressed" in lines[0]
-    assert lines[1].startswith("  untitled branch · branch")
+    assert lines[1].startswith("└─ ☤ untitled branch · branch")
 
 
 def test_the_all_view_lists_the_folded_rows_too(db) -> None:
     lines = session_tree.tree_lines(session_tree.load_family(db, "branch", show_all=True))
 
-    assert [line.strip().split(" · ")[1] for line in lines] == [
-        "root", "compression", "branch", "subagent"]
+    assert [line.split(" · ")[1] for line in lines] == ["original", "compressed", "branch", "subagent"]
+
+
+def test_a_row_carries_a_message_weight_bar_scaled_to_the_family(db) -> None:
+    assert session_tree.weight_bar(0, 10) == " "
+    assert session_tree.weight_bar(10, 10) == "█"
+    assert session_tree.weight_bar(1, 10) < session_tree.weight_bar(5, 10)
+    lines = session_tree.tree_lines(session_tree.load_family(db, "branch"))
+    assert "█ 2 msgs" in lines[0]
+
+
+def test_the_preview_says_where_a_row_came_from_and_its_last_exchange(db) -> None:
+    db.set_session_title("root", "side-main")
+    rows = session_tree.load_family(db, "branch", show_all=True).nodes
+    cont = next(row for row in rows if row["session_id"] == "cont")
+    root = next(row for row in rows if row["session_id"] == "root")
+
+    assert session_tree.preview_lines(cont)[0][1].startswith("compressed of “side-main” · 1 msg")
+    assert session_tree.preview_lines(root)[1:] == [("you", "one"), ("hermes", "two")]
+    branch = next(row for row in rows if row["session_id"] == "branch")
+    assert session_tree.preview_lines(branch)[1] == ("", "no messages yet")
+
+
+def test_the_preview_never_reads_rewound_messages(db) -> None:
+    db.append_message("cont", "user", "kept")
+    db._execute_write(lambda conn: conn.execute(
+        "UPDATE messages SET active = 0 WHERE session_id = 'cont' AND content = 'kept'"))
+    rows = session_tree.load_family(db, "branch", show_all=True).nodes
+    cont = next(row for row in rows if row["session_id"] == "cont")
+
+    assert cont["last_prompt"] == "after compaction"
 
 
 def test_the_text_answer_carries_a_header_and_the_rows(db) -> None:
     text = session_tree.tree_text(session_tree.load_family(db, "branch"))
 
     header, *rows = text.splitlines()
-    assert header.startswith("Session tree · untitled root · 2 session(s)")
+    assert header == "session tree · untitled root · 2 in view"
     assert len(rows) == 2
 
 
@@ -103,28 +130,12 @@ def test_an_empty_family_says_so_rather_than_printing_a_blank_tree(tmp_path) -> 
     assert text == session_tree.empty_line()
 
 
-def test_the_picker_returns_the_picked_session_id(db, monkeypatch) -> None:
-    seen: dict = {}
+def test_a_folded_row_says_so_and_drops_its_subtree(db) -> None:
+    family = session_tree.load_family(db, "branch", folded=("root",))
 
-    def _choose(title, items, default_index=0, *, cancel_label="Cancel", searchable=False):
-        seen.update(items=items, default_index=default_index, searchable=searchable)
-        return 1  # the second row is the branch
-
-    monkeypatch.setattr(session_tree, "curses_single_select", _choose)
-
-    assert session_tree.pick_session(session_tree.load_family(db, "branch")) == "branch"
-    assert seen["searchable"] is True
-    assert seen["default_index"] == 1
-
-
-def test_the_picker_is_skipped_when_there_is_nothing_to_switch_to(db, monkeypatch) -> None:
-    def _never(*_args, **_kwargs):
-        raise AssertionError("a one-session family must not open a picker")
-
-    monkeypatch.setattr(session_tree, "curses_single_select", _never)
-    db.create_session("lonely", source="cli")
-
-    assert session_tree.pick_session(session_tree.load_family(db, "lonely")) is None
+    assert [row["session_id"] for row in family.nodes] == ["root"]
+    assert family.nodes[0]["folded"] is True
+    assert session_tree.t("cli.tree.folded") in session_tree.node_line(family.nodes[0])
 
 
 class _TTY(io.StringIO):
@@ -148,7 +159,7 @@ def test_the_command_opens_the_picker_and_switches_on_a_pick(db, monkeypatch, ca
     """A terminal gets the picker only: the rows are drawn there, and printing them first would
     race the prompt's queued repaints when curses takes the screen."""
     monkeypatch.setattr("sys.stdin", _TTY())
-    monkeypatch.setattr(session_tree, "pick_session", lambda *_a, **_k: "branch")
+    monkeypatch.setattr(session_tree_browser, "browse_tree", lambda *_a, **_k: "branch")
     cli = _CLI(db, "cont")
 
     cli._handle_tree_command("/tree")
@@ -159,13 +170,13 @@ def test_the_command_opens_the_picker_and_switches_on_a_pick(db, monkeypatch, ca
 
 def test_the_command_prints_only_the_family_without_a_terminal(db, monkeypatch, capsys) -> None:
     monkeypatch.setattr("sys.stdin", io.StringIO())
-    monkeypatch.setattr(session_tree, "pick_session",
-                        lambda *_a, **_k: pytest.fail("no picker without a terminal"))
+    monkeypatch.setattr(session_tree_browser, "browse_tree",
+                        lambda *_a, **_k: pytest.fail("no browser without a terminal"))
     cli = _CLI(db, "branch")
 
     cli._handle_tree_command("/tree")
 
-    assert "untitled root · root" in capsys.readouterr().out
+    assert "◆ untitled root · original" in capsys.readouterr().out
     assert cli.resumed == []
 
 

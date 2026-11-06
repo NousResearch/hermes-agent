@@ -651,12 +651,10 @@ test('darwin staging ships the Swift helper executable and the rewritten windows
   }
 })
 
-// ─── stageGetWindows (optionalDependency gate) ──────────────────────
+// ─── stageGetWindows (missing-package gate) ─────────────────────────
 //
-// get-windows is an optionalDependency: the install omits it when its install script
-// fails (no prebuilt for Linux / Windows ARM64) and a Windows in-place update
-// can leave it half-extracted when a running Desktop holds files open
-// (#90829). Either way only read_window_below is lost, so staging degrades
+// A Windows in-place update can leave get-windows missing or half-extracted
+// when a running Desktop holds files open (#90829). Either way only read_window_below is lost, so staging degrades
 // with a warning on every platform instead of failing the whole build.
 
 test('staging degrades (never throws) when get-windows is absent on every platform', () => {

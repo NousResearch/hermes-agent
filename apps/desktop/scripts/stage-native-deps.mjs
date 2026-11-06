@@ -478,10 +478,9 @@ export function openWindowsSync() {
 `
 
 function resolveGetWindowsRoot(appRoot = projectRoot) {
-  // get-windows is an optionalDependency (its node-pre-gyp install script has
-  // no Linux or Windows ARM64 prebuilt and its node-gyp fallback may fail, so
-  // the install can skip it entirely on those targets). Return null when it is
-  // absent; the caller decides whether that is fatal per platform and arch.
+  // get-windows is a regular dependency whose install script is not run
+  // (pnpm-workspace.yaml allowBuilds); an interrupted install can still leave it
+  // unresolvable (#90829). Return null when it is absent; the caller degrades.
   try {
     // get-windows' exports map doesn't expose ./package.json; resolve the entry
     // (index.js sits at the package root) and take its directory.
@@ -576,12 +575,9 @@ export function stageGetWindowsInto(
     let bindingDirs = scanBindingDirs()
     let installAttempted = false
     if (bindingDirs.length === 0 && arch !== 'arm64' && typeof install === 'function') {
-      // An incremental install won't re-run an install script for a package
-      // that is already on disk, so every checkout that installed while
-      // get-windows was missing from the build allowlist stays bricked even
-      // after the allowlist is fixed. Invoke node-pre-gyp directly: an optional
-      // dependency's failed lifecycle is non-fatal, so an install can report
-      // success without producing the Windows binding.
+      // The install does not run get-windows' script (pnpm-workspace.yaml
+      // allowBuilds: a failed fallback build of a regular dependency would fail
+      // the whole install), so invoke node-pre-gyp directly and degrade here.
       console.log(
         '[stage-native-deps] get-windows has no win32 binding; running its native installer...'
       )
@@ -680,7 +676,7 @@ export function findHalfInstalledGetWindowsDir(startDir = projectRoot) {
 /** The warning printed when get-windows cannot be staged. */
 export function missingGetWindowsWarning({ platform, arch, halfInstalledDir }) {
   const lines = [
-    `[stage-native-deps] get-windows not installed (optional dep skipped for ${platform}-${arch}); ` +
+    `[stage-native-deps] get-windows not installed (for ${platform}-${arch}); ` +
       'read_window_below will be unavailable in this build'
   ]
   if (halfInstalledDir) {
@@ -718,7 +714,8 @@ export function stageGetWindows(
     return undefined
   }
 
-  // Only a win32 host can produce the win32 binding, so a cross-platform pack
+  // The install never runs get-windows' own script (pnpm-workspace.yaml allowBuilds), so the win32
+  // binding comes from here. Only a win32 host can produce it, so a cross-platform pack
   // has nothing to gain from the native installer.
   const install =
     platform === 'win32' && process.platform === 'win32'

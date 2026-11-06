@@ -122,13 +122,20 @@ def _update(home: Path | str, session_key: str, mutate, what: str) -> None:
 
 
 def record_turn_start(home: Path | str, session_key: str, prompt: str, *, attempts: int = 0,
-                      auto_continue: bool = True, notification_category: str | None = None) -> None:
-    """Persist the marker for a turn that is about to run. ``attempts`` = how many auto-continues led to
-    this run (0 for a user-initiated turn); the crash-loop breaker reads it back on the next resume."""
+                      resumes: int = 0, auto_continue: bool = True,
+                      notification_category: str | None = None) -> None:
+    """Persist the marker for a turn that is about to run.
+
+    ``attempts`` = consecutive auto-continues that produced NOTHING before dying (0 for a
+    user-initiated turn); it is the crash-loop breaker and ``note_turn_progress`` resets it once
+    a continuation does real work. ``resumes`` = every auto-continue spent on this interruption
+    so far, never reset — the hard ceiling that stops a turn nobody can keep alive from
+    respawning forever."""
     if not session_key or not prompt:
         return
     now = time.time()
-    entry = {"attempts": max(0, int(attempts)), "prompt": prompt[:_MAX_PROMPT_CHARS], "started_at": now,
+    entry = {"attempts": max(0, int(attempts)), "resumes": max(0, int(resumes)),
+             "prompt": prompt[:_MAX_PROMPT_CHARS], "started_at": now,
              "auto_continue": bool(auto_continue), **_writer_identity()}
     if notification_category == "diagnostic":
         entry["notification_category"] = notification_category
@@ -150,10 +157,13 @@ def read_turn_marker(home: Path | str, session_key: str) -> dict[str, Any] | Non
     try:
         with _lock:
             entry = _load(_marker_path(home)).get(session_key)
-        prompt = str(entry.get("prompt") or "") if isinstance(entry, dict) else ""
+        entry = entry if isinstance(entry, dict) else {}
+        prompt = str(entry.get("prompt") or "")
         if not prompt.strip():
             return None
-        return {"attempts": max(0, int(entry.get("attempts") or 0)), "prompt": prompt, "started_at": _started_at(entry),
+        return {"attempts": max(0, int(entry.get("attempts") or 0)),
+                "resumes": max(0, int(entry.get("resumes") or 0)),
+                "prompt": prompt, "started_at": _started_at(entry),
                 "auto_continue": bool(entry.get("auto_continue", True)),
                 # Writer identity when present: extra keys only, so a marker written by an older build still reads.
                 **{k: entry[k] for k in ("writer_pid", "writer_start_time") if entry.get(k) is not None},
@@ -161,3 +171,34 @@ def read_turn_marker(home: Path | str, session_key: str) -> dict[str, Any] | Non
                    if entry.get("notification_category") == "diagnostic" else {})}
     except Exception:
         return None
+
+
+def note_turn_progress(home: Path | str, session_key: str) -> int | None:
+    """Reset the crash-loop counter of a marker whose turn actually did work.
+
+    ``attempts`` answers "did resuming keep failing?", not "how many times did the backend die?".
+    A continuation that ran for minutes and was then killed by the NEXT restart is a *successful*
+    resume, so it must not spend budget meant for resumes that die on their feet — without this,
+    a long task interrupted by a handful of restarts is abandoned mid-flight as "crash-looping".
+    Total resumes for one interruption stay bounded by ``resumes`` (never reset here).
+
+    Returns the attempt count that was reset (0 when it already was), or None when the marker is gone.
+    """
+    if not session_key:
+        return None
+    seen: dict[str, int | None] = {"previous": None}
+
+    def _mutate(entries: dict[str, dict]) -> dict[str, dict] | None:
+        entry = entries.get(session_key)
+        if not isinstance(entry, dict):
+            return None
+        previous = max(0, int(entry.get("attempts") or 0))
+        seen["previous"] = previous
+        if previous == 0:
+            return None                      # nothing to reset, nothing to write
+        entry["attempts"] = 0
+        entry["progress_at"] = time.time()
+        return entries
+
+    _update(home, session_key, _mutate, "progress")
+    return seen["previous"]

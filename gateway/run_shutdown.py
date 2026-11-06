@@ -30,6 +30,11 @@ from gateway.restart import (
 from gateway.run_common import _UNSET
 from gateway.run_runtime import interrupt_side_agents, managed_turn_count, stop_managed_turns
 from gateway.run_shutdown_session_end import GatewaySessionEndMixin
+from gateway.shutdown_notice import (
+    delivery_target_key as _delivery_target_key,
+    notice_target_key as _notice_target_key,
+    record_shutdown_notice,
+)
 from gateway.shutdown_watchdog import arm_shutdown_watchdog, resolve_shutdown_watchdog_delay
 
 # Log-record parity with the origin module.
@@ -142,25 +147,6 @@ def _send_failed(result: Any) -> bool:
 def _send_error(result: Any) -> str:
     """Error text of a failed ``send()`` result (adapters may omit it)."""
     return getattr(result, "error", "send returned success=False")
-
-
-def _notice_target_key(platform_value: str, chat_id, thread_id) -> tuple:
-    """Dedup key for one notice destination: thread/topic platforms share a chat but route apart."""
-    return (platform_value, str(chat_id), str(thread_id) if thread_id else None)
-
-
-def _delivery_target_key(platform_value: str, chat_id, thread_id, *, profile: Optional[str] = None) -> tuple:
-    """Dedupe key for one DELIVERED chat: profile-independent, except Telegram private chats.
-
-    Two served profiles can share one home chat (one Telegram group for the whole host) and owe it
-    ONE notice per host restart. A positive Telegram chat id names the USER, though: the same id
-    under two bot tokens is two conversations, so those stay keyed per served profile (#118233).
-    """
-    from gateway.delivery import looks_like_telegram_private_chat_id
-    if (profile and profile != "default" and platform_value == "telegram"
-            and looks_like_telegram_private_chat_id(chat_id)):
-        platform_value = f"{profile}:{platform_value}"
-    return _notice_target_key(platform_value, chat_id, thread_id)
 
 
 def _effective_watchdog_leash(runner: object) -> float:
@@ -1033,7 +1019,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                 restart_key = _notice_target_key(
                     restart_source.platform.value, restart_source.chat_id, restart_source.thread_id
                 )
-        notified: set[tuple[str, str, Optional[str]]] = set()
+        notified: dict[tuple[str, str, Optional[str]], Optional[str]] = {}  # delivery key -> profile
         for session_key in self._snapshot_running_agents():
             target = await self._shutdown_notification_target(session_key)
             if target is None:
@@ -1072,7 +1058,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                 if await self._send_shutdown_notice(
                     adapter, chat_id, msg, "active chat", platform_str, metadata=metadata
                 ):
-                    notified.add(dedup_key)
+                    notified[dedup_key] = profile
             from gateway.warning_notifications import present_notification
             from gateway.run import _async_profile_runtime_scope
             scope = (_async_profile_runtime_scope(self._resolve_profile_home_for_source(source))
@@ -1080,7 +1066,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             async with scope:
                 presented = await present_notification(_send_active, platform=platform, diagnostic=restart_key != dedup_key)
             if not presented:
-                notified.add(dedup_key)  # suppressed: latch so the home-channel pass does not re-target it
+                notified[dedup_key] = profile  # suppressed: latch so the home-channel pass does not re-target it
         if self._restart_requested and restart_source is not None:
             logger.debug("Skipping home-channel shutdown notifications for in-chat restart")
             return
@@ -1121,13 +1107,17 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                 if await self._send_shutdown_notice(
                     adapter, str(home.chat_id), msg, "home channel", platform.value, metadata=metadata,
                 ):
-                    notified.add(dedup_key)
+                    notified[dedup_key] = profile
             from gateway.warning_notifications import present_notification
             from gateway.run import _async_profile_runtime_scope
             # present_notification reads the ACTIVE profile's display settings: bind the served one's.
             profile_home = (getattr(self, "_served_profile_homes", None) or {}).get(profile) if profile else None
             async with _async_profile_runtime_scope(profile_home) if profile_home else nullcontext():
                 await present_notification(_send_home, platform=platform)
+
+        # The next startup tells these chats the gateway is back (see gateway.shutdown_notice).
+        from gateway.run import _hermes_home as _home_path
+        record_shutdown_notice(_home_path, notified, restart_source)
 
     # Agent finalization / resource cleanup
     @staticmethod

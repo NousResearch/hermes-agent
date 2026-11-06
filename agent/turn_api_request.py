@@ -57,6 +57,29 @@ def _apply_user_turn_request_headers(agent: Any, api_kwargs: Any) -> None:
         _set_extra_header(api_kwargs, _key, _value)
 
 
+def _delivers_steer(messages: Any) -> bool:
+    from agent.prompt_builder import STEER_DISPLAY_KIND
+
+    for message in reversed(messages or ()):
+        if message.get("role") == "assistant":
+            return False
+        if message.get("display_kind") == STEER_DISPLAY_KIND:
+            return True
+    return False
+
+
+def _apply_user_x_initiator(agent: Any, api_kwargs: Any, messages: Any) -> None:
+    """Opted-in custom providers get ``x-initiator: agent`` with the routing headers; mark the calls
+    that carry a person's words ``user``: every attempt (retry, recovery, fallback) at a turn's first
+    call until the loop accepts its response, and the call that delivers a /steer."""
+    if not (getattr(agent, "_x_initiator_pending", False) or _delivers_steer(messages)):
+        return
+    from hermes_cli.config_providers import get_custom_provider_initiator_header
+
+    if get_custom_provider_initiator_header(str(agent.base_url or "")):
+        _set_extra_header(api_kwargs, "x-initiator", "user")
+
+
 def _fire_pre_api_request_hook(
     agent: Any, api_kwargs: Any, api_messages: Any, _llm_middleware_trace: Any, *, messages: Any,
     original_user_message: Any, approx_tokens: Any, total_chars: Any, retry_count: Any,
@@ -110,7 +133,7 @@ def _fire_pre_api_request_hook(
 def build_request_payload(
     agent: Any, *, api_messages: Any, _moa_prepared_request: Any, tools_for_api: Any,
     system_message: Any, api_call_count: Any, api_request_id: Any, effective_task_id: Any,
-    turn_id: Any,
+    turn_id: Any, messages: Any = (),
 ) -> ApiRequestBuild:
     """The provider payload through the LLM request middleware, with no turn hook fired: the
     turn loop's :func:`build_api_request` and off-turn side requests (``ctx.side_question``,
@@ -152,6 +175,7 @@ def build_request_payload(
     if agent._empty_content_retries > 0 and agent._is_openrouter_url():
         _set_extra_header(api_kwargs, "X-OpenRouter-Cache", "false")
     _apply_user_turn_request_headers(agent, api_kwargs)
+    _apply_user_x_initiator(agent, api_kwargs, messages)
     try:
         from hermes_cli.middleware import apply_llm_request_middleware
 
@@ -188,6 +212,7 @@ def build_api_request(
         agent, api_messages=api_messages, _moa_prepared_request=_moa_prepared_request,
         tools_for_api=tools_for_api, system_message=system_message, api_call_count=api_call_count,
         api_request_id=api_request_id, effective_task_id=effective_task_id, turn_id=turn_id,
+        messages=messages,
     )
     api_kwargs, api_messages, _moa_prepared_request = built.api_kwargs, built.api_messages, built._moa_prepared_request
     _fire_pre_api_request_hook(

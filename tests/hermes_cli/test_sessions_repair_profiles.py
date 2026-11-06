@@ -343,18 +343,21 @@ def test_a_failing_row_moves_alone_and_its_lineage_waits_with_it(homes, monkeypa
         # The partial first attempt left a second copy of gp in the target. The report-only
         # owner fence must not silently pick one or claim the stores are clean.
         assert root.get_session("gp") is not None and acme.get_session("gp") is not None
-        assert all(root.get_session(sid) is None for sid in ("par", "kid", "lone"))
-        assert acme.get_session("par")["parent_session_id"] == "gp"
-        assert acme.get_session("kid")["parent_session_id"] == "par"
+        assert root.get_session("lone") is None
+        assert root.get_session("par")["parent_session_id"] == "gp"
+        assert root.get_session("kid")["parent_session_id"] == "par"
+        assert acme.get_session("par") is None and acme.get_session("kid") is None
     finally:
         root.close()
         acme.close()
-    # With only the unresolved duplicate left, --apply must still return nonzero and explain why.
+    # The duplicate holds its linked rows too; an automatic retry cannot elect an owner.
     assert _run(apply=True) == 1
     assert "No automatic repair" in capsys.readouterr().out
     findings = _report()["findings"]
     assert any(f["kind"] == "dual_home" and f["subject"] == "gp" for f in findings)
-    assert not any(f["kind"] == "wrong_store" for f in findings)
+    held = [f for f in findings if f["kind"] == "wrong_store"]
+    assert {f["subject"] for f in held} == {"par", "kid"}
+    assert all(f["action"] is None and "dual_home" in f["reason"] for f in held)
 
 
 def _admit(path: Path, sid: str, status: str) -> None:

@@ -1,7 +1,7 @@
 name: shvl-agent-plugin
 title: SHVL workspace review
 repo: https://github.com/jlucwright/shvl-agent-plugin
-sha: 39b32e802fa5487e7d34c8a504edc78e39302829
+sha: 92298e257346765cbcb5dd390a5ba881a460054d
 version: "1.0.2"
 description: "Read authorised SHVL workspace receivables and connected Xero financial reports through a hosted Streamable HTTP MCP server, with a skill for selecting a workspace and interpreting the results. Disclosure: enabling this package connects Hermes to https://shvl.app/mcp/v2; after account OAuth, tool calls send the selected workspace and requested parameters to SHVL and return business data to Hermes and its configured model service. Access needs an active trial or subscription and applicable workspace and Xero permissions. The server's runtime tool set is outside the pinned Git commit. This package has no local executable code, install scripts, bundled credentials, background processes or telemetry."
 maintainer: Studea Limited

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, delimiter, dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
@@ -94,10 +94,33 @@ function completedInstallMatches({ source, receipt, installedLock, key, nativeKe
 // toolchain or configuration. Every install starts from empty trees, as npm ci did;
 // the store keeps that local. This also removes an npm-made tree, which pnpm would
 // move aside and leave behind.
-function removeInstalledTrees(source, projects) {
-  for (const project of projects) {
-    rmSync(join(source, project, 'node_modules'), { recursive: true, force: true, maxRetries: 3 })
+// The previous trees are moved aside, not deleted, until the install succeeds: the
+// first pnpm install runs on an empty store, so an unreachable registry would
+// otherwise leave no node_modules at all (#150031). `pnpm fetch` cannot fill the
+// store first: it takes no filter and rewrites node_modules/.pnpm itself.
+function previousTrees(source, projects) {
+  const aside = join(source, '.cache/node-deps-previous')
+  const moved = () => projects.filter(project => existsSync(join(aside, project, 'node_modules')))
+  const discard = () => rmSync(aside, { recursive: true, force: true, maxRetries: 3 })
+  const restore = () => {
+    for (const project of moved()) {
+      rmSync(join(source, project, 'node_modules'), { recursive: true, force: true, maxRetries: 3 })
+      renameSync(join(aside, project, 'node_modules'), join(source, project, 'node_modules'))
+    }
+    discard()
   }
+  const moveAside = () => {
+    try {
+      for (const project of projects.filter(project => existsSync(join(source, project, 'node_modules')))) {
+        mkdirSync(join(aside, project), { recursive: true })
+        renameSync(join(source, project, 'node_modules'), join(aside, project, 'node_modules'))
+      }
+    } catch (error) {
+      restore()
+      throw error
+    }
+  }
+  return { restore, discard, moveAside }
 }
 
 /** Install the full requested workspace union in one strict, locked operation.
@@ -153,19 +176,28 @@ export function prepareNodeDependencies({ source, workspaces, env = process.env,
     inputs.update(file).update('\0').update(existsSync(join(source, file)) ? readFileSync(join(source, file)) : '<missing>').update('\0')
   }
   const key = inputs.digest('hex')
+  const previous = previousTrees(source, projects)
+  // A run killed mid-install left the last complete trees aside: put them back
+  // over whatever partial trees the kill left, before judging reuse.
+  previous.restore()
   if (reuse && completedInstallMatches({ source, receipt, installedLock, key, nativeKey })) {
     if (prepareElectron) prepareElectronRuntime({ source, install, env })
     console.log(`node-deps: reusing completed install (${selected.join(', ')})`)
     return { source, workspaces: selected }
   }
   if (!install) throw new Error('Workspace dependencies are stale or missing and lazy installs are disabled; run an explicit build/update')
-  // pnpm can fail during validation before touching node_modules. Invalidate first.
-  rmSync(receipt, { force: true })
-  rmSync(nativeReceipt, { force: true })
-  removeInstalledTrees(source, projects)
-  console.log(`node-deps: installing workspace dependencies with pnpm (${selected.join(', ')})...`)
-  execFileSync(pnpm, args, { cwd: source, env, stdio: 'inherit' })
-  if (prepareElectron) prepareElectronRuntime({ source, install, env })
+  // The receipts live inside the trees, so they leave and return with them.
+  previous.moveAside()
+  try {
+    console.log(`node-deps: installing workspace dependencies with pnpm (${selected.join(', ')})...`)
+    execFileSync(pnpm, args, { cwd: source, env, stdio: 'inherit' })
+    if (prepareElectron) prepareElectronRuntime({ source, install, env })
+  } catch (error) {
+    previous.restore()
+    console.error('node-deps: install failed; restored the previously installed dependencies')
+    throw error
+  }
+  previous.discard()
   if (reuse) {
     const completed = `${key}\n${createHash('sha256').update(readFileSync(installedLock)).digest('hex')}\n`
     writeFileSync(receipt, completed)

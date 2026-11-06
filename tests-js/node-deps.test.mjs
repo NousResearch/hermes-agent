@@ -200,9 +200,10 @@ test('a restored completed install retains postinstall outputs only for matching
   // Even an invalid manifest must reach pnpm, not hide behind a warm receipt.
   json(join(restored, 'web/package.json'), { name: 'web', version: '1.0.0', dependencies: { 'web-only': '9.0.0' } })
   expect(() => prepareNodeDependencies({ source: restored, workspaces: ['web'], env, reuse: true })).toThrow()
+  // The failed install put the completed one back; its inputs match again, so it is reused.
   cpSync(join(source, 'web/package.json'), join(restored, 'web/package.json'))
   prepareNodeDependencies({ source: restored, workspaces: ['web'], env, reuse: true })
-  expect(existsSync(join(restored, artifact))).toBe(false)
+  expect(readFileSync(join(restored, artifact), 'utf8')).toBe('built again')
 }, 30000)
 
 test('reuse respects lifecycle configuration and repairs missing installed packages', () => {
@@ -265,6 +266,59 @@ test('an npm-installed tree is removed before the first pnpm install', () => {
   expect(existsSync(join(source, 'node_modules/.package-lock.json'))).toBe(false)
   expect(existsSync(join(source, 'web/node_modules/npm-only'))).toBe(false)
   expect(createRequire(join(source, 'web/package.json'))('web-only')).toBe('web-only')
+}, 30000)
+
+// #150031: an update onto a new lockfile while the registry is unreachable. The
+// first pnpm install has an empty store, so nothing new can be fetched; the
+// previous install must survive the failure, and a later online run must succeed.
+test('a failed install restores the previously installed trees', () => {
+  const { source, env } = fixture()
+  const options = { source, workspaces: ['ui-tui', 'web'], reuse: true, env }
+  prepareNodeDependencies(options)
+  const receipt = readFileSync(join(source, 'node_modules/.hermes-node-deps'))
+  const lock = readFileSync(join(source, 'pnpm-lock.yaml'), 'utf8')
+  const manifest = readFileSync(join(source, 'web/package.json'))
+  json(join(source, 'web/package.json'), { name: 'web', version: '1.0.0',
+    dependencies: { 'web-only': 'file:../vendor/web-only-1.0.0.tgz', picocolors: '1.1.1' } })
+  writeFileSync(join(source, 'pnpm-lock.yaml'), lock
+    .replace('  web:\n    dependencies:\n', '  web:\n    dependencies:\n      picocolors:\n        specifier: 1.1.1\n        version: 1.1.1\n')
+    .replace('packages:\n\n', 'packages:\n\n  picocolors@1.1.1:\n    resolution: {integrity: sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA==}\n\n')
+    .replace('snapshots:\n\n', 'snapshots:\n\n  picocolors@1.1.1: {}\n\n'))
+  const dead = { ...env, pnpm_config_offline: 'false', pnpm_config_registry: 'http://127.0.0.1:9/',
+    pnpm_config_fetch_retries: '0', pnpm_config_store_dir: join(dirname(source), 'empty-store') }
+  expect(() => execFileSync(process.execPath, cli(source, '--workspace', 'ui-tui', '--workspace', 'web', '--reuse'),
+    { env: dead, stdio: 'pipe' })).toThrow(/ERR_PNPM_TARBALL_FETCH/)
+  for (const [workspace, name] of [['ui-tui', 'tui-only'], ['web', 'web-only']]) {
+    expect(createRequire(join(source, workspace, 'package.json'))(name)).toBe(name)
+  }
+  expect(createRequire(join(source, 'package.json'))('root-only')).toBe('root-only')
+  // The restored receipt still names the old lockfile, so it is never reused for the new one.
+  expect(readFileSync(join(source, 'node_modules/.hermes-node-deps'))).toEqual(receipt)
+  expect(() => prepareNodeDependencies({ ...options, env: dead, install: false })).toThrow(/disabled/)
+  expect(existsSync(join(source, '.cache/node-deps-previous'))).toBe(false)
+  // Back on the old inputs, the restored install is complete as it was.
+  writeFileSync(join(source, 'pnpm-lock.yaml'), lock)
+  writeFileSync(join(source, 'web/package.json'), manifest)
+  prepareNodeDependencies({ ...options, install: false })
+  expect(installs(source)).toBe(1)
+}, 30000)
+
+test('a run killed mid-install gets the previous trees back on the next run', () => {
+  const { source, env } = fixture()
+  const options = { source, workspaces: ['web'], reuse: true, env }
+  prepareNodeDependencies(options)
+  // What a kill during pnpm leaves: the complete trees aside, a partial tree in place.
+  const aside = join(source, '.cache/node-deps-previous')
+  for (const project of ['.', 'web']) {
+    mkdirSync(join(aside, project), { recursive: true })
+    cpSync(join(source, project, 'node_modules'), join(aside, project, 'node_modules'), { recursive: true, verbatimSymlinks: true })
+  }
+  rmSync(join(source, 'web/node_modules'), { recursive: true })
+  rmSync(join(source, 'node_modules/.hermes-node-deps'))
+  prepareNodeDependencies({ ...options, install: false })
+  expect(createRequire(join(source, 'web/package.json'))('web-only')).toBe('web-only')
+  expect(existsSync(aside)).toBe(false)
+  expect(installs(source)).toBe(1)
 }, 30000)
 
 // A stand-in pnpm on PATH that records each command and delegates to the real one.

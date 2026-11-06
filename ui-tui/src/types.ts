@@ -255,4 +255,3 @@ export interface SlashCatalog {
   skillCount: number
   sub: Record<string, string[]>
 }
-

@@ -67,7 +67,11 @@ class RemoteMachine {
     if (method === 'profiles.list') {
       return {
         profiles: [
-          { name: 'default', ui_meta: { 'hermes-bots': { groups: this.groups } }, ui_meta_revisions: { 'hermes-bots': this.revision } }
+          {
+            name: 'default',
+            ui_meta: { 'hermes-bots': { groups: this.groups } },
+            ui_meta_revisions: { 'hermes-bots': this.revision }
+          }
         ]
       }
     }
@@ -171,7 +175,9 @@ describe('a membership write its machine dropped after the read', () => {
       }
     }
 
-    await expect(room.data.saveBotMeta(homelab, { groups: [] })).resolves.toMatchObject({ serverOutcome: 'unsupported' })
+    await expect(room.data.saveBotMeta(homelab, { groups: [] })).resolves.toMatchObject({
+      serverOutcome: 'unsupported'
+    })
   })
 })
 
@@ -246,8 +252,8 @@ describe('an undo that does not land', () => {
     expect(error).not.toMatch(/Nothing was changed/)
     expect(machineA.groups).toEqual(['Core'])
     expect(seatedKeys(room)).toEqual(['local::programmer', 'local::reviewer', 'remote-a::default'])
-    expect(room.chat.$groupChats.get().Core.members?.map(member => `${member.connectionId || 'local'}::${member.name}`)).toContain(
-      'remote-a::default'
-    )
+    expect(
+      room.chat.$groupChats.get().Core.members?.map(member => `${member.connectionId || 'local'}::${member.name}`)
+    ).toContain('remote-a::default')
   })
 })

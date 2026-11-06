@@ -40,9 +40,12 @@ export function useBusyInputMode({
   const targetProfile = route && typeof route === 'object' ? route.targetProfile : undefined
   const owner = busyInputOwnerKey(connectionId, targetProfile || ownerProfile)
 
-  const [loaded, setLoaded] = useState<{ owner: string; connection: typeof connection; sessionId: string; mode: BusyInputMode } | null>(
-    null
-  )
+  const [loaded, setLoaded] = useState<{
+    owner: string
+    connection: typeof connection
+    sessionId: string
+    mode: BusyInputMode
+  } | null>(null)
 
   const canonical = serverOwnsComposerQueue(sessionId ?? storedSessionId)
   const configured = !canonical && config?.owner === owner && config.connection === connection ? config.mode : null
@@ -70,7 +73,9 @@ export function useBusyInputMode({
         })
         .catch(() => {
           // A failed read must not strand busy Enter on an otherwise healthy socket.
-          if (!cancelled && attempts < 3) {retryTimer = setTimeout(load, 1000 * attempts)}
+          if (!cancelled && attempts < 3) {
+            retryTimer = setTimeout(load, 1000 * attempts)
+          }
         })
     }
 
@@ -96,5 +101,8 @@ export function useBusyInputMode({
     return null
   }
 
-  return configured ?? (loaded?.owner === owner && loaded.connection === connection && loaded.sessionId === sessionId ? loaded.mode : null)
+  return (
+    configured ??
+    (loaded?.owner === owner && loaded.connection === connection && loaded.sessionId === sessionId ? loaded.mode : null)
+  )
 }

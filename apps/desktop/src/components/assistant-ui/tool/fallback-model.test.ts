@@ -114,7 +114,10 @@ describe('buildToolView error confidence', () => {
         },
         'notice'
       ],
-      [{ toolName: 'skill_manage', result: { success: false, error: "batch aborted, ROLLBACK FAILED for 'demo'" } }, 'error'],
+      [
+        { toolName: 'skill_manage', result: { success: false, error: "batch aborted, ROLLBACK FAILED for 'demo'" } },
+        'error'
+      ],
       [{ result: { success: false, result: { output: { error: { message: 'Connection refused' } } } } }, 'error']
     ]
 

@@ -92,7 +92,13 @@ describe('MarkdownTextContent remote images', () => {
   })
 
   it('opens only an explicit web link from foreign history, with only the sanitized address and the safe target', async () => {
-    const view = render(<MessageTextContent media={false} previewOnly text={'Read [the release notes](https://example.com/notes?x=1 "Release notes").'} />)
+    const view = render(
+      <MessageTextContent
+        media={false}
+        previewOnly
+        text={'Read [the release notes](https://example.com/notes?x=1 "Release notes").'}
+      />
+    )
     const link = await screen.findByRole('link', { name: 'the release notes' })
     expect(link.getAttribute('href')).toBe('https://example.com/notes?x=1')
     expect(view.container.querySelectorAll('a')).toHaveLength(1)
@@ -105,19 +111,39 @@ describe('MarkdownTextContent remote images', () => {
   // The parsed hostname folds decimal, octal, hex, dotted-unicode and percent-encoded spellings;
   // bracketed IPv6 hosts are already blocked by the renderer's URL hardening.
   it.each([
-    'http://127.0.0.1:9119/api/status', 'http://2130706433/', 'http://0177.0.0.1/', 'http://0x7f000001/',
-    'http://①②⑦.0.0.1/', 'https://%6c%6f%63%61%6c%68%6f%73%74/', 'http://localhost./', 'http://dash.localhost/',
-    'http://0.0.0.0:8080/', 'http://[::1]/', 'http://[::ffff:127.0.0.1]/', 'http://[fe80::1]/', 'http://[fd12:3456::1]/',
-    'http://169.254.169.254/latest/meta-data/', 'http://10.1.2.3/', 'http://172.16.0.1/', 'http://192.168.1.1/'
+    'http://127.0.0.1:9119/api/status',
+    'http://2130706433/',
+    'http://0177.0.0.1/',
+    'http://0x7f000001/',
+    'http://①②⑦.0.0.1/',
+    'https://%6c%6f%63%61%6c%68%6f%73%74/',
+    'http://localhost./',
+    'http://dash.localhost/',
+    'http://0.0.0.0:8080/',
+    'http://[::1]/',
+    'http://[::ffff:127.0.0.1]/',
+    'http://[fe80::1]/',
+    'http://[fd12:3456::1]/',
+    'http://169.254.169.254/latest/meta-data/',
+    'http://10.1.2.3/',
+    'http://172.16.0.1/',
+    'http://192.168.1.1/'
   ])('keeps a foreign link to a local or private host as text: %s', async href => {
-    const view = render(<MessageTextContent media={false} previewOnly text={`Open [the dashboard](${href}) or [the docs](https://example.com/docs).`} />)
+    const view = render(
+      <MessageTextContent
+        media={false}
+        previewOnly
+        text={`Open [the dashboard](${href}) or [the docs](https://example.com/docs).`}
+      />
+    )
     await screen.findByRole('link', { name: 'the docs' })
     expect(screen.getByText(/the dashboard/).closest('a')).toBeNull()
     expect(view.container.querySelectorAll('a')).toHaveLength(1)
   })
 
   it('shows a foreign svg fence as its source instead of drawing it', async () => {
-    const fence = '```svg\n<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 4"><circle cx="2" cy="2" r="1"/></svg>\n```'
+    const fence =
+      '```svg\n<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 4"><circle cx="2" cy="2" r="1"/></svg>\n```'
     // Positive control: ordinary chat draws the same fence.
     const ordinary = render(<MessageTextContent text={fence} />)
     await waitFor(() => expect(ordinary.container.querySelector('circle')).toBeTruthy())

@@ -1,0 +1,6 @@
+name: kill-guard
+version: "0.1.0"
+description: "Block terminal pkill/killall commands that would signal every process of the user. BSD/macOS pkill stops parsing options at the first pattern, so an option after the pattern becomes another pattern. Opt-in; KILL_GUARD_DISABLE=1 bypasses."
+author: "NousResearch contributors"
+provides_hooks:
+  - pre_tool_call

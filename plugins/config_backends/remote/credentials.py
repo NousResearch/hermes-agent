@@ -67,8 +67,9 @@ def _nous_token(home: Path) -> str:
     except Exception as exc:
         raise PlaneCredentialError(f"cannot load the Nous auth module: {exc}", retryable=False) from exc
     token = set_hermes_home_override(home)  # auth.json is per profile home
-    scope_token = _bind_owner_secret_scope(home)
+    scope_token = None
     try:
+        scope_token = _bind_owner_secret_scope(home)  # inside the try: a failed build still resets the home
         return resolve_nous_access_token()
     except Exception as exc:
         # A missing login or a revoked session needs a human; a refresh that hit the network can retry.

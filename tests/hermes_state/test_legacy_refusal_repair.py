@@ -114,14 +114,20 @@ def test_refusal_folded_into_a_summary_is_left_alone_and_a_busy_chat_waits(tmp_p
 
 def test_subagent_and_cron_runs_keep_their_record(tmp_path):
     """A delegated run's one "turn" is the whole run: retaining it would hollow out the record and
-    unlock nothing, since nobody continues it as a chat."""
+    unlock nothing. Delegated and cron runs keep it by source even after an answered exchange; a chat
+    never answered before a refused run that used tools (an ACP task run) keeps it by shape. A Bot Chat
+    refused at its very first plain message is still unlocked: there /new becomes /compact."""
     db = SessionDB(tmp_path / "state.db")
     db.create_session("parent", "cli")
     db.append_message("parent", "user", "go")
     db.append_message("parent", "assistant", "ok")
-    runs = {"sub": ("subagent", "parent"), "gw_child": ("telegram", "parent"), "job": ("cron", None)}
+    runs = {"sub": ("subagent", "parent"), "gw_child": ("telegram", "parent"), "job": ("cron", None),
+            "task_chat": ("local", None)}
     for sid, (source, parent) in runs.items():
         db.create_session(sid, source, parent_session_id=parent)
+        if sid != "task_chat":  # reads like a locked chat: only its source or lineage keeps it
+            db.append_message(sid, "user", "a first goal")
+            db.append_message(sid, "assistant", "done")
         db.append_message(sid, "user", "the delegated goal")
         for i in range(3):
             db.append_message(sid, "assistant", "", tool_calls=[
@@ -130,11 +136,17 @@ def test_subagent_and_cron_runs_keep_their_record(tmp_path):
         db.append_message(sid, "assistant", _BOUNDARY, display_kind="failed_turn", display_metadata=_REFUSAL_CARD)
         db.end_session(sid, "agent_close")
     before = {sid: (db.get_session(sid)["message_count"], _model(db, sid)) for sid in runs}
+    db.create_session("first_ask", "local")
+    _refused_turn(db, "first_ask", "the blocked ask")
+    _refused_turn(db, "first_ask", "an innocent follow-up")
     _as_legacy_store(db)
 
     db = SessionDB(tmp_path / "state.db")
     try:
         assert {sid: (db.get_session(sid)["message_count"], _model(db, sid)) for sid in runs} == before
+        assert _model(db, "first_ask") == []
+        assert _display(db, "first_ask") == [("user", "the blocked ask", "content_refused"),
+                                             ("user", "an innocent follow-up", "content_refused")]
         assert db.get_meta(LEGACY_REFUSAL_REPAIR_DONE) == "1"
     finally:
         db.close()
@@ -162,5 +174,38 @@ def test_internal_turn_heads_leave_the_context_without_being_shown(tmp_path):
             assert refused == [("user", "an innocent follow-up", CONTENT_REFUSED_DISPLAY_KIND)], kind
             # Same footing as /undo and #149708's retention: an open view's /undo sees the history moved.
             assert db.get_session(kind)["rewind_count"] == 1
+    finally:
+        db.close()
+
+
+def test_rotated_refusal_is_left_alone_and_other_failures_stay_in_the_context(tmp_path):
+    """A /compress rotation's summary restates the refused ask, so its continuation is left as it
+    is, and so is the ended root; a failure that is not a refusal keeps its turn in the context."""
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("root", "cli")
+    db.append_message("root", "user", "hello")
+    db.append_message("root", "assistant", "hi")
+    _refused_turn(db, "root", "the blocked ask")
+    db.end_session("root", "compression")
+    db.create_session("tip", "cli", parent_session_id="root")
+    db.append_message("tip", "user", "[CONTEXT COMPACTION] the user asked the blocked ask")
+    db.append_message("tip", "assistant", "noted")
+    _refused_turn(db, "tip", "an innocent follow-up")
+    rotated = {sid: _model(db, sid) for sid in ("root", "tip")}
+    db.create_session("mixed", "cli")
+    db.append_message("mixed", "user", "hello")
+    db.append_message("mixed", "assistant", "hi")
+    db.append_message("mixed", "user", "a slow ask")
+    db.append_message("mixed", "assistant", _BOUNDARY, display_kind="failed_turn", display_metadata={
+        "error": "timeout", "error_surface": {"layer": "provider", "code": "provider_timeout"}})
+    _refused_turn(db, "mixed", "the blocked ask")
+    _as_legacy_store(db)
+
+    db = SessionDB(tmp_path / "state.db")
+    try:
+        assert {sid: _model(db, sid) for sid in ("root", "tip")} == rotated
+        assert _model(db, "mixed") == [
+            ("user", "hello"), ("assistant", "hi"), ("user", "a slow ask"), ("assistant", _BOUNDARY)]
+        assert db.get_session("mixed")["message_count"] == 4
     finally:
         db.close()

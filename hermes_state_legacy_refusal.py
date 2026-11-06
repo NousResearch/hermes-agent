@@ -18,7 +18,8 @@ touches an interactive chat whose newest settled turns are all refused (the refu
 transcript's tail). It leaves alone:
 
 - a session nobody continues as a chat: a delegated subagent run, cron, batch, kanban and tool
-  sessions (their one "turn" is the whole run, so retaining it would hollow out the record);
+  sessions (their one "turn" is the whole run, so retaining it would hollow out the record), and a
+  chat never answered before a refused span that ran tools (an ACP task run refused at its end);
 - a refusal followed by a real answer (the chat was not locked, and later turns were built on it);
 - a chat whose refused text was already folded into a compaction summary (an archived refused
   boundary in the session, or one in a compression ancestor): the summary still carries it, so
@@ -30,7 +31,9 @@ Candidates are found without the write lock: one index probe per chat session re
 assistant row (``idx_messages_session_id``), so a large store is never heap-scanned. The write lock is
 taken only per repaired chat, which re-reads the transcript inside that transaction. A session with a
 live turn lease or compression lock is deferred to the next open. The store records completion in
-``state_meta`` so a finished store pays one read per open.
+``state_meta`` so a finished store pays one read per open. Completion is one-shot: a pre-update process
+still running after it is set can write the old shape again; current builds never do, so that window is
+upgrade-only.
 """
 
 from __future__ import annotations
@@ -47,7 +50,7 @@ LEGACY_REFUSAL_REPAIR_DONE = "legacy_refusal_repair"
 _SCAN_CURSOR = "legacy_refusal_repair_session_cursor"
 _SCAN_COMPLETE = "legacy_refusal_repair_scanned"
 _PENDING = "legacy_refusal_repair_pending"
-_DISCOVER_BATCH = 2000
+_DISCOVER_BATCH = 250  # one cold batch stays near the budget
 _SCAN_BUDGET_S = 1.0
 _CODE = "content_policy_blocked"
 # Sessions nobody continues as a chat. A delegate child spawned under a gateway turn inherits the
@@ -148,6 +151,10 @@ def _locked_tail(db, rows) -> Optional[list[tuple[Optional[int], list[int]]]]:
     if last_boundary < 0 or not _is_refusal_boundary(db, rows[last_boundary]):
         return None
     start = 1 + max((i for i, r in enumerate(rows[:last_boundary]) if _is_final_reply(r)), default=-1)
+    if not start and any(r["role"] == "tool" for r in rows[:last_boundary]):
+        # Never answered and the refused span ran tools: a task run, not a chat. Dropping it empties
+        # the record. A chat refused at its first plain message is still repaired (Bot Chat has no /new).
+        return None
     turns, current = [], []
     for row in rows[start:last_boundary + 1]:
         current.append(row)

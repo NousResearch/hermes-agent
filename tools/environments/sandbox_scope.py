@@ -127,7 +127,9 @@ def create_hosted_environment(env_type: str, provider: Any, **kwargs: Any) -> Sc
     """Create the bound hosted agent's sandbox through *provider*, behind the identity guard.
 
     The provider receives ``scope`` and ``sandbox`` (the :class:`SandboxIdentity`), and
-    ``task_id`` is the identity's key: whatever task id the caller held is not passed on."""
+    ``task_id`` is the identity's key: whatever task id the caller held is not passed on. The
+    environment it returns must implement the hosted operation interface (:func:`require_hosted_interface`),
+    or it is refused here, before any tool can use it."""
     scope = hosted_scope()
     if scope is None:
         raise CrossAgentHandleRefused("a hosted sandbox can only be created inside a hosted scope")
@@ -138,44 +140,66 @@ def create_hosted_environment(env_type: str, provider: Any, **kwargs: Any) -> Sc
     identity = sandbox_identity(scope)
     kwargs["task_id"] = identity.key
     inner = provider.create_environment(scope=scope, sandbox=identity, **kwargs)
-    return ScopedEnvironment(inner, identity)
+    require_hosted_interface(inner, env_type)
+    return ScopedEnvironment(inner, identity, owner=scope)
 
 
-# Operations a hosted environment receives the bound scope with, as the ``scope`` keyword, when its
-# method declares that parameter (optional plugin kwargs are signature-inspected, plugins/AGENTS.md).
-_SCOPED_OPERATIONS = frozenset({"execute", "fetch_file", "fetch_realpath"})
+# The hosted operation interface. Every operation core makes on a hosted sandbox receives the bound
+# scope as the ``scope`` keyword, so the backend can check the sandbox it is about to touch. The
+# required ones must exist; an optional one, when present, must accept ``scope`` too.
+REQUIRED_OPERATIONS = ("execute", "cleanup", "start_process", "attach_process", "stop_process")
+OPTIONAL_OPERATIONS = ("fetch_file", "fetch_realpath", "get_temp_dir", "stop_idle")
+# Lifecycle calls the idle reaper makes with no scope bound: they run under the owning agent's scope
+# (bound for the call), and are refused from another agent. ``stop_idle`` suspends the sandbox (its
+# workspace is kept, it resumes on the next call); ``cleanup`` destroys it.
+_LIFECYCLE = frozenset({"cleanup", "stop_idle"})
 
 
-@functools.lru_cache(maxsize=256)
-def _declares_scope(owner: type, name: str) -> bool:
+def accepts_scope(method: Any) -> bool:
+    """Whether *method* can take ``scope=``: a named parameter or a ``**kwargs`` catch-all."""
     try:
-        return "scope" in inspect.signature(getattr(owner, name)).parameters
+        params = inspect.signature(method).parameters.values()
     except (TypeError, ValueError):
         return False
-# Lifecycle calls the idle reaper makes with no scope bound: allowed then, refused from another agent.
-_LIFECYCLE = frozenset({"cleanup", "stop_idle"})
+    return any(p.name == "scope" and p.kind is not p.POSITIONAL_ONLY or p.kind is p.VAR_KEYWORD for p in params)
+
+
+def require_hosted_interface(inner: Any, env_type: str) -> None:
+    """Refuse a hosted environment that would silently drop the scope on any operation."""
+    missing = [op for op in REQUIRED_OPERATIONS if not callable(getattr(inner, op, None))]
+    blind = [op for op in (*REQUIRED_OPERATIONS, *OPTIONAL_OPERATIONS)
+             if op not in missing and callable(getattr(inner, op, None)) and not accepts_scope(getattr(inner, op))]
+    if missing or blind:
+        raise HostedSandboxRequired(
+            f"terminal.backend {env_type!r} does not implement the hosted operation interface: "
+            + "; ".join(filter(None, (missing and f"missing {', '.join(missing)}",
+                                      blind and f"{', '.join(blind)} must accept scope="))))
 
 
 class ScopedEnvironment:
     """A hosted backend's environment behind the identity guard.
 
-    Every method call checks the bound scope first. The long-lived process calls, and the operations
-    in ``_SCOPED_OPERATIONS`` whose method declares ``scope``, also pass that scope to the backend, so
-    it can verify the sandbox it is about to touch. Attributes (``cwd``, ``env_type``, ...) read and write through to the backend's
-    object. The file tools never take a host-filesystem fast path through it."""
+    Every method call checks the bound scope first and hands it to the backend as ``scope=``
+    (:func:`require_hosted_interface` proved at creation that the interface accepts it; any other
+    method gets it whenever it can take it). Lifecycle calls made with no scope bound run under the
+    scope that created the sandbox. Attributes (``cwd``, ``env_type``, ...) read and write through
+    to the backend's object. The file tools never take a host-filesystem fast path through it."""
 
     uses_host_filesystem = False
     is_local = False
 
-    def __init__(self, inner: Any, identity: SandboxIdentity) -> None:
+    def __init__(self, inner: Any, identity: SandboxIdentity, *, owner: Optional[Scope] = None) -> None:
+        if owner is not None and sandbox_identity(owner) != identity:
+            raise CrossAgentHandleRefused("a sandbox's owning scope must name that sandbox's agent")
         object.__setattr__(self, "_inner", inner)
         object.__setattr__(self, "sandbox", identity)
+        object.__setattr__(self, "owner", owner)
 
     def __getattr__(self, name: str) -> Any:
         value = getattr(self._inner, name)
         if not callable(value):
             return value
-        return self._lifecycle(value) if name in _LIFECYCLE else self._guarded(name, value)
+        return self._lifecycle(name, value) if name in _LIFECYCLE else self._guarded(name, value)
 
     def __setattr__(self, name: str, value: Any) -> None:
         setattr(self._inner, name, value)
@@ -184,17 +208,21 @@ class ScopedEnvironment:
         @functools.wraps(method)
         def call(*args: Any, **kwargs: Any) -> Any:
             scope = require_identity(self.sandbox, name)
-            if name in _SCOPED_OPERATIONS and _declares_scope(type(self._inner), name):
+            if accepts_scope(method):
                 kwargs["scope"] = scope
             return method(*args, **kwargs)
         return call
 
-    def _lifecycle(self, method: Any) -> Any:
+    def _lifecycle(self, name: str, method: Any) -> Any:
         @functools.wraps(method)
         def call(*args: Any, **kwargs: Any) -> Any:
-            if current_scope() is not None:
-                require_identity(self.sandbox, method.__name__)
-            return method(*args, **kwargs)
+            if hosted_scope() is not None:
+                return self._guarded(name, method)(*args, **kwargs)
+            if self.owner is None:
+                raise CrossAgentHandleRefused(f"{name} on a hosted sandbox with no owning scope; refused")
+            from agent.runtime_scope import bind_state
+            with bind_state(self.owner):
+                return self._guarded(name, method)(*args, **kwargs)
         return call
 
     def start_process(self, name: str, argv: list[str], *, child_env: Optional[dict] = None) -> ProcessStream:

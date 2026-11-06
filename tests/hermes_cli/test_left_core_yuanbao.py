@@ -125,19 +125,31 @@ def test_plugins_disabled_naming_the_bundled_adapter_is_not_use_and_still_disabl
     assert gate_manifest(manifest, {"platforms/yuanbao"}, None).error == "disabled via config"
 
 
-def test_a_bare_yuanbao_in_plugins_disabled_is_still_use_and_the_notice_says_it_now_disables(tmp_path):
-    """Core's adapter was ``platforms/yuanbao`` / ``yuanbao-platform``: a bare ``yuanbao`` never stopped it.
-    The catalog plugin IS ``yuanbao``, so the install has to say that entry now turns it off."""
+def test_a_bare_yuanbao_in_plugins_disabled_is_still_use(tmp_path):
+    """Core's adapter was ``platforms/yuanbao`` / ``yuanbao-platform``: a bare ``yuanbao`` never stopped it, so
+    the home gets the plugin. The install's enable lifts that entry; one that survives it (a managed overlay
+    pin) now turns the plugin off, and the notice says so."""
+    from hermes_cli.config import read_user_config_raw
     home = _home(tmp_path, env="YUANBAO_APP_ID=a\nYUANBAO_APP_SECRET=s\n",
                  config="plugins:\n  disabled: [yuanbao]\n")
-    said = []
+    assert lcm.yuanbao_in_use(home) is True
+    sentence = "plugins.disabled lists 'yuanbao', which now turns Yuanbao off; remove it to keep using Yuanbao"
+    for lifted in (True, False):
+        (home / "config.yaml").write_text("plugins:\n  disabled: [yuanbao]\n", encoding="utf-8")
+        said = []
 
-    def install(name):
-        (home / "plugins" / name).mkdir(parents=True)
-        return {"ok": True}
+        def install(name):
+            (home / "plugins" / name).mkdir(parents=True, exist_ok=True)
+            if lifted:  # what the real enable does (_apply_activation)
+                (home / "config.yaml").write_text("plugins:\n  enabled: [yuanbao]\n  disabled: []\n", encoding="utf-8")
+            return {"ok": True}
 
-    assert lcm.migrate_home(home, install=install, say=said.append) == ["yuanbao"]
-    assert "plugins.disabled lists 'yuanbao', which now turns Yuanbao off; remove it to keep using Yuanbao" in said[0]
+        lcm._attempted.clear()
+        import shutil
+        shutil.rmtree(home / "plugins", ignore_errors=True)
+        assert lcm.migrate_home(home, install=install, say=said.append) == ["yuanbao"]
+        assert (sentence in said[0]) is (not lifted)
+        assert ("yuanbao" in (read_user_config_raw(home / "config.yaml")["plugins"].get("disabled") or [])) is (not lifted)
 
 
 def test_every_platform_core_knows_but_yuanbao_keeps_the_yb_tools_off():

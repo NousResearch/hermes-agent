@@ -143,6 +143,18 @@ test('desktop compiler consumes explicit immutable inputs, replaces variants, an
   expect(files(input.source).some(([name]) => name.includes('.vite') || name.endsWith('tsbuildinfo'))).toBe(false)
 }, 60000)
 
+test.skipIf(process.platform !== 'darwin')('desktop build degrades instead of failing when the optional get-windows helper is absent', async () => {
+  const { buildDesktop } = await import('../scripts/build/desktop.mjs')
+  const { productCurrent } = await import('../scripts/build/freshness.mjs')
+  const input = fixture()
+  // pnpm skips get-windows on non-win32 hosts (it resolves the package as win32-only), and
+  // stage-native-deps deliberately stages nothing in that case: only read_window_below goes away.
+  // A prepared tree without the helper must therefore still build, not abort the update tail.
+  rmSync(join(input.nativeDeps, 'get-windows'), { recursive: true, force: true })
+  await expect(buildDesktop({ ...input, platform: 'darwin' })).resolves.toBeTruthy()
+  expect(productCurrent({ ...input, product: 'desktop' })).toBe(true)
+})
+
 test('desktop output cannot overlap a source directory symlinked outside the checkout', async () => {
   const { buildDesktop } = await import('../scripts/build/desktop.mjs')
   const root = mkdtempSync(join(tmpdir(), 'desktop symlinked source-'))

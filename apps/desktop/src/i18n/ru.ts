@@ -3581,6 +3581,7 @@ export const ruOverrides = {
       readAloud: 'Зачитать вслух',
       copyFullResponse: 'Копировать весь ответ',
       readAloudFullResponseHint: 'Shift+клик: прочитать весь ответ',
+      contentRefusedNotice: 'Это сообщение отклонено фильтром безопасности модели — попробуйте другой запрос.',
       editMessage: 'Изменить сообщение',
       expandMessage: 'Развернуть сообщение',
       scrollToBottom: 'Прокрутить вниз',

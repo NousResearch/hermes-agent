@@ -1031,7 +1031,7 @@ def nonretryable_client_error_result(
     agent: Any, api_error: Exception, classified: Any, *, status_code: Optional[int],
     api_kwargs: Any, api_messages: Any, messages: list[dict[str, Any]], conversation_history: Any,
     api_call_count: int, approx_tokens: int, provider: Any, base_url: Any, model: Any,
-    delivered: str = "",
+    delivered: str = "", current_turn_user_idx: Any = None,
 ) -> dict[str, Any]:
     """Terminal path for a non-retryable 4xx once fallback is exhausted: debug dump, flush
     the retry trace, print auth / billing / content-policy / TLS guidance, persist (skipped
@@ -1109,6 +1109,22 @@ def nonretryable_client_error_result(
             "        for localhost, or add the server's cert to your trust store.",
         )
     logger.error("%sNon-retryable client error: %s", agent.log_prefix, api_error)
+    if classified.reason == FailoverReason.content_policy_blocked:
+        # Safety refusal that arrived as an exception (400 / APIError) rather than an HTTP-200
+        # finish_reason. Treat it exactly like the HTTP-200 refusal handler: do NOT persist the
+        # refused turn, and hand back the PRE-refusal history so an in-memory surface (CLI/TUI/ACP
+        # keep result["messages"] as live history) carries nothing forward. A refusal is
+        # deterministic for the unchanged conversation, so a persisted refused turn re-trips the
+        # filter on every later message and locks the chat (the "stuck session" report); the owner
+        # erases the durable turn-start row after the lease releases. Mirrors #1630.
+        from agent.turn_context import history_before_current_turn, refused_turn_boundary_row_id
+        _clean = history_before_current_turn(messages, current_turn_user_idx, conversation_history)
+        return _content_policy_blocked_result(
+            _clean, api_call_count,
+            final_response="⚠️ " + content_policy_copy(label=_plabel, summary=_nonretryable_summary),
+            error_detail=_nonretryable_summary,
+            boundary_row_id=refused_turn_boundary_row_id(messages, current_turn_user_idx),
+        )
     # Skip persistence on likely context-overflow (400 + large session): persisting the
     # failed message grows the session and repeats the failure.
     # Persisting the failed user message would make the session even larger, causing the same failure on the
@@ -1117,12 +1133,6 @@ def nonretryable_client_error_result(
         _vlines(agent, "⚠️  Skipping session persistence for large failed session to prevent growth loop.")
     else:
         agent._persist_session(messages, conversation_history)
-    if classified.reason == FailoverReason.content_policy_blocked:
-        return _content_policy_blocked_result(
-            messages, api_call_count,
-            final_response="⚠️ " + content_policy_copy(label=_plabel, summary=_nonretryable_summary),
-            error_detail=_nonretryable_summary,
-        )
     # Billing walls get the same structured recovery descriptor as the max-retries path
     # so every surface renders one consistent signal.
     if classified.reason == FailoverReason.billing:

@@ -293,8 +293,14 @@ export interface SessionSaveResponse {
   file?: string
 }
 
+/** `/undo`'s line naming the files the undone turns changed, rendered by the backend. */
+export interface UndoRollbackHint {
+  text?: string
+}
+
 export interface SessionUndoResponse {
   removed?: number
+  undo_hint?: UndoRollbackHint | null
 }
 
 export interface SessionUsageResponse {
@@ -542,6 +548,7 @@ export interface RollbackCheckpoint {
 export interface RollbackListResponse {
   checkpoints?: RollbackCheckpoint[]
   enabled?: boolean
+  undo_hint?: UndoRollbackHint | null
 }
 
 export interface RollbackDiffResponse {

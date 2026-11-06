@@ -666,6 +666,10 @@ def _print_fetch_failure(c: Console, sources, identifier: str, meta=None, source
     from tools.skills_hub import skills_hub_fetch_blocked_reason
 
     blocked_reason = skills_hub_fetch_blocked_reason()
+    if blocked_reason == "dns_resolution":
+        _print_error(c, f"Could not download '{identifier}': DNS resolution failed.")
+        c.print("[yellow]Hint:[/] Check your internet connection, DNS, and proxy settings, then retry.\n")
+        return "fetch_failed"
     if blocked_reason:
         guard = "URL-safety guard" if blocked_reason == "url_safety" else "website access policy"
         _print_error(c, f"Could not download '{identifier}': blocked by the {guard}.")

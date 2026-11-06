@@ -381,3 +381,22 @@ def test_install_code_sha_leaves_the_gateways_boot_identity_alone(layout, monkey
     _verdict, result = _parity(solo, _descriptor(solo), solo)
     assert result["install_code_sha"] == "a" * 40
     assert version_info.get_code_identity()["sha"] == "b" * 40
+
+
+@pytest.mark.parametrize("stamp, repo, expected", [
+    ("s" * 40, "repo", "s" * 40),   # a packaged install's stamp wins
+    (None, "repo", "a" * 40),       # a source checkout answers from git
+    (None, None, None),             # neither: no installed commit to name
+])
+def test_install_code_sha_and_read_checkout_sha_share_one_lookup(monkeypatch, stamp, repo, expected):
+    """The gateway's ``install_code_sha`` and the CLI's ``read_checkout_sha`` come from one reader,
+    so they cannot drift apart on which commit is installed."""
+    from gateway import control_resolve
+    from hermes_cli import version_info
+    monkeypatch.setattr(version_info, "_stamp_or_none",
+                        lambda: version_info.VersionInfo("1.0.0", "1.0.0", None, stamp, None, "stamp") if stamp else None)
+    monkeypatch.setattr(version_info, "_resolve_repo_dir", lambda: repo)
+    monkeypatch.setattr(version_info, "_run_git", lambda repo_dir, *args: "a" * 40)
+    assert control_resolve._install_code_sha() == version_info.read_checkout_sha() == expected
+    monkeypatch.setattr(version_info, "installed_commit_sha", lambda: "shared")
+    assert control_resolve._install_code_sha() == "shared"

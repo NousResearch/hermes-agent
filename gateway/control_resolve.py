@@ -62,12 +62,8 @@ def _install_code_sha() -> Optional[str]:
 
     Read without touching the process's cached identity: ``identify``'s ``code_sha`` must keep naming
     the code this gateway booted from, which is how a client spots an owner that outlived an update."""
-    from hermes_cli.version_info import _resolve_repo_dir, _run_git, _stamp_or_none
-    stamp = _stamp_or_none()
-    if stamp is not None:
-        return stamp.commit
-    repo_dir = _resolve_repo_dir()
-    return _run_git(repo_dir, "rev-parse", "HEAD") if repo_dir is not None else None
+    from hermes_cli.version_info import installed_commit_sha
+    return installed_commit_sha()
 
 
 def _verdict(payload: dict, requested: Optional[Path], own: Path):

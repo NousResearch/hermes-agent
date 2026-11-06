@@ -5,6 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 
 import type { usePromptActions } from '@/app/session/hooks/use-prompt-actions'
 import { Harness } from '@/app/session/hooks/use-prompt-actions/index-test-utils'
+import { notifyCorrectionRecovery } from '@/lib/correction-delivery'
 import { clearSessionDraft, mainComposerScope, stashSessionDraft, takeSessionDraft } from '@/store/composer'
 import { type ComposerDraftRetry, matchingDraftRetry } from '@/store/composer-draft-retry'
 import { clearQueuedPrompts, enqueueQueuedPrompt, getQueuedPrompts } from '@/store/composer-queue'
@@ -472,4 +473,22 @@ it.each(['next', 'attachment', 'approval', 'backlog'] as const)('preserves exist
   if (control === 'attachment') {
     expect(getQueuedPrompts('A')[0].attachments).toHaveLength(1)
   }
+})
+
+// Adolanium #6678917819: denied Copy retries must retain one notice and the only copy.
+it.each([undefined, 'existing-correction-notice'])('Copy failure reuses notice %s', async noticeId => {
+  const text = '  external exact\n你好  '
+  const writeText = vi.fn().mockRejectedValue(new Error('clipboard denied'))
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+  const id = notifyCorrectionRecovery(text, true, noticeId)
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await act(async () => $notifications.get().find(n => n.id === id)!.action!.onClick())
+    expect($notifications.get()).toHaveLength(1)
+    expect($notifications.get()[0]).toMatchObject({ id, persistent: true })
+  }
+
+  writeText.mockResolvedValue(undefined)
+  await act(async () => $notifications.get()[0].action!.onClick())
+  expect(writeText.mock.calls.map(([payload]) => payload)).toEqual([text, text, text, text])
 })

@@ -1430,7 +1430,7 @@
     },
     {
       "name": "groups.send",
-      "summary": "Append one inert message.user event idempotently; the actor is server-owned.",
+      "summary": "Append one inert message.user event idempotently; the actor is server-owned. A payload without thread_id starts its own thread.",
       "params": [
         {
           "name": "params",

@@ -18,6 +18,9 @@ DEFAULT_VERCEL_IMAGE = "vercel/sandbox/universal:latest"
 LEGACY_VERCEL_RUNTIME = "node24"  # the seeded pre-49 default, never a user choice
 
 
+from hermes_cli.config_defaults_vertex import VERTEX_CONFIG
+
+
 DEFAULT_CONFIG = {
     "model": "",
     "providers": {},
@@ -2682,16 +2685,8 @@ DEFAULT_CONFIG = {
         # up and nothing is used.
         "guest": True,
     },
-    # Google Vertex AI (Gemini). Auth is OAuth2 from a service-account JSON or ADC, NOT an API key;
-    # the credential path lives in .env (VERTEX_CREDENTIALS_PATH / GOOGLE_APPLICATION_CREDENTIALS).
-    # Bridged to VERTEX_PROJECT_ID / VERTEX_REGION.
-    "vertex": {
-        # GCP project ID. Empty → project_id from the service-account JSON (or ADC).
-        "project_id": "",
-        # "global" is required for Gemini 3.x preview models (regional endpoints silently 404); use
-        # e.g. "us-central1" only if your models are region-pinned.
-        "region": "global",
-    },
+    # Google Vertex AI (Gemini). Section lives in config_defaults_vertex.py (its own knobs).
+    "vertex": VERTEX_CONFIG,
     # Managed llama.cpp runtime (docs: user-guide/local-models): official binaries, one supervised
     # llama-server in router mode. No context/VRAM knobs by design.
     "local_runtime": {

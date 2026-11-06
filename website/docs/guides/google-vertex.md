@@ -18,6 +18,7 @@ Vertex has **no static API key** for the standard endpoint. Every request needs 
 - **Credentials**, one of:
   - a **service-account JSON** key file with the `roles/aiplatform.user` role, or
   - **Application Default Credentials** via `gcloud auth application-default login` (or the metadata server when running on a GCP VM).
+- A **Google Cloud project ID** — either embedded in the credentials or set under `vertex.project_id` in `config.yaml`.
 - **`google-auth`** — installed automatically the first time you select Vertex (lazy install). Run `hermes setup` to repair a managed install if that fails.
 
 ## Quick Start
@@ -26,8 +27,12 @@ Vertex has **no static API key** for the standard endpoint. Every request needs 
 # Option A — service account JSON (recommended for servers / gateways)
 echo "VERTEX_CREDENTIALS_PATH=/path/to/service-account.json" >> ~/.hermes/.env
 
-# Option B — Application Default Credentials (good for local dev)
+# Option B — gcloud Application Default Credentials (good for local dev)
 gcloud auth application-default login
+#   ↳ writes an "authorized_user" ADC JSON at
+#     ~/.config/gcloud/application_default_credentials.json
+#   point Hermes at it explicitly (it accepts this file as-is):
+echo "VERTEX_CREDENTIALS_PATH=$HOME/.config/gcloud/application_default_credentials.json" >> ~/.hermes/.env
 
 # Select Vertex as your provider
 hermes model
@@ -51,9 +56,32 @@ Vertex splits its settings by sensitivity:
 
 ```bash
 # One of these (checked in this order); omit both to use ADC:
+#   VERTEX_CREDENTIALS_PATH         -> a service-account JSON *or* a gcloud "authorized_user" ADC file
+#   GOOGLE_APPLICATION_CREDENTIALS -> same file kinds
 VERTEX_CREDENTIALS_PATH=/path/to/service-account.json
 GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
 ```
+
+:::info Two credential file kinds are accepted
+`VERTEX_CREDENTIALS_PATH` / `GOOGLE_APPLICATION_CREDENTIALS` accept **either**:
+
+| File | What it is | How to get it |
+|------|------------|---------------|
+| **service-account JSON** | A key with `"type": "service_account"` and a `client_email` / `private_key` | `gcloud iam service-accounts keys create <name>.json --iam-account=<sa>@<project>.iam.gserviceaccount.com` |
+| **gcloud `authorized_user` JSON** | The ADC file `gcloud auth application-default login` writes, with `"type": "authorized_user"` and a refresh token | `gcloud auth application-default login` (writes `~/.config/gcloud/application_default_credentials.json`) |
+
+The two are **not interchangeable**: an `authorized_user` file is a user OAuth credential, and a
+service-account JSON is a key-pair credential. Point `VERTEX_CREDENTIALS_PATH` at the file you
+actually have — do not rename one into the other. If a credentials file is read as the wrong kind,
+`google-auth` rejects it with:
+
+```
+MalformedError: Service account info was not in the expected format, missing fields client_email, token_uri.
+```
+
+For a service account, remember to grant the key's `client_email` the `roles/aiplatform.user` role
+on the project.
+:::
 
 `~/.hermes/config.yaml`:
 
@@ -73,7 +101,7 @@ vertex:
 
 ### How authentication works
 
-1. Hermes resolves credentials in this order: `VERTEX_CREDENTIALS_PATH` → `GOOGLE_APPLICATION_CREDENTIALS` → ADC.
+1. Hermes resolves credentials in this order: `VERTEX_CREDENTIALS_PATH` → `GOOGLE_APPLICATION_CREDENTIALS` → ADC. The first two accept **either** a service-account JSON **or** a gcloud `authorized_user` ADC file (see "Two credential file kinds are accepted" above); the ADC fallback uses the metadata server or the well-known gcloud ADC file.
 2. It mints an OAuth2 access token (`cloud-platform` scope) and caches it, refreshing when the token is within 5 minutes of expiry.
 3. The token is handed to a standard OpenAI client pointed at the Vertex endpoint:
    ```text
@@ -84,18 +112,29 @@ vertex:
 
 ## Available Models
 
-Vertex requires the `google/` vendor prefix on model IDs. The `hermes model` picker offers:
+Vertex requires the `google/` vendor prefix on model IDs. The following ids are live on the Vertex
+`global` endpoint (verified against the publisher model list) and are safe to use:
 
 | Model | ID |
 |-------|----|
+| Gemini 4 Argon | `google/gemini-4-argon` |
 | Gemini 3.8 Flash | `google/gemini-3.8-flash` |
 | Gemini 3.7 Flash | `google/gemini-3.7-flash` |
+| Gemini 3.6 Flash | `google/gemini-3.6-flash` |
+| Gemini 3.5 Flash | `google/gemini-3.5-flash` |
+| Gemini 3.5 Flash Lite | `google/gemini-3.5-flash-lite` |
 | Gemini 3.1 Pro Preview | `google/gemini-3.1-pro-preview` |
-| Gemini 3 Pro Preview | `google/gemini-3-pro-preview` |
+| Gemini 3.1 Flash Lite | `google/gemini-3.1-flash-lite` |
 | Gemini 3 Flash Preview | `google/gemini-3-flash-preview` |
-| Gemini 3.1 Flash Lite Preview | `google/gemini-3.1-flash-lite-preview` |
 | Gemini 2.5 Pro | `google/gemini-2.5-pro` |
 | Gemini 2.5 Flash | `google/gemini-2.5-flash` |
+
+:::note Retired model ids
+Google has retired some older Gemini 3 preview ids. They now return
+`404 Publisher model ... was not found` on the Vertex endpoint. Prefer the current ids above —
+`google/gemini-3.1-pro-preview` for the Pro tier and `google/gemini-3.1-flash-lite` for the Lite
+tier. Every id in the table above was verified live against the `global` endpoint.
+:::
 
 :::note `global` region for Gemini 3.x
 The Gemini 3.x preview models are served through the `global` endpoint. Regional endpoints (`us-central1`, etc.) may 404 them. Leave `region: global` unless you have a specific reason to pin a region.
@@ -104,7 +143,7 @@ The Gemini 3.x preview models are served through the `global` endpoint. Regional
 ## Switching Models Mid-Session
 
 ```text
-/model google/gemini-3-pro-preview
+/model google/gemini-3.1-pro-preview
 /model google/gemini-3-flash-preview
 ```
 
@@ -113,6 +152,21 @@ The Gemini 3.x preview models are served through the `global` endpoint. Regional
 ## Reasoning / Thinking
 
 Vertex exposes Gemini's thinking budget through the OpenAI-compatible surface. Hermes maps its reasoning-effort setting onto `extra_body.google.thinking_config` automatically, so `reasoning_effort` works the same way it does on other Gemini surfaces.
+
+## Priority PayGo
+
+Vertex's shared Standard PayGo pool serves every customer, so a busy pool answers some requests with `429 RESOURCE_EXHAUSTED`. Google's other consumption options are Provisioned Throughput (reserved capacity, an upfront commitment) and Priority PayGo.
+
+Priority PayGo sends the `X-Vertex-AI-LLM-Shared-Request-Type: priority` header, which prioritises your traffic over the shared pool without an upfront commitment. **It is billed at a higher per-token rate than Standard PayGo**, so it is off by default and must be enabled explicitly:
+
+```yaml
+vertex:
+  project_id: my-gcp-project
+  region: global
+  priority_paygo: true
+```
+
+It is supported on the `global`, `us` and `eu` endpoints. Leave it off unless the capacity 429s are actually costing you more than the rate difference.
 
 ## Diagnostics
 
@@ -126,7 +180,19 @@ The doctor reports whether Vertex credentials can be resolved (service-account p
 
 ### "Vertex AI credentials could not be resolved"
 
-Hermes found neither a service-account JSON nor working ADC. Either set `VERTEX_CREDENTIALS_PATH` in `~/.hermes/.env`, or run `gcloud auth application-default login`. If your project isn't embedded in the credentials, set `vertex.project_id` in `config.yaml`.
+Hermes emits this error verbatim when it can resolve neither a credentials file nor working ADC:
+
+> Vertex AI credentials could not be resolved. Vertex uses OAuth2 (not a static API key): point GOOGLE_APPLICATION_CREDENTIALS (or VERTEX_CREDENTIALS_PATH) in ~/.hermes/.env at a credential file - a service-account JSON, or the gcloud 'authorized_user' ADC file - or run 'gcloud auth application-default login' for ADC. Set the GCP project/region under vertex: in config.yaml if they aren't embedded in the credentials. Run `hermes setup` to install Vertex support.
+
+Fix it by pointing `VERTEX_CREDENTIALS_PATH` in `~/.hermes/.env` at **either** a service-account JSON
+**or** the gcloud `authorized_user` ADC file (see "Two credential file kinds are accepted" above), and
+by setting `vertex.project_id` in `config.yaml` if the project isn't embedded in the credentials.
+
+### `MalformedError: Service account info was not in the expected format, missing fields client_email, token_uri.`
+
+The file at `VERTEX_CREDENTIALS_PATH` was read as a service-account key but is not one — most often
+it is the gcloud `authorized_user` ADC file from `gcloud auth application-default login`. Use a real
+service-account JSON here, or point the variable at the credential file that matches its type.
 
 ### `google-auth` not installed
 

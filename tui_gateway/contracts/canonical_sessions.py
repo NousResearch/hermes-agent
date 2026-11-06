@@ -154,13 +154,15 @@ class CanonicalSnapshot(Result):
     execution_generation: int
     pending: list[CanonicalPendingAdmission]
     prompts: list[CanonicalPendingPrompt]
+    # Live server→client requests for this exact authority stream; batch params carry accepted locks.
+    open_requests: list[OpenRequestEntry] | None = None
+    # Bounded settled batch forms; clarify.reconcile supplies their authoritative terminal receipt.
+    request_receipts: list[OpenRequestEntry] | None = None
     info: CanonicalSnapshotInfo
     # The open ``manage_connections`` card, so a resume restores it while the tool waits.
     pending_connection: ConnectionRequestPayload | None = None
     # The session's todo snapshot (its transcript's newest todo result); null when it has none.
     todo_state: TodoState | None = None
-    # The owner's server→client requests still unanswered (``session_server_requests.open_requests``).
-    open_requests: list[OpenRequestEntry] | None = None
 
 
 class CanonicalListParams(ProfileParams):

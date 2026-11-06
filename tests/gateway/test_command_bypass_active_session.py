@@ -289,3 +289,56 @@ class TestBypassWithBotnameSuffix:
         )
         assert any("handled:stop" in r for r in adapter.sent_responses)
 
+
+# ---------------------------------------------------------------------------
+# Tests: a bot cannot cancel a running turn
+# ---------------------------------------------------------------------------
+
+
+class TestBotCannotInterruptActiveSession:
+    """The adapter cancels the running task itself, before pre_gateway_dispatch can drop the
+    command. With allow_bots on, another bot's /stop, /new or /reset must not end the human's turn."""
+
+    def _busy_adapter(self):
+        adapter = _make_adapter()
+        adapter.cancelled = []
+        adapter.dispatched = []
+        handler = adapter._message_handler
+
+        async def _spy_handler(event):
+            adapter.dispatched.append(event.text)
+            return await handler(event)
+
+        async def _spy_cancel(session_key, **kwargs):
+            adapter.cancelled.append(session_key)
+
+        adapter._message_handler = _spy_handler
+        adapter.cancel_session_processing = _spy_cancel
+        guard = asyncio.Event()
+        adapter._active_sessions[_session_key()] = guard
+        return adapter, guard
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("text", ["/stop", "/new", "/reset", "/stop@MyHermesBot"])
+    async def test_bot_command_does_nothing(self, text):
+        adapter, guard = self._busy_adapter()
+        event = _make_event(text)
+        event.source.is_bot = True
+
+        await adapter.handle_message(event)
+
+        sk = _session_key()
+        assert adapter.cancelled == []
+        assert adapter.dispatched == [] and adapter.sent_responses == []
+        assert adapter._active_sessions[sk] is guard
+        assert sk not in adapter._pending_messages
+
+    @pytest.mark.asyncio
+    async def test_human_stop_still_cancels(self):
+        adapter, _guard = self._busy_adapter()
+
+        await adapter.handle_message(_make_event("/stop"))
+
+        assert adapter.cancelled == [_session_key()]
+        assert adapter.dispatched == ["/stop"]
+

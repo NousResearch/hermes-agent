@@ -82,7 +82,7 @@ def _decode_cursor(cursor, session_id, order):
     except (TypeError, ValueError, binascii.Error):
         raise RuntimeStoreError('invalid_params', field='cursor') from None
     if ((tag, owner, issued_order) != (_CURSOR_TAG, session_id, order) or not isinstance(key, list) or len(key) != 2
-            or any(type(part) is not int or part < 0 for part in key)):
+            or any(type(part) is not int or not 0 <= part < 2 ** 63 for part in key)):
         raise RuntimeStoreError('invalid_params', field='cursor')
     return tuple(key)
 
@@ -109,58 +109,111 @@ def _lineage_window(db, target, latest, after, count):
         end = len(keys) if after is None else exact if exact is not None else next(
             (index for index, key in enumerate(durable) if key >= after[1]), len(keys))
         start = max(0, end - count)
-        return rows[start:end], keys[start:end], start > 0
+        window = keys[start:end]
+        return rows[start:end], window, start > 0, window[0] if window else None
     start = 0 if after is None else exact + 1 if exact is not None else next(
         (index for index, key in enumerate(durable) if key > after[1]), len(keys))
-    return rows[start:start + count], keys[start:start + count], start + count < len(rows)
+    window = keys[start:start + count]
+    return rows[start:start + count], window, start + count < len(rows), window[-1] if window else None
 
 
-# The current display slot of the message whose first durable row is :durable: that row while it is shown,
-# else the shown copy of its identity (a carried tail's copy; its original is removed).
-_CURRENT_POSITION_SQL = (
-    "SELECT display_order FROM messages WHERE session_id = :sid AND (active = 1 OR compacted = 1)"
-    " AND display_order IS NOT NULL AND (id = :durable OR display_identity = ("
-    "SELECT display_identity FROM messages WHERE id = :durable AND session_id = :sid))"
+# The current display slot of the message whose first durable row is :durable: the newest shown copy of
+# its identity (the live one first; a carried tail's copy when the original is removed), else the shown
+# summary carrier that wraps it (same ``message_uid``; a carrier's content, so its identity, is new), else
+# that row itself while it is shown. Each read uses its own index: the row by primary key, its identity's
+# shown copies on idx_messages_display_identity, its live carrier on idx_messages_session_uid.
+_CURSOR_ROW_SQL = ("SELECT display_identity, display_order, active, compacted, message_uid FROM messages"
+                   " WHERE id = :durable AND session_id = :sid")
+_CURSOR_COPY_SQL = (
+    "SELECT display_order FROM messages INDEXED BY idx_messages_display_identity WHERE session_id = :sid"
+    " AND display_identity = :identity AND (active = 1 OR compacted = 1) AND display_order IS NOT NULL"
     " ORDER BY active DESC, id DESC LIMIT 1")
+_CURSOR_CARRIER_SQL = (
+    "SELECT display_order FROM messages INDEXED BY idx_messages_session_uid WHERE session_id = :sid"
+    " AND message_uid = :uid AND active = 1 AND _compressed_summary = 1 AND display_order IS NOT NULL"
+    " ORDER BY id DESC LIMIT 1")
+
+
+def _current_position(conn, segment, durable):
+    """The slot ``_CURSOR_*_SQL`` find for *durable*, or None (the message was rewound or deleted)."""
+    row = conn.execute(_CURSOR_ROW_SQL, {'sid': segment, 'durable': durable}).fetchone()
+    if row is None:
+        return None
+    if row['display_identity'] is not None:
+        copy = conn.execute(_CURSOR_COPY_SQL, {'sid': segment, 'identity': row['display_identity']}).fetchone()
+        if copy is not None:
+            return copy[0]
+    if row['message_uid']:
+        carrier = conn.execute(_CURSOR_CARRIER_SQL, {'sid': segment, 'uid': row['message_uid']}).fetchone()
+        if carrier is not None:
+            return carrier[0]
+    shown = (row['active'] == 1 or row['compacted'] == 1) and row['display_order'] is not None
+    return row['display_order'] if shown else None
+
+
+def _placeholders(values):
+    return ', '.join('?' * len(values))
+
+
+def _durable_firsts(conn, segment, raw):
+    """``{row id: first durable id}`` for the page rows a compaction re-wrote: a carried copy (its removed
+    original has the same identity, which carries the timestamp: the (session_id, active, timestamp)
+    index finds it) and a summary carrier (the first row with its ``message_uid``; only a carrier folds
+    by uid, so a pruned tool result keeps its own identity, as the display dedupe keeps it)."""
+    identities = list({row['display_identity'] for row in raw if row['display_identity'] is not None})
+    stamps = list({row['timestamp'] for row in raw if row['timestamp'] is not None})
+    by_identity = dict(conn.execute(
+        "SELECT display_identity, MIN(id) FROM messages INDEXED BY idx_messages_session_active WHERE "
+        f"session_id = ? AND active = 0 AND timestamp IN ({_placeholders(stamps)}) AND compacted = 0 "
+        f"AND display_identity IN ({_placeholders(identities)}) GROUP BY display_identity",
+        (segment, *stamps, *identities)).fetchall()) if identities and stamps else {}
+    uids = list({row['message_uid'] for row in raw if row['_compressed_summary'] and row['message_uid']})
+    by_uid = dict(conn.execute(
+        f"SELECT message_uid, MIN(id) FROM messages WHERE session_id = ? AND message_uid IN ({_placeholders(uids)})"
+        " GROUP BY message_uid", (segment, *uids)).fetchall()) if uids else {}
+    return {row['id']: min(row['display_order'], by_identity.get(row['display_identity'], row['id']),
+                           by_uid.get(row['message_uid'], row['id']) if row['_compressed_summary'] else row['id'])
+            for row in raw}
 
 
 def _segment_window(db, segment, latest, after, count):
     """One segment, keyset-paged on its display index (position = ``display_order``): only the page's rows
-    are read. The keyset starts at the cursor message's current slot; read oldest first, a carried copy
-    of a message an earlier page showed is skipped."""
+    are read, in one read transaction (the cursor's slot, the page and its durable ids see one
+    generation). The keyset starts at the cursor message's current slot; read oldest first, a re-written
+    copy of a message an earlier page showed is skipped. The rows get the conversation normalization a
+    resume applies (``_rows_to_conversation``: harness turns and their curator replies, stale tool-call
+    markers), with the display row before the page as context so a prompt/reply pair split by the page
+    edge is still one pair. Returns ``(rows, keys, more beyond, edge key)``; the edge key is the last row
+    read in reading order, so rows the normalization drops there are not read again."""
     def read(conn):
-        position = None
-        if after is not None:
-            # Where the cursor's message sits now: a compaction that carried it gave its copy a new slot.
-            found = conn.execute(_CURRENT_POSITION_SQL, {'sid': segment, 'durable': after[1]}).fetchone()
-            position = found[0] if found is not None else after[0]
-        raw = db._display_rows_from_conn(conn, segment, limit=count, latest=latest, after=position)
-        # Superseded originals of the page's rows: removed rows with the same identity, which carries the
-        # timestamp, so the (session_id, active, timestamp) index finds them without a segment scan.
-        identities = list({row['display_identity'] for row in raw if row['display_identity'] is not None})
-        stamps = list({row['timestamp'] for row in raw if row['timestamp'] is not None})
-        first = dict(conn.execute(
-            "SELECT display_identity, MIN(id) FROM messages INDEXED BY idx_messages_session_active WHERE "
-            f"session_id = ? AND active = 0 AND timestamp IN ({', '.join('?' * len(stamps))}) AND compacted = 0 "
-            f"AND display_identity IN ({', '.join('?' * len(identities))}) GROUP BY display_identity",
-            (segment, *stamps, *identities)).fetchall()) if identities and stamps else {}
-        return raw, first
-    raw, first = db._read_retrying_ioerr(read)
-    rows, keys = [], []
-    for row in raw:
-        key = (row['display_order'], min(row['display_order'], first.get(row['display_identity'], row['id'])))
-        if after is not None and not latest and key[1] <= after[1]:
-            continue
-        message = db._row_to_message_dict(row, warn_context='session.transcript', summary_flag=True)
-        message['_row_id'] = message['id']
-        rows.append(message)
-        keys.append(key)
-    return rows, keys, len(raw) == count
+        conn.execute('BEGIN')
+        try:
+            position = None
+            if after is not None:
+                found = _current_position(conn, segment, after[1])
+                position = after[0] if found is None else found
+            raw = db._display_rows_from_conn(conn, segment, limit=count, latest=latest, after=position)
+            firsts = _durable_firsts(conn, segment, raw)
+            before = db._display_rows_from_conn(conn, segment, limit=1, latest=True,
+                                                after=min(row['display_order'] for row in raw)) if raw else []
+            return raw, firsts, before
+        finally:
+            if conn.in_transaction:
+                conn.execute('ROLLBACK')
+    raw, firsts, before = db._read_retrying_ioerr(read)
+    keys = {row['id']: (row['display_order'], firsts[row['id']]) for row in raw}
+    kept = [row for row in raw if after is None or latest or keys[row['id']][1] > after[1]]
+    context = {row['id'] for row in before}
+    rows = [message for message in db._rows_to_conversation(
+        [*before, *kept], session_id=segment, include_ancestors=False, repair_alternation=False, include_row_ids=True)
+        if message['_row_id'] not in context]
+    edge = None if not raw else keys[raw[0]['id'] if latest else raw[-1]['id']]
+    return rows, [keys[message['_row_id']] for message in rows], len(raw) == count, edge
 
 
 def _window(db, target, latest, after, count):
-    """``(rows, keys, more beyond, segments read)``: up to *count* display rows past *after* in reading
-    order, in display order."""
+    """``(rows, keys, more beyond, edge key, segments read)``: up to *count* display rows past *after* in
+    reading order, in display order (see ``_segment_window`` for the edge key)."""
     from hermes_state import SessionResumeTooLargeError
     lineage = db._resume_lineage_ids(target)
     if len(lineage) > 1:
@@ -226,26 +279,38 @@ def _bounded(message, budget):
 
 
 def _call_context(db, page, segments):
-    """The calls of the tool results that open *page* without them (the call sits on another page),
-    as one empty assistant row: projected first, it labels those results and shows nothing itself."""
-    called = {call.get('id') for row in page if row.get('role') == 'assistant'
-              for call in row.get('tool_calls') or () if isinstance(call, dict)}
-    wanted = {row['tool_call_id'] for row in page
-              if row.get('role') == 'tool' and row.get('tool_call_id') and row['tool_call_id'] not in called}
+    """The calls of the tool results on *page* whose call is not before them on it (it sits on an earlier
+    page), as one empty assistant row: projected first, it labels those results and shows nothing itself.
+    Each result is paired with its own call occurrence, as ``_rows_to_conversation`` pairs them: the one
+    whose durable tool-call uid it carries, else the nearest earlier call with its id (provider ids repeat)."""
+    seen, wanted = set(), {}
+    for row in page:
+        if row.get('role') == 'assistant':
+            seen.update(call.get('id') for call in row.get('tool_calls') or () if isinstance(call, dict))
+        elif row.get('role') == 'tool' and row.get('tool_call_id') and row['tool_call_id'] not in seen:
+            wanted.setdefault(row['tool_call_id'], (row['_row_id'], row.get('_tool_call_uid')))
     if not wanted:
         return []
-    first = min(row['_row_id'] for row in page if row.get('tool_call_id') in wanted)
     with db._read_ctx() as conn:
         found = conn.execute(
-            "SELECT tool_calls FROM messages WHERE session_id IN (SELECT value FROM json_each(?)) AND role = 'assistant'"
-            " AND tool_calls IS NOT NULL AND id < ? ORDER BY id DESC LIMIT 16", (json.dumps(segments), first)).fetchall()
-    calls = []
-    for (raw,) in found:
+            "SELECT tool_calls, tool_call_uids FROM messages WHERE session_id IN (SELECT value FROM json_each(?))"
+            " AND role = 'assistant' AND tool_calls IS NOT NULL AND id < ? ORDER BY id DESC LIMIT 16",
+            (json.dumps(segments), max(first for first, _ in wanted.values()))).fetchall()
+    calls = {}
+    for raw_calls, raw_uids in found:  # nearest first
         try:
-            calls += [call for call in json.loads(raw) if isinstance(call, dict) and call.get('id') in wanted]
+            listed, uids = json.loads(raw_calls), json.loads(raw_uids) if raw_uids else {}
         except (TypeError, ValueError):
             continue
-    return [{'role': 'assistant', 'content': '', 'tool_calls': calls}] if calls else []
+        for call in listed if isinstance(listed, list) else ():
+            call_id = call.get('id') if isinstance(call, dict) else None
+            if call_id not in wanted or call_id in calls:
+                continue
+            uid = wanted[call_id][1]
+            if uid and not (isinstance(uids, dict) and uids.get(call_id) == uid):
+                continue  # another occurrence of a reused provider id (``tool_call_uids``: id -> uid)
+            calls[call_id] = call
+    return [{'role': 'assistant', 'content': '', 'tool_calls': list(calls.values())}] if calls else []
 
 
 def _fit(project, rows, latest, taken):
@@ -267,14 +332,14 @@ def read_page(db, target, order, after, limit, *, profile_home, inline_images=Fa
     from gateway.session_controls import display_projection
     latest = order == 'latest'
     count = limit + _TOOL_RUN
-    rows, keys, beyond, segments = _window(db, target, latest, after, count)
+    rows, keys, beyond, edge, segments = _window(db, target, latest, after, count)
 
     def project(page):
         return display_projection(_call_context(db, page, segments) + page, profile_home, image_urls=inline_images)
     projected, taken = _fit(project, rows, latest, _take(rows, latest, limit))
-    if not (taken < len(rows) or beyond):
-        return projected, None
-    return projected, keys[-taken] if latest else keys[taken - 1]
+    if taken < len(rows):
+        return projected, keys[-taken] if latest else keys[taken - 1]
+    return projected, edge if beyond else None
 
 
 async def transcript(connection, ref, params):

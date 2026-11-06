@@ -170,8 +170,9 @@ listener keeps working.
   `inline_images: true`. It can show fewer
   rows than `limit`, so read until `next_cursor` is null. The cursor is opaque, bound to the session
   and order, and keyed by each message's first durable row, so a page boundary holds across later
-  compactions (a carried tail included). A single-segment conversation is paged in SQL on its display
-  index (only the page's bodies are read, and the first read may backfill that index once, as REST
+  compactions (a carried tail or a summary carrier included). A single-segment conversation is paged
+  in SQL on its display index, in one read transaction, with the resume's conversation normalization
+  (only the page's bodies are read, and the first read may backfill that index once, as REST
   `/messages` does); a rotated lineage is deduplicated whole, and past
   `sessions.max_resume_messages` only its current segment is paged.
   `session.compactions` returns `{session_id, compactions: [{timestamp, summary,

@@ -1504,3 +1504,45 @@ describe('project filter row rule (#97762)', () => {
     expect(sessionMatchesProjectFilter(stamped, [NO_PROJECT_ID], projects, owners)).toBe(true)
   })
 })
+
+// Archiving/deleting tombstones the ids the row carried at click time: the live
+// tip and the lineage root. The project tree is a structural snapshot that is
+// only refreshed on structural edges, so a conversation compressed since the
+// last snapshot is still filed under an OLDER segment id — a bare-id tombstone
+// check then keeps the removed row in the overview previews and in the entered
+// lanes until an app reload rebuilds the tree.
+describe('removal overlays match a row by its whole lineage', () => {
+  const lineage = { _lineage_ids: ['root', 'segment', 'tip'], _lineage_root_id: 'root' }
+  const snapshotRow = makeCwdSession('/www/app', { id: 'segment', ...lineage, message_count: 9 })
+
+  const project = projectNode({
+    id: '/www/app',
+    previewSessions: [snapshotRow],
+    sessionCount: 1,
+    repos: [
+      {
+        id: '/www/app',
+        label: 'app',
+        path: '/www/app',
+        sessionCount: 1,
+        groups: [lane({ id: '/www/app::branch::main', isMain: true, label: 'main', path: '/www/app', sessions: [snapshotRow] })]
+      }
+    ]
+  })
+
+  // What archiveSession/removeSession arm: the tip + the root, never the middle
+  // segment the snapshot happens to name.
+  const removed = new Set(['tip', 'root'])
+
+  it('drops an old-segment preview row from the project overview', () => {
+    expect(overlayLivePreviews([project], [], [], 3, { removed })).toEqual({})
+  })
+
+  it('drops an old-segment lane row from the entered project', () => {
+    const overlaid = overlayLiveLanes(project, [], removed)
+    const remaining = overlaid.repos.flatMap(repo => repo.groups.flatMap(group => group.sessions.map(s => s.id)))
+
+    expect(remaining).toEqual([])
+    expect(overlaid.sessionCount).toBe(0)
+  })
+})

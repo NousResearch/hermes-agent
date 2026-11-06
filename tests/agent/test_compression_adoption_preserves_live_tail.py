@@ -5,7 +5,7 @@ turn's un-persisted user input.
 per-session compression lock.  When another writer (frontend commit,
 background review, shared session_id) appended rows in that window,
 ``len(durable_parent) > len(messages)`` and preflight ADOPTS the snapshot
-verbatim (conversation_compression.py, "grew before lease" path).
+verbatim (conversation_compression_adoption.py, "grew before lease" path).
 
 The in-memory transcript carries the CURRENT turn's un-persisted user
 instruction — real user input anchored by ``_persist_user_message_idx`` that

@@ -119,7 +119,8 @@ _KNOWN_PROVIDER_KEYS = {
     "api_mode", "transport", "model", "default_model", "models", "models_discovered",
     "context_length", "rate_limit_delay", "request_timeout_seconds", "stale_timeout_seconds",
     "discover_models", "extra_body", "extra_headers", "capabilities", "ssl_ca_cert", "ssl_verify",
-    "catalog_provider", "session_affinity_header"}
+    "catalog_provider", "session_affinity_header",
+    "supports_vision", "supports_vision_tool_messages"}
 
 
 def _pick_provider_base_url(entry: dict[str, Any], provider_key: str) -> str:
@@ -264,6 +265,9 @@ def _normalize_custom_provider_entry(
         ("discover_models", lambda v: isinstance(v, (bool, str))),
     ):
         if ok(entry.get(field)):
+            normalized[field] = entry[field]
+    for field in ("supports_vision", "supports_vision_tool_messages"):
+        if field in entry:
             normalized[field] = entry[field]
     if isinstance(entry.get("extra_body"), dict):
         normalized["extra_body"] = dict(entry["extra_body"])

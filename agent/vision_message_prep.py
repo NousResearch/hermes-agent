@@ -57,6 +57,75 @@ def _provider_model_key(agent: Any) -> tuple[str, str]:
     )
 
 
+def _reshape_tool_images_for_strict_provider(api_messages: list) -> list:
+    """For vision-capable models on endpoints that require tool results to be strings
+    (supports_vision_tool_messages=False):
+    1. Keep tool result content string-valued.
+    2. Collect image parts from tool messages.
+    3. Insert a multimodal user message with the collected images after each contiguous group of tool results.
+    4. Parallel tool ordering is preserved.
+    """
+    reshaped = []
+    i = 0
+    n = len(api_messages)
+    while i < n:
+        msg = api_messages[i]
+        if isinstance(msg, dict) and msg.get("role") == "tool":
+            tool_group = []
+            collected_images = []
+            while i < n and isinstance(api_messages[i], dict) and api_messages[i].get("role") == "tool":
+                curr_tool = copy.deepcopy(api_messages[i])
+                content = curr_tool.get("content")
+                if isinstance(content, list):
+                    text_parts = []
+                    for part in content:
+                        if isinstance(part, dict):
+                            if part.get("type") in ("image_url", "image") or "image_url" in part:
+                                collected_images.append(part)
+                            elif part.get("type") == "text" and part.get("text"):
+                                text_parts.append(part["text"])
+                    if collected_images:
+                        curr_tool["content"] = "\n".join(text_parts) if text_parts else "Screenshot captured; image attached in the following message."
+                elif isinstance(content, dict):
+                    if content.get("type") in ("image_url", "image") or "image_url" in content:
+                        collected_images.append(content)
+                        curr_tool["content"] = "Screenshot captured; image attached in the following message."
+                tool_group.append(curr_tool)
+                i += 1
+            reshaped.extend(tool_group)
+            if collected_images:
+                if i < n and isinstance(api_messages[i], dict) and api_messages[i].get("role") == "user":
+                    next_user = copy.deepcopy(api_messages[i])
+                    u_content = next_user.get("content")
+                    if isinstance(u_content, str):
+                        next_user["content"] = [
+                            {"type": "text", "text": u_content},
+                            *collected_images,
+                        ]
+                    elif isinstance(u_content, list):
+                        next_user["content"] = list(u_content) + collected_images
+                    reshaped.append(next_user)
+                    i += 1
+                else:
+                    reshaped.append({
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "The preceding tool captured this image. Use native vision to answer the pending request.",
+                            },
+                            *collected_images,
+                        ],
+                    })
+        else:
+            if isinstance(msg, dict) and msg.get("role") == "assistant" and msg.get("content") is None:
+                msg = dict(msg)
+                msg["content"] = ""
+            reshaped.append(msg)
+            i += 1
+    return reshaped
+
+
 class VisionMessagePrepMixin:
     """Vision probes + image-part fallbacks for outgoing messages (see module docstring)."""
 
@@ -187,10 +256,16 @@ class VisionMessagePrepMixin:
 
     def _prepare_messages_for_non_vision_model(self, api_messages: list) -> list:
         """Replace native image parts with cached vision_analyze text when the active model lacks vision;
-        vision-capable models pass through unchanged (the provider adapter handles image parts natively)."""
+        for vision-capable models, if the provider rejects tool image parts, reshape tool messages so
+        images are moved to user messages."""
+        if self._model_supports_vision():
+            if not self._provider_supports_vision_tool_messages():
+                return _reshape_tool_images_for_strict_provider(api_messages)
+            return api_messages
+
         if not any(
             isinstance(msg, dict) and self._content_has_image_parts(msg.get("content")) for msg in api_messages
-        ) or self._model_supports_vision():
+        ):
             return api_messages
 
         transformed = copy.deepcopy(api_messages)
@@ -215,23 +290,6 @@ class VisionMessagePrepMixin:
             return content
 
         if self._model_supports_vision():
-            # Vision on paper, but the provider rejects list-type tool content (or we already learned that
-            # in-session): short-circuit to a text summary.
-            if not self._provider_supports_vision_tool_messages():
-                logger.debug(
-                    "Tool %s: provider %s does not accept list-type tool "
-                    "content — sending text summary",
-                    tool_name, getattr(self, "provider", ""),
-                )
-                return _multimodal_text_summary(result)
-            key = _provider_model_key(self)
-            if key in (getattr(self, "_no_list_tool_content_models", None) or ()):
-                logger.debug(
-                    "Tool %s: model %s/%s known to reject list-type tool "
-                    "content this session — sending text summary",
-                    tool_name, key[0], key[1],
-                )
-                return _multimodal_text_summary(result)
             return content
 
         summary = _multimodal_text_summary(result)

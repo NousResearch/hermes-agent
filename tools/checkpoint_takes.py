@@ -38,14 +38,42 @@ def turn_key(timestamp) -> str:
     return repr(when) if when is not None else ""
 
 
+def unique_turn_key(timestamp, rows) -> str:
+    """``turn_key(timestamp)``, or ``""`` when more than one user row in ``rows`` (every row the surface knows,
+    the undone ones included) carries that key. Stamps are not unique per turn (a platform's event time can be
+    whole seconds), and a take under a shared key proves neither turn made it."""
+    key = turn_key(timestamp)
+    same = sum(1 for m in rows or () if isinstance(m, dict) and m.get("role") == "user"
+               and turn_key(m.get("timestamp")) == key)
+    return key if key and same <= 1 else ""
+
+
+def stored_turn_key(db, session_id: str, timestamp) -> str:
+    """``unique_turn_key`` over every stored row of the session's lineage, rewound ones included; ``""``
+    when the transcript cannot be read (the hint is advisory: no proof, no hash)."""
+    try:
+        rows = db.get_messages_as_conversation(session_id, include_ancestors=True, include_inactive=True)
+    except Exception:  # health: allow BLE001 -- an advisory line must never fail the /undo it follows
+        return ""
+    return unique_turn_key(timestamp, rows)
+
+
 def bind_checkpoint_turn(agent, user_msg: dict) -> None:
     """Name the turn whose takes the agent's checkpoint manager records next by the stamp its user row is
-    persisted with (the persist override wins, as in ``agent/session_persistence.py``)."""
+    persisted with (the persist override wins, as in ``agent/session_persistence.py``). A key this manager
+    already bound for an earlier turn binds ``""``: those takes then prove no turn, rather than the wrong one."""
     mgr = getattr(agent, "_checkpoint_mgr", None)
     if mgr is None:
         return
     stamp = getattr(agent, "_persist_user_message_timestamp", None)
-    mgr.turn_key = turn_key(stamp if stamp is not None else (user_msg or {}).get("timestamp"))
+    key = turn_key(stamp if stamp is not None else (user_msg or {}).get("timestamp"))
+    bound = getattr(mgr, "_bound_turn_keys", None)
+    if bound is None:
+        bound = mgr._bound_turn_keys = {}
+    mgr.turn_key = "" if key in bound else key
+    bound[key] = None
+    if len(bound) > _MAX_TAKES:  # older turns' takes have left the record anyway
+        del bound[next(iter(bound))]
 
 
 def _entries(raw) -> list[tuple[float, str, int, str]]:

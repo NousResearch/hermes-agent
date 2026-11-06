@@ -2003,7 +2003,7 @@ def _(rid, params: dict, session: dict) -> dict:
     busy = _err(rid, 4009, busy_message("undo", bool(session.get("_manual_compress_active"))))
     if session.get("running"):
         return busy
-    removed, rewound = 0, None
+    removed, rewound, history = 0, None, []
     with session["history_lock"]:
         if session.get("running"):
             return busy
@@ -2017,7 +2017,7 @@ def _(rid, params: dict, session: dict) -> dict:
                 return _err(rid, 5008, f"undo: {exc}")
     if removed:  # Ink /retry is undo + resend and says so via ``intent`` (helper: methods_tools).
         _tui_model_friction("retry" if params.get("intent") == "retry" else "undo", session)
-    return _ok(rid, {"removed": removed, **_tools_mod("tui_gateway.checkpoints").undo_hint_fields(session, rewound, params)})
+    return _ok(rid, {"removed": removed, **_tools_mod("tui_gateway.checkpoints").undo_hint_fields(session, rewound, params, history)})
 
 
 def _save_via_compute_host(rid, params: dict) -> dict:

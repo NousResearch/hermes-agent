@@ -33,6 +33,6 @@ def print_undo_rollback_hint(cli, before: list, turns_undone: int) -> None:
                                    undo_since=undo_span_start(target_ts, kept)).get("undo_hint")
     else:
         mgr = getattr(getattr(cli, "agent", None), "_checkpoint_mgr", None)
-        hint = undo_hint_payload(mgr, os.getenv("TERMINAL_CWD", os.getcwd()), target_ts, kept)
+        hint = undo_hint_payload(mgr, os.getenv("TERMINAL_CWD", os.getcwd()), target_ts, kept, history=before)
     if text := (hint or {}).get("text"):
         print(f"  {text}")

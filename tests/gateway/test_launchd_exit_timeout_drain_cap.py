@@ -79,6 +79,38 @@ def test_launchd_reader_yields_a_budget_only_for_hermes_jobs(platform, environ, 
     assert resolve_launchd_capped_drain(180.0, budget) == expected
 
 
+@pytest.mark.parametrize(
+    "uid, loaded_in, expected_budget, expected_probes",
+    [
+        (501, "gui/501", 60.0, ["gui/501"]),
+        # Background/SSH installs (the default domain on macOS 26+) load the job in user/<uid>.
+        (501, "user/501", 60.0, ["gui/501", "user/501"]),
+        (501, None, None, ["gui/501", "user/501"]),
+        (0, "system", 60.0, ["system"]),
+    ],
+    ids=["gui-domain", "user-domain", "not-loaded", "root-system-domain"],
+)
+def test_launchd_reader_finds_the_job_in_the_domain_that_loaded_it(uid, loaded_in, expected_budget, expected_probes):
+    """``hermes gateway install`` loads the job into ``gui/<uid>`` or ``user/<uid>``
+    (``hermes_cli.gateway_launchd._probe_launchd_domain_for_label``); the reader must find it in either,
+    or the drain cap silently stays off for user-domain jobs."""
+    probes = []
+
+    def fake_run(argv, **_kw):
+        target = argv[-1]
+        domain = target.rsplit("/", 1)[0]
+        probes.append(domain)
+        if domain == loaded_in:
+            return SimpleNamespace(returncode=0, stdout="\texit timeout = 60\n")
+        return SimpleNamespace(returncode=113, stdout="")  # "Could not find service"
+
+    budget = read_launchd_exit_timeout_s(
+        environ=_grandchild("ai.hermes.gateway"), uid=uid, run=fake_run, platform="darwin",
+    )
+    assert budget == expected_budget
+    assert probes == expected_probes
+
+
 def test_forwarded_label_marks_grandchild_supervised_for_every_reader():
     """One seam: the restart route and the control-socket declaration see the same launchd identity
     the drain cap does, so a grandchild is not 'manual' to one reader and 'launchd' to another."""

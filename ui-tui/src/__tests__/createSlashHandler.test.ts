@@ -60,7 +60,7 @@ describe('createSlashHandler', () => {
     const ctx = buildCtx()
 
     expect(createSlashHandler(ctx)('/resume sid-old')).toBe(true)
-    expect(ctx.session.resumeById).toHaveBeenCalledWith('sid-old')
+    expect(ctx.session.resumeById).toHaveBeenCalledWith('sid-old', { keepCurrent: false })
     expect(getOverlayState().sessions).toBe(false)
   })
 
@@ -74,13 +74,13 @@ describe('createSlashHandler', () => {
     expect(gatewayWork(ctx)).toEqual([])
   })
 
-  it('blocks immediate resume-by-id while a turn is busy', () => {
+  it.each(['/resume sid-old', '/sessions sid-old'])('%s keeps the busy session running instead of refusing', cmd => {
     patchUiState({ busy: true, sid: 'sid-abc' })
-    const ctx = buildCtx({ session: { ...buildSession(), guardBusySessionSwitch: vi.fn(() => true) } })
+    const ctx = buildCtx()
 
-    expect(createSlashHandler(ctx)('/resume sid-old')).toBe(true)
-    expect(ctx.session.guardBusySessionSwitch).toHaveBeenCalled()
-    expect(ctx.session.resumeById).not.toHaveBeenCalled()
+    expect(createSlashHandler(ctx)(cmd)).toBe(true)
+    expect(ctx.session.guardBusySessionSwitch).not.toHaveBeenCalled()
+    expect(ctx.session.resumeById).toHaveBeenCalledWith('sid-old', { keepCurrent: true })
   })
 
   it('treats /session (singular) as an alias of the sessions overlay', () => {

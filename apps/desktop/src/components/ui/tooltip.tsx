@@ -212,7 +212,13 @@ function PaneClippedContent({
       align={align ?? preferred.align}
       arrowPadding={arrowPadding}
       className={cn(
-        'tooltip-bubble pointer-events-none z-(--z-over-modal) w-fit select-none bg-foreground px-2 py-1 text-[0.6875rem] font-medium leading-[1.4] text-background',
+        // The one floating-surface look menus and popovers ship (menu.ts
+        // `menuSurfaceClass`, popover.tsx): the elevated background token and
+        // its stroke — never the inverted `bg-foreground text-background` pair,
+        // which painted a white bubble on every dark theme (#140931).
+        // `--tooltip-surface` is what the arrow below fills itself with, so the
+        // surface is restated in this one class string alone.
+        'tooltip-bubble pointer-events-none z-(--z-over-modal) w-fit select-none border border-(--ui-stroke-secondary) bg-(--tooltip-surface) px-2 py-1 text-[0.6875rem] font-medium leading-[1.4] text-popover-foreground shadow-md backdrop-blur-md [--tooltip-surface:color-mix(in_srgb,var(--ui-bg-elevated)_96%,transparent)]',
         className
       )}
       collisionBoundary={collisionBoundary ?? pane ?? undefined}
@@ -231,10 +237,16 @@ function PaneClippedContent({
       <div className="tooltip-bubble-label" data-slot="tooltip-label">
         {children}
       </div>
-      <TooltipPrimitive.Arrow asChild height={5} width={10}>
-        <svg aria-hidden data-slot="tooltip-arrow" viewBox="0 0 10 5">
-          <path d="M0 0h10L5.7 4.3a1 1 0 0 1-1.4 0Z" />
-        </svg>
+      {/* CSS arrow that truly inherits the surface — the shape popover.tsx
+          ships: a rotated square sharing the body's exact bg + backdrop-blur,
+          with the border on its two outer edges only. Radix authors the child
+          pointing "down" and rotates the wrapper per side, so the V always
+          faces outward. The square's inner half tucks under the body, opening
+          the border seam. A filled svg could not carry the stroke or the glass. */}
+      <TooltipPrimitive.Arrow asChild height={7} width={16}>
+        <span aria-hidden className="relative block h-[7px] w-4 overflow-visible" data-slot="tooltip-arrow">
+          <span className="absolute top-0 left-1/2 size-[11px] -translate-x-1/2 -translate-y-1/2 rotate-45 border-r border-b border-(--ui-stroke-secondary) bg-(--tooltip-surface) backdrop-blur-md" />
+        </span>
       </TooltipPrimitive.Arrow>
     </TooltipPrimitive.Content>
   )

@@ -4,7 +4,8 @@ instruction + prefill examples (andrexibiza N4).
 
 One ordinary daemon, two sessions: in-process and ``gateway.managed_workers``. The loopback
 primary refuses with 429 ``insufficient_quota``; a healthy loopback backup is configured in
-``fallback_providers``. Both turns must reach the backup and complete.
+``fallback_providers``. Unpinned turns must reach the backup and complete; a turn whose session
+pinned its route (``pin_route``) must fail on the primary and never call the backup.
 """
 import asyncio
 from contextlib import closing
@@ -153,6 +154,27 @@ def test_managed_turn_falls_back_like_the_in_process_turn(tmp_path):
 
 
 @pytest.mark.platforms("linux")
+def test_a_pinned_turn_never_reaches_the_profile_chain(tmp_path):
+    """`hermes chat -m primary-model` (``pin_route``): the refused primary fails the turn, in process and managed, and
+    the configured backup is never called (a pinned cron job or delegate child behaves the same)."""
+    async def turn(ws, sid, name, settle, servers):
+        servers.primary.refuse = True
+        primary_start, backup_start = len(servers.primary.requests), len(servers.backup.requests)
+        result = await settle(ws, sid, name + '-refused', 'PINNED_ROUTE')
+        return {'failed': result.get('failed'), 'error': str(result.get('error') or ''),
+                'final_response': result.get('final_response'),
+                'primary_calls': len(servers.primary.requests) - primary_start,
+                'backup_calls': len(servers.backup.requests) - backup_start}
+    results = run_pair(tmp_path, lambda home: {}, turn, pin_route=True)
+    for name in ('inproc', 'managed'):
+        found = results[name]
+        # The pinned primary was asked and refused; the turn failed on that refusal, never on the backup.
+        assert found['primary_calls'] > 0 and found['backup_calls'] == 0, (name, results)
+        assert found['failed'] is True and 'quota' in found['error'].lower(), (name, results)
+    assert (results['inproc']['workers'], results['managed']['workers']) == (0, 1), results
+
+
+@pytest.mark.platforms("linux")
 def test_managed_turn_sends_configured_instruction_and_prefill(tmp_path):
     """``agent.system_prompt`` and ``prefill_messages_file`` reach the managed model request in
     the same places as in process, and stay out of the persisted system prompt."""
@@ -220,7 +242,8 @@ def test_construct_inputs_follow_the_session_mode(tmp_path, monkeypatch):
                              _get_system_prompt_for_channel=lambda *a: profile_reads.append('prompt') or 'SYS')
     authority = SimpleNamespace(runner=runner, profile_id=str(tmp_path))
     launch = {'cwd': str(tmp_path), 'model': 'm', 'provider': 'custom', 'base_url': 'http://127.0.0.1:9/v1'}
-    ordinary = build_policy(launch, {})
+    # A bypass launch must name its model; an ordinary one that did would be pinned (no profile chain).
+    ordinary = build_policy({k: v for k, v in launch.items() if k != 'model'}, {})
     config_only = _bypass_policy({**launch, 'ignore_user_config': True}, private_secrets={})
     safe = _bypass_policy({**launch, 'safe_mode': True}, private_secrets={})
     assert construct_inputs(authority, ordinary, 'c') == {

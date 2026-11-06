@@ -173,6 +173,8 @@ class GatewaySessionStore:
         params["row_cwd"] = os.getcwd() if record_cwd and local and params["source"] in CLI_FAMILY_SOURCES else ""
         if title:
             params["title"] = title
+        from hermes_cli.gateway_chat import route_pin_policy
+        params.update(route_pin_policy(params, self.create_parameters()))
         params.update(self.client_env())
         snapshot = self.call("session.create", request_id=uuid.uuid4().hex, **params)
         warning = (snapshot.get("info") or {}).get("config_warning")
@@ -180,14 +182,18 @@ class GatewaySessionStore:
             print(f"Warning: {warning}", file=sys.stderr)
         return self._adopt(snapshot)
 
-    def client_env(self):
-        """This shell's ``client_env`` when the gateway takes it (one ``runtime.describe`` per store)."""
-        from hermes_cli.gateway_chat import client_env_policy
+    def create_parameters(self):
+        """The gateway's ``session.create`` fields (one ``runtime.describe`` per store)."""
         if self._create_parameters is None:
             described = self.call("runtime.describe")
             contract = described.get("session_create") if isinstance(described, dict) else None
             self._create_parameters = list((contract or {}).get("parameters") or [])
-        return client_env_policy(self._create_parameters)
+        return self._create_parameters
+
+    def client_env(self):
+        """This shell's ``client_env`` when the gateway takes it."""
+        from hermes_cli.gateway_chat import client_env_policy
+        return client_env_policy(self.create_parameters())
 
     def branch(self, session_id, title=None):
         """``session.mutate branch``: the gateway forks the whole active transcript into a child it

@@ -50,6 +50,9 @@ class CanonicalCreateParams(ProfileParams):
     run_budget: float | None = None
     # The classic CLI's `-v`: the session agent's status lines are not quieted.
     verbose: bool = False
+    # A typed `-m`: the session never borrows the profile's `fallback_providers`. Needs `model`;
+    # refused with `follow_profile_config` or `source: gui`.
+    pin_route: bool = False
     # A shell-launched client's allowlisted environment (HERMES_* behaviour values, toolchain PATH/venv),
     # applied to this session only; never echoed in ``launch_request``.
     client_env: dict[str, str] | None = None

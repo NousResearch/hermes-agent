@@ -15,22 +15,28 @@ def construct_inputs(authority, policy, chat_id):
     """Owner side, per turn (off the owner loop: config reads)."""
     from gateway.session_authorities import owner_scope
     with owner_scope(authority):
-        return {'fallback_model': _fallback_chain(authority, policy),
+        return {'fallback_model': session_fallback_chain(authority.runner, policy, authority),
                 'ephemeral_system_prompt': _ephemeral_prompt(authority, policy, chat_id),
                 'prefill_messages': session_prefill(authority, policy, chat_id)}
 
 
-def _fallback_chain(authority, policy):
-    """The chain ``_build_fresh_agent`` gives an in-process turn. Ordinary sessions keep the
-    profile refresh semantics (re-read per turn, last-known-good per home); a config-only session
-    takes its frozen explicit snapshot (never the profile); safe mode carries none."""
-    if policy.safe_mode:
+def session_fallback_chain(runner, policy, authority=None):
+    """The ``fallback_model`` chain for an agent the gateway builds or reuses for a turn: fresh,
+    cached, side agent and managed worker alike. Safe mode carries none and a config-only session
+    takes its frozen explicit snapshot, neither reading the profile. Otherwise the profile's
+    ``fallback_providers``, re-read per turn with a last-known-good per home (#60955), except for a
+    LOCAL session that pinned its model at creation (``pins_route``): it never borrows that chain,
+    or reads it (a chain entry is another provider and usually another model, the swap the pin ruled
+    out). Messaging sessions have no policy and keep the chain."""
+    from hermes_cli.fallback_config import get_fallback_chain, scoped_fallback_chain
+    if policy is not None and policy.safe_mode:
         return None
-    if policy.ignore_user_config:
-        from hermes_cli.fallback_config import get_fallback_chain
+    if policy is not None and policy.ignore_user_config:
         return get_fallback_chain(policy.config(authority)) or None
-    refresh = getattr(authority.runner, '_refresh_fallback_model', None)
-    return refresh() if refresh is not None else None
+    pinned = bool(policy and policy.pins_route)
+    refresh = None if pinned else getattr(runner, '_refresh_fallback_model', None)
+    inherited = refresh() if refresh is not None else None
+    return scoped_fallback_chain(inherited, None, pinned=pinned, owner='local session')
 
 
 def _ephemeral_prompt(authority, policy, chat_id):

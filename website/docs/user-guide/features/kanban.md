@@ -680,7 +680,7 @@ hermes kanban set-model t_abcd claude-opus-4.6 --provider anthropic
 hermes kanban set-model t_abcd none    # clear the override
 ```
 
-The dispatcher spawns the worker with the pinned model (`--provider <name>` is passed when set; `--provider` requires a model). The dashboard's per-task model dropdown drives the same `model_override` field. With no override, the worker uses its profile's configured model.
+The dispatcher spawns the worker with the pinned model (`--provider <name>` is passed when set; `--provider` requires a model). The dashboard's per-task model dropdown drives the same `model_override` field. With no override, the worker uses its profile's configured model. A task with a model override gets no [`fallback_providers`](./fallback-providers.md): when the pinned model fails, the run fails instead of moving to another provider.
 
 ### Cost strategy: frontier orchestrator, inexpensive workers
 

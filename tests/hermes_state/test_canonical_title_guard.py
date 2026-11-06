@@ -278,3 +278,29 @@ def test_deliberate_archive_of_reaped_bot_chat_retires_the_name(db, already_arch
     assert row["archived"] and row["title"] is None and row["end_reason"] is None
     assert db.get_session_by_title(SessionDB.CANONICAL_BOT_CHAT_TITLE) is None
     assert not db.unarchive_recoverable_session(sid)
+
+
+def test_archived_ordinary_title_still_resolves(db):
+    """Only the canonical "Bot Chat" retires on archive: ``-c "<title>"``, ``/resume <title>`` and
+    ``--create-if-missing`` keep reopening any other user-archived session (main's behaviour)."""
+    db.create_session("proj", source="cli")
+    assert db.set_session_title("proj", "My project")
+    assert db.set_session_archived("proj", True)
+    assert db.get_session_by_title("My project")["id"] == "proj"
+    assert db.resolve_session_by_title("My project") == "proj"
+    assert db.get_session("proj")["title"] == "My project"
+
+
+def test_bulk_archive_spares_bot_chat_and_unarchived_retired_chat_is_listed(db):
+    """``hermes sessions archive`` is housekeeping like the idle sweep: it never retires the
+    canonical chat. A per-chat Archive does, and unarchiving the retired chat returns it as an
+    ordinary visible conversation; it never takes "Bot Chat" back."""
+    sid = _make_canonical(db, "forever")
+    db.end_session(sid, "cli_close")
+    assert db.archive_sessions(include_open=True) == 0
+    assert db.get_session(sid)["title"] == SessionDB.CANONICAL_BOT_CHAT_TITLE
+    assert db.set_session_archived(sid, True)
+    assert db.set_session_archived(sid, False)
+    row = db.get_session(sid)
+    assert (row["title"], row["hidden"], row["archived"]) == (None, 0, 0)
+    assert sid in [r["id"] for r in db.list_sessions_rich(limit=50)]

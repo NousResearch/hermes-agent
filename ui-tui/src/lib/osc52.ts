@@ -11,13 +11,18 @@ type OscQuerier = {
   send: <T>(query: { match: (r: unknown) => r is T; request: string }) => Promise<T | undefined>
 }
 
-function wrapForMultiplexer(sequence: string): string {
+/** tmux / screen swallow raw OSC unless it is wrapped in a DCS passthrough. */
+export function wrapForMultiplexer(sequence: string): string {
   if (process.env['TMUX']) {
     return `${ESC}Ptmux;${sequence.split(ESC).join(ESC + ESC)}${ST}`
   }
 
   if (process.env['STY']) {
-    return `${ESC}P${sequence}${ST}`
+    // screen ends the DCS at the first ST, so an ST-terminated OSC inside it would reach the
+    // terminal unterminated; BEL ends an OSC just as well and screen passes it through.
+    const inner = sequence.endsWith(ST) ? `${sequence.slice(0, -ST.length)}${BEL}` : sequence
+
+    return `${ESC}P${inner}${ST}`
   }
 
   return sequence

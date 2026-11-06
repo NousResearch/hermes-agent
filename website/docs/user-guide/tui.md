@@ -60,6 +60,7 @@ The classic CLI remains the shipped default. Anything documented in [CLI Interfa
 - **Mouse-friendly selection** — drag to highlight with a uniform background instead of SGR inverse. Copy with your terminal's normal copy gesture.
 - **Alternate-screen rendering** — differential updates mean no flicker when streaming, no scrollback clutter after you quit.
 - **Composer affordances** — inline paste-collapse for long snippets, `Cmd+V` / `Ctrl+V` text paste with clipboard-image fallback, bracketed-paste safety, and image/file-path attachment normalization.
+- **Terminal follows the agent's `cd`** — the TUI reports the terminal tool's working directory with OSC 7 (the signal shell integration sends), so a terminal's Files pane / cwd chip (Tern, iTerm2, WezTerm, Ghostty, kitty) tracks where the agent is working. Local terminal backend only. Inside tmux it needs `set -g allow-passthrough on` (tmux ≥ 3.3 ships it off), the same switch OSC 52 clipboard needs; screen passes it through as-is. Terminals without OSC 7 ignore it.
 
 Same [skins](features/skins.md) and [personalities](features/personality.md) apply. Switch mid-session with `/skin ares`, `/personality pirate`, and the UI repaints live. See [Skins & Themes](features/skins.md) for the full list of customizable keys and which ones apply to classic vs TUI — the TUI honors the banner palette, UI colors, prompt glyph/color, session display, completion menu, selection bg, `tool_prefix`, and `help_header`.
 

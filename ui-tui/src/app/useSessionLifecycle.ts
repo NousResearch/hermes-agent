@@ -21,6 +21,7 @@ import type {
   SetupStatusResponse
 } from '../gatewayTypes.js'
 import { t } from '../i18n/runtime.js'
+import { reportSessionCwd } from '../lib/osc7.js'
 import { migratePendingInputs } from '../lib/pendingInputs.js'
 import { asRpcResult } from '../lib/rpc.js'
 import type { Msg, PanelSection, SessionInfo } from '../types.js'
@@ -79,6 +80,10 @@ export const writeActiveSessionFile = (sessionId: null | string, file = process.
     // Best-effort shell epilogue hint only; never break live session changes.
   }
 }
+
+/** The session is now the one on screen: point the terminal's Files pane / cwd chip at its shell (OSC 7). */
+const announceSessionCwd = (storedSid: null | string, info: null | SessionInfo) =>
+  reportSessionCwd(storedSid, info?.cwd || STARTUP_WORKSPACE_CWD || process.env.HERMES_CWD, info?.terminal_backend)
 
 export const liveSessionInflightMessages = (inflight?: null | InflightTurn): Msg[] => {
   const user = String(inflight?.user ?? '').trim()
@@ -480,6 +485,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         setSessionStartedAt(Date.now())
 
         writeActiveSessionFile(storedSid)
+        announceSessionCwd(storedSid, info)
         patchUiState({
           gatewayConnected: true,
           info,
@@ -615,6 +621,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
           const transcript = [...toTranscriptMessages(r.messages), ...liveSessionInflightMessages(r.inflight)]
           setHistoryItems(info ? [introMsg(info), ...transcript] : transcript)
           writeActiveSessionFile(storedSid)
+          announceSessionCwd(storedSid, info)
           patchUiState({
             busy: running,
             gatewayConnected: true,
@@ -734,6 +741,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
               setHistoryItems(info ? [introMsg(info), ...resumed] : resumed)
               writeActiveSessionFile(storedSid)
+              announceSessionCwd(storedSid, info)
               patchUiState({
                 busy: running,
                 info,

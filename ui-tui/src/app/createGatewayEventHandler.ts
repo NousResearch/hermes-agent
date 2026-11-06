@@ -22,6 +22,7 @@ import { billingDialogCopy, usageLimitDialog } from '../lib/billingDialog.js'
 import { type ImageAttachment, stageImagePath } from '../lib/imageAttachments.js'
 import { isTodoDone } from '../lib/liveProgress.js'
 import { openExternalUrl } from '../lib/openExternalUrl.js'
+import { noteTerminalToolComplete } from '../lib/osc7.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
 import { isPaintableHex, setTerminalBackground, setTerminalForeground } from '../lib/terminalModes.js'
@@ -700,6 +701,54 @@ function applySessionInfo(payload: unknown, { appendMessage, setHistoryItems, se
   }))
 
   setHistoryItems(prev => prev.map(m => (m.kind === 'intro' ? { ...m, info } : m)))
+}
+
+type ToolCompletePayload = NonNullable<Extract<AnyGatewayEvent, { type: 'tool.complete' }>['payload']>
+
+/** `tool.complete`: settle an abandoned clarify, point the terminal at the shell's cwd, record the row. */
+function applyToolComplete(payload: ToolCompletePayload, flushAbandonedClarify: () => void): void {
+  // The clarify tool finishing with its overlay still live means it was
+  // abandoned (backend _block timed out, empty answer). A real answer
+  // clears the overlay in answerClarifyQuestion() before this fires, so
+  // this no-ops there.
+  if (payload.name === 'clarify') {
+    flushAbandonedClarify()
+  }
+
+  // The terminal tool's `cd` happened in a subshell the host terminal never saw;
+  // its result carries `cwd` only when the command moved. Tell the terminal (OSC 7).
+  noteTerminalToolComplete(getUiState().storedSid, payload.name, payload.result, {
+    args: payload.args,
+    backend: getUiState().info?.terminal_backend
+  })
+
+  const inlineDiffText =
+    payload.inline_diff && getUiState().inlineDiffs ? stripAnsi(String(payload.inline_diff)).trim() : ''
+
+  const resultText = payload.result_text ? stripAnsi(String(payload.result_text)) : undefined
+
+  if (inlineDiffText) {
+    turnController.recordInlineDiffToolComplete(
+      inlineDiffText,
+      payload.tool_id,
+      payload.name,
+      payload.duration_s ?? undefined,
+      resultText,
+      payload.labels ?? undefined
+    )
+  } else {
+    turnController.recordToolComplete(
+      payload.tool_id,
+      payload.name,
+      payload.summary ?? undefined,
+      payload.duration_s ?? undefined,
+      payload.todos ?? undefined,
+      resultText,
+      payload.labels ?? undefined
+    )
+  }
+
+  turnController.pushImageSegment(payload.image_path, payload.tool_id)
 }
 
 /** Billing wall (out of credits / payment required) or a window plan's limit (`error_surface.usage_limit`). */
@@ -1563,48 +1612,9 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         )
 
         return
-      case 'tool.complete': {
-        // The clarify tool finishing with its overlay still live means it was
-        // abandoned (backend _block timed out, empty answer). A real answer
-        // clears the overlay in answerClarifyQuestion() before this fires, so
-        // this no-ops there.
-        if (!ev.payload) {
-          return
-        }
 
-        if (ev.payload.name === 'clarify') {
-          flushAbandonedClarify()
-        }
-
-        const inlineDiffText =
-          ev.payload.inline_diff && getUiState().inlineDiffs ? stripAnsi(String(ev.payload.inline_diff)).trim() : ''
-
-        const resultText = ev.payload.result_text ? stripAnsi(String(ev.payload.result_text)) : undefined
-
-        if (inlineDiffText) {
-          turnController.recordInlineDiffToolComplete(
-            inlineDiffText,
-            ev.payload.tool_id,
-            ev.payload.name,
-            ev.payload.duration_s ?? undefined,
-            resultText,
-            ev.payload.labels ?? undefined
-          )
-        } else {
-          turnController.recordToolComplete(
-            ev.payload.tool_id,
-            ev.payload.name,
-            ev.payload.summary ?? undefined,
-            ev.payload.duration_s ?? undefined,
-            ev.payload.todos ?? undefined,
-            resultText,
-            ev.payload.labels ?? undefined
-          )
-        }
-
-        return turnController.pushImageSegment(ev.payload.image_path, ev.payload.tool_id)
-      }
-
+      case 'tool.complete':
+        return ev.payload ? applyToolComplete(ev.payload, flushAbandonedClarify) : undefined
       case 'request.cancel': {
         // The backend withdrew a server→client request (timeout / interrupt /
         // session close): tear down whichever card carries that id. A clarify

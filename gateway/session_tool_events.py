@@ -22,9 +22,28 @@ def bounded_args(args):
     return result
 
 
+def _structured_cwd(result):
+    """The ``cwd`` a terminal result carries at top level (present only when the command changed directory),
+    whether the result arrived parsed or as its JSON text; None for anything else."""
+    data = result
+    if isinstance(result, str):
+        try:
+            data = json.loads(result)
+        except ValueError:
+            return None
+    cwd = data.get("cwd") if isinstance(data, dict) else None
+    return cwd if isinstance(cwd, str) and 0 < len(cwd) <= 4096 else None
+
+
 def bounded_result(result, is_error):
     text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=True, default=str)
     if len(text) <= MAX_TOOL_EVENT_CHARS:
         return text
     # ACP reads errors from the result as well as the event flag; keep valid JSON after truncation.
-    return json.dumps({'error' if is_error else 'output': text[:MAX_TOOL_EVENT_CHARS // 2], 'truncated': True})
+    bounded = {'error' if is_error else 'output': text[:MAX_TOOL_EVENT_CHARS // 2], 'truncated': True}
+    # The one structured field a viewer acts on survives the cut: the TUI's OSC 7 cwd report reads it,
+    # and a long-output command that also changed directory must still move the terminal.
+    cwd = _structured_cwd(result)
+    if cwd is not None:
+        bounded['cwd'] = cwd
+    return json.dumps(bounded)

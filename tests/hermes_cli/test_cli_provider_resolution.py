@@ -876,3 +876,42 @@ def test_custom_endpoint_key_env_is_a_valid_posix_name_for_ip_endpoints():
     for identity in ("127.0.0.1_8080", "0.0.0.0", "10.0.0.7:11434", "", "-–-"):
         assert _ENV_VAR_NAME_RE.match(custom_endpoint_key_env(identity)), identity
 
+
+
+def test_model_flow_anthropic_passes_live_discovery_list_to_picker(tmp_path, monkeypatch):
+    """Regression for #62986: _model_flow_anthropic() must hand the picker the shared
+    cached_provider_model_ids("anthropic") catalog, not the bundled static list.
+
+    A live-only sentinel (absent from the static catalog) stands in for a model the
+    account serves but the bundled list does not know yet.
+    """
+    import hermes_cli.model_setup_flows as flows
+    from hermes_cli.models import _PROVIDER_MODELS
+    from utils import load_yaml_file_readonly
+
+    config_path = _seed_stale_custom_model(tmp_path, monkeypatch)
+    live_only_sentinel = "claude-live-only-sentinel-9999"
+    assert live_only_sentinel not in _PROVIDER_MODELS["anthropic"]
+
+    monkeypatch.setattr("hermes_cli.auth.get_anthropic_key", lambda: "sk-ant-api03-test")
+    monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
+    monkeypatch.setattr(flows, "_prompt_auth_credentials_choice", lambda title: "use")
+    monkeypatch.setattr(
+        "hermes_cli.models.cached_provider_model_ids",
+        lambda provider, **kwargs: [live_only_sentinel],
+    )
+    monkeypatch.setattr("hermes_cli.auth.deactivate_provider", lambda: None)
+
+    received = {}
+
+    def _fake_pick_model_or_prompt(model_list, prompt, **kwargs):
+        received["model_list"] = list(model_list)
+        return live_only_sentinel
+
+    monkeypatch.setattr(flows, "_pick_model_or_prompt", _fake_pick_model_or_prompt)
+
+    hermes_main._model_flow_anthropic({}, current_model="glm-5.2")
+
+    assert received["model_list"] == [live_only_sentinel]
+    config = load_yaml_file_readonly(config_path) or {}
+    assert config["model"]["default"] == live_only_sentinel

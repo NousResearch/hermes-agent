@@ -88,6 +88,17 @@ def test_disabled_without_either_switch(monkeypatch):
     assert _client().get("/api/webhooks").json()["enabled"] is False
 
 
+def test_explicit_yaml_disable_beats_the_env_flag(monkeypatch):
+    """The gateway keeps a platform disabled when config.yaml says so, even with the env flag set."""
+    _write_webhook_config(enabled=False)
+    monkeypatch.setenv("WEBHOOK_ENABLED", "true")
+
+    from hermes_cli.webhook import _is_webhook_enabled
+
+    assert _is_webhook_enabled() is False
+    assert _client().get("/api/webhooks").json()["enabled"] is False
+
+
 def test_static_config_routes_are_listed_read_only():
     """A route defined in config.yaml is served by the listener and is not editable from the page."""
     _write_webhook_config(enabled=True, routes={"github": STATIC_ROUTE})

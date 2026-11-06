@@ -119,13 +119,15 @@ def _get_webhook_config() -> dict:
 def _is_webhook_enabled() -> bool:
     """Whether the webhook platform is on, by the rule the gateway applies.
 
-    config.yaml's ``platforms.webhook.enabled`` OR a truthy ``WEBHOOK_ENABLED``, the env flag
-    ``gateway.config_env`` enables the platform from (read through the profile secret scope there,
-    exactly as the gateway reads it). Reading only the config key reported a running listener as
-    disabled on the dashboard (#149804).
+    A config.yaml ``enabled`` key wins — including ``false``, which the gateway's env pass honours
+    over credentials in the environment (the loader marks that key ``_enabled_explicit``). With no
+    such key, a truthy ``WEBHOOK_ENABLED`` enables the platform, read through the profile secret
+    scope exactly as ``gateway.config_env`` reads it. Reading only the config key reported a running
+    listener as disabled on the dashboard (#149804).
     """
-    if bool(_get_webhook_config().get("enabled")):
-        return True
+    config = _get_webhook_config()
+    if "enabled" in config:
+        return bool(config.get("enabled"))
     from gateway.config_env import getenv
     return is_truthy_value(getenv("WEBHOOK_ENABLED"))
 

@@ -1,8 +1,8 @@
 name: penguin
 title: Penguin
 repo: https://github.com/Crystal32378/hermes-penguin
-sha: 9a75eeb2aaaf1a57a98e89150983d84ff28c885c
-version: "0.1.1"
+sha: e0f4ae144117eeb7ea0a7ff42c5e2b76b8b5c0ba
+version: "0.2.0"
 requires_hermes: ">=0.23.0"
 maintainer: Crystal32378
 tier: community
@@ -10,12 +10,13 @@ category: tools
 description: >-
   A penguin in Antarctica keeping an eye on everyone's time: deterministic IANA conversions,
   whole-meeting overlap windows, profile-local teams, and an optional Desktop planner with
-  side-by-side clocks. Reads bundled non-executable IANA 2026f data and its own plugin state.
+  side-by-side clocks, Commander dispatch and proposal-only completion. Reads bundled artwork,
+  non-executable IANA 2026f data and its own plugin state.
   No external runtime requests, shell commands, credentials, telemetry or calendar writes.
 screenshots:
-  - https://raw.githubusercontent.com/Crystal32378/hermes-penguin/9a75eeb2aaaf1a57a98e89150983d84ff28c885c/docs/native-planner.png
-  - https://raw.githubusercontent.com/Crystal32378/hermes-penguin/9a75eeb2aaaf1a57a98e89150983d84ff28c885c/docs/native-arrival.png
-  - https://raw.githubusercontent.com/Crystal32378/hermes-penguin/9a75eeb2aaaf1a57a98e89150983d84ff28c885c/docs/native-sendoff.png
+  - https://raw.githubusercontent.com/Crystal32378/hermes-penguin/e0f4ae144117eeb7ea0a7ff42c5e2b76b8b5c0ba/docs/native-planner-0.2.jpg
+  - https://raw.githubusercontent.com/Crystal32378/hermes-penguin/e0f4ae144117eeb7ea0a7ff42c5e2b76b8b5c0ba/docs/native-arrival-0.2.jpg
+  - https://raw.githubusercontent.com/Crystal32378/hermes-penguin/e0f4ae144117eeb7ea0a7ff42c5e2b76b8b5c0ba/docs/native-commander-0.2.jpg
 platforms: []
 capabilities:
   provides_tools: [penguin_convert, penguin_overlap, penguin_save_team, penguin_get_team]

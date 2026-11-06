@@ -17,7 +17,7 @@ import {
 } from '@/store/composer'
 import { type ComposerDraftRetry, matchingDraftRetry } from '@/store/composer-draft-retry'
 import { clearQueuedPrompts, enqueueQueuedPrompt, getQueuedPrompts } from '@/store/composer-queue'
-import { $gateway, setPrimaryGateway } from '@/store/gateway'
+import { $gateway, ensureGatewayForProfile, setPrimaryGateway } from '@/store/gateway'
 import { $notifications, clearNotifications } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
 import { clearAllPrompts, setApprovalRequest } from '@/store/prompts'
@@ -631,6 +631,15 @@ it('retry scope A/B/A holds each admission until its own settlement', async () =
   expect(h.queue).toHaveBeenLastCalledWith('retry-B')
 })
 
+it('an accepted steer after the route is re-activated keeps the draft', async () => {
+  const h = fixture({ status: 'queued' }, true)
+  await act(async () => h.hook.result.current.steerDraft('steer'))
+  await act(async () => ensureGatewayForProfile('default'))
+  await act(async () => h.release())
+  expect(h.request).toHaveBeenCalledTimes(1)
+  expect(h.draft.current).toBe('  exact draft\n你好  ')
+})
+
 // Adolanium #6678917819: exercise composer -> prompt action -> real request-hook reconnect.
 it.each(
   (['steer', 'interrupt'] as const).flatMap(mode =>
@@ -705,4 +714,24 @@ it.each(
   expect(mainComposerScope.$attachments.get()).toHaveLength(change === 'attachment' ? 1 : 0)
   expect(h.queue).not.toHaveBeenCalled()
   expect(h.submit).not.toHaveBeenCalled()
+})
+
+it('a retry admission releases only its own scope when it settles', async () => {
+  const h = fixture({ status: 'queued' })
+  const a = deferred<boolean>()
+  const b = deferred<boolean>()
+  h.retry.current = { id: 'retry-A', text: h.draft.current, attachmentIds: [] }
+  h.queue.mockImplementationOnce(() => a.promise).mockImplementationOnce(() => b.promise)
+  await act(async () => h.hook.result.current.steerDraft('steer'))
+  act(() => h.navigate())
+  h.retry.current = { id: 'retry-B', text: h.draft.current, attachmentIds: [] }
+  await act(async () => h.hook.result.current.submitDraft())
+  // A settles while B is on screen: B's admission is still pending.
+  await act(async () => a.resolve(true))
+  await act(async () => h.hook.result.current.steerDraft('steer'))
+  expect(h.request).not.toHaveBeenCalled()
+  // B's refusal gives its id back and releases B, so Steer retries it.
+  await act(async () => b.resolve(false))
+  await act(async () => h.hook.result.current.steerDraft('steer'))
+  expect(h.queue.mock.calls).toEqual([['retry-A'], ['retry-B'], ['retry-B']])
 })

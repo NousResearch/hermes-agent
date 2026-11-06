@@ -143,6 +143,25 @@ test('desktop compiler consumes explicit immutable inputs, replaces variants, an
   expect(files(input.source).some(([name]) => name.includes('.vite') || name.endsWith('tsbuildinfo'))).toBe(false)
 }, 60000)
 
+test('desktop compiler ships a native tree without get-windows, as stage-native-deps degrades it', async () => {
+  // pnpm can skip the optional get-windows (#149861); staging then leaves it out and the app
+  // ships without read_window_below instead of failing the build.
+  const { buildDesktop } = await import('../scripts/build/desktop.mjs')
+  const input = fixture()
+  rmSync(join(input.nativeDeps, 'get-windows'), { recursive: true, force: true })
+  await buildDesktop(input)
+  expect(existsSync(join(input.out, 'electron-main.mjs'))).toBe(true)
+  expect(existsSync(join(input.out, 'node_modules/get-windows'))).toBe(false)
+}, 60000)
+
+test.skipIf(process.platform !== 'darwin')('desktop compiler refuses a staged get-windows without its macOS helper', async () => {
+  const { buildDesktop } = await import('../scripts/build/desktop.mjs')
+  const input = fixture()
+  rmSync(join(input.nativeDeps, 'get-windows'), { recursive: true, force: true })
+  put(join(input.nativeDeps, 'get-windows/package.json'), '{"name":"get-windows"}')
+  await expect(buildDesktop(input)).rejects.toThrow(/missing its macOS helper/)
+}, 60000)
+
 test('desktop output cannot overlap a source directory symlinked outside the checkout', async () => {
   const { buildDesktop } = await import('../scripts/build/desktop.mjs')
   const root = mkdtempSync(join(tmpdir(), 'desktop symlinked source-'))

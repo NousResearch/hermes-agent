@@ -9,8 +9,9 @@ import path from 'node:path'
 
 import {
   createKeepAwake,
+  KEEP_AWAKE_RELEASE_GRACE_MS,
+  keepAwakeHeld,
   type KeepAwakeMode,
-  keepAwakeWanted,
   parseKeepAwakeMode,
   type PowerSaveBlockerLike,
   readKeepAwakeMode
@@ -55,6 +56,8 @@ export function createKeepAwakeController(deps: KeepAwakeControllerDeps): KeepAw
   let mode: KeepAwakeMode = 'off'
   let offered = false
   let sleptMidTurn = false
+  /** Pending end-of-grace release; non-null means the hold-after-idle window is open. */
+  let graceTimer: null | ReturnType<typeof setTimeout> = null
 
   const persist = () => {
     try {
@@ -65,8 +68,31 @@ export function createKeepAwakeController(deps: KeepAwakeControllerDeps): KeepAw
     }
   }
 
+  const cancelGrace = () => {
+    if (graceTimer !== null) {
+      clearTimeout(graceTimer)
+      graceTimer = null
+    }
+  }
+
   const apply = (working = deps.isWorking()) => {
-    keepAwake.set(keepAwakeWanted(mode, working))
+    keepAwake.set(keepAwakeHeld(mode, working, graceTimer !== null))
+
+    if (working && mode === 'while-working') {
+      // Live work resets the window: a follow-up turn that re-arms busy keeps
+      // the hold continuous instead of stop/starting the native blocker. The
+      // release is re-scheduled from this apply, never left to fire mid-turn.
+      cancelGrace()
+      graceTimer = setTimeout(() => {
+        graceTimer = null
+        apply(deps.isWorking())
+      }, KEEP_AWAKE_RELEASE_GRACE_MS)
+
+      // Node keeps the loop alive for a pending timer; nobody should wait out
+      // five minutes of grace on shutdown or in tests.
+      const timer = graceTimer as { unref?: () => void }
+      timer.unref?.()
+    }
   }
 
   return {
@@ -91,6 +117,9 @@ export function createKeepAwakeController(deps: KeepAwakeControllerDeps): KeepAw
         return
       }
 
+      // Switching the mode away from 'while-working' drops the pending release
+      // at once: 'off' releases now rather than after the grace.
+      cancelGrace()
       mode = next
       apply()
       persist()

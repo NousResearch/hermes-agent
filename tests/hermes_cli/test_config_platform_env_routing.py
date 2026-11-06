@@ -5,6 +5,65 @@ import pytest
 import hermes_yaml as yaml
 
 
+@pytest.mark.parametrize("operation", ["set", "unset"])
+@pytest.mark.parametrize("command_key", ["FEISHU_HOME_CHANNEL", "feishu_home_channel", "Feishu_Home_Channel"])
+def test_registered_env_writes_remove_all_legacy_yaml_aliases(
+        tmp_path, monkeypatch, capsys, operation, command_key):
+    """Registered aliases must not resurrect old values after set/unset (#142057)."""
+    from hermes_cli import config as cfg
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(tmp_path / "managed"))
+    monkeypatch.delenv("FEISHU_HOME_CHANNEL", raising=False)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "FEISHU_HOME_CHANNEL: oc_upper\nfeishu_home_channel: oc_lower\n"
+        "Feishu_Home_Channel: oc_mixed\nmodel:\n  default: test/model\n"
+        "my_custom_flag: keep\n7: keep_numeric\n", encoding="utf-8")
+    # Unset must also work when there is no .env entry to remove.
+    if operation == "set":
+        cfg.set_config_value(command_key, "oc_new")
+        capsys.readouterr()
+        for alias in ("FEISHU_HOME_CHANNEL", "feishu_home_channel", "Feishu_Home_Channel"):
+            cfg.get_config_value(alias)
+            assert capsys.readouterr().out.strip() == "oc_new"
+    else:
+        cfg.unset_config_value(command_key)
+
+    assert yaml.safe_load(config_path.read_text(encoding="utf-8")) == {
+        "model": {"default": "test/model"}, "my_custom_flag": "keep", 7: "keep_numeric"}
+    if operation == "set":
+        cfg.unset_config_value(command_key)
+    for alias in ("FEISHU_HOME_CHANNEL", "feishu_home_channel", "Feishu_Home_Channel"):
+        with pytest.raises(SystemExit) as exc:
+            cfg.get_config_value(alias)
+        assert exc.value.code == 1
+    env_path = tmp_path / ".env"
+    if env_path.exists():
+        assert "FEISHU_HOME_CHANNEL" not in env_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("operation", ["set", "unset"])
+def test_unregistered_env_cleanup_preserves_case_sensitive_yaml_names(
+        tmp_path, monkeypatch, capsys, operation):
+    """Shape-based env routing must not consume an ordinary lowercase YAML setting."""
+    from hermes_cli import config as cfg
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(tmp_path / "managed"))
+    monkeypatch.delenv("MY_CUSTOM_FLAG", raising=False)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("MY_CUSTOM_FLAG: old\nmy_custom_flag: keep\n", encoding="utf-8")
+    if operation == "set":
+        cfg.set_config_value("MY_CUSTOM_FLAG", "new")
+    else:
+        cfg.unset_config_value("MY_CUSTOM_FLAG")
+    assert yaml.safe_load(config_path.read_text(encoding="utf-8")) == {"my_custom_flag": "keep"}
+    capsys.readouterr()
+    cfg.get_config_value("my_custom_flag")
+    assert capsys.readouterr().out.strip() == "keep"
+
+
 def test_platform_env_key_round_trips_without_a_config_yaml_copy(tmp_path, monkeypatch, capsys):
     """``config set/get/unset`` shares the platform setup flow's .env storage."""
     from hermes_cli import config as cfg

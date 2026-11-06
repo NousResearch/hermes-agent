@@ -141,6 +141,15 @@ def test_pnpm_dependency_moving_between_locked_versions_is_reported(tmp_path):
     assert "| ms *(root)* | `2.1.2` | `2.1.3` |" in _mod.render_markdown(diffs)
 
 
+@pytest.mark.parametrize("stray", ["# a note", "<<<<<<< HEAD", "\tdependencies:", "unknownKey: 1"])
+def test_pnpm_section_ends_only_at_a_known_top_level_key(stray):
+    # A column-0 line that is not a lock key would otherwise end importers early,
+    # and every project after it would be reported as removed.
+    broken = REPIN_BASE.replace("\n  pkg:\n", f"\n{stray}\n  pkg:\n")
+    with pytest.raises(ValueError, match="unreadable importers line"):
+        _mod.diff_pnpm_locks(REPIN_BASE, broken)
+
+
 def test_pnpm_lock_refuses_what_it_cannot_read():
     with pytest.raises(ValueError, match="lockfileVersion: '6.0'"):
         _mod.parse_pnpm_lockfile(PNPM_BASE.replace("lockfileVersion: '9.0'", "lockfileVersion: '6.0'"))

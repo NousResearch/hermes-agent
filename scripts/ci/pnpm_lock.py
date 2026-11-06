@@ -13,6 +13,14 @@ import re
 _KEY = re.compile(r"^  (\S.*?):(?: .*)?$")
 # A key (quoted, or plain up to the first ``: ``) and its inline value, if any.
 _ENTRY = re.compile(r"""^('(?:[^']|'')*'|"(?:[^"\\]|\\.)*"|[^'"\s].*?):(?: (.*))?$""")
+# The top-level keys pnpm 9-format locks carry (pnpm's Lockfile struct); only one of
+# them ends a section, so a stray column-0 line (a comment, a conflict marker, a
+# tab-indented field) fails instead of silently truncating the section.
+_TOP_LEVEL = re.compile(
+    r"^(lockfileVersion|settings|catalogs|overrides|packageExtensionsChecksum|pnpmfileChecksum"
+    r"|ignoredOptionalDependencies|untrackedPnpmfileReadPackageHook|patchedDependencies"
+    r"|importers|packages|snapshots|time):(?: .*)?$"
+)
 
 
 def _unquote(key: str) -> str:
@@ -40,6 +48,26 @@ def _document_lines(text: str) -> list[str]:
     return lines
 
 
+def _section_lines(text: str, name: str) -> list[str]:
+    """The lines of top-level section ``name`` (empty when the lock has none).
+
+    The section runs to the next top-level key or the end of the file; any other
+    line that is not indented by spaces is refused.
+    """
+    lines = _document_lines(text)
+    if f"{name}:" not in lines:
+        return []
+    body = []
+    for line in lines[lines.index(f"{name}:") + 1:]:
+        if line.startswith(" ") or not line.strip():
+            body.append(line)
+        elif _TOP_LEVEL.match(line):
+            break
+        else:
+            raise ValueError(f"pnpm-lock.yaml: unreadable {name} line: {line}")
+    return body
+
+
 def _scalar(value: str) -> dict | str:
     """An inline value: ``{}`` (an entry without fields) or a (maybe quoted) string.
 
@@ -54,17 +82,12 @@ def section(text: str, name: str) -> dict:
     Block maps become dicts, ``- item`` blocks lists, everything else strings. A
     lockfile without dependencies has no ``packages``/``snapshots`` section at all.
     """
-    lines = _document_lines(text)
-    if f"{name}:" not in lines:
-        return {}
     root: dict = {}
     # (indent of the lines this frame holds, container, its parent, its key in the parent)
     stack: list[tuple[int, dict | list, dict | None, str | None]] = [(2, root, None, None)]
-    for line in lines[lines.index(f"{name}:") + 1:]:
+    for line in _section_lines(text, name):
         if not line.strip():
             continue
-        if not line.startswith(" "):
-            break
         indent = len(line) - len(line.lstrip(" "))
         while len(stack) > 1 and indent < stack[-1][0]:
             stack.pop()
@@ -97,15 +120,10 @@ def section_keys(text: str, name: str) -> list[str]:
 
     Reads only the keys, so it does not depend on the shape of each entry's fields.
     """
-    lines = _document_lines(text)
-    if f"{name}:" not in lines:
-        return []
     keys = []
-    for line in lines[lines.index(f"{name}:") + 1:]:
+    for line in _section_lines(text, name):
         if not line.strip() or line.startswith("   "):
             continue  # blank separators and each entry's own fields
-        if not line.startswith(" "):
-            break
         match = _KEY.match(line)
         if not match:
             raise ValueError(f"pnpm-lock.yaml: unreadable {name} line: {line}")

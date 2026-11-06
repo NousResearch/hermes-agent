@@ -1,7 +1,7 @@
 name: skysay
 title: Skysay
 repo: https://github.com/skysay-ai/skysay-mcp
-sha: 35251fc9d2aaa3cc1a9c75e9b58e974feac753ac
+sha: 5a46bdbbf9fe0c59ec361f6085499300e265b212
 subdir: plugins/hermes/skysay
 description: >-
   Inspect your Skysay workspace, voice agents, phone numbers and call activity in Hermes.
@@ -10,7 +10,7 @@ maintainer: Skysay
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
-docs_url: https://github.com/skysay-ai/skysay-mcp/blob/35251fc9d2aaa3cc1a9c75e9b58e974feac753ac/plugins/hermes/skysay/README.md
+docs_url: https://github.com/skysay-ai/skysay-mcp/blob/5a46bdbbf9fe0c59ec361f6085499300e265b212/plugins/hermes/skysay/README.md
 version: "1.0.0"
 platforms: []
 capabilities:

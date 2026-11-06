@@ -71,6 +71,7 @@ def _clear_approval_state():
     from tools import approval as mod
     mod._gateway_queues.clear()
     mod._gateway_notify_cbs.clear()
+    mod._gateway_command_session_keys.clear()
     mod._session_approved.clear()
     mod._permanent_approved.clear()
     mod._pending.clear()
@@ -134,6 +135,51 @@ class TestBlockingGatewayApproval:
         assert entry.result == "once"
         unregister_gateway_notify(session_key)
 
+
+    def test_resolve_by_request_id_targets_that_entry(self):
+        """A card resolves its own request out of FIFO order, never a neighbour."""
+        from tools.approval import resolve_gateway_approval, _gateway_queues
+        from tools.approval_gateway_wait import _ApprovalEntry
+
+        session_key = "test-targeted"
+        e1, e2 = _ApprovalEntry({"command": "first"}), _ApprovalEntry({"command": "second"})
+        _gateway_queues[session_key] = [e1, e2]
+
+        assert resolve_gateway_approval(session_key, "deny", request_id=e2.data["request_id"]) == 1
+        assert (e1.result, e1.event.is_set()) == (None, False)
+        assert (e2.result, e2.event.is_set()) == ("deny", True)
+        assert _gateway_queues[session_key] == [e1]
+
+    def test_resolve_by_unmatched_request_id_resolves_nothing(self):
+        """An id that names no waiter never falls back to the oldest one."""
+        from tools.approval import resolve_gateway_approval, _gateway_queues
+        from tools.approval_gateway_wait import _ApprovalEntry
+
+        entry = _ApprovalEntry({"command": "only"})
+        _gateway_queues["test-unmatched"] = [entry]
+        assert resolve_gateway_approval("test-unmatched", "once", request_id="nope") == 0
+        assert (entry.result, entry.event.is_set()) == (None, False)
+
+    def test_typed_approve_reaches_oldest_isolated_background_queue(self):
+        """Typed /approve in the chat session resolves the oldest task-isolated (/background) waiter."""
+        from tools.approval import (
+            _gateway_queues, has_blocking_approval, register_gateway_notify, resolve_gateway_approval,
+            unregister_gateway_notify,
+        )
+        from tools.approval_gateway_wait import _ApprovalEntry
+
+        chat = "agent:main:matrix:group:room:user"
+        first, second = _ApprovalEntry({"command": "first"}), _ApprovalEntry({"command": "second"})
+        _gateway_queues["bg_first"], _gateway_queues["bg_second"] = [first], [second]
+        register_gateway_notify("bg_first", lambda _data: None, command_session_key=chat)
+        register_gateway_notify("bg_second", lambda _data: None, command_session_key=chat)
+
+        assert has_blocking_approval(chat)
+        assert resolve_gateway_approval(chat, "session") == 1
+        assert (first.result, second.result) == ("session", None)
+        unregister_gateway_notify("bg_first")
+        unregister_gateway_notify("bg_second")
+        assert not has_blocking_approval(chat)
 
     def test_resolve_single_pops_oldest_fifo(self):
         """resolve_gateway_approval without resolve_all resolves oldest first."""

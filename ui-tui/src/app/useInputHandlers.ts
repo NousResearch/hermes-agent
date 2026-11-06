@@ -578,6 +578,9 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     const index = cState.queueEditIdx === null ? (dir > 0 ? 0 : len - 1) : (cState.queueEditIdx + dir + len) % len
 
+    // A queue edit replaces the composer text and Enter resends that queue item: an armed backtrack
+    // edit no longer applies, or Enter would rewind history and send the queued text in its place.
+    cancelPendingRewind(actions.sys)
     cActions.setQueueEdit(index)
     cActions.setHistoryIdx(null)
     cActions.setInput(cActions.queueDraft(index))

@@ -567,18 +567,33 @@ def local_models_status():
 
 
 # ── hardware: what this machine can do ───────────────────────
+def _gpu_fact(gpu: dict) -> dict:
+    """One adapter for the status bar. Index is the driver index, not a compacted position."""
+    return {
+        "index": gpu["index"],
+        "name": gpu["gpu_name"],
+        "util_percent": gpu["gpu_util_percent"],
+        "vram_used_bytes": gpu["used_bytes"],
+        "vram_total_bytes": gpu["total_bytes"],
+        "vram_free_bytes": gpu["free_bytes"],
+    }
+
+
 def _nvidia_smi_facts() -> dict:
     """GPU identity + live utilization (NVIDIA only; other vendors degrade to {} and the UI hides those readouts).
 
-    Reads the shared cached query: one nvidia-smi spawn per poll window, hidden on Windows,
-    instead of a second bare one per request (#101895, #120262)."""
-    query = hardware._cached_nvidia_gpu_query()
-    if query is None:
+    ``gpu_name`` / ``gpu_util_percent`` / ``vram_used_bytes`` stay on the first adapter so older
+    clients and the local-model budget keep their single-card contract. ``gpus`` lists every
+    adapter from the same cached spawn (#101895, #120262)."""
+    gpus = hardware._cached_nvidia_gpus()
+    if not gpus:
         return {}
+    primary = gpus[0]
     return dict(
-        gpu_name=query["gpu_name"],
-        gpu_util_percent=query["gpu_util_percent"],
-        vram_used_bytes=query["used_bytes"],
+        gpu_name=primary["gpu_name"],
+        gpu_util_percent=primary["gpu_util_percent"],
+        vram_used_bytes=primary["used_bytes"],
+        gpus=[_gpu_fact(gpu) for gpu in gpus],
     )
 
 

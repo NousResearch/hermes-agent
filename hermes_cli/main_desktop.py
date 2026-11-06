@@ -107,6 +107,10 @@ def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode:
     if source_mode:
         if not _desktop_dist_exists(desktop_dir):
             return True
+        # The source launch runs the linked Electron. A ZIP swap drops workspace links, and
+        # a failed reinstall can leave the renderer current with no runtime beside it.
+        if not (_electron_dir(project_root) / "package.json").exists():
+            return True
     elif _desktop_packaged_executable(desktop_dir) is None:
         return True
 

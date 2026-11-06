@@ -5,6 +5,7 @@ import {
   directiveFrameHeight,
   evaluateIntent,
   frameSizeFromMessage,
+  inlinePreviewFrameWidth,
   INTENT_THROTTLE_MS,
   intentAckMessage,
   intentScript,
@@ -143,6 +144,17 @@ describe('frameSizeFromMessage', () => {
     expect(frameSizeFromMessage(msg({ height: -5 }), 'tok')).toBeNull()
     expect(frameSizeFromMessage(null, 'tok')).toBeNull()
     expect(frameSizeFromMessage('str', 'tok')).toBeNull()
+  })
+})
+
+describe('inlinePreviewFrameWidth', () => {
+  it('preserves content widths within the wider preview column', () => {
+    expect(inlinePreviewFrameWidth(888)).toBe(888)
+  })
+
+  it('keeps oversized content bounded and fluid documents full-width', () => {
+    expect(inlinePreviewFrameWidth(1200)).toBe(960)
+    expect(inlinePreviewFrameWidth(null)).toBeUndefined()
   })
 })
 

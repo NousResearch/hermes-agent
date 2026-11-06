@@ -39,6 +39,7 @@ def _bare_pool(entries):
     pool._active_leases = {}
     pool._current_id = None
     pool._max_concurrent = 2
+    pool._strategy = "fill_first"
     pool._unmatched_rotation_streak = 0
     pool.provider = "anthropic"
     return pool

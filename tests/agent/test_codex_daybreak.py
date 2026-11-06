@@ -128,10 +128,10 @@ def _owner_policies(home, monkeypatch):
     return policies
 
 
-def _load(platform, chat_id="gui"):
+def _load(platform, chat_id="gui", check="_load_daybreak"):
     from gateway.run_config_loaders import GatewayConfigLoadersMixin
-    return GatewayConfigLoadersMixin._load_daybreak(SimpleNamespace(), SimpleNamespace(platform=platform,
-                                                                                         chat_id=chat_id))
+    runner = type("Runner", (GatewayConfigLoadersMixin,), {})()
+    return getattr(runner, check)(SimpleNamespace(platform=platform, chat_id=chat_id))
 
 
 def test_gateway_reads_the_profile_switch_each_turn(tmp_path, monkeypatch):
@@ -164,6 +164,32 @@ def test_only_the_owners_own_chats_carry_daybreak(tmp_path, monkeypatch):
     local = {label: _load(Platform.LOCAL, label) for label in [*policies, "unreadable"]}
     assert local == {"gui": True, "cli": True, "tui": True, "oneshot": True, "tool": False, "acp": False,
                      "bot_room": False, "a2a": False, "unreadable": False}
+
+
+def test_delegation_sees_the_owners_gateway_chat_with_the_switch_off(tmp_path, monkeypatch):
+    """A Daybreak delegation route is chosen per task, not by the switch, so a gateway-hosted chat records
+    whether it is the owner's own (its launch policy) apart from ``agent.daybreak``, and delegation reads that."""
+    from agent.session_source import turn_daybreak_surface
+    from agent.subagent_lifecycle import bind_subagent_parent
+    from gateway.config import Platform
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    policies = _owner_policies(home, monkeypatch)
+    (home / "config.yaml").write_text("agent:\n  daybreak: false\n", encoding="utf-8")
+
+    surface = {label: _load(Platform.LOCAL, label, "_daybreak_surface") for label in [*policies, "unreadable"]}
+    assert surface == {"gui": True, "cli": True, "tui": True, "oneshot": True, "tool": False, "acp": False,
+                       "bot_room": False, "a2a": False, "unreadable": False}
+    assert _load(Platform.TELEGRAM, "gui", "_daybreak_surface") is False
+
+    def seen(**agent):
+        with bind_subagent_parent(SimpleNamespace(**agent)):
+            return turn_daybreak_surface()
+    # Only the gateway's explicit verdict counts: a ``/bg`` agent the gateway builds runs as ``cli`` unjudged.
+    assert [seen(platform="local", daybreak_surface=True), seen(platform="local", daybreak_surface=False),
+            seen(platform="local"), seen(platform="cli"), seen(platform="local", daybreak_surface="yes")] == [
+        True, False, False, False, False]
+    assert turn_daybreak_surface() is False
 
 
 def test_model_menu_capability_marks_only_listed_subscription_models(catalog, monkeypatch):

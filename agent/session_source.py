@@ -47,6 +47,15 @@ def session_source_for(platform: Optional[str]) -> str:
     return source or platform or "cli"
 
 
+def turn_daybreak_surface() -> bool:
+    """Whether the gateway judged the agent running this turn to serve the owner's own chat, for code with no
+    agent in hand (a delegation backend's ``route_task``). A gateway-hosted chat's platform is the ``local``
+    transport, so the gateway records its launch policy's verdict as ``agent.daybreak_surface``. Only that
+    explicit verdict counts: an agent the gateway built elsewhere (a ``/bg`` task runs as ``cli``) is unjudged."""
+    from agent.subagent_lifecycle import get_active_subagent_parent
+    return getattr(get_active_subagent_parent(), "daybreak_surface", None) is True
+
+
 def is_attended(agent: Any) -> bool:
     """A delegated child answers its parent, not a person, though its copied context still carries
     the parent's source; a library caller (no platform) has no one reading either."""

@@ -438,12 +438,18 @@ pnpm --dir ui-tui run build
 pnpm --dir apps/desktop run dev
 ```
 
-Activation provides the pnpm version root `package.json` pins in `devEngines`.
-Every install refuses any other pnpm version, a direct or filtered `pnpm install`
-included: pnpm 10 and 11 refuse the root `engines.pnpm` range (`^12`) themselves,
-and the root `preinstall` script refuses any pnpm but the `pm/lock.json` one (pnpm
-12 does not compare `engines.pnpm` with itself) and `npm install` (npx and other
-npm commands only warn).
+Activation provides the pnpm version `pm/lock.json` pins. An install that runs
+lifecycle scripts refuses any other pnpm, a direct or filtered `pnpm install`
+included: the root `preinstall` script requires the `pm/lock.json` pnpm and refuses
+`npm install`, and pnpm 10 and 11 also refuse the root `engines.pnpm` range (`^12`;
+pnpm 12 does not compare `engines.pnpm` with itself). pnpm 12 runs no root
+`preinstall` under `--ignore-scripts`, `--lockfile-only` (install, add, remove and
+update) or `pnpm fetch`, so another pnpm 12 passes those. The backstop for a
+lockfile written that way is CI: every change to `pnpm-lock.yaml` runs the JS checks,
+which install it with the pinned pnpm under `--frozen-lockfile` (with
+`--lockfile-only` when the installed tree is cached). That proves the lockfile matches
+the manifests and the release-age policy, not which pnpm wrote it. A user agent
+overridden through `pnpm_config_user_agent` is refused as well.
 
 The website is a separate npm project: `npm ci --prefix website`, then
 `npm run build:fast --prefix website`. PM activation supplies tools, not these

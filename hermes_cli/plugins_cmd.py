@@ -755,6 +755,10 @@ def _setup_refusal(name: str, setup_consent=None) -> Optional[dict]:
     entry = next((entry for entry in _discover_all_plugins() if entry[5] == key), None)
     if entry is None:
         return {"ok": False, "error": f"Plugin '{key}' is no longer installed or bundled."}
+    try:  # never run a recalled plugin's native setup: the kill list is judged before any of its code runs
+        _refuse_recalled_entry(entry)
+    except PluginOperationError as exc:
+        return {"ok": False, "error": str(exc)}
     return prepare_plugin_setup(entry, setup_consent=setup_consent)
 
 

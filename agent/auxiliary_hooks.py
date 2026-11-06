@@ -165,6 +165,7 @@ class _AuxCallHooks:
             message, finish_reason, usage = normalized or (*_first_choice_message(response), _usage_summary(response))
             content = _field(message, "content") if message is not None else None
             tool_calls = (_field(message, "tool_calls") if message is not None else None) or []
+            usage = _usage_summary(response)
             payload.update(
                 finish_reason=finish_reason,
                 response_model=_field(response, "model"),
@@ -177,7 +178,7 @@ class _AuxCallHooks:
                         "content": content,
                         "tool_calls": tool_calls,
                     },
-                    "usage": payload.get("usage"),
+                    "usage": usage,
                 }),
                 assistant_content_chars=len(content) if isinstance(content, str) else 0,
                 assistant_tool_call_count=len(tool_calls),

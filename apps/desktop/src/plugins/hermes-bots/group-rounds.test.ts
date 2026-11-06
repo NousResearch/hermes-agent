@@ -469,7 +469,10 @@ describe('round lifecycle', () => {
     // roster.
     const first = room.rounds.sendToGroupChat('Failure', [MEMBERS[0]], 'first')!
     await drain(() => room.gateway.calls.length < 1)
-    const queued = room.rounds.sendToGroupChat('Failure', MEMBERS.slice(0, 2), '@builder queued')!
+    // Unmentioned on purpose: an explicit @mention of an idle member now
+    // dispatches through a priority lane instead of queueing, and this test
+    // is about the QUEUE's failure attribution.
+    const queued = room.rounds.sendToGroupChat('Failure', MEMBERS.slice(0, 2), 'queued without a mention')!
     const request = host.request as (...args: unknown[]) => Promise<unknown>
 
     host.request = (...args: unknown[]) => {
@@ -960,6 +963,280 @@ describe('threads', () => {
 
     expect(room.rounds.sendToGroupChat('Seating', MEMBERS, '   ')).toBeNull()
     expect(notify).toHaveBeenCalledTimes(1)
+  })
+})
+
+// Head-of-line blocking: while one member grinds through a long turn, a user
+// send that EXPLICITLY @mentions an idle member in a NEW thread must dispatch
+// that member promptly instead of queueing behind the whole drive. The busy
+// member's in-flight work is never re-submitted or interrupted, and
+// unmentioned chatter keeps queueing exactly as before.
+describe('priority mention lanes', () => {
+  it('rechecks a live lane claim at the foreground dispatch boundary', async () => {
+    const room = await loadRoom({ turn: () => 'Duplicate reply.' })
+    const lanes = await import('./group-round-members')
+    const member = { name: 'chief-of-stuff', title: '' }
+    const thread = 'claimed-thread'
+    room.chat.appendGroupChatEntry('Core', { kind: 'user', name: 'You' }, '@chief-of-stuff status', thread)
+    expect(lanes.claimGroupPriorityLane('Core', thread, member)).toBe(true)
+
+    const result = await lanes.runGroupRoundMember(
+      {
+        group: 'Core',
+        members: [member],
+        thread,
+        startEpoch: 0,
+        binding: { isLive: () => true },
+        isCurrent: () => true
+      },
+      member
+    )
+
+    expect(result).toBe(false)
+    expect(room.gateway.calls).toHaveLength(0)
+  })
+
+  it('keeps a legacy room lane claimed and stoppable after rename', async () => {
+    let release!: (reply: string) => void
+
+    const pending = new Promise<string>(resolve => {
+      release = resolve
+    })
+
+    const room = await loadRoom({ turn: () => pending })
+    const lanes = await import('./group-round-members')
+    const member = { name: 'chief-of-stuff', title: '' }
+    const thread = 'legacy-lane-thread'
+    room.chat.appendGroupChatEntry('Core', { kind: 'user', name: 'You' }, '@chief-of-stuff status', thread)
+    expect(room.chat.$groupChats.get().Core.roomId).toBeFalsy()
+    const lane = lanes.runGroupPriorityLaneTurn('Core', [member], thread, member)
+    await drain(() => room.gateway.calls.length < 1)
+
+    const rooms = room.chat.$groupChats.get()
+    const { Core, ...rest } = rooms
+    room.chat.$groupChats.set({ ...rest, Renamed: Core })
+    const claimedAfterRename = lanes.groupPriorityLaneClaimed('Renamed', thread, member)
+    const stoppableAfterRename = lanes.activeGroupPriorityLaneClaims('Renamed').length
+    release('(pass)')
+    await lane
+
+    expect(claimedAfterRename).toBe(true)
+    expect(stoppableAfterRename).toBe(1)
+    expect(lanes.activeGroupPriorityLaneClaims('Renamed')).toHaveLength(0)
+  })
+
+  // Backend's "long work": a submit whose reply only lands when the test
+  // releases it — the room parked mid-turn, as a long terminal job would.
+  let releaseBackend!: (reply: string) => void
+
+  async function busyBackendRoom() {
+    const backendTurn = new Promise<string>(resolve => {
+      releaseBackend = resolve
+    })
+
+    const room = await loadRoom({
+      turn: ({ profile, prompt }) =>
+        profile === 'backend'
+          ? prompt.includes('run the long deploy')
+            ? backendTurn
+            : '(pass)'
+          : prompt.includes('QUICK_STATUS_MARKER')
+            ? 'All quiet on my end.'
+            : '(pass)'
+    })
+
+    const members: GroupMember[] = [
+      { name: 'backend', title: '' },
+      { name: 'chief-of-stuff', title: '' }
+    ]
+
+    return { members, room }
+  }
+
+  /** Send the long deploy into `Core` and wait until backend's turn is parked. */
+  async function startLongDeploy(room: Room, members: GroupMember[]) {
+    const thread = room.rounds.sendToGroupChat('Core', members, '@backend run the long deploy')!
+
+    await drain(() => room.gateway.calls.length < 1)
+
+    return thread
+  }
+
+  it('answers a direct mention of an idle member before the busy member completes', async () => {
+    const { members, room } = await busyBackendRoom()
+    const deployThread = await startLongDeploy(room, members)
+
+    expect(room.chat.$groupChats.get().Core.turn?.name).toBe('backend')
+
+    // While backend is mid-turn, the user opens a NEW thread and directly
+    // mentions the idle chief. The chief's reply must land in its own thread
+    // BEFORE the busy member's turn completes.
+    const chiefThread = room.rounds.sendToGroupChat('Core', members, '@chief-of-stuff QUICK_STATUS_MARKER please')!
+
+    await drain(
+      () => !log(room, 'Core').some(entry => entry.from.kind === 'member' && entry.from.name === 'chief-of-stuff')
+    )
+
+    const chiefCalls = room.gateway.calls.filter(call => call.profile === 'chief-of-stuff')
+
+    expect(chiefThread).not.toBe(deployThread)
+    expect(chiefCalls).toHaveLength(1)
+    // Upstream group prompts now carry historical context from sibling threads as
+    // explicit background, so the deploy text can legitimately appear in the
+    // chief's prompt. `addFreshThreadRoomContext` splices that block immediately
+    // ABOVE the delta header, so the chief's own turn instruction is everything
+    // from the delta header onward: its mention, and never backend's task.
+    const chiefPrompt = chiefCalls[0].prompt
+    const deltaAt = chiefPrompt.indexOf('New messages in the room since your last turn')
+    const chiefCurrentTurn = deltaAt === -1 ? chiefPrompt : chiefPrompt.slice(deltaAt)
+
+    expect(chiefCurrentTurn).toContain('QUICK_STATUS_MARKER')
+    expect(chiefCurrentTurn).not.toContain('run the long deploy')
+
+    const chiefReply = log(room, 'Core').find(
+      entry => entry.from.kind === 'member' && entry.from.name === 'chief-of-stuff'
+    )
+
+    expect(chiefReply?.thread).toBe(chiefThread)
+    expect(chiefReply?.text).toBe('All quiet on my end.')
+
+    // The busy member was never re-submitted into its live session and never
+    // interrupted — its long work is preserved untouched.
+    expect(room.gateway.calls.filter(call => call.profile === 'backend')).toHaveLength(1)
+    expect(room.gateway.rpcFor('session.interrupt')).toHaveLength(0)
+
+    releaseBackend('Deploy finished.')
+    await settle(room, 'Core')
+
+    const backendReplies = log(room, 'Core').filter(
+      entry => entry.from.kind === 'member' && entry.from.name === 'backend'
+    )
+
+    expect(backendReplies).toHaveLength(1)
+    expect(backendReplies[0].thread).toBe(deployThread)
+    expect(backendReplies[0].text).toBe('Deploy finished.')
+    expect(room.gateway.calls.filter(call => call.profile === 'backend')).toHaveLength(1)
+    expect(room.chat.$groupChats.get().Core.running).toBe(false)
+  })
+
+  it('never lane-dispatches a mention of the member whose turn is in flight', async () => {
+    const { members, room } = await busyBackendRoom()
+    await startLongDeploy(room, members)
+
+    // A second direct mention of the BUSY member must not spawn a lane: the
+    // gateway's busy-submit policy would redirect or hard-interrupt exactly
+    // the long work the user is waiting on. The send just queues.
+    room.rounds.sendToGroupChat('Core', members, '@backend and also check the logs')
+
+    await new Promise(resolve => setImmediate(resolve))
+
+    expect(room.gateway.calls.filter(call => call.profile === 'backend')).toHaveLength(1)
+    expect(room.gateway.rpcFor('session.interrupt')).toHaveLength(0)
+
+    releaseBackend('Deploy finished.')
+    await settle(room, 'Core')
+
+    // Backend was driven exactly twice: the original deploy turn, then the
+    // queued follow-up mention — never a parallel lane submit.
+    expect(room.gateway.calls.filter(call => call.profile === 'backend')).toHaveLength(2)
+    expect(room.gateway.calls.filter(call => call.profile === 'chief-of-stuff')).toHaveLength(0)
+  })
+
+  it('never lane-dispatches an unmentioned send — chatter keeps queueing', async () => {
+    const { members, room } = await busyBackendRoom()
+    await startLongDeploy(room, members)
+
+    // No explicit mention: the ordinary queueing contract is unchanged.
+    room.rounds.sendToGroupChat('Core', members, 'just fyi for whenever you are done')
+
+    await new Promise(resolve => setImmediate(resolve))
+
+    expect(room.gateway.calls.filter(call => call.profile === 'chief-of-stuff')).toHaveLength(0)
+
+    releaseBackend('(pass)')
+    await settle(room, 'Core')
+  })
+
+  it('Stop interrupts a lane turn in flight and leaves the busy member untouched on dispatch', async () => {
+    let releaseChief!: (reply: string) => void
+
+    const chiefTurn = new Promise<string>(resolve => {
+      releaseChief = resolve
+    })
+
+    const backendTurn = new Promise<string>(() => {
+      // Never resolves in this test — the busy member is still parked when
+      // the assertions run, exactly the mid-long-work moment.
+    })
+
+    const room = await loadRoom({
+      turn: ({ profile, prompt }) =>
+        profile === 'backend'
+          ? prompt.includes('run the long deploy')
+            ? backendTurn
+            : '(pass)'
+          : prompt.includes('QUICK_STATUS_MARKER')
+            ? chiefTurn
+            : '(pass)'
+    })
+
+    const members: GroupMember[] = [
+      { name: 'backend', title: '' },
+      { name: 'chief-of-stuff', title: '' }
+    ]
+
+    const deployThread = room.rounds.sendToGroupChat('Core', members, '@backend run the long deploy')!
+    await drain(() => room.gateway.calls.length < 1)
+
+    const chiefThread = room.rounds.sendToGroupChat('Core', members, '@chief-of-stuff QUICK_STATUS_MARKER please')!
+    await drain(
+      () => !log(room, 'Core').some(entry => entry.from.kind === 'member' && entry.from.name === 'chief-of-stuff')
+    )
+    expect(room.gateway.calls.filter(call => call.profile === 'chief-of-stuff')).toHaveLength(1)
+
+    // Stop the room: the lane turn (chief) must be interrupted through its
+    // own session; the busy member (backend) gets its interrupt leg too (it
+    // is the on-turn member), and nothing re-submits into its live session.
+    await room.rounds.stopGroupThread('Core', deployThread, members)
+
+    const interrupts = room.gateway.rpcFor('session.interrupt').map(call => call.params.session_id)
+    const sessions = room.chat.$groupChats.get().Core.sessions || {}
+    const backendStored = Object.entries(sessions).find(([key]) => key.endsWith('::backend'))?.[1]
+    const chiefStored = Object.entries(sessions).find(([key]) => key.endsWith('::chief-of-stuff'))?.[1]
+
+    // Both in-flight turns were interrupted — each through its OWN session.
+    expect(interrupts).toHaveLength(2)
+    expect(interrupts).toContain(String(backendStored))
+    expect(interrupts).toContain(String(chiefStored))
+    expect(new Set(interrupts).size).toBe(2)
+
+    // Backend was never re-dispatched: exactly one submit so far.
+    expect(room.gateway.calls.filter(call => call.profile === 'backend')).toHaveLength(1)
+
+    // The lane turn was cancelled: releasing the chief's reply lands nowhere
+    // (its poll abandoned on the stop epoch), and the room settles stopped.
+    releaseChief('should not land')
+    await new Promise(resolve => setImmediate(resolve))
+    await new Promise(resolve => setImmediate(resolve))
+
+    const chiefReplies = log(room, 'Core').filter(
+      entry => entry.from.kind === 'member' && entry.from.name === 'chief-of-stuff'
+    )
+
+    expect(chiefReplies).toHaveLength(0)
+    expect(chiefThread).not.toBe(deployThread)
+    expect(room.chat.$groupChats.get().Core.running).toBe(false)
+  })
+
+  it('does not double-dispatch when the same member+thread lane is claimed twice', async () => {
+    const { members, room } = await busyBackendRoom()
+
+    // Direct drive of the claim path: two claims of the same member+thread
+    // must collapse to one lane turn.
+    const { claimGroupPriorityLane } = await import('./group-round-members')
+
+    expect(claimGroupPriorityLane('Core', 't-x', members[1])).toBe(true)
+    expect(claimGroupPriorityLane('Core', 't-x', members[1])).toBe(false)
   })
 })
 

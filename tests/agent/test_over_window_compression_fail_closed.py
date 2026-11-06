@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agent.conversation_compression import run_compress_context_with_progress_timeout
-from agent.turn_context import PreflightCompressionTimedOut
+from agent.turn_context import PreflightCompressionInsufficientProgress
 from agent.turn_context_compaction import CompactionOutcome, _run_preflight_passes
 
 
@@ -45,8 +45,11 @@ def _preflight(agent, request_tokens):
 
 
 def test_no_progress_preflight_fails_closed_only_when_the_request_exceeds_the_window():
-    with pytest.raises(PreflightCompressionTimedOut, match="Start a new session with /new"):
+    with pytest.raises(PreflightCompressionInsufficientProgress, match="Start a new session with /new") as refused:
         _preflight(_agent(context_length=131_072), 356_113)
+    assert refused.value.request_tokens == 356_113
+    assert refused.value.messages == [{"role": "user", "content": "hi"}]
+    assert refused.value.conversation_history is None
 
     # Over threshold but inside the window: sent as-is (blocked so the loop does not retry).
     assert _preflight(_agent(context_length=1_000_000), 356_113).blocked is True

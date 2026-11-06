@@ -155,6 +155,7 @@ def tail_cut_progress_floor(compressor: Any, messages: list[dict[str, Any]], hea
 
 def with_skill_safety_rule(
     summary: str, head: list[dict[str, Any]], tail: list[dict[str, Any]],
+    *, preserve_tail: bool = False,
 ) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
     """``(summary, head, tail)`` carrying :data:`SKILL_SAFETY_RULE` exactly once when the summary or a kept row holds a
     prune marker (summary-side ``## Pruned Skills`` markers, Phase-1 and lean-demoted ``skill_view`` stubs). A kept
@@ -167,7 +168,7 @@ def with_skill_safety_rule(
                 if isinstance(m, dict) and m.get("role") != "system" and isinstance(m.get("content"), str)
                 and SKILL_SAFETY_RULE in m["content"] else m for m in rows]
 
-    head, tail = unruled(head), unruled(tail)
+    head, tail = unruled(head), tail if preserve_tail else unruled(tail)
     texts = (summary, *(_content_text_for_contains(m.get("content")) for m in (*head, *tail) if isinstance(m, dict)))
     if any(SKILL_SAFETY_RULE in text for text in texts) or not any(SKILL_PRUNED_MARKER_PREFIX in t for t in texts):
         return summary, head, tail

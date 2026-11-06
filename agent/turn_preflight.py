@@ -68,8 +68,12 @@ def run_preflight_compression(
     closed (llama.cpp may silently truncate)."""
     from agent.conversation_loop import (
         _COMPRESSION_TIMEOUT_FINAL_RESPONSE, _HANDOFF_SKIP_FINAL_RESPONSE,
-        _compression_deferred_result, _maybe_grow_local_window, _provider_overflow_exhausted_result,
+        _maybe_grow_local_window,
         _should_skip_model_call_for_reference_handoff,
+    )
+
+    from agent.conversation_loop_compression_results import (
+        _compression_deferred_result, _provider_overflow_exhausted_result,
     )
 
     def _done(action: str, result: Optional[dict[str, Any]] = None) -> PreflightGateVerdict:
@@ -195,7 +199,8 @@ def run_preflight_compression(
         # don't resend; let the next user turn retry after cooldown.
         agent._persist_session(v.messages, v.conversation_history)
         return _done("return", _compression_deferred_result(
-            agent, v.messages, v.api_call_count, reason="transient_block"
+            agent, v.messages, v.api_call_count, reason="transient_block",
+            provider_rejected=True, request_tokens=request_pressure_tokens,
         ))
     elif provider_overflow_preflight and v.compression_attempts >= max_compression_attempts:
         # All recovery passes consumed and still over threshold: fail closed —

@@ -365,10 +365,12 @@ def export_current_turn_boundary(agent: Any, result: Any, user_message: Any) -> 
     exports the coordinate, computed on the final list, only when the addressed row is this
     turn's user message verbatim. Otherwise the keys are omitted and hosts fail closed.
 
-    A preflight-timeout envelope carries the prior history without this turn's row (#7100), so a
+    A preflight failure envelope carries the prior history without this turn's row (#7100), so a
     repeated prompt would resolve to its historical copy: nothing is exported there.
     """
-    if not isinstance(result, dict) or result.get("turn_exit_reason") == "context_compression_timeout":
+    if not isinstance(result, dict) or result.get("turn_exit_reason") in {
+        "context_compression_timeout", "context_compression_no_progress",
+    }:
         return result
     messages = result.get("messages")
     turn_id = str(getattr(agent, "_current_turn_id", "") or "")
@@ -410,8 +412,22 @@ def compression_made_progress(
     return new_len < orig_len or (orig_tokens > 0 and new_tokens < orig_tokens * 0.95)
 
 
-class PreflightCompressionTimedOut(RuntimeError):
-    """Raised when an oversized turn cannot safely finish preflight."""
+class PreflightCompressionRefused(RuntimeError):
+    """A known unsafe request was stopped before the provider call."""
+
+
+class PreflightCompressionTimedOut(PreflightCompressionRefused):
+    """Preflight exhausted its wait budget without a committed summary."""
+
+
+class PreflightCompressionInsufficientProgress(PreflightCompressionRefused):
+    """An established over-window verdict remained after a completed no-progress pass."""
+
+    def __init__(self, message, *, messages, conversation_history, request_tokens):
+        super().__init__(message)
+        self.messages = messages
+        self.conversation_history = conversation_history
+        self.request_tokens = request_tokens
 
 
 def _fail_closed_after_preflight_timeout(agent, request_tokens: int) -> None:
@@ -438,7 +454,9 @@ def _fail_closed_after_preflight_timeout(agent, request_tokens: int) -> None:
     )
 
 
-def _fail_closed_on_insufficient_progress(agent, request_tokens: int) -> None:
+def _fail_closed_on_insufficient_progress(
+    agent, request_tokens: int, *, messages=None, conversation_history=None,
+) -> None:
     """Stop an over-window turn the moment preflight proves it cannot shrink the session, with
     "start a new session" guidance, instead of sending a request the model cannot accept.
 
@@ -457,10 +475,11 @@ def _fail_closed_on_insufficient_progress(agent, request_tokens: int) -> None:
     if compression_blocked_transiently(agent):
         return
     window = agent.context_compressor.context_length
-    raise PreflightCompressionTimedOut(
+    raise PreflightCompressionInsufficientProgress(
         "Context compression could not bring this session under the model's context window "
         f"(~{request_tokens:,} tokens vs {window:,}). The provider call was not "
-        "sent. Start a new session with /new; this session is too large to compress further."
+        "sent. Start a new session with /new; this session is too large to compress further.",
+        messages=messages, conversation_history=conversation_history, request_tokens=request_tokens,
     )
 
 

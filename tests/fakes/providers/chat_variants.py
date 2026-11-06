@@ -126,9 +126,11 @@ def replayed_reasoning_chars(body: dict[str, Any]) -> int:
 
 class FakeChatVariantServer:
     def __init__(self, script: list[Step] | Responder | None = None, *, default_text: str = "ok",
-                 strict_user_turn: bool = False, reasoning_budget_chars: int | None = None) -> None:
+                 strict_user_turn: bool = False, reasoning_budget_chars: int | None = None,
+                 auxiliary: Responder | None = None) -> None:
         self._script: list[Step] = list(script) if isinstance(script, list) else []
         self._responder = script if callable(script) else None
+        self._auxiliary = auxiliary
         self.default_text = default_text
         self.strict_user_turn = strict_user_turn
         self.reasoning_budget_chars = reasoning_budget_chars
@@ -228,7 +230,8 @@ def _handler_for(server: FakeChatVariantServer) -> type[BaseHTTPRequestHandler]:
                 self._json(404, {"error": {"message": f"unsupported path {self.path}"}})
                 return
             if kind == "aux":
-                self._render(CText("Fake title"), bool(body.get("stream")))
+                step = server._auxiliary(record) if server._auxiliary is not None else CText("Fake title")
+                self._render(step, bool(body.get("stream")))
                 return
             rejection = self._route_rejection(body)
             if rejection is not None:
@@ -323,7 +326,8 @@ def _handler_for(server: FakeChatVariantServer) -> type[BaseHTTPRequestHandler]:
                 self._json(502, {"error": {"message": "stream-only fault on a non-streaming request"}})
                 return
             self._json(200, {"id": "chatcmpl-variant", "object": "chat.completion", "created": int(time.time()),
-                             "model": MODEL_ID, "usage": _usage(100, 20),
+                             "model": MODEL_ID,
+                             "usage": _usage(step.prompt_tokens, step.completion_tokens) if isinstance(step, CText) else _usage(100, 20),
                              "choices": [{"index": 0, "message": msg, "finish_reason": finish}]})
 
     return Handler

@@ -30,10 +30,6 @@ def _estimate_tokens(agent: Any, messages: Optional[list[dict]]) -> Optional[int
         return None
 
     if messages is not None:
-        protect = (
-            int(getattr(cc, "protect_first_n", 3)) + int(getattr(cc, "protect_last_n", 20)) + 1)
-        if len(messages) <= protect:
-            return None
         try:
             from agent.model_metadata import estimate_request_tokens_rough
 

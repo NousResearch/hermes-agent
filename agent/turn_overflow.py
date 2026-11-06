@@ -87,7 +87,7 @@ class _Recovery(OverflowVerdict):
     def fail_turn(
         self, final_response: str, *, notices: tuple = (), log: Optional[tuple] = None,
         compression_exhausted: bool = True, reason: str = "context_overflow",
-        retryable: bool = False, **extra: Any,
+        retryable: bool = False, input_rejected: bool = False, **extra: Any,
     ) -> OverflowVerdict:
         """End the turn as failed/partial. ``notices`` flush the buffered retry trace
         first so the user sees what compression attempts were made."""
@@ -99,6 +99,14 @@ class _Recovery(OverflowVerdict):
         if log:
             logger.error(*log)
         agent._persist_session(self.messages, self.conversation_history)
+        if input_rejected:
+            from agent.conversation_loop_compression_results import _uncompressible_request_result
+
+            structural = _uncompressible_request_result(
+                agent, self.messages, self.api_call_count, self.request_tokens(),
+            )
+            if structural is not None:
+                return self.done("return", structural)
         result = stamp_failure({
             "final_response": final_response,
             "messages": self.messages,
@@ -125,6 +133,7 @@ class _Recovery(OverflowVerdict):
         if payload_too_large:
             return self.fail_turn(
                 site_copy("payload_too_large", model=self.agent.model),
+                input_rejected=True,
                 notices=(
                     f"❌ Max compression attempts ({cap}) reached for payload-too-large error.",
                     _RETRY_HINT,
@@ -133,6 +142,7 @@ class _Recovery(OverflowVerdict):
             )
         return self.fail_turn(
             site_copy("context_overflow", model=self.agent.model),
+            input_rejected=True,
             notices=(f"❌ Max compression attempts ({cap}) reached.", _RETRY_HINT),
             log=("%sContext compression failed after %d attempts.", self.agent.log_prefix, cap),
         )
@@ -147,7 +157,8 @@ class _Recovery(OverflowVerdict):
         committed summary) ends the turn via the typed contract, since re-sending would
         hit the same overflow."""
         from agent.conversation_compression import conversation_history_after_compression
-        from agent.conversation_loop import _COMPRESSION_TIMEOUT_FINAL_RESPONSE, _compression_deferred_result
+        from agent.conversation_loop import _COMPRESSION_TIMEOUT_FINAL_RESPONSE
+        from agent.conversation_loop_compression_results import _compression_deferred_result
 
         agent = self.agent
         before = self.messages
@@ -163,6 +174,7 @@ class _Recovery(OverflowVerdict):
             elif compression_blocked_transiently(agent):
                 deferred = _compression_deferred_result(
                     agent, self.messages, self.api_call_count, reason="transient_block",
+                    provider_rejected=True, request_tokens=request_tokens,
                 )
             if deferred is not None:
                 self.compression_attempts -= 1
@@ -270,6 +282,7 @@ def _recover_payload_too_large(st: _Recovery, _retry: TurnRetryState) -> Overflo
 
     return st.fail_turn(
         site_copy("payload_too_large", model=agent.model),
+        input_rejected=True,
         notices=("❌ Payload too large and cannot compress further.", _RETRY_HINT),
         log=("%s413 payload too large. Cannot compress further.", agent.log_prefix),
     )
@@ -443,6 +456,7 @@ def _recover_context_length(st: _Recovery, _retry: TurnRetryState, error_msg: st
     # Can't compress further and already at minimum tier.
     return st.fail_turn(
         site_copy("context_overflow", model=agent.model),
+        input_rejected=True,
         notices=(
             f"❌ The conversation is too long for the model ({new_tokens:,} tokens) and cannot be shrunk further.",
             _RETRY_HINT,

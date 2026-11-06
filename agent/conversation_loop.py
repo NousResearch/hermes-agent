@@ -35,7 +35,7 @@ from agent.runtime_cwd import resolve_agent_cwd
 from agent.surface_switch import (
     identity_line_value, note_inert_pinned_tools, runtime_host_value, stage_surface_switch_note,
 )
-from agent.turn_context import PRE_LLM_BLOCK_EXIT_REASON, PreflightCompressionTimedOut, build_turn_context
+from agent.turn_context import PRE_LLM_BLOCK_EXIT_REASON, PreflightCompressionRefused, build_turn_context
 from hermes_cli.observability.shared_metrics_efficiency import record_cache_break, record_prompt_rebuild
 from hermes_cli.plugins_dispatch import held_stream_transforms
 from agent.turn_retry_state import TurnRetryState
@@ -45,7 +45,8 @@ from agent.turn_scripted_prelude import Prelude, play_prelude
 from agent.turn_api_call import handle_api_interrupt, nous_rate_limit_guard, perform_api_call
 from agent.turn_api_error import handle_api_error
 from agent.turn_api_request import build_api_request
-from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, OPEN_TURN_TAIL_ROLES, failed_turn_notice, site_copy
+from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, OPEN_TURN_TAIL_ROLES, failed_turn_notice
+from agent.conversation_loop_compression_results import _preflight_refusal_result
 from agent.turn_final_response import finish_text_response
 from agent.turn_finalizer import finalize_turn
 from agent.turn_iteration_prep import (
@@ -1166,69 +1167,6 @@ def _partial_turn_result(
     }
 
 
-def _compression_deferred_result(agent, messages: list[dict], api_call_count: int, reason: str = "lock") -> dict[str, Any]:
-    """Soft turn result for a transiently-deferred compression. Both reasons must end as
-    ``compression_deferred``, never ``compression_exhausted`` — the gateway wipes the
-    session on exhaustion (#9893/#35809). ``failed`` stays False; the turn persists."""
-    session = agent.session_id or "none"
-    if reason == "transient_block":
-        block = getattr(agent, "_compression_blocked_transient", None)
-        logger.info(
-            "turn deferred: compression transiently blocked (%s) (session=%s) — not counting as "
-            "compression exhaustion", block if isinstance(block, str) else "unknown guard", session,
-        )
-        _final = (
-            "Context compression is temporarily paused after a recent failed attempt. Please retry "
-            "in a moment — compression will resume automatically (or run /compress to force a retry now)."
-        )
-    else:
-        holder = getattr(agent, "_compression_skipped_due_to_lock", None)
-        logger.info(
-            "turn deferred: compression lock held by another path (session=%s holder=%s) — not "
-            "counting as compression exhaustion", session, holder if isinstance(holder, str) else "unconfirmed",
-        )
-        _final = (
-            "Context compression is already running for this session. Please retry in a moment — "
-            "your next message will be processed once the concurrent compression finishes."
-        )
-    try:
-        agent._flush_status_buffer()
-    except Exception:
-        pass
-    return _partial_turn_result(
-        _final, messages, api_call_count,
-        failed=False, compression_deferred=True, session_id=agent.session_id,
-    )
-
-
-def _provider_overflow_exhausted_result(
-    agent, messages: list[dict], conversation_history, api_call_count: int,
-    request_pressure_tokens: int, max_compression_attempts: int,
-) -> dict[str, Any]:
-    """Fail closed when a rebuilt request is still too large after recovery."""
-    agent._flush_status_buffer()
-    logger.error(
-        "%sContext compression failed after %d attempts; rebuilt request "
-        "remains over threshold at ~%s tokens.",
-        agent.log_prefix, max_compression_attempts, f"{request_pressure_tokens:,}",
-    )
-    # Host progress-aware timeout (#98722, salvaged from #98741): the provider proved the request does not
-    # fit, but this recovery pass spent the full wait budget without a committed summary. Re-sending the
-    # unchanged request would bounce off the same overflow error and re-enter compression in the same turn.
-    # End the turn with the typed recovery contract instead — transcript intact, no further doomed provider
-    # sends.
-    # Prior <3 retries (or an earlier successful tool batch) leave a tool-result tail. Closing it here
-    # matches interrupt aborts (#48879 / #52592) so the next user turn is not tool→user for strict
-    # providers.
-    agent._persist_session(messages, conversation_history)
-    return _partial_turn_result(
-        site_copy("context_overflow", model=agent.model),
-        messages, api_call_count, failed=True, compression_exhausted=True,
-        turn_exit_reason="context_compression_exhausted",
-        failure_reason="context_overflow", failure_retryable=False,
-    )
-
-
 def _rewrite_system_content_blocks(system_message: dict, effective: str) -> bool:
     """Rewrite a cache-decorated system message in place, keeping its blocks (a bare string
     over the ``[static prefix, volatile tail]`` list would drop both cache_control
@@ -1438,23 +1376,6 @@ def _decode_inline_moa_turn(user_message, persist_user_message):
     return user_message, None, persist_user_message
 
 
-def _preflight_timeout_result(agent, exc, conversation_history) -> dict[str, Any]:
-    """Typed recovery result when turn-start preflight compression timed out (#98424): no
-    provider call was sent, and surfaces would otherwise hide the actionable guidance."""
-    logger.warning(
-        "Turn-start preflight compression timed out — ending turn with typed recovery result: %s", exc,
-    )
-    # Clear the tripwire slot note_turn_start registered (the early return skips the persist
-    # funnel). The user row is deliberately NOT persisted (#7100).
-    from agent.agent_runtime_helpers import note_turn_persisted
-    note_turn_persisted(agent)
-    # Not _COMPRESSION_TIMEOUT_FINAL_RESPONSE — that describes a different state
-    # (compression ran, could not reduce); the exception text carries the guidance.
-    return _partial_turn_result(
-        str(exc), list(conversation_history or []), 0,
-        failed=True, compression_exhausted=True, turn_exit_reason="context_compression_timeout",
-        failure_reason="context_overflow", failure_retryable=False,
-    )
 
 
 @dataclass
@@ -1715,8 +1636,8 @@ def _run_conversation_turn(
             moa_active=bool(moa_config),
             title_user_message=title_user_message,
         )
-    except PreflightCompressionTimedOut as _preflight_timeout_exc:
-        return _preflight_timeout_result(agent, _preflight_timeout_exc, conversation_history)
+    except PreflightCompressionRefused as _preflight_refusal_exc:
+        return _preflight_refusal_result(agent, _preflight_refusal_exc, conversation_history)
     # Voice turns may run on auxiliary.voice_chat: bound after the prompt/row/compaction were settled
     # against the main model, undone in finalize_turn (and run_conversation's finally on early exits).
     from agent.voice_turn_route import begin_voice_turn_route

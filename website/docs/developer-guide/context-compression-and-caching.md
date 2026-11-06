@@ -316,9 +316,9 @@ auxiliary:
 | `model_thresholds` | `{}` | map | Per-model overrides of `threshold`. Keys are substring-matched against the model name (longest match wins); `"<provider>:<substring>"` keys apply only on that provider. The small-context floor still applies on top (see below) |
 | `target_ratio` | `0.20` | 0.10-0.80 | Controls tail protection token budget: `threshold_tokens × target_ratio` (legacy mode only — `lean` uses its own clamp) |
 | `tail_mode` | `lean` | `lean`, `legacy` | Tail retention policy. `legacy` keeps a `target_ratio`-sized verbatim tail (~100K+ tokens on big-window models). `lean` keeps a clamped tail of `2.5% × context window` (10K floor, 25K cap) and instead carries continuity in the summary: a detailed identifier-preserving session log (produced by the same single summary request — lean compaction makes exactly one auxiliary LLM call per attempt), a mechanically extracted anchor index (PR numbers, SHAs, paths, error strings — regex, never paraphrased), every real user message quoted verbatim (newest-first budget), and a `session_search` recovery pointer so the agent can re-access anything summarized away. Oversized regions are evenly sampled into the summarizer input (with explicit elision markers) rather than triggering extra calls. Result on 500K-token real sessions: ~49K retained vs ~162K, with higher recall when paired with recovery (see `evals/compaction/results/`). Old tool results inside the lean tail are demoted to one-line stubs carrying a recovery pointer |
-| `protect_last_n` | `20` | ≥1 | Minimum number of recent messages always preserved |
+| `protect_last_n` | `20` | ≥1 | Preferred recent message count; the tail also follows its token budget, actionable-user anchors and atomic tool-group boundaries |
 | `min_tail_user_messages` | `1` | ≥1 | Minimum number of REAL (actionable) user messages guaranteed to survive in the uncompressed tail. `1` = the existing single last-user anchor (behavior-preserving default). Raise to e.g. `3` to keep the last 3 real user turns verbatim even when bulky tool outputs fill the tail token budget. Blank platform echoes, compaction handoffs, and synthetic continuation rows never count toward N. The guarantee wins over the tail token budget — the tail may exceed the budget when the anchor pulls the cut back |
-| `protect_first_n` | `3` | (hardcoded) | System prompt + first exchange always preserved |
+| `protect_first_n` | `3` | ≥0 | Preferred opening history on the first compaction; afterward the rolling summary carries it. Bulky historical head text can enter the summary earlier under context pressure |
 | `idle_compact_after_seconds` | `0` | ≥0 seconds | Opt-in: compact up front when a session resumes after this many seconds idle (0 = disabled). Skips when context ≤ threshold × target_ratio; honors cooldown/anti-thrash/lock guards |
 | `codex_gpt55_autoraise` | `true` | bool | Raise the trigger to 85% for gpt-5.4/5.5/5.6 and gpt-6 Astra on the ChatGPT Codex OAuth route (see below). Set `false` to keep the global `threshold` |
 | `codex_gpt55_autoraise_notice` | `true` | bool | Show the one-time Codex gpt-5.5 autoraise notice. Set `false` to keep the 85% autoraise but suppress the banner |
@@ -327,6 +327,25 @@ auxiliary:
 | `codex_responses_compact_threshold` | `null` | `null` or positive integer | Server-side compaction trigger, read **only when `codex_responses_native: true`** — it never changes when local compression fires; the local trigger is `threshold` (ratio) capped by `threshold_tokens`. `null` follows the resolved local compression trigger with an 8,192 token safety margin. A positive integer remains absolute and only clamps downward when required. Invalid values use automatic behavior. Automatic mode falls back to `200000` when no usable local trigger exists |
 | `in_place` | `true` | bool | Compact on the same session id instead of rotating to a new one (see below) |
 | `prepare_ahead` | `false` | bool | Opt-in: near the trigger, write the next summary in the background and splice it at the next automatic compaction when it still covers the same messages (see below) |
+
+A short transcript can still contain most of the context window. Once the existing
+compression trigger is reached, eligible historical rows can enter the summary if
+the preferred window is blocked, the historical head alone exceeds the tail budget,
+or a retained historical anchor exceeds the tail's existing soft ceiling. Head and
+tail allowances remain separate: a productive ordinary window with a modest head
+and a valid full tail keeps its normal boundaries. This uses the existing threshold,
+tail budget and soft ceiling; there is no separate short-history setting. Recovery
+keeps the system prompt, current user/tool transaction and configured minimum user
+tail out of the summary, and commits only after a complete summary is available.
+Any structural acknowledgement used to preserve role alternation is model-only
+context, with durable provenance; it is excluded from displayed transcripts.
+
+When the provider rejects the input, or preflight definitively finds it above the
+configured model window, a fresh structural check distinguishes an oversized
+current request with no eligible history from a failed summary. The former asks
+the user to shorten the message or attachments or choose a larger context, while
+preserving the conversation instead of rotating it as compression exhaustion.
+An actual elapsed compression timeout retains its separate timeout outcome.
 
 ### In-place compaction (single stable session id)
 

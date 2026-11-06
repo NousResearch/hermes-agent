@@ -216,3 +216,14 @@ def test_lifetime_prompt_counter_is_not_a_size_estimate():
                             session_prompt_tokens=16_282_033)
 
     assert _estimate_tokens(agent, None) is None
+
+
+def test_few_large_messages_are_still_priced_for_a_model_switch(monkeypatch):
+    from hermes_cli.context_switch_guard import _estimate_tokens
+
+    cc = _compressor(monkeypatch)
+    agent = SimpleNamespace(context_compressor=cc, _cached_system_prompt="Stable system prompt", tools=[])
+    messages = [{"role": "user", "content": "historical measurement\n" * 7000},
+                {"role": "assistant", "content": "SAVED"}]
+    estimate = _estimate_tokens(agent, messages)
+    assert estimate is not None and estimate > 32_000

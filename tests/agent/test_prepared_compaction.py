@@ -152,9 +152,58 @@ def test_pass_leaves_live_transcript_and_compressor_untouched():
     assert msgs == before
     assert cc._previous_summary is None and cc.compression_count == 0
     assert [c["worker"] for c in cc.calls] == [True]
-    _working, _, start, end = cc._plan_compaction_window(msgs)
+    plan = cc._plan_compaction_window(msgs, cc.threshold_tokens)
+    start, end = plan.start, plan.end
     assert (entry.compress_start, entry.compress_end) == (start, end)
     assert entry.body == f"Summary v1 of {end - start} turns."
+
+
+def test_productive_normal_window_keeps_modest_head_and_valid_full_tail():
+    cc = _compressor()
+    messages = _messages(30)
+    plan = cc._plan_compaction_window(messages, cc.threshold_tokens + 1)
+    assert plan.protect_active is False
+    assert plan.start == cc._protect_head_size(messages)
+    assert plan.end > plan.start
+    assert plan.end < cc._find_last_user_message_idx(messages, 0)
+    entry = _prepare(cc, messages)
+    assert entry.protect_active is False
+    result = cc.compress(messages, current_tokens=cc.threshold_tokens + 1)
+    assert [call["worker"] for call in cc.calls] == [True]
+    assert "Summary v1" in _summary_row(result)["content"]
+    assert result[1:plan.start] == messages[1:plan.start]
+
+
+@pytest.mark.parametrize("large_before", [False, True])
+def test_prepared_summary_is_not_spliced_across_historical_head_protection_changes(large_before):
+    cc = _compressor()
+    messages = _messages(10, size=32_000 if large_before else 1200)
+    entry = _prepare(cc, messages)
+    assert entry.protect_active is large_before
+    changed = copy.deepcopy(messages)
+    for row in changed[1:-1]:
+        row["content"] = "z" * (1200 if large_before else 32_000)
+    plan = cc._plan_compaction_window(changed, cc.threshold_tokens)
+    assert plan.protect_active is not large_before
+    assert cc.prepared_compaction.take(
+        plan.messages, cc._session_id, plan.start, eligible=True,
+        end=plan.protected_start, protect_active=plan.protect_active,
+    ) is None
+
+
+def test_prepared_summary_cannot_cross_a_newly_protected_historical_user_boundary():
+    cc = _compressor()
+    cc.protect_first_n = 0
+    messages = _messages(30)
+    entry = _prepare(cc, messages)
+    cc.min_tail_user_messages = 10
+    plan = cc._plan_compaction_window(messages, cc.threshold_tokens)
+    assert plan.start == entry.compress_start
+    assert plan.end < entry.compress_end
+    assert cc.prepared_compaction.take(
+        plan.messages, cc._session_id, plan.start, eligible=True,
+        end=plan.protected_start, protect_active=plan.protect_active,
+    ) is None
 
 
 @pytest.mark.parametrize("setup", [
@@ -219,7 +268,7 @@ def test_append_only_growth_splices_at_the_candidate_boundary_keeping_newer_mess
     msgs = _messages(30)
     entry = _prepare(cc, msgs)
     later = _grow(msgs, 8)
-    assert cc._plan_compaction_window(later)[3] > entry.compress_end  # a fresh plan would cut later
+    assert cc._plan_compaction_window(later).end > entry.compress_end  # a fresh plan would cut later
 
     compressed = cc.compress(later, current_tokens=cc.threshold_tokens + 1)
 
@@ -247,7 +296,8 @@ def test_growth_past_the_candidate_beyond_the_tail_budget_still_splices_keeping_
         _prepare(cc, msgs)
     window = (cc.prepared_compaction._entry or cc.prepared_compaction._pending.window)
     later = _grow(msgs, 24)
-    _, _, start, end = cc._plan_compaction_window(later)
+    plan = cc._plan_compaction_window(later)
+    start, end = plan.start, plan.end
     assert start == window.compress_start and end > window.compress_end
     assert estimate_messages_tokens_rough(later[window.compress_end:end]) > cc.tail_token_budget
 
@@ -281,7 +331,8 @@ def test_a_fresh_cut_before_the_candidate_boundary_still_splices_and_the_boundar
     window = (cc.prepared_compaction._entry or cc.prepared_compaction._pending.window)
     # The tail rows got cheaper since the pass planned (the no-LLM prune), so the fresh plan keeps more rows.
     later = [m if i < window.compress_end else {**m, "content": m["content"][:8]} for i, m in enumerate(_grow(msgs, 2))]
-    _, _, start, end = cc._plan_compaction_window(later)
+    plan = cc._plan_compaction_window(later)
+    start, end = plan.start, plan.end
     assert start == window.compress_start and end < window.compress_end
 
     from agent.auxiliary_client import aux_progress_hook
@@ -381,12 +432,14 @@ def test_prune_and_blank_echo_drop_do_not_invalidate_the_candidate():
         ]
     msgs += [{"role": "user", "content": "latest ask"}, {"role": "user", "content": " "},
              {"role": "assistant", "content": "working on it"}]
-    working, pruned, _, _ = cc._plan_compaction_window(msgs)
+    plan = cc._plan_compaction_window(msgs, cc.threshold_tokens)
+    working, pruned = plan.messages, plan.pruned_count
     assert pruned > 0 and len(working) == len(msgs) - 1, "prune ran and the trailing blank echo was dropped"
     entry = _prepare(cc, msgs)
 
     live = _grow(msgs, 4)  # a newer user turn: the old echo is no longer trailing, so it stays
-    live_working, live_pruned, start, end = cc._plan_compaction_window(live)
+    plan = cc._plan_compaction_window(live)
+    live_working, live_pruned, start, end = plan.messages, plan.pruned_count, plan.start, plan.end
     assert len(live_working) == len(live) and live_pruned >= pruned
     assert start == entry.compress_start and end >= entry.compress_end
 

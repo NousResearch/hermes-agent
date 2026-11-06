@@ -51,12 +51,13 @@ def test_boundary_is_exported_only_for_the_verbatim_current_row(user_message, me
     assert agent._persist_user_message_idx is None
 
 
-def test_preflight_timeout_envelope_exports_nothing():
-    """The preflight-timeout result carries the prior history without this turn's row (#7100);
+@pytest.mark.parametrize("reason", ["context_compression_timeout", "context_compression_no_progress"])
+def test_preflight_failure_envelope_exports_nothing(reason):
+    """The preflight failure result carries the prior history without this turn's row (#7100);
     a repeated prompt must not be resolved to its historical copy."""
     agent = _Agent()
     result = {"messages": [{"role": "user", "content": "continue"}, {"role": "assistant", "content": "old"}],
-              "turn_exit_reason": "context_compression_timeout"}
+              "turn_exit_reason": reason}
     out = export_current_turn_boundary(agent, result, "continue")
     assert "current_turn_user_idx" not in out and "turn_id" not in out
 

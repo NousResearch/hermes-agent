@@ -795,14 +795,12 @@ compression:
 
   # Number of non-system messages to protect at the head of the transcript, in
   # ADDITION to the system prompt (which is always implicitly protected).
-  # Head messages are NEVER summarized — they survive every compression
-  # indefinitely. This gives stable early context for short/medium sessions,
-  # but in long-running sessions that rely on rolling compaction the pinned
-  # opening turns may not match how you want the session framed over time.
-  # Set to 0 to preserve ONLY the system prompt (plus the rolling summary
-  # and recent tail) — the cleanest configuration for long-running sessions.
-  # Default 3 preserves the system prompt plus the first three non-system
-  # head messages, matching the pre-feature behaviour.
+  # Preferred opening history for the first compaction; afterward the rolling
+  # summary carries it. Under context pressure, bulky historical messages may
+  # enter that summary earlier when count protection prevents useful reclaim.
+  # This uses the existing trigger and verbatim tail budget, not another knob.
+  # Short-history recovery preserves the system prompt and current user/tool
+  # transaction verbatim. Set to 0 to disable only the historical-head preference.
   protect_first_n: 3
 
   # Idle compaction (default: 0 = disabled). When > 0, a session that resumes

@@ -121,7 +121,7 @@ You can also help directly: say "remember this for next time" after a productive
 
 **What it means:** Compression replaces older conversation history with a summary — that's the point, and it necessarily trades detail for headroom. Know the shape of it:
 
-- Recent messages are protected: by default the last 20 messages stay uncompressed (`protect_last_n`) and the opening exchange is pinned (`protect_first_n: 3`) so the original goal stays visible.
+- Recent context follows the existing token-budget tail policy (`protect_last_n: 20`). The opening history is preferred on the first compaction (`protect_first_n: 3`), then carried by the rolling summary. Under context pressure, bulky historical head messages may be summarized earlier; short-history recovery keeps the system prompt and current user/tool transaction verbatim.
 - Compaction is non-destructive: with the default `compression.in_place: true`, the session keeps one durable id and pre-compaction turns are soft-archived — still searchable via `session_search` and recoverable, not deleted.
 - With `in_place: false` (legacy behavior), each compaction rotates to a **new session linked to the old one** — a titled session becomes `"my project" → "my project #2" → "my project #3"`. If you resume by title, `hermes -c "my project"` automatically picks the most recent variant.
 - A focus topic narrows what a full summary preserves: `/compress focus auth-refactor` keeps that thread's detail at the expense of the rest.

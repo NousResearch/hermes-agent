@@ -61,8 +61,8 @@ class ContextEngine(ABC):
     context_length: int = 0
     compression_count: int = 0
     # Compaction parameters (read by run_agent.py for preflight). protect_first_n counts
-    # non-system head messages kept verbatim IN ADDITION to the always-protected system
-    # prompt (3 keeps the historical head shape).
+    # preferred non-system head messages in addition to the system prompt. The default compressor
+    # can summarize bulky historical head text under pressure; the live transaction stays verbatim.
     # These control the preflight compression check. Subclasses may override via __init__ or property;
     # defaults are sensible for most engines. See #13754.
     threshold_percent: float = 0.75

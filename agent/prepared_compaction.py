@@ -105,6 +105,7 @@ class _Window:
     compress_start: int
     compress_end: int
     identities: tuple[_Identity, ...]  # one per message of ``messages[:compress_end]``
+    protect_active: bool = field(default=False, kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -177,15 +178,20 @@ def prefix_identities(messages: list[dict[str, Any]], end: int) -> tuple[_Identi
     return tuple(_message_identity(msg) for msg in messages[:end])
 
 
-def _mismatch(window: _Window, messages: list[dict[str, Any]], session_id: str, start: int) -> Optional[_Miss]:
+def _mismatch(
+    window: _Window, messages: list[dict[str, Any]], session_id: str, start: int,
+    *, end: Optional[int] = None, protect_active: bool = False,
+) -> Optional[_Miss]:
     """Why *window* cannot splice into ``messages`` with the head ending at ``start``, or None. The fresh tail
-    cut is not consulted: the candidate's boundary is where the tail starts (one summary, never redone)."""
+    soft cut is not consulted: only a new hard protection boundary can shorten the eligible window."""
     if window.session_id != session_id:
         return _Miss("other_session", "another session")
     if window.compress_start != start:
         return _Miss("head_moved", f"head moved ({window.compress_start} -> {start})")
     if window.compress_end > len(messages):
         return _Miss("transcript_shorter", "transcript shorter than the prepared window")
+    if window.protect_active != protect_active or (end is not None and window.compress_end > end):
+        return _Miss("window_changed", "compaction protection or eligible window changed")
     for idx, ((structure, uid, digest), msg) in enumerate(zip(window.identities, messages)):
         now_structure, now_uid, now_digest = _message_identity(msg)
         if now_structure != structure:
@@ -276,6 +282,7 @@ class PreparedCompaction:
 
     def take(
         self, messages: list[dict[str, Any]], session_id: str, start: int, *, eligible: bool,
+        end: Optional[int] = None, protect_active: bool = False,
     ) -> Optional[PreparedSummary]:
         """The completed candidate when it still covers the same messages after ``compress()``'s head, else
         what a running pass whose window does publishes while this compaction waits for it, else None. Either way the state is
@@ -289,11 +296,13 @@ class PreparedCompaction:
             "provider_context" if self._needs_provider_context else "fresh_required", "fresh summary required",
         )
         if reason is None and entry is not None:
-            reason = _mismatch(entry, messages, session_id, start)
+            reason = _mismatch(entry, messages, session_id, start, end=end, protect_active=protect_active)
         waited = None
         try:
             if eligible and (entry is None or reason is not None):
-                if pending is not None and _mismatch(pending.window, messages, session_id, start) is None:
+                if pending is not None and _mismatch(
+                    pending.window, messages, session_id, start, end=end, protect_active=protect_active,
+                ) is None:
                     wait_started = time.monotonic()
                     entry, reason = self._await(pending)
                     waited = time.monotonic() - wait_started
@@ -405,7 +414,10 @@ class PreparedCompaction:
             with self._lock:
                 if self._pending is not None or self._entry is not None:
                     return None  # one summary per compaction: later messages join the tail at the splice
-            working, _, start, end = compressor._plan_compaction_window(messages)
+            # Preparation targets the upcoming threshold-triggered compaction, not the
+            # below-threshold reading that scheduled the background work.
+            plan = compressor._plan_compaction_window(messages, compressor.threshold_tokens)
+            working, start, end = plan.messages, plan.start, plan.end
             if start >= end:
                 return None
             worker = _worker_copy(compressor)
@@ -417,7 +429,8 @@ class PreparedCompaction:
             if not turns:
                 return None
             focus = worker._derive_auto_focus_topic(working)
-            window = _Window(compressor._session_id, start, end, prefix_identities(working, end))
+            window = _Window(compressor._session_id, start, end, prefix_identities(working, end),
+                             protect_active=plan.protect_active)
             # Never queue threads that retain transcripts while every slot is busy.
             if not _slots.acquire(blocking=False):
                 if self._busy_window != (window.session_id, start, end):  # count refused passes, not tool batches
@@ -480,6 +493,7 @@ class PreparedCompaction:
                     summary, worker._previous_summary,
                     call_state={name: getattr(worker, name, None) for name in _SUMMARY_CALL_STATE},
                     telemetry={key: telemetry.get(key) for key in _SUMMARY_CALL_TELEMETRY},
+                    protect_active=window.protect_active,
                 )
                 logger.info("prepared compaction: pass completed session=%s window=%d-%d in %.1fs",
                             window.session_id, window.compress_start, window.compress_end, time.monotonic() - started)

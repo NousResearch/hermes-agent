@@ -4,10 +4,25 @@ summary into that window."""
 
 from __future__ import annotations
 
+import copy
+from dataclasses import dataclass, replace
 from typing import Any, Optional
 
 from agent.context_compressor_tail import tail_cut_progress_floor
+from agent.model_metadata import estimate_messages_tokens_rough
 from agent.prepared_compaction import PreparedCompaction, PreparedSummary
+
+
+@dataclass(frozen=True)
+class CompactionWindow:
+    messages: list[dict[str, Any]]
+    pruned_count: int
+    start: int
+    end: int
+    protect_active: bool = False
+    active_start: Optional[int] = None
+    protected_start: Optional[int] = None
+    failure_class: Optional[str] = None
 
 
 class CompactionWindowMixin:
@@ -36,18 +51,75 @@ class CompactionWindowMixin:
                 compress_end = bridge_idx
         return compress_start, compress_end
 
-    def _plan_compaction_window(self, messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int, int, int]:
-        """Phases 1-2 of compress(): ``(working, pruned_count, compress_start, compress_end)``.
-        ``working`` is a pruned copy without blank echoes; the boundaries index into it."""
+    def _plan_compaction_window(
+        self, messages: list[dict[str, Any]], current_tokens: Optional[int] = None,
+    ) -> CompactionWindow:
+        """Resolve one working copy and its boundaries for the inline and prepared passes."""
+        canonical = self._drop_blank_echoes(messages)
+        bounds = self._window_bounds(canonical, current_tokens)
+        if bounds.protect_active:
+            active = bounds.active_start
+            historical, pruned = self._prune_old_tool_results(canonical[:active], protect_tail_count=0)
+            return replace(bounds, messages=historical + copy.deepcopy(canonical[active:]), pruned_count=pruned)
+        if bounds.start == bounds.end:
+            return bounds
         working, pruned_count = self._prune_old_tool_results(
-            messages, protect_tail_count=self.protect_last_n, protect_tail_tokens=self.tail_token_budget,
+            canonical, protect_tail_count=self.protect_last_n, protect_tail_tokens=self.tail_token_budget,
         )
         working = self._drop_blank_echoes(working)
-        compress_start, compress_end = self._compress_window(working)
-        return working, pruned_count, compress_start, compress_end
+        # Legacy pruning may demote active tool payloads. Keep the selected mode: a fresh
+        # pressure decision here could falsely promise that those payloads stayed verbatim.
+        start, end = self._compress_window(working)
+        return replace(bounds, messages=working, start=start, end=end, pruned_count=pruned_count)
+
+    def _window_bounds(
+        self, canonical: list[dict[str, Any]], current_tokens: Optional[int] = None,
+    ) -> CompactionWindow:
+        """Observational eligibility: no pruning, demotion, summary or transcript writes."""
+        preferred_head = self._protect_head_size(canonical)
+        pressure = max(current_tokens or 0, estimate_messages_tokens_rough(canonical)) >= self.threshold_tokens
+        active = self._find_last_user_message_idx(canonical, 0)
+        system = 1 if canonical and canonical[0].get("role") == "system" else 0
+        price = self._tail_row_pricer(canonical)
+        head_tokens = sum(price(i) for i in range(system, min(preferred_head, max(system, active))))
+        historical_tokens = sum(price(i) for i in range(system, max(system, active)))
+        user_boundary, multiple_users = self._user_tail_boundary(canonical, system)
+        protected = user_boundary if multiple_users else None
+        if len(canonical) <= preferred_head + 4:
+            normal = CompactionWindow(canonical, 0, preferred_head, preferred_head,
+                                      protected_start=protected, failure_class="insufficient_messages")
+        else:
+            start, end = self._compress_window(canonical)
+            normal = CompactionWindow(canonical, 0, start, end, protected_start=protected)
+        # Count protection is a continuity preference, not proof that a short history is small.
+        # The active user and its whole tool transaction stay hard even when history gives way.
+        blocked = normal.start >= normal.end
+        retained_history = sum(price(i) for i in range(max(system, normal.end), max(system, active)))
+        # Head continuity and the ordinary tail are separate protections. A full but valid
+        # tail must not consume the head's allowance or displace a productive normal middle.
+        # Only an oversized historical head, an over-ceiling historical anchor, or a blocked
+        # preferred window needs recovery; retain the existing tail's soft-ceiling policy.
+        preferred_blocks_reclaim = (blocked or head_tokens > self.tail_token_budget
+                                    or retained_history > self._tail_soft_ceiling(self.tail_token_budget))
+        if (pressure and active > system and historical_tokens > self.tail_token_budget
+            and preferred_blocks_reclaim):
+            end = min(active, self._find_tail_cut_by_tokens(canonical, system, allow_split_turn=False))
+            end = min(end, user_boundary) if user_boundary is not None else system
+            if end > system:
+                return CompactionWindow(canonical, 0, system, end, True, active,
+                                        protected if protected is not None else active)
+        return normal
+
+    def _user_tail_boundary(self, messages: list[dict[str, Any]], system: int) -> tuple[Optional[int], bool]:
+        """The configured hard user anchor, including one live user when the setting is absent."""
+        users = self._real_user_indices_desc(messages, system)
+        count = getattr(self, "min_tail_user_messages", 1)
+        count = max(1, count) if isinstance(count, int) and not isinstance(count, bool) else 1
+        return (users[min(count, len(users)) - 1] if users else None), count > 1
 
     def _take_prepared_summary(
         self, messages: list[dict[str, Any]], compress_start: int, *, fresh: bool, provider_context: bool,
+        compress_end: Optional[int] = None, protect_active: bool = False,
     ) -> Optional[PreparedSummary]:
         """The summary prepared in the background for this window, which an automatic compaction splices at
         ITS boundary; every newer message stays outside the summary, in the tail. ``fresh`` compactions
@@ -59,6 +131,7 @@ class CompactionWindowMixin:
             self.prepared_compaction.stop_for_provider_context()
         return self.prepared_compaction.take(
             messages, self._session_id, compress_start, eligible=not (fresh or provider_context),
+            end=compress_end, protect_active=protect_active,
         )
 
     def _adopt_prepared_summary(self, prepared: PreparedSummary) -> str:

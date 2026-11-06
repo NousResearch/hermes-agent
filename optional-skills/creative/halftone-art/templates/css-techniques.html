@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>CSS techniques</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#d5d1c4;font-family:Inter,system-ui,sans-serif;padding:20px}
+  .g{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+  .t{position:relative;height:300px;overflow:hidden;border:1px solid #15140f;background:#f2eee2;isolation:isolate}
+  .cap{font:600 11px ui-monospace,monospace;letter-spacing:.1em;text-transform:uppercase;margin-top:6px}
+
+  /* 1 — filter: screen dots then hard threshold --------------------------- */
+  .ht-filter{filter:contrast(7.5) brightness(1.02)}
+  .ht-filter img{width:100%;height:100%;object-fit:cover;display:block;filter:grayscale(1) contrast(1.35) brightness(.96)}
+  .ht-filter::after{
+    content:"";position:absolute;inset:-32%;
+    background-image:radial-gradient(circle at 50% 50%, #000 0%, #555 42%, #fff 78%);
+    background-size:5px 5px;
+    mix-blend-mode:screen;
+    transform:rotate(45deg);
+  }
+
+  /* 2 — dot mask over a gradient (flat-colour halftone) ------------------- */
+  .ht-gradient{background:linear-gradient(120deg,#0f4bd8,#ff5f8f 55%,#ffe600)}
+  .ht-gradient::after{
+    content:"";position:absolute;inset:0;
+    background:#f2eee2;
+    -webkit-mask-image:radial-gradient(circle at 50% 50%, #000 44%, transparent 46%);
+    mask-image:radial-gradient(circle at 50% 50%, #000 44%, transparent 46%);
+    -webkit-mask-size:9px 9px;mask-size:9px 9px;
+    -webkit-mask-repeat:round;mask-repeat:round;
+  }
+
+  /* 3 — halftone type ----------------------------------------------------- */
+  .ht-type{display:grid;place-items:center;background:#f2eee2}
+  .ht-type b{
+    font-family:"Helvetica Neue",Arial,sans-serif;font-size:158px;line-height:.8;font-weight:900;
+    letter-spacing:-.05em;color:#15140f;
+    -webkit-mask-image:radial-gradient(circle at 50% 50%, #000 58%, transparent 60%);
+    mask-image:radial-gradient(circle at 50% 50%, #000 58%, transparent 60%);
+    -webkit-mask-size:5px 5px;mask-size:5px 5px;
+    -webkit-mask-repeat:round;mask-repeat:round;
+  }
+
+  /* 4 — svg pattern + gradient mask -------------------------------------- */
+  .ht-svg svg{position:absolute;inset:0;width:100%;height:100%}
+
+  /* 5 — css dot texture (no image) --------------------------------------- */
+  .ht-tex{background-color:#15140f}
+  .ht-tex::after{
+    content:"";position:absolute;inset:0;
+    background:radial-gradient(circle at 50% 50%, #c8ff3d 2.1px, transparent 2.2px) 0 0/11px 11px;
+    -webkit-mask-image:linear-gradient(65deg, #000 10%, transparent 82%);
+    mask-image:linear-gradient(65deg, #000 10%, transparent 82%);
+  }
+  /* 6 — screenprint offset plate (misregistration) ----------------------- */
+  .ht-mis{background:#fdf3e3;display:grid;place-items:center}
+  .ht-mis .lay{position:absolute;inset:0;display:grid;place-items:center;font:900 120px/1 "Helvetica Neue",Arial;letter-spacing:-.05em}
+  .ht-mis .a{color:#0f4bd8;transform:translate(-4px,-3px);mix-blend-mode:multiply}
+  .ht-mis .b{color:#ff5f8f;transform:translate(4px,3px);mix-blend-mode:multiply;opacity:.9}
+</style></head>
+<body>
+<div class="g">
+  <figure><div class="t ht-filter"><img src="img/portrait.jpg" alt=""></div><figcaption class="cap">1 · filter screen + threshold</figcaption></figure>
+  <figure><div class="t ht-gradient"></div><figcaption class="cap">2 · dot mask over gradient</figcaption></figure>
+  <figure><div class="t ht-type"><b>HT</b></div><figcaption class="cap">3 · halftone type mask</figcaption></figure>
+  <figure><div class="t ht-svg">
+    <svg viewBox="0 0 300 300" preserveAspectRatio="none">
+      <defs>
+        <pattern id="dots" width="9" height="9" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+          <circle cx="4.5" cy="4.5" r="2.6" fill="#15140f"/>
+        </pattern>
+        <linearGradient id="fade" x1="0" y1="1" x2="1" y2="0">
+          <stop offset="0" stop-color="#fff" stop-opacity="1"/>
+          <stop offset="1" stop-color="#fff" stop-opacity="0"/>
+        </linearGradient>
+        <mask id="m"><rect width="300" height="300" fill="url(#fade)"/></mask>
+      </defs>
+      <rect width="300" height="300" fill="#c8ff3d"/>
+      <rect width="300" height="300" fill="url(#dots)" mask="url(#m)"/>
+    </svg></div><figcaption class="cap">4 · svg pattern + gradient mask</figcaption></figure>
+  <figure><div class="t ht-tex"></div><figcaption class="cap">5 · css dot texture, no image</figcaption></figure>
+  <figure><div class="t ht-mis"><span class="lay a">OFFSET</span><span class="lay b">OFFSET</span></div><figcaption class="cap">6 · misregistered plates</figcaption></figure>
+</div>
+</body></html>

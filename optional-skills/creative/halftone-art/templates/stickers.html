@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Halftone stickers — die-cut, transparent</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Archivo:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#f2eee2; --ink:#15140f; --rule:rgba(21,20,15,.18);
+    --ink-60:rgba(21,20,15,.6); --acid:#c8ff3d;
+    --pad:clamp(16px,4vw,52px);
+    --display:'Archivo Black',Impact,sans-serif;
+    --sans:'Archivo',Helvetica,sans-serif;
+    --mono:'JetBrains Mono',ui-monospace,monospace;
+    --surface: radial-gradient(circle at 30% 20%, #f7f3e8, #e6e0cf 70%);
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.45;
+    background:var(--surface);background-attachment:fixed;
+    -webkit-font-smoothing:antialiased;
+    transition:background .3s ease;
+  }
+  body.on-paper{--ink:#15140f;--ink-60:rgba(21,20,15,.6);--rule:rgba(21,20,15,.22)}
+  .wrap{padding-inline:var(--pad);max-width:1400px;margin-inline:auto}
+  .bar{
+    display:flex;justify-content:space-between;align-items:baseline;gap:18px;flex-wrap:wrap;
+    padding-block:14px;border-bottom:1.5px solid currentColor;color:var(--paper);
+    font-family:var(--mono);font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;
+  }
+  .bar span{opacity:.6}
+  header{padding-block:clamp(20px,3.4vw,42px) clamp(14px,2vw,26px);color:var(--paper)}
+  h1{
+    font-family:var(--display);font-weight:400;margin:0;
+    font-size:clamp(34px,5.6vw,74px);line-height:.88;letter-spacing:-.03em;text-transform:uppercase;
+  }
+  header p{max-width:56ch;margin:14px 0 0;opacity:.72}
+  header p b{color:var(--acid);font-weight:500}
+
+  .controls{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:18px 0 4px;
+    font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--paper)}
+  .sw{width:26px;height:26px;border:1.5px solid rgba(255,255,255,.7);cursor:pointer;padding:0}
+  .sw[aria-pressed="true"]{outline:2px solid var(--acid);outline-offset:2px}
+
+  .sheet{
+    display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));max-width:1180px;
+    gap:clamp(18px,3vw,38px);padding:clamp(24px,4vw,52px) 0 clamp(30px,5vw,64px);
+  }
+  figure{margin:0;display:flex;flex-direction:column;align-items:center;gap:12px}
+  .sticker{position:relative;width:100%;aspect-ratio:1/1;max-width:360px}
+  .sticker canvas{
+    width:100%;height:100%;display:block;
+    filter:drop-shadow(0 12px 18px rgba(0,0,0,.38)) drop-shadow(0 2px 3px rgba(0,0,0,.28));
+    transition:transform .25s cubic-bezier(.2,.8,.2,1);
+  }
+  .sticker:hover canvas{transform:scale(1.03) rotate(0deg)!important}
+  .sticker.tilt-l canvas{transform:rotate(-4deg)}
+  .sticker.tilt-r canvas{transform:rotate(3.5deg)}
+  .cap{
+    font-family:var(--mono);font-size:9.5px;letter-spacing:.13em;text-transform:uppercase;
+    color:var(--paper);opacity:.72;text-align:center;
+  }
+  .cap b{display:block;font-family:var(--sans);font-size:12.5px;letter-spacing:.01em;
+    text-transform:none;opacity:1;margin-bottom:3px;font-weight:500}
+  .dl{
+    font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;
+    background:none;border:1px solid rgba(255,255,255,.35);color:var(--paper);
+    padding:6px 11px;cursor:pointer;transition:all .18s ease;
+  }
+  .dl:hover{background:var(--acid);color:#15140f;border-color:var(--acid)}
+
+  .note{
+    border-top:1.5px solid rgba(255,255,255,.25);padding-block:18px 40px;color:var(--paper);
+    opacity:.62;font-size:13px;max-width:72ch;
+  }
+  .note code{font-family:var(--mono);font-size:12px;background:rgba(255,255,255,.1);padding:1px 5px}
+
+  /* paper surface variant flips the text colour */
+  body.on-paper .bar,body.on-paper header,body.on-paper .cap,body.on-paper .controls,body.on-paper .note{color:var(--ink)}
+  body.on-paper .dl{border-color:rgba(21,20,15,.3);color:var(--ink)}
+  body.on-paper .sw{border-color:rgba(21,20,15,.4)}
+  @media (max-width:560px){ .bar span:nth-child(2){display:none} }
+</style>
+</head>
+<body class="on-paper">
+<div class="wrap">
+  <div class="bar">
+    <b>Sticker pack — die-cut</b>
+    <span>Transparent PNG · paper rim · clear vinyl</span>
+    <span>halftone-art</span>
+  </div>
+
+  <header>
+    <h1>Cut out<br>the dots</h1>
+    <p>Same engine, cut to the subject silhouette: <b>cutout: true</b> drops the backdrop, keeps the
+      halftone, and grows a die-cut rim behind it. The stock stays inside the shape; everything
+      outside is transparent, so these drop onto any surface — try the swatches.</p>
+  </header>
+
+  <div class="controls">
+    <span>surface</span>
+    <button class="sw" data-surface="paper"  aria-pressed="true"  style="background:#f2eee2" title="paper"></button>
+    <button class="sw" data-surface="night"  aria-pressed="false" style="background:#0a1026" title="night"></button>
+    <button class="sw" data-surface="acid"   aria-pressed="false" style="background:#c8ff3d" title="acid"></button>
+    <button class="sw" data-surface="blue"   aria-pressed="false" style="background:#0f4bd8" title="riso blue"></button>
+    <button class="sw" data-surface="photo"  aria-pressed="false" style="background:#6b6257" title="photo"></button>
+  </div>
+
+  <div class="sheet" id="sheet"></div>
+
+  <div class="note">
+    Two ways in. <code>cutoutMode: 'alpha'</code> is exact — hand it a PNG that already has
+    transparency (Figma, Photoshop, any cut-out service) and the silhouette is read straight from
+    the alpha channel. <code>cutoutMode: 'key'</code> is the draft path: it floods the backdrop
+    inward from the frame corners, which works on studio and product shots with a plain backdrop
+    and fails on fur, hair and busy backgrounds. Every sticker saves with a transparent PNG.
+  </div>
+</div>
+
+<script type="module">
+import { renderHalftone } from './halftone-core.js';
+
+const load = (src) => new Promise((res) => {
+  const i = new Image();
+  i.onload = () => res(i);
+  i.onerror = () => res(null);
+  i.src = src;
+});
+
+/* ---- vector subjects: drawn with alpha, so the cut-out is exact ---------- */
+
+/** Bold geometric cat head with a tonal gradient and knocked-out eyes. */
+function catHead(size = 720) {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const x = c.getContext('2d');
+  const s = size / 100;
+  const g = x.createLinearGradient(size * 0.2, size * 0.05, size * 0.85, size);
+  g.addColorStop(0, '#4a4a4a');
+  g.addColorStop(0.5, '#9a9a9a');
+  g.addColorStop(1, '#141414');
+  x.fillStyle = g;
+  x.beginPath();
+  x.moveTo(17 * s, 48 * s);
+  x.lineTo(23 * s, 8 * s);
+  x.lineTo(41 * s, 30 * s);
+  x.quadraticCurveTo(50 * s, 26 * s, 59 * s, 30 * s);
+  x.lineTo(77 * s, 8 * s);
+  x.lineTo(83 * s, 48 * s);
+  x.quadraticCurveTo(93 * s, 64 * s, 84 * s, 79 * s);
+  x.quadraticCurveTo(71 * s, 95 * s, 50 * s, 95 * s);
+  x.quadraticCurveTo(29 * s, 95 * s, 16 * s, 79 * s);
+  x.quadraticCurveTo(7 * s, 64 * s, 17 * s, 48 * s);
+  x.closePath();
+  x.fill();
+
+  x.globalCompositeOperation = 'destination-out';
+  x.beginPath(); x.ellipse(36 * s, 58 * s, 7.5 * s, 9.5 * s, -0.18, 0, 7); x.fill();
+  x.beginPath(); x.ellipse(64 * s, 58 * s, 7.5 * s, 9.5 * s, 0.18, 0, 7); x.fill();
+  x.beginPath();
+  x.moveTo(50 * s, 71 * s);
+  x.lineTo(45.5 * s, 65 * s);
+  x.lineTo(54.5 * s, 65 * s);
+  x.closePath();
+  x.fill();
+  // whiskers, cut through the edge
+  x.lineCap = 'round';
+  x.lineWidth = 1.4 * s;
+  [[22, 70, 4, 66], [22, 76, 4, 78], [78, 70, 96, 66], [78, 76, 96, 78]].forEach(([x1, y1, x2, y2]) => {
+    x.beginPath(); x.moveTo(x1 * s, y1 * s); x.lineTo(x2 * s, y2 * s); x.stroke();
+  });
+  x.globalCompositeOperation = 'source-over';
+  return c;
+}
+
+/** Display type as an alpha subject — a sticker of the word itself. */
+function typeSticker(text, size = 900, font = '900 300px "Archivo Black", Impact, sans-serif') {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const x = c.getContext('2d');
+  const g = x.createLinearGradient(0, size * 0.1, size, size * 0.9);
+  g.addColorStop(0, '#2b2b2b');
+  g.addColorStop(0.55, '#9c9c9c');
+  g.addColorStop(1, '#101010');
+  x.fillStyle = g;
+  x.font = font;
+  x.textAlign = 'center';
+  x.textBaseline = 'middle';
+  const m = x.measureText(text);
+  const scale = Math.min(1, (size * 0.86) / m.width);
+  x.translate(size / 2, size / 2);
+  x.scale(scale, scale);
+  x.fillText(text, 0, 0);
+  return c;
+}
+
+/* ---- photo subject: cut by colour key from the corners ------------------- */
+/** Stand-in silhouette so the page still renders with no img/ folder. */
+function fallbackPortrait(size = 700) {
+  const c = document.createElement('canvas');
+  c.width = size;
+  c.height = size;
+  const x = c.getContext('2d');
+  const g = x.createRadialGradient(size * 0.46, size * 0.3, 10, size * 0.5, size * 0.55, size * 0.62);
+  g.addColorStop(0, '#f4f0e5');
+  g.addColorStop(0.55, '#8b8880');
+  g.addColorStop(1, '#1a1a1a');
+  x.fillStyle = g;
+  x.beginPath(); x.ellipse(size * 0.5, size * 0.36, size * 0.17, size * 0.2, 0, 0, 7); x.fill();
+  x.beginPath();
+  x.moveTo(size * 0.26, size);
+  x.quadraticCurveTo(size * 0.3, size * 0.62, size * 0.5, size * 0.6);
+  x.quadraticCurveTo(size * 0.7, size * 0.62, size * 0.74, size);
+  x.closePath();
+  x.fill();
+  return c;
+}
+
+const glam = (await load('img/glam.jpg')) || fallbackPortrait();
+
+await document.fonts.ready;           // the type sticker needs the real face
+
+const STICKERS = [
+  {
+    name: 'Cat head',
+    meta: 'alpha cut · riso duo · cell 7',
+    tilt: 'tilt-l',
+    build: () => catHead(720),
+    opts: {
+      mode: 'duotone', inks: ['#0f4bd8', '#ff5f8f'], plateAngles: [27, 62],
+      plateCurves: ['full', 'midtone'], misregister: 3, cell: 7, autoLevels: true,
+      paper: '#fdf3e3', cutoutOutline: 8, cutoutOutlineColor: '#ffffff',
+    },
+  },
+  {
+    name: 'MEOW',
+    meta: 'alpha cut · clear vinyl · cell 5',
+    tilt: 'tilt-r',
+    build: () => typeSticker('MEOW'),
+    opts: {
+      mode: 'mono', ink: '#15140f', paper: '#c8ff3d', cell: 5, autoLevels: true,
+      cutoutFill: 'paper', cutoutOutline: 6, cutoutOutlineColor: '#ffffff', contrast: 1.2,
+    },
+  },
+  {
+    name: 'Studio portrait, c.1905',
+    meta: 'key cut · clear vinyl · cell 4.5',
+    tilt: 'tilt-r',
+    build: () => glam,
+    opts: {
+      mode: 'mono', ink: '#15140f', paper: '#ffffff', cell: 4.5, contrast: 1.5, gain: 0.92,
+      autoLevels: true, cutoutMode: 'key', cutoutTolerance: 0.16, cutoutClose: 5,
+      cutoutKeepLargest: true, cutoutFill: 'none', cutoutOutline: 7,
+      cutoutOutlineColor: '#ffffff',
+    },
+  },
+  {
+    name: 'Spill',
+    meta: 'alpha cut · acid stock · cell 6',
+    tilt: 'tilt-l',
+    build: () => {
+      const c = document.createElement('canvas');
+      c.width = c.height = 700;
+      const x = c.getContext('2d');
+      const g = x.createRadialGradient(260, 240, 30, 350, 350, 340);
+      g.addColorStop(0, '#e2e2e2');
+      g.addColorStop(0.55, '#a8a8a8');
+      g.addColorStop(1, '#3a3a3a');
+      x.fillStyle = g;
+      // splat: radius modulated by a few harmonics, so it reads as a spill
+      const cx = 350, cy = 355, R = 300;
+      const wob = (a) => 1
+        + 0.13 * Math.sin(a * 3 + 0.7)
+        + 0.08 * Math.sin(a * 5 - 1.2)
+        + 0.05 * Math.cos(a * 7 + 2.1);
+      x.beginPath();
+      for (let i = 0; i <= 240; i++) {
+        const a = (i / 240) * Math.PI * 2;
+        const r = R * wob(a);
+        const px = cx + Math.cos(a) * r;
+        const py = cy + Math.sin(a) * r * 0.94;
+        if (i === 0) x.moveTo(px, py); else x.lineTo(px, py);
+      }
+      x.closePath();
+      x.fill();
+      // a couple of detached droplets
+      [[520, 120, 26], [600, 250, 17], [140, 590, 21]].forEach(([dx, dy, dr]) => {
+        x.beginPath(); x.arc(dx, dy, dr, 0, 7); x.fill();
+      });
+      return c;
+    },
+    opts: {
+      mode: 'mono', ink: '#15140f', paper: '#c8ff3d', cell: 6, autoLevels: false,
+      contrast: 1.15, cutoutFill: 'paper', cutoutOutline: 7, cutoutOutlineColor: '#ffffff',
+    },
+  },
+];
+
+const sheet = document.getElementById('sheet');
+const dpr = Math.min(window.devicePixelRatio || 1, 2);
+const SIZE = 360;
+
+for (const s of STICKERS) {
+  const src = s.build();
+  const fig = document.createElement('figure');
+
+  const holder = document.createElement('div');
+  holder.className = `sticker ${s.tilt || ''}`;
+  const cv = document.createElement('canvas');
+  cv.setAttribute('role', 'img');
+  cv.setAttribute('aria-label', `${s.name} — die-cut halftone sticker with transparent background`);
+  holder.appendChild(cv);
+
+  const cap = document.createElement('div');
+  cap.className = 'cap';
+  cap.innerHTML = `<b>${s.name}</b>${s.meta}`;
+
+  const dl = document.createElement('button');
+  dl.className = 'dl';
+  dl.textContent = 'Download PNG';
+  dl.addEventListener('click', () => {
+    cv.toBlob((blob) => {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `halftone-${s.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.png`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    }, 'image/png');
+  });
+
+  if (src) {
+    renderHalftone(cv, src, {
+      ...s.opts,
+      cutout: true,
+      width: SIZE,
+      height: SIZE,
+      pixelRatio: dpr,
+    });
+  }
+
+  fig.append(holder, cap, dl);
+  sheet.appendChild(fig);
+}
+
+/* ---- surface switcher: proof that the background is really transparent --- */
+const SURFACES = {
+  paper: { css: 'radial-gradient(circle at 30% 20%, #f7f3e8, #e6e0cf 70%)', paper: true },
+  night: { css: 'radial-gradient(circle at 20% 15%, #1b2a5e, #0a1026 70%)', paper: false },
+  acid: { css: 'linear-gradient(135deg, #c8ff3d, #7ec400)', paper: false },
+  blue: { css: 'linear-gradient(135deg, #0f4bd8, #071f5e)', paper: false },
+  photo: { css: 'linear-gradient(135deg, #6b6257, #2b2721)', paper: false },
+};
+document.querySelectorAll('.sw').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    const cfg = SURFACES[btn.dataset.surface];
+    document.body.style.background = cfg.css;
+    document.body.classList.toggle('on-paper', cfg.paper);
+    document.querySelectorAll('.sw').forEach((b) => b.setAttribute('aria-pressed', String(b === btn)));
+  });
+});
+
+window.__ready = true;
+</script>
+</body>
+</html>

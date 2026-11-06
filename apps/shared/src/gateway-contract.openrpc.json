@@ -22641,7 +22641,7 @@
       },
       "LlmOneshotParams": {
         "additionalProperties": false,
-        "description": "Needs a ``template`` or ``instructions`` / ``input``; a live ``session_id`` lends its model.\n``task`` is a built-in auxiliary slot or a plugin-registered one (unknown keys are refused).",
+        "description": "Needs a ``template`` or ``instructions`` / ``input``; a live ``session_id`` lends its model.",
         "properties": {
           "profile": {
             "anyOf": [

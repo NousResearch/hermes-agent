@@ -767,8 +767,7 @@ method("session.events.stats", params=SessionEventsStatsParams, result=SessionEv
 
 
 class LlmOneshotParams(ProfileParams):
-    """Needs a ``template`` or ``instructions`` / ``input``; a live ``session_id`` lends its model.
-    ``task`` is a built-in auxiliary slot or a plugin-registered one (unknown keys are refused)."""
+    """Needs a ``template`` or ``instructions`` / ``input``; a live ``session_id`` lends its model."""
 
     template: str | None = None
     instructions: str | None = None

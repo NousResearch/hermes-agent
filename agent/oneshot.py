@@ -112,17 +112,6 @@ def run_oneshot(
     return _strip_code_fence((extract_content_or_reasoning(response) or "").strip())
 
 
-def client_task(task: Optional[str]) -> str:
-    """The auxiliary task an ``llm.oneshot`` client named (default ``title_generation``): a built-in
-    slot or one a loaded plugin registered with ``ctx.register_auxiliary_task``. An unknown key
-    raises KeyError instead of running on the main model unnoticed (#141976)."""
-    from hermes_cli.main_provider_setup import _all_aux_tasks
-    task = (task or "").strip() or "title_generation"
-    if task not in {key for key, _name, _desc in _all_aux_tasks()}:
-        raise KeyError(f"unknown auxiliary task: {task}")
-    return task
-
-
 def _strip_code_fence(text: str) -> str:
     """Drop a single wrapping ``` fence the model may have added."""
     if not text.startswith("```"):

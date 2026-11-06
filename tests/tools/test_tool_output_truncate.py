@@ -43,7 +43,7 @@ def test_mcp_result_truncation():
 def test_execute_code_stdout_truncation(monkeypatch):
     from tools import code_execution_tool
     monkeypatch.setattr(code_execution_tool, "MAX_STDOUT_BYTES", 1000)
-    monkeypatch.setattr(code_execution_tool, "_spill_full_stdout", lambda _text: None)
+    monkeypatch.setattr(code_execution_tool, "_spill_full_stdout", lambda _text, _env=None: None)
     text, meta = code_execution_tool._truncate_stdout_text(TEXT)
     info = _assert_head_tail(text, budget=1000, total=10_000, unit="bytes")
     assert info["label"] == "OUTPUT" and meta["stdout_bytes_omitted"] == 9000

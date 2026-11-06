@@ -58,7 +58,11 @@ def _save_blocked_payload(command: str) -> str | None:
     of two, and is strictly safer than the hint-only path: the file goes through
     the normal execution pipeline (including the referenced-script content guard)
     and nothing runs here. Returns the path, or None on any failure (hint falls
-    back to write_file)."""
+    back to write_file). Never in a hosted scope: the command is the tenant's, and a host path
+    would mean nothing inside its sandbox."""
+    from tools.hosted_tool_policy import host_feature_enabled
+    if not host_feature_enabled("tool_host_artifacts"):
+        return None
     try:
         from hermes_constants import get_hermes_home
         script_dir = get_hermes_home() / "cache" / "blocked-scripts"

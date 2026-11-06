@@ -225,7 +225,7 @@ def get_status(execution_id: str) -> Optional[dict]:
     }
 
 
-def claim_next() -> Optional[dict]:
+def claim_next(*, execution_id: Optional[str] = None) -> Optional[dict]:
     """Atomically claim one pending send before touching the transport."""
     pid = os.getpid()
     started = _process_start_time(pid)
@@ -233,7 +233,9 @@ def claim_next() -> Optional[dict]:
         # created_at carries a DST-varying offset: order by instant, not text.
         row = conn.execute(
             "SELECT execution_id FROM deliveries WHERE status='pending' "
-            "ORDER BY julianday(created_at), created_at, execution_id LIMIT 1"
+            "AND (? IS NULL OR execution_id=?) "
+            "ORDER BY julianday(created_at), created_at, execution_id LIMIT 1",
+            (execution_id, execution_id),
         ).fetchone()
         if row is None:
             return None
@@ -285,10 +287,10 @@ def recover_abandoned() -> int:
     The firer settled long ago against a ``queued`` row, so each fenced row's outcome is written
     back here (job ``delivery_failed`` + error, ledger ``failed``) instead of leaving the run at
     ``delivery_queued`` forever."""
-    fenced: list[tuple[Optional[str], str]] = []
+    fenced: list[tuple[dict, str, str, bool]] = []
     with _transaction() as conn:
         rows = conn.execute(
-            "SELECT execution_id, job_json, owner_process_id, owner_pid, owner_started_at "
+            "SELECT execution_id, job_json, for_failure, owner_process_id, owner_pid, owner_started_at "
             "FROM deliveries WHERE status='delivering'"
         ).fetchall()
         for row in rows:
@@ -315,24 +317,27 @@ def recover_abandoned() -> int:
                 ),
             )
             if cur.rowcount:
-                # Read the job id now: pruning below redacts a terminal row's job_json.
-                fenced.append((json.loads(row["job_json"] or "{}").get("id"), row["execution_id"]))
+                # Retain routing until the failure notice is queued; pruning redacts job_json.
+                fenced.append((json.loads(row["job_json"] or "{}"), row["execution_id"],
+                               error, bool(row["for_failure"])))
         _prune_terminal_unlocked(conn)
-    from cron.delivery_outcome import settle_quietly
+    from cron.delivery_outcome import enqueue_delivery_failure, settle_quietly
 
-    for job_id, execution_id in fenced:
-        settle_quietly(job_id, execution_id)
+    for job, execution_id, error, for_failure in fenced:
+        enqueue_delivery_failure(job, execution_id, error, for_failure=for_failure)
+        settle_quietly(job.get("id"), execution_id)
     return len(fenced)
 
 
 def drain(
-    send: Callable[[dict, str, bool], Optional[str]], *, limit: int = 20
+    send: Callable[[dict, str, bool], Optional[str]], *, limit: int = 20,
+    execution_id: Optional[str] = None
 ) -> int:
     """Deliver pending rows through *send*, terminalizing every claimed row."""
     recover_abandoned()
     processed = 0
     for _ in range(max(0, limit)):
-        row = claim_next()
+        row = claim_next(execution_id=execution_id)
         if row is None:
             break
         with _lock:
@@ -346,8 +351,10 @@ def drain(
                 error = f"{type(exc).__name__}: {exc}"
             if _finish(row["execution_id"], error=error,
                        suppressed=bool(row["job"].get("_notification_all_targets_suppressed"))):
-                from cron.delivery_outcome import settle_quietly
+                from cron.delivery_outcome import enqueue_delivery_failure, settle_quietly
 
+                enqueue_delivery_failure(
+                    row["job"], row["execution_id"], error, for_failure=bool(row["for_failure"]))
                 settle_quietly(row["job"].get("id"), row["execution_id"])
         finally:
             with _lock:

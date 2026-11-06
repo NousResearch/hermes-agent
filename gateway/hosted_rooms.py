@@ -729,11 +729,11 @@ _OWE_REVOKE = """INSERT INTO hosted_room_owed_revokes(
 
 # Owed revokes are bounded however many grants a caller hands in: an expiry is read from the grant's
 # unsigned payload, so it is capped at the longest status horizon a member gateway signs; a member
-# keeps at most a few (its scope revocation covers every grant issued before it, so the longest-lived
-# one is enough); and the table has a ceiling, where expired rows make room first and a grant that
-# still finds none is revoked by the caller at once (``HostedRoomService.owe_grant_revoke``). A
-# revoke that never lands is retried, with capped backoff, until its grant expires: the grant passes
-# at its member's gateway until then.
+# keeps at most a few rows; and the table has a ceiling, where expired rows make room first. A grant
+# that finds no room is revoked by the caller at once (``HostedRoomService.owe_grant_revoke``): only
+# the member's gateway can check a grant's signature, so an owed row's unsigned expiry never counts
+# as covering another grant, nor is a row evicted for one. A revoke that never lands is retried, with
+# capped backoff, until its grant expires: the grant passes at its member's gateway until then.
 MAX_OWED_REVOKE_SECONDS = 30 * 24 * 60 * 60
 MAX_OWED_REVOKES_PER_MEMBER = 4
 MAX_OWED_REVOKES = 512
@@ -752,16 +752,13 @@ def _owe_revoke_locked(
     if conn.execute("SELECT 1 FROM hosted_room_owed_revokes WHERE room_id=? AND member_id=? AND grant_digest=?",
                     (*member, digest)).fetchone() is not None:
         return
-    rows = conn.execute("""SELECT grant_digest, expires_at FROM hosted_room_owed_revokes
-            WHERE room_id=? AND member_id=? ORDER BY expires_at, created_at""", member).fetchall()
-    if len(rows) >= MAX_OWED_REVOKES_PER_MEMBER:
+    owed = int(conn.execute("SELECT COUNT(*) FROM hosted_room_owed_revokes WHERE room_id=? AND member_id=?",
+                            member).fetchone()[0])
+    if owed >= MAX_OWED_REVOKES_PER_MEMBER:
         if held:
             raise HostedRoomError("too many held group chat grant revokes")
-        if float(rows[0]["expires_at"]) >= expires_at:
-            return  # a longer-lived grant of this member is already owed
-        conn.execute("DELETE FROM hosted_room_owed_revokes WHERE room_id=? AND member_id=? AND grant_digest=?",
-                     (*member, rows[0]["grant_digest"]))
-    elif int(conn.execute("SELECT COUNT(*) FROM hosted_room_owed_revokes").fetchone()[0]) >= MAX_OWED_REVOKES:
+        raise OwedRevokesFullError("too many owed revokes for this group chat member")
+    if int(conn.execute("SELECT COUNT(*) FROM hosted_room_owed_revokes").fetchone()[0]) >= MAX_OWED_REVOKES:
         # A grant past its expiry passes nowhere: its row is the one to give up.
         conn.execute("DELETE FROM hosted_room_owed_revokes WHERE expires_at<=?", (now,))
         if int(conn.execute("SELECT COUNT(*) FROM hosted_room_owed_revokes").fetchone()[0]) >= MAX_OWED_REVOKES:

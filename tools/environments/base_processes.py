@@ -14,6 +14,7 @@ public methods itself (they receive the bound scope, see ``sandbox_scope.ScopedE
 
 from __future__ import annotations
 
+import contextlib
 import subprocess
 import threading
 from typing import Any, Optional
@@ -57,21 +58,44 @@ class LongLivedProcessMixin:
         return self._stream(name, proc) if proc is not None and proc.poll() is None else None
 
     def stop_process(self, name: str, *, scope: Any = None) -> bool:
-        """Stop *name* (its whole process tree where the backend can); ``False`` if none was running."""
+        """Stop *name* (its whole process tree where the backend can); ``False`` if none was running.
+        A leader that already exited still has its group swept: a descendant it left behind is
+        stopped too, and the record goes only once that is done."""
         with self.__dict__.get("_long_lived_lock") or threading.Lock():
             proc = self._long_lived().pop(name, None)
-        if proc is None or proc.poll() is not None:
+        if proc is None:
             return False
-        self._kill_process(proc)  # type: ignore[attr-defined]
+        was_running = proc.poll() is None
+        self._reap_long_lived(proc)
+        return was_running
+
+    def stop_all_processes(self) -> None:
+        """Stop and reap every long-lived process this environment started (environment cleanup)."""
+        with self.__dict__.get("_long_lived_lock") or threading.Lock():
+            procs = list(self._long_lived().values())
+            self._long_lived().clear()
+        for proc in procs:
+            self._reap_long_lived(proc)
+
+    def _reap_long_lived(self, proc: subprocess.Popen) -> None:
+        """Kill *proc*'s tree, reap it, close its pipes, then release a host-owned group."""
+        owned_pgid = getattr(proc, "_hermes_owned_pgid", None)
+        if proc.poll() is None or owned_pgid is not None:
+            self._kill_process(proc)  # type: ignore[attr-defined]  # signals the group even with the leader gone
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proc.kill()
-        if (owned_pgid := getattr(proc, "_hermes_owned_pgid", None)) is not None:
-            # A host-owned group (``spawn_owned``): we stopped it, so the owner-death supervisor stops covering it.
+            proc.wait(timeout=5)
+        for pipe in (proc.stdin, proc.stdout):
+            if pipe is not None:
+                with contextlib.suppress(OSError):
+                    pipe.close()
+        if owned_pgid is not None:
+            # A host-owned group (``spawn_owned``): stopped, so the owner-death supervisor stops covering it
+            # once it is empty (a member that survived both signals stays covered and dies with Hermes).
             from hermes_cli.process_identity import release_process_group_once_empty
             release_process_group_once_empty(owned_pgid, proc=proc)
-        return True
 
     @staticmethod
     def _stream(name: str, proc: subprocess.Popen) -> ProcessStream:

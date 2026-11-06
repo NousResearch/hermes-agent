@@ -1,0 +1,18 @@
+name: hostyourai
+repo: https://github.com/cogitor/hermes-hostyourai
+sha: "ed062739a53b1875be82d64db860388e41a112ab"
+subdir: hostyourai
+description: HostYourAI provider profile (hyai/auto, EU-only inference option) and the /hyai task/policy routing command.
+maintainer: cogitor
+tier: community
+category: models
+requires_hermes: ">=0.21.7"
+docs_url: "https://github.com/cogitor/hermes-hostyourai#readme"
+version: "0.4.0"
+image: "https://raw.githubusercontent.com/cogitor/hermes-hostyourai/ed062739a53b1875be82d64db860388e41a112ab/docs/banner.jpg"
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_llm_call]
+  provides_middleware: [llm_request]
+  requires_env: [HOSTYOURAI_API_KEY]

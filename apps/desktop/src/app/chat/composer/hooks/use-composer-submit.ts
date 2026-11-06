@@ -659,7 +659,8 @@ export function useComposerSubmit({
             sessionId: sessionId ?? null,
             storedSessionId: activeQueueSessionKey
           },
-          () => {},
+          // An unconfirmed admission keeps its identity, so Enter on the unchanged draft retries it.
+          (scope, id) => rememberDraftRetry?.(scope, draftRetry(id, originalText, [])),
           clearSentDraft
         )
       } else {

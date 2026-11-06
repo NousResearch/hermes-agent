@@ -6,6 +6,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import type { usePromptActions } from '@/app/session/hooks/use-prompt-actions'
 import { Harness } from '@/app/session/hooks/use-prompt-actions/index-test-utils'
 import { clearSessionDraft, mainComposerScope, stashSessionDraft, takeSessionDraft } from '@/store/composer'
+import { type ComposerDraftRetry, matchingDraftRetry } from '@/store/composer-draft-retry'
 import { clearQueuedPrompts, enqueueQueuedPrompt, getQueuedPrompts } from '@/store/composer-queue'
 import { $notifications, clearNotifications } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -31,7 +32,7 @@ function deferred<T>() {
   return { promise, resolve }
 }
 
-function fixture(reply: unknown, held = false) {
+function fixture(reply: unknown, held = false, busy = { current: true }) {
   const gate = deferred<void>()
   const selected = { current: 'A' as string | null }
   const runtime = { current: 'rt-A' as string | null }
@@ -58,8 +59,9 @@ function fixture(reply: unknown, held = false) {
   })
 
   const submit = vi.fn(async () => true)
+  const retry = { current: undefined as ComposerDraftRetry | undefined }
 
-  const queue = vi.fn(() => {
+  const queue = vi.fn((_id?: string) => {
     const entry = enqueueQueuedPrompt(selected.current, {
       text: draft.current,
       attachments: mainComposerScope.$attachments.get()
@@ -111,7 +113,7 @@ function fixture(reply: unknown, held = false) {
         activeQueueSessionKey: selected.current,
         activeQueueSessionKeyRef: selected,
         attachments: mainComposerScope.$attachments.get(),
-        busy: true,
+        busy: busy.current,
         busyInputMode: 'steer',
         clearDraft: clear,
         disabled: false,
@@ -130,11 +132,20 @@ function fixture(reply: unknown, held = false) {
         queueCurrentDraft: queue,
         queueEdit: null,
         queuedPrompts: [],
+        rememberDraftRetry: (_scope, next) => {
+          retry.current = next
+        },
         sessionId: runtime.current,
         setComposerText: text => {
           draft.current = text
         },
-        stashAt: (scope, text = '', attachments = []) => stashSessionDraft(scope, text, attachments)
+        stashAt: (scope, text = '', attachments = []) => stashSessionDraft(scope, text, attachments),
+        takeDraftRetry: (text, attachments) => {
+          const taken = matchingDraftRetry(retry.current, text, attachments)
+          retry.current = undefined
+
+          return taken
+        }
       }),
     { wrapper: Wrapper }
   )
@@ -344,6 +355,42 @@ it.each([{ status: 'rejected', delivered: false }, undelivered])(
   }
 )
 
+it.each([{ status: 'queued' }, { status: 'rejected' }])(
+  'Enter after the turn ends does not resend a pending %j steer',
+  async reply => {
+    const busy = { current: true }
+    const h = fixture(reply, true, busy)
+    await act(async () => h.hook.result.current.submitDraft())
+    busy.current = false
+    h.hook.rerender()
+    await act(async () => h.hook.result.current.submitDraft())
+    await act(async () => h.release())
+    expect(h.request).toHaveBeenCalledTimes(1)
+    expect(h.submit).not.toHaveBeenCalled()
+  }
+)
+
+it.each(['navigation', 'profile', 'connection'] as const)('known-undelivered steer after %s queues nothing', async change => {
+  const h = fixture({ status: 'rejected', delivered: false }, true)
+  await act(async () => h.hook.result.current.submitDraft())
+
+  if (change === 'navigation') {
+    act(() => h.navigate())
+  }
+
+  if (change === 'profile') {
+    $activeGatewayProfile.set('other')
+  }
+
+  if (change === 'connection') {
+    $connection.set({ mode: 'remote', wsUrl: 'ws://other' } as never)
+  }
+
+  await act(async () => h.release())
+  expect(getQueuedPrompts('A')).toEqual([])
+  expect(getQueuedPrompts('B')).toEqual([])
+})
+
 it.each([true, false])('canonical known-safe fallback holds Enter/Next until acceptance=%s', async accepted => {
   $connection.set({ mode: 'remote', wsUrl: 'ws://fixture/?native_dial=browser' } as never)
   const h = fixture({ status: 'rejected', delivered: false })
@@ -365,6 +412,18 @@ it.each([true, false])('canonical known-safe fallback holds Enter/Next until acc
     'exact draft\n你好',
     expect.objectContaining({ fromQueue: true, sessionId: 'rt-A', storedSessionId: 'A' })
   )
+})
+
+it('an unconfirmed canonical fallback admission keeps its identity for the retry', async () => {
+  $connection.set({ mode: 'remote', wsUrl: 'ws://fixture/?native_dial=browser' } as never)
+  const h = fixture({ status: 'rejected', delivered: false })
+  h.submit.mockRejectedValueOnce(new Error('request timed out: prompt.submit'))
+  await act(async () => h.hook.result.current.submitDraft())
+  expect(h.draft.current).toBe('  exact draft\n你好  ')
+  const [, sent] = h.submit.mock.calls[0] as unknown as [string, { submission_id: string }]
+  await act(async () => h.hook.result.current.submitDraft())
+  expect(h.request).toHaveBeenCalledTimes(1)
+  expect(h.queue).toHaveBeenCalledExactlyOnceWith(sent.submission_id)
 })
 
 it.each(['profile', 'connection'] as const)(

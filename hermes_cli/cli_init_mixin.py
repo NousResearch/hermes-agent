@@ -162,6 +162,7 @@ class CLIInitMixin:
         self.final_response_markdown = _frm if _frm in {"render", "strip", "raw"} else "strip"
 
         self._inline_diffs_enabled = display.get("inline_diffs", True)
+        self._inline_images_mode = display.get("inline_images", "auto")
 
         # Per-turn accounting: CLI-only chrome riding the tool-progress feed.
         self._turn_summary_enabled = bool(display.get("turn_summary", True))

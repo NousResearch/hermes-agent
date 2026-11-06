@@ -4,7 +4,7 @@ import hashlib
 from contextlib import nullcontext
 from pathlib import Path
 
-from gateway.session_contract import Principal
+from gateway.session_contract import SessionActor
 from gateway.session_authorities import active_authority, all_authorities, owner_scope, serving_authorities
 from gateway.session_hosted_controls import HostedControls
 from gateway.owner_identity import same_owner
@@ -12,6 +12,14 @@ from hermes_state_runtime import RuntimeStoreError, _epoch
 from tui_gateway.hosted_room_service import HostedRoomService
 
 _OWNER = 'gateway.hosted.owner.v1:'
+
+
+def probe_native_room_owner(db_path, *, room_id) -> bool:
+    """Non-blocking, read-only: does the gateway owning this session store serve ``room_id``? Only rooms
+    with an owner entry are in ``CanonicalHostedRoomService.bindings``."""
+    from gateway.hosted_rooms import _probe
+    return _probe(Path(db_path), 'state_meta', 'SELECT 1 FROM state_meta WHERE key=? LIMIT 1',
+                  (_OWNER + str(room_id),), 'native room ownership is temporarily unavailable')
 
 
 class CanonicalHostedRoomService(HostedControls, HostedRoomService):
@@ -140,7 +148,9 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         key = binding.room_id, member, profile, owner, str(home)
         if key not in self.member_rpcs:
             if home != Path(self.authority.profile_id):
+                from gateway.session_hosted_member_homes import record_member_home
                 from gateway.session_hosted_transport import HostedRoomOwnerRPC
+                record_member_home(self.authority.db, binding.room_id, member, home)
                 self.member_rpcs[key] = HostedRoomOwnerRPC(home=home,
                     source_home=self.authority.profile_id, room_id=binding.room_id,
                     member_id=member, profile=profile)
@@ -192,13 +202,23 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
                 if not authorized(conn, 'submit', identity, generation):
                     raise RuntimeStoreError('permission_denied')
                 return True
-            principal = Principal(owner, self.authority.profile_id,
+            principal = SessionActor(owner, self.authority.profile_id,
                 frozenset({'session:create', 'session:read', 'session:submit', 'session:control', 'session:approve'}),
                 'hosted:' + binding.room_id + ':' + member)
             self.member_rpcs[key] = HostedRoomAuthorityRPC(self.authority, self.loop,
                 room_id=binding.room_id, member_id=member, profile=profile, principal=principal, authorize=authorize,
                 authorize_write=authorize_write)
         return self.member_rpcs[key]
+
+    def _stop_deferred_peer(self, room_id, task):
+        """Also settle a local member's deferred turn once its profile is no longer served here and
+        nothing on this host can run it (``unserved_member_stopped``): its daemon never answers."""
+        if super()._stop_deferred_peer(room_id, task):
+            return True
+        from gateway.session_hosted_member_homes import unserved_member_stopped
+        from tui_gateway.hosted_room_service import task_member_id
+        return (not self._member_is_peer(room_id, task_member_id(task))
+                and unserved_member_stopped(self, room_id, task))
 
     def check_admission(self, ref, row):
         """Reconstruct the private producer from durable task state before claim."""

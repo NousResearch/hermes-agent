@@ -24,24 +24,24 @@ as a no-op compatibility alias for existing installation commands.
 > `HERMES_NEMO_RELAY_ATIF_*` settings. Those legacy variables no longer
 > configure Relay exporters themselves.
 
-On supported platforms, Hermes requires NeMo Relay 0.10 for managed provider
+On supported platforms, Hermes requires NeMo Relay 0.11 for managed provider
 and tool calls.
 
 ## Runtime Dependency and Data Boundary
 
 Hermes installs the platform-specific `nemo-relay` native wheel from the
-bounded `>=0.10,<0.11` dependency range. The published package is built from
+bounded `>=0.11,<0.12` dependency range. The published package is built from
 the [NVIDIA NeMo Relay repository](https://github.com/NVIDIA/NeMo-Relay).
 Unsupported platforms use the explicit no-op runtime described above rather
 than downloading a different implementation.
 
-Relay 0.10 requires observability configuration `version = 4`. Custom Python
+Relay 0.10 introduced observability configuration `version = 4`. Custom Python
 LLM execution intercepts receive `(name, request, context, next_call)`; the
 context exposes the selected request codec and, for non-streaming execution,
 the response codec. Native plugins must be rebuilt for Relay 0.10's ABI v7 and
 set their `compat.relay` lower bound to `0.10.0`. Workers that register LLM
 execution intercepts must update their callbacks and regenerate their protocol
-bindings. See Relay's [0.10 migration guide](https://docs.nvidia.com/nemo/relay/reference/migration-guides)
+bindings. See Relay's [0.10 migration guide](https://github.com/NVIDIA/NeMo-Relay/blob/0.10.0/docs/reference/migration-guides.mdx)
 for the complete upgrade checklist.
 
 Relay 0.10 also starts OpenTelemetry export on its own when an active Relay
@@ -51,6 +51,11 @@ configuration meets a nonblank `OTEL_EXPORTER_OTLP_ENDPOINT` (or a per-signal
 `hermes migrate relay` set `[components.config.opentelemetry] enabled = false`
 to keep the 0.9 behavior; add the same section to a hand-written file, or set
 `OTEL_SDK_DISABLED=true`, unless you want that export.
+
+Relay 0.11 keeps the configuration version and Python intercept callback shape.
+If you configure Relay plugins or exporters, review the [0.11 migration guide](https://github.com/NVIDIA/NeMo-Relay/blob/0.11.0/docs/reference/migration-guides.mdx)
+before upgrading. Automatic OTLP trace, log, and metric exporters require HTTPS
+for remote destinations unless their host is explicitly allowlisted.
 
 When Relay managed execution is active, the provider request and response pass
 through that native module in the Hermes process so configured interceptors can

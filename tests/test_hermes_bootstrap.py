@@ -537,6 +537,9 @@ class TestHappyEyeballsSocketConnect:
             def connect_ex(self, _address):
                 return errno.EINPROGRESS if self.family == socket.AF_INET6 else 0
 
+            def getpeername(self):
+                return ("192.0.2.1", 443)
+
             def close(self):
                 self.closed = True
 
@@ -569,6 +572,76 @@ class TestHappyEyeballsSocketConnect:
         assert winner.timeout is None  # sentinel resolves to the process default, like stock
         assert clock[0] == hb._HAPPY_EYEBALLS_DELAY_SECONDS
         assert sockets[0].closed is True and sockets[1] is winner
+
+    @pytest.mark.parametrize("v6_connect_result", [0, errno.EINPROGRESS], ids=["immediate", "selector"])
+    def test_racer_never_returns_a_socket_that_is_not_connected(self, monkeypatch, v6_connect_result):
+        """A VPN that black-holes IPv6 (Cisco AnyConnect) can fail ``connect()`` with errno 0,
+        which ``connect_ex`` reports as 0 = success, or leave the socket writable with
+        ``SO_ERROR == 0`` and no peer. The stock serial walker raises there and moves on to
+        IPv4; the racer must too. Handing back the dead IPv6 socket made ``wrap_socket`` skip
+        the handshake and truststore die on ``None.get_unverified_chain``, a "Connection error"
+        on every Anthropic request while IPv4 was healthy."""
+        hb = _fresh_import()
+        sockets = []
+
+        class FakeSocket:
+            def __init__(self, family, socktype, proto):
+                self.family = family
+                self.closed = False
+                sockets.append(self)
+
+            def setsockopt(self, *_args):
+                pass
+
+            def setblocking(self, _blocking):
+                pass
+
+            def settimeout(self, _timeout):
+                pass
+
+            def getsockopt(self, *_args):
+                return 0
+
+            def connect_ex(self, _address):
+                return v6_connect_result if self.family == socket.AF_INET6 else 0
+
+            def getpeername(self):
+                if self.family == socket.AF_INET6:
+                    raise OSError(errno.ENOTCONN, os.strerror(errno.ENOTCONN))
+                return ("192.0.2.1", 443)
+
+            def close(self):
+                self.closed = True
+
+        class FakeSelector:
+            def __init__(self):
+                self.registered = []
+
+            def register(self, sock, _events):
+                self.registered.append(sock)
+
+            def unregister(self, sock):
+                if sock in self.registered:
+                    self.registered.remove(sock)
+
+            def select(self, _timeout):
+                # Every registered attempt reports writable with SO_ERROR == 0 at once.
+                return [(type("Key", (), {"fileobj": sock})(), 0) for sock in list(self.registered)]
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(hb.socket, "getaddrinfo", lambda *_a, **_k: [
+            (socket.AF_INET6, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("2001:db8::1", 443, 0, 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("192.0.2.1", 443)),
+        ])
+        monkeypatch.setattr(hb.socket, "socket", FakeSocket)
+        monkeypatch.setattr(hb.selectors, "DefaultSelector", FakeSelector)
+
+        winner = socket.create_connection(("api.anthropic.com", 443), 5.0)
+
+        assert winner.family == socket.AF_INET
+        assert sockets[0].family == socket.AF_INET6 and sockets[0].closed is True
 
     def test_racer_bug_raises_instead_of_falling_back_to_the_serial_walk(self, monkeypatch):
         """A non-OSError from the racer is a bug in the racer, not a network outcome: it must

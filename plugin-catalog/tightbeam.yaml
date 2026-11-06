@@ -1,0 +1,25 @@
+name: tightbeam
+repo: https://github.com/skeptical-agency/tightbeam
+sha: 09720762aa405d68794ed2d98e45e9270164e4fc
+description: "Beam shorts to every platform and keep your whole YouTube catalog optimized: 11 tools + 2 automation blueprints (nightly back-catalog sweep under a quota budget, post-publish optimizer for new uploads), plus multi-platform publishing through OpusClip with collision checks, platform caps and read-back verification built in. Disclosure — video metadata (titles/descriptions/tags/ids) goes to the Google YouTube Data API through YOUR OWN OAuth client declared in the plugin manifest (hermes auth add tightbeam:google; Hermes stores and refreshes the token, the plugin never sees it); video bytes and post copy go to OpusClip through YOUR Hermes-managed opusclip MCP connection (hermes mcp login opusclip); title and copy generation uses your Hermes host LLM; the plugin stores no credentials; publishing is irreversible once the platform window passes."
+maintainer: skeptical-agency
+tier: community
+category: tools
+docs_url: https://github.com/skeptical-agency/tightbeam/blob/09720762aa405d68794ed2d98e45e9270164e4fc/README.md
+version: "0.4.0"
+capabilities:
+  provides_tools:
+    - tightbeam_status
+    - tightbeam_credits
+    - yt_audit
+    - yt_watch
+    - yt_optimize
+    - yt_sweep
+    - publish_upload
+    - publish_submit
+    - publish_schedule
+    - publish_status
+    - publish_unschedule
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

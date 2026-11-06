@@ -28,6 +28,7 @@ completion in ``state_meta`` so a repaired store is never scanned again.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import time
@@ -177,35 +178,53 @@ def _scan(conn, deadline: float) -> tuple[list[str], bool]:
     return found, True
 
 
+@contextlib.contextmanager
+def _write_txn(conn):
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        yield
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+    conn.execute("COMMIT")
+
+
+def _pending(conn) -> list[str]:
+    return json.loads(_meta(conn, _PENDING) or "[]")
+
+
 def repair_legacy_refused_turns(db, conn) -> dict[str, int]:
     """Advance the one-time repair on the writer connection ``conn`` (autocommit, no open transaction).
-    Bounded per open (``_SCAN_BUDGET_S`` of scanning); the rest continues on later opens. Returns the
-    per-outcome session counts of this pass."""
+
+    One short transaction queues the next scanned slices' candidates (``_PENDING``), then each session
+    is repaired in its own transaction, so the write lock is never held for more than one chat. The whole
+    pass shares one ``_SCAN_BUDGET_S`` budget (at least one session per open, so a large store still
+    progresses); whatever is left stays queued for the next open. Returns this pass's outcome counts."""
     from agent.turn_failure_copy import CONTENT_REFUSED_NOTICE
     counts = {"repaired": 0, "skipped": 0, "deferred": 0}
     if _meta(conn, LEGACY_REFUSAL_REPAIR_DONE) is not None:
         return counts  # read before BEGIN IMMEDIATE: a repaired store never takes the write lock here
-    conn.execute("BEGIN IMMEDIATE")
-    try:
+    started = time.monotonic()
+    with _write_txn(conn):
         if _meta(conn, LEGACY_REFUSAL_REPAIR_DONE) is not None:
-            conn.execute("COMMIT")
-            return counts
-        pending = json.loads(_meta(conn, _PENDING) or "[]")
-        found, scan_complete = _scan(conn, time.monotonic() + _SCAN_BUDGET_S)
-        deferred = []
-        for session_id in dict.fromkeys([*pending, *found]):
+            return counts  # another process finished it between the read and the lock
+        found, scan_complete = _scan(conn, started + _SCAN_BUDGET_S / 2)
+        queue = list(dict.fromkeys([*_pending(conn), *found]))
+        _set_meta(conn, _PENDING, json.dumps(queue))
+    for index, session_id in enumerate(queue):
+        if index and time.monotonic() >= started + _SCAN_BUDGET_S:
+            break
+        with _write_txn(conn):
             outcome = _repair_session(db, conn, session_id, CONTENT_REFUSED_NOTICE)
-            counts[outcome] += 1
-            if outcome == "deferred":
-                deferred.append(session_id)
-        _set_meta(conn, _PENDING, json.dumps(deferred))
-        if scan_complete and not deferred:
+            # Read-modify-write on the stored queue: another process may have queued more meanwhile.
+            # A deferred chat goes to the back, for the next open.
+            remaining = [sid for sid in _pending(conn) if sid != session_id]
+            _set_meta(conn, _PENDING, json.dumps(remaining + [session_id] * (outcome == "deferred")))
+        counts[outcome] += 1
+    with _write_txn(conn):
+        if scan_complete and not _pending(conn):
             _set_meta(conn, LEGACY_REFUSAL_REPAIR_DONE, "1")
             conn.execute("DELETE FROM state_meta WHERE key IN (?, ?)", (_SCAN_CURSOR, _PENDING))
-        conn.execute("COMMIT")
-    except BaseException:
-        conn.execute("ROLLBACK")
-        raise
     if counts["repaired"] or counts["deferred"]:
         logger.info("Legacy safety-refusal repair: %(repaired)d chat(s) unlocked, %(skipped)d left as-is, "
                     "%(deferred)d deferred (busy)", counts)

@@ -6,11 +6,20 @@
 
 import { accessSync, constants } from 'node:fs'
 
+import { JsonRpcGatewayError } from '@hermes/shared/json-rpc-channel'
+
 import { introMsg, toTranscriptMessages } from '../../domain/messages.js'
 import { t } from '../../i18n/runtime.js'
 import { splitImageNotes } from '../../lib/imageNotes.js'
 import { asRpcResult, rpcErrorMessage } from '../../lib/rpc.js'
-import { $pendingRewind, armPendingRewind, cancelBacktrackPrime, cancelPendingRewind, type RewindSubmission } from '../backtrackStore.js'
+import {
+  $pendingRewind,
+  armPendingRewind,
+  cancelBacktrackPrime,
+  cancelPendingRewind,
+  rewindCancelGeneration,
+  type RewindSubmission
+} from '../backtrackStore.js'
 import type { RewindTarget } from '../interfaces.js'
 import { patchOverlayState } from '../overlayStore.js'
 import { captureDestination, type SubmissionDestination } from '../submissionDestination.js'
@@ -161,12 +170,14 @@ export async function rewindAndSend(
   const { attachments, display, text, tokens } = typeof edit === 'string' ? { display: edit, text: edit } : edit
   const stale = () => getUiState().sid !== sid
   const gw = ctx.gateway.gw
+  const generation = rewindCancelGeneration()
   let cut = false
 
   // `text` is already expanded (paste chips resolved): the composer's tokens are gone by now.
   // `rearm`: a refusal (busy, another viewer's turn, stale revision) leaves the edit armed, so the
   // retry Enter rewinds again instead of sending a plain prompt after the restored draft.
-  const keepEdit = (rearm = false) => {
+  // `unknown`: the request failed in transport, so the owner may have cut already (a lost reply).
+  const keepEdit = (rearm = false, unknown = false) => {
     if (cut) {
       if (attachments?.length) {
         ctx.composer.enqueue(text, display, destination, attachments)
@@ -178,9 +189,10 @@ export async function rewindAndSend(
     }
 
     if (stale()) {
-      // The view moved to another session before anything was cut: the edit is not sent there and
-      // not dropped silently. Its text is in input history (↑) for when the user goes back.
-      return ctx.transcript.sys(t('slashCmd.core.rewind.editNotSent'))
+      // The view moved to another session first: the edit is not sent there and not dropped
+      // silently. Its text is in input history (↑) for when the user goes back. Only a definite
+      // refusal can say nothing was removed.
+      return ctx.transcript.sys(t(unknown ? 'slashCmd.core.rewind.editNotSentUnknown' : 'slashCmd.core.rewind.editNotSent'))
     }
 
     // Nothing was cut: the draft goes back whole, chips and their images and pastes included, so a
@@ -192,8 +204,8 @@ export async function rewindAndSend(
       return ctx.transcript.sys(t('slashCmd.core.rewind.editNotSent'))
     }
 
-    // Unless the user armed another edit meanwhile: theirs is newer.
-    if (rearm && !$pendingRewind.get()) {
+    // Unless the user armed another edit or started over meanwhile: theirs is newer.
+    if (rearm && !$pendingRewind.get() && generation === rewindCancelGeneration()) {
       armPendingRewind({ send: next => void rewindAndSend(ctx, sid, target, next, destination), sid, target })
     }
   }
@@ -234,7 +246,7 @@ export async function rewindAndSend(
       ctx.transcript.send(text, true, display, value => value, { attachments })
     }
   } catch (error) {
-    keepEdit(true)
+    keepEdit(true, !(error instanceof JsonRpcGatewayError))
 
     if (!stale()) {
       ctx.transcript.sys(rewindBusyText(error, 'rewind') ?? `error: ${rpcErrorMessage(error)}`)

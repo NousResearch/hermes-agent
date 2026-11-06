@@ -256,7 +256,7 @@ jobs:
           BUNDLE_MACOS_MANIFEST: ${{ inputs.macos-bundle-manifest }}
           BUNDLE_ROUTE: ${{ inputs.route }}
         run: |
-          npm ci --ignore-scripts --no-audit --no-fund
+          pnpm install --frozen-lockfile --ignore-scripts
           node tests/install/e2e-assets/bundle-plan.mjs
 
   windows-bundled:

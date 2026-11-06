@@ -586,7 +586,7 @@ When you start Hermes from the application grid or menu (the launcher sets `DESK
 
 | Flag                 | Description                                                                               |
 | -------------------- | ----------------------------------------------------------------------------------------- |
-| `--skip-build`       | Skip npm install/package and launch the existing unpacked app from `apps/desktop/release` |
+| `--skip-build`       | Skip pnpm install/package and launch the existing unpacked app from `apps/desktop/release` |
 | `--force-build`      | Force a full rebuild even if the content stamp matches                                    |
 | `--build-only`       | Build the desktop app but do not launch it (used by `hermes update`)                      |
 | `--source`           | Launch via `electron .` against `apps/desktop/dist` instead of the packaged app           |
@@ -932,12 +932,12 @@ To **use a mirror** (e.g. a corporate one, or `npmmirror.com`, the de-facto Elec
 
 ```bash
 ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ \
-  bash -c 'cd "$HOME/.hermes/hermes-agent/apps/desktop" && CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack'
+  bash -c 'cd "$HOME/.hermes/hermes-agent/apps/desktop" && CSC_IDENTITY_AUTO_DISCOVERY=false pnpm run pack'
 ```
 
-**Other native downloads (e.g. the `get-windows` prebuilt on Windows) that need a mirror:** put the npm keys in `$HERMES_HOME/npmrc` (`%LOCALAPPDATA%\hermes\npmrc` on Windows, `~/.hermes/npmrc` elsewhere) — for example `node_get_windows_binary_host_mirror=https://<mirror>/sindresorhus/get-windows/releases/download/`. Every `npm ci`/`npm run` the updater spawns (desktop, web and TUI builds) points `NPM_CONFIG_USERCONFIG` at that file when it exists, so the config survives `hermes update`; the repo-root `.npmrc` is git-tracked and gets autostashed on every update, and `~/.npmrc` may be missed because the desktop hand-off inherits the GUI's environment. An `NPM_CONFIG_USERCONFIG` you set yourself is never overridden.
+**Other native downloads (e.g. the `get-windows` prebuilt on Windows) that need a mirror:** put the npm keys in `$HERMES_HOME/npmrc` (`%LOCALAPPDATA%\hermes\npmrc` on Windows, `~/.hermes/npmrc` elsewhere) — for example `node_get_windows_binary_host_mirror=https://<mirror>/sindresorhus/get-windows/releases/download/`. Every dependency install and build the updater spawns (desktop, web and TUI builds) points `NPM_CONFIG_USERCONFIG` at that file when it exists (pnpm reads its registry and auth from it) and hands its other keys to dependency install scripts as `npm_config_<key>` environment variables, so the config survives `hermes update`; `~/.npmrc` may be missed because the desktop hand-off inherits the GUI's environment. An `NPM_CONFIG_USERCONFIG` you set yourself is never overridden.
 
-**If `get-windows` is missing or half-installed:** the build no longer fails — it prints `[stage-native-deps] get-windows not installed ... read_window_below will be unavailable in this build` and ships without the `read_window_below` tool. When the package directory exists but is not loadable (a Windows in-place update interrupted by a running Hermes window, `TAR_ENTRY_ERROR` in the install log), the same warning names the directory, and the next `hermes desktop --force-build` or update removes it before its npm install so the package is re-extracted — close every Hermes window and gateway first so the extract is not interrupted again. A package whose native binding or macOS helper is missing is likewise shipped without window enumeration rather than failing the build.
+**If `get-windows` is missing or half-installed:** the build no longer fails — it prints `[stage-native-deps] get-windows not installed ... read_window_below will be unavailable in this build` and ships without the `read_window_below` tool. When the package directory exists but is not loadable (a Windows in-place update interrupted by a running Hermes window, `TAR_ENTRY_ERROR` in the install log), the same warning names the directory, and the next `hermes desktop --force-build` or update removes it before its pnpm install so the package is re-extracted — close every Hermes window and gateway first so the extract is not interrupted again. A package whose native binding or macOS helper is missing is likewise shipped without window enumeration rather than failing the build.
 
 To clear a corrupt cached zip by hand:
 
@@ -951,26 +951,26 @@ rm -f "$HOME/.cache/electron"/electron-*.zip            # Linux
 If you want to hack on the app itself, install workspace deps from the repo root once, then run the dev server from `apps/desktop`:
 
 ```bash
-npm install          # from repo root — links apps/desktop, web, apps/shared
+pnpm install         # from repo root — links apps/desktop, web, apps/shared
 cd apps/desktop
-npm run dev          # Vite renderer + Electron, which boots the Python backend
+pnpm run dev         # Vite renderer + Electron, which boots the Python backend
 ```
 
 Point the app at a specific checkout, or sandbox it from your real config:
 
 ```bash
-HERMES_DESKTOP_HERMES_ROOT=/path/to/clone npm run dev
-HERMES_HOME=$HOME/.hermes/cache/scratch/throwaway npm run dev
-npm run dev:fake-boot   # exercise the startup overlay with deterministic delays
+HERMES_DESKTOP_HERMES_ROOT=/path/to/clone pnpm run dev
+HERMES_HOME=$HOME/.hermes/cache/scratch/throwaway pnpm run dev
+pnpm run dev:fake-boot   # exercise the startup overlay with deterministic delays
 ```
 
 Build installers:
 
 ```bash
-npm run dist:mac     # DMG + zip
-npm run dist:win     # NSIS + MSI
-npm run dist:linux   # AppImage + deb + rpm
-npm run pack         # unpacked app under release/ (no installer)
+pnpm run dist:mac     # DMG + zip
+pnpm run dist:win     # NSIS + MSI
+pnpm run dist:linux   # AppImage + deb + rpm
+pnpm run pack         # unpacked app under release/ (no installer)
 ```
 
 macOS/Windows signing and notarization run automatically when the relevant credentials are present in the environment (`CSC_LINK` / `CSC_KEY_PASSWORD` / `APPLE_*` for macOS, `WIN_CSC_*` for Windows).

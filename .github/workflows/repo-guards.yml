@@ -47,7 +47,7 @@ on:
         type: boolean
         default: false
       npm_lock:
-        description: detect's `npm_lock` lane (package-lock.json semantic diff, PRs only).
+        description: detect's `npm_lock` lane (JS lockfile semantic diff, PRs only).
         type: boolean
         default: false
       uv_lock:
@@ -366,11 +366,12 @@ jobs:
           overwrite: true
           if-no-files-found: ignore
 
-      # ── Pull requests, npm_lock lane: package-lock.json semantic diff (advisory) ──────────
+      # ── Pull requests, npm_lock lane: JS lockfile semantic diff (advisory) ───────────────
 
-      # The raw textual diff of a lockfile is unreadable (npm reorders entries and rewrites
-      # integrity hashes), so scripts/ci/lockfile_diff.py set-diffs the {install path: version}
-      # maps at the merge base and at HEAD. Review signal, not enforcement.
+      # Covers pnpm-lock.yaml and the standalone npm projects' package-lock.json. The raw
+      # textual diff of a lockfile is unreadable (entries reorder and integrity hashes churn),
+      # so scripts/ci/lockfile_diff.py set-diffs the {package: version} maps at the merge base
+      # and at HEAD. Review signal, not enforcement.
       - name: Generate semantic lockfile diff
         id: lockfile-diff
         if: ${{ !cancelled() && inputs.event_name == 'pull_request' && inputs.npm_lock }}
@@ -388,7 +389,7 @@ jobs:
           if [ -s "$RUNNER_TEMP/lockfile-diff.md" ]; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
             {
-              echo "## package-lock.json semantic diff"
+              echo "## JS lockfile semantic diff"
               echo ""
               cat "$RUNNER_TEMP/lockfile-diff.md"
             } >> "$GITHUB_STEP_SUMMARY"
@@ -409,7 +410,7 @@ jobs:
 
           if [ "$CHANGED" = "true" ]; then
             CONTENT=$(cat "$RUNNER_TEMP/lockfile-diff.md" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))")
-            STATUS="[{\"source\":\"lockfile-diff\",\"results\":[{\"kind\":\"action_required\",\"title\":\"package-lock.json\",\"summary\":\"Locked npm dependency versions changed.\",\"detail\":${CONTENT},\"how_to_fix\":\"Verify the version changes are expected. package-lock.json changes need a hermes-agent-core review.\"}]}]"
+            STATUS="[{\"source\":\"lockfile-diff\",\"results\":[{\"kind\":\"action_required\",\"title\":\"JS lockfiles\",\"summary\":\"Locked JS dependency versions changed.\",\"detail\":${CONTENT},\"how_to_fix\":\"Verify the version changes are expected. Lockfile changes need a hermes-agent-core review.\"}]}]"
           else
             STATUS="[]"
           fi
@@ -460,7 +461,7 @@ jobs:
           # Three-point diff (base...head) diffs from the merge base to HEAD,
           # so only changes introduced by this PR are included — not changes
           # that landed on main after the PR branched off.
-          DIFF=$(git diff "$BASE"..."$HEAD" -- . ':!uv.lock' ':!*.lock' ':!package-lock.json' ':!yarn.lock' || true)
+          DIFF=$(git diff "$BASE"..."$HEAD" -- . ':!uv.lock' ':!*.lock' ':!pnpm-lock.yaml' ':!yarn.lock' || true)
 
           FINDINGS=""
 

@@ -1,0 +1,38 @@
+name: qbo-ops
+repo: https://github.com/blackghostosint/qbo-ops
+sha: e5fe895d4c16aa6f401938b3ad86abede06eacd4
+description: 'QuickBooks Online operations for Hermes: connection health, P&L reports,
+  close audits, deposit tracing and a guarded read-only SQL query tool — with a desktop
+  status pane and bundled reconciliation skill. 5 registered agent tools + desktop pane
+  (Agent + Desktop). Reconciliation tradecraft (close-audit reading, deposit-wash detection,
+  month-end sanity chain, failure diagnosis) ships as executable tools AND a bundled skill
+  (qbo-ops:qbo-ops-reconciliation), earned from closing real store books. Setup is guided:
+  the health tool doubles as a setup wizard and a turn-by-turn guided script (docs/SETUP.md)
+  walks first-timers through Intuit app creation click by click. Read-only by design; a
+  per-user allow_writes config switch (default off) gates a future write tool.
+  Disclosure — makes network calls to Intuit (quickbooks.api.intuit.com,
+  oauth.platform.intuit.com) with credentials the user provides; credentials flow only
+  through Hermes secret scope (requires_env), never read from .env files or other token
+  stores; the BYO-refresh-token path refreshes tokens through the plugin''s flock-guarded
+  refresher (disclosed tradeoff pending upstream redirect_port support, #149642); the
+  desktop pane reads only the plugin''s own backend routes.'
+maintainer: blackghostosint
+tier: community
+category: tools
+docs_url: https://github.com/blackghostosint/qbo-ops
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - qbo_health
+    - qbo_pnl
+    - qbo_udf_audit
+    - qbo_deposit_trace
+    - qbo_query
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - QBO_OPS_CLIENT_ID
+    - QBO_OPS_CLIENT_SECRET
+    - QBO_OPS_REFRESH_TOKEN
+    - QBO_OPS_REALM_ID

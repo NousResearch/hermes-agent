@@ -1,6 +1,7 @@
 """Tests for tools/file_operations.py — deny list, result dataclasses, helpers."""
 
 import base64
+import hashlib
 import os
 import pytest
 import shutil
@@ -12,7 +13,9 @@ from tests.tools.file_ops_fakes import READ_SENTINEL_RE, compound_read_output
 from tools.environments.local import _find_bash, LocalEnvironment
 from agent.file_safety import is_write_denied as _is_write_denied
 from tools.file_operations_common import SearchMatch
+from tools.file_operations_common import LintResult
 from tools.file_operations import (
+    ExecuteResult,
     ReadResult,
     SearchResult,
     ShellFileOperations,
@@ -562,6 +565,110 @@ def _fenced_base64_reply(command: str, payload: bytes, rc: int = 0) -> str:
     size = f"{len(payload)}\n{sentinel}\n" if "wc -c <" in command else ""
     return f"{sentinel}\n{body}\n{sentinel}\n{size}{rc}\n"
 
+class TestWriteFilePostWriteVerification:
+    """Fail-closed post-write hash verification for write_file (#52267)."""
+
+    @staticmethod
+    def _ops(mock_env, monkeypatch):
+        ops = ShellFileOperations(mock_env)
+        monkeypatch.setattr(ops, "_probe_write_target", lambda path, pre, want: (False, pre, None))
+        monkeypatch.setattr(
+            ops, "_atomic_write",
+            lambda path, content: ExecuteResult(stdout="", exit_code=0))
+        monkeypatch.setattr(ops, "_check_lint_delta", lambda *a, **k: LintResult(skipped=True))
+        monkeypatch.setattr(ops, "_maybe_lsp_diagnostics", lambda *a, **k: "")
+        monkeypatch.setattr(ops, "_native_read_enabled", lambda: False)
+        return ops
+
+    def test_write_file_fails_when_hash_unavailable(self, mock_env, monkeypatch):
+        ops = self._ops(mock_env, monkeypatch)
+        monkeypatch.setattr(
+            ops, "_exec",
+            lambda command, **kwargs: ExecuteResult(stdout="", exit_code=1))
+        result = ops.write_file("/tmp/test/out.txt", "hello\n")
+        assert result.error is not None, f"expected fail-closed, got {result}"
+        assert "verification failed" in result.error.lower()
+        assert "could not be read" in result.error.lower()
+        assert "no file was confirmed" in result.error.lower()
+        assert result.bytes_written == 0
+
+    def test_write_file_fails_when_hash_raises(self, mock_env, monkeypatch):
+        ops = self._ops(mock_env, monkeypatch)
+
+        def boom(command, **kwargs):
+            raise RuntimeError("no hash binary")
+
+        monkeypatch.setattr(ops, "_exec", boom)
+        result = ops.write_file("/tmp/test/out.txt", "hello\n")
+        assert result.error is not None
+        assert "could not be hashed" in result.error.lower()
+        assert "no hash binary" in result.error
+
+    def test_write_file_fails_when_hash_mismatches(self, mock_env, monkeypatch):
+        ops = self._ops(mock_env, monkeypatch)
+        bad = hashlib.sha256(b"other\n").hexdigest()
+        monkeypatch.setattr(
+            ops, "_exec",
+            lambda command, **kwargs: ExecuteResult(
+                stdout=f"{bad}  /tmp/test/out.txt\n", exit_code=0))
+        result = ops.write_file("/tmp/test/out.txt", "hello\n")
+        assert result.error is not None
+        assert "verification failed" in result.error.lower()
+        assert "did not persist" in result.error.lower()
+
+    def test_write_file_ok_when_hash_matches(self, mock_env, monkeypatch):
+        ops = self._ops(mock_env, monkeypatch)
+        content = "hello\n"
+        good = hashlib.sha256(content.encode()).hexdigest()
+        monkeypatch.setattr(
+            ops, "_exec",
+            lambda command, **kwargs: ExecuteResult(
+                stdout=f"{good}  /tmp/test/out.txt\n", exit_code=0))
+        result = ops.write_file("/tmp/test/out.txt", content)
+        assert result.error is None, result.error
+        assert result.verified is True
+        assert result.bytes_written == len(content.encode())
+
+    def test_native_hash_match_skips_shell(self, mock_env, monkeypatch):
+        ops = self._ops(mock_env, monkeypatch)
+        content = "hello\n"
+        good = hashlib.sha256(content.encode()).hexdigest()
+        monkeypatch.setattr(ops, "_native_read_enabled", lambda: True)
+        monkeypatch.setattr("tools.file_operations._native_io.sha256_of", lambda path: good)
+
+        def boom(command, **kwargs):
+            raise AssertionError("shell hash must not run when native hash succeeds")
+
+        monkeypatch.setattr(ops, "_exec", boom)
+        result = ops.write_file("/tmp/test/out.txt", content)
+        assert result.error is None, result.error
+        assert result.verified is True
+
+    def test_native_none_falls_back_to_shell_hash(self, mock_env, monkeypatch):
+        ops = self._ops(mock_env, monkeypatch)
+        content = "hello\n"
+        good = hashlib.sha256(content.encode()).hexdigest()
+        monkeypatch.setattr(ops, "_native_read_enabled", lambda: True)
+        monkeypatch.setattr("tools.file_operations._native_io.sha256_of", lambda path: None)
+        monkeypatch.setattr(
+            ops, "_exec",
+            lambda command, **kwargs: ExecuteResult(stdout=f"{good}  p\n", exit_code=0))
+        result = ops.write_file("/tmp/test/out.txt", content)
+        assert result.error is None, result.error
+        assert result.verified is True
+
+    def test_native_none_and_shell_miss_fails_closed(self, mock_env, monkeypatch):
+        ops = self._ops(mock_env, monkeypatch)
+        monkeypatch.setattr(ops, "_native_read_enabled", lambda: True)
+        monkeypatch.setattr("tools.file_operations._native_io.sha256_of", lambda path: None)
+        monkeypatch.setattr(
+            ops, "_exec",
+            lambda command, **kwargs: ExecuteResult(stdout="", exit_code=1))
+        result = ops.write_file("/tmp/test/out.txt", "hello\n")
+        assert result.error is not None
+        assert "could not be read" in result.error.lower()
+
+
 class TestPatchReplacePostWriteVerification:
     """Tests for the post-write verification added in patch_replace.
 
@@ -575,7 +682,20 @@ class TestPatchReplacePostWriteVerification:
         patch_replace must return an error, not success-with-diff."""
         file_contents = {"/tmp/test/a.py": "hello world\n"}
 
+        intended = {"raw": b""}
+
         def side_effect(command, **kwargs):
+            stdin_data = kwargs.get("stdin_data")
+            if stdin_data is not None:
+                # Atomic write "succeeds" but does not change the bytes a later
+                # re-read will see. Hash the bytes we claimed to write so
+                # write_file's fail-closed check passes and patch's own
+                # re-read is what catches the stale file.
+                intended["raw"] = stdin_data.encode("utf-8", "surrogateescape")
+                return {"output": "", "returncode": 0}
+            if "sha256sum" in command:
+                digest = hashlib.sha256(intended["raw"]).hexdigest()
+                return {"output": f"{digest}  /tmp/test/a.py\n", "returncode": 0}
             # the byte-exact read (base64 over the transport) — both the initial read and the verify read
             if "base64 < " in command:
                 for path, contents in file_contents.items():
@@ -616,6 +736,9 @@ class TestPatchReplacePostWriteVerification:
             if stdin_data is not None:  # write (atomic temp-file + mv script)
                 state["content"] = stdin_data
                 return {"output": "", "returncode": 0}
+            if "sha256sum" in command:
+                digest = hashlib.sha256(state["content"].encode()).hexdigest()
+                return {"output": f"{digest}  /tmp/test/a.py\n", "returncode": 0}
             if "base64 < " in command:  # byte-exact read
                 call_count["read"] += 1
                 # First read (initial fetch) succeeds; second read (verify) fails

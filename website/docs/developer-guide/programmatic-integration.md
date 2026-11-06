@@ -42,7 +42,7 @@ hermes acp --setup          # interactive provider/model setup for ACP terminal 
 
 The Ink TUI's gateway client lives in `apps/shared` (`@hermes/shared`), so another Node frontend can use it without compiling Ink's source. It dials the owner with a ticket, reads `runtime.describe` before `session.create`, translates requests and results for `hermes-gateway-v1` (`@hermes/shared/gateway-canonical`), reconnects with backoff, re-ensures a gone owner a bounded number of times per minute, and emits typed events (`@hermes/shared/gateway-types`).
 
-The client does not know where its connection comes from. The caller passes `connect(start, recover)`, which returns `{url, protocols, profile_id, instance_id}` and runs again for every reconnect (tickets are single-use). Ink passes its `gateway_bootstrap.py` helper; any other local client can run `hermes gateway attach --json` (added with this client's split, #142159) (with `--start` on the first call and `--recover` when asked to recover) and pass its `url` and `protocols`:
+The client does not know where its connection comes from. The caller passes `connect(start, recover)`, which returns `{url, protocols, profile_id, instance_id}` and runs again for every reconnect (tickets are single-use). Ink passes its `gateway_bootstrap.py` helper; any other local client can run [`hermes gateway attach --json`](./gateway-internals.md#hermes-gateway-attach), with `--start` on the first call and `--recover` when asked to recover, and pass its `url` and `protocols`:
 
 ```ts
 import { execFile } from 'node:child_process'

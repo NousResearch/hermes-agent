@@ -557,6 +557,23 @@ class GatewaySlashCommandsMixin(
             count = self._running_agent_count()
             return t("gateway.draining", count=count) if count else EphemeralReply(t("gateway.restart.in_progress"))
 
+        # Surface parity with the CLI's live-work guard (hermes_cli/gateway_lifecycle_guards):
+        # in-chat /restart used to start the drain unannounced, so a busy gateway looked hung for up
+        # to restart_after_turn_timeout. Name the work; `/restart force` is the existing escape hatch.
+        if "force" not in (event.get_command_args() or "").lower().split():
+            work = self._drain_work_counts()
+            if any(work):
+                labels = ("agent", "cron", "api", "deferred")
+                breakdown = ", ".join(f"{n} {label}" for label, n in zip(labels, work) if n)
+                # Counts stay out of the catalog sentence, on purpose: a count noun needs CLDR plural
+                # agreement (ar has six categories, ru/uk three) and t() selects no plural form, so a
+                # translated "3 task(s)" can only be wrong. The catalog's existing `_one`/`_other` rule
+                # picks one of two forms on `count == 1`, which cannot express six either. The detail
+                # line is code-built labels no catalog translates, and keeping it on its own line keeps
+                # an LTR run out of an RTL sentence, where the bidi algorithm reorders it around the
+                # sentence's punctuation.
+                return f"{t('gateway.restart.blocked')}\n{breakdown}"
+
         async def _write_marker(name: str, build, label: str) -> None:
             try:
                 await asyncio.to_thread(atomic_json_write, _hermes_home / name, build(), indent=None)

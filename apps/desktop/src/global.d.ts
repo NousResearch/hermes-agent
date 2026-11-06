@@ -651,6 +651,13 @@ declare global {
         write: (id: string, data: string) => Promise<boolean>
       }
       reachPreviewUrl?: (url: string) => Promise<string>
+      // Real-profile sign-ins for the in-app browser: main reads them from the backend host's real-profile
+      // browser and sets them on the preview partition. Counts only, never a cookie.
+      syncPreviewSignins?: (request: {
+        connectionId?: null | string
+        enabled: boolean
+        profile?: null | string
+      }) => Promise<PreviewSigninsResult>
       setActiveConnectionRoute?: (
         route: {
           connectionId?: null | string
@@ -1098,6 +1105,15 @@ export interface DesktopPluginProfileRoute {
   primary?: true
   profile: string
   targetProfile: string
+}
+
+export interface PreviewSigninsResult {
+  status: 'cleared' | 'disabled' | 'error' | 'imported' | 'remote'
+  imported: number
+  skipped: number
+  failed: number
+  cleared: number
+  error?: string
 }
 
 export interface HermesConnection {

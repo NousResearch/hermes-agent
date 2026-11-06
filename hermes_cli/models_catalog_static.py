@@ -200,8 +200,12 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "nvidia/nemotron-3.5-lightning-30b-a3b", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
         "z-ai/glm-5.3", "z-ai/glm-5.2", "moonshotai/kimi-k2.6", "minimaxai/minimax-m3",
     ],
+    # Synced against the live GET /coding/v1/models catalog: kimi-k3.1-pro + its highspeed tier
+    # lead (served on the wire as bare `k3.1-pro` / `k3.1-pro-highspeed`; picker dedup folds them
+    # through the model_search alias table), then the K3/K2 fallbacks.
     "kimi-coding": [
-        "kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "kimi-for-coding", "kimi-for-coding-highspeed",
+        "kimi-k3.1-pro", "kimi-k3.1-pro-highspeed", "kimi-k3", "kimi-k3-256k",
+        "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "kimi-for-coding", "kimi-for-coding-highspeed",
         "kimi-k2-thinking", "kimi-k2-thinking-turbo", "kimi-k2-turbo-preview", "kimi-k2-0905-preview",
     ],
     "kimi-coding-cn": [

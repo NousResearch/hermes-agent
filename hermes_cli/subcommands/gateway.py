@@ -22,23 +22,23 @@ _INTERRUPT_HELP = (
 
 
 class _GatewayCommandParser(argparse.ArgumentParser):
-    """Ensure's parser errors share its machine-readable command boundary."""
+    """``ensure``'s and ``attach``'s parser errors share their machine-readable command boundary."""
 
-    def __init__(self, *args, ensure_json=False, **kwargs):
-        self.ensure_json = ensure_json
+    def __init__(self, *args, json_verb=None, **kwargs):
+        self.json_verb = json_verb
         super().__init__(*args, **kwargs)
 
     def parse_known_args(self, args=None, namespace=None):
         parsed, unknown = super().parse_known_args(args, namespace)
-        if self.ensure_json and unknown:
+        if self.json_verb and unknown:
             self.error("unknown arguments")
         return parsed, unknown
 
     def error(self, message):
-        if not self.ensure_json:
+        if not self.json_verb:
             return super().error(message)
         print('{"endpoint":null,"reason_code":"invalid_invocation","state":"inaccessible"}')
-        self.exit(2, "gateway ensure: invalid invocation\n")
+        self.exit(2, f"gateway {self.json_verb}: invalid invocation\n")
 
 
 def _flag(parser, *names, help, **kw):
@@ -118,9 +118,9 @@ def build_gateway_parser(
     add_accept_hooks_flag(gateway_run)
     add_accept_hooks_flag(gateway_parser)
 
-    from hermes_cli.gateway_runtime_cli import cmd_gateway_ensure
+    from hermes_cli.gateway_runtime_cli import cmd_gateway_attach, cmd_gateway_ensure
     gateway_ensure = gateway_subparsers.add_parser(
-        "ensure", ensure_json=True,
+        "ensure", json_verb="ensure",
         help="Ensure a local runtime without installing or replacing a service",
         epilog="Exit codes: 0 ready; 2 invalid invocation; 3 incompatible; "
                "4 authorization/profile mismatch; 5 deadline; 6 draining/update-paused; "
@@ -129,6 +129,24 @@ def build_gateway_parser(
     gateway_ensure.add_argument("--timeout", default="60",
                                 help="Total startup deadline in seconds (default: 60)")
     gateway_ensure.set_defaults(func=cmd_gateway_ensure)
+
+    gateway_attach = gateway_subparsers.add_parser(
+        "attach", json_verb="attach",
+        help="Attach a local client: the gateway's WebSocket URL and a single-use session ticket",
+        description="Print the WebSocket URL of the gateway serving this profile and one single-use "
+                    "session ticket for it, for a local client that dials /api/ws itself. The ticket "
+                    "is a credential: it is printed for the calling process only, never logged, and "
+                    "expires 30 seconds after it is minted.",
+        epilog="Exit codes: 0 attached; 2 invalid invocation; otherwise the exit code "
+               "`hermes gateway ensure` gives the same verdict.")
+    _flag(gateway_attach, "--json", help="Emit one JSON result (default)")
+    attach_mode = gateway_attach.add_mutually_exclusive_group()
+    _flag(attach_mode, "--start", help="Start the gateway when none serves this profile")
+    _flag(attach_mode, "--recover",
+        help="Discover first; start (or replace an older Hermes's) gateway only when it is not ready")
+    gateway_attach.add_argument("--timeout", default="60",
+                                help="Start deadline in seconds for --start/--recover (default: 60)")
+    gateway_attach.set_defaults(func=cmd_gateway_attach)
 
     gateway_start = gateway_subparsers.add_parser(
         "start", help="Start the installed systemd/launchd background service")

@@ -22472,7 +22472,7 @@
       },
       "LlmOneshotParams": {
         "additionalProperties": false,
-        "description": "Needs a ``template`` or ``instructions`` / ``input``; a live ``session_id`` lends its model.",
+        "description": "Needs a ``template`` or ``instructions`` / ``input``; a live ``session_id`` lends its model.\n``task`` is a built-in auxiliary slot or a plugin-registered one (unknown keys are refused);\n``schema`` (a JSON Schema) makes the reply carry ``parsed``; ``redact`` masks secrets in ``input``.",
         "properties": {
           "profile": {
             "anyOf": [
@@ -22582,6 +22582,31 @@
             ],
             "default": null,
             "title": "Session Id"
+          },
+          "schema": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Schema"
+          },
+          "redact": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Redact"
           }
         },
         "title": "LlmOneshotParams",
@@ -22593,6 +22618,16 @@
           "text": {
             "title": "Text",
             "type": "string"
+          },
+          "parsed": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Parsed"
           }
         },
         "required": [
@@ -34133,6 +34168,30 @@
             ],
             "default": null,
             "title": "Profile"
+          },
+          "undo_since": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Undo Since"
+          },
+          "undo_message_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Undo Message Id"
           }
         },
         "required": [
@@ -34154,6 +34213,17 @@
             },
             "title": "Checkpoints",
             "type": "array"
+          },
+          "undo_hint": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UndoRollbackHint"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -39862,6 +39932,17 @@
           "removed": {
             "title": "Removed",
             "type": "integer"
+          },
+          "undo_hint": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UndoRollbackHint"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -45942,6 +46023,28 @@
         ],
         "title": "UndoIntent",
         "type": "string"
+      },
+      "UndoRollbackHint": {
+        "additionalProperties": false,
+        "description": "``/undo``'s line naming the files the undone turns changed and pointing at ``/rollback``: ``files`` are\nthe changed paths, ``text`` is the rendered line in the backend's language.",
+        "properties": {
+          "files": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Files",
+            "type": "array"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "UndoRollbackHint",
+        "type": "object"
       },
       "Usage": {
         "additionalProperties": true,

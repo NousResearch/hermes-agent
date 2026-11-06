@@ -7,6 +7,7 @@ backend (``auto``: the profile's default model, not the chat's). Session-less on
 ideas) keep the task backend."""
 import asyncio
 from contextlib import contextmanager
+from functools import partial
 import io
 import json
 from http.server import ThreadingHTTPServer
@@ -41,16 +42,37 @@ class _HeaderModel(Model):
         super().do_POST()
 
 
+class _JsonModel(_HeaderModel):
+    """With a ``response_format``, answers the user text verbatim: the test writes the JSON."""
+
+    def do_POST(self):
+        raw = self.rfile.read(int(self.headers['Content-Length']))
+        body = json.loads(raw)
+        if 'response_format' not in body:
+            self.rfile = io.BytesIO(raw)
+            return super().do_POST()
+        self.server.requests.append(body)
+        message = {'role': 'assistant', 'content': body['messages'][-1]['content']}
+        payload = json.dumps({'id': 'local', 'choices': [{'index': 0, 'message': message, 'finish_reason': 'stop'}],
+                              'usage': {'prompt_tokens': 1, 'completion_tokens': 1, 'total_tokens': 2}}).encode()
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+
 @contextmanager
-def _gateway(tmp_path, named=False):
+def _gateway(tmp_path, named=False, plugin_task=None):
     """A real gateway on a loopback model whose ``BLOCK_STARTED`` requests wait for ``release``;
-    ``named`` serves the model as a named custom provider that requires its ``extra_headers``."""
+    ``named`` serves the model as a named custom provider that requires its ``extra_headers``;
+    ``plugin_task`` installs a plugin registering that auxiliary task, pinned to ``plugin-model``."""
     root = Path(__file__).resolve().parents[2]
     home, user, work = tmp_path / 'state', tmp_path / 'user', tmp_path / 'work'
     home.mkdir(mode=0o700)
     user.mkdir()
     work.mkdir()
-    peer = ThreadingHTTPServer(('127.0.0.1', 0), _HeaderModel)
+    peer = ThreadingHTTPServer(('127.0.0.1', 0), _JsonModel)
     peer.requests, peer.tokens = [], []
     peer.blocked, peer.release = threading.Event(), threading.Event()
     thread = threading.Thread(target=peer.serve_forever, daemon=True)
@@ -59,13 +81,23 @@ def _gateway(tmp_path, named=False):
     model = {'provider': 'custom', 'default': 'chat-model', 'base_url': url}
     if named:
         model = {'provider': 'custom:edge', 'default': 'chat-model'}
+    # The task's default ``auto`` route: the borrowed session runtime, else the profile's model.
+    auxiliary = {'title_generation': {'enabled': False}}
+    if plugin_task:
+        plugin = home / 'plugins' / 'probe'
+        plugin.mkdir(parents=True)
+        (plugin / 'plugin.yaml').write_text('name: probe\nversion: 0.1.0\ndescription: probe\n', encoding='utf-8')
+        (plugin / '__init__.py').write_text(
+            f'def register(ctx):\n    ctx.register_auxiliary_task({plugin_task!r}, display_name="P", description="p")\n',
+            encoding='utf-8')
+        auxiliary[plugin_task] = {'provider': 'custom', 'base_url': url, 'model': 'plugin-model'}
     (home / 'config.yaml').write_text(json.dumps({
         'gateway': {'multiplex_profiles': False},
         'model': model,
+        'plugins': {'enabled': ['probe'] if plugin_task else []},
         'custom_providers': [{'name': 'edge', 'base_url': url, 'api_key': 'loopback-only',
                               'extra_headers': {'X-Route-Token': 'edge-token'}}] if named else [],
-        # The task's default ``auto`` route: the borrowed session runtime, else the profile's model.
-        'auxiliary': {'title_generation': {'enabled': False}}}))
+        'auxiliary': auxiliary}))
     env = child_env()
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home), PYTHONPATH=str(root),
                OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL=url, PYTHONUNBUFFERED='1')
@@ -203,3 +235,32 @@ def test_a_burst_of_slow_oneshots_never_starves_the_rest_of_the_gateway(tmp_path
     # Every call is answered: generated, or refused by name once the one-shot pool is full.
     assert set(answers) <= {'RECOVERY_ACK_BLOCK_STARTED', 'oneshot_busy'}, answers
     assert 'RECOVERY_ACK_BLOCK_STARTED' in answers, answers
+
+
+@pytest.mark.platforms("linux")
+def test_a_plugin_frontend_runs_its_own_auxiliary_task_with_a_schema(tmp_path):
+    """#141976: a plugin's frontend names the task its plugin registered and the call runs on
+    ``auxiliary.<task>``; an unregistered task is refused instead of running on the main model; a
+    ``schema`` returns the parsed JSON and a prose answer is an error; ``redact`` masks the input."""
+    schema = {'type': 'object', 'properties': {'kind': {'type': 'string'}}, 'required': ['kind']}
+    secret = 'sk-proj-' + 'A1b2C3d4' * 5
+    out = {}
+
+    async def probe(home, work, peer, desc):
+        async with websocket(home, desc) as ws:
+            call = partial(rpc, ws, 'llm.oneshot', task='probe_charts', instructions='sys')
+            out['typo'] = await rpc(ws, 'llm.oneshot', task='probe_chart', input='x')
+            out['json'] = await call(input='{"kind": "line"}', schema=schema)
+            out['prose'] = await call(input='a line chart', schema=schema)
+            out['redacted'] = await call(input=f'key {secret}', redact=True)
+            out['models'] = {request['model'] for request in peer.requests}
+            out['sent'] = json.dumps(peer.requests)
+    with _gateway(tmp_path, plugin_task='probe_charts') as served:
+        asyncio.run(probe(*served))
+    assert out['typo']['error']['data'] == {
+        'reason': 'invalid_params', 'field': 'task', 'detail': 'unknown auxiliary task: probe_chart'}, out
+    assert out['models'] == {'plugin-model'}, out
+    assert out['json']['result'] == {'text': '{"kind": "line"}', 'parsed': {'kind': 'line'}}, out
+    assert 'did not answer with JSON' in out['prose']['error']['message'], out
+    assert out['redacted']['result']['text'].startswith('RECOVERY_ACK_key sk-pro'), out
+    assert secret not in out['sent'], out

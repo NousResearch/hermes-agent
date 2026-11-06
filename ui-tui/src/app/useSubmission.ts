@@ -1,15 +1,15 @@
+import type { ShellExecResponse } from '@hermes/shared/gateway-types'
+import { hasInterpolation, INTERPOLATION_RE } from '@hermes/shared/interpolation'
 import { looksLikeSlashCommand, parseSlashCommand } from '@hermes/shared/slash'
+import { completionToApplyOnSubmit } from '@hermes/shared/slash-input'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { TYPING_IDLE_MS } from '../config/timing.js'
 import { expandTokens, imageAttachments } from '../domain/attachments.js'
-import { completionToApplyOnSubmit } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import type { ShellExecResponse } from '../gatewayTypes.js'
 import { queueItem, type QueueItem } from '../hooks/useQueue.js'
 import { t } from '../i18n/runtime.js'
 import { asRpcResult } from '../lib/rpc.js'
-import { hasInterpolation, INTERPOLATION_RE } from '../protocol/interpolation.js'
 import type { Msg } from '../types.js'
 
 import { reportSlashCommand } from './createSlashHandler.js'

@@ -1,20 +1,23 @@
 name: stage
 repo: https://github.com/adindamochamad/stage
-sha: 0f6f62b06ac726341f1c42bf31933f2b289667d8
+sha: b298921580a29a6a3b1f4e9195433be32505a4f0
 description: Stage Hermes write_file and patch calls in a scratch copy. Original files stay unchanged until stage_apply.
 maintainer: adindamochamad
 tier: community
 category: tools
 requires_hermes: ">=0.22.7"
 docs_url: https://github.com/adindamochamad/stage#readme
-version: "0.1.6"
+version: "0.2.6"
 capabilities:
   provides_tools:
     - stage_apply
     - stage_discard
     - stage_status
+    - stage_diff
+    - stage_receipts
   provides_hooks:
     - pre_tool_call
+    - post_tool_call
     - transform_tool_result
   provides_middleware: []
   requires_env: []

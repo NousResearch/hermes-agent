@@ -1,0 +1,10 @@
+name: credential-scope-example
+version: 1.0.0
+description: "Example consumer of the credential-scope contract: records per-scope API attempt outcomes from pre/post/error hooks without ever touching credential material."
+author: "NousResearch"
+capabilities:
+  - llm.credential_scope
+provides_hooks:
+  - pre_api_request
+  - post_api_request
+  - api_request_error

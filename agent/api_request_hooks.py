@@ -173,6 +173,7 @@ class ApiRequestHooksMixin:
             if not _lifecycle.has_hook("api_request_error"):
                 return
             ended_at = time.time()
+            from agent.credential_scope import attempt_credential_scope
             _lifecycle.invoke_hook(
                 "api_request_error",
                 task_id=task_id,
@@ -184,6 +185,8 @@ class ApiRequestHooksMixin:
                 provider=self.provider,
                 base_url=self.base_url,
                 api_mode=self.api_mode,
+                credential_scope=attempt_credential_scope(
+                    self, api_request_id).to_dict(),
                 api_call_count=api_call_count,
                 api_duration=ended_at - api_start_time,
                 started_at=api_start_time,

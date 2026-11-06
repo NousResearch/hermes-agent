@@ -31,6 +31,7 @@ class ApiRequestBuild:
     api_kwargs: Any
     _original_api_kwargs: Any
     _llm_middleware_trace: Any
+    credential_scope: Any = None
 
 
 def _set_extra_header(api_kwargs: Any, key: str, value: str) -> None:
@@ -61,7 +62,7 @@ def _fire_pre_api_request_hook(
     agent: Any, api_kwargs: Any, api_messages: Any, _llm_middleware_trace: Any, *, messages: Any,
     original_user_message: Any, approx_tokens: Any, total_chars: Any, retry_count: Any,
     api_call_count: Any, api_request_id: Any, api_start_time: Any, effective_task_id: Any,
-    turn_id: Any,
+    turn_id: Any, credential_scope: Any = None,
 ) -> None:
     from agent.conversation_loop import _system_prompt_for_hooks
 
@@ -102,6 +103,7 @@ def _fire_pre_api_request_hook(
                 started_at=api_start_time,
                 middleware_trace=list(_llm_middleware_trace),
                 request=agent._api_request_payload_for_hook(api_kwargs),
+                credential_scope=credential_scope,
             )
     except Exception:
         pass
@@ -117,6 +119,11 @@ def build_request_payload(
     which reports through ``pre/post_auxiliary_call``) share it."""
     from agent.conversation_loop import _redecorate_prompt_cache_for_provider
 
+    # Snapshot the credential selected for THIS attempt before any hook fires:
+    # post/error hooks for this attempt must report this scope even if a later
+    # retry rotates to a different credential.
+    from agent.credential_scope import capture_attempt_credential_scope
+    _credential_scope = capture_attempt_credential_scope(agent, api_request_id).to_dict()
     agent._reset_stream_delivery_tracking()
     # Per-attempt first-chunk timestamp so a stale value never leaks into post_api_request.
     agent._last_api_first_chunk_at = None
@@ -170,7 +177,7 @@ def build_request_payload(
         _llm_middleware_trace = []
     return ApiRequestBuild(
         "fallthrough", api_messages, _moa_prepared_request, tools_for_api, api_kwargs,
-        _original_api_kwargs, _llm_middleware_trace,
+        _original_api_kwargs, _llm_middleware_trace, _credential_scope,
     )
 
 
@@ -196,6 +203,7 @@ def build_api_request(
         total_chars=total_chars, retry_count=retry_count, api_call_count=api_call_count,
         api_request_id=api_request_id, api_start_time=api_start_time,
         effective_task_id=effective_task_id, turn_id=turn_id,
+        credential_scope=built.credential_scope,
     )
 
     if env_var_enabled("HERMES_DUMP_REQUESTS"):

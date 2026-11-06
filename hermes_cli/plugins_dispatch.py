@@ -16,6 +16,7 @@ import re
 import threading
 import time
 import types
+import weakref
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Union
 
@@ -292,6 +293,52 @@ class PluginDispatchMixin:
             kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
         return self._run_hook_callbacks(hook_name, self._hooks.get(hook_name, []), kwargs)
 
+    # -- capability-gated payload fields ------------------------------------
+    # ``credential_scope`` is consent-gated: only callbacks whose owning plugin
+    # was granted ``llm.credential_scope`` receive it. Callbacks registered
+    # outside track_hook() (test doubles, internal surfaces) have no owner and
+    # are treated as ungranted -- fail closed, other fields unaffected.
+    _GATED_HOOK_FIELDS: dict[str, str] = {"credential_scope": "llm.credential_scope"}
+
+    def _hook_owner_id(self, hook_name: str, cb: Callable) -> Optional[str]:
+        owners = getattr(self, "_hook_callback_owners", None) or {}
+        entry = (owners.get(hook_name) or {}).get(id(cb))
+        if entry is None:
+            return None
+        plugin_id, ref = entry
+        alive = ref() if isinstance(ref, weakref.ReferenceType) else ref
+        return plugin_id if alive is cb else None
+
+    def _kwargs_for_hook_callback(
+        self, hook_name: str, cb: Callable, kwargs: dict[str, Any],
+        _granted_cache: Optional[dict[str, bool]] = None,
+    ) -> dict[str, Any]:
+        """``kwargs`` for one callback, with ungranted gated fields removed.
+
+        Returns ``kwargs`` itself when nothing is gated or the owner is
+        granted; otherwise a shallow copy without the gated fields. Grant
+        checks are cached per dispatch (``_granted_cache``) so a multi-plugin
+        fire does not re-read config per callback.
+        """
+        gated = {f: cap for f, cap in self._GATED_HOOK_FIELDS.items() if f in kwargs}
+        if not gated:
+            return kwargs
+        owner = self._hook_owner_id(hook_name, cb)
+        if owner is None:
+            granted = False
+        else:
+            cache = _granted_cache if _granted_cache is not None else {}
+            if owner not in cache:
+                try:
+                    from hermes_cli.plugin_capabilities import plugin_capability_granted
+                    cache[owner] = bool(plugin_capability_granted(owner, "llm.credential_scope"))
+                except Exception:
+                    cache[owner] = False
+            granted = cache[owner]
+        if granted:
+            return kwargs
+        return {k: v for k, v in kwargs.items() if k not in gated}
+
     def _run_hook_callbacks(self, hook_name: str, callbacks: Any, kwargs: dict[str, Any],
                             failed: Optional[list] = None) -> list[Any]:
         """:meth:`invoke_hook`'s loop over ``callbacks``; each one that raised or timed out is
@@ -301,10 +348,12 @@ class PluginDispatchMixin:
         timeout = _resolve_hook_callback_timeout()
         use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
         fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
+        _granted_cache: dict[str, bool] = {}
         for cb in callbacks:
+            cb_kwargs = self._kwargs_for_hook_callback(hook_name, cb, kwargs, _granted_cache)
             try:
                 if use_timeout:
-                    ret = self._run_hook_callback_bounded(hook_name, cb, kwargs, timeout)
+                    ret = self._run_hook_callback_bounded(hook_name, cb, cb_kwargs, timeout)
                     if ret is _HOOK_SKIPPED:
                         if failed is not None:
                             failed.append(cb)
@@ -312,7 +361,7 @@ class PluginDispatchMixin:
                             results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
                         continue
                 else:
-                    ret = self._invoke_hook_callback(cb, kwargs)
+                    ret = self._invoke_hook_callback(cb, cb_kwargs)
                 if ret is not None:
                     results.append(ret)
             except (Exception, SystemExit) as exc:  # health: allow BLE001 -- moved from invoke_hook: plugin callbacks are untrusted; each failure is reported and isolated
@@ -571,6 +620,26 @@ class PluginDispatchMixin:
         from hermes_cli.plugins import VALID_HOOKS
 
         handle = context._track_callback("hook", hook_name, callback, self._hooks, VALID_HOOKS)
+        # Record the owning plugin for capability-gated payload fields. A
+        # weakref (with cleanup) keeps a recycled id() from inheriting a dead
+        # callback's owner; non-weakref-able callables keep a strong ref.
+        try:
+            owners_map = getattr(self, "_hook_callback_owners", None)
+            if owners_map is None:
+                owners_map = {}
+                self._hook_callback_owners = owners_map  # type: ignore[attr-defined]
+            owners = owners_map.setdefault(hook_name, {})
+            callback_id = id(callback)
+
+            def _drop_owner(_ref, _owners=owners, _cid=callback_id):
+                _owners.pop(_cid, None)
+
+            try:
+                owners[callback_id] = (context.plugin_id, weakref.ref(callback, _drop_owner))
+            except TypeError:
+                owners[callback_id] = (context.plugin_id, callback)
+        except Exception:
+            pass
         if hold_stream and hook_name != STREAM_HOLDING_HOOK:
             logger.warning("Plugin '%s' set hold_stream on '%s'; only %s rewrites the reply, ignored",
                            context.manifest.name, hook_name, STREAM_HOLDING_HOOK)
@@ -628,10 +697,12 @@ class PluginDispatchMixin:
         timeout = _resolve_hook_callback_timeout()
         use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
         fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
+        _granted_cache: dict[str, bool] = {}
         for cb in self._hooks.get(hook_name, []):
+            cb_kwargs = self._kwargs_for_hook_callback(hook_name, cb, kwargs, _granted_cache)
             callback_name = getattr(cb, "__name__", repr(cb))
             try:
-                ret = cb(**self._hook_callback_kwargs(cb, kwargs))
+                ret = cb(**self._hook_callback_kwargs(cb, cb_kwargs))
                 if inspect.isawaitable(ret):
                     ret = await (asyncio.wait_for(ret, timeout) if use_timeout else ret)
                 if ret is not None:

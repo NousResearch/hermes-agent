@@ -284,6 +284,11 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         # (matcher, callback, plugin_name), platform handler factories (lowercase platform -> list).
         self._plugins: dict[str, LoadedPlugin] = {}
         self._hooks: dict[str, list[Callable]] = {}
+        # Hook callback -> owning plugin id (for capability-gated payload
+        # fields such as credential_scope). Keyed by id(callback); entries
+        # hold a weakref (or a strong ref for non-weakref-able callables) so a
+        # dead callback's id can never be mis-attributed to a new owner.
+        self._hook_callback_owners: dict[str, dict[int, Any]] = {}
         # Fallback hooks registered by a memory provider before general discovery.
         self._memory_hook_registrations: dict[tuple[str, str], list[PluginRegistration]] = {}
         self._middleware: dict[str, list[Callable]] = {}

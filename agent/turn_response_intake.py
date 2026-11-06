@@ -73,6 +73,7 @@ def _fire_post_api_request_hook(
     try:
         from hermes_cli.lifecycle import has_hook, invoke_hook as _invoke_hook
         if has_hook("post_api_request"):
+            from agent.credential_scope import attempt_credential_scope
             _invoke_hook(
                 "post_api_request",
                 task_id=effective_task_id,
@@ -84,6 +85,8 @@ def _fire_post_api_request_hook(
                 provider=agent.provider,
                 base_url=agent.base_url,
                 api_mode=agent.api_mode,
+                credential_scope=attempt_credential_scope(
+                    agent, api_request_id).to_dict(),
                 api_call_count=api_call_count,
                 api_duration=api_duration,
                 started_at=api_start_time,

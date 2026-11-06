@@ -4723,6 +4723,41 @@ export interface RoomAttachmentBytes {
   data_base64: string
   [key: string]: unknown
 }
+export interface GroupsAttachmentListParams {
+  profile?: string | null
+  room_id: string
+  cursor?: string | null
+  limit?: number | null
+  query?: string | null
+  producer_member_id?: string | null
+  you_label?: string | null
+}
+export interface GroupsAttachmentListResult {
+  room_id: string
+  authority: RoomAuthority
+  snapshot_seq: number
+  items: RoomFileItem[]
+  next_cursor: string | null
+  has_more: boolean
+}
+export interface RoomFileItem {
+  available?: boolean
+  attachment_id: string
+  kind: string
+  name: string
+  size: number
+  mime: string
+  event_id: string
+  seq: number
+  manifest_index: number
+  producer: RoomFileProducer
+  shared_at: number
+}
+export interface RoomFileProducer {
+  kind: string
+  id: string
+  label: string
+}
 export interface GroupsDiscardParams {
   profile?: string | null
   room_id: string
@@ -6391,8 +6426,10 @@ export interface RpcMethods {
   'gateway.capabilities': { params: PingParams; result: GatewayCapabilitiesResult }
   /** Resolve one exact pending approval raised by a local or peer room member. */
   'groups.approve': { params: GroupsApproveParams; result: GroupsApproveResult }
-  /** Read one committed attachment for a live room viewer. */
+  /** Read one committed attachment for a live group chat viewer. A published version whose bytes are gone here is refused with attachment_unavailable. */
   'groups.attachment.download': { params: GroupsAttachmentDownloadParams; result: RoomAttachmentBytes }
+  /** List a live group chat's published file versions, newest share first, with stable snapshot paging, search and a sharer filter. available=false keeps a version listed whose bytes are unavailable here; omitted means downloadable. */
+  'groups.attachment.list': { params: GroupsAttachmentListParams; result: GroupsAttachmentListResult }
   /** Store one attachment for a later groups.send manifest (idempotent per upload_id). */
   'groups.attachment.upload': { params: GroupsAttachmentUploadParams; result: RoomAttachment }
   /** Describe the hosted-room protocol implemented by this gateway. */
@@ -6859,6 +6896,7 @@ export const RPC_METHODS = [
   'gateway.capabilities',
   'groups.approve',
   'groups.attachment.download',
+  'groups.attachment.list',
   'groups.attachment.upload',
   'groups.capabilities',
   'groups.context',
@@ -7087,8 +7125,10 @@ export interface CanonicalRpcMethods {
   /** Admit one cron firing into the owning profile's durable FIFO. */
   'cron.submit': { params: CronRunParams; result: CronSubmitResult }
   'groups.approve': { params: CanonicalRoomApproveParams; result: GroupsApproveResult }
-  /** Read one committed attachment for a live room viewer. */
+  /** Read one committed attachment for a live group chat viewer. A published version whose bytes are gone here is refused with attachment_unavailable. */
   'groups.attachment.download': { params: GroupsAttachmentDownloadParams; result: RoomAttachmentBytes }
+  /** List a live group chat's published file versions, newest share first, with stable snapshot paging, search and a sharer filter. available=false keeps a version listed whose bytes are unavailable here; omitted means downloadable. */
+  'groups.attachment.list': { params: GroupsAttachmentListParams; result: GroupsAttachmentListResult }
   /** Store one attachment for a later groups.send manifest (idempotent per upload_id). */
   'groups.attachment.upload': { params: GroupsAttachmentUploadParams; result: RoomAttachment }
   'groups.create': { params: CanonicalRoomCreateParams; result: GroupsCreateResult }
@@ -7170,6 +7210,7 @@ export const CANONICAL_RPC_METHODS = [
   'cron.submit',
   'groups.approve',
   'groups.attachment.download',
+  'groups.attachment.list',
   'groups.attachment.upload',
   'groups.create',
   'groups.discard',

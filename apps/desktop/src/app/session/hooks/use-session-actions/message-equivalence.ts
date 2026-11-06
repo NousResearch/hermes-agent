@@ -14,6 +14,7 @@ import { persistedTurnsEquivalent } from './pending-turn-identity'
 //   attachmentRefs — composer-side metadata; already reconciled in reconcileResumeMessages
 //   serverRowSpan — backend rows the folded message covers; the older-page offset
 //                   accounting reads it, the transcript never paints it
+//   submissionId — a stored prompt's send id; hydration sets it with the compared rowId
 //
 // If your new field affects what the user sees in the transcript, add it to
 // COMPARED. If it's metadata that shouldn't trigger a re-render, add it to
@@ -51,7 +52,7 @@ const COMPARED_FIELDS = [
   'durationS'
 ] as const
 
-const IGNORED_FIELDS = ['attachmentRefs', 'parts', 'serverRowSpan'] as const
+const IGNORED_FIELDS = ['attachmentRefs', 'parts', 'serverRowSpan', 'submissionId'] as const
 
 // Compile-time check: every ChatMessagePart discriminant must be handled by
 // chatPartsEquivalent. If @assistant-ui adds a new part type, this fails tsc.

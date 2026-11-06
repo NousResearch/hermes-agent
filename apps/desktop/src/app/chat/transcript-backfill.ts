@@ -20,7 +20,7 @@ import {
   dropPageRowsOfStoppedTurns,
   dropReceiptTurnsThePageHolds
 } from '@/app/chat/transcript-receipt-turns'
-import { transcriptRowIds } from '@/app/session/hooks/use-session-actions/pending-turn-identity'
+import { isLocalPendingReply, transcriptRowIds } from '@/app/session/hooks/use-session-actions/pending-turn-identity'
 import { getOlderSessionMessages, getSessionMessages, type ProfileScope } from '@/hermes'
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import {
@@ -299,6 +299,23 @@ interface StoredRowSlot {
   leading: ChatMessage[]
 }
 
+/** A running turn has no receipt yet. When the page stores its send, its live prompt and stream are left to the
+ *  pending-turn reconcile every caller runs next, which pairs them with the stored copies. */
+function withoutLiveTurnsThePageStores(trailing: ChatMessage[], page: ChatMessage[]): ChatMessage[] {
+  const stored = new Set(page.flatMap(message => (message.submissionId ? [`user-${message.submissionId}`] : [])))
+  let held = false
+
+  return trailing.filter(message => {
+    if (message.role === 'user') {
+      held = stored.has(message.id)
+
+      return !held
+    }
+
+    return !(held && isLocalPendingReply(message))
+  })
+}
+
 /**
  * Stored-id merge for a page that overlaps the window but does not anchor in
  * front of it. A row with no stored id travels with the next stored row after
@@ -391,9 +408,12 @@ function mergeOverlappingTail(previous: ChatMessage[], refreshedTail: ChatMessag
     return pending
   }
 
-  const previousTrailing = place(
-    receiptDrop.window.filter(message => !anchorNotice(message)),
-    false
+  const previousTrailing = withoutLiveTurnsThePageStores(
+    place(
+      receiptDrop.window.filter(message => !anchorNotice(message)),
+      false
+    ),
+    refreshedTail
   )
 
   const freshRows = dropPageRowsOfStoppedTurns(previous, dropPageFoldsCutByTheBoundary(previous, refreshedTail))

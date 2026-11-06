@@ -240,6 +240,12 @@ function timelineDisplayText(metadata: SessionMessage['display_metadata']): stri
   return typeof text === 'string' && text.trim() ? text : undefined
 }
 
+function promptSubmission(message: SessionMessage): Pick<ChatMessage, 'submissionId'> {
+  const id = message.role === 'user' ? parseDisplayMetadata(message.display_metadata)?.submission_id : undefined
+
+  return typeof id === 'string' && id ? { submissionId: id } : {}
+}
+
 function messageInterrupted(metadata: SessionMessage['display_metadata']): boolean {
   return parseDisplayMetadata(metadata)?.interrupted === true
 }
@@ -665,6 +671,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       ...(message.display_kind === 'process_complete' ? { asyncResultKind: 'process' as const } : {}),
       timestamp: earliestTimestamp(message.timestamp, ...parts.map(part => part.timestamp)),
       ...(rowId !== undefined ? { rowId } : {}),
+      ...promptSubmission(message),
       ...(pendingAbsorbedRows > 0 ? { serverRowSpan: pendingAbsorbedRows + 1 } : {}),
       ...(reactions.length ? { reactions } : {}),
       ...(message.role === 'assistant' && messageInterrupted(message.display_metadata) ? { interrupted: true } : {}),

@@ -16,6 +16,15 @@ export interface HudElectronOverlayWindow {
   ): void
 }
 
+/**
+ * Electron's vibrancy update on a transparent HUD terminates the main process
+ * on macOS 27 (Darwin 26). Keep the HUD usable there until Electron can make
+ * that native transition safe again. Unknown and later releases retain frost.
+ */
+export function hudVibrancySupported(darwinMajor: number): boolean {
+  return darwinMajor !== 26
+}
+
 /** Chrome Electron itself can honour. Compositor IPC is `promoteHudOverlay`. */
 export function applyHudElectronOverlay(win: HudElectronOverlayWindow, platform: string): void {
   win.setAlwaysOnTop(true, platform === 'darwin' ? 'floating' : 'screen-saver')

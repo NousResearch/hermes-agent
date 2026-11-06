@@ -485,6 +485,18 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     is_native_sdk_provider = (values["provider"] or "").strip().lower() in _NATIVE_SDK_PROVIDERS
 
     if values["base_url"] and not is_native_sdk_provider:
+        if values["provider"] and values["provider"].lower() != "custom" and not values["api_key"]:
+            # A named provider's key belongs to its own endpoint, not the parent's route.
+            named = _runtime_provider_credentials(values, explicit_request_overrides)
+            if (named["base_url"] or "").rstrip("/") != values["base_url"].rstrip("/"):
+                raise ValueError(
+                    f"delegation.base_url differs from provider '{values['provider']}' endpoint; "
+                    "set delegation.api_key for a separate endpoint."
+                )
+            named["base_url"] = values["base_url"]
+            if values["api_mode"]:
+                named["api_mode"] = values["api_mode"]
+            return named
         return _direct_endpoint_credentials(values, explicit_request_overrides)
     if not values["provider"]:
         # Pure inherit; explicit request_overrides still merge OVER the parent's.

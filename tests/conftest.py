@@ -1111,7 +1111,10 @@ def _processes_with_hermes_home_under(roots) -> list[int]:
     """
     if os.name != "posix":
         return []
-    import psutil
+    try:
+        import psutil
+    except ImportError:
+        return []
 
     resolved = [Path(r).resolve() for r in roots if r]
     me = os.getpid()

@@ -863,12 +863,74 @@ def _fetch_anthropic_account_usage(
                   ("seven_day_sonnet", "Sonnet week")), "utilization", "resets_at", fraction=True,
         model_scoped={"seven_day_opus", "seven_day_sonnet"},
     )
+    return _snapshot("anthropic", "oauth_usage_api", windows, _anthropic_spend_details(payload))
+
+
+def _anthropic_money(value: Any) -> Optional[tuple[float, str]]:
+    """``{"amount_minor": 1568, "currency": "EUR", "exponent": 2}`` → ``(15.68, "EUR")``; None when not a real amount."""
+    if not isinstance(value, dict):
+        return None
+    minor, exponent, currency = value.get("amount_minor"), value.get("exponent"), value.get("currency")
+    if not (_is_finite_num(minor) and isinstance(exponent, int) and not isinstance(exponent, bool)
+            and 0 <= exponent <= 6 and isinstance(currency, str) and currency.strip()):
+        return None
+    return float(minor) / (10 ** exponent), currency.strip().upper()
+
+
+def _anthropic_spend_state(payload: dict) -> Optional[dict]:
+    """Parsed usage-credit spend: None when the payload has no spend block at all.
+
+    The OAuth usage API reports every money value in MINOR units (cents): ``spend.used.amount_minor`` with an explicit
+    ``exponent``, and the legacy ``extra_usage.used_credits``/``monthly_limit`` with ``decimal_places``. Printing those
+    raw showed €15.68 / €40 as "1568.00 / 4000.00 EUR". Prefer the self-describing ``spend`` block; fall back to
+    ``extra_usage`` only when it declares its own ``decimal_places``. A value the API does not return (e.g. the
+    purchased-credit balance, ``spend.balance: null``, or the monthly reset date) stays None — never guessed.
+    """
+    raw_spend, raw_extra = payload.get("spend"), payload.get("extra_usage")
+    spend: dict = raw_spend if isinstance(raw_spend, dict) else {}
+    extra: dict = raw_extra if isinstance(raw_extra, dict) else {}
+    if not spend and not extra:
+        return None
+    enabled = spend.get("enabled") if "enabled" in spend else extra.get("is_enabled")
+    used, limit = _anthropic_money(spend.get("used")), _anthropic_money(spend.get("limit"))
+    if used is None or limit is None:
+        places, currency = extra.get("decimal_places"), str(extra.get("currency") or "").strip().upper()
+        raw_used, raw_limit = extra.get("used_credits"), extra.get("monthly_limit")
+        if (isinstance(places, int) and not isinstance(places, bool) and 0 <= places <= 6 and currency
+                and _is_finite_num(raw_used) and _is_finite_num(raw_limit)):
+            scale = 10 ** places
+            used, limit = (float(raw_used) / scale, currency), (float(raw_limit) / scale, currency)
+    return {
+        "enabled": bool(enabled), "used": used, "limit": limit,
+        "reached": bool(spend.get("spend_limit_reached") or extra.get("spend_limit_reached")),
+        # Only the money shape the API uses elsewhere is trusted; an unknown balance shape stays unavailable.
+        "balance": _anthropic_money(spend.get("balance")),
+        # Not returned by the API today; honoured only if it starts sending an explicit timestamp.
+        "reset_at": _parse_dt(spend.get("resets_at") or extra.get("resets_at")),
+    }
+
+
+def _anthropic_spend_details(payload: dict) -> list[str]:
+    """Usage-credit spend lines matching Claude Settings → Usage (``details`` / ``--json`` text)."""
+    state = _anthropic_spend_state(payload)
+    if state is None:
+        return []
+    if not state["enabled"]:
+        return ["Usage credits: disabled"]
+    used, limit, balance = state["used"], state["limit"], state["balance"]
     details: list[str] = []
-    extra = payload.get("extra_usage") or {}
-    used_credits, monthly_limit = extra.get("used_credits"), extra.get("monthly_limit")
-    if extra.get("is_enabled") and _is_num(used_credits) and _is_num(monthly_limit):
-        details.append(f"Extra usage: {used_credits:.2f} / {monthly_limit:.2f} {extra.get('currency') or 'USD'}")
-    return _snapshot("anthropic", "oauth_usage_api", windows, details)
+    if used is not None and limit is not None and used[1] == limit[1]:
+        line = f"Monthly spend limit: {used[0]:.2f} of {limit[0]:.2f} {limit[1]} used this month"
+        if state["reached"]:
+            line += " (limit reached)"
+        details.append(line)
+    elif used is not None:
+        details.append(f"Usage credits spent this month: {used[0]:.2f} {used[1]} (monthly limit: unavailable)")
+    else:
+        details.append("Monthly spend limit: unavailable")
+    details.append(f"Usage credits remaining: {balance[0]:.2f} {balance[1]}" if balance is not None
+                   else "Usage credits remaining: unavailable (not returned by the API)")
+    return details
 
 
 def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[str]) -> Optional[AccountUsageSnapshot]:

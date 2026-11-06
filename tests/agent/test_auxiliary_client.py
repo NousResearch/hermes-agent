@@ -336,6 +336,62 @@ class TestMoaAggregatorSharedResolution:
         assert mock_resolve.call_args.kwargs["model"] == "anthropic/claude-opus-4.8"
 
 
+class TestMainAgentFallbackCustomEndpoint:
+    """A bare-``custom`` main provider must not mis-route the main-model fallback (#131982).
+
+    Resolved without an endpoint, ``custom`` falls through the api-key chain to an unrelated
+    provider (Gemini here); the caller's main model slug then travels on that provider's wire
+    format and 404s ("models/glm-5.3 is not found for API version v1beta"). The fallback must
+    recover the live main endpoint like the vision auto-route does — or skip itself.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolate_keys(self, monkeypatch):
+        for key in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY",
+                    "OPENAI_BASE_URL", "GEMINI_API_KEY"):
+            monkeypatch.delenv(key, raising=False)
+
+    def test_custom_main_recovers_live_endpoint(self):
+        from agent.auxiliary_client import _try_main_agent_model_fallback
+
+        with patch("agent.auxiliary_client._read_main_provider", return_value="custom"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="glm-5.3"), \
+             patch("agent.auxiliary_client._is_provider_unhealthy", return_value=False), \
+             patch("agent.auxiliary_client._main_model_supports_vision", return_value=True), \
+             patch("agent.auxiliary_client._resolve_custom_runtime",
+                   return_value=(None, None, None)), \
+             patch("agent.auxiliary_client._normalize_main_runtime",
+                   return_value={"base_url": "https://my-proxy.example/v1",
+                                 "api_key": "sk-main", "api_mode": ""}):
+            client, model, label = _try_main_agent_model_fallback(
+                "openrouter", task="vision", reason="request timed out")
+
+        assert client is not None
+        assert "my-proxy.example" in str(getattr(client, "base_url", "") or "")
+        assert model == "glm-5.3"
+        assert label == "main-agent(custom)"
+
+    def test_custom_main_without_endpoint_skips_fallback(self):
+        from agent.auxiliary_client import _try_main_agent_model_fallback
+
+        misrouted = MagicMock(name="gemini-misroute")
+        with patch("agent.auxiliary_client._read_main_provider", return_value="custom"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="glm-5.3"), \
+             patch("agent.auxiliary_client._is_provider_unhealthy", return_value=False), \
+             patch("agent.auxiliary_client._main_model_supports_vision", return_value=True), \
+             patch("agent.auxiliary_client._resolve_custom_runtime",
+                   return_value=(None, None, None)), \
+             patch("agent.auxiliary_client._normalize_main_runtime", return_value={}), \
+             patch("agent.auxiliary_client._resolve_api_key_provider",
+                   return_value=(misrouted, "gemini-2.5-flash")):
+            client, model, label = _try_main_agent_model_fallback(
+                "openrouter", task="vision", reason="request timed out")
+
+        assert client is None
+        assert model is None
+        assert label == ""
+
+
 class TestBuildCallKwargsMaxTokens:
     """_build_call_kwargs should not cap output by default (#34530).
 

@@ -214,6 +214,18 @@ toggle is a filter applied from the bound scope at read time, never a
 registration. A local install never freezes, so runtime plugin and MCP loading
 behave as before.
 
+For MCP, every path that would change the served set refuses before its first
+side effect: reconciling with a changed `mcp_servers`, restarting a server on
+new launch inputs, a scoped or named `shutdown_mcp_servers`, and the removal
+helpers they share. A reconcile with nothing to change still returns its no-op
+result. Keeping a connection alive is not a registry change and stays allowed:
+a server that parks or shuts down closes its connection but keeps its
+registrations (a call fails as not connected until it revives), a revival or a
+lazy server's first use routes the tools it already registered to the live
+connection without publishing new ones, and `tools/list_changed` is ignored.
+The bare `shutdown_mcp_servers()` at process exit still closes every
+connection.
+
 ## Workstream A: context-local secret scope
 
 `agent/secret_scope.py` exists because the obvious implementation — union all

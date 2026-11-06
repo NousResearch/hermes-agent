@@ -7,6 +7,7 @@ import os
 import time
 from typing import Dict, Optional
 from hermes_cli.process_identity import is_owner_death_supervisor, release_process_groups
+from registry_freeze import refuse_if_frozen
 from tools.mcp_tool_common import _core
 from tools import mcp_tool_loop as _loop
 
@@ -169,9 +170,16 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = 
     must leave a served profile's same-named ``(B, name)`` connection alone. ``timeout`` bounds
     the wait for the close to land on the MCP loop — a caller running one pass per served
     profile under a total budget divides it, or N profiles × 15s starve the wildcard pass that
-    actually stops the loop."""
+    actually stops the loop.
+
+    After the hosted boot froze the registries only the wildcard (process exit) runs: it closes
+    every connection and each server keeps its registrations. A ``scope`` or ``names`` call
+    removes servers from what a running process serves, so it raises
+    :class:`registry_freeze.RegistryFrozen` before touching anything."""
     from tools.mcp_tool_scope import _key_name
     wildcard = scope is None and names is None
+    if not wildcard:
+        refuse_if_frozen("MCP registry")
     with _core._lock:
         selected = [key for key in _core._servers if wildcard or _core._server_scope_keys.get(key) == scope]
         if names is not None:

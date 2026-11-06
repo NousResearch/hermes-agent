@@ -21,6 +21,9 @@ accepts exactly that shape). Its image path goes through `vision_tools._native_t
 private vision check.
 
 **Hosted:** the hosted boot calls `registry_freeze.freeze_registries()`; registering after it raises.
+MCP removal paths (reconcile, restart, scoped/named shutdown, `_forget_lazy_server`,
+`_remove_server_scope`, `_deregister_mcp_tool_all_scopes`) raise too; reconnecting keeps the boot's
+registrations and publishes nothing new.
 A per-agent toggle filters from the scope at read time (`developer-guide/multiplexing-gateway.md`).
 
 ## Adding a core tool (2 files) — only when the user is explicitly contributing a core tool

@@ -15,6 +15,7 @@ from agent import runtime_cwd as _runtime_cwd
 from tools.mcp_tool_errors import _MCP_HTTP_MAX_BODY_BYTES, NonMcpEndpointError, _apply_identity_header, _describe_http_failure, _handshake_answered_with_unsupported_version, _handshake_rejected_as_modern, _is_streamable_http_rejection, _make_http_rejection_recorder, _make_mcp_body_cap_transport, _make_redirect_header_stripper, _resolve_client_cert, _unwrap_exception_group
 from tools.mcp_tool_lifecycle import _filter_mcp_children, _leader_start_time, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids, _stdio_starttimes
 from hermes_cli.process_identity import own_process_groups, register_child, release_process_groups
+from registry_freeze import registries_frozen
 from tools.mcp_tool_common import _core
 from tools.mcp_tool_node_abi import node_abi_error
 from tools import mcp_tool_config as _config
@@ -697,8 +698,8 @@ class MCPServerTransportMixin:
         ``_discover_and_register_server``). Outage handling may clear ``_ready`` and deregister stale tools;
         ownership via ``_servers`` authorizes publishing before readiness is restored so a revival (or a server
         retained after a recoverable initial failure) never comes back with zero tools."""
-        if self._registered_tool_names:
-            return
+        if self._registered_tool_names or registries_frozen():
+            return  # frozen: a revival serves what it registered at boot, never a new set
         with _core._lock:
             owned = [key for key, live in _core._servers.items() if live is self]
         if not owned and not self._ready.is_set():

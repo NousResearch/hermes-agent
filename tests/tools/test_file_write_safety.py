@@ -614,7 +614,8 @@ class TestBomHandling:
 class TestProtectedInstructionFiles:
     """Writes to agent-instruction files ALWAYS require approval.
 
-    AGENTS.md / CLAUDE.md / SOUL.md / .cursorrules / project-local .hermes
+    AGENTS.md / AGENTS.override.md / CLAUDE.md / SOUL.md / .hermes.md /
+    HERMES.md / .cursorrules / .cursor/rules/*.mdc / project-local .hermes
     config steer future agent behavior, so a prompt-injected agent writing
     them is a persistence vector. The gate must ask the human every time —
     even under yolo/auto-approve — and fail closed when no human channel
@@ -654,16 +655,40 @@ class TestProtectedInstructionFiles:
     # ---- core behavior -------------------------------------------------
 
     @pytest.mark.parametrize(
-        "name", ["AGENTS.md", "CLAUDE.md", "SOUL.md", ".cursorrules"]
+        "name", ["AGENTS.md", "CLAUDE.md", "SOUL.md", ".cursorrules",
+                 ".hermes.md", "HERMES.md", "AGENTS.override.md", "agents.OVERRIDE.md",
+                 ".cursor/rules/style.mdc", ".CURSOR/RULES/style.MDC"]
     )
     def test_deny_blocks_write(self, tmp_path, approvals, name):
         target = tmp_path / name
+        target.parent.mkdir(parents=True, exist_ok=True)
         approvals["answer"] = "deny"
         res = self._write(target)
         assert res.get("error"), res
         assert "BLOCKED" in res["error"]
         assert not target.exists()
         assert len(approvals["calls"]) == 1
+
+    @pytest.mark.parametrize(
+        "name", ["notes.mdc", "docs/rules/x.mdc", ".cursor/x.mdc", ".cursor/other/x.mdc",
+                 ".cursor/rules/readme.md"]
+    )
+    def test_non_instruction_cursor_paths_never_prompt(self, tmp_path, approvals, name):
+        target = tmp_path / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        res = self._write(target, "hello")
+        assert not res.get("error"), res
+        assert target.read_text(encoding="utf-8") == "hello"
+        assert approvals["calls"] == []
+
+    def test_all_subdirectory_hint_filenames_are_gated(self, tmp_path):
+        from agent.subdirectory_hints import _HINT_FILENAMES
+        from tools.file_tools_write_guards import _protected_instruction_reason
+
+        for name in _HINT_FILENAMES:
+            assert _protected_instruction_reason(
+                str(tmp_path / name), enabled=True, extra_patterns=[]
+            ), name
 
     def test_approve_once_allows_write(self, tmp_path, approvals):
         target = tmp_path / "AGENTS.md"
@@ -738,9 +763,11 @@ class TestProtectedInstructionFiles:
     # ---- adversarial path shapes ----------------------------------------
 
     @pytest.mark.require_symlinks
-    def test_symlink_to_protected_file_is_gated(self, tmp_path, approvals):
+    @pytest.mark.parametrize("name", ["AGENTS.md", ".cursor/rules/style.mdc"])
+    def test_symlink_to_protected_file_is_gated(self, tmp_path, approvals, name):
         """#41351 lesson: realpath first — innocent name, protected target."""
-        real = tmp_path / "AGENTS.md"
+        real = tmp_path / name
+        real.parent.mkdir(parents=True, exist_ok=True)
         real.write_text("original", encoding="utf-8")
         link = tmp_path / "innocent.txt"
         link.symlink_to(real)

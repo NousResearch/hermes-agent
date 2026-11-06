@@ -68,7 +68,7 @@ def test_resolve_titled_session_finds_recoverable_auto_archived_bot_chat(tmp_pat
         _local(db, authority, 'local-reaped', user='human', title='Bot Chat')
         assert db.set_session_hidden('local-reaped', True)
         db.end_session('local-reaped', 'ws_orphan_reap')
-        assert db.set_session_archived('local-reaped', True)
+        db._write_sql('UPDATE sessions SET archived = 1 WHERE id = ?', ('local-reaped',))  # pre-#139779 reaper state
         human = SessionActor('human', 'owned', frozenset({'session:read'}), 'viewer')
         ref = resolve_titled_session(authority, human, 'Bot Chat', missing_ok=True)
         assert ref is not None

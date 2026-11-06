@@ -204,6 +204,32 @@ class SessionTitlesMixin:
             "UPDATE sessions SET title_source = ? WHERE id = ? AND title IS NOT NULL", (source, session_id)
         ) > 0
 
+    def _retire_canonical_bot_chat_in_transaction(self, conn, session_id: str) -> list[str]:
+        """A DELIBERATE archive (user, CLI, API, Desktop's sidebar mutation) of the canonical
+        Bot Chat retires its name, so the next bot click mints a fresh "Bot Chat" (#139779).
+
+        Runs whether or not the row was already archived: a chat the ws-orphan / startup reaper
+        already closed (``ws_orphan_reap``, ``startup_orphan_reap``, ``agent_close``) is still the
+        user's chat, and their Archive means "done with it". So the lineage's recoverable
+        ``end_reason`` is cleared (``ended_at`` stays, so no orphan sweep re-stamps the closed row
+        recoverable and nothing resurrects it) and its "Bot Chat" title is NULLed. The idle sweep and
+        the reapers never call this. Returns the ids whose title was released."""
+        from hermes_state_sessions import _LINEAGE_CTE_SQL
+        lineage = (session_id, session_id)
+        held = [row[0] for row in conn.execute(
+            _LINEAGE_CTE_SQL + "SELECT id FROM sessions WHERE id IN (SELECT id FROM lineage) "
+            "AND COALESCE(hidden, 0) <> 0 AND title = ?", (*lineage, self.CANONICAL_BOT_CHAT_TITLE),
+        ).fetchall()]
+        if not held:
+            return []
+        conn.execute(
+            _LINEAGE_CTE_SQL + "UPDATE sessions SET end_reason = NULL "
+            f"WHERE id IN (SELECT id FROM lineage) AND end_reason IN ({_RECOVERABLE_END_REASONS_SQL})",
+            lineage)
+        conn.executemany("UPDATE sessions SET title = NULL, title_source = NULL WHERE id = ?",
+                         [(sid,) for sid in held])
+        return held
+
     def get_session_by_title(self, title: str) -> Optional[dict[str, Any]]:
         """Look up a session by exact title. Returns session dict or None.
 

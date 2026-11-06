@@ -58,7 +58,7 @@ async def test_title_list_still_resolves_recoverable_auto_archived_bot_chat(tmp_
         assert db.set_session_title(sid, 'Bot Chat')
         assert db.set_session_hidden(sid, True)
         db.end_session(sid, 'ws_orphan_reap')
-        assert db.set_session_archived(sid, True)
+        db._write_sql('UPDATE sessions SET archived = 1 WHERE id = ?', (sid,))  # pre-#139779 reaper state
         listed = await conn.dispatch({'id': 9, 'method': 'session.list', 'params': {'title': 'Bot Chat'}})
         sessions = listed['result']['sessions']
         assert len(sessions) == 1

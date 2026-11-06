@@ -85,33 +85,60 @@ def _forbidden_key_reason(key: str) -> Optional[str]:
     return None
 
 
-def _first_forbidden_key(value: Any, path: str = "") -> Optional[tuple[str, str]]:
+def _forbidden_pair_key(value: Any) -> Optional[tuple[str, str]]:
+    # YAML !!pairs stores each mapping entry as a tuple, including its key.
+    if isinstance(value, tuple) and len(value) == 2 and isinstance(value[0], str):
+        if reason := _forbidden_key_reason(value[0]):
+            return value[0], reason
+    return None
+
+
+def _first_forbidden_key(
+    value: Any, path: str = "", active: frozenset[int] = frozenset(),
+) -> Optional[tuple[str, str]]:
     """``(dotted key, reason)`` of the first forbidden key at ANY depth of *value*, else None.
     A nested mapping (or a mapping inside a list) is the same contract as the top level (#85050)."""
+    if not isinstance(value, (dict, list, tuple)):
+        return None
+    if id(value) in active:
+        return path.rstrip("."), "cyclic"
+    # Track the current ancestry, not all visited objects: shared aliases are valid.
+    active = active | {id(value)}
+    if pair := _forbidden_pair_key(value):
+        return f"{path}{pair[0]}", pair[1]
     if isinstance(value, dict):
         for key, child in value.items():
             if isinstance(key, str) and (reason := _forbidden_key_reason(key)):
                 return f"{path}{key}", reason
-            if found := _first_forbidden_key(child, f"{path}{key}."):
+            if found := _first_forbidden_key(child, f"{path}{key}.", active):
                 return found
-    elif isinstance(value, list):
+    else:
         for child in value:
-            if found := _first_forbidden_key(child, path):
+            if found := _first_forbidden_key(child, path, active):
                 return found
     return None
 
 
-def _strip_forbidden_keys(value: Any) -> Any:
+_OMIT_CONFIG_VALUE = object()
+
+
+def _strip_forbidden_keys(value: Any, active: frozenset[int] = frozenset()) -> Any:
     """Copy of *value* with forbidden keys and non-YAML-scalar leaves removed at every depth."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if not isinstance(value, (dict, list, tuple)):
+        return _OMIT_CONFIG_VALUE
+    if id(value) in active or _forbidden_pair_key(value) is not None:
+        return _OMIT_CONFIG_VALUE
+    active = active | {id(value)}
     if isinstance(value, dict):
         return {
-            key: _strip_forbidden_keys(child) for key, child in value.items()
+            key: clean for key, child in value.items()
             if isinstance(key, str) and _forbidden_key_reason(key) is None
-            and (child is None or isinstance(child, (str, int, float, bool, list, dict)))
+            and (clean := _strip_forbidden_keys(child, active)) is not _OMIT_CONFIG_VALUE
         }
-    if isinstance(value, list):
-        return [_strip_forbidden_keys(child) for child in value]
-    return value
+    return [clean for child in value
+            if (clean := _strip_forbidden_keys(child, active)) is not _OMIT_CONFIG_VALUE]
 
 
 def validate_config_seed(plugin_id: str, seed: Any) -> dict[str, Any]:
@@ -126,6 +153,8 @@ def validate_config_seed(plugin_id: str, seed: Any) -> dict[str, Any]:
     found = _first_forbidden_key(seed)
     if found is not None:
         key, reason = found
+        if reason == "cyclic":
+            raise PackError(f"Pack config for plugin '{plugin_id}' contains a cyclic alias at '{key}'.")
         if reason == "reserved":
             raise PackError(
                 f"Pack config for plugin '{plugin_id}' sets reserved key "

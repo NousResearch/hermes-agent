@@ -1,38 +1,43 @@
 name: pdf-shrink
 repo: https://github.com/Hazem-Samak/hermes-pdf-shrink
-sha: 86aea0f4379f1607fcc098de1f4ef9b93b902653
+sha: e75c2c2f82115a34b332438e6382bc380855b90a
 description: >-
   Shrink a PDF to a size limit (2 MB, 500 KB, whatever the upload form says) with
   everything running locally — no upload, no API key, no third-party service. Two
   tools and a bundled skill. pdf_inspect reports what makes a file heavy: image
   share of the bytes, the resolution each image is actually displayed at, fonts,
-  embedded attachments and duplicates, with a verdict (images dominate /
-  vector-heavy / already small) so a shrink that cannot work is caught before it
-  runs. pdf_shrink downsamples images to the resolution they are displayed at,
-  recovered by replaying each page's content stream (q/Q/cm/Do) to get the
-  graphics matrix, so a logo drawn one inch wide is not forced to page
-  resolution, then walks a measured ladder of DPI/JPEG-quality rungs from the
-  mildest down and keeps the first that fits — each rung rebuilt from the
-  pristine original, so the copy is one generation of compression rather than
-  six. Text, fonts and vector art are never rasterised; already-efficient
-  encodings (JBIG2, CCITT, 1-bit masks, small logos) are left alone. When the
-  limit cannot be reached without making the document unreadable it stops at the
-  safe floor, reports the smallest safe size, saves that copy, and names both
-  ways forward (a higher target, or aggressive=true for 72 DPI) instead of
-  handing back mush. Every copy is re-opened and verified (page count, blank
-  pages), the source is re-hashed to prove it was untouched, and a before/after
-  render of page 1 comes back with the run. Writes only new files; the only
-  destructive option is drop_attachments=true, off by default.
+  embedded attachments and duplicates, with a verdict (images dominate / images
+  not reclaimable / vector-heavy / already small) so a shrink that cannot work is
+  caught before it runs. pdf_shrink downsamples images it can re-encode safely to
+  the resolution they are displayed at, recovered by replaying each page's content
+  stream (q/Q/cm/Do, including nested Form XObjects), then walks a measured ladder
+  of DPI/JPEG-quality rungs from the mildest down and keeps the first that fits —
+  each rung rebuilt from the pristine original, so the copy is one generation of
+  compression rather than six. Text, fonts and vector art are never rasterised;
+  images that cannot be re-encoded safely (JBIG2, CCITT, 1-bit or non-8-bit
+  samples, soft/stencil masks, /Mask, /Matte or /Decode arrays, CMYK and other
+  print colour spaces, tiny logos) are left byte-for-byte alone. When the limit
+  cannot be reached without making the document unreadable it stops at the safe
+  floor, reports the smallest safe size, saves that copy when it is meaningfully
+  smaller, and names the levers that can actually help (a reachable higher target,
+  or aggressive=true when it can do better) instead of handing back mush. Every
+  copy is re-opened and verified (page count, blank pages, structural syntax)
+  before delivery; a copy that fails is reported as failed, not as a success. The
+  source is re-hashed before and after every run, and a change is reported rather
+  than claimed untouched. A before/after render of page 1 comes back when PDFium
+  is available and a verified copy was written. Writes only new files; an
+  existing output path is refused, never overwritten. The only destructive option
+  is drop_attachments=true, off by default.
 maintainer: Hazem-Samak
 tier: community
 category: tools
 requires_hermes: ">=0.22.0"
 docs_url: https://github.com/Hazem-Samak/hermes-pdf-shrink#readme
-version: "1.0.0"
+version: "1.0.1"
 title: PDF Shrink
-image: https://raw.githubusercontent.com/Hazem-Samak/hermes-pdf-shrink/86aea0f4379f1607fcc098de1f4ef9b93b902653/assets/banner.png
+image: https://raw.githubusercontent.com/Hazem-Samak/hermes-pdf-shrink/e75c2c2f82115a34b332438e6382bc380855b90a/assets/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/Hazem-Samak/hermes-pdf-shrink/86aea0f4379f1607fcc098de1f4ef9b93b902653/assets/screenshot.jpg
+  - https://raw.githubusercontent.com/Hazem-Samak/hermes-pdf-shrink/e75c2c2f82115a34b332438e6382bc380855b90a/assets/screenshot.jpg
 platforms: [linux, macos, windows]
 capabilities:
   provides_tools:

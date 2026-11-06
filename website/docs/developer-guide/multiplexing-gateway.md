@@ -258,6 +258,23 @@ connection without publishing new ones, and `tools/list_changed` is ignored.
 The bare `shutdown_mcp_servers()` at process exit still closes every
 connection.
 
+`freeze_registries()` refuses, freezing nothing, while a registration is still
+pending (`registry_freeze.assert_registries_complete()` raises
+`RegistriesIncomplete` naming it). Today that means a deferred platform loader
+nobody has looked up yet: its adapter registers on first lookup, which the
+freeze would refuse, so the boot looks up (or drops) every platform it serves
+before it freezes. Hooks are process-wide too: a memory provider constructed
+per agent after the freeze must not register global hooks; its plugin
+registers them at boot. Stable boot-time hook dispatch to per-agent provider
+instances is a follow-up.
+
+An operation a frozen process cannot perform is answered as such, never as an
+internal error. `session.reload_mcp` returns `status: restart_required`
+("restart required: registries are frozen"). A `plugins.manage` settings save
+is still written (`saved: true`), but when it changes an MCP server's launch
+inputs no reconnect is started: the reply carries `activated: false`,
+`restart_required: true` and the servers in `restart_required_servers`.
+
 ## Workstream A: context-local secret scope
 
 `agent/secret_scope.py` exists because the obvious implementation — union all

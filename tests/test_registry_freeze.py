@@ -238,3 +238,32 @@ def test_provider_registration_argument_is_detached_at_freeze(frozen_provider):
     providers, _profile, headers = frozen_provider
     headers["X-Probe"] = "after"
     assert providers.get_provider_profile("freeze-probe").default_headers == {"X-Probe": "before"}
+
+
+@pytest.fixture
+def thawed_platforms(monkeypatch):
+    from gateway.platform_registry import PlatformRegistry
+    import gateway.platform_registry as module
+    monkeypatch.setattr(registry_freeze, "_frozen", False)
+    monkeypatch.setattr(module, "platform_registry", PlatformRegistry())
+    return module.platform_registry
+
+
+def test_freeze_refuses_while_a_deferred_platform_is_unresolved(thawed_platforms):
+    """A deferred platform loader registers its adapter on first lookup; after the freeze that
+    registration is refused, so the platform would be lost. The freeze refuses first, naming it."""
+    loaded = []
+    thawed_platforms.register_deferred("lazyplat", lambda: loaded.append(1), scope="/home-a")
+    with pytest.raises(registry_freeze.RegistriesIncomplete, match="lazyplat"):
+        freeze_registries()
+    assert not registries_frozen() and loaded == []
+    with pytest.raises(registry_freeze.RegistriesIncomplete, match="lazyplat"):
+        registry_freeze.assert_registries_complete()
+
+
+def test_freeze_proceeds_once_deferred_platforms_resolve(thawed_platforms):
+    thawed_platforms.register_deferred("lazyplat", lambda: None)
+    thawed_platforms._resolve("lazyplat", None)  # the boot materialises (or drops) every platform it serves
+    registry_freeze.assert_registries_complete()
+    freeze_registries()
+    assert registries_frozen()

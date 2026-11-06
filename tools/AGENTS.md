@@ -26,6 +26,8 @@ MCP removal paths (reconcile, restart, scoped/named shutdown, `_forget_lazy_serv
 raise too (`shareable_connection` is the read-only adoption lookup); reconnecting keeps the boot's
 registrations and publishes nothing new.
 A per-agent toggle filters from the scope at read time (`developer-guide/multiplexing-gateway.md`).
+Freeze refuses while a deferred platform is pending; per-agent memory providers must not
+register global hooks after it (follow-up).
 
 ## Adding a core tool (2 files) — only when the user is explicitly contributing a core tool
 

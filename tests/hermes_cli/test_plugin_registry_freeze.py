@@ -161,15 +161,19 @@ def no_frozenplat():
     platform_registry.unregister("frozenplat")
 
 
-def test_deferred_platform_loader_refuses_after_freeze(manager, tmp_path, no_frozenplat):
-    """The loader leased at boot calls ``_load_plugin_scoped`` directly on first lookup."""
+def test_deferred_platform_loader_refuses_after_freeze(manager, tmp_path, no_frozenplat, monkeypatch):
+    """The loader leased at boot calls ``_load_plugin_scoped`` directly on first lookup. The freeze
+    itself refuses while that loader is unresolved (see test_registry_freeze); a loader called
+    after a freeze anyway (a handle retained past it) still publishes nothing."""
     from gateway.platform_registry import platform_registry
     manifest = _platform_manifest(tmp_path)
     manager._register_deferred_platform(manifest)
     loader = platform_registry.snapshot_registration("frozenplat", scope=manager.scope_key)[1]
     assert loader is not None
     before = list(manager._registration_order)
-    freeze_registries()
+    with pytest.raises(registry_freeze.RegistriesIncomplete, match="frozenplat"):
+        freeze_registries()
+    monkeypatch.setattr(registry_freeze, "_frozen", True)  # past the completeness check
     with pytest.raises(RegistryFrozen, match="plugin registry"):
         loader()
     assert manager._registration_order == before

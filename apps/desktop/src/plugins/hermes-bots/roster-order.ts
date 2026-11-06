@@ -2,19 +2,19 @@
  * Roster Section Manual Ordering and Drag Reorder.
  *
  * Provides persistent manual ordering scoped to individual roster sections.
- * Composes with user-made sections (#101290) by scoping order to each section/connection
- * context, preserving pinned-first semantics, deterministic unranked bot placement,
- * and isolated per-section resets.
+ * Composes with user-made sections (#101290) and group-chat slots (#113414) by
+ * scoping order to each (connection, section) context, preserving pinned-first
+ * outer bands, deterministic unranked bot placement, and isolated resets.
  */
 
 import { atom } from 'nanostores'
 
-import { botRosterKey } from './data'
 import { getPluginCtx } from './shared'
-import type { RosterRow } from './types'
-import { $draggingBot, BOT_DRAG_MIME, onBotMovedToSection } from './user-sections'
+import type { GatewaySource, RosterRow } from './types'
 
-export { $draggingBot, BOT_DRAG_MIME }
+function rowIdentityKey(bot: Partial<RosterRow> | null | undefined): string {
+  return `${bot?.connectionId || 'legacy'}::${bot?.name || 'default'}`
+}
 
 export const BOT_ROSTER_ORDER_KEY = 'bot-roster-order-v1'
 
@@ -23,21 +23,37 @@ export type RosterOrderMap = Record<string, string[]>
 
 export const $rosterOrder = atom<RosterOrderMap>({})
 
-/** Section scope of the bot currently in flight. */
-export const $draggingBotScope = atom<null | string>(null)
-
-/** Pinned status of the bot currently in flight. */
-export const $draggingBotPinned = atom<null | boolean>(null)
-
 /**
  * Scope key for a section context, combining connection and section identity.
  * Unassigned uses 'unassigned'.
  */
 export function rosterSectionScope(sectionId: null | string, connectionId?: string | null): string {
   const conn = String(connectionId || 'local').trim() || 'local'
-  const sec = sectionId ? String(sectionId).trim() : 'unassigned'
+  const sec = sectionId ? String(sectionId).trim() || 'unassigned' : 'unassigned'
 
   return `${conn}::${sec}`
+}
+
+function normalizeScopeList(list: unknown): string[] {
+  if (!Array.isArray(list)) {
+    return []
+  }
+
+  const seen = new Set<string>()
+  const cleanList: string[] = []
+
+  for (const item of list) {
+    const key = String(item || '').trim()
+
+    if (!key || seen.has(key)) {
+      continue
+    }
+
+    seen.add(key)
+    cleanList.push(key)
+  }
+
+  return cleanList
 }
 
 export function normalizeRosterOrderMap(value: unknown): RosterOrderMap {
@@ -48,26 +64,16 @@ export function normalizeRosterOrderMap(value: unknown): RosterOrderMap {
   const out: RosterOrderMap = {}
 
   for (const [scope, list] of Object.entries(value)) {
-    if (!Array.isArray(list)) {
+    const cleanScope = scope.trim()
+
+    if (!cleanScope) {
       continue
     }
 
-    const seen = new Set<string>()
-    const cleanList: string[] = []
-
-    for (const item of list) {
-      const key = String(item || '').trim()
-
-      if (!key || seen.has(key)) {
-        continue
-      }
-
-      seen.add(key)
-      cleanList.push(key)
-    }
+    const cleanList = normalizeScopeList(list)
 
     if (cleanList.length > 0) {
-      out[scope] = cleanList
+      out[cleanScope] = cleanList
     }
   }
 
@@ -107,9 +113,76 @@ export function clearRosterOrder(scopeKey?: string): void {
   persistRosterOrder(current)
 }
 
-/** Check whether a section scope has a custom manual order. */
-export function hasCustomRosterOrder(scopeKey: string, orderMap: RosterOrderMap = $rosterOrder.get()): boolean {
-  return Boolean(orderMap[scopeKey]?.length)
+function scopeMatchesSectionId(scope: string, sectionId: string): boolean {
+  const sep = scope.indexOf('::')
+
+  return sep >= 0 && scope.slice(sep + 2) === sectionId
+}
+
+/** Snapshot custom orders across all connections for a section id before deleting it. */
+export function snapshotSectionRosterOrder(
+  sectionId: string,
+  orderMap: RosterOrderMap = $rosterOrder.get()
+): RosterOrderMap {
+  const cleanId = sectionId.trim()
+
+  if (!cleanId) {
+    return {}
+  }
+
+  const snapshot: RosterOrderMap = {}
+
+  for (const [scope, list] of Object.entries(orderMap)) {
+    if (scopeMatchesSectionId(scope, cleanId) && list.length > 0) {
+      snapshot[scope] = [...list]
+    }
+  }
+
+  return snapshot
+}
+
+/** Clear custom orders across every connection for a deleted section id. */
+export function clearSectionRosterOrder(sectionId: string): void {
+  const cleanId = sectionId.trim()
+
+  if (!cleanId) {
+    return
+  }
+
+  const current = $rosterOrder.get()
+  const next: RosterOrderMap = {}
+  let changed = false
+
+  for (const [scope, list] of Object.entries(current)) {
+    if (scopeMatchesSectionId(scope, cleanId)) {
+      changed = true
+    } else if (list.length > 0) {
+      next[scope] = list
+    }
+  }
+
+  if (changed) {
+    persistRosterOrder(next)
+  }
+}
+
+/** Restore snapshotted section orders when a section delete is undone. */
+export function restoreSectionRosterOrder(snapshot: RosterOrderMap): void {
+  const entries = Object.entries(snapshot)
+
+  if (!entries.length) {
+    return
+  }
+
+  const next: RosterOrderMap = { ...$rosterOrder.get() }
+
+  for (const [scope, list] of entries) {
+    if (list.length > 0) {
+      next[scope] = [...list]
+    }
+  }
+
+  persistRosterOrder(next)
 }
 
 /** Check whether any section scope has a custom manual order. */
@@ -148,14 +221,77 @@ export function removeBotFromRosterOrder(botKey: string, scopeKey?: string): voi
   }
 }
 
-/** Prune deleted or stale keys no longer in the active roster. */
-export function pruneRosterOrder(liveRosterKeys: Set<string>): void {
+/** Remove a bot from its previous section's custom order without touching its destination section. */
+export function removeBotFromSectionOrder(bot: Partial<RosterRow>, sectionId: null | string): void {
+  const key = rowIdentityKey(bot)
+  const sec = sectionId ? String(sectionId).trim() || 'unassigned' : 'unassigned'
+
+  for (const scope of Object.keys($rosterOrder.get())) {
+    if (scopeMatchesSectionId(scope, sec)) {
+      removeBotFromRosterOrder(key, scope)
+    }
+  }
+}
+
+function deferredSourceConnections(sources?: GatewaySource[]): Set<string> {
+  if (!Array.isArray(sources) || !sources.length) {
+    return new Set()
+  }
+
+  const deferred = new Set<string>()
+
+  for (const source of sources) {
+    const id = String(source?.connectionId || '').trim()
+
+    if (id && (source.reachable === false || Boolean(String(source.error || '').trim()))) {
+      deferred.add(id)
+    }
+  }
+
+  return deferred
+}
+
+function keyOnDeferredConnection(
+  botKey: string,
+  deferredConnections: Set<string>,
+  hasAuthoritativeSources: boolean
+): boolean {
+  const sep = botKey.indexOf('::')
+  const conn = sep >= 0 ? botKey.slice(0, sep) : ''
+
+  if (!conn) {
+    return false
+  }
+
+  // Unknown source inventory is not proof that a remote gateway left the registry.
+  if (!hasAuthoritativeSources) {
+    return conn !== 'local' && conn !== 'legacy'
+  }
+
+  return deferredConnections.has(conn)
+}
+
+/**
+ * Prune deleted keys no longer in the active roster while preserving entries
+ * belonging to offline, errored, or connect-on-demand (SSH) connections.
+ */
+export function pruneRosterOrder(liveRosterKeys: Set<string>, sources?: GatewaySource[]): void {
   const current = $rosterOrder.get()
+  const entries = Object.entries(current)
+
+  if (!entries.length) {
+    return
+  }
+
+  const hasAuthoritativeSources = Array.isArray(sources) && sources.length > 0
+  const deferredConnections = deferredSourceConnections(sources)
   const next: RosterOrderMap = {}
   let changed = false
 
-  for (const [scope, list] of Object.entries(current)) {
-    const filtered = list.filter(k => liveRosterKeys.has(k))
+  for (const [scope, list] of entries) {
+    const filtered = list.filter(
+      k => liveRosterKeys.has(k) || keyOnDeferredConnection(k, deferredConnections, hasAuthoritativeSources)
+    )
 
     if (filtered.length !== list.length) {
       changed = true
@@ -171,27 +307,41 @@ export function pruneRosterOrder(liveRosterKeys: Set<string>): void {
   }
 }
 
-export function rosterRowKey(row: { bot?: RosterRow } | RosterRow): string {
-  const bot = ('bot' in row && row.bot ? row.bot : row) as RosterRow
-
-  return botRosterKey(bot)
-}
-
 export interface OrderableRosterRow {
   activity: number
-  bot?: RosterRow
   created?: number
   pinned: boolean
 }
 
+function compareRankedRows<T extends OrderableRosterRow>(
+  a: T,
+  b: T,
+  getRowKey: (row: T) => string,
+  orderIndexMap: Map<string, number>
+): number {
+  const keyA = getRowKey(a)
+  const keyB = getRowKey(b)
+  const idxA = orderIndexMap.get(keyA) ?? -1
+  const idxB = orderIndexMap.get(keyB) ?? -1
+
+  if (idxA >= 0 && idxB >= 0) {
+    return idxA - idxB
+  }
+
+  if (idxA >= 0 || idxB >= 0) {
+    return idxA >= 0 ? -1 : 1
+  }
+
+  // Unranked rows: deterministic placement by creation time then key to avoid activity churn.
+  const createdDiff = (b.created || 0) - (a.created || 0)
+
+  return createdDiff !== 0 ? createdDiff : keyA.localeCompare(keyB)
+}
+
 /**
- * Reorder rows within a section.
- * Pinned rows stay at the top.
+ * Reorder bot rows within a section.
+ * Pinned rows always remain in the top band.
  * When orderKeys is empty or undefined, falls back to default recency sort.
- * When orderKeys is present:
- *   - Ranked rows sort by their index in orderKeys.
- *   - Unranked rows (newly discovered bots) sort deterministically by (created, key)
- *     to prevent churn on chat activity, appended after ranked rows in each band.
  */
 export function orderRosterRows<T extends OrderableRosterRow>(
   rows: T[],
@@ -199,16 +349,7 @@ export function orderRosterRows<T extends OrderableRosterRow>(
   orderKeys?: string[]
 ): T[] {
   if (!orderKeys || !orderKeys.length) {
-    return rows.slice().sort((a, b) => {
-      const pa = a.pinned ? 1 : 0
-      const pb = b.pinned ? 1 : 0
-
-      if (pa !== pb) {
-        return pb - pa
-      }
-
-      return b.activity - a.activity
-    })
+    return rows.slice().sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.activity - a.activity)
   }
 
   const orderIndexMap = new Map<string, number>()
@@ -216,42 +357,50 @@ export function orderRosterRows<T extends OrderableRosterRow>(
     orderIndexMap.set(key, index)
   })
 
-  const sortBucket = (bucket: T[]): T[] => {
-    return bucket.slice().sort((a, b) => {
-      const keyA = getRowKey(a)
-      const keyB = getRowKey(b)
-      const idxA = orderIndexMap.has(keyA) ? orderIndexMap.get(keyA)! : -1
-      const idxB = orderIndexMap.has(keyB) ? orderIndexMap.get(keyB)! : -1
+  const pinnedRows = rows.filter(r => r.pinned).sort((a, b) => compareRankedRows(a, b, getRowKey, orderIndexMap))
+  const unpinnedRows = rows.filter(r => !r.pinned).sort((a, b) => compareRankedRows(a, b, getRowKey, orderIndexMap))
 
-      if (idxA >= 0 && idxB >= 0) {
-        return idxA - idxB
-      }
+  return [...pinnedRows, ...unpinnedRows]
+}
 
-      if (idxA >= 0) {
-        return -1
-      }
-
-      if (idxB >= 0) {
-        return 1
-      }
-
-      // Unranked rows: deterministic placement based on creation time then key.
-      // Avoids activity churn.
-      const ca = a.created || 0
-      const cb = b.created || 0
-
-      if (ca !== cb) {
-        return cb - ca
-      }
-
-      return keyA.localeCompare(keyB)
-    })
+/**
+ * Apply custom bot ordering onto a mixed list of bot and group-chat rows while
+ * preserving pinned bands and group-chat slot positions (mirroring sortGroupRosterRows).
+ * When orderKeys is empty, returns rows untouched.
+ */
+export function orderSectionMixedRows<
+  TRow extends { bot: RosterRow; kind?: 'bot' } | { kind: 'group'; pinned?: boolean }
+>(
+  rows: TRow[],
+  toOrderable: (row: Extract<TRow, { bot: RosterRow }>) => Extract<TRow, { bot: RosterRow }> & OrderableRosterRow,
+  orderKeys?: string[]
+): TRow[] {
+  if (!orderKeys || !orderKeys.length) {
+    return rows
   }
 
-  const pinnedRows = rows.filter(r => r.pinned)
-  const unpinnedRows = rows.filter(r => !r.pinned)
+  type BotEntry = Extract<TRow, { bot: RosterRow }>
 
-  return [...sortBucket(pinnedRows), ...sortBucket(unpinnedRows)]
+  const annotated = rows.map(row => {
+    if (row.kind === 'group') {
+      return { isGroup: true as const, pinned: Boolean(row.pinned), row }
+    }
+
+    const orderable = toOrderable(row as BotEntry)
+
+    return { isGroup: false as const, orderable, pinned: orderable.pinned, row }
+  })
+
+  const orderedBots = orderRosterRows(
+    annotated.filter(entry => !entry.isGroup).map(entry => entry.orderable),
+    row => rowIdentityKey(row.bot),
+    orderKeys
+  )
+
+  const banded = [...annotated.filter(entry => entry.pinned), ...annotated.filter(entry => !entry.pinned)]
+  let index = 0
+
+  return banded.map(entry => (entry.isGroup ? entry.row : orderedBots[index++]!))
 }
 
 /**
@@ -269,10 +418,9 @@ export function moveRosterItem(
     return currentOrder
   }
 
-  let baseOrder: string[]
+  const baseOrder = currentOrder.length > 0 ? [...currentOrder] : [...allSectionBotKeys]
 
   if (currentOrder.length > 0) {
-    baseOrder = [...currentOrder]
     const existing = new Set(baseOrder)
 
     for (const key of allSectionBotKeys) {
@@ -281,8 +429,6 @@ export function moveRosterItem(
         existing.add(key)
       }
     }
-  } else {
-    baseOrder = [...allSectionBotKeys]
   }
 
   const fromIndex = baseOrder.indexOf(fromKey)
@@ -296,14 +442,8 @@ export function moveRosterItem(
   if (targetIndex < 0) {
     baseOrder.push(fromKey)
   } else {
-    const insertIndex = position === 'before' ? targetIndex : targetIndex + 1
-    baseOrder.splice(insertIndex, 0, fromKey)
+    baseOrder.splice(position === 'before' ? targetIndex : targetIndex + 1, 0, fromKey)
   }
 
   return baseOrder
 }
-
-// Automatically purge bot from old section order whenever moved across sections
-onBotMovedToSection(bot => {
-  removeBotFromRosterOrder(botRosterKey(bot))
-})

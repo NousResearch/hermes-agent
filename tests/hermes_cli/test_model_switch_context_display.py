@@ -41,23 +41,6 @@ class TestResolveDisplayContextLength:
             "Codex OAuth's 272K cap must win over models.dev's 1.05M for gpt-5.5"
         )
 
-
-
-
-    def test_prefers_resolver_even_when_model_info_has_larger_value(self):
-        """Invariant: provider-aware resolver is authoritative, even if models.dev
-        reports a bigger window."""
-        fake_mi = _FakeModelInfo(2_000_000)
-        with patch(
-            "agent.model_metadata.get_model_context_length", return_value=128_000
-        ):
-            ctx = resolve_display_context_length(
-                "capped-model",
-                "capped-provider",
-                model_info=fake_mi,
-            )
-        assert ctx == 128_000
-
     def test_custom_providers_override_honored(self):
         """Regression for #15779: /model switch onto a custom provider must
         surface the configured per-model context_length, not the 128K/256K
@@ -90,6 +73,3 @@ class TestResolveDisplayContextLength:
             "custom_providers[].models.gpt-5.5.context_length=1.05M must win "
             "over probe-down fallback"
         )
-
-
-

@@ -1,22 +1,26 @@
+import type { PluginContext } from '@hermes/plugin-sdk'
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import {
   $rosterOrder,
   clearRosterOrder,
+  clearSectionRosterOrder,
   hasAnyCustomRosterOrder,
-  hasCustomRosterOrder,
   loadRosterOrder,
   moveRosterItem,
   normalizeRosterOrderMap,
   orderRosterRows,
+  orderSectionMixedRows,
   persistRosterOrder,
   pruneRosterOrder,
   removeBotFromRosterOrder,
-  rosterRowKey,
-  rosterSectionScope
+  removeBotFromSectionOrder,
+  restoreSectionRosterOrder,
+  rosterSectionScope,
+  snapshotSectionRosterOrder
 } from './roster-order'
 import { setPluginCtx } from './shared'
-import type { RosterRow } from './types'
+import type { GatewaySource, RosterRow } from './types'
 
 describe('roster-order (section-scoped manual ordering)', () => {
   let mockStorage: Record<string, unknown> = {}
@@ -30,7 +34,7 @@ describe('roster-order (section-scoped manual ordering)', () => {
           mockStorage[key] = val
         }
       }
-    } as any)
+    } as unknown as PluginContext)
     $rosterOrder.set({})
   })
 
@@ -43,9 +47,10 @@ describe('roster-order (section-scoped manual ordering)', () => {
       expect(normalizeRosterOrderMap(['array', 'not', 'map'])).toEqual({})
     })
 
-    it('deduplicates, trims keys, and drops empty lists', () => {
+    it('deduplicates, trims scope and bot keys, and drops empty lists', () => {
       const input = {
-        'local::sec-a': ['bot-1', ' bot-2 ', 'bot-1', '', '  ', 'bot-3'],
+        ' local::sec-a ': ['bot-1', ' bot-2 ', 'bot-1', '', '  ', 'bot-3'],
+        '   ': ['bot-ignored'],
         'local::empty': ['', '   '],
         'local::invalid': 'not-an-array'
       }
@@ -70,27 +75,6 @@ describe('roster-order (section-scoped manual ordering)', () => {
       expect(rosterSectionScope(null, 'remote-gw')).toBe('remote-gw::unassigned')
       expect(rosterSectionScope('', 'local')).toBe('local::unassigned')
       expect(rosterSectionScope(null, null)).toBe('local::unassigned')
-    })
-  })
-
-  describe('rosterRowKey', () => {
-    it('formats bot row key with connection and name', () => {
-      const bot: RosterRow = {
-        name: 'secops',
-        connectionId: 'local'
-      }
-
-      expect(rosterRowKey({ bot })).toBe('local::secops')
-      expect(rosterRowKey(bot)).toBe('local::secops')
-    })
-
-    it('formats bot on remote gateway with remote connectionId', () => {
-      const bot: RosterRow = {
-        name: 'triage',
-        connectionId: 'cloud-gw-1'
-      }
-
-      expect(rosterRowKey(bot)).toBe('cloud-gw-1::triage')
     })
   })
 
@@ -206,6 +190,7 @@ describe('roster-order (section-scoped manual ordering)', () => {
         'bot-a1',
         'before'
       )
+
       persistRosterOrder({
         ...$rosterOrder.get(),
         [scopeA]: nextOrderA
@@ -274,16 +259,16 @@ describe('roster-order (section-scoped manual ordering)', () => {
         [scopeB]: ['bot-b2', 'bot-b1']
       })
 
-      expect(hasCustomRosterOrder(scopeA)).toBe(true)
+      expect(Boolean($rosterOrder.get()[scopeA]?.length)).toBe(true)
       expect(hasAnyCustomRosterOrder()).toBe(true)
 
       // Reset only Section A
       clearRosterOrder(scopeA)
 
-      expect(hasCustomRosterOrder(scopeA)).toBe(false)
+      expect(Boolean($rosterOrder.get()[scopeA]?.length)).toBe(false)
       expect($rosterOrder.get()[scopeA]).toBeUndefined()
       // Section B is still customized
-      expect(hasCustomRosterOrder(scopeB)).toBe(true)
+      expect(Boolean($rosterOrder.get()[scopeB]?.length)).toBe(true)
       expect($rosterOrder.get()[scopeB]).toEqual(['bot-b2', 'bot-b1'])
 
       // Global reset
@@ -303,6 +288,133 @@ describe('roster-order (section-scoped manual ordering)', () => {
       loadRosterOrder()
 
       expect($rosterOrder.get()[scopeA]).toEqual(['bot-1', 'bot-2'])
+    })
+
+    it('snapshots, clears, and restores section custom order across connections on section Delete + Undo', () => {
+      const localA = rosterSectionScope('sec-A', 'local')
+      const remoteA = rosterSectionScope('sec-A', 'ssh-box')
+      const localB = rosterSectionScope('sec-B', 'local')
+
+      persistRosterOrder({
+        [localA]: ['local::bot-1', 'local::bot-2'],
+        [remoteA]: ['ssh-box::bot-3', 'ssh-box::bot-4'],
+        [localB]: ['local::bot-5']
+      })
+
+      const snapshot = snapshotSectionRosterOrder('sec-A')
+      expect(snapshot).toEqual({
+        [localA]: ['local::bot-1', 'local::bot-2'],
+        [remoteA]: ['ssh-box::bot-3', 'ssh-box::bot-4']
+      })
+
+      clearSectionRosterOrder('sec-A')
+      expect($rosterOrder.get()).toEqual({
+        [localB]: ['local::bot-5']
+      })
+
+      restoreSectionRosterOrder(snapshot)
+      expect($rosterOrder.get()).toEqual({
+        [localA]: ['local::bot-1', 'local::bot-2'],
+        [remoteA]: ['ssh-box::bot-3', 'ssh-box::bot-4'],
+        [localB]: ['local::bot-5']
+      })
+    })
+
+    it('removes a moved bot from its previous section across connection prefixes without touching destination order', () => {
+      const localA = rosterSectionScope('sec-A', 'local')
+      const legacyA = rosterSectionScope('sec-A', 'legacy')
+      const localB = rosterSectionScope('sec-B', 'local')
+
+      persistRosterOrder({
+        [localA]: ['legacy::alpha', 'legacy::beta'],
+        [legacyA]: ['legacy::alpha', 'legacy::gamma'],
+        [localB]: ['legacy::delta', 'legacy::alpha']
+      })
+
+      removeBotFromSectionOrder({ name: 'alpha' }, 'sec-A')
+
+      expect($rosterOrder.get()).toEqual({
+        [localA]: ['legacy::beta'],
+        [legacyA]: ['legacy::gamma'],
+        [localB]: ['legacy::delta', 'legacy::alpha']
+      })
+    })
+  })
+
+  describe('composition with #113414 group chats and #149444 connect-on-demand gateways', () => {
+    it('preserves pinned outer bands and group-chat slot positions in orderSectionMixedRows', () => {
+      type MixedRow =
+        | { activity: number; bot: RosterRow; created: number; kind: 'bot'; pinned: boolean }
+        | { kind: 'group'; name: string; pinned: boolean }
+
+      const mixed: MixedRow[] = [
+        { kind: 'bot', bot: { connectionId: 'local', name: 'pin-bot' }, pinned: true, activity: 50, created: 1 },
+        { kind: 'group', name: 'Pinned Crew', pinned: true },
+        { kind: 'bot', bot: { connectionId: 'local', name: 'bot-a' }, pinned: false, activity: 300, created: 2 },
+        { kind: 'group', name: 'Unpinned Crew', pinned: false },
+        { kind: 'bot', bot: { connectionId: 'local', name: 'bot-b' }, pinned: false, activity: 200, created: 3 }
+      ]
+
+      // Empty orderKeys returns the original array untouched.
+      expect(orderSectionMixedRows(mixed, row => row, [])).toBe(mixed)
+
+      // Custom order swaps bot-b before bot-a while keeping Pinned Crew in the pinned band
+      // and Unpinned Crew in its exact unpinned slot (never above pin-bot).
+      const ordered = orderSectionMixedRows(mixed, row => row, ['local::bot-b', 'local::bot-a'])
+
+      expect(ordered.map(row => (row.kind === 'group' ? `group:${row.name}` : `bot:${row.bot.name}`))).toEqual([
+        'bot:pin-bot',
+        'group:Pinned Crew',
+        'bot:bot-b',
+        'group:Unpinned Crew',
+        'bot:bot-a'
+      ])
+    })
+
+    it('preserves custom order for offline, errored, and SSH connect-on-demand gateways during pruneRosterOrder', () => {
+      const localScope = rosterSectionScope('sec-A', 'local')
+      const sshScope = rosterSectionScope('sec-A', 'ssh-prod')
+      const errScope = rosterSectionScope('sec-A', 'gateway-err')
+      const downScope = rosterSectionScope('sec-A', 'cloud-down')
+      const removedScope = rosterSectionScope('sec-A', 'old-removed')
+
+      persistRosterOrder({
+        [localScope]: ['local::keep', 'local::deleted'],
+        [sshScope]: ['ssh-prod::deferred-1', 'ssh-prod::deferred-2'],
+        [errScope]: ['gateway-err::flapping-1'],
+        [downScope]: ['cloud-down::offline-1'],
+        [removedScope]: ['old-removed::stale-1']
+      })
+
+      const sources: GatewaySource[] = [
+        { connectionId: 'local', reachable: true },
+        { connectionId: 'ssh-prod', error: 'connect-on-demand', reachable: false },
+        { connectionId: 'gateway-err', error: 'ECONNRESET', reachable: true },
+        { connectionId: 'cloud-down', reachable: false }
+      ]
+
+      pruneRosterOrder(new Set(['local::keep']), sources)
+
+      expect($rosterOrder.get()).toEqual({
+        [localScope]: ['local::keep'],
+        [sshScope]: ['ssh-prod::deferred-1', 'ssh-prod::deferred-2'],
+        [errScope]: ['gateway-err::flapping-1'],
+        [downScope]: ['cloud-down::offline-1']
+      })
+
+      // Unknown source inventory (sources === undefined) preserves remote connection scopes
+      // while pruning deleted local/legacy keys.
+      persistRosterOrder({
+        [localScope]: ['local::keep', 'local::gone'],
+        [sshScope]: ['ssh-prod::deferred-1']
+      })
+
+      pruneRosterOrder(new Set(['local::keep']), undefined)
+
+      expect($rosterOrder.get()).toEqual({
+        [localScope]: ['local::keep'],
+        [sshScope]: ['ssh-prod::deferred-1']
+      })
     })
   })
 })

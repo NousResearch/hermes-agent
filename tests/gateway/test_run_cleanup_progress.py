@@ -156,7 +156,6 @@ def _make_runner(adapter):
     runner._fallback_model = None
     runner._session_db = None
     runner._running_agents = {}
-    runner._session_run_generation = {}
     runner.hooks = SimpleNamespace(loaded_hooks=False)
     runner.config = SimpleNamespace(
         thread_sessions_per_user=False,
@@ -183,7 +182,7 @@ def _install_fakes(
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = agent_cls
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
-    import tools.terminal_tool  # noqa: F401 — register tool emoji
+    import tools.terminal_tool
 
     gateway_run = importlib.import_module("gateway.run")
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})

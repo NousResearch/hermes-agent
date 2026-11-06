@@ -251,4 +251,25 @@ describe('plugin-local state is cleaned up behind the delete', () => {
 
     expect(newChat).not.toHaveBeenCalled()
   })
+
+  it('removes a deleted bot from custom roster order only after the profile delete succeeds', async () => {
+    const { profileOps } = await loadModules()
+    const { $rosterOrder, persistRosterOrder, rosterSectionScope } = await import('./roster-order')
+    const scope = rosterSectionScope('sec-a', 'local')
+
+    persistRosterOrder({
+      [scope]: ['legacy::researcher', 'legacy::writer']
+    })
+
+    overrides.deleteProfile = vi.fn(async () => {
+      throw new Error('gateway down')
+    })
+
+    await expect(profileOps.deleteBot({ name: 'researcher' } as RosterRow)).rejects.toThrow('gateway down')
+    expect($rosterOrder.get()[scope]).toEqual(['legacy::researcher', 'legacy::writer'])
+
+    overrides.deleteProfile = vi.fn()
+    await profileOps.deleteBot({ name: 'researcher' } as RosterRow)
+    expect($rosterOrder.get()[scope]).toEqual(['legacy::writer'])
+  })
 })

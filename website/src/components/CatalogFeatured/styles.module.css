@@ -1,0 +1,118 @@
+/* Mirrors the desktop app's featured card: one plain card, copy stacked on the
+   left, the action bottom-right, no artwork. Border and radius match the
+   catalog grid cards; a soft accent wash marks it as the featured pick. */
+.featured {
+  margin-bottom: 2rem;
+}
+
+/* The site's own eyebrow (see .heroEyebrow on /skills). */
+.label {
+  margin: 0 0 0.6rem;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.72rem;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--ifm-color-primary-darker);
+}
+
+[data-theme="dark"] .label {
+  color: rgba(255, 215, 0, 0.5);
+}
+
+.card {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1.5rem;
+  padding: 1.25rem 1.5rem;
+  border: 1px solid var(--ifm-color-emphasis-300);
+  border-radius: 10px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--ifm-color-primary) 10%, transparent), transparent 65%),
+    var(--ifm-card-background-color, var(--ifm-background-surface-color));
+}
+
+[data-theme="dark"] .card {
+  border-color: rgba(255, 255, 255, 0.08);
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--ifm-color-primary) 12%, transparent), transparent 65%),
+    #0c0c16;
+}
+
+.copy {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.author {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--ifm-color-emphasis-700);
+}
+
+.title {
+  margin: 0.25rem 0 0;
+  font-size: 1.75rem;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+}
+
+.description {
+  margin: 0;
+  max-width: 42rem;
+  font-size: 0.9rem;
+  /* Same muted tone as the grid cards' description. */
+  color: var(--ifm-font-color-secondary, #9a968e);
+  line-height: 1.55;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-top: 0.25rem;
+}
+
+.tag {
+  padding: 0.12rem 0.5rem;
+  border: 1px solid var(--ifm-color-emphasis-300);
+  border-radius: 999px;
+  font-size: 0.72rem;
+  color: var(--ifm-color-emphasis-800);
+}
+
+/* Same outlined gold action as the grid cards' "Install in Hermes". */
+.cta {
+  flex: none;
+  padding: 0.45rem 0.9rem;
+  border: 1px solid var(--ifm-color-primary);
+  border-radius: 8px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--ifm-color-primary);
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.cta:hover,
+.cta:focus-visible {
+  background: var(--ifm-color-primary);
+  /* --ifm-background-color is transparent in light mode, so name the ink. */
+  color: var(--ifm-color-emphasis-0, #f7f8fa);
+  text-decoration: none;
+  /* Hover paints instantly; only the return eases. */
+  transition: none;
+}
+
+@media (max-width: 640px) {
+  .card {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}

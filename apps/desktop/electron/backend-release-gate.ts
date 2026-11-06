@@ -10,15 +10,13 @@
  * drivers stretch this out), and it need not hold the venv `hermes.exe` shim
  * at all — so a gate that only probes the shim can pass on its very first
  * iteration, with zero dwell, while the killed pythons are still
- * terminating. The venv-blocker scan downstream has no liveness filter; it
- * enumerates those dying processes as holders and aborts the hand-off.
- * Result: the FIRST update attempt from the footbar always failed, and the
- * manual retry (by which time the table had settled) succeeded.
+ * terminating. Waiting for the PIDs prevents handing control to the updater
+ * while our own backend is still exiting.
  *
  * The gate therefore requires BOTH: the shim unlocked AND every PID we have
  * ever signalled to have actually left the process table. On deadline, the
  * old shim-only criterion is kept as the escape hatch — lingering PIDs past
- * 15s are the venv-blocker re-scan's job, not a new failure mode.
+ * 15s are reported to the caller, not a new failure mode.
  *
  * Extracted into its own dependency-free module (no electron import) so the
  * gate's decision logic can be asserted directly with fake clocks and fake
@@ -96,8 +94,8 @@ export async function waitForBackendRelease(
 
   // Deadline reached. Keep the pre-#74805 success criterion — an unlocked
   // shim — rather than inventing a new failure mode for PIDs that linger
-  // past the deadline; the venv-blocker re-scan downstream covers that
-  // residue (and a REAL foreign holder still fails the shim probe).
+  // past the deadline. The caller receives lingering PIDs for diagnostics;
+  // a locked shim still fails the probe.
   const lingering = [...killedPids].filter(pid => deps.isPidAlive(pid))
 
   if (!deps.isShimLocked()) {

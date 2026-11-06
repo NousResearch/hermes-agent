@@ -1,9 +1,8 @@
 /**
  * Profile-scoped eligibility for the WSL path bridge (#66447).
  *
- * The single-profile tests in wsl-path-bridge.test.ts and the Windows-platform
- * gate tests in wsl-path-bridge-gate.test.ts cover the *what* (paths pass
- * through unchanged when bridging is disabled) but not the *which profile*. The
+ * The single-profile tests in wsl-path-bridge.test.ts cover the *what* (paths
+ * pass through unchanged when bridging is disabled) but not the *which profile*. The
  * desktop is multi-profile: the renderer can swap the live gateway onto any
  * profile (primary or pool) without reloading the window — so the bridge
  * eligibility MUST be keyed off the **currently active profile's** backend

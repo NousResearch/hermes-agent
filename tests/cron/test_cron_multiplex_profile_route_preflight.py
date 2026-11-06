@@ -15,9 +15,9 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
-from cron.scheduler import (
+from cron.scheduler_preflight import (
     _delivery_platform_routed_from_primary_gateway,
     _preflight_check_delivery,
 )

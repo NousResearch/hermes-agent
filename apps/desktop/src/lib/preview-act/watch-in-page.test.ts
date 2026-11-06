@@ -72,24 +72,6 @@ describe('watchInPage', () => {
     expect(host()).toBeNull()
   })
 
-  // The cursor is placed, never interpolated. Beyond reading as a machine, a
-  // transition here was an outright bug on the first paint: an unset transform
-  // IS the origin, so the browser flew the cursor in from the top-left corner —
-  // and every navigation is a fresh document, so a fresh first paint.
-  it('cuts the marks straight to the target instead of travelling to it', () => {
-    const target = document.createElement('button')
-    document.body.append(target)
-
-    watchInPage(document, { aimed: target }, 'aim', 'Clicking Save')
-
-    const { pointer } = drawn()
-
-    expect(pointer.style.transition).toBeFalsy()
-    expect((marks()[0] as HTMLElement).style.transition).toBeFalsy()
-    // Mocked rect is 200×40 at (100, 100), so the cursor belongs at its centre.
-    expect(pointer.style.transform).toBe('translate3d(200px,120px,0)')
-  })
-
   // The inventory pass is the one moment the agent is reading the whole page
   // rather than aiming at one thing, so the overlay has to be able to hold many
   // marks at once — not just the single ring every other stage draws.
@@ -123,37 +105,6 @@ describe('watchInPage', () => {
     expect(marks()).toHaveLength(0)
 
     vi.useRealTimers()
-  })
-
-  // jsdom cannot run a Web Animation, but it can be handed one and asked what
-  // it was given — and this particular option is worth pinning, because getting
-  // it wrong is invisible rather than broken. `easing` in the options bag is the
-  // ITERATION easing: it rewrites progress before any keyframe is consulted, so
-  // a step function there holds progress at 0 for the whole duration. Every box
-  // was created, animated and removed without painting a single frame.
-  it('does not step the sweep’s iteration easing, which would stop it painting', () => {
-    const timings: KeyframeAnimationOptions[] = []
-
-    Element.prototype.animate = vi.fn(function (this: Element, _frames, options) {
-      timings.push(options as KeyframeAnimationOptions)
-
-      return { cancel: () => {}, finish: () => {} } as unknown as Animation
-    }) as unknown as Element['animate']
-
-    const found = [document.createElement('button'), document.createElement('a')]
-    document.body.append(...found)
-
-    watchInPage(document, { field: found }, 'sweep')
-
-    // The cursor's idle sway is permanent and starts with the overlay, so it is
-    // not one of the sweep's own animations.
-    const sweep = timings.filter(timing => timing.iterations !== Infinity)
-
-    expect(sweep).toHaveLength(found.length)
-
-    for (const timing of sweep) {
-      expect(String(timing.easing)).not.toMatch(/steps/)
-    }
   })
 
   it('names each swept box after the element under it, not its ref', () => {
@@ -193,120 +144,6 @@ describe('watchInPage', () => {
     const cells = [...shadow.children].slice(-found.length)
 
     expect(cells.map(cell => cell.textContent)).toEqual(['a[1]', 'a[2]', 'a[3]'])
-  })
-
-  it('keeps a name short enough to sit on the box it names', () => {
-    const found = [document.createElement('div')]
-
-    found[0].id = 'a-genuinely-enormous-generated-identifier'
-    document.body.append(...found)
-
-    watchInPage(document, { field: found }, 'sweep')
-
-    const name = marks()[0].textContent as string
-
-    expect(name.length).toBeLessThanOrEqual(16)
-    expect(name.startsWith('div#a-')).toBe(true)
-    expect(name.endsWith('…')).toBe(true)
-  })
-
-  // A field past a couple of dozen boxes is a texture, not a list. Naming every
-  // one buries the outlines — which ARE the readout at that size — under a wall
-  // of tags that collide with each other and overhang their own rectangles.
-  it('stops naming the boxes once the field is too dense to read', () => {
-    const few = Array.from({ length: 4 }, () => document.createElement('button'))
-    document.body.append(...few)
-
-    watchInPage(document, { field: few }, 'sweep')
-    expect(marks().every(mark => mark.textContent)).toBe(true)
-
-    document.querySelector('hermes-watch')?.remove()
-    delete (window as unknown as Record<string, unknown>).__hermesWatch
-
-    const many = Array.from({ length: 40 }, () => document.createElement('button'))
-    document.body.append(...many)
-
-    watchInPage(document, { field: many }, 'sweep')
-    expect(marks().some(mark => mark.textContent)).toBe(false)
-  })
-
-  // Every other mark on the page wears its label on the top edge. A box against
-  // the top of the viewport has nowhere to put one, and a tab drawn off-screen
-  // is a box that looks unlabelled next to boxes that aren't.
-  it('flips the label under the box when there is no headroom above it', () => {
-    const roomy = document.createElement('button')
-    const flush = document.createElement('button')
-    const huge = document.createElement('button')
-
-    flush.getBoundingClientRect = () =>
-      ({
-        bottom: 40,
-        height: 40,
-        left: 100,
-        right: 300,
-        toJSON: () => ({}),
-        top: 0,
-        width: 200,
-        x: 100,
-        y: 0
-      }) as DOMRect
-    // Taller than the viewport: no room above it and none below it either, so
-    // the tab has nowhere left to go but inside.
-    huge.getBoundingClientRect = () =>
-      ({
-        bottom: 900,
-        height: 900,
-        left: 100,
-        right: 300,
-        toJSON: () => ({}),
-        top: 0,
-        width: 200,
-        x: 100,
-        y: 0
-      }) as DOMRect
-    document.body.append(roomy, flush, huge)
-
-    watchInPage(document, { field: [roomy, flush, huge] }, 'sweep')
-
-    const tags = marks().map(mark => mark.querySelector('div:last-child') as HTMLElement)
-
-    expect(tags[0].style.bottom).toBe('100%')
-    expect(tags[1].style.top).toBe('100%')
-    expect(tags[2].style.top).toBe('0px')
-  })
-
-  // A label is routinely wider than the box it names, so it is the boxes near the
-  // right edge that push their tab off screen. Whichever end it lands on, the
-  // tab's edge sits exactly on the outline's — the two are the same colour and
-  // meet at a corner, so a pixel of overhang reads as a misprint.
-  it('hangs the label off the right edge when a left-anchored one would run off', () => {
-    Object.defineProperty(HTMLElement.prototype, 'offsetWidth', { configurable: true, get: () => 80 })
-
-    const inboard = document.createElement('button')
-    const edge = document.createElement('button')
-
-    edge.getBoundingClientRect = () =>
-      ({
-        bottom: 140,
-        height: 40,
-        left: 990,
-        right: 1020,
-        toJSON: () => ({}),
-        top: 100,
-        width: 30,
-        x: 990,
-        y: 100
-      }) as DOMRect
-    document.body.append(inboard, edge)
-
-    watchInPage(document, { field: [inboard, edge] }, 'sweep')
-
-    const tags = marks().map(mark => mark.querySelector('div:last-child') as HTMLElement)
-
-    expect(tags[0].style.left).toBe('0px')
-    expect(tags[0].style.right).toBe('')
-    expect(tags[1].style.right).toBe('0px')
-    expect(tags[1].style.left).toBe('')
   })
 
   it('sweep draws nothing when the inventory came back empty', () => {

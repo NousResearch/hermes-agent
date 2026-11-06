@@ -1,36 +1,28 @@
 import type { MouseTrackingMode, ScrollBoxHandle } from '@hermes/ink'
-import type { MutableRefObject, ReactNode, RefObject, SetStateAction } from 'react'
-
-import type { PasteEvent } from '../components/textInput.js'
-import type { GatewayClient } from '../gatewayClient.js'
+import type { Usage } from '@hermes/shared/gateway-events'
 import type {
   BillingCardInfo,
   BillingMutationResponse,
   BillingStateResponse,
   SessionCloseResponse,
+  SessionInfo,
   SubscriptionPreviewResponse,
   SubscriptionStateResponse,
   SubscriptionUpgradeResponse
-} from '../gatewayTypes.js'
+} from '@hermes/shared/gateway-types'
+import type { MutableRefObject, ReactNode, RefObject, SetStateAction } from 'react'
+
+import type { PasteEvent } from '../components/textInput.js'
+import type { GatewayClient } from '../gatewayClient.js'
 import type { QueueItem } from '../hooks/useQueue.js'
 import type { ParsedVoiceRecordKey } from '../lib/platform.js'
 import type { RpcResult } from '../lib/rpc.js'
 import type { ActiveWidget } from '../sdk/types.js'
 import type { Theme } from '../theme.js'
-import type {
-  ApprovalReq,
-  ClarifyReq,
-  ConfirmReq,
-  DetailsMode,
-  Msg,
-  PanelSection,
-  SecretReq,
-  SectionVisibility,
-  SessionInfo,
-  SlashCatalog,
-  SudoReq,
-  Usage
-} from '../types.js'
+import type { ApprovalReq, ClarifyReq, ConfirmReq, DetailsMode, Msg, PanelSection, SecretReq, SectionVisibility, SlashCatalog, SudoReq, VaultCodeReq, VaultSaveLoginReq, VaultUnlockReq } from '../types.js'
+
+import type { RewindSubmission } from './backtrackStore.js'
+import type { SubmissionDestination } from './submissionDestination.js'
 
 export interface StateSetter<T> {
   (value: SetStateAction<T>): void
@@ -116,7 +108,7 @@ export interface GatewayProviderProps {
 // the SAME RPCs as the old slash flows (billing.charge / charge_status /
 // auto_reload / step_up).  Backend is unchanged & shared with the CLI.
 
-export type BillingScreen = 'autoreload' | 'buy' | 'confirm' | 'limit' | 'overview' | 'stepup'
+export type BillingScreen = 'autoreload' | 'buy' | 'confirm' | 'hermes' | 'limit' | 'overview' | 'stepup'
 
 /** Outcome of a charge attempt — lets the overlay route without tearing down. */
 export type BillingChargeOutcome =
@@ -134,6 +126,8 @@ export type BillingChargeOutcome =
 export interface BillingOverlayCtx {
   /** Run `billing.auto_reload` (enabled/threshold/top_up) → resolve ok/false. */
   applyAutoReload: (enabled: boolean, threshold?: number, topUp?: number) => Promise<boolean>
+  /** Run `billing.keep_going_on_credits` (window plans) → resolve ok/false. */
+  applyKeepGoingOnCredits: (enabled: boolean) => Promise<boolean>
   /**
    * Submit `billing.charge` for `amount` and poll to settlement. Resolves a
    * discriminated outcome so the overlay can route to the resumable step-up on
@@ -280,6 +274,10 @@ export interface SubscriptionOverlayState {
   stepUpRetry?: null | SubscriptionStepUpRetry
 }
 
+export interface ConnectionOverlayState {
+  opId: string
+}
+
 export interface OverlayState {
   agents: boolean
   agentsInitialHistoryIndex: number
@@ -287,6 +285,8 @@ export interface OverlayState {
   billing: BillingOverlayState | null
   clarify: ClarifyReq | null
   confirm: ConfirmReq | null
+  connection: ConnectionOverlayState | null
+  connectors: boolean
   /** Ambient widget apps — glanceable dock, non-blocking (never in $isBlocked). */
   ambient: ActiveWidget[]
   /** Modal widget app — owns input, blocks the composer. */
@@ -296,11 +296,40 @@ export interface OverlayState {
   pager: null | PagerState
   petPicker: boolean
   pluginsHub: boolean
+  rewind: null | RewindOverlay
   secret: null | SecretReq
+  vaultCode: null | VaultCodeReq
+  vaultSaveLogin: null | VaultSaveLoginReq
+  vaultUnlock: null | VaultUnlockReq
   sessions: boolean
   skillsHub: boolean
   subscription: SubscriptionOverlayState | null
   sudo: null | SudoReq
+}
+
+/** One earlier user prompt backtrack browsing can return to (`row_id` is its durable message row). */
+export interface RewindTarget {
+  rowId: number
+  text: string
+  /** The last stored row before this prompt (a fork keeps rows through it); absent for the first prompt. */
+  throughRowId?: number
+  turn: number
+}
+
+export interface RewindOverlay {
+  /** Oldest first, as stored. */
+  targets: RewindTarget[]
+  /** The session's transcript rows (the `--tui-native` pager draws these). */
+  messages?: Msg[]
+  /** ↵: put the prompt in the composer and arm a pending edit (nothing is cut yet). */
+  onEdit: (target: RewindTarget) => void
+  onFork: (target: RewindTarget) => void
+  /** Cut back to just before `target` and send `text` (the armed edit's send). */
+  onSubmit: (target: RewindTarget, edit: RewindSubmission | string) => void
+  /** A printable key that is not a browse key: browsing closes and the key is typed into the composer. */
+  onType: (text: string) => void
+  /** Text pasted while browsing: browsing closes and it is pasted into the composer. */
+  onPaste: (text: string) => void
 }
 
 export interface PagerState {
@@ -316,6 +345,7 @@ export interface TranscriptRow {
 }
 
 export interface UiState {
+  gatewayConnected?: boolean
   battery: boolean
   batteryStatus: BatteryInfo | null
   bgTasks: Set<string>
@@ -334,6 +364,8 @@ export interface UiState {
   info: null | SessionInfo
   liveSessionCount: number
   inlineDiffs: boolean
+  // `display.inline_images` isn't off: transcript rows draw (and reserve rows for) their images.
+  inlineImages: boolean
   mouseTracking: MouseTrackingMode
   notice: Notice | null
   pasteCollapseLines: number
@@ -346,6 +378,10 @@ export interface UiState {
   sid: null | string
   status: string
   statusBar: StatusBarMode
+  // Durable session id (state.db row) of the live session — what session.resume
+  // and the exit epilogue take. Kept apart from `info`, which producers replace
+  // wholesale with payloads that may omit `stored_session_id`.
+  storedSid: null | string
   // display.status_bar.fields — visibility filter for status-rule segments,
   // shared with the classic CLI bar. null = user has not customized (show
   // the default set).
@@ -369,23 +405,46 @@ export interface VirtualHistoryState {
 
 export interface ComposerPasteResult {
   cursor: number
+  /**
+   * Re-place this insertion on the composer's live value, which the caller
+   * then writes at once; null once the draft it was made for was edited away.
+   * `view` is the caller's own value and caret, used to keep the caret.
+   */
+  land?: (view?: ComposerView) => ComposerPasteResult | null
+  value: string
+}
+
+export interface ComposerView {
+  caret: number
   value: string
 }
 
 export type MaybePromise<T> = Promise<T> | T
 
 export interface ComposerActions {
+  /** Paste text at the end of the draft as a composer paste would (collapse, path and image detection). */
+  appendPaste: (text: string) => Promise<void>
+  /** Type text at the end of the draft, after any `appendPaste` still resolving. */
+  appendText: (text: string) => void
   /** Pull an image off the system clipboard in as a token. */
   attachClipboardImage: () => void
   /** Attach an image by path in as a token. */
-  attachImagePath: (path: string) => void
+  attachImagePath: (path: string) => Promise<void> | void
+  /** Attach several images in order to the destination current at the call; stops on any change. */
+  attachImagePaths: (paths: readonly string[], options?: { followTyping?: boolean }) => Promise<void>
   clearIn: () => void
-  dequeue: () => string | undefined
-  enqueue: (text: string, display?: string) => void
+  stage?: (text: string, display?: string, destination?: SubmissionDestination, attachments?: QueueItem['attachments']) => QueueItem
+  dequeue: (retry?: boolean) => QueueItem | undefined
+  enqueue: (text: string, display?: string, destination?: SubmissionDestination, attachments?: QueueItem['attachments']) => QueueItem | void
   handleTextPaste: (event: PasteEvent) => MaybePromise<ComposerPasteResult | null>
   openEditor: () => Promise<void>
-  prependQueue: (item: QueueItem) => void
+  prependQueue: (item: QueueItem, destination?: SubmissionDestination) => void
   pushHistory: (text: string) => void
+  /** Put a submitted draft (text with chips + their tokens) back into the same session's empty
+   *  composer; false when the session changed or the composer is in use. */
+  restoreDraft: (display: string, tokens: readonly ComposerToken[], destination: SubmissionDestination) => boolean
+  /** Composer text for queue-edit slot `index` (local items first, then server-queued rows). */
+  queueDraft: (index: number) => string
   removeQueue: (index: number) => void
   setCompIdx: StateSetter<number>
   setComposerTokens: StateSetter<ComposerToken[]>
@@ -393,9 +452,13 @@ export interface ComposerActions {
   setInput: StateSetter<string>
   setInputBuf: StateSetter<string[]>
   setQueueEdit: (index: null | number) => void
-  takeQueue: (index: number, editedDisplay?: string) => QueueItem | undefined
+  takeQueue: (index: number, editedDisplay?: string) => QueueItem | Promise<QueueItem | undefined> | undefined
   /** Reconcile attached payloads against tokens still present in the text. */
   syncTokens: (value: string) => void
+  /** Fold an expanded paste back into its chip; returns the composer text after the fold. */
+  collapsePaste: (value?: string) => string
+  /** Ctrl+P: expand the paste chip at `cursor` / collapse the expanded one. False = nothing to toggle. */
+  togglePaste: (cursor: number) => boolean
 }
 
 export interface ComposerRefs {
@@ -414,6 +477,8 @@ export interface ComposerState {
   historyIdx: null | number
   input: string
   inputBuf: string[]
+  /** A collapsed paste is expanded inline for editing (Ctrl+P folds it back). */
+  pasteExpanded: boolean
   queueEditIdx: null | number
   queuedDisplay: string[]
   tokens: ComposerToken[]
@@ -432,10 +497,14 @@ export interface UseComposerStateResult {
 }
 
 export interface InputHandlerActions {
-  answerClarify: (answer: string) => void
   appendMessage: (msg: Msg) => void
+  cancelClarify: () => void
+  /** User prompts in the transcript on screen (gates the backtrack prime hint). */
+  countPrompts: () => number
   die: () => void
-  dispatchSubmission: (full: string) => void
+  dispatchSubmission: (full: string | QueueItem) => void
+  /** Open backtrack browsing (the `/rewind` command, not echoed or counted as typed). */
+  openBacktrack: () => void
   guardBusySessionSwitch: (what?: string) => boolean
   newSession: (msg?: string, title?: string) => void
   sys: (text: string) => void
@@ -474,6 +543,7 @@ export interface InputHandlerResult {
 
 export interface GatewayEventHandlerContext {
   composer: {
+    enqueue?: ComposerActions['enqueue']
     setInput: StateSetter<string>
   }
   gateway: GatewayServices
@@ -481,19 +551,17 @@ export interface GatewayEventHandlerContext {
     STARTUP_RESUME_ID: string
     colsRef: MutableRefObject<number>
     newSession: (msg?: string, title?: string) => void
-    // Set by useMainApp's exit handler to the session that was live when the
-    // gateway died unexpectedly; consumed once by the next `gateway.ready` so a
-    // respawn resumes that session instead of forging a fresh one.
+    // Session carried across a transport loss or child exit, cleared after resume.
     recoverSidRef?: MutableRefObject<null | string>
     resetSession: () => void
-    resumeById: (id: string) => void
-    setCatalog: StateSetter<null | SlashCatalog>
+    resumeById: (id: string) => Promise<void>
+    setCatalog: (catalog: null | SlashCatalog) => void
   }
   submission: {
     /** Submit text literally as a prompt — no slash/!/interpolation dispatch.
      *  Used for `-q` startup queries, which are arbitrary launcher-provided
      *  text (parity with one-shot's literal prompt handling). */
-    submitLiteralRef: MutableRefObject<(value: string) => void>
+    submitLiteralRef: MutableRefObject<(value: string, attachments?: Array<{ path: string; mime: string }>) => void>
     submitRef: MutableRefObject<(value: string) => void>
   }
   system: {
@@ -515,14 +583,33 @@ export interface GatewayEventHandlerContext {
   }
 }
 
+/**
+ * What a slash command's composer held at submit time. A skill or alias
+ * eventually sends ordinary user text, so the staged image descriptors and the
+ * token expander travel with the command instead of dying with the cleared
+ * composer.
+ */
+export interface SlashSubmission {
+  attachments: Array<{ path: string; mime: string }>
+  expand: (text: string) => string
+}
+
+/** `typed` is false for programmatic calls (a picker re-issuing `/model <x>`, the backend's alias
+ *  re-dispatch) so shared metrics count each user-typed command once. */
+export type SlashHandler = (cmd: string, submission?: SlashSubmission, typed?: boolean) => boolean
+
 export interface SlashHandlerContext {
   composer: {
     attachClipboardImage: () => void
-    attachImagePath: (path: string) => void
-    enqueue: (text: string, display?: string) => void
+    attachImagePath: (path: string) => Promise<void> | void
+    appendPaste: ComposerActions['appendPaste']
+    appendText: ComposerActions['appendText']
+    attachImagePaths: ComposerActions['attachImagePaths']
+    enqueue: ComposerActions['enqueue']
     hasSelection: boolean
     openEditor: () => Promise<void>
     queueRef: MutableRefObject<QueueItem[]>
+    restoreDraft?: ComposerActions['restoreDraft']
     selection: SelectionApi
     setInput: StateSetter<string>
   }
@@ -532,24 +619,25 @@ export interface SlashHandlerContext {
     getHistoryItems: () => Msg[]
     getLastUserMsg: () => string
     maybeWarn: (value: unknown) => void
-    setCatalog: StateSetter<null | SlashCatalog>
+    setCatalog: (catalog: null | SlashCatalog) => void
   }
   session: {
-    closeSession: (targetSid?: null | string) => Promise<unknown>
+    closeSession: (targetSid?: null | string, deferMessages?: boolean) => Promise<unknown>
     die: () => void
     dieWithCode: (code: number) => void
     guardBusySessionSwitch: (what?: string) => boolean
     newLiveSession: (msg?: string, title?: string) => void
-    newSession: (msg?: string, title?: string) => void
+    newSession: (msg?: string, title?: string) => Promise<unknown> | void
     resetVisibleHistory: (info?: null | SessionInfo) => void
-    resumeById: (id: string) => void
+    resumeById: (id: string) => Promise<void> | void
     setSessionStartedAt: StateSetter<number>
   }
   slashFlightRef: MutableRefObject<number>
   transcript: {
     page: (text: string, title?: string) => void
     panel: (title: string, sections: PanelSection[]) => void
-    send: (text: string, showUserMessage?: boolean, displayText?: string) => void
+    send: (text: string, showUserMessage?: boolean, displayText?: string, expandOverride?: (value: string) => string,
+      submitOpts?: { attachments?: Array<{ path: string; mime: string }> }) => void
     setHistoryItems: StateSetter<Msg[]>
     sys: (text: string) => void
     trimLastExchange: (items: Msg[]) => Msg[]
@@ -563,10 +651,14 @@ export interface SlashHandlerContext {
 
 export interface AppLayoutActions {
   answerApproval: (choice: string) => void
-  answerClarify: (answer: string) => void
+  answerApprovalTell: (text: string) => void
   answerClarifyQuestion: (qid: string, answer: string) => void
   answerSecret: (value: string) => void
   answerSudo: (pw: string) => void
+  answerVaultCode: (code: string) => void
+  answerVaultSaveLogin: (identifier: string, password: string) => void
+  answerVaultUnlock: (password: string) => void
+  cancelClarify: () => void
   clearSelection: () => void
   activateLiveSession: (id: string) => void
   closeLiveSession: (id: string) => Promise<null | SessionCloseResponse>
@@ -586,6 +678,8 @@ export interface AppLayoutComposerProps {
   input: string
   inputBuf: string[]
   pagerPageSize: number
+  /** null = no paste chip in the composer; else whether one is expanded for editing. */
+  pasteHint: null | 'collapse' | 'expand'
   queueEditIdx: null | number
   queuedDisplay: string[]
   submit: (value: string) => void
@@ -631,7 +725,8 @@ export interface AppOverlaysProps {
   compIdx: number
   completions: CompletionItem[]
   onApprovalChoice: (choice: string) => void
-  onClarifyAnswer: (value: string) => void
+  onApprovalTell: (text: string) => void
+  onClarifyCancel: () => void
   onClarifyQuestionAnswer: (qid: string, value: string) => void
   onActiveSessionSelect: (sessionId: string) => void
   onActiveSessionClose: (sessionId: string) => Promise<null | SessionCloseResponse>
@@ -641,6 +736,9 @@ export interface AppOverlaysProps {
   onResumeSelect: (sessionId: string) => void
   onSecretSubmit: (value: string) => void
   onSudoSubmit: (pw: string) => void
+  onVaultCodeSubmit: (code: string) => void
+  onVaultSaveLoginSubmit: (identifier: string, password: string) => void
+  onVaultUnlockSubmit: (password: string) => void
   pagerPageSize: number
 }
 
@@ -653,5 +751,5 @@ export interface AppOverlaysProps {
  * path, used to detach the image when its token is deleted.
  */
 export type ComposerToken =
-  | { index: number; kind: 'image'; label: string; path: string; text?: undefined }
+  | { index: number; kind: 'image'; label: string; path: string; mime?: string; text?: undefined }
   | { index?: undefined; kind: 'paste'; label: string; path?: string; text: string }

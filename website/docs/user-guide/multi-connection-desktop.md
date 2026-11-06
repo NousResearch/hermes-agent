@@ -6,9 +6,10 @@ sidebar_position: 5
 
 Register every Hermes backend you own — the local runtime, remote gateways on
 your LAN or VPS, SSH hosts, and Hermes Cloud instances — in one desktop app,
-and use the agents on all of them side by side. Connections are persistent:
-each registered gateway dials its own backends and WebSockets on demand, and
-background agents keep streaming while you look at another gateway.
+and use the agents on all of them side by side. Every registered gateway is
+connected all the time: Desktop dials each one when it starts, keeps its
+connection open, and redials it if it drops, so there is no switching cost and
+background agents keep streaming whichever gateway you are looking at.
 
 This is the desktop-side complement to
 [Running Many Gateways at Once](./multi-profile-gateways.md): that page is
@@ -76,10 +77,36 @@ Rules worth knowing:
   the top of the Gateways page — the **Hermes Cloud** kind in the add-connection
   editor points you there.
 
-Switch gateways from the **Sessions** sidebar. Profiles, chats, messaging, and
-cron stay scoped to that gateway; the app-managed window backend is still chosen
-by the connection-mode controls above. **Primary** is the registry fallback and
-does not switch the current workspace.
+Every registered gateway stays connected, and the **Sessions** sidebar can
+show all of them at once. Profiles, chats, messaging, and cron stay with their
+own gateway; the app-managed window backend is still chosen by the
+connection-mode controls above. **Primary** is the registry fallback and does
+not change the current workspace.
+
+## Organizing session groups
+
+In the Sessions sidebar's view menu, choose **Gateway & profile** while viewing
+all profiles. Each gateway gets its own collapsible section, with profile
+subsections containing their sessions. Two gateways with a `default` profile
+stay separate. Gateway headers start with the saved connection name; profile
+headers show the profile name.
+
+Use a gateway or profile section's menu to **Rename group**, **Reset name**, **Move up**, or
+**Move down**. Renaming changes only the sidebar label, not the gateway or profile.
+Gateways reorder as complete sections, and profiles reorder within their own gateway.
+Drag the section header anywhere (its icon, its name, or the empty space) to
+reorder it, or focus the header and use Space, arrow keys, then Space to place
+it. Names, order, and collapsed sections
+are remembered on this desktop. Collapsing a gateway preserves its profiles'
+individual collapse states. Each profile's new-session action targets that
+profile on its owning gateway.
+
+The Hermes Cloud panel also lists **Saved Cloud gateways** when portal discovery
+is signed out. **Use gateway** selects an existing saved connection without
+changing the default gateway; **Active in this window** identifies the current
+one. Adding a new instance uses its friendly Cloud name, while existing custom
+connection names are preserved. Saved connections still need valid gateway
+authentication; manage sign-in from the registered connection controls.
 
 ## Adding a connection, step by step
 
@@ -105,7 +132,16 @@ does not switch the current workspace.
    - *SSH only:*
      - **SSH host** — one composite field in `user@host:22` form (user and
        port optional). Your SSH key is used; the app adopts a dashboard
-       token over the tunnel.
+       token over the tunnel. Remote probes run under the account's login
+       shell; on a `zsh` login shell the probe watchdog cannot kill the whole
+       process group, so a hung probe's grandchildren may linger on the remote
+       (bash/sh remotes reap them).
+     - **Hermes path (optional)** — full path to the `hermes` executable on
+       the remote (for example `/opt/hermes/bin/hermes`). Leave blank to
+       auto-detect. Set it when the remote's non-interactive shell does not
+       have `hermes` on its `PATH` and **Test** reports *"Hermes is not
+       installed on the remote host"*; clearing the field restores
+       auto-detection.
 5. Click **Save connection** (or **Cancel**).
 6. Click **Test** on the new row and wait for *"Reachable"*.
 
@@ -116,8 +152,8 @@ instance itself is not touched — you can add it again any time."*
 :::info The remote backend is a running `hermes serve` process
 Nothing here works unless the backend is actually up and reachable on the
 other machine. The desktop app attaches to it; it does not start it for you
-(except for SSH connections, where the app starts the dashboard over the
-tunnel on demand). See
+(except for SSH connections, where the app opens the tunnel and starts the
+dashboard when Desktop launches, since every gateway stays connected). See
 [Connecting to a remote backend](./desktop.md#connecting-to-a-remote-backend)
 for backend-side setup — auth providers, binding to a non-loopback address,
 and Tailscale guidance.
@@ -145,19 +181,35 @@ The union roster is what multi-gateway surfaces (and the built-in
   as **`@name-device`** — `research` on your Homelab renders as
   `@research-homelab`, while a profile unique across all gateways keeps its
   bare name.
-- Enumeration is eager but sockets are lazy: the app lists agents over REST
-  without dialing every gateway's WebSocket. An unreachable gateway reports
-  per-row instead of breaking the roster; SSH connections stay connect-on-demand
-  until you first open an agent on them (no surprise tunnels).
+- Every registered gateway, SSH included, connects when Desktop starts and
+  stays connected: its default profile holds one open connection for the life
+  of the window and is redialed every 30 seconds while it is down. An
+  unreachable gateway reports per-row instead of breaking the roster. With a
+  remote primary, **This device** is kept connected too when Hermes is
+  installed here, so its local gateway starts with Desktop. Terminals and
+  running work on a gateway keep going when you pick another one.
 - Opening an agent dials **its own gateway** — chats, sessions, and memory
   live on the machine that owns the profile, exactly as if you were using
   that instance directly.
 
-Each `(connection, profile)` pair gets its own backend and socket, pooled
-with the same idle-reaping as local per-profile backends — background agents
-keep streaming while you look at another gateway.
+Each `(connection, profile)` pair gets its own socket, and Desktop caches the
+gateway descriptor it dialed so the next open joins the same connection —
+background agents keep streaming while you look at another gateway. Desktop
+never spawns or reaps a *remote* gateway; each one owns its own lifetime. For a
+**local** profile, the first open runs `hermes gateway ensure`, which attaches
+to that profile's running gateway or, when there is none, installs and starts a
+persistent per-profile gateway (a systemd/launchd service where one exists,
+otherwise a detached daemon). That gateway keeps running after you close the
+app — it has no idle shutdown — until you stop it with `hermes gateway stop`.
 
-### Switching and scoping
+Approval buttons route back to the session's owning backend, not whichever
+profile is currently selected. For a local secondary profile, Desktop can use
+the socket that delivered the request even when the cached session binding is
+missing. Saved session ownership still takes precedence, and deleting or
+renaming that local profile clears this temporary route rather than reconnecting
+an obsolete backend.
+
+### Gateways, profiles and scope
 
 The sidebar foot follows one hierarchy: **gateway → profile → sessions**.
 Gateways are machines or hosted backends; profiles are isolated Hermes agents
@@ -169,27 +221,30 @@ that live on one gateway.
   cloud, network, or terminal icon identifies the connection type; profile
   avatars remain a separate control after the divider. The same selector scales
   from two gateways to a larger fleet without turning backends into profile-like
-  glyphs or crowding profile actions out of the rail.
+  glyphs or crowding profile actions out of the rail. Picking a gateway is
+  instant: it is already connected, nothing is wiped, there is no confirmation,
+  and sessions on the gateway you leave keep running.
 - Selecting a gateway restores the last profile used there. The home pill
   returns to its default profile and the layers pill shows **All profiles on
   this gateway**. **Cmd/Ctrl+1–9** continue to switch profiles within the
-  active gateway.
+  active gateway whenever no pane has a tab strip to claim them.
 - With several gateways the profile rail is a **fleet rail**: every registered
   gateway's profiles sit on the one strip, each group headed by that gateway's
   kind glyph (device, network, terminal, cloud) — the same glyph the gateway
-  selector uses. The active gateway's squares look exactly as they do on a
-  single-gateway Desktop; the other gateways' squares are dimmed ("at rest").
-  Hovering an at-rest square names its machine (`omer · This device`), so two
-  same-named profiles on different machines never read alike.
-- Clicking an at-rest square performs the same switch as the gateway selector,
-  landing on that exact `(gateway, profile)`: the square spins while the
-  target is dialed, the previous gateway stays painted until the target
-  answers, and a dead target fails the click with a message rather than
-  leaving the window half-switched. Groups keep registry order whichever
-  gateway is active, so a square never moves under the pointer that clicked
-  it. Right-click on an at-rest square offers **Switch to**, **Color**,
-  **Rename**, **Edit SOUL.md** and **Delete**, all executed on the square's
-  own gateway; the delete confirmation names the machine.
+  selector uses. Only the selected profile is highlighted; every other square,
+  on any gateway, has the same unselected look. Hovering another gateway's
+  square names its machine (`omer · This device`), so two same-named profiles
+  on different machines never read alike.
+- Clicking another gateway's square is a profile pick on that gateway, landing
+  on that exact `(gateway, profile)` with a fresh draft there. A profile whose
+  backend is not open yet spins while it is dialed; a dead target fails the
+  click with a message and leaves everything you had in front untouched.
+  Groups keep registry order whichever gateway is active, so a square never
+  moves under the pointer that clicked it. Right-click on another gateway's
+  square offers **Open**, **Color**, **Rename**, **Edit SOUL.md** and
+  **Delete**, all executed on the square's own gateway; the delete
+  confirmation names the machine. Picking **This device** asks for
+  confirmation only when Hermes is not installed on this computer yet.
 - A gateway the last enumeration could not reach keeps its squares, marked
   with an amber dot on its glyph — a sleeping box is still yours. Two
   registrations of one backend collapse to a single group. Past thirteen
@@ -210,11 +265,15 @@ that live on one gateway.
   are all scoped to the active `(gateway, profile)`. Switching from a Telegram
   gateway to a Signal gateway cannot leave the previous gateway's channel groups
   or sessions in the sidebar.
-- Merely displaying the switcher reads Electron's local connection registry.
-  Remote gateways are opened only when selected; there is no periodic fleet
-  polling.
-- Hovering an agent pre-warms its backend so the switch doesn't pay a cold
-  boot.
+- Desktop loads the local connection registry at startup, even with the status
+  bar hidden, and keeps it current when gateways are saved or removed. Opening
+  Settings is not required. In Simple mode, the profile rail stays available
+  when more than one gateway is registered, even with only a default profile.
+  Every gateway in the registry is connected from startup; adding one connects
+  it, removing one disconnects it.
+- Hovering a profile pre-warms its backend so opening it doesn't pay a cold
+  boot. On SSH gateways hovering never starts an extra profile backend on the
+  remote — only opening one does.
 - The **Capabilities** page (Skills / Tools / MCP) has a matching scope: its
   **Configuring** selector lists every `(profile, device)` agent from the
   union roster, and picking one reads and writes **that machine's** skills,
@@ -230,13 +289,14 @@ home, not a second add flow.
 
 ### Sessions and Bot Mode
 
-Sessions intentionally show one active gateway at a time: this keeps files,
-tools, channels, cron, and session history in one understandable execution
-context. The fleet profile rail widens only the *picker* — the workspace still
-lives on exactly one `(gateway, profile)` after every click. Bot Mode serves a
-different job and may present the union roster, grouped by gateway, so a user
-can open one agent on a NAS and another on a VPS from one surface. Opening a
-bot still activates its exact `(gateway, profile)` route.
+With **All profiles** selected, the Sessions list shows the sessions of every
+registered gateway at once; group it by **Gateway & profile** to give each
+gateway its own section. Opening any of those sessions talks to its own
+gateway directly — there is no gateway to switch to first. A new chat still
+runs on exactly one `(gateway, profile)`: the one you picked, so files, tools,
+channels and cron for that chat stay in one execution context. Bot Mode
+presents the same union roster, grouped by gateway, so you can open one agent
+on a NAS and another on a VPS from one surface.
 
 Direct bot mentions and delegation remain gateway-local by default. Crossing a
 backend boundary changes filesystem, credentials, tools, and trust context, so
@@ -315,8 +375,8 @@ multi-gateway roster is the reference consumer.
   WebSocket leg failing while HTTP passes usually means a proxy, firewall, or
   gateway auth/origin guard is blocking `/api/ws`.
 - **A remote gateway is missing from the roster** — its backend is down or
-  unreachable; the roster lists it under gateways with the error. SSH connections
-  show *connect-on-demand* until first use — that's by design, not a failure.
+  unreachable; the roster lists it under gateways with the error, and Desktop
+  keeps redialing it in the background.
 - **"Update Hermes Desktop to chat with agents on other connections"** — the
   app predates the multi-connection stack; update the desktop app itself.
 - **Duplicate device names** — not possible; names are enforced unique at

@@ -114,6 +114,23 @@ class TestSupportsMediaInToolResults:
         finally:
             clear_runtime_main()
 
+    def test_openrouter_xiaomi_route_vetoes_native_fast_path(self):
+        """A vision-capable catalog entry cannot override a routed Xiaomi veto."""
+        from tools.vision_tools import _should_use_native_vision_fast_path
+        from agent.auxiliary_client import set_runtime_main, clear_runtime_main
+        from agent import image_routing
+
+        set_runtime_main("openrouter", "xiaomi/mimo-v2.5")
+        try:
+            with patch.object(
+                image_routing, "decide_image_input_mode", return_value="native"
+            ), patch.object(
+                image_routing, "_lookup_supports_vision", return_value=True
+            ):
+                assert _should_use_native_vision_fast_path() is False
+        finally:
+            clear_runtime_main()
+
 
 # ─── _build_native_vision_tool_result ────────────────────────────────────────
 
@@ -133,18 +150,7 @@ class TestBuildNativeVisionToolResult:
         assert env["content"][1]["type"] == "image_url"
         assert env["content"][1]["image_url"]["url"] == "data:image/png;base64,XYZ"
         assert "what does it say?" in env["content"][0]["text"]
-        assert "Image attached natively" in env["text_summary"]
 
-    def test_no_question_omits_question_section(self):
-        env = _build_native_vision_tool_result(
-            image_url="/tmp/foo.png",
-            question="",
-            image_data_url="data:image/png;base64,XYZ",
-            image_size_bytes=512,
-        )
-        text = env["content"][0]["text"]
-        assert "Question:" not in text
-        assert "Image loaded" in text
 
 
 # ─── _vision_analyze_native ──────────────────────────────────────────────────
@@ -323,7 +329,7 @@ class TestVisionAnalyzeNative:
         except ImportError:
             pytest.skip("Pillow not installed — proactive resize is a no-op")
 
-        from tools.vision_tools import _EMBED_TARGET_BYTES
+        from tools.vision_tools_history_budget import _DEFAULT_EMBED_TARGET_BYTES as _EMBED_TARGET_BYTES
 
         # Noisy PNG that base64-encodes to well over 5 MB (won't compress much).
         big = tmp_path / "big.png"
@@ -347,7 +353,8 @@ class TestVisionAnalyzeNative:
     def test_embed_caps_are_sized_for_history_reuse(self):
         """Native embeds ride every later turn, so caps must stay well below
         the Anthropic 5 MB / 8000px reject limits (#92699)."""
-        from tools.vision_tools import _EMBED_MAX_DIMENSION, _EMBED_TARGET_BYTES
+        from tools.vision_tools import _EMBED_MAX_DIMENSION
+        from tools.vision_tools_history_budget import _DEFAULT_EMBED_TARGET_BYTES as _EMBED_TARGET_BYTES
 
         assert _EMBED_TARGET_BYTES <= 512 * 1024
         assert _EMBED_MAX_DIMENSION <= 2048

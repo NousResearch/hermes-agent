@@ -11,7 +11,7 @@ Hermes Agent 具备三层弹性机制，在提供商出现问题时保持会话�
 
 1. **[凭据池](./credential-pools.md)** — 在*同一*提供商的多个 API 密钥之间轮换（优先尝试）
 2. **主模型备用** — 当主模型失败时，自动切换到*不同*的提供商:模型
-3. **辅助任务备用** — 针对视觉、压缩、网页提取等附属任务的独立提供商解析
+3. **辅助任务备用** — 针对视觉、压缩等附属任务的独立提供商解析
 
 凭据池处理同一提供商内的轮换（例如多个 OpenRouter 密钥）。本页介绍跨提供商的备用机制。两者均为可选，且相互独立。
 
@@ -51,8 +51,6 @@ fallback_model:
 | OpenRouter | `openrouter` | `OPENROUTER_API_KEY` |
 | Nous Portal | `nous` | `hermes setup --portal`（全新安装）或 `hermes auth add nous`（OAuth） |
 | OpenAI Codex | `openai-codex` | `hermes model` → **ChatGPT or Codex Subscription**（ChatGPT OAuth） |
-| GitHub Copilot | `copilot` | `COPILOT_GITHUB_TOKEN`、`GH_TOKEN` 或 `GITHUB_TOKEN` |
-| GitHub Copilot ACP | `copilot-acp` | 外部进程（编辑器集成） |
 | Anthropic | `anthropic` | `ANTHROPIC_API_KEY` 或 Claude Code 凭据 |
 | z.ai / GLM | `zai` | `GLM_API_KEY` |
 | Kimi / Moonshot | `kimi-coding` | `KIMI_API_KEY` |
@@ -84,6 +82,7 @@ fallback_model:
 | LM Studio（本地） | `lmstudio` | `LM_API_KEY`（本地可不填）+ `LM_BASE_URL` |
 | Hugging Face | `huggingface` | `HF_TOKEN` |
 | 自定义端点 | `custom` | `base_url` + `key_env`（见下文） |
+| Mixture of Agents 预设 | `moa`（`model` = 预设名称） | 已配置且聚合器有凭据的 MoA 预设——备用时运行整个预设（参考模型 + 聚合器），而不是仅运行聚合器 |
 
 ### 自定义端点备用
 
@@ -157,7 +156,7 @@ fallback_model:
 ```yaml
 fallback_model:
   provider: openai-codex
-  model: gpt-5.3-codex
+  model: gpt-5.4
 ```
 
 ### 备用适用范围
@@ -186,7 +185,6 @@ Hermes 为附属任务使用独立的轻量级模型。每个任务都有自己�
 |------|-------------|-----------|
 | 视觉 | 图像分析、浏览器截图 | `auxiliary.vision` |
 | 压缩 | 上下文压缩摘要 | `auxiliary.compression` |
-| Skills Hub | 技能搜索与发现 | `auxiliary.skills_hub` |
 | MCP | MCP 辅助操作 | `auxiliary.mcp` |
 | 审批 | 智能命令审批分类 | `auxiliary.approval` |
 | 标题生成 | 会话标题摘要 | `auxiliary.title_generation` |
@@ -229,10 +227,6 @@ auxiliary:
     provider: "auto"
     model: ""
 
-  skills_hub:
-    provider: "auto"
-    model: ""
-
   mcp:
     provider: "auto"
     model: ""
@@ -261,7 +255,7 @@ fallback_model:
 
 ### 辅助任务的提供商选项
 
-以下选项仅适用于 `auxiliary:`、`compression:` 和 `fallback_model:` 配置——`"main"` **不是**顶层 `model.provider` 的有效值。对于自定义端点，请在 `model:` 部分使用 `provider: custom`（参见 [AI 提供商](/integrations/providers)）。
+以下选项仅适用于 `auxiliary:`、`compression:` 和 `fallback_model:` 配置——`"main"` **不是**顶层 `model.provider` 的有效值。对于自定义端点，请在 `model:` 部分使用 `provider: custom`（参见 [AI 提供商](../../integrations/providers.md)）。
 
 | 提供商 | 说明 | 要求 |
 |----------|-------------|-------------|
@@ -368,7 +362,7 @@ delegation:
   # api_key: "local-key"
 ```
 
-完整配置详情参见[子 Agent 委派](/user-guide/features/delegation)。
+完整配置详情参见[子 Agent 委派](./delegation.md)。
 
 ---
 
@@ -386,7 +380,7 @@ cronjob(
 )
 ```
 
-完整配置详情参见[定时任务（Cron）](/user-guide/features/cron)。
+完整配置详情参见[定时任务（Cron）](./cron.md)。
 
 ---
 
@@ -399,7 +393,6 @@ cronjob(
 | 辅助任务（任意）— 显式提供商 | `fallback_chain`（若已设置）→ 主 Agent 模型 → 警告 + 抛出，仅在容量错误时触发 | `auxiliary.<task>.fallback_chain` |
 | 视觉 | 分层（见上文）+ 内部 OpenRouter 重试 | `auxiliary.vision` |
 | 上下文压缩 | 分层（见上文）；所有层不可用时降级为无摘要 | `auxiliary.compression` |
-| Skills Hub | 分层（见上文） | `auxiliary.skills_hub` |
 | MCP 辅助 | 分层（见上文） | `auxiliary.mcp` |
 | 审批分类 | 分层（见上文） | `auxiliary.approval` |
 | 标题生成 | 分层（见上文） | `auxiliary.title_generation` |

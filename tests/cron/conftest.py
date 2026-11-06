@@ -11,6 +11,11 @@ edge cases — call ``monkeypatch.delenv("HERMES_MODEL", raising=False)``
 inside the test, which overrides this fixture's value for that scope.
 """
 
+import asyncio
+import json
+from types import SimpleNamespace
+from uuid import uuid4
+
 import pytest
 
 
@@ -46,6 +51,13 @@ def make_cron_provider():
 
 
 @pytest.fixture(autouse=True)
+def _no_managed_store(tmp_path, monkeypatch):
+    """Point PM's store at an empty dir: script runs must not select the host install's
+    dependency venv (POSIX cron scripts run on it when a store is committed)."""
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "no-pm-store"))
+
+
+@pytest.fixture(autouse=True)
 def _default_cron_test_model(monkeypatch):
     """Pin a default HERMES_MODEL so cron run_job tests have a resolvable model."""
     monkeypatch.setenv("HERMES_MODEL", "test-cron-default-model")
@@ -70,3 +82,59 @@ def _reset_session_context_vars():
     _reset_all()
     yield
     _reset_all()
+
+
+def owner_execution_runner():
+    """The production owner execution seam as a ``run_canonical_job`` replacement.
+
+    This is not admission/RPC coverage: the real scheduler runs under the exact owner-store
+    identity and profile scope. A plain function so a subprocess tick can install it too.
+    """
+    from gateway.session_contract import SessionRef
+    from gateway.session_cron import current_execution, execute
+    from hermes_state_registry import acquire, release
+
+    def run(job, *, extra_prompt=None, cancel_event=None, execution_id=None):
+        from cron.scheduler import _get_hermes_home
+
+        db = acquire(_get_hermes_home() / "state.db")
+        identity = uuid4().hex
+        ref = SessionRef("test-profile", "cron-" + identity)
+        db.create_session(ref.session_id, source="cron")
+        authority = SimpleNamespace(
+            db=db, sessions={ref.session_id: SimpleNamespace(
+                source=SimpleNamespace(user_id="cron-owner"))}, pending_results={})
+        request_id = execution_id or identity
+        row = {"admission_id": identity, "request_id": request_id,
+               "principal_id": "cron-owner", "payload": {"text": extra_prompt or ""}}
+        policy = SimpleNamespace(request_json=json.dumps({
+            "cron_job": job, "extra_prompt": extra_prompt, "request_id": request_id}))
+
+        async def execute_job():
+            previous = current_execution()
+            try:
+                await execute(authority, ref, row, policy)
+            except RuntimeError:
+                if identity not in authority.pending_results:
+                    raise
+            assert current_execution() is previous
+            assert not authority._cron_cancellations
+            saved = authority.pending_results[identity]["result"]
+            # The transport carries run-side verdicts back like run_canonical_job's status poll.
+            job.update(saved.get("cron_job_flags") or {})
+            return tuple(saved["cron_result"])
+
+        try:
+            return asyncio.run(execute_job())
+        finally:
+            release(db)
+
+    return run
+
+
+@pytest.fixture
+def cron_owner(monkeypatch):
+    """Replace only the client transport with the production owner execution seam."""
+    run = owner_execution_runner()
+    monkeypatch.setattr("cron.scheduler_authority.run_canonical_job", run)
+    return run

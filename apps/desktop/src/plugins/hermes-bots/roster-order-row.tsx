@@ -9,20 +9,28 @@ import { cn, useValue } from '@hermes/plugin-sdk'
 import type { DragEvent, ReactNode } from 'react'
 import { useEffect, useState } from 'react'
 
-import { $draggingBot, $draggingBotPinned, $draggingBotScope, BOT_DRAG_MIME } from './roster-order'
+import { $draggingBot, BOT_DRAG_MIME, GROUP_DRAG_PREFIX } from './user-sections'
 
 interface ReorderableRosterRowProps {
   children: ReactNode
+  draggingPinned: boolean | null
+  draggingScope: null | string
   itemKey: string
   onReorder: (sourceKey: string, targetKey: string, position: 'before' | 'after') => void
   pinned: boolean
   scopeKey: string
 }
 
-export function ReorderableRosterRow({ children, itemKey, onReorder, pinned, scopeKey }: ReorderableRosterRowProps) {
+export function ReorderableRosterRow({
+  children,
+  draggingPinned,
+  draggingScope,
+  itemKey,
+  onReorder,
+  pinned,
+  scopeKey
+}: ReorderableRosterRowProps) {
   const draggingBot = useValue($draggingBot)
-  const draggingScope = useValue($draggingBotScope)
-  const draggingPinned = useValue($draggingBotPinned)
   const [dropPosition, setDropPosition] = useState<null | 'before' | 'after'>(null)
 
   useEffect(() => {
@@ -34,6 +42,7 @@ export function ReorderableRosterRow({ children, itemKey, onReorder, pinned, sco
   const accepts = (event: DragEvent) => {
     return (
       Boolean(draggingBot) &&
+      !draggingBot!.startsWith(GROUP_DRAG_PREFIX) &&
       draggingBot !== itemKey &&
       draggingScope === scopeKey &&
       draggingPinned === pinned &&
@@ -44,11 +53,11 @@ export function ReorderableRosterRow({ children, itemKey, onReorder, pinned, sco
   return (
     <div
       className={cn(
-        'relative transition-all duration-75',
+        'relative',
         dropPosition === 'before' &&
-          'before:absolute before:-top-0.5 before:left-2 before:right-2 before:h-0.5 before:rounded-full before:bg-(--ui-accent) before:z-10',
+          'before:absolute before:-top-0.5 before:left-2 before:right-2 before:z-10 before:h-0.5 before:rounded-full before:bg-(--ui-accent)',
         dropPosition === 'after' &&
-          'after:absolute after:-bottom-0.5 after:left-2 after:right-2 after:h-0.5 after:rounded-full after:bg-(--ui-accent) after:z-10'
+          'after:absolute after:-bottom-0.5 after:left-2 after:right-2 after:z-10 after:h-0.5 after:rounded-full after:bg-(--ui-accent)'
       )}
       data-roster-item-key={itemKey}
       onDragLeave={event => {
@@ -65,8 +74,7 @@ export function ReorderableRosterRow({ children, itemKey, onReorder, pinned, sco
         event.dataTransfer.dropEffect = 'move'
 
         const rect = event.currentTarget.getBoundingClientRect()
-        const midY = rect.top + rect.height / 2
-        const nextPos = event.clientY < midY ? 'before' : 'after'
+        const nextPos = event.clientY < rect.top + rect.height / 2 ? 'before' : 'after'
 
         if (dropPosition !== nextPos) {
           setDropPosition(nextPos)
@@ -82,16 +90,18 @@ export function ReorderableRosterRow({ children, itemKey, onReorder, pinned, sco
 
         const sourceKey = event.dataTransfer.getData(BOT_DRAG_MIME) || draggingBot
 
-        if (!sourceKey || sourceKey === itemKey) {
+        if (!sourceKey || sourceKey.startsWith(GROUP_DRAG_PREFIX) || sourceKey === itemKey) {
           return
         }
 
         event.preventDefault()
         event.stopPropagation()
+        // Reordering can move or remount the source node before dragend fires;
+        // clear the in-flight key immediately so the row never stays faded.
+        $draggingBot.set(null)
 
         const rect = event.currentTarget.getBoundingClientRect()
-        const midY = rect.top + rect.height / 2
-        const position = wasPosition || (event.clientY < midY ? 'before' : 'after')
+        const position = wasPosition || (event.clientY < rect.top + rect.height / 2 ? 'before' : 'after')
 
         onReorder(sourceKey, itemKey, position)
       }}

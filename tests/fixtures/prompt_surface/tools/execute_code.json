@@ -1,0 +1,20 @@
+{
+  "description": "Run Python that calls Hermes tools programmatically. Use when you need 3+ tool calls with logic between them: filtering/reducing large outputs before they enter context, branching, or loops (N pages/files, retry on failure). Use normal tool calls for single calls, results you must reason over in full, or anything needing user interaction.\n\nCalls run in a persistent session kernel: variables, imports, and loaded data survive across execute_code calls, so build on earlier work instead of re-loading it. A timed-out or interrupted call loses that state.\n\nAvailable via `from hermes_tools import ...`:\n\n  web_search(query: str, limit: int = 5) -> dict\n    Returns {\"data\": {\"web\": [{\"url\", \"title\", \"description\"}, ...]}}\n  web_extract(urls: list[str], char_limit: int = None) -> dict\n    Returns {\"results\": [{\"url\", \"title\", \"content\", \"error\"}, ...]} where content is markdown.\n    No LLM summarization. Pages over char_limit (default 15000) are head+tail truncated; full text stored on disk (path in the content footer).\n  read_file(path: str, offset: int = 1, limit: int = 2000) -> dict\n    Lines are 1-indexed. Returns {\"content\": \"...\", \"total_lines\": N}\n  write_file(path: str, content: str) -> dict\n    Always overwrites the entire file; an existing file must be read_file'd first or the write is refused.\n  search_files(pattern: str, target=\"content\", path=\".\", file_glob=None, limit=50, order=\"discovery\") -> dict\n    target: \"content\" (search inside files) or \"files\" (find files by name). Returns {\"matches\": [...]}\n  patch(path: str, old_string: str, new_string: str, replace_all: bool = False) -> dict\n    Replaces old_string with new_string in the file.\n  terminal(command: str, timeout=None, workdir=None) -> dict\n    Foreground only (no background/pty). Returns {\"output\": \"...\", \"exit_code\": N}\n\nLimits: 5-minute timeout, max 50 tool calls per call. Stdout over 50KB shows head/tail inline; the FULL text is auto-saved to a file whose path rides in the result.\n\nScripts run in the session's working directory. Interpreter: the project's activated venv/conda python when one is active (VIRTUAL_ENV/CONDA_PREFIX — matches terminal()); otherwise Hermes's own python (the common case — stdlib plus Hermes's deps; check `import x` before relying on project packages).\n\nHelpers require imports: `from hermes_tools import json_parse, shell_quote, retry`. json_parse(text) — tolerant json.loads for terminal() output; shell_quote(s) — shlex.quote for dynamic shell args; retry(fn, max_attempts=3, delay=2) — exponential backoff.",
+  "name": "execute_code",
+  "parameters": {
+    "properties": {
+      "code": {
+        "description": "Python code to execute. Import tools with `from hermes_tools import web_search, terminal, ...` and print your final result to stdout.",
+        "type": "string"
+      },
+      "reset": {
+        "description": "Discard the kernel's persistent state and start fresh before running this code.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "code"
+    ],
+    "type": "object"
+  }
+}

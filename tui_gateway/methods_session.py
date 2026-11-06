@@ -2333,7 +2333,6 @@ def _(rid, params: dict) -> dict:
 def register(server) -> None:
     """Publish this module's helpers onto ``server`` (rebound to its globals) and install handlers."""
     bind_module(globals(), server, skip=("_",))
-    from . import methods_session_branch
-    methods_session_branch.register(server)
-    from . import methods_session_interrupt
-    methods_session_interrupt.register(server)
+    from . import methods_session_branch, methods_session_family, methods_session_interrupt
+    for sibling in (methods_session_branch, methods_session_family, methods_session_interrupt):
+        sibling.register(server)

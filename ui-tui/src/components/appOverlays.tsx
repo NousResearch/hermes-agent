@@ -20,6 +20,7 @@ import { PetPicker } from './petPicker.js'
 import { PluginsHub } from './pluginsHub.js'
 import { ApprovalPrompt, ClarifyPrompt, ConfirmPrompt } from './prompts.js'
 import { RewindPicker } from './rewindPicker.js'
+import { SessionTree } from './sessionTree.js'
 import { SkillsHub } from './skillsHub.js'
 import { SubscriptionOverlay } from './subscriptionOverlay.js'
 import { WidgetGrid, type WidgetGridWidget } from './widgetGrid.js'
@@ -135,6 +136,19 @@ export function PromptZone({
     return (
       <PromptCell cols={cols} id="connection">
         <ConnectionSetupOverlay cols={cols} t={theme} />
+      </PromptCell>
+    )
+  }
+
+  if (overlay.tree) {
+    return (
+      <PromptCell cols={cols} id="tree">
+        <SessionTree
+          cols={cols}
+          onClose={() => patchOverlayState({ tree: null })}
+          overlay={overlay.tree}
+          t={theme}
+        />
       </PromptCell>
     )
   }

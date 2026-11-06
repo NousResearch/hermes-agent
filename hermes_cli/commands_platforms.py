@@ -387,7 +387,10 @@ _SLACK_VIA_HERMES_ONLY = frozenset({
     # Recovery-only, after a restart lost a turn: `/hermes discard` reaches it.
     "discard",
     # One-time answer to the low-disk prompt; `/hermes autoprune on` reaches it.
-    "autoprune"})
+    "autoprune",
+    # A family listing is read at a terminal far more often than in Slack, and the 50-slash cap
+    # must not push an existing command off. `/hermes tree` reaches it.
+    "tree"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

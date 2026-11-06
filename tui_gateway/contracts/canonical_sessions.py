@@ -9,7 +9,7 @@ from pydantic import RootModel
 from .base import JsonValue, Params, Result
 from .common import ProfileParams, TranscriptMessage
 from .connectors_operation import ConnectionRequestPayload
-from .sessions import OpenRequestEntry, TodoState
+from .sessions import OpenRequestEntry, SessionFamilyParams, SessionFamilyResult, TodoState
 from .canonical import AdmissionStatus, CanonicalSessionRef, PromptResponseResult, SessionInventoryFields
 from .registry import canonical_method
 
@@ -325,6 +325,9 @@ for _name, _params, _result in (
     ('session.create', CanonicalCreateParams, CanonicalSnapshot),
     ('session.resume', CanonicalResumeParams, CanonicalSnapshot),
     ('session.list', CanonicalListParams, CanonicalListResult),
+    # The /tree family: read-only, and the only session verb that returns a whole tree rather
+    # than one row. Same wire the sidecar's RPC serves, so Ink draws one shape from both backends.
+    ('session.family', SessionFamilyParams, SessionFamilyResult),
     ('session.interrupt', CanonicalControlParams, CanonicalSessionHandle),
     ('session.steer', CanonicalCorrectionParams, CanonicalCorrectionResult),
     ('session.redirect', CanonicalCorrectionParams, CanonicalCorrectionResult),

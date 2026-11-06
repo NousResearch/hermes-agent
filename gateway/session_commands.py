@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 # gateway-command-parity.md); a handler that reads messaging-only state or writes config is not here.
 _READ_COMMANDS = frozenset({'help', 'commands', 'status', 'context', 'version', 'whoami',
                             'usage', 'insights', 'profile', 'diff', 'memory', 'kanban', 'topup',
-                            'suggestions', 'bundles', 'skills'})
+                            'suggestions', 'bundles', 'skills', 'tree'})
 _CONTROL_COMMANDS = frozenset({'title'})
 # Authoring/workflow commands whose messaging handler (``_command_handler_table``) runs as-is for a
 # local session: goal/loop/heartbeat state on the session's row, the review/refine forks of its

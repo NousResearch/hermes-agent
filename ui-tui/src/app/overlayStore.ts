@@ -41,7 +41,8 @@ const buildOverlayState = (): OverlayState => ({
   sessions: false,
   skillsHub: false,
   subscription: null,
-  sudo: null
+  sudo: null,
+  tree: null
 })
 
 export const $overlayState = atom<OverlayState>(buildOverlayState())
@@ -66,6 +67,7 @@ const BLOCKING_KEYS = [
   'skillsHub',
   'subscription',
   'sudo',
+  'tree',
   'vaultCode',
   'vaultSaveLogin',
   'vaultUnlock',

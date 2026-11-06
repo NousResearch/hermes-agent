@@ -3445,6 +3445,24 @@
       }
     },
     {
+      "name": "session.family",
+      "summary": "Read-only family around one session (root, branches, compression continuations, subagents) for the /tree navigator; never writes.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionFamilyParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionFamilyResult"
+        }
+      }
+    },
+    {
       "name": "session.foreign.import",
       "summary": "Import a foreign session into this profile's history (idempotent per origin).",
       "params": [
@@ -38082,6 +38100,194 @@
         "title": "SessionExportResult",
         "type": "object"
       },
+      "SessionFamilyKind": {
+        "description": "What a stored marker proves about a node's link to its parent; ``unknown`` is never a guess.",
+        "enum": [
+          "root",
+          "branch",
+          "compression",
+          "subagent",
+          "unknown"
+        ],
+        "title": "SessionFamilyKind",
+        "type": "string"
+      },
+      "SessionFamilyNode": {
+        "additionalProperties": false,
+        "description": "One row of the family tree, in depth-first pre-order.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "parent_session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Parent Session Id"
+          },
+          "depth": {
+            "default": 0,
+            "title": "Depth",
+            "type": "integer"
+          },
+          "title": {
+            "default": "",
+            "title": "Title",
+            "type": "string"
+          },
+          "created_at": {
+            "default": 0,
+            "title": "Created At",
+            "type": "number"
+          },
+          "message_count": {
+            "default": 0,
+            "title": "Message Count",
+            "type": "integer"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/SessionFamilyKind",
+            "default": "unknown"
+          },
+          "branch_from": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Branch From"
+          },
+          "is_current": {
+            "default": false,
+            "title": "Is Current",
+            "type": "boolean"
+          },
+          "has_children": {
+            "default": false,
+            "title": "Has Children",
+            "type": "boolean"
+          },
+          "folded_segments": {
+            "default": 0,
+            "title": "Folded Segments",
+            "type": "integer"
+          },
+          "guide": {
+            "default": "",
+            "title": "Guide",
+            "type": "string"
+          },
+          "last_active": {
+            "default": 0,
+            "title": "Last Active",
+            "type": "number"
+          },
+          "age": {
+            "default": "",
+            "title": "Age",
+            "type": "string"
+          },
+          "parent_title": {
+            "default": "",
+            "title": "Parent Title",
+            "type": "string"
+          },
+          "last_prompt": {
+            "default": "",
+            "title": "Last Prompt",
+            "type": "string"
+          },
+          "last_reply": {
+            "default": "",
+            "title": "Last Reply",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "SessionFamilyNode",
+        "type": "object"
+      },
+      "SessionFamilyParams": {
+        "additionalProperties": false,
+        "description": "``session.family``: the family around ``session_id``, already reduced to what the client draws.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "show_compressions": {
+            "default": false,
+            "title": "Show Compressions",
+            "type": "boolean"
+          },
+          "show_subagents": {
+            "default": false,
+            "title": "Show Subagents",
+            "type": "boolean"
+          },
+          "folded": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Folded",
+            "type": "array"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "SessionFamilyParams",
+        "type": "object"
+      },
+      "SessionFamilyResult": {
+        "additionalProperties": false,
+        "properties": {
+          "root_id": {
+            "default": "",
+            "title": "Root Id",
+            "type": "string"
+          },
+          "nodes": {
+            "items": {
+              "$ref": "#/components/schemas/SessionFamilyNode"
+            },
+            "title": "Nodes",
+            "type": "array"
+          },
+          "truncated": {
+            "default": false,
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "title": "SessionFamilyResult",
+        "type": "object"
+      },
       "SessionForeignIdParams": {
         "additionalProperties": false,
         "properties": {
@@ -49355,6 +49561,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/SessionExportResult"
+        }
+      }
+    },
+    {
+      "name": "session.family",
+      "summary": "",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionFamilyParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionFamilyResult"
         }
       }
     },

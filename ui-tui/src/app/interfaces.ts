@@ -318,6 +318,7 @@ export interface OverlayState {
   skillsHub: boolean
   subscription: SubscriptionOverlayState | null
   sudo: null | SudoReq
+  tree: null | SessionTreeOverlay
 }
 
 /** One earlier user prompt the rewind picker can return to (`row_id` is its durable message row). */
@@ -334,6 +335,48 @@ export interface RewindOverlay {
   targets: RewindTarget[]
   onFork: (target: RewindTarget) => void
   onSubmit: (target: RewindTarget, text: string) => void
+}
+
+/** One row of `/tree`'s family, as `session.family` renders it (see `hermes_state_family`). */
+export interface SessionTreeNode {
+  session_id: string
+  parent_session_id: null | string
+  depth: number
+  title: string
+  created_at: number
+  message_count: number
+  kind: 'branch' | 'compression' | 'root' | 'subagent' | 'unknown'
+  /** The parent's sealed message number this row continues from, when the store can prove it. */
+  branch_from: null | number
+  is_current: boolean
+  has_children: boolean
+  folded_segments: number
+  /** Shared row cells from the builder, drawn the same by the classic CLI's browser. */
+  guide?: string
+  last_active?: number
+  age?: string
+  parent_title?: string
+  last_prompt?: string
+  last_reply?: string
+}
+
+/** The viewer state the shared builder needs; every change is re-fetched so both terminal
+ *  surfaces fold and filter by the same rule. */
+export interface SessionTreeView {
+  show_compressions: boolean
+  show_subagents: boolean
+  folded: string[]
+}
+
+export interface SessionTreeOverlay {
+  nodes: SessionTreeNode[]
+  rootId: string
+  truncated: boolean
+  view: SessionTreeView
+  /** Ask the owner for the same family under a new view (fold/filter keys). */
+  onView: (view: SessionTreeView) => void
+  /** Switch to a row through the ordinary `session.resume` path. */
+  onSelect: (sessionId: string) => void
 }
 
 export interface PagerState {

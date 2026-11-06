@@ -999,12 +999,34 @@ def _cmd_skills(rid, params, session, name, arg):
     return _run_pending_review(rid, "skills", arg, session, unknown=_SKILLS_USAGE)
 
 
+def _cmd_tree(rid, params, session, name, arg):
+    """/tree — this session's family as indented text.
+
+    The Ink TUI opens its overlay for a bare ``/tree``, so this answers the surfaces that have no
+    overlay (the desktop, ACP, a gateway-local session) with the same text the classic CLI prints.
+    Read-only: it builds the family and formats it, and never touches the session.
+    """
+    from hermes_cli.session_tree import load_family, parse_show_all, tree_text, usage_line
+
+    show_all = parse_show_all(arg)
+    if show_all is None:
+        return _exec_out(rid, usage_line())
+    session_id = params.get("session_id") or (session or {}).get("session_id") or ""
+    if not session_id:
+        return _err(rid, 4001, "no active session")
+    with _profile_db(params) as db:
+        if db is None:
+            return _db_unavailable_error(rid, code=5017)
+        family = load_family(db, session_id, show_all=show_all)
+    return _exec_out(rid, tree_text(family))
+
+
 _SLASH_BUILTINS = {
     "queue": _cmd_queue, "q": _cmd_queue, "learn": _cmd_learn, "plan": _cmd_plan, "init": _cmd_init,
     "moa": _cmd_moa, "focus": _cmd_focus, "retry": _cmd_retry, "steer": _cmd_steer, "goal": _cmd_goal,
     "loop": _cmd_loop, "undo": _cmd_undo, "snapshot": _cmd_snapshot, "snap": _cmd_snapshot,
     "compress": _cmd_compress, "compact": _cmd_compress,
-    "memory": _cmd_memory, "skills": _cmd_skills}
+    "memory": _cmd_memory, "skills": _cmd_skills, "tree": _cmd_tree}
 
 @method("command.dispatch")
 def _(rid, params: dict) -> dict:

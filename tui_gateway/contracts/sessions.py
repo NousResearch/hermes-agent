@@ -249,6 +249,67 @@ method("session.list", params=SessionListParams, result=SessionListResult,
        doc="Human-facing stored sessions, most recent first (sub-agent / kanban sources denied).")
 
 
+class SessionFamilyKind(WireEnum):
+    """What a stored marker proves about a node's link to its parent; ``unknown`` is never a guess."""
+
+    root = "root"
+    branch = "branch"
+    compression = "compression"
+    subagent = "subagent"
+    unknown = "unknown"
+
+
+class SessionFamilyParams(SessionParams):
+    """``session.family``: the family around ``session_id``, already reduced to what the client draws."""
+
+    # A compression continuation folds into its nearest shown ancestor (replaced by that row's
+    # ``folded_segments`` count) unless this is set, so a compacted conversation reads as one line.
+    show_compressions: bool = False
+    # Subagent runs are hidden by default: they are children of the family, not branches of it.
+    show_subagents: bool = False
+    # Ids whose descendants are collapsed in the reply (the client's ←/→ state). The fold itself is
+    # applied by the shared builder, so both terminal surfaces fold identically.
+    folded: list[str] = Field(default_factory=list)
+
+
+class SessionFamilyNode(Result):
+    """One row of the family tree, in depth-first pre-order."""
+
+    session_id: str
+    parent_session_id: str | None = None
+    depth: int = 0
+    title: str = ""
+    created_at: float = 0
+    message_count: int = 0
+    kind: SessionFamilyKind = SessionFamilyKind.unknown
+    # The parent's sealed message number this row continues from, when the store can prove it
+    # (a compression continuation); a branch's copy point is not persisted, so it is null there.
+    branch_from: int | None = None
+    is_current: bool = False
+    has_children: bool = False
+    folded_segments: int = 0
+    # Drawn the same by every surface: the tree guide (``├─ `` ...), the relative age of the last
+    # activity, the parent's title and the row's newest live prompt and reply for the preview.
+    guide: str = ""
+    last_active: float = 0
+    age: str = ""
+    parent_title: str = ""
+    last_prompt: str = ""
+    last_reply: str = ""
+
+
+class SessionFamilyResult(Result):
+    root_id: str = ""
+    nodes: list[SessionFamilyNode] = Field(default_factory=list)
+    # True when the walk hit its node/depth ceiling: a partial family must not read as the whole one.
+    truncated: bool = False
+
+
+method("session.family", params=SessionFamilyParams, result=SessionFamilyResult,
+       doc="Read-only family around one session (root, branches, compression continuations, "
+           "subagents) for the /tree navigator; never writes.")
+
+
 class SessionMostRecentParams(ProfileParams):
     pass
 

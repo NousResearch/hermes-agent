@@ -26,6 +26,7 @@ import mimetypes
 import os
 import re
 import secrets
+import shutil
 import sys
 import tempfile
 import time
@@ -89,6 +90,18 @@ _FALLBACK_PNG_PREVIEW = bytes.fromhex(
     "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
     "890000000d49444154789c63000100000005000100377a7ff20000000049454e"
     "44ae426082")
+_COMMON_MEDIA_MIMES: dict[str, str] = {
+    ".m4a": "audio/mp4",
+    ".mp3": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".ogg": "audio/ogg",
+    ".opus": "audio/opus",
+    ".mp4": "video/mp4",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+}
 # Markdown LINE can't render, applied in order (code blocks first so their content survives).
 _MD_STRIP_RULES: tuple[tuple[re.Pattern, Any], ...] = (
     (re.compile(r"```[a-zA-Z0-9_+-]*\n?(.*?)```", re.DOTALL), lambda m: m.group(1).rstrip("\n")),
@@ -373,6 +386,33 @@ _INBOUND_MEDIA_EXT = {"image": ".jpg", "audio": ".m4a", "video": ".mp4", "file":
 _INBOUND_AV_CACHERS = {"audio": cache_audio_from_bytes_async, "video": cache_video_from_bytes_async}
 _LIFECYCLE_EVENTS = frozenset({"follow", "unfollow", "join", "leave"})
 _ENV_SEED_KEYS = (("LINE_PORT", "port", int), ("LINE_HOST", "host", None), ("LINE_PUBLIC_URL", "public_url", None))
+
+
+def _validate_media_file(file_path: str) -> tuple[Optional[Path], int]:
+    path = Path(file_path)
+    if not path.is_file():
+        return None, 404
+    try:
+        from hermes_constants import get_hermes_home
+        hermes_home = Path(get_hermes_home()).resolve()
+    except (ImportError, OSError, RuntimeError):
+        hermes_home = Path.home().joinpath(".hermes").resolve()
+    resolved = path.resolve()
+    allowed_roots = [
+        Path(tempfile.gettempdir()).resolve(),
+        Path("/tmp").resolve(),  # no-tmp: ok — macOS /private/tmp alias in the allowed-roots check, not a write target
+        hermes_home,
+    ]
+    safe_roots = os.environ.get("HERMES_WRITE_SAFE_ROOT", "")
+    if safe_roots:
+        for r in safe_roots.split(os.pathsep):
+            r_clean = r.strip()
+            if r_clean:
+                with contextlib.suppress(OSError):
+                    allowed_roots.append(Path(r_clean).expanduser().resolve())
+    if not any(resolved.is_relative_to(r) for r in allowed_roots):
+        return None, 403
+    return path, 200
 
 
 class LineAdapter(BasePlatformAdapter):
@@ -761,7 +801,38 @@ class LineAdapter(BasePlatformAdapter):
         return f"{base}{DEFAULT_MEDIA_PATH_PREFIX}/{token}/{_urlquote(filename, safe='')}"
 
     def _serve_file(self, path: Path) -> str:
-        return self._media_url(self._register_media(str(path.resolve())), path.name)
+        resolved = path.resolve()
+        served_path = resolved
+        cleanup = False
+        try:
+            from hermes_constants import get_hermes_home
+            hermes_home = Path(get_hermes_home()).resolve()
+        except (ImportError, OSError, RuntimeError):
+            hermes_home = Path.home().joinpath(".hermes").resolve()
+
+        is_under_hermes = False
+        with contextlib.suppress(ValueError, OSError):
+            is_under_hermes = resolved.is_relative_to(hermes_home)
+
+        temp_roots = (
+            Path(tempfile.gettempdir()).resolve(),
+            Path("/tmp").resolve(),  # no-tmp: ok — scratch directory detection for ephemeral staging
+        )
+        is_temp = not is_under_hermes and (
+            any(resolved.is_relative_to(r) for r in temp_roots) or "hermes_voice" in str(resolved)
+        )
+        if is_temp:
+            try:
+                cache_dir = hermes_home / "cache" / "line_media"
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                dest = cache_dir / f"{secrets.token_hex(8)}_{path.name}"
+                shutil.copy2(resolved, dest)
+                served_path = dest
+                cleanup = True
+            except OSError as exc:
+                logger.warning("LINE: failed to stage temporary media file: %s", exc)
+
+        return self._media_url(self._register_media(str(served_path), cleanup=cleanup), served_path.name)
 
     def _missing_public_url(self) -> bool:
         """True when no LINE_PUBLIC_URL is set and the bind host is wildcard/dual-stack ``None``."""
@@ -785,12 +856,13 @@ class LineAdapter(BasePlatformAdapter):
 
     async def _handle_media(self, request) -> Any:
         """Serve a registered local file for LINE's media URLs. Defence-in-depth: the resolved
-        path is rechecked against allowed roots (tempdir, ``/tmp``→``/private/tmp`` on macOS, HERMES_HOME).
+        path is rechecked against allowed roots (tempdir, ``/tmp``→``/private/tmp`` on macOS,
+        HERMES_HOME, and HERMES_WRITE_SAFE_ROOT).
 
         Defence-in-depth: even though ``_register_media`` is only called from trusted internal code, we
         recheck the resolved path against an allowed-roots set before serving. Sources allowed:
-        ``tempfile.gettempdir()``, ``/tmp`` (which resolves to ``/private/tmp`` on macOS), and
-        ``HERMES_HOME``. PR #8398.
+        ``tempfile.gettempdir()``, ``/tmp`` (which resolves to ``/private/tmp`` on macOS),
+        ``HERMES_HOME``, and any roots configured in ``HERMES_WRITE_SAFE_ROOT``. PR #8398.
         """
         from aiohttp import web
         token = request.match_info["token"]
@@ -799,20 +871,19 @@ class LineAdapter(BasePlatformAdapter):
             return web.Response(status=404, text="not found")
         if time.time() > expires_at:
             self._media_tokens.pop(token, None)
+            if file_path in self._media_temp_paths:
+                self._media_temp_paths.discard(file_path)
+                _unlink_quietly(file_path)
             return web.Response(status=410, text="gone")
-        path = Path(file_path)
-        if not path.is_file():
+
+        path, status = await asyncio.to_thread(_validate_media_file, file_path)
+        if path is None:
+            if status == 403:
+                logger.warning("LINE: refusing to serve outside allowed roots: %s", file_path)
+                return web.Response(status=403, text="forbidden")
             return web.Response(status=404, text="not found")
-        try:
-            from hermes_constants import get_hermes_home
-            hermes_home = Path(get_hermes_home()).resolve()
-        except Exception:
-            hermes_home = Path.home().joinpath(".hermes").resolve()
-        resolved = path.resolve()
-        if not any(resolved.is_relative_to(r) for r in (Path(tempfile.gettempdir()).resolve(), Path("/tmp").resolve(), hermes_home)):  # no-tmp: ok — macOS /private/tmp alias in the allowed-roots check, not a write target
-            logger.warning("LINE: refusing to serve outside allowed roots: %s", resolved)
-            return web.Response(status=403, text="forbidden")
-        content_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+
+        content_type = mimetypes.guess_type(str(path))[0] or _COMMON_MEDIA_MIMES.get(path.suffix.lower(), "application/octet-stream")
         return web.FileResponse(path, headers={"Content-Type": content_type})
 
     async def send_image_file(

@@ -22,9 +22,18 @@ def github(tmp_path, monkeypatch):
             if self.path == "/graphql":
                 value = {"data": {"repository": {"pullRequest": {
                     "headRefOid": sha, "baseRefName": "main", "state": "OPEN",
-                    "baseRef": {"branchProtectionRule": {"requiredStatusChecks": [
-                        {"context": "required", "app": {"databaseId": 1}}]}}}}}}
+                    "baseRef": {"branchProtectionRule": None if state.get("free_plan") else
+                        {"requiredStatusChecks": [
+                            {"context": "required", "app": {"databaseId": 1}}]}}}}}}
             elif "/rules/branches/" in self.path:
+                if state.get("rules_403"):
+                    message = "Upgrade to GitHub Pro or make this repository public to enable this feature."
+                    if state.get("rules_403_other"):
+                        message = "Must have admin rights to repository."
+                    self.send_response(403)
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"message": message, "status": "403"}).encode())
+                    return
                 value = [[]]
             elif "/check-runs" in self.path:
                 run = {"id": 42, "name": "required", "head_sha": sha,
@@ -34,7 +43,7 @@ def github(tmp_path, monkeypatch):
                     run["head_sha"] = "b" * 40
                 runs = [] if state.get("missing") else [run]
                 value = [{"total_count": 100 + len(runs), "check_runs": [
-                    {**run, "id": 1000 + i, "name": "optional", "conclusion": "skipped"}
+                    {**run, "id": 1000 + i, "name": "optional", "conclusion": "neutral" if state.get("free_plan") else "skipped"}
                     for i in range(100)]}, {"total_count": 100 + len(runs), "check_runs": runs}]
                 if state.get("race"):
                     state["race"]()
@@ -60,9 +69,15 @@ def github(tmp_path, monkeypatch):
     shim = tmp_path / "bin"
     shim.mkdir()
     gh = shim / "gh"
-    gh.write_text(f"#!{sys.executable}\nimport sys,urllib.request\n"
+    gh.write_text(f"#!{sys.executable}\nimport sys,urllib.request,urllib.error\n"
                   f"u='http://127.0.0.1:{server.server_port}/'+sys.argv[2]\n"
-                  "print(urllib.request.urlopen(u).read().decode())\n")
+                  "try:\n    print(urllib.request.urlopen(u).read().decode())\n"
+                  "except urllib.error.HTTPError as e:\n"
+                  "    body = e.read().decode()\n"
+                  "    import json as _j\n"
+                  "    msg = _j.loads(body).get('message', '')\n"
+                  "    print('gh: %s (HTTP %d)' % (msg, e.code), file=sys.stderr)\n"
+                  "    sys.exit(1)\n")
     gh.chmod(0o755)
     monkeypatch.setenv("PATH", str(shim) + os.pathsep + os.environ["PATH"])
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
@@ -230,3 +245,41 @@ def test_assigned_card_with_unresolvable_profile_is_auth_not_ambient(tmp_path, m
             "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0])
     assert receipt["classification"] == "auth"
     assert "'ghost'" in receipt["detail"] and "cannot be resolved" in receipt["detail"]
+
+
+# --- GitHub Free private repo: plan-limit 403 AND branchProtectionRule=null => head checks decide ---
+
+@pytest.mark.platforms("linux")
+def test_free_plan_no_protection_green_head_checks_complete_the_card(github):
+    """GitHub Free private repos have no branch protection and no rulesets: the rules
+    wall is a 403 'Upgrade to GitHub Pro'. The head's own check-runs/statuses are then
+    the repository's bar, so an all-green head completes the card."""
+    github.update(rules_403=True, free_plan=True, conclusion="success")
+    with connect() as conn:
+        tid = kb.create_task(conn, title="free-plan", completion_contract="acme/repo")
+        run_id = kb.claim_task(conn, tid).current_run_id
+        assert kb.complete_task(conn, tid, result="done", expected_run_id=run_id,
+                                metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
+        task = kb.get_task(conn, tid)
+        assert task.status == "done"
+        receipt = json.loads(conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0])
+        assert receipt["classification"] == "success"
+        assert receipt["required"] and all(r["context"] is None for r in receipt["required"])
+
+
+@pytest.mark.platforms("linux")
+def test_free_plan_red_head_check_blocks_completion(github):
+    """Same plan-limit shape, but a failing head check must still block: no completion,
+    failure classification, recovery hint persisted."""
+    github.update(rules_403=True, free_plan=True, conclusion="failure")
+    with connect() as conn:
+        tid = kb.create_task(conn, title="free-plan-red", completion_contract="acme/repo")
+        run_id = kb.claim_task(conn, tid).current_run_id
+        assert not kb.complete_task(conn, tid, result="done", expected_run_id=run_id,
+                                    metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
+        assert kb.get_task(conn, tid).status != "done"
+        receipt = json.loads(conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0])
+        assert receipt["classification"] == "failure"
+        assert "retry" in receipt["recovery"]

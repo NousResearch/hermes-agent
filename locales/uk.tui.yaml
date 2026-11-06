@@ -116,6 +116,7 @@ canonical.launch.invalidToolProgress: "недійсне HERMES_TUI_TOOL_PROGRESS
 canonical.launch.noTuiPolicy: "шлюз не підтримує політику сеансу tui; оновіть/перезапустіть шлюз"
 canonical.launch.unsupportedOptions: "шлюз не підтримує параметри запуску TUI: {0}"
 canonical.queue.clipboardImageFailed: "збій зображення з буфера обміну: {0}"
+canonical.queue.imagesNotRestored: "Зображень із редагованого повідомлення не прикріплено повторно: {0} (чернетка змінилася)"
 canonical.queue.discardFailed: "не вдалося відкинути: {0}"
 canonical.queue.invalidRecord: "Недійсний запис очікуваного вводу: {0}"
 canonical.queue.journalCleanupFailed: "ввід доставлено; не вдалося очистити журнал: {0}"

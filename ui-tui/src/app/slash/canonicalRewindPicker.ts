@@ -56,7 +56,8 @@ function prefillPrompt(ctx: SlashRunCtx, stored: string) {
   ctx.composer.setInput(text)
 
   if (images.length) {
-    void ctx.composer.attachImagePaths(images)
+    // The user may keep typing while the images stage: the restore follows the draft.
+    void ctx.composer.attachImagePaths(images, { followTyping: true })
   }
 }
 
@@ -108,7 +109,8 @@ export function openRewindPicker(ctx: SlashRunCtx) {
           },
           onFork: target => void forkFrom(ctx, sid, target),
           onSubmit: send,
-          onType: text => ctx.composer.setInput(prev => prev + text)
+          onType: text => ctx.composer.setInput(prev => prev + text),
+          onPaste: text => void ctx.composer.appendPaste(text)
         }
       })
     })

@@ -113,6 +113,7 @@
   "canonical.launch.unsupportedOptions",
   "canonical.queue.clipboardImageFailed",
   "canonical.queue.discardFailed",
+  "canonical.queue.imagesNotRestored",
   "canonical.queue.invalidRecord",
   "canonical.queue.journalCleanupFailed",
   "canonical.queue.lostRow",

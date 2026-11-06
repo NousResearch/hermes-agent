@@ -328,6 +328,8 @@ export interface RewindOverlay {
   onSubmit: (target: RewindTarget, edit: RewindSubmission | string) => void
   /** A printable key that is not a browse key: browsing closes and the key is typed into the composer. */
   onType: (text: string) => void
+  /** Text pasted while browsing: browsing closes and it is pasted into the composer. */
+  onPaste: (text: string) => void
 }
 
 export interface PagerState {
@@ -409,12 +411,14 @@ export interface ComposerPasteResult {
 export type MaybePromise<T> = Promise<T> | T
 
 export interface ComposerActions {
+  /** Paste text at the end of the draft as a composer paste would (collapse, path and image detection). */
+  appendPaste: (text: string) => Promise<void>
   /** Pull an image off the system clipboard in as a token. */
   attachClipboardImage: () => void
   /** Attach an image by path in as a token. */
   attachImagePath: (path: string) => Promise<void> | void
   /** Attach several images in order to the destination current at the call; stops on any change. */
-  attachImagePaths: (paths: readonly string[]) => Promise<void>
+  attachImagePaths: (paths: readonly string[], options?: { followTyping?: boolean }) => Promise<void>
   clearIn: () => void
   stage?: (text: string, display?: string, destination?: SubmissionDestination, attachments?: QueueItem['attachments']) => QueueItem
   dequeue: (retry?: boolean) => QueueItem | undefined
@@ -582,6 +586,7 @@ export interface SlashHandlerContext {
   composer: {
     attachClipboardImage: () => void
     attachImagePath: (path: string) => Promise<void> | void
+    appendPaste: ComposerActions['appendPaste']
     attachImagePaths: ComposerActions['attachImagePaths']
     enqueue: ComposerActions['enqueue']
     hasSelection: boolean

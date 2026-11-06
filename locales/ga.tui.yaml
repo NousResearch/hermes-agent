@@ -116,6 +116,7 @@ canonical.launch.invalidToolProgress: "HERMES_TUI_TOOL_PROGRESS neamhbhailí: {0
 canonical.launch.noTuiPolicy: "ní thacaíonn an gateway le polasaí seisiúin tui; nuashonraigh/atosaigh an gateway"
 canonical.launch.unsupportedOptions: "ní thacaíonn an gateway le roghanna tosaithe TUI: {0}"
 canonical.queue.clipboardImageFailed: "theip ar íomhá na gearrthaisce: {0}"
+canonical.queue.imagesNotRestored: "Níor athcheanglaíodh {0} íomhá ón teachtaireacht curtha in eagar (d’athraigh an dréacht)"
 canonical.queue.discardFailed: "theip ar an scriosadh: {0}"
 canonical.queue.invalidRecord: "Taifead ionchuir ar feitheamh neamhbhailí: {0}"
 canonical.queue.journalCleanupFailed: "ionchur seachadta; theip ar ghlanadh an dialainne: {0}"

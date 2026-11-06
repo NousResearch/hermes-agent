@@ -20,6 +20,7 @@ const staged = (name: string) => ({ mime: 'image/png', name: `${name}.png`, path
 const stored = 'question\n\n[Image attached at: /cache/a.png]\n[Image attached at: /cache/b.png]'
 
 let home = ''
+
 let unmount = () => {}
 
 beforeEach(() => {
@@ -48,6 +49,7 @@ async function editTwoImagePrompt() {
   )
 
   let composer!: ReturnType<typeof useComposerState>
+  const sys = vi.fn()
 
   const gw = {
     isCanonical: true,
@@ -55,7 +57,7 @@ async function editTwoImagePrompt() {
   }
 
   function Harness() {
-    composer = useComposerState({ gw, submitRef: { current: vi.fn() }, sys: vi.fn() } as any)
+    composer = useComposerState({ gw, submitRef: { current: vi.fn() }, sys } as any)
 
     return <Text>composer</Text>
   }
@@ -66,7 +68,7 @@ async function editTwoImagePrompt() {
   unmount = () => instance.unmount()
 
   openRewindPicker({
-    composer: { attachImagePath: (p: string) => composer.actions.attachImagePath(p), attachImagePaths: (p: string[]) => composer.actions.attachImagePaths(p), setInput: (v: any) => composer.actions.setInput(v) },
+    composer: { attachImagePath: (p: string) => composer.actions.attachImagePath(p), attachImagePaths: (p: string[], o?: any) => composer.actions.attachImagePaths(p, o), setInput: (v: any) => composer.actions.setInput(v) },
     gateway: { gw },
     guardedErr: () => {},
     sid: 'A',
@@ -81,7 +83,7 @@ async function editTwoImagePrompt() {
   browse.onEdit(browse.targets[0]!)
   await flush()
 
-  return { composer: () => composer, releases }
+  return { composer: () => composer, releases, sys }
 }
 
 const calls = () => vi.mocked(stageImagePath).mock.calls.map(([path, , destination]) => ({ path, sid: destination.sid }))
@@ -121,8 +123,8 @@ describe('restoring the images of an edited prompt', () => {
     expect(composer().refs.tokensRef.current).toEqual([])
   })
 
-  it('replacing the draft mid-restore stops the chain in the same session too', async () => {
-    const { composer, releases } = await editTwoImagePrompt()
+  it('replacing the draft mid-restore stops the chain in the same session too, and says so', async () => {
+    const { composer, releases, sys } = await editTwoImagePrompt()
 
     composer().actions.setInput('typed over it')
     releases[0]!()
@@ -131,5 +133,27 @@ describe('restoring the images of an edited prompt', () => {
 
     expect(calls()).toHaveLength(1)
     expect(composer().refs.tokensRef.current).toEqual([])
+    expect(sys).toHaveBeenCalledWith(expect.stringContaining('2 images'))
+  })
+
+  it('typing on after Enter keeps the restore going: every image lands after the typed text', async () => {
+    const { composer, releases, sys } = await editTwoImagePrompt()
+
+    composer().actions.setInput(prev => prev + ' more')
+    releases[0]!()
+    await flush()
+    await flush()
+    composer().actions.setInput(prev => prev + '!')
+    releases[1]!()
+    await flush()
+    await flush()
+
+    expect(calls().map(call => call.path)).toEqual(['/cache/a.png', '/cache/b.png'])
+    expect(composer().refs.tokensRef.current.map(token => (token as { path?: string }).path)).toEqual([
+      '/cache/a.png',
+      '/cache/b.png'
+    ])
+    expect(composer().state.input).toMatch(/^question more.*\[\[ Image 1 \]\].*!.*\[\[ Image 2 \]\]/s)
+    expect(sys).not.toHaveBeenCalled()
   })
 })

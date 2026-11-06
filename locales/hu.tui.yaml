@@ -116,6 +116,7 @@ canonical.launch.invalidToolProgress: "érvénytelen HERMES_TUI_TOOL_PROGRESS: {
 canonical.launch.noTuiPolicy: "az átjáró nem támogatja a tui munkamenet-szabályzatot; frissítsd/indítsd újra az átjárót"
 canonical.launch.unsupportedOptions: "az átjáró nem támogatja a TUI indítási beállításokat: {0}"
 canonical.queue.clipboardImageFailed: "vágólapkép sikertelen: {0}"
+canonical.queue.imagesNotRestored: "{0} kép a szerkesztett üzenetből nem lett újra csatolva (a piszkozat megváltozott)"
 canonical.queue.discardFailed: "elvetés sikertelen: {0}"
 canonical.queue.invalidRecord: "Érvénytelen függő bevitel-rekord: {0}"
 canonical.queue.journalCleanupFailed: "bevitel kézbesítve; a napló takarítása sikertelen: {0}"

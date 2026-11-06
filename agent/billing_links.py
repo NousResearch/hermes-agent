@@ -45,7 +45,11 @@ _PROVIDERS: tuple[_Provider, ...] = (
     _Provider("OpenAI", "https://platform.openai.com/settings/organization/billing", ("openai",), ("api.openai.com",)),
     _Provider("Anthropic", "https://console.anthropic.com/settings/billing", ("anthropic",), ("api.anthropic.com",)),
     _Provider("OpenRouter", "https://openrouter.ai/settings/credits", ("openrouter",), ("openrouter.ai",)),
-    _Provider("xAI", "https://console.x.ai/team/default/billing", ("xai", "xai-oauth"), ("api.x.ai",)),
+    # Split deliberately: "xai" is the pay-per-token team API key (console.x.ai team billing);
+    # "xai-oauth" is the personal SuperGrok/Premium+ subscription, billed at grok.com, not
+    # console.x.ai — topping up the team API key does nothing for an exhausted oauth subscription.
+    _Provider("xAI", "https://console.x.ai/team/default/billing", ("xai",), ("api.x.ai",)),
+    _Provider("xAI (Grok subscription)", "https://grok.com/?_s=usage", ("xai-oauth",)),
     _Provider("DeepSeek", "https://platform.deepseek.com/top_up", ("deepseek",), ("api.deepseek.com",)),
     _Provider("Groq", "https://console.groq.com/settings/billing", ("groq",), ("api.groq.com",)),
     _Provider("Mistral", "https://console.mistral.ai/billing", ("mistral",), ("api.mistral.ai",)),

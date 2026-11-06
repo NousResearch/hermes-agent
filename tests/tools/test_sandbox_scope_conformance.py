@@ -8,6 +8,8 @@ by the existing terminal/file/process suites, which run with no hosted scope bou
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from agent import terminal_env_registry as reg
@@ -167,3 +169,105 @@ def test_local_long_lived_process_dies_with_hermes_until_stopped(tmp_path, monke
     assert owned == [pid] and released == []
     assert env.stop_process("cat") is True
     assert released == [pid]
+
+
+def test_every_hosted_operation_receives_the_bound_scope():
+    """A backend whose operations take ``**kwargs`` still receives the scope; one that cannot take it
+    at all is refused when its sandbox is created, never silently handed no authority."""
+    from agent.runtime_scope import bind_state
+    from tools.environments.sandbox_scope import require_hosted_interface
+
+    class KwargsBackend:
+        def execute(self, command, **kwargs):
+            return kwargs
+
+        def get_temp_dir(self, **kwargs):
+            return kwargs
+
+        cleanup = start_process = attach_process = stop_process = execute
+
+    env = ScopedEnvironment(KwargsBackend(), sandbox_identity(A), owner=A)
+    with bind_state(A):
+        assert env.execute("true")["scope"] == A
+        assert env.get_temp_dir()["scope"] == A
+    require_hosted_interface(KwargsBackend(), "kwargs")
+
+    class Blind(KwargsBackend):
+        def execute(self, command, cwd=""):
+            return {}
+
+    with pytest.raises(HostedSandboxRequired, match="execute must accept scope"):
+        require_hosted_interface(Blind(), "blind")
+
+    class Partial:
+        def execute(self, command, *, scope):
+            return {}
+
+    with pytest.raises(HostedSandboxRequired, match="missing cleanup"):
+        require_hosted_interface(Partial(), "partial")
+
+
+def test_a_hosted_provider_without_the_interface_is_refused_at_creation(provider, monkeypatch):
+    class NoScope:
+        def execute(self, command, cwd=""):
+            raise AssertionError("an environment without the interface was used")
+
+    monkeypatch.setattr(provider, "create_environment", lambda **kw: NoScope())
+    from agent.runtime_scope import bind_state
+    with bind_state(A):
+        result = conformance.call_tool("terminal", {"command": "id"}, task_id="t")
+    assert "hosted operation interface" in json.dumps(result)
+
+
+def test_running_background_work_keeps_its_sandbox_alive(provider):
+    conformance.check_idle_sandbox_kept_while_working(provider, A)
+
+
+def test_an_idle_sandbox_is_suspended_under_its_owners_scope(provider):
+    conformance.check_idle_sandbox_suspended_not_destroyed(provider, A)
+
+
+def test_cleanup_stops_every_long_lived_process(tmp_path):
+    from tools.environments.local import LocalEnvironment
+
+    env = LocalEnvironment(cwd=str(tmp_path), timeout=10)
+    env.start_process("one", ["cat"])
+    env.start_process("two", ["cat"])
+    procs = list(env._long_lived().values())
+    env.cleanup()
+    assert all(proc.poll() is not None for proc in procs), "cleanup left a long-lived child alive"
+    assert all(proc.stdin.closed and proc.stdout.closed for proc in procs)
+    assert env._long_lived() == {} and env.attach_process("one") is None
+
+
+@pytest.mark.platforms("posix")
+def test_stopping_an_exited_leader_still_stops_its_descendants(tmp_path):
+    """The leader exits but leaves a child in its group: stop_process still stops that child and
+    releases the group only once it is empty."""
+    import os
+    import signal
+    from tests.waiting import wait_until
+    from tools.environments.local import LocalEnvironment
+
+    env = LocalEnvironment(cwd=str(tmp_path), timeout=10)
+    pid_file = tmp_path / "child.pid"
+    env.start_process("leader", ["bash", "-c", f"sleep 600 & echo $! > {pid_file}; exit 0"])
+    leader = env._long_lived()["leader"]
+    wait_until(lambda: leader.poll() is not None and pid_file.exists() and pid_file.read_text().strip())
+    child = int(pid_file.read_text())
+    try:
+        assert env.stop_process("leader") is False  # the leader itself was no longer running
+        wait_until(lambda: not _alive(child), timeout=10)
+    finally:
+        if _alive(child):
+            os.kill(child, signal.SIGKILL)
+
+
+def _alive(pid: int) -> bool:
+    import os
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    with open(f"/proc/{pid}/stat") as fh:
+        return fh.read().split(") ", 1)[1][0] != "Z"

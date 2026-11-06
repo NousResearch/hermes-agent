@@ -291,113 +291,25 @@ jobs:
     with:
       commit: ${{ inputs.commit }}
 
-  history-check:
-    name: Deny unrelated histories
+  # Every cheap repository guard (infographics, profile archives, case collisions, large blobs,
+  # lazy_deps imports, stale icons, unrelated histories, contributor attribution, uv.lock,
+  # prompt-surface and package-lock diffs, supply-chain scan, Docker lint) as steps of ONE job.
+  # Each used to be its own job on the same runner: a full billed minute for 0-13s of work.
+  # Each step keeps its own lane gate, so the detect outputs it needs are passed down.
+  repo-guards:
+    name: Repository guards
     needs: detect
-    if: needs.detect.outputs.event_name == 'pull_request'
-    uses: ./.github/workflows/history-check.yml
-    with:
-      commit: ${{ inputs.commit }}
-
-  contributor-check:
-    name: Check contributors
-    needs: detect
-    if: needs.detect.outputs.python == 'true' || needs.detect.outputs.catalog == 'true'
-    uses: ./.github/workflows/contributor-check.yml
-    with:
-      commit: ${{ inputs.commit }}
-
-  uv-lockfile:
-    name: Check uv.lock
-    needs: detect
-    # Gated: `uv lock --check` re-resolves the whole dependency graph against
-    # PyPI, so on every PR it spent a network round-trip — and, on a registry
-    # blip, a blocking red X — for diffs that cannot desync the lockfile
-    # (docs, frontend, prose). Only pyproject.toml / uv.lock can. A
-    # `.github/` change still forces it on via the classifier's fail-open.
-    if: needs.detect.outputs.uv_lock == 'true'
-    uses: ./.github/workflows/uv-lockfile-check.yml
-    with:
-      commit: ${{ inputs.commit }}
-
-  infographic-check:
-    name: Check no committed infographics
-    needs: detect
-    uses: ./.github/workflows/infographic-check.yml
-    with:
-      commit: ${{ inputs.commit }}
-
-  profile-artifact-check:
-    name: Profile artifact check
-    needs: detect
-    uses: ./.github/workflows/profile-artifact-check.yml
-    with:
-      commit: ${{ inputs.commit }}
-
-  icons-freshness-check:
-    name: Icon assets freshness
-    needs: detect
-    uses: ./.github/workflows/icons-freshness-check.yml
-    with:
-      commit: ${{ inputs.commit }}
-
-  case-collision-check:
-    name: Check no case-colliding filenames
-    needs: detect
-    uses: ./.github/workflows/case-collision-check.yml
-    with:
-      commit: ${{ inputs.commit }}
-
-  blob-size-check:
-    name: Check no large binaries
-    needs: detect
-    uses: ./.github/workflows/blob-size-check.yml
-    with:
-      commit: ${{ inputs.commit }}
-
-  lazy-deps-guard:
-    name: No production imports of the tools.lazy_deps stub
-    needs: detect
-    uses: ./.github/workflows/lazy-deps-guard.yml
-    with:
-      commit: ${{ inputs.commit }}
-
-  lockfile-diff:
-    name: package-lock.json diff
-    needs: detect
-    if: needs.detect.outputs.event_name == 'pull_request' && needs.detect.outputs.npm_lock == 'true'
-    uses: ./.github/workflows/lockfile-diff.yml
-    with:
-      commit: ${{ inputs.commit }}
-
-  # Advisory summary of the committed prompt-surface snapshot's diff. A stdlib-only job over two
-  # committed directories: cheap enough to run on every Python PR, and silent when nothing moved.
-  prompt-surface-diff:
-    name: Prompt surface diff
-    needs: detect
-    if: needs.detect.outputs.event_name == 'pull_request' && needs.detect.outputs.python == 'true'
-    uses: ./.github/workflows/prompt-surface-diff.yml
-    with:
-      commit: ${{ inputs.commit }}
-
-  docker-lint:
-    name: Lint Docker scripts
-    needs: detect
-    if: needs.detect.outputs.docker_meta == 'true'
-    uses: ./.github/workflows/docker-lint.yml
-    with:
-      commit: ${{ inputs.commit }}
-
-  supply-chain:
-    name: Supply-chain scan
-    needs: detect
-    if: needs.detect.outputs.event_name == 'pull_request' && (needs.detect.outputs.scan == 'true' || needs.detect.outputs.deps == 'true')
-    uses: ./.github/workflows/supply-chain-audit.yml
+    uses: ./.github/workflows/repo-guards.yml
     with:
       commit: ${{ inputs.commit }}
       event_name: ${{ needs.detect.outputs.event_name }}
+      python: ${{ needs.detect.outputs.python == 'true' }}
+      catalog: ${{ needs.detect.outputs.catalog == 'true' }}
       scan: ${{ needs.detect.outputs.scan == 'true' }}
       deps: ${{ needs.detect.outputs.deps == 'true' }}
+      npm_lock: ${{ needs.detect.outputs.npm_lock == 'true' }}
+      uv_lock: ${{ needs.detect.outputs.uv_lock == 'true' }}
+      docker_meta: ${{ needs.detect.outputs.docker_meta == 'true' }}
 
   # ─────────────────────────────────────────────────────────────────────
   # Gate: runs after everything. ``if: always()`` ensures it reports a
@@ -406,9 +318,9 @@ jobs:
   #   Non-release (PR/push): failure fails. Update/E2E consumers selected
   #   by detect.outputs must succeed; only unselected consumers may skip.
   #   Release (inputs.release): strict — every required job must be
-  #   `success`. A skipped required lane fails the gate; only the PR-only
-  #   jobs (history-check, lockfile-diff, prompt-surface-diff, supply-chain) and
-  #   the deferred Desktop E2E (e2e-desktop) may skip. The OSV scan's
+  #   `success`. A skipped required lane fails the gate; only the deferred
+  #   Desktop E2E (e2e-desktop) may skip. The PR-only guards are steps of
+  #   repo-guards, which itself runs on every event. The OSV scan's
   #   findings are advisory, but its execution is required.
   #
   # Branch protection should require ONLY this check.
@@ -440,19 +352,7 @@ jobs:
       - e2e-desktop-core
       - e2e-desktop-update
       - docs-site
-      - history-check
-      - contributor-check
-      - uv-lockfile
-      - infographic-check
-      - case-collision-check
-      - blob-size-check
-      - lazy-deps-guard
-      - lockfile-diff
-      - prompt-surface-diff
-      - docker-lint
-      - profile-artifact-check
-      - icons-freshness-check
-      - supply-chain
+      - repo-guards
       # OSV runs weekly against main (osv-scanner.yml schedule), not per PR:
       # every PR was reporting the same repo-wide baseline of pinned-dep CVEs
       # in its review comment, and the SARIF upload tripped GitHub's

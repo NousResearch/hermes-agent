@@ -548,8 +548,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       const revision = composerRevision.current
       const current = inputRef.current
 
-      // Returned so a caller attaching several images can wait for each: an attach that lands after
-      // another one changed the composer is discarded as stale.
+      // An attach that lands after something else changed the composer is discarded as stale.
       return attach(current, current.length).then(next => {
         if (next && isCurrentDestination(destination) && revision === composerRevision.current) {
           setInput(next.value)
@@ -564,35 +563,57 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
     [appendAttachment, pasteClipboardImage]
   )
 
-  const attachImagePath = useCallback(
-    (path: string) =>
-      appendAttachment(async (value, cursor) => {
-        const destination = captureDestination()
-        const revision = composerRevision.current
-        const { sid } = destination
+  /**
+   * Attach images by path, one after another, each landing at the end of the draft. The destination
+   * and composer revision are captured ONCE: every attach targets that destination, and the rest of
+   * the list is dropped as soon as the session changes or anything but these attaches edits the
+   * composer (cleared, submitted, replaced, typed into). Sequential because a second attach started
+   * before the first lands would see the first one's edit as a foreign change.
+   */
+  const attachImagePaths = useCallback(
+    async (paths: readonly string[]) => {
+      const destination = captureDestination()
+      let revision = composerRevision.current
+      const current = () => isCurrentDestination(destination) && revision === composerRevision.current
 
-        if (!sid || !path.trim()) {
-          return null
+      for (const path of paths) {
+        if (!destination.sid || !path.trim() || !current()) {
+          return
         }
 
-        return resolveAttachment<ImageAttachResponse & { path?: string; mime?: string }>(
+        const value = inputRef.current
+
+        const next = await resolveAttachment<ImageAttachResponse & { path?: string; mime?: string }>(
           destination,
           revision,
           (gw.isCanonical
             ? stageImagePath(path, gw, destination)
-            : gw.request<ImageAttachResponse & { path?: string }>('image.attach', { path, session_id: sid })
+            : gw.request<ImageAttachResponse & { path?: string }>('image.attach', {
+                path,
+                session_id: destination.sid
+              })
           ).catch((e: Error) => {
-            if (isCurrentDestination(destination) && revision === composerRevision.current) {
+            if (current()) {
               sys(`error: ${e.message}`)
             }
 
             return null
           }),
-          attached => (attached?.name ? attachImageToken(attached, value, cursor) : null)
+          attached => (attached?.name ? attachImageToken(attached, value, value.length) : null)
         )
-      }),
-    [appendAttachment, attachImageToken, gw, resolveAttachment, sys]
+
+        if (!next || !current()) {
+          return
+        }
+
+        setInput(next.value)
+        revision = composerRevision.current
+      }
+    },
+    [attachImageToken, gw, resolveAttachment, setInput, sys]
   )
+
+  const attachImagePath = useCallback((path: string) => attachImagePaths([path]), [attachImagePaths])
 
   const openEditor = useCallback(async () => {
     const destination = captureDestination()
@@ -638,6 +659,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
     () => ({
       attachClipboardImage,
       attachImagePath,
+      attachImagePaths,
       clearIn,
       collapsePaste,
       stage,
@@ -662,6 +684,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
     [
       attachClipboardImage,
       attachImagePath,
+      attachImagePaths,
       clearIn,
       stage,
       dequeue,

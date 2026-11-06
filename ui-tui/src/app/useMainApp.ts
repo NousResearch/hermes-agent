@@ -1192,6 +1192,7 @@ export function useMainApp(gw: GatewayClient) {
         composer: {
           attachClipboardImage: composerActions.attachClipboardImage,
           attachImagePath: composerActions.attachImagePath,
+          attachImagePaths: composerActions.attachImagePaths,
           enqueue: composerActions.enqueue,
           hasSelection,
           openEditor: composerActions.openEditor,

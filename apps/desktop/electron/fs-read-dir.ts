@@ -47,16 +47,39 @@ function shouldStatDirent(dirent) {
 async function entryForDirent(dirent, resolved, fsImpl) {
   const fullPath = path.join(resolved, dirent.name)
   let isDirectory = direntIsDirectory(dirent)
+  let mtimeMs
+  let size
 
-  if (!isDirectory && shouldStatDirent(dirent)) {
-    try {
-      isDirectory = (await fsImpl.promises.stat(fullPath)).isDirectory()
-    } catch {
+  // Always stat when possible: the Files panel sorts by mtime/size, and
+  // symlink targets still need a real isDirectory. Dirent flags alone leave
+  // plain files without dates (they used to skip stat).
+  try {
+    const st = await fsImpl.promises.stat(fullPath)
+    isDirectory = st.isDirectory()
+
+    if (typeof st.mtimeMs === 'number' && Number.isFinite(st.mtimeMs)) {
+      mtimeMs = st.mtimeMs
+    }
+
+    if (typeof st.size === 'number' && Number.isFinite(st.size)) {
+      size = st.size
+    }
+  } catch {
+    if (!isDirectory && shouldStatDirent(dirent)) {
       isDirectory = false
     }
   }
 
-  return { name: dirent.name, path: fullPath, isDirectory }
+  /** @type {{ name: string, path: string, isDirectory: boolean, mtimeMs?: number, size?: number }} */
+  const entry = {
+    name: dirent.name,
+    path: fullPath,
+    isDirectory,
+    ...(mtimeMs != null ? { mtimeMs } : {}),
+    ...(size != null ? { size } : {})
+  }
+
+  return entry
 }
 
 async function mapWithStatConcurrency(items, mapper) {
@@ -72,7 +95,7 @@ async function mapWithStatConcurrency(items, mapper) {
   }
 
   const workerCount = Math.min(FS_READDIR_STAT_CONCURRENCY, items.length)
-  const workers = Array.from({ length: workerCount } as any, () => runWorker())
+  const workers = Array.from({ length: workerCount }, () => runWorker())
   await Promise.all(workers)
 
   return results

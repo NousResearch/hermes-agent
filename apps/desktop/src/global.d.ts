@@ -1843,6 +1843,10 @@ export interface HermesReadDirEntry {
   name: string
   path: string
   isDirectory: boolean
+  /** Epoch ms; optional when a backend cannot stat (broken link, remote lag). */
+  mtimeMs?: number
+  /** Byte size from stat; directories may still report a platform size. */
+  size?: number
 }
 
 export interface HermesReadDirResult {

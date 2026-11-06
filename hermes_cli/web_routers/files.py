@@ -1000,11 +1000,21 @@ def _fs_list_entries(target: Path) -> list[dict[str, Any]]:
         for entry in scan:
             if entry.name in _FS_READDIR_HIDDEN or _is_sensitive_path(Path(entry.path)):
                 continue
-            entries.append({
+            item: dict[str, Any] = {
                 "name": entry.name,
                 "path": str(target / entry.name),
                 "isDirectory": entry.is_dir(follow_symlinks=False),
-            })
+            }
+            # mtime/size feed the Desktop Files panel sort (newest-first on
+            # renders etc.). A broken link still lists without metadata.
+            try:
+                st = entry.stat(follow_symlinks=True)
+                item["isDirectory"] = stat.S_ISDIR(st.st_mode)
+                item["mtimeMs"] = int(st.st_mtime * 1000)
+                item["size"] = int(st.st_size)
+            except OSError:
+                pass
+            entries.append(item)
     entries.sort(key=lambda item: (not item["isDirectory"], item["name"].lower(), item["name"]))
     return entries
 

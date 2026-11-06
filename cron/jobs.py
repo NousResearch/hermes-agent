@@ -1751,6 +1751,15 @@ def _normalize_catch_up(value: Any) -> Optional[bool]:
     raise ValueError("catch_up must be true, false, or null (use the default).")
 
 
+def _normalize_wrap_response(value: Any) -> Optional[bool]:
+    """``wrap_response``: True wraps delivered output, False delivers it raw, None inherits the
+    global ``cron.wrap_response``. Strict like ``catch_up``: ``bool("false")`` is True, so a string
+    must never be coerced into an override."""
+    if value is None or isinstance(value, bool):
+        return value
+    raise ValueError("wrap_response must be true, false, or null (inherit cron.wrap_response).")
+
+
 _CREATE_FIELD_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
     "model": _normalize_job_optional_text,
     "provider": _normalize_job_optional_text,
@@ -1767,7 +1776,7 @@ _CREATE_FIELD_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
     "timezone": jobs_time.normalize_timezone,
     "grace_minutes": jobs_time.normalize_grace_minutes,
     "catch_up": _normalize_catch_up,
-    "wrap_response": lambda v: bool(v) if v is not None else None,  # None = inherit global
+    "wrap_response": _normalize_wrap_response,
 }
 _UPDATE_FIELD_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
     # [] is an explicit zero-tool allowlist and must survive the update path as [] too (#82010).
@@ -1782,7 +1791,7 @@ _UPDATE_FIELD_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
     "timezone": jobs_time.normalize_timezone,
     "grace_minutes": jobs_time.normalize_grace_minutes,
     "catch_up": _normalize_catch_up,
-    "wrap_response": lambda v: bool(v) if v is not None else None,  # None = inherit global
+    "wrap_response": _normalize_wrap_response,
 }
 
 

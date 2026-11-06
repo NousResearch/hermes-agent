@@ -30,6 +30,7 @@ carries ``bearer`` / ``x_api_key`` so a responder can branch on the credential.
 
 from __future__ import annotations
 
+import gzip
 import json
 import threading
 import time
@@ -415,8 +416,9 @@ def _handler_for(server: AnthropicMessagesServer) -> type[BaseHTTPRequestHandler
             if not self.path.split("?", 1)[0].endswith("/v1/messages"):
                 self._json(404, error_envelope(ApiError(404, "not_found_error", f"no route {self.path}")))
                 return
-            body = json.loads(raw or b"{}")
             headers = {k.lower(): v for k, v in self.headers.items()}
+            decoded = gzip.decompress(raw) if headers.get("content-encoding", "").lower() == "gzip" else raw
+            body = json.loads(decoded or b"{}")
             record = {
                 "path": self.path, "headers": headers, "body": body, "t": time.monotonic(),
                 "bearer": headers.get("authorization", "").removeprefix("Bearer ").strip(),

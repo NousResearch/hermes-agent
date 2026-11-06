@@ -542,6 +542,19 @@ if echo "$FIN_RESPONSE" | "$JQ_BIN" -e '.error' >/dev/null 2>&1; then
   die "finalize failed: $err"
 fi
 
+# Only a 2xx answer that names the live version means the Site is live. A
+# proxy between us and the server can answer a non-2xx JSON body with no
+# error field (a 502 {"message":"Bad Gateway"}), and a broken one could
+# answer 200 {}; neither is a finalize result. Until 1.35.1 both fell through
+# to the success output below with an empty live version.
+if [[ "$fin_http_code" != 2* ]]; then
+  fin_msg=$(echo "$FIN_RESPONSE" | "$JQ_BIN" -r '.message // .error // empty')
+  die "finalize failed (HTTP $fin_http_code)${fin_msg:+: $fin_msg}"
+fi
+if ! echo "$FIN_RESPONSE" | "$JQ_BIN" -e '.currentVersionId | strings | length > 0' >/dev/null 2>&1; then
+  die "finalize failed: the response did not name the live version (HTTP $fin_http_code): $(echo "$FIN_RESPONSE" | tr -d '\r' | head -c 200)"
+fi
+
 # Non-fatal finalize warnings (an invalid .herenow/proxy.json, a .wasm
 # module published without crossOriginIsolation, ...). One line each, in
 # the publish_result.* channel agents already read; the Site is live.

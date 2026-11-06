@@ -9,8 +9,9 @@ create and finalize calls; requires an API key; incompatible with
 --from-drive). Since 1.35.0 also: the base-URL allowlist (https://api.here.now,
 the same API through Cloudflare, takes credentials without the override flag),
 the finalize retry (an HTML 524 or a 409 finalize_in_flight repeats the
-idempotent finalize call instead of being misread as success), and the
---claim-token value being saved to the state file.
+idempotent finalize call instead of being misread as success), the
+--claim-token value being saved to the state file, and (1.35.1) the rule that
+only a 2xx finalize answer naming currentVersionId reports a Site live.
 """
 
 from __future__ import annotations
@@ -147,6 +148,8 @@ if [[ "$url" == */finalize ]]; then
     "200 json") printf '%s' '{"success":true,"slug":"test-slug-a1b2","siteUrl":"https://test-slug-a1b2.here.now/","currentVersionId":"ver-1"}' ;;
     "409 json") printf '%s' '{"error":"A finalize is already in flight for this version.","code":"finalize_in_flight","retry_after":0}' ;;
     "524 html") printf '%s' '<!DOCTYPE html><html><body>error code: 524</body></html>' ;;
+    "502 json") printf '%s' '{"message":"Bad Gateway"}' ;;
+    "200 empty") printf '%s' '{}' ;;
     *) printf '%s' '{}' ;;
   esac
   if [[ "$wants_http_code" -eq 1 ]]; then printf '\\n%s' "$status"; fi
@@ -448,6 +451,46 @@ def test_finalize_repeats_while_in_flight_then_reads_the_real_answer(harness: Pu
     assert harness.finalize_calls() == 3
     assert result.stderr.count("still running on the server") == 2
     assert "publish_result.live_version_id=ver-1" in result.stderr
+
+
+@requires_shell_deps
+def test_finalize_json_502_without_error_field_is_not_success(harness: PublishHarness):
+    # Review on #32889: a proxy answering 502 {"message":"Bad Gateway"} has no
+    # retry_after (so it is not retried) and no error field (so it was not an
+    # error either), and until 1.35.1 fell through to the success output. Only
+    # a 2xx answer that names the live version may report a Site live.
+    harness.script_finalize("502 json")
+    result = harness.run(str(harness.site))
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert "finalize failed (HTTP 502): Bad Gateway" in result.stderr
+    assert "publish_result.site_url" not in result.stderr
+    assert harness.finalize_calls() == 1
+    assert not (harness.workdir / ".herenow" / "state.json").exists(), "no state may be written"
+
+
+@requires_shell_deps
+def test_finalize_200_without_live_version_is_not_success(harness: PublishHarness):
+    # The same invariant from the other side: a 2xx body that does not name
+    # currentVersionId is not a finalize result either. Every real success
+    # (first finalize, unchanged:true, replay) carries it.
+    harness.script_finalize("200 empty")
+    result = harness.run(str(harness.site))
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert "did not name the live version (HTTP 200)" in result.stderr
+    assert not (harness.workdir / ".herenow" / "state.json").exists()
+
+
+@requires_shell_deps
+def test_finalize_success_is_reported_only_from_the_real_answer(harness: PublishHarness):
+    # Negative control for the two tests above: the ordinary 200 with
+    # currentVersionId is live, prints the URL, and writes state.
+    result = harness.run(str(harness.site))
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "https://test-slug-a1b2.here.now/"
+    assert "publish_result.live_version_id=ver-1" in result.stderr
+    assert harness.read_state()["publishes"]["test-slug-a1b2"]["versionId"] == "ver-1"
 
 
 @requires_shell_deps

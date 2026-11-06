@@ -107,20 +107,21 @@ def _clean_revisions(raw: dict) -> dict:
 
 
 def _latest_message_preview(db, session_id):
-    """≤80-char excerpt of the NEWEST active user/assistant message, or "" (roster semantics).
+    """``(≤80-char excerpt, role)`` of the newest active user/assistant message.
     Same query shape as ``SessionDB.latest_message_row_id``; keep them in step."""
     try:
         with db._lock:
             row = db._conn.execute(
-                "SELECT content FROM messages"
+                "SELECT content, role FROM messages"
                 " WHERE session_id = ? AND role IN ('user', 'assistant')"
                 " AND active = 1 AND content IS NOT NULL AND TRIM(content) != ''"
                 " ORDER BY id DESC LIMIT 1",
                 (session_id,)).fetchone()
     except Exception:
-        return ""
+        return "", None
     text = " ".join(str(row[0] or "").split()).strip() if row else ""
-    return text[:80] + "..." if len(text) > 80 else text
+    preview = text[:80] + "..." if len(text) > 80 else text
+    return preview, str(row[1]) if row else None
 
 
 def _resurrect_recoverable_canonical(db, profile_path, session_id):
@@ -186,9 +187,10 @@ def _canonical_session_row(db, profile_path):
         tip = _try(lambda: db.get_compression_tip(session_id), None) or session_id
         tip_row = db.get_session(tip) or row
         started = row.get("started_at") or 0
+        preview, preview_role = _latest_message_preview(db, tip)
         return {
             "id": session_id, "resolved_id": tip, "root_title": row.get("title") or "",
-            "title": tip_row.get("title") or "", "preview": _latest_message_preview(db, tip),
+            "title": tip_row.get("title") or "", "preview": preview, "preview_role": preview_role,
             "started_at": tip_row.get("started_at") or started,
             "last_active": tip_row.get("last_activity_at") or tip_row.get("started_at") or started,
             "message_count": tip_row.get("message_count") or 0, **_live_count_field(db, tip)}

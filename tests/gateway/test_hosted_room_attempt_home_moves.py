@@ -157,16 +157,28 @@ def _gone(homes, home):
     homes.owners[home].close()  # no daemon holds its lock any more
 
 
-def test_a_retry_after_non_admission_records_the_home_that_took_it(homes):
-    # The driver requeues a proven non-admission under the same generation (requeue_not_admitted_task).
+def test_a_resubmit_after_non_admission_is_a_new_attempt_at_the_new_home(homes):
+    # The real lifecycle: a proven non-admission requeues the attempt (requeue_not_admitted_task),
+    # and its next start_task is a new generation, so the home that takes it gets its own record.
     homes.submit(homes.a)
     homes.finish(homes.a, homes.claim(homes.a))  # home A doesn't hold this attempt
-    homes.submit(homes.b)
-    homes.defer(homes.b)  # asking home A here would answer "nothing running" and cancel it
+    db, clock = homes.source.db.db_path, homes.service.runtime.clock
+    first = homes.task
+    lease = tasks.acquire_lease(db, room_id='room', gateway_id=homes.source.gateway, authority_epoch=1,
+                                process_generation='test', ttl_seconds=1000, clock=clock)
+    tasks.requeue_not_admitted_task(db, tasks.TaskAttempt(
+        homes.source.identity, lease, first['execution_generation'], first['cancel_generation']), clock=clock)
+    tasks.start_task(db, homes.source.identity, lease, expected_cancel_generation=first['cancel_generation'],
+                     clock=clock)
+    assert homes.task['execution_generation'] == first['execution_generation'] + 1
+    homes.submit(homes.b)  # the profile moved while it was queued
+    homes.claim(homes.b)  # home B runs it
+    homes.defer(homes.b)
     homes.calls.clear()
     homes.service.stop_room('room', cancel_id='again')
     asked = {call[0] for call in homes.calls}
     assert homes.b in asked and homes.a not in asked, asked
+    assert (homes.b, 'interrupt') in {call[:2] for call in homes.calls}  # the home running it stops it
 
 
 def test_a_removed_mapping_settles_on_the_admitting_home_alone(homes):

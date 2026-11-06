@@ -79,15 +79,15 @@ def _attempt_homes(conn, room_id, member_id, statuses=_LIVE_ATTEMPT):
 
 
 def record_attempt_home(db, room_id, member_id, task_id, generation, home):
-    """Remember the home that took one attempt, and drop the records of this member's attempts that
-    are over, so the store holds only its live ones. The latest attested submit wins: the driver
-    resubmits a generation only after that home proved it never admitted it."""
+    """Remember the home that admitted one attempt (the first one wins), and drop the records of
+    this member's attempts that are over, so the store holds only its live ones. A resubmit after
+    proven non-admission is a new generation (``start_task``), so it never reuses this record."""
     key = _HOMES + json.dumps([room_id, member_id, task_id, int(generation)], separators=(',', ':'))
     def write(conn):
         for old, (_home, live) in _attempt_homes(conn, room_id, member_id).items():
             if not live and old != key:
                 conn.execute('DELETE FROM state_meta WHERE key=?', (old,))
-        conn.execute('INSERT OR REPLACE INTO state_meta(key,value) VALUES(?,?)', (key, str(home)))
+        conn.execute('INSERT OR IGNORE INTO state_meta(key,value) VALUES(?,?)', (key, str(home)))
     db._execute_write(write)
 
 

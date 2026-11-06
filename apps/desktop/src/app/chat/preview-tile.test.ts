@@ -261,6 +261,50 @@ describe('preview tiles mirror the visible session tabs', () => {
     expect(tree.treePanesWithPrefix('preview-tile:')).toEqual([`preview-tile:${ids[0]}`])
   })
 
+  // Bots are profiles: switching to another bot's chat swaps the rail onto that
+  // profile's bucket. The page of the chat left behind is still a hidden
+  // session's live page and must survive the same way, or every return to a
+  // bot reloads its preview from scratch.
+  it("keeps a live page mounted when the chat on screen belongs to another profile", async () => {
+    const { preview, session, tree } = await setup()
+    const { registry } = await import('@/contrib/registry')
+    const contribution = (id: string) => registry.getArea('panes').find(pane => pane.id === `preview-tile:${id}`)
+
+    session.$selectedStoredSessionId.set('sess-a')
+    preview.openPreview(browserTarget('http://localhost:4321'))
+    const aTab = preview.$previewTabs.get()[0]!.id
+    const aBody = contribution(aTab)
+
+    expect(aBody).toBeDefined()
+
+    preview.setPreviewScope('bot-b')
+    session.$selectedStoredSessionId.set('sess-b')
+    preview.openPreview(browserTarget('https://b.example'))
+    expect(tree.treePanesWithPrefix('preview-tile:')).not.toContain(`preview-tile:${aTab}`)
+    expect(contribution(aTab)).toBe(aBody)
+
+    preview.setPreviewScope('default')
+    session.$selectedStoredSessionId.set('sess-a')
+    expect(tree.treePanesWithPrefix('preview-tile:')).toEqual([`preview-tile:${aTab}`])
+    expect(contribution(aTab)).toBe(aBody)
+  })
+
+  it("still lets go of a closed tab whose profile is out of view", async () => {
+    const { preview, session } = await setup()
+    const { registry } = await import('@/contrib/registry')
+    const contribution = (id: string) => registry.getArea('panes').find(pane => pane.id === `preview-tile:${id}`)
+
+    session.$selectedStoredSessionId.set('sess-a')
+    preview.openPreview(browserTarget('http://localhost:4321'))
+    const aTab = preview.$previewTabs.get()[0]!.id
+
+    preview.closeRightRailTab(aTab)
+    preview.setPreviewScope('bot-b')
+    session.$selectedStoredSessionId.set('sess-b')
+    preview.openPreview(browserTarget('https://b.example'))
+    expect(contribution(aTab)).toBeUndefined()
+  })
+
   it('does not create panes for another session tabs', async () => {
     const { preview, session, tree } = await setup()
 

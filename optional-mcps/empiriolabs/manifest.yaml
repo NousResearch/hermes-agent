@@ -1,0 +1,69 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: empiriolabs
+description: >-
+  Generate images, video, speech, music, and 3D, transcribe audio, and run
+  AI models on EmpirioLabs AI, plus GPU Cloud and hosted agents.
+source: https://docs.empiriolabs.ai/mcp
+
+# Official vendor-hosted remote MCP (URL-only: Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 with PKCE: RFC 9728
+# protected-resource metadata, then authorization server metadata that
+# accepts a Client ID Metadata Document (Hermes's own is used as-is) or
+# Dynamic Client Registration. Hermes's MCP client + mcp_oauth_manager
+# handle discovery, PKCE, token exchange, and refresh.
+# Verified live 2026-10-19: `hermes mcp login empiriolabs` -> consent ->
+# token exchange -> 82 tools; `hermes mcp test empiriolabs` passes.
+transport:
+  type: http
+  url: https://mcp.empiriolabs.ai/mcp
+
+auth:
+  type: oauth
+
+# Tool selection at install time:
+# The server builds its tools from the public API reference (82 today, more
+# as endpoints ship), so this entry uses exclude mode: every tool stays
+# enabled, including ones added later, except the three web search tools,
+# which would duplicate Hermes's native web_search backend. Re-enable them
+# by deleting their names from mcp_servers.empiriolabs.tools.exclude.
+tools:
+  default_excluded:
+    - web_search
+    - web_answer
+    - web_research
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - empiriolabs
+    - empirio labs
+  hosts:
+    - empiriolabs.ai
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with
+  EmpirioLabs AI (or run `hermes mcp login empiriolabs`). Approve access,
+  then restart the session so tools load.
+
+  Tools that generate media, run models, or create GPU instances and
+  hosted agents are billed to your EmpirioLabs AI account at the listed
+  prices. Model catalog lookups are free.
+
+  Prefer a narrower tool set? These URLs use the same sign-in:
+    https://mcp.empiriolabs.ai/mcp/inference  (models, text, search)
+    https://mcp.empiriolabs.ai/mcp/media      (images, video, audio, 3D)
+    https://mcp.empiriolabs.ai/mcp/cloud      (GPU Cloud, hosted agents)
+  Add one with `hermes mcp add <name> --url <url> --auth oauth`.
+
+  Headless / CI alternative: create an API key at
+  https://platform.empiriolabs.ai/dashboard/api-keys and configure the
+  server with a bearer header in ~/.hermes/config.yaml:
+
+    mcp_servers:
+      empiriolabs:
+        url: "https://mcp.empiriolabs.ai/mcp"
+        headers:
+          Authorization: "Bearer ${EMPIRIOLABS_API_KEY}"

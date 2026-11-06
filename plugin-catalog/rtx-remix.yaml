@@ -1,0 +1,24 @@
+name: rtx-remix
+repo: https://github.com/NousResearch/hermes-nvidia
+sha: 9c9f8a8b000fa57ff9afb61039b0ae2fb870ee2c
+subdir: rtx-remix
+description: "NVIDIA RTX Remix Toolkit control through the Toolkit's local MCP server: open and close mod
+  projects, read and edit the layer stack, find prims, textures and model instances, replace textures and
+  references, and ingest model and material assets. Needs an NVIDIA GPU; the install is refused on a machine
+  without one. The Toolkit is a package you unpack anywhere, so Hermes does not check that it is installed;
+  the tools appear while the Toolkit, windowed or through its headless launcher, serves MCP on
+  127.0.0.1:8012. Disclosure: the tools change the open Remix project and write layer and asset files on
+  this machine; nothing leaves loopback."
+title: RTX Remix
+maintainer: NousResearch
+tier: official
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/NousResearch/hermes-nvidia/tree/main/rtx-remix
+version: "0.1.0"
+platforms: [windows]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

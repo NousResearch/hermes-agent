@@ -2,6 +2,7 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
+import { introRu } from './intro-ru'
 import { ruBoot } from './ru_boot'
 import { ruCatalog, ruSkillDeepLink } from './ru_catalog'
 import { ruClarify } from './ru_clarify'
@@ -321,6 +322,7 @@ export const ruOverrides = {
       }
     }
   },
+  intro: introRu,
   connectors: ruConnectors.connectors,
   sharedMetrics: ruSharedMetrics,
   appTour: {

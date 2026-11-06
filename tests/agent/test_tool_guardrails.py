@@ -191,6 +191,150 @@ def test_mutating_or_unknown_tools_are_not_blocked_for_repeated_identical_succes
         assert controller.after_call("custom_tool", {"x": 1}, "ok", failed=False).action == "allow"
 
 
+def test_tool_repetition_defaults_and_nested_config():
+    defaults = ToolCallGuardrailConfig()
+    assert defaults.tool_repetition_warn_after == 5
+    assert defaults.tool_repetition_block_after == 8
+
+    cfg = ToolCallGuardrailConfig.from_mapping(
+        {
+            "warn_after": {"tool_repetition": 3},
+            "hard_stop_after": {"tool_repetition": 4},
+        }
+    )
+    assert cfg.tool_repetition_warn_after == 3
+    assert cfg.tool_repetition_block_after == 4
+    # Omitted keys keep the other axes' defaults.
+    assert cfg.no_progress_warn_after == 2
+    assert cfg.exact_failure_block_after == 5
+
+
+def test_tool_repetition_warns_without_blocking_by_default():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(tool_repetition_warn_after=2, tool_repetition_block_after=2)
+    )
+    args = {"url": "https://example.test/missing"}
+    result = '{"success": true, "status": 404}'
+
+    assert controller.before_call("browser_navigate", args).action == "allow"
+    assert controller.after_call("browser_navigate", args, result, failed=False).action == "allow"
+    warn = controller.after_call("browser_navigate", args, result, failed=False)
+    assert warn.action == "warn"
+    assert warn.code == "tool_repetition_warning"
+    assert warn.allows_execution is True
+    # Hard stops are off, so the next identical call still runs.
+    assert controller.before_call("browser_navigate", args).action == "allow"
+    assert controller.halt_decision is None
+
+
+def test_tool_repetition_hard_stop_blocks_the_next_identical_call():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            tool_repetition_warn_after=2,
+            tool_repetition_block_after=2,
+        )
+    )
+    args = {"url": "https://example.test/missing"}
+    result = '{"success": true, "status": 404}'
+
+    assert controller.after_call("browser_navigate", args, result, failed=False).action == "allow"
+    warn = controller.after_call("browser_navigate", args, result, failed=False)
+    assert warn.action == "warn" and warn.code == "tool_repetition_warning"
+    blocked = controller.before_call("browser_navigate", args)
+    assert blocked.action == "block"
+    assert blocked.code == "tool_repetition_block"
+    assert blocked.count == 2
+    assert blocked.should_halt is True
+
+
+def test_tool_repetition_resets_on_changed_result_or_failure():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            warnings_enabled=False,
+            tool_repetition_block_after=3,
+        )
+    )
+    args = {"url": "https://example.test/missing"}
+
+    controller.after_call("browser_navigate", args, '{"status": 404}', failed=False)
+    controller.after_call("browser_navigate", args, '{"status": 404}', failed=False)
+    # A different result is progress and restarts the streak.
+    controller.after_call("browser_navigate", args, '{"status": 200}', failed=False)
+    controller.after_call("browser_navigate", args, '{"status": 200}', failed=False)
+    assert controller.before_call("browser_navigate", args).action == "allow"
+
+    controller.after_call("browser_navigate", args, '{"status": 404}', failed=False)
+    controller.after_call("browser_navigate", args, '{"status": 404}', failed=False)
+    # A failure routes back through the failure axes and clears the streak.
+    controller.after_call("browser_navigate", args, '{"error": "timeout"}', failed=True)
+    controller.after_call("browser_navigate", args, '{"status": 404}', failed=False)
+    controller.after_call("browser_navigate", args, '{"status": 404}', failed=False)
+    assert controller.before_call("browser_navigate", args).action == "allow"
+    assert controller.halt_decision is None
+
+
+def test_tool_repetition_leaves_read_only_and_unknown_tools_on_their_existing_axes():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            no_progress_warn_after=2,
+            no_progress_block_after=2,
+            tool_repetition_warn_after=2,
+            tool_repetition_block_after=2,
+        )
+    )
+    read_args = {"path": "/tmp/x"}
+    controller.after_call("read_file", read_args, "same", failed=False)
+    warn = controller.after_call("read_file", read_args, "same", failed=False)
+    assert warn.code == "idempotent_no_progress_warning"
+    blocked = controller.before_call("read_file", read_args)
+    assert blocked.code == "idempotent_no_progress_block"
+
+    for _ in range(4):
+        assert controller.before_call("custom_tool", {"x": 1}).action == "allow"
+        decision = controller.after_call("custom_tool", {"x": 1}, "ok", failed=False)
+        assert decision.action == "allow"
+        assert decision.code == "allow"
+
+
+def test_tool_repetition_does_not_block_pollers():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            tool_repetition_warn_after=2,
+            tool_repetition_block_after=2,
+        )
+    )
+    args = {"action": "poll", "session_id": "p1"}
+    for _ in range(6):
+        assert controller.before_call("process_manage", args).action == "allow"
+        decision = controller.after_call("process_manage", args, "running", failed=False)
+        assert decision.action == "allow"
+    assert controller.halt_decision is None
+
+
+def test_tool_repetition_reset_for_turn_clears_the_streak():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            warnings_enabled=False,
+            tool_repetition_block_after=2,
+        )
+    )
+    args = {"url": "https://example.test/missing"}
+    result = '{"status": 404}'
+    controller.after_call("browser_navigate", args, result, failed=False)
+    controller.after_call("browser_navigate", args, result, failed=False)
+    assert controller.before_call("browser_navigate", args).action == "block"
+
+    controller.reset_for_turn()
+    assert controller.before_call("browser_navigate", args).action == "allow"
+    assert controller.after_call("browser_navigate", args, result, failed=False).action == "allow"
+    assert controller.halt_decision is None
+
+
 def test_identical_call_streak_halts_any_tool_when_hard_stop_enabled():
     # #89069 / #100849 bundle: a model replaying the same SUCCESSFUL
     # terminal/skill_view call with a byte-identical result is not covered by

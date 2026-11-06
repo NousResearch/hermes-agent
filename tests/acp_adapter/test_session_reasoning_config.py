@@ -71,3 +71,14 @@ def test_acp_agent_receives_custom_provider_request_body(acp_env, monkeypatch):
     assert same.kwargs["request_overrides"] == {"extra_body": {"user": "proxy-user"}}
     other = sm._make_agent(session_id="s3", cwd=".", base_url="https://elsewhere.example/v1")
     assert "request_overrides" not in other.kwargs
+
+
+def test_acp_agent_preserves_configured_bounded_fast_mode(acp_env):
+    """The configured tier is intent, including bounded modes, rather than a boolean."""
+    acp_env({"model": {"default": "gpt-6-sol", "provider": "openai-api"},
+             "agent": {"service_tier": "cold"}})
+    manager = SessionManager(db=None)
+    manager._get_db = lambda: None
+    agent = manager._make_agent(session_id="configured-tier", cwd=".")
+    assert agent.service_tier == "cold"
+    assert "service_tier" not in agent.request_overrides

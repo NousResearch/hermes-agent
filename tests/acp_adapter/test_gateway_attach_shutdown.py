@@ -21,6 +21,7 @@ async def test_aclose_stops_a_paused_post_attach_notice_before_it_reconnects(mon
     monkeypatch.setattr('acp_adapter.gateway_server.connect_gateway', connect_gateway)
     agent = GatewayACPAgent()
     agent._conn = AsyncMock()
+    agent._snapshots['s'] = {}
     paused, release = asyncio.Event(), asyncio.Event()
 
     async def session_update(**kwargs):

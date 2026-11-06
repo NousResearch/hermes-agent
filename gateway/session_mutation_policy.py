@@ -34,6 +34,36 @@ async def prepare_reasoning(authority, live, payload, prepared):
     return _rebind(authority, prepared, old, replace(old, config_json=json.dumps(frozen)))
 
 
+async def prepare_service_tier(authority, live, payload, prepared):
+    """A durable tier pick, validated against the owner's next-turn route."""
+    from agent.fast_mode import parse_exact_service_tier, service_tier_word
+    from gateway.session_contract import SessionRef
+    from gateway.session_policy import SESSION_PINS, restore_policy
+    from gateway.session_tui_config import service_tier_options
+    from types import SimpleNamespace
+    old = restore_policy(prepared['snapshot']['receipt']['policy'])
+    tier = parse_exact_service_tier(payload['service_tier']) or None
+    if tier is not None:
+        connection = SimpleNamespace(authority=authority)
+        options = await asyncio.to_thread(service_tier_options, connection,
+                                         SessionRef(authority.profile_id, live.source.chat_id), old)
+        from agent.fast_mode import CODEX_TIER_WORDS, STATIC_TIERS
+        from gateway.session_authorities import owner_scope
+
+        def sendable():
+            with owner_scope(authority):
+                _model, runtime = authority.runner._resolve_session_agent_runtime(
+                    source=live.source, session_key=live.route)
+                return not (runtime.get('api_mode') == 'codex_app_server'
+                            and tier in STATIC_TIERS and tier not in CODEX_TIER_WORDS)
+        if service_tier_word(tier) not in options or not await asyncio.to_thread(sendable):
+            raise RuntimeStoreError('fast_unavailable')
+    frozen = old.config()
+    frozen.setdefault('agent', {})['service_tier'] = tier or 'normal'
+    frozen[SESSION_PINS] = {**(frozen.get(SESSION_PINS) or {}), 'service_tier': True}
+    return _rebind(authority, prepared, old, replace(old, config_json=json.dumps(frozen)))
+
+
 async def prepare_workspace(authority, live, payload, prepared):
     """Move to project: execution cwd and TERMINAL_CWD move together (restore_policy's invariant)."""
     import os
@@ -68,4 +98,4 @@ async def prepare_edit_policy(authority, live, payload, prepared):
     return _rebind(authority, prepared, old, replace(old, edit_approval_policy=payload['policy']))
 
 
-PREPARE = {'reasoning': prepare_reasoning, 'workspace': prepare_workspace, 'edit_policy': prepare_edit_policy}
+PREPARE = {'reasoning': prepare_reasoning, 'service_tier': prepare_service_tier, 'workspace': prepare_workspace, 'edit_policy': prepare_edit_policy}

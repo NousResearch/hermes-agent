@@ -293,8 +293,17 @@ async def _set_fast(connection, ref, policy, value):
                                           include_ultrafast=tier == 'ultrafast')
         if service_tier_word(tier) not in options:
             raise RuntimeStoreError('fast_unavailable')
-    from gateway.session_busy_controls import service_tier_config
-    service_tier_config(connection, ref, {'session_id': ref.session_id, 'value': raw})
+    if policy is not None and policy.source == 'acp':
+        import uuid
+        from gateway.session_mutations import mutate_session
+        row = await asyncio.to_thread(connection.authority.db.get_session, ref.session_id)
+        await mutate_session(connection.authority, connection.actor, ref, {
+            'session_id': ref.session_id, 'request_id': 'tier-command:' + uuid.uuid4().hex,
+            'expected_revision': row['runtime_revision'], 'expected_generation': row['runtime_generation'],
+            'operation': 'service_tier', 'payload': {'service_tier': raw}})
+    else:
+        from gateway.session_busy_controls import service_tier_config
+        service_tier_config(connection, ref, {'session_id': ref.session_id, 'value': raw})
     return {'key': 'fast', 'value': service_tier_word(tier)}
 
 

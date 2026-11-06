@@ -21,7 +21,7 @@ async def test_peer_normal_selection_after_fast_reload_is_not_hidden_by_the_snap
         assert _tier(selected['result'])['currentValue'] == 'fast'
         loaded = await acp.rpc('session/load', sessionId=sid, cwd=str(tmp_path), mcpServers=[])
         assert _tier(loaded['result'])['currentValue'] == 'fast'
-        assert (await ws.rpc('session.info', session_id=sid))['service_tier'] == ''
+        assert (await ws.rpc('session.info', session_id=sid))['service_tier'] == 'priority'
         start = len(acp.frames)
         await ws.rpc('config.set', session_id=sid, key='fast', value='normal')
         await async_wait_until(

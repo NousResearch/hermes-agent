@@ -13,6 +13,7 @@ import time
 import pytest
 
 from acp.schema import TextContentBlock
+from acp.exceptions import RequestError
 
 from acp_adapter.server import HermesACPAgent
 from acp_adapter.session import SessionManager
@@ -50,14 +51,14 @@ async def test_new_session_keeps_the_event_loop_free():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("call", [
-    lambda s: s.prompt([TextContentBlock(type="text", text="hi")], "gone"),
-    lambda s: s.cancel("gone"),
-    lambda s: s.set_session_model("m", "gone"),
-    lambda s: s.set_session_mode("ask", "gone"),
-    lambda s: s.set_config_option("edit_approval_policy", "gone", "ask"),
+@pytest.mark.parametrize("call,expected_error", [
+    (lambda s: s.prompt([TextContentBlock(type="text", text="hi")], "gone"), None),
+    (lambda s: s.cancel("gone"), None),
+    (lambda s: s.set_session_model("m", "gone"), None),
+    (lambda s: s.set_session_mode("ask", "gone"), None),
+    (lambda s: s.set_config_option("edit_approval_policy", "gone", "ask"), RequestError),
 ])
-async def test_handlers_restore_unknown_sessions_off_the_loop(call):
+async def test_handlers_restore_unknown_sessions_off_the_loop(call, expected_error):
     """``get_session`` on a not-in-memory id restores from the DB (full agent build) and
     waits on the restore lock; the per-session handlers must not do that on the loop."""
     manager = SessionManager(agent_factory=_slow_factory)
@@ -77,9 +78,15 @@ async def test_handlers_restore_unknown_sessions_off_the_loop(call):
             await asyncio.sleep(0.02)
 
     task = asyncio.ensure_future(ticker())
-    await call(server)
-    done.set()
-    await task
+    try:
+        if expected_error:
+            with pytest.raises(expected_error):
+                await call(server)
+        else:
+            await call(server)
+    finally:
+        done.set()
+        await task
     assert ticks >= 5, f"event loop was blocked during the session restore (ticks={ticks})"
 
 

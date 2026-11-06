@@ -86,6 +86,36 @@ async def test_older_owner_keeps_existing_pickers_without_a_service_tier_read():
 
 
 @pytest.mark.asyncio
+async def test_picker_capable_owner_does_not_require_the_new_tier_mutation(monkeypatch):
+    monkeypatch.setattr('acp_adapter.gateway_session_meta.model_state', lambda info: None)
+    agent = GatewayACPAgent()
+    agent._snapshots['session'] = {}
+    selected = 'normal'
+
+    async def rpc(method, **params):
+        nonlocal selected
+        if method == 'config.set':
+            assert params == {'session_id': 'session', 'key': 'fast', 'value': 'fast'}
+            selected = params['value']
+            return {'key': 'fast', 'value': selected}
+        if method == 'config.get':
+            return {'value': selected, 'options': ['normal', 'fast']}
+        if method == 'session.info':
+            return {'model': 'gpt-6.1-sol', 'service_tier': selected}
+        if method == 'session.resume':
+            return {'revision': 0, 'execution_generation': 0}
+        assert method == 'session.mutate' and params['operation'] == 'service_tier'
+        raise GatewayRPCError('invalid_params')  # #148949 owner has no service_tier mutation.
+
+    owner = AsyncMock()
+    owner.rpc.side_effect = rpc
+    agent._client = AsyncMock(return_value=owner)
+    agent._gateway = owner
+    response = await agent.set_config_option('service_tier', 'session', 'fast')
+    assert next(option.current_value for option in response.config_options if option.id == 'service_tier') == 'fast'
+
+
+@pytest.mark.asyncio
 async def test_an_existing_unavailable_tier_is_not_silently_displayed_as_normal():
     from acp_adapter.gateway_session_meta import session_config_options
 

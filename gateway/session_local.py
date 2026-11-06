@@ -492,6 +492,18 @@ def local_session_info(authority, ref):
         if warning := ' '.join(filter(None, notices)):
             info['config_warning'] = warning
     info.update(_classic_cli_fields(authority, ref, live, agent, policy))
+    if policy is not None:
+        from agent.fast_mode import parse_service_tier
+        from gateway.session_state import SERVICE_TIER_UNSET
+        tier = parse_service_tier((policy.effective(authority, secrets=False)[0].get('agent') or {}).get('service_tier'))
+        if state is not None and state.conversation.service_tier_override is not SERVICE_TIER_UNSET:
+            tier = state.conversation.service_tier_override
+        info['service_tier'] = tier or ''
+        from agent.fast_mode import STATIC_TIERS
+        from hermes_cli.models import resolve_fast_mode_overrides
+        route = policy.effective(authority, secrets=False)[0].get('model') or {}
+        info['fast'] = tier in STATIC_TIERS and resolve_fast_mode_overrides(
+            info['model'], provider=route.get('provider'), base_url=route.get('base_url'), tier=tier) is not None
     return info
 
 

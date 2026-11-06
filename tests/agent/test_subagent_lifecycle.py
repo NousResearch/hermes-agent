@@ -105,6 +105,81 @@ def test_cancel_uses_explicit_hard_interrupt(lifecycle):
     lifecycle.wait(handle, timeout_seconds=1)
 
 
+@pytest.mark.parametrize("wire", [False, True])
+def test_lifecycle_controls_follow_compression_rotated_parent_session(tmp_path, monkeypatch, wire):
+    """A signed plugin handle remains owned after its real SessionDB rotates."""
+    from hermes_state import SessionDB
+
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("owner-old", source="cli")
+    db.end_session("owner-old", "compression")
+    db.create_session("owner-new", source="cli", parent_session_id="owner-old")
+    db.append_message("owner-new", "user", "continue the conversation")
+    assert db.resolve_resume_session_id("owner-old") == "owner-new"
+
+    parent = SimpleNamespace(session_id="owner-old", enabled_toolsets=["file"], _session_db=db)
+    child = FakeChild("sa-rotated-owner")
+    started = threading.Event()
+
+    def run(_index, _goal, child, _parent):
+        started.set()
+        while not child.interrupted:
+            time.sleep(0.002)
+        return {"status": "interrupted", "summary": None}
+
+    monkeypatch.setattr("tools.delegate_tool._build_child_agent", lambda **_kwargs: child)
+    monkeypatch.setattr("tools.delegate_tool._run_single_child", run)
+    monkeypatch.setattr("tools.delegate_tool_registry.steer_subagent", lambda *_args: True)
+    service = SubagentLifecycleService(lambda: parent)
+    handle = service.launch(SubagentLaunchRequest(goal="wait for a lifecycle control"))
+    assert started.wait(2)
+
+    parent = SimpleNamespace(session_id="owner-new", enabled_toolsets=["file"], _session_db=db)
+    from hermes_cli.plugin_host_wire import decode, encode
+    public_handle = decode(encode(handle)) if wire else handle
+
+    assert service.status(public_handle).state is SubagentState.RUNNING
+    assert service.wait(public_handle, timeout_seconds=0).completed is False
+    assert service.result(public_handle).ready is False
+    assert service.reconnect(public_handle).connected is True
+    assert service.steer(public_handle, "finish promptly") is True
+    assert service.cancel(public_handle, reason="rotated parent cleanup").accepted is True
+    assert service.wait(public_handle, timeout_seconds=2).state is SubagentState.CANCELLED
+    assert service.result(public_handle).ready is True
+
+
+@pytest.mark.parametrize(
+    ("end_reason", "child_config"),
+    [("branched", None), ("session_reset", {"_reset_from": "owner-old"})],
+)
+def test_lifecycle_controls_refuse_branch_and_reset_children(tmp_path, monkeypatch, end_reason, child_config):
+    """Only compression continuations inherit a public lifecycle capability, including legacy branches."""
+    from hermes_state import SessionDB
+
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("owner-old", source="cli")
+    db.end_session("owner-old", end_reason)
+    db.create_session("other-conversation", source="cli", parent_session_id="owner-old", model_config=child_config)
+
+    parent = SimpleNamespace(session_id="owner-old", enabled_toolsets=["file"], _session_db=db)
+    child = FakeChild("sa-non-continuation-owner")
+    release = threading.Event()
+    monkeypatch.setattr("tools.delegate_tool._build_child_agent", lambda **_kwargs: child)
+    monkeypatch.setattr(
+        "tools.delegate_tool._run_single_child",
+        lambda *_args: (release.wait(2), {"status": "completed", "summary": "done"})[1],
+    )
+    service = SubagentLifecycleService(lambda: parent)
+    handle = service.launch(SubagentLaunchRequest(goal="do not leak ownership"))
+    record = service._record(handle)
+
+    parent = SimpleNamespace(session_id="other-conversation", enabled_toolsets=["file"], _session_db=db)
+    assert service.status(handle).state is SubagentState.UNKNOWN
+    release.set()
+    assert record is not None and record.future is not None
+    record.future.result(timeout=2)
+
+
 
 
 

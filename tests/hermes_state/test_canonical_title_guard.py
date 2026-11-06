@@ -227,7 +227,7 @@ def test_recoverable_auto_archive_keeps_title_and_resurrects(db, reason):
     """#92687: orphan-reaper archives must stay findable and unarchive_recoverable."""
     sid = _make_canonical(db, "reaped")
     db.end_session(sid, reason)
-    assert db.set_session_archived(sid, True)
+    _stamp_legacy_archive(db, sid, end_reason=reason)
     assert db.get_session(sid)["title"] == SessionDB.CANONICAL_BOT_CHAT_TITLE
     row = db.get_session_by_title(SessionDB.CANONICAL_BOT_CHAT_TITLE)
     assert row and row["id"] == sid
@@ -262,3 +262,19 @@ def test_title_lookup_finds_recoverable_compressed_bot_chat(db):
     assert db.unarchive_recoverable_session(row["id"])
     assert not db.get_session("root1")["archived"]
     assert not db.get_session("tip1")["archived"]
+
+
+@pytest.mark.parametrize("already_archived", [False, True])
+def test_deliberate_archive_of_reaped_bot_chat_retires_the_name(db, already_archived):
+    """#139779: the reaper's recoverable stamp keeps "Bot Chat" alive for resurrection, but the
+    user's Archive means "done with this chat" even then: the name is released and nothing
+    resurrects the old row, so the next bot click mints a fresh "Bot Chat"."""
+    sid = _make_canonical(db, "reaped")
+    db.end_session(sid, "ws_orphan_reap")
+    if already_archived:
+        _stamp_legacy_archive(db, sid, end_reason="ws_orphan_reap")
+    assert db.set_session_archived(sid, True)
+    row = db.get_session(sid)
+    assert row["archived"] and row["title"] is None and row["end_reason"] is None
+    assert db.get_session_by_title(SessionDB.CANONICAL_BOT_CHAT_TITLE) is None
+    assert not db.unarchive_recoverable_session(sid)

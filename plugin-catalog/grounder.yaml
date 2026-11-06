@@ -1,7 +1,7 @@
 name: grounder
 repo: https://github.com/grounder-labs/grounder-hermes-plugin
 sha: 4c0e58799b2f2c2258f143d9e97ea7d3ff37ebeb
-description: 'Grounder as the web_search backend: one call reaches the search providers a query needs and live data for scores, prices, odds and flights, and returns one deduplicated list of licensed results. Connect with a Grounder search key or `hermes auth add grounder:grounder`. Search only. Disclosure: each query is sent to api.grounder.net and recorded under your Grounder account.'
+description: 'Grounder as the web_search backend: one call reaches the search providers a query needs and live data for scores, prices, odds and flights, and returns one deduplicated list of licensed results. Connect with a Grounder search key or `hermes auth add grounder:grounder`. Search only. Disclosure: each query is sent to api.grounder.net, passed on to the search providers Grounder picks and to its reranking vendors (Voyage AI, Cohere), and kept under your Grounder account indefinitely.'
 maintainer: grounder-labs
 tier: community
 category: web

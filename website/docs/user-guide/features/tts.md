@@ -61,6 +61,7 @@ tts:
     voice: "alloy"              # alloy, echo, fable, onyx, nova, shimmer
     base_url: "https://api.openai.com/v1"  # Override for OpenAI-compatible TTS endpoints
     pcm_sample_rate: 24000      # Streaming PCM rate expected from the endpoint (auto-overridden by X-Audio-Sample-Rate)
+    stream_timeout_seconds: 15.0  # Streaming per-connect/read timeout; finite number > 0 and <= 120
     speed: 1.0                  # 0.25 - 4.0
     # language: "es"            # Sent as lang_code — only for OpenAI-compatible endpoints that support it (e.g. Kokoro)
     # consent_attestation: "I have the speaker's consent"  # Required by some OpenAI-compatible servers for cloned voices
@@ -155,6 +156,8 @@ tts:
 The rewrite uses `auxiliary.tts_audio_tags` and defaults to your main chat model. Override that auxiliary task if you want tag insertion handled by a cheaper or faster model.
 
 **Streaming sample rate (OpenAI-compatible endpoints)**: streaming playback receives headerless raw PCM, so Hermes must know its sample rate. The official OpenAI API emits 24 kHz. A compatible server that reports its rate — the `X-Audio-Sample-Rate` response header, or `rate=` in the `Content-Type` (`audio/pcm; rate=44100`) — is honored automatically: the speaker, the temp-WAV player and the gateway audio stream all open at the reported rate once the response arrives. For servers that report nothing, set `tts.openai.pcm_sample_rate` to the endpoint's output rate (e.g. `22050` for Piper-backed servers); otherwise speech plays at the wrong speed and pitch. Invalid values log a warning and fall back to `24000`.
+
+**Streaming timeout (OpenAI-compatible endpoints)**: `tts.openai.stream_timeout_seconds` defaults to `15.0` seconds and applies to each connection/read operation, not the total sentence duration. A stream can continue longer while audio keeps arriving. Use a larger value (up to `120`) for a local server's cold model start; a smaller value detects stalls sooner but may interrupt a slow cold start. Values must be finite numbers greater than `0` and at most `120`; booleans and invalid values log a warning without echoing the value and fall back to `15.0`. Streaming sentences are never automatically retried, including after HTTP errors or timeouts.
 
 **Language (OpenAI-compatible endpoints)**: `tts.openai.language` is forwarded to the endpoint as a `lang_code` request parameter. It is intended for OpenAI-compatible TTS servers that support `lang_code` — for example [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI), where `language: "es"` selects the Spanish phonemizer instead of the English default. Leave it unset when using the official OpenAI API, which does not accept this parameter. When unset, nothing extra is sent.
 

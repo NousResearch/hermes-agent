@@ -1,0 +1,19 @@
+name: bulkpublish
+title: BulkPublish
+repo: https://github.com/bulkpublish/hermes-bulkpublish
+sha: 8343151e9c5a70408858afa5dc761e1fb3456399
+version: "1.0.0"
+description: "BulkPublish (https://www.bulkpublish.com) social media scheduling through its hosted MCP server (Streamable HTTP at https://mcp.bulkpublish.com/mcp/full, 80 tools): draft, schedule, publish and retry posts on Facebook, Instagram, X, TikTok, YouTube, Threads, Bluesky, Pinterest, Google Business Profile, LinkedIn, Mastodon, Discord, Telegram, Tumblr and Snapchat, with media uploads, bulk actions, team approvals, labels, templates, recurring schedules, RSS autopost, Inbox replies and analytics. Bundles 33 BulkPublish skills. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — hosted-only connector with no local code: every tool call, with its arguments, goes to mcp.bulkpublish.com and needs a BulkPublish account with its API key in BULKPUBLISH_API_KEY, sent as a Bearer header. Publishing tools post to the user's connected social accounts and Inbox tools reply to real people; the package marks the server untrusted, so Hermes asks before every tool the server does not annotate as read-only and refuses them in unattended runs. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: BulkPublish
+tier: community
+category: tools
+docs_url: https://github.com/bulkpublish/hermes-bulkpublish#readme
+requires_hermes: ">=0.21.6"
+image: https://raw.githubusercontent.com/bulkpublish/hermes-bulkpublish/8343151e9c5a70408858afa5dc761e1fb3456399/assets/banner.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: [BULKPUBLISH_API_KEY]

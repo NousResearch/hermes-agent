@@ -13,6 +13,7 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -260,6 +261,43 @@ def _container_finished_at(docker_exe: str, container_id: str):
     except ValueError as e:
         logger.debug("could not parse FinishedAt %r for %s: %s", raw, container_id[:12], e)
         return None
+
+
+_SNAP_LABEL_DIR_PREFIX = "hermes-docker-label-"
+_SNAP_LABEL_STALE_SECONDS = 24 * 3600
+_snap_label_dirs_swept = False
+
+
+def _sweep_stale_snap_label_dirs() -> None:
+    """Snap mode stages the runtime fingerprint label under ``$HOME`` (confined snap
+    Docker cannot read host ``/tmp``); ``TemporaryDirectory`` covers every normal exit
+    but a SIGKILL or host crash leaves the 0700 dir behind. Sweep stale leftovers once
+    per process: only our prefix, only real directories still mode 0700 and owned by
+    this uid, only older than a day, so a concurrent creator's fresh dir is untouched."""
+    global _snap_label_dirs_swept
+    if _snap_label_dirs_swept:
+        return
+    _snap_label_dirs_swept = True
+    get_uid = getattr(os, "getuid", None)  # absent on Windows: skip the owner check there
+    try:
+        home = Path.home()
+        if not home.is_dir():
+            return
+        cutoff = time.time() - _SNAP_LABEL_STALE_SECONDS
+        for entry in home.glob(f"{_SNAP_LABEL_DIR_PREFIX}*"):
+            try:
+                if entry.is_symlink() or not entry.is_dir():
+                    continue
+                st = entry.stat()
+                if stat.S_IMODE(st.st_mode) != 0o700 or (get_uid is not None and st.st_uid != get_uid()):
+                    continue
+                if st.st_mtime > cutoff:
+                    continue
+                shutil.rmtree(entry)
+            except OSError:
+                continue
+    except OSError:
+        pass
 
 
 def _is_executable(path: str) -> bool:
@@ -995,11 +1033,47 @@ class DockerEnvironment(BaseEnvironment):
         is removed and recreated, but a ``none`` container under default config is kept so
         ``--network=none`` in extra args doesn't churn containers every startup. The runtime
         fingerprint guard refuses drifted or legacy containers without deleting
-        another process's sandbox. Matching fingerprints are preferred by the probe."""
-        existing = self._find_reusable_container(task_label, profile_name, egress_label)
-        if existing is None:
+        another process's sandbox. The probe returns fingerprint matches first, but a
+        running box that cannot be removed (drifted image or network posture) must not
+        mask a stopped compatible sibling behind it: every candidate is checked for a
+        clean attach before the single-candidate removal policy runs on the probe's
+        head."""
+        candidates = self._find_reusable_candidates(task_label, profile_name, egress_label)
+        if not candidates:
             return False
-        container_id, state, actual_fp = existing
+        saw_compatible = False
+        for container_id, state, actual_fp in candidates:
+            if actual_fp != self._runtime_fp:
+                continue
+            actual_image = self._container_image(container_id)
+            if actual_image is None or actual_image != self._image:
+                continue
+            if not network and self._container_network_mode(container_id) != "none":
+                continue
+            saw_compatible = True
+            if state != "running":
+                err = self._start_container(container_id)
+                if err is not None:
+                    logger.warning(
+                        "Failed to start existing container %s (state=%s): "
+                        "%s — trying the next candidate.",
+                        container_id[:12], state, err)
+                    continue
+            self._container_id = container_id
+            logger.info(
+                "Reusing container %s (task=%s, profile=%s, prior state=%s)",
+                container_id[:12], task_label, profile_name, state)
+            return True
+        if saw_compatible:
+            return False
+        return self._attach_legacy_candidate(candidates, task_label, profile_name, egress_label, network)
+
+    def _attach_legacy_candidate(self, candidates, task_label, profile_name, egress_label, network: bool) -> bool:
+        """Single-candidate policy for the probe's head: image adoption or pinned-image
+        removal, lockdown network enforcement, fingerprint preservation. Runs only when
+        no candidate verifiably matches up front; ``candidates[0]`` is the same box the
+        old single-result probe returned."""
+        container_id, state, actual_fp = candidates[0]
         # A container built from another image. Explicitly configured image (config.yaml /
         # TERMINAL_DOCKER_IMAGE): the user changed it, so the old container is not their sandbox any
         # more — recreate (the image is immutable after creation). Default image: a default flip
@@ -1044,10 +1118,10 @@ class DockerEnvironment(BaseEnvironment):
         if image_kept:
             # Re-select with the kept image's fingerprint: a preserved stale
             # sibling must not hide an already compatible replacement.
-            existing = self._find_reusable_container(task_label, profile_name, egress_label)
-            if existing is None:
+            candidates = self._find_reusable_candidates(task_label, profile_name, egress_label)
+            if not candidates:
                 return False
-            container_id, state, actual_fp = existing
+            container_id, state, actual_fp = candidates[0]
         if not network:
             actual_mode = self._container_network_mode(container_id)
             if actual_mode != "none":
@@ -1158,6 +1232,8 @@ class DockerEnvironment(BaseEnvironment):
         # mode stages the file in a random 0700 non-hidden directory under $HOME
         # instead; the TemporaryDirectory cleanup around the run is unchanged.
         label_parent = str(Path.home()) if self._snap_compat else None
+        if self._snap_compat:
+            _sweep_stale_snap_label_dirs()
         try:
             with tempfile.TemporaryDirectory(prefix="hermes-docker-label-", dir=label_parent) as label_dir:
                 label_file = Path(label_dir) / "runtime.label"
@@ -1274,7 +1350,7 @@ class DockerEnvironment(BaseEnvironment):
                 logger.error("Recovery: no saved image name, cannot recreate container")
                 return False
             try:
-                self._container_id = self._docker_run(self._create_cwd)
+                self._container_id = self._docker_run(self.cwd)
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
                 logger.error("Recovery: failed to create new container: %s", e)
                 return False
@@ -1364,12 +1440,14 @@ class DockerEnvironment(BaseEnvironment):
             return ""
         return value
 
-    def _find_reusable_container(
-        self, task_label: str, profile_label: str, egress_label: str) -> Optional[tuple[str, str, str]]:
-        """``(container_id, state, runtime_fingerprint)`` for this task/profile/
-        egress posture and immutable environment, or ``None`` on miss or any failure.
-        Explicit shared keys opt out of the environment filter. The egress posture is a label
-        FILTER for every posture, "off" included: a container built with egress on must not be
+    def _find_reusable_candidates(
+        self, task_label: str, profile_label: str, egress_label: str) -> list[tuple[str, str, str]]:
+        """Ordered ``(container_id, state, runtime_fingerprint)`` candidates for this
+        task/profile/egress posture and immutable environment, fingerprint matches
+        first (running before stopped inside each group), or ``[]`` on miss or any
+        failure. Explicit shared keys opt out of the environment filter. The egress
+        posture is a label FILTER for every posture, "off" included: a container built
+        with egress on must not be
         reused after ``hermes egress disable`` (baked-in proxy env and CA mounts), and every
         container this class creates carries the label. The ``{{.Label "key"}}`` template
         function is Docker-only — podman ps exits 125 on it — so the probe never uses it (#99213)."""
@@ -1385,7 +1463,7 @@ class DockerEnvironment(BaseEnvironment):
             fail="docker ps probe failed: %s — will start a fresh container",
             nonzero="docker ps probe returned %d: %s — will start a fresh container")
         if result is None:
-            return None
+            return []
         candidates = []
         for ln in (ln for ln in result.stdout.splitlines() if ln.strip()):
             parts = ln.split("\t", 1)
@@ -1396,16 +1474,14 @@ class DockerEnvironment(BaseEnvironment):
         # Inspect instead of a fingerprint filter: the derived secret value
         # must not enter the ps client's world-readable argv either.
         candidates.sort(key=lambda candidate: candidate[1] != "running")
-        fallback = None
+        if not self._runtime_fp:
+            return [(cid, state, "") for cid, state in candidates]
+        matches: list[tuple[str, str, str]] = []
+        others: list[tuple[str, str, str]] = []
         for cid, state in candidates:
-            if not self._runtime_fp:
-                return cid, state, ""
             fingerprint = self._container_runtime_fingerprint(cid)
-            if fallback is None:
-                fallback = (cid, state, fingerprint)
-            if fingerprint == self._runtime_fp:
-                return cid, state, fingerprint
-        return fallback
+            (matches if fingerprint == self._runtime_fp else others).append((cid, state, fingerprint))
+        return matches + others
 
     def _remove_bind_dirs(self) -> None:
         for d in (self._workspace_dir, self._home_dir):

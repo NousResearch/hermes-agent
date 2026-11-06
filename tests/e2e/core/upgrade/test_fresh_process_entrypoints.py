@@ -102,7 +102,7 @@ _PLATFORM_ALLOWLIST: dict[str, str] = {}
 _PRELOAD = (
     "openai", "httpx", "pydantic", "rich", "prompt_toolkit", "yaml", "ruamel.yaml", "requests", "jinja2",
     "fastapi", "starlette", "uvicorn", "anthropic", "cryptography", "psutil", "websockets", "dotenv",
-    "tenacity", "fire", "croniter", "markdown", "jwt", "packaging", "PIL",
+    "fire", "croniter", "markdown", "jwt", "packaging", "PIL",
 )
 
 # Import sites the pre-hand-off updater (v2026.9.14 update_cmd_fleet/_maint) reaches AFTER

@@ -18,6 +18,7 @@ from typing import Any, Literal
 from agent.prompt_builder import CONTROL_FRAME_OPENERS
 from gateway import hosted_room_driver as driver
 from gateway import hosted_room_lead as lead_routing
+from gateway import hosted_room_router as router
 from gateway import hosted_rooms
 from gateway import hosted_rooms_common as common
 from gateway.hosted_room_context import scheduled_post_kind, validate_context
@@ -35,7 +36,7 @@ MAX_MEMBER_TEXT_BYTES = 64 * 1024
 _TRUNCATED_REPLY_NOTICE = "\n\n[Reply truncated. Ask the Bot to share the full result as a file.]"
 
 Payload = Mapping[str, Any]
-DecisionStatus = Literal["idle", "task", "settled", "bounded"]
+DecisionStatus = Literal["idle", "task", "settled", "bounded", "route"]
 TerminalKind = Literal["settled", "failed", "cancelled", "deferred"]
 
 _MENTION_RE = re.compile(r"@([A-Za-z0-9][A-Za-z0-9._:-]*)", re.IGNORECASE)
@@ -83,7 +84,8 @@ _GATEWAY_EVENT_FIELDS = {
         ("reason_code", "thread_id", "discussion_event_id")),
     "room.stop_requested": (frozenset({"cancel_id"}), ("cancel_id",))}
 _EPOCH_STAMPED_KINDS = _TERMINAL_EVENT_KINDS | {
-    "message.member", lead_routing.ASSIGNMENT_EVENT_KIND, *_GATEWAY_EVENT_FIELDS}
+    "message.member", lead_routing.ASSIGNMENT_EVENT_KIND, router.ROUTED_EVENT_KIND, router.CONTINUED_EVENT_KIND,
+    *_GATEWAY_EVENT_FIELDS}
 
 
 class DiscussionPolicyError(ValueError): """Base class for invalid policy input or unreconstructable state."""
@@ -148,6 +150,8 @@ class DiscussionDecision:
     source_event_seq: int | None = None
     thread_id: str | None = None
     task: DiscussionTaskPlan | None = None
+    #: How many times the user granted this discussion another budget (``room.continued``).
+    continues: int = 0
 
 
 @dataclass(frozen=True)
@@ -473,7 +477,8 @@ _EVENT_VALIDATORS = {
     "message.user": _validate_user_event, "message.member": _validate_member_message,
     **dict.fromkeys(_TERMINAL_EVENT_KINDS, _validate_terminal_event),
     **dict.fromkeys(_GATEWAY_EVENT_FIELDS, _validate_gateway_event),
-    lead_routing.ASSIGNMENT_EVENT_KIND: lead_routing.validate_assignment_event}
+    lead_routing.ASSIGNMENT_EVENT_KIND: lead_routing.validate_assignment_event,
+    router.ROUTED_EVENT_KIND: router.validate_routed_event, router.CONTINUED_EVENT_KIND: router.validate_continued_event}
 
 
 def _validate_event(raw: Any, *, room: DiscussionRoom, previous_seq: int) -> _ValidatedEvent:
@@ -600,7 +605,7 @@ def _context_lines(context: Mapping[str, str] | None) -> list[str]:
 def _build_prompt(
     *, room: DiscussionRoom, member: DiscussionMember, messages: Sequence[_ValidatedEvent], watermark: int,
     seen_through_seq: int, reply_required: bool = False, context: Mapping[str, str] | None = None,
-    addressed_by_job: str | None = None, assigned_by: DiscussionMember | None = None) -> str:
+    addressed_by_job: str | None = None, assigned_by: DiscussionMember | None = None, routed: bool = False) -> str:
     delta = [event for event in messages if watermark < event.seq <= seen_through_seq][- MAX_DISCUSSION_DELTA_LINES:]
     peers = ", ".join(f"@{candidate.handle}" for candidate in room.members if candidate.member_id != member.member_id)
     opening = [
@@ -609,11 +614,12 @@ def _build_prompt(
         "New messages in this thread since your last turn (oldest first):"]
     addressed = (f"- The room lead @{assigned_by.handle} gave the user's message to you." if assigned_by
                  else f'- The scheduled job "{addressed_by_job}" addressed you.' if addressed_by_job
+                 else "- The room picked you to answer the user's message." if routed
                  else "- The user directly addressed you.")
     participation = [
         f"{addressed} Reply with your answer, result, or concrete blocker.",
         '- Do not return "(pass)". If you cannot proceed, explain why and what you need from the user.',
-    ] if reply_required or assigned_by else [
+    ] if reply_required or assigned_by or routed else [
         "- Reply with one conversational message only when you have something new worth adding.",
         '- If you have nothing new to add, reply with exactly "(pass)".']
     rules = [
@@ -683,11 +689,14 @@ def _make_task_plan(
 
 
 def _pending_discussion(validated: Sequence[_ValidatedEvent]) -> _ValidatedEvent | None:
-    """Oldest latest-per-thread user message not stopped and not yet completed."""
+    """Oldest latest-per-thread user message not stopped and not yet completed. A ``room.continued``
+    reopens a discussion its earlier activity completed (Continue at the cap)."""
     stopped_through_seq = max((event.seq for event in validated if event.kind == "room.stop_requested"), default=0)
+    continued_at = router.continued_through(validated)
     completed_discussion_ids = {
         str(event.payload["discussion_event_id"]) for event in validated
-        if event.kind == "room.activity" and event.payload.get("status") in {"settled", "bounded"}}
+        if event.kind == "room.activity" and event.payload.get("status") in {"settled", "bounded"}
+        and event.seq > continued_at.get(str(event.payload["discussion_event_id"]), 0)}
     latest_by_thread = {
         str(event.payload["thread_id"]): event for event in validated if event.kind == "message.user"}
     return next((
@@ -810,12 +819,19 @@ def plan_next_task(
     if (discussion := _pending_discussion(validated)) is None:
         return DiscussionDecision(status="idle", reason="no_pending_user_event")
     thread_id = str(discussion.payload["thread_id"])
+    continues = router.continue_count(validated, discussion.event_id)
+    # Each Continue grants one more full budget of rounds and messages for the same discussion.
+    max_rounds, max_messages = limits.max_rounds * (continues + 1), limits.max_messages * (continues + 1)
     decide = partial(
         DiscussionDecision, discussion_event_id=discussion.event_id, source_event_seq=discussion.seq,
-        thread_id=thread_id)
+        thread_id=thread_id, continues=continues)
     thread_messages, discussion_messages, member_messages = _thread_messages(validated, discussion)
-    if len(member_messages) >= limits.max_messages:
+    if len(member_messages) >= max_messages:
         return decide("bounded", "max_messages")
+    routed = router.routed_responders(room, discussion, validated, context)
+    if routed is router.ROUTE_PENDING:
+        # The router's answer is recorded as ``room.routed`` before any turn is planned, so replay never re-asks.
+        return decide("route", "router_pending")
     if (lead_round := _lead_round(room, discussion, validated, context)) is not None and lead_round.task:
         return decide("task", "lead_routing", task=lead_round.task)
     # The lead's routing receipt is not its round-0 turn: a lead that gave the message to itself still answers.
@@ -825,15 +841,20 @@ def plan_next_task(
         if event.kind in _TERMINAL_EVENT_KINDS and event.payload.get("discussion_event_id") == discussion.event_id
         and event.payload.get("task_id") != routing_task_id}
     watermarks = _effective_watermarks(validated, initial_watermarks)
-    for round_index in range(limits.max_rounds):
+    resume_round = router.resume_round(validated, discussion.event_id, member_messages)
+    for round_index in range(max_rounds):
         # The user's message selects the first round, with no mention meaning
         # everyone. Later rounds are opt-in: only a peer explicitly cited by a
         # Bot and not heard from afterward gets another turn. Every member's
         # watermark remains intact, so a peer cited later still receives the
         # complete bounded transcript delta without consuming turns meanwhile.
         responders = (
-            (lead_round.responders if lead_round else _first_round_responders(discussion, room)) if round_index == 0
+            (lead_round.responders if lead_round else routed if routed is not None
+             else _first_round_responders(discussion, room)) if round_index == 0
             else _unaddressed_member_mentions(discussion_messages, room))
+        if not responders and round_index == resume_round:
+            # The round after the pause: with nobody cited, the whole room picks the discussion back up.
+            responders = room.members
         for member_index, member in enumerate(_rotate(responders, round_index)):
             watermark = watermarks.get((thread_id, member.member_id), 0)
             delta, attachments = _bounded_task_delta(thread_messages, watermark=watermark, member=member)
@@ -844,7 +865,8 @@ def plan_next_task(
                 room=room, member=member, messages=thread_messages, watermark=watermark,
                 seen_through_seq=seen_through_seq, context=context, addressed_by_job=_scheduled_job(discussion),
                 reply_required=_requires_direct_reply(room, discussion, member, round_index),
-                assigned_by=lead_round.lead if lead_round and round_index == 0 and member != lead_round.lead else None)
+                assigned_by=lead_round.lead if lead_round and round_index == 0 and member != lead_round.lead else None,
+                routed=round_index == 0 and routed is not None and len(routed) < len(room.members))
             return decide("task", "member_turn", task=_make_task_plan(
                 room=room, discussion_event=discussion, member=member, member_index=member_index,
                 round_index=round_index, seen_through_seq=seen_through_seq, prompt=prompt, attachments=attachments,
@@ -852,7 +874,7 @@ def plan_next_task(
                     if freeze_input_context or attachments else None)))
         if not any(int(event.payload["round_index"]) == round_index for event in member_messages):
             return decide("settled", "silent_round")
-        if round_index == limits.max_rounds - 1:
+        if round_index == max_rounds - 1:
             return decide("bounded", "max_rounds")
     raise AssertionError("bounded Discussion loop exhausted unexpectedly")
 

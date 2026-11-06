@@ -173,6 +173,155 @@ _SHELL_CARRIER_NAMES = frozenset({"eval", "sh", "bash", "zsh", "ksh", "dash", "s
 # `dash -c` through while bash/sh were flagged).
 _SHELL_NAMES = ("bash", "sh", "zsh", "ksh", "dash")
 _SHELL_NAMES_RE = "|".join(_SHELL_NAMES)
+# Pipe-to-shell sink: the shell may sit behind launcher words (`sudo -u root -E`, `env -i A=1`,
+# `/usr/bin/env`, `timeout 60`, `busybox`), be path-qualified (/bin/sh, ./zsh,
+# C:\\msys64\\...\\bash.exe), quoted, .exe-suffixed, or followed by a redirect instead of
+# whitespace. The lookahead terminator keeps `shred`, `shellcheck` and `bash-helper` out.
+# fish/csh/tcsh read a script on stdin too, so they count here (they take no part in the -c
+# payload scan). Launcher tokens fall in disjoint classes (a flag that takes a value -- sudo/env
+# `-u USER`, `-g`, `-C` ... -- a bare flag, VAR=value, a duration) inside atomic/possessive
+# groups, so each token has one parse and the scan stays linear; `sudo -u bash cat` reads `bash`
+# as the user, not the shell.
+_PIPE_SHELL_NAMES_RE = "|".join((*_SHELL_NAMES, "fish", "csh", "tcsh", "ash"))
+_PIPE_PATH_PREFIX_RE = r"(?>(?:[a-zA-Z]:)?(?:[.\w~-]*+[/\\])*+)"
+# Launchers that run their trailing words as a command, with the short/long options that take a
+# SEPARATE value word. One shared table made a bare flag (`time -p`, `exec -a x`) swallow the shell
+# name as its value; per-launcher rows let `-p` be bare for time/command and valued for sudo.
+_PIPE_LAUNCHER_VALUE_FLAGS = {
+    "sudo": ("ugUCDhpRrtT", ("user", "group", "other-user", "close-from", "chdir", "host", "prompt",
+                             "role", "type", "command-timeout", "chroot")),
+    "doas": ("uC", ()),
+    # `-S STRING` is the command itself (split into words), never a swallowed value.
+    "env": ("uCa", ("unset", "chdir", "argv0")),
+    "exec": ("a", ()),
+    "command": ("", ()),
+    "nohup": ("", ()),
+    "nice": ("n", ("adjustment",)),
+    "time": ("fo", ("format", "output")),
+    "timeout": ("sk", ("signal", "kill-after")),
+    "stdbuf": ("ioe", ("input", "output", "error")),
+    "busybox": ("", ()),
+    "setsid": ("", ()),
+    "ionice": ("cnpPu", ("class", "classdata", "pid", "pgid", "uid")),
+}
+
+
+def _pipe_launcher_re(name: str, short: str, long_opts: tuple) -> str:
+    valued = [rf"(?-i:-[^\W{short}\d-]*+[{short}])\s++[^\s|;&<>]++"] if short else []
+    valued += [rf"--(?:{'|'.join(long_opts)})\s++[^\s|;&<>]++"] if long_opts else []
+    duration = r"(?:infinity|\d++(?:\.\d++)?(?:e\d++)?|\.\d++)[smhd]?(?=\s)"
+    args = "|".join([*valued, r"-[^\s|;&<>]++", r"\w++=[^\s|;&<>]*+", duration])
+    return rf"{name}(?:\s++(?>{args}))*+"
+
+
+_PIPE_WRAPPERS_RE = (
+    rf"(?>{_PIPE_PATH_PREFIX_RE}(?:"
+    + "|".join(_pipe_launcher_re(n, *f) for n, f in _PIPE_LAUNCHER_VALUE_FLAGS.items())
+    + r")\s++)*+"
+)
+_PIPE_SHELL_TOKEN_RE = (
+    rf"['\"]?{_PIPE_PATH_PREFIX_RE}(?:{_PIPE_SHELL_NAMES_RE})(?:\.exe)?(?=['\"\s;&|<>)]|$)"
+)
+# Lookup/list modes name a shell without running it (`command -v bash`, `sudo -l bash`). The `l`
+# must be a bare flag: in `sudo -pl bash` / `-ul` it is the VALUE of -p / -u and bash runs.
+_PIPE_LOOKUP_ONLY_RE = re.compile(
+    rf"{_PIPE_PATH_PREFIX_RE}(?:command\s+-[a-zA-Z]*[vV]|sudo\s+(?:-(?-i:[^\W\dugUCDhpRrtT])*l|--list))\b",
+    re.IGNORECASE,
+)
+_PIPE_SINK_RE = re.compile(rf"(?:\|&?\s*|>\(\s*){_PIPE_WRAPPERS_RE}{_PIPE_SHELL_TOKEN_RE}", re.IGNORECASE)
+_PIPE_FETCH_RE = re.compile(r"\b(?:curl|wget)\b", re.IGNORECASE)
+_PIPE_OPERATOR_RE = re.compile(r"\|&?\s*|>\(\s*")
+# The widened sink skips `||` (an or-list, not a pipe); main's raw sink keeps the old operator.
+_PIPE_ONLY_OPERATOR_RE = re.compile(r"(?<!\|)\|(?!\|)&?\s*|>\(\s*")
+
+
+# main's original sink (bare or slash-prefixed shell), scanned on the RAW text: a quoted payload handed
+# to any carrier (su -c, ssh, xargs, docker exec ...) stays flagged exactly as before.
+_PIPE_BARE_SINK_RE = re.compile(rf"\|\s*(?:[/\w]*/)?(?:{_SHELL_NAMES_RE})(?:\s|$|-c)", re.IGNORECASE)
+
+
+_WMIC_SHADOW_DELETE_DESCRIPTION = "delete volume shadow copies (wmic)"
+_WMIC_DELETE_IN_SEGMENT_RE = re.compile(r"\sshadowcopy\b.*\sdelete\b", re.IGNORECASE | re.DOTALL)
+# Leading switches of a carrier before its script: cmd /s /q /c, start /b "title", pwsh -NoProfile
+# -ExecutionPolicy Bypass -Command, doas -u x, ssh -i k -p 22 host. Option values are taken only for
+# the options known to take one, so `powershell -NoProfile wmic ...` keeps wmic as the script.
+_CARRIER_SWITCHES_RE = re.compile(
+    r"""(?:\s*+(?:/\w++(?::\S*+)?|-(?:ExecutionPolicy|ep|ex|WindowStyle|w|Version|v|WorkingDirectory|wd"""
+    r"""|ConfigurationName|config|SettingsFile|settings|OutputFormat|of|InputFormat|inp|if|u|p|i|o|l|J|F|a)"""
+    r"""\s++(?:"[^"\n]*+"|'[^'\n]*+'|[^\s;&|]++)|--?\w*+))*+""",
+    re.IGNORECASE,
+)
+# `start "title" prog`: start alone takes a quoted window title before the program.
+_START_TITLE_RE = re.compile(r"""\s*+"[^"\\\n]*+"(?=\s*+["\w\\/])""")
+
+
+class _WmicShadowDeleteMatcher:
+    """`wmic ... shadowcopy ... delete` run as a command: the program word (bare, a full path, behind
+    sudo/env/nohup...) is wmic and its own command carries shadowcopy and then delete. The script of a
+    carrier (cmd /c, pwsh, powershell, start, call, doas, wsl, xargs, ssh host) is walked the same way,
+    so `cmd /c "echo hi & wmic shadowcopy delete"` counts. Nesting is capped, so the scan stays linear."""
+
+    _CARRIERS = frozenset({"cmd", "pwsh", "powershell", "start", "call", "doas", "wsl", "xargs", "ssh"})
+    _MAX_DEPTH = 3
+
+    def search(self, text: str, depth: int = 0):
+        if "wmic" not in text.lower():
+            return None
+        for _, end, word in _iter_shell_command_word_spans(text):
+            # Split the path before deobfuscating: the shell reading drops the backslashes of C:\...\wmic.
+            name = _deobfuscate_shell_word_for_detection(re.split(r"[\\/]", word)[-1]).strip("\"'").lower().removesuffix(".exe")
+            if name == "wmic":
+                if match := _WMIC_DELETE_IN_SEGMENT_RE.search(" " + _shell_command_segment(text, end)):
+                    return match
+            elif name in self._CARRIERS and depth < self._MAX_DEPTH:
+                for script in self._carrier_script(name, _shell_command_segment(text, end)):
+                    if match := self.search(script, depth + 1):
+                        return match
+        return None
+
+    @staticmethod
+    def _carrier_script(name: str, rest: str) -> tuple[str, ...]:
+        rest = _CARRIER_SWITCHES_RE.sub("", rest, count=1)
+        if name == "start":
+            rest = _CARRIER_SWITCHES_RE.sub("", _START_TITLE_RE.sub("", rest, count=1), count=1)
+        rest = rest.lstrip()
+        if name == "ssh":  # the first word after the options is the host
+            rest = re.sub(r"^[^\s;&|]+", "", rest, count=1)
+            rest = _CARRIER_SWITCHES_RE.sub("", rest, count=1).lstrip()
+        rest = re.sub(r"^-(?:Command|c)\b\s*", "", rest, flags=re.IGNORECASE)
+        rest = rest.rstrip().replace('\\"', '"')
+        if rest[:1] not in ("'", '"'):
+            return (rest,)
+        # A leading quote opens either the whole script (`"wmic shadowcopy delete"`) or just the program
+        # word (`"wmic" shadowcopy delete`); the normalized variant drops `\"` pairs, so its closing quote
+        # can be missing. Read it both ways.
+        return (rest, rest[1:-1] if len(rest) > 1 and rest[-1] == rest[0] else rest[1:])
+
+
+class _PipeRemoteToShellMatcher:
+    """Linear stand-in for the pipe-to-shell regex: find the first curl/wget, then try a sink only at
+    each later `|` / `>(` (a leading `.*` rescanned the tail from every fetch word: quadratic).
+    Two sinks: main's bare-shell sink on the raw text, so no case main caught is lost; and the widened
+    launcher/path/quoted sink on quote-masked text, so prose that merely mentions a wrapped pipe stays
+    quiet (raw again under an eval / sh -c carrier, whose quoted argument is code)."""
+
+    def search(self, text: str):
+        fetch = _PIPE_FETCH_RE.search(text)
+        if fetch is None:
+            return None
+        if match := self._scan(text, fetch.end(), _PIPE_BARE_SINK_RE, _PIPE_OPERATOR_RE, lookup_guard=False):
+            return match
+        widened = text if _contains_shell_carrier(text) else _mask_quoted_prose(text)
+        return self._scan(widened, fetch.end(), _PIPE_SINK_RE, _PIPE_ONLY_OPERATOR_RE, lookup_guard=True)
+
+    @staticmethod
+    def _scan(text: str, pos: int, sink: re.Pattern, operator: re.Pattern, lookup_guard: bool):
+        while (op := operator.search(text, pos)) is not None:
+            match = sink.match(text, op.start())
+            if match and not (lookup_guard and _PIPE_LOOKUP_ONLY_RE.match(text, op.end())):
+                return match
+            pos = op.end()
+        return None
 
 
 def _contains_shell_carrier(command: str) -> bool:
@@ -242,6 +391,28 @@ def detect_hardline_command(command: str) -> tuple:
 
 
 # ---- Dangerous command patterns -----------------------------------------------------------
+# PowerShell accepts any unambiguous parameter prefix (``-r`` is ``-Recurse``, ``-fo`` is
+# ``-Force``), so spelling the switches out in full misses ``ri -r -fo``. On Remove-Item and
+# Remove-ItemProperty ``-f`` alone is ambiguous with ``-Filter`` and refuses to run; on
+# Stop-Process and Stop-Service ``-Force`` is the only F parameter, so ``-f`` already means it.
+_PS_RECURSE = r"-r(?:e(?:c(?:u(?:r(?:s(?:e)?)?)?)?)?)?\b"
+_PS_FORCE = r"-fo(?:r(?:c(?:e)?)?)?\b"
+_PS_FORCE_ONLY_F = r"-f(?:o(?:r(?:c(?:e)?)?)?)?\b"
+_PS_DELETE_VERB = r"(?:remove-item|rmdir|erase|del|rd|ri|rm)"
+# powershell/pwsh as the program a command runs: line start, a shell separator, or a launcher
+# (sudo -u bob, env FOO=1, timeout 5, xargs, wsl, cmd /c, ssh -p 22 <host>; option tokens may carry
+# one value; ssh and cmd /c may quote the remote command), with an optional directory prefix (`C:\\...\\powershell.exe`). The prefix excludes
+# `(){}` and backticks so a run of them is not re-scanned from every position (quadratic).
+_PS_LAUNCHER_OPTIONS = r"(?:\s+-\S+(?:\s+[^\s;&|=-][^\s=]*(?!\S))?|\s+\w+=\S*)*"
+_PS_EXE_AT_COMMAND_POSITION = (
+    r"(?:^|[;&|({`\n]"
+    r"|(?:^|[;&|({`\n])\s*+(?:sudo|doas|env|exec|nohup|start|time|nice|command|xargs|wsl|busybox|timeout\s+\S+)"
+    + _PS_LAUNCHER_OPTIONS + r"\s"
+    r"|\bcmd(?:\.exe)?\s+/[ck]\s+[\"']?"
+    r"|(?:^|[;&|({`\n])[^\S\n]*+ssh(?:[^\S\n]+-[^\s;&|]+(?:[^\S\n]+[^\s;&|-][^\s;&|]*)?)*[^\S\n]+[^\s;&|-][^\s;&|]*[^\S\n]+[\"']?)"
+    r"\s*(?:[^\s;&|\"'(){}\x60]*[\\/])?(?:powershell|pwsh)(?:\.exe)?(?=\s)"
+)
+
 DANGEROUS_PATTERNS = [
     (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
     (r'\brm\s+-[^\s]*r', "recursive delete"),
@@ -256,12 +427,23 @@ DANGEROUS_PATTERNS = [
      # spellings the two patterns above catch — without this rule they run with no approval prompt at all.
      # Port of openai/codex#33464 ("recognize force options when they follow operands").
      "recursive delete (flags after operands)"),
+
     # Windows cmd/powershell destructive built-ins: gate only when executed through the shell so
     # prose/filenames containing "del"/"rd" do not trip.
     (r'\bcmd(?:\.exe)?\s+/(?:c|k)\s+.*\b(?:del|erase|rd|rmdir)\b', "Windows cmd destructive delete"),
     # PowerShell runs the verb as default positional arg (no -Command needed); anchor the verb to command
     # position (after leading -Flag switches and optional -Command/-c) so `-File c:\del-logs\run.ps1` is not caught.
-    (r'\b(?:powershell|pwsh)(?:\.exe)?\b(?:\s+-\S+)*\s+(?:-(?:command|c)\s+)?["\']?(?:remove-item|rmdir|erase|del|rd|ri|rm)\b', "Windows PowerShell destructive delete"),
+    (r'\b(?:powershell|pwsh)(?:\.exe)?\b(?:\s+-\S+)*\s+(?:-(?:command|c)\s+)?["\']?' + _PS_DELETE_VERB + r'\b', "Windows PowerShell destructive delete"),
+    # The same delete later in the script: `powershell -NoProfile "gci C:\\data | ri -r -fo"` (Windows
+    # PowerShell runs a positional argument as the command) puts the verb after a pipe, `;` or a
+    # `{ }` block, where the rule above walks past it. Like that rule, no switch is required:
+    # `gci -Recurse -File | ri` deletes every file with none. The executable must be at command
+    # position (or behind sudo/cmd /c/ssh <host>) and the quote must open its first non-flag argument,
+    # so `echo powershell "gci | ri"`, `pwsh -v; jq ".a | del(.b)"` and `cd ~/powershell-scripts &&
+    # git grep "a|rd"` stay quiet, and an outer-shell `powershell -c Get-Date; rm notes.txt` is left
+    # to the rm rules. The span runs to the OUTER quote, so a nested `'C:\\work dir'` cannot end it.
+    (_PS_EXE_AT_COMMAND_POSITION + r'(?:\s+-\S+)*\s+(?:"[^"\n]*|\'[^\'\n]*)[|;{(]\s*' + _PS_DELETE_VERB + r'(?![\w-])',
+     "Windows PowerShell destructive delete (later in the script)"),
     (r'\b(?:powershell|pwsh)(?:\.exe)?\b.*\s-(?:encodedcommand|enc|e)\b', "PowerShell encoded command execution"),
     # ── Windows destructive tier: native Windows EXEs/cmdlets reachable from ANY backend on a
     # Windows host (incl. git-bash). Input is lowercased by the variant loop, so patterns are
@@ -269,7 +451,13 @@ DANGEROUS_PATTERNS = [
     # `reg query`, `icacls file`) does NOT prompt. Bare Remove-Item form (ACP clients, pwsh-default
     # SSH hosts, or compound commands where `powershell` appeared earlier).
     # See #69472.
-    (r'\bremove-item\b[^\n;|&]*\s-(?:recurse|force)\b', "PowerShell destructive delete (Remove-Item)"),
+    # PowerShell accepts any unambiguous parameter prefix: `-r`/`-rec`/`-recurs` are -Recurse,
+    # `-fo`/`-forc` are -Force (validated on Windows PowerShell 5.1, #144024).
+    (r'\bremove-item\b[^\n;|&]*\s(?:' + _PS_RECURSE + r'|' + _PS_FORCE + r')', "PowerShell destructive delete (Remove-Item)"),
+    # Remove-Item aliases after a pipe — `gci C:\data | ri -r -fo` runs the same recursive forced
+    # delete from a positional script whose first command is not itself a delete verb, whether or
+    # not a `powershell` prefix precedes it.
+    (r'\|\s*' + _PS_DELETE_VERB + r'(?![\w-])[^\n;|&]*\s(?:' + _PS_RECURSE + r'|' + _PS_FORCE + r')', "PowerShell destructive delete (alias after pipe)"),
     # Bare cmd builtins with /s (recurse) or /q (quiet); plain `del file.txt` is covered only by the prefixed rule.
     (r'\b(?:del|erase|rd|rmdir)\s+(?:/[a-z]\s+)*/[sq]\b', "Windows destructive delete (recursive/quiet switch)"),
     # Remote content piped to Invoke-Expression — PowerShell's `curl | sh`.
@@ -277,7 +465,7 @@ DANGEROUS_PATTERNS = [
     (r'\b(?:iex|invoke-expression)\s*\(\s*(?:iwr|invoke-webrequest|invoke-restmethod|irm)\b', "execute remote content via Invoke-Expression"),
     # Force process kills — Windows analogue of pkill -9.
     (r'\btaskkill\b[^\n]*\s/f\b', "force kill processes (taskkill /F)"),
-    (r'\bstop-process\b[^\n]*\s-force\b', "force kill processes (Stop-Process -Force)"),
+    (r'\bstop-process\b[^\n]*\s' + _PS_FORCE_ONLY_F, "force kill processes (Stop-Process -Force)"),
     # Volume/disk destruction — Windows analogue of mkfs / dd.
     (r'\bformat-volume\b', "format filesystem (Format-Volume)"),
     (r'\bclear-disk\b', "wipe disk (Clear-Disk)"),
@@ -289,13 +477,17 @@ DANGEROUS_PATTERNS = [
     (r'\bicacls\b[^\n]*\s/reset\b', "reset ACLs recursively (icacls /reset)"),
     # Backup/recovery destruction — classic ransomware prep.
     (r'\bvssadmin\b[^\n]*\bdelete\s+shadows\b', "delete volume shadow copies (vssadmin)"),
+    # WMIC twin of the vssadmin rule — same shadow-copy destruction, older spelling. Not compiled:
+    # DANGEROUS_PATTERNS_COMPILED swaps in _WmicShadowDeleteMatcher, which checks each command-position
+    # word (wrappers, full paths, cmd /c, pwsh) instead of an unanchored regex over the whole line.
+    (r'wmic shadowcopy delete', _WMIC_SHADOW_DELETE_DESCRIPTION),
     (r'\bwbadmin\b[^\n]*\bdelete\b', "delete backups (wbadmin)"),
     (r'\bbcdedit\b[^\n]*\s/set\b', "modify boot configuration (bcdedit /set)"),
     # Registry deletion with force flag.
     (r'\breg(?:\.exe)?\s+delete\b', "registry delete (reg delete)"),
-    (r'\bremove-itemproperty\b[^\n]*\s-force\b', "registry value delete (Remove-ItemProperty -Force)"),
+    (r'\bremove-itemproperty\b[^\n]*\s' + _PS_FORCE, "registry value delete (Remove-ItemProperty -Force)"),
     # Windows service/system stop — analogue of systemctl stop.
-    (r'\bstop-service\b[^\n]*\s-force\b', "force stop service (Stop-Service -Force)"),
+    (r'\bstop-service\b[^\n]*\s' + _PS_FORCE_ONLY_F, "force stop service (Stop-Service -Force)"),
     (r'\bsc(?:\.exe)?\s+(?:stop|delete)\b', "stop/delete service (sc)"),
     # Windows-form credential paths; the POSIX ~/.ssh patterns never match drive-letter or backslash spellings.
     (r'\busers[\\/][^\\/\s]+[\\/]\.ssh\b', "access to SSH keys (Windows path)"),
@@ -327,8 +519,11 @@ DANGEROUS_PATTERNS = [
     (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
     # Shell -c is parsed structurally by _execution_flag_findings(); a regex searching a dash-token
     # for "c" also matched --norc/--rcfile/--restricted.
-    (rf'\b(curl|wget)\b.*\|\s*(?:[/\w]*/)?(?:{_SHELL_NAMES_RE})(?:\s|$|-c)', "pipe remote content to shell"),
-    (rf'\b(?:{_SHELL_NAMES_RE})\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
+    # Not compiled: DANGEROUS_PATTERNS_COMPILED swaps in _PipeRemoteToShellMatcher for this description;
+    # the string only feeds the legacy approval-key alias below, so editing it changes no verdict.
+    (rf'\b(curl|wget)\b.*(?:\|&?\s*{_PIPE_WRAPPERS_RE}|>\(\s*){_PIPE_SHELL_TOKEN_RE}', "pipe remote content to shell"),
+    (rf'(?<![\w.-])(?:{_SHELL_NAMES_RE})\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
+    (_CMDPOS + r'(?:source|\.)\s+<\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
     # eval/source/. $(curl ...) — equivalent to piping remote content to a shell.
     (r'(?:\beval\b|\bsource\b|\.)\s*(?:\$\(\s*|`\s*)(?:curl|wget)\b', "execute remote content via command substitution"),
     # Cloud instance-metadata (IMDS) credential endpoints — deterministic containment-escape
@@ -500,12 +695,27 @@ DANGEROUS_PATTERNS = [
 ]
 
 
-DANGEROUS_PATTERNS_COMPILED = [(re.compile(p, _RE_FLAGS), d) for p, d in DANGEROUS_PATTERNS]
+_PIPE_REMOTE_TO_SHELL_DESCRIPTION = "pipe remote content to shell"
+_CUSTOM_MATCHERS = {
+    _PIPE_REMOTE_TO_SHELL_DESCRIPTION: _PipeRemoteToShellMatcher,
+    _WMIC_SHADOW_DELETE_DESCRIPTION: _WmicShadowDeleteMatcher,
+}
+DANGEROUS_PATTERNS_COMPILED = [
+    (_CUSTOM_MATCHERS[d]() if d in _CUSTOM_MATCHERS else re.compile(p, _RE_FLAGS), d)
+    for p, d in DANGEROUS_PATTERNS
+]
 # Dynamic-word rules look for glob/brace characters, which are ordinary data inside quotes
 # (`find . -name 'log-del*'`), so they scan the quote-masked variant like the positionless hardline rules.
 _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS = frozenset({
     "find dynamic shell word may expand to destructive flag",
     "dynamic shell word may expand to arbitrary program execution flag",
+})
+# A quoted `| ri -r` is prose (`Write-Host "run gci | ri -r"`), unless an unquoted launcher runs the
+# quoted text as a script: `ssh host "gci | ri -r"`, `cmd /c "..."`, `iex "..."`, `echo "..." | pwsh -`.
+_PS_PIPE_ALIAS_DESCRIPTION = "PowerShell destructive delete (alias after pipe)"
+_PS_QUOTED_SCRIPT_LAUNCHERS = frozenset({
+    "ssh", "iex", "invoke-expression", "invoke-command", "icm", "pwsh", "powershell", "wsl", "runas",
+    "start-process", "start-job", "saps", "cmd", *_SHELL_CARRIER_NAMES,
 })
 
 # Content-level rules (ported from tirith in #133832, where they were separate findings with their own
@@ -1632,6 +1842,30 @@ def _word_may_run_curl_or_wget(word: str) -> bool:
     return not unquoted.startswith("-") and not _ENV_ASSIGNMENT_RE.fullmatch(word) and ("$" in word or "`" in word)
 
 
+def _quoted_text_is_executed(variant: str, pattern_re: "re.Pattern[str] | _PipeRemoteToShellMatcher") -> bool:
+    """Whether a launcher (ssh, cmd /c, iex, a shell carrier, pwsh) at command position runs the quoted
+    delete as code: the delete must sit in that launcher's own command, or be piped into a PowerShell
+    reading stdin (`echo "..." | pwsh -`). A launcher word elsewhere (`echo ssh "..."`, `pwsh -v &&
+    echo "..."`) leaves the quoted text prose."""
+    prev_start = None
+    for start, _, word in _iter_shell_command_word_spans(variant):
+        stage_start, prev_start = prev_start, start
+        name = os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower().removesuffix(".exe")
+        if name not in _PS_QUOTED_SCRIPT_LAUNCHERS:
+            continue
+        segment = _lower_preserving_flags(_shell_command_segment(variant, start))
+        if name == "cmd" and not re.match(r"cmd(?:\.exe)?\s+/[ck]\b", segment, _RE_FLAGS):
+            continue
+        if pattern_re.search(segment):
+            return True
+        # `echo "gci | ri -r" | pwsh -`: the stage piped in is the previous command word's own text.
+        before = variant[stage_start or 0:start].rstrip()
+        if name in ("pwsh", "powershell") and stage_start is not None and before.endswith("|") \
+                and not before.endswith("||") and pattern_re.search(_lower_preserving_flags(before)):
+            return True
+    return False
+
+
 def _iter_dangerous_descriptions(command: str, only: frozenset[str] | None = None):
     """Yield the description (= pattern key) of every dangerous match, in detection order; may repeat.
     *only* restricts the scan to those pattern rules and skips the parser-limit, execution-flag and
@@ -1649,12 +1883,15 @@ def _iter_dangerous_descriptions(command: str, only: frozenset[str] | None = Non
         command_lower = _lower_preserving_flags(command_variant)
         masked_lower: str | None = None
         for pattern_re, description in patterns:
-            if description in _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS:
+            if description in _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS or description == _PS_PIPE_ALIAS_DESCRIPTION:
                 if masked_lower is None:
                     masked_lower = _lower_preserving_flags(
                         _mask_quoted_prose(command_variant)
                     )
-                if pattern_re.search(masked_lower):
+                if pattern_re.search(masked_lower) or (
+                    description == _PS_PIPE_ALIAS_DESCRIPTION and pattern_re.search(command_lower)
+                    and _quoted_text_is_executed(command_variant, pattern_re)
+                ):
                     yield description
             elif description == _CREDENTIAL_UPLOAD_DESCRIPTION:
                 matches = list(pattern_re.finditer(command_lower))

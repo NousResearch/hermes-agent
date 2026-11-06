@@ -16,7 +16,7 @@ that the `hermes-atm` package (pip; source in atm-core `crates/hermes-atm`) call
 deliver agent-team-mail nudges into a profile's chat session. Everything else in the
 stack exists to support or test that seam.
 
-Current stack shape as of v0.22.5 (7 substantive commits + this doc's own commit = 8 above the base tag; replay ALL of them on every rebase):
+Current stack shape as of v0.23.0 (9 substantive commits + this doc's own update commit = 10 above the base tag; replay ALL of them on every rebase):
 1. `feat: reseat public injection seam onto mixin-split run.py` — the API + hook exposure + tests
 2. `fix(gateway): P1 review fixes HGF-001..004 (injection seam)` — review-round hardening
 3. `style(tests): strip trailing whitespace (HGF-005)`
@@ -28,11 +28,26 @@ Current stack shape as of v0.22.5 (7 substantive commits + this doc's own commit
    replayed by the rebase; nothing lives main-only. (It was originally main-only
    and got silently reverted by a whole-tree sync merge — PR #33 — which is the
    incident that produced this rule.)
+8. `fix(kanban): end the owning executor when a card is closed externally` —
+   fork-only fleet fix (zombie headless executors kept running after their card
+   went terminal; live incident 2026-11-05 t_2a7d0b3e). Originally fork PR #37;
+   landed on the stack per the banner ruling (nothing lives main-only), PR #37
+   closed as landed-via-stack. **UPSTREAM SUBMISSION CANDIDATE** — when it
+   merges upstream AND is contained in the base tag, DROP it from the stack at
+   the next replay (same removal rule as the beads fork rows); its 5 files then
+   leave the diffstat invariant.
+9. `docs(atm): stack shape 10 above base — kanban fix rides the stack (this
+   commit)` — the shape/invariant update for item 8.
 
 Stack diffstat invariant: `git diff vX^{commit}..stack-tip` touches exactly
-**6 files** — the 5 seam/contract files plus `README.md` (banner). A sync
-candidate touching fewer files dropped a patch; more files grew the stack
-without a contract update.
+**11 files** as of v0.23.0 — the 6 ATM/banner files (5 seam/contract +
+`README.md`) plus the kanban fix's 5 (`hermes_cli/kanban_db.py`,
+`hermes_cli/kanban_db_termination.py`,
+`tests/hermes_cli/test_kanban_complete_worker_termination.py`,
+`tests/tools/test_kanban_worker_self_exit.py`, `tools/kanban_tools.py`).
+The kanban 5 leave the invariant when item 8 retires (upstream merge + base
+containment). A sync candidate touching fewer files dropped a patch; more files
+grew the stack without a contract update.
 
 ## The contract (every item is load-bearing)
 

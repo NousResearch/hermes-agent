@@ -31,6 +31,7 @@ const SHARED_KEYS: ReadonlySet<string> = new Set([
   'hermes.desktop.translucency.v2',
   'hermes.desktop.user-bubble-transparency.v1',
   // Sessions sidebar and profile rail.
+  'hermes.desktop.sidebar.screenPortal.v1',
   'hermes.desktop.agentsGroupedByWorkspace',
   'hermes.desktop.profileColors',
   'hermes.desktop.profileOrder',

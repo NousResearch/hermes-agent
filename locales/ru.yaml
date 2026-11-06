@@ -1710,10 +1710,10 @@ slash:
     description: "Выйти из CLI (с --delete также удаляется история сеанса)"
 cli:
   backtrack:
-    title: "↺ Откат — выберите более ранний запрос"
-    keys_hint: "↑/↓ выбор · Enter изменить и отправить заново · f ответвиться отсюда · Esc закрыть"
-    preview_label: "Запрос {number} из {total}:"
-    more_lines: "… (ещё строк: {count})"
+    title: "↺ Стенограмма — выберите запрос для правки"
+    keys_hint: "Просмотр стенограммы · ↑↓/jk прокрутка · ←→/hl запросы · ↵ изменить · f ответвить · esc назад"
+    prime_hint: "нажмите esc ещё раз, чтобы изменить предыдущее сообщение"
+    no_previous: "Нет предыдущего сообщения для правки."
     editing_hint: "↺ Редактирование запроса {number} — Enter откатывает сюда и отправляет · Esc Esc отменяет"
     edit_cancelled: "↺ Откат отменён; ничего не удалено."
     rewound: "↺ Откат к запросу {number} (сообщений в архиве: {count}); отправка изменённого запроса."
@@ -3981,3 +3981,8 @@ plan_usage:
   large_notice_limit: "Крупная модель: достигнут {name} ({resets})."
   large_notice_limit_stops: "Крупная модель: достигнут {name} ({resets}), до сброса она не запустится."
   large_notice_percent: "Крупная модель: расходует больше лимита плана на сообщение. Месячный лимит крупных моделей: использовано {percent}."
+shared:
+  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  undo_rollback:
+    list: "↶ Файлы, изменённые в отменённых ходах: {files}. Выполните /rollback, чтобы увидеть контрольные точки и восстановить одну."
+    more: "ещё {count}"

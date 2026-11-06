@@ -81,7 +81,7 @@ def _exit_after_oneshot(rc: object) -> None:
     during ``Py_FinalizeEx``, *after* the response printed. Flush, shut down
     file logging, then ``os._exit`` past finalization. The ``atexit`` chain is
     deliberately skipped — several handlers re-enter native code that may be
-    the abort source; stateful cleanup lives in ``_cleanup_oneshot_runtime``.
+    the abort source.
 
     See #30387, #43055.
     """
@@ -98,94 +98,6 @@ def _exit_after_oneshot(rc: object) -> None:
     except Exception:
         pass
     os._exit(rc if isinstance(rc, int) else (0 if rc is None else 1))
-
-
-_oneshot_cleanup_done = False
-# (module, attr, kwargs, exceptions swallowed). MCP shutdown may raise
-# BaseException-derived errors from executor teardown; the rest are Exception.
-_ONESHOT_CLEANUPS = (
-    ("tools.terminal_tool", "cleanup_all_environments", {}, Exception),
-    ("tools.async_delegation", "interrupt_all", {"reason": "oneshot shutdown"}, Exception),
-    ("tools.browser_session_lifecycle", "emergency_cleanup_all_sessions", {}, Exception),
-    ("tools.mcp_tool_lifecycle", "shutdown_mcp_servers", {}, BaseException),
-    ("agent.auxiliary_client", "shutdown_cached_clients", {}, Exception),
-    # A no-op unless this run booted the managed llama-server (atexit's hook is skipped here).
-    ("hermes_cli.local_runtime.bootstrap", "shutdown_local_runtime", {}, Exception),
-    # The atexit hook that closes the metrics session never runs past os._exit.
-    ("hermes_cli.observability.relay_shared_metrics", "shutdown_runtimes", {}, Exception),
-)
-
-
-def _cleanup_oneshot_runtime() -> None:
-    """Best-effort process-global cleanup before one-shot hard exit.
-
-    ``run_oneshot`` owns the agent-local cleanup (memory provider, agent.close,
-    session_db.close — all in ``_run_agent``'s finally block). This mirrors the
-    process-global pieces from ``cli.py:_run_cleanup()`` that would otherwise
-    be skipped by ``os._exit``.
-    """
-    global _oneshot_cleanup_done
-    if _oneshot_cleanup_done:
-        return
-    _oneshot_cleanup_done = True
-    import importlib
-
-    for module, attr, kwargs, swallow in _ONESHOT_CLEANUPS:
-        try:
-            getattr(importlib.import_module(module), attr)(**kwargs)
-        except swallow:
-            pass
-
-
-def _run_and_exit_oneshot(
-    prompt: str,
-    *,
-    model: object = None,
-    provider: object = None,
-    toolsets: object = None,
-    skills: object = None,
-    usage_file: object = None,
-    resume: object = None,
-    reasoning: object = None,
-) -> None:
-    try:
-        from hermes_cli.oneshot import run_oneshot
-
-        rc = run_oneshot(
-            prompt,
-            model=model,
-            provider=provider,
-            toolsets=toolsets,
-            skills=skills,
-            usage_file=usage_file,
-            resume=resume,
-            reasoning=reasoning,
-        )
-    except KeyboardInterrupt:
-        rc = 130
-    except SystemExit as exc:
-        if exc.code is not None and not isinstance(exc.code, int):
-            print(exc.code, file=sys.stderr)
-            rc = 1
-        else:
-            rc = exc.code
-    except BaseException:
-        # ``run_oneshot`` already maps agent failures to an int rc; anything
-        # still escaping means it malfunctioned. Print it but never fall
-        # through to interpreter teardown (the SIGABRT path this routine fixes).
-        import traceback
-        try:
-            traceback.print_exc()
-        except Exception:
-            pass
-        rc = 1
-    try:
-        _cleanup_oneshot_runtime()
-    finally:
-        # Even an interrupt during cleanup must not fall back into interpreter
-        # finalization, where the native SIGABRT occurs.
-        # The hard exit is the safety boundary for #43055.
-        _exit_after_oneshot(rc)
 
 
 def _warn_if_unsupervised_pid1(pid: int | None = None) -> None:

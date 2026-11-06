@@ -125,7 +125,10 @@ export function pausedDiscussions(events: readonly CanonicalGroupEvent[], maxCon
 }
 
 export interface CanonicalGroupPausedRowProps {
+  /** A Send or Continue is in flight: Continue waits; Stop stays available. */
   busy?: boolean
+  /** A Stop is already in flight: neither button can act again. */
+  stopping?: boolean
   event: CanonicalGroupEvent
   /** This pause's entry from `pausedDiscussions`, computed once per log update. */
   paused: CanonicalPausedDiscussion
@@ -134,7 +137,7 @@ export interface CanonicalGroupPausedRowProps {
 }
 
 /** "Paused after 12 messages" with Continue and Stop while the pause is still the discussion's latest word. */
-export function CanonicalGroupPausedRow({ busy = false, event, paused, onContinue, onStop }: CanonicalGroupPausedRowProps) {
+export function CanonicalGroupPausedRow({ busy = false, stopping = false, event, paused, onContinue, onStop }: CanonicalGroupPausedRowProps) {
   const labels = useCanonicalGroupLabels()
   const { actionable, count } = paused
   const discussion = discussionOf(event)
@@ -143,8 +146,8 @@ export function CanonicalGroupPausedRow({ busy = false, event, paused, onContinu
     <div className="flex min-w-0 flex-wrap items-center gap-2" data-testid="room-paused">
       <strong className="text-[0.6875rem] font-medium text-(--ui-text-secondary)">{fill(labels.pausedAfter, { count })}</strong>
       {actionable && <>
-        <Button data-testid="room-continue" disabled={busy || !onContinue} onClick={() => void onContinue?.(discussion)} size="xs" variant="secondary">{labels.continueDiscussion}</Button>
-        <Button data-testid="room-paused-stop" disabled={busy || !onStop} onClick={() => void onStop?.()} size="xs" variant="ghost">{labels.stop}</Button>
+        <Button data-testid="room-continue" disabled={busy || stopping || !onContinue} onClick={() => void onContinue?.(discussion)} size="xs" variant="secondary">{labels.continueDiscussion}</Button>
+        <Button data-testid="room-paused-stop" disabled={stopping || !onStop} onClick={() => void onStop?.()} size="xs" variant="ghost">{labels.stop}</Button>
       </>}
     </div>
   </RoomNoticeRow>

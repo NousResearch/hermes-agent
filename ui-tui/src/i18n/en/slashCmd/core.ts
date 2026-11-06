@@ -136,7 +136,24 @@ export const slashCmdCoreEn = {
     queue: {
       countOne: (count: string) => `${count} queued message`,
       countOther: (count: string) => `${count} queued messages`,
-      queued: (preview: string) => `queued: "${preview}"`
+      queued: (preview: string) => `queued: "${preview}"`,
+      empty: 'Queue is empty.',
+      usage:
+        'Usage: /queue <prompt> | /queue list | /queue edit N <prompt> | /queue rm N | /queue move FROM TO | /queue clear',
+      pendingHeader: (count: string) => `Queue (${count} pending):`,
+      clearedOne: (count: string) => `Cleared ${count} queued prompt.`,
+      clearedOther: (count: string) => `Cleared ${count} queued prompts.`,
+      removed: (index: string, preview: string) => `Removed queue item ${index}: ${preview}`,
+      notFound: (index: string, size: string) => `Queue item ${index} not found. Current size: ${size}`,
+      usageEdit: 'Usage: /queue edit <number> <new prompt>',
+      usageRemove: 'Usage: /queue rm <number>',
+      updated: (index: string, preview: string) => `Updated queue item ${index}: ${preview}`,
+      usageMove: 'Usage: /queue move <from> <to>',
+      moveOutOfRange: (size: string) => `Queue move out of range. Current size: ${size}`,
+      moved: (source: string, destination: string) => `Moved queue item ${source} to ${destination}.`,
+      usageAdd: 'Usage: /queue add <prompt>',
+      gatewayFifo: 'The gateway runs queued prompts in the order they were sent; edit or remove one instead.',
+      alreadyStarted: (index: string) => `Queue item ${index} already started; it runs as it was sent.`
     },
     steer: {
       usage: 'usage: /steer <prompt>',

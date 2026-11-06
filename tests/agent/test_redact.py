@@ -848,10 +848,11 @@ class TestBareTokenUserinfoRedaction:
         assert "ftptoken123456" not in result
 
 
-    def test_user_pass_form_still_passes_through(self):
-        """The ``user:pass@`` colon form must NOT be redacted (#34029)."""
+    def test_user_pass_form_password_redacted(self):
+        """The ``user:pass@`` colon form's PASSWORD is redacted (#125664): #34029's pass-through
+        is about query-string round-trip tokens, never userinfo. Username, host and path stay."""
         text = "URL: https://user:supersecretpw@host.example.com/path"
-        assert redact_sensitive_text(text) == text
+        assert redact_sensitive_text(text) == "URL: https://user:***@host.example.com/path"
 
     def test_short_username_not_redacted(self):
         """Short userinfo (git, admin, deploy) below the 8-char floor passes."""
@@ -870,6 +871,24 @@ class TestBareTokenUserinfoRedaction:
             "https://example.com/users/john@doe.com/profile",
         ):
             assert redact_sensitive_text(text) == text
+
+    def test_json_string_boundary_is_not_bare_userinfo(self):
+        """A quoted URL followed by JSON ``@type`` is not ``scheme://TOKEN@host``.
+
+        ``https://schema.org","@type`` is the JSON-LD shape on every reference
+        page. A double quote is not URL userinfo, so the host must stay intact.
+        A quote-free token still redacts.
+        """
+        for text in (
+            'https://schema.org","@type',
+            'https://example.org","@type',
+            '{"@context":"https://schema.org","@type":"DefinedTerm"}',
+        ):
+            assert redact_sensitive_text(text) == text
+        secret = "MYPASSWORDWASDISLAYEDHERE"
+        masked = redact_sensitive_text(f"https://{secret}@github.com/org/repo.git")
+        assert secret not in masked
+        assert "@github.com" in masked
 
 
 

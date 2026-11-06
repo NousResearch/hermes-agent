@@ -67,6 +67,8 @@ instructions. Behind the sign-in gate (below) it also signs out every browser th
 dashboard account; each must sign in again. The account tokens such a login keeps in its cookies work
 on the Webapp only as that login (the gateway refuses them as a bearer token, on a connection's URL and
 on its token refresh), so they end with it. A native Hermes app that signed in to the gateway on its own stays signed in.
+The deployment session token (`HERMES_DASHBOARD_SESSION_TOKEN`, see [Deployment session-token provider](./features/web-dashboard.md#deployment-session-token-provider-token-only-deployments))
+also works there on its own, as a bearer token, in the `X-Hermes-Session-Token` header (what Desktop sends on REST) or on a connection's URL, while the session-token provider is enabled.
 
 For a named profile, `hermes -p work webapp` opens the Webapp on `work`. Profiles the default gateway
 serves share its Webapp; a standalone profile's own gateway serves its own when its config turns it on.

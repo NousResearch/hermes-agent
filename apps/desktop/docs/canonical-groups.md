@@ -66,5 +66,10 @@ The header offers **Files** only when the gateway explicitly lists `groups.attac
 
 A cursor pins the group chat, authority, filters and first page’s log position. New shares do not shift older pages; **Show latest** or Refresh starts a fresh list. Download addresses the exact event and attachment, checks the returned metadata, byte count and SHA-256, then uses the existing browser download. Closing the dialog, leaving the page or hiding the group chat retires pending downloads. Missing bytes stay listed as unavailable; failed verification saves nothing.
 
-
 Closing Files with Escape or its close button restores focus to its available opener.
+
+A local bot uses `share_group_file` during its turn. Files are private until its settled reply publishes them; stopped, failed and superseded turns publish none. The existing attachment limits apply: 8 files / 25 MB per reply, 15 MB per file. Paths follow media delivery policy with additional credential, private-profile and hard-link restrictions. Remote sources are checked after resolving links and before fetching; remote Hermes profile trees stay private. A source that changes during a bounded read is refused with a retry message. Files from another local profile arrive through the private owner transport, bound to the exact task and execution generation.
+
+Files stay on the gateway that stores them. A file-bearing turn addressed to a bot on another gateway fails visibly before dispatch (`attachments_unsupported_on_route`); the local file remains downloadable. A remote bot is told it cannot share files back here, and its turn has no sharing binding. Historical references without local bytes remain unavailable. Standalone and older gateways without the catalog method do not offer Files.
+
+File batches advance through the finite input present at Send. After a bot reaches that message, every published reply spends the discussion budget, even when it shares more files. Passes and failed turns still consume their pending input but do not count as replies. Newly shared files never grant more work; reaching the cap pauses for Continue. Addressed bots take turns before any bot processes another batch.

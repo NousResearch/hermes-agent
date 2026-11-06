@@ -204,7 +204,7 @@ def install_hosted_transport(server, authority, loop, *, attest):
         selected, params = select(envelope)
         if set(params) != {'selector', 'operation', 'params'}:
             raise RuntimeStoreError('invalid_params')
-        if params['operation'] not in _OPERATIONS | {'execute', 'attachment'}:
+        if params['operation'] not in _OPERATIONS | {'execute', 'attachment', 'output'}:
             raise RuntimeStoreError('invalid_params')
         callback = attest if selected is authority else getattr(
             getattr(selected, 'hosted_room_service', None), 'attest', None)

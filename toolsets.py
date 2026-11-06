@@ -127,7 +127,8 @@ TOOLSETS = {
     "session_search": _ts("Search and recall past conversations with summarization", ["session_search"]),
     "connections": _ts("Remote connector discovery, execution, and account authorization", ["manage_connections"]),
     "project": _ts("Desktop Projects — create/switch named workspaces (GUI sessions only)", ["desktop_project"]),
-    "bot_room": _ts("Verified text-only Group Chat turn capabilities"),
+    "bot_room": _ts("Group chat turn capabilities: share a file with the group chat",
+                    ["share_group_file"], platforms=frozenset({"bot_room"})),
 
     # GUI-renderer affordances, enabled per desktop-sourced SESSION by the GUI
     # gateway (tui_gateway/server.py::_load_enabled_toolsets) — never by a

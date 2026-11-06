@@ -656,7 +656,7 @@ def _build_prompt(
     *, room: DiscussionRoom, member: DiscussionMember, messages: Sequence[_ValidatedEvent], watermark: int,
     seen_through_seq: int, reply_required: bool = False, context: Mapping[str, str] | None = None,
     addressed_by_job: str | None = None, assigned_by: DiscussionMember | None = None, routed: bool = False,
-    attachments: Sequence[Mapping[str, Any]] = ()) -> str:
+    attachments: Sequence[Mapping[str, Any]] = (), share_files: bool = False) -> str:
     delta = [event for event in messages if watermark < event.seq <= seen_through_seq
              and not (event.kind == "message.member" and event.payload.get("member_id") == member.member_id)
              ][-MAX_DISCUSSION_DELTA_LINES:]
@@ -678,6 +678,10 @@ def _build_prompt(
     rules = [
         "", "Rules for this Discussion:", *participation,
         "- Mention a teammate by handle to pull them into the next round; do not repeat points already made.",
+        *(["- To hand off a file, call share_group_file; never paste a local path into chat."]
+          if share_files and _peer_id(member) is None else []),
+        *(["- Files stay on the gateway that stored them. You cannot share files with this group chat "
+           "from another gateway; explain this limit if asked for a file."] if _peer_id(member) else []),
         "- Never reveal content from private conversations. Your reply is published verbatim."]
     # File lines are reserved before messages are chosen, so a long thread never crowds them out.
     attachment_lines = _attachment_prompt_lines(attachments)
@@ -873,7 +877,7 @@ def _lead_round(
 def plan_next_task(
     room_value: Any, events: Sequence[Mapping[str, Any]], *, local_profiles: Iterable[str],
     initial_watermarks: Mapping[tuple[str, str], int] | None = None,
-    freeze_input_context: bool = False,
+    freeze_input_context: bool = False, share_files: bool = False,
     read_messages: Callable[..., Iterable[Mapping[str, Any]]] | None = None,
     limits: DiscussionLimits = DiscussionLimits(),
     room_context: Mapping[str, Any] | None = None,
@@ -959,7 +963,7 @@ def plan_next_task(
             seen_through_seq = delta[-1].seq
             prompt = _build_prompt(
                 room=room, member=member, messages=delta, watermark=watermark,
-                seen_through_seq=seen_through_seq, attachments=attachments, context=context, addressed_by_job=_scheduled_job(discussion),
+                seen_through_seq=seen_through_seq, attachments=attachments, share_files=share_files, context=context, addressed_by_job=_scheduled_job(discussion),
                 reply_required=_requires_direct_reply(room, discussion, member, round_index),
                 assigned_by=lead_round.lead if lead_round and round_index == 0 and member != lead_round.lead else None,
                 routed=round_index == 0 and routed is not None and len(routed) < len(room.members))
@@ -1070,17 +1074,33 @@ def _terminal_text(result: Any, *, field: str, fallback: str) -> str:
 Effects = tuple[dict[str, Any], list[EventPlan]]
 
 
+def _file_names(names: Iterable[str]) -> str:
+    """File names for a sentence the gateway writes: an ``@`` in a name never reads as a mention
+    (a word joiner follows it), so the sentence summons nobody."""
+    return ", ".join(str(name).replace("@", "@\u2060") for name in names)
+
+
 def _settled_effects(
     result: Any, *, task: DiscussionTaskPlan, room: DiscussionRoom, message_event_id: str, **_: Any) -> Effects:
+    # Files the Bot shared during the turn ride on its one member message, even after "(pass)";
+    # a staged file whose bytes could not be read is named instead, so a share is never silence.
+    attachments = _message_manifest(result.get("attachments", [])) if isinstance(result, Mapping) else []
+    unshared = [str(name) for name in result.get("unshared", [])] if isinstance(result, Mapping) else []
+    note = f"Could not share {_file_names(unshared)}." if unshared else ""
     text = _truncate_utf8_text(
-        _terminal_text(result, field="text", fallback=""), max_bytes=MAX_MEMBER_TEXT_BYTES,
+        _terminal_text(result, field="text", fallback=""),
+        max_bytes=MAX_MEMBER_TEXT_BYTES - (len(note.encode("utf-8")) + 2 if note else 0),
         suffix=_TRUNCATED_REPLY_NOTICE)
+    if is_pass_text(text):
+        text = f"Shared {_file_names(item['name'] for item in attachments)}." if attachments else ""
+    if note:
+        text = f"{text}\n\n{note}" if text else note
     if is_pass_text(text):
         return {"message_event_id": None, "passed": True}, []
     return {"message_event_id": message_event_id, "passed": False}, [EventPlan(
         event_id=message_event_id, kind="message.member", actor=_member_actor(task.member),
-        payload={**_turn_coordinates(task), "text": text}, authority_gateway_id=room.gateway_id,
-        authority_epoch=room.authority_epoch)]
+        payload={**_turn_coordinates(task), "text": text, **({"attachments": attachments} if attachments else {})},
+        authority_gateway_id=room.gateway_id, authority_epoch=room.authority_epoch)]
 
 
 def _failed_effects(result: Any, **_: Any) -> Effects:
@@ -1132,7 +1152,8 @@ def plan_publication(
     effective_status: TerminalKind = ("cancelled" if newer_same_thread and status != "deferred" else status)
     source = next((event for event in validated if event.event_id == task.discussion_event_id), None)
     if (effective_status == "settled" and _requires_direct_reply(room, source, task.member, task.round_index)
-            and is_pass_text(_terminal_text(result, field="text", fallback=""))):
+            and is_pass_text(_terminal_text(result, field="text", fallback=""))
+            and not (isinstance(result, Mapping) and (result.get("attachments") or result.get("unshared")))):
         # The execution completed, but did not answer the user. Publish that
         # failure from the durable receipt without replaying any tools or model calls.
         effective_status = "failed"

@@ -43,6 +43,8 @@ def probe_native_room_owner(db_path, *, room_id) -> bool:
 
 
 class CanonicalHostedRoomService(HostedControls, HostedRoomService):
+    shares_files = True
+
     def __init__(self, authority, loop):
         self.authority, self.loop = authority, loop
         self.member_rpcs = {}
@@ -106,14 +108,14 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
                     manifest = stored['payload'].get('attachments', [])
                     return {**result, 'retired': True, 'prompt': stored['payload']['prompt'], 'attachments': manifest,
                             'attachment_digests': source_attachment_digests(self, member, room_id, manifest)}
-        if operation in {'submit', 'execute', 'attachment'}:
+        if operation in {'submit', 'execute', 'attachment', 'output'}:
             matches = [t for t in list_tasks(self.db_path, room_id=room_id)
                        if asdict(t['identity']) == params.get('task')
                        and t['execution_generation'] == params.get('execution_generation')
                        and t['status'] == 'running'
                        and t['payload'].get('target_member_id', t['payload']['target_profile']) == member
                        and t['payload']['target_profile'] == profile
-                       and (operation == 'execute' or (
+                       and (operation in {'execute', 'output'} or (
                            (hashlib.sha256(t['payload']['prompt'].encode('utf-8')).hexdigest()
                             == params['prompt_sha256'] if 'prompt_sha256' in params
                             else t['payload']['prompt'] == params.get('prompt'))
@@ -125,7 +127,11 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
                 record_attempt_home(self.authority.db, room_id, member, matches[0]['identity'].task_id,
                                     matches[0]['execution_generation'], target_home)
             payload = matches[0]['payload']
-            if operation == 'attachment':
+            if operation == 'output':
+                # A file the running member turn shares, pushed in attested chunks.
+                from gateway.hosted_room_outputs import receive_output_chunk
+                result.update(receive_output_chunk(self, matches[0], params))
+            elif operation == 'attachment':
                 # Bytes only: the prompt/manifest already attested for the submit would
                 # otherwise compete with the chunk for the bounded response line.
                 from gateway.session_hosted_transport import source_attachment_chunk
@@ -137,6 +143,14 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
                               attachment_digests=source_attachment_digests(self, member, room_id, manifest))
         return result
 
+
+    def _bind_task_outputs(self, room, task):
+        from gateway.hosted_room_outputs import bind_outputs
+        return bind_outputs(self, room, task)
+
+    def _release_task_outputs(self, room, task):
+        from gateway.hosted_room_outputs import release_outputs
+        release_outputs(self, room, task)
 
     def bindings(self):
         with self.authority.db._read_ctx() as conn:

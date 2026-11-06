@@ -671,6 +671,65 @@ describe('ModelSettings', () => {
 })
 
 describe('ModelSettings provider switch', () => {
+  it('keeps the latest provider catalog when discovery replies arrive out of order', async () => {
+    const providers = [
+      { name: 'Nous', slug: 'nous', models: ['hermes-4'], authenticated: true },
+      {
+        name: 'Lab A',
+        slug: 'custom:lab-a',
+        models: [],
+        authenticated: true,
+        is_user_defined: true,
+        api_url: 'http://lab-a.local/v1'
+      },
+      {
+        name: 'Lab B',
+        slug: 'custom:lab-b',
+        models: [],
+        authenticated: true,
+        is_user_defined: true,
+        api_url: 'http://lab-b.local/v1'
+      }
+    ]
+
+    let resolveFirst!: (value: { providers: typeof providers }) => void
+
+    const first = new Promise<{ providers: typeof providers }>(resolve => {
+      resolveFirst = resolve
+    })
+
+    getGlobalModelOptions
+      .mockResolvedValueOnce({ providers })
+      .mockReturnValueOnce(first)
+      .mockResolvedValueOnce({
+        providers: providers.map(row =>
+          row.slug === 'custom:lab-b' ? { ...row, models: ['latest-b-model', 'another-b-model'] } : row
+        )
+      })
+
+    renderModelSettings()
+    await screen.findAllByRole('combobox')
+    fireEvent.click(screen.getAllByRole('combobox')[0])
+    fireEvent.click(await screen.findByRole('option', { name: /Lab A/ }))
+    await waitFor(() => expect(getGlobalModelOptions).toHaveBeenCalledTimes(2))
+    fireEvent.click(screen.getAllByRole('combobox')[0])
+    fireEvent.click(await screen.findByRole('option', { name: /Lab B/ }))
+    await waitFor(() => expect(getGlobalModelOptions).toHaveBeenCalledTimes(3))
+    fireEvent.click(screen.getAllByRole('combobox')[1])
+    expect(await screen.findByRole('option', { name: 'latest-b-model' })).toBeTruthy()
+    fireEvent.click(await screen.findByRole('option', { name: 'latest-b-model' }))
+
+    await act(async () => {
+      resolveFirst({ providers })
+      await first
+    })
+
+    // ModelSelect keeps the selected model visible even when it disappears
+    // from the catalog. A second model exposes whether the catalog survived.
+    fireEvent.click(screen.getAllByRole('combobox')[1])
+    expect(await screen.findByRole('option', { name: 'another-b-model' })).toBeTruthy()
+  })
+
   // #59063: a provider's model list is per-provider. Switching must not carry
   // the previous provider's model over (ModelSelect's withActive() would keep
   // painting it), and an empty freshly-selected custom provider must be probed

@@ -116,13 +116,32 @@ it('fails closed with a retry when the room lookup fails: retry, never mint', as
   expect(request.mock.calls.find(call => call[1] === 'groups.state')?.[2]).toMatchObject({ room_id: 'room-original' })
 })
 
-it('still offers to start a gateway group for a legacy room with no gateway room of that name', async () => {
+it.each([true, false])('Start keeps the original tab and read-only history without navigation (visible: %s)', async visible => {
+  $groupChats.set({ Team: { log: [{ id: 'earlier', at: 1, from: { kind: 'user', name: 'You' },
+    text: 'Earlier local message\n\nMEDIA:/tmp/private.png' }], running: false, watermarks: {} } })
   gateway(() => ({ rooms: [{ room_id: 'other', name: 'Elsewhere', members }], next_offset: null }))
-  await act(async () => { render(<GroupChatWorkspace group="Team" members={roster} />) })
+  const normal = request.getMockImplementation()!
+  let finish!: () => void
+  request.mockImplementation((route, method, params) => method === 'groups.create'
+    ? new Promise(resolve => { finish = () => resolve({ room: { ...original, room_id: params.room_id } }) })
+    : normal(route, method, params))
+  const view = await act(async () => render(<GroupChatWorkspace group="Team" members={roster} />))
   const start = screen.getByRole('button', { name: 'Start new group' }) as HTMLButtonElement
   expect(start.disabled).toBe(false)
   await act(async () => { fireEvent.click(start) })
+  view.rerender(<GroupChatWorkspace group="Team" members={roster} visible={visible} />)
+  await act(async () => { finish() })
+  expect(openWorkspace).not.toHaveBeenCalled()
+  await act(async () => { view.rerender(<GroupChatWorkspace group="Team" members={roster} />) })
   expect(methods().filter(m => m === 'groups.create')).toHaveLength(1)
+  expect(screen.queryByRole('button', { name: 'Start new group' })).toBeNull()
+  const created = request.mock.calls.find(call => call[1] === 'groups.create')![2].room_id
+  expect(request.mock.calls.find(call => call[1] === 'groups.state')?.[2]).toMatchObject({ room_id: created })
+  fireEvent.click(screen.getByText(/^Earlier messages/, { selector: 'summary' }))
+  const earlier = screen.getByRole('region', { name: /^Earlier messages/ })
+  expect(earlier.textContent).toContain('Earlier local message')
+  expect(earlier.querySelector('img, video, audio, button, textarea')).toBeNull()
+  expect(methods()).not.toContain('groups.send')
 })
 
 // Review on #140972: a name binding must stay on the (connection, profile) it was

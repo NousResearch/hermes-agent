@@ -147,9 +147,15 @@ def build_request_payload(
             api_kwargs, allow_stream=False, drop_replay_item_ids=drops_replay_item_ids(agent.base_url),
             sanitize_harmony_tokens=agent._is_codex_backend(),
         )
-    # OpenRouter caching replays identical responses, even empty ones; an empty-response
-    # retry must bypass the cache.
-    if agent._empty_content_retries > 0 and agent._is_openrouter_url():
+    # OpenRouter caching replays identical responses — even empty or broken ones. A retry
+    # that resends the request unchanged (empty content, invalid tool-call JSON, incomplete
+    # scratchpad) must bypass the cache, or it can hand back the very response it is
+    # retrying (#70387).
+    if agent._is_openrouter_url() and (
+        agent._empty_content_retries > 0
+        or agent._invalid_json_retries > 0
+        or agent._incomplete_scratchpad_retries > 0
+    ):
         _set_extra_header(api_kwargs, "X-OpenRouter-Cache", "false")
     _apply_user_turn_request_headers(agent, api_kwargs)
     try:

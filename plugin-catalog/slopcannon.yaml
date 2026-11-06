@@ -1,0 +1,93 @@
+name: slopcannon
+title: SLOPCANNON
+repo: https://github.com/vincitamore/hermes-slopcannon
+sha: b03e62386f85a13df42c34a63f87cf46618387b4
+version: "1.0.0"
+description: "SLOPCANNON music videos from a song, inside Hermes: one request produces a whole film (direction, rights sign-off, credit quote, first-scene review, parallel or chained scene renders, character checks, rerolls with a note, assembly), every decision a button on a live film card in the chat, a SLOPCANNON studio page in Hermes Desktop, and the whole hosted SLOPCANNON tool surface (remixes, the Ad Cannon, Character Lab, Slop TV) as native tools. Disclosure: calls api.slop.cc (needs a slop.cc account and Cannon Credits); spends only on the person's click on the card, a Hermes approval, or an unattended allowance that defaults to 0; runs the bundled Node production driver and ffmpeg as background child processes with a minimal environment and a dedicated agent session; reads only the songs and pictures you name and uploads them after your rights sign-off."
+maintainer: vincitamore
+category: tools
+tier: community
+requires_hermes: ">=0.22.5"
+docs_url: "https://github.com/vincitamore/hermes-slopcannon/blob/b03e62386f85a13df42c34a63f87cf46618387b4/README.md"
+image: "https://raw.githubusercontent.com/vincitamore/hermes-slopcannon/b03e62386f85a13df42c34a63f87cf46618387b4/docs/banner.png"
+screenshots:
+- "https://raw.githubusercontent.com/vincitamore/hermes-slopcannon/b03e62386f85a13df42c34a63f87cf46618387b4/docs/screenshots/3-scene-review.png"
+- "https://raw.githubusercontent.com/vincitamore/hermes-slopcannon/b03e62386f85a13df42c34a63f87cf46618387b4/docs/screenshots/4-finished.png"
+- "https://raw.githubusercontent.com/vincitamore/hermes-slopcannon/b03e62386f85a13df42c34a63f87cf46618387b4/docs/screenshots/2-quote.png"
+- "https://raw.githubusercontent.com/vincitamore/hermes-slopcannon/b03e62386f85a13df42c34a63f87cf46618387b4/docs/screenshots/1-rights.png"
+readme: true
+capabilities:
+  provides_tools:
+  - slopcannon_account
+  - slopcannon_upload
+  - slopcannon_wait
+  - slopcannon_download
+  - slopcannon_transcribe
+  - slopcannon_produce
+  - slopcannon_production_status
+  - slopcannon_production_stop
+  - slopcannon_add_character_reference
+  - slopcannon_add_reference
+  - slopcannon_assembly_download_links
+  - slopcannon_audio_spot_options
+  - slopcannon_cancel_assembly
+  - slopcannon_cancel_generation
+  - slopcannon_cancel_source_video
+  - slopcannon_capabilities
+  - slopcannon_check_take
+  - slopcannon_create_ad_pitch
+  - slopcannon_create_audio_spot
+  - slopcannon_create_character
+  - slopcannon_create_project
+  - slopcannon_create_publish_link
+  - slopcannon_create_quote
+  - slopcannon_create_render_request
+  - slopcannon_create_upload_link
+  - slopcannon_delete_take
+  - slopcannon_direct_scenes
+  - slopcannon_edit_audio_spot_line
+  - slopcannon_edit_audio_spot_sound
+  - slopcannon_get_ad_pitch
+  - slopcannon_get_assembly
+  - slopcannon_get_audio_spot
+  - slopcannon_get_character
+  - slopcannon_get_generation
+  - slopcannon_get_generation_content
+  - slopcannon_get_project
+  - slopcannon_get_project_local_assembly
+  - slopcannon_get_publish_link
+  - slopcannon_get_render_request
+  - slopcannon_get_scene_audio
+  - slopcannon_get_song_analysis
+  - slopcannon_get_source_video
+  - slopcannon_get_upload_link
+  - slopcannon_get_workspace
+  - slopcannon_import_character
+  - slopcannon_list_audio_spots
+  - slopcannon_list_characters
+  - slopcannon_list_generations
+  - slopcannon_list_publishable_films
+  - slopcannon_load_audio_spot
+  - slopcannon_plan_cuts
+  - slopcannon_prepare_source_video
+  - slopcannon_publish_character
+  - slopcannon_recover_generation
+  - slopcannon_remove_reference
+  - slopcannon_report_local_assembly
+  - slopcannon_save_workspace
+  - slopcannon_select_take
+  - slopcannon_slice_scene_audio
+  - slopcannon_start_assembly
+  - slopcannon_start_song_analysis
+  - slopcannon_submit_generation
+  - slopcannon_unpublish_character
+  - slopcannon_update_character
+  provides_hooks:
+  - pre_tool_call
+  - transform_llm_output
+  provides_middleware: []
+  requires_env: []
+known_issues:
+- "Needs a slop.cc account; renders spend Cannon Credits bought at slop.cc/account (the plugin never buys credits)"
+- "Whole productions need Node.js 22.13+ and ffmpeg/ffprobe on the machine Hermes runs on; the other tools work without them"
+- "Sign in once in a terminal: hermes config set SLOPCANNON_OAUTH_CLIENT_ID hermes-agent, then hermes auth add slopcannon:slop (or enter a slop.cc/account token as the plugin's Agent token)"

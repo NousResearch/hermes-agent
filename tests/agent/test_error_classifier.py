@@ -67,7 +67,6 @@ class TestClassifiedError:
         assert e3.is_auth is False
 
 
-
 # ── Test: Status code extraction ───────────────────────────────────────
 
 class TestExtractStatusCode:

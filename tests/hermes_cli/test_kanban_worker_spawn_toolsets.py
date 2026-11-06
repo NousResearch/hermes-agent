@@ -47,7 +47,25 @@ toolsets:
   - hermes-cli
 agent:
   disabled_toolsets: []
+plugins:
+  entries:
+    local_gpu_admission:
+      enabled: true
+      settings:
+        resource_balancer_python_path: RB_ROOT
+        resource_balancer_state_dir: RB_STATE
 """.lstrip(),
+        encoding="utf-8",
+    )
+    rb_root = tmp_path / "tools"
+    (rb_root / "resource_balancer").mkdir(parents=True)
+    (rb_root / "resource_balancer" / "admission.py").write_text("# fixture", encoding="utf-8")
+    rb_state = tmp_path / "rb-state"
+    rb_state.mkdir()
+    (rb_state / "queue.sqlite3").touch()
+    profile_config = profile.joinpath("config.yaml").read_text(encoding="utf-8")
+    profile.joinpath("config.yaml").write_text(
+        profile_config.replace("RB_ROOT", str(rb_root)).replace("RB_STATE", str(rb_state)),
         encoding="utf-8",
     )
     root.joinpath("config.yaml").write_text("toolsets:\n  - kanban\n", encoding="utf-8")
@@ -73,14 +91,28 @@ agent:
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    pid = kbd._default_spawn(_make_task(kb, assignee="elias"), str(workspace))
+    task = _make_task(kb, assignee="elias")
+    task.body = "Local-GPU-Capability: gemma.fixed-json.v1"
+    task.workspace_kind = "scratch"
+    task.workspace_path = str(workspace)
+    task.completion_contract = "local-only"
+    task.skills = ["local-gpu-model-task-gate"]
+    pid = kbd._default_spawn(task, str(workspace))
 
     assert pid == 4242
     assert captured["env"]["HERMES_HOME"] == str(profile)
     assert captured["env"]["HERMES_KANBAN_TASK"] == "t_spawn_tools"
-    assert captured["cmd"][-2:] == ["-m", "hermes_cli.kanban_worker_client"]
+    assert captured["cmd"][:3] == [
+        kbd.sys.executable, "-m", "plugins.local_gpu_admission.rb_exec_entrypoint",
+    ]
+    command_start = captured["cmd"].index("--") + 1
+    assert captured["cmd"][command_start:command_start + 3] == [
+        kbd.sys.executable, "-m", "hermes_cli.kanban_worker_client",
+    ]
     assert captured["env"]["HERMES_KANBAN_RUN_ID"] == "7"
     assert captured["env"]["HERMES_KANBAN_CLAIM_LOCK"] == "lock"
+    assert "HERMES_KANBAN_CAPABILITY_ID" not in captured["env"]
+    assert "HERMES_KANBAN_CONTRACT_SHA256" not in captured["env"]
 
 
 def test_default_spawn_does_not_pass_mutable_launch_overrides(monkeypatch, tmp_path):
@@ -167,7 +199,8 @@ def test_worker_toolsets_come_from_the_assignee_profile_not_the_parent_config(tm
     reach a worker whose profile grants ``terminal`` and ``web``."""
     import json
     from contextlib import closing
-    from types import SimpleNamespace
+    from types import ModuleType, SimpleNamespace
+    import sys
 
     from hermes_cli import kanban_db as kb
     from hermes_cli.kanban_db_connect import connect
@@ -195,6 +228,12 @@ def test_worker_toolsets_come_from_the_assignee_profile_not_the_parent_config(tm
 
     assignee_config = {"model": {"default": "m", "provider": "custom"},
                        "platform_toolsets": {"cli": ["terminal", "web"]}, "toolsets": ["hermes-cli"]}
+    # This test checks the Kanban toolset policy, not gateway model resolution. Importing
+    # gateway.run would load hermes_bootstrap and probe the real checkout recovery marker;
+    # keep that unrelated process bootstrap outside the temporary-home test contract.
+    gateway_run = ModuleType("gateway.run")
+    gateway_run._resolve_gateway_model = lambda _config: "m"
+    monkeypatch.setitem(sys.modules, "gateway.run", gateway_run)
     policy, _ = build_kanban_policy(connection, params, assignee_config)
     assert {"terminal", "web", "kanban"} <= set(policy.toolsets)
 

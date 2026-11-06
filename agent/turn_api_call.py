@@ -11,6 +11,7 @@ from __future__ import annotations
 from contextlib import nullcontext
 from dataclasses import dataclass
 import logging
+import os
 import time
 from typing import Any, Dict, Optional
 
@@ -34,8 +35,8 @@ def stop_thinking_spinner(agent: Any, thinking_spinner: Any) -> None:
 
 @dataclass
 class ApiCallVerdict:
-    """``action``: ``"fallthrough"`` (``response`` is ready for verification) or ``"break"``
-    (a redirect crossed the response — rebuild armed on ``_retry`` or ``interrupted``)."""
+    """``action``: ``"fallthrough"`` (response is ready), ``"break"`` (redirect/interrupt),
+    or ``"blocked"`` (local-model admission denied before provider I/O)."""
 
     action: str
     response: Any
@@ -125,7 +126,77 @@ def perform_api_call(
             defer_logical_completion=True,
         )
 
-    from hermes_cli.middleware import run_llm_execution_middleware
+    from hermes_cli.middleware import run_llm_admission_middleware, run_llm_execution_middleware
+
+    from agent.delegation_context import owned_local_gpu_task_context
+    local_task_context = owned_local_gpu_task_context()
+    admission = run_llm_admission_middleware(
+        task_id=effective_task_id, turn_id=turn_id, api_request_id=api_request_id,
+        kanban_task_id=os.environ.get("HERMES_KANBAN_TASK", ""),
+        task_run_id=os.environ.get("HERMES_KANBAN_RUN_ID", ""),
+        kanban_board=os.environ.get("HERMES_KANBAN_BOARD", ""),
+        kanban_db=os.environ.get("HERMES_KANBAN_DB", ""),
+        kanban_workspace=os.environ.get("HERMES_KANBAN_WORKSPACE", ""),
+        kanban_claim_lock=os.environ.get("HERMES_KANBAN_CLAIM_LOCK", ""),
+        capability_id=local_task_context.get("capability_id", ""),
+        task_contract_sha256=local_task_context.get("task_contract_sha256", ""),
+        context_length=getattr(getattr(agent, "context_compressor", None), "context_length", 0),
+        ollama_num_ctx=getattr(agent, "_ollama_num_ctx", 0),
+        session_id=agent.session_id or "", model=agent.model, provider=agent.provider,
+        base_url=agent.base_url, api_mode=agent.api_mode, api_call_count=api_call_count,
+        streaming=_use_streaming,
+        has_tools=bool(api_kwargs.get("tools")) if isinstance(api_kwargs, dict) else False,
+        existing_response_format=bool(
+            api_kwargs.get("response_format") or
+            ((api_kwargs.get("extra_body") or {}).get("response_format")
+             if isinstance(api_kwargs, dict) and isinstance(api_kwargs.get("extra_body"), dict) else False)
+        ) if isinstance(api_kwargs, dict) else False,
+        request_format_phase="prepare",
+        existing_lease_ids=tuple(getattr(agent, "_local_gpu_admission_lease_ids", ())),
+    )
+    if not admission.allowed:
+        response = admission
+        thinking_spinner = stop_thinking_spinner(agent, thinking_spinner)
+        return _verdict("blocked")
+
+    if admission.response_format is not None:
+        if not isinstance(api_kwargs, dict):
+            response = {
+                "decision": "block", "code": "request_format_invalid",
+                "reason": "Local JSON Schema request requires a mapping before provider I/O",
+            }
+            thinking_spinner = stop_thinking_spinner(agent, thinking_spinner)
+            return _verdict("blocked")
+        api_kwargs = dict(api_kwargs)
+        api_kwargs["response_format"] = admission.response_format
+        if isinstance(_original_api_kwargs, dict):
+            _original_api_kwargs = dict(_original_api_kwargs)
+            _original_api_kwargs["response_format"] = admission.response_format
+
+    # The task/run lease is acquired once and validated by the controller for every
+    # API request. Retain its opaque IDs on the agent so the outer turn finalizer can
+    # release them on success, failure, interruption, or an early return.
+    current_lease_ids = tuple(getattr(agent, "_local_gpu_admission_lease_ids", ()))
+    agent._local_gpu_admission_lease_ids = tuple(dict.fromkeys((*current_lease_ids, *admission.lease_ids)))
+    agent._local_gpu_admission_scope = {
+        "task_id": effective_task_id,
+        "kanban_task_id": os.environ.get("HERMES_KANBAN_TASK", ""),
+        "task_run_id": os.environ.get("HERMES_KANBAN_RUN_ID", ""),
+        "kanban_board": os.environ.get("HERMES_KANBAN_BOARD", ""),
+        "kanban_db": os.environ.get("HERMES_KANBAN_DB", ""),
+        "kanban_workspace": os.environ.get("HERMES_KANBAN_WORKSPACE", ""),
+        "kanban_claim_lock": os.environ.get("HERMES_KANBAN_CLAIM_LOCK", ""),
+        "capability_id": local_task_context.get("capability_id", ""),
+        "task_contract_sha256": local_task_context.get("task_contract_sha256", ""),
+        "api_request_id": api_request_id,
+        "context_length": str(getattr(getattr(agent, "context_compressor", None), "context_length", 0) or ""),
+        "ollama_num_ctx": str(getattr(agent, "_ollama_num_ctx", 0) or ""),
+        "turn_id": turn_id,
+        "session_id": agent.session_id or "",
+        "model": agent.model,
+        "provider": agent.provider,
+        "base_url": agent.base_url,
+    }
 
     # The ``_model_request_active`` bracket is taken under the redirect lock when one exists,
     # so redirect() can't observe a half-toggled flag.
@@ -142,6 +213,9 @@ def perform_api_call(
             session_id=agent.session_id or "", platform=agent.platform or "", model=agent.model,
             provider=agent.provider, base_url=agent.base_url, api_mode=agent.api_mode,
             api_call_count=api_call_count, middleware_trace=list(_llm_middleware_trace),
+            admission_policy_ids=admission.policy_ids,
+            admission_evidence_ids=admission.evidence_ids,
+            admission_lease_ids=admission.lease_ids,
         )
     finally:
         with _bracket:

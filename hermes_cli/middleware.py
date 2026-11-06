@@ -7,9 +7,11 @@ wrapping the actual execution callback. Agent-loop call sites and plugins share 
 from __future__ import annotations
 
 import logging
+import os
 from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List
+from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -20,9 +22,11 @@ TOOL_REQUEST_MIDDLEWARE = "tool_request"
 TOOL_EXECUTION_MIDDLEWARE = "tool_execution"
 LLM_REQUEST_MIDDLEWARE = "llm_request"
 LLM_EXECUTION_MIDDLEWARE = "llm_execution"
+LLM_ADMISSION_MIDDLEWARE = "llm_admission"
 
 VALID_MIDDLEWARE: set[str] = {
-    TOOL_REQUEST_MIDDLEWARE, TOOL_EXECUTION_MIDDLEWARE, LLM_REQUEST_MIDDLEWARE, LLM_EXECUTION_MIDDLEWARE,
+    TOOL_REQUEST_MIDDLEWARE, TOOL_EXECUTION_MIDDLEWARE, LLM_REQUEST_MIDDLEWARE,
+    LLM_EXECUTION_MIDDLEWARE, LLM_ADMISSION_MIDDLEWARE,
 }
 
 
@@ -34,6 +38,67 @@ class RequestMiddlewareResult:
     original_payload: Any
     changed: bool = False
     trace: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class LLMAdmissionDecision:
+    """Trusted pre-request decision for a local model route.
+
+    ``policy_ids`` and ``evidence_ids`` identify the controller records that allowed a
+    request. A denial is terminal for the current turn and must never fall through to the
+    provider or a configured model fallback.
+    """
+
+    allowed: bool
+    code: str
+    reason: str
+    policy_ids: tuple[str, ...] = ()
+    evidence_ids: tuple[str, ...] = ()
+    lease_ids: tuple[str, ...] = ()
+    response_format: dict[str, Any] | None = None
+
+
+class LocalModelAdmissionBlockedError(RuntimeError):
+    """Terminal refusal raised at a provider adapter before local inference begins."""
+
+
+class LocalGPUAdmissionController:
+    """Lifecycle contract for a trusted local-inference admission backend.
+
+    Implementations must atomically validate capability and acquire a task/run-bound GPU
+    reservation in ``acquire``. The provider adapter must validate that reservation immediately
+    before each inference request. ``release`` is called from the outer turn finalizer and must
+    be idempotent and holder-qualified. This interface intentionally has no default backend:
+    without an installed controller, local inference remains denied.
+    """
+
+    def __call__(self, *, action: str, lease_ids: tuple[str, ...] = (), **context: Any) -> dict[str, Any]:
+        """Plugin middleware entry point used by the pre-request gate and turn finalizer."""
+        if action == "acquire":
+            return self.acquire(**context)
+        if action == "validate":
+            return self.validate(lease_ids=lease_ids, **context)
+        if action == "release":
+            return self.release(lease_ids=lease_ids, **context)
+        if action == "verify_completion":
+            return self.verify_completion(**context)
+        return {
+            "decision": "block", "policy_id": "invalid-action",
+            "reason": "Unknown local GPU admission lifecycle action",
+        }
+
+    def acquire(self, **scope: Any) -> dict[str, Any]:  # pragma: no cover - interface contract
+        raise NotImplementedError
+
+    def validate(self, *, lease_ids: tuple[str, ...], **scope: Any) -> dict[str, Any]:  # pragma: no cover
+        raise NotImplementedError
+
+    def release(self, *, lease_ids: tuple[str, ...], **scope: Any) -> dict[str, Any]:  # pragma: no cover
+        raise NotImplementedError
+
+    def verify_completion(self, **scope: Any) -> dict[str, Any]:  # pragma: no cover
+        """Independently verify the exact task artifact before Kanban terminal mutation."""
+        raise NotImplementedError
 
 
 def observer_payload(**kwargs: Any) -> dict[str, Any]:
@@ -139,6 +204,72 @@ def run_llm_execution_middleware(
     return _run_execution_chain(
         LLM_EXECUTION_MIDDLEWARE, next_call,
         request=request, original_request=context.pop("original_request", request), **context)
+
+
+from hermes_cli.local_gpu_admission_middleware import (
+    call_local_model_admission_backend,
+    _admission_scope_string,
+    _is_type_only_json_schema,
+    _valid_response_format,
+    require_local_model_admission,
+    release_local_gpu_admission_leases,
+    run_llm_admission_middleware,
+)
+from hermes_cli.local_model_routes import (
+    _host_resolves_to_local_address,
+    _is_known_official_provider_host,
+    is_local_llm_route as _is_local_llm_route,
+)
+
+def verify_local_model_task_completion(**context: Any) -> dict[str, str] | None:
+    """Require exactly one trusted controller to verify a local task before it can complete.
+
+    The controller must re-read the pinned task/run, validate the active lease and task digest,
+    constrain artifacts to the task workspace, verify the pinned external oracle, and return an
+    exact scope echo plus immutable evidence identifiers. This helper never accepts a model's
+    self-reported PASS.
+    """
+    required = (
+        "task_id", "kanban_task_id", "task_run_id", "kanban_claim_lock", "kanban_board", "kanban_db",
+        "kanban_workspace", "capability_id", "task_contract_sha256", "workspace_path", "assignee",
+        "model_override", "provider_override", "completion_contract", "artifacts",
+    )
+    scope = {key: str(context.get(key) or "") for key in required if key != "artifacts"}
+    artifacts = context.get("artifacts")
+    required_identity = (
+        "task_id", "kanban_task_id", "task_run_id", "kanban_claim_lock", "kanban_board", "kanban_db",
+        "capability_id", "task_contract_sha256", "workspace_path", "assignee",
+    )
+    if (not all(scope.get(key) for key in required_identity)
+            or not isinstance(artifacts, (list, tuple)) or not artifacts):
+        raise RuntimeError("Local task completion lacks an exact task/run or artifact scope")
+    normalized_artifacts = [str(path) for path in artifacts]
+    if any(not path.strip() for path in normalized_artifacts):
+        raise RuntimeError("Local task completion contains an empty artifact path")
+    expected_scope = {**scope, "artifacts": normalized_artifacts}
+
+    try:
+        results, callback_count = call_local_model_admission_backend(
+            "verify_completion", **expected_scope,
+        )
+    except (ImportError, AttributeError, RuntimeError, TypeError, ValueError) as exc:
+        logger.error("Local task verifier discovery failed closed: %s", exc)
+        raise RuntimeError("Local-model controller could not verify this task") from exc
+    if callback_count == 0:
+        raise RuntimeError("No local-model controller is available to verify this task")
+    if callback_count != 1:
+        raise RuntimeError("Exactly one local-model controller is required for task verification")
+    result = results[0]
+    if not isinstance(result, dict):
+        raise RuntimeError("Local-model controller returned no verification receipt")
+    expected_text = ("policy_id", "reason", "evidence_id", "verifier_sha256", "artifact_sha256")
+    if (result.get("decision") != "verified"
+            or result.get("scope") != expected_scope
+            or any(not isinstance(result.get(key), str) or not result[key].strip()
+                   for key in expected_text)):
+        reason = result.get("reason") if isinstance(result.get("reason"), str) else "invalid receipt"
+        raise RuntimeError(f"Independent local-task verification refused completion: {reason}")
+    return {key: result[key].strip() for key in expected_text}
 
 
 def run_tool_execution_middleware(

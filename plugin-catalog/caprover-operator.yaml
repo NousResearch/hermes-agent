@@ -1,7 +1,7 @@
 name: caprover-operator
 title: CapRover Operator
 repo: https://github.com/fmercurio/hermes-caprover-operator
-sha: b1b8f0461651b84e5b00067437014a2fc4754741
+sha: 1d813b6e23c88c8641f8c891b46c2ae3f065e890
 description: >-
   Read-only setup diagnostics and human-approved, state-bound immutable-image
   deployment for one owner-configured CapRover app, with durable uncertainty,
@@ -12,12 +12,15 @@ description: >-
   ledger. Image startup may run migrations. HTTP alone does not prove the serving
   image; runtime task evidence is optional. No shell, telemetry, self-updater or
   automatic rollback. Apply requires fresh native human approval in in_process mode.
+  Safeguards apply only to this plugin's caprover_apply workflow and ledger;
+  independent terminal or execute_code actions, other plugins, direct API calls
+  and external operators require their own access controls and approvals.
 maintainer: fmercurio
 tier: community
 category: tools
 requires_hermes: ">=0.22.6"
 docs_url: https://github.com/fmercurio/hermes-caprover-operator#readme
-version: "0.3.0"
+version: "0.3.1"
 platforms: [linux, macos]
 known_issues:
   - Apply requires an interactive native human approval and plugins.isolation set to in_process; unattended, smart and YOLO approval cannot authorize a deployment.

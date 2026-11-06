@@ -162,21 +162,26 @@ async def test_a_reaction_on_an_earlier_segments_row_resets_the_poller(tmp_path,
 def _two_handoffs_on_one_carrier(db, target):
     """question 1, answer 1, then question 2 wrapped by two compactions in turn (the second re-wraps the
     first's carrier), then answer 2: the carrier shows two handoffs before it."""
-    from agent.context_compressor import (
-        SUMMARY_PREFIX, _MERGED_PRIOR_CONTEXT_HEADER, _MERGED_SUMMARY_DELIMITER, _SUMMARY_END_MARKER,
-    )
     db.append_message(target, 'user', 'question 1')
     db.append_message(target, 'assistant', 'answer 1')
     db.append_message(target, 'user', 'question 2', message_uid='q2')
     db.append_message(target, 'assistant', 'answer 2')
     for goal in ('first', 'second'):
-        held = db.get_messages_as_conversation(target)
-        carrier = next(row for row in held if row.get('message_uid') == 'q2')
-        carrier = {**carrier, '_compressed_summary': True, 'content': (
-            f'{_MERGED_PRIOR_CONTEXT_HEADER}\nquestion 2\n{_MERGED_SUMMARY_DELIMITER}\n{SUMMARY_PREFIX}\n'
-            f'## Goal\n{goal}\n{_SUMMARY_END_MARKER}')}
-        db.archive_and_compact(target, [carrier, held[-1]], watermark=db.get_active_message_watermark(target),
-                               tail_count=2)
+        _rewrap(db, target, goal)
+
+
+def _rewrap(db, target, goal):
+    """One more in-place compaction that re-wraps question 2's carrier: one more handoff before it."""
+    from agent.context_compressor import (
+        SUMMARY_PREFIX, _MERGED_PRIOR_CONTEXT_HEADER, _MERGED_SUMMARY_DELIMITER, _SUMMARY_END_MARKER,
+    )
+    held = db.get_messages_as_conversation(target)
+    carrier = next(row for row in held if row.get('message_uid') == 'q2')
+    carrier = {**carrier, '_compressed_summary': True, 'content': (
+        f'{_MERGED_PRIOR_CONTEXT_HEADER}\nquestion 2\n{_MERGED_SUMMARY_DELIMITER}\n{SUMMARY_PREFIX}\n'
+        f'## Goal\n{goal}\n{_SUMMARY_END_MARKER}')}
+    db.archive_and_compact(target, [carrier, held[-1]], watermark=db.get_active_message_watermark(target),
+                           tail_count=2)
 
 
 async def _every_page(owner, session_id, limit, order):
@@ -204,4 +209,26 @@ async def test_limit_counts_handoff_rows_and_a_split_carrier_sends_each_handoff_
             ('message', 'question 1'), ('message', 'answer 1'), ('compaction', '## Goal\nfirst'),
             ('compaction', '## Goal\nsecond'), ('message', 'question 2'), ('message', 'answer 2')], whole
         assert await _every_page(owner, ref.session_id, limit, order) == whole
+        await owner.close()
+
+
+@pytest.mark.asyncio
+async def test_a_rewrap_between_newest_first_pages_sends_no_handoff_twice(tmp_path, monkeypatch):
+    """A newest-first page ended inside question 2's handoffs (it sent the row and the newer one), then a
+    compaction re-wrapped the carrier once more: the next pages send the older handoff, not the newer
+    one again, and nothing the walk started with is skipped."""
+    with _session(tmp_path, monkeypatch) as (db, _authority, owner, ref, target):
+        _two_handoffs_on_one_carrier(db, target)
+        started = (await _call(owner, 'session.transcript', session_id=ref.session_id, limit=100))['result']['rows']
+        reply = (await _call(owner, 'session.transcript', session_id=ref.session_id, limit=3, order='latest'))['result']
+        assert [row.get('text') for row in reply['rows']] == ['## Goal\nsecond', 'question 2', 'answer 2'], reply
+        _rewrap(db, target, 'third')
+        rows = reply['rows']
+        while reply['next_cursor']:
+            reply = (await _call(owner, 'session.transcript', session_id=ref.session_id, limit=3, order='latest',
+                                 cursor=reply['next_cursor']))['result']
+            rows = reply['rows'] + rows
+        walked = [(row['row_kind'], row.get('text')) for row in rows]
+        assert len(walked) == len(set(walked)), walked
+        assert {(row['row_kind'], row.get('text')) for row in started} <= set(walked), walked
         await owner.close()

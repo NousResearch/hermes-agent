@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, MutableMapping, Optional
 
-from agent.provider_registry import ProviderRegistry
+from agent.provider_registry import ProviderRegistry, exact_key
 from agent.secret_sources.base import (
     SECRET_SOURCE_API_VERSION, ErrorKind, FetchResult, SecretSource, is_valid_env_name,
     reset_source_environment, set_source_environment,
@@ -29,17 +29,12 @@ from hermes_constants import hermes_home_key, normalize_scope
 
 logger = logging.getLogger(__name__)
 
-
-def _exact(name: str) -> str:
-    return name
-
-
 # Ordered registry: name → source. Dict insertion order doubles as the default
 # apply order. Origin is recorded so consumers never infer ownership from names.
 # Storage and the snapshot/restore pair are the shared ProviderRegistry; the lock is
 # reentrant because ``_ensure_builtin_sources`` registers while holding it.
 _registry: ProviderRegistry[SecretSource] = ProviderRegistry(
-    label="Secret source", provider_cls=SecretSource, logger=logger, normalize=_exact,
+    label="Secret source", provider_cls=SecretSource, logger=logger, normalize=exact_key,
     lock=threading.RLock(),
 )
 _SOURCES: dict[str, SecretSource] = _registry._providers

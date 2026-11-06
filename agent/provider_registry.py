@@ -24,11 +24,16 @@ def lower_key(name: str) -> str:
     return name.strip().lower()
 
 
+def exact_key(name: str) -> str:
+    return name
+
+
 class ProviderRegistry(Generic[P]):
     """Global + per-scope provider map with plugin snapshot/restore support.
 
-    ``normalize`` is ``str.strip`` or ``lower_key`` (case-insensitive registries mirror
-    how their dispatcher normalizes the configured name). ``builtin_names`` are reserved
+    ``normalize`` is ``str.strip``, ``lower_key`` (case-insensitive registries mirror how
+    their dispatcher normalizes the configured name) or ``exact_key`` (names kept as
+    registered). ``builtin_names`` are reserved
     for in-tree implementations; a collision calls ``on_builtin_collision(key)`` and, if
     that returns, skips registration. ``logger`` is the owning module's so record names
     stay per-registry.

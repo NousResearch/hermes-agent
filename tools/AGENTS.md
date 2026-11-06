@@ -127,6 +127,11 @@ _record_scope_trust` keys trust on the home; a secondary never adopts the launch
 for a same-named server, and `mcp_tool_handlers.py::_trust_gate_check` consults the calling
 session's profile.
 
+Builders that merge the verified local session's client toolchain pass `client_toolchain=True`
+through the sanitizer so sandbox allowlisting cannot re-resolve those non-secret values as profile
+secrets. Generic, remote and voice callers keep scoped-secret resolution; never enable this for an
+unmerged ambient environment. Preserve backend overrides, omitted-name clearing and credential filters.
+
 **Background-process teardown signals the parent first.** `process_registry_termination.py::
 ProcessTerminationMixin._terminate_host_pid` snapshots the descendants, SIGTERMs only the recorded parent, waits
 `terminal.daemon_term_grace_seconds` for it to exit and reap its own children, then SIGTERMs the

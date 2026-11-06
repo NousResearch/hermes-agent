@@ -1082,10 +1082,17 @@ def _wsl_powershell_player_cmd(file_path: str) -> Optional[list[str]]:
         return None  # WSL path resolution failed; fall through to ffplay/aplay
 
 
+# afplay can exit successfully without playing an unsupported container (notably
+# Ogg/Opus). Only offer it for CoreAudio containers; ffplay handles the rest.
+_COREAUDIO_CONTAINERS = frozenset({".wav", ".mp3", ".m4a", ".aac", ".aif", ".aiff", ".caf"})
+
+
 def _system_player_candidates(file_path: str) -> list[list[str]]:
-    """Ordered system-player commands for this platform."""
+    """Ordered system-player commands that can decode the requested container."""
     system = platform.system()
-    players: list[list[str]] = [["afplay", file_path]] if system == "Darwin" else []
+    players: list[list[str]] = []
+    if system == "Darwin" and os.path.splitext(file_path)[1].lower() in _COREAUDIO_CONTAINERS:
+        players.append(["afplay", file_path])
     ps_cmd = _wsl_powershell_player_cmd(file_path) if system == "Linux" else None
     if ps_cmd:
         players.append(ps_cmd)
@@ -1127,7 +1134,7 @@ def _play_audio_file_impl(file_path: str) -> bool:
     if not os.path.isfile(file_path):
         logger.warning("Audio file not found: %s", file_path)
         return False
-    # macOS skips sounddevice output (TCC media-library prompt); afplay handles all formats.
+    # macOS skips sounddevice output (TCC media-library prompt); use a compatible system player.
     if file_path.endswith(".wav") and _sounddevice_output_allowed() and _play_wav_via_sounddevice(file_path):
         return True
     for cmd in _system_player_candidates(file_path):

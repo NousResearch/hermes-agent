@@ -583,6 +583,31 @@ test('a dev run starts without window enumeration when the binding cannot be fet
   }
 })
 
+test('a dev run gives up on a hung binding fetch and starts without window enumeration', { timeout: 60_000 }, () => {
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
+  const warnings = []
+  const origWarn = console.warn
+  console.warn = (msg) => warnings.push(String(msg))
+  try {
+    const srcRoot = join(tmp, 'get-windows')
+    makeFakeGetWindows(srcRoot)
+    // Stands in for node-pre-gyp waiting on a network that drops packets; exits 0 after 20 s so
+    // an unbounded spawn fails the assertions below rather than hanging the suite.
+    const hang = join(tmp, 'hang.mjs')
+    fs.writeFileSync(hang, 'setTimeout(() => {}, 20_000)')
+    const install = (root, options) =>
+      installGetWindowsNativeBinding(root, { ...options, resolveInstaller: () => hang })
+    const started = Date.now()
+    ensureDevGetWindowsBinding({ platform: 'win32', arch: 'x64', resolveRoot: () => srcRoot, install, timeoutMs: 500 })
+    assert.equal(warnings.length, 1)
+    assert.ok(Date.now() - started < 10_000)
+    assert.match(warnings[0], /timed out after 0\.5s.*read_window_below will be unavailable/)
+  } finally {
+    console.warn = origWarn
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
 test('darwin staging degrades (not staged) when the helper binary is missing', () => {
   const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
   const warnings = []

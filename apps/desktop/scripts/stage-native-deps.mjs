@@ -634,14 +634,18 @@ function getWindowsBindingDirs(srcRoot, platform, arch) {
  * (pnpm-workspace.yaml allowBuilds), so a fresh Windows checkout has no binding there and
  * upstream's lib/windows.js hands back stubs. Fetch it once into the installed package, the way
  * stageGetWindows does for builds. Fail soft: dev runs without window enumeration rather than
- * not at all.
+ * not at all. node-pre-gyp's download has no timeout of its own, so on a network that drops
+ * packets the run is bounded here instead of waiting out the OS TCP timeout on every dev start.
  */
+export const DEV_GET_WINDOWS_TIMEOUT_MS = 120_000
+
 export function ensureDevGetWindowsBinding(
   {
     platform = process.platform,
     arch = process.arch,
     resolveRoot = () => resolveGetWindowsRoot(),
-    install = installGetWindowsNativeBinding
+    install = installGetWindowsNativeBinding,
+    timeoutMs = DEV_GET_WINDOWS_TIMEOUT_MS
   } = {}
 ) {
   if (platform !== 'win32' || arch === 'arm64') return
@@ -649,7 +653,7 @@ export function ensureDevGetWindowsBinding(
   if (!srcRoot || getWindowsBindingDirs(srcRoot, platform, arch).length > 0) return
   console.log('[dev] get-windows has no win32 binding; running its native installer...')
   try {
-    install(srcRoot)
+    install(srcRoot, { timeoutMs })
   } catch (error) {
     console.warn(
       `[dev] ${error instanceof Error ? error.message : String(error)}; ` +
@@ -660,7 +664,7 @@ export function ensureDevGetWindowsBinding(
 
 export function installGetWindowsNativeBinding(
   srcRoot,
-  { resolveInstaller, spawn = spawnSync } = {}
+  { resolveInstaller, spawn = spawnSync, timeoutMs } = {}
 ) {
   let installerPath
   try {
@@ -678,8 +682,14 @@ export function installGetWindowsNativeBinding(
 
   const result = spawn(process.execPath, [installerPath, 'install', '--fallback-to-build'], {
     cwd: srcRoot,
-    stdio: 'inherit'
+    stdio: 'inherit',
+    ...(timeoutMs ? { timeout: timeoutMs } : {})
   })
+  if (result.error?.code === 'ETIMEDOUT') {
+    throw new Error(
+      `[stage-native-deps] get-windows native installer timed out after ${timeoutMs / 1000}s`
+    )
+  }
   if (result.error) {
     throw new Error(
       `[stage-native-deps] get-windows native installer could not start: ${result.error.message}`

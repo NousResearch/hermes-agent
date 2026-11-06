@@ -210,7 +210,7 @@ class SessionProfileRepairMixin:
     def export_session_for_move(self, session_id: str) -> Optional[dict[str, Any]]:
         """Everything the target store needs to hold *session_id* as its own: the row (every column),
         the resolved system prompt, EVERY message row (inactive and compacted generations included —
-        a move is not an export) and its usage rows."""
+        a move is not an export), its usage rows and its outcomes."""
         def _read(conn):
             session = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
             if session is None:
@@ -225,8 +225,10 @@ class SessionProfileRepairMixin:
                 "SELECT * FROM messages WHERE session_id = ? ORDER BY id", (session_id,))]
             usage = [dict(r) for r in conn.execute(
                 "SELECT * FROM session_model_usage WHERE session_id = ?", (session_id,))]
+            outcomes = [dict(r) for r in conn.execute(
+                "SELECT * FROM session_outcomes WHERE session_id = ? ORDER BY id", (session_id,))]
             return {"session": dict(session), "system_prompt": prompt, "tool_pin": tool_pin, "messages": messages,
-                    "usage": usage}
+                    "usage": usage, "outcomes": outcomes}
         payload = self._read_retrying_ioerr(_read)
         if payload is not None and session_id in self._ledgered_session_ids():
             # Re-checked at apply time: the scan may predate a turn, and copying first would leave
@@ -265,6 +267,8 @@ class SessionProfileRepairMixin:
                 self._insert_row(conn, "messages", {**message, "session_id": session_id}, skip=_MESSAGE_MOVE_SKIP)
             for usage in payload.get("usage") or []:
                 self._insert_row(conn, "session_model_usage", {**usage, "session_id": session_id}, skip=frozenset())
+            for outcome in payload.get("outcomes") or []:  # ids are per store: the target assigns its own
+                self._insert_row(conn, "session_outcomes", {**outcome, "session_id": session_id}, skip=frozenset({"id"}))
             return "imported"
         return self._execute_write(_do)
 

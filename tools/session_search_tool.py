@@ -91,9 +91,12 @@ def _get_session_meta(db, session_id: str) -> dict:
                   "get_session failed for %s: %s", session_id, with_exc=True) or {}
 
 
-def _session_meta_block(meta: dict[str, Any]) -> dict[str, Any]:
-    return {"when": _format_timestamp(meta.get("started_at")), "source": meta.get("source"),
-            "model": meta.get("model"), "title": meta.get("title")}
+def _session_meta_block(db, meta: dict[str, Any]) -> dict[str, Any]:
+    block = {"when": _format_timestamp(meta.get("started_at")), "source": meta.get("source"),
+             "model": meta.get("model"), "title": meta.get("title")}
+    if outcomes := _outcomes_by_session(db, [meta.get("id")]).get(meta.get("id")):
+        block["outcomes"] = outcomes
+    return block
 
 
 def _ok(**payload) -> str:
@@ -273,6 +276,26 @@ def _discovery_entry(lineage_root: Optional[str], **fields) -> dict[str, Any]:
     return entry
 
 
+def _outcomes_by_session(db, session_ids: list) -> dict[str, list[dict[str, Any]]]:
+    """``outcomes``: up to 3 newest effective ``{signal, verdict, source}`` of each entry's session, matched
+    across its compression lineage (#138653), so recall can tell work that shipped from work that was
+    reverted. Never ``note``/``ref`` (free text the model must not read) and never rows the agent recorded
+    itself (its own grade is not evidence). Absent when there are none; a store that cannot answer just
+    leaves the key off."""
+    found = _quiet(lambda: db.outcomes_for_sessions(session_ids, include_agent=False), {}, "outcomes read failed")
+    if not isinstance(found, dict):
+        return {}
+    return {sid: [{k: r[k] for k in ("signal", "verdict", "source")} for r in rows] for sid, rows in found.items()}
+
+
+def _attach_outcomes(db, results: list[dict[str, Any]]) -> None:
+    """Set each result's ``outcomes`` (see :func:`_outcomes_by_session`) when its session has any."""
+    found = _outcomes_by_session(db, [e["session_id"] for e in results])
+    for entry in results:
+        if entry["session_id"] in found:
+            entry["outcomes"] = found[entry["session_id"]]
+
+
 def _title_match_result(db, query: str, current_lineage_root: Optional[str]) -> Optional[dict[str, Any]]:
     """Discovery-shaped result when the query matches a session title, else None."""
     title_query = query.strip().strip("`'\"")  # models often quote a remembered title
@@ -421,6 +444,7 @@ def _discover(db, query: str, role_filter: Optional[list[str]], limit: int, sort
         entry = _hydrate_hit(db, lineage_root, match_info, "full" if detail == "full" or not results else "compact")
         if entry is not None:
             results.append(entry)
+    _attach_outcomes(db, results)
     for entry in results:
         entry["link"] = _session_link(entry["session_id"], link_profile)
     return _discover_payload(db, query, detail, results, sessions_searched=len(seen_sessions), link_hint=(
@@ -456,7 +480,7 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_prof
     shaped = [_shape_message(m, max_content_len=_READ_MAX_CONTENT) for m in rows]
     total, truncated = len(shaped), len(shaped) > head + tail
     return _ok(mode="read", session_id=session_id, link=_session_link(session_id, link_profile),
-               session_meta=_session_meta_block(meta), message_count=total, truncated=truncated,
+               session_meta=_session_meta_block(db, meta), message_count=total, truncated=truncated,
                messages=shaped[:head] + shaped[-tail:] if truncated else shaped,
                **({"message": (f"Session has {total} messages; showing first {head} + last {tail}. "
                                "Pass around_message_id (any id above) to scroll the middle.")} if truncated else {}))
@@ -502,6 +526,7 @@ def _list_recent_sessions(db, limit: int, current_session_id: str | None = None,
             "title": s.get("title") or None, **{k: s.get(k, "") for k in ("source", "started_at", "last_active")},
             "message_count": s.get("message_count", 0), "preview": s.get("preview", "")}
             for s in [x for x in sessions if x.get("id", "") not in hidden][:limit]]
+        _attach_outcomes(db, results)
         return _ok(mode="browse", results=results, count=len(results), message=(
             f"Showing {len(results)} most recent sessions. Pass a query= to search, "
             "or session_id+around_message_id to scroll."))
@@ -565,7 +590,7 @@ def _scroll(db, session_id: str, around_message_id: int, window: int = 5,
         return tool_error(f"around_message_id {around_message_id} not in session_id {session_id}", success=False)
     return _ok(
         mode="scroll", session_id=session_id, around_message_id=around_message_id,
-        session_meta=_session_meta_block(session_meta), window=window,
+        session_meta=_session_meta_block(db, session_meta), window=window,
         messages=[_shape_message(m, anchor_id=around_message_id) for m in messages],
         messages_before=view.get("messages_before", 0), messages_after=view.get("messages_after", 0),
         hint=("Scroll forward: re-call with around_message_id = the LAST message's "

@@ -342,7 +342,9 @@ class SessionPortabilityMixin:
     def _with_messages(self, session: dict[str, Any], include_compacted: bool = False,
                        include_inactive: bool = False) -> dict[str, Any]:
         messages = self.get_messages(session["id"], include_inactive=include_inactive, include_compacted=include_compacted)
-        return {**session, "messages": messages, "timings": _export_timings(messages, session["id"])}
+        outcomes = self._outcomes_by_session([session["id"]]).get(session["id"])
+        return {**session, "messages": messages, "timings": _export_timings(messages, session["id"]),
+                **({"outcomes": outcomes} if outcomes else {})}
 
     def export_session(self, session_id: str, include_compacted: bool = False,
                        include_inactive: bool = False) -> Optional[dict[str, Any]]:
@@ -395,8 +397,10 @@ class SessionPortabilityMixin:
                 messages_by_session[row["session_id"]].append(
                     self._row_to_message_dict(row, warn_context="get_messages", summary_flag=True)
                 )
+        outcomes = self._outcomes_by_session(session_ids)
         return [{**session, "messages": messages_by_session[session["id"]],
-                 "timings": _export_timings(messages_by_session[session["id"]], session["id"])} for session in sessions]
+                 "timings": _export_timings(messages_by_session[session["id"]], session["id"]),
+                 **({"outcomes": outcomes[session["id"]]} if session["id"] in outcomes else {})} for session in sessions]
 
     def adopt_session_lineage_from(self, donor_db: Any, session_id: str, *, retire_donor: bool = True) -> dict[str, Any]:
         """Adopt *session_id*'s full compression lineage from *donor_db* (stranded-bot-session
@@ -655,6 +659,7 @@ class SessionPortabilityMixin:
         clean_messages: list[dict[str, Any]] = []
         for message_index, message in enumerate(messages):
             clean_messages.append(self._normalize_import_message(message, message_index))
+        clean_session["outcomes"] = self._normalize_import_outcomes(raw.get("outcomes"))
         return {"session": clean_session, "messages": clean_messages}
 
     def _validate_import_payload(self, sessions: list[dict[str, Any]]) -> tuple:
@@ -827,6 +832,7 @@ class SessionPortabilityMixin:
                     skipped_ids.append(session_id)
                     continue
                 self._import_session_row(conn, raw, item["messages"], session_id)
+                self._insert_import_outcomes(conn, session_id, raw["outcomes"])
                 parent_id = str(raw.get("parent_session_id") or "").strip()
                 if parent_id:
                     parent_updates.append((session_id, parent_id))

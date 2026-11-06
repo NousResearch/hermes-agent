@@ -223,6 +223,7 @@ describe('useVoiceConversation playback rearm', () => {
       audioElement: null,
       messageId: null,
       sequence: 0,
+      sessionId: null,
       source: null,
       status: 'idle'
     })
@@ -233,6 +234,7 @@ describe('useVoiceConversation playback rearm', () => {
       audioElement: null,
       messageId: null,
       sequence: 7,
+      sessionId: null,
       source: null,
       status: 'idle'
     })

@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $voicePlayback } from '@/store/voice-playback'
 
-import { playSpeechText, startSpeechStream, stopVoicePlayback } from './voice-playback'
+import { isVoicePlaybackActive, playSpeechText, startSpeechStream, stopVoicePlayback } from './voice-playback'
 
 const gateway = vi.hoisted(() => {
   let nextUrl: string | null = 'ws://gateway.test/api/ws'
@@ -163,7 +163,7 @@ describe('voice-playback teardown (#91991)', () => {
     vi.stubGlobal('AudioContext', FakeAudioContext)
     vi.stubGlobal('Audio', FakeAudio)
     vi.stubGlobal('hermesDesktop', { getConnection: vi.fn(async () => ({ profile: 'test' })) })
-    $voicePlayback.set({ audioElement: null, messageId: null, sequence: 0, source: null, status: 'idle' })
+    $voicePlayback.set({ audioElement: null, messageId: null, sequence: 0, sessionId: null, source: null, status: 'idle' })
   })
 
   afterEach(() => {
@@ -298,5 +298,103 @@ describe('voice-playback teardown (#91991)', () => {
     expect(secondWs.close).toHaveBeenCalled()
     expect(FakeAudioContext.instances[1]?.closed).toBe(true)
     expect($voicePlayback.get().status).toBe('idle')
+  })
+})
+
+// Session ownership of the single playback slot. One renderer, one speaker:
+// starting a clip in one session takes the speaker over and records WHICH
+// session owns it, so sibling sessions' surfaces do not react to it. The bug
+// this pins: clicking Read aloud in one chat lit every open chat's pill and
+// disabled every other message's button.
+describe('voice-playback session ownership', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    FakeSocket.instances = []
+    FakeAudioContext.instances = []
+    FakeAudio.instances = []
+    gateway.setNextUrl('ws://gateway.test/api/ws')
+    vi.stubGlobal('WebSocket', FakeSocket)
+    vi.stubGlobal('AudioContext', FakeAudioContext)
+    vi.stubGlobal('Audio', FakeAudio)
+    vi.stubGlobal('hermesDesktop', { getConnection: vi.fn(async () => ({ profile: 'test' })) })
+    $voicePlayback.set({
+      audioElement: null,
+      messageId: null,
+      sequence: 0,
+      sessionId: null,
+      source: null,
+      status: 'idle'
+    })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.useRealTimers()
+  })
+
+  it('stamps the starting session on the playback state', async () => {
+    const session = await startSpeechStream({ sessionId: 'session-a', source: 'voice-conversation' })
+
+    expect(session).not.toBeNull()
+
+    const ws = FakeSocket.instances[0]
+
+    ws.serverOpen()
+    ws.serverFrame({ type: 'start', sample_rate: 24_000 })
+    ws.serverPcm(64)
+
+    expect($voicePlayback.get().status).toBe('speaking')
+    expect($voicePlayback.get().sessionId).toBe('session-a')
+
+    stopVoicePlayback()
+  })
+
+  it('reports playback as active for the owning session only', async () => {
+    const session = await startSpeechStream({ sessionId: 'session-a', source: 'voice-conversation' })
+
+    expect(session).not.toBeNull()
+
+    const ws = FakeSocket.instances[0]
+
+    ws.serverOpen()
+    ws.serverFrame({ type: 'start', sample_rate: 24_000 })
+    ws.serverPcm(64)
+
+    expect(isVoicePlaybackActive('session-a')).toBe(true)
+    // A sibling chat must not believe it is speaking.
+    expect(isVoicePlaybackActive('session-b')).toBe(false)
+    // No id → the renderer-wide answer, unchanged for callers that want it.
+    expect(isVoicePlaybackActive()).toBe(true)
+
+    stopVoicePlayback()
+  })
+
+  it('hands the speaker to a second session and leaves it as the owner after a stop', async () => {
+    const first = await startSpeechStream({ sessionId: 'session-a', source: 'voice-conversation' })
+
+    if (!first) {
+      throw new Error('expected a live speech stream')
+    }
+
+    const firstWs = FakeSocket.instances[0]
+
+    firstWs.serverOpen()
+    firstWs.serverFrame({ type: 'start', sample_rate: 24_000 })
+    firstWs.serverPcm(64)
+    expect($voicePlayback.get().sessionId).toBe('session-a')
+
+    // Session B takes the speaker: A's clip is drained, B owns the slot.
+    const second = await startSpeechStream({ sessionId: 'session-b', source: 'voice-conversation' })
+
+    expect(second).not.toBeNull()
+    await expect(first.done).resolves.toBe('done')
+    expect($voicePlayback.get().sessionId).toBe('session-b')
+    expect(isVoicePlaybackActive('session-a')).toBe(false)
+
+    stopVoicePlayback()
+
+    // The stop is attributed to B, not to the sibling that was cut earlier.
+    expect($voicePlayback.get().status).toBe('idle')
+    expect($voicePlayback.get().sessionId).toBe('session-b')
   })
 })

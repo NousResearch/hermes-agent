@@ -90,7 +90,7 @@ async def test_an_imported_row_is_adopted_and_reopened_by_the_canonical_owner(tm
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore
     from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from gateway.session_local_migration import resolve_local_target
     from hermes_cli import foreign_sessions_browser as browser
     from hermes_state_local import local_receipt
@@ -111,7 +111,7 @@ async def test_an_imported_row_is_adopted_and_reopened_by_the_canonical_owner(tm
 
     runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False)
     authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id="first")
-    native = Principal("native", str(tmp_path), frozenset(
+    native = SessionActor("native", str(tmp_path), frozenset(
         {"session:create", "session:read", "session:submit", "session:control"}), "native-socket")
     authority._native_legacy_transports = {native.transport_id: native}
 

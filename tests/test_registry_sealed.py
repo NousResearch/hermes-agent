@@ -14,7 +14,7 @@ import pytest
 
 import registry_freeze
 from registry_freeze import RegistryFrozen
-from tools.registry_sealed import SealedDict, SealedList, SealedSet, seal
+from registry_sealed import SealedDict, SealedList, SealedSet, seal
 
 
 @pytest.fixture

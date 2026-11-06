@@ -121,6 +121,7 @@ def aux_probe_mode():
 
 
 from agent.credential_pool import load_pool
+from agent.credential_pool_model_cooldowns import pool_failure_reason
 from agent.custom_entry_pool import entry_scoped_pool, pool_for_aux_provider
 from agent.message_metadata import data_use_requirement
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
@@ -3487,13 +3488,15 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
     gated = verdict.reason is FailoverReason.model_entitlement
 
     def _rotate(fallback_status: int) -> bool:
+        # Sized as the main loop's recover_with_credential_pool sizes it: real status, pool failure reason, model.
         error_context: dict[str, Any] = {"message": str(exc)}
         if status_code is not None:
             error_context["status_code"] = status_code
         next_entry = pool.mark_exhausted_and_rotate(
-            status_code=fallback_status if status_code in (None, 400) else status_code,
+            status_code=fallback_status if status_code is None else status_code,
             error_context=error_context, api_key_hint=failed_api_key or None,
-            **({"failure_reason": verdict.reason.value, "model": verdict.model or None} if gated else {}),
+            failure_reason=pool_failure_reason(verdict.reason, verdict.error_context, verdict.billing_unverified),
+            model=verdict.model or None,
         )
         if next_entry is None:
             return False

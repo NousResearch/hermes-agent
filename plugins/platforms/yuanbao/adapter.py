@@ -69,6 +69,7 @@ from plugins.platforms.yuanbao.inbound_capacity import (
     BoundedDispatchMixin, GroupDispatchState, InboundAdmission,
 )
 from gateway.session_transcript import TranscriptReadError
+from plugins.platforms.yuanbao.ws_proxy import _proxy_log_mode, _resolve_ws_proxy_override
 
 logger = logging.getLogger(__name__)
 
@@ -1777,11 +1778,22 @@ class ConnectionManager:
         cleans up on auth failure."""
         if token_data.get("bot_id"):
             self._adapter._bot_id = str(token_data["bot_id"])
+        connect_kwargs = dict(
+            ping_interval=None, ping_timeout=None, close_timeout=5,
+            happy_eyeballs_delay=0.25,  # race IPv6/IPv4 in loop.create_connection (#114265)
+        )
+        # Repair the SOCKS proxy websockets would otherwise auto-derive from the system
+        # configuration (#122708): without an explicit ``proxy=`` the dial inherits the
+        # system proxy detection and dies on the missing python-socks runtime.
+        override, proxy_url = _resolve_ws_proxy_override(self._adapter._ws_url)
+        if override:
+            connect_kwargs["proxy"] = proxy_url
+            logger.info(
+                "[%s] Replaced unusable system SOCKS proxy for the WS dial -> %s",
+                self._adapter.name, _proxy_log_mode(proxy_url),
+            )
         self._ws = await asyncio.wait_for(
-            websockets.connect(  # type: ignore[attr-defined]
-                self._adapter._ws_url, ping_interval=None, ping_timeout=None, close_timeout=5,
-                happy_eyeballs_delay=0.25,  # race IPv6/IPv4 in loop.create_connection (#114265)
-            ),
+            websockets.connect(self._adapter._ws_url, **connect_kwargs),  # type: ignore[attr-defined]
             timeout=CONNECT_TIMEOUT_SECONDS,
         )
         if not await self._authenticate(token_data):

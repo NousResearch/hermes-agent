@@ -50,16 +50,20 @@ def test_kill_all_release_sweep_skips_persisted_sessions(registry):
     assert persisted.exited is False
 
 
-def test_gateway_turn_timeout_reap_skips_persisted_sessions(registry):
-    """A timed-out turn's kill_started_since (source=gateway_turn_timeout) is a
-    lifecycle sweep: a persisted job started mid-turn must survive it (#41225)."""
+@pytest.mark.parametrize(
+    "source",
+    ["gateway_turn_timeout", "gateway_turn_reset", "api_server_sse_disconnect"],
+)
+def test_gateway_turn_timeout_reap_skips_persisted_sessions(registry, source):
+    """An abandoned turn's kill_started_since (timeout, /new reset, or SSE disconnect)
+    is a lifecycle sweep: a persisted job started mid-turn must survive it (#41225)."""
     persisted = _make_session(sid="proc_persisted", task_id="session-a", persist=True)
     volatile = _make_session(sid="proc_new", task_id="session-a")
     registry._running[persisted.id] = persisted
     registry._running[volatile.id] = volatile
     calls = _fake_kill_collector(registry)
 
-    assert registry.kill_started_since("session-a", frozenset(), source="gateway_turn_timeout") == 1
+    assert registry.kill_started_since("session-a", frozenset(), source=source) == 1
     assert [c[0] for c in calls] == ["proc_new"]
     assert persisted.exited is False
 
@@ -104,6 +108,11 @@ def test_explicit_operator_stop_still_reaches_persisted_sessions(registry):
     calls = _fake_kill_collector(registry)
 
     assert registry.kill_all("session-a", source="process.kill") == 1
+    assert [c[0] for c in calls] == ["proc_persisted"]
+
+    persisted.exited = False
+    calls.clear()
+    assert registry.kill_started_since("session-a", frozenset(), source="gateway_turn_interrupt") == 1
     assert [c[0] for c in calls] == ["proc_persisted"]
 
 

@@ -21,6 +21,7 @@ import { resetBrowseState } from '@/store/composer-input-history'
 import { journalOutgoingSend, type OutgoingSend } from '@/store/composer-outbox'
 import { enqueueQueuedPrompt, type QueuedPromptEntry, serverOwnsComposerQueue } from '@/store/composer-queue'
 import { hasConnectionRequest, skipConnectionRequest } from '@/store/connection-request'
+import { activeGatewayConnectionId, activeGatewayProfileKey, gatewayActivationEpoch } from '@/store/gateway'
 import { notify } from '@/store/notifications'
 import { isOnboardingChat } from '@/store/onboarding-session'
 import { answerParkedCard, skipParkedCards, yieldParkedCardsToMessage } from '@/store/parked-card-answers'
@@ -620,7 +621,27 @@ export function useComposerSubmit({
     const submittedScope = draftScopeRef.current
     const connection = $connection.get()
     const profile = $activeGatewayProfile.get()
-    const sameOwner = () => $connection.get() === connection && $activeGatewayProfile.get() === profile
+    const activation = gatewayActivationEpoch()
+    const connectionId = activeGatewayConnectionId()
+    const routeProfile = activeGatewayProfileKey()
+    const sameOwner = () => {
+      const current = $connection.get()
+
+      // Reconnect refreshes the descriptor, not the dispatch route. An edited endpoint is a new owner.
+      return (
+        gatewayActivationEpoch() === activation &&
+        activeGatewayConnectionId() === connectionId &&
+        activeGatewayProfileKey() === routeProfile &&
+        $activeGatewayProfile.get() === profile &&
+        current?.connectionId === connection?.connectionId &&
+        current?.profile === connection?.profile &&
+        current?.mode === connection?.mode &&
+        current?.baseUrl === connection?.baseUrl &&
+        current?.wsUrl === connection?.wsUrl &&
+        current?.token === connection?.token &&
+        current?.authMode === connection?.authMode
+      )
+    }
     const stillHere = () => draftScopeRef.current === submittedScope && sameOwner()
     pendingSteers.current.add(submittedScope)
 

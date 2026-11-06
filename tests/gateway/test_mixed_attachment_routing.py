@@ -71,7 +71,6 @@ async def test_mixed_document_event_preserves_audio_as_non_stt_file_path():
     )
     runner.adapters = {}
     runner._session_model_overrides = {}
-    runner._session_reasoning_overrides = {}
     source = SessionSource(
         platform=Platform.TELEGRAM,
         chat_id="mixed-audio",

@@ -2264,7 +2264,7 @@ _AGENT_PENDING_SENTINEL = object()
 # plain-dict stores not yet folded in (``_pending_model_notes``, popped per-key by
 # _clear_conversation_scope) and the public test contract. NOT listed (different lifecycles): turn-scoped
 # _running_agents*/_busy_ack_ts/turn.lease/turn.lease_tokens (_release_running_agent_state +
-# dispatch finally); _session_run_generation (monotonic; clearing breaks stale-run detection);
+# dispatch finally); persistent.run_generation (monotonic; clearing breaks stale-run detection);
 # _agent_cache (_evict_cached_agent); approval/slash-confirm (_clear_session_boundary_security_state).
 # The state itself now lives in ``SessionState.conversation`` (see gateway/session_state.py) and boundaries
 # clear it structurally via ``ConversationState.clear()`` — adding a field to ConversationState means every
@@ -2273,9 +2273,7 @@ _AGENT_PENDING_SENTINEL = object()
 # eviction path (_evict_cached_agent) with resource cleanup; boundaries call it explicitly.
 _CONVERSATION_SCOPED_STATE: tuple = (
     "_session_model_overrides",
-    "_session_reasoning_overrides",
     "_pending_model_notes",
-    "_last_resolved_model",
     "_queued_events",
     # Stall-watchdog "already notified" latch; cleared on /new so a fresh conversation can warn again.
     # See #72016.
@@ -3363,14 +3361,10 @@ class GatewayRunner(
     _running_agents = legacy_dict_property("_running_agents")
     _running_agents_ts = legacy_dict_property("_running_agents_ts")
     _busy_ack_ts = legacy_dict_property("_busy_ack_ts")
-    _session_run_generation = legacy_dict_property("_session_run_generation")
     _session_model_overrides = legacy_dict_property("_session_model_overrides")
-    _session_reasoning_overrides = legacy_dict_property("_session_reasoning_overrides")
-    _last_resolved_model = legacy_dict_property("_last_resolved_model")
     _queued_events = legacy_dict_property("_queued_events")
     _pending_messages = legacy_dict_property("_pending_messages")
     _pending_approvals = legacy_dict_property("_pending_approvals")
-    _update_prompt_pending = legacy_dict_property("_update_prompt_pending")
 
     def _sessions_map(self) -> dict[str, SessionState]:
         """Per-session state map; lazily created so bare ``object.__new__`` test runners work."""

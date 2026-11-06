@@ -6,7 +6,7 @@ INTO its stub), so the stub lands in a display slot (``display_order``) of its o
 The reads therefore skip a tool row when an archived (``compacted``) display-visible tool row of the same
 session, ``message_uid`` and timestamp holds an EARLIER slot: that slot already paints the full original.
 
-The rule uses identity only (session, uid, timestamp, slot), never bodies, and changes no stored row. An
+The compacted-copy rule uses identity only (session, uid, timestamp, slot), never bodies, and changes no stored row. An
 in-place prune keeps its row's slot, so its stub shares the slot with the archived copies and the per-slot
 rule (the live row wins) keeps showing the stub. A row without a slot (legacy, never backfilled) is never
 skipped. The timestamp lets the probe seek ``(session_id, timestamp)``, so a page read stays per-row cheap.
@@ -18,6 +18,7 @@ from typing import Any, Iterable
 
 from agent.context_compressor import MODEL_ONLY_DISPLAY_METADATA_KEY
 from hermes_state_common import _sql_json_extract
+from hermes_state_lineage import SessionIdOwnedElsewhereError, session_lineage_guard
 
 _ORIGINAL_VISIBLE_SQL = (
     f"COALESCE({_sql_json_extract('original.display_metadata', '$.' + MODEL_ONLY_DISPLAY_METADATA_KEY)}, 0) = 0")
@@ -52,3 +53,26 @@ def later_tool_copy_ids(db: Any, rows: Iterable[Any]) -> set[int]:
             first_slot[owner(row)] = min(first_slot.get(owner(row), slot), slot)
     return {row["id"] for row in candidates if row["message_uid"] and row["display_order"] is not None
             and first_slot.get(owner(row), row["display_order"]) < row["display_order"]}
+
+
+def ensure_display_order(db: Any, session_id: str, missing_sql: str) -> bool:
+    """Backfill a writable owner's legacy index, or leave a retired copy on read-only projection."""
+    with db._read_ctx() as conn:
+        columns = set(db._message_column_names(conn))
+    if not {"display_order", "display_identity"} <= columns:
+        return False
+    if db._read_one(missing_sql, (session_id,)) is None:
+        return True
+    if getattr(db, "read_only", False):
+        return False
+
+    def _do(conn):
+        if conn.execute(missing_sql, (session_id,)).fetchone() is not None:
+            db._reconcile_display_orders(conn, session_id)
+        return True
+
+    try:
+        with session_lineage_guard(db.db_path, session_id, timeout_s=db._WRITE_PATIENCE_S):
+            return bool(db._execute_write(_do))
+    except SessionIdOwnedElsewhereError:
+        return False

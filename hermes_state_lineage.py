@@ -519,3 +519,20 @@ def guarded_session_write(
     """Keep the cross-store ownership lock held through the caller's SQLite commit."""
     with session_lineage_guard(db.db_path, session_ids, transfer_from=transfer_from, timeout_s=db._WRITE_PATIENCE_S):
         return db._execute_write(write)
+
+
+def guarded_resume_lineage_write(
+    db: Any, session_id: str, write: Callable[[sqlite3.Connection, list[str]], _WriteResult],
+) -> _WriteResult:
+    """Revalidate resolved display segments before writing, retaining their guards through commit."""
+    guarded = set(db._resume_lineage_ids(session_id))
+    deadline = time.monotonic() + db._WRITE_PATIENCE_S
+    for _ in range(8):
+        with session_lineage_guard(db.db_path, guarded,
+                                   timeout_s=max(0.0, deadline - time.monotonic())):
+            lineage = db._resume_lineage_ids(session_id)
+            if not set(lineage) <= guarded:
+                guarded.update(lineage)
+                continue
+            return db._execute_write(lambda conn: write(conn, lineage))
+    raise SessionLineageInventoryError("Resume lineage changed during ownership discovery")

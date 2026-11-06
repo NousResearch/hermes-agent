@@ -398,7 +398,7 @@ class SessionSessionsMixin:
         """Read the minimal metadata used to report ids duplicated across profile stores."""
         with self._read_ctx() as conn:
             return [dict(row) for row in conn.execute(
-                "SELECT id, ended_at, end_reason, profile_name, session_key, message_count FROM sessions"
+                "SELECT id, parent_session_id, ended_at, end_reason, profile_name, session_key, message_count FROM sessions"
             ).fetchall()]
 
     def set_expiry_finalized(self, session_id: str, finalized: bool = True) -> None:

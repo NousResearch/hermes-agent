@@ -31,6 +31,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
@@ -172,6 +173,7 @@ class RepairPlan:
         self.findings: list[Finding] = []
         self._moves: dict[tuple[Path, Path], _MoveBatch] = {}
         self._dual_home_ids: set[str] = set()
+        self._held_lineages: dict[Path, set[str]] = {}
         # The dual-home scan must see every physical store the ownership fence can be
         # blocked by — including tombstoned profile dirs that enumerate_stores() skips
         # (review finding 3): one shared physical inventory, fence and repair. Root-only
@@ -216,8 +218,10 @@ class RepairPlan:
         even though ordinary per-store scans stay on live profiles.
         """
         by_id: dict[str, list[tuple[Store, dict[str, Any]]]] = {}
+        store_rows = {}
         for store in self.physical_stores:
-            for row in session.db(store).list_session_lineage_rows():
+            store_rows[store.db_path] = session.db(store).list_session_lineage_rows()
+            for row in store_rows[store.db_path]:
                 by_id.setdefault(str(row["id"]), []).append((store, row))
         for session_id, copies in sorted(by_id.items()):
             if len(copies) < 2:
@@ -237,11 +241,18 @@ class RepairPlan:
                         "decision; automatic move/relabel could fork a live Bot Chat"),
             ))
 
+        for db_path, rows in store_rows.items():
+            groups = _connected_lineages(rows)
+            self._held_lineages[db_path] = set().union(
+                *(groups[sid] for sid in self._dual_home_ids if sid in groups))
+
     def _scan_sessions(self, session: _Session, store: Store) -> None:
         db = session.db(store)
         crossed = db.find_crossed_profile_sessions(store.profile)
         moving: set[str] = set()
         held = _ledgered_lineages([r for r in crossed["foreign"] if self._would_move(store, r)])
+        held.update({sid: "its linked lineage contains an excluded dual_home row"
+                     for sid in self._held_lineages.get(store.db_path, ())})
         for row in crossed["foreign"]:
             if row["id"] in self._dual_home_ids:
                 moving.add(row["id"])
@@ -255,22 +266,23 @@ class RepairPlan:
                 continue
             self._plan_foreign_row(store, row, moving)
         for row in crossed["mislabelled"]:
-            if row["id"] in moving or row["id"] in self._dual_home_ids:
+            if row["id"] in moving or row["id"] in held:
                 continue  # the move stamps the right label
             self._add(Finding(
                 "mislabelled", store.profile, row["id"],
                 f"profile_name={row['profile_name']!r} but key {row['session_key']!r} belongs to "
                 f"{row['key_profile']!r}", action=f"relabel to {row['key_profile']!r}",
-                _fix=lambda s, st=store, sid=row["id"]: {
-                    "relabelled": s.db(st).relabel_sessions_to_key_profile([sid])}))
+                _fix=_session_fix(store, row["id"], lambda db, sid=row["id"]: {
+                    "relabelled": db.relabel_sessions_to_key_profile([sid])})))
         for row in crossed["crossed_parents"]:
-            if row["id"] in moving or row["id"] in self._dual_home_ids:
+            if row["id"] in moving or row["id"] in held:
                 continue  # the import drops a parent that is not in the target store
             self._add(Finding(
                 "crossed_parent", store.profile, row["id"],
                 f"{row['key_profile']!r} row inherits from parent {row['parent_session_id']} keyed under "
                 f"{row['parent_profile']!r}", action="sever parent_session_id",
-                _fix=lambda s, st=store, sid=row["id"]: {"severed": s.db(st).sever_crossed_parents([sid])}))
+                _fix=_session_fix(store, row["id"], lambda db, sid=row["id"]: {
+                    "severed": db.sever_crossed_parents([sid])})))
 
     def _would_move(self, store: Store, row: dict[str, Any]) -> bool:
         """Mirror of :meth:`_plan_foreign_row`: does the plan copy this row to another store?"""
@@ -302,7 +314,8 @@ class RepairPlan:
         if self.legacy_main == "rekey":
             self._add(Finding(
                 "legacy_main", store.profile, sid, detail, action=f"rekey to agent:{store.profile}:",
-                _fix=lambda s, st=store, i=sid: {"rekeyed": s.db(st).rekey_legacy_main_sessions([i], st.profile)}))
+                _fix=_session_fix(store, sid, lambda db, i=sid, profile=store.profile: {
+                    "rekeyed": db.rekey_legacy_main_sessions([i], profile)})))
         elif self.legacy_main == "move" and self.routing_store is not None:
             moving.add(sid)
             self._add(Finding(
@@ -458,9 +471,7 @@ class _MoveBatch:
         if self._result is not None:
             return self._result
         src_db, dst_db = session.db(self.src), session.db(self.dst)
-        from hermes_state_lineage import session_lineage_guard
-        with session_lineage_guard(src_db.db_path, self.ids, timeout_s=src_db._WRITE_PATIENCE_S):
-            return self._run_locked(session, src_db, dst_db)
+        return _guarded_component_action(src_db, self.ids, lambda: self._run_locked(session, src_db, dst_db))
 
     def _run_locked(self, session: _Session, src_db: Any, dst_db: Any) -> dict[str, dict[str, int]]:
         from hermes_state_profile_repair import SessionLedgeredError
@@ -512,6 +523,53 @@ class _MoveBatch:
         return result
 
 
+def _guarded_component_action(db: Any, ids: Iterable[str], action: Callable[[], Any]) -> Any:
+    from hermes_state_lineage import SessionLineageInventoryError, session_lineage_guard
+    wanted = set(ids)
+    guarded = set(wanted)
+    deadline = time.monotonic() + db._WRITE_PATIENCE_S
+    for _ in range(8):
+        groups = _connected_lineages(db.list_session_lineage_rows())
+        for sid in wanted:
+            guarded.update(groups.get(sid, ()))
+        with session_lineage_guard(db.db_path, guarded,
+                                   timeout_s=max(0.0, deadline - time.monotonic())):
+            current = _connected_lineages(db.list_session_lineage_rows())
+            if any(current.get(sid, {sid}) - guarded for sid in wanted):
+                continue
+            return action()
+    raise SessionLineageInventoryError("Repair lineage changed during ownership discovery")
+
+
+def _session_fix(store: Store, sid: str, write: Callable[[Any], dict[str, int]]) -> Callable[[_Session], dict[str, int]]:
+    def fix(session: _Session) -> dict[str, int]:
+        db = session.db(store)
+        return _guarded_component_action(db, [sid], lambda: write(db))
+    return fix
+
+
+def _connected_lineages(rows: list[dict[str, Any]]) -> dict[str, set[str]]:
+    neighbors: dict[str, set[str]] = {row["id"]: set() for row in rows}
+    for row in rows:
+        sid, parent = row["id"], row.get("parent_session_id")
+        if parent in neighbors:
+            neighbors[sid].add(parent)
+            neighbors[parent].add(sid)
+    groups: dict[str, set[str]] = {}
+    for sid in neighbors:
+        if sid in groups:
+            continue
+        component, pending = set(), [sid]
+        while pending:
+            current = pending.pop()
+            if current not in component:
+                component.add(current)
+                pending.extend(neighbors[current] - component)
+        for member in component:
+            groups[member] = component
+    return groups
+
+
 def _ledgered_lineages(foreign: list[dict[str, Any]]) -> dict[str, str]:
     """Stray rows that must stay put, each with the reason. A row the gateway ledger references
     (admissions/workers, ``ON DELETE RESTRICT``) cannot be deleted from its store, so copying it
@@ -519,13 +577,7 @@ def _ledgered_lineages(foreign: list[dict[str, Any]]) -> dict[str, str]:
     with it, since moving a parent detaches the child left behind and a moved child loses its
     parent. Whether a move should carry the ledger is a separate policy decision."""
     by_id = {row["id"]: row for row in foreign}
-    groups: dict[str, set[str]] = {sid: {sid} for sid in by_id}
-    for row in foreign:
-        parent = row.get("parent_session_id")
-        if parent in by_id and groups[parent] is not groups[row["id"]]:
-            merged = groups[parent] | groups[row["id"]]
-            for sid in merged:
-                groups[sid] = merged
+    groups = _connected_lineages(foreign)
     held: dict[str, str] = {}
     for sid, row in by_id.items():
         anchors = sorted(m for m in groups[sid] if by_id[m].get("ledgered"))

@@ -23,12 +23,12 @@ from hermes_cli.timefmt import coerce_epoch
 from hermes_state_common import (
     _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _RESET_END_REASONS, _RESET_END_REASONS_SQL, _ended_by_compression,
     _json_or, _legacy_reset_child_sql, _placeholders, _sql_json_extract)
-from hermes_state_compaction_display import later_tool_copy_ids, not_a_later_tool_copy_sql
+from hermes_state_compaction_display import ensure_display_order, later_tool_copy_ids, not_a_later_tool_copy_sql
 from hermes_state_detached_results import SessionDetachedResultsMixin
 from hermes_state_todo import SessionTodoResultMixin
 from hermes_state_identity import (
     _absorbed_uids_json, _restore_identity_columns, _stable_tool_key, _tool_call_uid_map, _tool_call_uid_or_none, _tool_call_uids_json, _uid_list)
-from hermes_state_lineage import session_lineage_guard
+from hermes_state_lineage import guarded_resume_lineage_write, session_lineage_guard
 
 logger = logging.getLogger("hermes_state")  # caplog tests pin the origin module's name
 
@@ -517,9 +517,9 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         ``None`` for a row outside the session's visible resume lineage (see ``_reaction_row_query``)."""
         if not session_id or message_row_id is None:
             return None
-        sql, params = self._reaction_row_query(session_id, message_row_id)
-        def _do(conn):
-            row = conn.execute(sql, params).fetchone()
+        def _do(conn, lineage):
+            row = conn.execute(_DISPLAY_META_ROW_SQL.format(ids=_placeholders(lineage)),
+                               (message_row_id, *lineage)).fetchone()
             if row is None:
                 return None
             meta = self._decode_display_metadata(row[0]) or {}
@@ -534,8 +534,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
                 meta.pop(self.REACTIONS_METADATA_KEY, None)
             conn.execute(_SET_DISPLAY_META_SQL, (self._encode_display_metadata(meta) if meta else None, message_row_id))
             return reactions
-        with session_lineage_guard(self.db_path, session_id, timeout_s=self._WRITE_PATIENCE_S):
-            return self._execute_write(_do)
+        return guarded_resume_lineage_write(self, session_id, _do)
 
     def get_message_reactions(self, session_id: str, message_row_id: int) -> list[dict[str, Any]]:
         """Reaction list persisted on one message row (never ``None``)."""
@@ -558,8 +557,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         Include compaction-archived history that remains visible, but exclude rewound/superseded rows."""
         if not session_id:
             return []
-        lineage = self._resume_lineage_ids(session_id)
-        def _do(conn):
+        def _do(conn, lineage):
             pending = []
             # Only reaction-bearing rows cross into Python: display_metadata also carries delivery /
             # attachment markers on most rows, and the lineage scan grows with the session's age.
@@ -584,8 +582,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
                 if changed:
                     conn.execute(_SET_DISPLAY_META_SQL, (self._encode_display_metadata(meta), row["id"]))
             return pending
-        with session_lineage_guard(self.db_path, lineage, timeout_s=self._WRITE_PATIENCE_S):
-            return self._execute_write(_do)
+        return guarded_resume_lineage_write(self, session_id, _do)
 
     def latest_message_row_id(self, session_id: str, *, role: str = "user", offset: int = 0,
                               require_text: bool = True) -> Optional[int]:
@@ -1231,25 +1228,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
                 "UPDATE messages SET display_order = ?, display_identity = ? WHERE id = ?", updates)
 
     def _ensure_display_order(self, session_id: str) -> bool:
-        """Backfill one legacy session once, preserving the pre-index display identity exactly."""
-        with self._read_ctx() as conn:
-            columns = set(self._message_column_names(conn))
-        if not {"display_order", "display_identity"} <= columns:
-            return False
-        if self._read_one(_DISPLAY_INDEX_MISSING_SQL, (session_id,)) is None:
-            return True
-        if getattr(self, "read_only", False):
-            return False
-
-        def _do(conn):
-            missing = conn.execute(_DISPLAY_INDEX_MISSING_SQL, (session_id,)).fetchone()
-            if missing is None:
-                return True
-            self._reconcile_display_orders(conn, session_id)
-            return True
-
-        with session_lineage_guard(self.db_path, session_id, timeout_s=self._WRITE_PATIENCE_S):
-            return bool(self._execute_write(_do))
+        return ensure_display_order(self, session_id, _DISPLAY_INDEX_MISSING_SQL)
 
     def _legacy_display_page(self, session_id: str, *, active_clause: str, limit: Optional[int], offset: int,
                              latest: bool) -> list[Any]:

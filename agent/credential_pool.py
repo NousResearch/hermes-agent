@@ -3003,7 +3003,13 @@ def load_pool(provider: str) -> CredentialPool:
             changed |= _prune_stale_seeded_entries(
                 entries, singleton_sources | env_sources, prune_env_sources=False,
             )
-        changed |= _normalize_pool_priorities(provider, entries)
+        priorities_changed = _normalize_pool_priorities(provider, entries)
+        borrowed_bad_priority = owns_provider is False and any(
+            isinstance(payload, dict) and not isinstance(payload.get("priority", 0), int)
+            for payload in raw_entries
+        )
+        # Malformed inherited priorities must not trigger a root-store rewrite.
+        changed |= priorities_changed and not borrowed_bad_priority
 
     pool = CredentialPool(provider, entries)
     pool._persisted_token_pairs = auth_mod._token_pairs_by_id(raw_entries)

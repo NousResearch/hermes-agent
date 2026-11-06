@@ -175,6 +175,23 @@ async def test_run_simple_slash_executes_when_defer_interaction_expired(adapter)
 
 
 @pytest.mark.asyncio
+async def test_auto_registered_skills_command_preserves_approval_arguments(adapter):
+    """The native picker must pass approval subcommands through to the gateway."""
+    adapter._run_simple_slash = AsyncMock()
+
+    with patch("hermes_cli.commands._resolve_config_gates", return_value={"skills"}):
+        adapter._register_slash_commands()
+
+    skills = adapter._client.tree.commands["skills"]
+    interaction = SimpleNamespace()
+    await skills.callback(interaction, args="approve pending-42")
+
+    adapter._run_simple_slash.assert_awaited_once_with(
+        interaction, "/skills approve pending-42"
+    )
+
+
+@pytest.mark.asyncio
 async def test_auto_registers_plugin_commands_for_discord(adapter):
     """Plugin slash commands should appear as native Discord app commands."""
     adapter._run_simple_slash = AsyncMock()

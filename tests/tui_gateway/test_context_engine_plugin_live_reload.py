@@ -160,7 +160,7 @@ def test_builtin_compressor_still_adopts_live_policy_and_thresholds(monkeypatch)
 
 
 def test_plugin_live_context_change_uses_public_update_on_unchanged_route(monkeypatch):
-    from agent.conversation_loop import _apply_context_engine_selection
+    from agent.turn_request_assembly import _apply_context_engine_selection
     from tui_gateway import server
 
     budgets = []

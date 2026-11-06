@@ -10,7 +10,7 @@ import pytest
 
 from agent.activity_tracking import ActivityTrackingMixin
 from agent.context_engine import ContextEngine, ContextEngineError
-from agent.conversation_loop import _apply_context_engine_selection
+from agent.turn_request_assembly import _apply_context_engine_selection
 
 
 @pytest.fixture(autouse=True)
@@ -220,9 +220,13 @@ def test_typed_preparation_failure_never_falls_back_to_raw_history():
 
 
 @pytest.fixture
-def turn_agent(monkeypatch):
+def turn_agent(monkeypatch, tmp_path):
     """Run the real selection/dispatch/finalization path with an offline provider."""
     from run_agent import AIAgent
+    from hermes_state import SessionDB
+
+    database = SessionDB(db_path=tmp_path / "state.db")
+    database.create_session("context-preparation", source="cli", model="test-model")
 
     with (
         patch("model_tools.get_tool_definitions", return_value=[]),
@@ -234,6 +238,7 @@ def turn_agent(monkeypatch):
             api_key="test-key-1234567890", base_url="https://example.invalid/v1",
             quiet_mode=True, skip_context_files=True, skip_memory=True,
             save_trajectories=False,
+            session_id="context-preparation", session_db=database,
         )
     agent._cached_system_prompt = "You are helpful."
     agent._use_prompt_caching = False
@@ -258,6 +263,7 @@ def turn_agent(monkeypatch):
     monkeypatch.setattr(agent, "_interruptible_api_call", send)
     yield agent, requests
     agent.close()
+    database.close()
 
 
 def test_selected_context_reaches_provider_without_rewriting_transcript(turn_agent):
@@ -309,7 +315,10 @@ def test_preparation_failure_returns_terminal_error_without_provider_call(turn_a
     assert result["interrupted"] is False
     assert result["error"] == result["final_response"] == reason
     assert result["turn_exit_reason"] == "context_engine_error"
-    assert result["messages"][-1]["content"] == reason
+    assert result["failure_reason"] == "host_error"
+    assert result["failure_retryable"] is True
+    assert all(message.get("content") != reason for message in result["messages"])
+    assert result["messages"][-1]["display_kind"] == "failed_turn"
     assert observed["failed"] is True
     assert observed["usage"] is None
 
@@ -351,3 +360,45 @@ def test_unrequested_selection_keyboard_interrupt_is_not_swallowed(turn_agent):
     with pytest.raises(KeyboardInterrupt, match="stop selecting"):
         agent.run_conversation("current task")
     assert requests == []
+
+
+def test_context_engine_tool_cancellation_closes_every_call_and_finalizes(turn_agent, monkeypatch):
+    agent, requests = turn_agent
+    name = "context_lookup"
+    calls = [SimpleNamespace(id=call_id, type="function", function=SimpleNamespace(
+        name=name, arguments='{"offset":' + str(index) + '}',
+    )) for index, call_id in enumerate(("lookup_one", "lookup_two"))]
+
+    class Selecting(PluginEngine):
+        def handle_tool_call(self, function_name, args, **kwargs):
+            agent.interrupt()
+            raise SelectionCancelled("lookup cancelled")
+
+    agent.context_compressor = Selecting()
+    agent._context_engine_tool_names = {name}
+    agent.valid_tool_names.add(name)
+    agent.tools = [{"type": "function", "function": {
+        "name": name, "description": "Retrieve archived context",
+        "parameters": {"type": "object", "properties": {"offset": {"type": "integer"}}},
+    }}]
+
+    def send(api_kwargs):
+        requests.append(api_kwargs)
+        return SimpleNamespace(choices=[SimpleNamespace(
+            message=SimpleNamespace(content=None, tool_calls=calls, reasoning=None,
+                                    reasoning_content=None, reasoning_details=None),
+            finish_reason="tool_calls",
+        )], usage=None, model="test-model")
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", send)
+    try:
+        result = agent.run_conversation("retrieve archived context")
+    except KeyboardInterrupt:
+        pytest.fail("Context-engine tool cancellation escaped turn finalization")
+
+    assert result["interrupted"] is True
+    assert result["completed"] is False
+    assert len(requests) == 1
+    tool_results = [message for message in result["messages"] if message.get("role") == "tool"]
+    assert sorted(message["tool_call_id"] for message in tool_results) == ["lookup_one", "lookup_two"]
+    assert agent._interrupt_requested is False

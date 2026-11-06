@@ -10,13 +10,17 @@ so ``patch("agent.conversation_loop.X")`` sites keep intercepting.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import inspect
 import logging
-from typing import Any
+from typing import Any, Optional
 
+from agent.context_engine import ContextEngineError
+from agent.message_metadata import without_persistence_fields
 from agent.message_sanitization import _sanitize_messages_surrogates
 from agent.usage_anchor import anchored_context_tokens
 from agent.prompt_caching import build_prompt_cache_plan, effective_cache_ttl
 from agent.turn_context import build_api_messages
+from agent.turn_iteration_prep import begin_iteration, prepare_iteration
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -35,6 +39,81 @@ class AssembledRequest:
     approx_tokens: Any
     request_pressure_tokens: Any
     total_chars: Any
+
+
+def _apply_context_engine_selection(
+    agent: Any, api_messages: list[dict[str, Any]], conversation_messages: list[dict[str, Any]],
+    incoming_message: Optional[dict[str, Any]], *, logger: Any,
+) -> list[dict[str, Any]]:
+    """Run request-only selection, failing open on ordinary plugin errors.
+
+    Preparation errors and cancellation must propagate instead of sending the
+    original, potentially unbounded history; persisted history is never mutated."""
+    from agent.conversation_loop import _clone_message_for_send, _engine_overrides_hook
+
+    engine = getattr(agent, "context_compressor", None)
+    if not _engine_overrides_hook(engine, "select_context"):
+        return api_messages
+
+    session_label = getattr(agent, "session_id", None) or "-"
+    # Structural clones: the engine must not be able to write through nested
+    # containers into persisted history; only the request list is acted on (#80498).
+    try:
+        select_context = engine.select_context
+        selection_kwargs = dict(
+            conversation_messages=(
+                [_clone_message_for_send(m) for m in conversation_messages]
+                if conversation_messages is not None else None
+            ),
+            incoming_message=(
+                _clone_message_for_send(incoming_message)
+                if isinstance(incoming_message, dict) else incoming_message
+            ),
+            budget_tokens=getattr(engine, "context_length", 0) or 0,
+        )
+        try:
+            parameters = inspect.signature(select_context).parameters
+        except (TypeError, ValueError):
+            # Opaque callables retain the legacy call shape; callbacks are opt-in.
+            pass
+        else:
+            touch_activity = getattr(agent, "_touch_activity", None)
+            selection_kwargs.update(
+                progress=touch_activity if callable(touch_activity) else None,
+                cancelled=lambda: bool(getattr(agent, "_interrupt_requested", False)),
+            )
+            if not any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
+                selection_kwargs = {
+                    name: value for name, value in selection_kwargs.items()
+                    if name in parameters and parameters[name].kind in (
+                        inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY,
+                    )
+                }
+        selected = select_context(api_messages, **selection_kwargs)
+    except ContextEngineError:
+        raise
+    except Exception:
+        logger.warning(
+            "Context engine select_context hook failed; using unmodified request messages (session=%s)",
+            session_label, exc_info=True,
+        )
+        return api_messages
+
+    if selected is None:
+        return api_messages
+    # Require a NON-EMPTY list of dicts: ``all([])`` is ``True``, so a ``[]`` from a
+    # buggy engine would otherwise replace the request instead of failing open.
+    if isinstance(selected, list) and selected and all(isinstance(m, dict) for m in selected):
+        # The engine may hand back the ``conversation_messages`` clones (or its own dicts) that still
+        # carry persistence-only fields; the request copy was stripped BEFORE this hook, so strip the
+        # selection too or those fields reach the provider. Dicts without them pass through as-is.
+        stripped = [without_persistence_fields(m) for m in selected]
+        return selected if all(a is b for a, b in zip(stripped, selected)) else stripped
+    logger.warning(
+        "Context engine select_context returned an invalid value "
+        "(not a non-empty list of dicts); ignoring (session=%s)", session_label,
+    )
+    return api_messages
 
 
 def _append_moa_context(agent: Any, api_messages: Any, moa_config: Any, original_user_message: Any) -> None:
@@ -112,7 +191,7 @@ def assemble_api_request(
     are injected only after whitespace normalization, the orphan sweep, thinking-only drop /
     user merge and surrogate stripping, so the same row's bytes never vary across turns."""
     from agent.conversation_loop import (
-        _CODEX_INCOMPLETE_NUDGE, _apply_context_engine_selection, _canonicalize_api_tool_calls,
+        _CODEX_INCOMPLETE_NUDGE, _canonicalize_api_tool_calls,
         _clone_message_for_send, _midturn_request_pressure_tokens, _pressure_with_real_floor,
     )
     from agent.model_metadata import (
@@ -284,3 +363,28 @@ def assemble_api_request(
         "fallthrough", api_messages, tools_for_api, _moa_prepared_request,
         pending_moa_prepared_request, approx_tokens, request_pressure_tokens, approx_tokens * 4,
     )
+
+
+def prepare_next_request(agent: Any, state: Any) -> bool:
+    """Advance the iteration through request assembly; False ends the turn via finalization.
+
+    Keep preparation failures and requested cancellation out of provider dispatch without
+    changing ordinary plugin-error fallback or swallowing an unrequested KeyboardInterrupt.
+    """
+    from agent.conversation_loop import _run_phase
+
+    if _run_phase(begin_iteration, agent, state).action == "break":
+        return False
+    _run_phase(prepare_iteration, agent, state)
+    try:
+        _run_phase(assemble_api_request, agent, state)
+    except KeyboardInterrupt:
+        if not getattr(agent, "_interrupt_requested", False):
+            raise
+        state.interrupted = True
+        return False
+    except ContextEngineError as exc:
+        state.failed, state._turn_exit_reason = True, "context_engine_error"
+        state.final_response = str(exc)
+        return False
+    return True

@@ -162,6 +162,13 @@ dispatch. The host runs normal finalization and returns `failed=True`,
 `error`/`final_response`. Give the exception an actionable message describing the
 cause and how to recover. The engine owns preparation deadlines and cancellation
 checks; the host does not add background preparation or synthetic keepalives.
+The result uses the existing local `host_error` failure classification. Error detail
+stays in the response and failure display metadata; persisted history closes with the
+standard display-only failed-turn boundary rather than treating that detail as model output.
+
+Context-engine tools may also raise `KeyboardInterrupt` when a preparation wait is
+cancelled. The tool dispatcher supplies matching cancellation results for the pending
+calls, and the turn finalizes as interrupted instead of abandoning the tool-call sequence.
 
 **Backward compatibility:** engines do not have to accept either callback. The host
 inspects `select_context()` and passes only supported keyword parameters (or all of

@@ -118,9 +118,10 @@ def _agent(db, session_id="s1", model="claude-opus-4-6", route=ANTHROPIC):
 
 def _patch_assembly_loop(monkeypatch, selector=None):
     import agent.conversation_loop as loop
+    import agent.turn_request_assembly as assembly
 
     monkeypatch.setattr(
-        loop, "_apply_context_engine_selection",
+        assembly, "_apply_context_engine_selection",
         selector or (lambda agent, api, history, incoming, logger=None: api),
     )
     monkeypatch.setattr(loop, "_canonicalize_api_tool_calls", lambda messages: None)

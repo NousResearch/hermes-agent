@@ -17,7 +17,6 @@ from typing import Any, Dict, List, Optional
 
 from agent.agent_runtime_helpers_placeholders import hidden_interrupt_placeholder_row
 from agent.codex_responses_adapter import _summarize_user_message_for_log
-from agent.context_engine import ContextEngineError
 from agent.fast_mode import begin_turn as begin_fast_mode_turn
 from agent.message_metadata import append_message, without_persistence_fields
 from agent.message_sanitization import _repair_tool_call_arguments, _sanitize_surrogates
@@ -52,12 +51,10 @@ from agent.turn_finalizer import finalize_turn
 from agent.turn_iteration_prep import (
     announce_api_call,
     apply_retry_restarts,
-    begin_iteration,
-    prepare_iteration,
 )
 from agent.turn_loop_errors import handle_outer_loop_error
 from agent.turn_preflight_gate import run_preflight_gate
-from agent.turn_request_assembly import assemble_api_request
+from agent.turn_request_assembly import prepare_next_request
 from agent.turn_response_check import check_api_response
 from agent.turn_response_intake import normalize_model_response
 from agent.turn_tool_round import run_tool_round
@@ -1355,79 +1352,6 @@ def _engine_overrides_hook(engine: Any, name: str) -> bool:
         return True
 
 
-def _apply_context_engine_selection(
-    agent: Any, api_messages: list[dict[str, Any]], conversation_messages: list[dict[str, Any]],
-    incoming_message: Optional[dict[str, Any]], *, logger: Any,
-) -> list[dict[str, Any]]:
-    """Run request-only selection, failing open on ordinary plugin errors.
-
-    Preparation errors and cancellation must propagate instead of sending the
-    original, potentially unbounded history; persisted history is never mutated."""
-    engine = getattr(agent, "context_compressor", None)
-    if not _engine_overrides_hook(engine, "select_context"):
-        return api_messages
-
-    session_label = getattr(agent, "session_id", None) or "-"
-    # Structural clones: the engine must not be able to write through nested
-    # containers into persisted history; only the request list is acted on (#80498).
-    try:
-        select_context = engine.select_context
-        selection_kwargs = dict(
-            conversation_messages=(
-                [_clone_message_for_send(m) for m in conversation_messages]
-                if conversation_messages is not None else None
-            ),
-            incoming_message=(
-                _clone_message_for_send(incoming_message)
-                if isinstance(incoming_message, dict) else incoming_message
-            ),
-            budget_tokens=getattr(engine, "context_length", 0) or 0,
-        )
-        try:
-            parameters = inspect.signature(select_context).parameters
-        except (TypeError, ValueError):
-            # Opaque callables retain the legacy call shape; callbacks are opt-in.
-            pass
-        else:
-            touch_activity = getattr(agent, "_touch_activity", None)
-            selection_kwargs.update(
-                progress=touch_activity if callable(touch_activity) else None,
-                cancelled=lambda: bool(getattr(agent, "_interrupt_requested", False)),
-            )
-            if not any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
-                selection_kwargs = {
-                    name: value for name, value in selection_kwargs.items()
-                    if name in parameters and parameters[name].kind in (
-                        inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY,
-                    )
-                }
-        selected = select_context(api_messages, **selection_kwargs)
-    except ContextEngineError:
-        raise
-    except Exception:
-        logger.warning(
-            "Context engine select_context hook failed; using unmodified request messages (session=%s)",
-            session_label, exc_info=True,
-        )
-        return api_messages
-
-    if selected is None:
-        return api_messages
-    # Require a NON-EMPTY list of dicts: ``all([])`` is ``True``, so a ``[]`` from a
-    # buggy engine would otherwise replace the request instead of failing open.
-    if isinstance(selected, list) and selected and all(isinstance(m, dict) for m in selected):
-        # The engine may hand back the ``conversation_messages`` clones (or its own dicts) that still
-        # carry persistence-only fields; the request copy was stripped BEFORE this hook, so strip the
-        # selection too or those fields reach the provider. Dicts without them pass through as-is.
-        stripped = [without_persistence_fields(m) for m in selected]
-        return selected if all(a is b for a, b in zip(stripped, selected)) else stripped
-    logger.warning(
-        "Context engine select_context returned an invalid value "
-        "(not a non-empty list of dicts); ignoring (session=%s)", session_label,
-    )
-    return api_messages
-
-
 def _notify_context_engine_turn_complete(
     agent: Any, messages: list[dict[str, Any]], *, usage: Optional[dict[str, Any]] = None, logger: Any, **meta: Any
 ) -> None:
@@ -1632,10 +1556,18 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[dict[str, Any]]:
 
 def _finalize_from_state(agent: Any, s: _LoopState) -> dict[str, Any]:
     """Post-loop finalization (agent/turn_finalizer.finalize_turn) fed from the loop state."""
-    return finalize_turn(agent, **{
+    preparation_error = s.final_response if s._turn_exit_reason == "context_engine_error" else None
+    if preparation_error is not None:
+        # Host failure detail belongs in the response, not in model/assistant history.
+        # The durable failed-turn closer appends the standard display-only boundary.
+        s.final_response = ""
+    result = finalize_turn(agent, **{
         name: getattr(s, name)
         for name in inspect.signature(finalize_turn).parameters if name != "agent"
     })
+    if preparation_error is not None:
+        result["final_response"] = result["error"] = preparation_error
+    return result
 
 
 def _turn_without_loop(agent: Any, s: _LoopState, block_message: str) -> Optional[dict[str, Any]]:
@@ -1775,19 +1707,7 @@ def _run_conversation_turn(
     while _prelude_action != "break" and (
         (s.api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call
     ):
-        if _run_phase(begin_iteration, agent, s).action == "break":
-            break
-        _run_phase(prepare_iteration, agent, s)
-        try:
-            _run_phase(assemble_api_request, agent, s)
-        except KeyboardInterrupt:
-            if not getattr(agent, "_interrupt_requested", False):
-                raise
-            s.interrupted = True
-            break
-        except ContextEngineError as exc:
-            s.failed, s._turn_exit_reason = True, "context_engine_error"
-            s.final_response = str(exc)
+        if not prepare_next_request(agent, s):
             break
         _pg = _run_phase(run_preflight_gate, agent, s)
         if _pg.action == "return":
@@ -1832,8 +1752,6 @@ def _run_conversation_turn(
                 break
 
     result = _finalize_from_state(agent, s)
-    if s._turn_exit_reason == "context_engine_error":
-        result["error"] = result["final_response"]
     if s._compression_timeout_exhausted:
         # Reuse the gateway's context-recovery contract: transcript stays intact while
         # future input can move to a clean session (#98722).

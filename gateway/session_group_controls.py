@@ -3,6 +3,7 @@ import asyncio
 import logging
 import os
 from pathlib import Path
+import uuid
 import weakref
 
 from hermes_state_runtime import RuntimeStoreError
@@ -23,6 +24,7 @@ GROUP_METHODS = {
     'groups.attachment.upload': 'session:submit',
     'groups.attachment.download': 'session:read',
     'groups.stop': 'session:control',
+    'groups.continue': 'session:control',
     'groups.retry': 'session:control',
     'groups.discard': 'session:control',
     'groups.approve': 'session:approve',
@@ -40,6 +42,7 @@ _FIELDS = {
     'groups.attachment.upload': {'room_id', 'upload_id', 'kind', 'name', 'mime', 'data_base64'},
     'groups.attachment.download': {'room_id', 'event_id', 'attachment_id'},
     'groups.stop': {'room_id', 'cancel_id'},
+    'groups.continue': {'room_id', 'discussion_event_id'},
     'groups.retry': {'room_id', 'member_id', 'task_id', 'execution_generation'},
     'groups.discard': {'room_id', 'member_id', 'task_id', 'execution_generation'},
     'groups.approve': {'room_id', 'member_id', 'task_id', 'execution_generation',
@@ -81,10 +84,20 @@ async def dispatch_group_control(connection, method, params):
             except RuntimeStoreError:
                 raise
             except HostedRoomError as exc:
-                raise RuntimeStoreError(getattr(exc, 'reason', None) or 'invalid_params') from exc
+                raise _refusal(getattr(exc, 'reason', None) or 'invalid_params',
+                               admitted=getattr(exc, 'admitted', None)) from exc
             except (ValueError, TypeError) as exc:
-                raise RuntimeStoreError('invalid_params') from exc
+                raise _refusal('invalid_params', admitted=getattr(exc, 'admitted', None)) from exc
     return await asyncio.to_thread(invoke)
+
+
+def _refusal(reason, *, admitted=None):
+    """The wire refusal; ``admitted=False`` (a groups.send refused before its user event
+    committed: ``HostedRoomService.send``, or no driver to take it) rides along as error data."""
+    refusal = RuntimeStoreError(reason)
+    if admitted is False:
+        refusal.admitted = False
+    return refusal
 
 
 def _group(authority, actor, method, params, *, host_scope=False):
@@ -101,7 +114,8 @@ def _group(authority, actor, method, params, *, host_scope=False):
         if not status.get('running') or status.get('stopping'):
             service = None
 
-    execution_methods = {'groups.send', 'groups.stop', 'groups.retry', 'groups.discard', 'groups.approve'}
+    execution_methods = {'groups.send', 'groups.stop', 'groups.continue', 'groups.retry', 'groups.discard',
+                         'groups.approve'}
     admit = None
     if getattr(authority, 'hosted_room_service', None) is not None and 'room_id' in params:
         if room_authorizer is None:
@@ -121,6 +135,8 @@ def _group(authority, actor, method, params, *, host_scope=False):
         return handler(service, actor, params)
     if method in execution_methods:
         if service is None:
+            if method == 'groups.send':
+                raise _refusal('runtime_coordination_required', admitted=False)
             raise RuntimeStoreError('runtime_coordination_required')
         if not params.get('room_id'):
             raise RuntimeStoreError('invalid_params')
@@ -268,7 +284,9 @@ def _execution_control(service, method, params):
     handlers = {
         'groups.send': send,
         'groups.stop': lambda: {'cancelled': service.stop_room(
-            params.get('room_id'), cancel_id=params.get('cancel_id') or 'desktop-stop')},
+            params.get('room_id'), cancel_id=params.get('cancel_id') or uuid.uuid4().hex)},
+        'groups.continue': lambda: {'continued': True, 'event': service.continue_room(
+            params.get('room_id'), discussion_event_id=str(params.get('discussion_event_id') or ''))},
         'groups.retry': attempt_control,
         'groups.discard': attempt_control,
         'groups.approve': approve,
@@ -298,12 +316,12 @@ def _roster_siblings(connection, params):
     subject and capabilities, which is what the routed connection would carry; none is built, so
     no poll (routed or not) adds connections."""
     from gateway.session_authorities import local_bots
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     authority, actor = connection.authority, connection.actor
     if getattr(getattr(authority, 'runner', None), 'session_authorities', None) is None:
         return []
     readable = connection.host_scoped and params.get('include_sessions', True) is True
-    return [(bot, Principal(actor.subject, bot.authority.profile_id, actor.capabilities, actor.transport_id)
+    return [(bot, SessionActor(actor.subject, bot.authority.profile_id, actor.capabilities, actor.transport_id)
              if readable and bot.problem is None else None)
             for bot in local_bots(authority.runner) if bot.authority is not authority]
 
@@ -412,12 +430,10 @@ def _profiles(authority, actor, home, params, siblings=()):
     path = home / 'profile.yaml'
     meta = yaml.safe_load(path.read_text(encoding='utf-8-sig')) if path.is_file() else {}
     meta = meta if isinstance(meta, dict) else {}
-    revisions = meta.get('_ui_meta_revisions')
-    row['ui_meta_revisions'] = {str(k): max(0, v) for k, v in revisions.items()
-                              if type(v) is int} if isinstance(revisions, dict) else {}
+    row['ui_meta_revisions'] = _ui_meta_revisions(meta)
     if isinstance(meta.get('ui_meta'), dict):
         row['ui_meta'] = meta['ui_meta']
-    row['has_avatar'] = any((home / 'assets' / f'avatar.{ext}').is_file() for ext in ('png', 'jpg', 'webp'))
+    row['has_avatar'] = _has_avatar(home)
     if include_sessions:
         row.update(_bot_sessions(authority, actor))
     profiles = [row]
@@ -430,13 +446,17 @@ def _profiles(authority, actor, home, params, siblings=()):
             return
         seen.add(target.resolve())
         entry = {'name': configured, 'path': str(target), 'is_default': configured == 'default',
-                 'model': '', 'provider': '', 'description': '', 'display_name': configured,
-                 'skill_count': 0}
+                 'model': '', 'provider': '', 'description': '', 'display_name': '',
+                 'skill_count': 0, 'has_avatar': _has_avatar(target), 'ui_meta_revisions': {}}
         if include_sessions and reach is not None:
             entry.update(_sibling_sessions(*reach))
         meta = _discovered_profile_meta(configured, target / 'profile.yaml')
         if isinstance(meta, dict):
-            entry['display_name'] = str(meta.get('display_name') or configured)
+            # The profile's own metadata, not a placeholder: Desktop seeds the Edit profile dialog
+            # from these fields and skips the avatar push when ``has_avatar`` is set.
+            entry['description'] = str(meta.get('description') or '').strip()
+            entry['display_name'] = str(meta.get('display_name') or '')
+            entry['ui_meta_revisions'] = _ui_meta_revisions(meta)
             if isinstance(meta.get('ui_meta'), dict):
                 entry['ui_meta'] = meta['ui_meta']
         profiles.append(entry)
@@ -524,6 +544,25 @@ def _named_profile_dirs():
     if signature is not None:
         _NAMED_DIRS_CACHE[str(profiles_root)] = (signature, targets)
     return targets
+
+
+_ASSET_EXTS = ('png', 'jpg', 'webp')
+
+
+def _has_avatar(home):
+    """Cheap existence flag so a roster paint skips a ``get_asset`` probe per profile."""
+    return any((home / 'assets' / f'avatar.{ext}').is_file() for ext in _ASSET_EXTS)
+
+
+def _ui_meta_revisions(meta):
+    """``_ui_meta_revisions`` from a parsed profile.yaml: str keys, non-bool ints, floor 0.
+
+    Always present (``{}`` when the profile never wrote one) so a client can feature-detect
+    gateway-owned CAS instead of reading a missing field as revision zero.
+    """
+    revisions = meta.get('_ui_meta_revisions') if isinstance(meta, dict) else None
+    return {str(k): max(0, v) for k, v in revisions.items()
+            if type(v) is int} if isinstance(revisions, dict) else {}
 
 
 def _discovered_profile_meta(name, meta_path):

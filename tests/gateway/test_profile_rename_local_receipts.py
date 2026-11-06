@@ -109,13 +109,16 @@ def _assert_restored(authority, home, name, sids):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('names, linked', [(('beta',), False), (('beta', 'gamma'), False),
-                                           (('beta', 'alpha'), False), (('beta',), True)],
-                         ids=['one-rename', 'two-renames', 'renamed-back', 'symlinked-profiles-dir'])
+@pytest.mark.parametrize('names, linked', [(('beta',), None), (('beta', 'gamma'), None),
+                                           (('beta', 'alpha'), None), (('beta',), 'profiles'),
+                                           (('beta', 'gamma'), 'profile')],
+                         ids=['one-rename', 'two-renames', 'renamed-back', 'symlinked-profiles-dir',
+                              'symlinked-profile'])
 async def test_a_renamed_profile_restores_its_local_chats_and_their_credentials(tmp_path, monkeypatch, names, linked):
     """The CLI's own rename (no live multiplexer): the next gateway boot restores every chat of the
     renamed profile, credentials included, and still refuses a receipt that names another home. With
-    ``profiles/`` a symlink, every owner is spelled through its target."""
+    ``profiles/`` a symlink, every owner is spelled through its target. With the profile's own directory
+    a symlink, the rename moves only the link: the owner stays its target and only the routes move."""
     from gateway.run_runtime import initialize_gateway_runtime
     from gateway.runtime_ownership import process_ownership
     from gateway.session_local_recovery import restore_local_session
@@ -125,9 +128,12 @@ async def test_a_renamed_profile_restores_its_local_chats_and_their_credentials(
 
     root, homes = _reserve_homes(tmp_path, monkeypatch, names=('alpha',))
     (homes[1][1] / 'config.yaml').write_text(_CONFIG, encoding='utf-8')
-    if linked:
+    if linked == 'profiles':
         os.rename(root / 'profiles', tmp_path / 'profiles-store')
         os.symlink(tmp_path / 'profiles-store', root / 'profiles', target_is_directory=True)
+    elif linked == 'profile':
+        os.rename(homes[1][1], tmp_path / 'chat-store')
+        os.symlink(tmp_path / 'chat-store', homes[1][1], target_is_directory=True)
     process_ownership.reserve([home for _, home in homes])
     first = _runner(root, homes)
     try:

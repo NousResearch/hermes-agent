@@ -31,10 +31,15 @@ def renamed_owner_ids(db_path, old_name, new_name):
     """``(old, new)`` owner ids of profile *new_name*, formerly *old_name*, when *db_path* is its own store:
     its resolved home, as the serving authority spells it, before and after the directory moved. None for
     any other store, including a launch home that is merely named *new_name*. Resolved, so a symlinked
-    ``profiles/`` still names the profile."""
+    ``profiles/`` still names the profile. A profile directory that is itself a link resolves somewhere
+    other than ``profiles/<new_name>``: the rename moved the link, so its target, the owner, is unchanged
+    and only the routes move."""
     home = Path(db_path).resolve().parent
-    if home != (get_default_hermes_root() / 'profiles' / new_name).resolve():
+    profiles = (get_default_hermes_root() / 'profiles').resolve()
+    if home != (profiles / new_name).resolve():
         return None
+    if home != profiles / new_name:
+        return str(home), str(home)
     return str(home.with_name(old_name)), str(home)
 
 

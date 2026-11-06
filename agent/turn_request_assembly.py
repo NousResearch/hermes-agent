@@ -258,6 +258,9 @@ def assemble_api_request(
             approx_tokens = estimate_messages_tokens_rough(api_messages)
     else:
         approx_tokens = estimate_messages_tokens_rough(api_messages, charge_stale_thinking=False)
+    # Provider fallback must evaluate the assembled request, not a prior-session
+    # aggregate or an unrelated primary-model context pin.
+    agent._active_request_tokens = approx_tokens
     # Route-aware: native Responses compaction prunes the wire payload, so the raw
     # history figure overstates it and fires needless local compression.
     # Route-aware pressure: when the upcoming request is eligible for native Responses compaction the

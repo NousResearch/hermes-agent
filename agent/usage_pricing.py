@@ -394,7 +394,7 @@ def _first_nonzero(obj: Any, *paths: tuple[str, ...]) -> int:
 
 
 # Picker slugs → snapshot provider key ("openai-api" is the slug for direct
-# api.openai.com). Google and Fireworks are matched by name OR host below.
+# api.openai.com). Google, Fireworks and DeepSeek are matched by name OR host below.
 _SNAPSHOT_PROVIDER_ALIASES = {
     "anthropic": "anthropic", "openai": "openai", "openai-api": "openai", "minimax": "minimax", "minimax-cn": "minimax-cn",
 }
@@ -438,6 +438,8 @@ def resolve_billing_route(
             snapshot_provider = "google"
         elif provider_name == "fireworks" or host("api.fireworks.ai"):
             snapshot_provider = "fireworks"
+        elif provider_name == "deepseek" or host("api.deepseek.com"):
+            snapshot_provider = "deepseek"
     if snapshot_provider:
         if snapshot_provider == "openai" and (not url or host("api.openai.com")):
             bare = strip_codex_context_variant_suffix(bare)

@@ -89,6 +89,28 @@ def test_hosted_callback_bypasses_gated_cookie_auth(monkeypatch):
     assert flow._callback == ("abc", "expected", None)
 
 
+def test_non_ascii_callback_state_is_an_ordinary_state_mismatch():
+    """``compare_digest`` raises TypeError on a non-ASCII ``str`` and the callback ``state`` is
+    attacker input, so a non-ASCII one must be refused exactly like an unknown ASCII one."""
+    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+
+    flow = DashboardOAuthFlow(
+        flow_id="flow-non-ascii",
+        server_name="reports",
+        profile=None,
+        hermes_home="/tmp/hermes-test",
+        redirect_uri="https://agent.example/api/mcp/oauth/callback/reports",
+    )
+    asyncio.run(flow.publish_authorization_url("https://idp.example/authorize?state=expected"))
+    _web_server_mcp._mcp_oauth_flows[flow.flow_id] = flow
+    client = _client()
+
+    unknown = client.get("/api/mcp/oauth/callback/reports", params={"code": "abc", "state": "unknown"})
+    non_ascii = client.get("/api/mcp/oauth/callback/reports", params={"code": "abc", "state": "unknöwn"})
+    assert (non_ascii.status_code, non_ascii.text) == (unknown.status_code, unknown.text)
+    assert flow._callback is None and flow.status == "authorization_required"
+
+
 def test_hosted_auth_allows_same_server_name_in_different_profiles(tmp_path, monkeypatch):
     from hermes_cli import web_server
     from tools.mcp_dashboard_oauth import DashboardOAuthFlow

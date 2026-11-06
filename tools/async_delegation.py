@@ -107,6 +107,9 @@ _ACTIVE_STATES = ("running", "stalling")
 _ROUTING_KEYS = ("scope_id", "user_id", "user_name")
 # Structured stall metadata — additive, present only on stall finalizations.
 _STALL_META_KEYS = ("stalled_after_quiet_seconds", "stall_threshold_seconds", "stall_phase", "stall_grace_seconds")
+# Result fields a background parent needs to triage a child it never sees run: the classified
+# failure reason, the child's token counts and its priced cost. Carried only when present.
+_RESULT_META_KEYS = ("failure_reason", "tokens", "cost_usd", "cost_status")
 # Private stall bookkeeping on the record -> public field in list_async_delegations().
 _STALL_FIELD_MAP = (("_stall_quiet_seconds", "stalled_after_quiet_seconds"),
                     ("_stall_threshold_seconds", "stall_threshold_seconds"), ("_stall_in_tool", "stall_in_tool"))
@@ -1121,7 +1124,10 @@ def _push_completion_event(record: dict[str, Any], result: dict[str, Any], statu
         payload = {
             "summary": result.get("summary"), "error": result.get("error"),
             **({"api_calls": result["api_calls"]} if result.get("api_calls") is not None else {}),
-            "duration_seconds": result.get("duration_seconds", round(completed_at - dispatched_at, 2))}
+            "duration_seconds": result.get("duration_seconds", round(completed_at - dispatched_at, 2)),
+            # Triage metadata a background parent cannot see any other way: why a child stopped and
+            # what it spent. Present only when the runner reported it.
+            **{k: result[k] for k in _RESULT_META_KEYS if k in result}}
     evt = {
         "type": "async_delegation", "delegation_id": record.get("delegation_id"),
         # session_key routes back to the originating gateway session; "" => CLI.

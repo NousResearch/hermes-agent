@@ -1,6 +1,6 @@
 name: hermes-sanctuary
 repo: https://github.com/Med34000/hermes-sanctuary
-sha: a2cac2f2fec2cadc80b7ddd88252bec3016184ca
+sha: 79c77390b9d926fa50c9973152f801c7127c8238
 subdir: hermes-sanctuary
 title: Hermes Sanctuary
 description: "Watch your Hermes Agent work: five animated characters wake up when Hermes uses their tools, in two illustrated worlds (Olympus by default, the Clearing), in Hermes Desktop and the web dashboard, in English or French. The guard barks, with a bubble saying why, on tool and provider errors, silent fallbacks to a backup model, loops (same tool, same arguments, 4 times in a turn), heavy turns, a daily budget overrun and permissions waiting for an answer; a daily journal shows turns, tools, where the work came from, tokens and estimated cost per model hour by hour, with a shareable image of the day and a sped-up replay. Disclosure — observer hooks only (they never block, change or answer anything); records tool names, turn times, platform and scheduled-task names, counters, model names with token counts and one-letter event codes with their time for the replay (never messages, arguments, results, error texts, file paths or ids) under plugin-data/hermes-sanctuary/, files older than 2 days removed; a hash of each tool call is kept in memory for the current turn only to spot loops; read-only dashboard routes serve that activity and the plugin's own theme and images; cost is estimated with Hermes's own agent.usage_pricing module (a private import the validator may warn on); no network calls of its own, no shell commands, no background process, no secrets or .env access, no telemetry and no self-updater; the panorama runs in a sandboxed frame that receives everything by postMessage; Hermes Desktop may show native notifications (at most one per kind every 2 minutes); the daily budget is stored by Hermes Desktop or the browser."
@@ -9,14 +9,14 @@ tier: community
 category: desktop
 requires_hermes: ">=0.22.5"
 docs_url: https://github.com/Med34000/hermes-sanctuary#readme
-version: "2.7.2"
-image: https://raw.githubusercontent.com/Med34000/hermes-sanctuary/a2cac2f2fec2cadc80b7ddd88252bec3016184ca/docs/catalog/banner.jpg
+version: "2.7.3"
+image: https://raw.githubusercontent.com/Med34000/hermes-sanctuary/79c77390b9d926fa50c9973152f801c7127c8238/docs/catalog/banner.jpg
 screenshots:
-  - https://raw.githubusercontent.com/Med34000/hermes-sanctuary/a2cac2f2fec2cadc80b7ddd88252bec3016184ca/docs/demo.gif
-  - https://raw.githubusercontent.com/Med34000/hermes-sanctuary/a2cac2f2fec2cadc80b7ddd88252bec3016184ca/docs/panorama.jpg
-  - https://raw.githubusercontent.com/Med34000/hermes-sanctuary/a2cac2f2fec2cadc80b7ddd88252bec3016184ca/docs/catalog/today-en.jpg
-  - https://raw.githubusercontent.com/Med34000/hermes-sanctuary/a2cac2f2fec2cadc80b7ddd88252bec3016184ca/docs/catalog/desktop-pane.jpg
-  - https://raw.githubusercontent.com/Med34000/hermes-sanctuary/a2cac2f2fec2cadc80b7ddd88252bec3016184ca/docs/catalog/clearing-en.jpg
+  - https://raw.githubusercontent.com/Med34000/hermes-sanctuary/79c77390b9d926fa50c9973152f801c7127c8238/docs/demo.gif
+  - https://raw.githubusercontent.com/Med34000/hermes-sanctuary/79c77390b9d926fa50c9973152f801c7127c8238/docs/panorama.jpg
+  - https://raw.githubusercontent.com/Med34000/hermes-sanctuary/79c77390b9d926fa50c9973152f801c7127c8238/docs/catalog/today-en.jpg
+  - https://raw.githubusercontent.com/Med34000/hermes-sanctuary/79c77390b9d926fa50c9973152f801c7127c8238/docs/catalog/desktop-pane.jpg
+  - https://raw.githubusercontent.com/Med34000/hermes-sanctuary/79c77390b9d926fa50c9973152f801c7127c8238/docs/catalog/clearing-en.jpg
 readme: true
 platforms: []
 known_issues:

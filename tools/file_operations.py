@@ -516,6 +516,13 @@ class FileOperations(ABC):
 # Image extensions (subset of binary that we can return as base64)
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico'}
 
+# How much of a file to inspect when deciding "is this binary?", in BYTES read
+# from disk (must be >= PROBE_CHARS so a multibyte character cut at the byte
+# boundary still yields enough decoded text to judge the content ratio).
+PROBE_BYTES = 4096
+# How much of that decoded sample to actually inspect, in CHARACTERS.
+PROBE_CHARS = 4096
+
 # Shell-based linters by file extension.  Invoked via _exec() with the
 # filesystem path.  Cover languages where a compile/type check needs an
 # external toolchain (py_compile, node, tsc, go vet, rustfmt).
@@ -903,11 +910,25 @@ class ShellFileOperations(FileOperations):
             # sample carries the replacement char as binary (read-only) so the
             # agent can't corrupt it. Legitimate UTF-8 text effectively never
             # contains U+FFFD.
-            if "\ufffd" in content_sample[:1000]:
+            # A wall of U+FFFD means the sample is genuinely not UTF-8 — but a
+            # replacement char at the very END is an artifact of the sample
+            # cut, not evidence of a binary file. `head -c` slices at a BYTE
+            # boundary, so for text with heavy multibyte content (Vietnamese,
+            # CJK) the cut can land inside a character and leave a dangling
+            # sequence that decodes to U+FFFD. Treating that as binary makes
+            # read_file refuse perfectly valid UTF-8 text — a false positive
+            # that hits Vietnamese/CJK documents hardest (measured: a UTF-8
+            # file with 37% multibyte bytes read clean by Python was refused
+            # here). Strip only the TRAILING artifact; a U+FFFD anywhere else
+            # still means binary.
+            probe = content_sample[:PROBE_CHARS].rstrip("\ufffd")
+            if not probe:
+                return True      # sample was nothing but replacement chars
+            if "\ufffd" in probe:
                 return True
-            non_printable = sum(1 for c in content_sample[:1000]
+            non_printable = sum(1 for c in probe
                                if ord(c) < 32 and c not in '\n\r\t')
-            return non_printable / min(len(content_sample), 1000) > 0.30
+            return non_printable / len(probe) > 0.30
         
         return False
     
@@ -1189,7 +1210,7 @@ class ShellFileOperations(FileOperations):
             )
         
         # Read a sample to check for binary content
-        sample_cmd = f"head -c 1000 {self._escape_shell_arg(path)} 2>/dev/null"
+        sample_cmd = f"head -c {PROBE_BYTES} {self._escape_shell_arg(path)} 2>/dev/null"
         sample_result = self._exec(sample_cmd)
         sample_output = _strip_terminal_fence_leaks(sample_result.stdout)
         
@@ -1307,7 +1328,7 @@ class ShellFileOperations(FileOperations):
             file_size = 0
         if self._is_image(path):
             return ReadResult(is_image=True, is_binary=True, file_size=file_size)
-        sample_result = self._exec(f"head -c 1000 {self._escape_shell_arg(path)} 2>/dev/null")
+        sample_result = self._exec(f"head -c {PROBE_BYTES} {self._escape_shell_arg(path)} 2>/dev/null")
         sample_output = _strip_terminal_fence_leaks(sample_result.stdout)
         if self._is_likely_binary(path, sample_output):
             return ReadResult(

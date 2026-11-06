@@ -85,7 +85,8 @@ class SSHEnvironment(BaseEnvironment):
             self._sync_manager = FileSyncManager(
                 get_files_fn=lambda: iter_sync_files(f"{self._remote_home}/.hermes"),
                 upload_fn=self._scp_upload, delete_fn=self._ssh_delete,
-                bulk_upload_fn=self._ssh_bulk_upload, bulk_download_fn=self._ssh_bulk_download)
+                bulk_upload_fn=self._ssh_bulk_upload, bulk_download_fn=self._ssh_bulk_download,
+                get_remote_time_fn=self._ssh_remote_time)
             self._sync_manager.sync(force=True)
         self.init_session()
 
@@ -243,6 +244,13 @@ class SSHEnvironment(BaseEnvironment):
                                   f"{ssh_stderr.decode(errors='replace').strip()}",
                                   f"File sync over SSH to {self.host}", what="the connection")
         logger.debug("SSH: bulk-uploaded %d file(s) via tar pipe", len(files))
+
+    def _ssh_remote_time(self) -> float:
+        """Read the sync boundary from the same clock as remote tar mtimes."""
+        result = self._run_ssh("date +%s", timeout=10)
+        if result.returncode != 0:
+            raise _sync_error(f"remote clock failed: {result.stderr.strip()}", f"File sync to {self.host}")
+        return float(result.stdout.strip())
 
     def _ssh_bulk_download(self, dest: Path) -> None:
         """Download remote .hermes/ as a tar archive."""

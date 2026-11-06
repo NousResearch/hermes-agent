@@ -1249,8 +1249,9 @@ def build_skills_system_prompt(
     ContextVar would otherwise leak the default profile's skills into a bot's prompt.
     """
     from agent.safe_worker_policy import safe_worker_enabled
+    from tools.hosted_tool_policy import host_feature_enabled
 
-    if safe_worker_enabled():
+    if safe_worker_enabled() or not host_feature_enabled("skills"):
         return ""
     _home_token = None
     if skills_dir_override is not None:

@@ -11,7 +11,10 @@ export interface CreationContract { sources: string[]; parameters: string[] }
 /** A `session.create` policy label the gateway may offer (`runtime.describe` `session_create.sources`). */
 export type LaunchSource = 'acp' | 'cli' | 'gui' | 'oneshot' | 'tool' | 'tui'
 
-/** How a client names itself on `session.create`: a free-form label for attribution, never a grant. */
+/** How a client names itself on `session.create`: a label for attribution, never a grant. A gateway that takes
+ *  it refuses `session.create` unless `name` is 1-64 characters of a-z, 0-9, `.`, `_` or `-` starting with a
+ *  letter or digit, `version` (optional) is 1-64 printable ASCII characters without spaces, and there are no
+ *  other keys. */
 export interface ClientIdentity { name: string; version?: string }
 
 /** Who is launching: the policy label (default `'tui'`, the terminal-client policy) and, optionally,

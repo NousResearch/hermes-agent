@@ -91,6 +91,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True, args_hint="[off|help|session-id]"),
     CommandDef("clear", "Clear screen and start a new session", "Session",
                cli_only=True, desktop="terminal"),
+    CommandDef("purge", "Delete recent Telegram messages in this chat via Bot API (48h window; only ids we've seen since the feature was enabled)", "Session",
+               gateway_only=True, aliases=("wipe",)),
     CommandDef("redraw", "Force a full UI repaint (recovers from terminal drift)", "Session",
                cli_only=True, desktop="terminal"),
     CommandDef("history", "Show conversation history", "Session",

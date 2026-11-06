@@ -253,6 +253,14 @@ def _retire_agent(cli) -> None:
 class CLIAgentSetupMixin:
     """Agent construction + session-resume display methods for ``HermesCLI``."""
 
+    def _has_explicit_cli_route(self) -> bool:
+        """Whether -m/--provider pinned this invocation's model or provider. A pinned route either
+        resolves as requested or fails; it never silently swaps to a ``fallback_providers`` entry
+        (same contract as pinned cron jobs and delegation children)."""
+        return not getattr(self, "_startup_route_pin_released", False) and bool(
+            getattr(self, "_explicit_model_override", False)
+            or getattr(self, "_explicit_provider_override", False))
+
     def _ensure_runtime_credentials(self) -> bool:
         """Re-resolve provider credentials before agent use so key rotation / token
         refresh are picked up without restarting the CLI. False on auth failure."""
@@ -277,7 +285,7 @@ class CLIAgentSetupMixin:
                     explicit_base_url=self._explicit_base_url, target_model=self.model or None)
             except Exception as exc:
                 _primary_exc = exc
-            if _primary_exc is not None:
+            if _primary_exc is not None and not self._has_explicit_cli_route():
                 runtime = self._resolve_fallback_runtime(_primary_exc)
                 if runtime is not None:
                     _primary_exc = None
@@ -287,7 +295,12 @@ class CLIAgentSetupMixin:
             # Only an explicit re-authentication requirement is terminal. Unknown
             # resolver/network failures must not acquire the sticky Kanban block.
             self._credentials_terminal = isinstance(_primary_exc, AuthError) and _primary_exc.relogin_required
-            message = format_runtime_provider_error(_primary_exc) if _primary_exc else t("cli.startup.provider_resolution_failed")
+            if _primary_exc is not None and self._has_explicit_cli_route():
+                # Resolver data may contain credentials, so emit only typed safe copy.
+                from hermes_cli.cli_route_diagnostics import pinned_route_message
+                message = pinned_route_message(_primary_exc)
+            else:
+                message = format_runtime_provider_error(_primary_exc) if _primary_exc else t("cli.startup.provider_resolution_failed")
             if getattr(self, "tool_progress_mode", "full") == "off":
                 print(message, file=sys.stderr)  # quiet/stream-json: stdout is machine-readable
             else:

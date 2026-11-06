@@ -53,6 +53,8 @@ async def pick(tmp_path, monkeypatch, before, after, provider, *, request=None, 
                                         {'model': 'switched', 'provider': provider}, prepared)
         new = restore_policy(committed['policy'])
         config = new.config(authority)
+        from gateway.session_worker_construct import cli_launch_route_pinned
+        assert not cli_launch_route_pinned(new, config, new.model)
         _, runtime = _resolve_policy_agent_runtime(runner, new, fallback=False)
         # A real HTTP post using the runtime fields the next agent client receives.
         response = await asyncio.to_thread(httpx.post, runtime['base_url'].rstrip('/') + '/chat/completions',
@@ -64,6 +66,16 @@ async def pick(tmp_path, monkeypatch, before, after, provider, *, request=None, 
         _, cold = _resolve_policy_agent_runtime(runner, new, fallback=False)
         assert (cold['base_url'], cold['api_key']) == (runtime['base_url'], runtime['api_key'])
         return config, runtime
+
+
+@pytest.mark.asyncio
+async def test_cli_model_pick_releases_launch_pin_without_resetting_model_choice(tmp_path, monkeypatch):
+    with peers() as (_a, au, _b, bu):
+        before = {'model': {'provider': 'custom', 'base_url': au, 'default': 'original'}}
+        after = {'model': {'provider': 'custom', 'base_url': bu, 'default': 'original'}}
+        config, _ = await pick(tmp_path, monkeypatch, before, after, 'custom', request={'source': 'cli'})
+        assert config['_cli_launch_route_released'] is True
+        assert 'model' not in config.get('session_pins', {})
 
 
 @pytest.mark.asyncio

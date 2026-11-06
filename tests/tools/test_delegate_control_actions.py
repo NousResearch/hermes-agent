@@ -251,7 +251,8 @@ def test_empty_tasks_array_with_goal_is_single_task_not_batch_error():
     batch-count gate (observed live with gpt-5.4-mini on Nous Portal) —
     it falls through to the no-tasks teaching error."""
     out = delegate_task(tasks=[], goal="", parent_agent=_StubParent())
-    assert "No tasks provided" in out
+    assert "Schema violation" in out
+    assert "delegate_task requires" in out
     assert "at least 2 tasks" not in out
 
 

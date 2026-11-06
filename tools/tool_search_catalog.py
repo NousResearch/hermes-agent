@@ -175,8 +175,11 @@ def _required_term_coverage(answerable_term_count: int) -> int:
 
 def search_catalog(catalog: list[CatalogEntry], query: str, limit: int = 5, *,
                    corpus_stats: Optional[_CorpusStats] = None) -> list[CatalogEntry]:
-    """Top-``limit`` catalog entries for ``query`` by BM25; a query naming a tool ranks it first
-    (:func:`_name_match_tier`).
+    """Top-``limit`` catalog entries for ``query``, ordered by: a query naming the tool
+    (:func:`_name_match_tier`); then how many distinct query terms the tool matches, so for
+    "screenshot window" a tool describing both beats ``window``, which names one; then whether
+    the tool's whole local name is in the query ("peekaboo app" -> ``mcp__peekaboo__app``, not a
+    sibling whose shorter description mentions "app"); then BM25.
 
     Admission is by the query's rarest token (:func:`_gate_token`), not by ``score > 0``:
     BM25 is additive over the tokens a document shares with the query, so on a large catalog
@@ -201,11 +204,16 @@ def search_catalog(catalog: list[CatalogEntry], query: str, limit: int = 5, *,
         tokens = set(entry._tokens)
         return gate in tokens and sum(1 for t in answerable if t in tokens) >= required_terms
 
+    query_terms = set(query_tokens)
     scored = []
     for entry in catalog:
         named = _name_match_tier(name_query, entry.name)
         if _admitted(entry, named):
-            scored.append(((named, _bm25_score(query_tokens, entry._tokens, *corpus_stats)), entry))
+            tokens = set(entry._tokens)
+            covered = len(query_terms & tokens)
+            local_named = int(_local_name_terms(entry.name) <= query_terms)
+            bm25 = _bm25_score(query_tokens, entry._tokens, *corpus_stats)
+            scored.append(((named, covered, local_named, bm25), entry))
     scored.sort(key=lambda x: x[0], reverse=True)
     return [e for _, e in scored[:limit]]
 
@@ -213,6 +221,12 @@ def search_catalog(catalog: list[CatalogEntry], query: str, limit: int = 5, *,
 def _normalize_name(name: str) -> str:
     """Lowercase, with anything outside ``[a-z0-9_]`` as ``_``, so ``dev-radius`` names ``dev_radius``."""
     return re.sub(r"[^a-z0-9_]", "_", name.strip().lower())
+
+
+def _local_name_terms(name: str) -> set[str]:
+    """Stemmed terms of the name after its last ``__`` separator: the part a model says
+    (``app`` for ``mcp__peekaboo__app``). Empty never matches, so it is ``{""}`` then."""
+    return set(_tokenize(name.rsplit("__", 1)[-1])) or {""}
 
 
 def _name_match_tier(name_query: str, name: str) -> int:

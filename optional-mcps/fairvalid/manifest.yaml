@@ -3,8 +3,9 @@ manifest_version: 1
 name: fairvalid
 description: >-
   Verify email addresses, follow verification jobs, read results, and check
-  FairValid workspace credits.
-source: https://github.com/moonlitnayeem/fairvalid-ai/tree/b360f0ba53db724a0c4300f5f22970a3d7d80208
+  FairValid workspace credits. Discover business leads with FairMatch, quote
+  selections, and unlock verified work emails after explicit credit-limit approval.
+source: https://github.com/moonlitnayeem/fairvalid-ai/tree/f5f04f4354a5c2fe075728f0d664b90d8848640d
 
 transport:
   type: http
@@ -18,10 +19,17 @@ tools:
     - fairvalid_get_balance
     - fairvalid_get_job
     - fairvalid_get_results
+    - fairvalid_get_lead_filters
+    - fairvalid_search_leads
+    - fairvalid_quote_leads
+    - fairvalid_unlock_leads
+    - fairvalid_get_lead_batch
+    - fairvalid_get_leads
 
 suggest:
   keywords:
     - fairvalid
+    - fairmatch
   hosts:
     - fairvalid.com
 
@@ -29,15 +37,37 @@ post_install: |
   Complete OAuth on https://fairvalid.com and select an existing Live API key
   for the intended workspace. Its scopes and lifetime cap apply. Never paste
   credentials or authorization codes into chat.
-  Start with the three read tools. Use `hermes mcp configure fairvalid` to enable
-  email submission or job cancellation only when those actions are wanted.
+  The default selection exposes three verification reads and all six FairMatch
+  tools, including unlock. This is not a read-only tool set: search performs a
+  search, and unlock can acquire leads and spend credits. Keep normal approval
+  prompts. Tool selection does not grant scopes or authorize a purchase.
+  Use `hermes mcp configure fairvalid` to review the nine defaults or enable
+  email submission and job cancellation when those actions are wanted.
+  FairMatch reads/search/quotes require leads:read; unlock requires leads:acquire.
+  Existing keys and OAuth grants do not gain permissions from this catalog update.
+  Deliberately reconnect through native OAuth with a suitably scoped key when
+  FairMatch is wanted; review the workspace, scopes and lifetime credit cap.
+  Discover filters, search, then quote 1-50 distinct returned selection IDs.
+  A quote reserves no credits. Obtain explicit approval of that exact selection
+  and a numerical maximum credit spend before fairvalid_unlock_leads. Pass
+  integer maximumCredits from 0-200, confirm: true and one stable idempotency_key.
+  Each newly acquired verified work email costs four credits; already-owned and
+  unavailable contacts cost zero. Do not infer unlock approval from installation,
+  connection, searching or quoting, or split batches to evade the approved cap.
+  Retain the returned batch_id and poll fairvalid_get_lead_batch with retry_after
+  and 5-30 second backoff. Report completed leads and settled charged_credits;
+  use fairvalid_get_leads for owned contacts, preserving next_cursor unchanged.
+  Retry an uncertain unlock only with the original API-key identity, exact ordered
+  ids, maximumCredits and idempotency_key. Do not replace selections on a retry.
+  FairMatch sends no outreach and does not grant permission to contact a person.
   For an authorized connection check, read the balance; this uses no verification
   credits. Do not submit customer addresses or cancel customer jobs as a test.
   Live Valid and Invalid checks cost one credit each. Genuine Unknown,
   unresolved catch-all, technical failures, and unprocessed items have no net
   verification charge. Retry uncertain submissions only with the same selected
   API-key identity, idempotency key, and unchanged input.
-  OAuth uses Live keys. Sandbox verification needs a separate direct Test-key
-  connection and documented example.com fixtures.
+  OAuth uses Live keys. Sandbox checks need a separate direct Test-key connection
+  and documented synthetic fixtures. Never unlock real leads as a connection test.
+  FairMatch contracts and fixtures: https://github.com/moonlitnayeem/fairvalid-ai/blob/f5f04f4354a5c2fe075728f0d664b90d8848640d/docs/fairmatch.md
   Documentation: https://fairvalid.com/help/mcp
   Support: nayeem@fairvalid.com

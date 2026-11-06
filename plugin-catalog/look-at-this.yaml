@@ -1,9 +1,9 @@
 name: look-at-this
 repo: https://github.com/Elshayib/look-at-this
-sha: 653757f9f1eb58176a8d0ae40f64b663ce1d72f3
+sha: b1b4b9eb0880f1736d0d8399e65008438b8a8dc4
 readme: true
 title: Look At This
-image: https://raw.githubusercontent.com/Elshayib/look-at-this/653757f9f1eb58176a8d0ae40f64b663ce1d72f3/assets/look-at-this.png
+image: https://raw.githubusercontent.com/Elshayib/look-at-this/b1b4b9eb0880f1736d0d8399e65008438b8a8dc4/assets/look-at-this.png
 description: >-
   One-shot "explain this" context capture: a hotkey, the composer's attach menu or
   /look grabs the window you were just in (screenshot, accessibility tree, active

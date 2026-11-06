@@ -32,7 +32,11 @@ from gateway.response_filters import (
     is_partial_silence_marker as _is_partial_silence_marker,
     ends_with_partial_silence_marker as _ends_with_partial_silence_marker,
     strip_trailing_silence_marker as _strip_trailing_silence_marker)
-from gateway.stream_consumer_directives import has_pending_media_directive, strip_image_tags_for_display
+from gateway.stream_consumer_directives import (
+    has_pending_media_directive,
+    has_unsettled_image_tag,
+    strip_image_tags_for_display,
+)
 from gateway.stream_consumer_fences import ensure_closed_code_fences
 from gateway.stream_consumer_transport import StreamTransportMixin
 from gateway.stream_consumer_fallback import StreamFallbackMixin
@@ -793,13 +797,15 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # ("answer\n\nNO"); got_done always resolves the buffer.
         # Likewise defer while a MEDIA:/[[…]] directive is still being typed: the cleaner
         # only strips complete deliverable tags, so a half-streamed one would be shown, and
-        # a media-only reply cleans to "" at finish, which never edits the bubble away.
+        # a media-only reply cleans to "" at finish, which never edits the bubble away. And while
+        # an image tag may still turn into quoted code, so its hidden/shown state is not settled.
         cleaned = self._clean_for_display(self._accumulated)
         return (should_edit and not _is_partial_silence_marker(cleaned)
                 # Raw buffer: the cleaner already drops a COMPLETE trailing marker, but an interim
                 # frame carries the cursor after it, which hides the marker from the cleaner.
                 and not _ends_with_partial_silence_marker(self._accumulated)
-                and not has_pending_media_directive(cleaned))
+                and not has_pending_media_directive(cleaned)
+                and not has_unsettled_image_tag(self._accumulated))
 
     async def _split_first_send(self, tick: _Tick) -> bool:
         """No message to edit yet and the buffer overflows: seal only the head chunks; the

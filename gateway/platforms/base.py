@@ -20,6 +20,8 @@ import weakref
 from abc import ABC, abstractmethod
 from hermes_dir_acl import make_user_dir, unusable_dir_remedy
 from gateway.platforms.base_log_safety import safe_url_for_log
+from gateway.platforms.base_markdown import (
+    _FENCED_CODE_RE, _INLINE_CODE_RE, _blank_spans, _code_spans, _delete_spans, deliverable_image_tags)
 
 from utils import normalize_proxy_url, unlink_files_older_than
 from agent.i18n import t
@@ -1212,11 +1214,6 @@ _MEDIA_EXT_ALTERNATION = "|".join(sorted((e.lstrip(".") for e in MEDIA_DELIVERY_
 # attachment is silently dropped (#88038).
 _MEDIA_CJK_TERMINATORS = "（）〈〉《》：，。；！？、\u201c\u201d\u2018\u2019【】"
 
-# Image tags ``extract_images`` turns into attachments (the streamed display hides the same tags).
-MD_IMAGE_TAG_PATTERN = r'!\[([^\]]*)\]\((https?://[^\s\)]+)\)'
-HTML_IMAGE_TAG_PATTERN = r'<img\s+src=["\']?(https?://[^\s"\'<>]+)["\']?\s*/?>\s*(?:</img>)?'
-_IMAGE_URL_MARKERS = ('.png', '.jpg', '.jpeg', '.gif', '.webp', 'fal.media', 'fal-cdn', 'replicate.delivery')
-
 MEDIA_TAG_CLEANUP_RE = re.compile(
     r'''[`"'*_]{0,3}MEDIA:\s*'''
     r'''(?P<path>`[^`\n]+?`|"[^"\n]+?"|'[^'\n]+?'|'''
@@ -1368,40 +1365,6 @@ def _real_media_tag_spans(masked: str) -> list:
     spans: list = [m.span() for m in MEDIA_TAG_CLEANUP_RE.finditer(masked)]
     spans.extend((match.start(), end) for match, _, end in _extensionless_media_matches(masked))
     return spans
-
-
-_FENCED_CODE_RE = re.compile(r'```[^\n]*\n.*?```', re.DOTALL)
-_INLINE_CODE_RE = re.compile(r'`[^`\n]+`')
-
-
-def _code_spans(content: str) -> list:
-    """(start, end) spans of fenced code blocks and inline code in ``content``."""
-    return [m.span() for rx in (_FENCED_CODE_RE, _INLINE_CODE_RE) for m in rx.finditer(content)]
-
-
-def _blank_spans(text: str, spans: list) -> str:
-    """Replace every non-newline char inside ``spans`` with a space (offsets preserved)."""
-    chars = list(text)
-    for start, end in spans:
-        chars[start:end] = [c if c == '\n' else ' ' for c in chars[start:end]]
-    return ''.join(chars)
-
-
-def _delete_spans(text: str, spans: list) -> str:
-    """Delete ``spans`` from ``text``, merging overlapping/nested ones first so multi-pattern
-    matches over the same tag never double-delete adjacent text."""
-    if not spans:
-        return text
-    merged: list = []
-    for s, e in sorted(spans):
-        if merged and s <= merged[-1][1]:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
-        else:
-            merged.append((s, e))
-    chars = list(text)
-    for start, end in reversed(merged):
-        del chars[start:end]
-    return "".join(chars)
 
 
 def _strip_media_tag_directives(text: str) -> str:
@@ -2948,24 +2911,14 @@ class BasePlatformAdapter(ABC):
     @staticmethod
     def extract_images(content: str) -> tuple[list[tuple[str, str]], str]:
         """Extract ``![alt](url)`` and ``<img src=...>`` image URLs from a response;
-        returns ``([(url, alt_text), ...], content with those tags removed)``."""
-        md_pattern, html_pattern = MD_IMAGE_TAG_PATTERN, HTML_IMAGE_TAG_PATTERN
-        images = [(m.group(2), m.group(1)) for m in re.finditer(md_pattern, content)
-                  if any(m.group(2).lower().endswith(ext) or ext in m.group(2).lower()
-                         for ext in _IMAGE_URL_MARKERS)]  # only URLs that look like actual images
-        images.extend((match.group(1), "") for match in re.finditer(html_pattern, content))
-        if not images:
-            return images, content
-        # Remove only the tags we extracted, not every markdown image.
-        extracted_urls = {url for url, _ in images}
-
-        def _remove_if_extracted(match):
-            url = match.group(2) if match.lastindex >= 2 else match.group(1)
-            return '' if url in extracted_urls else match.group(0)
-        cleaned = content
-        for pattern in (md_pattern, html_pattern):
-            cleaned = re.sub(pattern, _remove_if_extracted, cleaned)
-        return images, re.sub(r'\n{3,}', '\n\n', cleaned).strip()  # leftover blank lines
+        returns ``([(url, alt_text), ...], content with those tags removed)``. Tags in fenced or
+        inline code stay as text, as ``extract_media`` / ``extract_local_files`` leave code."""
+        tags = deliverable_image_tags(content)
+        if not tags:
+            return [], content
+        # Remove the delivered tags by position: a quoted copy of the same URL stays.
+        cleaned = _delete_spans(content, [(start, end) for start, end, _, _ in tags])
+        return [(url, alt) for _, _, url, alt in tags], re.sub(r'\n{3,}', '\n\n', cleaned).strip()
 
     async def send_voice(
         self, chat_id: str, audio_path: str, caption: Optional[str] = None,

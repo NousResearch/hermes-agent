@@ -73,6 +73,31 @@ def test_arm_shutdown_watchdog_fires_with_dump_and_exit(tmp_path):
     assert get_shutdown_watchdog_dump_path(tmp_path).name == "gateway-shutdown-watchdog.log"
 
 
+def test_write_watchdog_dump_mkdir_failure_falls_back_to_stderr(tmp_path):
+    dump_path = tmp_path / "unwritable" / "watchdog.log"
+    stderr_captured = []
+    dump_trace_calls = []
+
+    def fake_stderr_write(s):
+        stderr_captured.append(s)
+
+    def fake_dump_traceback(**kwargs):
+        dump_trace_calls.append(kwargs)
+
+    with patch.object(Path, "mkdir", side_effect=OSError("Permission denied")), \
+         patch("sys.stderr.write", side_effect=fake_stderr_write), \
+         patch("sys.stderr.flush"), \
+         patch("faulthandler.dump_traceback", side_effect=fake_dump_traceback):
+        shutdown_watchdog_module._write_watchdog_dump(
+            dump_path,
+            delay_s=5.0,
+            snapshot={"status": "draining"},
+            event="test_watchdog_fired",
+        )
+
+    assert not dump_path.exists()
+    assert any("Gateway test watchdog fired after 5s" in s for s in stderr_captured)
+    assert any(call.get("all_threads") is True for call in dump_trace_calls)
 
 
 async def _run_heartbeat_until_payload(tmp_path, timeout_s=10.0):

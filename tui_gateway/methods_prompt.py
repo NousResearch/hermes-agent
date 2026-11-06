@@ -515,8 +515,9 @@ def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids
             "resubmit with confirm_empty_truncate=true if this is intended"), {}
     # Depth gate: a valid anchor can still name a stale row; tail regenerate / edit-last
     # drop exactly one user turn, deeper cuts need confirm_deep_truncate.
-    archived_user_turns = _archived_user_turns(session, sid, history, cut_index, _row_ids_of(truncated))
-    if archived_user_turns > 1 and not is_truthy_value(params.get("confirm_deep_truncate")):
+    # Confirmed first: the count can load the durable transcript under history_lock.
+    if not is_truthy_value(params.get("confirm_deep_truncate")) and (archived_user_turns := _archived_user_turns(
+            session, sid, history, cut_index, _row_ids_of(truncated))) > 1:
         # A durable-carrier cut's ``truncated`` is physical rows: count the live cut instead.
         archived_messages = len(history) - (
             cut_index if durable_prefix is not None else len(truncated))

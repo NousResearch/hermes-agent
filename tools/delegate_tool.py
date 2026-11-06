@@ -290,12 +290,13 @@ def _build_child_agent(
         child_session_db = _open_child_session_db(parent_agent)
         # Children run provider-less. Under compression.checkpoint_required the child arms the same gate
         # (read inside the delegated profile scope, as the child reads it) and would die at its first
-        # compaction, so it inherits the provider, scoped as a fork, unless its parent opted out of memory
-        # (--ignore-rules). Cost: one initialize() per spawn.
+        # compaction, so it inherits the provider, scoped as a fork, unless the session opted out of memory
+        # (--ignore-rules). A child's own skip_memory may only mean the gate was off where it was built, so the
+        # opt-out rides down the chain as _memory_opt_out. Cost: one initialize() per spawn.
         from agent.conversation_compression_checkpoint import checkpoint_required_from_config
 
-        child_checkpoint_required = (not getattr(parent_agent, "skip_memory", False)
-                                     and checkpoint_required_from_config())
+        memory_opt_out = getattr(parent_agent, "_memory_opt_out", getattr(parent_agent, "skip_memory", False))
+        child_checkpoint_required = not memory_opt_out and checkpoint_required_from_config()
         with delegated_child_context():
             try:
                 child = AIAgent(
@@ -339,6 +340,7 @@ def _build_child_agent(
     child_session_ref["session_id"] = getattr(child, "session_id", "") or ""
     child._progress_identity_ref = child_session_ref
     child._delegate_depth, child._delegate_role = child_depth, effective_role  # post-degrade role
+    child._memory_opt_out = memory_opt_out
     child._subagent_id, child._parent_subagent_id = subagent_id, parent_subagent_id
     _apply_child_compression_cap(child, delegation_cfg)
     # Ownership chain for action=list/steer/stop; weakref so a finished parent

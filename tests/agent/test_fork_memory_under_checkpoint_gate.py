@@ -7,7 +7,7 @@ provider-less. The detached review and ``/btw`` forks persist nothing and are ex
 (``_pre_compress_memory_context``), so they are not fork sites here.
 """
 
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -26,15 +26,16 @@ class _ConstructorStop(BaseException):
     and would swallow an ordinary failure into a green test."""
 
 
-def _fork_site(site, parent_skip_memory=False):
+def _fork_site(site, parent_skip_memory=False, parent=None):
     """``(module holding the AIAgent binding, spawn thunk, extra patches)``, resolved lazily.
     batch_runner binds AIAgent at import, so its patch lands on its own global. The delegate parent is
-    built-in-only (no memory manager); ``parent_skip_memory`` makes it an ``--ignore-rules`` parent."""
+    built-in-only (no memory manager); ``parent_skip_memory`` makes it an ``--ignore-rules`` parent, and
+    ``parent`` replaces it with a real agent."""
     if site == "delegate":
         import run_agent
         from tools import delegate_tool
 
-        parent = SimpleNamespace(
+        parent = parent or SimpleNamespace(
             model="m", provider="openrouter", api_key="k", base_url="https://openrouter.ai/api/v1",
             api_mode="chat_completions", session_id="parent", enabled_toolsets=None, disabled_toolsets=None,
             request_overrides={}, prefill_messages=None, _delegate_depth=0,
@@ -66,9 +67,9 @@ def _fork_site(site, parent_skip_memory=False):
     raise AssertionError(f"unknown fork site: {site}")
 
 
-def _capture_fork_kwargs(site, *, checkpoint_required, parent_skip_memory=False):
+def _capture_fork_kwargs(site, *, checkpoint_required, parent_skip_memory=False, parent=None):
     """Drive one real fork site and return the kwargs it passed to AIAgent."""
-    binding, spawn, extra_patches = _fork_site(site, parent_skip_memory)
+    binding, spawn, extra_patches = _fork_site(site, parent_skip_memory, parent)
     captured = {}
 
     def _recorder(**kwargs):
@@ -123,7 +124,7 @@ def test_delegate_child_of_a_builtin_only_parent_still_gets_the_checkpoint_provi
 
 
 def test_agent_records_its_memory_opt_out_for_its_delegate_children():
-    """The delegate site reads ``parent.skip_memory``; a real init records it."""
+    """A top-level parent's opt-out is its ``skip_memory``, which the delegate site reads; a real init records it."""
     assert _build_agent_with_recording_provider({}).skip_memory is False
     assert _build_agent_with_recording_provider({}, skip_memory=True).skip_memory is True
 
@@ -171,24 +172,58 @@ class _RecordingProvider(MemoryProvider):
         return []
 
 
-def _build_agent_with_recording_provider(seen, builtin_memory=False, skip_memory=False, **extra):
-    """A real AIAgent init with a recording provider; returns the agent. ``builtin_memory`` sets both
-    built-in store flags (``memory.memory_enabled`` / ``memory.user_profile_enabled``)."""
-    cfg = {"compression": {}, "agent": {}, "memory": {"provider": "recording", "memory_enabled": builtin_memory,
-                                                      "user_profile_enabled": builtin_memory}}
+@contextmanager
+def _offline_agent_construction(cfg, seen=None):
+    """Real ``AIAgent`` construction under ``cfg``, offline, with the recording provider as ``memory.provider``."""
     with (
         patch("hermes_cli.config.load_config", return_value=cfg),
         patch("hermes_cli.config.load_config_readonly", return_value=cfg),
-        patch("plugins.memory.load_memory_provider", return_value=_RecordingProvider(seen)),
+        patch("plugins.memory.load_memory_provider", return_value=_RecordingProvider({} if seen is None else seen)),
         patch("agent.model_metadata.get_model_context_length", return_value=204_800),
         patch("model_tools.get_tool_definitions", return_value=[]),
         patch("model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
     ):
+        yield
+
+
+def _recording_memory_config(builtin_memory=False, **sections):
+    return {"compression": {}, "agent": {}, **sections, "memory": {
+        "provider": "recording", "memory_enabled": builtin_memory, "user_profile_enabled": builtin_memory}}
+
+
+def _build_agent_with_recording_provider(seen, builtin_memory=False, skip_memory=False, **extra):
+    """A real AIAgent init with a recording provider; returns the agent. ``builtin_memory`` sets both
+    built-in store flags (``memory.memory_enabled`` / ``memory.user_profile_enabled``)."""
+    with _offline_agent_construction(_recording_memory_config(builtin_memory), seen):
         from run_agent import AIAgent
 
         return AIAgent(api_key="test-key-1234567890", base_url="https://openrouter.ai/api/v1", quiet_mode=True,
                        skip_context_files=True, skip_memory=skip_memory, **extra)
+
+
+@pytest.mark.parametrize("session_opted_out", [False, True])
+def test_grandchild_follows_the_sessions_opt_out_not_its_parents_gate(session_opted_out):
+    """A child built where the gate is off runs provider-less without opting out of memory. As an orchestrator it
+    may route a grandchild to a profile that arms the gate: the grandchild gets the provider unless the session
+    itself opted out (``--ignore-rules``), at any depth."""
+    from run_agent import AIAgent
+    from tools import delegate_tool
+
+    gate_off = _recording_memory_config(compression={"checkpoint_required": False}, delegation={})
+    with _offline_agent_construction(gate_off):
+        root = AIAgent(api_key="test-key-1234567890", base_url="https://openrouter.ai/api/v1", quiet_mode=True,
+                       skip_context_files=True, skip_memory=session_opted_out)
+        child = delegate_tool._build_child_agent(task_index=0, goal="g", context=None, toolsets=None, model=None,
+                                                 max_iterations=3, task_count=1, parent_agent=root)
+    try:
+        assert (root._memory_manager is None) is session_opted_out
+        assert child._memory_manager is None
+        grandchild = _capture_fork_kwargs("delegate", checkpoint_required=True, parent=child)
+        assert grandchild["skip_memory"] is session_opted_out
+    finally:
+        child.close()
+        root.close()
 
 
 def test_memory_agent_context_reaches_the_provider_initialize():

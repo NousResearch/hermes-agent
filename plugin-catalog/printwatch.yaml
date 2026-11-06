@@ -1,19 +1,20 @@
 name: printwatch
 repo: https://github.com/clawsyndicate/printwatch
-sha: 7bd2f0e1420645f98e4dc9d2280ff30a39ce7307
+sha: 7da1a5e4fb1888065a09d85a88abb6f2aebf3f79
 title: PrintWatch
-description: "Control 3D printers over the local network from your agent: fleet status (temps, progress, layers), file listing, print start/pause/resume/cancel, file upload, and camera snapshots delivered into chat. Dual protocol — Anycubic Kobra printers over their built-in stock LAN Mode (clean-room reverse-engineered handshake + MQTT; no cloud, no rooting, nothing flashed) and Klipper/Moonraker over HTTP. Includes a headless slice-to-print pipeline: any raw .gcode is repackaged into the exact Anycubic .gcode.3mf dialect the stock firmware requires (header blocks, M75, uppercase-MD5 sidecar, X-ACNext slice info) and started remotely. Disclosure — makes outbound connections only to the printer hosts the user configures (PRINTWATCH_PRINTERS / PRINTWATCH_MOONRAKER_URL env, hostnames only); printer_snapshot shells out to ffmpeg; Anycubic MQTT uses TLS with the printer's self-signed certificate accepted (CERT_NONE) on the local network; no telemetry, no external services, no credentials persisted (printer session tokens are per-session, in-memory, never logged)."
+description: "Control 3D printers over the local network from your agent: fleet status (temps, progress, layers), file listing, print start/pause/resume/cancel, file upload, and camera snapshots delivered into chat. Dual protocol — Anycubic Kobra printers over their built-in stock LAN Mode (clean-room reverse-engineered handshake + MQTT; no cloud, no rooting, nothing flashed) and Klipper/Moonraker over HTTP, and Bambu Lab printers over their local MQTT/FTPS interface (user's LAN access code; X1/P1/A1 family). Includes a headless slice-to-print pipeline: any raw .gcode is repackaged into the exact Anycubic .gcode.3mf dialect the stock firmware requires (header blocks, M75, uppercase-MD5 sidecar, X-ACNext slice info) and started remotely. Disclosure — makes outbound connections only to the printer hosts the user configures (PRINTWATCH_PRINTERS / PRINTWATCH_MOONRAKER_URL env, hostnames only); printer_snapshot shells out to ffmpeg; Anycubic MQTT uses TLS with the printer's self-signed certificate accepted (CERT_NONE) on the local network; no telemetry, no external services, no credentials persisted (printer session tokens are per-session, in-memory, never logged)."
 maintainer: clawsyndicate
 tier: community
 category: tools
-version: "0.3.0"
+version: "0.4.0"
 platforms: []
 known_issues:
   - printer_snapshot requires ffmpeg on PATH.
+  - Bambu adapter verified against the documented protocol (community-verified X1C fw 01.12 wire format) plus a simulated printer; physical-printer verification pending community feedback.
   - Anycubic LAN Mode must be enabled on the printer (built-in settings toggle, stock firmware).
   - Camera snapshots work only on printers with an Anycubic camera attached; the tool fails cleanly (printer error 11401) otherwise.
 capabilities:
   provides_tools: [printer_status, printer_files, printer_print, printer_cancel, printer_pause_resume, printer_snapshot]
   provides_hooks: []
   provides_middleware: []
-  requires_env: [PRINTWATCH_PRINTERS, PRINTWATCH_MOONRAKER_URL, PRINTWATCH_MOONRAKER_API_KEY]
+  requires_env: [PRINTWATCH_PRINTERS, PRINTWATCH_BAMBU, PRINTWATCH_MOONRAKER_URL, PRINTWATCH_MOONRAKER_API_KEY]

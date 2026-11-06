@@ -2,7 +2,7 @@ name: hireko
 title: Hireko
 repo: https://github.com/HireKoAI/HirekoAiPluginPublicRepo
 subdir: .hermes-plugin
-sha: 2f9db4d5cd7f35ee9e76f4f43590de9467cd9f8a
+sha: 4af68d73ac89e67f8bc5f4a68d1079f1dc2c8294
 version: "0.1.0"
 image: https://raw.githubusercontent.com/HireKoAI/HirekoAiPluginPublicRepo/hermes/.hermes-plugin/assets/hireko-image.png
 description: >-

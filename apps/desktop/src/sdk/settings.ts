@@ -6,6 +6,7 @@ import { $composerPopoutGesturesEnabled, setComposerPopoutGesturesEnabled } from
 import { $introSplash, setIntroSplash } from '@/store/intro-splash'
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
 import { $sessionListDensity, type SessionListDensity, setSessionListDensity } from '@/store/session-list-density'
+import { $statusbarVisible, setStatusbarVisible } from '@/store/statusbar-prefs'
 import { $tabStripDefault, setTabStripDefault, type TabStripDefault } from '@/store/tabstrip-prefs'
 
 export interface DesktopSettingValues {
@@ -15,6 +16,7 @@ export interface DesktopSettingValues {
   'intro-splash.v1': boolean
   'reasoning.collapsedByDefault': boolean
   sessionListDensity: SessionListDensity
+  statusbarVisible: boolean
   tabStripDefault: TabStripDefault
 }
 
@@ -62,6 +64,7 @@ const settingBindings = {
   'intro-splash.v1': bindSetting($introSplash, setIntroSplash, isBoolean),
   'reasoning.collapsedByDefault': bindSetting($reasoningCollapsedByDefault, setReasoningCollapsedByDefault, isBoolean),
   sessionListDensity: bindSetting($sessionListDensity, setSessionListDensity, isSessionListDensity),
+  statusbarVisible: bindSetting($statusbarVisible, setStatusbarVisible, isBoolean),
   tabStripDefault: bindSetting($tabStripDefault, setTabStripDefault, isTabStripDefault)
 } satisfies { [Key in DesktopSettingKey]: SettingBinding<DesktopSettingValues[Key]> }
 

@@ -24,8 +24,12 @@ export const $statusbarVisible = modeBound('statusbarVisible', $statusbarVisible
   $statusbarVisiblePref.set(value)
 )
 
+export function setStatusbarVisible(value: boolean) {
+  $statusbarVisible.set(value)
+}
+
 export function toggleStatusbarVisible() {
-  $statusbarVisible.set(!$statusbarVisible.get())
+  setStatusbarVisible(!$statusbarVisible.get())
 }
 
 // Items the bar hides until the user turns them on from its context menu. The

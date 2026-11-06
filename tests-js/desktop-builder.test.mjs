@@ -144,8 +144,9 @@ test('desktop compiler consumes explicit immutable inputs, replaces variants, an
 }, 60000)
 
 test('desktop compiler ships a native tree without get-windows, as stage-native-deps degrades it', async () => {
-  // pnpm can skip the optional get-windows (#149861); staging then leaves it out and the app
-  // ships without read_window_below instead of failing the build.
+  // An interrupted install can leave get-windows absent (#90829), as pnpm's name-based skip of
+  // the optional declaration did (#149861); staging then leaves it out and the app ships
+  // without read_window_below instead of failing the build.
   const { buildDesktop } = await import('../scripts/build/desktop.mjs')
   const input = fixture()
   rmSync(join(input.nativeDeps, 'get-windows'), { recursive: true, force: true })

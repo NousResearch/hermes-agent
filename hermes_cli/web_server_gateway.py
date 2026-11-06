@@ -158,6 +158,29 @@ def _owned_profile_platforms(writer_identity: Optional[tuple], platforms: dict) 
         and value.get("writer_start_time") == live_start}
 
 
+def _host_ingress_alive() -> bool:
+    """Is a LIVE gateway holding the host lock?
+
+    LOCAL PATCH (zhijie): the host-lock owner is the process that serves the ``/p/<profile>/``
+    ingress for every gateway-less profile (worker pools), so a live owner means no profile is
+    left unserved by topology alone.
+    """
+    from hermes_constants import get_default_hermes_root
+    try:
+        record = json.loads((Path(get_default_hermes_root()) / "gateway.lock").read_text(
+            encoding="utf-8"))
+        pid = int(record.get("pid") or 0)
+    except Exception:
+        return False
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
 def _collect_profile_gateway_topology() -> dict[str, Any]:
     """Enumerate profiles and the gateways serving them for ``/api/status``.
 
@@ -217,6 +240,13 @@ def _collect_profile_gateway_topology() -> dict[str, Any]:
     # install has nothing unserved and gets no banner.
     from hermes_cli.gateway_multiplex_mode import SINGLE_PROFILE_REASON
     if standalone_reason == SINGLE_PROFILE_REASON or len(homes) < 2:
+        standalone_reason = None
+    elif standalone_reason is not None and (mode == "multiple" or _host_ingress_alive()):
+        # LOCAL PATCH (zhijie): a guard refusal describes the TOPOLOGY (this host deliberately runs
+        # per-profile gateways), not an outage. With several live gateways (mode == "multiple") every
+        # profile answers on its own gateway, so "not served / bots stay silent" is simply wrong;
+        # gateway-less worker profiles are served by the host ingress at /p/<profile>/. Keep the
+        # banner only for a host whose single gateway leaves profiles with nobody serving them.
         standalone_reason = None
     return {
         "profiles": [name for name, _home in homes],

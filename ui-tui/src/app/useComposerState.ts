@@ -276,7 +276,9 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
    */
   const syncTokens = useCallback(
     (value: string) => {
-      const gone = droppedTokens(tokensRef.current, value)
+      // The draft is the buffered `\`+Enter lines plus the line being edited: a chip on an earlier
+      // line is still in it.
+      const gone = droppedTokens(tokensRef.current, [...inputBufRef.current, value].join('\n'))
 
       if (!gone.length) {
         return

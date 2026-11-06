@@ -25,12 +25,13 @@ strictDepBuilds: true
 # Minutes (14 days). Checked whenever the lockfile is resolved; user-machine installs trust the
 # already-checked lockfile (--trust-lockfile).
 minimumReleaseAge: 20160
-# Exemptions are exact `name@version` entries, each with the reason it cannot wait. Every install
-# drops an entry once the lockfile no longer holds that version, so none needs a removal date.
-minimumReleaseAgeExcludePrune: true
+# Exemptions are exact `name@version` entries, one per line with the reason it cannot wait as an
+# inline comment (`- name@1.2.3  # why`). `hermes pm update --pnpm` drops an entry once the lockfile
+# no longer holds that version, so none needs a removal date. pnpm's own
+# minimumReleaseAgeExcludePrune stays off: it would run on every install and rewrite this tracked
+# file on users' machines.
 minimumReleaseAgeExclude:
-  # The release the desktop diagram swap was measured and parity-checked on (math labels need 1.8.0+).
-  - pele@1.13.0
+  - pele@1.13.0  # the desktop diagram swap was parity-checked on it (math labels need 1.8.0+)
 
 overrides:
   '@electron/osx-sign>isbinaryfile': 5.0.7

@@ -752,6 +752,7 @@ def _refresh_uv_lock() -> int:
 
 
 def _refresh_pnpm_lock() -> int:
+    from pm import pnpm_release_age
     from pm.install import env_for, installed_package
     from pm.packages import pnpm_env
 
@@ -772,14 +773,13 @@ def _refresh_pnpm_lock() -> int:
             print("  a range's only matches are newer than minimumReleaseAge (pnpm-workspace.yaml): "
                   "wait for them to age, or add the exact name@version to minimumReleaseAgeExclude")
         return 1
-    # --no-save also skips minimumReleaseAgeExcludePrune; an install that settles the new lock
-    # drops the excludes it no longer holds, so they leave in the same commit as the lock change
-    # (a later install would rewrite pnpm-workspace.yaml on a user's checkout instead).
-    code, tail = _run_live([str(pnpm.binary), "install", "--frozen-lockfile", "--lockfile-only"],
-                           cwd=str(repo_root()), env=env)
-    if code != 0:
-        print(f"✗ pnpm install --frozen-lockfile failed after the update:\n{tail}")
-        return 1
+    # pnpm's minimumReleaseAgeExcludePrune would fire on every install, user builds included, and
+    # rewrite the tracked pnpm-workspace.yaml there; the excludes the new lock no longer holds leave
+    # here instead, in the same commit as the lock change.
+    root = repo_root()
+    dropped = pnpm_release_age.prune_excludes(root / "pnpm-workspace.yaml", root / "pnpm-lock.yaml")
+    if dropped:
+        print(f"  dropped from minimumReleaseAgeExclude (no longer locked): {', '.join(dropped)}")
     print("✓ pnpm-lock.yaml refreshed")
     return 0
 

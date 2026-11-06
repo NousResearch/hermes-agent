@@ -89,6 +89,21 @@ def _derive_finish_reason(agent: Any, response: Any, messages: Any) -> str:
     return finish_reason
 
 
+def _fire_post_api_request_for_truncated(
+    agent: Any, response: Any, finish_reason: Any, *, api_messages: Any, api_call_count: Any,
+    api_duration: Any, api_start_time: Any, api_request_id: Any, effective_task_id: Any, turn_id: Any,
+) -> None:
+    """``post_api_request`` for a length-stopped attempt: it is a finished provider call, but
+    truncation recovery runs before ``normalize_model_response`` would fire the hook."""
+    from agent.turn_response_intake import _fire_post_api_request_hook, normalize_response_for_agent
+    _fire_post_api_request_hook(
+        agent, response, normalize_response_for_agent(agent, response), finish_reason,
+        api_messages=api_messages, api_call_count=api_call_count, api_duration=api_duration,
+        api_start_time=api_start_time, api_request_id=api_request_id,
+        effective_task_id=effective_task_id, turn_id=turn_id,
+    )
+
+
 def check_api_response(
     agent: Any, *, response: Any, _retry: Any, thinking_spinner: Any, messages: Any,
     api_messages: Any, api_kwargs: Any, active_system_prompt: Any, conversation_history: Any,
@@ -171,6 +186,11 @@ def check_api_response(
         return _verdict("break")
 
     if finish_reason == "length":
+        _fire_post_api_request_for_truncated(
+            agent, response, finish_reason, api_messages=api_messages, api_call_count=api_call_count,
+            api_duration=api_duration, api_start_time=api_start_time, api_request_id=api_request_id,
+            effective_task_id=effective_task_id, turn_id=turn_id,
+        )
         _tv = recover_from_truncation(
             agent, response, finish_reason, _retry, messages=messages,
             conversation_history=conversation_history, api_kwargs=api_kwargs,

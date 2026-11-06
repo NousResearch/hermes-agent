@@ -602,7 +602,7 @@ export function GroupChatWorkspace(props: GroupChatWorkspaceProps) {
 
   // The in-panel fallback has no tab to close, so leaving deselects the room, as in the legacy view.
   if (binding && (!owner || (binding.connectionId === owner.connectionId && binding.profile === owner.profile && binding.roomId === owner.roomId))) {
-    return <CanonicalGroupWorkspace binding={binding} onBack={props.onBack ?? (() => $groupChatWorkspace.set(null))} visible={props.visible} />
+    return <CanonicalGroupWorkspace binding={binding} onBack={props.onBack ?? (() => $groupChatWorkspace.set(null))} onReplaced={key => openGroupChat(key, 'key')} visible={props.visible} />
   }
 
   // A recorded gateway owner takes precedence over membership inference.

@@ -3,16 +3,19 @@
 Refs #145171 (EP-2). Contract: closing a client removes a viewer; it never stops accepted work.
 A real ``hermes gateway run`` in a hermetic home, a loopback model that holds each turn open until
 the test releases it (so "mid-turn" is deterministic), and a client on the gateway's ticketed
-``/api/ws`` that loses its connection with an abortive close (TCP RST, no WebSocket close frame).
+``/api/ws`` that loses its connection with no WebSocket close frame (a FIN, then an RST).
 ``sessions.orphan_end_grace_s`` is 1 s, so the owner's "last viewer vanished" close fires while the
 turn is still held at the model; its persisted record is the proof the drop was seen mid-turn.
 
 Two scenarios, one fresh session each:
 
 * ``absent``: the client drops, the viewer close fires, the model is released with nobody attached;
-  the turn completes exactly once, and a new connection's ``session.resume`` shows the reply.
+  the turn completes exactly once, the deferred close then ends the row, and a new connection's
+  ``session.resume`` shows the reply.
 * ``returning``: the client drops and a new connection reattaches while the turn is still held;
   ``session.resume`` reports it running, and the completion arrives live on the new connection.
+
+Either way, the returning client's next message in the same session runs and answers.
 
 Boot failures and timeouts fail loudly with the gateway log attached.
 """
@@ -112,9 +115,9 @@ class _Viewer:
                         self.frames.append(json.loads(line))
                         self._cond.notify_all()
 
-    def wait_for(self, pred: Callable[[dict], bool], what: str) -> dict:
+    def wait_for(self, pred: Callable[[dict], bool], what: str, since: int = 0) -> dict:
         def first() -> dict | None:
-            return next((f for f in self.frames if pred(f)), None)
+            return next((f for f in self.frames[since:] if pred(f)), None)
         with self._cond:
             frame = self._cond.wait_for(first, timeout=TURN_S)
         if frame is None:
@@ -130,10 +133,12 @@ class _Viewer:
         return reply["result"]
 
     def drop(self) -> None:
-        """Abortive close: SO_LINGER 0 sends a TCP RST, so no WebSocket close frame is ever sent.
+        """Drop the connection without a WebSocket close frame.
 
-        ``SHUT_RD`` first wakes the reader blocked in ``recv``: closing the fd under a blocked
-        ``recv`` defers the real close (and the RST) until the gateway next sends a frame."""
+        ``SHUT_RD`` wakes websockets' reader thread blocked in ``recv``. It takes the EOF as an
+        abnormal closure (1006, no close frame), half-closes the socket (a FIN) and closes it, which
+        ``SO_LINGER 0`` turns into a trailing RST. Closing the fd under the blocked ``recv`` instead
+        defers the real close until the gateway next sends a frame."""
         sock = self._ws.socket
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
         sock.shutdown(socket.SHUT_RD)
@@ -189,6 +194,11 @@ def _replies(db: Path, sid: str, phase: str) -> int:
     return sum(m["role"] == "assistant" and _reply(phase) in (m["content"] or "") for m in persisted_messages(db, sid))
 
 
+def _end_reason(db: Path, sid: str) -> str | None:
+    rows = _read(db, "SELECT end_reason FROM sessions WHERE id=? AND ended_at IS NOT NULL", (sid,))
+    return rows[0][0] if rows else None
+
+
 def _admissions(db: Path, sid: str) -> list[tuple[str, str | None]]:
     return _read(db, "SELECT status, outcome FROM session_admissions WHERE target_session_id=? ORDER BY seq", (sid,))
 
@@ -213,6 +223,16 @@ def _start(viewer: _Viewer, model: _Model, phase: str) -> str:
     viewer.call("prompt.submit", session_id=sid, text=f"hold-{phase}", input_id=f"netdrop-{phase}-0")
     model.wait_called(phase)
     return sid
+
+
+def _follow_up(viewer: _Viewer, db: Path, sid: str, phase: str, log: Path) -> dict:
+    """The returning client's next message in the same session runs and answers."""
+    since = len(viewer.frames)
+    viewer.call("prompt.submit", session_id=sid, text=f"next-{phase}", input_id=f"netdrop-{phase}-1")
+    done = viewer.wait_for(lambda f: f.get("method") == "event" and (f.get("params") or {}).get("session_id") == sid
+                           and f["params"].get("type") in {"message.complete", "error"}, f"{phase}: follow-up", since)
+    _poll(lambda: all(st == "terminal" for st, _ in _admissions(db, sid)), TURN_S, f"{phase}: follow-up settled", log)
+    return {"done": done, "admissions": _admissions(db, sid)}
 
 
 @pytest.fixture(scope="module")
@@ -250,9 +270,13 @@ def scenario(tmp_path_factory: pytest.TempPathFactory):
         closed = _closed_mid_turn(db, sid, "absent", log)
         model.release["absent"].set()
         _poll(lambda: _settled(db, sid, "absent"), TURN_S, "absent: turn settled with no viewer", log)
-        back = viewer().call("session.resume", session_id=sid)
+        # The close that fired mid-turn waited for the turn, then ended the row.
+        _poll(lambda: not _close_armed(db, sid) and _end_reason(db, sid), TURN_S, "absent: the deferred close ran", log)
         facts["absent"] = {"sid": sid, "closed_mid_turn": closed, "admissions": _admissions(db, sid), "replies": _replies(db, sid, "absent"),
-                           "calls": model.calls["absent"], "resume": back}
+                           "calls": model.calls["absent"], "end_reason": _end_reason(db, sid)}
+        back = viewer()
+        facts["absent"]["resume"] = back.call("session.resume", session_id=sid)
+        facts["absent"]["follow_up"] = _follow_up(back, db, sid, "absent", log)
 
         # returning: drop mid-turn, reattach while the turn is still held, then release.
         first = viewer()
@@ -268,6 +292,7 @@ def scenario(tmp_path_factory: pytest.TempPathFactory):
         _poll(lambda: _settled(db, sid, "returning"), TURN_S, "returning: turn settled", log)
         facts["returning"] = {"sid": sid, "closed_mid_turn": closed, "resume": resumed, "done": done,
                               "admissions": _admissions(db, sid), "replies": _replies(db, sid, "returning"), "calls": model.calls["returning"]}
+        facts["returning"]["follow_up"] = _follow_up(second, db, sid, "returning", log)
         yield facts
     finally:
         for event in model.release.values():
@@ -290,8 +315,17 @@ def test_dropped_viewer_never_stops_the_accepted_turn(scenario) -> None:
     s = scenario["absent"]
     assert s["admissions"] == [("terminal", "completed")], f"the dropped viewer's turn ended {s['admissions']}"
     assert s["closed_mid_turn"], "the owner never closed the dropped viewer while its turn was running"
+    assert s["end_reason"] == "ws_orphan_reap", f"the deferred close ended the row with {s['end_reason']!r}"
     assert s["calls"] == 1, f"the turn reached the model {s['calls']} times; a drop must not rerun it"
     assert s["replies"] == 1, f"{s['replies']} assistant replies persisted for {s['sid']}, wanted exactly 1"
+
+
+@pytest.mark.parametrize("phase", PHASES)
+def test_the_session_takes_the_next_message_after_the_drop(scenario, phase) -> None:
+    follow_up = scenario[phase]["follow_up"]
+    assert follow_up["done"]["params"]["type"] == "message.complete", follow_up["done"]
+    assert "netdrop-other" in json.dumps(follow_up["done"]), follow_up["done"]
+    assert follow_up["admissions"] == [("terminal", "completed")] * 2, follow_up["admissions"]
 
 
 def test_reattach_after_drop_shows_the_finished_turn(scenario) -> None:

@@ -70,6 +70,7 @@ import { chooseSendFormat } from "./send-format.mjs";
 import {
   classifyProbeRejection,
   createProbeMessageId,
+  isStreamReady,
   shouldProbe,
   isZombieSuspect,
 } from "./stream-staleness.mjs";
@@ -159,6 +160,10 @@ function streamHealthSnapshot() {
     streamHealth.degradedSince === null ? 0 : now - streamHealth.degradedSince;
   return {
     ok: streamHealth.state !== "degraded",
+    // Explicit readiness (true only for `healthy`): the Python adapter and
+    // out-of-process senders get one unambiguous boolean without changing the
+    // existing `ok`/`state` fields they already consume.
+    ready: isStreamReady(streamHealth.state),
     state: streamHealth.state,
     degradedForMs,
     restartAfterMs: STREAM_DEGRADED_RESTART_MS,
@@ -1040,8 +1045,10 @@ const server = http.createServer(async (req, res) => {
     if (req.url === "/probe") {
       // Upstream liveness probe. Drives a cheap unary read over the SAME gRPC
       // channel the inbound stream uses. STRICT semantics: only a completed
-      // round-trip (resolution, or a not-found rejection for our synthetic
-      // id) counts as alive; any other rejection or a timeout is
+      // round-trip counts as alive — resolution, or a SERVER-ANSWERED
+      // rejection for our synthetic id (not-found, INVALID_ARGUMENT, or any
+      // `[spectrum-*]`-stamped SDK error: the server answered, so the wire
+      // round-tripped). Transport failures and FAILED_PRECONDITION are
       // INCONCLUSIVE — never reported as alive.
       const outcome = await probeUpstream();
       if (outcome.alive) {

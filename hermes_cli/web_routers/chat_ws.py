@@ -675,6 +675,19 @@ async def gateway_ws(ws: WebSocket) -> None:
         # every profile), so its socket may select any served sibling too.
         identity = {**identity, 'profile_scope': 'host'}
     ticket_home = getattr(ws, "_hermes_ticket_profile_home", None)
+    requested_profile = (ws.query_params.get("profile") or "").strip()
+    if authority is not None and requested_profile:
+        # Native OAuth tickets authorise this host but carry no profile home. A registry
+        # route's query must select its authority, as a profile-bound Webapp ticket does.
+        try:
+            requested_home = await asyncio.to_thread(_resolve_profile_dir, requested_profile)
+        except HTTPException:
+            await ws.close(code=4403)
+            return
+        if ticket_home and not await asyncio.to_thread(lambda: Path(ticket_home).resolve() == requested_home.resolve()):
+            await ws.close(code=4403)
+            return
+        ticket_home = str(requested_home)
     served = authority
     if ticket_home and authority is None:
         # Only the gateway mints a profile-bound ticket, and it unbinds its authority while the

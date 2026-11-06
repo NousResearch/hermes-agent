@@ -26,7 +26,6 @@ def watcher_home(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_change_sigs", {})
     monkeypatch.setattr(server, "_change_checked_at", {})
     monkeypatch.setattr(server, "_change_broadcast_at", {})
-    monkeypatch.setattr(server, "_bot_relay_outbox_seen", 0)
     monkeypatch.setattr(server, "_pairing_roots_cache", None, raising=False)
     monkeypatch.setattr(server, "_sessions_db_sig_cache", {})
 
@@ -415,8 +414,7 @@ def test_enqueued_envelope_broadcasts_outbox_pending(watcher_home):
 
 
 def test_drained_outbox_does_not_rebroadcast_pending(watcher_home):
-    """Signature is monotone: a drain empties outbox/ (rename → claimed/), and
-    that emptying must NOT look like a change — only new envelopes fire."""
+    """An empty outbox with no outstanding claims must not wake the relay."""
     home, events = watcher_home
     outbox = home / "bot_relay" / "outbox"
     outbox.mkdir(parents=True)
@@ -424,7 +422,8 @@ def test_drained_outbox_does_not_rebroadcast_pending(watcher_home):
     envelope.write_text("{}")
     server._broadcast_watched_changes(now=0.0)
 
-    envelope.unlink()  # the Desktop drained it
+    events.clear()  # startup signalled the outstanding envelope
+    envelope.unlink()  # no outstanding claim remains
     server._broadcast_watched_changes(now=10.0)
     server._broadcast_watched_changes(now=20.0)
 
@@ -440,7 +439,8 @@ def test_new_envelope_after_drain_fires_pending_again(watcher_home):
     first = outbox / ("c" * 32 + ".json")
     first.write_text("{}")
     server._broadcast_watched_changes(now=0.0)
-    first.write_text("{}")  # make the first sighting a change, not a seed
+    events.clear()  # startup signalled the outstanding envelope
+    first.write_text("{}")  # a changed outstanding envelope signals again
     bump_ns = first.stat().st_mtime_ns + 1_000_000
     os.utime(first, ns=(bump_ns, bump_ns))  # strictly newer, FS-independent
     server._broadcast_watched_changes(now=10.0)

@@ -70,7 +70,7 @@ class CredentialPoolAdminMixin:
 
     def move_entry(self, credential_id: str, priority: int) -> Optional[PooledCredential]:
         """Place an entry at a clamped zero-based position and persist contiguous priorities."""
-        from agent.credential_pool import _normalize_pool_priorities
+        from agent.credential_pool_priority import _normalize_pool_priorities
 
         with self._lock:
             entry = self._find(lambda e: e.id == credential_id)
@@ -113,10 +113,11 @@ class CredentialPoolAdminMixin:
 
     def add_entry(self, entry: PooledCredential) -> PooledCredential:
         from agent.credential_pool import (
-            _borrowed_single_use_pool_root, _next_priority, _profile_owns_pool_provider,
-            write_credential_pool,
+            _borrowed_single_use_pool_root, _profile_owns_pool_provider, write_credential_pool,
         )
+        from agent.credential_pool_priority import _next_priority
         from hermes_cli import auth as auth_mod
+        from hermes_cli import auth_pool_rows as pool_rows
         from hermes_cli.auth_oauth_grants import SINGLE_USE_REFRESH_POOL_PROVIDERS
 
         with self._lock:
@@ -145,9 +146,10 @@ class CredentialPoolAdminMixin:
                 self._entries = [entry]
                 written = write_credential_pool(
                     self.provider, [entry.to_dict()],
-                    token_bases=self._persisted_token_pairs,
+                    token_bases=self._persisted_token_pairs, priority_bases=self._persisted_priorities,
                 )
-                self._persisted_token_pairs = auth_mod._token_pairs_by_id(written)
+                self._persisted_token_pairs = pool_rows._token_pairs_by_id(written)
+                self._persisted_priorities = pool_rows.priorities_by_id(written)
                 self._borrowed_root_ids = set()
             else:
                 self._persist()

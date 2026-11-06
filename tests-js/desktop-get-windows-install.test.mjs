@@ -16,50 +16,58 @@ function json(path, value) {
   writeFileSync(path, JSON.stringify(value))
 }
 
-// How the repository declares get-windows: the apps/desktop manifest field and the allowBuilds decision.
+// How the repository declares get-windows: the apps/desktop manifest field, the allowBuilds entry (key and
+// value), and the workspace settings that decide what a failed or unreviewed build does.
 function repoDeclaration() {
   const manifest = JSON.parse(readFileSync(join(repo, 'apps/desktop/package.json'), 'utf8'))
   const field = ['dependencies', 'optionalDependencies', 'devDependencies'].find(name => manifest[name]?.['get-windows'])
   const version = manifest[field]['get-windows']
-  const allowBuilds = load(readFileSync(join(repo, 'pnpm-workspace.yaml'), 'utf8')).allowBuilds ?? {}
-  return { field, build: allowBuilds[`get-windows@${version}`] ?? allowBuilds['get-windows'] }
+  const workspace = load(readFileSync(join(repo, 'pnpm-workspace.yaml'), 'utf8'))
+  const allowBuilds = workspace.allowBuilds ?? {}
+  // pnpm keys a file: dependency's versioned decision by its spec, not its registry version.
+  const allow = `get-windows@${version}` in allowBuilds
+    ? { [`get-windows@file:vendor/get-windows-${version}.tgz`]: allowBuilds[`get-windows@${version}`] }
+    : 'get-windows' in allowBuilds ? { 'get-windows': allowBuilds['get-windows'] } : {}
+  return { field, version, allow, settings: { strictDepBuilds: workspace.strictDepBuilds, sideEffectsCache: workspace.sideEffectsCache } }
 }
 
 // A workspace whose desktop declares a local get-windows tarball exactly as the repository declares the
-// real one. Its install script fails, as node-pre-gyp's fallback build does where no prebuilt exists.
-function fixture(os, cpu) {
+// real one. Its install script fails, as node-pre-gyp's fallback build does where no prebuilt exists
+// (win32-arm64); elsewhere the script never matters, because pnpm skips or ignores it.
+function fixture(os) {
   const base = mkdtempSync(join(tmpdir(), 'desktop get-windows-'))
   roots.push(base)
   const source = join(base, 'source')
   const env = { ...process.env, pnpm_config_offline: 'true', pnpm_config_store_dir: join(base, 'store'),
     pnpm_config_cache_dir: join(base, 'cache'), pnpm_config_state_dir: join(base, 'state') }
+  const { field, version, allow, settings } = repoDeclaration()
   const vendor = join(source, 'vendor/get-windows')
-  json(join(vendor, 'package.json'), { name: 'get-windows', version: '9.3.0', main: 'index.js',
+  json(join(vendor, 'package.json'), { name: 'get-windows', version, main: 'index.js',
     scripts: { install: 'node -e "process.exit(1)"' } })
   writeFileSync(join(vendor, 'index.js'), '')
   writeFileSync(join(vendor, 'main'), '')
   execFileSync(pnpmCommand(), ['pack', '--pack-destination', join(source, 'vendor')], { cwd: vendor, env, stdio: 'pipe' })
-  const { field, build } = repoDeclaration()
   json(join(source, 'package.json'), { name: 'fixture', private: true })
   json(join(source, 'apps/desktop/package.json'), { name: 'desktop', version: '1.0.0',
-    [field]: { 'get-windows': 'file:../../vendor/get-windows-9.3.0.tgz' } })
-  writeFileSync(join(source, 'pnpm-workspace.yaml'), [
-    'packages:', '  - apps/desktop', 'strictDepBuilds: true', 'sideEffectsCache: false',
-    // pnpm keys a file: dependency's build decision by its spec, not its registry version.
-    'allowBuilds:', `  'get-windows@file:vendor/get-windows-9.3.0.tgz': ${build}`,
-    'supportedArchitectures:', `  os: [${os}]`, `  cpu: [${cpu}]`, '',
-  ].join('\n'))
+    [field]: { 'get-windows': `file:../../vendor/get-windows-${version}.tgz` } })
+  // JSON is YAML: the repository's own values, verbatim.
+  writeFileSync(join(source, 'pnpm-workspace.yaml'), JSON.stringify({ packages: ['apps/desktop'], ...settings,
+    allowBuilds: allow, supportedArchitectures: { os: [os] } }))
   execFileSync(pnpmCommand(), ['install', '--lockfile-only'], { cwd: source, env, stdio: 'pipe' })
   return { source, env }
 }
 
-// #149861: pnpm >= 11.6 infers os: [win32] from the name of an optional dependency and skipped get-windows
-// on macOS and Linux, so the macOS build lost its helper and read_window_below was gone everywhere but
-// Windows. win32-arm64 has no prebuilt: its failed native build must not fail the install either.
-test.each([['darwin', 'arm64'], ['linux', 'x64'], ['win32', 'x64'], ['win32', 'arm64']])(
-  'the desktop install keeps get-windows for %s-%s', (os, cpu) => {
-    const { source, env } = fixture(os, cpu)
-    prepareNodeDependencies({ source, workspaces: ['apps/desktop'], env })
-    // The workspace's own link, not require.resolve: `pnpm exec` sets NODE_PATH to the outer install.
-    expect(existsSync(join(source, 'apps/desktop/node_modules/get-windows/main'))).toBe(true)
-  }, 30000)
+// #149861: pnpm >= 11.6 infers os: [win32] from the name of an optional dependency (cpu is not inferred) and
+// skipped get-windows on macOS and Linux, so the macOS build lost its helper and read_window_below was gone
+// everywhere but Windows. On win32 the fixture's failing script stands in for win32-arm64, which has no
+// prebuilt: a failed native build must not fail the install (win32-x64 downloads one and never fails).
+test.each([
+  ['darwin', 'is not skipped by name'],
+  ['linux', 'is not skipped by name'],
+  ['win32', 'survives a failed native build'],
+])('the desktop install keeps get-windows on %s: it %s', (os) => {
+  const { source, env } = fixture(os)
+  prepareNodeDependencies({ source, workspaces: ['apps/desktop'], env })
+  // The workspace's own link, not require.resolve: `pnpm exec` sets NODE_PATH to the outer install.
+  expect(existsSync(join(source, 'apps/desktop/node_modules/get-windows/main'))).toBe(true)
+}, 30000)

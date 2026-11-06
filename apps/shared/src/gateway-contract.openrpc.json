@@ -28920,6 +28920,63 @@
         "title": "PluginActivation",
         "type": "object"
       },
+      "PluginCardDirectivePayload": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "attrs": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Attrs",
+            "type": "object"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "PluginCardDirectivePayload",
+        "type": "object"
+      },
+      "PluginCardPayload": {
+        "additionalProperties": false,
+        "description": "``gateway.session_completion_notes`` after a plugin card's note row committed.",
+        "properties": {
+          "plugin_id": {
+            "title": "Plugin Id",
+            "type": "string"
+          },
+          "card_id": {
+            "title": "Card Id",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "directive": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PluginCardDirectivePayload"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "plugin_id",
+          "card_id",
+          "text"
+        ],
+        "title": "PluginCardPayload",
+        "type": "object"
+      },
       "PluginCatalogLookupEntry": {
         "additionalProperties": false,
         "description": "The fields an install needs: the same ones the embedded catalog picker posts on a pick.",
@@ -52472,6 +52529,18 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/ChangeSignalPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "plugin.card",
+      "summary": "A plugin posted a card into the session (a note, no model turn).",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/PluginCardPayload"
           }
         }
       ]

@@ -245,9 +245,9 @@ gateway chat client do not run `/rollback`, so they print no line.
 
 A whole-tree `/rollback` also undoes the newest remaining chat turn (step 4
 above), but only when that turn made the checkpoint or came after it. After
-`/undo`, the turns you kept ended before the checkpoint, so they stay; when the
-checkpoint's time is only known to the second and a kept turn falls in that
-same second, the turn is kept too.
+`/undo`, the turns you kept ended before the checkpoint, so they stay. Each
+checkpoint records its exact time; for a checkpoint made by an older version,
+only the second is known, and a kept turn in that same second is kept too.
 
 ## Single-File Restore
 

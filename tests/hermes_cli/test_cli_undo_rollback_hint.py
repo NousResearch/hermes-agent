@@ -38,8 +38,8 @@ def _next_second():
 
 
 def _session(cli, db, project, *, enabled):
-    """A kept turn that took a checkpoint but wrote nothing, then two undone turns that write: the first one's
-    attempt finds nothing changed and reuses the kept turn's snapshot, the second takes a new one."""
+    """A kept turn that wrote nothing (so took no checkpoint, which is taken only before a write), then two undone
+    turns that each take one and write."""
     mgr = CheckpointManager(enabled=enabled)
     cli.agent = SimpleNamespace(_checkpoint_mgr=mgr)
     for text, write in (("kept: run the tests", None), ("edit 1", ("app.js", "turn 1\n")),
@@ -47,8 +47,8 @@ def _session(cli, db, project, *, enabled):
         _next_second()
         db.append_message(cli.session_id, "user", text, timestamp=time.time())
         mgr.new_turn()
-        mgr.ensure_checkpoint(str(project), f"before {text}")
         if write:
+            mgr.ensure_checkpoint(str(project), f"before {text}")
             (project / write[0]).write_text(write[1])
         db.append_message(cli.session_id, "assistant", f"did {text}", timestamp=time.time())
     cli.conversation_history = db.get_messages_as_conversation(cli.session_id)
@@ -67,7 +67,7 @@ def test_undo_lists_the_changed_files_then_rollback_restores_and_keeps_the_kept_
     cli._handle_rollback_command("/rollback")
     listed = capsys.readouterr().out
     checkpoints = mgr.list_checkpoints(str(project))
-    oldest = checkpoints[-1]["short_hash"]  # the one edit 1 found (it reused it)
+    oldest = checkpoints[-1]["short_hash"]  # edit 1's: the files before the undone span
     assert len(checkpoints) == 2 and oldest in listed, listed
 
     cli._handle_rollback_command(f"/rollback {oldest}")  # by the hash /rollback listed

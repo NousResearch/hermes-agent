@@ -131,34 +131,48 @@ def undo_hint_payload(mgr, cwd: str, since, *, task_id: Optional[str] = "default
     return {"files": files, "text": format_undo_rollback_hint(files)} if files else None
 
 
-def checkpoint_taken_at(cwd: str, commit: str) -> Optional[float]:
-    """The git author second checkpoint ``commit`` was taken in; None when unreadable."""
+def checkpoint_taken_at(cwd: str, commit: str) -> Optional[tuple[float, bool]]:
+    """``(when, exact)`` checkpoint ``commit`` was taken: the exact time its body records, else its git
+    author second (``exact`` False: older snapshots); None when unreadable."""
     from tools import checkpoint_manager as cm
 
     store = cm._store_path()
     if not commit or not (store / "HEAD").exists():
         return None
-    ok, out, _ = cm._run_git(["log", "-1", "--format=%at", commit], store, str(cm._normalize_path(cwd)),
+    ok, out, _ = cm._run_git(["log", "-1", "--format=%at%x00%B", commit], store, str(cm._normalize_path(cwd)),
                              allowed_returncodes={128})
-    return float(out.strip()) if ok and out.strip().isdigit() else None
+    second, _, body = out.partition("\x00") if ok else ("", "", "")
+    for line in body.splitlines():
+        key, _, value = line.partition(":")
+        if key.strip() == cm.TAKEN_AT_TRAILER and (when := _epoch(_float(value))) is not None:
+            return when, True
+    return (float(second.strip()), False) if second.strip().isdigit() else None
 
 
-def rollback_rewinds_newest_turn(history: list, user_indices: list[int], taken: Optional[float]) -> bool:
-    """Whether a whole-tree ``/rollback`` to a checkpoint taken in second ``taken`` (``checkpoint_taken_at``) also
+def _float(value: str) -> Optional[float]:
+    try:
+        return float(value.strip())
+    except ValueError:
+        return None
+
+
+def rollback_rewinds_newest_turn(history: list, user_indices: list[int], taken) -> bool:
+    """Whether a whole-tree ``/rollback`` to a checkpoint taken at ``taken`` (``checkpoint_taken_at``) also
     undoes the newest kept user turn (main's "so the agent's context matches the restored files"): only when
-    that turn made the checkpoint or came after it. After ``/undo`` already removed the turn that made it,
-    the newest kept turn ended before the checkpoint and stays.
+    that turn made the checkpoint or came after it, i.e. one of its rows is no older than the snapshot. After
+    ``/undo`` already removed the turn that made it, the newest kept turn ended before the checkpoint and stays.
 
-    Only the checkpoint's whole second is known, so a turn row inside that same second may be either side of
-    it: that is ambiguous, and an ambiguous turn is KEPT (losing a turn the user kept is the worse mistake).
-    Unknown times keep main's behaviour."""
+    A snapshot from an older build records only its git second, so a row inside that same second may be
+    either side of it: that is ambiguous, and an ambiguous turn is KEPT (losing a turn the user kept is the
+    worse mistake). Unknown times keep main's behaviour."""
     from agent.context_compressor import is_compaction_summary_message
 
     if not user_indices or taken is None:
         return bool(user_indices)
+    when, exact = taken
     stamps = [_epoch(m.get("timestamp")) for m in history[user_indices[-1]:]
               if isinstance(m, dict) and not is_compaction_summary_message(m)]
     known = [s for s in stamps if s is not None]
     if not stamps or len(known) != len(stamps):
         return True
-    return max(known) >= math.floor(taken) + 1
+    return max(known) >= (when if exact else math.floor(when) + 1)

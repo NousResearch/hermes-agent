@@ -3,8 +3,10 @@
 A plugin that finishes loading after an adapter connected — a tool-triggered force re-discovery, or
 ``hermes plugins install/enable`` / the Desktop / ``plugins.manage`` nudging the gateway over the control
 socket — used to leave its platform handlers (slash commands, button callbacks, inbound transforms)
-silently unwired until a restart. The runner subscribes to ``PluginManager.on_plugin_loaded`` per served
-profile and calls every live adapter's idempotent ``rewire_plugin_handlers()`` on the event loop.
+silently unwired until a restart. The runner subscribes to ``PluginManager.on_plugins_swept`` per served
+profile and calls every live adapter's idempotent ``rewire_plugin_handlers()`` on the event loop. That event
+fires after every sweep, so a ``reload_safe`` handler whose plugin only reloaded (no newcomer, so no
+``on_plugin_loaded``) is wired again after its unload callback removed it.
 
 Scope is handlers only: a mid-run-loaded plugin's tools and system-prompt sections stay deferred to the
 next session (prompt-cache invariant; same as ``/skills install``).
@@ -21,9 +23,12 @@ from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
+# A re-wire pass that finds a discovery sweep in flight on another thread tries again this soon.
+_REWIRE_RETRY_S = 0.05
+
 
 class GatewayPluginRewireMixin:
-    """Subscribe once per plugin manager; re-wire that profile's adapters on every loaded event."""
+    """Subscribe once per plugin manager; re-wire that profile's adapters after every discovery sweep."""
 
     _plugin_rewire_unsubscribe: Optional[dict[str, Callable[[], None]]] = None
 
@@ -42,14 +47,28 @@ class GatewayPluginRewireMixin:
         except RuntimeError:
             loop = None
 
-        def _on_loaded(_names) -> None:
+        def _on_swept() -> None:
             # Fires on the discovering thread (tool worker, control-socket executor, or the loop itself):
             # adapters own PTB/Bolt handler tables, so always hop onto the gateway loop.
             if loop is None or loop.is_closed():
                 return
-            loop.call_soon_threadsafe(self._rewire_plugin_handlers, profile_name, profile_home)
+            loop.call_soon_threadsafe(self._rewire_after_sweep, loop, manager, profile_name, profile_home)
 
-        subs[scope] = manager.on_plugin_loaded(_on_loaded)
+        subs[scope] = manager.on_plugins_swept(_on_swept)
+
+    def _rewire_after_sweep(self, loop: asyncio.AbstractEventLoop, manager: Any,
+                            profile_name: Optional[str] = None, profile_home: Optional[Path] = None) -> None:
+        """Re-wire on the loop while holding ``manager``'s discovery lock, so a sweep on another thread cannot
+        unload or re-register factories mid-pass. A sweep in flight is never waited on here (that would block
+        the loop); the pass retries shortly instead."""
+        lock = manager._discovery_lock
+        if not lock.acquire(blocking=False):
+            loop.call_later(_REWIRE_RETRY_S, self._rewire_after_sweep, loop, manager, profile_name, profile_home)
+            return
+        try:
+            self._rewire_plugin_handlers(profile_name, profile_home)
+        finally:
+            lock.release()
 
     def _rewire_plugin_handlers(self, profile_name: Optional[str] = None,
                                 profile_home: Optional[Path] = None) -> int:
@@ -81,7 +100,7 @@ class GatewayPluginRewireMixin:
 
 def reload_plugins_verb(runner: Any, loop: asyncio.AbstractEventLoop) -> Callable[..., dict]:
     """Control-socket ``reload-plugins``: force re-discovery under the requested home's scope so a plugin
-    installed/enabled by another process (CLI, Desktop, ``plugins.manage``) loads now; the loaded event
+    installed/enabled by another process (CLI, Desktop, ``plugins.manage``) loads now; the sweep event
     then re-wires that profile's adapters. Only the gateway home and served profile homes are accepted.
     Answer: ``{"reloaded", "home", "plugins", "activations", "adapters_rewired"}``. Runs on the socket executor thread
     (discovery is blocking); the count is read on the loop AFTER the re-wire callback (FIFO), so a
@@ -160,7 +179,7 @@ def _reconcile_plugin_mcp_servers(runner: Any, home: Path) -> None:
 
 
 async def _count_adapters(runner: Any, profile_name: Optional[str]) -> int:
-    """Live adapters for the profile; scheduled after the loaded-event callback, so they are re-wired."""
+    """Live adapters for the profile; scheduled after the sweep's re-wire callback, so they are re-wired."""
     if profile_name is None:
         return len(getattr(runner, "adapters", None) or {})
     return len((getattr(runner, "_profile_adapters", None) or {}).get(profile_name) or {})

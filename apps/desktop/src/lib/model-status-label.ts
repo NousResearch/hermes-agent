@@ -127,6 +127,12 @@ function prettifyBase(base: string): string {
     return base.replace(/^gpt-/i, 'GPT-')
   }
 
+  // Meituan spells its models hyphenated, "LongCat-2.5" — the generic
+  // hyphen→space pass would render the id as "Longcat 2.5".
+  if (/^longcat-/i.test(base)) {
+    return titleCase(base.replace(/^longcat-/i, 'LongCat-'))
+  }
+
   // Title-case this branch too: without it `gemini-2.5-pro` rendered as
   // "Gemini 2.5 pro" — the only branch that left its words lowercase.
   if (/^gemini-/i.test(base)) {

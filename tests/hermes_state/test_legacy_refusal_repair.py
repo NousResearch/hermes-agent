@@ -110,3 +110,57 @@ def test_refusal_folded_into_a_summary_is_left_alone_and_a_busy_chat_waits(tmp_p
         assert db.get_meta(LEGACY_REFUSAL_REPAIR_DONE) == "1"
     finally:
         db.close()
+
+
+def test_subagent_and_cron_runs_keep_their_record(tmp_path):
+    """A delegated run's one "turn" is the whole run: retaining it would hollow out the record and
+    unlock nothing, since nobody continues it as a chat."""
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("parent", "cli")
+    db.append_message("parent", "user", "go")
+    db.append_message("parent", "assistant", "ok")
+    runs = {"sub": ("subagent", "parent"), "gw_child": ("telegram", "parent"), "job": ("cron", None)}
+    for sid, (source, parent) in runs.items():
+        db.create_session(sid, source, parent_session_id=parent)
+        db.append_message(sid, "user", "the delegated goal")
+        for i in range(3):
+            db.append_message(sid, "assistant", "", tool_calls=[
+                {"id": f"c{i}", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}])
+            db.append_message(sid, "tool", f"out{i}", tool_call_id=f"c{i}")
+        db.append_message(sid, "assistant", _BOUNDARY, display_kind="failed_turn", display_metadata=_REFUSAL_CARD)
+        db.end_session(sid, "agent_close")
+    before = {sid: (db.get_session(sid)["message_count"], _model(db, sid)) for sid in runs}
+    _as_legacy_store(db)
+
+    db = SessionDB(tmp_path / "state.db")
+    try:
+        assert {sid: (db.get_session(sid)["message_count"], _model(db, sid)) for sid in runs} == before
+        assert db.get_meta(LEGACY_REFUSAL_REPAIR_DONE) == "1"
+    finally:
+        db.close()
+
+
+def test_internal_turn_heads_leave_the_context_without_being_shown(tmp_path):
+    """Only a row the user typed is shown as their refused message; a background-task notice, a
+    process notice or a hidden row that started a refused turn leaves the context unshown."""
+    db = SessionDB(tmp_path / "state.db")
+    kinds = ("async_delegation_complete", "process_complete", "hidden")
+    for kind in kinds:
+        db.create_session(kind, "cli")
+        db.append_message(kind, "user", "hello")
+        db.append_message(kind, "assistant", "hi")
+        db.append_message(kind, "user", "[internal] background work finished", display_kind=kind)
+        db.append_message(kind, "assistant", _BOUNDARY, display_kind="failed_turn", display_metadata=_REFUSAL_CARD)
+        _refused_turn(db, kind, "an innocent follow-up")
+    _as_legacy_store(db)
+
+    db = SessionDB(tmp_path / "state.db")
+    try:
+        for kind in kinds:
+            assert _model(db, kind) == [("user", "hello"), ("assistant", "hi")]
+            refused = [m for m in _display(db, kind) if m[2] == CONTENT_REFUSED_DISPLAY_KIND]
+            assert refused == [("user", "an innocent follow-up", CONTENT_REFUSED_DISPLAY_KIND)], kind
+            # Same footing as /undo and #149708's retention: an open view's /undo sees the history moved.
+            assert db.get_session(kind)["rewind_count"] == 1
+    finally:
+        db.close()

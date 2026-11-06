@@ -259,9 +259,14 @@ async def _query_doh_provider(client: httpx.AsyncClient, provider: dict) -> list
 
 
 async def discover_fallback_ips() -> list[str]:
-    """Resolve api.telegram.org via Google + Cloudflare DoH; unique A records, in order. IPs matching the
-    system resolver are deliberately KEPT (often the most reliable path). Falls back to
-    ``SEED_FALLBACK_IPS`` only when DoH yields nothing usable.
+    """Resolve api.telegram.org via Google + Cloudflare DoH; unique A records, in order, then every
+    ``SEED_FALLBACK_IPS`` entry DoH did not already name. IPs matching the system resolver are deliberately
+    KEPT (often the most reliable path). When DoH yields nothing usable, the seeds alone.
+
+    The seeds are a floor, not a last resort (#147346): DoH usually answers with the single address the
+    hostname already resolves to, and returning that alone left the walk with one target, so a route
+    blackhole on it had no alternate even though a second Telegram address was known. Discovered addresses
+    stay first, so the fast path is unchanged; a seed is only reached after they fail.
 
     IPs that match the local system resolver are kept rather than excluded: in many networks the system-DNS
     IP is the most reliable path to api.telegram.org and a transient primary-path failure should be retried
@@ -285,8 +290,10 @@ async def discover_fallback_ips() -> list[str]:
     doh_ips = [ip for r in results if isinstance(r, list) for ip in r]
     validated = _normalize_fallback_ips(list(dict.fromkeys(doh_ips)))  # dedupe, keep order
     if validated:
-        logger.debug("Discovered Telegram fallback IPs via DoH: %s", ", ".join(validated))
-        return validated
+        merged = validated + [ip for ip in SEED_FALLBACK_IPS if ip not in validated]
+        logger.debug("Discovered Telegram fallback IPs via DoH: %s (with seeds: %s)",
+                     ", ".join(validated), ", ".join(merged))
+        return merged
     logger.info(
         "DoH discovery yielded no usable IPs (system DNS: %s); using seed fallback IPs %s",
         ", ".join(system_ips) or "unknown", ", ".join(SEED_FALLBACK_IPS))

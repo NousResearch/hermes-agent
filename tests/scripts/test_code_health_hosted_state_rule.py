@@ -175,6 +175,94 @@ def test_graph_follows_import_time_edges_only(tmp_path):
     assert got == {"entry.py", "pkg/__init__.py", "pkg/sub.py", "pkg/rel.py", "pkg/leaf.py", "guarded.py"}
 
 
+# Each import-time edge, as (files, the module only that edge reaches). Every case also holds a
+# function-body import and a TYPE_CHECKING import that must stay out of the graph.
+_NOT_FOLLOWED = "def later():\n    import in_function\nfrom typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    import typed\n"
+_EDGES = {
+    "root_package_init": ({"pkg/__init__.py": "import shared\n", "pkg/entry.py": _NOT_FOLLOWED}, "shared.py"),
+    "class_body": ({"pkg/entry.py": "class C:\n    import shared\n" + _NOT_FOLLOWED}, "shared.py"),
+    "nested_class": ({"pkg/entry.py": "class C:\n    class D:\n        import shared\n" + _NOT_FOLLOWED},
+                     "shared.py"),
+    "for_loop": ({"pkg/entry.py": "for _ in range(1):\n    import shared\n" + _NOT_FOLLOWED}, "shared.py"),
+    "while_loop": ({"pkg/entry.py": "while True:\n    import shared\n    break\n" + _NOT_FOLLOWED}, "shared.py"),
+    "loop_else": ({"pkg/entry.py": "for _ in ():\n    pass\nelse:\n    import shared\n" + _NOT_FOLLOWED},
+                  "shared.py"),
+    "match_case": ({"pkg/entry.py": "match 1:\n    case 1:\n        import shared\n" + _NOT_FOLLOWED}, "shared.py"),
+    "with_block": ({"pkg/entry.py": "import contextlib\nwith contextlib.suppress(ImportError):\n"
+                                    "    import shared\n" + _NOT_FOLLOWED}, "shared.py"),
+    "try_else": ({"pkg/entry.py": "try:\n    pass\nexcept ImportError:\n    pass\nelse:\n    import shared\n"
+                                  + _NOT_FOLLOWED}, "shared.py"),
+    "if_else": ({"pkg/entry.py": "import sys\nif sys.platform == 'x':\n    pass\nelse:\n    import shared\n"
+                                 + _NOT_FOLLOWED}, "shared.py"),
+    "type_checking_else": ({"pkg/entry.py": "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    import typed\n"
+                                            "else:\n    import shared\n"}, "shared.py"),
+    "lazy_forwarder": ({"pkg/entry.py": "from agent.lazy_forward import forward as _forward\nclass A:\n"
+                                        "    m = _forward('shared', 'm')\n" + _NOT_FOLLOWED,
+                        "agent/__init__.py": "", "agent/lazy_forward.py": ""}, "shared.py"),
+    "builtin_tool_discovery": ({"pkg/entry.py": "import model_tools\n" + _NOT_FOLLOWED,
+                                "model_tools.py": "from tools.registry import discover_builtin_tools\n"
+                                                  "discover_builtin_tools()\n",
+                                "tools/__init__.py": "", "tools/registry.py": "registry = None\n",
+                                "tools/shared.py": "from tools.registry import registry\nregistry.register('t')\n",
+                                "tools/library.py": "def f():\n    registry.register('t')\n",
+                                "tools/pkgtool/__init__.py": "", "tools/pkgtool/tool.py":
+                                    "from tools.registry import registry\nfor n in 'ab':\n    registry.register(n)\n",
+                                "tools/orphan/tool.py": "from tools.registry import registry\nregistry.register('t')\n"},
+                               "tools/shared.py"),
+}
+
+
+def _edge_files(name):
+    files, target = _EDGES[name]
+    base = {"pkg/__init__.py": "", "pkg/entry.py": "", "shared.py": "", "in_function.py": "", "typed.py": ""}
+    return {**base, **files}, target
+
+
+@pytest.mark.parametrize("name", sorted(_EDGES))
+def test_graph_follows_every_import_time_edge(tmp_path, name):
+    files, target = _edge_files(name)
+    got = reachable(_graph_repo(tmp_path, files), None, ("pkg.entry",))
+    assert target in got
+    assert not {"in_function.py", "typed.py"} & got
+
+
+def test_graph_models_builtin_tool_discovery(tmp_path):
+    files, _ = _edge_files("builtin_tool_discovery")
+    got = reachable(_graph_repo(tmp_path, files), None, ("pkg.entry",))
+    assert {"tools/shared.py", "tools/pkgtool/tool.py"} <= got
+    assert not {"tools/library.py", "tools/orphan/tool.py"} & got  # no module-level register; no package
+    # and only through model_tools: a graph that never imports it discovers nothing
+    assert "tools/shared.py" not in reachable(tmp_path / "g", None, ("tools.registry",))
+
+
+def test_tool_discovery_mirror_agrees_with_the_registry():
+    """The graph mirrors the registry's discovery predicate (the registry module is not importable
+    from the lint without the tool stack); both must select the same modules on the real tree."""
+    from scripts.code_health import gitio
+    from scripts.code_health.hosted_graph_tools import discovered_tool_modules
+    from tools import registry
+
+    tools_dir = (REPO / "tools").resolve()
+    skipped = {"__init__.py", "registry.py", "mcp_tool.py"}
+    expected = sorted(
+        p.relative_to(REPO.resolve()).as_posix() for p in registry._tool_module_candidates(tools_dir)
+        if p.name not in skipped and (p.parent == tools_dir or (p.parent / "__init__.py").exists())
+        and registry._module_registers_tools(p))
+    files = {p for p in gitio.tracked_files(REPO, None) if p.endswith(".py")}
+    texts = {p: (REPO / p).read_text(encoding="utf-8-sig") for p in files if p.startswith("tools/")}
+    assert expected and discovered_tool_modules(files, texts) == expected
+
+
+@pytest.mark.parametrize("name", sorted(_EDGES))
+def test_state_behind_each_edge_blocks(tmp_path, monkeypatch, capsys, name):
+    monkeypatch.setattr(config, "HOSTED_ENTRY", ("pkg.entry",))
+    files, target = _edge_files(name)
+    repo, _ = _repo(tmp_path)
+    base = _commit(repo, files)
+    code, out = _verdict(repo, base, {target: files[target] + "\n_PLANTED = {}\n"}, capsys)
+    assert code != 0 and "HX015" in out, out
+
+
 def test_every_hosted_root_names_a_module():
     """A renamed root would silently shrink the judged graph."""
     missing = [r for r in config.HOSTED_ENTRY if importlib.util.find_spec(r) is None]

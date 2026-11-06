@@ -1,8 +1,9 @@
-"""Read-only storage for the tool registry once the hosted boot has frozen the registries.
+"""Read-only storage for the registries once the hosted boot has frozen them.
 
 Guarding ``register``/``deregister`` is not enough to make a registration immutable: a caller
-that holds the schema dict a getter returned, a ``ToolEntry``, or one of the registry's maps can
-still change it in place, and in a shared process that change reaches every tenant's agent.
+that holds the schema dict a getter returned, a ``ToolEntry``, a ``ProviderProfile``, or one of a
+registry's maps can still change it in place, and in a shared process that change reaches every
+tenant's agent.
 At the freeze, :func:`seal` replaces each registration's payload with a detached deep copy built
 from the containers below; their mutators raise :class:`registry_freeze.RegistryFrozen` while the
 registries are frozen.
@@ -18,9 +19,10 @@ from __future__ import annotations
 import copy
 from typing import Any
 
+from hermes_scope_cache import tenant_neutral
 from registry_freeze import refuse_if_frozen
 
-STORAGE = "tool registry storage"
+STORAGE = "registry storage"
 
 
 def _refusing(base: type, names: tuple[str, ...]) -> dict[str, Any]:
@@ -97,3 +99,44 @@ def seal(value: Any) -> Any:
     if isinstance(value, set):
         return _build(SealedSet, value)
     return value
+
+
+_SEALED_CLASSES: dict[type, type] = tenant_neutral(
+    {}, reason="class -> its sealed subclass: derived from code, identical for every tenant")
+
+
+def _refuse_setattr(self, name: str, value: Any) -> None:
+    refuse_if_frozen(STORAGE)
+    object.__setattr__(self, name, value)
+
+
+def _refuse_delattr(self, name: str) -> None:
+    refuse_if_frozen(STORAGE)
+    object.__delattr__(self, name)
+
+
+def _sealed_class(cls: type) -> type:
+    """*cls* with attribute writes refused while frozen. Same name, module and methods, so
+    ``type(obj).hook is not Base.hook`` overrides checks and module-based identity still hold."""
+    sealed = _SEALED_CLASSES.get(cls)
+    if sealed is None:
+        sealed = type(cls.__name__, (cls,), {
+            "__slots__": (),  # same layout as *cls*, so ``__class__`` can be reassigned in place
+            "__setattr__": _refuse_setattr, "__delattr__": _refuse_delattr,
+            "__module__": cls.__module__, "__qualname__": cls.__qualname__, "_registry_sealed": True})
+        _SEALED_CLASSES[cls] = sealed
+    return sealed
+
+
+def seal_instance(obj: Any) -> Any:
+    """Seal a registered record (a provider profile) in place at the freeze: identity is kept
+    (lookups and identity-keyed caches still match), every dict/list/set attribute becomes a detached
+    sealed copy (the containers the registering module passed stay the module's), and the
+    instance's attributes refuse rebinding. Idempotent."""
+    if getattr(type(obj), "_registry_sealed", False):
+        return obj
+    for name, value in list(getattr(obj, "__dict__", {}).items()):
+        if isinstance(value, (dict, list, set)):
+            object.__setattr__(obj, name, seal(value))
+    obj.__class__ = _sealed_class(type(obj))
+    return obj

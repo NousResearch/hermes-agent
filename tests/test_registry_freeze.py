@@ -190,3 +190,51 @@ def test_schema_constructor_cannot_rewrite_frozen_schema(frozen_tool_registry):
         reg.get_entry("t").requires_env.__init__(["OTHER"])
     assert reg.get_schema("t")["description"] == "d"
     assert reg.get_entry("t").requires_env == ["T_KEY"]
+
+
+@pytest.fixture
+def frozen_provider(monkeypatch):
+    """A provider profile registered before the freeze, with the containers its plugin passed."""
+    import providers
+    from providers.base import ProviderProfile
+    monkeypatch.setattr(registry_freeze, "_frozen", False)
+    providers.list_providers()
+    for name in ("_REGISTRY", "_ALIASES", "_SOURCES"):  # the seal replaces the maps; restore them
+        monkeypatch.setattr(providers, name, dict(getattr(providers, name)))
+    headers = {"X-Probe": "before"}
+    profile = ProviderProfile(name="freeze-probe", display_name="before", aliases=("fp",),
+                              default_headers=headers, model_aliases={"m": ["a"]})
+    providers.register_provider(profile)
+    freeze_registries()
+    return providers, profile, headers
+
+
+def test_provider_payload_refuses_after_freeze(frozen_provider):
+    """A profile a lookup returned is the registered one: changing it after the freeze would change
+    every tenant's provider, so its fields and nested containers refuse."""
+    providers, profile, _headers = frozen_provider
+    got = providers.get_provider_profile("freeze-probe")
+    assert got is profile  # identity kept: identity-keyed memos still match
+    with pytest.raises(RegistryFrozen):
+        got.display_name = "after"
+    with pytest.raises(RegistryFrozen):
+        del got.base_url
+    with pytest.raises(RegistryFrozen):
+        got.default_headers["X-Probe"] = "after"
+    with pytest.raises(RegistryFrozen):
+        got.model_aliases["m"].append("b")
+    with pytest.raises(RegistryFrozen):
+        providers._REGISTRY["freeze-probe"] = None
+    with pytest.raises(RegistryFrozen):
+        providers._ALIASES.pop("fp")
+    assert got.display_name == "before" and got.default_headers == {"X-Probe": "before"}
+    assert providers.get_provider_profile("fp") is profile
+    assert type(got).__name__ == "ProviderProfile"  # overrides checks compare class attributes
+    assert dict(got.default_headers) == {"X-Probe": "before"}  # copies stay writable
+
+
+def test_provider_registration_argument_is_detached_at_freeze(frozen_provider):
+    """The containers a plugin passed to its profile stay the plugin's after the freeze."""
+    providers, _profile, headers = frozen_provider
+    headers["X-Probe"] = "after"
+    assert providers.get_provider_profile("freeze-probe").default_headers == {"X-Probe": "before"}

@@ -23,7 +23,7 @@ from typing import Callable, Dict, List, Optional, Set
 
 from hermes_constants import hermes_home_key, normalize_scope
 from registry_freeze import refuse_if_frozen, seal_at_freeze
-from tools.registry_sealed import STORAGE, seal
+from registry_sealed import STORAGE, seal
 
 logger = logging.getLogger(__name__)
 
@@ -534,7 +534,7 @@ class ToolRegistry:
 
     def _seal_storage(self) -> None:
         """At the hosted freeze: every map, entry and schema a caller can reach becomes read-only
-        (``tools.registry_sealed``), so a retained reference cannot change what other tenants see."""
+        (``registry_sealed``), so a retained reference cannot change what other tenants see."""
         with self._lock:
             for entry in [*self._tools.values(), *(e for m in self._scoped_tools.values() for e in m.values())]:
                 _seal_entry(entry)

@@ -18,9 +18,10 @@ import weakref
 from typing import Callable
 
 _frozen = False
-# Registries that hold payloads callers can reach (the tool registry's schemas and entries) seal
-# them at the freeze; held weakly so a registry built in a test does not live for the process.
-_sealers: list[weakref.WeakMethod] = []
+# Registries that hold payloads callers can reach (the tool registry's schemas and entries, the
+# provider profiles) seal them at the freeze. A registry instance's bound method is held weakly so a
+# registry built in a test does not live for the process; a module function is held as is.
+_sealers: list[Callable[[], Callable[[], None] | None]] = []
 
 
 class RegistryFrozen(RuntimeError):
@@ -39,10 +40,11 @@ def freeze_registries() -> None:
 
 
 def seal_at_freeze(seal: Callable[[], None]) -> None:
-    """Have :func:`freeze_registries` call the bound method *seal*, which replaces the registry's
-    reachable payloads with read-only copies. Runs at once when the registries are already frozen."""
+    """Have :func:`freeze_registries` call *seal* (a registry's bound method, or a module function),
+    which replaces the registry's reachable payloads with read-only copies. Runs at once when the
+    registries are already frozen."""
     _sealers[:] = [ref for ref in _sealers if ref() is not None]
-    _sealers.append(weakref.WeakMethod(seal))
+    _sealers.append(weakref.WeakMethod(seal) if hasattr(seal, "__self__") else (lambda: seal))
     if _frozen:
         seal()
 

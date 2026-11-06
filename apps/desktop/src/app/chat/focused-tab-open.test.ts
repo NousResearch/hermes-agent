@@ -271,9 +271,38 @@ describe('"New session" with a session tab focused opens a new tab', () => {
     expect(mainGroup().panes).toEqual(['workspace', tilePane('draft-a')])
   })
 
-  it('defers to main when main is the focused tab', () => {
+  // Main is the strip's FIRST tab to the user. Resetting it swapped out the
+  // conversation they were reading, the very thing the tile branch avoids.
+  it('opens a new tab beside main when main is the focused tab and holds a chat', async () => {
     openTile('chat-a', 3)
     states.frontMainIfSelected('main-chat')
+    const open = createTile('target')
+
+    expect(startNewSessionBesideFocusedTab(open)).toBe(true)
+    await settle()
+
+    expect(open).toHaveBeenCalledWith('center', { anchor: 'workspace', before: tilePane('chat-a'), listed: false })
+    expect(mainGroup().panes).toEqual(['workspace', tilePane('target'), tilePane('chat-a')])
+    expect(mainGroup().active).toBe(tilePane('target'))
+    expect(session.$selectedStoredSessionId.get()).toBe('main-chat')
+  })
+
+  it('opens a new tab beside a lone main that holds a chat', async () => {
+    const open = createTile('target')
+
+    expect(startNewSessionBesideFocusedTab(open)).toBe(true)
+    await settle()
+
+    expect(open).toHaveBeenCalledWith('center', { anchor: 'workspace', before: null, listed: false })
+    expect(mainGroup().panes).toEqual(['workspace', tilePane('target')])
+    expect(session.$selectedStoredSessionId.get()).toBe('main-chat')
+  })
+
+  it('defers to main when main is the focused tab and already a blank new session', () => {
+    session.$selectedStoredSessionId.set(null)
+    openTile('chat-a', 3)
+    tree.revealTreePane('workspace')
+    tree.noteActiveTreeGroup(null)
     const open = createTile('target')
 
     expect(startNewSessionBesideFocusedTab(open)).toBe(false)

@@ -12,7 +12,10 @@ import {
   type TileDock
 } from '@/store/session-states'
 
-import { isUntouchedDraftTile } from './reuse-draft-tab'
+import { isUntouchedDraftTile, mainIsUntouchedDraft } from './reuse-draft-tab'
+
+/** Main's pane: the uncloseable workspace, the strip's first tab to the user. */
+const MAIN_PANE = 'workspace'
 
 interface FocusedSessionTabSlot {
   /** The pane after the focused tab in its group: a replacement stacks before it. */
@@ -34,6 +37,18 @@ function focusedSessionTabSlot(): FocusedSessionTabSlot | null {
   const replaced = $sessionTiles.get().find(tile => `${TILE_PANE_PREFIX}${tile.storedSessionId}` === paneId)
 
   return replaced ? { before: group.panes[group.panes.indexOf(paneId) + 1] ?? null, paneId, replaced } : null
+}
+
+/** Main when it is the focused tab; `before` is the pane after it in its group. */
+function focusedMainSlot(): { before: null | string } | null {
+  const tree = $layoutTree.get()
+  const group = focusedSessionTabAnchor() === MAIN_PANE && tree ? findGroupOfPane(tree, MAIN_PANE) : null
+
+  if (!group || group.active !== MAIN_PANE) {
+    return null
+  }
+
+  return { before: group.panes[group.panes.indexOf(MAIN_PANE) + 1] ?? null }
 }
 
 /** The replaced chat goes to the ⌘⇧T stack (a busy one keeps streaming in the background —
@@ -85,19 +100,35 @@ type OpenNewSessionTile = (
  * which replaced whichever tab held main. An untouched untitled tab already IS
  * a new session, so it is kept as is instead of minting a twin.
  *
- * False when the focused tab is main or not a session tab: the caller starts the
- * fresh draft in main as before.
+ * Main is the strip's first tab to the user, so the same rule holds there: a
+ * focused main holding a chat gets the new tab right after it.
+ *
+ * False when the focused tab is main as a blank new session (the caller resets
+ * it in place, its own twin) or not a session tab: the caller starts the fresh
+ * draft in main as before.
  */
 export function startNewSessionBesideFocusedTab(openNewSessionTile: OpenNewSessionTile): boolean {
   const slot = focusedSessionTabSlot()
 
   if (!slot) {
-    return false
+    return openBesideFocusedMain(openNewSessionTile)
   }
 
   if (!isUntouchedDraftTile(slot.replaced)) {
     void openNewSessionTile('center', { anchor: slot.paneId, before: slot.before, listed: false })
   }
+
+  return true
+}
+
+function openBesideFocusedMain(openNewSessionTile: OpenNewSessionTile): boolean {
+  const main = focusedMainSlot()
+
+  if (!main || mainIsUntouchedDraft()) {
+    return false
+  }
+
+  void openNewSessionTile('center', { anchor: MAIN_PANE, before: main.before, listed: false })
 
   return true
 }

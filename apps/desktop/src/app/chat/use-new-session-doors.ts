@@ -17,10 +17,11 @@ type SessionActions = ReturnType<typeof useSessionActions>
  *   Registered here as the strip's "+" action (the generic renderer stays session-agnostic; null
  *   until wired hides the glyph).
  * - `startNewSession` / `navigateSidebar`: the sidebar "New session" row and ⌘N open a new tab
- *   beside the focused session tab, never over it; main only when main is the tab the user is in
- *   (see `startNewSessionBesideFocusedTab`). Both open a GENERIC session: they drop any owner an
- *   earlier bot chat pinned and target the default-profile preference, else the root `default`
- *   profile (`prepareGenericNewSession`); only "+"/⌘T aim at the selected bot.
+ *   beside the focused session tab, main included, never over it; main is reset in place only
+ *   when it is focused and already a blank new session (see `startNewSessionBesideFocusedTab`).
+ *   Both open a GENERIC session: they drop any owner an earlier bot chat pinned and target the
+ *   default-profile preference, else the root `default` profile (`prepareGenericNewSession`);
+ *   only "+"/⌘T aim at the selected bot.
  *   Every other sidebar row navigates as before.
  */
 export function useNewSessionDoors(

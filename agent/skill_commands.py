@@ -462,7 +462,7 @@ _SCAN_SKIP_PARTS = {'.git', '.github', '.hub', '.archive', '.locks'}
 
 
 def skill_command_collision_note(name: str) -> Optional[str]:
-    """User-facing note when *name*'s slash slug is a core command (name or alias), else None.
+    """Explain a core-command collision on the current surface, or return None.
 
     The single source of the collision predicate: ``scan_skill_commands`` uses it to skip
     auto-registration (the shadowing guard from 370ebf2d3 — the skill map is consulted before
@@ -471,9 +471,16 @@ def skill_command_collision_note(name: str) -> Optional[str]:
     """
     from hermes_cli.commands import resolve_command
     cmd_name = slugify_skill_name(name)
-    if not cmd_name or resolve_command(cmd_name) is None:
+    command = resolve_command(cmd_name)
+    if not cmd_name or command is None:
         return None
-    return f"slash command /{cmd_name} unavailable — name taken by built-in; use /skill {name}"
+    # Gateway-only handlers cannot shadow skills on local surfaces. Keep the
+    # original guard on messaging platforms, where the skill map is checked first.
+    if command.gateway_only and _resolve_skill_commands_platform() in (
+        None, "local", "cli", "tui", "desktop", "acp",
+    ):
+        return None
+    return f"slash command /{cmd_name} unavailable — name taken by built-in; rename the skill's frontmatter name"
 
 
 def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: dict[str, dict[str, Any]]) -> None:
@@ -496,11 +503,10 @@ def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: dic
     cmd_name = slugify_skill_name(name)
     if not cmd_name:
         return
-    # A collision with a core command (name or alias) skips auto-registration; the skill stays
-    # loadable via /skill <name>. The same predicate feeds the /skills + palette notes.
-    if skill_command_collision_note(name) is not None:
-        logger.warning("Skill %r generates slash command '/%s' which collides with a core Hermes command; "
-                       "skipping auto-registration. Use '/skill %s' instead.", name, cmd_name, name)
+    # The same surface-aware predicate feeds the /skills and palette notes.
+    note = skill_command_collision_note(name)
+    if note is not None:
+        logger.warning("Skill %r: %s", name, note)
         return
     # Dedup on the slug too: "git_helper" and "git-helper" normalize the same.
     # First-wins preserves project > local > external precedence.

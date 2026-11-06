@@ -60,15 +60,27 @@ def _namespace_name(name: object) -> bool:
     return name in _NAMESPACE_OPS or (dunder and name not in _PLAIN_DUNDERS)
 
 
-def _dynamic(node: ast.AST) -> bool:
+def _literal_getattr_callees(nodes: list[ast.AST]) -> set[int]:
+    """The ``getattr`` names that are the direct callee of a call with a literal attribute name:
+    the only ``getattr`` use that is a plain read. Any other use (an alias, an argument, a
+    computed name) can fetch a namespace operation."""
+    return {id(n.func) for n in nodes
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "getattr"
+            and len(n.args) > 1 and isinstance(n.args[1], ast.Constant)
+            and isinstance(n.args[1].value, str)}
+
+
+def _dynamic(node: ast.AST, literal_getattr: frozenset[int] | set[int] = frozenset()) -> bool:
     """Whether *node* may change an instance's namespace by a route other than a plain
     attribute assignment or ``del`` (see ``_NAMESPACE_OPS``); a ``getattr`` whose name is not a
-    literal (it may fetch any of them) counts too."""
+    literal (it may fetch any of them) counts too, and so does ``getattr`` taken as a value
+    (``fetch = getattr``) rather than called with a literal name."""
     if isinstance(node, ast.Call) and _call_name(node) == "getattr":
         name = node.args[1] if len(node.args) > 1 else None
         return not (isinstance(name, ast.Constant) and isinstance(name.value, str))
     if isinstance(node, ast.Name):
-        return _namespace_name(node.id) or node.id in _NAMESPACE_MODULES
+        return (_namespace_name(node.id) or node.id in _NAMESPACE_MODULES
+                or (node.id == "getattr" and id(node) not in literal_getattr))
     if isinstance(node, ast.Attribute):
         return _namespace_name(node.attr)
     return isinstance(node, ast.Constant) and _namespace_name(node.value)
@@ -155,7 +167,8 @@ class _Receivers:
         stores anything but a fresh value into, or deletes, through any receiver but the class;
         None, for every attribute, when the class can change a namespace dynamically."""
         nodes = list(ast.walk(self.cls))
-        if any(_dynamic(node) for node in nodes):
+        literal = _literal_getattr_callees(nodes)
+        if any(_dynamic(node, literal) for node in nodes):
             return None
         kept: set[int] = set()  # attribute targets an assignment gives a fresh value
         for node in nodes:

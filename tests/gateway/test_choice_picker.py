@@ -16,6 +16,7 @@ from gateway.config import Platform
 from gateway.platforms.base import SendResult
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
+from gateway.session_state import SERVICE_TIER_UNSET
 
 
 def _make_event(text="/reasoning", platform=Platform.TELEGRAM, user_id="12345", chat_id="67890"):
@@ -144,7 +145,8 @@ class TestFastChoicePicker:
         await on_choice(event.source.chat_id, "fast")
 
         assert runner._service_tier == "priority"
-        assert runner._session_service_tier_overrides
+        assert any(st.conversation.service_tier_override is not SERVICE_TIER_UNSET
+                   for st in runner._sessions_map().values())
         assert not (tmp_path / "config.yaml").exists()
 
 

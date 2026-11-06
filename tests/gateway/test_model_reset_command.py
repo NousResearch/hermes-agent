@@ -41,14 +41,14 @@ async def test_reset_clears_a_persisted_override_after_restart(tmp_path, monkeyp
     runner._evict_cached_agent = lambda k, **_kw: evicted.append(k)
     runner._normalize_source_for_session_key = lambda s: s
     runner._session_key_for_source = lambda s: build_session_key(s)
-    runner._pending_one_turn_model_restores[key] = {"had_override": False, "override": None}
+    runner._session_state(key).conversation.one_turn_restore = {"had_override": False, "override": None}
 
     reply = await runner._handle_model_command(_event("/model reset", source))
 
     assert "cfg-model" in reply
     assert store.get_model_override(key) is None
     assert runner._session_model_overrides.get(key) is None
-    assert runner._pending_one_turn_model_restores.get(key) is None  # an armed --once can't re-plant it
+    assert runner._session_state(key).conversation.one_turn_restore is None  # an armed --once can't re-plant it
     assert evicted == [key]
     assert "pinned-model" in runner._pending_model_notes[key]
 

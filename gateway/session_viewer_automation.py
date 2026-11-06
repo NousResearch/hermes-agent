@@ -21,7 +21,7 @@ from pathlib import Path
 from hermes_state_runtime import RuntimeStoreError
 
 _CALLS = {
-    "goal": frozenset({"state", "set", "pause", "resume", "clear", "mark_done", "add_subgoal", "remove_subgoal",
+    "goal": frozenset({"state", "set", "edit", "pause", "resume", "clear", "mark_done", "add_subgoal", "remove_subgoal",
                        "clear_subgoals", "add_gate", "remove_gate", "clear_gates", "wait_on", "wait_on_session",
                        "wait_for_seconds", "stop_waiting", "is_waiting", "evaluate_after_turn", "command"}),
     "loop": frozenset({"state", "set", "pause", "resume", "clear", "fire_tick", "abandon_tick", "complete_tick",
@@ -98,10 +98,10 @@ def _special(mgr, kind, target, call, args, kwargs):
             processes, delegations = None, 0
         return mgr.evaluate_after_turn(str((args or [""])[0] or ""), user_initiated=True,
                                        background_processes=processes, active_delegations=delegations)
-    if kind == "goal" and call == "set" and isinstance(kwargs.get("contract"), dict):
+    if kind == "goal" and call in ("set", "edit") and isinstance(kwargs.get("contract"), dict):
         from hermes_cli.goals import GoalContract
         kwargs = {**kwargs, "contract": GoalContract.from_dict(kwargs["contract"])}
-        return mgr.set(*args, **kwargs)
+        return getattr(mgr, call)(*args, **kwargs)
     if kind == "loop" and call == "goal_blocks_tick":
         from hermes_cli.loops import goal_blocks_loop_tick
         return goal_blocks_loop_tick(target)

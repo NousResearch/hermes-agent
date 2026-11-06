@@ -1180,6 +1180,19 @@ class GoalManager:
         )
         return self._save()
 
+    def edit(self, goal: str, *, contract: Optional[GoalContract] = None) -> GoalState:
+        """Reword the current goal in place: status, turn budget, subgoals, gates and any wait
+        barrier survive (``set`` starts over). ``contract`` replaces the old one only when given."""
+        state = self._require_goal()
+        goal = (goal or "").strip()
+        if not goal:
+            raise ValueError("goal text is empty")
+        state.goal = goal
+        if contract is not None:
+            state.contract = contract
+        self._save()
+        return state
+
     def set_contract(self, contract: GoalContract) -> Optional[GoalState]:
         """Attach or replace the completion contract on the active goal."""
         if self._state is None:

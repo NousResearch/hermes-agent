@@ -241,6 +241,34 @@ gateway:
       guidance: "这是自动任务状态通知，不是再次分解任务的请求。创建后续任务前请先检查当前看板；不要重复创建已存在的任务或任务图。"
     ping:
       completed: "✔ {head} 已完成——{title}{handoff}"
+      completion:
+        open_task: "完整结果请查看看板任务 {task_id}。"
+        pr:
+          # 仅根据 GitHub 返回结果渲染，并绑定到本任务分支。
+          verified: "Pull request：#{number} {url}（{state}）—— 已由 GitHub 在 {repository} 核验"
+          verified_fork: "推送自 fork {owner} —— 已由 GitHub 绑定到 {repository}"
+          head: "HEAD：{oid}，分支 {branch}"
+          state_open: "已开启"
+          state_draft: "已开启（草稿）"
+          state_merged: "已合并"
+          state_closed: "已关闭但未合并"
+        line: "{label}：{value}"
+        label:
+          kanban_status: "自报状态"
+          review: "自报审查"
+          tests: "自报测试"
+        state:
+          done: "自报完成"
+          partial: "自报部分完成"
+          blocked: "自报阻塞"
+          unknown: "未知"
+          not_run: "未运行"
+        review:
+          self_pass: "自报通过（未经独立复核）"
+          self_blocked: "自报未通过"
+        tests:
+          self_pass: "自报通过（未由本机复跑）"
+          self_failed: "自报失败"
       review_requested: "👀 {head} 待审核——{title}{handoff}"
       changes_default_reason: "审核反馈要求修改"
       reviewer_suffix: " ——审核人 @{reviewer}"

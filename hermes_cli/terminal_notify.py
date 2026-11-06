@@ -69,6 +69,11 @@ def program_status_sequence(state: str, *, kind: str = "", message: str = "") ->
     return f"\x1b]7501;{':'.join(pairs)}\x1b\\"
 
 
+def program_status_clear_sequence() -> str:
+    """OSC 7501 ``state=clear`` with no id: removes every record this program left on the terminal."""
+    return "\x1b]7501;state=clear\x1b\\"
+
+
 def warp_supported(env=None) -> bool:
     """True when running in a Warp build that can render OSC 777 agent payloads."""
     env = os.environ if env is None else env

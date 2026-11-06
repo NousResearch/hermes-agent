@@ -1,12 +1,16 @@
 """Transaction-scoped rewind shared by storage and canonical mutations."""
 from hermes_state_messages import _ACTIVE_IDS_SQL, _SET_COUNTERS_SQL, _placeholders
+from hermes_state_write_guards import REVIEW_LEASE_YIELD
 
 
 def rewind_in_transaction(self, conn, session_id, target_message_id, *,
                           preserve_compaction_handoff=False, expected_active_ids=None,
                           expected_target_content=None):
+    # A user rewrite invalidates a background review's replay basis: the review holder is asked
+    # to yield (never refused like a foreign turn) exactly as main's inline rewind did.
     self._check_transcript_write_guards(
-        conn, session_id, None, reject_active_turn_lease=True, reject_active_compression_lock=True)
+        conn, session_id, None, reject_active_turn_lease=True, reject_active_compression_lock=True,
+        review_lease_policy=REVIEW_LEASE_YIELD)
     if expected_active_ids is not None:
         active_rows = conn.execute(_ACTIVE_IDS_SQL, (session_id,)).fetchall()
         if [int(r[0]) for r in active_rows] != expected_active_ids:

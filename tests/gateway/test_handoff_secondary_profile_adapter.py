@@ -173,6 +173,85 @@ async def test_default_profile_handoff_keeps_primary_adapter(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_direct_call_review_completion_awaits_an_awaitable_completion():
+    from gateway.run_turn_review import complete_direct_call_review
+
+    outcomes = []
+    event = SimpleNamespace()
+
+    async def complete(*, delivery_succeeded, cause=None):
+        outcomes.append(delivery_succeeded)
+
+    event._gateway_review_delivery_complete = complete
+    await complete_direct_call_review(event, delivery_succeeded=True)
+    await complete_direct_call_review(event, delivery_succeeded=False)  # taken once: a no-op now
+
+    assert outcomes == [True]
+    assert not hasattr(event, "_gateway_review_delivery_complete")
+
+
+@pytest.mark.asyncio
+async def test_direct_call_review_completion_logs_a_raising_completion(caplog):
+    from gateway.run_turn_review import complete_direct_call_review
+
+    def complete(*, delivery_succeeded, cause=None):
+        raise RuntimeError("completion exploded")
+
+    event = SimpleNamespace(_gateway_review_delivery_complete=complete)
+    with caplog.at_level("ERROR"):
+        await complete_direct_call_review(event, delivery_succeeded=False)
+
+    assert "Handoff review-delivery completion failed" in caplog.text
+    assert not hasattr(event, "_gateway_review_delivery_complete")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("send_succeeded", [True, False])
+async def test_direct_handoff_completes_review_ownership_after_delivery(
+    monkeypatch, send_succeeded
+):
+    runner, _ = _make_multiplex_runner()
+    outcomes = []
+
+    async def _handle_message(event):
+        event._gateway_review_delivery_complete = (
+            lambda *, delivery_succeeded: outcomes.append(delivery_succeeded)
+        )
+        return "visible handoff response"
+
+    runner._handle_message = _handle_message
+
+    def _transport_factory(_platform, _config, adapters):
+        async def _send(*_args, **_kwargs):
+            return SimpleNamespace(success=send_succeeded)
+
+        return SimpleNamespace(
+            adapter=adapters[Platform.TELEGRAM],
+            send=_send,
+        )
+
+    monkeypatch.setattr(
+        "gateway.delivery.resolve_delivery_transport", _transport_factory
+    )
+
+    if send_succeeded:
+        await runner._process_handoff(
+            {"id": "cli-session", "title": "work", "handoff_platform": "telegram"}
+        )
+    else:
+        with pytest.raises(RuntimeError, match="adapter.send failed"):
+            await runner._process_handoff(
+                {
+                    "id": "cli-session",
+                    "title": "work",
+                    "handoff_platform": "telegram",
+                }
+            )
+
+    assert outcomes == [send_succeeded]
+
+
+@pytest.mark.asyncio
 async def test_secondary_profile_config_load_failure_fails_closed(monkeypatch):
     """A secondary profile whose config cannot load must fail the handoff.
 

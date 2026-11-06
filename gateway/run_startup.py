@@ -27,6 +27,7 @@ from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, GATEWAY_FATAL_CONFIG_EXIT_CODE, is_global_startup_conflict
 )
 from gateway.run_shutdown import _log_suppressed, _send_error
+from gateway.run_turn_review import complete_direct_call_review
 from hermes_cli.observability.shared_metrics_busy import note_running_chat_owner
 from gateway.shutdown_watchdog import (
     DEFAULT_HEARTBEAT_INTERVAL_S, DEFAULT_LOOP_WATCHDOG_INTERVAL_S,
@@ -1952,24 +1953,37 @@ class GatewayStartupMixin:
             source=dest.source,
             internal=True,
         )
+        # Direct-call ingress: review ownership completes from this event (finally below), never
+        # from the destination chat's session Event, which a live adapter task may own.
+        synthetic_event._gateway_review_completes_on_event = True
         logger.info(
             "Handoff: dispatching synthetic turn for CLI session %s → %s "
             "(home=%s, thread=%s, session_key=%s)",
             cli_session_id, dest.platform_name, dest.home.chat_id, dest.effective_thread_id, session_key,
         )
-        # Inline _handle_message keeps success/failure observable (handle_message would detach it).
-        response_text = await self._handle_message(synthetic_event)
-        if not response_text:
-            # Streaming may have delivered inline; the agent ran without raising — success.
-            return
-        # Reply into the new thread (else the home channel) via the resolved transport, so a relay-fronted
-        # logical platform is stamped on the outbound frame.
-        send_metadata = {"thread_id": dest.effective_thread_id} if dest.effective_thread_id else None
+        delivery_succeeded = False
         try:
-            result = await dest.transport.send(
-                dest.platform, str(dest.home.chat_id), response_text, send_metadata,
+            # Inline _handle_message keeps success/failure observable (handle_message would detach it).
+            response_text = await self._handle_message(synthetic_event)
+            if not response_text:
+                # Streaming may have delivered inline; the agent ran without raising — success.
+                delivery_succeeded = True
+                return
+            # Reply into the new thread (else the home channel) via the resolved transport, so a
+            # relay-fronted logical platform is stamped on the outbound frame.
+            send_metadata = (
+                {"thread_id": dest.effective_thread_id}
+                if dest.effective_thread_id
+                else None
             )
-        except Exception as exc:
-            raise RuntimeError(f"adapter.send failed: {exc}") from exc
-        if not getattr(result, "success", True):
-            raise RuntimeError(f"adapter.send failed: {_send_error(result)}")
+            try:
+                result = await dest.transport.send(
+                    dest.platform, str(dest.home.chat_id), response_text, send_metadata,
+                )
+            except Exception as exc:
+                raise RuntimeError(f"adapter.send failed: {exc}") from exc
+            if not getattr(result, "success", True):
+                raise RuntimeError(f"adapter.send failed: {_send_error(result)}")
+            delivery_succeeded = True
+        finally:
+            await complete_direct_call_review(synthetic_event, delivery_succeeded=delivery_succeeded)

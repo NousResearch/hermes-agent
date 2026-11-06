@@ -139,14 +139,19 @@ class SessionMaintenanceMixin:
             self._remove_session_files(sessions_dir, sid)
         return len(removed_ids)
 
-    def _guarded_ids(self, conn, ids: Iterable[str]) -> set:
+    def _guarded_ids(self, conn, ids: Iterable[str], **guard_kwargs) -> set:
         """Ids in *ids* protected by a live turn lease / compression lock. Idle compression-ended
-        parents are closed, not live, so they are not guarded (prune and delete share this)."""
-        return {sid for sid in ids if self._write_guards_reject(conn, sid, allow_closed_compression_parent=True)}
+        parents are closed, not live, so they are not guarded (prune and delete share this).
+        ``review_lease_policy`` is what a live background-review lease means to the caller: a
+        maintenance probe spares the row (the default), a user delete asks the review to yield."""
+        return {sid for sid in ids if self._write_guards_reject(
+            conn, sid, allow_closed_compression_parent=True, **guard_kwargs)}
 
     def _write_guards_reject(self, conn, sid: str, **kwargs) -> bool:
-        """True when a live turn lease / compression lock protects ``sid``; expired or
-        dead-holder guards are reclaimed and fenced as a side effect."""
+        """True when a live turn lease / compression lock protects ``sid`` (a background-review
+        lease included unless ``review_lease_policy`` says otherwise: a probe is not a transcript
+        edit, so by default the review is never asked to yield); expired or dead-holder guards
+        are reclaimed and fenced as a side effect."""
         from hermes_state import SessionCompressionInProgressError
         from hermes_state_errors import SessionTurnLeaseLostError
         try:

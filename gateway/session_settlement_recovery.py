@@ -313,9 +313,23 @@ async def settle_and_deliver(authority, live, ref, row, response, outcome):
             if settled is None or discarded:
                 # Uncommitted (unknown or discarded): the user is not told an answer the FIFO lost.
                 authority.pending_deliveries.pop(admission_id, None)
-                drop_producer_turn(authority, admission_id)
                 from gateway.session_ingress import fire_post_delivery
-                await fire_post_delivery(authority, admission_id)
+                from gateway.session_ingress_review import release_unsettled_review
+                try:
+                    drop_producer_turn(authority, admission_id)
+                    # The turn's post-delivery slot still runs (bg-review notice release, temp-bubble
+                    # cleanup, a deferred /goal verdict), as an adapter task's finally would. The
+                    # drain's review entry is still held across this await: on the unknown path the
+                    # execution stamp is already cleared and the delivery retained, so a Discard that
+                    # commits the captured result inside this window takes the turn over
+                    # (``_resolved_unknown`` -> ``deliver_resolved`` -> ``deliver_settled`` ->
+                    # ``complete_settled_review``) and completes the review with the real delivery
+                    # outcome; the release below then finds nothing. Otherwise nothing spawns from
+                    # the slot and the candidate is released unconfirmed below. One release per token
+                    # either way.
+                    await fire_post_delivery(authority, admission_id)
+                finally:
+                    release_unsettled_review(authority, admission_id)
             from gateway.session_ingress import waiter_replies
             waiter_replies(authority).pop(admission_id, None)
             # Taken on every exit, so a turn that never settled leaves no reset for a later one.
@@ -326,6 +340,12 @@ async def settle_and_deliver(authority, live, ref, row, response, outcome):
         await fire_post_delivery(authority, admission_id)
         await authority._resolve_settled_waiter(admission_id, response)
         return True
+    except BaseException:
+        # A raise ahead of the step that releases the drain's review token (``publish_transfers``'
+        # pooled admission read in the cleanup above, ``deliver_settled``'s marker release) ends the
+        # drain before it; the token would stay live for the process lifetime. Released here instead.
+        _release_review_after_failure(authority, admission_id, committed=settled is not None and not discarded)
+        raise
     finally:
         # A resolution that raced this drain handed its collection here (``_resolved_unknown``):
         # honour it on every exit, settled or not.
@@ -334,6 +354,22 @@ async def settle_and_deliver(authority, live, ref, row, response, outcome):
             authority._drain_owned_collection.discard(admission_id)
         if settled is not None or owed:
             release_media_after_delivery(authority, row)
+
+
+def _release_review_after_failure(authority, admission_id, *, committed):
+    """``settle_and_deliver`` raised ahead of the step that releases the drain's review token
+    (``release_unsettled_review`` in its cleanup, ``complete_settled_review`` in ``deliver_settled``).
+    The drain dies of that raise either way; without this every later automatic review on the session
+    is refused ``live_turn_active``. Both helpers are no-ops on an entry the seam already took, so a
+    raise after it releases nothing twice. Never fatal: the drain's own fault is what it dies of."""
+    from gateway.session_ingress_review import release_undelivered_review, release_unsettled_review
+    try:
+        if committed:
+            release_undelivered_review(authority, admission_id)
+        else:
+            release_unsettled_review(authority, admission_id)
+    except Exception:
+        logger.exception('Review release after the failed settlement of admission %s failed', admission_id)
 
 
 def hand_collection_to_drain(authority, admission_id):

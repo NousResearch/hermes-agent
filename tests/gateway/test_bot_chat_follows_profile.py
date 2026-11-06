@@ -528,11 +528,11 @@ async def test_a_busy_first_open_leaves_adoption_to_the_next_open_on_that_connec
     runner._peek_session_state = lambda key: None
     real, refused = guards.require_idle, []
 
-    def busy_once(db, conn, ids):
+    def busy_once(db, conn, ids, **policy):
         if not refused:
             refused.append(ids)
             raise RuntimeStoreError('session_busy')
-        return real(db, conn, ids)
+        return real(db, conn, ids, **policy)
     monkeypatch.setattr(guards, 'require_idle', busy_once)
     desktop = AuthorityConnection(authority, object(), {'user_id': 'human'})
     try:
@@ -650,11 +650,11 @@ async def test_an_mcp_reload_keeps_a_busy_first_opens_adoption_pending(home, mon
     runner._peek_session_state = lambda key: None
     real, refused = guards.require_idle, []
 
-    def busy_once(db, conn, ids):
+    def busy_once(db, conn, ids, **policy):
         if not refused:
             refused.append(ids)
             raise RuntimeStoreError('session_busy')
-        return real(db, conn, ids)
+        return real(db, conn, ids, **policy)
     monkeypatch.setattr(guards, 'require_idle', busy_once)
     desktop = AuthorityConnection(authority, object(), {'user_id': 'human'})
     try:

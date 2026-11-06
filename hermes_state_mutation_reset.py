@@ -5,6 +5,7 @@ import time
 
 from hermes_state_local import POLICY_PREFIX
 from hermes_state_local_lineage import advance_local_target, validate_local_lineage
+from hermes_state_write_guards import REVIEW_LEASE_IGNORE
 from hermes_state_mutation_guards import require_target_advanceable
 from hermes_state_runtime import RuntimeStoreError
 
@@ -18,7 +19,9 @@ def reset_in_transaction(db, conn, session_id, payload):
     target = validate_local_lineage(conn, receipt)
     from hermes_state_runtime_workers import discard_orphan_workers_on_reset, runtime_lineage
     discard_orphan_workers_on_reset(conn, runtime_lineage(conn, session_id))
-    require_target_advanceable(db, conn, list({session_id, target}))
+    # A background review keeps decoding the transcript this reset closes: its snapshot stays
+    # valid and the fresh target is an explicit fork, so the review lands beside it.
+    require_target_advanceable(db, conn, list({session_id, target}), review_lease_policy=REVIEW_LEASE_IGNORE)
     parent = conn.execute('SELECT * FROM sessions WHERE id=?', (target,)).fetchone()
     policy = receipt['policy']
     from gateway.session import SessionEntry

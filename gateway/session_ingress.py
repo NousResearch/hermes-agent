@@ -5,8 +5,15 @@ from contextvars import ContextVar
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import replace
 
+from gateway.platforms.base_followup_admission import publish_followup_queue_mutation
 from gateway.platforms.event import MessageEvent, ProcessingOutcome
 from gateway.session_envelope import restore_native
+from gateway.session_ingress_review import (adopt_review_completion, complete_review_delivery,
+                                            complete_settled_review, forget_review_waiter,
+                                            hand_over_review_completion,
+                                            hand_review_completion_to_waiter, note_review_waiter,
+                                            release_failed_review, release_unsettled_review,
+                                            take_review_completion)
 from gateway.session_producer_lifecycle import close_producer_turn, producer_turn
 from hermes_cli.observability.shared_metrics_busy import (
     busy_turn_started, note_busy_admitted, note_busy_parked, settle_busy_arrival)
@@ -66,6 +73,7 @@ async def admit_message(authority, event):
         return None
     # Only the delivery waiter is process-local; execution reads the committed snapshot.
     authority.native_waiters.add(receipt.admission_id)
+    note_review_waiter(authority, receipt.admission_id)
     waiter = authority.waiters.setdefault(receipt.admission_id, asyncio.get_running_loop().create_future())
     adopters = _marker_adopters(authority)
     if getattr(event, '_turn_marker_handoff', False):
@@ -84,12 +92,14 @@ async def admit_message(authority, event):
             del authority.waiters[receipt.admission_id]
         if adopters.get(receipt.admission_id) is event:
             del adopters[receipt.admission_id]
+        adopt_review_completion(authority, receipt.admission_id, None)
         return None if status == 'terminal' else pause_notice(authority, receipt.ref, 'unknown_execution')
     if accepted is not None and not accepted.done():
         accepted.set_result(None)
     try:
-        return await asyncio.shield(waiter)
+        response = await asyncio.shield(waiter)
     except RuntimeStoreError as exc:
+        adopt_review_completion(authority, receipt.admission_id, None)
         row = get_session_admission(authority.db, admission_id=receipt.admission_id)
         if row is not None and row['status'] == 'terminal':
             # The drain refused this head (``_refuse_head``): cancelled, not saved behind a pause.
@@ -98,9 +108,16 @@ async def admit_message(authority, event):
         if row is not None:
             note_busy_parked(event)  # still queued (saved): answered after the pause, not dropped
         return pause_notice(authority, receipt.ref, exc.reason)
+    except asyncio.CancelledError:
+        forget_review_waiter(authority, receipt.admission_id)
+        raise
     finally:
         if adopters.get(receipt.admission_id) is event:
             del adopters[receipt.admission_id]
+    # The drain left the executed turn's review-ownership completion for this waiter: the
+    # lifecycle that sends the reply reads it off this event once the handler returns.
+    adopt_review_completion(authority, receipt.admission_id, event)
+    return response
 
 
 def _marker_adopters(authority):
@@ -332,6 +349,9 @@ async def execute_admission(authority, ref, row):
     token = executing_admission.set(True)
     # This drain, not the handler's unwind, releases the turn's crash marker (see below).
     event._turn_marker_handoff = True
+    # And it owns the turn's review-ownership completion (gateway/session_ingress_review.py):
+    # parked on this event, never on the chat's adapter guard, whose task completes its own turn.
+    event._gateway_review_completes_on_event = True
     handed = False
     try:
         async with _admission_scope(authority, home, row, event, captured):
@@ -376,9 +396,18 @@ async def execute_admission(authority, ref, row):
                         waiter_replies(authority)[row['admission_id']] = delivery
                     else:
                         authority.pending_deliveries[row['admission_id']] = delivery
+            hand_over_review_completion(authority, row['admission_id'], event, native=native)
             handed = True
             await _hand_over_turn_marker(authority, row['admission_id'], event)
             return response
+    except BaseException as exc:
+        if handed and not isinstance(exc, Exception):
+            # The hand-over above sits ahead of two awaits (the marker hand-off, the admission
+            # scope's exit). An Exception raised there still settles: ``_execute_claimed`` turns it
+            # into a failed turn whose settlement seams take the held entry. A cancel ends the drain
+            # with no settlement behind it, so nothing else would release the completion it holds.
+            release_unsettled_review(authority, row['admission_id'])
+        raise
     finally:
         if not native:
             # No adapter task awaits this turn to run its post-delivery callbacks: the drain runs them
@@ -386,6 +415,7 @@ async def execute_admission(authority, ref, row):
             _take_post_delivery(authority, row['admission_id'], event.source, route)
         if not handed:
             await _release_turn_marker(authority, event)
+            release_failed_review(event)
         executing_admission.reset(token)
         execution_result.reset(result_token)
         api_execution.reset(api_token)
@@ -452,13 +482,19 @@ async def deliver_settled(authority, admission_id):
         if held is not None and adopter is not None:
             _move_marker(held, adopter)
             held = None
+        hand_review_completion_to_waiter(authority, admission_id)
         delivery = None
     if delivery is None:
         if held is not None:
             # Fenced unknown: no answer is owed, so no later boot may deliver one either.
             await _release_turn_marker(authority, held)
-        # Settled with nothing (left) to send: its reply streamed, or it had none.
-        await close_producer_turn(authority, admission_id, ProcessingOutcome.SUCCESS)
+        try:
+            # Settled with nothing (left) to send: its reply streamed, or it had none.
+            await close_producer_turn(authority, admission_id, ProcessingOutcome.SUCCESS)
+        finally:
+            # Nothing owed by this drain: the committed outcome IS what an API caller, a local viewer
+            # or a finite turn reads, so the drain's own review completion is delivered.
+            complete_settled_review(authority, admission_id, delivery_succeeded=True)
         return
     adapter, event, session_key, response, home = delivery
     delivered = False
@@ -472,8 +508,11 @@ async def deliver_settled(authority, admission_id):
         authority.pending_deliveries.pop(admission_id, None)
         # The ledgered send already released the marker; an empty or failed send owes no more.
         await _release_turn_marker(authority, event)
-        await close_producer_turn(
-            authority, admission_id, ProcessingOutcome.SUCCESS if delivered else ProcessingOutcome.FAILURE)
+        try:
+            await close_producer_turn(
+                authority, admission_id, ProcessingOutcome.SUCCESS if delivered else ProcessingOutcome.FAILURE)
+        finally:
+            complete_settled_review(authority, admission_id, delivery_succeeded=delivered)
 
 
 async def deliver_response(adapter, event, session_key, response):
@@ -510,21 +549,30 @@ async def dispatch_shared_busy(adapter, event, session_key, *, durable=False):
 
     async def observe():
         # Like the first message's lifecycle, this sender adopts the turn's crash marker and
-        # releases it only once the reply is ledgered (the marker moves onto ``event``).
+        # releases it only once the reply is ledgered (the marker moves onto ``event``), and it
+        # completes the turn's review ownership with its send (the drain leaves it on ``event``).
         event._turn_marker_handoff = getattr(adapter, 'gateway_runner', None) is not None
+        review_delivery_complete, delivered = None, False
         try:
-            response = await adapter._message_handler(event)
+            try:
+                response = await adapter._message_handler(event)
+            finally:
+                review_delivery_complete = take_review_completion(event)
             # The ledgered send releases the marker off the event it sends.
             _move_marker(event, delivery_event)
             delivery_event._turn_marker_handoff = event._turn_marker_handoff
-            await deliver_response(adapter, delivery_event, session_key, response)
+            delivered = await deliver_response(adapter, delivery_event, session_key, response)
         except Exception as exc:
             if not accepted.done():
                 raise  # nothing was queued: the receive loop sees the failure as before
             logger.error('[%s] Queued busy follow-up failed: %s', adapter.name, exc, exc_info=True)
             await adapter._notify_turn_error(delivery_event, exc)
         finally:
-            settle_busy_arrival(event)
+            try:
+                if review_delivery_complete is not None:
+                    complete_review_delivery(review_delivery_complete, delivery_succeeded=delivered)
+            finally:
+                settle_busy_arrival(event)  # telemetry last: never between the turn and its review release
             # Clears the marker if no ledgered send did, then wakes the drain's bounded wait,
             # which listens on the adopter (``event``).
             await adapter._release_turn_marker(delivery_event)
@@ -548,8 +596,16 @@ async def dispatch_shared_busy(adapter, event, session_key, *, durable=False):
         raise
     if task.done():
         task.result()  # refused, consumed or answered inline before any durable acceptance
-    elif not committed.done():
+        return
+    if not committed.done():
         _hold_until_committed(adapter, committed, task)
+    # Accepted behind the running turn (committed, or held until its commit lands): publish it to
+    # review admission the way a slot write is (``_record_and_fence_followup_locked`` bumps the
+    # follow-up epoch and cancels that turn's review), so the review never spawns beside, or runs
+    # beside, the follower.
+    # Through the tolerant path every runner-side slot write takes: an adapter binding the
+    # fence contract (every production adapter) is fenced; a minimal one is not pretended at.
+    publish_followup_queue_mutation(adapter, session_key, lambda: True)
 
 
 def _hold_until_committed(adapter, committed, task):

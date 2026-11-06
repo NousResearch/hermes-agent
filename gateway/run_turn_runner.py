@@ -462,6 +462,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         runner = self._runner
         agent._notification_config = ctx.user_config
         agent._notification_platform = ctx.source.platform
+        gateway_review_admission = getattr(ctx, "gateway_review_admission", None)
+        if gateway_review_admission is not None:
+            gateway_review_admission.bind_agent(agent)
         # ALWAYS attached (never gated to None): its body gates each event class, and subagent-
         # failure notices must fire even with tool_progress/thinking off.
         agent.tool_progress_callback = ctx.progress_callback
@@ -498,9 +501,40 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # auxiliary.voice_chat route (a voice note, or an admission committed as a voice turn) and
         # this turn's must-deliver notes; a managed worker arms its agent through the same helper.
         arm_surface_turn(agent, runner._consume_pending_turn_sidecar_notes(ctx.session_key), voice_turn=ctx.voice_turn)
+
+        # The post-turn review is spawned from the agent thread before the gateway drains a
+        # same-session message queued while that turn was busy. Give review admission a
+        # non-consuming, body-free probe so foreground follow-ups win without a review request
+        # (``followup_pending_callback``; its durable-FIFO read is sampled off the admission
+        # lock, ``followup_pending_sample``, so no SQLite I/O runs under the gateway's fence).
+        from gateway.run_turn_followup_probe import install_followup_probe
+
+        # The overflow FIFO is resolved at probe time, as every other runner read here is.
+        install_followup_probe(
+            agent, ctx._status_adapter, ctx.session_key, lambda key: runner._overflow_queue(key)
+        )
+        register_cancel = getattr(ctx._status_adapter, "register_followup_review_cancel", None)
+        if ctx.session_key and callable(register_cancel):
+            def _cancel_review_for_followup() -> None:
+                from agent.background_review import cancel_background_review_for_pending_followup
+
+                # Fired on the gateway loop (busy-slot writes, the runner's queue mutations),
+                # outside the turn's profile scope: the registry key is the turn's own owner.
+                # Resolved ambiently it would be the loop thread's launch profile, whose review
+                # on the same session id (multiplexing) this fence would cancel instead.
+                owner = gateway_review_admission
+                cancel_background_review_for_pending_followup(
+                    agent,
+                    session_id=owner.session_id if owner is not None else None,
+                    profile_key=owner.profile_key if owner is not None
+                    else getattr(agent, "_active_turn_profile_key", None),
+                )
+
+            register_cancel(ctx.session_key, _cancel_review_for_followup)
         agent.background_review_callback, bg_release = self._make_bg_review_callbacks()
-        # Register the release hook on the adapter so base.py's finally block fires it after the
-        # main response is delivered.
+        # Register the release hook on the adapter so base.py's finally block, or the authority
+        # drain (session_ingress.fire_post_delivery) for a turn with no adapter task, fires it
+        # after the main response is delivered.
         if ctx._status_adapter and ctx.session_key:
             if getattr(type(ctx._status_adapter), "register_post_delivery_callback", None) is not None:
                 ctx._status_adapter.register_post_delivery_callback(ctx.session_key, bg_release, generation=ctx.run_generation)

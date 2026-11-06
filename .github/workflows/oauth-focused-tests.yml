@@ -1,0 +1,49 @@
+name: OAuth client credentials focused tests
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/plugin-oauth-client-credentials
+    paths:
+      - ".github/workflows/oauth-focused-tests.yml"
+      - ".github/actions/setup-pm/**"
+      - "hermes_cli/plugin_oauth.py"
+      - "hermes_cli/plugin_provider_requests.py"
+      - "tests/hermes_cli/test_plugin_oauth.py"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "pm/**"
+      - "scripts/ci/setup_toolchain.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oauth-focused-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  oauth-tests:
+    name: OAuth client credentials tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Set up Hermes locked Python test environment
+        uses: ./.github/actions/setup-pm
+        with:
+          test-environment: "true"
+          extras: "[]"
+          prune-python-cache: "true"
+
+      - name: Run OAuth tests
+        run: ${{ env.HERMES_PYTHON }} -m pytest -q tests/hermes_cli/test_plugin_oauth.py
+        env:
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""
+          NOUS_API_KEY: ""

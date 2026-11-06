@@ -86,6 +86,25 @@ def live_wait_seconds() -> float | None:
     return parsed if math.isfinite(parsed) and parsed >= 0.0 else None
 
 
+def live_wait_seconds() -> float:
+    """Live Bot Chat reply-wait budget: ``bot_mode.live_wait_seconds``, lazily read, falling back
+    to ``_LIVE_WAIT_SECONDS``. The budget covers BOTH legs of a live delivery — the target's queue
+    wait and its reply production — so work that outlives it settles its mailbox receipt after the
+    waiter has exited, stranding the reply in a ticket nobody reads again. Installations whose bot
+    turns run long raise it in config.yaml. Every live-wait lane resolves through this one function
+    (local DM runner, the gateway's peer-DM waiter, the Desktop relay) so the lanes cannot drift."""
+    from tools.bot_relay import _bot_mode_cfg
+
+    val = _bot_mode_cfg("live_wait_seconds", loader="load_config")
+    if val is None:
+        return float(_LIVE_WAIT_SECONDS)
+    try:
+        parsed = float(val)
+    except (TypeError, ValueError, OverflowError):
+        return float(_LIVE_WAIT_SECONDS)
+    return parsed if math.isfinite(parsed) and parsed >= 0.0 else float(_LIVE_WAIT_SECONDS)
+
+
 def _default_home() -> str:
     from hermes_constants import get_process_hermes_home
     return str(get_process_hermes_home())

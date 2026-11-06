@@ -111,6 +111,9 @@ def apply_action(db, conn, session_id, operation, payload, *, prepared=None):
             column = 'last_read_at' if key == 'unread' else key
             stored = (0.0 if value else time.time()) if key == 'unread' else int(value)
             affected.update(db._set_lineage_column_in_transaction(conn, column, session_id, stored))
+            if key == 'archived' and value:
+                # Desktop's Archive lands here, not in set_session_archived: same retire (#139779).
+                affected.update(db._retire_canonical_bot_chat_in_transaction(conn, session_id))
             result[key] = value
     return affected, result
 

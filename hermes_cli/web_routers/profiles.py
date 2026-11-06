@@ -827,7 +827,10 @@ async def create_profile_endpoint(body: ProfileCreate):
         clone_config = clone
     with _profile_errors("POST /api/profiles failed", not_found=(),
                          bad_request=(ValueError, FileExistsError, FileNotFoundError)):
-        path = profiles_mod.create_profile(
+        # Off the loop: creation asks a live multiplexer to serve the profile now over its control
+        # socket, and on the gateway's own listener (the Webapp) that socket answers on this loop.
+        path = await asyncio.to_thread(
+            profiles_mod.create_profile,
             name=body.name, clone_from=clone_from, clone_all=body.clone_all,
             clone_config=clone_config, no_skills=body.no_skills, description=body.description,
             clone_channels=body.clone_channels, **({"soul": body.soul} if body.soul is not None else {}))

@@ -1071,7 +1071,7 @@ async def _materialize_video(video_url: str, task_id: Optional[str], temp_paths:
     """Local video path for a terminal-backend path, local file, or HTTP(S) URL. Only files created
     here are appended to ``temp_paths`` — never user-provided paths. Terminal-backend reads use the
     shared media resolver with ``permitted=("video",)`` — the exact pipeline vision_analyze uses
-    (media-cache host reads, bounded in-sandbox exec-read, credential-read guard, 50MB cap)."""
+    (media-cache host reads, bounded in-sandbox exec-read, credential-read guard, ingest cap)."""
     from tools.image_source import (
         ImageResolutionError, ResolveContext, _is_local_terminal_backend, resolve_image_source,
     )

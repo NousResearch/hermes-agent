@@ -28,7 +28,7 @@ import sys
 import tempfile
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
@@ -216,6 +216,8 @@ class Sender:
     teammates: list
     task_id: Optional[str]
     agent: Any
+    # The chain gate's author-envelope fields for this call (``tools/bot_mode_dm_chain.py``).
+    chain: dict = field(default_factory=dict)
 
     def roster_err(self, msg: str) -> str:
         return _err(msg, roster=self.teammates, peers=self.peers)
@@ -274,7 +276,7 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
         return _err(f"message too long ({len(body)} chars > {MESSAGE_MAX_CHARS}). "
                     "Send the essentials; share large content as a file path instead.")
 
-    from tools.bot_mode_dm_coordination import fan_out, split_targets
+    from tools.bot_mode_dm_coordination import split_targets
 
     targets = split_targets(target, sender)
     if not targets:
@@ -283,11 +285,12 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
         return _err(f"Too many targets ({len(targets)} > {FAN_OUT_MAX}); message the ones the task needs.")
     reply = _wants_reply(expects_reply)
     # Sender signature: the friendly name when the bot has one (#89720); the @handle stays the routing alias.
-    content = (f"Message from 🤖 {_display_name(me, roster_homes.get(me, Path(home)), list(roster_homes))} (@{_handle(me, list(roster_homes))}): "
-               + ("" if reply else f"{NO_REPLY_MARKER} ") + body)
-    if len(targets) == 1:
-        return _dispatch(targets[0], content, sender, wake="notify" if reply else "none")
-    return fan_out(targets, content, sender, expects_reply=reply)
+    signature = f"Message from 🤖 {_display_name(me, roster_homes.get(me, Path(home)), list(roster_homes))} (@{_handle(me, list(roster_homes))}): "
+    from tools.bot_mode_dm_chain import send_gated
+
+    # The runtime's chain rules run before any transport (hop cap, repeated ask, reply to a bot: #137027).
+    return send_gated(targets, reply, body, lambda wants: signature + ("" if wants else f"{NO_REPLY_MARKER} ") + body,
+                      sender)
 
 
 def _dispatch(raw_target: str, content: str, sender: Sender, *, wake: Any) -> str:
@@ -301,7 +304,7 @@ def _dispatch(raw_target: str, content: str, sender: Sender, *, wake: Any) -> st
     roster = list(roster_homes)
     delivery = dict(task_id=sender.task_id, agent=sender.agent, wake=wake)
     # Attribution for the recipient's memory hooks; the text prefix stays the human-facing signature.
-    author = {"id": f"bot:{me}", "name": _handle(me, roster), "is_bot": True}
+    author = {"id": f"bot:{me}", "name": _handle(me, roster), "is_bot": True, **sender.chain}
 
     # Peer target: '<peer>/<agent>' or a bare registered peer name.
     peer_match = _PEER_TARGET_RE.match(raw_target)

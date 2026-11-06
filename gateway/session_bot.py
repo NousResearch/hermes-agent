@@ -387,7 +387,8 @@ def _bot_chat_creation_id(authority, actor):
     handed off to a messaging lane, and a replacement takes the next one. Derived from durable rows
     only, so a restart and two concurrent deliveries (serialized by the titled-create lock) pick the
     same identity. An existing UNtitled local session is the same creation interrupted before its
-    title: it is reused."""
+    title: it is reused, unless archived: a deliberate Archive retires the Bot Chat by clearing its
+    title, and reusing that row would put the next delivery into the archived chat (#139779)."""
     from gateway.session_local_recovery import local_identity
     from gateway.session_route_recovery import _messaging_platform
     from hermes_state_mutation_retirement import first_generation
@@ -395,10 +396,10 @@ def _bot_chat_creation_id(authority, actor):
     request_id = lambda generation: base if generation == 0 else f'{base}:{generation}'
 
     def spent(conn, sid):
-        row = conn.execute('SELECT title, source FROM sessions WHERE id=?', (sid,)).fetchone()
+        row = conn.execute('SELECT title, source, archived FROM sessions WHERE id=?', (sid,)).fetchone()
         # Handed off (``/handoff``), it is a messaging lane's conversation: its receipt went with it,
         # and a reset's head carried its name there (``hermes_state_local.hand_off_conversations``).
-        return row is not None and (bool(row[0]) or _messaging_platform(row[1]) is not None)
+        return row is not None and (bool(row[0]) or bool(row[2]) or _messaging_platform(row[1]) is not None)
     generation, _sid = first_generation(
         authority.db, lambda n: local_identity(authority.profile_id, actor.subject, request_id(n)), spent=spent)
     return request_id(generation)

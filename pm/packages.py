@@ -667,6 +667,23 @@ def npm_env(cache_dir: Path, base_env: Optional[dict] = None) -> dict[str, str]:
     return env
 
 
+def pnpm_env(base_env: Optional[dict] = None) -> dict[str, str]:
+    """pnpm's store, metadata cache and state default to the user's XDG dirs. Keep them
+    Hermes-owned beside the uv cache: shared by every profile, gone with the Hermes root."""
+    from hermes_constants import get_default_hermes_root
+
+    env = dict(os.environ if base_env is None else base_env)
+    root = get_default_hermes_root() / "cache" / "pnpm"
+    for name in ("store", "cache", "state"):
+        key = f"pnpm_config_{name}_dir"
+        # Windows env names are case-insensitive and Python upper-cases inherited ones:
+        # a surviving PNPM_CONFIG_* twin would leave the child's pick between the two undefined.
+        for twin in [k for k in env if k.upper() == key.upper() and k != key]:
+            del env[twin]
+        env[key] = str(root / name)
+    return env
+
+
 @register
 class Npm(BinaryPackage):
     name = "npm"
@@ -753,6 +770,46 @@ class Npm(BinaryPackage):
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
         latest = npm_dist_tags("npm").get("latest")
+        return [latest] if latest else []
+
+
+@register
+class Pnpm(BinaryPackage):
+    """pnpm installs the repo's JS workspaces. pnpm 12 is a native executable
+    (@pnpm/exe.<target>); the `pnpm` package of the same version is only the
+    launcher that downloads it, so pm pins both and keeps the launcher's dist/:
+    the bundled node-gyp the executable looks for beside itself to build
+    dependencies that ship a binding.gyp. Without it a host node-gyp on PATH
+    (or none) would build them."""
+
+    name = "pnpm"
+    # Lifecycle scripts and node-gyp run on the node pm installs.
+    deps = ("node",)
+    binary_rel = {"win32": "pnpm.exe", "posix": "pnpm"}
+    flatten = False
+    gaps = {"linux-arm64-bionic": "Termux ships a prebuilt TUI; nothing installs JS workspaces on device"}
+
+    def fetch_urls(self, version: str, target: str) -> list[str]:
+        return [
+            f"https://registry.npmjs.org/@pnpm/exe.{target}/-/exe.{target}-{version}.tgz",
+            f"https://registry.npmjs.org/pnpm/-/pnpm-{version}.tgz",
+        ]
+
+    def unpack(self, archive: Path, staged: Path, target: str) -> None:
+        from pm.store import extract
+
+        extract(archive, staged)
+        package = staged / "package"
+        dist = package / "dist"
+        if dist.is_dir():
+            dist.rename(staged / "dist")
+        else:
+            for item in package.iterdir():
+                item.rename(staged / item.name)
+        shutil.rmtree(package)
+
+    def latest_versions(self, target: str, locked=None) -> list[str]:
+        latest = npm_dist_tags("pnpm").get("latest")
         return [latest] if latest else []
 
 

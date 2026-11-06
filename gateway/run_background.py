@@ -165,9 +165,11 @@ class GatewayBackgroundMixin:
         except Exception:
             logger.exception("Background task %s failed", task_id)
             # Automatic failure diagnostic (the task produced no requested result to deliver).
+            from gateway.bot_peer_notices import automatic_notices_allowed
             with suppress(Exception):
-                await adapter.emit_warning(
-                    source.chat_id,
-                    t("gateway.background.failed", preview=_bg_prompt_preview(prompt)),
-                    metadata=_thread_metadata, logical_platform=source.platform,
-                )
+                if automatic_notices_allowed(source):
+                    await adapter.emit_warning(
+                        source.chat_id,
+                        t("gateway.background.failed", preview=_bg_prompt_preview(prompt)),
+                        metadata=_thread_metadata, logical_platform=source.platform,
+                    )

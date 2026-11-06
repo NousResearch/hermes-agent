@@ -563,4 +563,31 @@ def build_native_content_parts(
     return [{"type": "text", "text": combined_text}, *image_parts], skipped
 
 
-__all__ = ["build_native_content_parts", "decide_image_input_mode", "extract_image_refs"]
+# A text-mode image note some surface prepended to the typed prompt (gateway ``Runner._enrich_message_with_vision``,
+# the CLI's ``_preprocess_images_with_vision``, the TUI sidecar's ``_build_image_ref_message``): it opens with
+# ``[The user sent|attached an image`` and its last line names the image as ``image_url: <path>]``.
+_IMAGE_NOTE_RE = re.compile(r"\[The user (?:sent|attached) an image[\s\S]*?image_url: ([^\n]+?)(?: ~)?\](?:\n\n|$)")
+# ``build_native_content_parts``'s trailing hints, one line per image, after the caption.
+_NATIVE_HINTS_RE = re.compile(r"\n\n((?:\[Image attached(?: at)?: [^\n]+\]\n?)+)$")
+_NATIVE_HINT_RE = re.compile(r"\[Image attached(?: at)?: ([^\n]+)\]")
+_DEFAULT_IMAGE_CAPTION = "What do you see in this image?"
+
+
+def split_image_notes(text: str) -> tuple[str, list[str]]:
+    """``(typed text, image paths)`` for a stored user prompt: the image notes a surface added for the model
+    (leading vision descriptions or trailing ``[Image attached at: …]`` hints) removed, the images they name
+    returned. Text without such notes comes back unchanged with no paths."""
+    paths: list[str] = []
+    rest = text or ""
+    while match := _IMAGE_NOTE_RE.match(rest):
+        paths.append(match[1].strip())
+        rest = rest[match.end():]
+    if not paths and (hints := _NATIVE_HINTS_RE.search(rest)):
+        paths = [m[1].strip() for m in _NATIVE_HINT_RE.finditer(hints[1])]
+        rest = rest[:hints.start()]
+        if rest.strip() == _DEFAULT_IMAGE_CAPTION:
+            rest = ""
+    return (rest, paths) if paths else (text, [])
+
+
+__all__ = ["build_native_content_parts", "decide_image_input_mode", "extract_image_refs", "split_image_notes"]

@@ -121,7 +121,9 @@ CASES = {
     "ts package → frontend": (["apps/desktop/src/app.tsx"], _lanes(frontend=True)),
     "ui-tui → frontend": (["ui-tui/src/entry.ts"], _lanes(frontend=True)),
     # Lockfile bump shifts every TS package's tree, but not the Python suite.
-    "root lockfile → frontend, not python": (["package-lock.json"], _lanes(frontend=True, npm_lock=True, docker=True, nix=True)),
+    "root lockfile → frontend, not python": (["pnpm-lock.yaml"], _lanes(frontend=True, npm_lock=True, docker=True, nix=True)),
+    # The workspace config (overrides, release-age policy) shifts the same trees.
+    "workspace config → frontend, not python": (["pnpm-workspace.yaml"], _lanes(frontend=True, docker=True, nix=True)),
     "nested lockfile → npm_lock": (["website/package-lock.json"], _lanes(site=True, npm_lock=True)),
     # A website file the Python suite cannot read stays site-only.
     "website config → site": (["website/docusaurus.config.ts"], _lanes(site=True)),
@@ -441,6 +443,8 @@ CASES = {
     ),
     # The rules README is mirrored by a docs-page test, so it keeps the suite.
     "catalog README → python": (["plugin-catalog/README.md"], _lanes(python=True)),
+    # Its code examples are held to the plugin API by a Python test.
+    "plugins AGENTS.md → python": (["plugins/AGENTS.md"], _lanes(python=True)),
     # Any code next to the entry brings the full suite back.
     "catalog entry + code → python and catalog": (
         ["plugin-catalog/foo.yaml", "agent/display.py"],

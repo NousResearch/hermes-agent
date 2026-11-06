@@ -1159,6 +1159,24 @@
       }
     },
     {
+      "name": "groups.continue",
+      "summary": "Grant a discussion paused at its cap (room.activity bounded) one more budget; writes room.continued.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsContinueParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsContinueResult"
+        }
+      }
+    },
+    {
       "name": "groups.create",
       "summary": "Create a hosted room idempotently; authority is this gateway's stable install identity.",
       "params": [
@@ -8950,6 +8968,139 @@
         "title": "CanonicalEventsResult",
         "type": "object"
       },
+      "CanonicalGroupsPeerInviteParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "home_install_id": {
+            "title": "Home Install Id",
+            "type": "string"
+          },
+          "authority_gateway_id": {
+            "title": "Authority Gateway Id",
+            "type": "string"
+          },
+          "authority_epoch": {
+            "title": "Authority Epoch",
+            "type": "integer"
+          },
+          "member_id": {
+            "title": "Member Id",
+            "type": "string"
+          },
+          "ttl_seconds": {
+            "default": 3600,
+            "title": "Ttl Seconds",
+            "type": "number"
+          },
+          "status_ttl_seconds": {
+            "title": "Status Ttl Seconds",
+            "type": "number"
+          }
+        },
+        "required": [
+          "room_id",
+          "home_install_id",
+          "authority_gateway_id",
+          "authority_epoch",
+          "member_id"
+        ],
+        "title": "CanonicalGroupsPeerInviteParams",
+        "type": "object"
+      },
+      "CanonicalGroupsPeerRegisterParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "member_id": {
+            "title": "Member Id",
+            "type": "string"
+          },
+          "target_url": {
+            "title": "Target Url",
+            "type": "string"
+          },
+          "target_profile": {
+            "title": "Target Profile",
+            "type": "string"
+          },
+          "grant": {
+            "title": "Grant",
+            "type": "string"
+          },
+          "catalog": {
+            "additionalProperties": true,
+            "title": "Catalog",
+            "type": "object"
+          }
+        },
+        "required": [
+          "room_id",
+          "member_id",
+          "target_url",
+          "target_profile",
+          "grant",
+          "catalog"
+        ],
+        "title": "CanonicalGroupsPeerRegisterParams",
+        "type": "object"
+      },
+      "CanonicalGroupsPeerRevokeParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "grant": {
+            "title": "Grant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "grant"
+        ],
+        "title": "CanonicalGroupsPeerRevokeParams",
+        "type": "object"
+      },
       "CanonicalListParams": {
         "additionalProperties": false,
         "properties": {
@@ -10280,6 +10431,18 @@
             "default": null,
             "title": "Title"
           },
+          "archived": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Archived"
+          },
           "started_at": {
             "anyOf": [
               {
@@ -11078,6 +11241,18 @@
             ],
             "default": null,
             "title": "Title"
+          },
+          "archived": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Archived"
           },
           "started_at": {
             "anyOf": [
@@ -13550,6 +13725,17 @@
             "default": null,
             "title": "Required Env"
           },
+          "launch": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConnectionTargetLaunch"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "tools": {
             "anyOf": [
               {
@@ -14021,6 +14207,60 @@
           "skill"
         ],
         "title": "ConnectionTargetKind",
+        "type": "string"
+      },
+      "ConnectionTargetLaunch": {
+        "additionalProperties": false,
+        "description": "What an MCP row will run (``stdio`` command line) or contact (``remote`` URL); scrubbed\ndisplay text, never env values or headers.",
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/ConnectionTargetLaunchKind"
+          },
+          "target": {
+            "title": "Target",
+            "type": "string"
+          },
+          "env": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Env"
+          },
+          "cwd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cwd"
+          }
+        },
+        "required": [
+          "kind",
+          "target"
+        ],
+        "title": "ConnectionTargetLaunch",
+        "type": "object"
+      },
+      "ConnectionTargetLaunchKind": {
+        "enum": [
+          "remote",
+          "stdio"
+        ],
+        "title": "ConnectionTargetLaunchKind",
         "type": "string"
       },
       "ConnectionTargetState": {
@@ -19306,7 +19546,8 @@
               {
                 "enum": [
                   "everyone",
-                  "lead"
+                  "lead",
+                  "auto"
                 ],
                 "type": "string"
               },
@@ -19354,6 +19595,55 @@
           "event"
         ],
         "title": "GroupsContextResult",
+        "type": "object"
+      },
+      "GroupsContinueParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "discussion_event_id": {
+            "title": "Discussion Event Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id",
+          "discussion_event_id"
+        ],
+        "title": "GroupsContinueParams",
+        "type": "object"
+      },
+      "GroupsContinueResult": {
+        "additionalProperties": false,
+        "properties": {
+          "continued": {
+            "default": true,
+            "title": "Continued",
+            "type": "boolean"
+          },
+          "event": {
+            "$ref": "#/components/schemas/RoomEvent"
+          }
+        },
+        "required": [
+          "event"
+        ],
+        "title": "GroupsContinueResult",
         "type": "object"
       },
       "GroupsCreateParams": {
@@ -19876,6 +20166,18 @@
             ],
             "default": null,
             "title": "Ttl Seconds"
+          },
+          "status_ttl_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Status Ttl Seconds"
           }
         },
         "title": "GroupsPeerInviteParams",
@@ -22339,7 +22641,7 @@
       },
       "LlmOneshotParams": {
         "additionalProperties": false,
-        "description": "Needs a ``template`` or ``instructions`` / ``input``; a live ``session_id`` lends its model.",
+        "description": "Needs a ``template`` or ``instructions`` / ``input``; a live ``session_id`` lends its model.\n``task`` is a built-in auxiliary slot or a plugin-registered one (unknown keys are refused);\n``schema`` (a JSON Schema) makes the reply carry ``parsed``; ``redact`` masks secrets in ``input``.",
         "properties": {
           "profile": {
             "anyOf": [
@@ -22449,6 +22751,31 @@
             ],
             "default": null,
             "title": "Session Id"
+          },
+          "schema": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Schema"
+          },
+          "redact": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Redact"
           }
         },
         "title": "LlmOneshotParams",
@@ -22460,6 +22787,16 @@
           "text": {
             "title": "Text",
             "type": "string"
+          },
+          "parsed": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Parsed"
           }
         },
         "required": [
@@ -28159,6 +28496,59 @@
         "title": "PluginToolsetRow",
         "type": "object"
       },
+      "PluginUpdateAllRow": {
+        "additionalProperties": false,
+        "description": "One plugin ``update_all`` tried. ``needs_review``: nothing changed because the update widens the\nplugin or its scan returned caution; the plugin's own ``update`` walks that review.",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/PluginUpdateAllStatus"
+          },
+          "detail": {
+            "default": "",
+            "title": "Detail",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "status"
+        ],
+        "title": "PluginUpdateAllRow",
+        "type": "object"
+      },
+      "PluginUpdateAllSkip": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "reason"
+        ],
+        "title": "PluginUpdateAllSkip",
+        "type": "object"
+      },
+      "PluginUpdateAllStatus": {
+        "enum": [
+          "updated",
+          "current",
+          "failed",
+          "needs_review"
+        ],
+        "title": "PluginUpdateAllStatus",
+        "type": "string"
+      },
       "PluginsAction": {
         "enum": [
           "list",
@@ -28171,7 +28561,9 @@
           "remove",
           "settings",
           "onboarding",
-          "presence"
+          "presence",
+          "update_all",
+          "auto_update"
         ],
         "title": "PluginsAction",
         "type": "string"
@@ -28231,7 +28623,7 @@
       },
       "PluginsManageParams": {
         "additionalProperties": false,
-        "description": "``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``\n(+ ``force``, ``enable``, ``ref``, ``inspected_sha`` = the commit ``inspect`` read: a custom source with no\n``ref`` whose branch moved since is refused); ``inspect``: ``identifier``/``repo`` or ``catalog_name``;\n``install_desktop``: ``identifier``/``repo`` (any source ``install`` takes) or ``catalog_name``, always\nwith ``ref`` (the commit ``inspect`` read and the dialog showed; another commit is refused) (+ ``force``) \u2014 the desktop half onto\nthe host that serves this client; ``remove_desktop``: ``name``\n(+ ``force`` for a package's own half); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin\nthat widened the plugin after the user confirmed the ``delta``, + ``force`` to apply an update whose\nsecurity scan returned caution after the user saw the findings); ``remove``: ``name`` (user installs only);\n``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only);\n``presence``: ``names`` (catalog names, answered in that order).",
+        "description": "``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``\n(+ ``force``, ``enable``, ``ref``, ``inspected_sha`` = the commit ``inspect`` read: a custom source with no\n``ref`` whose branch moved since is refused); ``inspect``: ``identifier``/``repo`` or ``catalog_name``;\n``install_desktop``: ``identifier``/``repo`` (any source ``install`` takes) or ``catalog_name``, always\nwith ``ref`` (the commit ``inspect`` read and the dialog showed; another commit is refused) (+ ``force``) \u2014 the desktop half onto\nthe host that serves this client; ``remove_desktop``: ``name``\n(+ ``force`` for a package's own half); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin\nthat widened the plugin after the user confirmed the ``delta``, + ``force`` to apply an update whose\nsecurity scan returned caution after the user saw the findings); ``remove``: ``name`` (user installs only);\n``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only);\n``presence``: ``names`` (catalog names, answered in that order); ``update_all``: no fields;\n``auto_update``: ``enable`` to set ``plugins.auto_apply`` (omit to read it).",
         "properties": {
           "profile": {
             "anyOf": [
@@ -28882,6 +29274,72 @@
             ],
             "default": null,
             "title": "Unpaired From"
+          },
+          "results": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PluginUpdateAllRow"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Results"
+          },
+          "skipped": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PluginUpdateAllSkip"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Skipped"
+          },
+          "current": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Current"
+          },
+          "auto_apply": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Auto Apply"
+          },
+          "check_hours": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Check Hours"
           }
         },
         "title": "PluginsManageResult",
@@ -33879,6 +34337,30 @@
             ],
             "default": null,
             "title": "Profile"
+          },
+          "undo_since": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Undo Since"
+          },
+          "undo_message_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Undo Message Id"
           }
         },
         "required": [
@@ -33900,6 +34382,17 @@
             },
             "title": "Checkpoints",
             "type": "array"
+          },
+          "undo_hint": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UndoRollbackHint"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -34553,7 +35046,8 @@
             "default": "everyone",
             "enum": [
               "everyone",
-              "lead"
+              "lead",
+              "auto"
             ],
             "title": "Routing",
             "type": "string"
@@ -34632,6 +35126,33 @@
             ],
             "default": null,
             "title": "Max Rounds"
+          },
+          "max_continues": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Max Continues"
+          },
+          "routing_modes": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Routing Modes"
           },
           "peer_routes": {
             "items": {
@@ -39580,6 +40101,17 @@
           "removed": {
             "title": "Removed",
             "type": "integer"
+          },
+          "undo_hint": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UndoRollbackHint"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -45661,6 +46193,28 @@
         "title": "UndoIntent",
         "type": "string"
       },
+      "UndoRollbackHint": {
+        "additionalProperties": false,
+        "description": "``/undo``'s line naming the files the undone turns changed and pointing at ``/rollback``: ``files`` are\nthe changed paths, ``text`` is the rendered line in the backend's language.",
+        "properties": {
+          "files": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Files",
+            "type": "array"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "UndoRollbackHint",
+        "type": "object"
+      },
       "Usage": {
         "additionalProperties": true,
         "description": "``tui_gateway/server.py::_get_usage`` + ``agent/context_breakdown.py::context_usage_fields``.",
@@ -48699,6 +49253,60 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/GroupsDiscardResult"
+        }
+      }
+    },
+    {
+      "name": "groups.peer.invite",
+      "summary": "Operator only: mint one room grant for a member of another gateway's room.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalGroupsPeerInviteParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsPeerInviteResult"
+        }
+      }
+    },
+    {
+      "name": "groups.peer.register",
+      "summary": "Bind a target grant to the room's pinned peer member after a live scoped probe.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalGroupsPeerRegisterParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsPeerRegisterResult"
+        }
+      }
+    },
+    {
+      "name": "groups.peer.revoke",
+      "summary": "Operator only: revoke one grant this gateway issued, by its exact room scope.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalGroupsPeerRevokeParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsPeerRevokeResult"
         }
       }
     },

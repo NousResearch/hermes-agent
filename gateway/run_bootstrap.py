@@ -546,6 +546,10 @@ def _launch_home_may_multiplex(config=None) -> bool:
             f"profile {name!r} launched the gateway, and only the default profile runs the multiplexer "
             "(start it with `hermes gateway run` from the default profile to serve every profile)")
         config.multiplex_profiles = False
+        # The first load armed fail-closed secret reads for a multiplexer; boot work before the
+        # runner (the left-core install) reads this profile's own env, unscoped.
+        from agent.secret_scope import set_multiplex_active
+        set_multiplex_active(False)
         log_multiplex_decision(decision)
         return True
     from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
@@ -556,6 +560,27 @@ def _launch_home_may_multiplex(config=None) -> bool:
         "default profile (`hermes gateway run`), which serves this profile too.", name)
     _write_runtime_status_quiet(gateway_state="startup_failed", exit_reason="multiplex_requires_default_profile")
     raise SystemExit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
+
+
+def _reload_config_keeping_multiplex_verdict(first: GatewayConfig) -> GatewayConfig:
+    """Re-read platform config after the left-core migration installed a platform plugin (the first
+    load predates it) without deciding multiplex again: the boot already settled it, including the
+    named-launch downgrade ``_launch_home_may_multiplex`` applied in place, and reserved homes to
+    match. A second ``resolve_multiplex_mode`` would re-enable an implicit default and serve
+    profiles this process never reserved."""
+    from gateway.config import load_gateway_config
+    if getattr(first, "multiplex_profiles", False):
+        from gateway.run import _profile_runtime_scope
+        from hermes_constants import get_default_hermes_root
+        with _profile_runtime_scope(Path(get_default_hermes_root())):
+            reloaded = load_gateway_config()
+    else:
+        reloaded = load_gateway_config()
+    reloaded.multiplex_profiles = first.multiplex_profiles
+    reserved = getattr(first, "_runtime_profile_homes", None)
+    if reserved:
+        reloaded._runtime_profile_homes = reserved
+    return reloaded
 
 
 def _start_gateway_resolve_terminal_cwd() -> None:
@@ -787,11 +812,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
         from gateway.run_startup import recover_left_core_at_gateway_start
         if await asyncio.to_thread(recover_left_core_at_gateway_start) and config is None:
-            # A platform plugin was just installed: the config loaded above predates it.
-            reserved = getattr(resolved_config, "_runtime_profile_homes", None)
-            resolved_config = load_gateway_config_for_runner()
-            if reserved:
-                resolved_config._runtime_profile_homes = reserved
+            resolved_config = _reload_config_keeping_multiplex_verdict(resolved_config)
 
         from gateway.run_runtime import initialize_gateway_runtime, pin_launch_store, unpin_launch_store
         _launch_store_pin = await asyncio.to_thread(pin_launch_store)

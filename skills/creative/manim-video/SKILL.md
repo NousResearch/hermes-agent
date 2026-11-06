@@ -1,19 +1,23 @@
 ---
 name: manim-video
 description: "Manim CE animations: 3Blue1Brown math/algo videos."
-version: 1.0.0
-author: SHL0MS, Hermes Agent
+version: 2.0.0
+author: Magnus Hedemark (@magnus919), SHL0MS, Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:
+    category: creative
     tags: [Manim, Animation, Math, Video]
     related_skills: []
 ---
 
-# Manim Video Production Pipeline
+# Manim Video Skill
 
-## When to use
+Create educational animations with Manim Community Edition. Use the full LaTeX
+path for mathematical typesetting, or a Text/geometry-only path when LaTeX is unavailable.
+
+## When to Use
 
 Use when users request: animated explanations, math animations, concept visualizations, algorithm walkthroughs, technical explainers, 3Blue1Brown style videos, or any programmatic animation with geometric/mathematical content. Creates 3Blue1Brown-style explainer videos, algorithm visualizations, equation derivations, architecture diagrams, and data stories using Manim Community Edition.
 
@@ -35,9 +39,17 @@ This is educational cinema. Every frame teaches. Every animation reveals structu
 
 ## Prerequisites
 
-Run `scripts/setup.sh` to verify all dependencies. Requires: Python 3.10+, Manim Community Edition v0.20+ (`pip install manim`), LaTeX (`texlive-full` on Linux, `mactex` on macOS), and ffmpeg. Reference docs tested against Manim CE v0.20.1.
+Use `terminal` to run `python scripts/check_prerequisites.py` from this skill directory to verify dependencies. Pass `--no-latex` only for Text/geometry-only scenes. Requires: Python 3.10+, Manim Community Edition v0.20+ (`pip install manim`), LaTeX (`texlive-full` on Linux, `mactex` on macOS), and ffmpeg. Reference docs tested against Manim CE v0.20.1.
 
-## Modes
+## How to Run
+
+Use `read_file` to inspect the relevant reference, then `terminal` to render a
+low-quality preview with `python -m manim -ql scene.py SceneName`. Inspect key
+frames with `vision_analyze` before rendering the final video.
+
+## Quick Reference
+
+### Modes
 
 | Mode | Input | Output | Reference |
 |------|-------|--------|-----------|
@@ -273,3 +285,40 @@ Take a standard mathematical/technical visualization and transform it:
 2. Pick the most fundamental assumption
 3. Reverse it (right-to-left derivation, 3D embedding of a 2D concept, continuous morphing instead of steps, zero notation)
 4. Explore what the reversal reveals that the standard approach hides
+
+## Procedure
+
+Plan one conceptual point per scene. Use an installed font suited to the material;
+Pango Text supports proportional fonts as well as monospace. For a no-LaTeX project,
+read `references/no-latex-workaround.md` and avoid default numeric axis labels.
+
+For a zooming camera, subclass Manim CE's `MovingCameraScene` rather than renaming
+an ordinary `Scene`. Use this complete pattern in a scene file:
+
+```python
+from manim import Circle, Create, MovingCameraScene, Restore
+
+class DetailScene(MovingCameraScene):
+    def construct(self):
+        target = Circle()
+        self.play(Create(target))
+        self.camera.frame.save_state()
+        self.play(self.camera.frame.animate.scale(0.5).move_to(target))
+        self.wait()
+        self.play(Restore(self.camera.frame))
+```
+
+## Pitfalls
+
+- `VGroup` accepts vector mobjects; `Group(*self.mobjects)` supports mixed scene objects.
+- `DecimalNumber` and `Integer` use MathTex by default; use `Text(str(value))` for simple no-LaTeX labels.
+- `Brace` also depends on TeX. Use lines for a geometry-only bracket.
+- Manim CE's `always_redraw` accepts a zero-argument factory: `always_redraw(lambda: Brace(square, UP))`.
+- Camera motion should explain a relationship; constant motion can distract.
+
+## Verification
+
+Run the prerequisite checker in the chosen mode and require a zero exit status.
+Render each changed scene at low quality; check readable labels, clipping, timing,
+camera restoration and cleanup before final export. Missing Manim or rendering
+dependencies means rendering is unverified; report that limitation.

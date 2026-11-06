@@ -334,9 +334,16 @@ tasks. Omit `task=` (or use `"auto"`) to keep the active main provider/model.
 A plugin's frontend (a Desktop page, or a client attached to the shared
 gateway) does not call the model itself. It calls its own Python half
 through a [plugin RPC method](plugins/index.md#talk-to-your-own-frontend-plugin-rpc-methods-and-session-events),
-and the handler calls `ctx.llm` on the task the plugin registered:
+and the handler calls `ctx.llm` on the task the plugin registered. A plugin
+RPC call holds its client's request lane until the handler returns, so the
+handler starts the model call in a thread, answers with a job id at once,
+and delivers the result as a session event:
 
 ```python
+import contextvars
+import threading
+import uuid
+
 from agent.redact import redact_sensitive_text
 
 CHART = {"type": "object", "properties": {"kind": {"type": "string"}}, "required": ["kind"]}
@@ -344,26 +351,53 @@ CHART = {"type": "object", "properties": {"kind": {"type": "string"}}, "required
 
 def register(ctx):
     ctx.register_auxiliary_task("chart_writer", display_name="Charts", description="Pick chart kinds.")
+    slots = threading.BoundedSemaphore(4)  # model calls in flight
 
     def write_chart(params, *, session_id, **kwargs):
+        if not session_id:
+            raise ValueError("chart.write needs a session_id")
+        job = uuid.uuid4().hex
         text = redact_sensitive_text(str(params.get("text", "")), force=True)
-        result = ctx.llm.complete_structured(
-            instructions="Pick a chart kind for this data.",
-            input=[{"type": "text", "text": text}],
-            json_schema=CHART,
-            task="chart_writer",
-        )
-        if result.parsed is None:
-            raise ValueError("the model did not answer with JSON")
-        return result.parsed
+
+        def run():
+            try:
+                result = ctx.llm.complete_structured(
+                    instructions="Pick a chart kind for this data.",
+                    input=[{"type": "text", "text": text}],
+                    json_schema=CHART,
+                    task="chart_writer",
+                )
+                if result.parsed is None:
+                    raise ValueError("the model did not answer with JSON")
+                payload = {"job": job, "chart": result.parsed}
+            except Exception as exc:
+                payload = {"job": job, "error": str(exc)}
+            finally:
+                slots.release()
+            ctx.emit_to_session(session_id, "chart.written", payload)
+
+        if not slots.acquire(blocking=False):
+            raise RuntimeError("chart.write is busy: wait for a chart.written event")
+        try:
+            # copy_context: the thread keeps the call's profile scope, which ctx.llm reads.
+            threading.Thread(target=contextvars.copy_context().run, args=(run,), daemon=True).start()
+        except Exception:
+            slots.release()  # run() never started, so it never releases
+            raise
+        return {"job": job}
 
     ctx.register_rpc("chart.write", write_chart)
 ```
 
 The frontend sends
-`{"method": "plugin.<plugin_id>.chart.write", "params": {"session_id": "…", "text": "…"}}`
-and gets the parsed JSON back as the call's `result`. An exception in the
-handler answers the call with reason `plugin_rpc_failed`.
+`{"method": "plugin.<plugin_id>.chart.write", "params": {"session_id": "…", "text": "…"}}`,
+gets `{"job": "…"}` back at once, and receives the chart (or an `error`) as
+the session event `plugin.<plugin_id>.chart.written` with the same `job`.
+Called inline, the model call would hold that client's next requests on the
+connection, an interrupt or an approval answer included, until the model
+answered. The semaphore stands in for `llm.oneshot`'s per-owner cap: a fifth
+call while four run is refused. An exception in the handler itself answers
+the call with reason `plugin_rpc_failed`.
 
 - **Redact at the boundary.** `agent.redact.redact_sensitive_text` is part
   of the [public plugin API](plugins/public-api.md). Pass `force=True` where

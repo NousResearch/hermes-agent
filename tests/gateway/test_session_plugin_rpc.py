@@ -25,31 +25,21 @@ def register(ctx):
     ctx.register_rpc("pane.where", lambda params, *, session_id, **kw: threading.current_thread().name)
 '''
 
-# A plugin's structured-output route: its frontend calls this RPC; the handler redacts, then asks its own task.
-_CHART_PLUGIN = '''
-from agent.redact import redact_sensitive_text
-
-SCHEMA = {"type": "object", "properties": {"kind": {"type": "string"}}, "required": ["kind"]}
-
-
-def register(ctx):
-    ctx.register_auxiliary_task("chart_writer", display_name="Charts", description="Writes chart specs")
-
-    def write_chart(params, *, session_id, **kwargs):
-        text = redact_sensitive_text(params["text"], force=True)
-        result = ctx.llm.complete_structured(task="chart_writer", instructions="Pick a chart kind.",
-                                             input=[{"type": "text", "text": text}], json_schema=SCHEMA)
-        return result.parsed
-
-    ctx.register_rpc("chart.write", write_chart)
-'''
+def _documented_chart_plugin():
+    """The plugin RPC handler ``plugin-llm-access.md`` teaches, taken verbatim from the page."""
+    from pathlib import Path
+    page = (Path(__file__).resolve().parents[2] / 'website' / 'docs' / 'developer-guide'
+            / 'plugin-llm-access.md').read_text(encoding='utf-8')
+    section = page[page.index("#### From the plugin's frontend"):]
+    return section[section.index('```python\n') + len('```python\n'):section.index('\n```\n')] + '\n'
 
 
 class _ChartModel(BaseHTTPRequestHandler):
-    """An OpenAI-compatible stub model: records each request, answers ``{"kind": "line"}``."""
+    """An OpenAI-compatible stub model: records each request, answers ``{"kind": "line"}`` once released."""
 
     def do_POST(self):
         self.server.requests.append(json.loads(self.rfile.read(int(self.headers['Content-Length']))))
+        self.server.release.wait(30)  # the test holds the model to see who waits for it
         message = {'role': 'assistant', 'content': '{"kind": "line"}'}
         payload = json.dumps({'id': 'stub', 'object': 'chat.completion', 'model': 'chart-model',
                               'choices': [{'index': 0, 'message': message, 'finish_reason': 'stop'}],
@@ -253,23 +243,35 @@ def test_emit_from_a_plugin_thread_reaches_its_own_profile_on_a_multiplexed_gate
 @pytest.mark.parametrize('isolation', ['in_process', pytest.param('host', marks=pytest.mark.platforms('posix'))])
 async def test_plugin_frontend_gets_schema_checked_json_from_its_own_task_with_input_redacted(
         tmp_path, monkeypatch, isolation):
-    """The route for a plugin frontend's structured output: ``plugin.<id>.<name>`` reaches the plugin's
-    handler, which redacts its input and calls ``ctx.llm.complete_structured`` on the task it registered.
-    The client gets the parsed JSON; the model, on ``auxiliary.<task>``, never sees the secret, even
-    with ``security.redact_secrets: false`` (``force=True``). Under ``plugins.isolation: host`` the
-    plugin's code runs in the plugin host and the same call answers the same way."""
+    """The route the docs teach for a plugin frontend's structured output, run as the page prints it.
+
+    ``plugin.<id>.chart.write`` answers ``{"job"}`` while the model call is still running, so the
+    client's request lane is free (an interrupt or approval answer is not stuck behind the model). Four
+    calls run at once and a fifth is refused busy; each result arrives as ``plugin.<id>.chart.written``
+    with its job and the parsed JSON. The handler redacts its input and calls its own task: the model,
+    on ``auxiliary.<task>``, never sees the secret, even with ``security.redact_secrets: false``
+    (``force=True``). A ``Thread.start`` failure gives its slot back. Under ``plugins.isolation: host``
+    the plugin's code runs in the plugin host and the same calls answer the same way."""
+    import contextvars
     import sys
+    import time
+    from gateway import run_api
     from gateway.session_controls import AuthorityConnection
     from hermes_cli import plugins
 
     model = ThreadingHTTPServer(('127.0.0.1', 0), _ChartModel)
-    model.requests = []
+    model.requests, model.release = [], threading.Event()
     threading.Thread(target=model.serve_forever, daemon=True).start()
     authority = await _authority(tmp_path, monkeypatch, _answer)
+    monkeypatch.setattr(run_api, '_ACTIVE_RUNNER', authority.runner)
+    written = []
+    authority.sessions['s'].event_stream.observers.add(
+        lambda frame: frame['params']['type'] == 'plugin.chart-demo.chart.written'
+        and written.append(frame['params']['payload']))
     plugin = tmp_path / 'plugins' / 'chart-demo'
     plugin.mkdir(parents=True)
     (plugin / 'plugin.yaml').write_text(yaml.safe_dump({'name': 'chart-demo', 'version': '0.1.0'}))
-    (plugin / '__init__.py').write_text(_CHART_PLUGIN)
+    (plugin / '__init__.py').write_text(_documented_chart_plugin())
     (tmp_path / 'config.yaml').write_text(yaml.safe_dump({
         'plugins': {'enabled': ['chart-demo'], 'isolation': isolation},
         'auxiliary': {'chart_writer': {'provider': 'custom', 'model': 'chart-model', 'api_key': 'loopback-only',
@@ -281,20 +283,54 @@ async def test_plugin_frontend_gets_schema_checked_json_from_its_own_task_with_i
     monkeypatch.setenv('HERMES_REDACT_SECRETS', 'false')
     owner = AuthorityConnection(authority, object(), {'user_id': 'owner'})
     secret = 'sk-proj-' + 'A1b2C3d4' * 5
+
+    async def write(**params):
+        reply = await asyncio.wait_for(owner.dispatch(
+            {'id': 1, 'method': 'plugin.chart-demo.chart.write', 'params': params}), 20)
+        return reply.get('result', reply.get('error'))
+
+    async def until(check):
+        deadline = time.monotonic() + 20
+        while not check() and time.monotonic() < deadline:
+            await asyncio.sleep(0.02)
+        return check()
+
+    start = threading.Thread.start
     try:
-        reply = await owner.dispatch({'id': 1, 'method': 'plugin.chart-demo.chart.write',
-                                      'params': {'session_id': 's', 'text': f'revenue by month, key {secret}'}})
+        assert (await write(text='no session'))['data']['reason'] == 'plugin_rpc_failed'
+        if isolation == 'in_process':  # the plugin's own thread cannot start: its slot comes back
+            def refuse(thread):
+                if isinstance(getattr(thread._target, '__self__', None), contextvars.Context):
+                    raise RuntimeError("can't start new thread")
+                return start(thread)
+            monkeypatch.setattr(threading.Thread, 'start', refuse)
+            for _ in range(4):
+                assert (await write(session_id='s', text='x'))['data']['reason'] == 'plugin_rpc_failed'
+            monkeypatch.setattr(threading.Thread, 'start', start)
+        jobs = [(await write(session_id='s', text=f'revenue by month, key {secret}'))['job'] for _ in range(4)]
+        # All four answered while their model calls are still held: none waits on the model.
+        assert await until(lambda: len(model.requests) == 4) and not model.release.is_set()
+        assert (await write(session_id='s', text='fifth'))['data']['reason'] == 'plugin_rpc_failed'
+        assert written == []
+        model.release.set()
+        assert await until(lambda: len(written) == 4), written
+        assert sorted(event['job'] for event in written) == sorted(jobs)
+        assert all(event['chart'] == {'kind': 'line'} for event in written), written
+        sixth = (await write(session_id='s', text='sixth'))['job']
+        assert await until(lambda: len(written) == 5) and written[-1] == {'job': sixth, 'chart': {'kind': 'line'}}
         hosted = not any('chart' in name for name in sys.modules)
     finally:
+        monkeypatch.setattr(threading.Thread, 'start', start)
+        model.release.set()
         await owner.close()
         model.shutdown()
         if isolation == 'host':
             manager.unload()
             manager._plugin_host().shutdown()
-    assert reply.get('result') == {'kind': 'line'}, reply
     assert hosted is (isolation == 'host')
-    [request] = model.requests
-    assert request['model'] == 'chart-model'
-    assert request['response_format']['type'] == 'json_schema'
-    sent = json.dumps(request['messages'])
+    assert len(model.requests) == 5
+    for request in model.requests:
+        assert request['model'] == 'chart-model'
+        assert request['response_format']['type'] == 'json_schema'
+    sent = json.dumps([request['messages'] for request in model.requests])
     assert 'revenue by month' in sent and secret not in sent

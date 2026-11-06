@@ -1,0 +1,17 @@
+name: hermes-glasswork
+title: Hermes Glasswork
+repo: https://github.com/Goodrich347/hermes-glasswork
+sha: 7a277bc2b95b8fb7b22f6764bb729bc131649989
+description: "Frosted organic noise grain, dual specular refraction lights, and pure backdrop translucency for Hermes Desktop. Full-window seamless ambient grain, customizable light points with live XY coordinates, and custom user presets."
+maintainer: Goodrich347
+tier: community
+category: desktop
+requires_hermes: ">=0.21.3"
+docs_url: https://github.com/Goodrich347/hermes-glasswork#readme
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

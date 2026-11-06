@@ -184,7 +184,7 @@ def test_every_hosted_operation_receives_the_bound_scope():
         def get_temp_dir(self, **kwargs):
             return kwargs
 
-        cleanup = start_process = attach_process = stop_process = execute
+        cleanup = start_process = attach_process = stop_process = stop_idle = execute
 
     env = ScopedEnvironment(KwargsBackend(), sandbox_identity(A), owner=A)
     with bind_state(A):

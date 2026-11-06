@@ -442,3 +442,27 @@ def test_no_backend_probe_environment_is_built_in_a_hosted_scope(monkeypatch):
     assert ran == []
     prompt_builder._probe_remote_backend("docker")
     assert ran, "a local probe no longer runs"
+
+
+# Idle suspension (round-2 finding 6): stop_idle is part of the required hosted interface.
+
+
+def test_a_hosted_backend_without_stop_idle_is_refused_at_creation(provider, monkeypatch):
+    monkeypatch.delattr(c.RecordingSandboxEnvironment, "stop_idle")
+    with bind_state(A):
+        result = c.call_tool("terminal", {"command": "true"}, task_id="t")
+    assert "missing stop_idle" in json.dumps(result), result
+    assert not [call for call in provider.calls if call.op == "execute"]
+
+
+def test_an_idle_hosted_sandbox_is_never_destroyed(provider, monkeypatch):
+    """Even if a backend lost ``stop_idle`` after creation, the reaper suspends (or fails) rather than
+    destroying the workspace."""
+    from tools import terminal_tool
+    from tools.terminal_tool_lifecycle import _cleanup_inactive_envs
+    with bind_state(A):
+        c.call_tool("terminal", {"command": "true"}, task_id="t")
+    terminal_tool._last_activity[sandbox_identity(A).key] = time.time() - 1000
+    monkeypatch.delattr(c.RecordingSandboxEnvironment, "stop_idle")
+    _cleanup_inactive_envs(lifetime_seconds=300)
+    assert not [call for call in provider.calls if call.op == "cleanup"], provider.calls

@@ -65,9 +65,10 @@ class TerminalEnvironmentProvider(ProviderBase):
     key. The environment it returns is wrapped by core in ``ScopedEnvironment``, which refuses any call
     made under another agent's scope (or under none) before it reaches the backend, and passes the
     bound scope as ``scope=`` to every operation. The environment must implement the hosted operation
-    interface (``sandbox_scope.require_hosted_interface``: ``execute``, ``cleanup`` and the long-lived
-    process methods, plus ``fetch_file``/``fetch_realpath``/``get_temp_dir``/``stop_idle`` when present,
-    each accepting ``scope=``) or it is refused at creation. The streams core hands back are proxies
+    interface (``sandbox_scope.require_hosted_interface``: ``execute``, ``cleanup``, ``stop_idle`` (suspend:
+    the workspace is kept and resumes on the next call; an idle hosted sandbox is never destroyed instead)
+    and the long-lived process methods, plus ``fetch_file``/``fetch_realpath``/``get_temp_dir`` when
+    present, each accepting ``scope=``) or it is refused at creation. The streams core hands back are proxies
     that refuse every pipe and ``poll`` operation under another agent's scope. The long-lived process
     methods are:
 

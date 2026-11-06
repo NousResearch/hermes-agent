@@ -172,8 +172,9 @@ def create_hosted_environment(env_type: str, provider: Any, **kwargs: Any) -> Sc
 # The hosted operation interface. Every operation core makes on a hosted sandbox receives the bound
 # scope as the ``scope`` keyword, so the backend can check the sandbox it is about to touch. The
 # required ones must exist; an optional one, when present, must accept ``scope`` too.
-REQUIRED_OPERATIONS = ("execute", "cleanup", "start_process", "attach_process", "stop_process")
-OPTIONAL_OPERATIONS = ("fetch_file", "fetch_realpath", "get_temp_dir", "stop_idle")
+# ``stop_idle`` is required: an idle hosted sandbox is suspended, never destroyed in its place.
+REQUIRED_OPERATIONS = ("execute", "cleanup", "start_process", "attach_process", "stop_process", "stop_idle")
+OPTIONAL_OPERATIONS = ("fetch_file", "fetch_realpath", "get_temp_dir")
 # Lifecycle calls the idle reaper makes with no scope bound: they run under the owning agent's scope
 # (bound for the call), and are refused from another agent. ``stop_idle`` suspends the sandbox (its
 # workspace is kept, it resumes on the next call); ``cleanup`` destroys it.

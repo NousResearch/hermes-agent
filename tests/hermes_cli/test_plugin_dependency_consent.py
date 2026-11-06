@@ -152,6 +152,8 @@ def test_dashboard_install_publishes_a_plugin_the_config_already_selects(admissi
                    cwd=source, env=env, check=True, capture_output=True, timeout=30)
     again = plugins_cmd.dashboard_install_plugin(source.as_uri(), force=True, enable=True)
     assert not again['ok'] and 'Reinstall declined' in again['error']
+    # Refused before the tree went to PM: the client may rely on nothing having been placed.
+    assert again.get('placed') is False
 
 
 def test_publish_assume_consent_skips_replacement_veto(tmp_path, monkeypatch):

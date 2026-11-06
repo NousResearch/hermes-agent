@@ -1755,9 +1755,17 @@ def _plugins_toggle(rid, params):
 
 
 def _source_moved_data(result: dict) -> dict | None:
-    """The structured marker of an install refused because the source left the reviewed commit: the
-    client re-inspects on ``reason``, never on the message, which echoes text a git server controls."""
-    return {"reason": "source_moved"} if result.get("source_moved") else None
+    """The structured markers of a refused install. ``reason: source_moved``: the source left the reviewed
+    commit, and the client re-inspects on it, never on the message, which echoes text a git server controls.
+    ``plugin_name``: the tree landed although the install was refused (its enable was refused), so the
+    client still puts the matching desktop half down beside it. ``placed: false``: refused before the tree
+    went to PM, so nothing was placed; a failure without it may have followed a published tree."""
+    data = {"reason": "source_moved"} if result.get("source_moved") else {}
+    if result.get("plugin_name"):
+        data["plugin_name"] = result["plugin_name"]
+    if result.get("placed") is False:
+        data["placed"] = False
+    return data or None
 
 
 def _plugins_install(rid, params):

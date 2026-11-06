@@ -203,11 +203,18 @@ built-in tool modules `model_tools` discovers at import, and
 `agent.lazy_forward` forwarders declared in a class body. When the hosted boot
 lands, it is added to the list.
 
-The ratchet walks the graph on both sides of a change. State already on the
+The ratchet walks the graph on both sides of a change, each from its own
+revision's roots: the base graph starts from the `HOSTED_ENTRY` committed on the
+base, so a root the change adds gets no base credit. State already on the
 hosted path in the base is baselined and is migrated when it is next touched.
-A module that a change newly brings onto the hosted path is checked for state
-even if the file is unchanged, and none of its state is baselined. Its other
-debt is not judged by this check.
+A module that a change newly brings onto the hosted path (a new import, or a
+new root) is checked for state even if the file is unchanged, and none of its
+state is baselined. Its other debt is not judged by this check.
+
+There is no baseline file. Base credit comes from re-running the current rules
+over the base source and crediting what survives, so existing state the rules
+now detect is credited too. That makes this a ratchet: credited state is debt
+that must not grow, not a reviewed declaration that it is tenant-neutral.
 
 The tool, MCP, provider and plugin registries are frozen once the hosted boot
 finishes: it calls `registry_freeze.freeze_registries()`, after which every

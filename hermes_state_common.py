@@ -787,12 +787,20 @@ END;
 DROP TRIGGER IF EXISTS messages_transcript_revision_update;
 CREATE TRIGGER IF NOT EXISTS messages_transcript_revision_update
 AFTER UPDATE OF role, content, api_content, tool_calls, tool_call_id, tool_name, reasoning, reasoning_content,
-    reasoning_details, codex_reasoning_items, codex_message_items, display_kind, display_metadata ON messages
+    reasoning_details ON messages
 BEGIN
-    -- An in-place rewrite (prompt expansion, multimodal context, a redaction, a reaction, checkpoint
-    -- pruning) moves neither the active row count nor the highest id; this write-side revision is what a
-    -- transcript-derived cache (conversation_revision) and a transcript poller's cursor
-    -- (transcript_cursor_state) key on. Whoever wrote the row, old builds included.
+    -- An in-place rewrite (prompt expansion, multimodal context, a redaction) moves neither the
+    -- active row count nor the highest id; this write-side revision is what a transcript-derived
+    -- cache keys on (conversation_revision). Whoever wrote the row, old builds included.
+    UPDATE sessions SET transcript_revision = transcript_revision + 1 WHERE id = new.session_id;
+END;
+DROP TRIGGER IF EXISTS messages_display_revision_update;
+CREATE TRIGGER IF NOT EXISTS messages_display_revision_update
+AFTER UPDATE OF codex_reasoning_items, codex_message_items, display_kind, display_metadata ON messages
+BEGIN
+    -- A reaction, a display rewrite or checkpoint pruning: a transcript poller's cursor
+    -- (transcript_cursor_state) keys on these too. Its own name, so an older build's open, which
+    -- recreates the trigger above with that build's column list, leaves this one in place.
     UPDATE sessions SET transcript_revision = transcript_revision + 1 WHERE id = new.session_id;
 END;
 CREATE INDEX IF NOT EXISTS idx_messages_session_active

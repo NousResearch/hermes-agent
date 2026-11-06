@@ -200,7 +200,7 @@ def test_retry_moves_on_when_the_admitting_home_is_gone(homes):
     assert homes.task['status'] == 'queued'  # its next start is a new generation at the current home
 
 
-def test_a_turn_from_before_attempt_homes_stays_held_by_a_live_older_home(homes):
+def test_a_turn_from_before_attempt_homes_is_stopped_at_a_live_older_home(homes):
     homes.submit(homes.a)
     homes.defer(homes.a)
     with sqlite3.connect(homes.source.db.db_path) as conn:
@@ -208,6 +208,8 @@ def test_a_turn_from_before_attempt_homes_stays_held_by_a_live_older_home(homes)
             if len(json.loads(key[len(_HOMES):])) == 4:
                 conn.execute('DELETE FROM state_meta WHERE key=?', (key,))
     homes.source.homes['other'] = str(homes.b)  # its "no such session" proves nothing about home A
-    homes.pending()
-    _gone(homes, homes.a)
+    # Home A still holds the queued input: its Stop goes there, and once A holds nothing it settles.
     assert 'tombstone' in homes.disband()
+    assert (homes.a, 'interrupt') in {call[:2] for call in homes.calls}
+    row, = homes.rows(homes.a)
+    assert row['status'] == 'terminal'

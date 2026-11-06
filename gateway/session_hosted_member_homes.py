@@ -155,18 +155,58 @@ def moved_attempt_gone(service, room_id, task):
             and discover_gateway_endpoint(admitted).state == 'absent')
 
 
-def legacy_attempt_unproven(service, room_id, task):
-    """True for a turn admitted before attempt homes were recorded while another home its member
-    was served from is still up: the current home's answer says nothing about that one."""
+def legacy_stop_homes(db, room_id, member_id, task_id=None):
+    """Homes whose Stop reads attest accepts for a stopping or deferred turn of *member_id*
+    admitted before attempt homes were recorded (``task_id``, when the read names one, must be
+    such a turn): any home the member was served from may hold it."""
+    from gateway.hosted_room_driver import list_tasks
+    from tui_gateway.hosted_room_service import task_member_id
+    if not any(task_member_id(t) == member_id and task_id in (None, t['identity'].task_id)
+               and stopping_attempt_home(db, room_id, member_id, t) is None
+               for t in list_tasks(db.db_path, room_id=room_id) if t['status'] in _STOPPING):
+        return set()
+    return {str(home) for home in _recorded_homes(db, room_id, member_id)}
+
+
+def _legacy_home_released(service, room_id, member, home, task):
+    """Ask one older home whether its room session holds nothing; one that holds this turn is sent
+    its Stop, and the turn is kept until a later read finds it gone. Unreachable keeps it."""
+    from gateway.session_hosted_transport import HostedRoomOwnerRPC
+    from tui_gateway.hosted_room_driver import room_session_title
+    profile = task['payload']['target_profile']
+    rpc = HostedRoomOwnerRPC(home=home, source_home=service.authority.profile_id, room_id=room_id,
+                             member_id=member, profile=profile)
+    kw = {'profile': profile, 'source': 'bot_room'}
+    try:
+        if rpc.resolve_exact(title=room_session_title(room_id), **kw) is None:
+            return True
+        info = rpc.info(session_id=rpc.ref.session_id, **kw)
+        if not info.get('active') and info.get('task_id') is None:
+            return True  # no queued, running or unknown input left in that session
+        if info.get('task_id') != task['identity'].task_id or info.get('status') == 'unknown':
+            return False  # another turn, or one whose admission that home cannot tell
+        rpc.interrupt(session_id=rpc.ref.session_id, expected_task_id=task['identity'].task_id, **kw)
+        # A queued input is cancelled at once; a running one stays until its run ends.
+        info = rpc.info(session_id=rpc.ref.session_id, **kw)
+        return not info.get('active') and info.get('task_id') is None
+    except Exception:  # health: allow BLE001 -- an unreachable or refusing home keeps the turn
+        return False
+
+
+def unsettled_legacy_homes(service, room_id, task):
+    """For a turn admitted before attempt homes were recorded, every other home its member was
+    served from whose gateway is up and has not answered that it holds nothing for the room: the
+    current home's answer says nothing about those. Empty when the turn has an attempt home."""
     from hermes_cli.gateway_runtime import discover_gateway_endpoint
     from tui_gateway.hosted_room_service import task_member_id
-    member = task_member_id(task)
-    if stopping_attempt_home(service.authority.db, room_id, member, task) is not None:
-        return False
+    member, db = task_member_id(task), service.authority.db
+    if stopping_attempt_home(db, room_id, member, task) is not None:
+        return []
     served = service.profile_homes().get(task['payload']['target_profile'])
-    return any(discover_gateway_endpoint(home).state != 'absent'
-               for home in _recorded_homes(service.authority.db, room_id, member)
-               if served is None or home != Path(served))
+    return [home for home in _recorded_homes(db, room_id, member)
+            if (served is None or home != Path(served))
+            and discover_gateway_endpoint(home).state != 'absent'
+            and not _legacy_home_released(service, room_id, member, home, task)]
 
 
 def unserved_member_stopped(service, room_id, task):

@@ -93,6 +93,8 @@ class HintVariant:
     endpoint: str
     line_delta: int = 0
     legacy_inclusive: bool = False
+    right_boundary: int | None = None
+    right_endpoint: str | None = None
 
 
 def _boundary_edges(distances: set[int]) -> list[int]:
@@ -112,6 +114,15 @@ def hint_boundary_classes(distances: dict[str, set[int]]) -> tuple[HintVariant, 
             found.append(HintVariant(f"{unit}:ex:{edge}", unit, edge, "exclusive"))
         last = edges[-1]
         found.append(HintVariant(f"{unit}:above:{last}", unit, last, "above"))
+        singles = [v for v in found if v.unit == unit]
+        for left in singles:
+            for right in singles:
+                if left.boundary == right.boundary and left.endpoint == right.endpoint:
+                    continue
+                found.append(HintVariant(
+                    f"{left.name}|{right.name}", unit, left.boundary, left.endpoint,
+                    right_boundary=right.boundary, right_endpoint=right.endpoint,
+                ))
     return tuple(found)
 
 
@@ -352,11 +363,17 @@ def _covers(
 ) -> bool:
     if mutant == "fixed-width-list":
         return _legacy_covers(hit, hint, doc, spans, variant)
-    found = _nearest(hit, hint, doc, spans)
-    if found is None:
-        return False
-    distance = found[0] if variant.unit == "line" else found[1]
-    return _within(distance, variant)
+    for start, end in _hint_spans(doc.text, hint):
+        if variant.unit == "line":
+            distance = _distance(hit.line_start, hit.line_end, _line_at(spans, start))
+        else:
+            distance = _char_distance(hit.start, hit.end, start, end)
+        effective = variant
+        if hit.start >= end and variant.right_boundary is not None:
+            effective = HintVariant(variant.name, variant.unit, variant.right_boundary, variant.right_endpoint or "exclusive")
+        if _within(distance, effective):
+            return True
+    return False
 
 
 def _parse(patch: str) -> tuple[tuple[_Update, ...] | None, str]:
@@ -453,7 +470,12 @@ def _fragment_span(doc: _Doc, spans: list[tuple[int, int]], start: int, end: int
     content_start, content_end = spans[line]
     if not (content_start <= start and end <= content_end):
         return False
-    return normalized_fragment(pattern, doc.text[content_start:content_end])
+    if normalized_fragment(pattern, doc.text[content_start:content_end]):
+        return True
+    raw_suffix = doc.text[end:content_end]
+    suffix = normalize(raw_suffix)
+    return bool(pattern and not pattern[-1].isspace() and raw_suffix and not raw_suffix[0].isspace()
+                and suffix and _TOKEN_TAIL.match(suffix))
 
 
 def _enumerate(doc: _Doc, spans: list[tuple[int, int]], search: tuple[tuple[str, bool], ...], mutant: str | None) -> list[_Hit]:
@@ -810,11 +832,9 @@ def _record_distances(
     char_distances: set[int],
 ) -> None:
     for hit in hits:
-        found = _nearest(hit, hint, doc, spans)
-        if found is None:
-            continue
-        line_distances.add(found[0])
-        char_distances.add(found[1])
+        for start, end in _hint_spans(doc.text, hint):
+            line_distances.add(_distance(hit.line_start, hit.line_end, _line_at(spans, start)))
+            char_distances.add(_char_distance(hit.start, hit.end, start, end))
 
 
 def _collect_distances(
@@ -1176,13 +1196,13 @@ def test_rule3_adjacent_hint_boundary_is_unspecified() -> None:
     assert by_name["line:below:0"].outcome == Outcome.REFUSE
 
 
-def test_rule3_repeated_adjacent_hints_agree_on_refuse() -> None:
+def test_rule3_repeated_adjacent_hints_can_be_unspecified() -> None:
     source = "# target\nvalue = old\n# target\nvalue = old\n"
     body = "@@ target @@\n-value = old\n+value = new"
     decision = evaluate({"f.py": source}, _patch("f.py", body))
-    assert decision.outcome == Outcome.REFUSE
+    assert decision.outcome == Outcome.UNSPECIFIED
     assert decision.writes == ()
-    assert {item.outcome for item in decision.variants} == {Outcome.REFUSE}
+    assert {item.outcome for item in decision.variants} == {Outcome.REFUSE, Outcome.WRITE}
 
 
 def test_rule4_replacement_already_present_is_not_success() -> None:
@@ -1369,7 +1389,7 @@ def test_hint_boundary_classes_are_configurable_for_the_fuzz_card() -> None:
         expected.append(f"line:in:{edge}")
         expected.append(f"line:ex:{edge}")
     expected.append("line:above:13")
-    assert [item.name for item in classes] == expected
+    assert [item.name for item in classes[:len(expected)]] == expected
     assert "line:in:1" not in expected
     source = "# marker\nvalue = old\n"
     patch = _patch("f.py", "@@ marker @@\n-value = old\n+value = new")
@@ -1398,6 +1418,19 @@ def test_mutation_broken_fragment_winner_fails_hand_computed_rule2() -> None:
         and bad.site is not None
         and bad.site.origin_start == 11
     )
+
+
+def test_fragment_inside_call_is_not_an_edit_site() -> None:
+    decision = evaluate({"f.py": "call(value = 10)\n"}, _patch("f.py", "@@\n-value = 1\n+changed"))
+    assert decision.outcome == Outcome.REFUSE
+    assert not decision.writes
+
+
+def test_asymmetric_hint_window_can_select_one_equidistant_candidate() -> None:
+    source = "target\n# hint\ntarget\n"
+    decision = evaluate({"f.py": source}, _patch("f.py", "@@ hint @@\n-target\n+changed"))
+    assert decision.outcome == Outcome.UNSPECIFIED
+    assert {site.origin_start for item in decision.variants for site in item.sites} == {0, 14}
 
 
 def test_overlapping_distinct_whole_line_candidates_are_ambiguous() -> None:
@@ -1450,16 +1483,14 @@ def test_two_candidates_beyond_fixed_extent_are_unspecified() -> None:
     assert {item.writes for item in writers} == {(("f.py", nearer),)}
 
 
-def test_equidistant_hinted_sites_agree_on_refuse() -> None:
-    # Each site's nearest hint is 1 line and 1 character away, so every extent
-    # includes both sites or neither.
+def test_equidistant_hinted_sites_allow_asymmetric_windows() -> None:
     source = "# target\nvalue = old\n# target\nvalue = old\n"
     decision = evaluate({"f.py": source}, _patch("f.py", "@@ target @@\n-value = old\n+value = new"))
-    assert decision.outcome == Outcome.REFUSE
+    assert decision.outcome == Outcome.UNSPECIFIED
     assert decision.writes == ()
-    assert {item.outcome for item in decision.variants} == {Outcome.REFUSE}
+    assert {item.outcome for item in decision.variants} == {Outcome.REFUSE, Outcome.WRITE}
     names = {item.variant.name for item in decision.variants}
-    assert {"line:below:0", "line:in:1", "char:in:1", "line:above:2"} <= names
+    assert {"line:below:0", "line:in:1", "char:in:1"} <= names
 
 
 def test_long_file_extent_classes_are_not_a_fixed_window() -> None:

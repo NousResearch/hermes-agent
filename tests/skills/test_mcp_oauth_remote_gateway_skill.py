@@ -36,9 +36,13 @@ class FakeResponse:
         self.status = status
         self._body = body
         self.headers = headers or {}
+        self.closed = False
 
     def read(self):
         return self._body
+
+    def close(self):
+        self.closed = True
 
 def _write_token_files(tokens_dir: Path, server="stripe", resource="https://mcp.example.com",
                        refresh_token="rt-1"):

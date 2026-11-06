@@ -1,0 +1,28 @@
+# Catalog entry for privacy-shield (subdir of the MOTHR/security-suite monorepo).
+# Owner submission (Rule 5): submitted by MOTHR, owner of the plugin repo.
+# Validated with `hermes plugins validate` + `hermes plugins doctor --ci`
+# at this exact commit against a fresh clone.
+name: privacy-shield
+repo: https://github.com/MOTHR/hermes-security-suite
+sha: 8c4c7d794161adaf34ee391eaa1ab79dadcd5295
+subdir: "privacy-shield"
+description: "Privacy-Shield — tokenizes personal data (PII) in LLM output before sending it to cloud providers, with encrypted AES-256-GCM mapping and whitelisted restore. Modes: off / audit / restore. Configurable via Desktop-Controls or YAML."
+maintainer: MOTHR
+tier: community
+category: general
+docs_url: https://github.com/MOTHR/hermes-security-suite#readme
+version: "1.8.0"
+readme: true
+platforms: []
+known_issues:
+  - "Formally audited (multi-agent audit, Run 4 = GO for v1.7.6; see SECURITY-AUDIT.md in the repo); 11 medium/low findings remain tracked in the audit ledger."
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - post_llm_call
+    - post_api_request
+    - transform_llm_output
+    - on_session_finalize
+  provides_middleware: []
+  requires_env: []

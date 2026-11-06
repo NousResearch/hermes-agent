@@ -10,63 +10,38 @@ store checkout in a worker thread: batched lookups and one indexed probe per seg
 """
 from __future__ import annotations
 
-import json
-
-# The segment's newest replies, newest first, on the (session_id, id) index: an assistant row with text,
-# live or archived by an in-place compaction, never a failed turn's notice or hidden scaffolding. Each is
-# projected as a display read projects it (``project_compaction_message_for_display``): a pure handoff the
-# compressor wrote as an assistant row shows nothing, so the reply before it stands; a carrier shows the
-# reply it wraps.
-_LAST_REPLIES_SQL = (
-    "SELECT content, _compressed_summary FROM messages INDEXED BY idx_messages_session_id WHERE session_id = ? AND role = 'assistant'"
-    " AND (active = 1 OR compacted = 1) AND content IS NOT NULL AND content <> ''"
-    " AND COALESCE(display_kind, '') NOT IN ('hidden', 'failed_turn'){visible} ORDER BY id DESC LIMIT 8")
-
 
 def workspace_members(db, session_ids, workspace):
-    """The ids among *session_ids* whose row is in *workspace*: the clause ``list_sessions_rich``
-    filters the stored feed by (``hermes -c``'s rule: the same repo root, or at/under the folder)."""
-    from hermes_state_sessions import _workspace_key_clause
-    clause, params = _workspace_key_clause(workspace)
-    with db._read_ctx() as conn:
-        rows = conn.execute(f"SELECT s.id FROM sessions s WHERE s.id IN (SELECT value FROM json_each(?)) AND {clause}",
-                            (json.dumps(list(session_ids)), *params)).fetchall()
-    return {row[0] for row in rows}
+    """The ids among *session_ids* whose row is in *workspace* (``SessionDB.sessions_in_workspace``: the
+    clause ``list_sessions_rich`` filters the stored feed by, ``hermes -c``'s rule)."""
+    return db.sessions_in_workspace(session_ids, workspace)
 
 
-def _last_reply(db, conn, segment):
+def _last_reply(candidates):
+    """The newest of a segment's replies (``picker_session_facts``) that shows text, projected as a display
+    read projects it (``project_compaction_message_for_display``): a pure handoff the compressor wrote as an
+    assistant row shows nothing, so the reply before it stands; a carrier shows the reply it wraps."""
     from agent.compaction_display import project_compaction_message_for_display
     from agent.message_content import flatten_message_text
     from hermes_state_common import _shape_preview
-    from hermes_state_messages import DISPLAY_VISIBLE_SQL
-    for content, summary in conn.execute(_LAST_REPLIES_SQL.format(visible=DISPLAY_VISIBLE_SQL), (segment,)):
+    for content, summary in candidates:
         shown = project_compaction_message_for_display(
-            {'role': 'assistant', 'content': db._decode_content(content), '_compressed_summary': bool(summary)})
+            {'role': 'assistant', 'content': content, '_compressed_summary': summary})
         text = _shape_preview(flatten_message_text(shown['content'])) if shown is not None else ''
         if text:
             return text
     return None
 
 
-def _ids(values):
-    return json.dumps(sorted(set(values)))
-
-
 def fill_picker_fields(db, items):
     """Set the picker fields on each ``(row, root, segment, listed)``: *listed* is the segment's
     ``list_sessions_rich`` row (its ``preview`` / ``last_active`` / branch / pin), None to read them."""
-    from hermes_state_common import _shape_preview, _sql_preview_raw, _sql_session_last_active
+    from hermes_state_common import _shape_preview
     from hermes_state_sessions import workspace_key
-    unlisted = [segment for _, _, segment, listed in items if listed is None]
-    with db._read_ctx() as conn:
-        roots = {row['id']: dict(row) for row in conn.execute(
-            "SELECT id, cwd, git_repo_root FROM sessions WHERE id IN (SELECT value FROM json_each(?))",
-            (_ids(root for _, root, _, _ in items),)).fetchall()}
-        segments = {row['id']: dict(row) for row in conn.execute(
-            f"SELECT s.id, s.git_branch, s.pinned, {_sql_preview_raw('s.id')}, {_sql_session_last_active('s')} "
-            "AS last_active FROM sessions s WHERE s.id IN (SELECT value FROM json_each(?))",
-            (_ids(unlisted),)).fetchall()} if unlisted else {}
-        replies = {segment: _last_reply(db, conn, segment) for segment in {item[2] for item in items}}
+    roots, segments, replies = db.picker_session_facts(
+        [root for _, root, _, _ in items], [segment for _, _, segment, listed in items if listed is None],
+        [segment for _, _, segment, _ in items])
+    replies = {segment: _last_reply(candidates) for segment, candidates in replies.items()}
     for row, root, segment, listed in items:
         if listed is None:
             listed = segments.get(segment)
@@ -81,19 +56,9 @@ def fill_picker_fields(db, items):
 
 
 def current_segments(authority, session_ids):
-    """``{logical id: current physical segment}`` in one store checkout: a local receipt's entry (extracted in
-    SQL, as ``session_live_listing._store_facts`` does), else the compression tip
-    (``session_viewer_close._physical_target``'s rule)."""
-    from hermes_state_local import POLICY_PREFIX
-    db = authority.db
-    with db._read_ctx() as conn:
-        rows = conn.execute(
-            "SELECT s.id, s.end_reason, (SELECT json_extract(m.value, '$.entry.session_id') FROM state_meta m "
-            "WHERE m.key = ? || s.id AND json_valid(m.value)) AS entry FROM sessions s "
-            "WHERE s.id IN (SELECT value FROM json_each(?))", (POLICY_PREFIX, _ids(session_ids))).fetchall()
-        # Only a row compression ended has a tip past itself: walked on this one connection.
-        return {row['id']: row['entry'] or (db._compression_tip_on(conn, row['id'])
-                                            if row['end_reason'] == 'compression' else row['id']) for row in rows}
+    """``{logical id: current physical segment}`` (``SessionDB.session_current_segments``: a local receipt's
+    entry, else the compression tip) in one store checkout."""
+    return authority.db.session_current_segments(session_ids)
 
 
 def live_picker_page(authority, sessions, limit, workspace=None, picker=False):

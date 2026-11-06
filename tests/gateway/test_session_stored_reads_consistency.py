@@ -89,7 +89,8 @@ async def test_a_reply_a_later_compaction_wraps_in_a_summary_carrier_is_not_show
             db.archive_and_compact(target, [carrier, *rest], watermark=db.get_active_message_watermark(target),
                                    tail_count=3)
         pages = await _pages(owner, ref.session_id, 4, between=wrap_the_pages_last_reply)
-        assert pages[0] == ['question 1', 'answer 1', 'question 2', 'answer 2']
+        # The compaction resets the reader; its first page's fourth row is the handoff (it counts toward limit).
+        assert pages[0] == ['question 1', 'answer 1', 'question 2']
         assert _flat(pages) == ['question 1', 'answer 1', 'question 2', 'answer 2', 'question 3', 'answer 3'], pages
         await owner.close()
 

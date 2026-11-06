@@ -23,10 +23,9 @@ from hermes_state_common import (
     _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _RESET_END_REASONS, _RESET_END_REASONS_SQL, _ended_by_compression,
     _json_or, _legacy_reset_child_sql, _placeholders, _sql_json_extract)
 from hermes_state_compaction_display import later_tool_copy_ids, not_a_later_tool_copy_sql
-from hermes_state_display_set import display_set
 from hermes_state_detached_results import SessionDetachedResultsMixin
 from hermes_state_todo import SessionTodoResultMixin
-from hermes_state_transcript_cursor import SessionTranscriptCursorMixin
+from hermes_state_stored_reads import SessionStoredReadsMixin
 from hermes_state_identity import (
     _absorbed_uids_json, _restore_identity_columns, _stable_tool_key, _tool_call_uid_map, _tool_call_uid_or_none, _tool_call_uids_json, _uid_list)
 
@@ -122,7 +121,7 @@ def _stale_holder(row, now: float) -> bool:
     return float(row["expires_at"]) <= now or _compression_lock_holder_process_is_dead(row["holder"])
 
 
-class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, SessionTranscriptCursorMixin):
+class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, SessionStoredReadsMixin):
     """Message append/replace/rewind, reactions, resume conversations, replay dedupe (detached results: the base)."""
 
     def _bump_conversation_generation(self, conn, session_id: str, end_reason: str) -> None:
@@ -1391,7 +1390,9 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
         ``latest`` pages back from the newest but returns chronological order; ``after_id``: keyset paging.
         ``include_ancestors``: also load the compression lineage (root → tip, branch sessions exempt),
         mirroring ``get_messages_as_conversation(include_ancestors=True)`` — after a compression rotation
-        the full transcript spans parent sessions, not just the child continuation (#51058)."""
+        the full transcript spans parent sessions, not just the child continuation (#51058).
+
+        Storage interface: port as ``get_messages`` (its lineage display read is ``display_set``)."""
         if after_id is not None and (latest or offset):
             raise ValueError("after_id is incompatible with latest/offset paging")
         if after_id is not None and include_compacted:
@@ -1408,7 +1409,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
             # display_order paging below does not apply across a lineage.)
             display = include_compacted and not include_inactive  # removed rows too: see drop_removed
             sql = f"SELECT * FROM messages WHERE session_id IN ({_placeholders(session_ids)}){active_clause} ORDER BY id ASC"
-            rows = self._dedupe_display_generations(display_set(self, sql, session_ids) if display
+            rows = self._dedupe_display_generations(self._display_set(sql, session_ids) if display
                                                     else self._read_all(sql, session_ids), drop_removed=display)
             rows = rows[::-1][offset:][:limit][::-1] if latest else rows[offset:][:limit]
         elif include_compacted and not include_inactive and self._ensure_display_order(session_id):
@@ -1509,12 +1510,14 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
                                  with_compacted: bool = False):
         """``_CONVERSATION_ROW_COLUMNS`` rows for *session_ids* ORDER BY id (timestamps are not monotonic
         and would break tool-call adjacency). ``with_compacted``: the display set (``active_clause`` is
-        ignored) with the ``compacted`` column, plus the removed rows' identities for ``drop_removed``."""
+        ignored) with the ``compacted`` column, plus the removed rows' identities for ``drop_removed``.
+
+        Storage interface: port as ``conversation_rows`` (``with_compacted`` reads ``display_set``)."""
         sql = (f"SELECT {'session_id, ' if with_session_id or with_compacted else ''}{'compacted, display_order, ' if with_compacted else ''}"
                f"{self._CONVERSATION_ROW_COLUMNS} "
                f"FROM messages WHERE session_id IN ({_placeholders(session_ids)})"
                f"{_DISPLAY_ACTIVE_CLAUSE if with_compacted else active_clause} ORDER BY id")
-        return display_set(self, sql, session_ids) if with_compacted else self._read_all(sql, tuple(session_ids))
+        return self._display_set(sql, session_ids) if with_compacted else self._read_all(sql, tuple(session_ids))
 
     def get_messages_as_conversation(self, session_id: str, include_ancestors: bool = False,
                                      include_inactive: bool = False, repair_alternation: bool = False,

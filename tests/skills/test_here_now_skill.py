@@ -1,12 +1,16 @@
 """Tests for optional-skills/productivity/here-now.
 
-Covers SKILL.md frontmatter standards and publish.sh request-body behavior:
+Covers SKILL.md frontmatter standards and publish.sh behavior:
 the claim-token handling (anonymous and API-key updates), the removal of
 the deprecated --forkable / fork-meta.json surface (forking was removed from
 the here.now product; the API no longer accepts a `forkable` field), and the
 --workspace account selector (sent as an x-herenow-account header on the
 create and finalize calls; requires an API key; incompatible with
---from-drive).
+--from-drive). Since 1.35.0 also: the base-URL allowlist (https://api.here.now,
+the same API through Cloudflare, takes credentials without the override flag),
+the finalize retry (an HTML 524 or a 409 finalize_in_flight repeats the
+idempotent finalize call instead of being misread as success), and the
+--claim-token value being saved to the state file.
 """
 
 from __future__ import annotations
@@ -128,15 +132,34 @@ for a in "$@"; do
 done
 printf '%s' "$body" > "$log_dir/call-$i.body"
 
+# Finalize is called with `-w '\\n%{http_code}'`: body, newline, status.
+# FINALIZE_SEQUENCE (optional, in the log dir) scripts one answer per line
+# for successive finalize calls, "<status> <json|html>"; after the lines
+# run out, or when the file is absent, finalize succeeds.
+if [[ "$url" == */finalize ]]; then
+  status=200; kind=json
+  seq_file="$log_dir/finalize-sequence"
+  if [[ -s "$seq_file" ]]; then
+    read -r status kind < "$seq_file"
+    tail -n +2 "$seq_file" > "$seq_file.tmp" && mv "$seq_file.tmp" "$seq_file"
+  fi
+  case "$status $kind" in
+    "200 json") printf '%s' '{"success":true,"slug":"test-slug-a1b2","siteUrl":"https://test-slug-a1b2.here.now/","currentVersionId":"ver-1"}' ;;
+    "409 json") printf '%s' '{"error":"A finalize is already in flight for this version.","code":"finalize_in_flight","retry_after":0}' ;;
+    "524 html") printf '%s' '<!DOCTYPE html><html><body>error code: 524</body></html>' ;;
+    *) printf '%s' '{}' ;;
+  esac
+  if [[ "$wants_http_code" -eq 1 ]]; then printf '\\n%s' "$status"; fi
+  exit 0
+fi
+
 # File-upload PUTs use `-o /dev/null -w "%{http_code}"`; answer with a 200.
 if [[ "$wants_http_code" -eq 1 ]]; then
   printf '200'
   exit 0
 fi
 
-if [[ "$url" == */finalize ]]; then
-  echo '{}'
-elif [[ "$url" == */api/v1/publish* ]]; then
+if [[ "$url" == */api/v1/publish* ]]; then
   cat "$log_dir/create-response.json"
 else
   echo '{}'
@@ -173,7 +196,21 @@ class PublishHarness:
             json.dumps({"publishes": {slug: {"claimToken": claim_token}}})
         )
 
-    def run(self, *args: str, api_key: str | None = None):
+    def read_state(self) -> dict:
+        return json.loads((self.workdir / ".herenow" / "state.json").read_text())
+
+    def script_finalize(self, *answers: str) -> None:
+        """Queue finalize answers, e.g. "524 html", "409 json"; then success."""
+        (self.log_dir / "finalize-sequence").write_text("".join(a + "\n" for a in answers))
+
+    def finalize_calls(self) -> int:
+        return sum(
+            1
+            for f in self.log_dir.glob("call-*.args")
+            if any(line.endswith("/finalize") for line in f.read_text().splitlines())
+        )
+
+    def run(self, *args: str, api_key: str | None = None, env_extra: dict | None = None):
         env = {
             **os.environ,
             "PATH": f"{self.bin_dir}:{os.environ['PATH']}",
@@ -181,8 +218,11 @@ class PublishHarness:
             "CURL_STUB_DIR": str(self.log_dir),
         }
         env.pop("HERENOW_API_KEY", None)
+        env.pop("HERENOW_FINALIZE_WAIT_SECONDS", None)
         if api_key is not None:
             env["HERENOW_API_KEY"] = api_key
+        if env_extra:
+            env.update(env_extra)
         return subprocess.run(
             ["bash", str(PUBLISH_SH), *args],
             cwd=self.workdir,
@@ -345,3 +385,83 @@ def test_explicit_claim_token_overrides_state(harness: PublishHarness):
     assert result.returncode == 0, result.stderr
     _, body = harness.request(1)
     assert body["claimToken"] == "explicit-token"
+
+
+@requires_shell_deps
+def test_claim_token_flag_is_saved_to_state(harness: PublishHarness):
+    # 1.35.0: a token passed by flag (a Site the user created at here.new and
+    # handed over) is saved, so the next update from this directory needs no
+    # flag. An update response carries no claimToken of its own (only a
+    # create does), so the fixture drops it here.
+    update_response = {k: v for k, v in CREATE_RESPONSE.items() if k not in {"claimToken", "claimUrl", "expiresAt"}}
+    (harness.log_dir / "create-response.json").write_text(json.dumps(update_response))
+    result = harness.run(
+        str(harness.site), "--slug", "test-slug-a1b2", "--claim-token", "explicit-token"
+    )
+    assert result.returncode == 0, result.stderr
+    assert harness.read_state()["publishes"]["test-slug-a1b2"]["claimToken"] == "explicit-token"
+
+
+# ---------------------------------------------------------------------------
+# Base URL allowlist (1.35.0): https://api.here.now is the same API through
+# Cloudflare for networks that cannot reach here.now; credentials may go
+# there without the override flag, and nowhere else.
+# ---------------------------------------------------------------------------
+
+
+@requires_shell_deps
+def test_api_host_accepts_credentials_without_override(harness: PublishHarness):
+    result = harness.run(
+        str(harness.site), "--base-url", "https://api.here.now", api_key="hn_test_key"
+    )
+    assert result.returncode == 0, result.stderr
+    args, _ = harness.request(1)
+    assert "https://api.here.now/api/v1/publish" in args
+    assert "authorization: Bearer hn_test_key" in args
+
+
+@requires_shell_deps
+@pytest.mark.parametrize(
+    "base_url",
+    ["https://evil.example", "https://api.here.now:8443", "https://api.here.now.evil.example", "http://api.here.now"],
+)
+def test_other_base_urls_refuse_credentials(harness: PublishHarness, base_url: str):
+    result = harness.run(str(harness.site), "--base-url", base_url, api_key="hn_test_key")
+    assert result.returncode != 0
+    assert "refusing to send API key" in result.stderr
+    assert not list(harness.log_dir.glob("call-*.args")), "no request may leave before the guard"
+
+
+# ---------------------------------------------------------------------------
+# Finalize retry (1.35.0): the server's finalize is idempotent, so when no
+# real answer arrives (a proxy's 524 with an HTML body, a dropped connection)
+# or it reports the finalize still running (409 finalize_in_flight), the
+# script repeats the same call instead of misreading the reply.
+# ---------------------------------------------------------------------------
+
+
+@requires_shell_deps
+def test_finalize_repeats_while_in_flight_then_reads_the_real_answer(harness: PublishHarness):
+    harness.script_finalize("409 json", "409 json")
+    result = harness.run(str(harness.site))
+    assert result.returncode == 0, result.stderr
+    assert harness.finalize_calls() == 3
+    assert result.stderr.count("still running on the server") == 2
+    assert "publish_result.live_version_id=ver-1" in result.stderr
+
+
+@requires_shell_deps
+def test_finalize_gateway_timeout_is_not_success(harness: PublishHarness):
+    # Before 1.35.0 an HTML 524 parsed as a successful finalize with an empty
+    # live version. With a wait budget too small for a retry, the script must
+    # stop with the timeout marker and no site URL on stdout.
+    harness.script_finalize("524 html", "524 html", "524 html")
+    result = harness.run(
+        str(harness.site), env_extra={"HERENOW_FINALIZE_WAIT_SECONDS": "1"}
+    )
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "no answer (HTTP 524" in result.stderr
+    assert "publish_result.finalize=timeout" in result.stderr
+    assert "/api/v1/publish/test-slug-a1b2/finalize" in result.stderr
+    assert harness.finalize_calls() == 1

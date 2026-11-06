@@ -120,6 +120,15 @@ def _launch(browser_name: str) -> tuple[Optional[str], Optional[str]]:
     return launched.cdp_url, None
 
 
+def _pinned_browser() -> Optional[str]:
+    """``browser.real_profile_browser`` pins the real-profile browser family (chrome/edge/brave/
+    brave-origin/chromium) instead of following the OS default. Local patch 2026-11-06: a non-Chromium
+    OS default (Safari) must not deny real-profile browsing. Read per call like the consent switch."""
+    from tools.browser_session_cloud import browser_cfg
+    name = str(browser_cfg("real_profile_browser", "") or "").strip().lower()
+    return name or None
+
+
 def real_profile_cdp() -> tuple[Optional[str], Optional[str]]:
     """``(cdp_url, error)`` for consented real-profile browsing.
 
@@ -145,7 +154,7 @@ def real_profile_cdp() -> tuple[Optional[str], Optional[str]]:
         if running is not None:
             return running.cdp_url, None
         from hermes_cli.browser_connect import detect_default_chromium
-        browser_name = detect_default_chromium()
+        browser_name = _pinned_browser() or detect_default_chromium()
         unsupported = _unsupported_reason(browser_name)
         if unsupported:
             return None, unsupported

@@ -352,7 +352,7 @@ class AuthorityConnection:
             async with async_owner_scope(self.authority):
                 if method in GROUP_METHODS or method == 'profiles.list':
                     result = await dispatch_group_control(self, method, params)
-                elif method not in handlers and (plugin := await resolve_plugin_rpc(method)) is not None:
+                elif method not in handlers and (plugin := await resolve_plugin_rpc(self, method)) is not None:
                     return {'jsonrpc': '2.0', 'id': rid, 'result': await call_plugin_rpc(self, ref, method, plugin, params)}
                 elif method not in handlers or (method in CONNECTION_METHODS and not session_owned(params)):
                     # JSON-RPC's own verdict: clients key compat fallbacks on -32601, and a

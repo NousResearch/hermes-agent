@@ -16,14 +16,22 @@ from hermes_state_runtime import RuntimeStoreError
 logger = logging.getLogger(__name__)
 
 
-async def resolve_plugin_rpc(method):
+async def _off_loop(connection, func):
+    """``func()`` on the runner's turn pool (context copied), as plugin slash handlers run: a slow or
+    hung plugin must not hold the loop's shared default pool, which core dispatch also uses. A bare
+    runner without that pool (a test peer) uses ``asyncio.to_thread``."""
+    offload = getattr(getattr(connection.authority, 'runner', None), '_run_in_executor_with_context', None)
+    return await (offload(func) if offload is not None else asyncio.to_thread(func))
+
+
+async def resolve_plugin_rpc(connection, method):
     """The plugin handler serving ``method``, looked up in a worker: discovery waits on the lock a
     concurrent ``reload-plugins`` holds, which must stall this call only, never the gateway loop."""
     from hermes_cli.plugin_events import PLUGIN_EVENT_PREFIX
     if not isinstance(method, str) or not method.startswith(PLUGIN_EVENT_PREFIX):
         return None
     from hermes_cli.plugin_rpc import plugin_rpc_handler
-    return await asyncio.to_thread(plugin_rpc_handler, method)
+    return await _off_loop(connection, lambda: plugin_rpc_handler(method))
 
 
 async def call_plugin_rpc(connection, ref, method, handler, params):
@@ -39,7 +47,7 @@ async def call_plugin_rpc(connection, ref, method, handler, params):
             raise RuntimeStoreError('permission_denied')
     try:
         # Resolved in the worker: an ``async def`` handler's body must not run on the gateway loop.
-        result = await asyncio.to_thread(lambda: resolve_plugin_command_result(
+        result = await _off_loop(connection, lambda: resolve_plugin_command_result(
             handler(dict(params), session_id=ref.session_id or None)))
         return json.loads(json.dumps(result, allow_nan=False))  # NaN/Infinity: not JSON, an error
     except Exception as exc:  # the call's only answer: a plugin failure is the client's error, not a crash

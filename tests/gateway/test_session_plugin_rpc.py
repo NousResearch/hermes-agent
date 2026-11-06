@@ -20,6 +20,7 @@ def register(ctx):
     ctx.register_rpc("pane.state", lambda params, *, session_id, **kw: {"n": params["n"], "session_id": session_id})
     ctx.register_rpc("pane.thread", _thread)
     ctx.register_rpc("pane.nan", lambda params, *, session_id, **kw: {"ratio": float("nan")})
+    ctx.register_rpc("pane.where", lambda params, *, session_id, **kw: threading.current_thread().name)
 '''
 
 
@@ -63,6 +64,19 @@ async def test_plugin_method_is_gated_like_a_session_verb_and_leaves_with_its_pl
         # NaN is not JSON: an error, never a frame the client's JSON.parse would drop unanswered.
         nan = await owner.dispatch({'id': 3, 'method': 'plugin.pane-demo.pane.nan', 'params': {}})
         assert nan['error']['data']['reason'] == 'plugin_rpc_failed'
+        # A gateway runner's turn pool runs plugin handlers, never the loop's shared default pool.
+        import contextvars
+        from concurrent.futures import ThreadPoolExecutor
+        turn_pool = ThreadPoolExecutor(thread_name_prefix='runner-turn')
+
+        async def on_turn_pool(func, *args):
+            return await asyncio.get_running_loop().run_in_executor(
+                turn_pool, contextvars.copy_context().run, func, *args)
+        authority.runner._run_in_executor_with_context = on_turn_pool
+        where = await owner.dispatch({'id': 4, 'method': 'plugin.pane-demo.pane.where', 'params': {}})
+        assert where['result'].startswith('runner-turn')
+        del authority.runner._run_in_executor_with_context
+        turn_pool.shutdown()
         # An async handler's body runs in the worker too, so blocking work in it never stalls the loop.
         reply = await owner.dispatch({'id': 2, 'method': 'plugin.pane-demo.pane.thread', 'params': {}})
         assert reply['result'] != threading.get_ident()

@@ -8,29 +8,62 @@
  * Eviction drops the oldest insertion-order entry when the cap is exceeded.
  * Re-remembering an existing id is a no-op for ordering (not LRU refresh).
  *
- * Heuristic limitation (intentional, documented for future debugging):
- * the set is in-memory only.  On bridge restart it is empty, so for the
- * brief window between restart and the first new outbound, any in-flight
- * delivery receipts of pre-restart sends would be classified as
- * owner-typed.  The TTL on owner-driven plugin actions (e.g. handover
- * sliding TTL) bounds blast radius; persisting would not be worth the
- * extra complexity / disk churn.
+ * With `persistPath`, the set is reloaded on startup and rewritten
+ * atomically (tmp file + rename) whenever a new id is remembered. Without
+ * it, a bridge restart empties the set and WhatsApp's redelivery of
+ * pre-restart bot sends looks owner-typed to the owner-message gate.
+ * A missing or unreadable file starts empty.
  */
 
-export function createOutboundIdTracker(maxSize = 512) {
+import { readFileSync, renameSync, writeFileSync } from 'fs';
+
+export function createOutboundIdTracker(maxSize = 512, { persistPath } = {}) {
   if (!Number.isInteger(maxSize) || maxSize < 1) {
     throw new RangeError('createOutboundIdTracker: maxSize must be a positive integer');
   }
   const ids = new Set();
+  let warnedPersistFailure = false;
 
-  function remember(id) {
-    if (!id) return;
-    ids.add(id);
+  function evict() {
     while (ids.size > maxSize) {
       // Set iteration order is insertion order, so values().next() is the
       // oldest entry — drop it to keep memory flat under sustained sending.
       ids.delete(ids.values().next().value);
     }
+  }
+
+  function load() {
+    let saved;
+    try {
+      saved = JSON.parse(readFileSync(persistPath, 'utf8'));
+    } catch {
+      return;
+    }
+    if (!Array.isArray(saved)) return;
+    for (const id of saved) {
+      if (typeof id === 'string' && id) ids.add(id);
+    }
+    evict();
+  }
+
+  function save() {
+    const tmpPath = `${persistPath}.tmp`;
+    try {
+      writeFileSync(tmpPath, JSON.stringify([...ids]));
+      renameSync(tmpPath, persistPath);
+    } catch (err) {
+      if (!warnedPersistFailure) {
+        warnedPersistFailure = true;
+        console.warn(`[bridge] could not persist outbound message ids to ${persistPath}: ${err.message}`);
+      }
+    }
+  }
+
+  function remember(id) {
+    if (!id || ids.has(id)) return;
+    ids.add(id);
+    evict();
+    if (persistPath) save();
   }
 
   function has(id) {
@@ -41,5 +74,19 @@ export function createOutboundIdTracker(maxSize = 512) {
     return ids.size;
   }
 
+  if (persistPath) load();
+
   return { remember, has, size };
+}
+
+/**
+ * Pick the message id for an SDK send up front and remember it before the
+ * call. Baileys can emit the `fromMe` upsert of our own send before
+ * `sendMessage()` settles, and a send that times out here may still be
+ * delivered; remembering the id only from the resolved result misses both.
+ */
+export function withRegisteredMessageId(tracker, options, generateId) {
+  const messageId = options?.messageId || generateId();
+  tracker.remember(messageId);
+  return { ...options, messageId };
 }

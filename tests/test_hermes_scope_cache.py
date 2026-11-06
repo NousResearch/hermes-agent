@@ -55,3 +55,27 @@ def test_tenant_neutral_needs_a_reason():
     assert fn is len
     with pytest.raises(ValueError):
         tenant_neutral({}, reason=" ")
+
+
+def test_slots_are_bounded_least_recently_used_first():
+    """One process serves many tenants over its life: a cache keeps at most ``max_slots`` agents'
+    slots, evicting the one used longest ago, and an evicted agent gets a fresh slot."""
+    cache: ScopedCache[dict] = ScopedCache("bounded", max_slots=2)
+    for agent in ("a1", "a2"):
+        with push_state(scope=_hosted("t", agent)):
+            cache.slot()["k"] = agent
+    with push_state(scope=_hosted("t", "a1")):  # a1 is now the most recently used
+        assert cache.slot() == {"k": "a1"}
+    with push_state(scope=_hosted("t", "a3")):
+        cache.slot()["k"] = "a3"
+    assert len(cache) == 2
+    with push_state(scope=_hosted("t", "a1")):
+        assert cache.slot() == {"k": "a1"}
+    with push_state(scope=_hosted("t", "a2")):  # evicted: rebuilt by the factory
+        assert cache.slot() == {}
+
+
+def test_default_bound_and_invalid_bound():
+    assert ScopedCache("default").max_slots > 0
+    with pytest.raises(ValueError):
+        ScopedCache("bad", max_slots=0)

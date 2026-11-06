@@ -176,7 +176,9 @@ module the hosted entry point imports. Two forms pass (`hermes_scope_cache`):
 
 - `ScopedCache(name)`: one slot per `(tenant, agent)` of the bound scope.
   `slot()` and `drop()` raise `UnscopedStateError` when no scope is bound; there
-  is no shared fallback slot.
+  is no shared fallback slot. A cache keeps at most `max_slots` agents' slots
+  (default 1024) and evicts the least recently used one, so it holds only values
+  that are cheap to rebuild. `drop()` is for an owner that knows a slot is done.
 - `tenant_neutral(value, reason="...")` (or `@tenant_neutral(reason="...")` on a
   cached function): state that is the same for every tenant, such as a model
   catalog or tool schemas. The reason must be a non-empty literal.

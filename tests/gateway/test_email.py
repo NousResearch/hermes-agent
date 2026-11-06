@@ -1451,7 +1451,10 @@ def test_oversized_cron_output_is_delivered_as_one_whole_email():
         adapter = EmailAdapter(PlatformConfig(enabled=True))
     sent = []
     smtp = MagicMock()
-    smtp.send_message.side_effect = lambda msg: sent.append(msg.get_payload()[0].get_payload(decode=True).decode())
+    # The body rides inside a multipart/alternative, so walk to the plain part.
+    smtp.send_message.side_effect = lambda msg: sent.append(
+        next(p.get_payload(decode=True).decode() for p in msg.walk() if p.get_content_type() == "text/plain")
+    )
     adapter._connect_smtp = lambda: smtp
     content = "\n\n".join(f"line {i} " + "x" * 200 for i in range(60))
     payload = DeliveryRouter(GatewayConfig())._cap_oversized_output(adapter, content, "job")

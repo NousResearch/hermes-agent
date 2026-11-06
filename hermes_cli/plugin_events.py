@@ -100,7 +100,8 @@ def emit_plugin_session_event(plugin_id: str, session_id: str, event: str,
     if payload is not None and not isinstance(payload, dict):
         raise TypeError(f"plugin event payload must be a dict or None, got {type(payload).__name__}")
     name = plugin_event_name(plugin_id, event)
-    # Encoded here, at the caller: a frame the viewer's socket cannot encode would end that connection.
-    body = json.loads(json.dumps(payload or {}))
+    # Encoded here, at the caller: a frame the viewer's socket cannot encode would end that connection,
+    # and NaN/Infinity are not JSON (a client's JSON.parse would drop the frame and its replay).
+    body = json.loads(json.dumps(payload or {}, allow_nan=False))
     from gateway.session_plugin_rpc import publish_session_event
     return publish_session_event(session_id, name, body)

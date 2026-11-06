@@ -174,6 +174,26 @@ def _optional_table_columns(conn) -> dict[str, set[str]]:
 _HANDOFF_FAIL_SQL = "UPDATE sessions SET handoff_state = 'failed', handoff_error = ? WHERE "
 
 
+def _gateway_session_model() -> str | None:
+    """The configured model a gateway-minted session row should carry (#146723).
+
+    The gateway never passes a model at mint time, so the self-heal INSERT used to leave
+    ``sessions.model`` NULL forever; the TUI ``/sessions`` switcher then crashed on
+    ``null.replace``. Resolve the profile's configured model at the (rare) insert point,
+    with the same ``model.default`` / ``model.model`` precedence the gateway uses.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        model_cfg = load_config_readonly().get("model", {})
+        if isinstance(model_cfg, dict):
+            model_cfg = model_cfg.get("default") or model_cfg.get("model")
+        return model_cfg if isinstance(model_cfg, str) and model_cfg else None
+    except Exception:
+        logger.debug("gateway session model resolution failed", exc_info=True)
+        return None
+
+
 class SessionGatewayMixin:
     """Routing index, session peers/orphans, hygiene streaks, heartbeats, handoffs."""
 
@@ -282,9 +302,9 @@ class SessionGatewayMixin:
                     """INSERT INTO sessions (
                                id, source, created_source, user_id, session_key, chat_id,
                                chat_type, thread_id, display_name, origin_json,
-                               profile_name, transport_profile, started_at
+                               profile_name, transport_profile, model, started_at
                            )
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                            ON CONFLICT(id) DO UPDATE SET
                                session_key = COALESCE(sessions.session_key, excluded.session_key),
                                chat_id = COALESCE(sessions.chat_id, excluded.chat_id),
@@ -293,11 +313,13 @@ class SessionGatewayMixin:
                                display_name = COALESCE(sessions.display_name, excluded.display_name),
                                origin_json = COALESCE(sessions.origin_json, excluded.origin_json),
                                transport_profile = COALESCE(sessions.transport_profile, excluded.transport_profile),
-                               created_source = COALESCE(sessions.created_source, excluded.created_source)""",
+                               created_source = COALESCE(sessions.created_source, excluded.created_source),
+                               model = COALESCE(sessions.model, excluded.model)""",
                     # Same ownership stamp as _insert_session_row: an unowned (NULL) row
                     # vanishes from profile-keyed consumers.
                     (session_id, source, source, user_id, session_key, chat_id, chat_type, thread_id, display_name,
-                     origin_json, self._own_profile_name(), transport_profile, time.time()),
+                     origin_json, self._own_profile_name(), transport_profile, _gateway_session_model(),
+                     time.time()),
                 )
         self._execute_write(_do)
 

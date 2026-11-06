@@ -101,7 +101,8 @@ def gateway(tmp_path, monkeypatch):
         from agent.secret_scope import get_secret
         from hermes_constants import get_hermes_home
         turns.append(SimpleNamespace(message=message, history=list(history), session_id=session_id,
-                                     home=get_hermes_home(), marker=get_secret("PROBE_MARKER")))
+                                     home=get_hermes_home(), marker=get_secret("PROBE_MARKER"),
+                                     scheduled_heartbeat=_kwargs.get("scheduled_heartbeat")))
         return {"final_response": f"reply-{len(turns)}", "messages": [], "tools": [],
                 "history_offset": len(history), "last_prompt_tokens": 0}
 
@@ -154,6 +155,7 @@ async def test_origin_creates_session_in_own_profile_and_replies_to_origin(gatew
     assert alpha.send_scopes == [(gateway.homes["alpha"], "alpha")] * 2
     assert beta.send_scopes == [(gateway.homes["beta"], "beta")]
     assert gateway.adapters["default"].sent == []
+    assert all(turn.scheduled_heartbeat is False for turn in gateway.turns)
 
     entry = runner.session_store._entries["agent:alpha:telegram:group:100:7"]
     assert entry.session_id == first.session_id
@@ -168,6 +170,19 @@ async def test_origin_creates_session_in_own_profile_and_replies_to_origin(gatew
     await _settle(runner, alpha)
     assert gateway.turns[-1].session_id == first.session_id
     assert alpha.sent[-1] == ("100", "reply-4")
+
+
+@pytest.mark.asyncio
+async def test_quiet_origin_injection_uses_the_quiet_display_path(gateway):
+    runner, alpha = gateway.runner, gateway.adapters["alpha"]
+    context, manager = _context(gateway.homes["alpha"])
+
+    with patch("hermes_cli.plugins._known_plugin_managers", return_value=[manager]):
+        await _publish(runner)
+        assert context.inject_message("Check the deployment", origin=_origin("100"), quiet=True) is True
+        await _settle(runner, alpha)
+
+    assert gateway.turns[0].scheduled_heartbeat is True
 
 
 @pytest.mark.asyncio

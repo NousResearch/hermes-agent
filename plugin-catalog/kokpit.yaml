@@ -1,0 +1,33 @@
+name: kokpit
+repo: https://github.com/sahindemirbas/kokpit
+sha: 21112512fcb8d5fa24efc1558e9b50195eb031a0
+subdir: integrations/hermes/kokpit
+description: "Your own cockpit in Hermes: /kokpit setup makes a plain Markdown vault, capture from any chat (Telegram included), a session card and short receipt only when a session produced a result so Claude Code, Codex and Hermes continue from the same place, a night pass whose proposals quote their sources, and a morning brief. Local, stdlib only."
+maintainer: sahindemirbas
+tier: community
+category: memory
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/sahindemirbas/kokpit/blob/main/docs/hermes-plugin.md
+version: "0.4.0"
+title: Kokpit
+capabilities:
+  provides_tools:
+    - kokpit_today
+    - kokpit_brain_search
+    - kokpit_threads
+    - kokpit_capture
+    - kokpit_events
+    - kokpit_jobs
+    - kokpit_ai_usage
+    - kokpit_health
+    - kokpit_training
+    - kokpit_server
+    - kokpit_night
+  provides_hooks:
+    - pre_llm_call
+    - post_tool_call
+    - on_session_start
+    - on_session_finalize
+    - post_compaction
+  provides_middleware: []
+  requires_env: []

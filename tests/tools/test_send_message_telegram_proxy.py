@@ -56,6 +56,30 @@ def _make_bot() -> MagicMock:
     return bot
 
 
+def test_markdown_file_uses_rich_api_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A standalone Markdown file keeps its raw table syntax when Rich is enabled."""
+    from tools.send_message_tool import _send_telegram
+
+    monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
+    bot = _make_bot()
+    bot.do_api_request = AsyncMock(return_value=SimpleNamespace(message_id=73))
+    bot_factory = MagicMock(return_value=bot)
+    _install_telegram_mock_with_request(monkeypatch, bot_factory, MagicMock())
+
+    result = asyncio.run(_send_telegram(
+        "tok", "123", "Title: report\\n\\n| Name | Value |\\n|---|---|\\n| one | 1 |",
+        rich_messages=True, markdown_file=True,
+    ))
+
+    assert result["success"] is True
+    assert result["message_id"] == "73"
+    bot.do_api_request.assert_awaited_once()
+    endpoint, = bot.do_api_request.call_args.args
+    assert endpoint == "sendRichMessage"
+    assert bot.do_api_request.call_args.kwargs["api_kwargs"]["rich_message"]["markdown"].startswith("Title")
+    bot.send_message.assert_not_called()
+
+
 class TestSendTelegramStandaloneProxy:
     """The standalone ``_send_telegram`` path must route through
     ``TELEGRAM_PROXY`` when one is configured, even when no in-process

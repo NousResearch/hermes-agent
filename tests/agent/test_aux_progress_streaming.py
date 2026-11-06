@@ -477,6 +477,25 @@ class TestContentBearingProgress:
     def test_codex_nonempty_deltas_are_progress(self, event):
         assert _codex_event_has_content(event) is True
 
+    @pytest.mark.parametrize("event_factory", [dict, SimpleNamespace], ids=["json", "sdk"])
+    @pytest.mark.parametrize(
+        ("event_type", "item_type", "encrypted_content", "expected"),
+        [
+            ("response.output_item.done", "reasoning", "opaque-reasoning", True),
+            ("response.output_item.done", "reasoning", "", False),
+            ("response.output_item.done", "reasoning", None, False),
+            ("response.output_item.done", "message", "opaque-reasoning", False),
+            ("response.output_item.added", "reasoning", "opaque-reasoning", False),
+        ],
+    )
+    def test_codex_completed_encrypted_reasoning_progress(
+        self, event_factory, event_type, item_type, encrypted_content, expected
+    ):
+        item = event_factory(type=item_type, summary=[], encrypted_content=encrypted_content)
+        event = event_factory(type=event_type, item=item)
+
+        assert _codex_event_has_content(event) is expected
+
     @pytest.mark.parametrize(
         ("delta", "expected"),
         [

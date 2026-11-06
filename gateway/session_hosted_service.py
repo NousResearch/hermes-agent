@@ -159,11 +159,14 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         if home is None:
             raise RuntimeStoreError('permission_denied')
         key = binding.room_id, member, profile, owner, str(home)
+        if home != Path(self.authority.profile_id):
+            from gateway.session_hosted_member_homes import record_member_home
+            # Every resolve, not only a new transport: a profile re-added to hosted_rooms.profiles
+            # reuses its cached transport, and its home must still be recorded.
+            record_member_home(self.authority.db, binding.room_id, member, home)
         if key not in self.member_rpcs:
             if home != Path(self.authority.profile_id):
-                from gateway.session_hosted_member_homes import record_member_home
                 from gateway.session_hosted_transport import HostedRoomOwnerRPC
-                record_member_home(self.authority.db, binding.room_id, member, home)
                 self.member_rpcs[key] = HostedRoomOwnerRPC(home=home,
                     source_home=self.authority.profile_id, room_id=binding.room_id,
                     member_id=member, profile=profile)

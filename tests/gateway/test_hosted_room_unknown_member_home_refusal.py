@@ -1,5 +1,6 @@
 """Disband held by a turn whose member profile is no longer configured and whose home is unknown
-names the way out (re-add the profile, or Discard), on both RPC surfaces, with a stable reason."""
+names the way out (re-add the profile), on both RPC surfaces, with a stable reason, and following
+it unblocks Disband."""
 import asyncio
 import sqlite3
 from types import SimpleNamespace
@@ -40,7 +41,6 @@ def test_unknown_member_home_refusal_says_how_to_unblock(tmp_path, deferred, mon
     assert error['code'] == code, reply
     assert error['data']['reason'] == 'member_home_unknown', reply
     assert "'two'" in error['message'] and 'hosted_rooms.profiles' in error['message'], error
-    assert 'Discard' in error['message'], error
     assert tasks.get_task(db, identity)['status'] == 'deferred'
     assert hosted_rooms.room_state(db, room_id='room').get('disbanded_at') is None
 
@@ -50,3 +50,23 @@ def test_a_known_home_keeps_the_generic_stop_pending_refusal(tmp_path, deferred)
     with pytest.raises(hosted_rooms.RoomStopPendingError) as refused:
         service.stop_room('room', cancel_id='room-disbanded', require_acknowledged=True)
     assert refused.value.reason == 'room_stop_pending'
+
+
+def test_re_adding_the_profile_unblocks_disband(tmp_path, deferred):
+    """The advice works: re-added, the profile's home is known (Disband now waits on its daemon's
+    Stop, recording that home); once its daemon is gone, Disband settles the turn."""
+    home = tmp_path.resolve() / 'custom' / 'two'
+    service, db, identity, roster = deferred(home)
+    with sqlite3.connect(db) as conn:
+        conn.execute("DELETE FROM state_meta WHERE key LIKE 'gateway.hosted.member_homes.v1:%'")
+    del roster['two']
+    with pytest.raises(hosted_rooms.RoomStopPendingError) as refused:
+        service.stop_room('room', cancel_id='room-disbanded', require_acknowledged=True)
+    assert refused.value.reason == 'member_home_unknown'
+    roster['two'] = home  # re-added to hosted_rooms.profiles
+    with pytest.raises(hosted_rooms.RoomStopPendingError) as refused:
+        service.stop_room('room', cancel_id='room-disbanded', require_acknowledged=True)
+    assert refused.value.reason == 'room_stop_pending'  # served: only its daemon's Stop decides
+    del roster['two']  # unserved again, but its home is now recorded and no daemon runs there
+    service.stop_room('room', cancel_id='room-disbanded', require_acknowledged=True)
+    assert tasks.get_task(db, identity)['status'] == 'cancelled'

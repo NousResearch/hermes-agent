@@ -85,6 +85,8 @@ Subagents start with a **completely fresh conversation**. They have zero knowled
 
 One exception: when the parent has a resolved workspace directory, every subagent's system prompt embeds that workspace's **project context files** (`.hermes.md` > AGENTS.md chain > CLAUDE.md > `.cursorrules` — the same discovery, priority, and size caps as the main agent's system prompt; SOUL.md is excluded). Subagents working in a repo operate under the repo's own conventions without having to rediscover them.
 
+Subagents also start with the default Hermes identity, not your `SOUL.md`. Set `delegation.inherit_soul: true` to give default subagents your `SOUL.md` as their identity, the same way cron jobs load it. Memory and cwd context files stay skipped either way. A subagent routed to a profile through `delegation.backends.profile_routes` already uses that profile's `SOUL.md`.
+
 This means the parent agent must pass **everything** the subagent needs in the call:
 
 ```python
@@ -769,6 +771,7 @@ delegation:
   # worktree_isolation: false               # Give each child its own git worktree (see Worktree Isolation above)
   # max_spawn_depth: 1                      # Tree depth (floor 1, no ceiling, default 1 = flat). Raise to 2 to allow orchestrator children to spawn leaves; 3+ for deeper trees.
   # orchestrator_enabled: true              # Disable to force all children to leaf role.
+  # inherit_soul: false                     # true = default children get SOUL.md as their identity (memory and cwd context files stay skipped)
   model: "google/gemini-3-flash-preview"             # Optional provider/model override
   provider: "openrouter"                             # Optional built-in provider
   api_mode: anthropic_messages                       # optional; auto-detected from base_url for anthropic_messages endpoints

@@ -18,6 +18,7 @@ def test_undo_hint_then_rollback_restore_round_trip_in_the_sessions_profile(tmp_
     (project / "app.js").write_text("hello\n")
     mgr = CheckpointManager(enabled=True)
     start = time.time()
+    mgr.turn_key = repr(start)  # the turn editing app.js made the take (agent/turn_context.py binds it)
     history = [{"role": "user", "content": "read", "timestamp": start - 60},
                {"role": "assistant", "content": "ok", "timestamp": start - 59},
                {"role": "user", "content": "edit app.js", "timestamp": start}]

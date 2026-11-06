@@ -650,7 +650,8 @@ class GatewaySessionCommandsMixin:
         if (mgr := self._checkpoint_manager(source)) is not None:
             # Same manager and cwd /rollback lists, so its number is the one /rollback takes.
             from tools.checkpoint_undo_hint import format_undo_rollback_hint, undo_rollback_hint
-            hint = await asyncio.to_thread(undo_rollback_hint, mgr, self._terminal_cwd(), result.get("undo_since"))
+            hint = await asyncio.to_thread(undo_rollback_hint, mgr, self._terminal_cwd(), result.get("undo_since"),
+                                           first_turn=result.get("undo_turn") or "")
             if line := format_undo_rollback_hint(hint):
                 reply += "\n" + line
         return reply

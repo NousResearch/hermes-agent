@@ -9,10 +9,14 @@ list position, it does not move when the next checkpoint is taken.
 The target comes from the take record (``tools/checkpoint_takes.py``), not from commit times: a turn
 whose take found nothing changed reused an older snapshot, which git history alone cannot show, and
 git times are whole seconds. The first recorded take at or after the span start names the target by
-tree; the hint then finds that tree among the retained snapshots, so a snapshot the pruner dropped
-is simply not found. Whenever the record cannot prove the target (an older build's project, a gap,
-a failed take, a pruned snapshot), the line says to run ``/rollback`` and pick one: a wrong command
-is worse than none.
+tree, and only when that take provably belongs to the FIRST undone turn: its row carries that turn's
+identity (``checkpoint_takes.turn_key``). A first undone turn that took nothing (its edits went
+through a tool that takes no checkpoint, or its attempt met a busy store) would otherwise hand the
+target to the NEXT turn's take, which already holds the first turn's edits. The hint then finds that
+tree among the retained snapshots, so a snapshot the pruner dropped is simply not found. Whenever
+the record cannot prove the target (an older build's project, a gap, a failed or busy take, a take
+of another turn, a pruned snapshot), the line says to run ``/rollback`` and pick one: a wrong
+command is worse than none.
 
 Read-only over the store: ``git log`` plus a name-only diff of the snapshot's tree against the
 working tree, through a throwaway index; it writes no objects, refs or project index.
@@ -91,18 +95,21 @@ def _snapshots(mgr, abs_dir: str) -> list[tuple[str, str, int]]:
     return rows
 
 
-def _span_target(abs_dir: str, since: float, rows: list) -> Optional[tuple[str, int]]:
-    """``(tree, author epoch)`` the project was at when the span's first take ran; None when unprovable."""
+def _span_target(abs_dir: str, since: float, rows: list, first_turn: str) -> Optional[tuple[str, int]]:
+    """``(tree, author epoch)`` the project was at when the span's first take ran, when the FIRST undone turn
+    (``first_turn``) made that take; None when unprovable."""
     from tools.checkpoint_takes import project_takes
 
     record = project_takes(abs_dir)
-    if record is None or record[1] > since:
-        return None  # the record does not reach back to the span start
-    seen = {(tree, epoch) for _when, tree, epoch in record[0]}
+    if not first_turn or record is None or record[1] > since:
+        return None  # the turn is unknown, or the record does not reach back to the span start
+    seen = {(tree, epoch) for _when, tree, epoch, _turn in record[0]}
     if any((tree, epoch) not in seen for _sha, tree, epoch in rows if epoch >= math.floor(since)):
         return None  # a snapshot of the span the record never saw: a take went unrecorded (another process)
-    first = next(((tree, epoch) for when, tree, epoch in record[0] if when >= since), None)
-    return first if first and first[0] else None  # empty tree: that take failed or never completed
+    first = next(((tree, epoch, turn) for when, tree, epoch, turn in record[0] if when >= since), None)
+    if not first or first[2] != first_turn:
+        return None  # the first undone turn took nothing here: a later turn's take already holds its edits
+    return first[:2] if first[0] else None  # empty tree: that take failed or never completed
 
 
 def _changed_files(abs_dir: str, tree: str) -> Optional[list[str]]:
@@ -125,11 +132,13 @@ def _changed_files(abs_dir: str, tree: str) -> Optional[list[str]]:
     return sorted({p for p in (changed + "\x00" + new).split("\x00") if p})
 
 
-def undo_rollback_hint(mgr, cwd: str, since, *, task_id: Optional[str] = "default") -> Optional[UndoRollbackHint]:
+def undo_rollback_hint(mgr, cwd: str, since, *, first_turn: str = "",
+                       task_id: Optional[str] = "default") -> Optional[UndoRollbackHint]:
     """The hint for undoing every turn from the user message stamped ``since`` onward.
 
     The target is the snapshot the project was at when the span's FIRST take ran (``_span_target``), so
-    the restore brings back the files as the first undone turn found them. None: checkpoints off or
+    the restore brings back the files as the first undone turn found them. ``first_turn`` is that turn's
+    ``checkpoint_takes.turn_key``; without it, or when that turn made no take, ``ref`` is None. None: checkpoints off or
     refused here, no timestamp, no take in the span, or nothing changed since. ``ref`` None: the span
     took a checkpoint but the record cannot prove which one.
     ``task_id=None``: the caller already applied ``unsupported_backend_reason`` under its own scope.
@@ -143,7 +152,7 @@ def undo_rollback_hint(mgr, cwd: str, since, *, task_id: Optional[str] = "defaul
             return None
         abs_dir = str(cm._normalize_path(cwd))
         rows = _snapshots(mgr, abs_dir)
-        target = _span_target(abs_dir, since_ts, rows)
+        target = _span_target(abs_dir, since_ts, rows, first_turn)
         if not target and not any(epoch >= math.floor(since_ts) for _sha, _tree, epoch in rows):
             return None  # no take and no snapshot in the span: nothing for /rollback to restore
         match = next((sha for sha, tree, epoch in rows if target and (tree, epoch) == target), None)
@@ -177,7 +186,7 @@ def checkpoint_taken_at(cwd: str, commit: str) -> Optional[tuple[float, bool]]:
     if not tree or not epoch.isdigit():
         return None
     record = project_takes(abs_dir)
-    seen = max((w for w, t, e in record[0] if t == tree and e == int(epoch)), default=None) if record else None
+    seen = max((w for w, t, e, _turn in record[0] if t == tree and e == int(epoch)), default=None) if record else None
     if seen is not None and record[1] <= seen:  # no unrecorded take since: nothing later can have reused it
         return seen, True
     return float(epoch), False
@@ -208,8 +217,12 @@ def rollback_rewinds_newest_turn(history: list, user_indices: list[int], taken) 
 
 def undo_hint_payload(mgr, cwd: str, target_timestamp, kept_history=(), *,
                       task_id: Optional[str] = "default") -> Optional[dict]:
-    """``undo_rollback_hint`` over a rewind's target stamp and kept prefix, as the wire dict (None: no line)."""
-    hint = undo_rollback_hint(mgr, cwd, undo_span_start(target_timestamp, kept_history), task_id=task_id)
+    """``undo_rollback_hint`` over a rewind's target (first undone) user row stamp and the kept prefix, as the
+    wire dict (None: no line)."""
+    from tools.checkpoint_takes import turn_key
+
+    hint = undo_rollback_hint(mgr, cwd, undo_span_start(target_timestamp, kept_history),
+                              first_turn=turn_key(target_timestamp), task_id=task_id)
     return hint.as_dict() if hint is not None else None
 
 

@@ -225,7 +225,16 @@ def check_foreign_handle_refused(provider: RecordingSandboxProvider, a: Scope, b
         else:
             raise AssertionError("B's environment accepted a process reference naming A's sandbox")
     assert all(c.sandbox != _identity(a) for c in provider.calls[seen:]), "a refused call reached A's sandbox"
+    with _bind(b):  # the stream object A acquired stays A's: no pipe or poll operation runs under B
+        for attempt in (lambda: stream.stdin.write(b"x"), lambda: stream.stdout.read(1), stream.poll,
+                        lambda: stream.stdin.close(), lambda: stream.stdout.fileno(), lambda: next(iter(stream.stdout))):
+            try:
+                attempt()
+            except CrossAgentHandleRefused:
+                continue
+            raise AssertionError("an operation on A's process stream ran under B's scope")
     with _bind(a):
+        assert stream.poll() is None
         attached = env_a.attach_process(stream.ref)
         assert attached is not None
         attached.stdin.write(b"ping\n")

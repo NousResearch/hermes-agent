@@ -376,3 +376,31 @@ def test_local_scopes_build_byte_identical_environments(monkeypatch):
             monkeypatch.setattr(sandbox_scope, "hosted_scope", real_hosted_scope)
         assert with_machinery == without, f"local behaviour changed under scope {scope}"
         assert b"False)" not in with_machinery, "a local backend came back wrapped"
+
+
+def test_an_acquired_stream_is_refused_under_another_scope():
+    """start_process / attach_process hand back proxies: once acquired, a stream's pipes and poll
+    stay A's, whoever holds the object (round-2 finding 16)."""
+    import io
+    from agent.runtime_scope import bind_state
+    from tools.environments.sandbox_scope import ProcessRef, ProcessStream
+
+    class Backend:
+        def start_process(self, *args, **kwargs):
+            return ProcessStream(ProcessRef("", "service"), io.BytesIO(), io.BytesIO(b"A-PRIVATE"), lambda: None)
+
+        attach_process = start_process
+
+    env = ScopedEnvironment(Backend(), sandbox_identity(A), owner=A)
+    with bind_state(A):
+        stream, attached = env.start_process("service", ["cat"]), env.attach_process("service")
+    for s in (stream, attached):
+        with bind_state(B):
+            for op in (lambda: s.stdout.read(), lambda: s.stdin.write(b"x"), s.poll, lambda: s.stdout.close(),
+                       lambda: list(s.stdout), lambda: s.stdout.closed):
+                with pytest.raises(CrossAgentHandleRefused):
+                    op()
+        with pytest.raises(CrossAgentHandleRefused):  # no scope at all is not the owner either
+            s.stdout.read()
+    with bind_state(A):
+        assert stream.stdout.read() == b"A-PRIVATE" and stream.poll() is None

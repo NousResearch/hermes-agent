@@ -1,6 +1,6 @@
 name: ascii-worlds
 repo: https://github.com/dudicslevente/hermes-ascii-worlds
-sha: 26f309d9152699d3a7644f36a462f5c6479ec492
+sha: ba8faabd33426a1a56353d19f16fd89aef025d60
 title: ASCII Worlds
 description: >-
   Twenty quiet habitats drawn live in text glyphs for Hermes Desktop: koi, jellyfish,
@@ -16,14 +16,14 @@ category: desktop
 requires_hermes: ">=0.21.6"
 docs_url: https://github.com/dudicslevente/hermes-ascii-worlds#readme
 version: "1.2.0"
-image: https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/26f309d9152699d3a7644f36a462f5c6479ec492/docs/images/v1.2/banner.png
+image: https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/ba8faabd33426a1a56353d19f16fd89aef025d60/docs/images/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/26f309d9152699d3a7644f36a462f5c6479ec492/docs/images/v1.2/overview.png
-  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/26f309d9152699d3a7644f36a462f5c6479ec492/docs/images/v1.2/octopus-dark.png
-  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/26f309d9152699d3a7644f36a462f5c6479ec492/docs/images/v1.2/sea-turtles-dark.png
-  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/26f309d9152699d3a7644f36a462f5c6479ec492/docs/images/v1.2/sleeping-cat-dark.png
-  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/26f309d9152699d3a7644f36a462f5c6479ec492/docs/images/v1.2/settings-catalog.png
-  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/26f309d9152699d3a7644f36a462f5c6479ec492/docs/images/v1.2/whole-window-catalog.png
+  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/ba8faabd33426a1a56353d19f16fd89aef025d60/docs/images/overview.png
+  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/ba8faabd33426a1a56353d19f16fd89aef025d60/docs/images/habitats/octopus-dark.png
+  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/ba8faabd33426a1a56353d19f16fd89aef025d60/docs/images/habitats/sea-turtles-dark.png
+  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/ba8faabd33426a1a56353d19f16fd89aef025d60/docs/images/habitats/sleeping-cat-dark.png
+  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/ba8faabd33426a1a56353d19f16fd89aef025d60/docs/images/settings.png
+  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/ba8faabd33426a1a56353d19f16fd89aef025d60/docs/images/habitats/butterflies-light.png
 platforms: []
 known_issues:
   - The author hand-tested the plugin on macOS with Hermes Desktop. The screenshots are browser captures of the plugin's own preview and settings page.

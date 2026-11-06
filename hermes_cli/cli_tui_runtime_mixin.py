@@ -514,6 +514,9 @@ class CLITuiRuntimeMixin:
         """Teardown after the app exits: interrupt agent, stop voice/pet, persist + close session, cleanup, exit summary."""
         from cli import _DIM, _RST, _cprint, _invoke_interrupted_session_end, _run_cleanup, set_approval_callback, set_secret_capture_callback, set_sudo_password_callback
         self._should_exit = True
+        # First, before anything that can hang or be cut short by the exit watchdog: a pane back at its
+        # shell must not keep listing Hermes as an agent (OSC 7501 idle/done outlive the process).
+        self._clear_program_status()
         self._pet_stop_anim()
         # Without this line the terminal sits silent through the whole cleanup window.
         with suppress(Exception):

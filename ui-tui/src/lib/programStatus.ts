@@ -20,6 +20,33 @@ export const $programStatusEnabled = atom<boolean | null>(null)
 // How the last turn ended (message.complete / error set it, message.start clears it); shown once busy drops.
 export const $turnOutcome = atom<TurnOutcome>(null)
 
+// `state=clear` with no id removes every record this program left on the terminal.
+export const PROGRAM_STATUS_CLEAR = '\x1b]7501;state=clear\x1b\\'
+
+let reported = false
+
+export const markProgramStatusReported = (): void => {
+  reported = true
+}
+
+// Quit: idle/done/error outlive the process under the spec, so without a clear a pane back at its
+// shell keeps listing Hermes as an agent. Runs from process.on('exit'): synchronous, never throws.
+export function clearProgramStatus(write: (seq: string) => void): boolean {
+  if (!reported) {
+    return false
+  }
+
+  reported = false
+
+  try {
+    write(PROGRAM_STATUS_CLEAR)
+
+    return true
+  } catch {
+    return false
+  }
+}
+
 // A cancelled turn reports idle (the spec's rule for user interrupts); a reply-less failure is error.
 export function completionOutcome(interrupted: boolean, payload: { partial?: unknown; status?: unknown }): TurnOutcome {
   // The backend's own verdict too: a voice barge-in interrupts without the TUI's local flag.
@@ -69,18 +96,31 @@ export const connectionNeedsUser = (targets: readonly ConnectionOperationTarget[
     target => !RESOLVED.has(target.state) && !(target.state === 'initiated' && !target.connect_url)
   )
 
+// Why the user is needed, as the classic CLI says it: the command to approve, or the open question.
+const blockedMessage = (overlay: OverlayState): string | undefined => {
+  if (overlay.approval) {
+    return overlay.approval.command
+  }
+
+  const answered = overlay.clarify?.answers ?? {}
+
+  return overlay.clarify?.questions.find(q => !(q.qid in answered))?.question
+}
+
 export function deriveProgramStatus(
   busy: boolean,
   overlay: OverlayState,
   outcome: TurnOutcome,
   connectionTargets?: readonly ConnectionOperationTarget[]
-): { kind?: BlockedKind; state: ProgramState } {
+): { kind?: BlockedKind; msg?: string; state: ProgramState } {
   const blocked =
     BLOCKING.find(([key]) => Boolean(overlay[key])) ??
     (overlay.connection && connectionNeedsUser(connectionTargets) ? (['connection', 'auth'] as const) : undefined)
 
   if (blocked) {
-    return { kind: blocked[1], state: 'blocked' }
+    const msg = blockedMessage(overlay)
+
+    return msg ? { kind: blocked[1], msg, state: 'blocked' } : { kind: blocked[1], state: 'blocked' }
   }
 
   if (busy) {

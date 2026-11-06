@@ -45,15 +45,19 @@ class CLIChatTurnMixin:
 
     def _report_program_status(self, state: str, *, kind: str = "", message: str = "") -> None:
         """OSC 7501 Program Status report (idle/working/blocked/done/error) on an interactive terminal only."""
-        if not getattr(self, "program_status_enabled", True) or getattr(self, "_terminal_io_broken", False):
-            return
-        if not sys.stdout.isatty():
-            return
-        from hermes_cli.terminal_notify import program_status_sequence, write_tty
+        from hermes_cli.terminal_notify import program_status_sequence
         try:
             seq = program_status_sequence(state, kind=kind, message=message)
         except (TypeError, ValueError, UnicodeError):
             return
+        self._write_program_status(seq)
+
+    def _write_program_status(self, seq: str) -> None:
+        if not getattr(self, "program_status_enabled", True) or getattr(self, "_terminal_io_broken", False):
+            return
+        if not sys.stdout.isatty():
+            return
+        from hermes_cli.terminal_notify import write_tty
         app = getattr(self, "_app", None)
         if app is None or not getattr(app, "_is_running", False):
             write_tty(seq)
@@ -69,8 +73,22 @@ class CLIChatTurnMixin:
         _run_on_app_loop(app, _emit)
 
     # (state, msg) of the last finished turn; None = no outcome to show (fresh, early return, lost result).
-    _program_turn_outcome = None
+    _program_turn_outcome: tuple[str, str] | None = None
     _program_status_last = None
+    # Set on quit: the record is cleared and nothing may report again (a turn settling during shutdown).
+    _program_status_closed = False
+
+    def _clear_program_status(self) -> None:
+        """Quit: clear the record this CLI reported. idle/done/error outlive the process under the spec,
+        so without this a pane back at its shell keeps listing Hermes as an agent."""
+        if self._program_status_closed:
+            return
+        self._program_status_closed = True
+        if self._program_status_last is None:
+            return
+        self._program_status_last = None
+        from hermes_cli.terminal_notify import program_status_clear_sequence
+        self._write_program_status(program_status_clear_sequence())
 
     def _program_prompt_status(self):
         """(kind, msg) for the blocking prompt on screen, or None. Connection cards block only while
@@ -92,6 +110,8 @@ class CLIChatTurnMixin:
         """Report what the screen shows: a blocking prompt, else a running turn, else the last turn's
         outcome (idle when none). One owner, called on every modal repaint and turn boundary, so no
         prompt or exit path has to remember its own transition."""
+        if self._program_status_closed:
+            return
         prompt = self._program_prompt_status()
         if prompt:
             key = ("blocked", prompt[0], prompt[1])

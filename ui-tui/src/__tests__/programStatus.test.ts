@@ -1,7 +1,14 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
-import { completionOutcome, deriveProgramStatus, encodeProgramStatus } from '../lib/programStatus.js'
+import {
+  clearProgramStatus,
+  completionOutcome,
+  deriveProgramStatus,
+  encodeProgramStatus,
+  markProgramStatusReported,
+  PROGRAM_STATUS_CLEAR
+} from '../lib/programStatus.js'
 import type { ApprovalReq } from '../types.js'
 
 const decode = (seq: string) => {
@@ -24,7 +31,11 @@ describe('OSC 7501 program status', () => {
 
   it('a prompt outranks busy, and an answered prompt falls back to working, then the turn outcome', () => {
     patchOverlayState({ approval: { command: 'rm -rf build' } as ApprovalReq })
-    expect(deriveProgramStatus(true, getOverlayState(), null)).toEqual({ kind: 'permission', state: 'blocked' })
+    expect(deriveProgramStatus(true, getOverlayState(), null)).toEqual({
+      kind: 'permission',
+      msg: 'rm -rf build',
+      state: 'blocked'
+    })
 
     patchOverlayState({ approval: null })
     expect(deriveProgramStatus(true, getOverlayState(), null)).toEqual({ state: 'working' })
@@ -43,5 +54,41 @@ describe('OSC 7501 program status', () => {
       state: 'blocked'
     })
     expect(completionOutcome(false, { status: 'interrupted' })).toBe('idle')
+  })
+
+  it('a clarify prompt carries its first unanswered question, like the classic CLI', () => {
+    const q = (qid: string, question: string) => ({ choices: null, qid, question })
+
+    patchOverlayState({
+      clarify: { answers: { a: 'yes' }, questions: [q('a', 'Deploy?'), q('b', 'Which region?')], requestId: 'r' }
+    } as never)
+    expect(deriveProgramStatus(true, getOverlayState(), null)).toEqual({
+      kind: 'question',
+      msg: 'Which region?',
+      state: 'blocked'
+    })
+  })
+
+  it('quit clears the record only after one was written, and only once', () => {
+    const out: string[] = []
+    const write = (seq: string) => void out.push(seq)
+
+    expect(clearProgramStatus(write)).toBe(false)
+    expect(out).toEqual([])
+
+    markProgramStatusReported()
+    expect(clearProgramStatus(write)).toBe(true)
+    expect(clearProgramStatus(write)).toBe(false)
+    expect(out).toEqual([PROGRAM_STATUS_CLEAR])
+    expect(PROGRAM_STATUS_CLEAR).toBe('\x1b]7501;state=clear\x1b\\')
+  })
+
+  it('a dead terminal at exit never throws out of the clear', () => {
+    markProgramStatusReported()
+    expect(
+      clearProgramStatus(() => {
+        throw new Error('EIO')
+      })
+    ).toBe(false)
   })
 })

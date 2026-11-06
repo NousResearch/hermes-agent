@@ -168,6 +168,10 @@ def _agent_cbs(sid: str) -> dict:
         "clarify_callback": lambda questions: _clarify_block(sid, questions),
         "read_terminal_callback": _read_block("terminal.read", 30),
         "read_preview_callback": _read_block("preview.read", 45),
+        # The renderer request stays linked to this live UI session; the tool
+        # dispatcher supplies only the agent's durable session identity.
+        "player_agent_callback": lambda operation: _ask(
+            "player.agent.request", sid, {"operation": operation}, timeout=45),
         # drive_preview / annotate_preview (desktop GUI): same budget as the preview read it ends with.
         # The probe ladder lives in server.py (_preview_action_request) so an
         # absent renderer fails fast instead of burning 45s per action (#94272).

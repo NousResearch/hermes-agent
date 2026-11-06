@@ -6,6 +6,15 @@ description: "Extend the native Hermes Desktop app — panes, pages, sidebar nav
 
 # Desktop Plugin SDK
 
+:::warning Proposed API — not released or supported by stock Hermes Desktop
+The `ctx.media` capability described below is a proposal under maintainer
+review. It is not part of a released Desktop SDK, does not establish compatibility
+with installed Hermes versions, and has no minimum-version promise. Its API,
+operation set, errors, provider policy, and helper setup flow remain subject to
+review. Do not publish a plugin that depends on it as compatible with stock
+Hermes Desktop.
+:::
+
 The native [Hermes Desktop](../user-guide/desktop.md) app is contribution-driven: every
 surface in the window — panes, routes, sidebar nav, status-bar items, palette
 entries, keybinds, themes — registers into one central registry. Core registers
@@ -47,6 +56,13 @@ plugin, and fail to resolve in a disk plugin). Capability comes in tiers:
   page. Closed by default: the plugin declares `capabilities:
   ['preview.executeJavaScript']` and the user allows it per page origin
   ([Preview page scripts](#preview-page-scripts)).
+- **Proposed `ctx.media`** — a host-owned native player surface and a narrow
+  player/context API. A plugin must declare `capabilities: ['media.player']`;
+  without that declaration `ctx.media` is `undefined`. The existing plugin
+  activation decision is the trust gate for this proposed capability. Linking a
+  chat to the player is a separate explicit action, scoped to that active chat.
+  See [Proposed native media API](#proposed-native-media-api) for current limits
+  and unresolved design decisions.
 - **`host.request`** — the gateway JSON-RPC door: sessions, config, skills,
   cron — everything the app itself calls.
 - **`captureGatewayFileDownload()`** — capture a gateway file-save action
@@ -168,8 +184,9 @@ interface HermesPlugin {
    *  for opt-in plugins: they inventory in Capabilities ▸ Plugins, off until the
    *  user flips the switch. */
   defaultEnabled?: boolean
-  /** Sensitive doors this plugin uses, declared up front. Today:
-   *  'preview.executeJavaScript' (ctx.preview). An undeclared door refuses. */
+  /** Sensitive doors this plugin uses, declared up front.
+   *  'preview.executeJavaScript' (ctx.preview); proposed 'media.player'
+   *  (ctx.media, absent when undeclared). */
   capabilities?: readonly string[]
   /** Called once at load; wire contributions through `ctx`. */
   register: (ctx: PluginContext) => void
@@ -212,8 +229,66 @@ interface PluginContext {
   preview: PluginPreview
   /** Plugin-scoped JSON persistence (keys live under `hermes.plugin.<id>.`). */
   storage: PluginStorage
+  /** Proposed native player API; present only when `media.player` is declared. */
+  media?: DesktopMedia
 }
 ```
+
+## Proposed native media API
+
+This section documents the proposed `ctx.media` contract for review only. It is
+not a released API and carries no compatibility guarantee. Declare the
+capability and make the plugin opt-in so users activate it deliberately:
+
+```javascript
+export default {
+  id: 'my-player-plugin',
+  name: 'My Player Plugin',
+  defaultEnabled: false,
+  capabilities: ['media.player'],
+  register(ctx) {
+    if (!ctx.media) return // older hosts or an undeclared capability
+    // Register UI that uses ctx.media.Surface or ctx.media.usePlayer().
+  }
+}
+```
+
+The capability is host-owned: it does not hand plugins Electron or Node APIs.
+The proposed controller currently includes `usePlayer()` and `Surface`, plus
+`command()`, `link()`, `unlink()`, `request()`, `seedPrompt()`,
+`setupMediaHelpers()`, `revealMediaJob()`, and `clearLocalData()`. A plugin must
+call `link()` in an explicit user action before the active chat can exchange
+player context; the host binds that link to the active connection, profile,
+session, and owning window. `unlink()` removes it. In this candidate, unloading
+the adapter releases its native guest (including a popped-out player), revokes
+the linked chat authority and initiates cancellation of its media work. Provider
+sign-in data is retained. Merely unmounting or hiding the pane preserves playback;
+the adapter remembers ownership even while its Surface is unmounted. One adapter
+at a time may issue mutating player commands in a window; an observer or a retired
+adapter cannot release another adapter's player. Regression tests cover the
+unmount/unload distinction and native release. These are proposed semantics,
+not an accepted public ownership contract; multi-plugin lifecycle review and
+native acceptance on this new source build remain required.
+
+The initial job path is **YouTube only**. Transcript and download requests use
+the captured YouTube watch ID, not a plugin-supplied URL. Downloads are saved to
+a user-selected local path and can be revealed through the host; the API does
+not provide an arbitrary remote-file path. Helper setup is an explicit action:
+it may create a private app-data Python environment and install pinned helper
+packages from the package index. Helper availability, setup failures, and job
+failures are reported as unavailable/error results; their exact error codes and
+the closed operation set still need maintainer approval. Provider names in the
+experimental catalog do not imply verified sign-in or protected playback.
+This proposal does not certify any runtime, protected-media/CDM path, OS, or
+provider.
+
+The public semantics, final closed operation list, stable errors, authorization
+model, helper package/update policy, supported provider policy, and runtime
+compatibility floor are unresolved review decisions. The proposed
+`media.player` declaration uses the existing plugin activation decision as its
+trust gate; it does not introduce a second universal native-consent prompt.
+Explicit chat linking remains a distinct user action. These points must be
+settled before this documentation is treated as released author guidance.
 
 A **contribution** is the one primitive every surface shares:
 

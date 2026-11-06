@@ -25,6 +25,7 @@ _CALLBACK_PARAMS = (
     "tool_result_metadata_callback",
     "thinking_callback", "reasoning_callback", "clarify_callback",
     "read_terminal_callback", "read_preview_callback", "drive_preview_callback",
+    "player_agent_callback",
     "read_window_below_callback", "connection_callback", "tour_callback", "theme_callback",
     "setup_beat_callback", "step_callback", "stream_delta_callback",
     "interim_assistant_callback",

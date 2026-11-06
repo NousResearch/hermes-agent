@@ -276,14 +276,17 @@ def wire(turn, agent):
     agent.setup_beat_callback = lambda payload: _setup_beat(turn, agent, dict(payload or {}))
     # Fire-and-forget: the tool thread waits on its own operation; the card answers by op_id.
     agent.connection_callback = lambda payload: publish("connection.request", dict(payload)) and None
-    return key, publish
+    from gateway import local_player
+    return key, publish, local_player.bind(turn, agent)
 
 
 def release(token) -> None:
     """Drop this turn's routing entry, unless a newer turn of the same session already replaced it."""
     if not token:
         return
-    key, publish = token
+    key, publish, player_token = token
+    from gateway import local_player
+    local_player.release(player_token)
     with _lock:
         if _turns.get(key) is publish:
             _turns.pop(key, None)

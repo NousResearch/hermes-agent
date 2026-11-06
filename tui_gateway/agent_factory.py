@@ -625,6 +625,24 @@ def _startup_system_prompt(cfg: dict, task_id: str) -> str:
     return system_prompt
 
 
+def _prepare_desktop_tool_surface(platform: str) -> None:
+    """Install the desktop event sink before check-gated tool schemas are built."""
+    if platform != "desktop":
+        return
+    from tools import desktop_ui
+
+    if desktop_ui.available():
+        return
+    try:
+        _wire_desktop_sinks()
+    except Exception:
+        logger.warning("Could not wire desktop tools before agent setup", exc_info=True)
+        return
+    if desktop_ui.available():
+        from tools.registry import invalidate_check_fn_cache
+        invalidate_check_fn_cache()
+
+
 def _make_agent(
     sid: str, key: str, session_id: str | None = None, session_db=None,
     model_override: dict | str | None = None, provider_override: str | None = None,
@@ -652,6 +670,7 @@ def _make_agent(
     fallback_notice = runtime.pop("_fallback_notice", None)
     _pr = _load_provider_routing()
     platform = _resolve_agent_platform(platform_override)
+    _prepare_desktop_tool_surface(platform)
     ignore_rules = is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))
     with _sessions_lock:
         session = _sessions.get(sid)

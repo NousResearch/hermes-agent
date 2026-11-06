@@ -27836,6 +27836,294 @@
         "title": "PlanUsageGauge",
         "type": "object"
       },
+      "PlayerAgentContextOperation": {
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "const": "context",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "title": "PlayerAgentContextOperation",
+        "type": "object"
+      },
+      "PlayerAgentControlOperation": {
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "const": "control",
+            "title": "Type",
+            "type": "string"
+          },
+          "context_token": {
+            "maxLength": 256,
+            "minLength": 24,
+            "title": "Context Token",
+            "type": "string"
+          },
+          "navigation_generation": {
+            "minimum": 0,
+            "title": "Navigation Generation",
+            "type": "integer"
+          },
+          "action": {
+            "enum": [
+              "play",
+              "pause",
+              "mute",
+              "unmute",
+              "seek",
+              "pin",
+              "unpin",
+              "fullscreen",
+              "exit-fullscreen"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "position_seconds": {
+            "anyOf": [
+              {
+                "maximum": 86400,
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Position Seconds"
+          }
+        },
+        "required": [
+          "type",
+          "context_token",
+          "navigation_generation",
+          "action"
+        ],
+        "title": "PlayerAgentControlOperation",
+        "type": "object"
+      },
+      "PlayerAgentDownloadOperation": {
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "const": "download.start",
+            "title": "Type",
+            "type": "string"
+          },
+          "context_token": {
+            "maxLength": 256,
+            "minLength": 24,
+            "title": "Context Token",
+            "type": "string"
+          },
+          "quality": {
+            "anyOf": [
+              {
+                "enum": [
+                  "best",
+                  "720p",
+                  "1080p",
+                  "audio"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Quality"
+          }
+        },
+        "required": [
+          "type",
+          "context_token"
+        ],
+        "title": "PlayerAgentDownloadOperation",
+        "type": "object"
+      },
+      "PlayerAgentJobOperation": {
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "enum": [
+              "job.status",
+              "job.cancel"
+            ],
+            "title": "Type",
+            "type": "string"
+          },
+          "job_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "title": "Job Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "job_id"
+        ],
+        "title": "PlayerAgentJobOperation",
+        "type": "object"
+      },
+      "PlayerAgentJobsOperation": {
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "const": "jobs.list",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "title": "PlayerAgentJobsOperation",
+        "type": "object"
+      },
+      "PlayerAgentRange": {
+        "additionalProperties": false,
+        "properties": {
+          "start_seconds": {
+            "anyOf": [
+              {
+                "maximum": 86400,
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Start Seconds"
+          },
+          "end_seconds": {
+            "anyOf": [
+              {
+                "maximum": 86400,
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "End Seconds"
+          }
+        },
+        "title": "PlayerAgentRange",
+        "type": "object"
+      },
+      "PlayerAgentRequestParams": {
+        "additionalProperties": false,
+        "description": "Closed player operation family; session scope is owned by the transport.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "operation": {
+            "discriminator": {
+              "mapping": {
+                "context": "#/components/schemas/PlayerAgentContextOperation",
+                "control": "#/components/schemas/PlayerAgentControlOperation",
+                "download.start": "#/components/schemas/PlayerAgentDownloadOperation",
+                "job.cancel": "#/components/schemas/PlayerAgentJobOperation",
+                "job.status": "#/components/schemas/PlayerAgentJobOperation",
+                "jobs.list": "#/components/schemas/PlayerAgentJobsOperation",
+                "transcript.start": "#/components/schemas/PlayerAgentTranscriptOperation"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PlayerAgentContextOperation"
+              },
+              {
+                "$ref": "#/components/schemas/PlayerAgentControlOperation"
+              },
+              {
+                "$ref": "#/components/schemas/PlayerAgentTranscriptOperation"
+              },
+              {
+                "$ref": "#/components/schemas/PlayerAgentDownloadOperation"
+              },
+              {
+                "$ref": "#/components/schemas/PlayerAgentJobsOperation"
+              },
+              {
+                "$ref": "#/components/schemas/PlayerAgentJobOperation"
+              }
+            ],
+            "title": "Operation"
+          }
+        },
+        "required": [
+          "session_id",
+          "operation"
+        ],
+        "title": "PlayerAgentRequestParams",
+        "type": "object"
+      },
+      "PlayerAgentTranscriptOperation": {
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "const": "transcript.start",
+            "title": "Type",
+            "type": "string"
+          },
+          "context_token": {
+            "maxLength": 256,
+            "minLength": 24,
+            "title": "Context Token",
+            "type": "string"
+          },
+          "language": {
+            "anyOf": [
+              {
+                "maxLength": 35,
+                "minLength": 2,
+                "pattern": "^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Language"
+          },
+          "range": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PlayerAgentRange"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "type",
+          "context_token"
+        ],
+        "title": "PlayerAgentTranscriptOperation",
+        "type": "object"
+      },
       "PluginActivation": {
         "additionalProperties": false,
         "description": "What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now``\nkinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``locales`` (``<lang>.<surface>``\nlanguage-pack layers), ``gateway_transforms`` / ``hooks`` (hook\nnames), ``callbacks`` (platforms / ``slack:<action_id>``) \u2014 live in the running gateway once it reloaded\n(``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the\nerror) and skills, usable in every open chat of the profile from its next turn \u2014 the chats also get a\nnote listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids)\napply from the next session. ``missing_dependencies``: the plugin's declared Python requirements a\nrunning process cannot import (installed after it booted, or never); ``missing_in`` names which\nprocesses (``gateway``, ``backend`` = the Desktop / dashboard process) \u2014 only restarting them loads them.",
@@ -49570,6 +49858,24 @@
           "name": "params",
           "schema": {
             "$ref": "#/components/schemas/DisplayInstallSudoParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ValueResult"
+        }
+      }
+    },
+    {
+      "name": "player.agent.request",
+      "summary": "Route a fixed player operation to the desktop renderer linked to this session.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/PlayerAgentRequestParams"
           }
         }
       ],

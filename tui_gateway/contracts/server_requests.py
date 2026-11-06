@@ -7,9 +7,9 @@ the transport and declared on the shared base) and the ``result`` the client ans
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from tools.tour_presets import TourPreset
 
@@ -248,6 +248,79 @@ class VaultCodeRequestParams(ServerRequestParams):
 
 server_request("vault.code", params=VaultCodeRequestParams, result=ValueResult,
                doc="A one-time / 2FA code the user reads from their device.")
+
+
+# ── session-linked desktop player ──────────────────────────────────────────────────────────────
+
+
+class PlayerAgentContextOperation(Params):
+    type: Literal["context"]
+
+
+class PlayerAgentControlOperation(Params):
+    type: Literal["control"]
+    context_token: str = Field(min_length=24, max_length=256)
+    navigation_generation: int = Field(ge=0)
+    action: Literal["play", "pause", "mute", "unmute", "seek", "pin", "unpin", "fullscreen", "exit-fullscreen"]
+    position_seconds: float | None = Field(default=None, ge=0, le=86_400)
+
+    @model_validator(mode="after")
+    def seek_has_position(self):
+        if (self.action == "seek") != (self.position_seconds is not None):
+            raise ValueError("seek requires position_seconds; other actions forbid it")
+        return self
+
+
+class PlayerAgentRange(Params):
+    start_seconds: float | None = Field(default=None, ge=0, le=86_400)
+    end_seconds: float | None = Field(default=None, ge=0, le=86_400)
+
+    @model_validator(mode="after")
+    def end_follows_start(self):
+        if self.end_seconds is not None and self.start_seconds is not None and self.end_seconds < self.start_seconds:
+            raise ValueError("end_seconds must be greater than or equal to start_seconds")
+        return self
+
+
+class PlayerAgentTranscriptOperation(Params):
+    type: Literal["transcript.start"]
+    context_token: str = Field(min_length=24, max_length=256)
+    language: str | None = Field(
+        default=None, min_length=2, max_length=35,
+        pattern=r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$",
+    )
+    range: PlayerAgentRange | None = None
+
+
+class PlayerAgentDownloadOperation(Params):
+    type: Literal["download.start"]
+    context_token: str = Field(min_length=24, max_length=256)
+    quality: Literal["best", "720p", "1080p", "audio"] | None = None
+
+
+class PlayerAgentJobsOperation(Params):
+    type: Literal["jobs.list"]
+
+
+class PlayerAgentJobOperation(Params):
+    type: Literal["job.status", "job.cancel"]
+    job_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+
+
+PlayerAgentOperation = Annotated[
+    PlayerAgentContextOperation | PlayerAgentControlOperation | PlayerAgentTranscriptOperation
+    | PlayerAgentDownloadOperation | PlayerAgentJobsOperation | PlayerAgentJobOperation,
+    Field(discriminator="type"),
+]
+
+
+class PlayerAgentRequestParams(ServerRequestParams):
+    """Closed player operation family; session scope is owned by the transport."""
+    operation: PlayerAgentOperation
+
+
+server_request("player.agent.request", params=PlayerAgentRequestParams, result=ValueResult,
+               doc="Route a fixed player operation to the desktop renderer linked to this session.")
 
 
 # ── desktop GUI bridges ───────────────────────────────────────────────────────────────────────

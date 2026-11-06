@@ -100,6 +100,7 @@ import {
   shouldLatchSshClientFailure,
   sshClientFailedError
 } from './backend-start-failure'
+import { clampBootProgress } from './boot-progress'
 import { describeBootstrapFailure } from './bootstrap-failure-copy'
 import {
   detectRemoteDisplay,
@@ -426,6 +427,7 @@ import {
 } from './payload-backend'
 import { petOverlayClickThrough, shouldPopInOnOverlayClosed } from './pet-overlay'
 import { placePetOverlay, registerPetOverlayIpc } from './pet-overlay-ipc'
+import { createDesktopPlayerHost } from './player/desktop-host'
 import {
   buildRegistryProfileRoutes,
   isLocalEnumerationFailure,
@@ -436,6 +438,7 @@ import { createPortalSession, resolvePortalBaseUrl } from './portal-session'
 import { readPreUpdateBackupEnabled } from './pre-update-backup-config'
 import { registerPreparedSubmissions } from './prepared-submissions'
 import { capturePreviewContents } from './preview-capture'
+import { looksBinary } from './preview-file-kind'
 import { onPreviewWatchOwnerDestroyed, sendPreviewFileChangedToOwner } from './preview-file-watch'
 import { hasClosePreviewFlag, previewGuestInputAction } from './preview-guest-escape'
 import { registerPreviewGuestIpc } from './preview-guest-ipc'
@@ -772,6 +775,8 @@ if (process.env.HERMES_DESKTOP_TMPDIR) {
   process.env.TMPDIR = process.env.HERMES_DESKTOP_TMPDIR
   delete process.env.HERMES_DESKTOP_TMPDIR
 }
+
+const desktopPlayer = createDesktopPlayerHost()
 
 const DEV_SERVER = process.env.HERMES_DESKTOP_DEV_SERVER
 const IS_PACKAGED = app.isPackaged || Boolean(process.env.HERMES_DESKTOP_IS_PACKAGED)
@@ -1711,27 +1716,6 @@ const PREVIEW_LANGUAGE_BY_EXT = {
   '.zsh': 'shell'
 }
 
-function looksBinary(buffer) {
-  if (!buffer.length) {
-    return false
-  }
-
-  let suspicious = 0
-
-  for (const byte of buffer) {
-    if (byte === 0) {
-      return true
-    }
-
-    // Allow common whitespace controls: tab, LF, CR.
-    if (byte < 32 && byte !== 9 && byte !== 10 && byte !== 13) {
-      suspicious += 1
-    }
-  }
-
-  return suspicious / buffer.length > 0.12
-}
-
 function previewFileMetadata(filePath, mimeType) {
   let byteSize = 0
   let binary = false
@@ -2388,16 +2372,6 @@ function ensureWslWindowsFonts() {
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
-}
-
-function clampBootProgress(value) {
-  const numeric = Number(value)
-
-  if (!Number.isFinite(numeric)) {
-    return 0
-  }
-
-  return Math.max(0, Math.min(100, Math.round(numeric)))
 }
 
 function broadcastBootProgress() {
@@ -16462,6 +16436,7 @@ const streamThrottle = createStreamThrottle(undefined, undefined, {
   // normal idle throttling contract.
   keepFullscreenPainting: process.platform === 'linux' && linuxOzoneBackend(process.env, process.argv) === 'wayland'
 })
+
 registerStreamWorkClock(ipcMain, sender => BrowserWindow.fromWebContents(sender))
 
 function isAnyTurnInFlight() {
@@ -16488,9 +16463,11 @@ ipcMain.on('hermes:active-work', (event, payload) => {
       event.sender.off('destroyed', forget)
       event.sender.off('render-process-gone', forget)
       activeWorkByWebContents.delete(id)
+
       if (owner) {
         streamThrottle.setVoiceActive(owner, false)
       }
+
       updateStreamThrottleFromActiveWork()
     }
 
@@ -16504,9 +16481,11 @@ ipcMain.on('hermes:active-work', (event, payload) => {
   const work = normalizeActiveWork(payload)
   activeWorkByWebContents.set(id, work)
   lastActiveWorkSeen = work
+
   if (owner?.webContents === event.sender && event.senderFrame === event.sender.mainFrame) {
     streamThrottle.setVoiceActive(owner, payload?.voiceActive === true)
   }
+
   updateStreamThrottleFromActiveWork()
 })
 
@@ -17978,6 +17957,7 @@ function heldQuitForActiveWork(event: Electron.Event): boolean {
 // before-quit with the latch set and falls through.
 function registerChatWindow(window: BrowserWindow) {
   chatWindows.add(window)
+  desktopPlayer.registerOwner(window, DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString())
   window.on('close', (event: Electron.Event) => {
     // The tray's close-to-tray handler runs first (registered first) and
     // absorbs the close into a hide — the work keeps running, so there is
@@ -18034,6 +18014,12 @@ app.on('before-quit', event => {
   appQuitting = true
   quitInProgress = true
   nvidiaEglRecovery.cleanExit()
+
+  // Dispose the player as soon as this quit is committed. A pinned service
+  // guest can keep the app alive and prevent will-quit from ever firing.
+  // The host is idempotent because managed-update/teardown joins can re-enter
+  // before-quit for this same committed shutdown.
+  desktopPlayer.dispose()
 
   minimizeToTray.beginQuit()
   mainProcessLagWatchdog.stop()

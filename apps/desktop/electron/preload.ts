@@ -1,5 +1,7 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron'
 
+import type { PlayerBridge } from '../src/lib/player-contract'
+
 import type { DesktopProfileRoute } from './desktop-profile'
 import type { HudModifierApi, HudModifierStatus } from './hud-modifier-types'
 import { customWindowControlsEnabled } from './window-controls'
@@ -50,6 +52,21 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       return () => ipcRenderer.removeListener('hermes:ui-preferences:changed', listener)
     }
   },
+  player: {
+    request: command => ipcRenderer.invoke('hermes:player:request', command),
+    onState: callback => {
+      const listener = (_event, snapshot) => callback(snapshot)
+      ipcRenderer.on('hermes:player:state', listener)
+
+      return () => ipcRenderer.removeListener('hermes:player:state', listener)
+    },
+    linkAwareness: scope => ipcRenderer.invoke('hermes:player:link-awareness', scope),
+    unlinkAwareness: () => ipcRenderer.invoke('hermes:player:unlink-awareness'),
+    agentRequest: request => ipcRenderer.invoke('hermes:player:agent-request', request),
+    setupMediaHelpers: () => ipcRenderer.invoke('hermes:player:setup-media-helpers'),
+    revealMediaJob: (scope, jobId) => ipcRenderer.invoke('hermes:player:reveal-media-job', { scope, jobId }),
+    clearLocalData: () => ipcRenderer.invoke('hermes:player:clear-local-data')
+  } satisfies PlayerBridge,
   getConnection: (profile, opts) => ipcRenderer.invoke('hermes:connection', profile, opts),
   // Loopback origin that hosts YouTube's player for the file:// renderer.
   getEmbedHostOrigin: () => ipcRenderer.invoke('hermes:embed-host:origin'),

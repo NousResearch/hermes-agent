@@ -44,6 +44,7 @@ import { parkThemePick } from '@/store/theme-pick'
 import { requestScrollToBottom } from '@/store/thread-scroll'
 import { $toursEnabled } from '@/store/tours'
 
+import { playerAgentRequest } from './player-agent-request'
 import type { GatewayEventDeps } from './types'
 
 /** The preview engine, loaded on demand so ~25KB of page-injectable source stays
@@ -109,6 +110,7 @@ type PreviewSessionRoute = 'ignore' | 'retry' | 'run'
  * the owner's pane is open (#113348).
  */
 const WINDOW_OWNED_REQUESTS = new Set([
+  'player.agent.request',
   'preview.act',
   'preview.read',
   'terminal.read',
@@ -784,6 +786,7 @@ const setupBeat: Handler = ctx => {
 
 /** Method → handler. Every `ServerRequestMap` key the desktop answers. */
 export const SERVER_REQUEST_HANDLERS: Record<string, Handler> = {
+  'player.agent.request': playerAgentRequest,
   approval,
   clarify,
   'display.install.sudo': displayInstallSudo,

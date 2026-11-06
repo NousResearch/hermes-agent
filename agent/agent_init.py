@@ -25,6 +25,7 @@ from urllib.parse import parse_qs, urlparse, urlunparse
 from agent.context_compressor import ContextCompressor
 from agent.agent_init_fallback import _fallback_entries, _init_fallback_chain, recompute_init_fallback_api_mode
 from agent.agent_init_params import _CALLBACK_PARAMS, _GATEWAY_IDENTITY_PARAMS, _PASSTHROUGH_PARAMS
+from agent.agent_init_values import _positive_int
 from agent.agent_runtime_helpers import _ra
 from agent.iteration_budget import IterationBudget, normalize_budget_warning_ratio
 from agent.memory_context import StreamingContextScrubber
@@ -1344,17 +1345,6 @@ def _apply_agent_section(agent, _agent_cfg):
         agent._auto_recovery_cycles = 5
 
 
-def _positive_int(raw: Any, *, reject: tuple = ()) -> Optional[int]:
-    """``int(raw)`` when positive, else None. ``reject`` lists types refused outright (bool, float)."""
-    if reject and isinstance(raw, reject):
-        return None
-    try:
-        parsed = int(raw)
-    except (TypeError, ValueError):
-        return None
-    return parsed if parsed > 0 else None
-
-
 def _compression_threshold(agent, cfg: dict[str, Any]) -> tuple[float, bool]:
     """Global threshold merged with the per-model override; stashes the autoraise notice.
     Codex gpt-5.4/5.5 raise to 85% (272K cap → 50% would compact at ~136K); the opt-out flag
@@ -2111,7 +2101,8 @@ def init_agent(
     tool_start_callback: Callable[..., Any] | None = None, tool_complete_callback: Callable[..., Any] | None = None,
     thinking_callback: Callable[..., Any] | None = None, reasoning_callback: Callable[..., Any] | None = None,
     clarify_callback: Callable[..., Any] | None = None, read_terminal_callback: Callable[..., Any] | None = None,
-    read_preview_callback: Callable[..., Any] | None = None, drive_preview_callback: Callable[..., Any] | None = None,
+    read_preview_callback: Callable[..., Any] | None = None, player_agent_callback: Callable[..., Any] | None = None,
+    drive_preview_callback: Callable[..., Any] | None = None,
     read_window_below_callback: Callable[..., Any] | None = None, connection_callback: Callable[..., Any] | None = None,
     tour_callback: Callable[..., Any] | None = None, theme_callback: Callable[..., Any] | None = None,
     setup_beat_callback: Callable[..., Any] | None = None,

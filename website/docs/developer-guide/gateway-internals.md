@@ -76,10 +76,14 @@ pass it back as `after` to receive only the rows written since (`reset: false`, 
 none). When `reset` is true the messages are the whole transcript and replace what the
 caller holds: on the first read (no `after`), and whenever anything but an append
 changed the child (it compacted in place, rotated to a new `child_session_id`, rewound or
-rewrote a row), including rows written and compacted between two polls. A cursored poll costs a count and a keyset read of the new rows
+rewrote a row, its metadata included: a reaction, checkpoint pruning), including rows written
+and compacted between two polls. A cursor the owner did not issue for that segment is a fresh
+read too. A cursored poll costs a count and a keyset read of the new rows
 (`transcript_cursor_state`, `conversation_tail`), not a transcript
 rebuild. A running child is
-the one the parent's roster names (the `subagent.list` rule, nested children included).
+the one the parent's roster names (the `subagent.list` rule, nested children included; after
+the parent agent is rebuilt, an orchestrator found by its durable owner id brings its own
+running workers).
 A finished child is found through the `_subagent_id` stamped on its row at spawn, and
 only when its `parent_session_id` chain reaches this conversation through delegation and
 compression hops alone; a branch of the conversation does not lend its children. An

@@ -111,3 +111,23 @@ def test_rows_written_and_compacted_between_polls_reach_the_viewer(receipt):
     assert compacted['reset'], compacted
     assert [(m['content'], m.get('archived', False)) for m in compacted['messages']] == [
         ('empty goal', True), ('empty step', True), ('empty summary', False)], compacted
+
+
+def test_a_cursor_the_owner_never_issued_is_a_fresh_read(receipt):
+    for reply in receipt['odd_cursors']:
+        assert reply.get('reset') is True and reply['child_session_id'] == 'live-child', reply
+        assert ('user', 'live summary') in _texts(reply), reply
+
+
+def test_a_metadata_only_rewrite_of_a_held_row_resets_the_viewer(receipt):
+    reacted = receipt['live_reacted']
+    assert reacted['reset'], reacted
+    [row] = [m for m in reacted['messages'] if m['content'] == 'live summary']
+    assert [r['emoji'] for r in row['display_metadata']['reactions']] == ['\U0001f525'], row
+
+
+def test_a_running_worker_of_an_orchestrator_stays_running_after_the_parent_is_rebuilt(receipt):
+    assert receipt['rebuilt_orch']['running'], receipt['rebuilt_orch']
+    deep = receipt['rebuilt_deep']
+    assert deep['running'] and deep['child_session_id'] == 'deep-child', deep
+    assert receipt['rebuilt_list'] == ['sa-0-deep', 'sa-1-orch'], receipt['rebuilt_list']

@@ -539,10 +539,24 @@ def subagent_records(parent, session_id=None, *, session_db=None, route=None, in
     # A rotating /compress moves the conversation to a new stored id; an evicted parent keeps its earlier one.
     target_sids = _compression_lineage(expected_db, target_sid)
     with registry._active_subagents_lock:
-        return [dict(record) for record in registry._active_subagents.values()
-                if (parent is not None and registry._is_descendant_of(record.get('agent'), parent))
-                or _has_fallback_evicted_ancestor(record.get('agent'), target_sids, expected_db, effective_route, registry)
-                or _owned_by_lineage(record, target_sids, expected_db)]
+        records = list(registry._active_subagents.values())
+        owned = {id(record): record for record in records
+                 if (parent is not None and registry._is_descendant_of(record.get('agent'), parent))
+                 or _has_fallback_evicted_ancestor(record.get('agent'), target_sids, expected_db, effective_route, registry)
+                 or _owned_by_lineage(record, target_sids, expected_db)}
+        return [dict(record) for record in records
+                if id(record) in owned or _below_owned(record, owned.values(), expected_db, registry)]
+
+
+def _below_owned(record, owned, expected_db, registry):
+    """A worker of a child this roster already owns, in the same session database file. After a parent
+    rebuild or eviction the orchestrator is found by its durable owner id, but its worker's owner id names the
+    orchestrator and its spawn ancestry runs through the old parent, so only the orchestrator links it."""
+    expected_path = getattr(expected_db, 'db_path', None)
+    child_path = getattr(getattr(record.get('agent'), '_session_db', None), 'db_path', None)
+    if expected_path is None or child_path is None or str(child_path) != str(expected_path):
+        return False
+    return any(registry._is_descendant_of(record.get('agent'), r.get('agent')) for r in owned)
 
 
 def _owned_by_lineage(record, target_sids, expected_db):

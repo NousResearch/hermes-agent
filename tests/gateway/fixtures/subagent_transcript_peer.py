@@ -34,6 +34,9 @@ def seed(db, target):
                       model_config={'_delegate_from': target, '_subagent_id': 'sa-1-done'})
     # An orchestrator child's own worker, delegated from the child's first segment.
     child('nested-child', 'done-child', 'sa-0-nested')
+    # A running orchestrator child and its own running worker (the rebuilt-parent case).
+    child('orch-child', target, 'sa-1-orch')
+    child('deep-child', 'orch-child', 'sa-0-deep')
     # A branch of this conversation is another conversation: its children are not ours.
     db.create_session('branch', source='gui', parent_session_id=target, model_config={'_branched_from': target})
     child('branch-child', 'branch', 'sa-0-branch')
@@ -42,7 +45,8 @@ def seed(db, target):
     db.append_message(target, role='user', content='PARENT_PRIVATE')
     for sid, texts in [('live-child', ['live goal', 'live step one']),
                        ('done-child-2', ['done summary', 'done final']),
-                       ('nested-child', ['nested goal', 'nested final']), ('foreign-done', ['FOREIGN_PRIVATE']),
+                       ('nested-child', ['nested goal', 'nested final']), ('deep-child', ['deep goal']),
+                       ('foreign-done', ['FOREIGN_PRIVATE']),
                        ('foreign-child', ['FOREIGN_PRIVATE']), ('branch-child', ['BRANCH_PRIVATE'])]:
         rows[sid] = [db.append_message(sid, role='user' if i == 0 else 'assistant', content=text)
                      for i, text in enumerate(texts)]
@@ -127,8 +131,39 @@ async def probe():
                                                              after=receipt['live_caught_up']['cursor'])
                 receipt['live_compacted_caught_up'] = await transcript(
                     ws, sid, 'sa-0-live', after=receipt['live_compacted']['cursor'])
+                # A reaction rewrites only a held row's display_metadata (no new row, no deactivation).
+                reacted = next(m['row_id'] for m in receipt['live_compacted']['messages']
+                               if m['content'] == 'live summary')
+                authority.db.set_message_reaction('live-child', reacted, '\U0001f525')
+                receipt['live_reacted'] = await transcript(
+                    ws, sid, 'sa-0-live', after=receipt['live_compacted_caught_up']['cursor'])
+                # Cursors the owner never issued, a non-ASCII digit and a row id past SQLite's integer range,
+                # are a fresh read like any foreign cursor, never a server error.
+                receipt['odd_cursors'] = [await transcript(ws, sid, 'sa-0-live', after=bad) for bad in (
+                    '\u00b2.0.0.0.live-child', f'{2 ** 63}.0.0.0.live-child', f'1.{2 ** 64}.0.0.live-child')]
+                # The parent agent is rebuilt (/model, a policy refresh): the orchestrator is still found by
+                # its durable owner id, and its worker (owner id: the orchestrator) by its spawn ancestry.
+                old_parent, rebuilt = parent, Agent()
+                rebuilt.session_id = target
+                with runner._agent_cache_lock:
+                    runner._agent_cache[live.route] = (rebuilt, 'fixture')
+                orch, deep = Agent(), Agent()
+                orch._subagent_id, orch.session_id, orch._parent_session_id = 'sa-1-orch', 'orch-child', target
+                deep._subagent_id, deep.session_id, deep._parent_session_id = 'sa-0-deep', 'deep-child', 'orch-child'
+                orch._delegate_parent_ref, deep._delegate_parent_ref = weakref.ref(old_parent), weakref.ref(orch)
+                orch._session_db = deep._session_db = authority.db
+                deep._delegate_depth = 2
+                for agent, goal in ((orch, 'orch goal'), (deep, 'deep goal')):
+                    _register_child(agent, agent._delegate_parent_ref(), goal, owner_session_id=None,
+                                    owner_transport=None, owner_session_record=None)
+                receipt['rebuilt_orch'] = await transcript(ws, sid, 'sa-1-orch')
+                receipt['rebuilt_deep'] = await transcript(ws, sid, 'sa-0-deep')
+                rebuilt_list = await rpc(ws, 'subagent.list', session_id=sid)
+                receipt['rebuilt_list'] = sorted(r['subagent_id'] for r in rebuilt_list['result']['subagents'])
             finally:
                 _unregister_subagent('sa-0-live', agent=running)
+                for name in ('sa-1-orch', 'sa-0-deep'):
+                    _unregister_subagent(name)
             # A child read before it wrote anything, then appended and compacted before the next poll.
             receipt['empty'] = await transcript(ws, sid, 'sa-2-empty')
             for i, text in enumerate(['empty goal', 'empty step']):

@@ -13,11 +13,13 @@ holds, ``after: cursor`` reads only the rows appended since. Anything else (an i
 a rotation, a rewind, an in-place rewrite) answers the whole transcript with ``reset``.
 """
 import asyncio
+import re
 
 from gateway.session_busy_controls import authorize
 from hermes_state_runtime import RuntimeStoreError
 
 _FIELDS = frozenset({'session_id', 'profile', 'subagent_id', 'after'})
+_UINT = re.compile(r'[0-9]{1,19}')
 
 
 def _cursor(session_id, row_id, state):
@@ -25,11 +27,14 @@ def _cursor(session_id, row_id, state):
 
 
 def _held(after, session_id):
-    """``(row_id, (live, inactive, revision))`` of a cursor this reply's segment issued, else None."""
+    """``(row_id, (live, inactive, revision))`` of a cursor this reply's segment issued, else None. Only
+    ASCII digits within SQLite's integer range: ``str.isdigit`` accepts ``²``, and a bigger row id fails
+    parameter binding."""
     parts = after.split('.', 4) if isinstance(after, str) else []
-    if len(parts) != 5 or parts[4] != session_id or not all(p.isdigit() for p in parts[:4]):
+    if len(parts) != 5 or parts[4] != session_id or not all(_UINT.fullmatch(p) for p in parts[:4]):
         return None
-    return int(parts[0]), tuple(int(p) for p in parts[1:4])
+    numbers = tuple(int(p) for p in parts[:4])
+    return (numbers[0], numbers[1:]) if max(numbers) < 2 ** 63 else None
 
 
 def _read(db, session_id, after):

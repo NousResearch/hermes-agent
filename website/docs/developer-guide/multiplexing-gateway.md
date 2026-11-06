@@ -187,8 +187,15 @@ The rule counts any module-level name a function rebinds (through `global`,
 `setattr(sys.modules[__name__], ...)` or `globals()`) or changes in place,
 including through a nested item or attribute, whatever its initial value, plus
 `threading.local()` and class attributes changed through the class or an
-instance without its own copy from `__init__`. A parameter or local that shares
-a module name is not the module's state. The two declarations count only when
+instance without its own copy from `__init__`. An own copy counts only when it
+is a fresh value (a container literal or constructor, a copy, a capitalised
+constructor; never an alias such as `self.values = C.values`) assigned by a
+top-level statement of `__init__` before anything there reads or writes that
+attribute, uses the instance, or returns. A walrus through `global` is a
+rebind, a method defined under a class-body `if`/`try` is a method, and an
+object bound by `from m import X` that a function changes in place is reported
+on the importer's import line, since `m` cannot see the write. A parameter or
+local that shares a module name is not the module's state. The two declarations count only when
 they resolve to the `hermes_scope_cache` API, not by name.
 
 The entry point is the list `HOSTED_ENTRY` in `scripts/code_health/config.py`.
@@ -198,7 +205,14 @@ adapters, the scope modules and the registries. The graph
 (`scripts/code_health/hosted_graph.py`) follows every import that runs at import
 time, in class bodies, loops and other blocks too, and each root's package
 `__init__`. Imports inside functions are not followed, so a module the hosted
-process loads lazily is listed as a root. Two dynamic loads are modelled: the
+process loads lazily is listed as a root. For the roots in
+`LAZY_IMPORTS_AUDITED` (`gateway.run`, `run_agent`, `agent.agent_init`) that is
+a maintained decision, not a best effort: every in-repo module they import
+inside a function is either a root or listed in `OFF_HOSTED_PATH` with the
+reason it never runs while the process serves tenants (boot before the first
+turn, process exit, a CLI-only entry), and
+`tests/scripts/test_code_health_lazy_roots.py` fails on a new one until it is
+placed. Other modules' function-body imports are not audited yet. Two dynamic loads are modelled: the
 built-in tool modules `model_tools` discovers at import, and
 `agent.lazy_forward` forwarders declared in a class body. When the hosted boot
 lands, it is added to the list.
@@ -215,6 +229,14 @@ There is no baseline file. Base credit comes from re-running the current rules
 over the base source and crediting what survives, so existing state the rules
 now detect is credited too. That makes this a ratchet: credited state is debt
 that must not grow, not a reviewed declaration that it is tenant-neutral.
+
+Measured on the committed tree (`HX015` over `reachable()`, with the rule's
+`registry_freeze.py` exclusion applied): before the lazy imports were added as
+roots, 685 modules and 510 enforced hits in 162 files; with the stricter
+instance-copy, walrus, conditional-method and `from m import X` checks, 537
+hits in 174 files on the same 685 modules; with the audited lazy imports as
+roots, 823 modules and 678 enforced hits in 232 files. All of it is existing
+debt the ratchet credits; none of it has been reviewed as tenant-neutral.
 
 The tool, MCP, provider and plugin registries are frozen once the hosted boot
 finishes: it calls `registry_freeze.freeze_registries()`, after which every

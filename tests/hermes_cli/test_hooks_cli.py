@@ -178,6 +178,23 @@ class TestHooksDoctor:
         assert "modified since approval" in out
 
 
+    @pytest.mark.parametrize("now,at,expected", [
+        # #107513: sub-second vs whole-second strings of the SAME or an older instant.
+        ("2026-10-08T00:32:53.848680Z", "2026-10-08T00:32:53.848680Z", False),
+        ("2026-10-08T00:32:53Z", "2026-10-08T00:32:53.000000Z", False),
+        ("2026-10-08T00:32:53.000000Z", "2026-10-08T00:32:53Z", False),
+        ("2026-10-08T00:32:53Z", "2026-10-08T00:32:53.848680Z", None),
+        # Real changes after approval stay flagged, either precision on either side.
+        ("2026-10-08T00:32:53.848680Z", "2026-10-08T00:32:53Z", True),
+        ("2026-10-08T00:32:54Z", "2026-10-08T00:32:53.999999Z", True),
+        ("garbage", "2026-10-08T00:32:53Z", None),
+    ])
+    def test_mtime_drift_compares_instants_not_strings(self, now, at, expected):
+        spec = SimpleNamespace(command="/x/hook.sh")
+        fake = SimpleNamespace(script_mtime_iso=lambda _cmd: now)
+        drift, _, _ = hooks_cli._mtime_drift(fake, spec, {"script_mtime_at_approval": at})
+        assert drift is expected
+
     def test_unallowlisted_script_is_not_executed(self, tmp_path):
         """Regression for M4: `hermes hooks doctor` used to run every
         listed script against a synthetic payload as part of its JSON

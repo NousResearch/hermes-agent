@@ -71,6 +71,25 @@ def test_source_compile_failure_stops_launch_without_reinstall(tui_source):
 
 
 @pytest.mark.platforms("posix")
+def test_failed_dependency_preparation_launches_the_previous_build(tui_source, monkeypatch, capsys):
+    """#150031: after an update moved the TUI's inputs, an install that cannot run (here lazy
+    installs are disabled; offline, the registry is unreachable) still starts the previous bundle."""
+    root, _ = tui_source
+    monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
+    with pytest.raises(subprocess.CalledProcessError):
+        main_tui_launch._make_tui_argv(root / "ui-tui", tui_dev=False)
+    _touch_tui_entry(root / "ui-tui")
+    argv, cwd = main_tui_launch._make_tui_argv(root / "ui-tui", tui_dev=False)
+    assert argv[-1] == str(root / "ui-tui/dist/entry.js")
+    assert subprocess.run(argv, cwd=cwd, check=True, capture_output=True, text=True).stdout.strip() == "tui"
+    assert "starting the previous TUI build" in capsys.readouterr().err
+    assert _events(root) == []
+    # --dev runs the sources, which need the dependencies.
+    with pytest.raises(subprocess.CalledProcessError):
+        main_tui_launch._make_tui_argv(root / "ui-tui", tui_dev=True)
+
+
+@pytest.mark.platforms("posix")
 @pytest.mark.parametrize("termux", [False, True])
 def test_fresh_bundle_does_not_prepare_or_compile(tui_source, monkeypatch, termux):
     root, acquired = tui_source

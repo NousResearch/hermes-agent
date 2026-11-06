@@ -251,8 +251,21 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     from hermes_cli.source_build import build_source_tui, prepare_launch_dependencies, source_build_env
 
     project_root = tui_dir.parent
-    env = source_build_env()
-    prepare_launch_dependencies(project_root, env=env)
+    try:
+        # Acquiring pnpm is part of preparation: offline, it fails like the install.
+        env = source_build_env()
+        prepare_launch_dependencies(project_root, env=env)
+    except (OSError, subprocess.SubprocessError, RuntimeError):
+        previous = tui_dir / "dist/entry.js"
+        if tui_dev or not previous.is_file():
+            raise
+        # An update whose install failed (an unreachable registry, #150031) keeps the previous
+        # trees and bundle. Nothing pins a TUI build to its backend: like a TUI left open across
+        # an update, it negotiates with the gateway (runtime.describe), so it usually still works.
+        print("⚠ Could not prepare the TUI's Node dependencies (see above); starting the previous TUI build,\n"
+              "  which predates the current code and may not support all of it. Run `hermes update` again\n"
+              "  once the package registry is reachable, or use `hermes --cli`.", file=sys.stderr)
+        return [_tui_node_bin("node"), "--expose-gc", str(previous)], tui_dir
     if tui_dev:
         # tsx imports @hermes/ink's built exports; the production bundle instead
         # compiles its source directly through scripts/build/tui.mjs.

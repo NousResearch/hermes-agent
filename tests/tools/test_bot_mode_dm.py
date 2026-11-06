@@ -1136,7 +1136,7 @@ def test_write_dm_file_unlinks_partial_file_on_write_exception(tmp_path, monkeyp
 
 @pytest.mark.platforms("linux")
 def test_dm_dir_is_private_and_uid_scoped_on_posix(tmp_path, monkeypatch):
-    monkeypatch.setattr(bot_mode_dm.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(bot_mode_dm, "_termux_safe_tempdir", lambda: str(tmp_path))
 
     dm_dir = bot_mode_dm._dm_dir()
 
@@ -1149,7 +1149,7 @@ def test_dm_dir_is_private_and_uid_scoped_on_posix(tmp_path, monkeypatch):
 
 @pytest.mark.platforms("linux")
 def test_dm_dir_repairs_restrictive_owner_mode(tmp_path, monkeypatch):
-    monkeypatch.setattr(bot_mode_dm.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(bot_mode_dm, "_termux_safe_tempdir", lambda: str(tmp_path))
     uid = os.getuid() if hasattr(os, "getuid") else None
     dirname = f"{bot_mode_dm._DM_DIR_NAME}-{uid}" if uid is not None else bot_mode_dm._DM_DIR_NAME
     dm_dir = tmp_path / dirname
@@ -1166,7 +1166,7 @@ def test_dm_dir_rejects_precreated_symlink(tmp_path, monkeypatch):
     target.mkdir()
     expected = tmp_path / f"{bot_mode_dm._DM_DIR_NAME}-{os.getuid()}"
     expected.symlink_to(target, target_is_directory=True)
-    monkeypatch.setattr(bot_mode_dm.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(bot_mode_dm, "_termux_safe_tempdir", lambda: str(tmp_path))
 
     with pytest.raises(PermissionError, match="not a directory"):
         bot_mode_dm._dm_dir()

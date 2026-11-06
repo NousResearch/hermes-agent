@@ -10,6 +10,7 @@ import json
 import logging
 import math
 import os
+from hermes_constants import _termux_safe_tempdir
 import re
 import shlex
 import sqlite3
@@ -22,7 +23,7 @@ from tools.budget_config import DEFAULT_PREVIEW_SIZE_CHARS, BudgetConfig, DEFAUL
 logger = logging.getLogger(__name__)
 PERSISTED_OUTPUT_TAG = "<persisted-output>"
 PERSISTED_OUTPUT_CLOSING_TAG = "</persisted-output>"
-STORAGE_DIR = os.path.join(tempfile.gettempdir(), "hermes-results")
+STORAGE_DIR = os.path.join(_termux_safe_tempdir(), "hermes-results")
 SPILLOVER_SUBDIR = "cache/spillover"
 # Fallback spillover age only (unreadable config); the real default is the session
 # retention window — see _spillover_retention_hours().

@@ -8,6 +8,7 @@ extras, installed through PM (``hermes tools`` configures speech-to-text).
 import logging
 import math
 import os
+from hermes_constants import _termux_safe_tempdir
 import platform
 import shlex
 import shutil
@@ -35,7 +36,7 @@ DTYPE = "int16"
 SAMPLE_WIDTH = 2  # bytes per sample (int16)
 SILENCE_RMS_THRESHOLD = 200  # RMS below this = silence (int16 range 0-32767)
 SILENCE_DURATION_SECONDS = 3.0  # continuous silence before auto-stop
-_TEMP_DIR = os.path.join(tempfile.gettempdir(), "hermes_voice")
+_TEMP_DIR = os.path.join(_termux_safe_tempdir(), "hermes_voice")
 
 
 # ── Lazy audio imports ──

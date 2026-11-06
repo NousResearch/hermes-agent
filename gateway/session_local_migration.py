@@ -13,6 +13,7 @@ from pathlib import Path
 from gateway.config import Platform
 from gateway.session import SessionEntry, SessionSource
 from gateway.session_contract import SessionRef
+from hermes_state_errors import SessionTurnLeaseLostError
 from hermes_state_runtime import RuntimeStoreError
 
 
@@ -258,7 +259,7 @@ def adopts_client_history(authority, actor, row):
 _ADOPTION_HELD = frozenset({'runtime_coordination_required'})
 
 
-def adopt_client_history(authority, actor, sid):
+def adopt_client_history(authority, actor, sid, capability=None):
     """Adopt *sid*, a routeless client-app row, on a **capability call** rather than a resume.
 
     ``session.resume`` adopts such a row before authorizing (``resolve_local_target``), but a client
@@ -269,17 +270,25 @@ def adopt_client_history(authority, actor, sid):
 
     False when the row is not one this actor adopts (another loader's, a non-native actor, a row
     ``validate_legacy_row`` refuses, a compression segment): the caller falls through to the mount and
-    keeps today's answer. A row another writer holds keeps its own refusal: a live turn lease raises
-    ``runtime_coordination_required`` rather than degrading to a read-only mount, which would hide the
-    second writer behind ``session_read_only``.
+    keeps today's answer. A row another writer holds keeps its own refusal for every capability that
+    mutates it: a live turn lease surfaces as ``SessionTurnLeaseLostError`` (``require_idle``) and a
+    second writer's claim as ``RuntimeStoreError('runtime_coordination_required')``
+    (``bind_legacy_target``). Both are re-raised rather than degraded to a read-only mount, which
+    would hide the second writer behind ``session_read_only``. ``session:read`` is the exception: a
+    lease fences transcript mutation, not a read, so a read keeps the read-only mount it opened
+    before this path existed.
     """
     row = authority.db.get_session(sid)
     if row is None or not adopts_client_history(authority, actor, row):
         return False
     try:
         resolve_local_target(authority, actor, sid)
+    except SessionTurnLeaseLostError:
+        if capability == 'session:read':
+            return False
+        raise
     except RuntimeStoreError as exc:
-        if exc.reason in _ADOPTION_HELD:
+        if exc.reason in _ADOPTION_HELD and capability != 'session:read':
             raise
         return False
     return True

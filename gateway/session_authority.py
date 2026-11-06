@@ -226,7 +226,7 @@ class SessionAuthority:
                 # A cold capability call adopts a routeless client-app row before the read-only mount
                 # claims it, so it behaves exactly as ``session.resume`` does on the same row.
                 if (restore_routed_session(self, ref.session_id) is None
-                        and not adopt_client_history(self, actor, ref.session_id)
+                        and not adopt_client_history(self, actor, ref.session_id, capability)
                         and not mount_history(self, actor, ref.session_id)):
                     from gateway.session_api import restore_api_session
                     restore_api_session(self, ref.session_id)

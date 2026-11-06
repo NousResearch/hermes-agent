@@ -10,8 +10,16 @@ from types import SimpleNamespace
 
 import pytest
 
+from hermes_state_local_migration import not_client_labels
+
 _CAPS = ['session:create', 'session:read', 'session:submit', 'session:control', 'session:approve',
          'session:respond']
+# The dashboard's own label is client history only where t_33cf038a's ``NOT_CLIENT_LABELS`` change is
+# present (the running checkout). This branch does not carry that hunk, so the ``webui`` row follows
+# the rule the code actually holds at this tip instead of the install's.
+_WEBUI_IS_CLIENT_HISTORY = 'webui' not in not_client_labels()
+CLIENT_ROWS = ('phone-mobile', 'phone-ios') + (('webui-row',) if _WEBUI_IS_CLIENT_HISTORY else ())
+READ_ONLY_ROWS = ('teams-row', 'curator-row') + (() if _WEBUI_IS_CLIENT_HISTORY else ('webui-row',))
 
 
 async def _owner(tmp_path, monkeypatch, toolsets):
@@ -50,9 +58,9 @@ async def test_a_client_apps_own_label_resumes_writable_and_a_bundled_label_stay
     Platform._add_pseudo_member('mobile')
     from hermes_cli.sessions_adopt import adoptable_sessions
     offered = {row['id'] for row in adoptable_sessions(db.db_path)}
-    assert {'phone-mobile', 'phone-ios', 'webui-row'} <= offered
-    assert not offered & {'teams-row', 'curator-row'}
-    for i, sid in enumerate(('phone-mobile', 'phone-ios', 'webui-row')):
+    assert set(CLIENT_ROWS) <= offered
+    assert not offered & set(READ_ONLY_ROWS)
+    for i, sid in enumerate(CLIENT_ROWS):
         if sid == 'phone-mobile':
             # A metadata read first opens a read-only view; the resume then adopts it in place.
             await desktop.dispatch({'id': 50, 'method': 'session.info', 'params': {'session_id': sid}})
@@ -67,7 +75,7 @@ async def test_a_client_apps_own_label_resumes_writable_and_a_bundled_label_stay
         again = await desktop.dispatch({'id': 20 + i, 'method': 'session.resume', 'params': {'session_id': sid}})
         assert again.get('result', {}).get('session_id') == sid, again
     # A bundled plugin platform's label and an automation label stay read-only.
-    for i, sid in enumerate(('teams-row', 'curator-row')):
+    for i, sid in enumerate(READ_ONLY_ROWS):
         await desktop.dispatch({'id': 30 + i, 'method': 'session.resume', 'params': {'session_id': sid}})
         sent = await desktop.dispatch({'id': 40 + i, 'method': 'prompt.submit',
                                        'params': {'session_id': sid, 'text': 'go on', 'submission_id': 's-' + sid}})

@@ -1,18 +1,18 @@
 name: hermes-consult
 repo: https://github.com/dandacompany/hermes-consult
-sha: 81efb6ea95300f3dd5dae1f5108eb0ac445c3f16
+sha: db65cc68770fc93b5229b723907ea60ef174ff1f
 description: Website voice consultations with an embedded server and bilingual Desktop settings.
 maintainer: dandacompany
 tier: community
 category: voice
 requires_hermes: ">=0.22.5"
-version: "0.2.2"
+version: "0.2.3"
 title: hermes-consult
 readme: true
 platforms: [macos, linux]
 screenshots:
-  - https://raw.githubusercontent.com/dandacompany/hermes-consult/81efb6ea95300f3dd5dae1f5108eb0ac445c3f16/assets/desktop-assistant.png
-  - https://raw.githubusercontent.com/dandacompany/hermes-consult/81efb6ea95300f3dd5dae1f5108eb0ac445c3f16/assets/desktop-safety.png
+  - https://raw.githubusercontent.com/dandacompany/hermes-consult/db65cc68770fc93b5229b723907ea60ef174ff1f/assets/desktop-assistant.png
+  - https://raw.githubusercontent.com/dandacompany/hermes-consult/db65cc68770fc93b5229b723907ea60ef174ff1f/assets/desktop-safety.png
 known_issues:
   - Requires Node.js 24 or later and a separately provisioned public HTTPS origin.
   - Subscription voice requires Hermes Live 0.9.1+ (consultation API; the catalog currently lists 0.9.0) and the user's installed Codex CLI login.

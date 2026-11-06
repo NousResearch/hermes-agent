@@ -39,13 +39,28 @@ _SUBPROCESS_WAITS = {"run", "call", "check_call", "check_output"}
 _SHELL_IDENTITY = ("pgrep -f", "ps aux", "ps -ef", "ps -eo")
 
 
+@dataclass(frozen=True)
+class _Import:
+    """What one import binds a name to: the target module path (``m.X`` for ``from m import X``),
+    whether the name is an object of that module rather than a module (``from m import X`` and
+    ``from . import X``, not ``import m.n as a``), whether the import is relative, and its line."""
+
+    target: str
+    obj: bool = False
+    relative: bool = False
+    line: int = 0
+
+    def same(self, other: _Import) -> bool:
+        return (self.target, self.obj, self.relative) == (other.target, other.obj, other.relative)
+
+
 @dataclass
 class _Scope:
     """One lexical scope's bindings: names an import binds, and names anything else binds."""
 
     parent: _Scope | None = None
     kind: str = "function"  # "module" | "class" | "function" | "comprehension"
-    imports: dict[str, str] = field(default_factory=dict)
+    imports: dict[str, _Import] = field(default_factory=dict)
     others: set[str] = field(default_factory=set)
     # Names a `global` / `nonlocal` statement hands to an outer scope: they bind nothing here.
     declared: dict[str, str] = field(default_factory=dict)
@@ -70,8 +85,8 @@ class _Scope:
     def binds(self, name: str) -> bool:
         return name in self.others or name in self.imports or name in self.declared
 
-    def resolve(self, name: str) -> str | None:
-        """Import target ``name`` means here: the innermost scope binding it decides, and a
+    def resolve(self, name: str) -> _Import | None:
+        """The import ``name`` means here: the innermost scope binding it decides, and a
         scope that binds it any other way (or by two imports) makes it a plain local. Class
         bodies are invisible to the functions and comprehensions nested in them."""
         scope: _Scope | None = self
@@ -96,19 +111,19 @@ class _Binder(ast.NodeVisitor):
     def __init__(self) -> None:
         self.module = self.scope = _Scope(kind="module")
         self.loads: dict[int, _Scope] = {}
-        self.relative: set[str] = set()  # targets bound by a relative import (package unknown)
-        self.from_names: set[str] = set()  # targets bound by ``from m import X`` (an object of m)
-        self.import_lines: dict[str, int] = {}  # first line binding each from-import target
-        self.module_aliases: set[str] = set()  # targets bound by ``import m.n as a`` (a module)
 
     def _bind(self, name: str, scope: _Scope | None = None) -> None:
         (scope or self.scope).owner(name).others.add(name)
 
-    def _import(self, name: str, target: str) -> None:
+    def _import(self, name: str, imp: _Import) -> None:
+        """Bind *name* to *imp* in the scope that owns it; the first import of a name keeps its
+        line, and a second import of something else makes the name ambiguous there."""
         scope = self.scope.owner(name)
-        if scope.imports.get(name, target) != target:
+        known = scope.imports.get(name)
+        if known is None:
+            scope.imports[name] = imp
+        elif not known.same(imp):
             self._bind(name)
-        scope.imports[name] = target
 
     def _enter(self, kind: str, nodes: Iterable[ast.AST]) -> None:
         outer, self.scope = self.scope, _Scope(self.scope, kind)
@@ -119,20 +134,15 @@ class _Binder(ast.NodeVisitor):
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
             top = alias.name.split(".")[0]
-            if alias.asname:
-                self.module_aliases.add(alias.name)
-            self._import(alias.asname or top, alias.name if alias.asname else top)
+            self._import(alias.asname or top, _Import(alias.name if alias.asname else top, line=node.lineno))
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         # A relative import keeps its module path minus the dots: rules match the leaf.
         for alias in node.names:
             if alias.name != "*":
                 target = f"{node.module}.{alias.name}" if node.module else alias.name
-                if node.level:
-                    self.relative.add(target)
-                self.from_names.add(target)
-                self.import_lines.setdefault(target, node.lineno)
-                self._import(alias.asname or alias.name, target)
+                self._import(alias.asname or alias.name,
+                             _Import(target, obj=True, relative=bool(node.level), line=node.lineno))
 
     def visit_Name(self, node: ast.Name) -> None:
         if isinstance(node.ctx, ast.Load):
@@ -216,24 +226,26 @@ def canonical_tree(tree: ast.Module) -> ast.Module:
     class _Spell(ast.NodeTransformer):
         def visit_Name(self, node: ast.Name) -> ast.AST:
             scope = binder.loads.get(id(node))
-            target = scope.resolve(node.id) if scope else None
-            if target is None:
+            imp = scope.resolve(node.id) if scope else None
+            if imp is None:
                 return node
             # The root records what it resolved from, for rules that must tell an imported module
             # from a local that shares its name, or a relative import from an absolute one.
-            node.imported, node.relative = True, target in binder.relative
-            if target == node.id:
-                return node
-            parts = target.split(".")
-            root = expr = ast.Name(parts[0], ast.Load())
-            root.imported, root.relative = True, node.relative
-            for part in parts[1:]:
-                expr = ast.Attribute(expr, part, ast.Load())
-            # ``X`` from ``from m import X``: the outermost node is the imported object itself,
-            # spelled ``m.X``, and remembers the import line for rules that report the binding.
-            if target in binder.from_names and target not in binder.module_aliases:
-                expr.from_import = binder.import_lines.get(target, node.lineno)
-            return ast.copy_location(expr, node)
+            node.imported, node.relative = True, imp.relative
+            expr: ast.expr = node
+            if imp.target != node.id:
+                parts = imp.target.split(".")
+                root = expr = ast.Name(parts[0], ast.Load())
+                root.imported, root.relative = True, imp.relative
+                for part in parts[1:]:
+                    expr = ast.Attribute(expr, part, ast.Load())
+                ast.copy_location(expr, node)
+            # ``X`` from ``from m import X`` (or ``from . import X``): the outermost node is the
+            # imported object itself, spelled ``m.X``, and remembers the line of the import this
+            # read resolved to, for rules that report the binding.
+            if imp.obj:
+                expr.from_import = imp.line
+            return expr
 
     return ast.fix_missing_locations(_Spell().visit(tree))
 

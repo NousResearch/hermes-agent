@@ -19,7 +19,7 @@
  * launch the built Electron app against it (`npm run dev:mock`).
  */
 
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import http from 'node:http'
 import type { ServerResponse } from 'node:http'
@@ -28,6 +28,8 @@ import nodePath from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import { z } from 'zod'
+
+import { resolveElectronBinary } from '../../apps/desktop/e2e/electron-binary.ts'
 
 import { writeEnvFile, writeMockProviderConfig } from './mock-provider-config.ts'
 
@@ -1457,17 +1459,6 @@ function createDevSandbox(): DevSandbox {
   }
 }
 
-/** Resolve the Electron binary: the repo's own install, then PATH. */
-function findElectron(repoRoot: string): string {
-  const local = nodePath.join(repoRoot, 'node_modules', 'electron', 'dist', 'electron')
-
-  if (fs.existsSync(local)) {return local}
-  const r = spawnSync('which', ['electron'], { encoding: 'utf8' })
-
-  if (r.status === 0 && r.stdout.trim()) {return r.stdout.trim()}
-  throw new Error('Electron binary not found. Run "npm install" from the repo root.')
-}
-
 /** Fail fast with a clear message when the desktop dist/ is missing. */
 function assertDistBuilt(desktopRoot: string): void {
   const electronMain = nodePath.join(desktopRoot, 'dist', 'electron-main.mjs')
@@ -1497,7 +1488,7 @@ async function runDevLaunch(): Promise<void> {
   writeEnvFile(sandbox.hermesHome)
   console.log(`  HERMES_HOME: ${sandbox.hermesHome}`)
 
-  const electronBin = findElectron(repoRoot)
+  const electronBin = resolveElectronBinary([desktopRoot, repoRoot])
 
   const env: Record<string, string> = {
     ...process.env,

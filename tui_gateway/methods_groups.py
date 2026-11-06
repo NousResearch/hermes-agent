@@ -10,6 +10,7 @@ import contextlib
 import importlib
 import os
 import threading
+import uuid
 
 # Imported, so never rebound: it reads the bound server from this module, not server.py's globals.
 from .methods_groups_forward import forward_bound as _forward_to_owner
@@ -21,7 +22,7 @@ method = _registry.method
 _METHODS = (
     "groups.capabilities", "groups.list", "groups.create", "groups.state", "groups.send",
     "groups.rename", "groups.context", "groups.log", "groups.disband", "groups.replicate", "groups.replica_state",
-    "groups.promote", "groups.demote", "groups.stop", "groups.retry", "groups.approve",
+    "groups.promote", "groups.demote", "groups.stop", "groups.continue", "groups.retry", "groups.approve",
     "groups.peer.invite", "groups.peer.revoke", "groups.peer.register", "groups.attachment.upload",
     "groups.attachment.download")
 #: ``groups.discard`` is forwarded to an owning gateway only, so local capabilities never list it.
@@ -187,12 +188,14 @@ def _room_error_class(replica_only: bool) -> type:
 def _room_method(
     name: str, *, code: int, room_code: int | None = None, replica_only: bool = False,
     with_reason: bool = True, service_code: int | None = None,
-    service_message: str = _DRIVER_UNAVAILABLE, db: bool = False):
+    service_message: str = _DRIVER_UNAVAILABLE, db: bool = False, admits: bool = False):
     """Register ``fn`` under ``name`` with the shared hosted-room error envelope.
     ``service_code``: the live service is required (else that error) and passed as a third
     argument; ``db``: the default room db path follows. ``room_code`` maps ``HostedRoomError``
     (only ``ReplicaError`` when ``replica_only``) to a client error with ``{"reason"}`` data
-    when ``with_reason``; anything else maps to ``code``."""
+    when ``with_reason``; anything else maps to ``code``. A refusal that admitted nothing of
+    the request (``admits``: no service to take it; or an error marked ``admitted = False``)
+    adds ``{"admitted": false}``."""
     error_class = _room_error_class  # closure cell: handlers run under server.py globals
     owner_call = _forward_to_owner
 
@@ -204,7 +207,7 @@ def _room_method(
             if service_code is not None:
                 service = get_hosted_room_service()
                 if service is None:
-                    return _err(rid, service_code, service_message)
+                    return _err(rid, service_code, service_message, {"admitted": False} if admits else None)
                 args += (service,)
             if db:
                 from gateway.hosted_rooms import default_db_path
@@ -212,10 +215,13 @@ def _room_method(
             try:
                 return fn(*args)
             except Exception as exc:
+                data = {"admitted": False} if getattr(exc, "admitted", None) is False else {}
                 if room_code is not None and isinstance(exc, error_class(replica_only)):
                     reason = getattr(exc, "reason", None) if with_reason else None
-                    return _err(rid, room_code, str(exc), {"reason": reason} if reason else None)
-                return _err(rid, code, str(exc))
+                    if reason:
+                        data = {"reason": reason, **data}
+                    return _err(rid, room_code, str(exc), data or None)
+                return _err(rid, code, str(exc), data or None)
         handler.__doc__ = fn.__doc__
         return method(name)(handler)
     return dec
@@ -394,7 +400,7 @@ def _(rid, params: dict, db_path) -> dict:
 
 @_room_method(
     "groups.send", code=5112, room_code=4111, service_code=4123,
-    service_message=_WORKER_UNAVAILABLE)
+    service_message=_WORKER_UNAVAILABLE, admits=True)
 def _(rid, params: dict, service) -> dict:
     """Append one typed event idempotently (inert ``message.user`` only; actor is server-owned)."""
     from gateway.hosted_rooms import user_event_id
@@ -465,8 +471,16 @@ def _(rid, params: dict, service) -> dict:
 def _(rid, params: dict, service) -> dict:
     """Durably cancel queued or running work for one hosted room."""
     count = service.stop_room(
-        str(params.get("room_id") or ""), cancel_id=str(params.get("cancel_id") or "desktop-stop"))
+        str(params.get("room_id") or ""), cancel_id=str(params.get("cancel_id") or uuid.uuid4().hex))
     return _ok(rid, {"cancelled": count})
+
+
+@_room_method("groups.continue", code=5126, room_code=4128, service_code=4115)
+def _(rid, params: dict, service) -> dict:
+    """Grant a discussion paused at its cap one more budget of rounds and messages."""
+    event = service.continue_room(
+        str(params.get("room_id") or ""), discussion_event_id=str(params.get("discussion_event_id") or ""))
+    return _ok(rid, {"continued": True, "event": event})
 
 
 @_room_method("groups.approve", code=5119, service_code=4115)

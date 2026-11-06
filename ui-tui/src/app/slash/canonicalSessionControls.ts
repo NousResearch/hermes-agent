@@ -243,7 +243,7 @@ function isSupersededControl(
   )
 }
 
-async function applyBranchResult(result: CanonicalControlResult, arg: string, ctx: SlashRunCtx) {
+export async function applyBranchResult(result: CanonicalControlResult, arg: string, ctx: SlashRunCtx) {
   if (!result.branched_session_id) {
     throw new Error(t('session.common.invalidResponse', 'branch'))
   }

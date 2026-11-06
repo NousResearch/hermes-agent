@@ -135,7 +135,7 @@ A `/command` registered with `ctx.register_command()` runs in the gateway proces
 
 - **Return its text** instead of calling `print()`. Printed output goes to the gateway's stdout, not to the user's chat.
 - **Read the session's working directory with `agent.runtime_cwd.resolve_agent_cwd()`**, not `os.getcwd()`, which is the gateway's own directory. The gateway pins the session's directory while the handler runs.
-- **Take the calling session as handler keywords**: declare `session_id`, `session_key`, `platform` or `source` (the sender's `SessionSource`) and Hermes passes them; one-argument handlers keep working unchanged. The same values are bound as `HERMES_SESSION_*` around the handler (`gateway.session_context.get_session_env`, never `os.environ`), so a background job the handler starts records the session as its parent.
+- **Take the calling session as handler keywords**: declare `session_id`, `session_key`, `platform` or `source` (the sender's `SessionSource`) and Hermes passes them; one-argument handlers keep working unchanged. The same values are bound as `HERMES_SESSION_*` around the handler (read them with `from gateway.session_context import get_session_env`, never `os.environ`), so a background job the handler starts records the session as its parent.
 
 The classic CLI waits for the reply for as long as the handler runs. Ctrl+C stops the wait, not the handler: the handler finishes in the gateway and its reply is not shown. The command runs over its own connection to the gateway, so the session's prompts, interrupts and other commands are not held up while it runs.
 
@@ -464,8 +464,8 @@ a different interval.
 `hermes plugins update` with no name runs the same check and lists the
 plugins it can move: catalog installs (re-pinned to the reviewed catalog
 commit) and tracked Git installs (pulled). It names every plugin it skips and
-why: pinned, needs fixing, status unknown, or a pip distribution Hermes does
-not upgrade. In a terminal it asks once, then updates each plugin through the
+why: pinned, held with `--ref`, needs fixing, status unknown, or a pip
+distribution Hermes does not upgrade. In a terminal it asks once, then updates each plugin through the
 same path as `hermes plugins update NAME`, so new capabilities, a widened
 catalog pin and scan findings still prompt per plugin. One failure does not
 stop the rest; the summary lists what updated, what was already current and
@@ -474,10 +474,45 @@ it prints the list and updates nothing unless you pass `--yes`; with `--yes`,
 consent prompts fail closed as in any non-interactive update (new
 capabilities stay ungranted, a widened catalog pin is not applied).
 
-By default, plugins only update when you run `hermes plugins update`. Setting
-`plugins.auto_apply: true` opts tracked Git plugins into unattended updates.
-Both routes use the update security scan. Auto-apply does not manage pinned,
-manual, drifted, or pip-distribution rows.
+By default, plugins only update when you run `hermes plugins update`. Turning
+on auto-update (`plugins.auto_apply: true`) lets the gateway's scheduled check
+apply the same catalog re-pins and tracked Git pulls on its own. Both routes
+use the update security scan, and an unattended update never accepts a widened
+catalog pin or Git update (new tools, hooks, capabilities), new capabilities or a caution scan verdict on a Git update: those
+wait for you to run the update yourself. (A catalog re-pin accepts a caution
+verdict, because a reviewer read that pin when it was admitted to the catalog.)
+Auto-update does not manage pinned, manual, drifted, or pip-distribution rows,
+nor a catalog plugin you installed with `--ref` at a commit other than its
+catalog pin: that stays on the commit you chose until you name it
+(`hermes plugins update <name>`); every Update all, `hermes plugins update`
+with no name included, skips it. A `--ref` equal to the catalog pin is recorded
+as an ordinary catalog install, so auto-update moves it with the catalog. It runs on the gateway's housekeeping thread, so it
+never delays starting a session, and an offline check costs one warning.
+Code the scheduled check updates loads in new sessions; a running session keeps
+the code it already imported. The setting is per profile.
+
+The same switch and an "Update all" action are on every surface:
+
+| Surface | Update all | Auto-update |
+|---|---|---|
+| CLI | `hermes plugins update` | `hermes plugins auto-update [on\|off]` |
+| Chat (classic CLI and TUI) | `/plugins update` | `/plugins auto-update [on\|off]` |
+| Desktop app | Plugins tab, **Update all** | Plugins tab, **Auto-update** switch |
+| Web dashboard | Plugins page, **Update all** | Plugins page, **Auto-update** switch |
+
+`/plugins update`, Desktop and the dashboard update without asking per plugin,
+so a plugin that needs a review (widened pin or Git update, caution scan of a Git update) is
+listed as "needs review" with nothing changed; update it by name to review it.
+Each plugin they update is reloaded right away, as an update from the plugin's
+own Update action is: its MCP servers and skills reach open chats now, its
+Python tools load in new sessions. Two
+updates of the same plugin never run at once: the second one is refused and
+changes nothing.
+
+`hermes update` can move catalog pins. Installed catalog plugins stay on their
+old pin until updated, so the update names them for every profile and asks
+that profile's gateway to check again on its next tick (which applies them
+when auto-update is on).
 
 If a manifest changes or introduces `update_url`, Hermes refuses the new address
 until you approve it with `hermes plugins trust-update-url NAME`. This is a

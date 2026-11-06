@@ -28,7 +28,7 @@ import sys
 import tempfile
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
@@ -216,6 +216,8 @@ class Sender:
     teammates: list
     task_id: Optional[str]
     agent: Any
+    # The chain gate's author-envelope fields for this call (``tools/bot_mode_dm_chain.py``).
+    chain: dict = field(default_factory=dict)
 
     def roster_err(self, msg: str) -> str:
         return _err(msg, roster=self.teammates, peers=self.peers)
@@ -274,7 +276,7 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
         return _err(f"message too long ({len(body)} chars > {MESSAGE_MAX_CHARS}). "
                     "Send the essentials; share large content as a file path instead.")
 
-    from tools.bot_mode_dm_coordination import fan_out, split_targets
+    from tools.bot_mode_dm_coordination import split_targets
 
     targets = split_targets(target, sender)
     if not targets:
@@ -283,11 +285,12 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
         return _err(f"Too many targets ({len(targets)} > {FAN_OUT_MAX}); message the ones the task needs.")
     reply = _wants_reply(expects_reply)
     # Sender signature: the friendly name when the bot has one (#89720); the @handle stays the routing alias.
-    content = (f"Message from 🤖 {_display_name(me, roster_homes.get(me, Path(home)), list(roster_homes))} (@{_handle(me, list(roster_homes))}): "
-               + ("" if reply else f"{NO_REPLY_MARKER} ") + body)
-    if len(targets) == 1:
-        return _dispatch(targets[0], content, sender, wake="notify" if reply else "none")
-    return fan_out(targets, content, sender, expects_reply=reply)
+    signature = f"Message from 🤖 {_display_name(me, roster_homes.get(me, Path(home)), list(roster_homes))} (@{_handle(me, list(roster_homes))}): "
+    from tools.bot_mode_dm_chain import send_gated
+
+    # The runtime's chain rules run before any transport (hop cap, repeated ask, reply to a bot: #137027).
+    return send_gated(targets, reply, body, lambda wants: signature + ("" if wants else f"{NO_REPLY_MARKER} ") + body,
+                      sender)
 
 
 def _dispatch(raw_target: str, content: str, sender: Sender, *, wake: Any) -> str:
@@ -301,7 +304,7 @@ def _dispatch(raw_target: str, content: str, sender: Sender, *, wake: Any) -> st
     roster = list(roster_homes)
     delivery = dict(task_id=sender.task_id, agent=sender.agent, wake=wake)
     # Attribution for the recipient's memory hooks; the text prefix stays the human-facing signature.
-    author = {"id": f"bot:{me}", "name": _handle(me, roster), "is_bot": True}
+    author = {"id": f"bot:{me}", "name": _handle(me, roster), "is_bot": True, **sender.chain}
 
     # Peer target: '<peer>/<agent>' or a bare registered peer name.
     peer_match = _PEER_TARGET_RE.match(raw_target)
@@ -319,7 +322,7 @@ def _dispatch(raw_target: str, content: str, sender: Sender, *, wake: Any) -> st
         # The delivery runs in a background service context whose PATH lacks the gateway's
         # venv bin dir, so a bare "hermes" resolves to a system install and dies on import
         # under the wrong interpreter (#108628). _hermes_cli pins the entrypoint beside
-        # this interpreter; _delivery_lock/_local_delivery_home match argv[0] by basename,
+        # this interpreter; _local_delivery_home matches argv[0] by basename,
         # so the absolute path stays compatible.
         return _start_delivery([_hermes_cli(), "-p", _self_profile_name(root), "peer", "dm", dm_target], content,
                                f"@{peer_profile or peer_name} on peer '{peer_name}'", stdin_file=True,
@@ -356,7 +359,7 @@ def _dispatch(raw_target: str, content: str, sender: Sender, *, wake: Any) -> st
         return _err(f"@{_handle(resolved, roster)} messaged you this turn and your final response already goes back "
                     "to them: put your reply in it instead of messaging them. Do not retry.")
     # Local teammates are admitted through the profile authority; the argv only names the
-    # profile for the runner's lock/home lookups and is never executed.
+    # profile for the runner's home lookup and is never executed.
     return _start_delivery([_hermes_cli(), "-p", resolved], content, f"@{_handle(resolved, roster)}",
                            stdin_file=False, profile_home=roster_homes[resolved], author=author, **delivery)
 
@@ -470,26 +473,6 @@ def _write_dm_file(content: str) -> str:
         _unlink_dm_file(path)
         raise
     return path
-
-
-def _delivery_lock(argv: list[str], *, stdin_file: bool):
-    """Per-profile turn lock for a LOCAL teammate delivery: local and relay deliveries
-    into one profile both run a Bot Chat turn here, so the turn window is serialized on
-    ``tools.bot_relay``'s cross-process lock. Peer transports (stdin mode) are locked
-    on the remote gateway by its own deliver path.
-
-    See #93091.
-    """
-    # Match the CLI element by basename: argv[0] may be an absolute venv path
-    # (service contexts lack PATH) and carries .exe on Windows; split on both separators.
-    # Split on both separators so the shape matches regardless of which platform built the argv. See #93590.
-    cli = (argv[0] if argv else "").rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
-    if stdin_file or len(argv) < 3 or cli not in ("hermes", "hermes.exe") or argv[1] != "-p":
-        return contextlib.nullcontext()
-    from tools.bot_mode_probe import _hermes_root
-    from tools.bot_relay import acquire_turn_lock
-
-    return acquire_turn_lock(_hermes_root(Path(_default_home())), argv[2])
 
 
 def _live_intent_file(dm_file: str | os.PathLike) -> str:
@@ -748,12 +731,11 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
         from tools.bot_relay import delivery_env
 
         env = delivery_env(author, profile_home if not stdin_file else None)
-        with _delivery_lock(argv, stdin_file=stdin_file):
-            # Keep the file open until the transport exits; cleanup occurs
-            # after subprocess.run returns, not merely after stdin reaches EOF.
-            with open(dm_file, "r", encoding="utf-8-sig") as stream:
-                # Passing the file descriptor as stdin bypasses the BOM-aware decoder.
-                return subprocess.run(argv, input=stream.read().encode("utf-8"), check=False, env=env).returncode
+        # Keep the file open until the transport exits; cleanup occurs
+        # after subprocess.run returns, not merely after stdin reaches EOF.
+        with open(dm_file, "r", encoding="utf-8-sig") as stream:
+            # Passing the file descriptor as stdin bypasses the BOM-aware decoder.
+            return subprocess.run(argv, input=stream.read().encode("utf-8"), check=False, env=env).returncode
     finally:
         _unlink_dm_file(dm_file)
 
@@ -1012,8 +994,8 @@ def _delivery_main(args: list[str]) -> int:
         return _run_delivery(argv, dm_file, stdin_file=mode == "stdin", profile_home=profile_home, author=author)
     except Exception as exc:
         # Every refusal ships a typed reason on stdout so the completion notification carries it
-        # back to the sender (#93091): 'target_busy' from the queue's bounded wait, otherwise the
-        # same vocabulary-guarded classification the relay lane applies.
+        # back to the sender (#93091), with the same vocabulary-guarded classification the relay
+        # lane applies.
         from tools.bot_failure_reasons import delivery_failure_reason
 
         print(json.dumps({"error": str(exc), "reason": delivery_failure_reason(exc)}))

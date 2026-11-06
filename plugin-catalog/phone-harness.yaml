@@ -1,15 +1,16 @@
 name: phone-harness
-repo: https://github.com/ShawnPana/phone-harness
-sha: 7e3ea6cff1377db4d4f37e852c59493120aa52b6
+repo: https://github.com/phone-harness/phone-harness
+sha: 549d300e317a76ec8f493600cb04c69ba4f9d97d
 subdir: integrations/hermes
 title: Phone Harness
-description: "Drive a real phone from Hermes with one phone_exec tool: an iPhone via iPhone Mirroring on a Mac, an Android over adb, or a cloud phone from Phone Harness Cloud. Disclosure — runs model-written Python on this computer with your user's permissions through the phone-harness package (installed from PyPI); every phone_exec call goes to Hermes's approval prompt unless you opt in to classifier auto-run, a heuristic, bypassable check that decides which scripts ask first; taps and types into your real phone and its apps and accounts; screenshots go to the system temp folder and are attached to the tool result for vision models; a cloud phone streams its screen to Phone Harness Cloud, bills by the minute, and uses phone-harness's own cloud sign-in (~/.config/phone-harness/auth.json); phone-harness's PostHog telemetry (script text, script output, helper arguments) is off under Hermes unless you opt in."
+description: "Drive a real phone from Hermes with one phone_exec tool: an iPhone via iPhone Mirroring on a Mac, an Android over adb, or a cloud phone from Phone Harness Cloud. Disclosure — runs model-written Python on this computer with your user's permissions through the phone-harness package (installed from PyPI); every phone_exec call goes to Hermes's approval prompt unless you opt in to classifier auto-run, a heuristic, bypassable check that decides which scripts ask first; taps and types into your real phone and its apps and accounts; screenshots go to the system temp folder and are attached to the tool result for vision models; a cloud phone streams its screen to Phone Harness Cloud and uses phone-harness's own cloud sign-in (~/.config/phone-harness/auth.json), and the push_file helper uploads a file from this computer to Phone Harness Cloud's file store to open it on the cloud phone; a cloud Android bills by the minute, and a cloud iPhone is a per-phone subscription; phone-harness's PostHog telemetry (script text, script output, helper arguments, errors, an install ID, and your cloud account and session IDs when signed in) is off under Hermes unless you opt in."
 maintainer: ShawnPana
 tier: community
 category: tools
 version: "0.1.0"
 requires_hermes: ">=0.21.6"
-docs_url: https://github.com/ShawnPana/phone-harness/tree/main/integrations/hermes#readme
+docs_url: https://github.com/phone-harness/phone-harness/tree/main/integrations/hermes#readme
+image: https://raw.githubusercontent.com/phone-harness/phone-harness/549d300e317a76ec8f493600cb04c69ba4f9d97d/integrations/hermes/assets/banner.png
 capabilities:
   provides_tools:
   - phone_exec

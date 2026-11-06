@@ -33,6 +33,7 @@ async def test_a_platform_installed_by_this_start_is_in_the_runners_config(tmp_p
             raise SystemExit(0)
 
     monkeypatch.setattr("gateway.run.load_gateway_config_for_runner", load_config)
+    monkeypatch.setattr("gateway.config.load_gateway_config", load_config)
     monkeypatch.setattr("hermes_cli.left_core_migration.recover_at_startup", recover_at_startup)
     monkeypatch.setattr("gateway.run._host_attach_or_none", lambda replace, force: _none())
     monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
@@ -47,6 +48,64 @@ async def test_a_platform_installed_by_this_start_is_in_the_runners_config(tmp_p
         await gateway_run.start_gateway(replace=False, verbosity=None)
 
     assert seen["platforms"] == {Platform.TELEGRAM, Platform.WEIXIN}
+
+
+@pytest.mark.asyncio
+async def test_a_named_launch_stays_standalone_across_the_reload(tmp_path, monkeypatch):
+    """``hermes -p foo gateway run`` on a host with default + foo downgrades the implicit multiplex
+    default to standalone and reserves only foo. The reload after the migration installed a platform
+    must keep that verdict: a fresh decision re-enables multiplex and serves default's adapters,
+    which this process never reserved."""
+    root = tmp_path / ".hermes"
+    (root / "profiles" / "foo").mkdir(parents=True)
+    (root / "config.yaml").write_text("model: {default: m}\n")
+    (root / "profiles" / "foo" / "config.yaml").write_text("model: {default: m}\n")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "foo"))
+    monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
+    import hermes_constants
+    monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
+    seen = {}
+    decisions = []
+
+    import hermes_cli.gateway_multiplex_mode as mux
+    monkeypatch.setattr(mux, "log_multiplex_decision", decisions.append)
+
+    class Runner:
+        def __init__(self, config):
+            seen["multiplex"] = config.multiplex_profiles
+            seen["served"] = [name for name, _home in gateway_run._multiplex_profile_homes(config)] \
+                if config.multiplex_profiles else ["foo"]
+            raise SystemExit(0)
+
+    from agent.secret_scope import is_multiplex_active, set_multiplex_active
+    monkeypatch.setattr("agent.secret_scope._MULTIPLEX_ACTIVE", False)
+    monkeypatch.setattr("agent.secret_scope._AUTO_PINNED_HOME", None)
+
+    def recover_at_startup(*, say=None, gateway_start=False):
+        # The install reads this profile's env unscoped (manifest requires_env): it must not fail closed.
+        seen["multiplex_active_at_migration"] = is_multiplex_active()
+        return ["yuanbao"]
+
+    monkeypatch.setattr("hermes_cli.left_core_migration.recover_at_startup", recover_at_startup)
+    monkeypatch.setattr("gateway.run._host_attach_or_none", lambda replace, force: _none())
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda *a, **kw: None)
+    monkeypatch.setattr("gateway.status.acquire_gateway_runtime_lock", lambda: True)
+    monkeypatch.setattr("gateway.status.write_pid_file", lambda: None)
+    monkeypatch.setattr("gateway.status.remove_pid_file", lambda: None)
+    monkeypatch.setattr("gateway.status.release_gateway_runtime_lock", lambda: None)
+    monkeypatch.setattr("gateway.run._write_runtime_status_quiet", lambda **kw: None)
+    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: None)
+    monkeypatch.setattr("gateway.run.GatewayRunner", Runner)
+
+    try:
+        with pytest.raises(SystemExit):
+            await gateway_run.start_gateway(replace=False, verbosity=None)
+    finally:
+        set_multiplex_active(False)
+
+    assert seen == {"multiplex": False, "served": ["foo"], "multiplex_active_at_migration": False}
+    assert [(d.enabled, d.source) for d in decisions] == [(True, "default"), (False, "guard")]  # no re-decision
 
 
 async def _none():

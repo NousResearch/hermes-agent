@@ -18,7 +18,8 @@ logger = logging.getLogger("tools.process_registry")
 
 class ProcessTerminationMixin:
     """The subclass supplies ``_host_pid_is_ours``, ``_is_host_pid_alive``,
-    ``_detached_host_fate`` and ``_daemon_term_grace_seconds``. See ProcessRegistry."""
+    ``_detached_host_fate``, ``_finish_exited`` and ``_daemon_term_grace_seconds``.
+    See ProcessRegistry."""
 
     @staticmethod
     def _proc_alive(proc) -> bool:
@@ -159,6 +160,25 @@ class ProcessTerminationMixin:
             if not survivors or time.monotonic() >= deadline:
                 return survivors
             time.sleep(0.05)
+
+    def _reconcile_pty_exit(self, session: "ProcessSession") -> None:
+        """Reconcile a PTY session the reader never observed the exit of.
+        The reader's ``while pty.isalive()`` is the only exit signal for a PTY
+        session (``_reconcile_local_exit`` needs a ``Popen`` handle), and that
+        probe can stay satisfied after the child is gone (Windows ConPTY,
+        #137437) — wait()/poll() then spin to their full deadline with no net.
+        The kernel PID verdict is authoritative: gone (or recycled onto another
+        process) ⇒ exited, even when the reader never finalized."""
+        pty = session._pty
+        if pty is None or session.pid_scope != "host" or not session.pid:
+            return
+        if self._detached_host_fate(session.pid, session.host_start_time) == "running":
+            return  # Alive, or liveness unverifiable: the reader still owns the exit.
+        exit_code = getattr(pty, "exitstatus", None)
+        self._finish_exited(session, exit_code if isinstance(exit_code, int) else -1)
+        logger.info(
+            "Reconciled PTY session %s: OS reports pid %s gone; exited with code %s "
+            "though the reader never finalized.", session.id, session.pid, exit_code)
 
     def _probe_survivors(self, session: "ProcessSession") -> list[int]:
         survivors: list[int] = []

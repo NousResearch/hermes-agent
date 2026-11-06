@@ -1,6 +1,6 @@
 name: plugin_foundry
 repo: https://github.com/julian-saint-work/hermes-plugin-foundry
-sha: 56b56c0db5224a5c0fcb655e2f90318f2e74653d
+sha: f8c699214f33eff69ae7baa7d755c5479dbcdc22
 description: 'Turn a narrow plugin request into a native Hermes plugin: manifest, entry point, tool, SQLite state, tests, static scan and catalog draft. Two archetypes (folder watcher and JSON API poller). Generated code is reviewed before install or catalog submission; nothing is auto-merged.'
 maintainer: julian-saint-work
 tier: community

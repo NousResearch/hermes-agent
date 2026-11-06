@@ -12,7 +12,12 @@ beforeAll(() => {
 const getGlobalModelOptions = vi.fn()
 
 vi.mock('@/hermes', () => ({
-  getGlobalModelOptions: () => getGlobalModelOptions()
+  // `store/settings-scope` pulls in `store/profile`, which calls
+  // setApiRequestProfile at module scope on import — the field now reads the
+  // shared "Applies to" scope so its catalog is the edited profile's.
+  setApiRequestProfile: vi.fn(),
+  // Forward args: the field now passes the scope profile explicitly.
+  getGlobalModelOptions: (...args: unknown[]) => getGlobalModelOptions(...args)
 }))
 
 // Load once at module scope so no test's 15s budget pays the heavy transform

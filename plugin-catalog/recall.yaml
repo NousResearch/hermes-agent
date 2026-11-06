@@ -1,0 +1,51 @@
+name: recall
+title: recall
+version: "0.2.0"
+repo: https://github.com/memeshee/hermes-recall
+sha: f2fde6bea6d2f4ee0fb2be6e80034b4b09a2188a
+description: >-
+  Local file recall: a private on-device index of the documents already on the user's machine, with
+  a search tool over file content (SQLite FTS5, no network and no embedding service), a
+  recall_open reader for PDF, Word, Excel, PowerPoint, OpenDocument, Markdown, CSV, email and source
+  files, an @recall: context reference that expands matching passages into the turn, and a
+  pre_llm_call hook that puts up to three candidate file paths in front of the model before it
+  answers a document question. Five tools (recall_index, recall_search, recall_open, recall_stats,
+  recall_forget), a bounded background refresh on session start, and the /recall slash command.
+  Extraction is standard library only (FlateDecode-aware PDF stream extractor, OOXML text nodes).
+  Disclosure - reads the contents of files under the folders the user points it at (defaults
+  ~/Documents, ~/Desktop, ~/Downloads, ~/Projects) and may be pointed at any folder the user names,
+  stores the extracted text in a plaintext SQLite index under HERMES_HOME/plugin-data/recall/, and
+  injects short excerpts of that text into the model prompt on turns whose message looks
+  document-related (disable with the ambient setting or use recall_forget to drop paths). Indexed
+  text reaches the user's model provider in the normal course of a turn. Credential stores (.env,
+  *.pem, id_rsa, .ssh, .aws, auth.json, state.db and a wider built-in denylist) are refused by name
+  before any file is opened, and recall_open refuses them too. Files on disk are never modified,
+  moved or deleted; nothing is written outside the plugin data directory; no network calls and no
+  credentials.
+maintainer: memeshee
+tier: community
+category: tools
+requires_hermes: ">=0.19.0"
+docs_url: https://github.com/memeshee/hermes-recall#readme
+image: https://raw.githubusercontent.com/memeshee/hermes-recall/f2fde6bea6d2f4ee0fb2be6e80034b4b09a2188a/docs/answer.png
+screenshots:
+  - https://raw.githubusercontent.com/memeshee/hermes-recall/f2fde6bea6d2f4ee0fb2be6e80034b4b09a2188a/docs/answer.png
+  - https://raw.githubusercontent.com/memeshee/hermes-recall/f2fde6bea6d2f4ee0fb2be6e80034b4b09a2188a/docs/refusal.png
+  - https://raw.githubusercontent.com/memeshee/hermes-recall/f2fde6bea6d2f4ee0fb2be6e80034b4b09a2188a/docs/title.png
+platforms: []
+known_issues:
+  - Scanned PDFs and images are indexed by filename only - there is no OCR, and recall_stats reports the skip reasons.
+  - Ranking is lexical (BM25 plus path, recency and phrase boosts), not semantic; no embedding model is used.
+  - The first index of a large folder costs roughly 20 ms per file.
+capabilities:
+  provides_tools:
+    - recall_index
+    - recall_search
+    - recall_open
+    - recall_stats
+    - recall_forget
+  provides_hooks:
+    - pre_llm_call
+    - on_session_start
+  provides_middleware: []
+  requires_env: []

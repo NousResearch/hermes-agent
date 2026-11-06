@@ -104,8 +104,10 @@ describe('PlayerManager media job routing', () => {
     const destroyWindow = vi.fn()
 
     const slot = {
-      owner, ownerId: 7, presentation: 'floating', authWindows: new Set(),
-      guest: { webContents: { isDestroyed: () => false, close: closeGuest } },
+      owner, ownerId: 7, source: 'youtube', status: 'ready', presentation: 'floating', authWindows: new Set(),
+      guest: { webContents: { id: 41, isDestroyed: () => false, close: closeGuest,
+        getURL: () => 'https://www.youtube.com/watch?v=abcdefghijk',
+        canGoBack: () => false, canGoForward: () => false } },
       floatWindow: { isDestroyed: () => false, destroy: destroyWindow, contentView: { removeChildView: vi.fn() } },
       floatBoundsTracking: null, mediaPoll: null
     } as unknown as Slot

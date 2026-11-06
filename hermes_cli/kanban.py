@@ -13,6 +13,7 @@ import os
 import shlex
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -97,6 +98,26 @@ def _parse_branch_flag(value: Optional[str]) -> Optional[str]:
     return branch
 
 
+# Module-level override for the daemon pidfile path (tests / special homes).
+# Default: ``<hermes_home>/state/kanban-daemon.pid`` resolved in
+# ``_standalone_daemon_alive``. ONE writer keeps the pidfile accurate: the
+# standalone daemon owns it.
+_daemon_pidfile: Optional[str] = None
+
+
+def _standalone_daemon_alive(pidfile: Optional[str] = None) -> Optional[int]:
+    """Return the standalone dispatcher pid if its pidfile exists and the process is alive."""
+    try:
+        path = pidfile or _daemon_pidfile or str(
+            Path(__file__).resolve().parents[2] / "state" / "kanban-daemon.pid"
+        )
+        pid = int(Path(path).read_text().strip())
+        os.kill(pid, 0)  # raises if dead
+        return pid
+    except (OSError, ValueError, FileNotFoundError):
+        return None
+
+
 def _check_dispatcher_presence(hermes_home: Optional[Path] = None) -> tuple[bool, str]:
     """``(running, message)`` for the "will anything dispatch this?" warning: True when a gateway is
     alive for this HERMES_HOME with ``kanban.dispatch_in_gateway`` on, else False + human guidance.
@@ -107,7 +128,14 @@ def _check_dispatcher_presence(hermes_home: Optional[Path] = None) -> tuple[bool
     different HERMES_HOME than the profile the request targets, which otherwise produced a "no gateway is
     running" warning against a perfectly healthy profile gateway (#71211). CLI callers leave it ``None`` and
     keep the existing process-level behavior.
+
+    The standalone daemon (``hermes kanban daemon``) is the ACTUAL dispatcher when
+    ``dispatch_in_gateway=false`` — it is checked first so a live daemon never produces a
+    false "will sit in ready" warning (observed 2026-10-02, pid 58910).
     """
+    daemon_pid = _standalone_daemon_alive()
+    if daemon_pid is not None:
+        return (True, f"standalone kanban daemon pid={daemon_pid} (dispatch enabled)")
     try:
         from gateway.status import resolve_gateway_liveness  # type: ignore
 
@@ -982,16 +1010,41 @@ def _commented(conn, reason: Optional[str], author, prefix: str, op):
 def _cmd_block(args: argparse.Namespace) -> int:
     reason = _joined_words(args.reason)
     kind = getattr(args, "kind", None)
+    not_before = getattr(args, "not_before", None)
+    # Validate the gate up front: ``_commented`` defers ``op`` into
+    # ``_bulk_apply``, so a ValueError raised inside the op would escape the
+    # per-task loop instead of printing a usable message.
+    try:
+        kb.normalize_not_before(not_before)
+        if kind == "scheduled" and not not_before:
+            raise ValueError(
+                "--kind scheduled is a time gate and requires --not-before "
+                "(unix seconds or an ISO-8601 timestamp); without a clock the card "
+                "would park in 'scheduled' with nothing able to wake it — use "
+                "--kind needs_input for a gate a human opens"
+            )
+        if not_before and kind not in (None, "scheduled"):
+            raise ValueError(
+                f"--not-before is a time gate and only applies to --kind scheduled "
+                f"(got {kind!r})"
+            )
+    except ValueError as exc:
+        return _err(str(exc))
     author = _profile_author()
     ids = _bulk_ids(args)
     suffix = f": {reason}" if reason else ""
     with kbc.connect_closing() as conn:
         def ok_msg(tid):
-            # Report where it landed: dependency blocks -> todo, tripped unblock-loop breaker -> triage.
+            # Report where it landed: dependency blocks -> todo, time gates ->
+            # scheduled (with the clock), tripped unblock-loop breaker -> triage.
             landed = kb.get_task(conn, tid)
             where = landed.status if landed else "blocked"
             if where == "todo":
                 return f"{tid} → todo (dependency wait){suffix}"
+            if where == "scheduled" and landed and landed.not_before:
+                return (f"{tid} → scheduled until "
+                        f"{datetime.fromtimestamp(landed.not_before).isoformat()} "
+                        f"(auto-resumes; no cron needed){suffix}")
             if kind == "dependency" and where == "blocked":
                 return f"Blocked {tid} as needs_input (no open parent to wait on){suffix}"
             if where == "triage":
@@ -1002,19 +1055,34 @@ def _cmd_block(args: argparse.Namespace) -> int:
             return f"Blocked {tid}{suffix}"
 
         op = _commented(conn, reason, author, "BLOCKED", lambda tid: kb.block_task(
-            conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id_for(tid)))
+            conn, tid, reason=reason, kind=kind, not_before=not_before,
+            expected_run_id=_worker_run_id_for(tid)))
         return _bulk_apply(ids, op, ok_msg, lambda tid: f"cannot block {tid}")
 
 
 def _cmd_schedule(args: argparse.Namespace) -> int:
     reason = _joined_words(args.reason)
+    not_before = getattr(args, "not_before", None)
+    try:
+        kb.normalize_not_before(not_before)
+    except ValueError as exc:
+        return _err(str(exc))
     author = _profile_author()
     ids = _bulk_ids(args)
     suffix = f": {reason}" if reason else ""
     with kbc.connect_closing() as conn:
+        def ok_msg(tid):
+            landed = kb.get_task(conn, tid)
+            if landed and landed.not_before:
+                return (f"Scheduled {tid} until "
+                        f"{datetime.fromtimestamp(landed.not_before).isoformat()} "
+                        f"(auto-resumes; no cron needed){suffix}")
+            return f"Scheduled {tid}{suffix}"
+
         op = _commented(conn, reason, author, "SCHEDULED", lambda tid: kb.schedule_task(
-            conn, tid, reason=reason, expected_run_id=_worker_run_id_for(tid)))
-        return _bulk_apply(ids, op, lambda tid: f"Scheduled {tid}{suffix}", lambda tid: f"cannot schedule {tid}")
+            conn, tid, reason=reason, not_before=not_before,
+            expected_run_id=_worker_run_id_for(tid)))
+        return _bulk_apply(ids, op, ok_msg, lambda tid: f"cannot schedule {tid}")
 
 
 def _cmd_unblock(args: argparse.Namespace) -> int:

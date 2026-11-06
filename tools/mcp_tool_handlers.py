@@ -8,7 +8,9 @@ import inspect
 import json
 import time
 from contextlib import asynccontextmanager
-from functools import partial
+from functools import partial, wraps
+from threading import RLock
+from weakref import WeakValueDictionary
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -689,6 +691,32 @@ def _render_call_tool_result(result, server_name: str, image_paths: Optional[lis
         return json.dumps({"result": text_result}, ensure_ascii=False)
 
 
+def _stable_handler_factory(factory):
+    """Keep factory identity while a registry entry or in-flight call owns the handler.
+
+    These factories capture only route names, operation and timeout, never a session,
+    profile or credentials. Weak values avoid retaining unloaded catalogs; serializing
+    creation also avoids distinct closures on concurrent cache misses.
+    """
+    signature = inspect.signature(factory)
+    handlers = WeakValueDictionary()
+    lock = RLock()
+
+    @wraps(factory)
+    def cached(*args, **kwargs):
+        bound = signature.bind(*args, **kwargs)
+        bound.apply_defaults()
+        key = tuple(bound.arguments.items())
+        with lock:
+            handler = handlers.get(key)
+            if handler is None:
+                handler = factory(*args, **kwargs)
+                handlers[key] = handler
+            return handler
+    return cached
+
+
+@_stable_handler_factory
 def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *, native_images: bool = False):
     """Sync handler (``handler(args_dict, **kwargs)``) calling an MCP tool via the background loop. Always a JSON
     string, except with ``native_images`` (the registry handler the agent loop dispatches): a result carrying
@@ -751,6 +779,7 @@ def _make_utility_handler(op: str, log_label: str, rpc, render, required: Option
     """``(server_name, tool_timeout) -> sync handler`` for one utility tool: ``rpc(session, args,
     server_name)`` awaited under ``_rpc_lock``, ``render(result, server_name)`` -> JSON-able
     payload, ``required`` validated before any transport work."""
+    @_stable_handler_factory
     def _factory(server_name: str, tool_timeout: float):
         def _handler(args: dict, **kwargs) -> str:
             from tools import mcp_tool_discovery as _discovery  # lazy: import cycle
@@ -843,6 +872,7 @@ _make_get_prompt_handler = _make_utility_handler(
     _render_get_prompt, required="name")
 
 
+@_stable_handler_factory
 def _make_check_fn(server_name: str):
     """Connection-alive check; lazy (schema-cache registered) servers count as available.
 

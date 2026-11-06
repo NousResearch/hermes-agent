@@ -270,7 +270,26 @@ def _annotate_wait_times(jobs: list[dict]) -> None:
         j["wait_s"] = (started - latest_dep_end).total_seconds() if latest_dep_end else 0.0
 
 
-def collect_timings(token: str, repo: str, run_id: str, head_sha: str) -> dict:
+def close_running_job(raw: dict) -> dict | None:
+    """The job this report runs in, as completed at its last finished step.
+
+    The report runs as trailing steps of the gate job, which the API still
+    lists as ``in_progress``. Dropping it like other unfinished jobs would
+    leave the gate out of every report and baseline. Its finished steps (the
+    verdict) are the work it did before the report started; the report's own
+    steps are excluded, as they were when the report was a job of its own.
+    """
+    done = [s for s in (raw.get("steps") or []) if s.get("status") == "completed" and s.get("completed_at")]
+    if not raw.get("started_at") or not done:
+        return None
+    failed = any(s.get("conclusion") == "failure" for s in done)
+    return {**raw, "steps": done, "status": "completed",
+            "conclusion": "failure" if failed else "success",
+            "completed_at": max(s["completed_at"] for s in done)}
+
+
+def collect_timings(token: str, repo: str, run_id: str, head_sha: str,
+                    current_runner: str = "") -> dict:
     """Collect job/step timings from the GitHub API.
 
     1. Get orchestrator run's direct jobs (detect, all-checks-pass, etc.).
@@ -295,7 +314,12 @@ def collect_timings(token: str, repo: str, run_id: str, head_sha: str) -> dict:
         if any(s.get("name", "").startswith("Run ./.github/workflows/") for s in steps):
             continue  # workflow-call placeholder
         if job.get("status") in ("in_progress", "queued"):
-            continue  # skip self / unfinished
+            # This job (matched by runner) counts up to its last finished step.
+            closed = (close_running_job(job)
+                      if current_runner and job.get("runner_name") == current_runner else None)
+            if closed is not None:
+                direct.append(closed)
+            continue
         direct.append(job)
 
     # Sub-workflow runs
@@ -1062,7 +1086,8 @@ def main():
             token = os.environ.get("GITHUB_TOKEN")
             if not token:
                 raise TimingsUnavailable("GITHUB_TOKEN is empty")
-            timings = collect_timings(token, repo, run_id, head_sha)
+            timings = collect_timings(token, repo, run_id, head_sha,
+                                      current_runner=os.environ.get("RUNNER_NAME", ""))
         except TimingsUnavailable as e:
             # Observability job: a missing report must never redden the PR.
             # Emit a degraded summary + placeholder artifact and exit 0.

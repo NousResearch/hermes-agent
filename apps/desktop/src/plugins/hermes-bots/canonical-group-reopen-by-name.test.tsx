@@ -20,27 +20,11 @@ const { request, notify, openWorkspace, catalog } = vi.hoisted(() => ({
 
 vi.mock('@hermes/plugin-sdk', async importOriginal => {
   const sdk = await importOriginal<typeof HermesSdk>()
-  const { captureGroupRequests } = await import('./canonical-group-contract-test-utils')
+  const { localGatewaySdkMock } = await import('./canonical-group-contract-test-utils')
   const { en } = await import('@/i18n/en')
 
-  return {
-    ...sdk,
-    gatewayActivationEpoch: () => 1,
-    useGatewayActivationEpoch: () => 1,
-    host: {
-      ...sdk.host, requestProfile: captureGroupRequests(request).request, notify, openWorkspace,
-      request: (method: string, params?: Record<string, unknown>) => request(null, method, params),
-      connections: vi.fn(async () => []),
-      state: {
-        ...sdk.host.state,
-        connectionId: sdk.atom<string | null>('local'),
-        profile: sdk.atom('default'),
-        gateway: sdk.atom('open')
-      }
-    },
-    useI18n: () => ({ locale: 'en', t: catalog.patch ? catalog.patch(en as unknown as Record<string, unknown>) : en }),
-    usePluginI18n: () => translateBots
-  }
+  return { ...await localGatewaySdkMock(sdk, request, () => translateBots, { notify, openWorkspace, connections: vi.fn(async () => []) }),
+    useI18n: () => ({ locale: 'en', t: catalog.patch ? catalog.patch(en as unknown as Record<string, unknown>) : en }) }
 })
 vi.mock('./group-chat-parts', async importOriginal => ({
   ...await importOriginal<typeof GroupChatParts>(),
@@ -231,4 +215,27 @@ it('renders the lookup states and Retry from the active catalog, not hardcoded E
 
   await act(async () => { releaseList({ rooms: [], next_offset: null }) })
   expect(screen.getByText('T:missing')).toBeTruthy()
+})
+
+const owner = { kind: 'gateway' as const, connectionId: 'remote', profile: 'owner-profile', roomId: 'room-original' }
+const savedOwner = { ...owner, connectionId: 'saved-owner', profile: 'default', roomId: 'saved-room' }
+const roomKey = 'canonical:remote:owner-profile:room-original'
+
+it.each([
+  { origin: 'name', group: 'Team', stored: owner, expected: owner },
+  { origin: 'key', group: roomKey, stored: savedOwner, expected: owner },
+  { origin: 'name', group: roomKey, stored: savedOwner, expected: savedOwner }
+] as const)('$origin open of $group keeps its owner after restart and peer removal', async ({ origin, group, stored, expected }) => {
+  $groupChats.set({ [group]: { log: [], watermarks: {}, engine: stored } })
+  gateway(() => ({ rooms: [original, { ...original, room_id: savedOwner.roomId, name: roomKey }], next_offset: null }))
+  const mixed = [{ name: 'alpha', connectionId: 'local' }, { name: 'default', connectionId: 'remote', remoteSource: true }]
+  const view = await act(async () => render(<GroupChatWorkspace group={group} members={mixed} origin={origin} />))
+  expect(request.mock.calls.find(call => call[1] === 'groups.list')?.[0]).toMatchObject({ connectionId: expected.connectionId, targetProfile: expected.profile })
+  expect(request.mock.calls.find(call => call[1] === 'groups.state')?.[2]).toMatchObject({ room_id: expected.roomId })
+  view.unmount()
+  $canonicalGroupBindings.set({})
+  request.mockClear()
+  await act(async () => { render(<GroupChatWorkspace group={group} members={mixed.slice(0, 1)} origin={origin} />) })
+  expect(request.mock.calls.find(call => call[1] === 'groups.state')?.[0]).toMatchObject({ connectionId: expected.connectionId, targetProfile: expected.profile })
+  expect(methods()).not.toContain('groups.create')
 })

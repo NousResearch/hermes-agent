@@ -1,0 +1,42 @@
+# Vendor-hosted remote MCP catalog submission; approval follows maintainer review.
+manifest_version: 1
+
+name: careopenly
+description: "Find U.S. senior living communities, public prices, reviews and licensing records."
+source: https://www.careopenly.com/connectors
+
+transport:
+  type: http
+  url: https://mcp.careopenly.com/mcp
+
+auth:
+  type: none
+
+tools:
+  default_enabled:
+    - search_facilities
+    - get_facility
+
+suggest:
+  keywords:
+    - "careopenly"
+    - "senior living"
+  hosts:
+    - careopenly.com
+  examples:
+    - "Find assisted living communities in Bellevue, Washington."
+    - "Show public prices and licensing records for a selected community."
+
+post_install: |
+  No account, API key or credentials are required. Restart the session
+  after installation to discover the enabled read-only tools.
+
+  Search public U.S. senior living community facts and inspect published
+  starting prices, floor plans, review summaries and available government
+  licensing/inspection records. Coverage varies. Published prices are dated
+  observations, not quotes or availability guarantees. Information requests
+  continue on careopenly.com; these MCP tools read public information.
+
+  Documentation: https://www.careopenly.com/connectors
+  Privacy: https://www.careopenly.com/privacy
+  Contact: leo@pageonelab.com.

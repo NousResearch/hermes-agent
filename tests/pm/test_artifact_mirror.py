@@ -95,6 +95,10 @@ def test_both_pnpm_archives_follow_the_users_npm_registry(tmp_path, monkeypatch)
         assert source.url == "https://npm.corp.example/npm/" + path
 
 
+_PNPM_PATH = "/@pnpm/exe.linux-x64/-/exe.linux-x64-12.15.0.tgz"
+_PNPM_LOCK_URL = "https://registry.npmjs.org" + _PNPM_PATH
+
+
 @pytest.fixture
 def no_proxy_env(monkeypatch):
     """urllib honours proxy variables in any case; a developer's proxy must not carry 127.0.0.2."""
@@ -103,9 +107,9 @@ def no_proxy_env(monkeypatch):
 
 
 @contextlib.contextmanager
-def _lan_mirror():
+def _lan_mirror(handler=RangeHandler):
     """A plain-http npm registry on an address the downloader does not treat as loopback."""
-    server = HTTPServer(("127.0.0.2", 0), RangeHandler)
+    server = HTTPServer(("127.0.0.2", 0), handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         yield f"http://127.0.0.2:{server.server_port}/"
@@ -122,11 +126,10 @@ def test_plain_http_npm_mirror_serves_pinned_bytes(tmp_path, monkeypatch, dl_ser
     from pm.downloader import Download, HashError
 
     body = b"pinned pnpm tarball"
-    RangeHandler.payloads["/@pnpm/exe.linux-x64/-/exe.linux-x64-12.15.0.tgz"] = b"tampered with mirror" if tampered else body
+    RangeHandler.payloads[_PNPM_PATH] = b"tampered with mirror" if tampered else body
     with _lan_mirror() as lan_mirror:
         monkeypatch.setenv("NPM_CONFIG_REGISTRY", lan_mirror)
-        source = pinned_source("https://registry.npmjs.org/@pnpm/exe.linux-x64/-/exe.linux-x64-12.15.0.tgz",
-                               tmp_path / "pnpm.tgz", hashlib.sha256(body).hexdigest())
+        source = pinned_source(_PNPM_LOCK_URL, tmp_path / "pnpm.tgz", hashlib.sha256(body).hexdigest())
         assert source.url.startswith(lan_mirror)
         download = Download([source], partials_dir=tmp_path / "partials")
         if tampered:
@@ -136,6 +139,19 @@ def test_plain_http_npm_mirror_serves_pinned_bytes(tmp_path, monkeypatch, dl_ser
         else:
             assert download.run() == [source.dest]
             assert source.dest.read_bytes() == body
+
+
+@pytest.mark.parametrize("source", ["lock row", "fallback"])
+def test_plain_http_is_only_for_the_users_npm_mirror(tmp_path, source):
+    """A pinned lock row or archive on http stays refused: only the npmrc registry chose http."""
+    from pm.downloader import Download, Source
+
+    digest = "a" * 64
+    http_url = "http://127.0.0.2:9/tool.tgz"  # refuses at once if the policy ever dials it
+    plan = (Source(http_url, tmp_path / "t", digest) if source == "lock row"
+            else Source("https://example.invalid/tool.tgz", tmp_path / "t", digest, fallbacks=(http_url,)))
+    with pytest.raises(ValueError, match="non-https"):
+        Download([plan], partials_dir=tmp_path / "p").run()
 
 
 def test_plain_http_stays_refused_without_a_pin(tmp_path):

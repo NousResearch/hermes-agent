@@ -37,6 +37,20 @@ export const $wakeWord = atom<WakeWordState>(INITIAL_WAKE_WORD_STATE)
 /** Active client mic stream for remote wake (capture: client). */
 let clientCapture: ClientWakeCaptureHandle | null = null
 
+// The detector is process-global, but wake events must target the session that
+// is active in this renderer. Wiring refreshes this whenever that session
+// changes; keep it outside the UI atom because it is routing identity, not
+// presentation state.
+let wakeWordSessionId: string | null = null
+
+export function setWakeWordSessionId(sessionId: string | null | undefined): void {
+  wakeWordSessionId = sessionId?.trim() || null
+}
+
+function wakeStartParams(params: Record<string, unknown> = {}): Record<string, unknown> {
+  return wakeWordSessionId ? { ...params, session_id: wakeWordSessionId } : params
+}
+
 /** Stop client-side PCM capture (also called on wake.detected before voice). */
 export function stopClientCapture(): void {
   clientCapture?.stop()
@@ -274,27 +288,29 @@ export async function armWakeWord(request: WakeRequester = gatewayRequester): Pr
 
     applyWakeStatus(status)
 
-    if (!status?.available || status.listening) {
-      // Armed already (e.g. another surface/restart) — reattach feeder if client.
-      if (status?.listening) {
-        const mode = (status.capture || '').toLowerCase()
+    if (!status?.available) {
+      return
+    }
 
-        if (mode === 'client' || mode === 'remote' || mode === 'external') {
-          void maybeStartClientCapture({
-            started: true,
-            capture: 'client',
-            frame_length: status.frame_length ?? 1280
-          })
-        }
+    if (status.listening && !wakeWordSessionId) {
+      // Armed already (e.g. another surface/restart) — reattach feeder if client.
+      const mode = (status.capture || '').toLowerCase()
+
+      if (mode === 'client' || mode === 'remote' || mode === 'external') {
+        void maybeStartClientCapture({
+          started: true,
+          capture: 'client',
+          frame_length: status.frame_length ?? 1280
+        })
       }
 
       return
     }
 
-    const result = await request<WakeStartResponse>('wake.start', {
+    const result = await request<WakeStartResponse>('wake.start', wakeStartParams({
       surface: 'gui',
       client_capture: true
-    })
+    }))
 
     applyWakeStartResult(result)
   } catch {
@@ -326,11 +342,11 @@ export async function toggleWakeWord(request: WakeRequester = gatewayRequester):
       // wake_word.enabled in config.yaml (on/off) and the choice sticks for
       // future sessions. Auto-arm (armWakeWord) never passes it.
       applyWakeStartResult(
-        await request<WakeStartResponse>('wake.start', {
+        await request<WakeStartResponse>('wake.start', wakeStartParams({
           persist: true,
           surface: 'gui',
           client_capture: true
-        })
+        }))
       )
     }
   } catch (error) {
@@ -395,10 +411,10 @@ export async function resumeWakeAfterVoice(request: WakeRequester = gatewayReque
         return
       }
 
-      const started = await request<WakeStartResponse>('wake.start', {
+      const started = await request<WakeStartResponse>('wake.start', wakeStartParams({
         surface: 'gui',
         client_capture: true
-      })
+      }))
 
       applyWakeStartResult(started)
 
@@ -421,5 +437,6 @@ export async function resumeWakeAfterVoice(request: WakeRequester = gatewayReque
 /** Test-only reset. */
 export function resetWakeWordState(): void {
   stopClientCapture()
+  wakeWordSessionId = null
   $wakeWord.set(INITIAL_WAKE_WORD_STATE)
 }

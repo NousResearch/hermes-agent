@@ -168,7 +168,8 @@ listener keeps working.
   "system"`, `text` the summary a reader sees (without the preamble, end marker, re-quoted user
   messages, recovery footer and ranking line written for the model), `compacted_messages` (the count
   the footer named, else null), `timestamp` and the stored `row_id`. A later compaction that carries,
-  re-wraps or unwraps a summary carrier still shows the older handoff, each once.
+  re-wraps or unwraps a summary carrier still shows the older handoff, each once, before the first row
+  in the whole transcript that holds it, wherever a page starts.
   A page holds at most `limit` (1-500, default 100) rows, compaction rows included, plus up to 64 tool
   results of the call at its edge (a row's handoffs and the row itself can fall on two pages, each sent
   once), and at most 2 MiB of JSON, cut between tool groups (a tool result whose call sits on another
@@ -185,7 +186,11 @@ listener keeps working.
   including rows appended and compacted between two polls) answers `reset: true` from the first page:
   the caller replaces what it holds. The check, the page and the state the next cursor holds are read
   in one read transaction (`SessionDB.transcript_read_snapshot`), so a cursor vouches for exactly the
-  rows its page holds. A reply without a cursor is `reset: true` too.
+  rows its page holds. A store without a pooled reader (not WAL, read-only, or at the pool's ceiling)
+  holds no transaction across the reads: there the read counts only when no write landed in the
+  database meanwhile, else it is read once more; when that read also overlaps a write, the reply is
+  `reset: true` from the first page with a cursor whose next poll resets again. A reply without a cursor
+  is `reset: true` too.
   `order: "latest"` starts at the newest rows and pages older until `next_cursor` is null; its cursor
   is keyed by each message's first durable row, so a page boundary holds across later compactions.
   A single-segment conversation is paged in SQL on its display index, in one read transaction, with

@@ -1,6 +1,7 @@
 """``SessionDB.transcript_read_snapshot``: every read inside sees one generation on a WAL store; a
 DELETE-journal store (reads go through the writer connection under the write lock) is not pinned, so a
-write from the same thread cannot wait on its own lock."""
+write from the same thread cannot wait on its own lock; there ``consistent()`` turns false once any write
+lands, this process's or another connection's."""
 import threading
 
 import hermes_yaml as yaml
@@ -30,7 +31,7 @@ def test_reads_inside_a_snapshot_see_one_generation(tmp_path):
         db.close()
 
 
-def test_a_delete_journal_store_is_not_pinned(tmp_path, monkeypatch):
+def test_a_delete_journal_store_is_not_pinned_and_any_write_makes_it_inconsistent(tmp_path, monkeypatch):
     home = tmp_path / "hermes-home"
     home.mkdir()
     (home / "config.yaml").write_text(yaml.safe_dump({"database": {"journal_mode": "delete"}}), encoding="utf-8")
@@ -41,13 +42,21 @@ def test_a_delete_journal_store_is_not_pinned(tmp_path, monkeypatch):
         db.create_session("s1", source="cli")
         done = []
 
+        other = SessionDB(db_path=home / "state.db")
+
         def read_and_write():
             with db.transcript_read_snapshot() as consistent:
+                done.append((consistent.pinned, consistent()))
                 db.append_message("s1", role="user", content="hello")
+                done.append((_count(db), consistent()))
+            with db.transcript_read_snapshot() as consistent:
+                assert consistent()
+                other.append_message("s1", role="assistant", content="from another connection")
                 done.append((_count(db), consistent()))
         worker = threading.Thread(target=read_and_write, daemon=True)
         worker.start()
         worker.join(10)
-        assert done == [(1, True)]
+        assert done == [(False, True), (1, False), (2, False)]
+        other.close()
     finally:
         db.close()

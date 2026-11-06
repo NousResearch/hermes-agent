@@ -1,7 +1,8 @@
 """The store reads behind ``session.transcript``, the ``session.list`` picker fields and a delegated child's
 lookup by ``subagent_id``, kept in this one module: the display set a resume and a transcript page read,
 the compression lineage a delegated child displays, the state check a poller's cursor holds (it tells an
-append from every other change), the compaction handoffs a page shows as rows, one keyset page of a
+append from every other change), the compaction handoffs a page shows as rows (and those a display row
+before the page already holds), one keyset page of a
 segment, and the session facts a picker shows. Bound onto SessionDB through ``SessionMessagesMixin``. Each
 method's docstring names its storage-interface port.
 """
@@ -26,6 +27,20 @@ _HANDOFF_ROWS_SQL = (
     " WHERE w.id IN (SELECT value FROM json_each(:shown)) AND g.role IN ('user', 'assistant')"
     " AND (g._compressed_summary = 1 OR instr(g.content, '[CONTEXT COMPACTION') > 0"
     " OR instr(g.content, '[CONTEXT SUMMARY]') > 0) ORDER BY w.id, g.id")
+
+# The handoff rows (as ``_HANDOFF_ROWS_SQL`` finds them) that a shown row of :sid before slot :before holds:
+# driven from the matching handoff copies (by uid on idx_messages_session_uid; a legacy uid-less one by its
+# content), each joined to the rows that hold it, kept when one is its slot's chosen display row.
+_HANDOFF_SHOWN_BEFORE_SQL = (
+    "SELECT DISTINCT g.* FROM messages g JOIN messages w ON w.session_id = g.session_id AND (w.id = g.id OR ("
+    "g.message_uid IS NOT NULL AND g.message_uid <> '' AND w.message_uid = g.message_uid AND w.id > g.id))"
+    " WHERE g.session_id = :sid AND g.role IN ('user', 'assistant') AND ({match})"
+    " AND (g._compressed_summary = 1 OR instr(g.content, '[CONTEXT COMPACTION') > 0"
+    " OR instr(g.content, '[CONTEXT SUMMARY]') > 0)"
+    " AND w.display_order < :before AND w.id = (SELECT candidate.id FROM messages AS candidate"
+    " WHERE candidate.session_id = :sid AND candidate.display_order = w.display_order"
+    " AND (candidate.active = 1 OR candidate.compacted = 1){visible}{later}"
+    " ORDER BY candidate.active DESC, candidate.id DESC LIMIT 1) ORDER BY g.id")
 
 _REMOVED_IDENTITIES_SQL = (
     "SELECT session_id, id, role, timestamp, tool_call_id, tool_calls, tool_name, display_kind, display_metadata, "
@@ -71,6 +86,16 @@ def _ids(values: Iterable[str]) -> str:
     return json.dumps(sorted(set(values)))
 
 
+class _ReadCheck:
+    """``transcript_read_snapshot``'s ``consistent()``; ``pinned``: one read transaction (else validated)."""
+
+    def __init__(self, check, *, pinned: bool):
+        self._check, self.pinned = check, pinned
+
+    def __call__(self) -> bool:
+        return bool(self._check())
+
+
 class SessionStoredReadsMixin:
     """Stored-session reads for clients that read without attaching (``session.transcript``, the picker)."""
 
@@ -81,31 +106,45 @@ class SessionStoredReadsMixin:
         then checks one out as usual)."""
         return _pins().get(id(self))
 
+    def _write_generation(self) -> Any:
+        """What any committed or pending write moves: the writer connection (a reopen is a new one), its
+        ``total_changes`` (this process's writes, all on it) and its ``PRAGMA data_version`` (every
+        other connection's commits). A closed store has none: an object equal to nothing."""
+        with self._lock:
+            conn = self._conn
+            if conn is None:
+                return object()
+            return conn, conn.total_changes, conn.execute('PRAGMA main.data_version').fetchone()[0]
+
     @contextmanager
-    def transcript_read_snapshot(self) -> Iterator[Any]:
+    def transcript_read_snapshot(self) -> Iterator[_ReadCheck]:
         """Every read this thread makes through this SessionDB inside the block sees ONE generation: one
         read transaction on one pooled connection, which ``_read_ctx`` hands to each nested read. Yields
         ``consistent()``: false when the transaction ended early (a transient I/O error rolled it back),
         so the caller reads again. Without a pooled reader (not WAL, a read-only store, or the pool's
         ceiling: reads use the writer connection under the write lock) nothing is pinned, since a write
-        from inside would wait on its own lock; there each read is its own, as before. Re-entrant.
+        from inside would wait on its own lock, and no lock is held across the block; each read is its
+        own, and ``consistent()`` is false when any write landed between the block's start and the call
+        (``_write_generation``), so the reads saw one generation exactly when it is true. ``.pinned``
+        tells the two apart. Re-entrant.
 
         Storage interface: port as ``read_snapshot``."""
         pins = _pins()
         if id(self) in pins:
             conn = pins[id(self)]
-            yield lambda: conn.in_transaction
+            yield _ReadCheck(lambda: conn.in_transaction, pinned=True)
             return
         with self._read_ctx(pooled_only=True) as conn:
             if conn is None:
-                yield lambda: True
+                start = self._write_generation()
+                yield _ReadCheck(lambda: self._write_generation() == start, pinned=False)
                 return
             began = not conn.in_transaction
             if began:
                 conn.execute('BEGIN')
             pins[id(self)] = conn
             try:
-                yield lambda: conn.in_transaction
+                yield _ReadCheck(lambda: conn.in_transaction, pinned=True)
             finally:
                 pins.pop(id(self), None)
                 if began and conn.in_transaction:
@@ -201,6 +240,32 @@ class SessionStoredReadsMixin:
             message = self._row_to_message_dict(row, warn_context='session.transcript', summary_flag=True)
             found.setdefault(int(message.pop('_shown_id')), []).append(message)
         return found
+
+    def transcript_handoffs_shown_before(self, segment: str, before: int, handoffs: Iterable[tuple[Any, Any]]) -> list[dict[str, Any]]:
+        """The stored copies of *handoffs* (``(message_uid or None, content)``) that a row of *segment*'s
+        display set at a ``display_order`` below *before* holds (``_HANDOFF_ROWS_SQL``'s rule): the row
+        itself, or an earlier copy of its message. A row is in the display set when it is its slot's
+        chosen row (``_display_rows_from_conn``'s). Decoded as ``transcript_handoff_rows``; the caller
+        confirms each with ``compaction_summary``. A paged read shows a handoff once, at its first row.
+
+        Storage interface: port as ``transcript_handoffs_shown_before``."""
+        from hermes_state_compaction_display import not_a_later_tool_copy_sql
+        from hermes_state_messages import DISPLAY_VISIBLE_SQL
+        handoffs = list(handoffs)
+        uids = sorted({uid for uid, _ in handoffs if uid})
+        contents = sorted({self._encode_content(content) for uid, content in handoffs
+                           if not uid and isinstance(content, str)})
+        match = [*(['g.message_uid IN (SELECT value FROM json_each(:uids))'] if uids else []),
+                 *(["(g.message_uid IS NULL OR g.message_uid = '') AND g.content IN (SELECT value FROM json_each(:contents))"]
+                   if contents else [])]
+        if not match:
+            return []
+        sql = _HANDOFF_SHOWN_BEFORE_SQL.format(match=' OR '.join(f'({part})' for part in match), visible=DISPLAY_VISIBLE_SQL,
+                                               later=not_a_later_tool_copy_sql('candidate'))
+        with self._read_ctx() as conn:
+            rows = conn.execute(sql, {'sid': segment, 'before': int(before), 'uids': json.dumps(uids),
+                                      'contents': json.dumps(contents)}).fetchall()
+        return [self._row_to_message_dict(row, warn_context='session.transcript', summary_flag=True) for row in rows]
 
     def transcript_segment_page(self, segment: str, *, latest: bool, after: Optional[tuple[int, int]],
                                 count: int, inclusive: bool = False) -> tuple[list[Any], dict[int, int], list[Any]]:

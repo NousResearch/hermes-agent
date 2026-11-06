@@ -122,3 +122,97 @@ export function createPtyCompositionForwarder(send: (data: string) => void) {
     },
   };
 }
+
+export type PtyCompositionForwarder = ReturnType<typeof createPtyCompositionForwarder>;
+
+export interface PtyCompositionBridgeHooks {
+  // Opens the mobile line-replacement window for the next terminal input.
+  armReplacementWindow: () => void;
+  isReplacementInput: (input: InputEvent) => boolean;
+  // True on mobile-like surfaces, where the commit belongs to the replacement
+  // path (xterm's own slice stays mismatched there on purpose) rather than to
+  // onData. The bridge stands down instead of moving the commit's channel.
+  isMobileInput?: () => boolean;
+}
+
+/**
+ * Wires xterm's helper textarea to the forwarder. Returns the cleanup.
+ *
+ * xterm 6 sends a composition as `textarea.value.substring(start)`, with
+ * `start` the mirror length recorded at compositionstart. The DOM inserts the
+ * commit at the caret, and the dashboard runs screenReaderMode, so the caret
+ * follows the arrow keys: a commit made mid-line slices out a shifted tail
+ * ("调奇怪）" for "语调奇怪") that the forwarder cannot match, and the PTY gets
+ * both. The mirror is rewritten only when that slice disagrees with the
+ * commit, so xterm still delivers the word and the forwarder drops its
+ * fallback. Should become unnecessary once xterm reads the compositionend data
+ * itself (xtermjs/xterm.js#6049).
+ *
+ * The rewrite stands down whenever the slice is not the commit plus a tail:
+ * the mirror was cleared or shrank below `start` (blur does this), or the
+ * composition replaced text that was already in the mirror (a recomposition) —
+ * slicing a fragment out of that mirror is worse than leaving xterm alone. It
+ * also stands down for mobile-like input, whose commit is owned by the
+ * replacement path instead (see `isMobileInput`). Text a commit key leaves
+ * after an appended commit keeps working (xterm.js #3191); a mid-line slice is
+ * replaced by the commit alone, so a character such a key left there does not
+ * survive this rewrite — without the bridge it is mis-delivered inside the
+ * stale fragment instead (base sends [' ）','녕'] for that case).
+ */
+export function bindPtyCompositionBridge(
+  textarea: HTMLTextAreaElement,
+  forwarder: PtyCompositionForwarder,
+  hooks: PtyCompositionBridgeHooks,
+): () => void {
+  let start = 0;
+  let composing = false;
+  // Same value xterm's own compositionstart listener records.
+  const noteStart = () => {
+    start = textarea.value.length;
+    composing = true;
+  };
+  const alignMirrorToCommit = (data: string) => {
+    const slice = textarea.value.substring(start);
+    // Fewer characters than the commit means the mirror shrank under us or the
+    // composition replaced text that was already there. xterm's own slice is
+    // short or empty in both, and the forwarder's fallback delivers the commit
+    // exactly once — rewriting here would turn that single send into a
+    // fragment plus the word.
+    if (slice.length < data.length) return;
+    // Appending at the end of the line, and every case where a commit key's own
+    // character follows the commit (xterm.js #3191), already leave the commit
+    // heading the slice: the value is correct as it stands.
+    if (slice.startsWith(data)) return;
+    textarea.value = textarea.value.slice(0, start) + data;
+  };
+  const onBeforeInput = (ev: Event) => {
+    if (hooks.isReplacementInput(ev as InputEvent)) hooks.armReplacementWindow();
+  };
+  const onCompositionEnd = (ev: CompositionEvent) => {
+    const wasComposing = composing;
+    composing = false;
+    hooks.armReplacementWindow();
+    // An empty compositionend data gives nothing to align to, and assigning
+    // textarea.value also moves the caret to the end, so leave the DOM and
+    // xterm's own slice untouched. A compositionend with no matching
+    // compositionstart (Android may fire it twice or trails later input)
+    // leaves `start` stale, and mobile input commits through the replacement
+    // path: both belong to xterm and the forwarder, not to this rewrite. An
+    // aborted composition can leave `composing` set until the next
+    // compositionstart resets it, which is why the offset is only ever used
+    // for the composition that recorded it.
+    if (ev.data && wasComposing && !hooks.isMobileInput?.()) {
+      alignMirrorToCommit(ev.data);
+    }
+    forwarder.onCompositionEnd(ev.data);
+  };
+
+  textarea.addEventListener("beforeinput", onBeforeInput, true);
+  textarea.addEventListener("compositionstart", noteStart, true);
+  textarea.addEventListener("compositionend", onCompositionEnd, true);
+  return () => {
+    textarea.removeEventListener("beforeinput", onBeforeInput, true);
+    textarea.removeEventListener("compositionstart", noteStart, true);
+    textarea.removeEventListener("compositionend", onCompositionEnd, true);
+  };
+}

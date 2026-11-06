@@ -31,7 +31,6 @@ import { $fileBrowserOpen, setFileBrowserOpen } from '@/store/layout'
 import { $showModelPricing, setShowModelPricing } from '@/store/model-pricing'
 import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
-import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
 import { $sessionListDensity, type SessionListDensity, setSessionListDensity } from '@/store/session-list-density'
 import { $tabStripDefault, setTabStripDefault, type TabStripDefault } from '@/store/tabstrip-prefs'
@@ -78,6 +77,7 @@ import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config
 
 import { AppearanceExtraSlot } from './appearance-contrib'
 import type { AppearanceSubpageId } from './appearance-subpages'
+import { ChatDisplayToggles } from './chat-display-toggles'
 import { ChatFontSetting } from './chat-font-setting'
 import { MODE_OPTIONS } from './constants'
 import { setNested } from './helpers'
@@ -435,7 +435,6 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
   const glassMode = translucency.mode === 'glass' && GLASS_SUPPORTED
   const userBubbleTransparency = useStore($userBubbleTransparency)
   const textDirection = useStore($textDirection)
-  const reactionsEnabled = useStore($reactionsEnabled)
   const tipsEnabled = useStore($tipsEnabled)
   const toursEnabled = useStore($toursEnabled)
   const spentTips = useStore($spentTipCount)
@@ -977,15 +976,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
 
           {show('general') && <ResumeLastSessionSetting />}
 
-          {show('chat-display') && (
-            <ToggleRow
-              checked={reactionsEnabled}
-              description={a.reactionsDesc}
-              id={settingElementId(ids.reactions)}
-              label={a.reactionsTitle}
-              onChange={setReactionsEnabled}
-            />
-          )}
+          {show('chat-display') && <ChatDisplayToggles />}
 
           {show('general') && (
             <ToggleRow

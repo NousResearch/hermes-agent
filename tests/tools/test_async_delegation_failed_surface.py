@@ -66,6 +66,20 @@ def test_a_split_unit_labels_its_failed_task_with_that_tasks_goal():
     assert (row["task_index"], row["goal"], row["error"]) == (1, "B goal", "boom")
 
 
+@pytest.mark.parametrize("state, result", [
+    ("stalled", {"results": [], "error": "stopped responding"}),  # stall monitor; a runner crash writes the same shape
+    ("unknown", {"status": "unknown", "error": "owner exited"}),  # owner gone before any child recorded
+])
+def test_a_split_unit_that_failed_before_any_task_reported_lists_its_own_tasks(state, result):
+    _delegation("d-unit", status=state, is_batch=True, task_indexes=[1, 2],
+                goals=["A goal", "B goal", "C goal"], result=result)
+    _delegation("d-whole", status=state, is_batch=True, goals=["A goal", "B goal"], result=result, ui="ui-2")
+
+    assert [(r["task_index"], r["goal"]) for r in ad.failed_delegations_for_session("ui-1")] == [
+        (1, "B goal"), (2, "C goal")]
+    assert [r["delegation_id"] for r in ad.failed_delegations_for_session("ui-2")] == ["d-whole"]
+
+
 def test_the_durable_parent_id_claims_rows_after_a_reload_remints_the_ui_session():
     _delegation("d-fail", status="stalled", goal="refactor", result={"status": "error", "error": "stalled"})
 

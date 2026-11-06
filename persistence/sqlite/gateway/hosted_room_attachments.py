@@ -906,6 +906,16 @@ class SQLiteHostedRoomAttachmentRepository:
                 blob_root, blob_id=str(row["blob_id"]), size=int(row["size"]), offset=offset, length=length)
             return AttachmentData(_metadata(row), data)
 
+    def list_published(self, *, placement: HostedPlacement, **params):
+        from ._hosted_attachment_catalog import list_published
+        with translated():
+            return list_published(self._files, placement, **params)
+
+    def published_reference(self, *, placement: HostedPlacement, **params):
+        from ._hosted_attachment_catalog import published_reference
+        with translated():
+            return published_reference(self._files, placement, **params)
+
     def read_viewer(self, *, placement: HostedPlacement, room_id: str, attachment_id: str, event_id: str | None = None,
                     recipient_member_id: str | None = None, authority_gateway_id: str, authority_epoch: int,
                     now: float | None = None) -> AttachmentData:

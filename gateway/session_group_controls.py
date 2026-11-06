@@ -24,6 +24,7 @@ GROUP_METHODS = {
     'groups.send': 'session:submit',
     'groups.attachment.upload': 'session:submit',
     'groups.attachment.download': 'session:read',
+    'groups.attachment.list': 'session:read',
     'groups.stop': 'session:control',
     'groups.continue': 'session:control',
     'groups.retry': 'session:control',
@@ -45,6 +46,7 @@ _FIELDS = {
     'groups.send': {'room_id', 'event_id', 'payload'},
     'groups.attachment.upload': {'room_id', 'upload_id', 'kind', 'name', 'mime', 'data_base64'},
     'groups.attachment.download': {'room_id', 'event_id', 'attachment_id'},
+    'groups.attachment.list': {'room_id', 'cursor', 'limit', 'query', 'producer_member_id', 'you_label'},
     'groups.stop': {'room_id', 'cancel_id'},
     'groups.continue': {'room_id', 'discussion_event_id'},
     'groups.retry': {'room_id', 'member_id', 'task_id', 'execution_generation'},
@@ -150,11 +152,12 @@ def _group(authority, actor, method, params, *, host_scope=False):
             owner = actor.subject
         else:
             room_authorizer(actor.subject, params['room_id'])
-    if method in {'groups.attachment.upload', 'groups.attachment.download'}:
+    if method.startswith('groups.attachment.'):
         if service is None:
             raise AuthorityRefusal('runtime_coordination_required')
-        from gateway.session_hosted_attachments import upload, download
-        handler = upload if method == 'groups.attachment.upload' else download
+        from gateway.session_hosted_attachments import upload, download, list_files
+        handler = {'groups.attachment.upload': upload, 'groups.attachment.download': download,
+                   'groups.attachment.list': list_files}[method]
         return handler(service, actor, params)
     if method in execution_methods:
         if service is None:

@@ -37,6 +37,7 @@ __all__ = [
     "AuthorityConflictError",
     "AuthorityHistoryError",
     "AuthoritySupersededError",
+    "CatalogCursorError",
     "DriverLease",
     "DriverStateError",
     "DriverValidationError",
@@ -61,6 +62,7 @@ __all__ = [
     "OwedRevokesFullError",
     "PolicyProjectionError",
     "PolicySnapshot",
+    "PublishedFileUnavailableError",
     "RemoteRunIdentity",
     "RemoteRunReceipt",
     "ReplicaEpochRegressionError",
@@ -136,6 +138,18 @@ class _OneMessage:
 
 class HostedRoomError(PersistenceError, ValueError):
     """Base class for invalid or conflicting hosted-room operations."""
+
+
+class CatalogCursorError(HostedRoomError):
+    """The cursor does not continue this listing; restart from the newest files."""
+
+    reason = "attachment_cursor_invalid"
+
+
+class PublishedFileUnavailableError(HostedRoomError):
+    """A visible version is retained in history but cannot supply its bytes here."""
+
+    reason = "attachment_unavailable"
 
 
 class HostedRoomRefusal(PersistenceError):
@@ -849,6 +863,17 @@ class HostedRoomPolicyRepository(Protocol):
 @runtime_checkable
 class HostedRoomAttachmentRepository(Protocol):
     """Room attachment rows and their blobs, kept in ``hosted-room-attachments/`` beside the placement's file. The caller validates identifiers, manifests, content and ranges before the call (``AttachmentError``)."""
+
+    def list_published(self, *, placement: HostedPlacement, room_id: str, authority_gateway_id: str, authority_epoch: int,
+                       cursor: str | None = None, limit: int | None = None, query: str | None = None,
+                       producer_member_id: str | None = None, you_label: str | None = None) -> Mapping[str, JsonValue]:
+        """One bounded page of exact versions from public messages at a fixed log position; fence on the viewer's authority."""
+        ...
+
+    def published_reference(self, *, placement: HostedPlacement, room_id: str, event_id: str, attachment_id: str,
+                            authority_gateway_id: str, authority_epoch: int) -> bool:
+        """Whether this exact event still publishes this version to the viewer after a failed byte read."""
+        ...
 
     def prepare(self, *, placement: HostedPlacement, now: float | None = None) -> None:
         """Run the store's attachment setup unless this process already ran it on that store: the attachment records, the reconciliation of the commitments their durable events name, and the prune of expired rows and their blobs. Every other verb runs it first too."""

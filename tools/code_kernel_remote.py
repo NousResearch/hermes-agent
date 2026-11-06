@@ -327,14 +327,22 @@ def _acquire_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
         _REGISTRY.discard(key, kernel)
         kernel, lost_why = None, "gone"
     reused = kernel is not None
-    if kernel is None:
+    if reused:
+        # A marker only describes the kernel a NEW one replaces; one left by a race with this
+        # live kernel already registered reports nothing.
+        lost_why = ""
+    else:
         kernel = _spawn_remote_kernel(env, env_type, owner, task_env_id, sandbox_tools, idle_exit=idle_exit)
         if kernel is not None:
             from agent.delegation_context import is_delegated_child_context
             kernel.pinned = is_delegated_child_context()
             kernel.owner_scope = owner_scope
-            with _REGISTRY.lock:
+        with _REGISTRY.lock:
+            if kernel is not None:
                 _REMOTE_KERNELS[key] = kernel
+            elif lost_why:
+                # Fail-open runs per-call, whose result has no kernel report: keep it for the next call.
+                _REGISTRY.mark_lost(key, lost_why)
     return kernel, reused, state_reset, lost_why
 
 
@@ -433,6 +441,9 @@ def _run_attached_cell(kernel: RemoteKernel, key: tuple, code: str, *, env, task
         # kernel as the timeout path does: leaving it registered would let the
         # next call reuse a kernel whose state silently missed this cell.
         _REGISTRY.discard(key, kernel)
+        if lost_why or reused:
+            with _REGISTRY.lock:
+                _REGISTRY.mark_lost(key, lost_why or "failed")
         raise
     finally:
         stop_event.set()

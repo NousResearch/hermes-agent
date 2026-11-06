@@ -293,10 +293,72 @@ class TestIdleReapAndCapEviction(RemoteKernelBase):
             call("owner-0")  # sweeps owner-2 on entry
             reaped = call("owner-2")
         self.assertTrue(evicted["kernel"].get("state_lost"), evicted["kernel"])
+        self.assertFalse(evicted["kernel"]["reused"])
         self.assertIn("max_session_kernels", evicted["kernel"]["note"])
         self.assertNotIn("state_lost", again["kernel"])
         self.assertTrue(reaped["kernel"].get("state_lost"), reaped["kernel"])
         self.assertIn("kernel_idle_timeout", reaped["kernel"]["note"])
+
+    def _evict_owner_0(self, env):
+        with patch("tools.code_kernel._lifecycle_limits", return_value=(1, 1800)):
+            _run(env, task="owner-0")
+            _run(env, task="owner-1")
+        self.assertNotIn("owner-0", {key[0] for key in _REMOTE_KERNELS})
+
+    def test_reset_consumes_a_pending_loss(self):
+        env = ScriptedEnv(_spawn_ok_handlers([_cell() for _ in range(10)]))
+        self._evict_owner_0(env)
+        reset = _run(env, task="owner-0", reset=True)
+        after = _run(env, task="owner-0")
+        self.assertNotIn("state_lost", reset["kernel"])
+        self.assertTrue(after["kernel"]["reused"])
+        self.assertNotIn("state_lost", after["kernel"])
+
+    def test_a_loss_survives_a_failed_spawn(self):
+        env = ScriptedEnv(_spawn_ok_handlers([_cell() for _ in range(10)]))
+        self._evict_owner_0(env)
+        healthy = env.handlers
+        env.handlers = [("nohup", lambda c: {"output": "sh: cannot fork\n", "returncode": 1})]
+        self.assertIsNone(_run(env, task="owner-0"))  # caller falls open to per-call
+        env.handlers = healthy
+        after = _run(env, task="owner-0")
+        self.assertTrue(after["kernel"].get("state_lost"), after["kernel"])
+        self.assertIn("max_session_kernels", after["kernel"]["note"])
+
+    def test_a_reused_kernel_lost_to_a_failed_cell_ship_is_reported_next_call(self):
+        env = ScriptedEnv(_spawn_ok_handlers([_cell() for _ in range(10)]))
+        _run(env, task="owner-0")
+
+        def ship(_env, path, *args, **kwargs):
+            if "cell_req_" in path:
+                raise ConnectionError("ssh dropped before the cell request landed")
+
+        with patch("tools.code_execution_tool._ship_file_to_remote", side_effect=ship):
+            with self.assertRaises(ConnectionError):  # the caller falls back to per-call
+                _run(env, task="owner-0")
+        after = _run(env, task="owner-0")
+        self.assertFalse(after["kernel"]["reused"])
+        self.assertTrue(after["kernel"].get("state_lost"), after["kernel"])
+        self.assertIn("internal error", after["kernel"]["note"])
+
+    def test_a_marker_left_by_a_race_does_not_flag_a_reused_kernel(self):
+        # A concurrent eviction can mark the key while this call spawns and publishes a replacement.
+        import tools.code_kernel_remote as remote
+
+        real_spawn = remote._spawn_remote_kernel
+
+        def spawn_racing_an_eviction(env, env_type, owner, *args, **kwargs):
+            kernel = real_spawn(env, env_type, owner, *args, **kwargs)
+            with remote._REGISTRY.lock:
+                remote._REGISTRY.mark_lost(remote._kernel_key(owner, env_type, args[0], args[1]), "evicted")
+            return kernel
+
+        env = ScriptedEnv(_spawn_ok_handlers([_cell() for _ in range(10)]))
+        with patch.object(remote, "_spawn_remote_kernel", spawn_racing_an_eviction):
+            _run(env, task="owner-0")
+        after = _run(env, task="owner-0")
+        self.assertTrue(after["kernel"]["reused"])
+        self.assertNotIn("state_lost", after["kernel"])
 
     def test_eviction_skips_kernels_with_a_running_cell(self):
         """Cap eviction must never kill a kernel mid-cell (the local-kernel

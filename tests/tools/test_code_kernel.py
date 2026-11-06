@@ -473,10 +473,51 @@ class TestKernelOwnershipAndLifecycle(unittest.TestCase):
 
         with _kernel_config(kernel_idle_timeout=1):
             self._run_as("conv-a", "x = 41", task_id="turn-1")
-            next(iter(_KERNELS.values())).last_used -= 5  # idle past the window
+            stale = next(iter(_KERNELS.values()))
+            stale.last_used -= 5  # idle past the window
             _reap_once()
+            self.assertNotIn(stale.key, _KERNELS)  # the background pass did it, not the next acquire
             after = self._run_as("conv-a", "print('x' in dir())", task_id="turn-2")
         self._assert_lost(after, "kernel_idle_timeout")
+
+    def test_the_cell_that_spawns_the_replacement_reports_the_loss(self):
+        # Parallel cells: the acquire that consumes the marker need not be the cell that runs first.
+        from tools.code_kernel import _REGISTRY, _acquire_kernel
+
+        with _kernel_config(max_session_kernels=1):
+            self._run_as("conv-a", "x = 1", task_id="turn-1")
+            key_a = next(iter(_KERNELS))
+            self._run_as("conv-b", "x = 1", task_id="turn-2")  # evicts conv-a
+            early, _ = _acquire_kernel(key_a, False)
+            try:
+                first = self._run_as("conv-a", "print('x' in dir())", task_id="turn-3")
+                second = self._run_as("conv-a", "print(1)", task_id="turn-4")
+            finally:
+                with _REGISTRY.lock:
+                    early.attached -= 1
+        self._assert_lost(first, "max_session_kernels")
+        self.assertTrue(second["kernel"]["reused"])
+        self.assertNotIn("state_lost", second["kernel"])
+
+    def test_a_loss_survives_a_failed_spawn(self):
+        from tools import code_kernel
+
+        real_spawn, calls = code_kernel._spawn, []
+
+        def spawn_failing_once(*args, **kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                raise OSError("spawn failed")
+            return real_spawn(*args, **kwargs)
+
+        with _kernel_config(max_session_kernels=1):
+            self._run_as("conv-a", "x = 1", task_id="turn-1")
+            self._run_as("conv-b", "x = 1", task_id="turn-2")  # evicts conv-a
+            with patch.object(code_kernel, "_spawn", spawn_failing_once):
+                failed = self._run_as("conv-a", "print(1)", task_id="turn-3")
+                after = self._run_as("conv-a", "print('x' in dir())", task_id="turn-4")
+        self.assertEqual(failed["status"], "error", failed)
+        self._assert_lost(after, "max_session_kernels")
 
     def test_a_dead_kernel_is_reported_as_lost_not_as_a_reset(self):
         with _kernel_config():

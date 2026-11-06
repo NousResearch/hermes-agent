@@ -331,6 +331,9 @@ class SessionKernel:
         self.attached: int = 0
         # Owned by a live delegate_task child: exempt from LRU eviction (the child's teardown disposes it).
         self.pinned: bool = False
+        # Why the kernel this one replaces lost its state; reported by the cell that spawns it, which
+        # under parallel cells need not be the cell whose acquire created it.
+        self.lost_why: str = ""
         self.response_q: queue.Queue[dict] = queue.Queue()
         self.raw, self.stderr = _BoundedBuffer(), _BoundedBuffer()
         self.execution_count, self.last_used = 0, time.monotonic()
@@ -377,13 +380,17 @@ class KernelRegistry:
         self.lost: dict[tuple, str] = {}
         self.lock, self._teardown = threading.Lock(), teardown
 
-    def pop_lost(self, key: tuple, why: str) -> Any:
-        """Pop *key*'s kernel and remember why (caller holds the lock). Bounded: owners that never
-        come back must not grow the map for the host's life."""
+    def mark_lost(self, key: tuple, why: str) -> None:
+        """Remember that *key*'s state is gone and why (caller holds the lock). Bounded: owners that
+        never come back must not grow the map for the host's life."""
         self.lost.pop(key, None)
         self.lost[key] = why
         while len(self.lost) > _LOST_KEYS_LIMIT:
             self.lost.pop(next(iter(self.lost)))
+
+    def pop_lost(self, key: tuple, why: str) -> Any:
+        """Pop *key*'s kernel and remember why (caller holds the lock)."""
+        self.mark_lost(key, why)
         return self.kernels.pop(key)
 
     def take_lost(self, key: tuple) -> str:
@@ -430,6 +437,8 @@ _LOST_STATE_NOTES = {
              "state from earlier calls was lost and a fresh kernel was started."),
     "died": ("The previous session kernel had exited; state from earlier calls was lost and a fresh "
              "kernel was started."),
+    "failed": ("The previous session kernel was discarded after an internal error; state from earlier "
+               "calls was lost and a fresh kernel was started."),
 }
 
 
@@ -715,11 +724,10 @@ def _pop_idle_expired(now: float, idle_timeout: float) -> list[SessionKernel]:
             if _KERNELS[k].attached == 0 and now - _KERNELS[k].last_used > idle_timeout]
 
 
-def _acquire_kernel(key: tuple, reset: bool, *,
-                    pinned: bool = False) -> tuple[SessionKernel, bool, str]:
-    """Look up or register the kernel for *key*; returns (kernel, state_reset, lost_why). ``lost_why``
-    names why an earlier kernel's state is gone although the caller never asked for a reset (``""``:
-    nothing lost); ``reset=True`` reports ``state_reset`` instead. Every entry also
+def _acquire_kernel(key: tuple, reset: bool, *, pinned: bool = False) -> tuple[SessionKernel, bool]:
+    """Look up or register the kernel for *key*; returns (kernel, state_reset). A kernel registered
+    here in place of one whose state is gone without a reset carries the reason in ``lost_why``
+    (``reset=True`` reports ``state_reset`` instead). Every entry also
     sweeps idle-expired kernels and enforces the process-wide LRU cap (doomed kernels are popped
     under the lock, torn down outside it), so a long-lived host stays bounded. ``pinned`` kernels
     (live delegate_task children) are exempt from the cap: their lifetime is the child's, ended by
@@ -740,7 +748,7 @@ def _acquire_kernel(key: tuple, reset: bool, *,
             lost_why = ""
         if kernel is None:
             kernel = _KERNELS[key] = SessionKernel(key)
-            kernel.pinned = pinned
+            kernel.pinned, kernel.lost_why = pinned, lost_why
         kernel.last_used = time.monotonic()
         kernel.attached += 1
         unpinned = [k for k in _KERNELS if not _KERNELS[k].pinned]
@@ -749,7 +757,7 @@ def _acquire_kernel(key: tuple, reset: bool, *,
         expired.extend(_REGISTRY.pop_lost(k, "evicted") for k in by_age[: max(0, len(unpinned) - cap)])
     for doomed in expired:
         doomed.teardown()
-    return kernel, state_reset, lost_why
+    return kernel, state_reset
 
 
 # The acquire-path sweep above only fires on the NEXT kernel request. A host that stays
@@ -936,12 +944,11 @@ def execute_in_session_kernel(
     key = (_resolve_owner(task_id) or "", mode, child_python, child_cwd, tuple(sorted(sandbox_tools)))
     exec_start = time.monotonic()
     from agent.delegation_context import is_delegated_child_context
-    kernel, state_reset, lost_why = _acquire_kernel(key, reset, pinned=is_delegated_child_context())
+    kernel, state_reset = _acquire_kernel(key, reset, pinned=is_delegated_child_context())
     try:
         return _run_cell(kernel, key, code, task_id=task_id, child_python=child_python, child_cwd=child_cwd,
                          sandbox_tools=sandbox_tools, timeout=timeout, max_tool_calls=max_tool_calls,
-                         is_interrupted=is_interrupted, exec_start=exec_start, state_reset=state_reset,
-                         lost_why=lost_why)
+                         is_interrupted=is_interrupted, exec_start=exec_start, state_reset=state_reset)
     finally:
         with _REGISTRY.lock:
             kernel.attached -= 1
@@ -955,14 +962,16 @@ def execute_in_session_kernel(
 
 def _run_cell(kernel: SessionKernel, key: tuple, code: str, *, task_id: str, child_python: str,
               child_cwd: str, sandbox_tools: frozenset, timeout: int, max_tool_calls: int,
-              is_interrupted, exec_start: float, state_reset: bool, lost_why: str) -> str:
-    reused = kernel.proc is not None
+              is_interrupted, exec_start: float, state_reset: bool) -> str:
+    reused, lost_why = True, ""
     # Captured on the calling thread BEFORE the cell runs (the snapshot a per-call RPC thread
     # would get) and installed on the kernel so RPC dispatches under THIS cell's identity.
     authority = CellAuthority(task_id)
     with kernel.lock:
         try:
             if kernel.proc is None:
+                # The spawning cell owns the report, so it always rides on a reused=false result.
+                reused, lost_why, kernel.lost_why = False, kernel.lost_why, ""
                 _spawn(kernel, task_id=task_id, child_python=child_python, child_cwd=child_cwd,
                        sandbox_tools=sandbox_tools, max_tool_calls=max_tool_calls)
             assert kernel.proc is not None and kernel.proc.stdin is not None
@@ -984,6 +993,10 @@ def _run_cell(kernel: SessionKernel, key: tuple, code: str, *, task_id: str, chi
             from tools.code_execution_tool import _error_result
             logger.error("session kernel failed: %s: %s", type(exc).__name__, exc, exc_info=True)
             _REGISTRY.discard(key, kernel)
+            # The error result carries no kernel report: leave it for this key's next call.
+            if lost_why or reused:
+                with _REGISTRY.lock:
+                    _REGISTRY.mark_lost(key, lost_why or "failed")
             return _error_result(str(exc), tool_calls_made=kernel.tool_call_counter[0],
                                  duration=round(time.monotonic() - exec_start, 2))
         finally:

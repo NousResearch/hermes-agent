@@ -32,6 +32,13 @@ def record_member_home(db, room_id, member_id, home):
     db._execute_write(write)
 
 
+def forget_room_member_homes_locked(conn, room_id):
+    """Drop a disbanded room's recorded homes, in its tombstone's transaction: no turn is left."""
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='state_meta'").fetchone():
+        prefix = _HOMES + json.dumps([room_id], separators=(',', ':'))[:-1] + ','
+        conn.execute('DELETE FROM state_meta WHERE substr(key, 1, length(?))=?', (prefix, prefix))
+
+
 def _recorded_homes(db, room_id, member_id):
     with db._read_ctx() as conn:
         row = conn.execute('SELECT value FROM state_meta WHERE key=?', (_key(room_id, member_id),)).fetchone()

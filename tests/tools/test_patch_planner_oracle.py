@@ -21,10 +21,10 @@ _NORM = {b"a b": b"a\tb", b"a\tb": b"a b"}
 _HEAD = b"*** Begin Patch\n*** Update File: f\n@@\n"
 _TAIL = b"*** End Patch\n"
 _PREFIX = "Patch validation failed (no files were modified):\n  • f: "
-_AMB_N = re.compile(r"ambiguous \(([1-9]\d*) matches\)")
+_AMB_N = re.compile(r"ambiguous \((\d+) matches\)")
 # The planner's Found-N diagnostic normally includes extra lines, so its live
 # form is UNMAPPED; the single-line form is retained by the approved spec.
-_FOUND_N = re.compile(r"Found ([1-9]\d*) matches for old_string")
+_FOUND_N = re.compile(r"Found (\d+) matches for old_string")
 _NOT_FOUND = re.compile(
     r"hunk [0-9]+ \(no hint\) not found — "
     r"Could not find a match for old_string in the file\Z"
@@ -543,6 +543,7 @@ def test_mutation_sanity_breaks_spec_table():
         (_PREFIX + "hunk 1 (no hint) not found — Could not find a match for old_string in the file", "NOT_FOUND"),
         (_PREFIX + "hunk 12 (no hint) not found — Could not find a match for old_string in the file", "NOT_FOUND"),
         (_PREFIX + "hunk 1 (no hint) is ambiguous (2 matches)", "AMBIGUOUS"),
+        (_PREFIX + "ambiguous (02 matches)", "AMBIGUOUS"),
         (_PREFIX + "Found 2 matches for old_string", "AMBIGUOUS"),
         (_PREFIX + "hunk 1 (no hint) not found — Found 3 matches for old_string", "AMBIGUOUS"),
         (_PREFIX + "hunk 1 (no hint) has empty search text — include surrounding context lines", "UNMAPPED"),

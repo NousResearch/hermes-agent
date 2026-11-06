@@ -180,7 +180,7 @@ describe('composer hint', () => {
 
 function slashHarness(messages: unknown[] = rows) {
   const gw = gateway(messages)
-  const composer = { appendPaste: vi.fn(async () => {}), attachImagePath: vi.fn(), attachImagePaths: vi.fn(async () => {}), enqueue: vi.fn(), setInput: vi.fn() }
+  const composer = { appendPaste: vi.fn(async () => {}), appendText: vi.fn(), attachImagePath: vi.fn(), attachImagePaths: vi.fn(async () => {}), enqueue: vi.fn(), setInput: vi.fn() }
   const send = vi.fn()
   const sys = vi.fn()
 

@@ -68,7 +68,7 @@ async function editTwoImagePrompt() {
   unmount = () => instance.unmount()
 
   openRewindPicker({
-    composer: { attachImagePath: (p: string) => composer.actions.attachImagePath(p), attachImagePaths: (p: string[], o?: any) => composer.actions.attachImagePaths(p, o), setInput: (v: any) => composer.actions.setInput(v) },
+    composer: { appendPaste: (t: string) => composer.actions.appendPaste(t), appendText: (t: string) => composer.actions.appendText(t), attachImagePath: (p: string) => composer.actions.attachImagePath(p), attachImagePaths: (p: string[], o?: any) => composer.actions.attachImagePaths(p, o), setInput: (v: any) => composer.actions.setInput(v) },
     gateway: { gw },
     guardedErr: () => {},
     sid: 'A',
@@ -134,6 +134,41 @@ describe('restoring the images of an edited prompt', () => {
     expect(calls()).toHaveLength(1)
     expect(composer().refs.tokensRef.current).toEqual([])
     expect(sys).toHaveBeenCalledWith(expect.stringContaining('2 images'))
+  })
+
+  it('a cleared edit never revives: a new draft starting with the same text gets none of its images', async () => {
+    const { composer, releases, sys } = await editTwoImagePrompt()
+
+    composer().actions.clearIn()
+    composer().actions.setInput('question and more')
+    releases[0]!()
+    await flush()
+    await flush()
+
+    expect(calls()).toHaveLength(1)
+    expect(composer().refs.tokensRef.current).toEqual([])
+    expect(composer().state.input).toBe('question and more')
+    expect(sys).toHaveBeenCalledWith(expect.stringContaining('2 images'))
+  })
+
+  it('a paste then a key from one terminal read land in order, the paste never dropped', async () => {
+    const { composer, releases } = await editTwoImagePrompt()
+
+    releases[0]!()
+    await flush()
+    releases[1]!()
+    await flush()
+    await flush()
+    composer().actions.clearIn()
+
+    const block = Array.from({ length: 12 }, (_, i) => `line ${i + 1}`).join('\n')
+    const pasted = composer().actions.appendPaste(block)
+
+    composer().actions.appendText('x')
+    await pasted
+    await flush()
+
+    expect(composer().state.input).toMatch(/^\[\[ .*12 lines.* \]\]x$/s)
   })
 
   it('typing on after Enter keeps the restore going: every image lands after the typed text', async () => {

@@ -413,6 +413,8 @@ export type MaybePromise<T> = Promise<T> | T
 export interface ComposerActions {
   /** Paste text at the end of the draft as a composer paste would (collapse, path and image detection). */
   appendPaste: (text: string) => Promise<void>
+  /** Type text at the end of the draft, after any `appendPaste` still resolving. */
+  appendText: (text: string) => void
   /** Pull an image off the system clipboard in as a token. */
   attachClipboardImage: () => void
   /** Attach an image by path in as a token. */
@@ -587,6 +589,7 @@ export interface SlashHandlerContext {
     attachClipboardImage: () => void
     attachImagePath: (path: string) => Promise<void> | void
     appendPaste: ComposerActions['appendPaste']
+    appendText: ComposerActions['appendText']
     attachImagePaths: ComposerActions['attachImagePaths']
     enqueue: ComposerActions['enqueue']
     hasSelection: boolean

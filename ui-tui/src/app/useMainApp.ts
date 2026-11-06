@@ -1193,6 +1193,7 @@ export function useMainApp(gw: GatewayClient) {
           attachClipboardImage: composerActions.attachClipboardImage,
           attachImagePath: composerActions.attachImagePath,
           appendPaste: composerActions.appendPaste,
+          appendText: composerActions.appendText,
           attachImagePaths: composerActions.attachImagePaths,
           enqueue: composerActions.enqueue,
           hasSelection,

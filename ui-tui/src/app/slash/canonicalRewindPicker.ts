@@ -127,7 +127,7 @@ export function openRewindPicker(ctx: SlashRunCtx) {
           },
           onFork: target => void forkFrom(ctx, sid, target),
           onSubmit: send,
-          onType: text => ctx.composer.setInput(prev => prev + text),
+          onType: text => ctx.composer.appendText(text),
           onPaste: text => void ctx.composer.appendPaste(text)
         }
       })

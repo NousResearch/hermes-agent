@@ -541,6 +541,7 @@ def guarded_resume_lineage_write(
 def guarded_discovered_session_write(
     db: Any, session_ids: Iterable[str], discover: Callable[[sqlite3.Connection], Iterable[str]],
     write: Callable[[sqlite3.Connection], _WriteResult],
+    *, execute_write: Callable[..., _WriteResult] | None = None, patience_s: float | None = None,
 ) -> _WriteResult:
     """Fence a SQL-discovered write set, rechecking on the writer before any mutation.
 
@@ -548,7 +549,7 @@ def guarded_discovered_session_write(
     the complete canonical set. Discovery and SQLite retries share one caller budget.
     """
     guarded = set(session_ids)
-    deadline = time.monotonic() + db._WRITE_PATIENCE_S
+    deadline = time.monotonic() + (db._WRITE_PATIENCE_S if patience_s is None else patience_s)
     expanded = object()
     for _attempt in range(8):
         with db._read_ctx() as conn:
@@ -558,7 +559,8 @@ def guarded_discovered_session_write(
             def apply(conn):
                 needed.update(discover(conn))
                 return expanded if needed - guarded else write(conn)
-            result = db._execute_write(apply, patience_s=max(0.0, deadline - time.monotonic()))
+            runner = execute_write or db._execute_write
+            result = runner(apply, patience_s=max(0.0, deadline - time.monotonic()))
             if result is not expanded:
                 return result
         guarded.update(needed)

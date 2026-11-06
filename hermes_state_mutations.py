@@ -86,18 +86,20 @@ def _valid_compress_payload(payload):
     return 'keep_last' not in payload or (payload.get('partial') is True and payload['keep_last'] >= 1)
 
 
-def apply_action(db, conn, session_id, operation, payload, *, prepared=None):
+def apply_action(db, conn, session_id, operation, payload, *, prepared=None, reserved=None):
     if operation == 'compress':
         from hermes_state_mutation_compress import compress_in_transaction
-        return compress_in_transaction(db, conn, session_id, payload, prepared)
+        return compress_in_transaction(db, conn, session_id, payload, prepared, reserved=reserved)
     if operation in {'model', 'reasoning', 'workspace', 'editor_mcp', 'edit_policy'}:
         from hermes_state_mutation_prepared import POLICY_HANDLERS
         return POLICY_HANDLERS[operation](db, conn, session_id, payload, prepared)
     if operation == 'branch':
         from hermes_state_mutation_branch import branch_in_transaction
-        return branch_in_transaction(db, conn, session_id, payload, prepared)
+        return branch_in_transaction(db, conn, session_id, payload, prepared, reserved=reserved)
     from hermes_state_mutation_reset import reset_in_transaction
-    handlers = {'delete': _delete, 'import': _import, 'rewind': _rewind, 'reset': reset_in_transaction}
+    handlers = {'delete': _delete, 'import': _import, 'rewind': _rewind}
+    if operation == 'reset':
+        return reset_in_transaction(db, conn, session_id, payload, reserved=reserved)
     if operation in handlers:
         return handlers[operation](db, conn, session_id, payload)
     affected = set()

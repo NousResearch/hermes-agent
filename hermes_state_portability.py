@@ -566,7 +566,12 @@ class SessionPortabilityMixin:
             if not donor_db.end_session_as_adopted(seg_id):
                 return False
             # The session lives on in the adopting profile: not a delete for plugins.
-            donor_db.set_session_archived(seg_id, True, notify=False)
+            # _attempt_lineage_adoption still holds the complete, transfer-validated
+            # member set. The public archive API must refuse this donor once the
+            # target owns it. Retire this one recorded member under that guard;
+            # the caller visits every member, including compression continuations.
+            donor_db._execute_write(lambda conn: conn.execute(
+                'UPDATE sessions SET archived=1, auto_archived=0 WHERE id=?', (seg_id,)))
             return True
         except Exception:
             logger.warning("failed to retire donor segment %s after adoption", seg_id, exc_info=True)

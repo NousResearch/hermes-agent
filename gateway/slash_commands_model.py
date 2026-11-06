@@ -221,7 +221,7 @@ class GatewayModelCommandsMixin:
 
         # Persist the new model to the session DB so the dashboard shows the updated model (#34850).
         _sess_db = getattr(self, "_session_db", None)
-        if _sess_db is not None:  # so the dashboard shows the updated model
+        if _sess_db is not None and not picker:  # picker publishes the DB model with its mutation receipt
             try:
                 _sess_entry = await self.async_session_store.get_or_create_session(source)
                 # Typed path: consume the auto-reset flag so the next message's cleanup does not
@@ -644,7 +644,8 @@ class GatewayModelCommandsMixin:
             return channel.model, channel.provider or ""
         return _resolve_gateway_model(cfg), "" if provider.lower() == "auto" else provider
 
-    async def _handle_model_reset(self, event: MessageEvent, ctx: _ModelSwitchContext) -> Optional[str]:
+    async def _handle_model_reset(self, event: MessageEvent, ctx: _ModelSwitchContext,
+                                  *, picker: bool = False) -> Optional[str]:
         """``/model reset``: drop this session's /model override (memory, store and any armed
         ``--once`` restore) so the next turn resolves channel_overrides > config.yaml again. The
         transcript is kept; before this the only way off a persisted override was ``/new``."""
@@ -674,7 +675,7 @@ class GatewayModelCommandsMixin:
             return t("gateway.model.reset_none", model=shown)
         from hermes_cli.model_switch import format_model_for_display
         _sess_db = getattr(self, "_session_db", None)
-        if _sess_db is not None:  # the dashboard's session-model column (#34850)
+        if _sess_db is not None and not picker:  # picker publishes the DB model with its mutation receipt
             try:
                 entry = await self.async_session_store.get_or_create_session(source)
                 await _sess_db.update_session_model(entry.session_id, default_model, provider=default_provider or None)

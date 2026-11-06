@@ -49,7 +49,7 @@ def prepare_chat_pick(db, *, epoch, key, digest, session_id, params):
         return {'row': dict(_fenced_row(conn, session_id, params))}
 
 
-def commit_chat_pick(db, *, epoch, key, digest, session_id, params, result):
+def commit_chat_pick(db, *, epoch, key, digest, session_id, params, result, model_update=None):
     """Bump the mount's revision and store *result* (plus the new revision) as the receipt, in one
     write that re-checks the fences. Returns the committed receipt result."""
     def write(conn):
@@ -58,10 +58,26 @@ def commit_chat_pick(db, *, epoch, key, digest, session_id, params, result):
         if replay is not None:
             return replay
         _fenced_row(conn, session_id, params)
+        if model_update is not None:
+            target = db._compression_tip_on(conn, session_id)
+            patch = {'browser_model_lock': None, 'model': model_update['model']}
+            provider = model_update.get('provider')
+            if provider:
+                route = {'provider': provider, 'base_url': model_update.get('base_url'),
+                         'api_mode': model_update.get('api_mode')}
+                patch.update(route, gateway_runtime=route)
+            from hermes_state_sessions import _MODEL_CONFIG_ROW_MISSING
+            merged = db._merge_model_config_json(conn, target, patch)
+            if merged is _MODEL_CONFIG_ROW_MISSING:
+                raise RuntimeStoreError('not_found')
+            conn.execute('UPDATE sessions SET model=?,model_config=? WHERE id=?',
+                         (model_update['model'], merged, target))
         conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (session_id,))
         revision = conn.execute('SELECT runtime_revision FROM sessions WHERE id=?', (session_id,)).fetchone()[0]
         committed = {**result, 'revision': revision}
         conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)',
                      (key, _json({'digest': digest, 'result': committed})))
         return committed
-    return db._execute_write(write)
+    from hermes_state_lineage import guarded_discovered_session_write
+    return guarded_discovered_session_write(
+        db, (session_id,), lambda conn: (session_id, db._compression_tip_on(conn, session_id)), write)

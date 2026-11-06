@@ -395,13 +395,18 @@ class SessionCompressionMixin:
         See #75316.
         ``None`` = unbounded (no internal flush happened). See #47202.
         """
-        with session_lineage_guard(self.db_path, (parent_session_id, child_session_id), timeout_s=self._WRITE_PATIENCE_S):
-            self._execute_transcript_write(lambda conn: self._publish_compression_child_on_conn(
+        from hermes_state_lineage import guarded_discovered_session_write
+        from hermes_state_mutation_ownership import compression_publication_ids
+        guarded_discovered_session_write(
+            self, (parent_session_id, child_session_id),
+            lambda conn: compression_publication_ids(conn, parent_session_id, child_session_id),
+            lambda conn: self._publish_compression_child_on_conn(
                 conn, parent_session_id=parent_session_id, child_session_id=child_session_id, source=source,
                 messages=messages, model=model, model_config=model_config, system_prompt=system_prompt,
                 cwd=cwd, profile_name=profile_name, compression_lock_holder=compression_lock_holder,
                 require_compression_lease=require_compression_lease, require_lease_refresh=require_lease_refresh,
-                lease_ttl_seconds=lease_ttl_seconds, watermark=watermark, watermark_ceiling=watermark_ceiling), messages)
+                lease_ttl_seconds=lease_ttl_seconds, watermark=watermark, watermark_ceiling=watermark_ceiling),
+            execute_write=lambda write, **kwargs: self._execute_transcript_write(write, messages, **kwargs))
 
     def _publish_compression_child_on_conn(
             self, conn, *, parent_session_id: str, child_session_id: str, source: str,

@@ -2022,6 +2022,13 @@ display:
   # display.platforms.<platform>.suppress_warning_notifications.
   suppress_warning_notifications: false
 
+  # WhatsApp-only: hide temporary automatic-recovery countdown notices while
+  # recovery and /stop remain active. The final exhaustion notice stays visible.
+  # Defaults to true. Opt out with this per-platform display override:
+  # platforms:
+  #   whatsapp:
+  #     auto_recovery_progress: false
+
   # Gateway-only long-running status heartbeats.
   # When false, the platform does not receive periodic "⏳ Working — N min"
   # notifications even if agent.gateway_notify_interval is non-zero. The

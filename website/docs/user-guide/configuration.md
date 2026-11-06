@@ -1354,6 +1354,20 @@ A rate limit that names its reset (`Retry-After` or a `retry_after` body field) 
 
 `agent.auto_recovery_cycles` is the safety net *after* both the retries and the fallback chain are spent. When the failure is a transient outage (HTTP 5xx, an `overloaded`/529 response, a connect or read timeout) and no answer text has reached you yet, Hermes does not end the turn with "API failed after N retries" — it waits and tries again, up to this many cycles (default `5`), with a jittered 15/30/60/60/60 s schedule. A provider `Retry-After` header wins over the schedule (honoured up to 120 s). Every surface shows the same line while it waits — `⏳ Provider temporarily unavailable — retrying automatically in 30s (cycle 2/5); press Esc to stop` on the CLI/TUI/Desktop, a status bubble on messaging platforms (`send /stop to cancel`), a `hermes.status` SSE event on the API server, and a log line for cron jobs. Pressing Esc (or `/stop`) cancels the wait immediately. Fallback still comes first: with a fallback chain configured, exhaustion moves to the next provider as before, and the ladder only engages once the chain has nothing left. Authentication, billing, request-format, entitlement, content-policy and account-policy errors never enter the ladder. Set `0` to disable it.
 
+To hide only the temporary automatic-recovery progress on WhatsApp, set:
+
+```yaml
+display:
+  platforms:
+    whatsapp:
+      auto_recovery_progress: false
+```
+
+This setting affects presentation only. Recovery still runs, `/stop` still
+interrupts it, and the final exhausted-recovery notice remains visible. Other
+platforms retain visible progress. The default is `true`; it is read from the
+owning turn's notification configuration, without changing prompts or toolsets.
+
 ## Wall-Clock Run Budget
 
 Separate from the iteration budget, you can give each conversation run an optional **wall-clock** budget. This is designed for one-shot and eval-harness invocations that run under a hard external ceiling (e.g. a 900-second per-task limit): without it, a run can time out with the work essentially done — one generation short of emitting the final answer, or stuck in a single hung provider call.

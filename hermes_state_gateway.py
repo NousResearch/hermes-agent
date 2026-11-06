@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from hermes_state_common import (
     _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS_SQL, _sql_json_extract,
     _sql_session_last_active)
-from hermes_state_lineage import guarded_session_write
+from hermes_state_lineage import guarded_discovered_session_write, guarded_session_write
 
 # Log-record parity with the origin module (caplog tests pin "hermes_state").
 logger = logging.getLogger("hermes_state")
@@ -38,6 +38,15 @@ _COMPRESSION_LINEAGE_CTE = f"""
                           AND COALESCE(child.source, '') != 'tool'
                     )
                 """
+
+
+def _peer_write_ids(conn, session_id, source, session_key):
+    from gateway.session_route_recovery import _messaging_platform
+    from hermes_state_local import handoff_write_ids, moved_receipts
+    moved = {row[0] for row in conn.execute(
+        f"{_COMPRESSION_LINEAGE_CTE} SELECT id FROM compression_lineage", (session_id,))}
+    receipts = moved_receipts(conn, moved, session_key=session_key) if _messaging_platform(source) is not None else {}
+    return moved | handoff_write_ids(conn, receipts)
 
 # Projection shared by both peer-recovery queries (exact key, then peer tuple).
 _PEER_SELECT_HEAD = """
@@ -300,7 +309,11 @@ class SessionGatewayMixin:
                     (session_id, source, source, user_id, session_key, chat_id, chat_type, thread_id, display_name,
                      origin_json, self._own_profile_name(), transport_profile, time.time()),
                 )
-        guarded_session_write(self, session_id, _do)
+        if ancestors:
+            guarded_discovered_session_write(
+                self, [session_id], lambda conn: _peer_write_ids(conn, session_id, source, session_key), _do)
+        else:
+            guarded_session_write(self, session_id, _do)
 
     def save_gateway_routing_entry(self, session_key: str, entry_json: str, *, scope: str = "") -> None:
         """Upsert one gateway routing entry (session_key -> SessionEntry JSON); ``scope``

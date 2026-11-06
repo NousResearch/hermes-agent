@@ -74,24 +74,26 @@ class Finding:
 
 
 class _Session:
-    """Open store handles for one run; every store opened at most once, all released at the end."""
+    """Open store handles for one run; cache each access mode and release all at the end."""
 
     def __init__(self, *, read_only: bool) -> None:
         self.read_only = read_only
-        self._dbs: dict[Path, Any] = {}
+        self._dbs: dict[tuple[Path, bool], Any] = {}
 
-    def db(self, store: Store):
+    def db(self, store: Store, *, inventory_only: bool = False):
         """The store's SessionDB. Read-only runs never create a file: a live profile that has no
         ``state.db`` yet reads as empty; an apply run opens it for real when a move lands there."""
         path = store.db_path
-        if path not in self._dbs:
-            if self.read_only:
+        read_only = self.read_only or inventory_only
+        key = (path, read_only)
+        if key not in self._dbs:
+            if read_only:
                 from hermes_state import SessionDB
-                self._dbs[path] = SessionDB(path, read_only=True) if path.exists() else _EMPTY_STORE
+                self._dbs[key] = SessionDB(path, read_only=True) if path.exists() else _EMPTY_STORE
             else:
                 from hermes_state_registry import acquire
-                self._dbs[path] = acquire(path)
-        return self._dbs[path]
+                self._dbs[key] = acquire(path)
+        return self._dbs[key]
 
     def close(self) -> None:
         from hermes_state_registry import release_or_close
@@ -99,7 +101,7 @@ class _Session:
             if db is _EMPTY_STORE:
                 continue
             with contextlib.suppress(Exception):
-                release_or_close(db) if not self.read_only else db.close()
+                db.close() if db.read_only else release_or_close(db)
         self._dbs.clear()
 
 
@@ -219,8 +221,10 @@ class RepairPlan:
         """
         by_id: dict[str, list[tuple[Store, dict[str, Any]]]] = {}
         store_rows = {}
+        live_paths = {store.db_path for store in self.stores}
         for store in self.physical_stores:
-            store_rows[store.db_path] = session.db(store).list_session_lineage_rows()
+            store_rows[store.db_path] = session.db(
+                store, inventory_only=store.db_path not in live_paths).list_session_lineage_rows()
             for row in store_rows[store.db_path]:
                 by_id.setdefault(str(row["id"]), []).append((store, row))
         for session_id, copies in sorted(by_id.items()):

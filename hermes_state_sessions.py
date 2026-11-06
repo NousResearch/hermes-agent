@@ -397,8 +397,11 @@ class SessionSessionsMixin:
     def list_session_lineage_rows(self: Any) -> list[dict[str, Any]]:
         """Read the minimal metadata used to report ids duplicated across profile stores."""
         with self._read_ctx() as conn:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
+            optional = ("parent_session_id", "end_reason", "profile_name", "session_key", "message_count")
+            projection = ", ".join(["id", "ended_at", *(name if name in columns else f"NULL AS {name}" for name in optional)])
             return [dict(row) for row in conn.execute(
-                "SELECT id, parent_session_id, ended_at, end_reason, profile_name, session_key, message_count FROM sessions"
+                f"SELECT {projection} FROM sessions"
             ).fetchall()]
 
     def set_expiry_finalized(self, session_id: str, finalized: bool = True) -> None:
@@ -1024,10 +1027,11 @@ class SessionSessionsMixin:
         """
         if not session_id:
             return False
-        # Expand the root/tip set only after releasing the previous ownership guard.
+        # Expand the actual SQL write set only after releasing the previous guard.
         guarded_ids = {session_id}
+        deadline = time.monotonic() + self._WRITE_PATIENCE_S
         for _attempt in range(3):
-            with session_lineage_guard(self.db_path, guarded_ids, timeout_s=self._WRITE_PATIENCE_S):
+            with session_lineage_guard(self.db_path, guarded_ids, timeout_s=max(0.0, deadline - time.monotonic())):
                 try:
                     row = self.get_session(session_id)
                 except Exception:
@@ -1047,15 +1051,30 @@ class SessionSessionsMixin:
                     return False
                 if (tip.get("end_reason") or "") not in self.RECOVERABLE_END_REASONS:
                     return False
+                needed = set()
                 def _recover(conn):
+                    needed.update(r[0] for r in conn.execute(
+                        _LINEAGE_CTE_SQL + " SELECT id FROM sessions WHERE id IN (SELECT id FROM lineage)",
+                        (session_id, session_id)))
+                    actual_tip = self._compression_tip_on(conn, session_id)
+                    needed.add(actual_tip)
+                    if needed - guarded_ids:
+                        return None
+                    current = conn.execute("SELECT archived FROM sessions WHERE id=?", (session_id,)).fetchone()
+                    end = conn.execute("SELECT end_reason FROM sessions WHERE id=?", (actual_tip,)).fetchone()
+                    if not current or not current[0] or not end or end[0] not in self.RECOVERABLE_END_REASONS:
+                        return False
                     if not self._set_lineage_column_in_transaction(conn, "archived", session_id, 0):
                         return False
                     # A later deliberate archive must not inherit the accidental end stamp.
                     conn.execute(
-                        "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?", (tip["id"],),
+                        "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?", (actual_tip,),
                     )
                     return True
-                return self._execute_write(_recover)
+                result = self._execute_write(_recover, patience_s=max(0.0, deadline - time.monotonic()))
+                if result is not None:
+                    return result
+            guarded_ids.update(needed)
         raise SessionLineageInventoryError("Compression tip changed during recovery; retry the operation.")
 
     def set_session_pinned(self, session_id: str, pinned: bool) -> bool:

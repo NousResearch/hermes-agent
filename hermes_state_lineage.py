@@ -536,3 +536,30 @@ def guarded_resume_lineage_write(
                 continue
             return db._execute_write(lambda conn: write(conn, lineage))
     raise SessionLineageInventoryError("Resume lineage changed during ownership discovery")
+
+
+def guarded_discovered_session_write(
+    db: Any, session_ids: Iterable[str], discover: Callable[[sqlite3.Connection], Iterable[str]],
+    write: Callable[[sqlite3.Connection], _WriteResult],
+) -> _WriteResult:
+    """Fence a SQL-discovered write set, rechecking on the writer before any mutation.
+
+    Expansion commits only the discovery read, releases the old locks, then reacquires
+    the complete canonical set. Discovery and SQLite retries share one caller budget.
+    """
+    guarded = set(session_ids)
+    deadline = time.monotonic() + db._WRITE_PATIENCE_S
+    expanded = object()
+    for _attempt in range(8):
+        with db._read_ctx() as conn:
+            guarded.update(discover(conn))
+        needed: set[str] = set()
+        with session_lineage_guard(db.db_path, guarded, timeout_s=max(0.0, deadline - time.monotonic())):
+            def apply(conn):
+                needed.update(discover(conn))
+                return expanded if needed - guarded else write(conn)
+            result = db._execute_write(apply, patience_s=max(0.0, deadline - time.monotonic()))
+            if result is not expanded:
+                return result
+        guarded.update(needed)
+    raise SessionLineageInventoryError("Session write set changed during ownership discovery")

@@ -18,7 +18,7 @@ from typing import Any, Iterable
 
 from agent.context_compressor import MODEL_ONLY_DISPLAY_METADATA_KEY
 from hermes_state_common import _sql_json_extract
-from hermes_state_lineage import SessionIdOwnedElsewhereError, session_lineage_guard
+from hermes_state_lineage import SessionIdOwnedElsewhereError, SessionLineageAmbiguousError, session_lineage_guard
 
 _ORIGINAL_VISIBLE_SQL = (
     f"COALESCE({_sql_json_extract('original.display_metadata', '$.' + MODEL_ONLY_DISPLAY_METADATA_KEY)}, 0) = 0")
@@ -74,5 +74,5 @@ def ensure_display_order(db: Any, session_id: str, missing_sql: str) -> bool:
     try:
         with session_lineage_guard(db.db_path, session_id, timeout_s=db._WRITE_PATIENCE_S):
             return bool(db._execute_write(_do))
-    except SessionIdOwnedElsewhereError:
+    except (SessionIdOwnedElsewhereError, SessionLineageAmbiguousError):
         return False

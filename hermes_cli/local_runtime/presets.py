@@ -10,10 +10,12 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from hermes_cli.local_runtime.context_policy import (
-    RUNTIME_OVERHEAD_BYTES, fit_to_free_memory, launch_args, plan_launch, ub_logits_bytes)
+    DEFAULT_UBATCH, PREFILL_UBATCH, RUNTIME_OVERHEAD_BYTES, fit_to_free_memory, launch_args,
+    plan_launch, posture_profile, ub_logits_bytes)
 from hermes_cli.local_runtime.estimator import (
     HardwareBudget, PhysicsRefusal, as_loaded, ctx_bytes, footprint_bytes, profile_from_gguf)
 from hermes_cli.local_runtime.gguf import model_id_from_stem, read_gguf_header
+from hermes_cli.local_runtime.model_settings import settings_for_model
 
 logger = logging.getLogger(__name__)
 
@@ -125,9 +127,18 @@ def _runs_dflash(entry) -> Path | None:
     return _asset_path(entry.draft)
 
 
+def _recorded_dflash_bytes(entry, profile, keys: dict[str, str]) -> int | None:
+    draft = _runs_dflash(entry)
+    if (draft is None or keys.get("model-draft") != str(draft)
+            or keys.get("spec-draft-n-max") != str(entry.draft_depth)
+            or keys.get("parallel") != "1"):
+        return None
+    return _dflash_extra_bytes(entry, profile)
+
+
 def _dflash_plan(entry, profile, budget: HardwareBudget, live: HardwareBudget | None, *,
                  fixed_overhead: int, requested_window: int | None, engine_tag: str | None,
-                 window_without: int, residents: int = 1):
+                 window_without: int, residents: int = 1, backend_defaults: bool = False):
     """The launch plan with the entry's DFlash draft in place of MTP, or None.
 
     The draft runs on one slot: each slot keeps a recurrent-state copy per draft position, and
@@ -144,7 +155,8 @@ def _dflash_plan(entry, profile, budget: HardwareBudget, live: HardwareBudget | 
         return None
     lean = replace(profile, kv_scale=1.0)
     overhead = fixed_overhead + _dflash_extra_bytes(entry, lean)
-    plan = plan_launch(lean, budget, fixed_overhead=overhead, requested_window=requested_window)
+    plan = plan_launch(lean, budget, fixed_overhead=overhead, requested_window=requested_window,
+                       backend_defaults=backend_defaults)
     if live is not None and live.commit_room_bytes is not None:
         from hermes_cli.local_runtime.hardware import usable_beside_prompt_cache
 
@@ -152,10 +164,11 @@ def _dflash_plan(entry, profile, budget: HardwareBudget, live: HardwareBudget | 
     if live is not None:
         # fit_to_free_memory holds a too-busy card at the floor rather than move weights off it on a
         # live reading. The draft never rides on that hold: it runs only where it fits now.
-        now = plan_launch(lean, live, fixed_overhead=overhead)
+        now = plan_launch(lean, live, fixed_overhead=overhead, backend_defaults=backend_defaults)
         if isinstance(now.decision, PhysicsRefusal) or now.decision.spilled:
             return None
-        plan = fit_to_free_memory(plan, lean, live, mtp_capable=False, fixed_overhead=overhead)
+        plan = fit_to_free_memory(plan, lean, live, mtp_capable=False, fixed_overhead=overhead,
+                                  backend_defaults=backend_defaults)
     decision = plan.decision
     if isinstance(decision, PhysicsRefusal) or decision.spilled:
         return None
@@ -189,6 +202,8 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
     except (ValueError, OSError) as exc:
         logger.warning("preset skip %s: %s", gguf.name, exc)
         return None
+    settings = settings_for_model(gguf)
+    profile = settings.apply(profile)
     entry = entry_for_model(model_id)
     companions = _companions(entry)
     is_mtp = _runs_mtp(entry, companions) if entry is not None else model_id in mtp_capable
@@ -196,23 +211,26 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
     fixed_overhead = RUNTIME_OVERHEAD_BYTES + companions.nbytes
     requested = load_window_overrides().get(model_id) if requested_window is None else requested_window
     plan = plan_launch(profile, budget, mtp_capable=is_mtp, fixed_overhead=fixed_overhead,
+                       backend_defaults=settings.backend_defaults,
                        requested_window=requested)
     if live is not None:
         plan = fit_to_free_memory(plan, profile, live, mtp_capable=is_mtp,
-                                  fixed_overhead=fixed_overhead)
+                                  fixed_overhead=fixed_overhead,
+                                  backend_defaults=settings.backend_defaults)
     decision = plan.decision
     if isinstance(decision, PhysicsRefusal):
         return PresetEntry(model_id=model_id, window=0, spilled=False, refusal=decision.message)
 
     dflash = None if decision.spilled else _dflash_plan(
         entry, profile, budget, live, fixed_overhead=fixed_overhead, requested_window=requested,
-        engine_tag=engine_tag, window_without=decision.window, residents=residents)
+        engine_tag=engine_tag, window_without=decision.window, residents=residents,
+        backend_defaults=settings.backend_defaults)
     if dflash is not None:
         plan, decision = dflash, dflash.decision
     # Router discovery is preset-only: refused files must never autoload with stock fit.
     keys = _args_to_keys(launch_args(
         profile, decision, mtp_capable=is_mtp and dflash is None, uma=budget.uma,
-        mtp_prefill=plan.mtp_prefill,
+        mtp_prefill=plan.mtp_prefill, backend_defaults=settings.backend_defaults,
         mtp_draft_depth=entry.mtp_draft_depth if entry is not None else 3))
     keys["model"] = str(gguf)
     from hermes_cli.local_runtime.hardware import prompt_cache_bytes
@@ -261,28 +279,55 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
                        spilled=decision.spilled, keys=keys)
 
 
-def resident_footprint(gguf: Path, budget: HardwareBudget, window: int, *, drafting: bool = False) -> int | None:
-    """Estimated bytes one staged model holds while loaded at ``window``, or None when unreadable.
-    ``drafting`` prices the one-slot DFlash launch its preset runs instead of MTP."""
+def resident_footprint(gguf: Path, budget: HardwareBudget, window: int, *,
+                       preset_path: Path | None = None) -> int | None:
+    """Reclaimable bytes at the actual window and recorded launch posture, never edited config.
+
+    Missing or unrecognized readback grants no memory credit; prospective settings cannot tell
+    us what an already-loaded child will free. A spilled child's device share is also unknown.
+    """
     from hermes_cli.local_runtime.catalog import entry_for_model
 
     model_id = model_id_from_stem(gguf.stem)
+    if preset_path is None:
+        return None
+    recorded = read_preset_decisions(preset_path).get(model_id)
+    if recorded is None or recorded.spilled or not recorded.keys:
+        return None
+    keys = recorded.keys
+    if keys.get("model") != str(gguf):
+        return None
+    try:
+        ubatch = int(keys.get("ubatch-size", DEFAULT_UBATCH))
+    except (ValueError, TypeError):
+        return None
+    if ubatch not in (DEFAULT_UBATCH, PREFILL_UBATCH):
+        return None
     try:
         profile = as_loaded(profile_from_gguf(read_gguf_header(gguf)), budget)
     except (ValueError, OSError) as exc:
         logger.debug("footprint skip %s: %s", gguf.name, exc)
         return None
     entry = entry_for_model(model_id)
-    companions = _companions(entry)
-    fixed_overhead = RUNTIME_OVERHEAD_BYTES + companions.nbytes
-    if drafting and _runs_dflash(entry) is not None:
-        lean = replace(profile, kv_scale=1.0)
-        plan = plan_launch(lean, budget, fixed_overhead=fixed_overhead + _dflash_extra_bytes(entry, lean),
-                           requested_window=window)
-    else:
-        plan = plan_launch(profile, budget, mtp_capable=_runs_mtp(entry, companions),
-                           fixed_overhead=fixed_overhead, requested_window=window)
-    return footprint_bytes(plan.profile, window, overhead_bytes=plan.overhead_bytes)
+    companion_bytes = 0
+    if entry is not None:
+        companion_bytes = sum(asset.size_bytes for asset, key in (
+            (entry.mmproj, "mmproj"), (entry.mtp_head, "model-draft"))
+            if asset is not None and keys.get(key) == str(_asset_path(asset)))
+    if keys.get("spec-type") == "draft-dflash":
+        draft_bytes = _recorded_dflash_bytes(entry, profile, keys)
+        if draft_bytes is None:
+            return None
+        companion_bytes += draft_bytes
+        profile = replace(profile, kv_scale=1.0)
+    is_mtp = keys.get("spec-type") == "draft-mtp"
+    if is_mtp and profile.kv_scale == 1.0:
+        profile = replace(profile, kv_scale=1.2)
+    posture = dict(mtp_capable=is_mtp, mtp_prefill=is_mtp and ubatch == PREFILL_UBATCH,
+                   backend_defaults=ubatch == DEFAULT_UBATCH)
+    priced = posture_profile(profile, **posture)
+    overhead = RUNTIME_OVERHEAD_BYTES + companion_bytes + ub_logits_bytes(profile.n_vocab, **posture)
+    return footprint_bytes(priced, window, overhead_bytes=overhead)
 
 
 def _launch_footprint(gguf: Path, budget: HardwareBudget, engine_tag: str | None = None) -> int | None:
@@ -298,11 +343,14 @@ def _launch_footprint(gguf: Path, budget: HardwareBudget, engine_tag: str | None
     except (ValueError, OSError) as exc:
         logger.debug("footprint skip %s: %s", gguf.name, exc)
         return None
+    settings = settings_for_model(gguf)
+    profile = settings.apply(profile)
     entry = entry_for_model(model_id)
     companions = _companions(entry)
     fixed_overhead = RUNTIME_OVERHEAD_BYTES + companions.nbytes
     requested = load_window_overrides().get(model_id)
     plan = plan_launch(profile, budget, mtp_capable=_runs_mtp(entry, companions),
+                       backend_defaults=settings.backend_defaults,
                        fixed_overhead=fixed_overhead, requested_window=requested)
     if isinstance(plan.decision, PhysicsRefusal):
         return None
@@ -313,7 +361,8 @@ def _launch_footprint(gguf: Path, budget: HardwareBudget, engine_tag: str | None
     # larger of the two launches, never both.
     dflash = None if plan.decision.spilled else _dflash_plan(
         entry, profile, budget, None, fixed_overhead=fixed_overhead, requested_window=requested,
-        engine_tag=engine_tag, window_without=plan.decision.window)
+        engine_tag=engine_tag, window_without=plan.decision.window,
+        backend_defaults=settings.backend_defaults)
     if dflash is not None:
         price = max(price, footprint_bytes(dflash.profile, dflash.decision.window,
                                            overhead_bytes=dflash.overhead_bytes))

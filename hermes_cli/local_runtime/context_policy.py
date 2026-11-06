@@ -121,17 +121,19 @@ class LaunchPlan:
     profile: ModelProfile | None = None   # as priced at the chosen posture (posture_profile)
 
 
-def posture_profile(profile: ModelProfile, *, mtp_capable: bool, mtp_prefill: bool) -> ModelProfile:
+def posture_profile(profile: ModelProfile, *, mtp_capable: bool, mtp_prefill: bool,
+                    backend_defaults: bool = False) -> ModelProfile:
     """``profile`` at one launch posture: window-scaled compute buffers grow with the microbatch
     launch_args passes, and MTP runs a second context beside the target."""
-    ubatch = PREFILL_UBATCH if mtp_prefill or not mtp_capable else DEFAULT_UBATCH
+    ubatch = (DEFAULT_UBATCH if backend_defaults else
+              PREFILL_UBATCH if mtp_prefill or not mtp_capable else DEFAULT_UBATCH)
     contexts = 2 if mtp_capable else 1
     return replace(profile, window_compute_per_token=profile.window_compute_bytes * ubatch * contexts)
 
 
 def plan_launch(profile: ModelProfile, budget: HardwareBudget, *, mtp_capable: bool = False,
                 fixed_overhead: int = RUNTIME_OVERHEAD_BYTES,
-                requested_window: int | None = None) -> LaunchPlan:
+                requested_window: int | None = None, backend_defaults: bool = False) -> LaunchPlan:
     """Window first, then prefill; price both postures at the effective window.
 
     A restored window may fit only under lean MTP. Evaluate it before discarding it because
@@ -143,9 +145,11 @@ def plan_launch(profile: ModelProfile, budget: HardwareBudget, *, mtp_capable: b
     initial: dict[bool, WindowDecision | PhysicsRefusal] = {}
 
     def candidate(stacked: bool) -> LaunchPlan:
-        posture = posture_profile(profile, mtp_capable=mtp_capable, mtp_prefill=stacked)
+        posture = posture_profile(profile, mtp_capable=mtp_capable, mtp_prefill=stacked,
+                                   backend_defaults=backend_defaults)
         overhead = fixed_overhead + ub_logits_bytes(
-            profile.n_vocab, mtp_capable=mtp_capable, mtp_prefill=stacked)
+            profile.n_vocab, mtp_capable=mtp_capable, mtp_prefill=stacked,
+            backend_defaults=backend_defaults)
         decision = initial_window(posture, budget, overhead_bytes=overhead)
         initial[stacked] = decision
         if isinstance(decision, WindowDecision) and requested_window:
@@ -160,7 +164,7 @@ def plan_launch(profile: ModelProfile, budget: HardwareBudget, *, mtp_capable: b
         return LaunchPlan(decision, stacked, overhead, posture)
 
     lean = candidate(False)
-    if not mtp_capable:
+    if not mtp_capable or backend_defaults:
         return lean
     stacked = candidate(True)
     if isinstance(stacked.decision, PhysicsRefusal):
@@ -183,7 +187,8 @@ def plan_launch(profile: ModelProfile, budget: HardwareBudget, *, mtp_capable: b
 
 def fit_to_free_memory(plan: LaunchPlan, profile: ModelProfile, live: HardwareBudget, *,
                        mtp_capable: bool = False,
-                       fixed_overhead: int = RUNTIME_OVERHEAD_BYTES) -> LaunchPlan:
+                       fixed_overhead: int = RUNTIME_OVERHEAD_BYTES,
+                       backend_defaults: bool = False) -> LaunchPlan:
     """Narrow a resident capacity plan to the window the card's free memory holds now.
 
     Only the window moves, and only down to the floor. A plan that already spills keeps its
@@ -194,7 +199,8 @@ def fit_to_free_memory(plan: LaunchPlan, profile: ModelProfile, live: HardwareBu
     decision = plan.decision
     if not isinstance(decision, WindowDecision) or decision.spilled:
         return plan
-    now = plan_launch(profile, live, mtp_capable=mtp_capable, fixed_overhead=fixed_overhead)
+    now = plan_launch(profile, live, mtp_capable=mtp_capable, fixed_overhead=fixed_overhead,
+                      backend_defaults=backend_defaults)
     if isinstance(now.decision, WindowDecision) and not now.decision.spilled:
         if now.decision.window >= decision.window:
             return plan
@@ -292,7 +298,7 @@ def spill_overrides(profile: ModelProfile, spill_bytes: int | None = None) -> li
 
 def launch_args(profile: ModelProfile, decision: WindowDecision, *, flash_attention: bool = True,
                 mtp_capable: bool = False, mtp_draft_depth: int = 3, uma: bool = False,
-                mtp_prefill: bool = False) -> list[str]:
+                mtp_prefill: bool = False, backend_defaults: bool = False) -> list[str]:
     """Per-model launch flags from a window decision. Explicit -c puts fit into
     spill-weights-and-hold-ctx; q8 KV cache wherever flash attention exists; -ot placement on
     spilled configs — DISCRETE cards only."""
@@ -300,9 +306,9 @@ def launch_args(profile: ModelProfile, decision: WindowDecision, *, flash_attent
     if mtp_capable:
         args += ["--spec-type", "draft-mtp", "--spec-draft-n-max", str(mtp_draft_depth),
                  "--backend-sampling", "--spec-draft-backend-sampling"]
-        if mtp_prefill:
+        if mtp_prefill and not backend_defaults:
             args += ["-b", "4096", "-ub", str(PREFILL_UBATCH)]
-    else:
+    elif not backend_defaults:
         args += ["-b", str(PREFILL_UBATCH), "-ub", str(PREFILL_UBATCH)]
     if flash_attention:
         args += ["-ctk", "q8_0", "-ctv", "q8_0", "-fa", "on"]
@@ -311,11 +317,14 @@ def launch_args(profile: ModelProfile, decision: WindowDecision, *, flash_attent
     return args
 
 
-def ub_logits_bytes(n_vocab: int, *, mtp_capable: bool, mtp_prefill: bool = False) -> int:
+def ub_logits_bytes(n_vocab: int, *, mtp_capable: bool, mtp_prefill: bool = False,
+                    backend_defaults: bool = False) -> int:
     """GPU logits/compute-buffer cost of the microbatch posture chosen by launch_args, priced from
     the model's own vocab and calibrated against measured server RSS (Qwen3.8 Q4, both postures,
     three windows)."""
     v = max(0, int(n_vocab))
+    if backend_defaults:
+        return DEFAULT_UBATCH * v * 4 * (2 if mtp_capable else 1)
     if mtp_capable and mtp_prefill:
         return int(2048 * v * 4 * 1.5)
     if mtp_capable:

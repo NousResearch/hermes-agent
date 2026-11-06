@@ -250,16 +250,26 @@ def _generate_presets(mdir: Path, preset_path: Path, residents: int = 1, *,
     unified memory.
     """
     from hermes_cli.local_runtime.hardware import probe_budget
+    from hermes_cli.local_runtime.model_settings import InvalidModelSettings, settings_for_model
     from hermes_cli.local_runtime.presets import generate_presets
 
+    constrained = False
     try:
+        for gguf in staged_in(mdir):
+            settings = settings_for_model(gguf)
+            constrained |= settings.context_cap is not None or settings.backend_defaults
         capacity = probe_budget(planning=True)
         for entry in generate_presets(mdir, capacity, preset_path, live=_launch_budget(capacity),
                                       residents=residents, engine_tag=engine_tag):
             if entry.refusal:
                 logger.warning("model refused by physics check: %s", entry.refusal)
         return preset_path
+    except InvalidModelSettings:
+        # A stale or absent INI may exceed an explicit limit; refuse this boot instead.
+        raise
     except Exception as exc:
+        if constrained:
+            raise InvalidModelSettings("cannot generate presets with persistent model limits") from exc
         if preset_path.exists():
             logger.error("preset generation failed (%s); serving with the "
                          "PREVIOUS launch policies — models staged since "

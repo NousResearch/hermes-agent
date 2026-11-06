@@ -796,6 +796,8 @@ def test_labels_attribute_populated_after_init(monkeypatch):
     labels = dict(env._labels)
     environment_label = labels.pop("hermes-environment")
     runtime_label = labels.pop("hermes-runtime-fingerprint")
+    assert env._reuse_owners is not None
+    assert labels.pop("hermes-reuse-owners") == env._reuse_owners.namespace
     assert labels == {
         "hermes-agent": "1",
         "hermes-task-id": "abc",
@@ -923,6 +925,7 @@ def _mock_subprocess_run_with_reuse(monkeypatch, ps_state: str | None,
     Returns the captured call list so the test can verify which docker
     commands actually ran.
     """
+    from tests.tools.test_docker_reuse_owners import registered_runtime_fingerprint
     calls = []
 
     def _run(cmd, **kwargs):
@@ -955,7 +958,7 @@ def _mock_subprocess_run_with_reuse(monkeypatch, ps_state: str | None,
     monkeypatch.setattr(
         docker_env.DockerEnvironment,
         "_container_runtime_fingerprint",
-        lambda self, cid: getattr(self, "_runtime_fp", ""),
+        registered_runtime_fingerprint,
     )
     return calls
 
@@ -1038,9 +1041,11 @@ def test_reuse_probe_format_is_podman_compatible(monkeypatch):
     default-config Podman host (#99213).  The probe must stick to fields both
     runtimes implement (``{{.ID}}``, ``{{.State}}``) and express the egress
     posture via label FILTERS instead."""
+    from tests.tools.test_docker_reuse_owners import registered_runtime_fingerprint
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/podman")
     monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
     monkeypatch.setattr(docker_env, "_runtime_reuse_fingerprint", lambda image, args, **kw: "podman-runtime-fp")
+    monkeypatch.setattr(docker_env.DockerEnvironment, "_container_runtime_fingerprint", registered_runtime_fingerprint)
 
     calls = []
 
@@ -1487,7 +1492,8 @@ def test_reap_orphan_continues_after_individual_rm_failure(monkeypatch):
                 cmd, 0, stdout="cid-a\ncid-b\ncid-c\n", stderr="",
             )
         if sub == "inspect":
-            return subprocess.CompletedProcess(cmd, 0, stdout=old + "\n", stderr="")
+            stdout = old + "\n" if "{{.State.FinishedAt}}" in cmd else ""
+            return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
         if sub == "rm":
             rm_calls.append(cmd[-1])
             # cid-b fails; cid-a and cid-c succeed.
@@ -1528,7 +1534,8 @@ def test_reap_orphan_uses_plain_rm_so_running_containers_fail_safe(monkeypatch):
                 cmd, 0, stdout="cid-a\ncid-b\n", stderr="",
             )
         if sub == "inspect":
-            return subprocess.CompletedProcess(cmd, 0, stdout=old + "\n", stderr="")
+            stdout = old + "\n" if "{{.State.FinishedAt}}" in cmd else ""
+            return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
         if sub == "rm":
             rm_calls.append(list(cmd))
             if cmd[-1] == "cid-b":

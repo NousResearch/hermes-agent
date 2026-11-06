@@ -71,6 +71,7 @@ def _reuse_guard_harness(
 
     Returns the list of docker commands issued.
     """
+    from tests.tools.test_docker_reuse_owners import registered_runtime_fingerprint
     commands = []
 
     def fake_run(cmd, *args, **kwargs):
@@ -104,7 +105,7 @@ def _reuse_guard_harness(
     monkeypatch.setattr(
         docker_env.DockerEnvironment,
         "_container_runtime_fingerprint",
-        lambda self, cid: getattr(self, "_runtime_fp", ""),
+        registered_runtime_fingerprint,
     )
 
     docker_env.DockerEnvironment(

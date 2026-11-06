@@ -227,6 +227,13 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         from gateway.session_hosted_member_homes import stopping_attempt_homes
         return stopping_attempt_homes(self.authority.db, room_id, member)
 
+    def _stop_pending_refusal(self, room_id, deferred):
+        """Name an unconfigured member profile whose unknown home keeps a turn deferred."""
+        from gateway.session_hosted_member_homes import unknown_home_refusal
+        from tui_gateway.hosted_room_service import task_member_id
+        return unknown_home_refusal(self, room_id, [
+            task for task in deferred if not self._member_is_peer(room_id, task_member_id(task))])
+
     def _stop_deferred_peer(self, room_id, task):
         """Also settle a local member's deferred turn once its profile is no longer served here and
         nothing on this host can run it (``unserved_member_stopped``): its daemon never answers."""

@@ -485,13 +485,85 @@ class TestSessionLink:
 # Cross-profile read — `profile` swaps in another profile's DB (read-only)
 # =========================================================================
 
+def _set_allow_profiles(allow):
+    import hermes_cli.config as cfg
+    c = cfg.load_config()
+    c.setdefault("session_search", {})["allow_profiles"] = allow
+    cfg.save_config(c)
+
+
 class TestCrossProfileRead:
-    def _patch_profiles(self, monkeypatch, home, exists=True):
+    def _patch_profiles(self, monkeypatch, home, exists=True, allow=None):
         from hermes_cli import profiles as profiles_mod
         monkeypatch.setattr(profiles_mod, "normalize_profile_name", lambda n: n)
         monkeypatch.setattr(profiles_mod, "validate_profile_name", lambda n: None)
         monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: exists)
         monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: home)
+        if allow is not None:
+            _set_allow_profiles(allow)
+
+    def test_allow_profiles_limits_which_profiles_are_readable(self, db, tmp_path, monkeypatch):
+        # Unset or "*" keeps every profile readable; a list limits every call shape (argument,
+        # @session:<profile>/<id> link, discovery, browse) to the listed profiles, and a refusal
+        # carries no message text.
+        other_home = tmp_path / "asdf_home"
+        other_home.mkdir()
+        other = SessionDB(other_home / "state.db")
+        other.create_session("s_far", source="cli")
+        other.append_message("s_far", role="user", content="secret")
+        other._conn.commit()
+
+        self._patch_profiles(monkeypatch, other_home)
+        assert json.loads(session_search(session_id="s_far", profile="asdf", db=db))["success"] is True
+        for allow in ([], ["other"], 5):
+            self._patch_profiles(monkeypatch, other_home, allow=allow)
+            for kwargs in ({"session_id": "s_far", "profile": "asdf"}, {"session_id": "asdf/s_far"},
+                           {"query": "secret", "profile": "asdf"}, {"profile": "asdf"}):
+                result = json.loads(session_search(db=db, **kwargs))
+                assert result["success"] is False, (allow, kwargs)
+                assert "secret" not in json.dumps(result) and "allow_profiles" in result["error"]
+        for allow in (["asdf"], "*"):
+            self._patch_profiles(monkeypatch, other_home, allow=allow)
+            named = json.loads(session_search(session_id="s_far", profile="asdf", db=db))
+            assert named["success"] is True and named["message_count"] == 1, allow
+
+        # An unreadable config.yaml leaves only the own profile readable.
+        import hermes_cli.config as cfg
+        monkeypatch.setattr(cfg, "load_config", lambda: cfg.FailedConfigRead(error=OSError("EIO")))
+        assert json.loads(session_search(session_id="s_far", profile="asdf", db=db))["success"] is False
+
+    @pytest.mark.live_system_guard_bypass  # HOME is tmp_path, so its ~/.hermes is a temp dir
+    def test_own_profile_is_decided_by_path_not_name(self, tmp_path, monkeypatch):
+        # Under a restrictive allowlist a profile still reads itself by name. A HERMES_HOME that
+        # is not a profile dir is labelled "custom" by get_active_profile_name(); a real profile
+        # named "custom" is not its own. Real profile helpers, no monkeypatched resolution.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        root = tmp_path / ".hermes"
+
+        def profile_with_session(home):
+            home.mkdir(parents=True)
+            (home / "config.yaml").write_text("model: {}\n")
+            store = SessionDB(home / "state.db")
+            store.create_session("s_x", source="cli")
+            store.append_message("s_x", role="user", content="secret")
+            store._conn.commit()
+
+        mine, custom, sandbox = root / "profiles" / "mine", root / "profiles" / "custom", root / "sandboxes" / "x"
+        profile_with_session(mine)
+        profile_with_session(custom)
+        sandbox.mkdir(parents=True)
+
+        monkeypatch.setenv("HERMES_HOME", str(mine))
+        _set_allow_profiles([])
+        own = json.loads(session_search(session_id="s_x", profile="mine", db=SessionDB(mine / "state.db")))
+        assert own["success"] is True and own["message_count"] == 1
+
+        monkeypatch.setenv("HERMES_HOME", str(sandbox))
+        _set_allow_profiles([])
+        from hermes_cli import profiles as profiles_mod
+        assert profiles_mod.get_active_profile_name() == "custom"
+        refused = json.loads(session_search(session_id="s_x", profile="custom", db=SessionDB(sandbox / "state.db")))
+        assert refused["success"] is False and "secret" not in json.dumps(refused)
 
     def test_bare_id_never_reads_another_profiles_store(self, db, tmp_path, monkeypatch):
         # #106761: profiles are isolated islands. A bare id that misses the caller's

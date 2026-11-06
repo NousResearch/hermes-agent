@@ -431,6 +431,29 @@ def _discover(db, query: str, role_filter: Optional[list[str]], limit: int, sort
         "session_search(session_id=..., around_message_id=match_message_id)."))
 
 
+def _profile_read_allowed(canon: str, profiles_mod) -> bool:
+    """Whether ``session_search.allow_profiles`` lets this profile read *canon*: unset or "*"
+    = every profile (the behaviour before the key existed), a list = only those. The caller's own
+    profile is always readable; "own" is decided by path, never by name, because
+    ``get_active_profile_name()`` labels a HERMES_HOME that is not a profile dir "custom", which
+    a real profile may also be named. An unreadable config allows only the own profile."""
+    if profiles_mod.profile_matches_home(canon):
+        return True
+    from hermes_cli.config import FailedConfigRead, cfg_get, load_config
+    config = load_config()
+    if isinstance(config, FailedConfigRead):
+        return False
+    allowed = cfg_get(config, "session_search", "allow_profiles", default=None)
+    if allowed is None:
+        return True
+    if isinstance(allowed, str):
+        allowed = [allowed]
+    if not isinstance(allowed, list):
+        raise ValueError("session_search.allow_profiles must be a list of profile names, or \"*\"")
+    names = {profiles_mod.normalize_profile_name(n) for n in allowed if isinstance(n, str) and n.strip()}
+    return "*" in names or canon in names
+
+
 def _resolve_profile_db(profile: str):
     """Another profile's ``state.db`` opened read-only (safe on a live DB); None = current."""
     if profile is None or not str(profile).strip():
@@ -439,6 +462,9 @@ def _resolve_profile_db(profile: str):
     from hermes_state import SessionDB
     canon = profiles_mod.normalize_profile_name(profile)
     profiles_mod.validate_profile_name(canon)
+    if not _profile_read_allowed(canon, profiles_mod):
+        raise ValueError(f"profile '{canon}' is not readable from this profile "
+                         "(list it in session_search.allow_profiles to allow it)")
     if not profiles_mod.profile_exists(canon):
         raise ValueError(f"profile '{canon}' does not exist")
     return SessionDB(db_path=profiles_mod.get_profile_dir(canon) / "state.db", read_only=True)

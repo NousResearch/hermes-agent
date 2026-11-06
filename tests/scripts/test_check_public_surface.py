@@ -4,6 +4,7 @@ Replayed against the Sep 2026 refactor PR at open it reports 1,703 public names 
 (the figure reviewers had to find ~30 of by hand); here the contract is pinned on a throwaway repo.
 """
 import importlib.util
+import os
 import subprocess
 import textwrap
 from pathlib import Path
@@ -21,7 +22,7 @@ def _load():
 def _git(repo, *args):
     subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True,
                    env={"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
-                        "GIT_COMMITTER_EMAIL": "t@t", "PATH": "/usr/bin:/bin:/usr/local/bin"})
+                        "GIT_COMMITTER_EMAIL": "t@t", "PATH": os.environ["PATH"]})
 
 
 def test_dropped_public_names_methods_and_test_defs_are_reported_and_moves_are_not(tmp_path, monkeypatch):
@@ -89,3 +90,28 @@ def test_unresolvable_refs_are_an_error_not_a_clean_report(tmp_path, monkeypatch
     mod = _load()
     assert mod.main(["--base", "origin/does-not-exist", "--head", "HEAD", "--strict"]) == 2
     assert mod.main(["--base", "origin/does-not-exist", "--head", "HEAD"]) == 2
+
+
+def test_a_moved_file_is_compared_with_its_old_self(tmp_path, monkeypatch):
+    """Git reports a moved file as a rename, not a modification; a public name dropped during the move
+    (into ``src/hermes_agent/`` or between packages) and a moved test file losing defs are both drops."""
+    repo = tmp_path
+    (repo / "agent").mkdir(); (repo / "tools").mkdir(); (repo / "tests").mkdir()
+    (repo / "agent" / "mod.py").write_text("def keep(): ...\ndef gone(): ...\n" + "X = 1\n" * 20, encoding="utf-8")
+    (repo / "tools" / "util.py").write_text("def stays(): ...\ndef lost(): ...\n" + "Y = 1\n" * 20, encoding="utf-8")
+    (repo / "tests" / "test_mod.py").write_text("def test_a(): ...\ndef test_b(): ...\n" + "Z = 1\n" * 20, encoding="utf-8")
+    _git(repo, "init", "-q", "-b", "main"); _git(repo, "add", "."); _git(repo, "commit", "-qm", "base")
+
+    (repo / "src" / "hermes_agent" / "agent").mkdir(parents=True); (repo / "gateway").mkdir()
+    (repo / "agent" / "mod.py").rename(repo / "src" / "hermes_agent" / "agent" / "mod.py")
+    (repo / "src" / "hermes_agent" / "agent" / "mod.py").write_text("def keep(): ...\n" + "X = 1\n" * 20, encoding="utf-8")
+    (repo / "tools" / "util.py").rename(repo / "gateway" / "util.py")
+    (repo / "gateway" / "util.py").write_text("def stays(): ...\n" + "Y = 1\n" * 20, encoding="utf-8")
+    (repo / "tests" / "test_mod.py").rename(repo / "tests" / "test_moved.py")
+    (repo / "tests" / "test_moved.py").write_text("def test_a(): ...\n" + "Z = 1\n" * 20, encoding="utf-8")
+    _git(repo, "add", "-A"); _git(repo, "commit", "-qm", "move")
+
+    monkeypatch.chdir(repo)
+    report = _load().diff_surface("HEAD~1", "HEAD")
+    assert report["dropped_names"] == {"src/hermes_agent/agent/mod.py": ["gone"], "gateway/util.py": ["lost"]}
+    assert report["test_drops"] == {"tests/test_moved.py": (2, 1)}

@@ -1,0 +1,27 @@
+name: vt-check
+repo: https://github.com/Aravinth-Earth/vt-check
+sha: 3d9d5c0a8049799e90837f8f6492e48b63878b82
+subdir: plugin
+description: >-
+  VirusTotal reputation for downloads and links. Files are hashed locally and looked up by SHA-256 —
+  never uploaded. URLs are checked read-only, and archives are inspected in memory for path traversal,
+  decompression bombs, encrypted entries and hidden executables. Disclosure — network calls to
+  www.virustotal.com (hash + URL lookup, optional URL submit); reads only the paths passed to
+  vt_check_file; no shell, no background processes, no telemetry; lookup cache in plugin state;
+  credential read via get_secret.
+maintainer: Aravinth-Earth
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/Aravinth-Earth/vt-check#readme
+version: "0.1.2"
+platforms: []
+capabilities:
+  provides_tools:
+    - vt_check_file
+    - vt_check_url
+    - vt_status
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - VT_API_KEY

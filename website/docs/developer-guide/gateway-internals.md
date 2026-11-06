@@ -85,7 +85,9 @@ rebuild. A running child is
 the one the parent's roster names (the `subagent.list` rule, nested children included; after
 the parent agent is rebuilt, an orchestrator found by its durable owner id brings its own
 running workers).
-A finished child is found through the `_subagent_id` stamped on its row at spawn, and
+A queued child, whose row is reserved before its first turn stores its delegation marker, shows
+only its own rows, never a rotated delegator's as its history. A finished child is found through
+the `_subagent_id` stamped on its row at spawn (its tip by compression links, not start time), and
 only when its `parent_session_id` chain reaches this conversation through delegation and
 compression hops alone; a branch of the conversation does not lend its children. An
 unknown or foreign child answers `available: false` with no messages and `cursor: null`; an unknown session

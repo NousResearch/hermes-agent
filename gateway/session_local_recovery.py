@@ -251,12 +251,12 @@ def transcript_target(authority, ref):
 RESUME_HISTORY_BYTES = 3 * 1024 * 1024
 
 
-def display_rows(db, target):
+def display_rows(db, target, ancestors=True):
     """``(live row ids, display rows, truncated)`` of physical *target*, the live ids read first
     (``local_history``'s fence). The display rows are the compression lineage as main's resume and the
     REST transcript show it: every live row, and the newest compaction-archived rows that fit what the
     live rows leave of ``RESUME_HISTORY_BYTES`` (``truncated`` when older ones were left out). A lineage
-    over the resume cap shows only the live rows."""
+    over the resume cap shows only the live rows. ``ancestors=False``: the target's own rows only."""
     from hermes_state import SessionResumeTooLargeError
     live_rows = db.get_messages_as_conversation(target, include_row_ids=True)
     live = {row['_row_id'] for row in live_rows}
@@ -265,7 +265,7 @@ def display_rows(db, target):
     except SessionResumeTooLargeError:
         return live, [], False
     kept, truncated = _fit_archive(live_rows, db.get_messages_as_conversation(
-        target, include_ancestors=True, include_compacted=True, include_row_ids=True))
+        target, include_ancestors=ancestors, include_compacted=True, include_row_ids=True))
     return live, kept, truncated
 
 
@@ -346,14 +346,15 @@ def local_history(authority, ref, prepared=None):
     return stored_history(authority.db, transcript_target(authority, ref), prepared)
 
 
-def stored_history(db, target, prepared=None):
-    """``local_history``'s rows of physical *target* (``subagent.transcript`` reads a child's)."""
+def stored_history(db, target, prepared=None, *, ancestors=True):
+    """``local_history``'s rows of physical *target* (``subagent.transcript`` reads a child's, its
+    ``ancestors`` only when the child's lineage has any)."""
     read_live, display, truncated = (prepared[1] if prepared is not None and prepared[0] == target
-                                     else display_rows(db, target))
+                                     else display_rows(db, target, ancestors))
     live = db.get_messages_as_conversation(target, include_row_ids=True)
     live_ids = {row['_row_id'] for row in live}
     if not read_live <= live_ids:
-        read_live, display, truncated = display_rows(db, target)
+        read_live, display, truncated = display_rows(db, target, ancestors)
         live = db.get_messages_as_conversation(target, include_row_ids=True)
     elif live_ids - read_live:
         # Rows appended since the prepare count against the archive budget too (no lineage re-read).

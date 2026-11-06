@@ -57,9 +57,9 @@ async def test_secondary_profile_child_transcript_reads_its_own_store_in_its_sco
     seen_homes = []
     stored_history = session_local_recovery.stored_history
 
-    def observed(db, session_id):
+    def observed(db, session_id, **kwargs):
         seen_homes.append(Path(get_hermes_home()).resolve())
-        return stored_history(db, session_id)
+        return stored_history(db, session_id, **kwargs)
 
     monkeypatch.setattr(session_local_recovery, 'stored_history', observed)
     connection = None

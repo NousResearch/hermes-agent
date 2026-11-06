@@ -43,6 +43,12 @@ def seed(db, target):
     rows = {}
     # The delegating conversation's own rows never join a child's transcript.
     db.append_message(target, role='user', content='PARENT_PRIVATE')
+    # A queued child: its row is reserved with no model_config (``_reserve_child_transcript``), the markers
+    # still in memory, and the delegating conversation then rotates through compression.
+    db.create_session('rotating-parent', source='cli')
+    db.append_message('rotating-parent', role='user', content='DELEGATOR_PRIVATE')
+    db.create_session('queued-child', source='subagent', parent_session_id='rotating-parent')
+    db.end_session('rotating-parent', 'compression')
     for sid, texts in [('live-child', ['live goal', 'live step one']),
                        ('done-child-2', ['done summary', 'done final']),
                        ('nested-child', ['nested goal', 'nested final']), ('deep-child', ['deep goal']),
@@ -109,6 +115,16 @@ async def probe():
             running._parent_session_id = target
             _register_child(running, parent, 'live goal', owner_session_id=None,
                             owner_transport=None, owner_session_record=None)
+            # Queued in the roster, its reserved row parented on a delegator segment that has since rotated.
+            queued = Agent()
+            queued._subagent_id, queued.session_id = 'sa-3-queued', 'queued-child'
+            queued._delegate_parent_ref, queued._parent_session_id = weakref.ref(parent), 'rotating-parent'
+            _register_child(queued, parent, 'queued goal', owner_session_id=None,
+                            owner_transport=None, owner_session_record=None)
+            try:
+                receipt['queued_child'] = await transcript(ws, sid, 'sa-3-queued')
+            finally:
+                _unregister_subagent('sa-3-queued', agent=queued)
             try:
                 roster = await rpc(ws, 'subagent.list', session_id=sid)
                 receipt['list'] = roster.get('result', roster.get('error'))

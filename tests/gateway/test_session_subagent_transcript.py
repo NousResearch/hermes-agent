@@ -138,3 +138,9 @@ def test_a_rewrite_of_a_row_from_before_a_rotation_resets_the_viewer(receipt):
     assert reacted['reset'] and reacted['child_session_id'] == 'done-child-2', reacted
     [row] = [m for m in reacted['messages'] if m['content'] == 'done goal']
     assert row['archived'] and [r['emoji'] for r in row['display_metadata']['reactions']] == ['\U0001f44d'], row
+
+
+def test_a_queued_child_of_a_rotated_delegator_shows_none_of_the_delegator_rows(receipt):
+    queued = receipt['queued_child']
+    assert queued['running'] and queued['child_session_id'] == 'queued-child', queued
+    assert queued['messages'] == [] and queued['reset'], queued

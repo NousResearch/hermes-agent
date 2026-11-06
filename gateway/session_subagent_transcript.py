@@ -50,7 +50,7 @@ def _read(db, session_id, after):
     from gateway.session_local_recovery import stored_history
     # Read before the rows: a change landing during the read then fails the next poll's check.
     _, inactive, revision = db.transcript_cursor_state(session_id, 0)
-    rows = stored_history(db, session_id)
+    rows = stored_history(db, session_id, ancestors=len(db.transcript_lineage_ids(session_id)) > 1)
     ids = [row['row_id'] for row in rows if isinstance(row.get('row_id'), int)]
     live = sum(1 for row in rows if not row.get('archived'))
     return rows, _cursor(session_id, max(ids, default=0), (live, inactive, revision)), True

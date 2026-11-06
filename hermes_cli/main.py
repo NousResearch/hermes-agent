@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# health: allow FILE_LINES -- parser wiring only for `hermes clipboard` (one import, one builder call); the command lives in hermes_cli/clipboard_cmd.py and hermes_cli/subcommands/clipboard.py
 """Hermes CLI - Main entry point.
 
 Usage:
@@ -2655,10 +2654,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
         "model", "monitoring", "pairing", "pause", "peer", "pets", "plugins", "portal", "profile",
-        "project", "proxy",
-        "prompt-size",
-        "resume",
-        "send", "sessions", "setup",
+        "project", "proxy", "prompt-size", "resume", "send", "sessions", "setup",
         "skin", "skills", "slack", "status", "tools", "uninstall", "update",
         "usage", "vault",
         "webhook", "whatsapp", "whatsapp-cloud", "worktree", "chat", "secrets", "security",

@@ -1784,7 +1784,7 @@ profile file, so a client whose gateway runs on another machine calls it where t
 
 | Option | Description |
 |--------|-------------|
-| `--out PATH` | File to write (required). Parent directories are created. |
+| `--out PATH` | File to write (required). Parent directories are created. The image is extracted into a temporary file in the same directory and then renamed onto `PATH`, so on any failure an existing `PATH` is left as it was. |
 | `--json` | Print one JSON object on stdout. Without it, success prints the path and failure prints one stderr line. |
 
 | Exit code | `reason` | Meaning |
@@ -1792,7 +1792,7 @@ profile file, so a client whose gateway runs on another machine calls it where t
 | `0` | (none, `ok: true`) | The image was written to `path`. |
 | `1` | `no_image` | The clipboard holds no image (or one that could not be converted to PNG). |
 | `3` | `no_tool` | None of this platform's clipboard tools is installed; `tools` lists them in the order tried. |
-| `4` | `write_failed` | `--out` cannot be written. |
+| `4` | `write_failed` | `--out` cannot be written: its directory is not writable or cannot be created, an existing `PATH` is a directory or read-only, or the final rename failed. |
 | `2` | (no JSON) | Usage error from the argument parser. |
 
 `--json` replies (keys are stable; new keys may be added; read `path` only when `ok` is true):

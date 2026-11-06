@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 EXIT_OK = 0
@@ -36,18 +37,27 @@ def extract_clipboard_image(dest: Path) -> tuple[int, dict]:
     from hermes_platform.resolver import locate_command
 
     dest = dest.expanduser().absolute()
+    written = None
     try:
         dest.parent.mkdir(parents=True, exist_ok=True)
         if not os.access(dest.parent, os.W_OK):
             raise PermissionError("directory is not writable")
-        saved = clipboard.save_clipboard_image(dest)
+        if os.path.lexists(dest) and (dest.is_dir() or not os.access(dest, os.W_OK)):
+            raise PermissionError("file is not writable")
+        # Extract into a private directory beside dest, then rename over it: the extractor
+        # deletes its target on failure, so dest itself is only ever replaced by a full image.
+        with tempfile.TemporaryDirectory(prefix=".hermes-clipboard-", dir=dest.parent) as tmp:
+            staged = Path(tmp) / dest.name
+            if clipboard.save_clipboard_image(staged):
+                with staged.open("rb") as f:
+                    written = {"ok": True, "path": str(dest), "mime": _mime(f.read(16)),
+                               "bytes": staged.stat().st_size}
+                os.replace(staged, dest)
     except OSError as exc:
         return EXIT_WRITE_FAILED, {
             "ok": False, "reason": "write_failed", "message": f"cannot write {dest}: {exc}"}
-    if saved:
-        with dest.open("rb") as f:
-            head = f.read(16)
-        return EXIT_OK, {"ok": True, "path": str(dest), "mime": _mime(head), "bytes": dest.stat().st_size}
+    if written:
+        return EXIT_OK, written
     tools = clipboard.clipboard_image_tools()
     if not any(locate_command(tool).command for tool in tools):
         return EXIT_NO_TOOL, {

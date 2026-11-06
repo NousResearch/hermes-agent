@@ -1199,6 +1199,7 @@ export function useMainApp(gw: GatewayClient) {
           hasSelection,
           openEditor: composerActions.openEditor,
           queueRef: composerRefs.queueRef,
+          restoreDraft: composerActions.restoreDraft,
           selection,
           setInput: composerActions.setInput
         },

@@ -131,10 +131,17 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
   // Bumped whenever the draft is not just added to at the end (cleared, submitted, replaced, edited
   // mid-text): an edit's image restore follows the user's typing only within the draft it began on.
   const draftLife = useRef(0)
+  // Bumped only when the draft is emptied (cleared, submitted): text arriving late from browse (a
+  // paste still resolving, keys queued behind it) belongs to the draft it was typed into, and an
+  // edit inside that draft (backspace, mid-text) keeps it.
+  const draftEpoch = useRef(0)
+
+  const inputBufRef = useRef<string[]>([])
 
   const setInputBuf = useCallback<StateSetter<string[]>>(next => {
     composerRevision.current++
-    setInputBufState(next)
+    inputBufRef.current = typeof next === 'function' ? next(inputBufRef.current) : next
+    setInputBufState(inputBufRef.current)
   }, [])
 
   const [tokens, setTokens] = useState<ComposerToken[]>([])
@@ -161,6 +168,10 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
 
     if (!inputRef.current.startsWith(prev) || !inputRef.current) {
       draftLife.current++
+    }
+
+    if (!inputRef.current) {
+      draftEpoch.current++
     }
 
     if (pasteSpanRef.current) {
@@ -637,6 +648,16 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
   // paste in the same terminal read wait for the paste to resolve.
   const pendingAppend = useRef<null | Promise<void>>(null)
 
+  // The draft a browse key or paste was typed into: its session and its epoch. A paste resolving
+  // (image or file lookup) after a session switch, or after the draft was cleared or submitted, is
+  // dropped with the keys queued behind it; it never lands in the next draft.
+  const liveDraft = useCallback(() => {
+    const destination = captureDestination()
+    const epoch = draftEpoch.current
+
+    return () => isCurrentDestination(destination) && epoch === draftEpoch.current
+  }, [])
+
   /** A key typed outside the composer (backtrack browse), appended after any paste still resolving. */
   const appendText = useCallback(
     (text: string) => {
@@ -644,20 +665,39 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
         return setInput(prev => prev + text)
       }
 
-      pendingAppend.current = pendingAppend.current.then(() => setInput(prev => prev + text))
+      const live = liveDraft()
+
+      pendingAppend.current = pendingAppend.current.then(() => {
+        if (live()) {
+          setInput(prev => prev + text)
+        }
+      })
     },
-    [setInput]
+    [liveDraft, setInput]
   )
 
   /** Text pasted outside the composer (backtrack browse), handled as a composer paste: collapse,
-   * dropped-path and image detection included, at the end of the draft. If the draft changed while
-   * it resolved, the raw text is appended instead, as the composer's own paste does: never lost. */
+   * dropped-path and image detection included, at the end of the draft. If the user typed on in the
+   * same draft while it resolved, the raw text is appended instead, as the composer's own paste does.
+   * If the draft itself went away (session switch, cleared, submitted), the paste is
+   * dropped with a notice, never landing in the next draft. */
   const appendPaste = useCallback(
     (text: string) => {
+      const live = liveDraft()
+
       const run = async () => {
         const value = inputRef.current
         const revision = composerRevision.current
-        const result = await handleTextPaste({ bracketed: true, cursor: value.length, text, value })
+        const result = live() ? await handleTextPaste({ bracketed: true, cursor: value.length, text, value }) : null
+
+        if (!live()) {
+          if (text.trim()) {
+            sys(t('canonical.queue.pasteNotApplied'))
+          }
+
+          return
+        }
+
         const next = result && revision === composerRevision.current ? result.value : inputRef.current + text
 
         if (result || text.trim()) {
@@ -678,7 +718,52 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
 
       return done
     },
-    [handleTextPaste, setInput]
+    [handleTextPaste, liveDraft, setInput, sys]
+  )
+
+  /** Put a submitted draft back as it was (text with its chips, and their tokens) when a send that
+   * took it out of the composer cut nothing. Only into the session it was typed in; a draft the user
+   * started since stays, after it, and an image label both use is renumbered on the restored side. */
+  const restoreDraft = useCallback(
+    (display: string, draftTokens: readonly ComposerToken[], destination: SubmissionDestination) => {
+      if (!isCurrentDestination(destination)) {
+        return false
+      }
+
+      let restored = display
+      const kept: ComposerToken[] = []
+
+      for (const token of draftTokens) {
+        if (token.kind !== 'image' || !tokensRef.current.some(t => t.label === token.label)) {
+          kept.push(token)
+
+          continue
+        }
+
+        const index = nextImageIndex([...tokensRef.current, ...draftTokens, ...kept])
+        const label = imageToken(index)
+
+        restored = restored.replace(token.label, label)
+        kept.push({ ...token, index, label })
+      }
+
+      const current = inputRef.current
+      const buffered = inputBufRef.current.length > 0
+
+      setComposerTokens(prev => [...kept, ...prev])
+
+      if (buffered) {
+        setInputBuf(prev => [restored, ...prev])
+      } else {
+        const next = current ? `${restored}\n${current}` : restored
+
+        placeInputCursor(next, next.length)
+        setInput(next)
+      }
+
+      return true
+    },
+    [setComposerTokens, setInput, setInputBuf]
   )
 
   const attachImagePath = useCallback((path: string) => attachImagePaths([path]), [attachImagePaths])
@@ -738,6 +823,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       handleTextPaste,
       openEditor,
       prependQueue: prependQ,
+      restoreDraft,
       pushHistory,
       queueDraft,
       removeQueue: removeQ,
@@ -764,6 +850,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       handleTextPaste,
       openEditor,
       prependQ,
+      restoreDraft,
       pushHistory,
       queueDraft,
       removeQ,

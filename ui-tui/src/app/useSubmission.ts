@@ -354,8 +354,11 @@ export function useSubmission(opts: UseSubmissionOptions) {
       const submission = prepareSubmission(full, submissionTokens)
       const toHistory = submission.text
 
-      // Expanded here, before clearIn() empties the tokens the async rewind would expand against.
-      if (sendPendingRewind(submission, getUiState().sid)) {
+      // Expanded here, before clearIn() empties the tokens the async rewind would expand against;
+      // the tokens ride along so a rewind that cuts nothing restores the draft whole.
+      if (sendPendingRewind({ ...submission, tokens: submissionTokens }, getUiState().sid)) {
+        // The sent row shows each chip and expands it from these bodies, as an ordinary submit's does.
+        stagePastes(full, submission.text, submissionTokens)
         composerActions.pushHistory(toHistory)
         composerActions.clearIn()
 

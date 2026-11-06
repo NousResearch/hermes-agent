@@ -11,7 +11,7 @@ import { atom } from 'nanostores'
 
 import { t } from '../i18n/runtime.js'
 
-import type { RewindTarget } from './interfaces.js'
+import type { ComposerToken, RewindTarget } from './interfaces.js'
 
 export interface BacktrackPrime {
   count: number
@@ -19,11 +19,13 @@ export interface BacktrackPrime {
 }
 
 /** An armed edit's submission, already expanded: `text` goes to the model, `display` is the
- *  composer text (paste chips folded), `attachments` the image tokens. */
+ *  composer text (paste chips folded), `attachments` the image tokens, `tokens` the composer's
+ *  chips as they were, so a send that cuts nothing puts the draft back whole. */
 export interface RewindSubmission {
   attachments?: Array<{ mime: string; path: string }>
   display: string
   text: string
+  tokens?: readonly ComposerToken[]
 }
 
 export interface PendingRewind {

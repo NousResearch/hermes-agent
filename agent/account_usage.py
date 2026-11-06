@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import math
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
@@ -34,6 +34,21 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
+WINDOW_LABEL_KEYS = {
+    "Session": "session", "Weekly": "weekly", "Current session": "current_session",
+    "Current week": "current_week", "Opus week": "opus_week", "Sonnet week": "sonnet_week",
+    "API key quota": "api_key_quota",
+}
+
+
+@dataclass(frozen=True)
+class AccountUsageRow:
+    """Structured numeric presentation of a detail line; text surfaces keep using ``details``."""
+
+    key: str
+    args: dict[str, float | int | str] = field(default_factory=dict)
+
+
 @dataclass(frozen=True)
 class AccountUsageWindow:
     label: str
@@ -44,6 +59,11 @@ class AccountUsageWindow:
     # ``model``: the window caps only one model family (Anthropic Opus/Sonnet weekly) and can
     # never imply the account itself is out of quota.
     scope: str = "account"
+    # * Presentation metadata preserves the value equality used by existing text consumers.
+    label_key: Optional[str] = field(default=None, compare=False)
+    limit: Optional[float] = field(default=None, compare=False)
+    limit_remaining: Optional[float] = field(default=None, compare=False)
+    reset_interval: Optional[str] = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -66,6 +86,9 @@ class AccountUsageSnapshot:
     # Usage-window plans only: the stacked bar layout. Every other snapshot
     # renders exactly as before.
     usage_window: bool = False
+    credits_balance: Optional[float] = field(default=None, compare=False)
+    rows: tuple[AccountUsageRow, ...] = field(default=(), compare=False)
+    details_structured: bool = field(default=False, compare=False)
 
     @property
     def available(self) -> bool:
@@ -624,7 +647,7 @@ def _usage_windows(
             used *= 100
         windows.append(AccountUsageWindow(
             label=label, used_percent=used, reset_at=_parse_dt(window.get(reset_key)),
-            scope="model" if key in model_scoped else "account",
+            scope="model" if key in model_scoped else "account", label_key=WINDOW_LABEL_KEYS.get(label),
         ))
     return windows
 
@@ -694,16 +717,23 @@ def _fetch_codex_account_usage_impl(
     rate_limit = payload.get("rate_limit") or {}
     windows = _usage_windows(rate_limit, _codex_window_labels(rate_limit), "used_percent", "reset_at")
     details: list[str] = []
+    rows: list[AccountUsageRow] = []
     count = _codex_banked_resets(payload)
     if count > 0:
         details.append(f"You have {count} reset{_plural(count)} banked - use /usage reset to activate")
+        rows.append(AccountUsageRow("banked_resets", {"count": count}))
     credits, balance = payload.get("credits") or {}, (payload.get("credits") or {}).get("balance")
+    credits_balance = None
     if credits.get("has_credits") and _is_num(balance):
         details.append(f"Credits balance: ${float(balance):.2f}")
+        credits_balance = float(balance)
+        rows.append(AccountUsageRow("credits_balance", {"value": credits_balance, "currency": "USD"}))
     elif credits.get("has_credits") and credits.get("unlimited"):
         details.append("Credits balance: unlimited")
+        rows.append(AccountUsageRow("credits_unlimited"))
     return _snapshot("openai-codex", "usage_api", windows, details, plan=_title_case_slug(payload.get("plan_type")),
-                     identity=_codex_snapshot_identity(token), raw=payload)
+                     identity=_codex_snapshot_identity(token), raw=payload, credits_balance=credits_balance,
+                     rows=tuple(rows), details_structured=True)
 
 
 def _codex_snapshot_identity(token: str) -> Optional[str]:
@@ -864,11 +894,14 @@ def _fetch_anthropic_account_usage(
         model_scoped={"seven_day_opus", "seven_day_sonnet"},
     )
     details: list[str] = []
+    rows: list[AccountUsageRow] = []
     extra = payload.get("extra_usage") or {}
     used_credits, monthly_limit = extra.get("used_credits"), extra.get("monthly_limit")
     if extra.get("is_enabled") and _is_num(used_credits) and _is_num(monthly_limit):
         details.append(f"Extra usage: {used_credits:.2f} / {monthly_limit:.2f} {extra.get('currency') or 'USD'}")
-    return _snapshot("anthropic", "oauth_usage_api", windows, details)
+        rows.append(AccountUsageRow("extra_usage", {"used": float(used_credits), "limit": float(monthly_limit),
+                                                     "currency": str(extra.get("currency") or "USD")}))
+    return _snapshot("anthropic", "oauth_usage_api", windows, details, rows=tuple(rows), details_structured=True)
 
 
 def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[str]) -> Optional[AccountUsageSnapshot]:
@@ -890,6 +923,9 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
             key_data = {}
     balance = float(credits.get("total_credits") or 0.0) - float(credits.get("total_usage") or 0.0)
     details = [f"Credits balance: ${max(0.0, balance):.2f}"]
+    credits_balance = max(0.0, balance) if _is_finite_num(balance) else None
+    rows = ([AccountUsageRow("credits_balance", {"value": credits_balance, "currency": "USD"})]
+            if credits_balance is not None else [])
     windows: list[AccountUsageWindow] = []
     limit, limit_remaining, usage = key_data.get("limit"), key_data.get("limit_remaining"), key_data.get("usage")
     limit_reset = str(key_data.get("limit_reset") or "").strip()
@@ -897,15 +933,20 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
         limit_value, remaining_value = float(limit), float(limit_remaining)
         detail_parts = [f"${remaining_value:.2f} of ${limit_value:.2f} remaining", *([f"resets {limit_reset}"] if limit_reset else [])]
         windows.append(AccountUsageWindow(label="API key quota", used_percent=((limit_value - remaining_value) / limit_value) * 100,
-                                          detail=" • ".join(detail_parts)))
+                                          detail=" • ".join(detail_parts), label_key="api_key_quota", limit=limit_value,
+                                          limit_remaining=remaining_value, reset_interval=limit_reset or None))
     if _is_num(usage):
         usage_parts = [f"API key usage: ${float(usage):.2f} total"]
+        usage_args: dict[str, float | int | str] = {"total": float(usage)}
         for key, label in (("usage_daily", "today"), ("usage_weekly", "this week"), ("usage_monthly", "this month")):
             value = key_data.get(key)
             if _is_num(value) and float(value) > 0:
                 usage_parts.append(f"${float(value):.2f} {label}")
+                usage_args[key.removeprefix("usage_")] = float(value)
         details.append(" • ".join(usage_parts))
-    return _snapshot("openrouter", "credits_api", windows, details)
+        rows.append(AccountUsageRow("api_key_usage", usage_args))
+    return _snapshot("openrouter", "credits_api", windows, details, credits_balance=credits_balance,
+                     rows=tuple(rows), details_structured=True)
 
 
 _USAGE_FETCHERS: dict[str, Callable[[Optional[str], Optional[str]], Optional[AccountUsageSnapshot]]] = {

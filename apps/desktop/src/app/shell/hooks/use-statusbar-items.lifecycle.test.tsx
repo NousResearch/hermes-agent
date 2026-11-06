@@ -1,4 +1,6 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, render, renderHook } from '@testing-library/react'
+import { type ReactNode, useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { renderMessageStream } from '@/app/session/hooks/use-message-stream/test-harness'
@@ -34,6 +36,12 @@ function breakdown(tokens: number): ContextBreakdown {
   }
 }
 
+function Wrapper({ children }: { children: ReactNode }) {
+  const [queryClient] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false } } }))
+
+  return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+}
+
 function mountStatusbar() {
   const pending: Array<{ resolve: (value: ContextBreakdown) => void; reject: (error: Error) => void }> = []
 
@@ -62,7 +70,7 @@ function mountStatusbar() {
     toggleCommandCenter: vi.fn()
   }
 
-  const hook = renderHook(() => useStatusbarItems(options))
+  const hook = renderHook(() => useStatusbarItems(options), { wrapper: Wrapper })
   const meter = () => hook.result.current.statusbarItems.find(item => item.id === 'context-usage')!
 
   return { ...hook, meter, pending, requestGateway }

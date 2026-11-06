@@ -7,6 +7,7 @@ import { ConnectionSwitcher } from '@/app/chat/sidebar/connection-switcher'
 import { ProfileSwitcher } from '@/app/chat/sidebar/profile-dropdown-switcher'
 import type { CommandCenterSection } from '@/app/command-center'
 import { toggleTerminalPane } from '@/app/right-sidebar/terminal/reveal-focus'
+import { useAccountUsageStatusbarItem } from '@/app/shell/account-usage-statusbar-item'
 import { useApprovalModeStatusbarItem } from '@/app/shell/approval-mode-menu'
 import { ContextMeterDetail, ContextUsagePanel } from '@/app/shell/context-usage-panel'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
@@ -59,6 +60,8 @@ import {
   $busy,
   $connection,
   $currentCwd,
+  $currentModel,
+  $currentProvider,
   $currentUsage,
   $selectedStoredSessionId,
   $sessions,
@@ -168,6 +171,8 @@ export function useStatusbarItems({
   // own cwd in `$sessionStates` and must not paint the primary's workspace.
   const primaryCwd = useStore($currentCwd)
   const primaryUsage = useStore($currentUsage)
+  const primaryModel = useStore($currentModel)
+  const primaryProvider = useStore($currentProvider)
   const gatewayRestarting = useStore($gatewayRestarting)
   const primarySessionStartedAt = useStore($sessionStartedAt)
   const tileSessionFocusStartedAt = useStore($tileSessionFocusStartedAt)
@@ -235,6 +240,8 @@ export function useStatusbarItems({
   // reports new usage — far rarer than a delta — so its reference is a valid
   // bail-out key on its own.
   const focusedUsage = useStoreSelector($focusedSessionState, state => state?.usage ?? null)
+  const focusedModel = useStoreSelector($focusedSessionState, state => state?.model ?? '')
+  const focusedProvider = useStoreSelector($focusedSessionState, state => state?.provider ?? '')
   const focusedStateCwd = useStoreSelector($focusedSessionState, state => state?.cwd?.trim() || '')
 
   // Runtime slices carry the stored id they were bound for. During a primary
@@ -276,6 +283,21 @@ export function useStatusbarItems({
     }
 
     return idsShareLineage(focusedStoredSessionId, focusedStateStoredId, sessions)
+  })
+
+  // * Runtime metadata can lag a tab switch; account figures require the selected session's own binding.
+  const accountSessionMatchesFocus =
+    !focusedStoredSessionId ||
+    activeSessionId === focusedStoredSessionId ||
+    focusedStateStoredId === focusedStoredSessionId ||
+    liveCwdSharesFocusLineage
+
+  const accountUsageItem = useAccountUsageStatusbarItem({
+    model: primaryFocused ? primaryModel : focusedModel,
+    provider: primaryFocused ? primaryProvider : focusedProvider,
+    requestGateway,
+    sessionId: accountSessionMatchesFocus ? activeSessionId : null,
+    usage: accountSessionMatchesFocus ? (focusedUsage ?? EMPTY_USAGE) : EMPTY_USAGE
   })
 
   const liveCwdBelongsToFocus =
@@ -779,6 +801,7 @@ export function useStatusbarItems({
         toggleLabel: planGauge ? copy.togglePlanUsage : undefined,
         variant: 'link'
       },
+      accountUsageItem,
       systemResourcesItem,
       {
         ...approvalModeItem,
@@ -800,6 +823,7 @@ export function useStatusbarItems({
       ...(backendVersionItem ? [backendVersionItem] : [])
     ],
     [
+      accountUsageItem,
       approvalModeItem,
       backendVersionItem,
       busy,

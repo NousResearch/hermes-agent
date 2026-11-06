@@ -1,6 +1,7 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, renderHook } from '@testing-library/react'
 import type { WritableAtom } from 'nanostores'
-import { isValidElement, type ReactNode } from 'react'
+import { isValidElement, type ReactNode, useState } from 'react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -83,7 +84,15 @@ function focusPane(storedId: null | string): void {
   $focusedTreePaneId.set(tilePane)
 }
 
-const wrapper = ({ children }: { children: ReactNode }) => <MemoryRouter>{children}</MemoryRouter>
+const Wrapper = ({ children }: { children: ReactNode }) => {
+  const [queryClient] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false } } }))
+
+  return (
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>{children}</MemoryRouter>
+    </QueryClientProvider>
+  )
+}
 
 function renderStatusbarItems(changeSessionCwd: (cwd: string, sessionId?: string) => Promise<void> = async () => {}) {
   const { result } = renderHook(
@@ -104,7 +113,7 @@ function renderStatusbarItems(changeSessionCwd: (cwd: string, sessionId?: string
         statusSnapshot: null,
         toggleCommandCenter: () => {}
       }),
-    { wrapper }
+    { wrapper: Wrapper }
   )
 
   return result.current
@@ -277,7 +286,7 @@ const statusbarOptions = {
 }
 
 function sessionTimerItem() {
-  const { result } = renderHook(() => useStatusbarItems(statusbarOptions), { wrapper })
+  const { result } = renderHook(() => useStatusbarItems(statusbarOptions), { wrapper: Wrapper })
 
   return result.current.statusbarItems.find(item => item.id === 'session-timer')
 }
@@ -502,7 +511,7 @@ describe('context meter beside an agentless breakdown', () => {
           statusSnapshot: null,
           toggleCommandCenter: () => {}
         }),
-      { wrapper }
+      { wrapper: Wrapper }
     )
 
     await act(async () => {

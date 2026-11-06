@@ -186,6 +186,13 @@ fallback is installed on the canonical transport.
 
 ## Canonical native projections
 
+`session.account_usage` projects the exact session's retained or frozen execution credential,
+never a replacement pool account. A frozen key remains usable only while the execution gate
+accepts it for the effective followed route and mode, checked before and after the fetch.
+Codex app-server owns separate authentication, so its HTTP key
+cannot identify the executing account: return `unsupported / route_unsupported`. A route or
+credential change during a fetch invalidates the snapshot.
+
 `gateway/session_config.py` exposes profile-authorized `config.get` presentation
 reads and `model.options` through the shared provider inventory. `full` contains
 display, approval and paste preferences plus voice record/submit settings, not

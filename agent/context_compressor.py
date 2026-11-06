@@ -3381,12 +3381,6 @@ class ContextCompressor(
             f"{int(self._proactive_prune_rearm_tokens):,}",
         )
 
-    def _compute_summary_budget(self, turns_to_summarize: list[dict[str, Any]]) -> int:
-        """Scale the summary token budget with content size and context window."""
-        content_tokens = estimate_messages_tokens_rough(turns_to_summarize)
-        budget = int(content_tokens * _SUMMARY_RATIO)
-        return max(_MIN_SUMMARY_TOKENS, min(budget, self.max_summary_tokens))
-
     # Summarizer-input limits: the budget is the summary model's window, not the main model's.
     _CONTENT_MAX = 6000       # total chars per message body
     _CONTENT_HEAD = 4000      # chars kept from the start
@@ -5459,6 +5453,9 @@ Write only the summary body. Do not include any preamble or prefix."""
         # Unpruned copy for no-op/abort returns (history stays lossless) and finalize; head/tail are
         # assembled and measured from the pruned copy (#61932).
         canonical_messages = self._drop_blank_echoes(messages)
+
+        if self._size_efficiency_skip(messages, force):
+            return messages
         # Phases 1-2: prune (cheap, no LLM call), drop blank echoes, determine boundaries on the pruned
         # copy so a pressure-demoted tail can compress (#61932)
         messages, pruned_count, compress_start, compress_end = self._plan_compaction_window(messages)

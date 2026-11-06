@@ -366,7 +366,7 @@ def test_plain_member_reply_does_not_wake_another_bot_round(
     assert decision.reason == "silent_round"
 
 
-@pytest.mark.parametrize("value", ["", "pass", "pass.", "(pass)", " ( PASS ). "])
+@pytest.mark.parametrize("value", ["", "pass", "pass.", "(pass)", " ( PASS ). ", "（pass）", "（pass）。"])
 def test_pass_detection(value: str):
     assert discussion.is_pass_text(value)
 

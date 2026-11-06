@@ -79,6 +79,8 @@ describe('routing', () => {
     expect(turns.isGroupPassText('pass')).toBe(true)
     expect(turns.isGroupPassText('Pass.')).toBe(true)
     expect(turns.isGroupPassText('  ')).toBe(true)
+    expect(turns.isGroupPassText('（pass）')).toBe(true)
+    expect(turns.isGroupPassText('（pass）。')).toBe(true)
     expect(turns.isGroupPassText('I will pass this to ops')).toBe(false)
   })
 

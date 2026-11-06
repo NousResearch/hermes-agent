@@ -34,7 +34,7 @@ import {
 import { botConnectionRoute, requestForBot } from './routing'
 import type { Attachment, GroupMember, GroupPrompt, GroupPromptQuestion, ProfileRoute } from './types'
 
-/** "(pass)" (loosely: pass / (pass) / pass.) or empty = the member stayed silent. */
+/** "(pass)" (loosely: pass / (pass) / pass., incl. full-width （pass）。) or empty = the member stayed silent. */
 export function isGroupPassText(text: unknown) {
   const trimmed = String(text || '').trim()
 
@@ -42,7 +42,7 @@ export function isGroupPassText(text: unknown) {
     return true
   }
 
-  return /^\(?\s*pass\s*\)?\.?$/i.test(trimmed)
+  return /^[(（]?\s*pass\s*[)）]?[.。．｡]?$/i.test(trimmed)
 }
 
 /** One transcript entry in a `session.resume` snapshot, as the turn harvester

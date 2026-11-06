@@ -1,83 +1,105 @@
-"""Tools a hosted scope refuses because they would run or read on this host.
+"""What a hosted scope may run: an allowlist of tools, and one switch for host-state features.
 
-In a hosted scope nothing tenant-supplied may execute on this host or touch its filesystem: the
-terminal, code, background-process and file tools reach the agent's own sandbox
-(``tools.environments.sandbox_scope``). The tool families below have no sandbox route yet. They
-run here (a browser harness executing the model's Python, a desktop driver, local TTS engines),
-write their result as a host file that is only deliverable by host path, or act for the profile
-rather than the agent (skills, cron, MCP servers from the profile's config, child agents). Until each
-gets a route through the agent's environment, a hosted scope refuses it before any setup, file or
-process: :func:`hosted_refusal` is checked by ``ToolRegistry.dispatch``, and the paths that skip the
-registry (the browser harness entry, checkpoints, inline skill shell, ``@`` references, workspace
-probes, cron scripts, MCP stdio spawns, media delivery, transcription, delegation) call
-:func:`refuse_on_host` themselves.
+In a hosted scope nothing tenant-supplied may execute on this host or touch its filesystem, and no
+agent may read or write state this host keeps for its profile. Two decisions enforce that. Each is
+made in one function and is deny-by-default, so a new tool or feature stays off in a hosted scope
+until someone shows it acts only through the agent's sandbox:
 
-A local install (no scope, or a local one) is untouched: every function here answers "allowed".
+* :func:`hosted_tool_refusal` — a tool runs in a hosted scope only if it is on
+  :data:`HOSTED_TOOL_ALLOWLIST`, the tools whose every effect goes through the agent's own sandbox
+  (``tools.environments.sandbox_scope``). Everything else (memory, recall, todo, vision, browser, web,
+  MCP, connectors, catalog, delegation, skills, cron, ...) is refused before its handler. The agent
+  loop asks once per call, in ``agent.tool_executor._dispatch_authorized_once``: the one function every
+  sequential, concurrent and batched call goes through, whatever executes it (inline agent tools,
+  memory-provider and context-engine tools, the registry, connectors). The execution primitives also
+  ask, for callers outside the loop: ``ToolRegistry.dispatch`` (execute_code RPC, the session kernel,
+  the MCP bridge, plugin ``dispatch_tool``), the inline-executor table and connector dispatch.
+* :func:`host_feature_enabled` — the agent features outside tool dispatch that read or write this
+  host's state for the profile, or run here (:data:`HOST_FEATURES`). Every one is off in a hosted
+  scope; each site asks this one function. They come back per agent through storage ports.
+
+A local install (no scope, or a local one) is untouched: neither set is consulted, and every
+function here answers "allowed".
 """
 
 from __future__ import annotations
 
 from typing import Optional
 
-# toolset -> what the family would do on this host.
-_REFUSED_TOOLSETS = {
-    "browser-use": "browser_exec runs its Python on this host",
-    "browser-cdp": "it drives a browser this host launched",
-    "browser": "it fills the operator's vault into a browser this host launched",
-    "computer_use": "it drives this host's desktop",
-    "desktop_ui": "it drives this host's desktop app",
-    "project": "it creates workspaces on this host",
-    "image_gen": "its output is a host file",
-    "video_gen": "its output is a host file",
-    "tts": "it writes host audio files and runs local speech engines",
-    "skills": "skills live in the profile's host directory and may run inline shell on this host",
-    "cronjob": "cron jobs and their scripts run on this host for the profile",
-    "delegation": "a child agent would run outside this agent's sandbox routing",
-    "kanban": "the board dispatches workers on this host for the profile",
-    "catalog": "it installs plugins and skills into this host's profile",
-    "connections": "it can install and start local MCP servers on this host",
-    "onboarding": "it changes this host profile's setup",
-}
-_MCP_TOOLSET_PREFIX = "mcp-"
+# Tools whose every effect goes through the agent's ScopedEnvironment and nothing on this host:
+#   terminal        commands run by env.execute in the sandbox; background spawns via spawn_via_env,
+#                   their records stamped with the sandbox key.
+#   process_manage  acts only on the bound agent's own records (sandbox_visible); polls via its env.
+#   execute_code    always the remote kernel / per-call script in the sandbox, never the host kernel;
+#                   its RPC tool calls re-enter ToolRegistry.dispatch, so they meet this allowlist too.
+#   read_file, write_file, patch, search_files
+#                   ShellFileOperations over the sandbox env: no host fast path, a lexical path policy,
+#                   no host document extraction; an oversized result spills into the sandbox.
+HOSTED_TOOL_ALLOWLIST = frozenset({
+    "terminal", "process_manage", "execute_code", "read_file", "write_file", "patch", "search_files",
+})
+
+# Agent features outside tool dispatch that read or write this host's profile state, or run here.
+HOST_FEATURES = frozenset({
+    "context_files",              # AGENTS.md / CLAUDE.md / .cursorrules / SOUL.md in the system prompt
+    "subdirectory_hints",         # AGENTS.md found beside the paths a tool call names
+    "context_references",         # @file / @diff / @url expansion of the user's message
+    "workspace_snapshot",         # git and project facts for the system prompt
+    "backend_probe",              # a throwaway environment built to describe the backend
+    "builtin_memory",             # MEMORY.md / USER.md and external memory providers
+    "session_recall",             # the profile's state.db opened for recall
+    "background_review",          # the post-turn memory/skill review fork
+    "trajectory_export",          # trajectory JSONL in the working directory
+    "file_mutation_bookkeeping",  # host stat of a failed write's target
+    "checkpoints",                # shadow-git checkpoints and rollback of the working directory
+    "media_processing",           # images/video decoded, converted and cached on this host
+    "skill_inline_shell",         # !`cmd` blocks in a skill body
+    "cron_scripts",               # a cron job's pre-run script
+    "mcp_stdio",                  # a profile MCP server started as a host process
+    "media_delivery",             # a reply attachment named by host path
+    "transcription",              # audio read and speech engines run here
+    "delegation",                 # child agents started outside a tool call (/review)
+})
 
 
 class HostedToolRefused(PermissionError):
     """A hosted scope asked for something that would run or read on this host."""
 
 
+def _hosted() -> bool:
+    from tools.environments.sandbox_scope import hosted_scope
+    return hosted_scope() is not None
+
+
 def _message(what: str, why: str) -> str:
-    return (f"{what} is not available to a hosted agent: {why}. Hosted tools run only in the "
-            "agent's own sandbox (terminal, execute_code, background processes, file tools).")
+    return (f"{what} is not available to a hosted agent: {why}. A hosted agent's tools are "
+            f"{', '.join(sorted(HOSTED_TOOL_ALLOWLIST))}, all run in its own sandbox.")
 
 
-def hosted_refusal(tool_name: str, toolset: str) -> Optional[str]:
-    """Why a hosted scope may not dispatch *tool_name* (of *toolset*), or ``None``."""
-    from tools.environments.sandbox_scope import hosted_scope
-    if hosted_scope() is None:
+def hosted_tool_refusal(tool_name: str) -> Optional[str]:
+    """Why a hosted scope may not run *tool_name*, or ``None``. Always ``None`` outside a hosted scope,
+    where the allowlist is not consulted."""
+    if not _hosted() or tool_name in HOSTED_TOOL_ALLOWLIST:
         return None
-    if toolset.startswith(_MCP_TOOLSET_PREFIX):
-        return _message(tool_name, "MCP servers come from the profile's config and run for it, not for "
-                                   "this agent")
-    why = _REFUSED_TOOLSETS.get(toolset)
-    return _message(tool_name, why) if why else None
+    return _message(tool_name, "only tools that act solely through the agent's sandbox are enabled")
 
 
-def refuse_on_host(what: str, why: str) -> None:
-    """Raise :class:`HostedToolRefused` in a hosted scope; a no-op otherwise."""
-    from tools.environments.sandbox_scope import hosted_scope
-    if hosted_scope() is not None:
-        raise HostedToolRefused(_message(what, why))
+def host_feature_enabled(feature: str) -> bool:
+    """Whether *feature* (one of :data:`HOST_FEATURES`) may use this host's state now: always outside
+    a hosted scope, never inside one."""
+    if feature not in HOST_FEATURES:
+        raise KeyError(f"unknown host feature {feature!r}")
+    return not _hosted()
 
 
-def host_refusal(what: str, why: str) -> Optional[str]:
-    """:func:`refuse_on_host` as a value: the refusal message in a hosted scope, else ``None``."""
-    try:
-        refuse_on_host(what, why)
-    except HostedToolRefused as exc:
-        return str(exc)
-    return None
+def host_feature_refusal(feature: str, what: str) -> Optional[str]:
+    """:func:`host_feature_enabled` as a message for *what*: the refusal in a hosted scope, else ``None``."""
+    if host_feature_enabled(feature):
+        return None
+    return _message(what, f"it uses this host's {feature.replace('_', ' ')}")
 
 
-def refused_toolsets() -> frozenset[str]:
-    """The toolsets :func:`hosted_refusal` refuses by name (MCP toolsets are refused by prefix)."""
-    return frozenset(_REFUSED_TOOLSETS)
+def require_host_feature(feature: str, what: str) -> None:
+    """Raise :class:`HostedToolRefused` when *feature* is off (a hosted scope); a no-op otherwise."""
+    if refusal := host_feature_refusal(feature, what):
+        raise HostedToolRefused(refusal)

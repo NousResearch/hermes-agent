@@ -306,6 +306,9 @@ _RAW_INLINE_TOOL_EXECUTORS: dict[str, InlineToolExecutor] = {
 
 def _coerced(name: str, executor: InlineToolExecutor) -> InlineToolExecutor:
     def _exec(agent, args: dict, ctx: InlineToolContext) -> Any:
+        from tools.hosted_tool_policy import hosted_tool_refusal
+        if refusal := hosted_tool_refusal(name):  # the table is an execution primitive: same allowlist
+            return json.dumps({"error": refusal}, ensure_ascii=False)
         return executor(agent, coerce_tool_args(name, args), ctx)
     return _exec
 

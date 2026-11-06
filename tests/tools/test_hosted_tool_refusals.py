@@ -1,11 +1,12 @@
-"""Hosted scopes refuse every tool family that would run or read on this host.
+"""Hosted scopes keep host-only paths outside tool dispatch closed.
 
-``tools/hosted_tool_policy.py`` lists the families with no sandbox route yet. The registry-dispatched
-ones are covered by the conformance check ``host_tools_refused``; this file drives the paths that
-skip the registry (browser harness entry, checkpoints, inline skill shell, ``@`` references, the
-workspace probe, cron scripts, MCP stdio spawns, media delivery, transcription, delegation, connector
-file inputs, document extraction) through their real entry points, under a hosted scope and with no
-scope bound, and checks that the hosted call fails closed before any host effect.
+Tool calls meet the deny-by-default allowlist (``tools/hosted_tool_policy.py``, covered by
+``test_hosted_deny_by_default.py`` and the conformance check ``host_tools_refused``). This file drives
+the paths that run without a tool call (checkpoints, inline skill shell, ``@`` references, the
+workspace probe, cron scripts, MCP stdio spawns, media delivery, transcription, ``/review``
+delegation) and document extraction inside the allowlisted ``read_file``, through their real entry
+points, under a hosted scope and with no scope bound, and checks the hosted call fails closed before
+any host effect. Each asks ``host_feature_enabled``.
 """
 
 from __future__ import annotations
@@ -38,18 +39,18 @@ def no_spawn(monkeypatch):
 
 
 def test_browser_exec_runs_no_tenant_python_on_the_host(monkeypatch, no_spawn):
+    """browser_exec is reached only by tool dispatch, where the allowlist refuses it before setup."""
     import tools.browser_use_cli as browser
-    from tools import browser_use_shot
+    from tools.registry import registry
 
     setup = []
-    monkeypatch.setattr(browser, "_find_cli", lambda: [sys.executable, "-"])
+    monkeypatch.setattr(browser, "_find_cli", lambda: setup.append("cli") or [sys.executable, "-"])
     monkeypatch.setattr(browser, "_base_subprocess_env", lambda: setup.append("env") or {})
-    monkeypatch.setattr(browser, "_route_exec_current", lambda env, *a: setup.append("route") or (env, None, False, 0))
-    monkeypatch.setattr(browser, "_workspace_dir", lambda task: setup.append("workspace"))
-    monkeypatch.setattr(browser_use_shot, "harness_command", lambda cmd, **kw: cmd)
     with bind_state(A):
-        result = browser.browser_exec("print('HOST-EXECUTED')", task_id="t")
-    assert "not available to a hosted agent" in result and "HOST-EXECUTED" not in result.replace("print('HOST", "")
+        dispatched = registry.dispatch("browser_exec", {"code": "print('HOST-EXECUTED')"}, task_id="t")
+        direct = browser.browser_exec("print('HOST-EXECUTED')", task_id="t")
+    for result in (dispatched, direct):
+        assert "not available to a hosted agent" in result
     assert setup == [] and no_spawn == []
 
 
@@ -142,15 +143,6 @@ def test_delegation_spawns_no_child_agent():
     with bind_state(A):
         result = json.loads(delegate_task(goal="do it", parent_agent=Parent()))
     assert "not available to a hosted agent" in result["error"]
-
-
-def test_a_connector_file_input_never_reads_the_host(tmp_path):
-    from tools.connectors.gateway.files import FileInputError, _readable_file
-
-    planted = tmp_path / "doc.pdf"
-    planted.write_bytes(b"%PDF")
-    with bind_state(A), pytest.raises(FileInputError, match="hosted agent"):
-        _readable_file(str(planted), "t")
 
 
 def test_document_extraction_is_not_done_on_the_host(monkeypatch):

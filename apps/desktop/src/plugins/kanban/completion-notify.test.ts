@@ -22,6 +22,7 @@ interface OsDoor {
 interface Mod {
   bindCompletionNotify(r: Rest, t?: Translate, os?: OsDoor): void
   onKanbanEventsFrame(slug: string, events?: CompletionEvent[]): Promise<boolean>
+  setSilencedKinds(kinds: Iterable<string>): void
 }
 
 const { hostMock } = vi.hoisted(() => ({
@@ -466,6 +467,40 @@ describe('terminal kinds beyond completed', () => {
     await m.onKanbanEventsFrame('smoke', [ev(102, 'blocked'), ev(104, 'blocked')])
     expect(hostMock.notify).toHaveBeenCalledTimes(1)
     expect(lastNotify().message).toBe('t104')
+  })
+})
+
+describe('silenced kinds', () => {
+  it('a silenced blocked event advances the cursor without a toast or an OS banner', async () => {
+    const os = { notify: vi.fn() }
+    const m = await loadModule()
+    m.bindCompletionNotify(makeRest(() => 100) as never, undefined, os)
+    m.setSilencedKinds(['blocked', 'block_loop_detected'])
+
+    const fired = await m.onKanbanEventsFrame('smoke', [ev(101, 'blocked', { reason: 'needs API key' })])
+
+    expect(fired).toBe(false)
+    expect(hostMock.notify).not.toHaveBeenCalled()
+    expect(os.notify).not.toHaveBeenCalled()
+
+    // The cursor still moved past 101: a later completed task notifies, and a
+    // replayed blocked at 101 stays silent.
+    const next = await m.onKanbanEventsFrame('smoke', [ev(101, 'blocked'), ev(102, 'completed')])
+
+    expect(next).toBe(true)
+    expect(hostMock.notify).toHaveBeenCalledTimes(1)
+    expect(lastNotify()).toMatchObject({ kind: 'success' })
+  })
+
+  it('silencing is per kind: block_loop still notifies when only blocked is off', async () => {
+    const m = await loadModule()
+    m.bindCompletionNotify(makeRest(() => 100) as never)
+    m.setSilencedKinds(['blocked'])
+
+    const fired = await m.onKanbanEventsFrame('smoke', [ev(101, 'block_loop_detected', { reason: 'same cause 3x' })])
+
+    expect(fired).toBe(true)
+    expect(lastNotify()).toMatchObject({ kind: 'warning', message: 'same cause 3x' })
   })
 })
 

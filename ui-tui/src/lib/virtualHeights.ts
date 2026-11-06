@@ -3,7 +3,7 @@ import { INLINE_IMAGE_MAX_ROWS } from '../config/limits.js'
 import type { Msg } from '../types.js'
 
 import { transcriptBodyWidth } from './inputMetrics.js'
-import { isUserPrompt, USER_PROMPT_SHADE_ROWS } from './userPromptShade.js'
+import { hasUserPromptShade, USER_PROMPT_SHADE_ROWS } from './userPromptShade.js'
 
 const hashText = (text: string) => {
   let h = 5381
@@ -77,10 +77,10 @@ const imageRows = (msg: Msg, inlineImages: boolean) =>
 // Rows whose height doesn't depend on wrapped text; null for the rest.
 // Rows a message's own chrome paints around it in MessageLine: user and diff
 // rows keep a blank line above and below, user prompts add their shade bar's
-// padding rows inside that, and slash echoes get a top margin.
-const ownMarginRows = (msg: Msg): number => {
+// padding rows inside that (when the shade is on), and slash echoes get a top margin.
+const ownMarginRows = (msg: Msg, userShade: boolean | undefined): number => {
   if (msg.role === 'user' || msg.kind === 'diff') {
-    return 2 + (isUserPrompt(msg) ? USER_PROMPT_SHADE_ROWS : 0)
+    return 2 + (hasUserPromptShade(msg, userShade) ? USER_PROMPT_SHADE_ROWS : 0)
   }
 
   return msg.kind === 'slash' ? 1 : 0
@@ -119,6 +119,7 @@ export const estimatedMsgHeight = (
     thinkingExpanded = thinkingVisible,
     toolsVisible = details,
     userPrompt = '',
+    userShade,
     withSeparator = false
   }: {
     compact: boolean
@@ -129,6 +130,7 @@ export const estimatedMsgHeight = (
     thinkingVisible?: boolean
     toolsVisible?: boolean
     userPrompt?: string
+    userShade?: boolean
     withSeparator?: boolean
   }
 ) => {
@@ -169,7 +171,7 @@ export const estimatedMsgHeight = (
 
   h += imageRows(msg, inlineImages)
 
-  h += ownMarginRows(msg)
+  h += ownMarginRows(msg, userShade)
 
   // Group-boundary blank line owned by BlockSlot: model prose, reasoning/tool
   // trails, and notes/errors each start a new visual group when the block

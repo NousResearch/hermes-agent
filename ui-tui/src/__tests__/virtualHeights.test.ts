@@ -24,19 +24,21 @@ describe('virtual height estimates', () => {
     // body enough to wrap an extra line vs the single-cell '❯' prompt.
     const msg: Msg = { role: 'user', text: 'x'.repeat(23) }
 
-    // 1-2 wrapped body rows + 2 margin rows + 2 shade-bar padding rows.
-    expect(estimatedMsgHeight(msg, 30, { compact: false, details: false, userPrompt: '❯' })).toBe(5)
-    expect(estimatedMsgHeight(msg, 30, { compact: false, details: false, userPrompt: 'Ψ >' })).toBe(6)
+    // 1-2 wrapped body rows + 2 margin rows.
+    expect(estimatedMsgHeight(msg, 30, { compact: false, details: false, userPrompt: '❯' })).toBe(3)
+    expect(estimatedMsgHeight(msg, 30, { compact: false, details: false, userPrompt: 'Ψ >' })).toBe(4)
   })
 
-  it('reserves the shade-bar padding rows for user prompts only', () => {
+  it('reserves the shade-bar padding rows for user prompts only, and only when the shade is on', () => {
     const prompt: Msg = { role: 'user', text: 'hi' }
     const slash: Msg = { kind: 'slash', role: 'user', text: '/help' }
     const diff: Msg = { kind: 'diff', role: 'assistant', text: '+a' }
+    const on = { compact: false, details: false, userShade: true }
 
-    expect(estimatedMsgHeight(prompt, 80, { compact: false, details: false })).toBe(1 + 2 + 2)
-    expect(estimatedMsgHeight(diff, 80, { compact: false, details: false })).toBe(1 + 2)
-    expect(estimatedMsgHeight(slash, 80, { compact: false, details: false })).toBeLessThan(1 + 2 + 2)
+    expect(estimatedMsgHeight(prompt, 80, { compact: false, details: false })).toBe(1 + 2)
+    expect(estimatedMsgHeight(prompt, 80, on)).toBe(1 + 2 + 2)
+    expect(estimatedMsgHeight(diff, 80, on)).toBe(1 + 2)
+    expect(estimatedMsgHeight(slash, 80, on)).toBe(estimatedMsgHeight(slash, 80, { compact: false, details: false }))
   })
 
   it('reserves a tool image at its cap, with no text line or gap, and attachments under a gap', () => {

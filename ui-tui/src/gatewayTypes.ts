@@ -147,6 +147,8 @@ export interface ConfigDisplayConfig {
   tui_agents_nudge?: boolean
   tui_auto_resume_recent?: boolean
   tui_compact?: boolean
+  /** Shade bar behind the user's own prompts in the transcript. Default false. */
+  tui_user_message_shade?: boolean
   /** Legacy alias for display.mouse_tracking. */
   tui_mouse?: boolean | null | number | string
   // Forward-compat: backend may send styles this client doesn't know yet —

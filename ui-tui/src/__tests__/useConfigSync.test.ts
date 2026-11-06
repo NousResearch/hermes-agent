@@ -30,7 +30,8 @@ describe('applyDisplay', () => {
             show_reasoning: true,
             streaming: false,
             tui_compact: true,
-            tui_statusbar: false
+            tui_statusbar: false,
+            tui_user_message_shade: true
           }
         }
       },
@@ -45,6 +46,7 @@ describe('applyDisplay', () => {
     expect(s.showReasoning).toBe(true)
     expect(s.statusBar).toBe('off')
     expect(s.streaming).toBe(false)
+    expect(s.userMessageShade).toBe(true)
   })
 
   it('hydrates the destructive slash confirmation policy from approvals', () => {
@@ -107,6 +109,7 @@ describe('applyDisplay', () => {
     expect(s.statusBar).toBe('top')
     expect(s.streaming).toBe(true)
     expect(s.sections).toEqual({})
+    expect(s.userMessageShade).toBe(false)
   })
 
   it('parses display.sections into per-section overrides', () => {

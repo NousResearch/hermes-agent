@@ -183,6 +183,17 @@ If you want the light theme permanently regardless of terminal:
 export HERMES_TUI_THEME=light
 ```
 
+## User message shade bar
+
+To make your own prompts easy to spot when scrolling back, the TUI can put them on a full-width shaded bar, like Codex and opencode. It's off by default:
+
+```yaml
+display:
+  tui_user_message_shade: true
+```
+
+The bar's color defaults to the terminal background nudged slightly toward the opposite pole (lighter on dark terminals, darker on light ones). Pick your own with the `user_message_bg` skin key, e.g. `hermes skin set user_message_bg "#2a2a33"`.
+
 ## Busy indicator styles
 
 The status-bar busy indicator is pluggable — the default rotates Hermes' kawaii face palette every 2.5 seconds during agent work. Pick a different style via config or the `/indicator` slash command:

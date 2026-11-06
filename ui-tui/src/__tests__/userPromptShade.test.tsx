@@ -24,7 +24,7 @@ afterEach(() => {
 
 const theme: Theme = { ...DEFAULT_THEME, color: { ...DEFAULT_THEME.color, userMessageBg: SHADE } }
 
-async function renderFrame(msg: Msg): Promise<string> {
+async function renderFrame(msg: Msg, userShade = true): Promise<string> {
   const stdout = new PassThrough()
   const stdin = new PassThrough()
   const stderr = new PassThrough()
@@ -37,7 +37,7 @@ async function renderFrame(msg: Msg): Promise<string> {
     output += chunk.toString()
   })
 
-  const instance = renderSync(<MessageLine cols={60} msg={msg} t={theme} />, {
+  const instance = renderSync(<MessageLine cols={60} msg={msg} t={theme} userShade={userShade} />, {
     patchConsole: false,
     stderr: stderr as NodeJS.WriteStream,
     stdin: stdin as NodeJS.ReadStream,
@@ -57,8 +57,14 @@ describe('user prompt shade bar', () => {
     expect(isUserPrompt({ role: 'user', text: 'hi' })).toBe(true)
     expect(isUserPrompt({ kind: 'slash', role: 'user', text: '/help' })).toBe(false)
     expect(isUserPrompt({ role: 'assistant', text: 'hi' })).toBe(false)
-    expect(userPromptShade({ role: 'assistant', text: 'hi' }, theme)).toEqual({})
-    expect(userPromptShade({ role: 'user', text: 'hi' }, theme)).toEqual({ backgroundColor: SHADE, paddingY: 1 })
+    expect(userPromptShade({ role: 'assistant', text: 'hi' }, theme, true)).toEqual({})
+    expect(userPromptShade({ role: 'user', text: 'hi' }, theme, true)).toEqual({ backgroundColor: SHADE, paddingY: 1 })
+  })
+
+  it('is off unless display.tui_user_message_shade turns it on', async () => {
+    expect(userPromptShade({ role: 'user', text: 'hi' }, theme, false)).toEqual({})
+    expect(userPromptShade({ role: 'user', text: 'hi' }, theme, undefined)).toEqual({})
+    expect(await renderFrame({ role: 'user', text: 'find the bug' }, false)).not.toContain(SHADE_SGR)
   })
 
   it('paints the theme shade behind a user prompt', async () => {

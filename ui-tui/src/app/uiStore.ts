@@ -42,7 +42,8 @@ const buildUiState = (): UiState => ({
   // Last session's resolved theme paints frame one (flash-free boot, like
   // the desktop's hermes-boot-* keys); DEFAULT_THEME only on first launch.
   theme: bootTheme ?? DEFAULT_THEME,
-  usage: ZERO
+  usage: ZERO,
+  userMessageShade: false
 })
 
 export const $uiState = atom<UiState>(buildUiState())

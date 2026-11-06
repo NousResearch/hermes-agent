@@ -396,6 +396,8 @@ export interface UiState {
   // rows, the same config key the classic CLI honors (#41531).
   timestamps: boolean
   usage: Usage
+  // `display.tui_user_message_shade` — full-width shade bar behind the user's own prompts.
+  userMessageShade: boolean
 }
 
 export interface VirtualHistoryState {

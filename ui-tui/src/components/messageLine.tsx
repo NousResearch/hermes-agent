@@ -60,7 +60,8 @@ export const MessageLine = memo(function MessageLine({
   sections,
   t,
   timestamps = false,
-  tools = []
+  tools = [],
+  userShade
 }: MessageLineProps) {
   const T = useT().chatBits.messageLine
 
@@ -279,7 +280,7 @@ export const MessageLine = memo(function MessageLine({
       flexDirection="column"
       marginBottom={msg.role === 'user' || isDiffSegment ? 1 : 0}
       marginTop={msg.role === 'user' || msg.kind === 'slash' || isDiffSegment || leadGap ? 1 : 0}
-      {...userPromptShade(msg, t)}
+      {...userPromptShade(msg, t, userShade)}
     >
       {showDetails && (
         <Box flexDirection="column" marginBottom={1}>
@@ -400,4 +401,6 @@ interface MessageLineProps {
   /** `display.timestamps` — dim [HH:MM] label on user/assistant rows. */
   timestamps?: boolean
   tools?: ActiveTool[]
+  /** `display.tui_user_message_shade` — shade bar behind the user's own prompts. */
+  userShade?: boolean
 }

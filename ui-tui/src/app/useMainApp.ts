@@ -261,13 +261,19 @@ export async function startPromptLiveSession({
   return sid
 }
 
-// One bucket per layout that changes row heights (width, prompt, compact, inline images, details).
+// One bucket per layout that changes row heights (width, prompt, compact, inline images, user shade, details).
 function heightCacheBucket(
-  ui: { compact?: boolean; inlineImages?: boolean; sid?: null | string; theme: { brand: { prompt: string } } },
+  ui: {
+    compact?: boolean
+    inlineImages?: boolean
+    sid?: null | string
+    theme: { brand: { prompt: string } }
+    userMessageShade?: boolean
+  },
   cols: number,
   detailsLayoutKey: string
 ): string {
-  const flags = `${ui.compact ? '1' : '0'}:${ui.inlineImages ? '1' : '0'}`
+  const flags = `${ui.compact ? '1' : '0'}:${ui.inlineImages ? '1' : '0'}:${ui.userMessageShade ? '1' : '0'}`
 
   return `${ui.sid ?? 'draft'}:${cols}:${composerPromptWidth(ui.theme.brand.prompt)}:${flags}:${detailsLayoutKey}`
 }
@@ -525,9 +531,8 @@ export function useMainApp(gw: GatewayClient) {
     }
   }, [activeHeightCache, heightCacheKey, historyGeneration, virtualRows])
 
-  // Index of the first user-role message — separator-rendering in
-  // appLayout.tsx skips this row, so the height estimator must skip it
-  // too. -1 when no user message exists yet (no row will gate true).
+  // First user-role row: appLayout.tsx draws no separator above it, so the height
+  // estimator skips it too. -1 when no user message exists yet (no row gates true).
   const firstUserIdx = useMemo(() => virtualRows.findIndex(r => r.msg.role === 'user'), [virtualRows])
 
   const estimateRowHeight = useCallback(
@@ -548,6 +553,7 @@ export function useMainApp(gw: GatewayClient) {
         thinkingVisible: thinkingDetailsVisible,
         toolsVisible: toolsDetailsVisible,
         userPrompt: ui.theme.brand.prompt,
+        userShade: ui.userMessageShade,
         withSeparator: virtualRows[index]!.msg.role === 'user' && firstUserIdx >= 0 && index > firstUserIdx
       }),
     [
@@ -563,6 +569,7 @@ export function useMainApp(gw: GatewayClient) {
       ui.detailsModeCommandOverride,
       ui.sections,
       ui.theme.brand.prompt,
+      ui.userMessageShade,
       virtualRows
     ]
   )

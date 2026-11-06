@@ -266,6 +266,11 @@ import {
   stopFind
 } from './find-in-page'
 import { createFirstRunSetupGate } from './first-run-setup-gate'
+import {
+  FLEET_WORKER_SESSIONS_PATH,
+  type FleetWorkerSession,
+  fleetWorkerSessionsFromBody
+} from './fleet-work'
 import { registerFsIpc } from './fs-ipc'
 import { directoryExists, fileExists, isGitCheckout } from './fs-probes'
 import { downloadViaTokenToFile as downloadViaNativeGatewayToFile } from './gateway-download-transport'
@@ -14807,6 +14812,12 @@ async function probeSshProfileInventory(connection) {
   }
 }
 
+// Worker-session page cache: Bot Mode polls the roster every 5s, and the page
+// fans out across every profile's state.db server-side. 20s is enough for the
+// rail's liveness window without turning a poll into a DB scan.
+const fleetWorkCache = new Map<string, { at: number; work: Record<string, FleetWorkerSession> }>()
+const FLEET_WORK_TTL_MS = 20_000
+
 async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRegistry()) {
   // One dead source must not wedge the whole roster: ensureRegistryBackend on
   // an unreachable remote can block up to the 45s readiness timeout, and the
@@ -14831,6 +14842,54 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
     }
   }
 
+  // Worker sessions are deny-listed out of every conversation listing, so no
+  // gateway socket event reaches the renderer while a bot is mid-card. The
+  // gateway's own session store heartbeats last_activity_at on those rows;
+  // ask a DIALED source for one bounded worker page instead of reading another
+  // process's state.db.
+  const fetchFleetWorkerWork = async (
+    connection: RegistryConnection,
+    descriptor: any
+  ): Promise<Record<string, FleetWorkerSession> | undefined> => {
+    const cached = fleetWorkCache.get(connection.id)
+
+    if (cached && Date.now() - cached.at < FLEET_WORK_TTL_MS) {
+      return cached.work
+    }
+
+    try {
+      const body = await withEnumerationDeadline(
+        Promise.resolve(getJsonForBackend(descriptor, FLEET_WORKER_SESSIONS_PATH, { timeoutMs: 6_000 })),
+        7_000
+      )
+
+      const work = fleetWorkerSessionsFromBody(body, Date.now() / 1000)
+
+      fleetWorkCache.set(connection.id, { at: Date.now(), work })
+
+      return work
+    } catch {
+      // Older backend without the route, or a transient read failure: keep the
+      // last real page. Its lastActive decays in the renderer, so a source that
+      // stopped answering cannot stay confidently green.
+      return cached?.work
+    }
+  }
+
+  // An undialed ssh source must never be spawned just for a dot: only read the
+  // worker page when the user already opened one of its profiles this session.
+  const pooledBackendDescriptor = (connectionId: string): Promise<unknown> | null => {
+    const prefix = backendScopePrefix(connectionId)
+
+    for (const [key, entry] of backendPool.entries()) {
+      if (key.startsWith(prefix) && entry?.connectionPromise) {
+        return entry.connectionPromise
+      }
+    }
+
+    return null
+  }
+
   return withoutInteractiveOauthLogin(() =>
     Promise.all(
       registry.connections.map(async connection => {
@@ -14843,6 +14902,7 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
           installId?: string
           profiles: null | string[]
           profileMetadata?: Record<string, RosterProfileMetadata>
+          work?: Record<string, FleetWorkerSession>
         }
 
         try {
@@ -14852,13 +14912,26 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
           // (ECONNRESET / liveness probe drop).
           if (connection.kind === 'ssh') {
             await probeSshProfileInventory(connection)
+
+            // Live worker dots for a box the user already dialed: reuse the
+            // pooled backend, never spawn one just to paint a pulse.
+            const pooled = pooledBackendDescriptor(connection.id)
+
+            const work = pooled
+              ? await withEnumerationDeadline(
+                  pooled.then(descriptor => fetchFleetWorkerWork(connection, descriptor)),
+                  7_000
+                ).catch(() => undefined)
+              : undefined
+
             // The inventory probe learns the backend's install id on its own session; carrying it
             // here is what lets two ssh addresses for one machine collapse to one row.
             raw = {
               connection,
               profiles: null,
               error: 'connect-on-demand',
-              installId: connectionInstallIds.get(connection.id)?.id
+              installId: connectionInstallIds.get(connection.id)?.id,
+              ...(work ? { work } : {})
             }
           } else {
             // Same connect-on-demand courtesy for the forced-local path: when
@@ -14893,13 +14966,18 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
               rosterSourceEnumerationTimeoutMs(connection)
             )
 
+            // The install-id probe is TTL-cached, so the 5s roster poll usually
+            // pays zero extra requests; on a miss it runs beside /api/profiles.
+            // The worker page is started here too and awaited after both: a dot
+            // must never delay the roster it hangs off.
+            const workPromise = fetchFleetWorkerWork(connection, descriptor)
+
             const { body, installId } = await fetchRosterSourceData(
               () => getJsonForBackend(descriptor, '/api/profiles', { timeoutMs: 8_000 }),
               () => probeConnectionInstallId(connection.id, descriptor)
             )
 
-            // The install-id probe is TTL-cached, so the 5s roster poll usually
-            // pays zero extra requests; on a miss it runs beside /api/profiles.
+            const work = await workPromise
 
             const profiles = Array.isArray(body?.profiles)
               ? body.profiles.map(p => String(p?.name || '').trim()).filter(Boolean)
@@ -14919,7 +14997,8 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
               connection,
               profiles,
               ...(installId ? { installId } : {}),
-              ...(profileMetadata ? { profileMetadata } : {})
+              ...(profileMetadata ? { profileMetadata } : {}),
+              ...(work ? { work } : {})
             }
           }
         } catch (error: any) {

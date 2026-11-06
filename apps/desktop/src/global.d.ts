@@ -1349,6 +1349,18 @@ export interface DesktopRosterAgent {
   // False when this source lists the profile but does not serve it.
   // Absent means the source's own reachable flag.
   reachable?: boolean
+  // Freshest open kanban/tool worker session, when the source answered the
+  // worker-session probe. The rail turns this into the live work dot.
+  work?: DesktopAgentWork
+}
+
+export interface DesktopAgentWork {
+  sessionId: string
+  source: string
+  title?: string
+  // Epoch seconds from the gateway session row's last_activity_at. The dot
+  // decays from this timestamp, never from the roster fetch time.
+  lastActive: number
 }
 
 export interface DesktopAgentRoster {

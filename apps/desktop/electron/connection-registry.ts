@@ -39,6 +39,7 @@ import {
   normAuthMode
 } from './connection-config'
 import { matchingConnectionId, type StoredRoute } from './connection-route-identity'
+import type { FleetWorkerSession } from './fleet-work'
 
 export const REGISTRY_VERSION = 2
 
@@ -618,6 +619,10 @@ export interface ConnectionAgents {
   /** Credential-free profile metadata from the same connection. Kept separate
    * from `profiles` so old enumerators can continue returning names only. */
   profileMetadata?: Record<string, RosterProfileMetadata>
+  /** Freshest open worker session per profile (kanban/tool/oneshot), when the
+   * source answered the worker-session probe. Absent on older backends and on
+   * undialed sources: the rail then has no live worker signal for that row. */
+  work?: Record<string, FleetWorkerSession>
   /** Present when profiles is null: why enumeration was skipped. */
   error?: string
   /** Stable backend identity from the connection's /api/status (`install_id`).
@@ -640,6 +645,9 @@ export interface RosterAgent {
   handle: string
   /** Rich metadata for this exact connection + profile, when enumerated. */
   profileMetadata?: RosterProfileMetadata
+  /** Live worker liveness for this profile, when the source answered the
+   * worker-session probe. The renderer decides whether it is still current. */
+  work?: FleetWorkerSession
 }
 
 export interface RosterProfileMetadata {
@@ -794,12 +802,13 @@ export function buildAgentRoster(
       order: number
       profile: string
       profileMetadata?: RosterProfileMetadata
+      work?: FleetWorkerSession
     }
   >()
 
   let order = 0
 
-  for (const { connection, installId, profiles, profileMetadata } of enumerations) {
+  for (const { connection, installId, profiles, profileMetadata, work } of enumerations) {
     for (const profile of profiles || []) {
       const name = String(profile || '').trim() || 'default'
       const key = `${connection.id}\0${name}`
@@ -810,7 +819,8 @@ export function buildAgentRoster(
           installId,
           order,
           profile: name,
-          ...(profileMetadata?.[name] ? { profileMetadata: profileMetadata[name] } : {})
+          ...(profileMetadata?.[name] ? { profileMetadata: profileMetadata[name] } : {}),
+          ...(work?.[name] ? { work: work[name] } : {})
         })
       }
     }
@@ -824,21 +834,46 @@ export function buildAgentRoster(
   // (older backends, undialed ssh) keep a per-connection key — no collapse.
   const backends = new Map<
     string,
-    { connection: RegistryConnection; order: number; profile: string; profileMetadata?: RosterProfileMetadata }[]
+    {
+      connection: RegistryConnection
+      order: number
+      profile: string
+      profileMetadata?: RosterProfileMetadata
+      work?: FleetWorkerSession
+    }[]
   >()
 
-  for (const { connection, installId, order: rank, profile, profileMetadata } of identities.values()) {
+  for (const { connection, installId, order: rank, profile, profileMetadata, work } of identities.values()) {
     const key = installId ? `id:${installId}\0${profile}` : `conn:${connection.id}\0${profile}`
+    const row = { connection, order: rank, profile, profileMetadata, work }
     const group = backends.get(key)
 
     if (group) {
-      group.push({ connection, order: rank, profile, profileMetadata })
+      group.push(row)
     } else {
-      backends.set(key, [{ connection, order: rank, profile, profileMetadata }])
+      backends.set(key, [row])
     }
   }
 
-  const rows = [...backends.values()].map(group => pickCanonicalConnection(group, opts.primaryConnectionId))
+  const rows = [...backends.values()].map(group => {
+    const canonical = pickCanonicalConnection(group, opts.primaryConnectionId)
+    // One physical backend may be registered under two addresses; the live
+    // worker claim can arrive on either enumeration (the dialed one), so merge
+    // the freshest claim per profile before the per-profile pick instead of
+    // trusting the canonical row alone.
+    const workByProfile: Record<string, FleetWorkerSession> = {}
+
+    for (const candidate of group) {
+      if (
+        candidate.work &&
+        (!workByProfile[candidate.profile] || workByProfile[candidate.profile].lastActive < candidate.work.lastActive)
+      ) {
+        workByProfile[candidate.profile] = candidate.work
+      }
+    }
+
+    return { ...canonical, workByProfile }
+  })
 
   // The @name-device duplicate-handle rule runs AFTER the collapse, so a
   // profile that only *looked* duplicated (one box, two addresses) keeps its
@@ -851,7 +886,7 @@ export function buildAgentRoster(
 
   const roster: RosterAgent[] = []
 
-  for (const { connection, profile, profileMetadata } of rows) {
+  for (const { connection, profile, profileMetadata, workByProfile } of rows) {
     roster.push({
       connectionId: connection.id,
       connectionKind: connection.kind,
@@ -859,7 +894,8 @@ export function buildAgentRoster(
       profile,
       targetProfile: connection.remoteProfile || profile,
       handle: agentHandle(profile, connection.label, (counts.get(profile) || 0) > 1),
-      ...(profileMetadata ? { profileMetadata } : {})
+      ...(profileMetadata ? { profileMetadata } : {}),
+      ...(workByProfile[profile] ? { work: workByProfile[profile] } : {})
     })
   }
 

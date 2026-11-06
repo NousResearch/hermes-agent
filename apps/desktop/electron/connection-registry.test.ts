@@ -1048,6 +1048,66 @@ test('roster: collapse prefers the active (primary) connection', () => {
   assert.equal(roster[0].connectionId, 'spark-ts')
 })
 
+test('roster: collapse keeps the freshest worker claim across both addresses of one box', () => {
+  const hostname = { id: 'spark', kind: 'remote' as const, label: 'Spark', url: 'http://spark:8642' }
+  const tailscale = { id: 'spark-ts', kind: 'remote' as const, label: 'Spark TS', url: 'http://100.1.2.3:8642' }
+
+  // The worker page can only answer on the address that is dialed; the other
+  // registration carries no claim at all. The collapsed row must still surface
+  // the live session, with its heartbeat, instead of the canonical row's null.
+  const roster = buildAgentRoster(
+    [
+      { connection: hostname, profiles: ['default'], installId: 'aaa' },
+      {
+        connection: tailscale,
+        installId: 'aaa',
+        profiles: ['default'],
+        work: { default: { lastActive: 1_700_000_100, sessionId: 'sess-new', source: 'kanban' } }
+      }
+    ],
+    { primaryConnectionId: 'spark' }
+  )
+
+  assert.equal(roster.length, 1)
+  assert.equal(roster[0].connectionId, 'spark')
+  assert.deepEqual(roster[0].work, { lastActive: 1_700_000_100, sessionId: 'sess-new', source: 'kanban' })
+})
+
+test('roster: collapse takes the newest heartbeat when both addresses answer', () => {
+  const hostname = { id: 'spark', kind: 'remote' as const, label: 'Spark', url: 'http://spark:8642' }
+  const tailscale = { id: 'spark-ts', kind: 'remote' as const, label: 'Spark TS', url: 'http://100.1.2.3:8642' }
+
+  const roster = buildAgentRoster(
+    [
+      {
+        connection: hostname,
+        installId: 'aaa',
+        profiles: ['default'],
+        work: { default: { lastActive: 1_700_000_100, sessionId: 'sess-old', source: 'kanban' } }
+      },
+      {
+        connection: tailscale,
+        installId: 'aaa',
+        profiles: ['default'],
+        work: { default: { lastActive: 1_700_000_400, sessionId: 'sess-new', source: 'kanban' } }
+      }
+    ],
+    { primaryConnectionId: 'spark' }
+  )
+
+  assert.equal(roster.length, 1)
+  assert.equal(roster[0].work?.sessionId, 'sess-new')
+})
+
+test('roster: a row without a worker claim carries no work key', () => {
+  const hostname = { id: 'spark', kind: 'remote' as const, label: 'Spark', url: 'http://spark:8642' }
+
+  const roster = buildAgentRoster([{ connection: hostname, profiles: ['default'], installId: 'aaa' }])
+
+  assert.equal(roster.length, 1)
+  assert.equal('work' in roster[0], false)
+})
+
 test('roster: collapse pick order is local > ssh > remote > cloud, then registration order', () => {
   const local = { id: 'local', kind: 'local' as const, label: 'This device' }
   const remote = { id: 'loop', kind: 'remote' as const, label: 'Loopback', url: 'http://127.0.0.1:8642' }

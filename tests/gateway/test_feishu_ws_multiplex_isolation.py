@@ -9,11 +9,14 @@ sibling's loop that never hears anything again.
 
 import asyncio
 import logging
+import socket
 import sys
 import threading
 import types
 from types import SimpleNamespace
 from unittest.mock import MagicMock
+
+import requests
 
 from plugins.platforms.feishu import adapter as feishu_adapter
 
@@ -266,6 +269,37 @@ def test_sdk_reconnect_ladder_publishes_retrying(monkeypatch):
     adapter_loop.run_until_complete(drain())
     adapter_loop.close()
     assert stub.status_writes == ["retrying"]
+
+
+def test_stuck_endpoint_discovery_times_out_instead_of_blocking_forever(monkeypatch):
+    """lark_oapi's endpoint POST sets no timeout: a TCP link that survived a network
+    change or sleep blocked the WS thread in a socket read forever, so the profile
+    stayed deaf with no log line and no retry. The call must raise, because the SDK's
+    ``_try_connect`` turns any exception into a failed attempt its ladder retries."""
+    client_mod = _inject_fake_lark_module(monkeypatch)
+    client_mod.requests = requests
+    monkeypatch.setattr(feishu_adapter, "_WS_ENDPOINT_HTTP_TIMEOUT_SECONDS", (1, 0.2))
+    monkeypatch.setenv("NO_PROXY", "*")
+    feishu_adapter._install_lark_ws_isolation(client_mod)
+
+    raised = []
+
+    def discover_endpoint(url):
+        try:
+            client_mod.requests.post(url, headers={}, json={"AppID": "app-id"})  # the SDK's call shape
+        except requests.exceptions.Timeout as exc:
+            raised.append(exc)
+
+    # The kernel completes the handshake from the backlog; nothing ever accepts or replies.
+    with socket.create_server(("127.0.0.1", 0)) as blackhole:
+        url = f"http://127.0.0.1:{blackhole.getsockname()[1]}/callback/ws/endpoint"
+        thread = threading.Thread(target=discover_endpoint, args=(url,), daemon=True)
+        thread.start()
+        thread.join(timeout=5)
+        stuck = thread.is_alive()
+
+    assert not stuck, "the endpoint POST is still blocked on a peer that never answers"
+    assert len(raised) == 1
 
 
 def _supervisor_stub():

@@ -1035,6 +1035,7 @@ def _strip_edge_self_mentions(text: str, mentions: Sequence[FeishuMentionRef]) -
 _WS_ISOLATION_LOCK = threading.Lock()
 _WS_ISOLATION_INSTALLED = False
 _ws_isolation_state = threading.local()  # per WS thread: .loop and .connect_kwargs
+_WS_ENDPOINT_HTTP_TIMEOUT_SECONDS = (10, 30)  # (connect, read) for the SDK's endpoint-discovery POST
 
 
 class _ThreadLocalLoopProxy:
@@ -1051,6 +1052,25 @@ class _ThreadLocalLoopProxy:
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"<ThreadLocalLoopProxy target={self._target()!r}>"
+
+
+class _RequestsWithEndpointTimeout:
+    """The SDK module's ``requests``, with a default timeout on ``post``.
+
+    ``Client._get_conn_url`` POSTs with no timeout on the WS thread, so a TCP link stranded by a
+    network change or sleep blocks that thread in a socket read forever: no log line, no retry, a
+    deaf profile. Raising instead lets ``_try_connect`` count it as a failed attempt and retry.
+    """
+
+    def __init__(self, real_requests: Any) -> None:
+        self._real = real_requests
+
+    def post(self, *args: Any, **kwargs: Any) -> Any:
+        kwargs.setdefault("timeout", _WS_ENDPOINT_HTTP_TIMEOUT_SECONDS)
+        return self._real.post(*args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._real, name)
 
 
 def _install_lark_ws_isolation(ws_client_module: Any) -> None:
@@ -1072,6 +1092,11 @@ def _install_lark_ws_isolation(ws_client_module: Any) -> None:
         _dispatch_connect.__wrapped__ = real_connect
         _dispatch_connect.__name__ = getattr(real_connect, "__name__", "connect")
         ws_client_module.websockets.connect = _dispatch_connect
+
+        # Rebinds the SDK module's name only; the process-wide ``requests`` stays untouched.
+        real_requests = getattr(ws_client_module, "requests", None)
+        if real_requests is not None:
+            ws_client_module.requests = _RequestsWithEndpointTimeout(real_requests)
 
         original_receive_loop = ws_client_module.Client._receive_message_loop
 

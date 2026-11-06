@@ -1,0 +1,43 @@
+name: va-claims
+repo: https://github.com/lEWFkRAD/va-claims-hermes-plugin
+sha: 1c6e50528ed02355d7997fa283a5dfdb1fa5465c
+title: VA Benefits
+description: >-
+  File and track VA disability claims (21-526EZ) the way 38 CFR actually works,
+  plus every other VA benefit in one tracker: Post-9/11 GI Bill, VA health
+  enrollment, CHAMPVA, SGLI/VGLI, pension, VR&E. Seven tools: a federal-standards
+  filing guide with CFR citations, intent-to-file with the 12-month effective-date
+  clock, live claim status and change tracking via the VA Lighthouse Benefits
+  Claims API, official contention lookup, benefit/expiration tracking with
+  deadline countdowns, and a one-screen benefits summary. Desktop app adds a VA
+  Benefits page with a benefits grid, claim phase trackers, and deadlines.
+  Network calls go only to api.va.gov and sandbox-api.va.gov; the veteran's ICN
+  is the only personal value sent. Benefit records stay in one local JSON file
+  per veteran under the plugin data directory. Credentials (VA client ID, RSA
+  key path, reference API key) come through plugin settings and Hermes secret
+  scope. One Python dependency: pyjwt[crypto]. No hooks, middleware, shell
+  commands, background processes, or telemetry.
+image: https://raw.githubusercontent.com/lEWFkRAD/va-claims-hermes-plugin/1c6e50528ed02355d7997fa283a5dfdb1fa5465c/docs/screenshots/hero.png
+maintainer: lEWFkRAD
+tier: community
+category: tools
+version: "0.1.0"
+docs_url: https://github.com/lEWFkRAD/va-claims-hermes-plugin#readme
+platforms: []
+known_issues:
+  - Live claim status needs a VA Lighthouse sandbox or production client ID (free sandbox application at developer.va.gov); the guide, intent-to-file, benefit tracking, and deadlines work with no credentials.
+  - Production VA API access requires VA agreements; sandbox uses VA test ICNs.
+capabilities:
+  provides_tools:
+    - va_claim_status
+    - va_claim_track
+    - va_disability_lookup
+    - va_intent_to_file
+    - va_benefit_track
+    - va_benefit_summary
+    - va_claim_guide
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - VA_REFERENCE_API_KEY
+requires_hermes: ">=0.22.6"

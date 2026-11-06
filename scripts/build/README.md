@@ -84,7 +84,9 @@ filesystem) is deleted in place as before and cannot be restored. Runs in one ch
 are serialised by `.cache/node-deps.lock`. Its owner refreshes the lock's mtime every
 second, and a lock that nobody has refreshed for 30 s is broken, whatever pid, host or
 PID namespace it names. A live owner is waited for at most 10 minutes; then the run
-fails.
+fails. Downloads retry with pnpm's defaults, except for a source launch (`hermes --tui`,
+the dashboard), which retries once, so an unreachable registry fails it in about 10 s
+instead of 70 s.
 `--pnpm ARGS...` instead runs the same resolved pnpm with `ARGS`.
 
 The prepared source needs these inputs:

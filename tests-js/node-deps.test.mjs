@@ -240,6 +240,16 @@ test('pnpm configuration name casing does not invalidate a completed install', (
   expect(installs(source)).toBe(2)
 }, 30000)
 
+// A source launch lowers pnpm's retries (someone is waiting, and it can fall back): the trees an
+// update installed with the defaults must still be reused there.
+test('the download retry policy does not invalidate a completed install', () => {
+  const { source, env } = fixture()
+  const options = { source, workspaces: ['web'], reuse: true }
+  prepareNodeDependencies({ ...options, env })
+  prepareNodeDependencies({ ...options, env: { ...env, pnpm_config_fetch_retries: '1' }, install: false })
+  expect(installs(source)).toBe(1)
+}, 30000)
+
 test('the receipt is keyed on the lockfile and the workspace settings', () => {
   const { source, env } = fixture()
   const options = { source, workspaces: ['web'], reuse: true, env }

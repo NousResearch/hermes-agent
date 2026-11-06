@@ -121,6 +121,10 @@ def prepare_launch_dependencies(project_root: Path, *, env: dict) -> None:
     desktop_dir = project_root / "apps/desktop"
     desktop = _desktop_dist_exists(desktop_dir) or _desktop_packaged_executable(desktop_dir) is not None
     workspaces = ("ui-tui", "web") + (("apps/desktop",) if desktop else ())
+    # Someone is waiting for this launch, which falls back to the previous build when it fails:
+    # offline, pnpm's default retries spend ~70 s before failing, one retry ~10 s.
+    if not any(key.lower() == "pnpm_config_fetch_retries" for key in env):
+        env = {**env, "pnpm_config_fetch_retries": "1"}
     prepare_source_dependencies(project_root, workspaces, env=env)
 
 

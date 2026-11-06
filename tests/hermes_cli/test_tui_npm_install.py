@@ -58,6 +58,8 @@ def test_source_launch_prepares_base_union_but_compiles_only_tui(tui_source):
     assert (root / "ui-tui/node_modules").exists()
     assert (root / "web/node_modules").exists()
     assert not (root / "apps/desktop/node_modules").exists()
+    # A launch someone waits for, which can fall back, gives up on an unreachable registry sooner.
+    assert _events(root)[0]["retries"] == "1"
 
 
 @pytest.mark.platforms("posix")

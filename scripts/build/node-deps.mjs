@@ -384,9 +384,9 @@ export function prepareNodeDependencies({ source, workspaces, env = process.env,
   const inputs = createHash('sha256').update(JSON.stringify({
     node: process.versions.node, pnpm: version, platform: process.platform, arch: process.arch, args,
     // Windows Python uppercases inherited keys. Cache, store and state locations
-    // change where pnpm keeps data, not what it installs.
+    // change where pnpm keeps data, and the retry policy how it downloads, not what it installs.
     config: Object.entries(env).filter(([key]) => /^p?npm_config_/i.test(key)
-      && !/^p?npm_config_(cache|cache_dir|store_dir|state_dir|offline|prefer_offline)$/i.test(key))
+      && !/^p?npm_config_(cache|cache_dir|store_dir|state_dir|offline|prefer_offline|fetch_retries|fetch_retry_\w+)$/i.test(key))
       .map(([key, value]) => [key.toLowerCase(), value]).sort(),
   }))
   const files = ['pnpm-lock.yaml', 'pnpm-workspace.yaml', '.npmrc', ...projects.map(path => join(path, 'package.json'))].sort()

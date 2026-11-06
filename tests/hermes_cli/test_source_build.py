@@ -154,7 +154,7 @@ def source_checkout(tmp_path, monkeypatch):
         "esbuild: process.env.ESBUILD_BINARY_PATH, "
         "npmrc: process.env.NPM_CONFIG_USERCONFIG, store: process.env.pnpm_config_store_dir, "
         "mirror: process.env.npm_config_node_get_windows_binary_host_mirror, "
-        "electron: process.env.npm_config_electron_mirror, "
+        "electron: process.env.npm_config_electron_mirror, retries: process.env.pnpm_config_fetch_retries, "
         "skipped: Object.keys(process.env).filter(key => /^npm_config_(@.*|ca(\\[\\])?|nodedir)$/i.test(key)), "
         "leaked: Object.values(process.env).some(value => value.includes('npmrc-secret'))}) + '\\n');\n",
         encoding="utf-8",
@@ -252,6 +252,8 @@ def test_preparation_reuses_only_the_exact_completed_workspace_union(source_chec
     assert first[0]["electron"] == "https://mirror.invalid/electron/"
     assert first[0]["skipped"] == []
     assert first[0]["leaked"] is False
+    # Updates and builds keep pnpm's default download retries; only a launch lowers them.
+    assert "retries" not in first[0]
     # pnpm's store lives under the Hermes root, never the user's XDG data dir.
     assert first[0]["store"] == str(Path(os.environ["HERMES_HOME"]) / "cache/pnpm/store")
     assert (Path(os.environ["HERMES_HOME"]) / "cache/pnpm/store").is_dir()

@@ -219,7 +219,9 @@ source checkout as the output root. Builders without a runtime environment
 prepare one with `scripts/build/icon_environment.py`.
 
 The desktop native tree contains prepared packages, including `node-pty` with
-its compiled binding. macOS also requires `get-windows/main`. The provider owns
+its compiled binding. `get-windows` is optional: when staging degraded it away
+the app ships without window enumeration, but a staged copy on macOS must include
+its `main` helper. The provider owns
 the architecture and Electron ABI match. `--platform` defaults to the running
 Node platform and controls native-file checks. It does not cross-compile a
 binding. `--typecheck` enables the desktop renderer TypeScript check and defaults

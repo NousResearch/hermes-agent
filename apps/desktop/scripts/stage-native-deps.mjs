@@ -498,9 +498,10 @@ function resolveGetWindowsRoot(appRoot = projectRoot) {
  *
  * Per-platform native payload: macOS ships the `main` Swift helper binary
  * (universal, present in every published tarball), Windows the node-pre-gyp
- * prebuilt under lib/binding (downloaded by the package's install script on
- * a Windows host — cross-platform packs already can't happen, see
- * stageNodePtyInto), Linux nothing (it shells out to xprop at runtime).
+ * prebuilt under lib/binding (fetched by `install`, which runs node-pre-gyp on
+ * a Windows host since the install skips the package's own script —
+ * cross-platform packs already can't happen, see stageNodePtyInto), Linux
+ * nothing (it shells out to xprop at runtime).
  */
 const GET_WINDOWS_VERSION = '9.3.0'
 
@@ -704,8 +705,7 @@ export function stageGetWindows(
   const destRoot = join(out, 'get-windows')
 
   if (!srcRoot) {
-    // The install may omit an optional dependency whose install script fails, or an in-place
-    // update may fail to extract it due to file locks (#90829). The runtime import
+    // An in-place update may fail to extract it due to file locks (#90829). The runtime import
     // already fails soft, so we disable only window enumeration instead of failing
     // the entire Desktop build (which would strand users on an old version).
     console.warn(

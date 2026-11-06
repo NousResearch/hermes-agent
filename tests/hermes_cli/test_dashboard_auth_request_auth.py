@@ -9,10 +9,12 @@ sanitizing), and end-to-end through the real ``gated_auth_middleware``.
 from __future__ import annotations
 
 import contextlib
+import logging
 import time
 from types import SimpleNamespace
 
 import pytest
+import hermes_yaml as yaml
 
 from hermes_cli import web_server
 from hermes_cli.dashboard_auth import (
@@ -25,6 +27,7 @@ from hermes_cli.dashboard_auth import (
 )
 from hermes_cli.dashboard_auth.base import assert_protocol_compliance
 from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
+from plugins.dashboard_auth import remote_user as remote_user_plugin
 from plugins.dashboard_auth.remote_user import (
     RemoteUserAuthProvider,
     _clean_username,
@@ -96,6 +99,15 @@ class TestProtocol:
         with pytest.raises(TypeError, match="supports_request_auth"):
             assert_protocol_compliance(Bad)
 
+    def test_compliance_accepts_inherited_request_auth(self):
+        """The guard targets a *missing* implementation: a provider that inherits one (from a
+        reference provider base) and sets the flag is compliant, not rejected."""
+        class Child(RemoteUserAuthProvider):
+            name = "remote-user-child"
+            display_name = "Child"
+
+        assert assert_protocol_compliance(Child) is None
+
     def test_list_request_auth_providers_filters(self):
         clear_providers()
         register_provider(_prov())
@@ -161,6 +173,20 @@ class TestSecretHeader:
         ) is None
         # missing secret
         assert p.verify_request_auth(request=_req("192.168.0.2", {"X-Remote-User": "ryan"})) is None
+
+    def test_non_ascii_secret_values_do_not_crash(self):
+        # Regression: hmac.compare_digest(str, str) raises TypeError when
+        # either side contains non-ASCII, and the presented header is
+        # attacker-controlled — it must not surface as an unhandled 500.
+        p = _prov(secret="sécret—¥")
+        # matching non-ASCII secret -> accepted
+        assert p.verify_request_auth(
+            request=_req("192.168.0.2", {"X-Remote-User": "ryan", "X-Remote-User-Secret": "sécret—¥"})
+        ) is not None
+        # non-ASCII presented value with a wrong secret -> declined, no raise
+        assert p.verify_request_auth(
+            request=_req("192.168.0.2", {"X-Remote-User": "ryan", "X-Remote-User-Secret": "wrøng"})
+        ) is None
 
 
 # ---------------------------------------------------------------------------
@@ -346,6 +372,28 @@ class TestGateIntegration:
         assert called == []
         assert resp.status_code == 302
 
+    def test_vouch_success_emits_audit_event(self, request_auth_gate, monkeypatch):
+        import hermes_cli.dashboard_auth.middleware as mw
+        from hermes_cli.dashboard_auth.audit import AuditEvent
+
+        calls = []
+        monkeypatch.setattr(
+            mw, "audit_log", lambda event, **k: calls.append((event, k))
+        )
+
+        resp, called = _run_gate(
+            _make_request(
+                **{"X-Remote-User": "ryan", "X-Remote-User-Secret": "sec-no-colon-xxxxxxxx"}
+            )
+        )
+        assert resp.status_code == 200 and called == [1]
+        assert len(calls) == 1
+        event, fields = calls[0]
+        assert event == AuditEvent.REQUEST_AUTH_SUCCESS
+        assert fields["provider"] == "remote-user"
+        assert fields["user_id"] == "ryan"
+        assert fields["peer"] == "192.168.0.2"
+
 
 class TestStackingAndFailClosed:
     def test_provider_outage_surfaces_503(self):
@@ -365,3 +413,67 @@ class TestStackingAndFailClosed:
             resp, called = _run_gate(_make_request(**{"X-Remote-User": "x"}))
             assert called == []
             assert resp.status_code == 302
+
+class TestRegistration:
+    """The plugin entry point: activation is driven by config.yaml / env, and it refuses to
+    register anything until at least one trusted proxy is allowlisted."""
+
+    @pytest.fixture(autouse=True)
+    def _clean_registry(self):
+        clear_providers()
+        yield
+        clear_providers()
+
+    @staticmethod
+    def _configure(tmp_path, monkeypatch, dashboard_cfg):
+        home = tmp_path / "hermes"
+        home.mkdir(exist_ok=True)
+        (home / "config.yaml").write_text(
+            yaml.safe_dump({"dashboard": dashboard_cfg}), encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        for env_name in (
+            "HERMES_DASHBOARD_REMOTE_USER_TRUSTED_PROXIES",
+            "HERMES_DASHBOARD_REMOTE_USER_HEADER",
+            "HERMES_DASHBOARD_REMOTE_USER_SECRET",
+            "HERMES_DASHBOARD_REMOTE_USER_SECRET_HEADER",
+            "HERMES_DASHBOARD_REMOTE_USER_TTL_SECONDS",
+        ):
+            monkeypatch.delenv(env_name, raising=False)
+
+    def test_registers_from_config_yaml(self, tmp_path, monkeypatch):
+        self._configure(tmp_path, monkeypatch, {"remote_user": {"trusted_proxies": ["192.168.0.2"]}})
+        remote_user_plugin.register(
+            SimpleNamespace(register_dashboard_auth_provider=register_provider))
+        assert [p.name for p in list_request_auth_providers()] == ["remote-user"]
+        session = list_request_auth_providers()[0].verify_request_auth(
+            request=_req("192.168.0.2", {"X-Remote-User": "ryan"}))
+        assert session is not None and session.user_id == "ryan"
+
+    def test_no_trusted_proxy_skips_registration(self, tmp_path, monkeypatch):
+        self._configure(tmp_path, monkeypatch, {})
+        remote_user_plugin.register(
+            SimpleNamespace(register_dashboard_auth_provider=register_provider))
+        assert list_request_auth_providers() == []
+        assert "trusted_proxies" in remote_user_plugin.LAST_SKIP_REASON
+
+    def test_warns_when_proxy_is_also_uvicorn_trusted(self, tmp_path, monkeypatch, caplog):
+        """dashboard.trusted_proxies makes uvicorn rewrite request.client from XFF, which would
+        make every peer check fail; registration must say so instead of going quietly dead."""
+        self._configure(tmp_path, monkeypatch, {
+            "trusted_proxies": ["192.168.0.2"],
+            "remote_user": {"trusted_proxies": ["192.168.0.2"]},
+        })
+        with caplog.at_level(logging.WARNING, logger="plugins.dashboard_auth.remote_user"):
+            remote_user_plugin.register(
+                SimpleNamespace(register_dashboard_auth_provider=register_provider))
+        assert "dashboard.trusted_proxies" in caplog.text
+
+    def test_skip_reason_reaches_the_gate_refusal(self, tmp_path, monkeypatch):
+        """An operator who expected proxy auth must see why it is off: the gate's
+        "no auth providers" refusal lists the unconfigured provider's own reason."""
+        self._configure(tmp_path, monkeypatch, {})
+        remote_user_plugin.register(
+            SimpleNamespace(register_dashboard_auth_provider=register_provider))
+        message = web_server._no_auth_provider_message("0.0.0.0")
+        assert "remote_user: " in message
+        assert "trusted_proxies" in message

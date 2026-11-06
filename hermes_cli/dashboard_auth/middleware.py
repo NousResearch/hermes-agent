@@ -291,6 +291,13 @@ def _verify_request_auth(request: Request) -> Session | None:
                 unreachable_provider = provider.name
             continue
         if session is not None:
+            audit_log(
+                AuditEvent.REQUEST_AUTH_SUCCESS,
+                provider=provider.name,
+                user_id=session.user_id,
+                peer=getattr(request.client, "host", "") or "",
+                ip=_client_ip(request),
+            )
             return session
     if unreachable_provider is not None:
         raise ProviderError(unreachable_provider)

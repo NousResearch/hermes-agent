@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 import asyncio
 from collections import deque
 import hmac
+import importlib
 import logging
 import os
 import re
@@ -864,6 +865,12 @@ app.include_router(_dashboard_auth_router)
 mount_spa(app)
 
 
+#: Bundled dashboard-auth provider modules whose ``LAST_SKIP_REASON`` explains an
+#: installed-but-unconfigured provider in the gate's "no providers" refusal.
+_BUNDLED_DASHBOARD_AUTH_PROVIDERS = (
+    "nous", "self_hosted", "basic", "drain", "session_token", "remote_user")
+
+
 def _no_auth_provider_message(host: str) -> str:
     """Actionable SystemExit text for a gated bind with no registered auth provider.
 
@@ -874,13 +881,14 @@ def _no_auth_provider_message(host: str) -> str:
     unconfigured provider is not reported as merely "no providers".
     """
     skip_reasons: list[str] = []
-    try:
-        from plugins.dashboard_auth import nous as _nous_plugin
-
-        if _nous_plugin.LAST_SKIP_REASON:
-            skip_reasons.append(f"  • nous: {_nous_plugin.LAST_SKIP_REASON}")
-    except Exception:
-        pass
+    for plugin_name in _BUNDLED_DASHBOARD_AUTH_PROVIDERS:
+        try:
+            module = importlib.import_module(f"plugins.dashboard_auth.{plugin_name}")
+        except Exception:
+            continue
+        reason = getattr(module, "LAST_SKIP_REASON", "")
+        if reason:
+            skip_reasons.append(f"  • {plugin_name}: {reason}")
 
     # A listener that declares its own public URL (the gateway's Webapp: webapp.public_url) is
     # gated by that setting, never by dashboard.public_url.

@@ -62,6 +62,9 @@ Proxy best practices (see the web-dashboard docs for Apache + nginx examples):
     $remote_user``).
   * ``remote_user`` mirrors the app-level trusted-proxy validation used by
     projects such as Keycloak (``--proxy-trusted-addresses=``).
+  * The proxy delivers only a *username*; the provider synthesizes ``email``
+    as ``<user>@proxy.local`` (there is no real mailbox). Any surface that
+    displays ``email`` verbatim will show this synthetic value.
 """
 from __future__ import annotations
 
@@ -74,20 +77,26 @@ from typing import Any, Optional
 
 from hermes_cli.dashboard_auth import (
     DashboardAuthProvider,
-    InvalidCodeError,
     InvalidCredentialsError,
-    LoginStart,
     RefreshExpiredError,
     Session,
 )
+from plugins.dashboard_auth._shared import (
+    NonInteractiveMixin,
+    SkipRegistration,
+    load_config_section,
+    register_provider,
+    resolve_env_or_cfg,
+)
 
 logger = logging.getLogger(__name__)
+_TAG = "dashboard-auth-remote-user"
+#: Operator-facing reason this provider declined to register; the plugin/gate surfaces read it.
+LAST_SKIP_REASON: str = ""
 
 _DEFAULT_HEADER = "X-Remote-User"
 _DEFAULT_SECRET_HEADER = "X-Remote-User-Secret"
 _DEFAULT_TTL_SECONDS = 12 * 60 * 60
-
-LAST_SKIP_REASON: str = ""
 
 
 def _parse_ip_list(value: str) -> list[str]:
@@ -112,6 +121,14 @@ def _peer_is_trusted(peer: str, trusted: list[str]) -> bool:
     return False
 
 
+def _same_network(a: str, b: str) -> bool:
+    """True when two IP/CIDR entries describe overlapping address space."""
+    try:
+        return ipaddress.ip_network(a, strict=False).overlaps(ipaddress.ip_network(b, strict=False))
+    except (ValueError, TypeError):
+        return False
+
+
 def _clean_username(raw: str) -> str:
     """Validate/normalize a username into an identifier, or '' if unusable."""
     username = raw.strip()
@@ -125,7 +142,7 @@ def _clean_username(raw: str) -> str:
     return username
 
 
-class RemoteUserAuthProvider(DashboardAuthProvider):
+class RemoteUserAuthProvider(NonInteractiveMixin, DashboardAuthProvider):
     """Vouch for a proxy-authenticated user delivered via a request header."""
 
     name = "remote-user"
@@ -135,6 +152,11 @@ class RemoteUserAuthProvider(DashboardAuthProvider):
     supports_password: bool = False
     supports_token: bool = False
     supports_request_auth: bool = True
+
+    _NOT_INTERACTIVE = (
+        "remote-user auth is proxy-only: the reverse proxy performs the login and there is no "
+        "Hermes-side sign-in flow."
+    )
 
     def __init__(
         self,
@@ -174,7 +196,14 @@ class RemoteUserAuthProvider(DashboardAuthProvider):
             return None
         if self._secret:
             presented = str(request.headers.get(self._secret_header, ""))
-            if not hmac.compare_digest(presented, self._secret):
+            # Constant-time compare on BYTES: hmac.compare_digest(str, str)
+            # raises TypeError when either side contains non-ASCII, and the
+            # presented value is attacker-controlled via the header — comparing
+            # the utf-8-encoded bytes keeps an arbitrary header from turning an
+            # authentication attempt into an unhandled 500.
+            if not hmac.compare_digest(
+                presented.encode("utf-8"), self._secret.encode("utf-8")
+            ):
                 return None
         return Session(
             user_id=username,
@@ -198,83 +227,76 @@ class RemoteUserAuthProvider(DashboardAuthProvider):
     def revoke_session(self, *, refresh_token: str) -> None:
         return None
 
-    def start_login(self, *, redirect_uri: str) -> LoginStart:
-        raise InvalidCodeError("remote-user auth has no OAuth flow")
-
-    def complete_login(
-        self,
-        *,
-        code: str,
-        state: str,
-        code_verifier: str,
-        redirect_uri: str,
-    ) -> Session:
-        raise InvalidCodeError("remote-user auth has no OAuth flow")
-
     def complete_password_login(self, *, username: str, password: str) -> Session:
-        raise InvalidCredentialsError("proxy-only authentication")
+        raise InvalidCredentialsError(self._NOT_INTERACTIVE)
 
 
-def _cfg_section() -> dict:
-    try:
-        from hermes_cli.config import load_config
-        return dict((load_config().get("dashboard") or {}).get("remote_user", {}) or {})
-    except Exception:  # pragma: no cover - best-effort
-        return {}
+def _settings() -> dict:
+    """Resolve ``RemoteUserAuthProvider`` kwargs from env/config; raises ``SkipRegistration``."""
+    dashboard_section = load_config_section(logger, _TAG, "dashboard")
+    section = dashboard_section.get("remote_user")
+    if not isinstance(section, dict):
+        section = {}
 
+    def setting(env_name: str, cfg_key: str, default: Any = "") -> str:
+        return resolve_env_or_cfg(env_name, section.get(cfg_key, default))
 
-def _resolve(key_env: str, cfg_key: str, default: Any = "") -> Any:
-    env = os.environ.get(key_env, "").strip()
-    if env:
-        return env
-    return _cfg_section().get(cfg_key, default)
-
-
-def register(ctx) -> None:
-    """Plugin entry — registers RemoteUserAuthProvider when configured."""
-    global LAST_SKIP_REASON
-    LAST_SKIP_REASON = ""
-
-    proxies_raw = _resolve(
-        "HERMES_DASHBOARD_REMOTE_USER_TRUSTED_PROXIES", "trusted_proxies", []
-    )
-    if isinstance(proxies_raw, str):
-        trusted_proxies = _parse_ip_list(proxies_raw)
-    elif isinstance(proxies_raw, list):
-        trusted_proxies = [str(p).strip() for p in proxies_raw if str(p).strip()]
+    # ``trusted_proxies`` is the one list-valued setting: accept a YAML list or a
+    # comma/space separated string (env is always the string form).
+    env_proxies = os.environ.get("HERMES_DASHBOARD_REMOTE_USER_TRUSTED_PROXIES", "").strip()
+    cfg_proxies = section.get("trusted_proxies", [])
+    if env_proxies:
+        trusted_proxies = _parse_ip_list(env_proxies)
+    elif isinstance(cfg_proxies, str):
+        trusted_proxies = _parse_ip_list(cfg_proxies)
+    elif isinstance(cfg_proxies, (list, tuple)):
+        trusted_proxies = [str(p).strip() for p in cfg_proxies if str(p).strip()]
     else:
         trusted_proxies = []
 
     if not trusted_proxies:
-        LAST_SKIP_REASON = (
-            "remote-user dashboard auth is not configured: no trusted proxy "
-            "allowed. Set dashboard.remote_user.trusted_proxies in config.yaml "
-            "(or HERMES_DASHBOARD_REMOTE_USER_TRUSTED_PROXIES in .env) to the "
-            "IP/CIDR of the reverse proxy that performs auth, then restart."
-        )
-        logger.debug("dashboard-auth-remote-user: %s", LAST_SKIP_REASON)
-        return
+        raise SkipRegistration(
+            "dashboard.remote_user.trusted_proxies is empty (and "
+            "HERMES_DASHBOARD_REMOTE_USER_TRUSTED_PROXIES is unset). Set it to the IP/CIDR of "
+            "the reverse proxy that performs dashboard auth, then restart the dashboard.")
 
+    # ``dashboard.trusted_proxies`` is uvicorn's ``forwarded_allow_ips``: for those peers the
+    # server rewrites ``request.client`` from ``X-Forwarded-For``, so this provider's peer check
+    # would compare against the END CLIENT and silently decline (fail closed, but signed-out).
+    uvicorn_trusted = dashboard_section.get("trusted_proxies", [])
+    if isinstance(uvicorn_trusted, str):
+        uvicorn_trusted = _parse_ip_list(uvicorn_trusted)
+    overlap = sorted(
+        {p for p in trusted_proxies if any(_same_network(p, u) for u in uvicorn_trusted or [])})
+    if overlap:
+        logger.warning(
+            "%s: %r is in BOTH dashboard.remote_user.trusted_proxies and "
+            "dashboard.trusted_proxies. The latter makes uvicorn rewrite request.client from "
+            "X-Forwarded-For, so the peer check will see the end client and decline every "
+            "request. Remove the proxy from dashboard.trusted_proxies to use proxy identity "
+            "headers.", _TAG, overlap)
+
+    ttl_raw = setting("HERMES_DASHBOARD_REMOTE_USER_TTL_SECONDS", "ttl_seconds")
     try:
-        provider = RemoteUserAuthProvider(
-            trusted_proxies=trusted_proxies,
-            header=str(_resolve("HERMES_DASHBOARD_REMOTE_USER_HEADER", "header", _DEFAULT_HEADER)),
-            secret=str(_resolve("HERMES_DASHBOARD_REMOTE_USER_SECRET", "secret", "")),
-            secret_header=str(
-                _resolve("HERMES_DASHBOARD_REMOTE_USER_SECRET_HEADER", "secret_header", _DEFAULT_SECRET_HEADER)
-            ),
-            ttl_seconds=int(
-                _resolve("HERMES_DASHBOARD_REMOTE_USER_TTL_SECONDS", "ttl_seconds", _DEFAULT_TTL_SECONDS)
-            ) or _DEFAULT_TTL_SECONDS,
-        )
-    except (ValueError, TypeError) as exc:
-        LAST_SKIP_REASON = f"RemoteUserAuthProvider construction failed: {exc}"
-        logger.warning("dashboard-auth-remote-user: %s", LAST_SKIP_REASON)
-        return
+        ttl = int(ttl_raw) if ttl_raw else _DEFAULT_TTL_SECONDS
+    except ValueError:
+        ttl = _DEFAULT_TTL_SECONDS
+    return {
+        "trusted_proxies": trusted_proxies,
+        "header": setting("HERMES_DASHBOARD_REMOTE_USER_HEADER", "header", _DEFAULT_HEADER),
+        "secret": setting("HERMES_DASHBOARD_REMOTE_USER_SECRET", "secret"),
+        "secret_header": setting(
+            "HERMES_DASHBOARD_REMOTE_USER_SECRET_HEADER", "secret_header", _DEFAULT_SECRET_HEADER),
+        "ttl_seconds": ttl,
+    }
 
-    ctx.register_dashboard_auth_provider(provider)
-    logger.info(
-        "dashboard-auth-remote-user: registered upstream-proxy auth provider "
-        "(trusted_proxies=%r, header=%s, secret_header=%s)",
-        trusted_proxies, provider._header, provider._secret_header,
-    )
+
+def register(ctx) -> None:
+    """Plugin entry — registers ``RemoteUserAuthProvider`` when a trusted proxy is configured."""
+    global LAST_SKIP_REASON
+    LAST_SKIP_REASON = ""
+    kwargs, LAST_SKIP_REASON = register_provider(ctx, logger, _TAG, RemoteUserAuthProvider, _settings)
+    if kwargs is not None:
+        logger.info(
+            "%s: registered upstream-proxy auth provider (trusted_proxies=%r, header=%s)",
+            _TAG, kwargs["trusted_proxies"], kwargs["header"])

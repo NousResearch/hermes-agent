@@ -1161,19 +1161,31 @@ The `DashboardAuthProvider` ABC also supports a **request-scoped** capability �
 
 The bundled **`remote_user`** provider (`plugins/dashboard_auth/remote_user`) is the reference implementation. It reads the username from a configurable header (default `X-Remote-User`) and registers when a trusted proxy is configured:
 
-```bash
-# ~/.hermes/.env  (secrets file; the provider fails closed without a trusted proxy)
-HERMES_DASHBOARD_REMOTE_USER_TRUSTED_PROXIES=192.168.0.2     # required (IP or CIDR)
-HERMES_DASHBOARD_REMOTE_USER_HEADER=X-Remote-User            # optional; or X-Forwarded-User
-HERMES_DASHBOARD_REMOTE_USER_SECRET=...                      # optional defense-in-depth (below)
+```yaml
+# ~/.hermes/config.yaml
+dashboard:
+  remote_user:
+    trusted_proxies: ["192.168.0.2"]   # required (IP or CIDR); the provider fails closed without it
+    header: X-Remote-User              # optional; or X-Forwarded-User
+    secret_header: X-Remote-User-Secret  # optional defense-in-depth, below
 ```
+
+The shared secret itself is a credential, so it lives in `.env` (env wins over config.yaml when non-empty):
+
+```bash
+# ~/.hermes/.env
+HERMES_DASHBOARD_REMOTE_USER_SECRET=...
+```
+
+Every setting also has an env override (`HERMES_DASHBOARD_REMOTE_USER_TRUSTED_PROXIES`, `_HEADER`, `_SECRET_HEADER`, `_TTL_SECONDS`) for provisioning systems that inject env instead of YAML.
 
 Security requirements (these are the trust rules — get them wrong and the header is forgeable):
 
-- **Trust the socket peer, never `X-Forwarded-For`.** The provider only honors the header when the request's *peer IP* is in `trusted_proxies`. `X-Forwarded-For` is user-controllable until it reaches a trusted proxy, so it must never be used to decide *who* the caller is. This mirrors how Keycloak validates `--proxy-trusted-addresses=`.
+- **Trust the socket peer, never `X-Forwarded-For`.** The provider only honors the header when the request's *peer IP* is in `dashboard.remote_user.trusted_proxies`. `X-Forwarded-For` is user-controllable until it reaches a trusted proxy, so it must never be used to decide *who* the caller is. This mirrors how Keycloak validates `--proxy-trusted-addresses=`.
+- **Keep the auth proxy out of `dashboard.trusted_proxies`.** That (different) key is uvicorn's `forwarded_allow_ips`: for a peer listed there, uvicorn rewrites `request.client` from `X-Forwarded-For`, so the gate would see the *end client's* address instead of the proxy's and the provider would decline — fail closed, but silently signed-out. The provider logs a warning when the same address is in both keys.
 - **Allowlist only the actual proxy addresses** (specific IPs or a tight CIDR) and bind/expose the dashboard port so only those proxies — plus whatever firewall/tunnel you control — can reach it. Terminate TLS at the proxy.
 - **The proxy must overwrite (not append) the identity header**, else a client can smuggle a forged `X-Remote-User` through the proxy: strip any inbound value, then set it from the authenticated user.
-- **Optional shared-secret header (defense in depth).** Setting `secret` requires the proxy to also send `X-Remote-User-Secret` matching it (constant-time compare), so even a client that tunnels through the proxy's network path can't forge an identity.
+- **Optional shared-secret header (defense in depth).** Setting `secret` requires the proxy to also send the secret header matching it (constant-time compare), so even a client that tunnels through the proxy's network path can't forge an identity.
 
 Apache example (pwauth/basic auth; the `RequestHeader` fixup runs after authentication, so `%{REMOTE_USER}` is populated from `r->user` — use `expr=`, not the `%{REMOTE_USER}e` env form, which expands to `(null)`):
 

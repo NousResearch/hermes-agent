@@ -69,11 +69,13 @@ def _is_final_reply(row) -> bool:
 
 
 def _compaction_holds_refusal(db, conn, session_id: str) -> bool:
-    """True when a compaction summary may restate the refusal: an archived refused boundary in this
-    session (in-place compaction) or any refused boundary in a compression ancestor (rotation)."""
+    """True when a compaction summary may restate the refusal: an inactive refused boundary in this
+    session (in-place compaction archives it, or carries it forward and retires the original) or any
+    refused boundary in a compression ancestor (rotation). An ``/undo`` also leaves an inactive one;
+    skipping that chat too is the safe side."""
     rows = conn.execute(
         "SELECT role, display_kind, display_metadata FROM messages WHERE session_id = ? AND active = 0 "
-        "AND compacted = 1 AND display_kind = 'failed_turn'", (session_id,)).fetchall()
+        "AND display_kind = 'failed_turn'", (session_id,)).fetchall()
     if any(_is_refusal_boundary(db, r) for r in rows):
         return True
     current, seen = session_id, {session_id}

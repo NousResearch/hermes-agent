@@ -60,12 +60,17 @@ export function RewindBrowse({
     setOffset(prev => ensureVisible(prev, messageRange(lines, selectedMsg), rows, lines.length))
   }, [lines, rows, selectedMsg])
 
-  useInput((ch, key) => {
+  useInput((ch, key, event) => {
     // A lone Esc can arrive meta-flagged, so it is read before the chord guard.
     if (key.escape) {
       $rewindScrollRestore.set(true)
 
       return onBack()
+    }
+
+    // A paste is text, never a browse key: pasting "f" or "q" closes browse and types it.
+    if (event?.keypress.isPasted) {
+      return ch && onType(ch)
     }
 
     // Ctrl+C closes from the global handler; other chords are not browse keys.

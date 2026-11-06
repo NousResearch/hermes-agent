@@ -258,7 +258,7 @@ def skill_gist(action: str, name: str, *, content: str = "", file_path: str = ""
                old_string: str = "", new_string: str = "") -> str:
     """One-line heuristic gist (no model call) for a pending skill write: create/edit use
     the frontmatter ``description:``; patch/write_file describe the size of the change."""
-    if action in {"create", "edit"} and content:
+    if (action in {"create", "edit"} or (action == "patch" and not old_string)) and content:
         desc = _frontmatter_description(content)
         size = f"{len(content) // 1024 + 1} KB" if len(content) >= 1024 else f"{len(content)} chars"
         return f"{'create' if action == 'create' else 'rewrite'} '{name}'{f' — {desc}' if desc else ''} ({size})"
@@ -321,11 +321,13 @@ def skill_pending_diff(
         return {"remove_file": f"remove file: {payload.get('file_path')} from skill '{name}'",
                 "delete": f"delete skill '{name}'"}.get(action, f"({action} on '{name}')")
 
+    # patch with content alone is the schema's full-rewrite shape (approve runs _edit_skill).
+    rewrite = _is_full_rewrite(action, payload)
     # patch/write_file target a file inside the skill; edit always targets SKILL.md.
-    target_label = "SKILL.md" if action == "edit" else (payload.get("file_path") or "SKILL.md")
+    target_label = "SKILL.md" if rewrite else (payload.get("file_path") or "SKILL.md")
     current = _staged_base(name, target_label, staged)
 
-    if action == "patch":
+    if action == "patch" and not rewrite:
         old_s, new_s = payload.get("old_string") or "", payload.get("new_string") or ""
         if not current:
             new = f"(patch {old_s!r} → {new_s!r})"
@@ -338,10 +340,15 @@ def skill_pending_diff(
                 return f"(patch would fail: {patch_err})"
             new = folded
     else:
-        new = payload.get("content" if action == "edit" else "file_content") or ""
+        new = payload.get("content" if rewrite else "file_content") or ""
     diff = difflib.unified_diff(current.splitlines(keepends=True), new.splitlines(keepends=True),
                                 fromfile=f"a/{target_label}", tofile=f"b/{target_label}")
     return "".join(diff) or "(no textual change)"
+
+
+def _is_full_rewrite(action: str, payload: dict[str, Any]) -> bool:
+    """``edit``, or ``patch`` carrying ``content`` (the advertised full-rewrite shape)."""
+    return action == "edit" or (action == "patch" and bool(payload.get("content")))
 
 
 def _fold_patch(base: str, old_string: str, new_string: str, replace_all: Any = False
@@ -373,9 +380,10 @@ def _fold_staged(staged: dict[str, dict[str, str]], action: str, name: str,
     if action == "delete":
         staged.pop(name, None)
         return
-    label = "SKILL.md" if action == "edit" else (op.get("file_path") or "SKILL.md")
+    rewrite = _is_full_rewrite(action, op)
+    label = "SKILL.md" if rewrite else (op.get("file_path") or "SKILL.md")
     files = staged.setdefault(name, {})
-    if action in {"create", "edit"}:
+    if action == "create" or rewrite:
         files["SKILL.md"] = op.get("content") or ""
     elif action == "write_file":
         files[label] = op.get("file_content") or ""

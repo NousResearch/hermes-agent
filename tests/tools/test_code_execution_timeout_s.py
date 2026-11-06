@@ -60,8 +60,8 @@ def test_command_alias_still_redirects():
 
 # ---- Real kernel: custom timeout honoured, state loss explicit -------------
 
-def _call(code, timeout_s=None, reset=False, task=TASK):
-    with patch("tools.code_execution_tool._load_config", return_value={}):
+def _call(code, timeout_s=None, reset=False, task=TASK, cfg=None):
+    with patch("tools.code_execution_tool._load_config", return_value=cfg or {}):
         from tools.code_execution_tool import execute_code
         raw = execute_code(code=code, task_id=task, enabled_tools=["read_file"],
                            reset=reset, timeout_s=timeout_s)
@@ -167,6 +167,26 @@ def test_timeout_on_one_cell_of_shared_kernel_does_not_hang_sibling_cell(child_e
     assert out["fast"]["status"] in ("success", "error", "interrupted"), out["fast"]
     after = _call("print('fresh-again')", task="share-kernel")
     assert after["kernel"]["reused"] is False  # a kernel-wide kill leaves no stale kernel behind
+
+
+# ---- Ceiling, never extension: min(configured, timeout_s) ------------------
+
+def test_timeout_s_never_extends_a_tighter_configured_timeout(child_env):
+    """Config 10s, timeout_s=30: the call must still expire at ~10s -
+    an optional ceiling can only SHORTEN the configured timeout."""
+    timed = _call("import time; time.sleep(60); print('never')",
+                  timeout_s=30, cfg={"timeout": 10}, task="tight-config")
+    assert timed["status"] == "timeout"
+    assert 9.0 <= timed["duration_seconds"] < 20, timed["duration_seconds"]
+    assert abs(timed["duration_seconds"] - 10) < 3  # ~10s, NOT ~30s
+
+
+def test_timeout_s_shortens_a_looser_configured_timeout(child_env):
+    """Config 30s, timeout_s=5: expires at ~5s (ceiling applied)."""
+    timed = _call("import time; time.sleep(60); print('never')",
+                  timeout_s=5, cfg={"timeout": 30}, task="wide-config")
+    assert timed["status"] == "timeout"
+    assert 4.0 <= timed["duration_seconds"] < 12, timed["duration_seconds"]
 
 
 # ---- No regression: absent timeout_s keeps the configured behaviour --------

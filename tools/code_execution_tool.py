@@ -665,7 +665,8 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[l
     from tools.terminal_tool import _resolve_container_task_id
     from tools.terminal_tool_lifecycle import _call_in_flight
     _cfg = _load_config()
-    timeout, max_tool_calls = timeout_s or _cfg.get("timeout", DEFAULT_TIMEOUT), _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
+    timeout, max_tool_calls = (min(timeout_s, _cfg.get("timeout", DEFAULT_TIMEOUT))
+                               if timeout_s else _cfg.get("timeout", DEFAULT_TIMEOUT)), _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
     sandbox_tools, effective_task_id = _sandbox_tools_for(enabled_tools), task_id or "default"
     env, env_type = _get_or_create_env(effective_task_id)
     with _call_in_flight(_resolve_container_task_id(effective_task_id)):
@@ -799,7 +800,7 @@ def execute_code(
         code, task_id=task_id or "", mode=_mode, child_python=_resolve_child_python(_mode),
         child_cwd=_resolve_child_cwd(_mode, "", task_id=task_id or ""),
         sandbox_tools=frozenset(_sandbox_tools_for(enabled_tools)),
-        timeout=timeout_s or _cfg.get("timeout", DEFAULT_TIMEOUT),
+        timeout=min(timeout_s, _cfg.get("timeout", DEFAULT_TIMEOUT)) if timeout_s else _cfg.get("timeout", DEFAULT_TIMEOUT),
         max_tool_calls=_cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS),
         reset=bool(reset), is_interrupted=_is_interrupted,
     ))
@@ -923,8 +924,8 @@ def build_execute_code_schema(enabled_sandbox_tools: set | None = None,
         f"Available via `from hermes_tools import ...`:\n\n"
         f"{tool_lines}\n\n"
         "Limits: default timeout 300 s (config `code_execution.timeout`); the optional "
-        "`timeout_s` (1-300) shortens one call — on any timeout the session kernel is "
-        "killed and its state is lost. Max 50 tool calls per call. Stdout over "
+        "`timeout_s` (1-300) SHORTENS one call (min of both limits) — on any timeout the session "
+        "kernel is killed and its state is lost. Max 50 tool calls per call. Stdout over "
         "50KB shows head/tail inline; the FULL text is auto-saved to a file whose path rides in the result.\n\n"
         f"{cwd_note}\n\n"
         "Helpers require imports: `from hermes_tools import json_parse, shell_quote, retry`. "
@@ -945,9 +946,10 @@ def build_execute_code_schema(enabled_sandbox_tools: set | None = None,
                 "reset": {"type": "boolean", "description": (
                     "Discard the kernel's persistent state and start fresh before running this code.")},
                 "timeout_s": {"type": "integer", "minimum": 1, "maximum": 300, "description": (
-                    "Optional per-call ceiling in seconds (1-300). Overrides the default "
-                    "timeout for THIS call only; on timeout the session kernel is killed "
-                    "and its state is lost. Absent = configured timeout applies.")},
+                    "Optional per-call ceiling in seconds (1-300). When provided, the call runs "
+                    "on min(configured, timeout_s) - it can only SHORTEN the configured timeout, "
+                    "never extend it. On timeout the session kernel is killed and its state is "
+                    "lost. Absent = configured timeout applies.")},
             },
             "required": ["code"],
         },

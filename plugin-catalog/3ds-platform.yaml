@@ -1,6 +1,6 @@
 name: 3ds-platform
 repo: https://github.com/rndaom/Hermes3DS
-sha: 3182c0b1cc97072e6aa047dd463474e3b12b84d7
+sha: 12d59922b46ddd5f4dc214a1d9bda9afe40214c2
 subdir: plugin
 title: Nintendo 3DS
 description: "Talk to Hermes from a Nintendo 3DS: a gateway platform for the Hermes 3DS homebrew app, with streaming replies, approvals and clarify questions, sessions, skills, jobs, model and slash-command pickers, pictures, documents, audio, voice messages, camera photos and spoken replies, over an end-to-end encrypted Noise IK link (LAN, or away from home through Tailscale Funnel). Disclosure — opens a TCP listener on all interfaces (port 7333) and a UDP discovery responder (7334); paired consoles (Noise IK keys in the plugin's data folder, paired by one-time LAN-only code) get full agent chat including approval answers; opt-in away mode publishes a persistent public Tailscale Funnel to a loopback listener; runs `tailscale`, `ffmpeg` and the desktop file opener, and downloads image links in replies; the dev-only `security: plaintext` setting accepts unauthenticated connections."
@@ -9,15 +9,15 @@ tier: community
 category: platform
 requires_hermes: ">=0.22.5"
 docs_url: https://github.com/rndaom/Hermes3DS#readme
-version: "0.1.0"
-image: https://raw.githubusercontent.com/rndaom/Hermes3DS/3182c0b1cc97072e6aa047dd463474e3b12b84d7/docs/media/banner.png
+version: "0.1.3"
+image: https://raw.githubusercontent.com/rndaom/Hermes3DS/12d59922b46ddd5f4dc214a1d9bda9afe40214c2/docs/media/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/rndaom/Hermes3DS/3182c0b1cc97072e6aa047dd463474e3b12b84d7/docs/media/screens/01-chat.png
-  - https://raw.githubusercontent.com/rndaom/Hermes3DS/3182c0b1cc97072e6aa047dd463474e3b12b84d7/docs/media/screens/02-voice.png
-  - https://raw.githubusercontent.com/rndaom/Hermes3DS/3182c0b1cc97072e6aa047dd463474e3b12b84d7/docs/media/screens/04-approvals.png
-  - https://raw.githubusercontent.com/rndaom/Hermes3DS/3182c0b1cc97072e6aa047dd463474e3b12b84d7/docs/media/screens/05-files.png
-  - https://raw.githubusercontent.com/rndaom/Hermes3DS/3182c0b1cc97072e6aa047dd463474e3b12b84d7/docs/media/screens/07-anywhere.png
-  - https://raw.githubusercontent.com/rndaom/Hermes3DS/3182c0b1cc97072e6aa047dd463474e3b12b84d7/docs/media/screens/08-pair.png
+  - https://raw.githubusercontent.com/rndaom/Hermes3DS/12d59922b46ddd5f4dc214a1d9bda9afe40214c2/docs/media/screens/01-chat.png
+  - https://raw.githubusercontent.com/rndaom/Hermes3DS/12d59922b46ddd5f4dc214a1d9bda9afe40214c2/docs/media/screens/02-voice.png
+  - https://raw.githubusercontent.com/rndaom/Hermes3DS/12d59922b46ddd5f4dc214a1d9bda9afe40214c2/docs/media/screens/04-approvals.png
+  - https://raw.githubusercontent.com/rndaom/Hermes3DS/12d59922b46ddd5f4dc214a1d9bda9afe40214c2/docs/media/screens/05-files.png
+  - https://raw.githubusercontent.com/rndaom/Hermes3DS/12d59922b46ddd5f4dc214a1d9bda9afe40214c2/docs/media/screens/07-anywhere.png
+  - https://raw.githubusercontent.com/rndaom/Hermes3DS/12d59922b46ddd5f4dc214a1d9bda9afe40214c2/docs/media/screens/08-pair.png
 platforms: []
 known_issues:
   - Needs a Nintendo 3DS or 2DS with custom firmware (Luma3DS) running the Hermes 3DS homebrew app from the same repository.

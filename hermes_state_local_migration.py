@@ -20,8 +20,13 @@ LEGACY_CREATION_SOURCES = {'desktop': 'gui'}
 # retired platform, and a third-party WebUI that runs its own agent on this state.db (adopting its rows
 # would legitimise a second writer, so they stay read-only: gateway/session_history_mount.py).
 NOT_CLIENT_LABELS = frozenset({'cron', 'subagent', 'kanban', 'bot_room', 'a2a', 'webhook', 'api_server',
-                               'import', 'recovered', 'curator', 'batch', 'homeassistant', 'webui',
+                               'import', 'recovered', 'curator', 'batch', 'homeassistant',
                                'local', 'unknown'})
+# ``webui`` is deliberately NOT in that set on this install: the dashboard's own chat writes its rows
+# under that label, so a routeless ``webui`` row is this owner's client history. It stays a read-only
+# mount (session_history_mount) until a native client on the host resumes it, which adopts it as a
+# writable chat like a phone app's self-labelled one. A genuinely foreign WebUI writing this store
+# still cannot adopt: validate_legacy_row requires the owner's own user_id and profile.
 
 
 @functools.lru_cache(maxsize=1)

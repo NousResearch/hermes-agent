@@ -776,6 +776,8 @@ skills:
 
 After changing this, **restart the gateway** (`hermes gateway restart` or kill and relaunch). The Telegram bot command menu rebuilds on startup.
 
+Note the gate's scope: a platform-disabled skill disappears from `skills_list` discovery and the skills tools (`skill_view`, `skill_run`) refuse to serve it by name. Generic file tools can still read a skill's files on disk, so treat `platform_disabled` as a scoping knob for the skills interface, not a filesystem access boundary.
+
 :::tip
 Skills with very long descriptions are truncated to 40 characters in the Telegram menu to stay within payload size limits. If skills aren't appearing, it may be a total payload size issue rather than the 100 command count limit — disabling unused skills helps with both.
 :::

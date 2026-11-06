@@ -45,6 +45,17 @@ def is_delegated_child_context() -> bool:
     return bool(_DELEGATED_CHILD_CONTEXT.get())
 
 
+def delegated_child_platform() -> str | None:
+    """The running delegate child's own platform (``"subagent"``), else ``None``.
+
+    Skills access gates resolve their platform from ``HERMES_PLATFORM`` / session env, which
+    only ever carry the PARENT's channel — on a child's execution chain this helper is the
+    asking agent's platform instead (#140537: otherwise ``platform_disabled.subagent`` hides
+    a skill from a child's index yet skill_view still serves it by name).
+    """
+    return "subagent" if is_delegated_child_context() else None
+
+
 def enter_non_dispatcher_owned_context() -> Token[bool]:
     """Token form of :func:`non_dispatcher_owned_context` for long try/finally scopes."""
     return _NON_DISPATCHER_OWNED_CONTEXT.set(True)

@@ -114,8 +114,8 @@ def one_turn_runtime(override, model, runtime_kwargs, config):
     if same_provider and not result.alias_endpoint_applied:
         # A plain model pick on the session's provider: the explicit provider re-resolved that provider's
         # default endpoint and key, and the session already has both (a mirror, a proxy, a pool), so keep
-        # them. The wire follows the target only where the provider picks it per model (Copilot, Nous
-        # Portal, OpenCode; ``_rederive_per_model_route``); otherwise ``result.api_mode`` describes the
+        # them. The wire follows the target only where the provider picks it per model (a profile's
+        # ``api_mode_for_model``, Nous Portal, OpenCode; ``_rederive_per_model_route``); otherwise ``result.api_mode`` describes the
         # default host, not this session's endpoint, and the session's wire stays.
         from hermes_cli.model_switch import model_derived_api_mode
         from hermes_cli.models import normalize_opencode_base_url, opencode_provider_family

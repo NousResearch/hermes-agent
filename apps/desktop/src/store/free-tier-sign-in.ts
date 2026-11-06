@@ -1,6 +1,7 @@
 import type { FreeTierClaimNudgeResult } from '@hermes/shared'
 import { atom } from 'nanostores'
 
+import { invalidateAllConnectors } from '@/app/capabilities/connectors/data/keys'
 import {
   cancelOAuthSession,
   getNousHandoffStatus,
@@ -16,7 +17,7 @@ import type { AppHandoffStatus, FreeTierStatus, OAuthPollResponse } from '@/type
 
 import { type FreeTierRequester, NOUS_PROVIDER_ID, refreshFreeTierStatus } from './free-tier'
 import { $localModelOfferPending } from './local-model-offer'
-import { afterOnboardingSurfaceClear, onboardingSurfaceActive } from './onboarding-presence'
+import { onboardingSurfaceActive } from './onboarding-presence'
 
 /** Why a sign-in ended without tokens. Each maps to one ruled screen:
  *  `busy` (the account service asked for a short wait — a busy account, a
@@ -42,15 +43,7 @@ export type FreeTierSignInState =
   | { kind: FreeTierOfferKind; status: 'offer' }
   // `handoff`: the free tier's apps moving to this account (null when the
   // sign-in replaced no free tier). Followed while it is still retrying.
-  // `scope`: the profile the sign-in ran for when it is not the active one,
-  // so Reconnect opens that profile's apps.
-  | {
-      email: null | string
-      handoff: AppHandoffStatus | null
-      model: null | string
-      scope?: ProfileScope
-      status: 'completed'
-    }
+  | { email: null | string; handoff: AppHandoffStatus | null; model: null | string; status: 'completed' }
   // `retryAfter`: the seconds the backend asked us to wait before trying
   // again (0 when it named none); only `busy` screens read it.
   | { kind: FreeTierSignInFailure; message: null | string; retryAfter: number; status: 'failed' }
@@ -213,10 +206,14 @@ export function syncFreeTierOffer(status: FreeTierStatus | null, requestGateway:
   void claimFreeTierOffer(requestGateway, kind)
 }
 
+/** Connector app windows on screen. The offer waits for them to close, so it never covers one. */
+export const $openAppWindows = atom(0)
+
 // The local-model offer after onboarding goes first; the sign-in offer is claimed once it is answered.
 const offerBlocked = () =>
   offerClaiming ||
   onboardingSurfaceActive() ||
+  $openAppWindows.get() > 0 ||
   $localModelOfferPending.get() ||
   $freeTierSignIn.get().status !== 'closed'
 
@@ -441,6 +438,7 @@ async function finishSignIn(result: OAuthPollResponse, requestGateway: FreeTierR
   // completed screen claims the user is signed in.
   await requestGateway('reload.env').catch(() => undefined)
   await refreshFreeTierStatus(requestGateway)
+  invalidateAllConnectors()
 
   if (mine !== attempt) {
     return
@@ -450,7 +448,17 @@ async function finishSignIn(result: OAuthPollResponse, requestGateway: FreeTierR
   set({ email: result.account_email ?? null, handoff, model: result.model ?? null, status: 'completed' })
 
   if (handoff && handoffStillMoving(handoff)) {
-    void followHandoff(handoff, mine)
+    const live = () => mine === attempt && $freeTierSignIn.get().status === 'completed'
+
+    const publish = (next: AppHandoffStatus) => {
+      const screen = $freeTierSignIn.get()
+
+      if (screen.status === 'completed') {
+        set({ ...screen, handoff: next })
+      }
+    }
+
+    void followHandoff(handoff, live, publish)
   }
 }
 
@@ -459,43 +467,23 @@ export function handoffStillMoving(handoff: AppHandoffStatus): boolean {
   return handoff.state === 'pending' || handoff.state === 'retrying'
 }
 
-/** A Nous sign-in that finished in the onboarding picker and replaced the free
- *  tier: show the same result screen this dialog shows. Onboarding paints above
- *  every dialog, so the result waits until it leaves the screen; never over a
- *  sign-in already on screen. `scope` is the profile the sign-in ran for. */
-export function showFreeTierSignInResult(result: OAuthPollResponse, scope?: ProfileScope) {
-  const handoff = result.handoff_status
-
-  if (!handoff) {
-    return
-  }
-
-  afterOnboardingSurfaceClear(() => {
-    if ($freeTierSignIn.get().status !== 'closed') {
-      return
-    }
-
-    const mine = ++attempt
-    clearTimers()
-    set({ email: result.account_email ?? null, handoff, model: null, scope, status: 'completed' })
-
-    if (handoffStillMoving(handoff)) {
-      void followHandoff(handoff, mine, scope)
-    }
-  })
-}
-
 // Failed handoff reads in a row before the result stops following the move. The note on screen stays
 // true either way: the move continues in the background whether or not this window hears about it.
 const HANDOFF_READ_RETRIES = 4
 
-// Keep the completed screen's handoff current while the move is retried, until it settles or the
-// dialog closes. A failed read leaves the last answer on screen: it already says the move continues.
-async function followHandoff(shown: AppHandoffStatus, mine: number, scope?: ProfileScope) {
+/** Keep a shown handoff current while the move is retried, until it settles or `live` goes false
+ *  (the screen showing it left). A failed read leaves the last answer up: it already says the move
+ *  continues. A settled move changed the apps, so the cached connector reads are dropped. */
+export async function followHandoff(
+  shown: AppHandoffStatus,
+  live: () => boolean,
+  publish: (handoff: AppHandoffStatus) => void,
+  scope?: ProfileScope
+) {
   let current = shown
   let failures = 0
 
-  while (mine === attempt && handoffStillMoving(current)) {
+  while (live() && handoffStillMoving(current)) {
     const askedAt = Date.now()
 
     try {
@@ -512,13 +500,18 @@ async function followHandoff(shown: AppHandoffStatus, mine: number, scope?: Prof
       continue
     }
 
-    const screen = $freeTierSignIn.get()
-
-    if (mine !== attempt || screen.status !== 'completed') {
+    if (!live()) {
       return
     }
 
-    set({ ...screen, handoff: current })
+    publish(current)
+
+    if (!handoffStillMoving(current)) {
+      invalidateAllConnectors()
+
+      return
+    }
+
     await restOfLongPollGap(askedAt)
   }
 }

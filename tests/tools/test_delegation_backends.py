@@ -208,46 +208,10 @@ def test_a_backend_route_without_its_own_chain_inherits_delegation_fallback_prov
         manager.unload()
 
 
-def test_a_session_backend_switch_routes_that_session_only_and_global_persists(tmp_path, monkeypatch, recorded):
-    """``/delegation`` seam: a session override decides that session's routing; ``--global`` writes config.yaml
-    and drops the override; a backend that cannot run is refused up front."""
-    home, manager = _home(tmp_path, monkeypatch, {"backend": "probe-options",
-                                                  "backends": {"probe-options": {"options": OPTIONS}}})
-    try:
-        from agent.delegation_backends import (
-            get_session_backend, list_backends, set_global_backend, set_session_backend,
-        )
-        from tools.delegate_tool import delegate_task
-
-        assert [(b.name, b.available) for b in list_backends()] == [("default", True), ("probe-options", True)]
-        set_session_backend("chat-a", "default")
-        for sid in ("chat-a", "chat-b"):
-            delegate_task(tasks=[{"goal": "route me plainly"}, {"goal": "route me on fast", "option": "fast"}],
-                          parent_agent=_parent(sid))
-        # chat-a's schema still offers `option` (it follows config.yaml); its default backend refuses that task
-        # instead of running it on the default route, and a name no backend declares is refused too.
-        assert [b["model"] for b in recorded] == [None, None, "fast-model"]
-        error = json.loads(delegate_task(tasks=[{"goal": "route me on fast", "option": "fast"},
-                                                {"goal": "route me on a tier", "tier": "a"}],
-                                         parent_agent=_parent("chat-a")))["error"]
-        owned, unknown = error.split(" Task 1: ")
-        assert "backend is 'default'" in owned and "`/delegation default --global` then `/new`" in owned
-        assert "`/delegation probe-options` to switch this session back to the saved backend" in owned
-        assert "'tier'" in unknown and "no installed delegation backend" in unknown and len(recorded) == 3
-        with pytest.raises(ValueError, match="'nope' is not installed"):
-            set_session_backend("chat-a", "nope")
-
-        set_global_backend("default", session_key="chat-a")
-        assert yaml.safe_load((home / "config.yaml").read_text())["delegation"]["backend"] == "default"
-        assert get_session_backend("chat-a") is None
-    finally:
-        manager.unload()
-
-
-def test_a_session_switch_refuses_a_task_using_the_previous_backends_parameter(tmp_path, monkeypatch, recorded):
-    """The schema keeps the saved backend's parameters for the whole session (cached prompt), so after
-    ``/delegation`` switches to another backend a task sending the old ``option`` is refused alone, naming the
-    session's backend, the parameter and the fix; it never runs on the new backend's default route."""
+def test_a_saved_switch_refuses_the_previous_backends_parameter_and_names_the_fix(tmp_path, monkeypatch, recorded):
+    """``/delegation <backend>`` saves config.yaml, and a parent with no tools of its own routes on it. A task
+    sending a parameter that backend does not declare is refused alone, naming the backend, the parameter and the
+    fix; it never runs on the backend's default route."""
     from agent.delegation_provider import DelegationProvider
     from agent.delegation_registry import _registry
 
@@ -262,29 +226,40 @@ def test_a_session_switch_refuses_a_task_using_the_previous_backends_parameter(t
         def route_task(self, task, config):
             return {"model": f"{task.get('target') or 'profile-default'}-model"}
 
-    _, manager = _home(tmp_path, monkeypatch, {"backend": "probe-options",
-                                               "backends": {"probe-options": {"options": OPTIONS}}})
+    home, manager = _home(tmp_path, monkeypatch, {"backend": "probe-options",
+                                                  "backends": {"probe-options": {"options": OPTIONS}}})
     profiles = Profiles()
     _registry.register(profiles)
     try:
-        from agent.delegation_backends import set_session_backend
+        from agent.delegation_backends import list_backends, set_global_backend
         from tools.delegate_tool import delegate_task
 
-        assert "option" in _task_props(_definition())
-        set_session_backend("chat-a", "probe-profiles")
+        assert [b.name for b in list_backends()] == ["default", "probe-options", "probe-profiles"]
+        before = (home / "config.yaml").read_bytes()
+        with pytest.raises(ValueError, match="'nope' is not installed"):
+            set_global_backend("nope")
+        with pytest.raises(ValueError, match="apply_now needs"):
+            set_global_backend("probe-profiles", apply_now=True)
+        assert (home / "config.yaml").read_bytes() == before
+
+        set_global_backend("probe-profiles", session_key="chat-a")
+        assert yaml.safe_load((home / "config.yaml").read_text())["delegation"]["backend"] == "probe-profiles"
         out = json.loads(delegate_task(tasks=[
             {"goal": "the quick thing", "option": "fast"},
             {"goal": "a plain task"},
             {"goal": "a work task", "target": "work"},
+            {"goal": "a tier task", "tier": "a"},
         ], parent_agent=_parent("chat-a")))
-        refused, plain, work = out["results"]
+        refused, plain, work, unknown = out["results"]
         assert refused["status"] == "error" and refused["route"] == {"backend": "probe-profiles", "refused": True}
-        # /new starts on the saved backend, so the advice persists the session's pick first or names the saved one.
         assert refused["error"] == (
-            "Task 0: this session's delegation backend is 'probe-profiles', which does not take 'option' (declared by "
-            "'probe-options'), so this task was not started. Run `/delegation probe-profiles --global` then `/new` for "
-            "a session whose delegate_task choices match 'probe-profiles', or `/delegation probe-options` to switch "
-            "this session back to the saved backend.")
+            "Task 0: the delegation backend is 'probe-profiles', which does not take 'option' (declared by "
+            "'probe-options'), so this task was not started. This session's delegate_task was built for another "
+            "backend: run `/delegation probe-profiles --now` to rebuild this session's delegate_task for "
+            "'probe-profiles', or start a new session with /new.")
+        assert unknown["error"].startswith(
+            "Task 3: the delegation backend is 'probe-profiles', which does not take 'tier', and no installed "
+            "delegation backend does, so this task was not started. Resend it without 'tier';")
         assert plain["status"] == work["status"] == "completed"
         assert [b["model"] for b in recorded] == ["profile-default-model", "work-model"]
     finally:

@@ -40,6 +40,10 @@ Here is a complete plugin that adds a `hello_world` tool and logs every tool cal
 name: hello-world
 version: "1.0"
 description: A minimal example plugin
+provides_tools:
+  - hello_world
+provides_hooks:
+  - post_tool_call
 ```
 
 **`~/.hermes/plugins/hello-world/__init__.py`**
@@ -80,7 +84,7 @@ def register(ctx):
     )
 
     # --- Hook: log every tool call ---
-    def on_tool_call(tool_name, params, result):
+    def on_tool_call(tool_name, args, result, **kwargs):
         print(f"[hello-world] tool called: {tool_name}")
 
     ctx.register_hook("post_tool_call", on_tool_call)
@@ -460,8 +464,8 @@ a different interval.
 `hermes plugins update` with no name runs the same check and lists the
 plugins it can move: catalog installs (re-pinned to the reviewed catalog
 commit) and tracked Git installs (pulled). It names every plugin it skips and
-why: pinned, needs fixing, status unknown, or a pip distribution Hermes does
-not upgrade. In a terminal it asks once, then updates each plugin through the
+why: pinned, held with `--ref`, needs fixing, status unknown, or a pip
+distribution Hermes does not upgrade. In a terminal it asks once, then updates each plugin through the
 same path as `hermes plugins update NAME`, so new capabilities, a widened
 catalog pin and scan findings still prompt per plugin. One failure does not
 stop the rest; the summary lists what updated, what was already current and
@@ -470,10 +474,45 @@ it prints the list and updates nothing unless you pass `--yes`; with `--yes`,
 consent prompts fail closed as in any non-interactive update (new
 capabilities stay ungranted, a widened catalog pin is not applied).
 
-By default, plugins only update when you run `hermes plugins update`. Setting
-`plugins.auto_apply: true` opts tracked Git plugins into unattended updates.
-Both routes use the update security scan. Auto-apply does not manage pinned,
-manual, drifted, or pip-distribution rows.
+By default, plugins only update when you run `hermes plugins update`. Turning
+on auto-update (`plugins.auto_apply: true`) lets the gateway's scheduled check
+apply the same catalog re-pins and tracked Git pulls on its own. Both routes
+use the update security scan, and an unattended update never accepts a widened
+catalog pin or Git update (new tools, hooks, capabilities), new capabilities or a caution scan verdict on a Git update: those
+wait for you to run the update yourself. (A catalog re-pin accepts a caution
+verdict, because a reviewer read that pin when it was admitted to the catalog.)
+Auto-update does not manage pinned, manual, drifted, or pip-distribution rows,
+nor a catalog plugin you installed with `--ref` at a commit other than its
+catalog pin: that stays on the commit you chose until you name it
+(`hermes plugins update <name>`); every Update all, `hermes plugins update`
+with no name included, skips it. A `--ref` equal to the catalog pin is recorded
+as an ordinary catalog install, so auto-update moves it with the catalog. It runs on the gateway's housekeeping thread, so it
+never delays starting a session, and an offline check costs one warning.
+Code the scheduled check updates loads in new sessions; a running session keeps
+the code it already imported. The setting is per profile.
+
+The same switch and an "Update all" action are on every surface:
+
+| Surface | Update all | Auto-update |
+|---|---|---|
+| CLI | `hermes plugins update` | `hermes plugins auto-update [on\|off]` |
+| Chat (classic CLI and TUI) | `/plugins update` | `/plugins auto-update [on\|off]` |
+| Desktop app | Plugins tab, **Update all** | Plugins tab, **Auto-update** switch |
+| Web dashboard | Plugins page, **Update all** | Plugins page, **Auto-update** switch |
+
+`/plugins update`, Desktop and the dashboard update without asking per plugin,
+so a plugin that needs a review (widened pin or Git update, caution scan of a Git update) is
+listed as "needs review" with nothing changed; update it by name to review it.
+Each plugin they update is reloaded right away, as an update from the plugin's
+own Update action is: its MCP servers and skills reach open chats now, its
+Python tools load in new sessions. Two
+updates of the same plugin never run at once: the second one is refused and
+changes nothing.
+
+`hermes update` can move catalog pins. Installed catalog plugins stay on their
+old pin until updated, so the update names them for every profile and asks
+that profile's gateway to check again on its next tick (which applies them
+when auto-update is on).
 
 If a manifest changes or introduces `update_url`, Hermes refuses the new address
 until you approve it with `hermes plugins trust-update-url NAME`. This is a
@@ -607,6 +646,8 @@ working but are **deprecated** in favor of the consent flow:
 
 A gate is open when *either* the capability is granted *or* the legacy key is
 set — existing configs keep working unchanged.
+`llm.side_question` has no legacy key: it is open only when declared and
+granted through the consent flow.
 
 :::warning Not a sandbox
 Capabilities are a **consent and audit layer**, not isolation. Plugins run as
@@ -866,8 +907,9 @@ plugins:
 
 Plugins do not change. They receive the same `ctx` and register tools, hooks, slash commands, skills and
 provider objects (image/video generation, web search, browser, TTS/STT, memory, context engines,
-model-provider profiles) exactly as before; Hermes registers matching entries on its side that call into
-the host. Dashboard plugin APIs are served by the host too. Bundled plugins keep running in-process.
+secret sources, `@` context references, model-provider profiles) exactly as before; Hermes registers
+matching entries on its side that call into the host, and values cross as the types the provider base
+class declares (a secret source's `fetch()` gets a `Path` and returns a `FetchResult`). Dashboard plugin APIs are served by the host too. Bundled plugins keep running in-process.
 In-process dashboard API handlers share the gateway's event loop, so they must not block it (see
 [Don't block the event loop](extending-the-dashboard.md#dont-block-the-event-loop)).
 

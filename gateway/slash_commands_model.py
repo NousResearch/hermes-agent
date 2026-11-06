@@ -305,13 +305,14 @@ class GatewayModelCommandsMixin:
     ) -> str:
         """Confirmation text with full metadata (display form shortens opaque Palantir IDs)."""
         from gateway.run import _load_gateway_config
-        from hermes_cli.model_switch import format_model_for_display, resolve_display_context_length_async
+        from hermes_cli.model_switch import (
+            effective_context_pin, format_model_for_display, resolve_display_context_length_async)
 
         lines = [
             t("gateway.model.switched", model=format_model_for_display(result.new_model)),
             t("gateway.model.provider_label", provider=result.provider_label or result.target_provider),
         ]
-        # Provider-aware chain: Codex OAuth, Copilot and Nous caps win over the raw models.dev entry.
+        # Provider-aware chain: Codex OAuth, Nous and profile live-catalog caps win over the raw models.dev entry.
         mi = result.model_info
         model_cfg: dict = {}
         config_ctx = None
@@ -321,17 +322,20 @@ class GatewayModelCommandsMixin:
                 config_ctx = int(model_cfg["context_length"])
         if not isinstance(model_cfg, dict):
             model_cfg = {}
+        base_url = result.base_url or ctx.current_base_url or ""
+        # The pin applies only while the route matches the config; the number and its label use the same answer.
+        config_ctx = effective_context_pin(
+            config_ctx, result.new_model, result.target_provider, base_url,
+            model_cfg.get("default") or model_cfg.get("model"), model_cfg.get("provider"), model_cfg.get("base_url"))
         ctx_len = await resolve_display_context_length_async(
-            result.new_model, result.target_provider,
-            base_url=result.base_url or ctx.current_base_url or "",
+            result.new_model, result.target_provider, base_url=base_url,
             api_key=result.api_key or ctx.current_api_key or "", model_info=mi,
             custom_providers=ctx.custom_provs, config_context_length=config_ctx,
-            configured_model=model_cfg.get("default") or model_cfg.get("model"),
-            configured_provider=model_cfg.get("provider"),
-            configured_base_url=model_cfg.get("base_url"),
         )
         if ctx_len:
-            lines.append(t("gateway.model.context_label", tokens=f"{ctx_len:,}"))
+            from agent.context_pin import context_window_suffix
+            lines.append(t("gateway.model.context_label", tokens=f"{ctx_len:,}") + context_window_suffix(
+                ctx_len, config_ctx, model=result.new_model, provider=result.target_provider, base_url=base_url))
         if mi and mi.max_output:
             lines.append(t("gateway.model.max_output_label", tokens=f"{mi.max_output:,}"))
         if mi:
@@ -526,6 +530,7 @@ class GatewayModelCommandsMixin:
         lines.append(t("gateway.model.usage_switch_model"))
         lines.append(t("gateway.model.usage_switch_provider"))
         lines.append(t("gateway.model.usage_persist"))
+        lines.append(t("gateway.model.usage_reset"))
         return "\n".join(lines)
 
     async def _model_selection_guard_reply(
@@ -613,6 +618,8 @@ class GatewayModelCommandsMixin:
             restore_snapshot=self._snapshot_session_model_override(session_key) if request.is_once else None,
         )
         ctx.read_config()
+        if request.is_reset:
+            return await self._handle_model_reset(event, ctx)
         ctx.apply_override(self._session_model_overrides.get(session_key, {}))
         if not request.target and not request.explicit_provider:
             return await self._model_listing_reply(event, ctx, profile_home)
@@ -623,6 +630,64 @@ class GatewayModelCommandsMixin:
         if guard_fired:
             return guard_reply
         return await self._commit_model_switch_locked(result, ctx, source=source, picker=False)
+
+    def _channel_default_route(self, source, config_path) -> tuple[str, str]:
+        """``(model, provider)`` this chat runs with no session override: channel_overrides, else the
+        owning profile's config.yaml (read from *config_path*: slash dispatch runs outside the routed
+        profile's scope on a multiplexed runner)."""
+        from gateway.run import _load_gateway_config, _resolve_gateway_model
+        cfg = _load_gateway_config(config_path=config_path) or {}
+        model_cfg = cfg.get("model")
+        provider = str(model_cfg.get("provider") or "") if isinstance(model_cfg, dict) else ""
+        channel = self._channel_override_for(source)
+        if channel is not None and channel.model:
+            return channel.model, channel.provider or ""
+        return _resolve_gateway_model(cfg), "" if provider.lower() == "auto" else provider
+
+    async def _handle_model_reset(self, event: MessageEvent, ctx: _ModelSwitchContext) -> Optional[str]:
+        """``/model reset``: drop this session's /model override (memory, store and any armed
+        ``--once`` restore) so the next turn resolves channel_overrides > config.yaml again. The
+        transcript is kept; before this the only way off a persisted override was ``/new``."""
+        source, session_key = ctx.source, ctx.session_key
+        default_model, default_provider = await asyncio.to_thread(
+            self._channel_default_route, source, ctx.config_path)
+        from gateway.session_setting_commands import local_authority_live
+        if local_authority_live(self, source)[1] is not None:
+            # A local session runs a frozen policy with no override tier: reset is a session-scoped
+            # pick of the configured default, committed by the owner like any typed /model.
+            ctx.persist_global = False
+            result, error = await self._perform_model_switch(ctx, default_model, default_provider, source)
+            if error is not None:
+                return error
+            return await self._commit_model_switch_locked(result, ctx, source=source, picker=False)
+        # A restart leaves the persisted override unloaded until first use: load it, or the reply
+        # says "none active" while the store resurrects it on the next message.
+        await asyncio.to_thread(self._rehydrate_session_model_override, session_key)
+        previous = self._session_model_overrides.pop(session_key, None)
+        self._pending_one_turn_model_restores.pop(session_key, None)
+        try:
+            await self.async_session_store.set_model_override(session_key, None)
+        except Exception:
+            logger.warning("Failed to clear persisted session model override", exc_info=True)
+        shown = default_model or t("gateway.shared.unknown_value")
+        if previous is None:
+            return t("gateway.model.reset_none", model=shown)
+        from hermes_cli.model_switch import format_model_for_display
+        _sess_db = getattr(self, "_session_db", None)
+        if _sess_db is not None:  # the dashboard's session-model column (#34850)
+            try:
+                entry = await self.async_session_store.get_or_create_session(source)
+                await _sess_db.update_session_model(entry.session_id, default_model, provider=default_provider or None)
+            except Exception:
+                logger.debug("Failed to persist model reset to DB", exc_info=True)
+        if not hasattr(self, "_pending_model_notes"):
+            self._pending_model_notes = {}
+        self._pending_model_notes[session_key] = (
+            f"[Note: the session model override was cleared; model changed from "
+            f"{format_model_for_display(previous.get('model') or '')} back to the default "
+            f"{format_model_for_display(default_model)}. Adjust your self-identification accordingly.]")
+        self._evict_cached_agent(session_key)  # next turn builds from the default route
+        return t("gateway.model.reset_done", model=format_model_for_display(shown))
 
     # -------------------------------------------------- usage-window limit: one-tap switch
 

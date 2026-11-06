@@ -1,6 +1,6 @@
 name: advanced-delegation
 repo: https://github.com/NousResearch/hermes-official-plugins
-sha: b3825d097195b5748585b0491fab48c95d105c19
+sha: e404b6816b20237a82f6fbe2749b5a576cf75dba
 subdir: advanced-delegation
 title: Advanced Delegation
 description: 'Two extra delegation modes for `delegate_task`, next to the built-in default. Model routes
@@ -8,9 +8,10 @@ description: 'Two extra delegation modes for `delegate_task`, next to the built-
   define (e.g. fast, deep, local). Profile routes (`delegation.backend: profile_routes`): the agent runs a
   subagent as one of your Hermes profiles, with that profile''s own model, credentials, skills and SOUL.md.
   Only route names and their one-line descriptions reach the model. Adds `hermes delegation config` (pick
-  the mode and edit its routes; `--show` prints the setup) and the `/delegation` slash command (switch modes
-  for this session, or `--global` to save it). Needs a Hermes core with pluggable delegation providers
-  (0.22.5 or newer); on an older core it installs, logs one warning and does nothing. Disclosure — no
+  the mode and edit its routes; `--show` prints the setup) and the `/delegation` slash command (save a mode
+  for the next session, or `--now` to apply it to the current chat). Needs Hermes 0.22.5 or newer, the
+  first release with pluggable delegation providers; Hermes 0.22.0 to 0.22.4 refuses to install it, and on
+  a core older than 0.22.0 it installs, logs one warning and does nothing. Disclosure — no
   Python dependencies and no network or model calls of its own; subagents run through core''s
   `delegate_task` on the routes you configured. Writes only `delegation.backend` and
   `delegation.backends.*` (model_map / profile_routes) in the active profile''s config.yaml, through
@@ -22,7 +23,7 @@ tier: official
 category: tools
 requires_hermes: ">=0.22.5"
 version: "1.0.0"
-image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/b3825d097195b5748585b0491fab48c95d105c19/assets/advanced-delegation.jpg
+image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/e404b6816b20237a82f6fbe2749b5a576cf75dba/assets/advanced-delegation.jpg
 docs_url: https://github.com/NousResearch/hermes-official-plugins/tree/main/advanced-delegation
 platforms: []
 capabilities:

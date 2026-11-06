@@ -32,6 +32,11 @@ it('keeps background waiting local to its idle thread without echoing child thin
   expect(container.querySelector('[role="status"]')).toBeTruthy()
   expect(container.textContent).not.toContain('pondering')
   expect(container.querySelector('.shimmer')).toBeNull()
+  // Live, but in its own register: a turning sync glyph and the wait's elapsed
+  // time, never the parent turn's dithered pulse.
+  expect(container.querySelector('.codicon-sync.codicon-modifier-spin')).toBeTruthy()
+  expect(container.querySelector('.dither')).toBeNull()
+  expect(container.textContent).toMatch(/\d/)
 
   act(() => $ownerBusy.set(true))
   expect(container.querySelector('[role="status"]')).toBeNull()

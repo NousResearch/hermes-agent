@@ -2,7 +2,7 @@ import { useStore } from '@nanostores/react'
 import { atom } from 'nanostores'
 import { useCallback, useEffect, useMemo } from 'react'
 
-import { desktopFsCacheKey } from '@/lib/desktop-fs'
+import { desktopDefaultCwd, desktopFsCacheKey } from '@/lib/desktop-fs'
 import { $connection } from '@/store/session'
 import { $workspaceChangeTick, consumeWorkspaceChange } from '@/store/workspace-events'
 
@@ -162,11 +162,16 @@ function clearProjectTree() {
 /** Sessions record their launch cwd; deleted worktrees and remote-backend
  *  paths arrive here as directories that don't exist on this machine. Rather
  *  than bricking the tree, display the sanitized workspace fallback (main
- *  prefers the configured default project dir). Local connections only —
- *  remote trees are read through the remote bridge. */
+ *  prefers the configured default project dir). Remote trees are read through
+ *  the server's fs API, where a bot session records the server container's
+ *  HERMES_HOME/workspace — a path that need not exist on an ssh terminal
+ *  backend — so their fallback is the server's default cwd (terminal.cwd →
+ *  TERMINAL_CWD, the chain the web dashboard opens). */
 async function fallbackRootFor(cwd: string, sourceIsRemote: boolean): Promise<string | null> {
   if (sourceIsRemote) {
-    return null
+    const fallback = await desktopDefaultCwd().catch(() => null)
+
+    return fallback?.cwd && fallback.cwd !== cwd ? fallback.cwd : null
   }
 
   const sanitize = window.hermesDesktop?.sanitizeWorkspaceCwd
@@ -239,24 +244,48 @@ async function loadRoot(
   let entries: ProjectTreeEntry[] = []
   let error: string | undefined
 
+  // The remote bridge reports a missing root as a rejected request (HTTP 404)
+  // rather than a structured error, so BOTH the error-field path and the catch
+  // path below need the same salvage: retry at the workspace fallback root.
+  const salvageWithFallback = async (): Promise<boolean> => {
+    if (desktopFsCacheKey() !== connectionKey) {
+      return false
+    }
+
+    const fallback = await fallbackRootFor(cwd, sourceIsRemote).catch(() => null)
+
+    if (!fallback) {
+      return false
+    }
+
+    try {
+      const retry = await readProjectDir(fallback, fallback)
+
+      if (retry.error) {
+        return false
+      }
+
+      resolvedCwd = fallback
+      entries = retry.entries
+
+      return true
+    } catch {
+      return false
+    }
+  }
+
   try {
     ;({ entries, error } = await readProjectDir(cwd, cwd))
 
-    if (error && desktopFsCacheKey() === connectionKey) {
-      const fallback = await fallbackRootFor(cwd, sourceIsRemote)
-
-      if (fallback) {
-        const retry = await readProjectDir(fallback, fallback)
-
-        if (!retry.error) {
-          resolvedCwd = fallback
-          entries = retry.entries
-          error = undefined
-        }
-      }
+    if (error && (await salvageWithFallback())) {
+      error = undefined
     }
   } catch (cause) {
     error = readError(cause)
+
+    if (await salvageWithFallback()) {
+      error = undefined
+    }
   }
 
   setProjectTree(latest => {

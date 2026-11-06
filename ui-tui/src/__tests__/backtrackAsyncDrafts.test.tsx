@@ -286,6 +286,27 @@ describe('an armed edit through the real submit path', () => {
     expect(sys.mock.calls.map(([text]) => String(text)).join('\n')).toContain('edit not sent')
   })
 
+  it('a refusal while the user is on a continuation line: the restored chips survive the next keystroke', async () => {
+    const { composer, send, submit } = await armWithChips(1)
+    const display = composer().state.input
+
+    submit().dispatchSubmission(display)
+    composer().actions.setInputBuf(['first line'])
+    await settle()
+
+    expect(composer().state.inputBuf[0]).toBe(display)
+    composer().actions.syncTokens('x')
+    expect(composer().refs.tokensRef.current.map(token => token.kind)).toEqual(['paste', 'image', 'image'])
+
+    // Enter on the continuation line submits every buffered line with it, as useSubmission's submit does.
+    submit().dispatchSubmission([...composer().state.inputBuf, 'x'].join('\n'))
+    await settle()
+
+    const [, , , , opts] = send.mock.calls[0]!
+
+    expect(opts.attachments.map((a: { path: string }) => a.path)).toEqual(['/cache/a.png', '/cache/b.png'])
+  })
+
   it('the sent paste chip keeps its body, so the transcript can open it (Ctrl+P / click)', async () => {
     const { composer, send, submit } = await armWithChips(0)
 

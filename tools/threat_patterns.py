@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+import json
 from typing import List, Optional, Tuple
 
 # Hard cap on scanned text: scanners are advisory, so bound worst-case runtime.
@@ -135,6 +136,14 @@ def scan_for_threats(content: str, scope: str = "context") -> list[str]:
         return []
     if (patterns := _COMPILED.get(scope)) is None:
         raise ValueError(f"scan_for_threats: unknown scope {scope!r}")
+    # Defensive: callers may pass non-str content (e.g. memory ops carrying a dict).
+    # Scanners are advisory — coerce to a stable string form instead of crashing
+    # the tool executor (KeyError on dict[:MAX_SCAN_CHARS] seen in gateway logs).
+    if not isinstance(content, str):
+        try:
+            content = json.dumps(content, ensure_ascii=False, default=str)
+        except Exception:
+            content = repr(content)
     content = content[:MAX_SCAN_CHARS]
     # Invisible unicode is checked on the RAW content: NFKC below can strip these codepoints.
     findings: list[str] = [f"invisible_unicode_U+{ord(ch):04X}" for ch in set(content) & INVISIBLE_CHARS]

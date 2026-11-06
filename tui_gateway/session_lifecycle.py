@@ -632,7 +632,14 @@ def _pop_session_by_id(sid: str) -> dict | None:
     """Atomically detach one live session from the registry — the ownership claim for teardown (a concurrent
     close/reaper no-ops). Separate from ``_teardown_session``: slow finalization must not run under the resume lock."""
     with _sessions_lock:
-        session = _sessions.pop(sid, None)
+        session = _sessions.get(sid)
+        if session is not None:
+            # Teardown runs after the live registry entry is gone. Preserve the exact already-owned
+            # compute-host target/supervisor so close-time interrupt cannot resolve a replacement or
+            # create a new child for a detached session.
+            with contextlib.suppress(Exception):
+                _capture_compute_host_close_owner(sid, session)
+            session = _sessions.pop(sid, None)
         if session is not None:
             from hermes_constants import get_hermes_home
 
@@ -641,6 +648,8 @@ def _pop_session_by_id(sid: str) -> dict | None:
             _closed_session_activity[home] = max(_closed_session_activity.get(home, 0), last_active)
             session["_closing"] = True
             session["_sid"] = sid  # out of _sessions now, so teardown can't recover the live id by scanning
+    if session is not None:
+        _retire_compute_host_target(sid, session)
     return session
 
 
@@ -682,8 +691,10 @@ def _settle_isolated_turn_before_close(session: dict) -> None:
     grace timer, else a second backend acquires the stored session while the child is still writing."""
     if not session.get("_compute_host_turn_id") or not _session_uses_compute_host(session):
         return
+    sid = _lifecycle_own_sid(session)
+    captured_supervisor = _compute_host_close_owner(session, sid)
     with contextlib.suppress(Exception):
-        _interrupt_session_turn(_lifecycle_own_sid(session), session)
+        _interrupt_session_turn(sid, session, captured_supervisor=captured_supervisor)
     deadline = time.monotonic() + _TURN_SETTLE_BEFORE_CLOSE_SECONDS
     while session.get("_compute_host_turn_id") and time.monotonic() < deadline:
         time.sleep(0.05)
@@ -770,6 +781,7 @@ def _ws_session_is_orphaned(session: dict | None) -> bool:
 
 def _interrupt_session_turn(
     sid: str, session: dict, *, request_id: str | None = None, orphan: bool = False,
+    captured_supervisor=None,
 ) -> bool:
     """Apply the shared ``session.interrupt`` contract to one claimed session; returns whether the compute-host control
     channel was used. The WS orphan reaper reuses this so a dead client gets the same partial-history/queue semantics.
@@ -787,7 +799,10 @@ def _interrupt_session_turn(
         # The host owns the live turn (parent `running` can lag a blocked tool), so let it decide. Gate on
         # `_compute_host_active`: HostSupervisor.interrupt() calls start(), so a lazy session would spawn a child to interrupt.
         if should_interrupt or session.get("_compute_host_active"):
-            _get_compute_host_supervisor().interrupt(sid, request_id=request_id)
+            if captured_supervisor is not None:
+                captured_supervisor.interrupt_if_running(sid, request_id=request_id)
+            else:
+                _compute_host_supervisor_for_session(sid, session).interrupt(sid, request_id=request_id)
     else:
         run_thread_alive = (rt := session.get("_run_thread")) is not None and rt.is_alive()
     with session["history_lock"]:

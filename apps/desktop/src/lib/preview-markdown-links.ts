@@ -1,3 +1,4 @@
+import { joinPath } from '@/lib/local-preview'
 import { previewMarkdownHref } from '@/lib/preview-targets'
 
 /**
@@ -121,6 +122,159 @@ export function remarkPreviewFileLinks() {
 
     visit(tree)
   }
+}
+
+function decodeImagePath(path: string): string {
+  try {
+    return decodeURIComponent(path)
+  } catch {
+    return path
+  }
+}
+
+/** Percent-encode a path segment-by-segment so the hardener's URL round-trip
+ *  keeps it intact; a drive-letter segment keeps its colon (it is a marker,
+ *  not a filename). */
+function encodeImagePath(path: string): string {
+  return path
+    .split('/')
+    .map(segment => (/^[A-Za-z]:$/.test(segment) ? segment : encodeURIComponent(segment)))
+    .join('/')
+}
+
+/** `C:\x`/`C:/x` cannot pass the hardener as-is (it parses as a `c:` scheme),
+ *  so Windows paths travel as `/C:/x` and the image component restores them. */
+function asMarkerPath(path: string): string {
+  const normalized = /^\/[A-Za-z]:\//.test(path) ? path.slice(1) : path
+
+  return /^[A-Za-z]:\//.test(normalized) ? `/${normalized}` : normalized
+}
+
+/** Rewrite a local image `src` so Streamdown's URL hardener keeps it: local
+ *  paths become absolute, percent-encoded paths starting with `/`, which the
+ *  hardener passes through unchanged. Returns `null` for anything the hardener
+ *  already handles (web/data/blob URLs) or that cannot be resolved here. */
+export function rewriteLocalImageSrc(src: string, baseDir?: string): string | null {
+  const raw = src.trim()
+
+  if (!raw || raw.startsWith('#') || raw.startsWith('//')) {
+    return null
+  }
+
+  if (/^file:/i.test(raw)) {
+    let path = raw.replace(/^file:\/\//i, '')
+
+    try {
+      path = decodeURIComponent(new URL(raw).pathname)
+    } catch {
+      // Keep the scheme-stripped form.
+    }
+
+    return encodeImagePath(asMarkerPath(path.replace(/\\/g, '/')))
+  }
+
+  let path: string
+
+  if (/^[A-Za-z]:[\\/]/.test(raw)) {
+    // A drive-letter path is absolute; the `C:` must be checked before the
+    // scheme test below, which would read it as a protocol.
+    path = raw.replace(/\\/g, '/')
+  } else if (SCHEME_RE.test(raw) || raw.startsWith('~/')) {
+    return null
+  } else if (raw.startsWith('/')) {
+    path = decodeImagePath(raw)
+  } else if (baseDir) {
+    path = joinPath(baseDir, decodeImagePath(raw.replace(/\\/g, '/')))
+  } else {
+    // A relative path with no note to resolve it against stays as-is; the
+    // hardener blocks it the way it always has.
+    return null
+  }
+
+  return encodeImagePath(asMarkerPath(path))
+}
+
+/** The inverse of {@link rewriteLocalImageSrc}: the absolute filesystem path
+ *  behind a rewritten `src`, or `null` when the source is a web/data URL the
+ *  `<img>` element can load directly. */
+export function localImageSrcPath(src: string): string | null {
+  const raw = src.trim()
+
+  if (!raw || raw.startsWith('#') || raw.startsWith('//') || SCHEME_RE.test(raw)) {
+    return null
+  }
+
+  const path = decodeImagePath(raw)
+
+  if (/^\/[A-Za-z]:\//.test(path)) {
+    return path.slice(1)
+  }
+
+  return path.startsWith('/') ? path : null
+}
+
+/** Rehype attacher: markdown images and raw-HTML `<img>` both arrive here as
+ *  hast `img` elements; their local `src`s are rewritten for the hardener
+ *  before it runs. */
+export function rehypePreviewImagePaths(baseDir?: string) {
+  return (tree: HastNode) => {
+    const visit = (node: HastNode) => {
+      if (node.type === 'element' && node.tagName === 'img') {
+        const src = typeof node.properties?.src === 'string' ? node.properties.src : ''
+        const rewritten = src ? rewriteLocalImageSrc(src, baseDir) : null
+
+        if (rewritten) {
+          node.properties = { ...node.properties, src: rewritten }
+        }
+      }
+
+      for (const child of node.children ?? []) {
+        visit(child)
+      }
+    }
+
+    visit(tree)
+  }
+}
+
+/** Rehype attacher: raw-HTML anchors (`<a href="README.md">`) never pass the
+ *  remark link wrapper — they arrive as html nodes and become hast `a`
+ *  elements after rehypeRaw — so they reach Streamdown's hardener untouched
+ *  and render as "label [blocked]". Two rewrites before that pass:
+ *  - file-naming hrefs wrap into the same `#preview/…` door
+ *    remarkPreviewFileLinks uses for markdown-syntax links;
+ *  - hash hrefs get their non-ASCII characters percent-encoded (the
+ *    markdown pipeline pre-encodes destinations, raw HTML does not, and
+ *    harden rejects a fragment its URL parser has to re-encode).
+ *  Web and scheme links stay put. */
+export function rehypePreviewFileLinks() {
+  return (tree: HastNode) => {
+    const visit = (node: HastNode) => {
+      if (node.type === 'element' && node.tagName === 'a') {
+        const href = typeof node.properties?.href === 'string' ? node.properties.href : ''
+
+        if (href && isPreviewFileHref(href)) {
+          node.properties = { ...node.properties, href: previewMarkdownHref(href.trim()) }
+        } else if (href.startsWith('#') && /[^!-~]/.test(href)) {
+          node.properties = { ...node.properties, href: normalizeHashHref(href) }
+        }
+      }
+
+      for (const child of node.children ?? []) {
+        visit(child)
+      }
+    }
+
+    visit(tree)
+  }
+}
+
+/** Percent-encode the characters a URL fragment may not carry raw (CJK,
+ *  spaces, …) one by one — existing `%XX` escapes survive untouched. */
+function normalizeHashHref(href: string): string {
+  return `#${Array.from(href.slice(1))
+    .map(char => (/[\x21-\x7E]/.test(char) ? char : encodeURIComponent(char)))
+    .join('')}`
 }
 
 export function decodeHashFragment(href: string): string {

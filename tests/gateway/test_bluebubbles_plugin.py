@@ -46,6 +46,21 @@ class TestBlueBubblesConfigLoading:
         assert bc.extra["require_mention"] is True
         assert bc.extra["mention_patterns"] == ["(?i)^amos\\b"]
 
+    @pytest.mark.parametrize("env_value, expected", [(None, True), ("false", False), ("true", True)])
+    def test_yaml_require_mention_survives_unset_env(self, monkeypatch, env_value, expected):
+        monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
+        monkeypatch.setenv("BLUEBUBBLES_PASSWORD", "secret")
+        if env_value is None:
+            monkeypatch.delenv("BLUEBUBBLES_REQUIRE_MENTION", raising=False)
+        else:
+            monkeypatch.setenv("BLUEBUBBLES_REQUIRE_MENTION", env_value)
+        from gateway.config import GatewayConfig, _apply_env_overrides
+
+        config = GatewayConfig()
+        config.platforms[Platform.BLUEBUBBLES] = PlatformConfig(enabled=True, extra={"require_mention": True})
+        _apply_env_overrides(config)
+        assert config.platforms[Platform.BLUEBUBBLES].extra["require_mention"] is expected
+
 
 class TestBlueBubblesHelpers:
 

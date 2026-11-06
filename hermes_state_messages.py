@@ -25,6 +25,7 @@ from hermes_state_common import (
 from hermes_state_compaction_display import later_tool_copy_ids, not_a_later_tool_copy_sql
 from hermes_state_detached_results import SessionDetachedResultsMixin
 from hermes_state_todo import SessionTodoResultMixin
+from hermes_state_transcript_cursor import SessionTranscriptCursorMixin
 from hermes_state_identity import (
     _absorbed_uids_json, _restore_identity_columns, _stable_tool_key, _tool_call_uid_map, _tool_call_uid_or_none, _tool_call_uids_json, _uid_list)
 
@@ -120,7 +121,7 @@ def _stale_holder(row, now: float) -> bool:
     return float(row["expires_at"]) <= now or _compression_lock_holder_process_is_dead(row["holder"])
 
 
-class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
+class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, SessionTranscriptCursorMixin):
     """Message append/replace/rewind, reactions, resume conversations, replay dedupe (detached results: the base)."""
 
     def _bump_conversation_generation(self, conn, session_id: str, end_reason: str) -> None:
@@ -1548,26 +1549,6 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             f"SELECT COUNT(*), COALESCE(MAX(id), 0), (SELECT COALESCE(SUM(transcript_revision), 0) FROM sessions"
             f" WHERE id IN ({marks})) FROM messages WHERE session_id IN ({marks}) AND active = 1", (*ids, *ids))
         return (tuple(ids), int(row[0]), int(row[1]), int(row[2]))
-
-    def transcript_cursor_state(self, session_id: str, through_id: int) -> tuple[int, int, int]:
-        """``(live rows with id <= through_id, inactive rows, transcript_revision)`` of one session. An
-        append moves none of them. A compaction or rewind (anywhere, including rows appended after
-        *through_id*) moves the inactive count, deleting the rows held moves the first, an in-place
-        rewrite the last; while all three hold, the rows after *through_id* are all that changed."""
-        row = self._read_one(
-            "SELECT (SELECT COUNT(*) FROM messages WHERE session_id = ? AND active = 1 AND id <= ?),"
-            " (SELECT COUNT(*) FROM messages WHERE session_id = ? AND active = 0),"
-            " (SELECT COALESCE(MAX(transcript_revision), 0) FROM sessions WHERE id = ?)",
-            (session_id, int(through_id), session_id, session_id))
-        return int(row[0]), int(row[1]), int(row[2])
-
-    def conversation_tail(self, session_id: str, after_id: int) -> list[dict[str, Any]]:
-        """``get_messages_as_conversation(include_row_ids=True)``'s live rows of one session with an id
-        greater than *after_id*: the keyset read a ``transcript_cursor_state`` holder polls."""
-        rows = self._fetch_conversation_rows([session_id], self._active_clause(False, False), with_session_id=False,
-                                             after_id=after_id)
-        return self._rows_to_conversation(rows, session_id=session_id, include_ancestors=False,
-                                          repair_alternation=False, include_row_ids=True)
 
     def _dedupe_replayed_user(self, messages, msg, exact_user_clones) -> tuple[bool, Any]:
         """Ancestor-lineage dedupe of one decoded user *msg* -> ``(skip, exact_clone_key)``. Rotation

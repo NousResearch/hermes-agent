@@ -125,6 +125,58 @@ def test_do_list_platform_env_is_ignored(three_source_env, monkeypatch):
     assert seen["platform"] is None
 
 
+def test_do_list_piped_output_keeps_full_names(hub_env, monkeypatch, capsys):
+    """Rich sizes a non-TTY console to 80 columns and ellipsis-truncates the Name
+    column, so a piped `hermes skills list | grep <full-name>` reads a correctly
+    installed skill as missing (#140555). With no explicit console and a non-TTY
+    stdout (pytest's capture qualifies), the render must widen to fit the
+    longest name instead."""
+    from agent import skill_utils
+    from tools import skills_tool
+
+    long_name = "receiving-code-reviews-and-summarizing-them"
+
+    monkeypatch.setattr(skills_tool, "_skill_catalog",
+                        lambda **_kwargs: [{"name": long_name, "load_name": long_name,
+                                            "category": "x", "description": "d", "tier": None}])
+    monkeypatch.setattr(skill_utils, "get_disabled_skill_names", lambda **_kwargs: set())
+
+    do_list()
+
+    assert long_name in capsys.readouterr().out
+
+
+def test_do_list_piped_output_survives_collision_note(hub_env, monkeypatch, capsys):
+    """Follow-up to the #140555 widening: the Status column's multi-line
+    built-in-collision note raises Rich's width demand there, and the wrapped
+    Name column gives up the surplus — with a 32-character category on the
+    long-name row, the longest name is ellipsis-truncated again even at the
+    widened console. ``no_wrap`` pins the Name column so piped output stays
+    greppable in this shape too (real collision handling: `plan` resolves to a
+    built-in command, no stubbing of the note)."""
+    from agent import skill_utils
+    from agent.skill_commands import skill_command_collision_note
+    from tools import skills_tool
+
+    long_name = "receiving-code-reviews-and-summarizing-them"
+
+    # Sanity: `plan` must genuinely collide for the note row to exercise Rich.
+    assert skill_command_collision_note("plan") is not None
+
+    monkeypatch.setattr(skills_tool, "_skill_catalog",
+                        lambda **_kwargs: [
+                            {"name": long_name, "load_name": long_name,
+                             "category": "c" * 32, "description": "d", "tier": None},
+                            {"name": "plan", "load_name": "plan",
+                             "category": "x", "description": "d", "tier": None},
+                        ])
+    monkeypatch.setattr(skill_utils, "get_disabled_skill_names", lambda **_kwargs: set())
+
+    do_list()
+
+    assert long_name in capsys.readouterr().out
+
+
 # ---------------------------------------------------------------------------
 # Cross-registry hijack regression tests
 #

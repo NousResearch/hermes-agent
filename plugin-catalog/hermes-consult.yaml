@@ -1,22 +1,21 @@
 name: hermes-consult
 repo: https://github.com/dandacompany/hermes-consult
-sha: 27e21cb5d866571b04b156ad042870a30e2855f3
+sha: 81efb6ea95300f3dd5dae1f5108eb0ac445c3f16
 description: Website voice consultations with an embedded server and bilingual Desktop settings.
 maintainer: dandacompany
 tier: community
 category: voice
 requires_hermes: ">=0.22.5"
-version: "0.2.1"
+version: "0.2.2"
 title: hermes-consult
 readme: true
 platforms: [macos, linux]
 screenshots:
-  - https://raw.githubusercontent.com/dandacompany/hermes-consult/27e21cb5d866571b04b156ad042870a30e2855f3/assets/desktop-assistant.png
-  - https://raw.githubusercontent.com/dandacompany/hermes-consult/27e21cb5d866571b04b156ad042870a30e2855f3/assets/desktop-safety.png
+  - https://raw.githubusercontent.com/dandacompany/hermes-consult/81efb6ea95300f3dd5dae1f5108eb0ac445c3f16/assets/desktop-assistant.png
+  - https://raw.githubusercontent.com/dandacompany/hermes-consult/81efb6ea95300f3dd5dae1f5108eb0ac445c3f16/assets/desktop-safety.png
 known_issues:
   - Requires Node.js 24 or later and a separately provisioned public HTTPS origin.
-  - Internal AIAgent and runtime-provider imports emit compatibility warnings; no core overrides.
-  - Subscription voice requires Hermes Live 0.9.1+ and the user's installed Codex CLI login.
+  - Subscription voice requires Hermes Live with the consultation API (pending PR #143585) and the user's installed Codex CLI login.
   - Funded OpenAI API voice E2E and production HTTPS/load verification remain outstanding.
 capabilities:
   provides_tools: []

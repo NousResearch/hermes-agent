@@ -11,6 +11,7 @@ import { $hubInstalledOverride } from '@/store/hub-actions'
 import { requestMcpInstallFromDeepLink } from '@/store/mcp-deeplink-install'
 import { requestPluginCatalogInstallFromDeepLink } from '@/store/plugin-catalog-install'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
+import { requestFreshSession } from '@/store/profile'
 import {
   _resetLegacyDiscardForTests,
   _resetSessionOwnerHintsForTests,
@@ -174,6 +175,45 @@ describe('useDesktopIntegrations', () => {
       }
     )
   }
+
+  describe('base cold-start characterization', () => {
+    it('boot fresh-session resets do not abandon cold restore', () => {
+      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/saved')
+      const sessions = [session({ id: 'saved' })]
+      const hook = render({ profileReady: false, sessions })
+      act(() => requestFreshSession())
+      hook.rerender({
+        activeProfile: 'default',
+        locationPathname: '/',
+        profileReady: true,
+        resumeExhaustedSessionId: null,
+        resumeLastSession: true,
+        routedSessionId: null,
+        sessions
+      })
+      expect(navigate).toHaveBeenCalledWith('/saved', { replace: true })
+    })
+
+    it('writes the empty route in the same effect when nothing is remembered', () => {
+      render({ profileReady: true })
+      expect(window.localStorage.getItem('hermes.desktop.lastRoute.profile.default')).toBe('/')
+    })
+
+    it('keeps the remembered id and does not navigate after a failed by-id read', async () => {
+      window.localStorage.setItem('hermes.desktop.lastSessionId.profile.default', 'missing')
+      render({ profileReady: true, sessions: [session()] })
+      await act(async () => {})
+      expect(navigate).not.toHaveBeenCalled()
+      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBe('missing')
+    })
+
+    it('restores before the separate exhausted-id cleanup runs', () => {
+      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/exhausted')
+      render({ profileReady: true, sessions: [session({ id: 'exhausted' })], resumeExhaustedSessionId: 'exhausted' })
+      expect(navigate).toHaveBeenCalledWith('/exhausted', { replace: true })
+      expect(window.localStorage.getItem('hermes.desktop.lastRoute.profile.default')).toBeNull()
+    })
+  })
 
   describe('profile-ready gate', () => {
     it('does NOT restore before profileReady is true', () => {

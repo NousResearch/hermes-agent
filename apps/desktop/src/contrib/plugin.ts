@@ -24,7 +24,13 @@ import {
   runPluginAppAction
 } from '@/lib/keybinds/plugin-actions'
 import { readKey, writeKey } from '@/lib/storage'
-import { dispatchPluginNativeNotification, type PluginNativeNotificationInput } from '@/store/native-notifications'
+import {
+  clearPluginNotifyHandlersForPlugin,
+  dispatchPluginNativeNotification,
+  dispatchPluginNativeNotificationWithResult,
+  type NativeNotificationResult,
+  type PluginNativeNotificationInput
+} from '@/store/native-notifications'
 import { $petActive } from '@/store/pet'
 import { clearPetMessages, type PetSayOptions, sayPetMessage } from '@/store/pet-plugin-messages'
 
@@ -43,7 +49,11 @@ export type { PluginSettingsPage, PluginSettingsSubpage } from './settings-pages
 export type { PluginRestOptions } from '@/hermes'
 export type { HermesOpenTarget } from '@/lib/hermes-open-target'
 export type { PluginAppActionId, PluginAppActionInfo, PluginRunActionResult } from '@/lib/keybinds/plugin-actions'
-export type { PluginNativeNotificationInput, PluginNotificationAction } from '@/store/native-notifications'
+export type {
+  NativeNotificationResult,
+  PluginNativeNotificationInput,
+  PluginNotificationAction
+} from '@/store/native-notifications'
 export type { PetMessageTone, PetSayOptions } from '@/store/pet-plugin-messages'
 
 /** A contribution as a plugin author writes it — provenance + id scoping are
@@ -71,6 +81,9 @@ export interface PluginOs {
    *  Supports `icon`, `activate` (e.g. `hermes://index-network/intent/1`),
    *  action buttons, and renderer `onActivate` / `onAction` callbacks. */
   notify: (input: PluginNativeNotificationInput) => void
+  /** Await the native handoff outcome. `accepted` means only that the bridge
+   *  returned true; it does not prove OS display or user activation. */
+  notifyWithResult: (input: PluginNativeNotificationInput) => Promise<NativeNotificationResult>
   /** Open a URL with the OS default handler (browser, mail client, custom
    *  schemes like `spotify:`). Resolves false when the shell can't. */
   openExternal: (url: string) => Promise<boolean>
@@ -236,7 +249,16 @@ function createPluginStorage(pluginId: string): PluginStorage {
 // Never throws for a missing capability: the renderer can outlive an older
 // Electron shell (or run in a plain browser), so every door degrades to a
 // false result the plugin can branch on.
-function createPluginOs(pluginId: string): PluginOs {
+function createPluginOs(pluginId: string, track: (dispose: () => void) => () => void): PluginOs {
+  let notificationsTracked = false
+
+  const ownNotificationCallbacks = () => {
+    if (!notificationsTracked) {
+      notificationsTracked = true
+      track(() => clearPluginNotifyHandlersForPlugin(pluginId))
+    }
+  }
+
   const attempt = async (run: (bridge: NonNullable<typeof window.hermesDesktop>) => Promise<boolean>) => {
     const bridge = typeof window === 'undefined' ? undefined : window.hermesDesktop
 
@@ -267,7 +289,15 @@ function createPluginOs(pluginId: string): PluginOs {
   }
 
   return {
-    notify: input => dispatchPluginNativeNotification(pluginId, input),
+    notify: input => {
+      ownNotificationCallbacks()
+      dispatchPluginNativeNotification(pluginId, input)
+    },
+    notifyWithResult: input => {
+      ownNotificationCallbacks()
+
+      return dispatchPluginNativeNotificationWithResult(pluginId, input)
+    },
     openExternal: url =>
       attempt(async bridge => {
         await bridge.openExternal(url)
@@ -395,7 +425,7 @@ export function createPluginContext(
     ...createPluginLifetime(track),
     rest: <T>(path: string, opts?: PluginRestOptions) => pluginRest<T>(pluginId, path, opts),
     socket: (path, onMessage) => track(pluginSocket(pluginId, path, onMessage)),
-    os: createPluginOs(pluginId),
+    os: createPluginOs(pluginId, track),
     pet: createPluginPet(pluginId, track),
     runAction: id => runPluginAppAction(pluginId, id),
     listActions: listPluginAppActions,

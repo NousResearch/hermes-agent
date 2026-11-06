@@ -1416,7 +1416,8 @@ busy flag.
 host.notify({ kind, message, title?, detail?, action? })  // toast; returns id
 host.notifyError(error, fallbackMessage)                   // toast an error
 ctx.os.notify({ title, body?, silent?, icon?, activate?, onActivate?, actions? })
-                                           // native OS notification (attributed to your plugin)
+                                           // native OS notification; synchronous void (legacy)
+ctx.os.notifyWithResult({ title, body?, … }) // native handoff → Promise<NativeNotificationResult>
 ctx.os.openExternal(url)                   // OS default handler (browser, mail, spotify:) → Promise<boolean>
 ctx.os.revealPath(path)                    // reveal in Finder / Explorer → Promise<boolean>
 ctx.os.writeClipboard(text)                // system clipboard → Promise<boolean>
@@ -1582,6 +1583,26 @@ Notifications ▸ "Plugin notifications", and repeats from the same plugin are
 throttled, so treat it as a signal for genuinely notable events — not a log.
 
 Rich presentation + activation (extends the original `ctx.os` door):
+
+`ctx.os.notify(input)` remains synchronous and returns `void`; awaiting it is
+not evidence of handoff. For an observable result, feature-detect
+`ctx.os.notifyWithResult` on older hosts and await
+`ctx.os.notifyWithResult(input): Promise<NativeNotificationResult>`. It uses the
+same preferences, startup/focus guards, per-plugin throttle, and activation
+routing as `notify`. Its `status` is:
+
+- `accepted`: the native bridge returned exactly `true`. This means native
+  handoff only; it does **not** prove OS display or user activation.
+- `suppressed`: a renderer preference, startup, focus, or throttle guard stopped
+  the notification before bridge invocation.
+- `failed`: the bridge/method is missing, or it returned exactly `false`.
+- `unknown`: invocation threw/rejected or returned any ambiguous value,
+  including `undefined`.
+
+Callbacks stay available while IPC is pending and after an `unknown` outcome,
+are removed on known failure, and are always cleared when the plugin unloads.
+Neither method retries; durable consumers should preserve `unknown` rather than
+coercing it to accepted or failed.
 
 ```ts
 ctx.os.notify({
@@ -2485,7 +2506,7 @@ pipeline as a trust boundary.
 | Category | Exports |
 |----------|---------|
 | Host | `host` (`.state.*`, `.settings`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`, `.composer`, `.spellcheck`, `.sessions`, `.skills`, `.toolsets`, `.profiles`, `.pluginDecisions`) |
-| Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginFiles`, `PluginFolder`, `PluginFileEntry`, `PluginFilesResult`, `PluginOs`, `PluginPet`, `PetSayOptions`, `PetMessageTone`, `PluginAppActionId`, `PluginAppActionInfo`, `PluginRunActionResult`, `PLUGIN_APP_ACTIONS`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
+| Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginFiles`, `PluginFolder`, `PluginFileEntry`, `PluginFilesResult`, `PluginOs`, `PluginPet`, `PetSayOptions`, `PetMessageTone`, `PluginAppActionId`, `PluginAppActionInfo`, `PluginRunActionResult`, `PLUGIN_APP_ACTIONS`, `PluginRestOptions`, `NativeNotificationResult`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
 | Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS`, `MODEL_MENU_ROW_AREA`, `KANBAN_CARD_AREAS`, `SESSION_ROW_AREAS`, `SIDEBAR_NAV_PREFS_AREA`, `APPEARANCE_AREAS`, `SETTINGS_PLUGINS_AREA` |
 | Area payloads | `PluginSettingsPage`, `PluginSettingsSubpage` (+ `pluginSettingsHref`), `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider`, `ComposerContextMenuProvider` (+ `ComposerContextMenuItem`, `ComposerContextMenuContext`, `ComposerContextMenuAction`), `SessionRowSlotContribution`, `KanbanCardBadgeContribution` (+ `KanbanCard`, `KanbanCardBoard`, `KanbanCardBadge`, `KanbanCardBadgeTone`, `KANBAN_CARD_BADGE_HUES`, `KANBAN_CARD_BADGE_LIMITS`), `SidebarNavPrefsContribution` |
 | React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute`, `WorkspacePageHeaderControl` |

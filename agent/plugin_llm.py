@@ -362,24 +362,16 @@ def _check_schema(parsed: Any, json_schema: Optional[Any]) -> None:
 def _whole_reply(whole: str, json_schema: Optional[Any]) -> Any:
     """The whole reply parsed and fitting the schema, else ``_NOT_JSON`` (never raises).
 
-    A fallback only: any failure here (including a recursive schema or deeply nested reply that
-    exhausts the recursion limit) leaves the released outcome of the fenced-block path in place."""
+    A fallback only: any failure here (a reply or schema that exhausts the recursion limit, an
+    invalid schema, a ``$ref`` that does not resolve) leaves the released outcome of the
+    fenced-block path in place."""
     try:
         parsed = _json_or_missing(whole)
-    except RecursionError:
-        return _NOT_JSON
-    if parsed is _NOT_JSON:
+        if parsed is not _NOT_JSON:
+            _check_schema(parsed, json_schema)
         return parsed
-    try:
-        import jsonschema  # type: ignore[import-untyped]
-        schema_errors: tuple = (jsonschema.SchemaError,)
-    except ImportError:
-        schema_errors = ()
-    try:
-        _check_schema(parsed, json_schema)
-    except (ValueError, RecursionError, *schema_errors):
+    except Exception:  # health: allow BLE001 -- the fallback never adds an error of its own
         return _NOT_JSON
-    return parsed
 
 
 def _extract_usage(response: Any) -> PluginLlmUsage:

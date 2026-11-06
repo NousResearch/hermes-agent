@@ -192,6 +192,27 @@ def test_schema_constructor_cannot_rewrite_frozen_schema(frozen_tool_registry):
     assert reg.get_entry("t").requires_env == ["T_KEY"]
 
 
+def test_tuple_nested_schema_is_detached_and_sealed(monkeypatch):
+    """A tuple is immutable, its contents need not be: a dict inside one is sealed and detached
+    from the registration argument like any other nested container."""
+    from tools.registry import ToolRegistry
+    monkeypatch.setattr(registry_freeze, "_frozen", False)
+    reg = ToolRegistry()
+    nested = {"type": "string"}
+    schema = {"name": "tt", "description": "d", "parameters": {"allOf": (nested,)}}
+    reg.register("tt", "ts", schema, lambda args, **kw: "{}")
+    freeze_registries()
+    nested["type"] = "integer"
+    def all_of():
+        got = reg.get_schema("tt")
+        assert got is not None
+        return got["parameters"]["allOf"]
+    assert isinstance(all_of(), tuple) and all_of()[0]["type"] == "string"
+    with pytest.raises(RegistryFrozen):
+        all_of()[0]["type"] = "boolean"
+    assert all_of()[0]["type"] == "string"
+
+
 @pytest.fixture
 def frozen_provider(monkeypatch):
     """A provider profile registered before the freeze, with the containers its plugin passed."""
@@ -231,6 +252,30 @@ def test_provider_payload_refuses_after_freeze(frozen_provider):
     assert providers.get_provider_profile("fp") is profile
     assert type(got).__name__ == "ProviderProfile"  # overrides checks compare class attributes
     assert dict(got.default_headers) == {"X-Probe": "before"}  # copies stay writable
+
+
+def test_provider_tuple_payload_is_detached_and_sealed(monkeypatch):
+    """Containers reached through a tuple, in a field or nested in one, are sealed and detached."""
+    import providers
+    from providers.base import ProviderProfile
+    monkeypatch.setattr(registry_freeze, "_frozen", False)
+    providers.list_providers()
+    for name in ("_REGISTRY", "_ALIASES", "_SOURCES"):
+        monkeypatch.setattr(providers, name, dict(getattr(providers, name)))
+    nested, direct = {"name": "before"}, {"name": "before"}
+    profile = ProviderProfile(name="tuple-probe", model_capabilities={"model": {"extension": (nested,)}},
+                              fallback_models=(direct,))
+    providers.register_provider(profile)
+    freeze_registries()
+    nested["name"] = direct["name"] = "after"
+    got = providers.get_provider_profile("tuple-probe")
+    assert got is profile
+    assert profile.model_capabilities["model"]["extension"][0]["name"] == "before"
+    assert isinstance(profile.fallback_models, tuple) and profile.fallback_models[0]["name"] == "before"
+    with pytest.raises(RegistryFrozen):
+        profile.model_capabilities["model"]["extension"][0]["name"] = "after"
+    with pytest.raises(RegistryFrozen):
+        profile.fallback_models[0]["name"] = "after"
 
 
 def test_provider_registration_argument_is_detached_at_freeze(frozen_provider):

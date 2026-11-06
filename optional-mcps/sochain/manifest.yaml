@@ -1,0 +1,50 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: sochain
+description: Bitcoin, Litecoin, Dogecoin and Zcash blockchain data from SoChain.
+source: https://sochain.com/docs
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). No authentication required (verified live:
+# initialize and tools/list succeed anonymously, 2,500 requests a day per IP).
+# An optional API key raises the limits; it is sent as the same Bearer header
+# that auth.type api_key writes, but api_key auth would refuse to connect
+# without one, so the entry stays keyless (see post_install).
+
+transport:
+  type: http
+  url: https://sochain.com/mcp
+
+auth:
+  type: none
+
+# Every lookup tool is read-only. contact_support (offered only with an API
+# key) sends a message to SoChain support, so it starts disabled.
+tools:
+  default_excluded:
+    - contact_support
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - sochain
+    - bitcoin address
+    - dogecoin
+    - litecoin
+    - zcash
+  hosts:
+    - sochain.com
+
+post_install: |
+  No account or credentials needed — tools are available as soon as the
+  session restarts. Covers BTC, LTC, DOGE and ZEC and their testnets
+  (balances, transactions, unspent outputs, blocks, fees, prices).
+
+  Works without a key up to 2,500 requests a day per IP. For more, create a
+  free account and an API key at https://sochain.com/dashboard, save it in
+  .env as MCP_SOCHAIN_API_KEY, and add this to mcp_servers.sochain in
+  config.yaml:
+    headers:
+      Authorization: Bearer ${MCP_SOCHAIN_API_KEY}

@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict
 
 from hermes_constants import display_hermes_home
-from utils import atomic_json_write
+from utils import atomic_json_write, is_truthy_value
 from hermes_cli.config import cfg_get
 
 
@@ -117,7 +117,29 @@ def _get_webhook_config() -> dict:
 
 
 def _is_webhook_enabled() -> bool:
-    return bool(_get_webhook_config().get("enabled"))
+    """Whether the webhook platform is on, by the rule the gateway applies.
+
+    config.yaml's ``platforms.webhook.enabled`` OR a truthy ``WEBHOOK_ENABLED``, the env flag
+    ``gateway.config_env`` enables the platform from (read through the profile secret scope there,
+    exactly as the gateway reads it). Reading only the config key reported a running listener as
+    disabled on the dashboard (#149804).
+    """
+    if bool(_get_webhook_config().get("enabled")):
+        return True
+    from gateway.config_env import getenv
+    return is_truthy_value(getenv("WEBHOOK_ENABLED"))
+
+
+def _static_config_routes() -> dict[str, dict]:
+    """Routes defined in ``platforms.webhook.extra.routes`` — the adapter's own static set.
+
+    The listener serves these OVER the dynamic subscriptions of the same name
+    (``{**dynamic, **static}``), so the dashboard lists them read-only and skips any subscription
+    they shadow, answering with the route table the gateway actually serves (#149804).
+    """
+    extra = _get_webhook_config().get("extra") or {}
+    routes = extra.get("routes") if isinstance(extra, dict) else None
+    return routes if isinstance(routes, dict) else {}
 
 
 def _get_webhook_base_url() -> str:

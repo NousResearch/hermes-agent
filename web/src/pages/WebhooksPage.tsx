@@ -550,6 +550,7 @@ export default function WebhooksPage() {
                   <span className="font-medium text-sm truncate">
                     {sub.name}
                   </span>
+                  {sub.read_only && <Badge tone="outline">config.yaml</Badge>}
                   <Badge tone="outline">{sub.deliver}</Badge>
                   {sub.deliver_only && (
                     <Badge tone="secondary">deliver only</Badge>
@@ -584,25 +585,31 @@ export default function WebhooksPage() {
               </div>
 
               <div className="flex items-center gap-1 shrink-0">
-                <Button
-                  ghost
-                  size="sm"
-                  className="uppercase"
-                  disabled={togglingName === sub.name}
-                  onClick={() => handleToggleEnabled(sub.name, !sub.enabled)}
-                >
-                  {sub.enabled ? "Disable" : "Enable"}
-                </Button>
-                <Button
-                  ghost
-                  destructive
-                  size="icon"
-                  title="Delete"
-                  aria-label="Delete"
-                  onClick={() => webhookDelete.requestDelete(sub.name)}
-                >
-                  <Trash2 />
-                </Button>
+                {/* A config.yaml route is not a store record: enable/disable and delete only
+                    mutate webhook_subscriptions.json, so they are not offered here. */}
+                {!sub.read_only && (
+                  <>
+                    <Button
+                      ghost
+                      size="sm"
+                      className="uppercase"
+                      disabled={togglingName === sub.name}
+                      onClick={() => handleToggleEnabled(sub.name, !sub.enabled)}
+                    >
+                      {sub.enabled ? "Disable" : "Enable"}
+                    </Button>
+                    <Button
+                      ghost
+                      destructive
+                      size="icon"
+                      title="Delete"
+                      aria-label="Delete"
+                      onClick={() => webhookDelete.requestDelete(sub.name)}
+                    >
+                      <Trash2 />
+                    </Button>
+                  </>
+                )}
               </div>
             </CardContent>
           </Card>

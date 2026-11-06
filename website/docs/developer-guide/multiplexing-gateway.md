@@ -235,8 +235,11 @@ Measured on the committed tree (`HX015` over `reachable()`, with the rule's
 roots, 685 modules and 510 enforced hits in 162 files; with the stricter
 instance-copy, walrus, conditional-method and `from m import X` checks, 537
 hits in 174 files on the same 685 modules; with the audited lazy imports as
-roots, 823 modules and 678 enforced hits in 232 files. All of it is existing
-debt the ratchet credits; none of it has been reviewed as tenant-neutral.
+roots, 823 modules and 678 enforced hits in 232 files; with an own copy
+revoked by any later non-fresh rebind or deletion, and an imported-object write
+reported on the import line of the binding it resolves to (relative imports
+included), 684 hits in 232 files. All of it is existing debt the ratchet
+credits; none of it has been reviewed as tenant-neutral.
 
 The tool, MCP, provider and plugin registries are frozen once the hosted boot
 finishes: it calls `registry_freeze.freeze_registries()`, after which every

@@ -60,3 +60,22 @@ def test_a_child_rotated_past_any_hop_budget_resolves_to_its_newest_segment(tmp_
         assert stored_child_session(db, "sa-0-long", ["parent"]) == "seg-079"
     finally:
         db.close()
+
+
+def test_a_finished_child_resolves_to_its_continuation_after_a_backward_clock_step(tmp_path):
+    """The terminal segment follows verified compression links, not ``started_at``: a wall clock that
+    stepped back between the rotation's two rows must not hand back the root."""
+    from hermes_state import SessionDB
+    from tools.delegate_tool_sessions import stored_child_session
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.create_session("parent", source="cli")
+        marker = {"_delegate_from": "parent", "_subagent_id": "sa-0-clock"}
+        db.create_session("clock-root", source="subagent", parent_session_id="parent", model_config=marker)
+        db.end_session("clock-root", "compression")
+        db.create_session("clock-tip", source="subagent", parent_session_id="clock-root", model_config=marker)
+        db._execute_write(lambda conn: conn.executemany(
+            "UPDATE sessions SET started_at = ? WHERE id = ?", [(1002.0, "clock-root"), (1001.0, "clock-tip")]))
+        assert stored_child_session(db, "sa-0-clock", ["parent"]) == "clock-tip"
+    finally:
+        db.close()

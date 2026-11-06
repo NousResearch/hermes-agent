@@ -23,8 +23,9 @@ def stored_child_session(db: Any, subagent_id: str, conversation_ids: Iterable[s
     ``parent_session_id`` chain must reach the conversation, and a hop is followed only when the
     row is its parent's delegate child or compression continuation. A branch or reset fork of the
     conversation, or any unrelated session, never lends its children. Every segment carries the
-    marker, so the newest owned one is the child's tip (``get_compression_tip`` does not follow a
-    delegate child's rotations: its chain step skips rows carrying ``_delegate_from``)."""
+    marker, so the tip is the owned segment that no owned segment continues by compression
+    (``get_compression_tip`` does not follow a delegate child's rotations: its chain step skips rows
+    carrying ``_delegate_from``)."""
     from hermes_state_common import _sql_json_extract
 
     ancestors = frozenset(sid for sid in conversation_ids if sid)
@@ -35,7 +36,13 @@ def stored_child_session(db: Any, subagent_id: str, conversation_ids: Iterable[s
         f"{_sql_json_extract('model_config', '$.' + SUBAGENT_ID_KEY)} = ? ORDER BY started_at DESC, id DESC",
         (subagent_id,),
     )
-    return next((row["id"] for row in rows if _descends_from(db, row["id"], ancestors)), None)
+    owned = [row["id"] for row in rows if _descends_from(db, row["id"], ancestors)]
+    # The tip is the owned segment no owned segment continues by compression; ``started_at`` only breaks
+    # a tie, since the wall clock can step back between a rotation's two rows.
+    owned_ids = frozenset(owned)
+    continued = {seg["parent_session_id"] for seg in map(db.get_session, owned)
+                 if seg is not None and seg.get("parent_session_id") in owned_ids and db._is_compression_child_row(seg)}
+    return next((sid for sid in owned if sid not in continued), None)
 
 
 def _descends_from(db: Any, session_id: str, ancestors: frozenset[str]) -> bool:

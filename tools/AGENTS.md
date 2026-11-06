@@ -88,7 +88,8 @@ real profile (consented) > Lightpanda > the packaged Chromium from `browser_laun
 parent-first and recorded in a private 0700 dir (a throwaway profile's in
 `<HERMES_HOME>/cache/browser/chromium-records`; a persistent profile's per OS user under the host lock dir,
 one for every home pinning it) so a later process reaps a crashed owner's browser after checking pid + start
-time + its `--user-data-dir` argv token; the reaper walks every served home and every shared profile.
+time + its `--user-data-dir` argv token; the record and a throwaway profile go only once that browser is proven
+gone or proven to be another process. The reaper walks every served home and every shared profile.
 `browser_tool.py` and `browser_tool_install.py` are frozen old-updater stubs only (see their
 docstrings); never grow them.
 

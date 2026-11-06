@@ -189,6 +189,7 @@ def _tree_kill(pid: int, expected_start) -> None:
 
 def _write_record(server: LightpandaServer) -> None:
     record = {"pid": server.proc.pid, "port": server.port, "owner_pid": os.getpid(),
+              "owner_start_time": _safe_start_time(os.getpid()),
               "start_time": server.start_time, "started_at": time.time()}
     try:
         # Temp + rename: an orphan sweep (another Hermes, or a cleanup thread) unlinks a record it
@@ -304,18 +305,27 @@ def _is_lightpanda_process(pid: int, port, start_time) -> bool:
     return True
 
 
+def _stop_orphan(pid: int, port, start_time) -> bool:
+    """Kill a verified orphan; True once it is gone."""
+    import psutil
+    from tools.process_registry import ProcessRegistry
+    try:
+        _tree_kill(pid, start_time)
+    except (OSError, psutil.Error) as e:
+        logger.debug("orphan lightpanda kill failed for pid %s: %s", pid, e)
+    return not ProcessRegistry._outlived_kill(lambda: _is_lightpanda_process(pid, port, start_time))
+
+
 def reap_orphaned_lightpanda() -> int:
-    """Kill ``lightpanda serve`` processes whose owning Hermes is gone; return the count. A live owner is
-    never touched; a PID is only signalled after psutil confirms it is still ``lightpanda serve`` on the recorded port."""
+    """Kill ``lightpanda serve`` processes whose owning Hermes is gone; return the count. A live owner (the pid with
+    its recorded start time) is never touched; a PID is only signalled after psutil confirms it is still
+    ``lightpanda serve`` on the recorded port. A record goes once its server is gone, not once a kill was tried."""
     try:
         state_dir = _state_dir()
     except Exception as e:
         logger.debug("lightpanda state dir unavailable: %s", e)
         return 0
-    try:
-        from gateway.status import _pid_exists
-    except Exception:  # pragma: no cover - defensive
-        return 0
+    from tools.browser_launcher_holders import process_alive
 
     reaped = 0
     for record_path in sorted(state_dir.glob("*.json")):
@@ -324,24 +334,23 @@ def reap_orphaned_lightpanda() -> int:
             record = json.loads(record_path.read_text(encoding="utf-8-sig"))
             if not isinstance(record, dict):
                 raise ValueError(f"expected a JSON object, got {type(record).__name__}")
-        except (OSError, ValueError):
+            owner_pid, pid = int(record.get("owner_pid") or 0), int(record.get("pid") or 0)
+        except (OSError, ValueError, TypeError):
             record_path.unlink(missing_ok=True)
             continue
-        owner_pid = record.get("owner_pid")
         if owner_pid == os.getpid():
             with _servers_lock:
                 if session_name in _servers:
                     continue
-        elif owner_pid and _pid_exists(int(owner_pid)):
+        elif owner_pid and process_alive(owner_pid, record.get("owner_start_time")):
             continue
-        pid = record.get("pid")
-        if pid and _is_lightpanda_process(int(pid), record.get("port"), record.get("start_time")):
-            try:
-                _tree_kill(int(pid), record.get("start_time"))
-                reaped += 1
-                logger.info("Reaped orphaned lightpanda serve pid %s (session %s)", pid, session_name)
-            except Exception as e:
-                logger.debug("orphan lightpanda kill failed for pid %s: %s", pid, e)
+        port, start_time = record.get("port"), record.get("start_time")
+        if pid and _is_lightpanda_process(pid, port, start_time):
+            if not _stop_orphan(pid, port, start_time):
+                logger.warning("Keeping the record of lightpanda serve pid %s: it outlived its signals; the next reap retries", pid)
+                continue
+            reaped += 1
+            logger.info("Reaped orphaned lightpanda serve pid %s (session %s)", pid, session_name)
         record_path.unlink(missing_ok=True)
     return reaped
 

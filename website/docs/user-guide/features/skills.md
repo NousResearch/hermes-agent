@@ -682,6 +682,10 @@ When `write_approval: true`, every `skill_manage` write (create / edit /
 patch / delete / write_file / remove_file) is **staged** instead of committed —
 a SKILL.md is too large to review inline, so staging applies regardless of
 whether the write came from a foreground turn or the background review.
+The curator's inactivity archiving is staged the same way: one
+`curator: archive '<skill>' (inactive)` entry per skill, applied on approve
+unless the skill has since been pinned, referenced by a cron job or used
+(approve then refuses and the entry stays until rejected).
 Staged writes survive restarts under `~/.hermes/pending/skills/` and are
 reviewed with the same familiar approve/deny flow as dangerous commands:
 

@@ -4,14 +4,7 @@ import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'rea
 
 import { setInputSelection, takeInputCursor } from '../app/inputSelectionStore.js'
 import { highlightMask, highlightsStable } from '../domain/composerHighlights.js'
-import {
-  applyYank,
-  isKillStroke,
-  isLineKillModifier,
-  KillRing,
-  removedText,
-  type YankState
-} from '../domain/killRing.js'
+import { applyYank, isKillChord, KillRing, removedText, type YankState } from '../domain/killRing.js'
 import { readClipboardText, writeClipboardText } from '../lib/clipboard.js'
 import { cursorLayout, offsetFromPosition } from '../lib/inputMetrics.js'
 import {
@@ -491,9 +484,23 @@ export function killToLineEnd(value: string, cursor: number): { value: string; c
   return { value: value.slice(0, cursor) + value.slice(to), cursor }
 }
 
-// The line-kill predicate and the kill-chord table live with the kill ring; re-exported for the
-// composer's callers and tests, which have always imported them from here.
-export { isLineKillModifier }
+/**
+ * True when a Backspace / ForwardDelete keystroke should kill to the line
+ * boundary rather than delete a single word.
+ *
+ * Only the *super* bit qualifies. It is tempting to reuse `isActionMod`,
+ * but that accepts `key.meta` on macOS — and hermes-ink reports Option as
+ * `meta`, so Option+Backspace (delete-word, the macOS standard) would be
+ * swallowed. On Linux/Windows `isActionMod` is `key.ctrl`, and
+ * Ctrl+Backspace is delete-word there too. `super` is set only by kitty
+ * CSI-u / xterm modifyOtherKeys, where it unambiguously means Cmd.
+ *
+ * Terminals that instead rewrite Cmd+Backspace to Ctrl+U are handled by
+ * the `isMacActionFallback` kill-to-start path, not by this predicate.
+ */
+export function isLineKillModifier(key: { ctrl: boolean; meta: boolean; super?: boolean }): boolean {
+  return key.super === true
+}
 
 /**
  * Where Home / End / Left / Right put the caret, or null when the key is not one of them.
@@ -1458,25 +1465,11 @@ export function TextInput({
    * stays that way, so the paste-back chord is Alt+Y (unbound until now).
    */
   const yank = () => {
-    const result = applyYank({
-      cursor: curRef.current,
-      last: lastYank.current,
-      ring: killRing.current,
-      value: vRef.current
-    })
+    const result = applyYank(killRing.current, vRef.current, curRef.current, lastYank.current)
 
-    if (!result) {
-      return
-    }
-
-    lastYank.current = result.next
-    commit(result.value, result.cursor)
-  }
-
-  /** Feed the ring from the two cursors — one place for every kill chord's removed text. */
-  const noteKill = (stroke: boolean, before: string, after: string, from: number, to: number) => {
-    if (stroke) {
-      killRing.current.push(removedText(before, after, from, to))
+    if (result) {
+      lastYank.current = result.next
+      commit(result.value, result.cursor)
     }
   }
 
@@ -1580,9 +1573,15 @@ export function TextInput({
       const actionDeleteWord = (mod && inp === 'w') || isMacActionFallback(k, inp, 'w')
       const range = selRange()
       const delFwd = k.delete || fwdDel.current
-      const killStroke = isKillStroke(k, inp, { alt: k.meta, delFwd, isActionFallback: isMacActionFallback, mod })
-      const vBefore = v
-      const cBefore = c
+
+      const killStroke = isKillChord(inp, {
+        deleting: delFwd || k.backspace,
+        deleteToStart: actionDeleteToStart,
+        deleteWord: actionDeleteWord,
+        killToEnd: actionKillToEnd,
+        lineKill: isLineKillModifier(k),
+        wordMod
+      })
 
       const isPrintableInput =
         !event.isControlChord &&
@@ -1811,7 +1810,7 @@ export function TextInput({
       }
 
       if (killStroke) {
-        noteKill(killStroke, vBefore, v, cBefore, c)
+        killRing.current.push(removedText(vRef.current, v, curRef.current, c))
       }
 
       commit(v, c)

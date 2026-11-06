@@ -19,13 +19,19 @@ _TELEGRAM_API_HOST = "api.telegram.org"
 
 
 def _describe_transport_error(error: Exception) -> str:
-    """Return a non-empty, secret-safe exception representation for diagnostics."""
+    """Return a non-empty, secret-safe exception representation for diagnostics, including the
+    cause chain: httpx wraps the underlying ssl/OS error in an empty ``ConnectError('')``."""
+    chain: list[BaseException] = []
+    exc: BaseException | None = error
+    while exc is not None and exc not in chain and len(chain) < 6:
+        chain.append(exc)
+        exc = exc.__cause__ or exc.__context__
     try:
         from agent.redact import redact_sensitive_text
 
-        return redact_sensitive_text(repr(error), force=True)
+        return redact_sensitive_text(" <- ".join(repr(e) for e in chain), force=True)
     except Exception:
-        return type(error).__name__
+        return " <- ".join(type(e).__name__ for e in chain)
 
 # TCP keepalive so a half-open/CLOSE-WAIT long-poll errors out instead of blocking getUpdates forever
 # (Windows leaves SO_KEEPALIVE off). Idle/interval knobs are best-effort per Python/OS combo.

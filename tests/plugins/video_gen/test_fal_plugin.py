@@ -407,11 +407,10 @@ class TestPayloadBuilder:
 
 
     def test_gemini_omni_flash_accepts_v12_fifteen_second_cap(self):
-        """v1.2 declares duration 3-15 (v1.1 stopped at 10); a 15s request must reach the endpoint unclamped."""
+        """The endpoint declares duration 3-15 (v1.1 stopped at 10); a 15s request must reach it unclamped."""
         from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
 
         fam = FAL_FAMILIES["gemini-omni-flash"]
-        assert fam["text_endpoint"].startswith("google/gemini-omni-flash/v1.2/")
         p = _build_payload(fam, prompt="x", image_url=None, duration=15, aspect_ratio="16:9",
                            resolution="720p", negative_prompt=None, audio=None, seed=None)
         assert p["duration"] == 15

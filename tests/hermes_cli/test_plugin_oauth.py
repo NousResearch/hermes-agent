@@ -658,10 +658,16 @@ def test_client_credentials_expiry_reacquires_once_under_lock(idp, api, monkeypa
     assert _auth("add", "machine:google") is True
     _set_grant("machine:google", expires_at_ms=0)
 
-    plugin.call("google", allowed.url + "/one", method="GET")
-    plugin.call("google", allowed.url + "/two", method="GET")
+    # Both requests observe the expired grant at roughly the same time. Only one
+    # process may acquire the replacement token; the second must re-read the store.
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(
+            lambda path: plugin.call("google", allowed.url + path, method="GET"),
+            ("/one", "/two"),
+        ))
 
-    assert len(calls) == 2
+    assert [response.status for response in responses] == [200, 200]
+    assert len(calls) == 2  # initial auth add + exactly one reacquisition
     assert [r["headers"]["Authorization"] for r in allowed.seen] == [
         "Bearer machine-token-two", "Bearer machine-token-two"
     ]

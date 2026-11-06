@@ -347,11 +347,29 @@ class LobeHubSource(SkillSource):
 
 # --- browse.sh source adapter -----------------------------------------------
 
+_GITHUB_BLOB_URL_RE = re.compile(r"^https?://(?:www\.)?github\.com/([^/]+)/([^/]+)/(?:blob|raw)/(.+)$")
+
+
+def _github_raw_url(url: str) -> Optional[str]:
+    """A GitHub blob/raw HTML URL as its raw download URL; None for any other URL."""
+    if not isinstance(url, str) or not url.startswith("http"):
+        return None
+    from utils import base_url_host_matches
+    if base_url_host_matches(url, "raw.githubusercontent.com"):
+        return url
+    match = _GITHUB_BLOB_URL_RE.match(url)
+    if not match:
+        return None
+    owner, repo, rest = match.groups()
+    return f"https://raw.githubusercontent.com/{owner}/{repo}/{rest}"
+
+
 class BrowseShSource(SkillSource):
     """Browserbase's browse.sh catalog of site-specific browser-automation SKILL.md files.
 
-    The catalog is ``/api/skills``; content comes from ``/api/skills/{slug}``'s ``skillMdUrl`` (CDN blob).
-    The catalog's ``sourceUrl`` is a GitHub HTML URL whose repo is not always public, so it is not used for content.
+    The catalog is ``/api/skills``; content comes from ``/api/skills/{slug}``'s ``skillMdUrl`` (CDN blob),
+    falling back to the catalog entry's own GitHub ``sourceUrl``/``externalUrl`` when the detail
+    endpoint has dropped the entry (skills moved to another Browserbase repo).
     """
 
     SOURCE_ID = "browse-sh"
@@ -416,14 +434,23 @@ class BrowseShSource(SkillSource):
         )
 
     def _resolve_skill_md_url(self, slug: str, item: dict) -> Optional[str]:
-        """``skillMdUrl`` from ``/api/skills/{slug}``; fallback to a ``raw.githubusercontent.com`` ``sourceUrl``."""
+        """``skillMdUrl`` from ``/api/skills/{slug}``, else the catalog entry's own GitHub link.
+
+        The detail endpoint 404s for entries the catalog still lists: Browserbase moved several
+        skills out of ``browse.sh`` into ``browserbase/skills`` and the old slug stayed in
+        ``/api/skills``. The item's ``sourceUrl``/``externalUrl`` is then the only live pointer,
+        and refusing it left a skill that is alive upstream uninstallable forever, reported as a
+        "stale index entry".
+        """
         data = _get_json(self.SKILL_DETAIL_URL.format(slug=slug), follow_redirects=True)
         md_url = data.get("skillMdUrl") if isinstance(data, dict) else None
         if isinstance(md_url, str) and md_url.startswith("http"):
             return md_url
-        source_url = item.get("sourceUrl", "") if isinstance(item, dict) else ""
-        from utils import base_url_host_matches
-        return source_url if source_url and base_url_host_matches(source_url, "raw.githubusercontent.com") else None
+        for key in ("sourceUrl", "externalUrl"):
+            raw_url = _github_raw_url(item.get(key, "") if isinstance(item, dict) else "")
+            if raw_url:
+                return raw_url
+        return None
 
     def _slug_from_identifier(self, identifier: str) -> str:
         """'browse-sh/airbnb.com/search-listings-abc' -> 'airbnb.com/search-listings-abc'."""

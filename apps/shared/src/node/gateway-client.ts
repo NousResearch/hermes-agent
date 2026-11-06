@@ -71,10 +71,12 @@ export interface GatewayClientOptions {
   /** The WebSocket implementation when the runtime has no global `WebSocket` (Node < 22). */
   fallbackWebSocket?: typeof WebSocket
   /** The `session.create` policy label (default `'tui'`, the terminal-client policy). The gateway must
-   *  list it in `runtime.describe` `session_create.sources`, or session.create is refused. */
+   *  list it in `runtime.describe` `session_create.sources`, or session.create is refused. Canonical
+   *  gateways only: a non-canonical `attachUrl` listener gets session.create without it. */
   source?: LaunchSource
   /** The client's own name on `session.create`, sent only when the gateway lists `client` in
-   *  `session_create.parameters`. A label for attribution: the gateway never grants anything on it. */
+   *  `session_create.parameters` (never to a non-canonical `attachUrl` listener). A label for
+   *  attribution: the gateway never grants anything on it. */
   client?: ClientIdentity
 }
 

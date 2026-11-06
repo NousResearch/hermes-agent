@@ -1,5 +1,6 @@
 /** `hermes-gateway-v1` request/result translation for a client written against the stdio-era
  *  method names (Ink, and clients built on `./node/gateway-client`). Browser-safe. */
+import type { CanonicalCreateParams } from './gateway-contract.generated.js'
 import { type GatewayText, gatewayText } from './gateway-text.js'
 import { randomUuid } from './session-http-mutations.js'
 
@@ -9,7 +10,7 @@ export const sharedControlParams = (prompt?: { sharedControl?: SharedControl } |
 export interface CreationContract { sources: string[]; parameters: string[] }
 
 /** A `session.create` policy label the gateway may offer (`runtime.describe` `session_create.sources`). */
-export type LaunchSource = 'acp' | 'cli' | 'gui' | 'oneshot' | 'tool' | 'tui'
+export type LaunchSource = NonNullable<CanonicalCreateParams['source']>
 
 /** How a client names itself on `session.create`: a label for attribution, never a grant. A gateway that takes
  *  it refuses `session.create` unless `name` is 1-64 characters of a-z, 0-9, `.`, `_` or `-` starting with a

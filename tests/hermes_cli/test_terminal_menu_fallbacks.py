@@ -134,3 +134,81 @@ def test_remove_custom_provider_falls_back_on_menu_runtime_error(tmp_path, monke
     assert reloaded["custom_providers"] == [
         {"name": "Local B", "base_url": "http://localhost:8002/v1"},
     ]
+
+
+def test_remove_row_shown_for_v12_providers_only_config(tmp_path, monkeypatch):
+    """The picker's Remove row must appear for migrated configs — entries live in the
+    ``providers:`` map only, no raw legacy ``custom_providers`` list (the pre-v12 gate hid
+    the row for every migrated config; the removal flow now covers both schemas)."""
+    from hermes_cli.main_provider_setup import (
+        _build_provider_picker_rows,
+        _named_custom_provider_map,
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        "model:\n  provider: sample-api\n  default: some-model\n"
+        "providers:\n  sample-api:\n    name: SampleApi\n    api: https://api.x.test/v1\n"
+    )
+
+    cfg = load_config()
+    provider_map = _named_custom_provider_map(cfg)
+    rows, _ = _build_provider_picker_rows(cfg, "sample-api", {}, provider_map)
+    assert provider_map, "v12 map entries must render picker rows"
+    assert any(key == "remove-custom" for key, _label, _members in rows)
+
+
+def test_remove_custom_provider_covers_v12_map_prunes_twin_detaches_model(tmp_path, monkeypatch):
+    """Removing a merged custom provider pops the ``providers:`` map entry, the legacy list
+    twin, the main-model mirror, and the managed .env key — while leaving sibling entries
+    (including raw ``${ENV}`` templates) byte-untouched."""
+    from hermes_cli.main_provider_setup import _remove_custom_provider
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / ".env").write_text("HERMES_CUSTOM_TESTPROV_API_KEY=sk-secret\nSIBLING_KEY=sk-sib\n")
+    raw_yaml = (
+        "model:\n"
+        "  provider: testprov\n"
+        "  default: some-model\n"
+        "  base_url: https://x.test/v1\n"
+        "  api_key: sk-secret\n"
+        "providers:\n"
+        "  testprov:\n"
+        "    name: TestProv\n"
+        "    api: https://x.test/v1\n"
+        "  sibling:\n"
+        "    name: Sibling\n"
+        "    api: ${SIBLING_URL}\n"
+        "    api_key: ${SIBLING_KEY}\n"
+        "  keepme:\n"
+        "    name: KeepMe\n"
+        "    api: https://keep.test/v1\n"
+        "custom_providers:\n"
+        "  - name: TestProv\n"
+        "    base_url: https://x.test/v1\n"
+        "  - name: Other\n"
+        "    base_url: https://other.test/v1\n"
+    )
+    (tmp_path / "config.yaml").write_text(raw_yaml)
+
+    monkeypatch.setattr("hermes_cli.curses_ui.curses_radiolist", _raise_menu)
+    responses = iter(["1"])  # TestProv (merged from the legacy twin + map entry, listed first)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(responses))
+
+    _remove_custom_provider(load_config())
+
+    saved = (tmp_path / "config.yaml").read_text()
+    assert "testprov:" not in saved and "TestProv" not in saved, "map entry must be popped"
+    assert "keepme:" in saved and "https://keep.test/v1" in saved, "unrelated map entry survives"
+    assert "${SIBLING_URL}" in saved and "${SIBLING_KEY}" in saved, \
+        "raw templates must not expand on save"
+    assert "https://other.test/v1" in saved and "name: Other" in saved, \
+        "legacy twin pruned, unrelated rows kept"
+    model_block = saved.split("model:")[1].split("providers:")[0]
+    assert "provider:" not in model_block and "base_url:" not in model_block \
+        and "api_key:" not in model_block, \
+        "main-model mirror of the deleted provider must detach"
+    assert "default: some-model" in model_block, "the model name itself is not the provider mirror"
+    env = (tmp_path / ".env").read_text()
+    assert "HERMES_CUSTOM_TESTPROV_API_KEY" not in env, "managed .env slot must be scrubbed"
+    assert "SIBLING_KEY=sk-sib" in env, "unrelated env vars survive"

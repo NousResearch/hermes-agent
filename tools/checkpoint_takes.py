@@ -9,7 +9,8 @@ pruner's history rewrite (it keeps both, while every commit hash changes), so an
 its snapshot after a prune and finds nothing once that snapshot was dropped.
 
 An attempt is written BEFORE it runs, with an empty tree, and completed after: a take that failed or
-whose completion could not be written stays visibly unknown. ``takes_since`` is the time from which
+whose completion could not be written stays visibly unknown, and an attempt that never got the store
+lock (busy: another process's take or prune) is noted like an unwritable one. ``takes_since`` is the time from which
 the record is complete. It moves forward for a project an older build snapshotted, for entries the
 cap dropped, and past an attempt this process could not record at all. The record lives in the
 project's metadata JSON, so it is renamed and deleted with the project.
@@ -29,13 +30,31 @@ _MAX_TAKES = 256
 _UNRECORDED: dict[str, float] = {}
 
 
-def _entries(raw) -> list[tuple[float, str, int]]:
+def turn_key(timestamp) -> str:
+    """The identity of one user turn every surface can rebuild from its transcript row: ``""`` when unknown."""
+    from tools.checkpoint_undo_hint import _epoch
+
+    when = _epoch(timestamp)
+    return repr(when) if when is not None else ""
+
+
+def bind_checkpoint_turn(agent, user_msg: dict) -> None:
+    """Name the turn whose takes the agent's checkpoint manager records next by the stamp its user row is
+    persisted with (the persist override wins, as in ``agent/session_persistence.py``)."""
+    mgr = getattr(agent, "_checkpoint_mgr", None)
+    if mgr is None:
+        return
+    stamp = getattr(agent, "_persist_user_message_timestamp", None)
+    mgr.turn_key = turn_key(stamp if stamp is not None else (user_msg or {}).get("timestamp"))
+
+
+def _entries(raw) -> list[tuple[float, str, int, str]]:
     out = []
     for item in raw if isinstance(raw, list) else ():
-        if (isinstance(item, list) and len(item) == 3 and isinstance(item[0], (int, float))
+        if (isinstance(item, list) and len(item) == 4 and isinstance(item[0], (int, float))
                 and not isinstance(item[0], bool) and math.isfinite(item[0])
-                and isinstance(item[1], str) and isinstance(item[2], int)):
-            out.append((float(item[0]), item[1], item[2]))
+                and isinstance(item[1], str) and isinstance(item[2], int) and isinstance(item[3], str)):
+            out.append((float(item[0]), item[1], item[2], item[3]))
     return out
 
 
@@ -46,10 +65,18 @@ def _since(meta: dict) -> Optional[float]:
     return float(since)
 
 
+def note_unrecorded(meta_path: Path, when: float) -> None:
+    """Attempt ``when`` ran but nothing on disk says so (no lock, unwritable metadata): the record is
+    incomplete up to it, here at once and on disk from the next write."""
+    key = str(meta_path)
+    _UNRECORDED[key] = max(_UNRECORDED.get(key, 0.0), when)
+
+
 def record_take(meta_path: Path, when: float, tree: str = "", author_epoch: int = 0, *,
-                had_history: bool = True) -> None:
+                had_history=True, turn: str = "") -> None:
     """Write attempt ``when`` (``tree=""``: started) or complete it with the snapshot it left. The caller
-    holds ``store_lock``. Never raises: a failed write is remembered and closes the gap on the next one."""
+    holds ``store_lock``. Never raises: a failed write is remembered and closes the gap on the next one.
+    ``had_history`` (a bool or a callable) is read only for the project's first recorded take."""
     key = str(meta_path)
     try:
         meta = json.loads(meta_path.read_text(encoding="utf-8-sig"))
@@ -57,11 +84,11 @@ def record_take(meta_path: Path, when: float, tree: str = "", author_epoch: int 
             raise ValueError("project metadata is not an object")
         takes, since = _entries(meta.get(_TAKES)), _since(meta)
         if since is None:  # the project's first recorded take: any earlier (an older build's) are unknown
-            takes, since = [], (when if had_history else 0.0)
+            takes, since = [], (when if (had_history() if callable(had_history) else had_history) else 0.0)
         if key in _UNRECORDED:
             since = max(since, _UNRECORDED[key])
         takes = [t for t in takes if not (t[0] == when and not t[1])]  # completing replaces the started row
-        takes.append((when, tree, int(author_epoch)))
+        takes.append((when, tree, int(author_epoch), turn))
         takes.sort()
         if len(takes) > _MAX_TAKES:
             since = max(since, takes[-_MAX_TAKES - 1][0])
@@ -72,12 +99,12 @@ def record_take(meta_path: Path, when: float, tree: str = "", author_epoch: int 
         os.replace(tmp, meta_path)
     except (OSError, ValueError):
         if not tree:  # the started row is missing: nothing on disk says this attempt ran
-            _UNRECORDED[key] = max(_UNRECORDED.get(key, 0.0), when)
+            note_unrecorded(meta_path, when)
         return
     _UNRECORDED.pop(key, None)
 
 
-def load_takes(meta_path: Path) -> Optional[tuple[list[tuple[float, str, int]], float]]:
+def load_takes(meta_path: Path) -> Optional[tuple[list[tuple[float, str, int, str]], float]]:
     """``(entries oldest first, takes_since)``, or None when the project has no readable record."""
     try:
         meta = json.loads(meta_path.read_text(encoding="utf-8-sig"))
@@ -108,16 +135,29 @@ def recorded_take(mgr, abs_dir: str, reason: str, **kwargs) -> bool:
     dir_hash = cm._project_hash(abs_dir)
     meta_path = cm._project_meta_path(store, dir_hash)
     ref = cm._ref_name(dir_hash)
-    had_history = (store / "HEAD").exists() and _tip(store, abs_dir, ref) is not None
-    when = time.time()
+    # Only a project's FIRST recorded take reads whether it had history (an older build's snapshots), and only
+    # before the take: once a record exists that git log is skipped. Read late it says True: the safe answer.
+    def had_history() -> bool:
+        return (store / "HEAD").exists() and _tip(store, abs_dir, ref) is not None
+
+    when, turn = time.time(), getattr(mgr, "turn_key", "") or ""
     if meta_path.exists():
-        record_take(meta_path, when, had_history=had_history)
+        record_take(meta_path, when, had_history=had_history, turn=turn)
+    else:
+        had_history = had_history()
     mgr._take_reused = False
     ok = mgr._take(abs_dir, reason, **kwargs)
     # A take that failed (too many files, a git error) left the tip, not the files: its row stays unknown.
     tip = _tip(store, abs_dir, ref) if ok or mgr._take_reused else None
-    record_take(meta_path, when, *(tip or ("", 0)), had_history=had_history)
+    record_take(meta_path, when, *(tip or ("", 0)), had_history=had_history, turn=turn)
     return ok
+
+
+def note_unrecorded_attempt(abs_dir: str, when: float) -> None:
+    """``note_unrecorded`` for ``abs_dir``'s project in the active profile's store."""
+    from tools import checkpoint_manager as cm
+
+    note_unrecorded(cm._project_meta_path(cm._store_path(), cm._project_hash(abs_dir)), when)
 
 
 def project_takes(abs_dir: str):

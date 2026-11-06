@@ -926,6 +926,8 @@ class CheckpointManager:
         self.max_total_size_mb = max(0, int(max_total_size_mb))
         self.max_file_size_mb = max(0, int(max_file_size_mb))
         self._checkpointed_dirs: set[str] = set()
+        # The user turn whose takes are recorded (tools/checkpoint_takes.py::bind_checkpoint_turn); "" unknown.
+        self.turn_key = ""
 
     # ------------------------------------------------------------------
     # Turn lifecycle
@@ -1068,13 +1070,17 @@ class CheckpointManager:
 
         self._checkpointed_dirs.add(abs_dir)
 
+        from tools.checkpoint_takes import note_unrecorded_attempt, recorded_take
+        attempted = time.time()
         try:
             from tools.checkpoint_pruning import store_lock
-            from tools.checkpoint_takes import recorded_take
 
             with store_lock(_resolve_checkpoint_base()):
                 return recorded_take(self, abs_dir, reason)
         except Exception as e:
+            # A busy store (never waited for: a write must not stall on a prune) leaves no take record: say the
+            # record is incomplete from here, or /undo would credit a later take with this turn's start.
+            note_unrecorded_attempt(abs_dir, attempted)
             logger.debug("Checkpoint failed (non-fatal): %s", e)
             return False
 

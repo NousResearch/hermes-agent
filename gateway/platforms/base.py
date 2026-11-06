@@ -1055,8 +1055,8 @@ def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[s
     (``HERMES_MEDIA_DELIVERY_STRICT=1``, public bots where prompt injection must not exfiltrate
     host secrets): MUST be under a Hermes cache, an operator root (``HERMES_MEDIA_ALLOW_DIRS``),
     or freshly produced within the recency window. Symlinks are resolved before any check."""
-    from tools.environments.sandbox_scope import hosted_scope
-    if hosted_scope() is not None or not (candidate := _normalize_media_tag_path(path)):  # hosted: sandbox paths
+    from tools.hosted_tool_policy import host_feature_enabled
+    if not host_feature_enabled("media_delivery") or not (candidate := _normalize_media_tag_path(path)):
         return None
     try:
         expanded = Path(os.path.expanduser(candidate))

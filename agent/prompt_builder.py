@@ -883,8 +883,8 @@ def _probe_remote_backend(env_type: str) -> str | None:
     None in a hosted scope: the probe builds and tears down a throwaway environment, and a hosted agent's
     only environment is its own sandbox."""
     from hermes_constants import hermes_home_key
-    from tools.environments.sandbox_scope import hosted_scope
-    if hosted_scope() is not None:
+    from tools.hosted_tool_policy import host_feature_enabled
+    if not host_feature_enabled("backend_probe"):
         return None
     cache_key = (hermes_home_key(), env_type, _tenv_read("TERMINAL_CWD", ""))
     formatted = _BACKEND_PROBE_CACHE.get(cache_key)
@@ -1527,8 +1527,9 @@ def load_soul_md(context_length: Optional[int] = None, home_override: Path | Non
     the skills-index leak fixed in #86313).
     """
     from agent.safe_worker_policy import safe_worker_enabled
+    from tools.hosted_tool_policy import host_feature_enabled
 
-    if safe_worker_enabled():
+    if safe_worker_enabled() or not host_feature_enabled("context_files"):
         return None
     try:
         from hermes_cli.config import ensure_hermes_home
@@ -1734,9 +1735,10 @@ def build_context_files_prompt(
     from HERMES_HOME is independent and always included unless *skip_soul* (already the identity slot).
     """
     from agent.safe_worker_policy import safe_worker_enabled
+    from tools.hosted_tool_policy import host_feature_enabled
 
-    if safe_worker_enabled():
-        return ""
+    if safe_worker_enabled() or not host_feature_enabled("context_files"):
+        return ""  # hosted: the project's files are in the agent's sandbox, this host's are not its
     cwd_path = Path(cwd if cwd is not None else os.getcwd()).resolve()
     if _project_context_suppressed(cwd, cwd_path, allow_install_tree_fallback):
         logger.warning(

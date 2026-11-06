@@ -1085,12 +1085,12 @@ class ToolRegistry:
         self, name: str, args: dict, *, scope: Optional[str] = None, **kwargs) -> str | dict:
         """Execute a tool handler by name: async handlers bridged via ``_run_async()``,
         results normalized, every exception returned as ``{"error": ...}``."""
+        from tools.hosted_tool_policy import hosted_tool_refusal
+        if refusal := hosted_tool_refusal(name):  # deny-by-default in a hosted scope, before any handler
+            return tool_error(refusal)
         entry = self.get_entry(name, scope=scope)
         if not entry:
             return tool_error(f"Unknown tool: {name}")
-        from tools.hosted_tool_policy import hosted_refusal
-        if refusal := hosted_refusal(name, entry.toolset):  # before the handler: no setup, no host effect
-            return tool_error(refusal)
         from tools.arg_validation import check_tool_args, flag_unknown_args
         refusal, unknown, valid = check_tool_args(entry, args)
         if refusal is not None:

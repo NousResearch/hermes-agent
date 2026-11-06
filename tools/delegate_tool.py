@@ -576,8 +576,8 @@ def delegate_task(
     dispatch handle when running in the background."""
     if parent_agent is None:
         return tool_error("delegate_task requires a parent agent context.")
-    from tools.hosted_tool_policy import host_refusal
-    if refusal := host_refusal("delegate_task", "a child agent would run outside this agent's sandbox routing"):
+    from tools.hosted_tool_policy import host_feature_refusal
+    if refusal := host_feature_refusal("delegation", "delegate_task"):  # /review reaches here outside a tool call
         return tool_error(refusal)
 
     normalized_action = (action or "").strip().lower()

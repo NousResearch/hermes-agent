@@ -699,7 +699,13 @@ def _dispatch_authorized_once(
         elif callback is not None:
             callback()
 
-    block_message, block_error_type = scope_block, "tool_scope_block"
+    # Deny-by-default for a hosted scope, before plugin hooks, guardrails or any executor: every
+    # sequential, concurrent and batched call reaches its executor (inline, memory provider, context
+    # engine, registry) only through here.
+    from tools.hosted_tool_policy import hosted_tool_refusal
+    block_message, block_error_type = hosted_tool_refusal(ref.name), "hosted_tool_refused"
+    if block_message is None:
+        block_message, block_error_type = scope_block, "tool_scope_block"
     if block_message is None:
         block_error_type = "plugin_block"
         resolve = lambda: _pre_tool_block(agent, ref)

@@ -547,13 +547,13 @@ def check_media_never_read_on_host(provider: RecordingSandboxProvider, a: Scope,
 
 
 def check_host_tools_refused(provider: RecordingSandboxProvider, a: Scope, b: Scope) -> None:
-    """Every registered tool that would run or read on this host (``tools.hosted_tool_policy``:
-    browser, desktop, media generation, TTS, skills, cron, delegation, MCP servers, ...) is refused
-    under a hosted scope before its handler runs, and still reaches its handler with no scope bound."""
-    from tools.hosted_tool_policy import refused_toolsets
+    """Deny by default: every registered tool off ``tools.hosted_tool_policy.HOSTED_TOOL_ALLOWLIST``
+    (memory, recall, browser, web, vision, MCP, connectors, skills, cron, delegation, ... and any tool
+    added later) is refused under a hosted scope before its handler runs, and still reaches its
+    handler with no scope bound."""
+    from tools.hosted_tool_policy import HOSTED_TOOL_ALLOWLIST
     from tools.registry import registry
-    names = [n for n in registry.get_all_tool_names()
-             if (ts := registry.get_toolset_for_tool(n) or "") in refused_toolsets() or ts.startswith("mcp-")]
+    names = sorted(n for n in registry.get_all_tool_names() if n not in HOSTED_TOOL_ALLOWLIST)
     assert names, "no host tool is registered to check"
     reached: list[str] = []
     originals = {}

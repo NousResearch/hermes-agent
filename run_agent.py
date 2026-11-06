@@ -292,8 +292,9 @@ class AIAgent(
         advertised ``session_search`` tool stays usable."""
         # Persistence-isolated forks (background review) must not lazily open the canonical state DB —
         # that would re-arm the flush to write the fork's harness turn into the user's real session.
-        if getattr(self, "_persist_disabled", False):
-            return None
+        from tools.hosted_tool_policy import host_feature_enabled
+        if getattr(self, "_persist_disabled", False) or not host_feature_enabled("session_recall"):
+            return None  # hosted: the profile's state.db is not the agent's recall store
         if self._session_db is not None:
             return self._session_db
         try:
@@ -765,6 +766,9 @@ class AIAgent(
         (/refine, with or without focus) is user-initiated: it bypasses the automatic-only delegate,
         ``enabled`` and idle-defer gates (#87250: ``enabled: false`` stops only automatic forks).
         """
+        from tools.hosted_tool_policy import host_feature_enabled
+        if not host_feature_enabled("background_review"):
+            return  # hosted: the review fork writes the profile's memory and skills on this host
         # Automatic-review gates run at enqueue/spawn time; the idle dispatcher re-checks `enabled` at dispatch time.
         if not explicit and focus is None and getattr(self, "_delegate_depth", 0) > 0:
             return

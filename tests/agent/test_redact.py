@@ -6,7 +6,13 @@ import time
 
 import pytest
 
-from agent.redact import mask_secret, redact_cdp_url, redact_sensitive_text, RedactingFormatter
+from agent.redact import (
+    RedactingFormatter,
+    is_secret_field_name,
+    mask_secret,
+    redact_cdp_url,
+    redact_sensitive_text,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -422,6 +428,37 @@ class TestJsonFields:
 
 
 class TestPythonReprFields:
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "aws_secret_access_key",
+            "AWS_SECRET_ACCESS_KEY",
+            "SecretAccessKey",
+            "SECRET_KEY",
+            "secretKey",
+            "privateKey",
+            "signing_key",
+            "encryption_key",
+            "master_key",
+            "hmac_key",
+        ],
+    )
+    def test_credential_qualified_key_is_a_secret_field(self, key):
+        secret = "opaque-credential-value-1234567890"
+        assert is_secret_field_name(key)
+
+        result = redact_sensitive_text(f"{{'{key}': '{secret}'}}", force=True)
+
+        assert secret not in result
+        assert f"'{key}': '***'" in result
+
+    @pytest.mark.parametrize(
+        "key",
+        ["key", "sort_key", "cache_key", "primary_key", "idempotency_key"],
+    )
+    def test_unqualified_key_is_not_a_secret_field(self, key):
+        assert not is_secret_field_name(key)
+
     @pytest.mark.parametrize(
         "key",
         [

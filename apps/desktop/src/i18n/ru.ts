@@ -3466,6 +3466,8 @@ export const ruOverrides = {
     lastTabKeptTitle: 'Последняя вкладка остаётся',
     lastTabKeptBody:
       'В этой зоне нужна хотя бы одна видимая вкладка. Сначала покажите другую вкладку или сверните всю боковую панель.',
+    enforcedDockLockedTitle: 'Размещение управляется',
+    enforcedDockLockedBody: 'Эта панель остаётся закреплённой здесь. Перетаскивание не сохраняется между запусками.',
     toggleStripTab: title => `Переключить вкладку ${title}`,
     minimize: 'Свернуть',
     restore: 'Восстановить',

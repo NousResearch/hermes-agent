@@ -225,7 +225,16 @@ def _owns_subagent_record(record: dict[str, Any], parent_agent: Any) -> bool:
     """
     if _is_descendant_of(record.get("agent"), parent_agent):
         return True
-    owner_sid = str(record.get("owner_agent_session_id") or "")
+    return _session_lineage_matches(record.get("owner_agent_session_id"), parent_agent)
+
+
+def _session_lineage_matches(owner_session_id: Optional[str], parent_agent: Any) -> bool:
+    """Shared durable-conversation check for native controls and public lifecycle handles.
+
+    SessionDB resolves continuations, not branch/reset/delegate children. An absent identity
+    never grants ownership; the caller may separately recognize its original live parent.
+    """
+    owner_sid = str(owner_session_id or "")
     parent_sid = str(getattr(parent_agent, "session_id", "") or "")
     if not owner_sid or not parent_sid:
         return False

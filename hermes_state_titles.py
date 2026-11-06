@@ -249,13 +249,8 @@ class SessionTitlesMixin:
         session = self._session_row_dict(row)
         if not session.get("archived"):
             return session
-        tip = session
-        try:
-            tip_id = self.get_compression_tip(session["id"]) or session["id"]
-            if tip_id != session["id"]:
-                tip = self.get_session(tip_id) or session
-        except Exception:
-            tip = session
+        tip_id = self.get_compression_tip(session["id"]) or session["id"]
+        tip = (self.get_session(tip_id) or session) if tip_id != session["id"] else session
         if (tip.get("end_reason") or "") in _RECOVERABLE_END_REASONS:
             return session
         return None

@@ -2,6 +2,7 @@
 receives, SMTP sends. Configured via EMAIL_* env vars or ``platforms.email`` in config.yaml (see website docs)."""
 
 import asyncio
+from collections import OrderedDict
 import email as email_lib
 from contextlib import contextmanager, suppress
 import imaplib
@@ -72,6 +73,8 @@ _PREAUTH_FETCH = (
 )
 # Authentication-Results clause head (``dmarc=pass``), matched only at the start of a clause.
 _AUTH_METHOD_RE = re.compile(r"\s*(dmarc|dkim|spf)\s*=\s*([a-z]+)", re.IGNORECASE)
+# Inbound subjects kept for reply threading; replies normally go out within minutes.
+_MAX_SUBJECTS_BY_MESSAGE_ID = 512
 _NO_AUTH_RESULTS_REASON = "no Authentication-Results header"
 _UNTRUSTED_AUTHSERV_REASON = "no Authentication-Results from trusted authserv-id"
 _MISSING_AUTHSERV_REASON = "authserv-id is not configured; refusing to trust Authentication-Results"
@@ -497,6 +500,10 @@ class EmailAdapter(BasePlatformAdapter):
         # Track the last IMAP fetch attempt so the poll loop can distinguish "checked, nothing new" from
         # "the check itself failed" (#80016).
         self._thread_context: dict[str, dict[str, str]] = {}
+        # Inbound Message-ID -> subject. A reply that names the message it answers takes that
+        # message's subject; the per-sender slot above holds only the LATEST inbound mail, so
+        # while one email is still being answered the next from the same sender overwrote it.
+        self._subject_by_message_id: OrderedDict[str, str] = OrderedDict()
         logger.info("[Email] Adapter initialized for %s", self._address)
 
     def _trim_seen_uids(self) -> None:
@@ -832,6 +839,7 @@ class EmailAdapter(BasePlatformAdapter):
         # of message_type, but document-context injection gates strictly on MessageType.DOCUMENT — so DOCUMENT surfaces both.
         kinds = {att["type"] for att in attachments}
         self._thread_context[sender_addr] = {"subject": subject, "message_id": msg_data["message_id"]}
+        self._remember_subject(msg_data["message_id"], subject)
         name = msg_data["sender_name"] or sender_addr
         event = MessageEvent(
             text=text or "(empty email)", message_id=msg_data["message_id"],
@@ -859,11 +867,21 @@ class EmailAdapter(BasePlatformAdapter):
         """Domain for generated Message-IDs; ``localhost`` when EMAIL_ADDRESS lacks ``@``."""
         return (self._address.rsplit("@", 1)[-1] if "@" in self._address else "") or "localhost"
 
+    def _remember_subject(self, message_id: str, subject: str) -> None:
+        """Record an inbound message's subject by Message-ID (bounded, oldest evicted)."""
+        if not message_id:
+            return
+        self._subject_by_message_id[message_id] = subject
+        self._subject_by_message_id.move_to_end(message_id)
+        while len(self._subject_by_message_id) > _MAX_SUBJECTS_BY_MESSAGE_ID:
+            self._subject_by_message_id.popitem(last=False)
+
     def _new_reply(self, to_addr: str, body: str, reply_to_msg_id: Optional[str] = None, *,
                    attach_empty_body: bool = False) -> tuple[MIMEMultipart, str, str]:
         """Build a threaded reply skeleton. Returns ``(msg, msg_id, subject)``."""
         msg, ctx = MIMEMultipart(), self._thread_context.get(to_addr, {})
-        subject = ctx.get("subject", "Hermes Agent")
+        known = self._subject_by_message_id.get(reply_to_msg_id) if reply_to_msg_id else None
+        subject = known if known is not None else ctx.get("subject", "Hermes Agent")
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"
         original_msg_id = reply_to_msg_id or ctx.get("message_id")

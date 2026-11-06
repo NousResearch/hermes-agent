@@ -4,12 +4,6 @@ import { forceRedraw, onTerminalBackground, onTerminalForeground } from '@hermes
 import { stripAnsi } from '@hermes/shared/ansi'
 import { relativeLuminance } from '@hermes/shared/color'
 import type { MessageDeltaPayload, SubagentStatus, Usage } from '@hermes/shared/gateway-events'
-import type { UsageLimit } from '@hermes/shared/plan-usage'
-
-import { STARTUP_IMAGE, STARTUP_QUERY } from '../config/env.js'
-import { STREAM_BATCH_MS } from '../config/timing.js'
-import { buildSetupRequiredSections, setupRequiredTitle } from '../content/setup.js'
-import { usageFromTick } from '../domain/usage.js'
 import type {
   AnyGatewayEvent,
   ConfigFullResponse,
@@ -18,6 +12,7 @@ import type {
   SessionInfo,
   SessionMostRecentResponse
 } from '@hermes/shared/gateway-types'
+import type { UsageLimit } from '@hermes/shared/plan-usage'
 
 import { STARTUP_IMAGE, STARTUP_QUERY } from '../config/env.js'
 import { STREAM_BATCH_MS } from '../config/timing.js'

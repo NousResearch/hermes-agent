@@ -712,4 +712,4 @@ def test_client_credentials_token_failure_does_not_persist_or_leak_secret(idp, m
         _auth("add", "machine:google")
     assert "invalid_client" in str(excinfo.value)
     assert SECRET not in str(excinfo.value) + caplog.text
-    assert not (_home() / "auth.json").exists() or _grant("machine:google") is None
+    assert not (_home() / "auth.json").exists()

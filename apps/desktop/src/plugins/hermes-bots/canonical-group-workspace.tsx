@@ -9,6 +9,7 @@ import { CanonicalGroupHeader } from './canonical-group-header'
 import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-group-history'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { markRoomLead } from './canonical-group-lead'
+import { peerRenewalBeforeSend, usePeerRenewal } from './canonical-group-peer-join'
 import { forgetCanonicalGroup, registerCanonicalGroup } from './canonical-group-registry'
 import { CanonicalGroupRoomSettings } from './canonical-group-room-settings'
 import { attemptCanonicalGroupSend, prepareCanonicalGroupSend, readCanonicalGroupSend, replaceCanonicalGroupSend, retireCanonicalGroupSend, withdrawCanonicalGroupSend } from './canonical-group-send'
@@ -293,12 +294,15 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
     if (run.posted) {throw error}
   }
 
-  const sendIntent = async (run: SendRun) => {
+  const retireDeliveredIntent = async () => {
     if (!pending && delivered.current) {
       await retireCanonicalGroupSend(binding, delivered.current)
       delivered.current = null
     }
+  }
 
+  const sendIntent = async (run: SendRun) => {
+    await retireDeliveredIntent()
     const typed = { text: draft, attachments, thread_id: reply?.thread ?? draftThread.current }
     const replacing = editing.current
     const exact = pending ?? (replacing ? await replaceCanonicalGroupSend(binding, replacing, typed) : await prepareCanonicalGroupSend(binding, typed))
@@ -322,6 +326,10 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
     setPending(exact)
     setDraft(words.text)
     setAttachments(words.attachments)
+    // Save before waiting; Stop can still hold this intent back.
+    await peerRenewalBeforeSend(exact.binding, state, methods)
+
+    if (!alive.current) {return}
 
     if (await attemptCanonicalGroupSend(exact.binding, exact.params.event_id) === null) {
       if (alive.current) {finishedElsewhere()}
@@ -456,6 +464,8 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
     forgetCanonicalGroup(binding)
     host.notify({ kind: 'success', message: labels.disbanded(state?.room.name || binding.roomName || '') })
   }
+
+  usePeerRenewal(binding, state, methods, visible)
 
   const composerLocked = !restored || busy || !!pending
   const driver = state?.driver_status

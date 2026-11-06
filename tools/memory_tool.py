@@ -202,8 +202,11 @@ def _background_delete_gate(store, action, operations, target="memory", content=
         FAILURE_CLASS.set("staged")
         record = wa.stage_write(
             wa.MEMORY, payload,
+            # Cap the detail, not the whole summary (#143181): the fixed prefix used to eat
+            # into the same 200-char budget, so the cut always landed in the new text — the
+            # one part a reviewer of a consolidation patch needs to see.
             summary=(f"background review consolidation ({'batch' if operations is not None else action} "
-                     f"on {target}): {detail}")[:200],
+                     f"on {target}): {detail[:200]}"),
             origin=wa.current_origin())
         return json.dumps({
             "success": True, "staged": True, "proposal_staged": True, "pending_id": record["id"],

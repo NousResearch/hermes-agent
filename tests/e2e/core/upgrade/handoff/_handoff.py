@@ -47,6 +47,10 @@ UPDATE_TIMEOUT = 1500
 RESTART_WAIT_CAP_S = 120
 API_KEY = "e2e-handoff-api-server-key"
 NEXT_MARKER = "docs/e2e-handoff-next-marker.txt"
+# NEXT moves a module the gateway imports at boot and rewrites its importer, as a layout change does;
+# the relaunched gateway can serve a turn only from the moved file.
+NEXT_MOVE = ("gateway/run_background.py", "gateway/run_turn_background.py")
+NEXT_MOVE_IMPORTER = ("gateway/run_turn.py", "from gateway.run_background import", "from gateway.run_turn_background import")
 
 
 # -- refs ---------------------------------------------------------------------------------------
@@ -61,14 +65,11 @@ class Refs:
 
 @functools.cache
 def refs() -> Refs:
-    """HEAD and release N-1, resolved on first use (collection runs no git)."""
+    """HEAD and the start version (``_install_helpers.upgrade_base``), resolved on first use
+    (collection runs no git)."""
     head = I.head_sha()
-    try:
-        tag = os.environ.get("HERMES_E2E_UPGRADE_BASE") or I.git(
-            "describe", "--tags", "--match", "v20[0-9][0-9].*", "--abbrev=0", "HEAD~1", cwd=H.WORKTREE)
-        return Refs(head, tag, I.git("rev-parse", f"{tag}^{{commit}}", cwd=H.WORKTREE))
-    except AssertionError:  # shallow checkout without tags
-        return Refs(head, "", "")
+    base = I.upgrade_base()
+    return Refs(head, base.ref, base.commit) if base else Refs(head, "", "")
 
 
 def free_port() -> int:
@@ -216,13 +217,17 @@ def stage(column: str, root: Path) -> Install:
 
 
 def publish_target(inst: Install) -> str:
-    """Upstream moves: N-1 -> HEAD, HEAD -> NEXT (a child commit adding a marker file)."""
+    """Upstream moves: N-1 -> HEAD, HEAD -> NEXT (a child commit that moves a module, see ``NEXT_MOVE``)."""
     if inst.column == "n1":
         I.git("update-ref", "refs/heads/main", refs().head, cwd=inst.origin)
         inst.target = refs().head
     else:
+        importer, old, new = NEXT_MOVE_IMPORTER
+        source = I.git("show", f"{refs().head}:{importer}", cwd=H.WORKTREE)
+        assert source.count(old) == 1, f"premise: {importer} imports {NEXT_MOVE[0]} once"
         inst.target = I.publish_commit(inst.origin, inst.root, "release: e2e handoff NEXT",
-                                       {NEXT_MARKER: f"NEXT above {refs().head}\n"})
+                                       {NEXT_MARKER: f"NEXT above {refs().head}\n", importer: source.replace(old, new) + "\n"},
+                                       moves=dict([NEXT_MOVE]))
     return inst.target
 
 

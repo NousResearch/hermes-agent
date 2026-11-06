@@ -55,14 +55,16 @@ def reported_success(cp: subprocess.CompletedProcess) -> bool:
 
 
 def n1_tag() -> str:
-    """N-1: the newest release tag strictly before HEAD."""
-    return I.git("describe", "--tags", "--abbrev=0", "--match", "v20[0-9][0-9].*", "HEAD~1", cwd=H.WORKTREE)
+    """The start version's ref (``_install_helpers.upgrade_base``): N-1 unless overridden."""
+    base = I.upgrade_base()
+    if base is None:
+        pytest.skip("no release tag reachable before HEAD (fetch tags)")
+    return base.ref
 
 
 def n1_base() -> str:
-    """The commit an N-1 install sits on: N-1's tag, or ``HERMES_E2E_N1_REF`` (a patched commit
-    object, used to prove red a cell whose bug lives in N-1's own updater code)."""
-    return commit_of(os.environ.get("HERMES_E2E_N1_REF") or n1_tag())
+    """The commit an N-1 install sits on."""
+    return commit_of(n1_tag())
 
 
 def commit_of(ref: str) -> str:

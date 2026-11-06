@@ -63,6 +63,7 @@ import hermes_yaml as yaml
 
 from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core.upgrade import _helpers as H
+from tests.e2e.core.upgrade import _install_helpers as I
 from tests.fakes.fake_llm_provider import FakeLLMServer
 
 pytestmark = [
@@ -103,21 +104,11 @@ class _Refs(NamedTuple):
 
 @functools.cache
 def _refs() -> _Refs:
-    """HEAD and release N-1, resolved on first use: collection (every CI shard) runs no git.
-
-    N-1 is the nearest CalVer release tag before HEAD; HERMES_E2E_UPGRADE_BASE=<ref> starts from any
-    older ref instead (e.g. the pre-handoff v2026.9.14, or a patched base when proving a leg red
-    against the N-1 side).
-    """
+    """HEAD and the start version (``_install_helpers.upgrade_base``), resolved on first use:
+    collection (every CI shard) runs no git."""
     head = _git("rev-parse", "HEAD", cwd=H.WORKTREE)
-    try:
-        tag = os.environ.get("HERMES_E2E_UPGRADE_BASE") or _git(
-            "describe", "--tags", "--match", "v20[0-9][0-9].*", "--abbrev=0", "HEAD~1",
-            cwd=H.WORKTREE,
-        )
-        return _Refs(head, tag, _git("rev-parse", f"{tag}^{{commit}}", cwd=H.WORKTREE))
-    except AssertionError:  # shallow CI checkout without tags
-        return _Refs(head, "", "")
+    base = I.upgrade_base()
+    return _Refs(head, base.ref, base.commit) if base else _Refs(head, "", "")
 
 
 @pytest.fixture(scope="module", autouse=True)

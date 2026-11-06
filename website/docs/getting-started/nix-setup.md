@@ -963,8 +963,9 @@ direnv allow    # one-time
 The flake builds every JavaScript surface from one fixed-output pnpm store whose
 hash is in `nix/pnpm-deps-hash`. A `pnpm-lock.yaml` change that adds, removes or
 re-resolves a package changes that hash, and every frontend build fails with a
-hash mismatch until it is updated. `hermes pm update --pnpm` and a plain
-`pnpm install` rewrite the lockfile but not the hash. From the checkout, run:
+hash mismatch until it is updated. `hermes pm update --pnpm`, a plain
+`pnpm install` and the `nix develop` shell hook rewrite the lockfile but not the
+hash. From the checkout, run:
 
 ```bash
 nix run .#update-pnpm-lockfile

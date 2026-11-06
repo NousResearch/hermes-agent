@@ -755,8 +755,8 @@ direnv allow    # 仅需一次
 
 flake 从一个 fixed-output pnpm store 构建所有 JavaScript 界面，其哈希保存在
 `nix/pnpm-deps-hash`。`pnpm-lock.yaml` 中新增、删除或重新解析某个包会改变这个哈希，
-在更新之前所有前端构建都会因哈希不匹配而失败。`hermes pm update --pnpm` 和普通的
-`pnpm install` 只重写锁文件，不更新哈希。在仓库目录中运行：
+在更新之前所有前端构建都会因哈希不匹配而失败。`hermes pm update --pnpm`、普通的
+`pnpm install` 和 `nix develop` 的 shell hook 只重写锁文件，不更新哈希。在仓库目录中运行：
 
 ```bash
 nix run .#update-pnpm-lockfile

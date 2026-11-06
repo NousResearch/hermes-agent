@@ -247,6 +247,10 @@ def record_unit_child(delegation_id: str, entry: dict[str, Any]) -> None:
     result at finalize); ``recover_abandoned_delegations`` replays it. Best-effort: a failed write costs recovery
     fidelity, never the live result."""
     entry = redact_child_result(entry)
+    if isinstance(entry.get("task_index"), int):  # a stall force-finalize keeps it (``_stalled_result``)
+        with _records_lock:
+            if (record := _records.get(delegation_id)) is not None and record.get("status") in _ACTIVE_STATES:
+                record.setdefault("_finished_children", {})[entry["task_index"]] = entry
     if remote := worker_ledger():
         return remote.child(delegation_id, entry)
     try:
@@ -1302,7 +1306,13 @@ def _stalled_result(delegation_id: str, event_record: dict[str, Any]) -> dict[st
         "stall_phase": "in_tool" if stall_in_tool else "idle" if stall_in_tool is not None else None,
         "stall_grace_seconds": _STALL_GRACE_SECONDS}
     if event_record.get("is_batch"):
-        return {**_batch_crash(error, duration), **stall_meta}
+        stalled = {**_batch_crash(error, duration), **stall_meta}
+        # Children that finished before the stall keep their results; only the rest are stalled.
+        if finished := event_record.get("_finished_children"):
+            indexes = event_record.get("task_indexes") or range(len(event_record.get("goals") or []))
+            stalled["results"] = [finished.get(i) or {"task_index": i, "status": "stalled", "summary": None, "error": error}
+                                  for i in indexes]
+        return stalled
     return {**_single_crash(error, duration), "status": "stalled", "exit_reason": "stalled", **stall_meta}
 
 

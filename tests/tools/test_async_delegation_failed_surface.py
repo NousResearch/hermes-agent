@@ -5,6 +5,7 @@ failed delegation had nowhere to show up. ``failed_delegations_for_session`` rea
 These tests write real rows into a temp ``state.db`` through the module's own persistence calls.
 """
 
+import threading
 import time
 
 import pytest
@@ -78,6 +79,38 @@ def test_a_split_unit_that_failed_before_any_task_reported_lists_its_own_tasks(s
     assert [(r["task_index"], r["goal"]) for r in ad.failed_delegations_for_session("ui-1")] == [
         (1, "B goal"), (2, "C goal")]
     assert [r["delegation_id"] for r in ad.failed_delegations_for_session("ui-2")] == ["d-whole"]
+
+
+def test_a_split_unit_that_stalls_after_one_task_finished_lists_only_the_stalled_task(monkeypatch):
+    """Task 1 finishes (recorded on the unit's row), then task 2 stalls: the forced finalization keeps task 1's
+    result, so only task 2 surfaces as failed."""
+    from tools.process_registry import process_registry
+    monkeypatch.setattr(ad, "_STALE_IDLE_SECONDS", 0.3)
+    monkeypatch.setattr(ad, "_STALE_IN_TOOL_SECONDS", 0.3)
+    monkeypatch.setattr(ad, "_STALE_CHECK_INTERVAL", 0.05)
+    monkeypatch.setattr(ad, "_STALL_GRACE_SECONDS", 0.1)
+    gate = threading.Event()
+
+    def runner():
+        ad.record_unit_child("deleg_call-2", {"task_index": 1, "status": "completed", "summary": "done"})
+        gate.wait(timeout=10)
+        return {"results": []}
+
+    try:
+        res = ad.dispatch_async_delegation_batch(
+            delegation_id="deleg_call-2", task_indexes=[1, 2], goals=["A goal", "B goal", "C goal"], context=None,
+            toolsets=None, role="leaf", model="m", session_key="", origin_ui_session_id="ui-1",
+            max_async_children=2, runner=runner, progress_fn=lambda: ((0, None), False))
+        assert res["status"] == "dispatched"
+        deadline = time.time() + 5
+        while time.time() < deadline and not ad.failed_delegations_for_session("ui-1"):
+            time.sleep(0.05)
+        assert [(r["task_index"], r["goal"], r["status"]) for r in ad.failed_delegations_for_session("ui-1")] == [
+            (2, "C goal", "stalled")]
+    finally:
+        gate.set()
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
 
 
 def test_the_durable_parent_id_claims_rows_after_a_reload_remints_the_ui_session():

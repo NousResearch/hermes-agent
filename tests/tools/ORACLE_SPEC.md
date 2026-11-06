@@ -16,15 +16,18 @@ resulting file**, including exact terminators; `REFUSE(code)`; or
 version: `NOT_FOUND` and `AMBIGUOUS`; these are stable categories, not source
 text or production diagnostic strings. Unsupported operations, syntax,
 features, encodings, or situations are `OUT_OF_DOMAIN`, never `REFUSE`.
-For baseline diagnostics, use case-sensitive substring matching on the entire
-diagnostic: if `empty search text` appears, classify as `UNMAPPED`. Otherwise,
-a substring matching numeric `ambiguous (N matches)` or
-`Found N matches for old_string` with N >= 2 maps to `AMBIGUOUS` before any
-`not found` label. Otherwise, map to `NOT_FOUND` only if the complete diagnostic
-is `Could not find a match for old_string in the file`, or consists of a
-`hunk N (no hint) not found` label, where N is decimal, followed by ` — ` and
-that exact message. Do not match arbitrary `not found` substrings;
-every other diagnostic is `UNMAPPED`. UNMAPPED is a finding, not either refusal
+For baseline diagnostics, read exactly `PatchResult.error` from
+`apply_v4a_operations`. Require exactly one bullet, no further lines, and the
+prefix `Patch validation failed (no files were modified):\n  • f: `;
+otherwise map to `UNMAPPED` (including phase-2 `Could not apply hunk` and any
+`Similar sections near lines` suffix). Classify the remaining single-line payload as follows:
+if `empty search text` appears, classify as `UNMAPPED`. Otherwise, a substring
+matching numeric `ambiguous (N matches)` or `Found N matches for old_string`
+with N >= 2 maps to `AMBIGUOUS` before any `not found` label. Otherwise map to
+`NOT_FOUND` only if the entire payload is the concatenation of
+`hunk N (no hint) not found — ` and `Could not find a match for old_string in the file`,
+with N a decimal integer.
+Every other payload is `UNMAPPED`. UNMAPPED is a finding, not either refusal
 code. Do not infer a count from the input to reinterpret a production error.
 
 For a successful whole-line replacement or deletion, `site` describes the
@@ -41,7 +44,12 @@ the assignment requires a separate unterminated class and file-style
 replacement terminators, but the upstream contract does not settle whether a
 replacement must add the missing terminator. This restricted grammar retains
 unterminated-file cases whose selected line is terminated, and deletion of an
-unterminated final line. Expand only after that EOF policy is resolved.
+unterminated final line. For deletion, this is explicitly the assignment's
+rule 6: remove the consumed pair and its terminator, which is absent here; no
+terminator is inserted. Thus `b'a\nold'` with `-old` yields `b'a\n'` and site
+`(1,2)`. This is task-manager's proposed oracle policy, not an upstream EOF
+specification; a baseline disagreement is not automatically a planner bug.
+Expand replacement coverage only after that EOF policy is resolved.
 
 ## Generator-owned closed grammar
 
@@ -105,7 +113,12 @@ site comparison unavailable,
 not a pass. A production
 difference is a finding, never a
 reason to discard a generated input or alter its expected value. Validate oracle
-membership using separately constructed negative cases too.
+membership using separately constructed negative cases too. At minimum test:
+substring decoy, equal search/replacement, hint, multiple hunks, mixed LF/CRLF,
+empty file, malformed wrapper, and replacement with an unterminated winning
+candidate. An alleged empty unterminated suffix after a terminator is not a
+physical line in the canonical decoder: assert it is never generated as such,
+not that the byte-equivalent terminated file is OOD.
 
 For this grammar, an independently implemented recognizer first checks all
 structural constraints in this entire grammar, including the exact wrapper in
@@ -213,9 +226,12 @@ compared. Rule 6's ordinary deletion writes `b'a\n\nb\n'`, not
 `b'a\nb\n'`; its unique blank deletion refuses with `empty search text`, and
 its duplicate blank deletion also refuses with `empty search text`, not the
 specified ambiguous category. A separate probe used input `b'a\n'`, search
-`SUPERUNIQUE`, replacement `new`; its baseline not-found diagnostic was
+`SUPERUNIQUE`, replacement `new`; its inner not-found diagnostic was
 `Could not find a match for old_string in the file` and did not echo the
-marker. These are baseline
+marker. The full `PatchResult.error` for the rule 2 and 5 NOT_FOUND examples
+was `Patch validation failed (no files were modified):\n  • f: hunk 1 (no hint) not found — Could not find a match for old_string in the file`, which maps to NOT_FOUND.
+The additional unterminated-final deletion example above agrees with the planner.
+These are baseline
 findings, not evidence that
 this proposed contract has already been implemented. The other in-domain
 examples above had the expected success/refusal and resulting bytes. Out-of-

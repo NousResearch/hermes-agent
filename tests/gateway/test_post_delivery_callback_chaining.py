@@ -102,3 +102,39 @@ class TestPostDeliveryCallbackAsyncChaining:
         _invoke(cb)
         assert fired == ["sync", "async"]
 
+
+
+class TestCarryOverAcrossGenerations:
+    """A turn's progress-bubble cleanup must survive a newer turn taking the session's slot
+    before the older reply is delivered; ordinary stale callbacks stay dropped."""
+
+    def test_older_cleanup_fires_after_newer_generation_overwrites(self, adapter):
+        fired = []
+        adapter.register_post_delivery_callback("s", lambda: fired.append("old-release"), generation=1)
+        adapter.register_post_delivery_callback(
+            "s", lambda: fired.append("old-cleanup"), generation=1, carry_over=True)
+        adapter.register_post_delivery_callback("s", lambda: fired.append("new-release"), generation=2)
+        assert adapter.pop_post_delivery_callback("s", generation=1) is None
+        _invoke(adapter.pop_post_delivery_callback("s", generation=2))
+        assert fired == ["old-cleanup", "new-release"]
+
+    def test_stale_cleanup_registered_after_newer_generation_still_fires(self, adapter):
+        fired = []
+        adapter.register_post_delivery_callback("s", lambda: fired.append("new-release"), generation=2)
+        adapter.register_post_delivery_callback("s", lambda: fired.append("stale"), generation=1)
+        adapter.register_post_delivery_callback(
+            "s", lambda: fired.append("old-cleanup"), generation=1, carry_over=True)
+        _invoke(adapter.pop_post_delivery_callback("s", generation=2))
+        assert fired == ["new-release", "old-cleanup"]
+
+    def test_carried_cleanup_fires_once_across_two_supersessions(self, adapter):
+        fired = []
+        adapter.register_post_delivery_callback("s", lambda: fired.append("c1"), generation=1, carry_over=True)
+        adapter.register_post_delivery_callback("s", lambda: fired.append("c2"), generation=2, carry_over=True)
+        adapter.register_post_delivery_callback("s", lambda: fired.append("r3"), generation=3)
+        _invoke(adapter.pop_post_delivery_callback("s", generation=3))
+        assert fired == ["c1", "c2", "r3"]
+        fired.clear()
+        adapter.register_post_delivery_callback("s", lambda: fired.append("r4"), generation=4)
+        _invoke(adapter.pop_post_delivery_callback("s", generation=4))
+        assert fired == ["r4"]

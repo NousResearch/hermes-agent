@@ -218,23 +218,19 @@ class SessionTitlesMixin:
         already closed (``ws_orphan_reap``, ``startup_orphan_reap``, ``agent_close``) is still the
         user's chat, and their Archive means "done with it". So the lineage's recoverable
         ``end_reason`` is cleared (``ended_at`` stays, so no orphan sweep re-stamps the closed row
-        recoverable and nothing resurrects it), its "Bot Chat" title is NULLed and it is un-hidden
-        (a VISIBLE row the reaper already closed is the exception: kept for #92687, as on main):
+        recoverable and nothing resurrects it), its "Bot Chat" title is NULLed and it is un-hidden:
         it is an ordinary archived conversation now, listed under Archived and back in the sidebar
         if the user unarchives it. The idle sweep, bulk archive and the reapers never call this.
         Returns the ids whose title was released."""
         from hermes_state_sessions import _LINEAGE_CTE_SQL
         lineage = (session_id, session_id)
-        held = conn.execute(
-            _LINEAGE_CTE_SQL + "SELECT id, hidden FROM sessions WHERE id IN (SELECT id FROM lineage) AND title = ?",
+        # Visible reaped rows retire too: no reaper archives, so this call is always the user's.
+        # A legacy accidental archive (old code, title + recoverable stamp kept) never comes here
+        # and still resurrects via #92687.
+        held = [sid for (sid,) in conn.execute(
+            _LINEAGE_CTE_SQL + "SELECT id FROM sessions WHERE id IN (SELECT id FROM lineage) AND title = ?",
             (*lineage, self.CANONICAL_BOT_CHAT_TITLE),
-        ).fetchall()
-        tip_reason = conn.execute("SELECT end_reason FROM sessions WHERE id = ?",
-                                  (self._compression_tip_on(conn, session_id),)).fetchone()
-        # A VISIBLE reaped row keeps main's #92687 resurrection: nothing tells its Archive apart from
-        # the reaper's own. A hidden one is Desktop's canonical chat, whose only archive is the user's.
-        held = [sid for sid, hidden in held
-                if hidden or bot_chat_title_released(True, False, tip_reason[0] if tip_reason else None)]
+        ).fetchall()]
         if not held:
             return []
         conn.execute(

@@ -68,3 +68,28 @@ async def test_delivery_after_archive_of_delivery_minted_bot_chat_mints_fresh(hi
     finally:
         await owner.close()
         store.close_all_db_handles()
+
+
+@pytest.mark.parametrize('writer', ['sidebar', 'set_session_archived'])
+def test_archive_of_visible_reaped_bot_chat_retires_the_name(tmp_path, writer):
+    """A VISIBLE canonical (delivery/cron/``-c --create-if-missing`` mint) the reaper already closed is
+    still the user's chat: their Archive retires it, or the roster lookup un-archives it on the next
+    poll and clicks keep landing in it."""
+    db = SessionDB(db_path=tmp_path / 'state.db')
+    try:
+        epoch = rt.begin_runtime_epoch(db, instance_id='owner')
+        db.create_session('canon', source='gateway_botmode')
+        assert db.set_session_title('canon', SessionDB.CANONICAL_BOT_CHAT_TITLE)
+        db.end_session('canon', 'ws_orphan_reap')
+        if writer == 'sidebar':
+            rt.mutate_runtime_session(db, epoch=epoch, principal_id='human', session_id='canon', request_id='arch',
+                                      expected_revision=0, operation='sidebar', payload={'archived': True})
+        else:
+            assert db.set_session_archived('canon', True)
+        row = db.get_session('canon')
+        assert (row['archived'], row['title'], row['end_reason']) == (1, None, None)
+        assert db.get_session_by_title(SessionDB.CANONICAL_BOT_CHAT_TITLE) is None
+        assert not db.unarchive_recoverable_session('canon')
+    finally:
+        db.close()
+

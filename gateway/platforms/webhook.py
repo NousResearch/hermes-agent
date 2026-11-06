@@ -212,6 +212,8 @@ class WebhookAdapter(BasePlatformAdapter):
     serves_profile_prefix: bool = True
 
     def __init__(self, config: PlatformConfig):
+        from hermes_constants import get_hermes_home
+
         super().__init__(config, Platform.WEBHOOK)
         extra = config.extra
         # Empty string / null host normalises to None ("bind all families").
@@ -219,6 +221,8 @@ class WebhookAdapter(BasePlatformAdapter):
         self._port: int = int(extra.get("port", DEFAULT_PORT))
         self._global_secret: str = extra.get("secret", "")
         self._static_routes: dict[str, dict] = extra.get("routes", {})
+        # Durable admission reloads routes under the target profile, but the store belongs to the listener.
+        self._subscriptions_path = get_hermes_home() / _DYNAMIC_ROUTES_FILENAME
         self._dynamic_routes: dict[str, dict] = {}
         self._dynamic_routes_stat: Optional[tuple] = None
         self._routes: dict[str, dict] = dict(self._static_routes)
@@ -442,9 +446,8 @@ class WebhookAdapter(BasePlatformAdapter):
         atomic rename, which also gives the file a new inode, so a restored mtime cannot hide a change;
         ``file_cache_version`` also catches a same-tick same-size edit made in place (a hand edit).
         """
-        from hermes_constants import get_hermes_home
         from utils import file_cache_version
-        subs_path = get_hermes_home() / _DYNAMIC_ROUTES_FILENAME
+        subs_path = self._subscriptions_path
         try:
             stat_key = file_cache_version(subs_path)
         except FileNotFoundError:

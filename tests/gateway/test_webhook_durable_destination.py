@@ -55,6 +55,65 @@ async def test_destination_commits_with_input_and_survives_adapter_restart():
 
 
 @pytest.mark.asyncio
+async def test_profile_bound_dynamic_webhook_admits_from_listener_store(tmp_path, monkeypatch):
+    """A profile-bound route lives only in the shared listener's store (#142889)."""
+    import hermes_state
+    from gateway.config import GatewayConfig, Platform
+    from gateway.run import GatewayRunner
+    from gateway.run_runtime import _build_profile_authority
+    from gateway.session_authorities import SessionAuthorities
+
+    owner = (tmp_path / "hermes").resolve()
+    worker = owner / "profiles" / "worker"
+    worker.mkdir(parents=True)
+    homes = [("default", owner), ("worker", worker)]
+    monkeypatch.setenv("HERMES_HOME", str(owner))
+    # Undo the per-test DB pin so each temporary profile gets its own ledger.
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
+    monkeypatch.setattr("hermes_cli.profiles._get_default_hermes_home", lambda: owner)
+    monkeypatch.setattr("hermes_cli.profiles._get_profiles_root", lambda: owner / "profiles")
+    monkeypatch.setattr("hermes_cli.profiles.profiles_to_serve", lambda *args, **kwargs: homes)
+    (owner / "webhook_subscriptions.json").write_text(json.dumps({
+        "fixture": {"profile": "worker", "secret": "worker-secret", "prompt": "{text}", "deliver": "log"}
+    }), encoding="utf-8")
+
+    runner = GatewayRunner(GatewayConfig(multiplex_profiles=True))
+    runner.config._runtime_profile_homes = homes
+    runner._primary_profile_name = "default"
+    runner.session_authorities = SessionAuthorities(owner, multiplexed=True)
+    runner.session_runtime_descriptor = {"instance_id": "webhook-route-test", "parked_profiles": {}}
+    try:
+        primary = await _build_profile_authority(runner, "default", owner, register=True)
+        routed = await _build_profile_authority(runner, "worker", worker, register=False)
+        for authority in (primary, routed):
+            monkeypatch.setattr(authority, "_schedule", lambda ref: None)
+        adapter = WebhookAdapter(PlatformConfig(enabled=True, extra={}))
+        adapter.gateway_runner = runner
+        runner.adapters[Platform.WEBHOOK] = adapter
+        runner._wire_adapter_handlers(adapter)
+        app = web.Application()
+        app.router.add_post("/p/{profile}/webhooks/{route_name}", adapter._handle_webhook)
+        body = b'{"text":"hello"}'
+        headers = {
+            "X-GitHub-Delivery": "profile-bound-dynamic",
+            "X-Hub-Signature-256": "sha256=" + hmac.new(b"worker-secret", body, hashlib.sha256).hexdigest(),
+        }
+        async with TestClient(TestServer(app)) as client:
+            url = "/p/worker/webhooks/fixture"
+            response = await client.post(url, data=body, headers=headers)
+            assert response.status == 202, await response.text()
+            duplicate = await client.post(url, data=body, headers=headers)
+            assert duplicate.status == 200
+            assert (await duplicate.json())["status"] == "duplicate"
+        rows = routed.db._read_all("SELECT request_id FROM session_admissions")
+        assert [row["request_id"] for row in rows] == ["profile-bound-dynamic"]
+        assert not primary.db._read_all("SELECT request_id FROM session_admissions")
+    finally:
+        for authority in runner.session_authorities:
+            authority.db.close()
+
+
+@pytest.mark.asyncio
 async def test_later_automation_completion_keeps_original_destination_resolvable():
     """F28: a process/watch completion admitted for the same webhook chat never competes with the signed origin."""
     config = PlatformConfig(enabled=True, extra={'secret': 'owned-secret', 'routes': {

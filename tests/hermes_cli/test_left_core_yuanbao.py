@@ -83,3 +83,17 @@ def test_a_fresh_or_shipped_default_home_installs_nothing(tmp_path):
         said = []
         assert lcm.migrate_home(home, install=lambda name: pytest.fail("installed"), say=said.append) == []
         assert said == []
+
+
+def test_a_secondary_whose_credentials_come_from_its_secret_scope_uses_yuanbao(tmp_path):
+    """A multiplexed secondary's external secret sources reach only the scope bound for it, never its .env."""
+    from agent.secret_scope import reset_secret_scope, set_secret_scope
+    home = _home(tmp_path)
+    other = tmp_path / "other"
+    creds = {"YUANBAO_APP_ID": "a", "YUANBAO_APP_SECRET": "s"}
+    for bound, in_use in ((home, True), (other, False)):
+        token = set_secret_scope(creds, profile_home=str(bound))
+        try:
+            assert lcm.yuanbao_in_use(home) is in_use
+        finally:
+            reset_secret_scope(token)

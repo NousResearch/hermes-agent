@@ -30,7 +30,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Check out feature branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ github.sha }}
 
@@ -42,7 +42,7 @@ jobs:
           prune-python-cache: "true"
 
       - name: Run OAuth tests
-        run: ${{ env.HERMES_PYTHON }} -m pytest -q tests/hermes_cli/test_plugin_oauth.py
+        run: "$HERMES_PYTHON" -m pytest -q tests/hermes_cli/test_plugin_oauth.py
         env:
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""

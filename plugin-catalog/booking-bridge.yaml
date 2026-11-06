@@ -1,14 +1,14 @@
 name: booking-bridge
 repo: https://github.com/kyle-bartlett/booking-bridge
-sha: "06e5f6239c5bebcf08dbb3b9a8cd36d482434280"
-version: "1.0.2"
+sha: "562c608dc9b1c165131c97696ade8971035473fa"
+version: "1.0.3"
 title: Booking Bridge
-description: "Find free time, then book, list, reschedule and cancel real Google Calendar consults (for example a Strategy consult) from Hermes. Signs in with the user's own Google OAuth client through hermes auth add booking-bridge:google; all calls go through credentialed_provider_request to www.googleapis.com only. Disclosure: network calls to Google Calendar API v3 only (scopes calendar.events and calendar.freebusy); write tools (book, reschedule, cancel) change the user's calendar, can email invitations to listed attendees, require confirm=true, and refuse to run (changing nothing) in cron runs, single-query (-q) runs and the webhook, msgraph_webhook and api_server platforms, while an interactive CLI, TUI, Desktop or human chat-gateway session runs them after the user agrees in the conversation (a conversational confirm, not a Hermes approval card); booked events carry a private hash property to prevent duplicates; revoke with hermes auth logout booking-bridge:google; no shell commands, background processes, telemetry or stored credentials."
+description: "Find free time, then book, list, reschedule and cancel real Google Calendar consults (for example a Strategy consult) from Hermes. Signs in with the user's own Google OAuth client through hermes auth add booking-bridge:google; all calls go through credentialed_provider_request to www.googleapis.com only. Disclosure: network calls to Google Calendar API v3 only (scopes calendar.events and calendar.freebusy); write tools (book, reschedule, cancel) change the user's calendar, can email invitations to listed attendees, and require confirm=true. They run only in an interactive CLI, TUI, Desktop or ACP session and in named human chat platforms (Telegram, Discord, Slack, WhatsApp, Signal, Mattermost, Matrix, BlueBubbles); they refuse, changing nothing, in cron, single-query and one-shot runs, kanban workers, webhook, msgraph_webhook and api_server, email, SMS, and any unrecognized platform or session source. The confirm is conversational, not a Hermes approval card; booked events carry a private hash property to prevent duplicates; revoke with hermes auth logout booking-bridge:google; no shell commands, background processes, telemetry or stored credentials."
 maintainer: kyle-bartlett
 tier: community
 category: tools
 requires_hermes: ">=0.22.7"
-docs_url: https://github.com/kyle-bartlett/booking-bridge/blob/06e5f6239c5bebcf08dbb3b9a8cd36d482434280/README.md
+docs_url: https://github.com/kyle-bartlett/booking-bridge/blob/562c608dc9b1c165131c97696ade8971035473fa/README.md
 readme: true
 capabilities:
   provides_tools: [list_availability, list_upcoming, book_event, reschedule_event, cancel_event]
@@ -18,4 +18,5 @@ capabilities:
 known_issues:
   - "Needs the user's own Google Cloud OAuth client (Desktop app) with the Calendar API enabled; sign in once with hermes auth add booking-bridge:google."
   - "Google may show an unverified-app warning for a personal OAuth client in testing mode."
-  - "Write tools use a conversational confirm=true rather than a Hermes approval card, because Hermes does not route plugin tool calls through its dangerous-command approval prompt."
+  - "Write tools use a conversational confirm=true rather than a Hermes approval card: Hermes does not route plugin tool calls through its approval prompt, and ctx.ask_choice only works inside a user-typed slash command, not an agent tool call."
+  - "Known limit: a one-shot (-q / -z) turn submitted through the gateway daemon carries its finite flag in a private Hermes context variable plugins cannot read. It is refused when Hermes also sets the one-shot session markers (HERMES_SINGLE_QUERY_SESSION or a oneshot session source), but a finite daemon turn with neither marker on a local surface would still run after confirm=true."

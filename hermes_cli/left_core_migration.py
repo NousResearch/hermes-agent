@@ -126,7 +126,11 @@ def yuanbao_in_use(home: Path, *, process_env: bool = False) -> bool:
     (:func:`_home_env`; the process env too for the launch home with *process_env*), the platform on in its
     gateway config (:func:`platform_configured_on`), or the ``yuanbao`` / ``hermes-yuanbao`` toolset selected
     for another platform or in the top-level ``toolsets`` list. The shipped ``yuanbao: [hermes-yuanbao]``
-    platform_toolsets row is not use: it scoped Yuanbao's own sessions, which need the platform on."""
+    platform_toolsets row is not use: it scoped Yuanbao's own sessions, which need the platform on. Nothing
+    counts when ``plugins.disabled`` names ``platforms/yuanbao``, core's manifest name ``yuanbao-platform`` or
+    ``yuanbao``: core never loaded the adapter there."""
+    if _plugin_lists(home, "yuanbao", also=("yuanbao-platform",))[1]:  # core's loader never ran it there
+        return False
     if all(any(_home_env(home, name, process_env=process_env) for name in group) for group in _YUANBAO_ENV_GATE):
         return True
     if platform_configured_on(home, "yuanbao"):
@@ -172,9 +176,10 @@ def spotify_in_use(home: Path, *, process_env: bool = False) -> bool:
     return _toolset_listed(_read_config(home), frozenset({"spotify"}))
 
 
-def _plugin_lists(home: Path, plugin: str) -> tuple[bool, bool]:
-    """Whether *plugin*'s key or name is in *home*'s ``plugins.enabled`` / ``plugins.disabled``, read with the
-    managed overlay applied like the loader's config, so an administrator's pinned list counts."""
+def _plugin_lists(home: Path, plugin: str, *, also: tuple[str, ...] = ()) -> tuple[bool, bool]:
+    """Whether *plugin*'s key or name (or a name in *also*) is in *home*'s ``plugins.enabled`` /
+    ``plugins.disabled``, read with the managed overlay applied like the loader's config, so an
+    administrator's pinned list counts."""
     from gateway import config_loader
     feature = next(f for f in LEFT_CORE if f.plugin == plugin)
     try:
@@ -186,7 +191,7 @@ def _plugin_lists(home: Path, plugin: str) -> tuple[bool, bool]:
 
     def listed(key: str) -> bool:
         names = plugins.get(key)
-        return isinstance(names, list) and any(str(n) in (feature.plugin_key, feature.plugin) for n in names)
+        return isinstance(names, list) and any(str(n) in (feature.plugin_key, feature.plugin, *also) for n in names)
     return listed("enabled"), listed("disabled")
 
 
@@ -558,7 +563,7 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
     ),
     LeftCoreFeature(
         # YUANBAO_APP_KEY (the legacy App ID name) stays on local_env_policy's own short list, as core had it.
-        plugin="yuanbao", label="Yuanbao", in_use=yuanbao_in_use,
+        plugin="yuanbao", label="Yuanbao", in_use=yuanbao_in_use, plugin_key="platforms/yuanbao",
         unchanged="YUANBAO_* settings, platforms.yuanbao, YUANBAO_HOME_CHANNEL and the yb_* tool names are unchanged",
         secret_env=("YUANBAO_APP_SECRET",),
         private_env=("YUANBAO_APP_ID", "YUANBAO_BOT_ID", "YUANBAO_WS_URL", "YUANBAO_API_DOMAIN", "YUANBAO_ROUTE_ENV",

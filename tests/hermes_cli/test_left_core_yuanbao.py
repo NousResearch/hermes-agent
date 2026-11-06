@@ -97,3 +97,14 @@ def test_a_secondary_whose_credentials_come_from_its_secret_scope_uses_yuanbao(t
             assert lcm.yuanbao_in_use(home) is in_use
         finally:
             reset_secret_scope(token)
+
+
+@pytest.mark.parametrize("name", ["platforms/yuanbao", "yuanbao-platform", "yuanbao"])
+def test_plugins_disabled_naming_the_bundled_adapter_is_not_use_and_still_disables_the_plugin(tmp_path, name):
+    from hermes_cli.plugins_discovery import gate_manifest
+    from hermes_cli.plugins_manifest import PluginManifest
+    home = _home(tmp_path, env="YUANBAO_APP_ID=a\nYUANBAO_APP_SECRET=s\n",
+                 config=f"plugins:\n  disabled: [{name}]\n")
+    assert lcm.yuanbao_in_use(home) is False
+    manifest = PluginManifest(name="yuanbao", source="user", path=str(home / "plugins" / "yuanbao"), key="yuanbao")
+    assert gate_manifest(manifest, {"platforms/yuanbao"}, None).error == "disabled via config"

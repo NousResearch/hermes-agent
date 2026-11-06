@@ -773,6 +773,33 @@ def _path_env_key(run_env: dict) -> str | None:
     return next((k for k in run_env if k.upper() == "PATH"), None) if _IS_WINDOWS else "PATH"
 
 
+def apply_bot_desktop_screen_env(env: dict) -> dict:
+    """Send a GUI launch from *env* to this profile's running Bot Desktop screen; returns *env*.
+
+    One producer for BOTH terminal child-env lanes — a foreground command (``_make_run_env``) and a
+    background spawn (``ProcessRegistry._spawn_env``) — so the two cannot drift: a background GUI launch
+    without the overlay died with ``cannot open display`` (#150076, the background half of #125830). The
+    values are the launcher's published DISPLAY/XAUTHORITY/DBUS; ``published_env()`` is the pure read (no
+    activity stamp, so a plain ``ls`` must not keep the screen alive past idle_stop_minutes), and they win
+    over the seat env the way an inline ``DISPLAY=:0 cmd`` prefix does for bash. Screen down, module
+    missing, unreadable state dir → *env* passes through untouched. ``WAYLAND_DISPLAY`` is dropped because
+    the screen is X11: a leaked Wayland socket flips GTK/Chromium backends.
+    """
+    published = _published_bot_desktop_env()
+    if published:
+        env.update(published)
+        env.pop("WAYLAND_DISPLAY", None)
+    return env
+
+
+def _published_bot_desktop_env() -> dict[str, str]:
+    try:
+        from tools.bot_desktop.runtime import published_env
+        return dict(published_env())
+    except Exception:  # health: allow BLE001 -- an optional feature's probe must never break every terminal command
+        return {}
+
+
 def _make_run_env(env: dict) -> dict:
     """Build a run environment with a sane PATH and provider-var stripping. The process env is
     the LAUNCH profile's; under a routed home override its ``.env`` residue is dropped first
@@ -788,19 +815,9 @@ def _make_run_env(env: dict) -> dict:
     )
     # While this profile's Bot Desktop is running, its DISPLAY/XAUTHORITY/DBUS ride along so GUI
     # apps the agent launches from the terminal open on the Bot Screen the user is watching, not
-    # on the user's own seat (#125830). published_env() is the pure read (no activity stamp — a
-    # plain ``ls`` must not keep the screen alive past idle_stop_minutes), and it wins over the
-    # login snapshot's seat DISPLAY; a user who wants their own seat uses an inline
-    # ``DISPLAY=:0 cmd`` prefix, which bash applies after this env. Empty (or module missing) →
-    # the seat env passes through untouched.
-    try:
-        from tools.bot_desktop.runtime import published_env
-        published = published_env()
-    except Exception:
-        published = {}
-    if published:
-        run_env.update(published)
-        run_env.pop("WAYLAND_DISPLAY", None)  # X11 desktop; a leaked Wayland socket flips GTK/Chromium backends
+    # on the user's own seat (#125830); the overlay is shared with the background spawn lane, which
+    # had been left without it (#150076).
+    apply_bot_desktop_screen_env(run_env)
     return run_env
 
 

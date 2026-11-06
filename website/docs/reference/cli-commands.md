@@ -1781,6 +1781,8 @@ TUI use for image paste: macOS `pngpaste`, then `osascript`; Windows PowerShell 
 PNG, except that a copied image *file* (Windows/WSL file drop) is copied as it is. The command
 reads only this machine's clipboard: it needs no running gateway and reads no session store or
 profile file, so a client whose gateway runs on another machine calls it where the user is.
+Under NixOS container mode the command runs inside the managed container, like every `hermes`
+subcommand, so it cannot see the host's clipboard and `--out` is a path inside the container.
 
 | Option | Description |
 |--------|-------------|

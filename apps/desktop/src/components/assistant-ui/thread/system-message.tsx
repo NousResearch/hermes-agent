@@ -13,7 +13,11 @@ import { cn } from '@/lib/utils'
 
 const SLASH_STATUS_RE = /^slash:(?<command>\/[^\n]+)\n(?<output>[\s\S]*)$/
 const STEER_NOTE_RE = /^steer:(?<text>[\s\S]+)$/
-const REVIEW_NOTE_RE = /^review:(?<label>[^:\n]+):?\s*(?<detail>[\s\S]*)$/
+// The label ends at a colon — the backend's English summary uses an ASCII one,
+// but a localized summary may use its script's own (zh "自我改进回顾：…"). Accept
+// both, or the whole line lands in the label, which never wraps (`shrink-0`
+// below) and overflows the transcript on narrow panes.
+const REVIEW_NOTE_RE = /^review:(?<label>[^:\n：]+)[：:]?\s*(?<detail>[\s\S]*)$/
 // A usage-window plan gauge exactly as the backend renders it: `[` + 10 cells of
 // `|` then spaces + `]`. Only a window plan's /usage output carries one.
 const USAGE_WINDOW_GAUGE_RE = /\[(?=[| ]{10}\])\|* *\]/

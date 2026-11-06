@@ -124,24 +124,25 @@ class TestProviderAdditiveBuiltinMemory:
         assert agent._memory_enabled is True
         assert agent._memory_store is not None
 
-    def test_provider_with_memory_enabled_true_no_override_log(self, monkeypatch, tmp_path, caplog):
-        """When memory_enabled is already true and a provider is configured,
-        no override log message is emitted (the info log only fires on the
-        false→true override)."""
+    @pytest.mark.parametrize(("memory_enabled", "expected_logs"), [(False, 1), (True, 0)])
+    def test_provider_override_logging_matches_memory_transition(
+        self, monkeypatch, tmp_path, caplog, memory_enabled, expected_logs,
+    ):
+        """Capture INFO and assert exactly one log on the false-to-true transition."""
         import logging
 
+        caplog.set_level(logging.INFO, logger="tools.memory_tool")
         agent = _make_agent(
             monkeypatch,
             tmp_path,
-            {"memory_enabled": True, "user_profile_enabled": True, "provider": "fake"},
+            {"memory_enabled": memory_enabled, "user_profile_enabled": True, "provider": "fake"},
         )
         override_logs = [
             r for r in caplog.records
             if "enabling built-in MEMORY.md injection" in r.getMessage()
         ]
-        assert len(override_logs) == 0, (
-            "no override log expected when memory_enabled was already true"
-        )
+        assert len(override_logs) == expected_logs
+        assert all(record.levelno == logging.INFO for record in override_logs)
         assert agent._memory_enabled is True
 
     def test_empty_provider_string_does_not_force(self, monkeypatch, tmp_path):

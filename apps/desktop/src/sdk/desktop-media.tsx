@@ -7,7 +7,7 @@ import type { PlayerAgentOperation, PlayerAgentResponse } from '@/lib/player-con
 import type { PlayerCommand, PlayerMediaJobCapabilities, PlayerSnapshot } from '@/lib/player-contract'
 import { isPlayerSource } from '@/lib/player-services'
 
-type SafeCommand = Exclude<PlayerCommand, { type: 'bounds' }>
+type SafeCommand = Exclude<PlayerCommand, { type: 'bounds' | 'release' }>
 export interface MediaPlayerController {
   available: boolean
   snapshot: PlayerSnapshot | null
@@ -33,6 +33,9 @@ export interface DesktopMedia {
 }
 
 let activeSurface: { owner: symbol; lease: symbol } | null = null
+// A floating guest survives Surface unmount. Retain its adapter's ownership
+// until unload so teardown still reaches it when its pane is hidden.
+let playerOwner: symbol | null = null
 let boundsRevision = Date.now() * 1000
 
 const OVERLAYS =
@@ -139,12 +142,18 @@ export function createDesktopMedia(pluginId: string, track: (dispose: () => void
   }
 
   const dispose = () => {
+    if (disposed) {return}
     disposed = true
     releaseCallbacks.forEach(fn => fn())
     releaseCallbacks.clear()
 
     if (activeSurface?.owner === owner) {activeSurface = null}
     subscribers.clear()
+
+    if (playerOwner === owner) {
+      playerOwner = null
+      void window.hermesDesktop?.player?.request({ type: 'release' }).catch(() => undefined)
+    }
   }
 
   track(dispose)
@@ -169,6 +178,12 @@ export function createDesktopMedia(pluginId: string, track: (dispose: () => void
         if (disposed) {throw new Error('Plugin media capability is disposed')}
 
         if (!bridge) {throw new Error('HermesTV player is unavailable')}
+
+        if (value.type !== 'status') {
+          if (playerOwner && playerOwner !== owner) {throw new Error('Player belongs to another plugin')}
+          playerOwner = owner
+        }
+
         const version = stateVersion
         const next = await bridge.request(value)
 

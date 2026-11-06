@@ -259,11 +259,16 @@ The proposed controller currently includes `usePlayer()` and `Surface`, plus
 `setupMediaHelpers()`, `revealMediaJob()`, and `clearLocalData()`. A plugin must
 call `link()` in an explicit user action before the active chat can exchange
 player context; the host binds that link to the active connection, profile,
-session, and owning window. `unlink()` removes it. Disabling or unloading the
-plugin disposes the adapter and hides its surface. Closing native guests,
-revoking linked authority, and settling jobs on disable/uninstall still need
-an agreed ownership contract and acceptance tests; hiding a pane is not the
-same operation. These names and semantics may change during review.
+session, and owning window. `unlink()` removes it. In this candidate, unloading
+the adapter releases its native guest (including a popped-out player), revokes
+the linked chat authority and initiates cancellation of its media work. Provider
+sign-in data is retained. Merely unmounting or hiding the pane preserves playback;
+the adapter remembers ownership even while its Surface is unmounted. One adapter
+at a time may issue mutating player commands in a window; an observer or a retired
+adapter cannot release another adapter's player. Regression tests cover the
+unmount/unload distinction and native release. These are proposed semantics,
+not an accepted public ownership contract; multi-plugin lifecycle review and
+native acceptance on this new source build remain required.
 
 The initial job path is **YouTube only**. Transcript and download requests use
 the captured YouTube watch ID, not a plugin-supplied URL. Downloads are saved to

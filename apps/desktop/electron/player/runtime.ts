@@ -1,5 +1,9 @@
 import * as electronApi from 'electron'
 
+import type { PlayerSnapshot } from '../../src/lib/player-contract'
+
+import { redactError } from './manager-state'
+
 const READY_TIMEOUT_MS = 60_000
 const COMPONENT_ID_RE = /^[A-Za-z0-9._+:-]{1,120}$/
 
@@ -99,4 +103,19 @@ export async function resolveWidevineReadiness(
       clearTimeout(timer)
     }
   }
+}
+
+/** Resolve an injected recipient runtime probe through the same bounded error policy. */
+export async function resolvePlayerRuntime(
+  override?: () => Promise<PlayerSnapshot['runtime']>
+): Promise<PlayerSnapshot['runtime']> {
+  if (override) {
+    try {
+      return await override()
+    } catch (error) {
+      return { state: 'unsupported', detail: redactError(error) }
+    }
+  }
+
+  return resolveWidevineReadiness()
 }

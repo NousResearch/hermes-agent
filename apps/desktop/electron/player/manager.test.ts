@@ -95,4 +95,34 @@ describe('PlayerManager media job routing', () => {
       }
     }
   )
+
+  it('releases a floating guest, chat authority and media work without clearing provider data', async () => {
+    const disposeScope = vi.fn()
+    const manager = new PlayerManager({ mediaJobs: { disposeScope } as unknown as PlayerMediaJobHost })
+    const owner = { id: 7, isDestroyed: () => false } as unknown as BrowserWindow
+    const closeGuest = vi.fn()
+    const destroyWindow = vi.fn()
+
+    const slot = {
+      owner, ownerId: 7, presentation: 'floating', authWindows: new Set(),
+      guest: { webContents: { isDestroyed: () => false, close: closeGuest } },
+      floatWindow: { isDestroyed: () => false, destroy: destroyWindow, contentView: { removeChildView: vi.fn() } },
+      floatBoundsTracking: null, mediaPoll: null
+    } as unknown as Slot
+
+    const internals = manager as unknown as { slot: Slot; awarenessLink: AwarenessLink | null }
+    internals.slot = slot
+    internals.awarenessLink = { ownerId: 7, linkId: 'active-link', scope }
+
+    const result = await manager.request(owner, { type: 'release' } as never)
+    expect(result.status).toBe('closed')
+    expect(closeGuest).toHaveBeenCalledOnce()
+    expect(destroyWindow).toHaveBeenCalledOnce()
+    expect(disposeScope).toHaveBeenCalledWith(scope)
+    expect(internals.awarenessLink).toBeNull()
+    const context = await manager.agentRequest(owner, { scope, operation: { type: 'context' } })
+    expect(context.error?.code).toBe('player-awareness-not-linked')
+    manager.dispose()
+  })
+
 })

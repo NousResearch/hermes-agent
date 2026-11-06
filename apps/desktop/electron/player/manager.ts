@@ -36,7 +36,6 @@ import {
   fixtureOrigin,
   initialSnapshot,
   isDocked,
-  redactError,
   safePageText,
   type Slot,
   validSeconds
@@ -50,7 +49,7 @@ import {
   isAllowedPlayerPopup,
   safePlayerOrigin
 } from './policy'
-import { resolveWidevineReadiness } from './runtime'
+import { resolvePlayerRuntime } from './runtime'
 import { resetServiceScopedState } from './service-scope'
 
 const PARTITION = 'persist:hermes-player'
@@ -565,6 +564,21 @@ export class PlayerManager {
         this.closePlayer(owner)
 
         return
+      case 'release': {
+        // Unloading is stronger than hiding a pane or closing a video: revoke
+        // the chat lease and stop its local work, while retaining sign-in data.
+        const scope = this.awarenessLink?.ownerId === owner.id ? this.awarenessLink.scope : null
+
+        if (scope) {
+          this.awarenessLink = null
+          this.invalidateContexts()
+          void this.options.mediaJobs?.disposeScope?.(scope)
+        }
+
+        this.closePlayer(owner)
+
+        return
+      }
     }
   }
 
@@ -774,7 +788,7 @@ export class PlayerManager {
   private async resolveSourceRuntime(source: PlayerSource): Promise<PlayerSnapshot['runtime']> {
     return this.fixture || !getPlayerService(source).requiresWidevine
       ? { state: 'not-required', detail: 'Widevine readiness is not required for this service or local fixtures' }
-      : this.resolveRuntime()
+      : resolvePlayerRuntime(this.options.runtimeReady)
   }
 
   private allowRuntime(
@@ -808,18 +822,6 @@ export class PlayerManager {
 
   private serviceHomeUrl(source: PlayerSource): string {
     return this.fixture ? this.options.fixtureUrl! : getPlayerService(source).homeUrl
-  }
-
-  private async resolveRuntime(): Promise<PlayerSnapshot['runtime']> {
-    if (this.options.runtimeReady) {
-      try {
-        return await this.options.runtimeReady()
-      } catch (error) {
-        return { state: 'unsupported', detail: redactError(error) }
-      }
-    }
-
-    return resolveWidevineReadiness()
   }
 
   private awarenessLinkState(owner: BrowserWindow): PlayerAwarenessLinkState {

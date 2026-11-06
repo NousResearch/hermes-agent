@@ -38,6 +38,8 @@ export type PlayerCommand =
   | { type: 'pin'; pinned: boolean }
   | { type: 'fullscreen'; fullscreen: boolean }
   | { type: 'close' }
+  /** Host adapter teardown; not exposed as a plugin controller command. */
+  | { type: 'release' }
   | {
       type: 'bounds'
       bounds: { x: number; y: number; width: number; height: number }

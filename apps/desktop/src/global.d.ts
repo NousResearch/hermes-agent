@@ -12,8 +12,8 @@ import type { UpdateHoldWire } from '../electron/update-hold-types'
 import type { UpdateRunReport } from '../electron/updater/update-metrics'
 import type { WindowSizeMode } from '../electron/window-size-types'
 
-import type { UiPreferencesBridge } from './lib/ui-preferences/sync'
 import type { PlayerBridge } from './lib/player-contract'
+import type { UiPreferencesBridge } from './lib/ui-preferences/sync'
 import type { WakeIndicatorState } from './lib/wake-indicator'
 import type {
   PetOverlayBounds,

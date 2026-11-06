@@ -156,6 +156,7 @@ const parsers: Record<string, (value: Record<string, unknown>) => boolean> = {
   dock: noArguments,
   popout: noArguments,
   close: noArguments,
+  release: noArguments,
   home: noArguments,
   back: noArguments,
   forward: noArguments,

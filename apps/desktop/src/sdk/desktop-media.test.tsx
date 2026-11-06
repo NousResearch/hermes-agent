@@ -121,6 +121,7 @@ describe('desktop media adapter', () => {
 
     const invalid = [
       { type: 'bounds', bounds: {}, visible: true, revision: 1 },
+      { type: 'release' },
       { type: 'open', source: 'https://evil.example', session_id: 'forged' },
       { type: 'open', source: 'https://youtube.com' },
       { type: 'fullscreen', fullscreen: 'true' },
@@ -278,4 +279,40 @@ describe('desktop media adapter', () => {
     await waitFor(() => expect(hook.result.current.snapshot?.currentTime).toBe(70))
     view.unmount()
   })
+
+  it('keeps playback on pane unmount, but releases it when its plugin unloads', async () => {
+    const native = installBridge(async () => readySnapshot({ presentation: 'floating' }))
+    const media = create('unload-owner')
+    const hook = renderHook(() => media.usePlayer())
+    await act(async () => { await hook.result.current.command({ type: 'open', source: 'youtube' }) })
+    const view = render(<media.Surface />)
+    view.unmount()
+    expect(native.request).not.toHaveBeenCalledWith({ type: 'release' })
+
+    disposers[disposers.length - 1]()
+    expect(native.request).toHaveBeenCalledWith({ type: 'release' })
+    hook.unmount()
+  })
+
+
+  it('does not let an observing plugin control or release the current owner', async () => {
+    const native = installBridge(async () => readySnapshot())
+    const owner = create('player-owner')
+    const releaseOwner = disposers[disposers.length - 1]
+    const observer = create('player-observer')
+    const releaseObserver = disposers[disposers.length - 1]
+    const ownerHook = renderHook(() => owner.usePlayer())
+    const observerHook = renderHook(() => observer.usePlayer())
+    await act(async () => { await ownerHook.result.current.command({ type: 'open', source: 'youtube' }) })
+    await act(async () => { await observerHook.result.current.command({ type: 'status' }) })
+    await expect(observerHook.result.current.command({ type: 'media-control', action: 'pause' })).rejects.toThrow('another plugin')
+    releaseObserver()
+    expect(native.request).not.toHaveBeenCalledWith({ type: 'release' })
+    releaseOwner()
+    releaseOwner()
+    expect(native.request.mock.calls.filter(([command]) => command.type === 'release')).toHaveLength(1)
+    ownerHook.unmount()
+    observerHook.unmount()
+  })
+
 })

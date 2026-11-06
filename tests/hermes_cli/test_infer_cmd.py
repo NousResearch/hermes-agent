@@ -184,6 +184,55 @@ def test_infer_resolves_configured_model_alias(configured_home, monkeypatch, cap
     assert seen["provider"] == "custom"
 
 
+def test_infer_detects_provider_for_requested_plain_model(configured_home, monkeypatch, capsys):
+    seen = {}
+    monkeypatch.setenv("HERMES_INFERENCE_MODEL", "requested-model")
+    monkeypatch.setattr("hermes_cli.models.detect_provider_for_model",
+                        lambda model, current: ("openai", model))
+
+    def fake_call_llm(**kwargs):
+        seen.update(kwargs)
+        return _response("ok", "requested-model")
+
+    monkeypatch.setattr("agent.auxiliary_client.call_llm", fake_call_llm)
+    assert cmd_infer(_args()) == 0
+    assert json.loads(capsys.readouterr().out)["ok"] is True
+    assert seen["model"] == "requested-model"
+    assert seen["provider"] == "openai"
+
+
+def test_infer_resolves_url_alias_with_its_own_credential(configured_home, monkeypatch, capsys):
+    (configured_home / "config.yaml").write_text(
+        "model:\n  provider: anthropic\n  default: claude-test\n"
+        "model_aliases:\n  audit:\n    model: remote-model\n"
+        "    provider: anthropic\n    base_url: https://models.example.test/v1\n"
+        "    api_key: alias-key\n", encoding="utf-8")
+    seen = {}
+
+    def fake_call_llm(**kwargs):
+        seen.update(kwargs)
+        return _response("ok", "remote-model")
+
+    monkeypatch.setattr("agent.auxiliary_client.call_llm", fake_call_llm)
+    assert cmd_infer(_args(model="audit")) == 0
+    assert json.loads(capsys.readouterr().out)["ok"] is True
+    assert seen["model"] == "remote-model"
+    assert seen["provider"] == "custom"
+    assert seen["base_url"] == "https://models.example.test/v1"
+    assert seen["api_key"] == "alias-key"
+
+
+def test_infer_rejects_provider_override_for_url_alias(configured_home, monkeypatch, capsys):
+    (configured_home / "config.yaml").write_text(
+        "model_aliases:\n  audit:\n    model: remote-model\n"
+        "    provider: anthropic\n    base_url: https://models.example.test/v1\n",
+        encoding="utf-8")
+    monkeypatch.setattr("agent.auxiliary_client.call_llm", lambda **kw: pytest.fail("model called"))
+    assert cmd_infer(_args(model="audit", provider="anthropic")) == 1
+    output = json.loads(capsys.readouterr().out)
+    assert output["error"]["message"] == "--provider cannot override a URL-bound model alias"
+
+
 def test_infer_includes_non_text_response_fields_on_request(configured_home, monkeypatch, capsys):
     response = _response("")
     response.choices[0].finish_reason = "length"

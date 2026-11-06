@@ -294,6 +294,8 @@ answer is useful or whether a refusal should count as a failure for a script.
 The command uses the profile's configured provider, model, credentials, and
 fallback policy, including Hermes model aliases. Supply both `--provider` and
 `--model` to select another configured route. `-p` selects a named profile.
+`--provider` cannot override an alias bound to a URL; that alias uses its own
+endpoint credential so a provider key cannot be sent to another host.
 No `AIAgent`, session, memory, skills, or tool schemas are loaded. The reported
 provider is the route used after any configured fallback; the model is the
 response's model ID when the provider supplies one, otherwise the selected

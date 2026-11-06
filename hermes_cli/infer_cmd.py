@@ -5,8 +5,9 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import os
 import sys
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -41,33 +42,53 @@ def _schema_file(path: str | None) -> dict | None:
     return schema
 
 
-def _model_route(model: str | None, provider: str | None):
-    """Use the same configured-model and alias resolution as CLI one-shot mode."""
+@dataclass
+class _InferenceRoute:
+    model: str
+    provider: str | None
+    base_url: str | None = None
+    api_key: str | None = None
+
+
+def _model_route(model: str | None, provider: str | None) -> _InferenceRoute:
+    """Select a configured route without depending on the agent one-shot command."""
     if provider and not model:
         raise ValueError("--provider requires --model")
     from hermes_cli.config import load_config_readonly, split_model_config_default
-    from hermes_cli.oneshot import _resolve_model_and_provider
+    from hermes_cli.model_switch import resolve_startup_model_route
+    from hermes_cli.models import detect_provider_for_model
 
     config = load_config_readonly()
-    choice = _resolve_model_and_provider(config, model, provider)
     model_cfg = config.get("model") or {}
-    if not choice.provider and isinstance(model_cfg, dict):
-        _, nested_provider = split_model_config_default(model_cfg.get("default"))
-        choice.provider = nested_provider or str(model_cfg.get("provider") or "").strip() or None
-    if model and provider:
-        # The one-shot helper short-circuits on an explicit provider. Resolve a
-        # direct alias here too, retaining its endpoint/key origin guard.
-        from hermes_cli.model_switch import resolve_startup_model_route
-
+    if isinstance(model_cfg, dict):
+        configured_default = model_cfg.get("default") or model_cfg.get("model")
+        configured_provider = str(model_cfg.get("provider") or "").strip()
+    else:
+        configured_default = model_cfg
+        configured_provider = ""
+    default, nested_provider = split_model_config_default(configured_default)
+    configured_provider = (nested_provider or configured_provider
+                           or os.getenv("HERMES_INFERENCE_PROVIDER", "").strip())
+    requested_model = (model or "").strip() or os.getenv("HERMES_INFERENCE_MODEL", "").strip()
+    selected_model = requested_model or default
+    selected_provider = (provider or "").strip() or None
+    if requested_model:
         route = resolve_startup_model_route(
-            model, explicit_provider=provider, current_provider=provider,
+            requested_model, explicit_provider=selected_provider or "",
+            current_provider=selected_provider or configured_provider or "auto",
             user_providers=config.get("providers"), custom_providers=config.get("custom_providers"),
             alias_config=config,
         )
         if route is not None:
-            choice.model, choice.provider = route.model, route.provider
-            choice.base_url, choice.api_key = route.base_url or None, route.api_key or None
-    return choice
+            if selected_provider and route.base_url:
+                raise ValueError("--provider cannot override a URL-bound model alias")
+            return _InferenceRoute(route.model, route.provider, route.base_url or None,
+                                   route.api_key or None)
+        if selected_provider is None:
+            detected = detect_provider_for_model(requested_model, configured_provider or "auto")
+            if detected:
+                selected_provider, selected_model = detected
+    return _InferenceRoute(selected_model, selected_provider or configured_provider or None)
 
 
 def _response_json(response):
@@ -113,7 +134,7 @@ def _infer(args) -> dict:
     route_info: dict[str, str] = {}
     response = call_llm(
         messages=messages, provider=choice.provider, model=choice.model or None,
-        base_url=choice.base_url, api_key=choice.api_key, api_mode=choice.api_mode,
+        base_url=choice.base_url, api_key=choice.api_key, api_mode=None,
         max_tokens=args.max_tokens, timeout=args.timeout,
         extra_body=_json_response_format(json_mode=True, json_schema=schema) if schema else None,
         route_info=route_info,

@@ -40,3 +40,18 @@ def test_cron_accept_hooks_flag_on_run_and_tick():
     assert ns.accept_hooks is True
     ns2 = parser.parse_args(["cron", "tick", "--accept-hooks"])
     assert ns2.accept_hooks is True
+
+
+def test_cron_timezone_and_grace_flags():
+    parser = _build()
+    created = parser.parse_args(
+        ["cron", "create", "0 9 * * *", "hi", "--timezone", "Asia/Hong_Kong",
+         "--grace-minutes", "0"])
+    assert created.timezone == "Asia/Hong_Kong"
+    assert created.grace_minutes == "0", "an int-ish string must survive to the normalizer"
+
+    edited = parser.parse_args(["cron", "edit", "j", "--timezone", "", "--grace-minutes", ""])
+    assert edited.timezone == "", "an empty value is the documented clear"
+    assert edited.grace_minutes == ""
+
+    assert parser.parse_args(["cron", "edit", "j"]).timezone is None

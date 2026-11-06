@@ -91,6 +91,24 @@ sandboxes
 where the limit cannot be changed, startup continues without changing the
 limit.
 
+On Linux with glibc, the gateway, `hermes serve` and `hermes dashboard` also cap the number of
+malloc arenas the process may create:
+
+```yaml
+runtime:
+  malloc_arena_max: 4
+```
+
+glibc otherwise hands every new thread its own arena, up to eight per CPU core,
+and keeps each arena's freed pages; a long-running gateway with many short-lived
+worker threads ends up holding hundreds of MB of free-but-unreturned memory.
+The cap is set at startup, before the server starts any thread, and applies
+only to the Hermes server process itself — commands it runs (terminal tools,
+MCP servers, builds) keep glibc's default. An explicit `MALLOC_ARENA_MAX` (or
+`GLIBC_TUNABLES=glibc.malloc.arena_max=…`) takes precedence, whether exported
+before launch or set in the profile's `.env`. Set the value to `0`, `false`, or `null` to keep
+glibc's default. Other platforms ignore it.
+
 ## Database Settings
 
 The `database:` section controls how Hermes opens its SQLite state database
@@ -167,7 +185,7 @@ You can set `providers.<id>.request_timeout_seconds` for a provider-wide request
 
 You can also set `providers.<id>.stale_timeout_seconds` for the non-streaming stale-call detector, plus `providers.<id>.models.<model>.stale_timeout_seconds` for a model-specific override. This wins over the legacy `HERMES_API_CALL_STALE_TIMEOUT` env var. The same key is the streaming stale-stream deadline: an explicit value is used as-is — the implicit context-size tiers (240s above 50k tokens, 300s above 100k) and the reasoning-model floors apply only to the 180s default, so an explicit value can shorten how long a hung stream is tolerated.
 
-Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERMES_API_CALL_STALE_TIMEOUT=90`s, native Anthropic 900s). The non-streaming stale detector is auto-disabled for local endpoints when left implicit and can scale upward for very large contexts. Not currently wired for AWS Bedrock (both `bedrock_converse` and AnthropicBedrock SDK paths use boto3 with its own timeout configuration). See the commented example in [`cli-config.yaml.example`](https://github.com/NousResearch/hermes-agent/blob/main/cli-config.yaml.example).
+Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERMES_API_CALL_STALE_TIMEOUT=90`s, native Anthropic 900s). The non-streaming stale detector is auto-disabled for local endpoints when left implicit and can scale upward for very large contexts. On AWS Bedrock (`providers.bedrock`), the resolved request timeout is the socket read timeout of the boto3 Converse client (`bedrock_converse`) and of the AnthropicBedrock SDK client, picked per request for the active model so a `/model` switch or fallback uses that model's value. The connect timeout stays fixed (botocore's 60s on Converse, 10s on AnthropicBedrock), and a read timeout bounds each socket read, not the whole call. Unset keeps botocore's 60s read on Converse and 900s on AnthropicBedrock. See the commented example in [`cli-config.yaml.example`](https://github.com/NousResearch/hermes-agent/blob/main/cli-config.yaml.example).
 
 ## Update Behavior
 
@@ -216,13 +234,13 @@ updates:
 
 Point-in-time copies of `config.yaml` itself (taken before `hermes setup` rewrites it, before `hermes migrate` edits it, every time the file parses successfully, and when it fails to parse) go to `backups/config/config.yaml.<reason>.<timestamp>`. Identical repeats are skipped and only the newest five per reason are kept, so they never pile up beside `config.yaml`. If `config.yaml` is broken, Hermes serves the newest `good` copy instead of built-in defaults and warns on every start until the YAML is fixed; the broken file is never modified.
 
-For git installs, Hermes auto-stashes dirty tracked files and untracked files before checking out the update branch or pulling. Interactive terminal updates prompt before restoring that stash. Non-interactive updates (desktop/chat app, gateway, or `--yes`) use `updates.non_interactive_local_changes`: `stash` restores local source edits after a successful pull, while `discard` drops the update-created stash after a successful pull. Use `discard` only on managed installs where local source edits are never meant to persist.
+For git installs, Hermes auto-stashes dirty tracked files, plus any untracked file at a path the update adds, before checking out the update branch or pulling. Untracked files the update never writes stay in place. Interactive terminal updates ask whether to keep the changes before stashing anything; answering no deletes them instead of leaving a stash entry behind. Non-interactive updates (desktop/chat app, gateway, or `--yes`) use `updates.non_interactive_local_changes`: `stash` restores local source edits after a successful pull, while `discard` drops the update-created stash after a successful pull. Use `discard` only on managed installs where local source edits are never meant to persist.
 
 Before that stash step, Hermes also restores tracked `package-lock.json` diffs left by npm install/build churn. Commit or manually stash intentional lockfile edits before updating.
 
 ## Terminal Backend Configuration
 
-Hermes ships six terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, or a Vercel Sandbox. Plugins add more, such as the official [Singularity/Apptainer](#singularityapptainer-backend) backend.
+Hermes ships six terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, or a Vercel Sandbox. Plugins add more, such as the official [Singularity/Apptainer](#singularityapptainer-backend) and [Sprites](#sprites-backend) backends.
 
 ```yaml
 terminal:
@@ -288,7 +306,7 @@ warns about directories over 1 GB elsewhere under `cache/` that no pruner covers
 
 `terminal.font_family` controls the embedded terminal in Hermes Desktop. It accepts either one locally installed family name (for example, `MesloLGS NF`) or a CSS font stack. Hermes appends its bundled JetBrains Mono stack as a fallback, and an empty value keeps the default. You can edit the same profile-scoped setting in **Settings → Appearance → Terminal Font**; no Google Fonts download or system-font permission is required.
 
-For cloud sandboxes such as Modal, Daytona, and Vercel Sandbox, `container_persistent: true` means Hermes will try to preserve filesystem state across sandbox recreation. It does not promise that the same live sandbox, PID space, or background processes will still be running later.
+For cloud sandboxes such as Modal, Daytona, Vercel Sandbox, and Sprites, `container_persistent: true` means Hermes will try to preserve filesystem state across sandbox recreation. It does not promise that the same live sandbox, PID space, or background processes will still be running later.
 
 ### Backend Overview
 
@@ -301,6 +319,7 @@ For cloud sandboxes such as Modal, Daytona, and Vercel Sandbox, `container_persi
 | **daytona** | Daytona workspace | Full (cloud container) | Managed cloud dev environments |
 | **vercel_sandbox** | Vercel Sandbox | Full (cloud microVM) | Cloud execution with snapshot-backed filesystem persistence |
 | **singularity** (plugin) | Singularity/Apptainer container | Namespaces (--containall) | HPC clusters, shared machines |
+| **sprites** (plugin) | Sprite on Fly.io | Full (cloud microVM) | Stateful cloud sandboxes that persist between sessions |
 
 ### Local Backend
 
@@ -367,7 +386,13 @@ The agent has the same filesystem access as your user account. Use `hermes tools
 
 Runs commands inside a Docker container with security hardening (all capabilities dropped, no privilege escalation, PID limits).
 
-**Single persistent container, shared across Hermes processes.** Hermes starts ONE long-lived container on first use and routes every terminal, file, and `execute_code` call through `docker exec` into that same container — across sessions, `/new`, `/reset`, and `delegate_task` subagents. Working-directory changes, installed packages, files in `/workspace`, and **background processes** all carry over from one tool call to the next, and from one Hermes process to the next. When you close a TUI session, run `/quit`, or start a new `hermes` invocation, the container keeps running and the next Hermes process reuses it via a labeled lookup. See **Container lifecycle** below for the exact teardown rules.
+**Persistent containers, shared across Hermes processes.** With `container_persistent: true` and `docker_mount_cwd_to_workspace: false` (the defaults), sessions in the same profile share its original sandbox. Selecting a working directory in Desktop does not create a separate workspace sandbox in this mode, so CLI and Desktop keep access to the same files. With host-workspace mounting enabled, persistent containers are instead keyed by profile and selected workspace: sessions in the same workspace share a container, while different workspaces stay separate. `delegate_task` subagents use their parent's container.
+
+Earlier builds gave each Desktop folder its own sandbox even with mounting off. Those directories (`*_ws_*` under `TERMINAL_SANDBOX_DIR/docker`, default `sandboxes/docker` in the profile's Hermes home) are kept but no longer used by the terminal or the file panel: copy anything you still need into the profile sandbox's `workspace` or `home`.
+
+In a named profile, its gateway chats, Desktop sessions, cron jobs and Kanban workers all use the profile's one sandbox (`profile_<name>-*` under `TERMINAL_SANDBOX_DIR/docker`). Earlier builds kept a gateway launched as that profile (`hermes -p <name> gateway`) and its cron and Kanban work in a separate `default` sandbox under the profile's home. That directory is kept but no longer used: copy anything you still need from it the same way.
+
+Terminal, file, and `execute_code` calls use `docker exec` in the selected container. Installed packages, files in `/workspace`, and **background processes** carry over between calls and Hermes processes using that container. Closing a TUI session, running `/quit`, or starting a new `hermes` invocation does not itself remove it; the next process can reuse it through its labels. See **Container lifecycle** below for the exact teardown rules.
 
 **Per-session isolation mode (`container_persistent: false`).** Setting `container_persistent: false` on the Docker backend switches to one container **per session**: every chat (desktop app session, gateway conversation, TUI session) gets its own fresh sandbox, created on its first terminal/file call and removed when the session closes or goes idle past `lifetime_seconds`. Nothing carries over between sessions — no filesystem state, no mounts, no background processes. With `docker_mount_cwd_to_workspace: true`, only the workspace **attached to that session** is mounted at `/workspace`; a fresh session with no attached directory gets an empty workspace instead of inheriting the previous session's mount. `delegate_task` subagents still share their parent session's container. Use this mode when the sandbox is a security boundary between conversations; keep the default `true` when you want the long-lived shared container described above.
 
@@ -629,6 +654,31 @@ terminal:
 
 **Isolation:** Uses `--containall --no-home` for full namespace isolation without mounting the host home directory.
 
+### Sprites Backend
+
+Runs commands in a [Sprite](https://fly.io/sprites), a stateful cloud sandbox on Fly.io with checkpoint and restore. It is the [`sprites` plugin](https://github.com/NousResearch/hermes-plugin-sprites); install it, then select it:
+
+```bash
+hermes plugins install NousResearch/hermes-plugin-sprites --enable
+hermes config set terminal.backend sprites
+```
+
+The install asks before it adds the plugin's Python dependency (`sprites-py`); restart Hermes afterwards.
+
+```yaml
+terminal:
+  backend: sprites
+  container_persistent: true       # Keep the Sprite between sessions (default)
+```
+
+**Required:** `SPRITES_TOKEN` in `~/.hermes/.env`. Create the token in your organization's Sprites settings in the Fly.io dashboard; `sprite login` on its own does not give Hermes a token.
+
+**Persistence:** A persistent Sprite stays alive after the session and is resumed by name the next time. Names are profile-scoped: `hermes-{task_id}` on the default profile, and `hermes-{profile}-{task_id}-{digest}` (shortened to fit) on named profiles. The Sprite's own filesystem is the authoritative copy, so nothing is synced back to the host. With `container_persistent: false`, each run gets a uniquely named Sprite that is deleted on cleanup.
+
+**Sharing:** Gateway and WebUI sessions each get their own Sprite, `delegate_task` subagents share their parent's, and flows without a session (CLI, cron) share the profile's default Sprite.
+
+**Optional settings** live under `plugins.entries.sprites.settings` (also editable in the Plugins hub): `name_prefix` (replace `hermes-` in every Sprite name), `scope` (`session` or `instance`, one Sprite per profile), and `image`, `max_cpus`, `max_ram_gb`, `max_disk_gb` for newly created Sprites. An invalid value stops the backend from starting, and `hermes doctor` names it. See the [plugin README](https://github.com/NousResearch/hermes-plugin-sprites#settings).
+
 ### Common Terminal Backend Issues
 
 If terminal commands fail immediately or the terminal tool is reported as disabled:
@@ -639,6 +689,7 @@ If terminal commands fail immediately or the terminal tool is reported as disabl
 - **Modal** — Needs `MODAL_TOKEN_ID` env var or `~/.modal.toml`. Run `hermes doctor` to check.
 - **Daytona** — Needs `DAYTONA_API_KEY`. The Daytona SDK handles server URL configuration.
 - **Singularity** — Needs the `singularity` plugin (`hermes plugins install singularity`) and `apptainer` or `singularity` in `$PATH`. Common on HPC clusters.
+- **Sprites** — Needs the `sprites` plugin and `SPRITES_TOKEN`. `hermes doctor` shows the token, SDK and naming checks.
 
 When in doubt, set `terminal.backend` back to `local` and verify that commands run there first.
 
@@ -648,7 +699,7 @@ For the **SSH**, **Modal**, and **Daytona** backends, Hermes pushes your `~/.her
 
 - The sync-back retries up to 3 times with backoff and refuses to extract remote archives larger than 2 GiB; set `terminal.sync_back_max_bytes` (bytes) in `config.yaml` to raise the cap for a larger state tree. Live sockets under the remote `~/.hermes/` (e.g. `gateway.sock`) are skipped rather than failing the transfer.
 - The downloaded archive is staged under the system temp directory (`hermes-sync-back-<pid>-*`); leftovers from a hard-killed process are reclaimed on the next sync-back.
-- Docker and Singularity use bind mounts (live host filesystem view) and don't need this.
+- Docker and Singularity use bind mounts (live host filesystem view) and don't need this. Sprites keeps its own persistent filesystem and does not sync back either.
 - This covers Hermes state (`~/.hermes/`), **not** arbitrary working-tree files inside the sandbox — have the agent copy important artifacts out explicitly (e.g. `scp`, `modal volume put`) before the sandbox is destroyed.
 
 ### Docker Volume Mounts
@@ -1363,6 +1414,7 @@ Hermes has separate timeout layers for streaming, plus a stale detector for non-
 |---------|---------|----------------|--------------|
 | Socket read timeout | 120s | Auto-raised to 1800s | `HERMES_STREAM_READ_TIMEOUT` |
 | Stale stream detection | 180s | Raised to a 900s ceiling (`agent.local_stream_stale_timeout`) | `HERMES_STREAM_STALE_TIMEOUT` |
+| Stream max lifetime (opt-in) | Off (`0`) | Same | `agent.stream_max_lifetime` |
 | Stale non-stream detection | 90s | Auto-disabled when left implicit | `providers.<id>.stale_timeout_seconds` or `HERMES_API_CALL_STALE_TIMEOUT` |
 | Responses first-event watchdog | 120s | Raised to the 900s ceiling (`agent.local_stream_stale_timeout`) | `HERMES_CODEX_TTFB_TIMEOUT_SECONDS` |
 | API call (non-streaming) | 1800s | Unchanged | `providers.<id>.request_timeout_seconds` / `timeout_seconds` or `HERMES_API_TIMEOUT` |
@@ -1373,6 +1425,8 @@ The **socket read timeout** controls how long httpx waits for the next chunk of 
 The **stale stream detection** kills connections that receive SSE keep-alive pings but no actual content. For local providers (which don't send keep-alive pings during prefill) the default is raised to a finite 900-second ceiling instead of the 180s base — configurable via `agent.local_stream_stale_timeout` or the `HERMES_LOCAL_STREAM_STALE_TIMEOUT` env var.
 
 The **Responses first-event watchdog** (Codex / `codex_responses` transport, including custom providers declared with the Responses transport) aborts and reconnects a request that accepts the connection but emits no stream event within 120 seconds. A local server prefilling a large context legitimately stays silent longer than that, so on local endpoints the implicit default is raised to the same ceiling as the stale stream detector (`agent.local_stream_stale_timeout` / `HERMES_LOCAL_STREAM_STALE_TIMEOUT`, 900s). An explicit `HERMES_CODEX_TTFB_TIMEOUT_SECONDS` is always used as-is (`0` disables the watchdog).
+
+The **stream max lifetime** is an opt-in cap on the total wall-clock time of one streaming response. The stale detector resets on every chunk, so a stream that keeps sending data but never finishes (a gateway trickling chunks, a runaway generation) is never cut. Set `agent.stream_max_lifetime` (seconds) to cut such a stream; the connection is killed the same way a stale kill is, and the retry or partial-response continuation takes over. It never fires before the effective stale-stream timeout, and a cut attempt does not count toward the stale-stream circuit breaker (`HERMES_STREAM_STALE_GIVEUP`), since the provider was responding. The cap covers Chat Completions and Anthropic Messages streams only; Codex/Responses streams (`codex_responses`, including custom providers declared with the Responses transport) and Bedrock streams are not capped. Leave it at `0` (the default) if you run long reasoning turns that legitimately stream for a long time.
 
 The **stale non-stream detection** kills non-streaming calls that produce no response for too long. By default Hermes disables this on local endpoints to avoid false positives during long prefills. If you explicitly set `providers.<id>.stale_timeout_seconds`, `providers.<id>.models.<model>.stale_timeout_seconds`, or `HERMES_API_CALL_STALE_TIMEOUT`, that explicit value is honored even on local endpoints.
 
@@ -1657,14 +1711,6 @@ auxiliary:
     timeout: 30
     language: ""
 
-  # Skills hub — skill matching and search
-  skills_hub:
-    provider: "auto"
-    model: ""
-    base_url: ""
-    api_key: ""
-    timeout: 30
-
   # MCP tool dispatch
   mcp:
     provider: "auto"
@@ -1729,7 +1775,7 @@ Each entry supports the same three knobs as any auxiliary task config:
 | `model` | Model name for that provider |
 | `base_url` | (Optional) Custom OpenAI-compatible endpoint |
 
-`fallback_chain` is available on any auxiliary task — `compression`, `vision`, `approval`, `skills_hub`, `mcp`, etc.
+`fallback_chain` is available on any auxiliary task — `compression`, `vision`, `approval`, `mcp`, etc.
 
 ### Native vision embed budgets (top-level `vision:`)
 
@@ -1923,6 +1969,19 @@ agent:
 ```
 
 Hermes sends it as the top-level Responses `text: {verbosity: ...}` field only on Responses-family routes; it is never sent on `chat_completions`, Anthropic or xAI requests, and an empty or unknown value sends nothing. Structured-output (`text.format`) set through `request_overrides` is passed through unchanged.
+
+### OpenAI Daybreak (`daybreak`)
+
+[Daybreak](https://help.openai.com/en/articles/20001258-openai-daybreak-trusted-access-for-cyber-overview) is OpenAI's Trusted Access for Cyber program: approved accounts get fewer refusals for authorized security work on supported models. On the ChatGPT/Codex subscription (`openai-codex`), Hermes can request it:
+
+```yaml
+agent:
+  daybreak: false   # true = request Daybreak Blue on models your account is approved for
+```
+
+In Desktop, open a model's options in the model menu: the **Daybreak** switch appears next to **Fast**, only on models your signed-in account's Codex catalog lists for Daybreak. Accounts without Daybreak never see it. The switch is profile-wide, like Codex's own toggle, and applies from the next turn.
+
+Every request checks the catalog again, so `access_programs.cyber: daybreak_blue` is sent only when the switch is on **and** that request's account and model are listed. Switching to an unlisted model, rotating to an account without access, or an unreadable catalog sends standard requests. It is not sent on API-key routes or the opt-in `codex_app_server` runtime, and only your own chat turns use it (Desktop, the TUI and the CLI). Messaging-platform chats, hosted rooms, A2A peers, third-party `--source tool` integrations, editor (ACP) clients, cron jobs and subagents use standard safeguards: OpenAI allows Daybreak no third-party or downstream access, and those chats can be other people. The setting grants no access: approval comes from OpenAI.
 
 :::note Adaptive-thinking models (Claude 4.6+, Fable/Mythos-class) over OpenRouter
 These models use *adaptive* thinking and don't accept the usual `reasoning.effort`
@@ -2500,7 +2559,7 @@ stt:
   enabled: true                # Auto-transcribe inbound voice messages (default: true)
   echo_transcripts: true       # Post raw transcripts back to the chat as 🎙️ "..." (default: true)
   provider: "local"            # "local" | "groq" | "openai" | "mistral" | "xai" | "elevenlabs" | "deepinfra" | ...
-  language: "en"               # GLOBAL language hint for every provider (per-provider language wins); set "" for auto-detect
+  language: "en"               # Global hint; a nonempty provider language wins. Blank falls back to HERMES_LOCAL_STT_LANGUAGE, then auto-detect
   streaming: false             # live partial text while you speak (openai, xai, elevenlabs); see Voice Mode > Live transcription
   cloud_trim_silence: true     # trim long pauses with ffmpeg before uploading to a cloud provider (default: true)
   cloud_trim_threshold_db: -40 # audio quieter than this counts as silence
@@ -2508,7 +2567,7 @@ stt:
   # prompt: "Hermes, Teknium, Nous Research, kanban"   # Static vocabulary hint (see below)
   local:
     model: "base"              # tiny, base, small, medium, large-v3, turbo
-    language: ""               # per-provider override of stt.language
+    language: ""               # blank inherits stt.language, then HERMES_LOCAL_STT_LANGUAGE
     initial_prompt: ""         # optional whisper prompt to bias vocabulary/script (e.g. Simplified Chinese)
     vad: true                  # Silero VAD filter (default on) — silence never reaches whisper; false = raw behavior (music/ambient)
     vad_min_silence_ms: 500    # min silence (ms) that splits speech chunks when vad is on
@@ -2516,19 +2575,50 @@ stt:
     logprob_threshold: -1.0        # ...AND avg_logprob < this (both must hit — quiet real speech survives)
     unload_after_idle_seconds: 0   # 0=never unload (default); e.g. 300 = release the model after 5min idle
   groq:
-    language: ""               # per-provider override of stt.language
+    language: ""               # blank inherits stt.language, then HERMES_LOCAL_STT_LANGUAGE
   openai:
     model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe | gpt-transcribe
-    language: ""               # per-provider override of stt.language
+    language: ""               # blank inherits stt.language, then HERMES_LOCAL_STT_LANGUAGE
     timeout: 60                # seconds per transcription request; raise for self-hosted model cold starts
     max_retries: 1             # SDK transport retries (connection errors, 408/409/429/5xx); 0 = single attempt
   xai:
     model: "grok-voice-transcribe-2.0"  # or grok-voice-transcribe-1.0; sent on every request
-    language: ""               # per-provider override of stt.language
+    language: ""               # blank inherits stt.language, then HERMES_LOCAL_STT_LANGUAGE
   # model: "whisper-1"         # Legacy fallback key still respected
 ```
 
-Language resolution is the same for **every** STT provider (local, groq, openai, mistral, xai, elevenlabs, deepinfra, command providers, and plugins): `stt.<provider>.language` → `stt.language` → `HERMES_LOCAL_STT_LANGUAGE` env var → provider auto-detect. **The default is `stt.language: "en"`** — Whisper auto-detection frequently misidentifies short or accented clips, which shows up as voice notes transcribed in the wrong language. Non-English speakers should set `stt.language` to their language code once (e.g. `"es"`, `"zh"`, `"uk"`); set it to `""` to restore auto-detection for multilingual use.
+The shared language resolver checks `stt.<provider>.language`, then `stt.language`, then `HERMES_LOCAL_STT_LANGUAGE`, and uses the **first nonempty string**:
+
+```text
+stt.<provider>.language -> stt.language -> HERMES_LOCAL_STT_LANGUAGE -> no language hint
+```
+
+A blank value means **continue to the next source**, not "force auto-detection". ElevenLabs also accepts `stt.elevenlabs.language_code` as a provider-specific alias. **The global default is `stt.language: "en"`**, so leaving only the provider language blank still resolves to English. To pin another language, set a provider or global language code such as `"zh"`, `"es"`, or `"uk"`.
+
+Without a request-level plugin hook override:
+
+| Provider language | Global language | `HERMES_LOCAL_STT_LANGUAGE` | Resolved hint |
+| --- | --- | --- | --- |
+| `""` | `"en"` | unset | `en` |
+| `"zh"` | `""` | unset | `zh` |
+| `""` | `""` | `en` | `en` |
+| `""` | `""` | unset | none |
+
+For automatic language detection with **local faster-whisper**, use:
+
+```yaml
+stt:
+  provider: local
+  language: ""
+  local:
+    language: ""
+```
+
+Also remove any `HERMES_LOCAL_STT_LANGUAGE` override from the process environment or `.env`. A nonempty provider setting or a `pre_transcription` hook can still select a language.
+
+When no hint is resolved, faster-whisper and the native cloud handlers omit the language argument; plugin providers receive `None`.
+
+Command backends have additional behavior. `local_command` uses `stt.local.language` as its provider setting. Named command providers first use `language` from their command configuration (`stt.providers.<name>`, or the legacy `stt.<name>` block), then fall back through the shared resolver. Both paths use `en` for the `{language}` placeholder if no language is resolved. Custom templates may omit that placeholder or use their own engine's detection option. If `local` falls back to a Whisper CLI because faster-whisper is unavailable, the same blank settings therefore do not currently guarantee auto-detection. See [command providers](features/tts.md#stt-custom-command-providers) for their configuration.
 
 `stt.openai.timeout` and `stt.openai.max_retries` shape the OpenAI-SDK transcription client that the `openai`, `groq` and `deepinfra` providers share (there are no per-provider siblings yet, and the SDK reads no environment variables for these). The defaults are `60` / `1` rather than the previous fixed 30 s / no retries because a self-hosted OpenAI-compatible endpoint can take longer than 30 s to load its model on the first request, which used to lose that voice message outright. The trade-off: an unreachable backend now holds a voice message for up to two attempts × the timeout before Hermes gives up; set `timeout: 30` and `max_retries: 0` for the old shape.
 
@@ -2537,7 +2627,7 @@ Set `stt.echo_transcripts: false` when the gateway should transcribe voice notes
 Provider behavior:
 
 - `local` uses `faster-whisper` running on your machine. Install it separately with `python -c "import pm; pm.sync_venv(['stt-whisper'], explicit=True)"`. Silence-hallucination hardening is on by default: a Silero VAD filter keeps silence/noise from ever reaching Whisper, cross-window conditioning is disabled, and segments the model itself flags as probably-not-speech *and* low-confidence are dropped. Set `stt.local.vad: false` to transcribe non-speech audio (music, ambient) with the raw behavior. The model stays loaded in memory between voice messages for low-latency transcription; set `stt.local.unload_after_idle_seconds` (e.g. `300` for 5 minutes) to automatically release the model when idle. This frees GPU memory on CUDA hosts (the main win when a local LLM shares the GPU); on CPU the memory becomes reusable by the process, though the OS-visible footprint may not shrink until the process needs the space for something else. The next voice message reloads the model transparently.
-- `groq` uses Groq's Whisper-compatible endpoint and reads `GROQ_API_KEY`. Pass `stt.groq.language` (or the global `HERMES_LOCAL_STT_LANGUAGE` env var) to skip auto-detection and reduce latency.
+- `groq` uses Groq's Whisper-compatible endpoint and reads `GROQ_API_KEY`. Set `stt.groq.language` or `stt.language` to pin a hint; `HERMES_LOCAL_STT_LANGUAGE` is used only when both are empty.
 - `openai` uses the OpenAI speech API and reads `VOICE_TOOLS_OPENAI_KEY`.
 
 Cloud providers (groq, openai, mistral, xai, elevenlabs, deepinfra) get a **pre-upload silence trim** by default when `ffmpeg` is installed: long pauses in a voice note are collapsed client-side before the file uploads, keeping `cloud_trim_keep_ms` of each pause so natural pacing survives. Shorter audio means faster uploads, lower per-audio-minute billing, and fewer silence hallucinations from the remote model. Clips shorter than 12 seconds skip the trim entirely (savings can't matter there, and several providers bill a per-request minimum anyway). The trim is best-effort — if ffmpeg is missing, the trim fails, the clip is mostly silence, or trimming would save less than ~10%, the original file is uploaded untouched. Set `stt.cloud_trim_silence: false` to always upload the original (e.g. when transcribing music or ambient audio through a cloud provider). Command-type and plugin providers never get trimmed audio.
@@ -2718,7 +2808,13 @@ backend alike. Each server process reads them once at startup: restart every
 process sharing that room store after changing them.
 
 These are ceilings, not targets or a guarantee of task completion. Discussions
-can settle early, and Stop and approval gates remain in effect.
+can settle early, and Stop and approval gates remain in effect. Reaching one pauses
+the discussion; **Continue** in the room (`groups.continue`) grants it one more
+budget of `max_rounds` and `max_messages`, at most 5 times per discussion.
+
+Rooms set to pick who answers automatically (Room settings, `routing: auto`) make
+one short JSON model call per unaddressed message through `auxiliary.group_router`
+(provider/model/timeout like every other auxiliary task; default timeout 20 s).
 
 ## Unauthorized DM Behavior
 
@@ -2877,7 +2973,8 @@ browser:
   # Cloud browser selection (written by `hermes tools` → Browser Automation)
   cloud_provider: local          # local | browserbase | browser-use | firecrawl | nous | <provider plugin>; unset = autodetect from credentials
   auto_local_for_private_urls: true  # With a cloud provider, open LAN/localhost URLs in a local Chromium
-  allow_private_urls: false      # Allow private/internal addresses (localhost, 192.168.x.x, ...)
+                                     # (ignores allow_private_urls; false = refuse them instead)
+  allow_private_urls: false      # Legacy alias of security.allow_private_urls (guards cloud/CDP browsers, not the local Chromium)
   # Optional CDP override — when set, the browser tools attach to your own
   # Chromium-family browser (as /browser connect does) instead of launching one.
   cdp_url: ""
@@ -3085,10 +3182,12 @@ delegation:
   #     provider:
   #       sort: throughput
   max_concurrent_children: 3                # Parallel children per batch (floor 1, no ceiling). Also via DELEGATION_MAX_CONCURRENT_CHILDREN env var.
+  prefix_stagger_seconds: 0                 # Prompt-cache warm-up for batches: siblings start when the first child's response starts streaming; N (max 60) only caps that wait, it is not a fixed stagger. 0 = off.
   worktree_isolation: false                 # Give each child its own git worktree branched from HEAD (local backend + git repos only; inspired by Muse Code). See Subagent Delegation → Worktree Isolation.
   max_spawn_depth: 1                        # Delegation tree depth cap (1-3, clamped). 1 = flat (default): parent spawns leaves that cannot delegate. 2 = orchestrator children can spawn leaf grandchildren. 3 = three levels.
   orchestrator_enabled: true                # Global kill switch. When false, role="orchestrator" is ignored and every child is forced to leaf regardless of max_spawn_depth.
   oneshot_max_children: 2                   # Total subagents a one-shot run (hermes chat -q / --oneshot) may spawn; 0 = unlimited. Interactive and gateway sessions are never capped by this.
+  gateway_mode: auto                        # Gateway sessions: auto | inline | background. auto = join children inside the turn (one answer) on a messaging chat whose display.interim_assistant_messages is off. See Subagent Delegation → Messaging chats without interim messages.
 ```
 
 **Delegation strategy (`backend`):** `delegation.backend` picks the strategy plugin that decides each subagent's route. `default` follows the keys below (or the parent's route when they are empty). Plugin strategies such as `model_map` (a named model per task) and `profile_routes` (a Hermes profile per task) read their settings from `delegation.backends.<backend name>`. A backend whose plugin is missing or disabled fails closed: `delegate_task` returns a tool error naming it and the fix (`/delegation default`, or `hermes config set delegation.backend default`) instead of running children on another route. A backend route without its own `fallback_providers` uses `delegation.fallback_providers`. See [Subagent Delegation → Delegation strategies](features/delegation.md#delegation-strategies-delegationbackend).
@@ -3122,6 +3221,8 @@ The delegation provider uses the same credential resolution as CLI/gateway start
 **Width and depth:** `max_concurrent_children` caps how many subagents run in parallel per batch (default `3`, floor of 1, no ceiling). Can also be set via the `DELEGATION_MAX_CONCURRENT_CHILDREN` env var. When the model submits a `tasks` array longer than the cap, `delegate_task` returns a tool error explaining the limit rather than silently truncating. `max_spawn_depth` controls the delegation tree depth (clamped to 1-3). At the default `1`, delegation is flat: children cannot spawn grandchildren, and passing `role="orchestrator"` silently degrades to `leaf`. Raise to `2` so orchestrator children can spawn leaf grandchildren; `3` for three-level trees. The agent opts into orchestration per call via `role="orchestrator"`; `orchestrator_enabled: false` forces every child back to leaf regardless. Cost scales multiplicatively — at `max_spawn_depth: 3` with `max_concurrent_children: 3`, the tree can reach 3×3×3 = 27 concurrent leaf agents. See [Subagent Delegation → Depth Limit and Nested Orchestration](features/delegation.md#depth-limit-and-nested-orchestration) for usage patterns.
 
 **Child process notifications:** background processes started by subagents route their completion/watch notifications to the parent conversation, but those are **suppressed** there by default — the child's consolidated result is the deliverable. Set `delegation.surface_child_process_notifications: true` to deliver them (with subagent attribution). Delegation results themselves are never suppressed. See [Subagent Delegation → Child background-process notifications](features/delegation.md#child-background-process-notifications).
+
+**Prompt-cache warm-up for batches:** siblings in one `tasks` batch send the same tools and system-prompt scaffold; only the goal differs (and the end of the system prompt, when tasks carry different `context`). Started together, each child's first request misses the provider's prompt cache and pays the full prefix. With `prefix_stagger_seconds: N` the first child starts at once and the siblings on its provider/model wait until its first response starts streaming (by then its request has written the cache), until it finishes, or N seconds, whichever comes first. N is a cap on that one wait, not a spacing between children: siblings normally start about one time-to-first-token after the leader, whatever N is. The cost is roughly one time-to-first-token added to the batch; routes Hermes does not prompt-cache (most non-Anthropic models) and siblings routed to a different model start without waiting. The leader is always the batch's first task: when task 0 is on an uncached or different route, the batch is not gated even if later tasks share a cached route, and a one-task unit (e.g. under `independent_completions`) never waits. Off (`0`) by default.
 
 ## Clarify
 
@@ -3214,9 +3315,9 @@ webapp:
 ```
 
 - `enabled` — the gateway reads it at start; restart the gateway after changing it (`hermes gateway restart`).
-- `host` — `127.0.0.1`, `::1` or `localhost` keeps the Webapp on this machine. `0.0.0.0` or `::` makes it reachable from other machines and requires a [dashboard sign-in provider](./features/web-dashboard.md#authentication-gated-mode); without one the gateway serves native clients only and `hermes webapp --status` says why. Restart the gateway after adding the provider. Any other value, another loopback address such as `127.0.0.2` included, keeps the Webapp off.
+- `host` — `127.0.0.1`, `::1` or `localhost` keeps the Webapp on this machine. `0.0.0.0` or `::` makes it reachable from other machines and requires a [dashboard sign-in provider](./features/web-dashboard.md#authentication-gated-mode); without one the gateway serves native clients only and `hermes webapp --status` says why. Restart the gateway after adding the provider. Any other value, another loopback address such as `127.0.0.2` included, keeps the Webapp off. In a container, use `0.0.0.0`: a published port or a proxy in another container cannot reach the container's loopback ([Docker → Running the Webapp](./docker.md#running-the-webapp)).
 - `port` — a standalone profile's gateway needs a port other than the default gateway's. **Settings → Web Access → Start** picks one for a standalone profile that sets none (the first free port above 9120 no other profile uses) and saves it here; it never replaces a port you set. When the port is taken, the gateway likewise serves native clients only and `hermes webapp --status` reports why. It also replaces the Webapp's browser sign-in, since another program may have received it, so open tabs need `hermes webapp` again once the port is free.
-- `public_url` — set it when a reverse proxy or tunnel you run serves the Webapp at its own address (forwarding to `host:port`). It turns on dashboard sign-in even on a loopback `host`, it is the one outside hostname the Webapp accepts requests for, and sign-in callbacks are built on it. Without a sign-in provider the gateway serves native clients only, as for `0.0.0.0`. It must be an `http://` or `https://` address with no credentials, query or fragment; anything else keeps the Webapp off. `dashboard.public_url` is for `hermes dashboard` and never applies to the Webapp.
+- `public_url` — set it when a reverse proxy or tunnel you run serves the Webapp at its own address (forwarding to `host:port`). It turns on dashboard sign-in even on a loopback `host`, where it is also the one outside hostname the Webapp accepts requests for, and sign-in callbacks are built on it. Without a sign-in provider the gateway serves native clients only, as for `0.0.0.0`. It must be an `http://` or `https://` address with no credentials, query or fragment; anything else keeps the Webapp off. `dashboard.public_url` is for `hermes dashboard` and never applies to the Webapp. `dashboard.trusted_proxies` does: the Webapp takes a proxy's `X-Forwarded-*` headers only from loopback and the addresses listed there ([Docker → Behind a tunnel or reverse proxy](./docker.md#webapp-behind-a-proxy)).
 
 Sign-in turns on when `host` is `0.0.0.0` or `::`, or when `public_url` is set, whatever the host. `hermes webapp` then opens the Webapp's address (`public_url` when set, where sign-in returns) for you to sign in with your dashboard account: its one-use links only open a Webapp that needs no sign-in. Native clients (the CLI, TUI and Desktop app) never sign in: the gateway's listener for them never asks for it, whatever the config says.
 
@@ -3255,7 +3356,7 @@ dashboard:
 - `theme` — dashboard visual theme.
 - `show_token_analytics` — off by default. The Analytics page and token/cost figures are a **local lower-bound estimate** (they exclude auxiliary calls, retries, fallbacks, and cache writes), so they can read far below the provider bill. Set `true` only if you understand they're not billing.
 - `public_url` — when set, this is the complete authority (scheme + host + optional path prefix) the OAuth `redirect_uri` is built from. Set it for deploys behind reverse proxies that don't reliably forward `X-Forwarded-*` headers. Leave empty to use proxy-header reconstruction.
-- `trusted_proxies` — IP addresses or bounded CIDR networks allowed to supply `X-Forwarded-Proto` and `X-Forwarded-For`. Loopback remains trusted automatically. Configure this when the TLS reverse proxy connects from another container or host. Prefer the proxy's exact IP; use a small dedicated network only when its address is dynamic. Wildcards and `/0` networks are rejected.
+- `trusted_proxies` — IP addresses or bounded CIDR networks allowed to supply `X-Forwarded-Proto` and `X-Forwarded-For`. Loopback remains trusted automatically. Configure this when the TLS reverse proxy connects from another container or host. Prefer the proxy's exact IP; use a small dedicated network only when its address is dynamic. Wildcards and `/0` networks are rejected. The gateway's [Webapp](#webapp) listener reads the same list.
 - `oauth` / `basic_auth` / `drain_auth` — auth provider config read by the bundled dashboard-auth plugins. The drain secret itself is **not** set here; it's provisioned via the `HERMES_DASHBOARD_DRAIN_SECRET` env var. See [Web Dashboard](./features/web-dashboard.md) for full auth setup.
 - `ws_ping_interval` / `ws_ping_timeout` — WebSocket keepalive tuning for non-loopback binds (loopback connections never ping). Raise these on high-latency links (Tailscale, distant SSH tunnels) where the 20 s defaults can manufacture spurious 1006 disconnects.
 - `ssh_isolated_idle_grace_s` (default `900`) — a Desktop-owned `hermes serve --isolated` backend reached over SSH is detached from the SSH session on purpose, so a laptop that sleeps mid-connection cannot tear it down; each dark-wake reconnect used to leave another backend holding `state.db`. The backend now retires itself once no client WebSocket has been connected for this long and no agent turn is running (a turn keeps it alive; an unreadable turn state keeps it alive too). Set high if you rely on a detached backend finishing long work after the laptop sleeps. Such backends also send a slow WebSocket ping (60 s, 10 min timeout) so a half-open tunnel is noticed. Independently of this grace, a backend retires (between turns) once the Desktop's ownership lock on the remote host names a newer spawn of the same connection, so a reconnect storm cannot stack detached backends; this covers POSIX and native Windows SSH hosts.

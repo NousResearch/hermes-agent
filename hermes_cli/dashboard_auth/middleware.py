@@ -7,7 +7,8 @@ everything else demands a bearer token or a valid session cookie and attaches
 the verified :class:`Session` to ``request.state.session``. On the gateway's
 Webapp a cookie session also needs its sign-in binding to the browser credential
 (``hermes_cli.webapp_sign_in``), and its cookie writes, sign-out included, must come
-from the Webapp's own origin. HTML routes are
+from the Webapp's own origin; elsewhere a cookie write the browser marks as another page's
+(``Sec-Fetch-Site``) is refused. HTML routes are
 redirected to ``/login``; ``/api/*`` routes get a 401 JSON envelope.
 """
 from __future__ import annotations
@@ -21,7 +22,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 from starlette.concurrency import run_in_threadpool
 
 from hermes_cli import webapp_sign_in
-from hermes_cli.dashboard_auth import list_session_providers
+from hermes_cli.dashboard_auth import list_interactive_providers, list_session_providers
 from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
 from hermes_cli.dashboard_auth.base import ProviderError
 from hermes_cli.dashboard_auth.cookies import (
@@ -46,12 +47,17 @@ _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
     "/api/auth/providers", "/api/mcp/oauth/callback/",
     "/assets/", "/dashboard-plugins/", "/favicon.ico", "/ds-assets/", "/fonts/", "/fonts-terminal/")
 
+# Page icons, matched exactly. Browsers fetch them without cookies (the Webapp's page icon and
+# home-screen icon are ``/apple-touch-icon.png``), so behind the gate they hit the sign-in redirect
+# and log an auto-SSO ``login_start`` with no sign-in behind it.
+_GATE_PUBLIC_ICONS: frozenset[str] = frozenset({"/apple-touch-icon.png"})
+
 
 def _path_is_public(path: str) -> bool:
-    """:data:`PUBLIC_API_PATHS` (shared with the legacy middleware) matched exactly so
-    ``/api/status`` never exposes ``/api/status/extension``; :data:`_GATE_PUBLIC_PREFIXES`
-    prefix-matched."""
-    return path in PUBLIC_API_PATHS or any(
+    """:data:`PUBLIC_API_PATHS` (shared with the legacy middleware) and :data:`_GATE_PUBLIC_ICONS`
+    matched exactly so ``/api/status`` never exposes ``/api/status/extension``;
+    :data:`_GATE_PUBLIC_PREFIXES` prefix-matched."""
+    return path in PUBLIC_API_PATHS or path in _GATE_PUBLIC_ICONS or any(
         path == p or path.startswith(p) for p in _GATE_PUBLIC_PREFIXES)
 
 
@@ -78,11 +84,25 @@ def _safe_next_target(request: Request) -> str:
 _CROSS_ORIGIN_WRITE_DETAIL = ("Cookie-authenticated writes must come from the Webapp's own origin. "
                               "Behind a reverse proxy, set webapp.public_url to the URL the browser uses.")
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
+#: The 403 detail for a cookie write the browser itself says another page made, on a surface
+#: without the Webapp's own-origin check.
+_OTHER_PAGE_WRITE_DETAIL = "Cookie-authenticated writes must come from this dashboard's own page."
+#: ``Sec-Fetch-Site`` verdicts naming a request another page made. ``same-site`` is a sibling
+#: (another port or subdomain) that ``SameSite=Lax`` still sends the session cookies from.
+_OTHER_PAGE_FETCH_SITES = frozenset({"same-site", "cross-site"})
 
 
 def _own_origin_writes(request: Request) -> bool:
     from hermes_cli.web_server_surface import policy
     return policy(request.app.state).own_origin_cookie_writes
+
+
+def _browser_says_other_page(request: Request) -> bool:
+    """The browser's own ``Sec-Fetch-Site`` verdict names another page. Pages cannot set the
+    header and the browser computes it against the URL it addressed, so it holds behind any proxy;
+    a request without Fetch Metadata (a plain-HTTP origin, a non-browser client) is not judged."""
+    return any(value.strip().lower() in _OTHER_PAGE_FETCH_SITES
+               for value in request.headers.getlist("sec-fetch-site"))
 
 
 def _unauth_response(request: Request, *, reason: str) -> Response:
@@ -118,7 +138,7 @@ def _auto_sso_response(request: Request) -> Response | None:
         resp = _unauth_response(request, reason="no_cookie")
         clear_sso_attempt_cookie(resp, prefix=prefix_from_request(request), gateway=gateway)
         return resp
-    providers = list_session_providers()
+    providers = list_interactive_providers()
     if len(providers) != 1 or getattr(providers[0], "supports_password", False):
         return None
     provider = providers[0]
@@ -147,6 +167,29 @@ def _verify_access_token(
     return scan_session_providers(
         provider_hint, lambda p: p.verify_session(access_token=access_token),
         phase="verify" if audit else "bearer verify", log=_log, on_unreachable=_audit_unreachable)
+
+
+def peek_session(request: Request):
+    """The verified Session a request to a PUBLIC path carries, or ``None``, with the gate's own
+    checks (Webapp sign-in binding, bearers only a native app was given) and none of its side
+    effects: no refresh, no cookie writes, no audit records, no 401. A public route uses it to
+    decide how much to show; an expired or unverifiable session reads as signed out."""
+    bearer = _extract_bearer(request)
+    if bearer:
+        if not webapp_sign_in.access_token_works_alone(request, bearer):
+            return None
+        access_token, provider_hint = bearer, None
+    else:
+        gateway = webapp_sign_in.cookie_gateway(request)
+        access_token, _rt = read_session_cookies(request, gateway)
+        if not access_token or (webapp_sign_in.applies(request) and not webapp_sign_in.check(request)):
+            return None
+        provider_hint = read_session_provider(request, gateway)
+    try:
+        return _verify_access_token(
+            request, access_token=access_token, provider_hint=provider_hint, audit=False)
+    except ProviderError:
+        return None
 
 
 async def _serve_refreshed(request: Request, call_next, new_session, provider: str) -> Response:
@@ -188,10 +231,12 @@ async def gated_auth_middleware(
             or getattr(request.state, "native_http_principal", None)):
         return await call_next(request)
     # Login/callback routes have their own credentials/state checks. Logout is public so an
-    # expired session can leave; where cookie writes must come from the listener's own origin it
-    # still consumes cookies, so it goes through that check.
+    # expired session can leave; where cookie writes must come from the listener's own origin, or
+    # the browser says another page sent it, it still consumes cookies, so it goes through that
+    # check.
     own_origin = _own_origin_writes(request)
-    cookie_logout = own_origin and request.url.path == "/auth/logout"
+    other_page = not own_origin and _browser_says_other_page(request)
+    cookie_logout = (own_origin or other_page) and request.url.path == "/auth/logout"
     if _path_is_public(request.url.path) and not cookie_logout:
         return await call_next(request)
     # RFC 8252 native-app bearer path: the same provider-minted access token the cookie flow
@@ -203,7 +248,7 @@ async def gated_auth_middleware(
     if bearer:
         if cookie_logout:
             return await call_next(request)
-        if not webapp_sign_in.token_works_alone(request, bearer):
+        if not webapp_sign_in.access_token_works_alone(request, bearer):
             return _unauth_response(request, reason="invalid_or_expired_session")
         try:
             bearer_session = _verify_access_token(request, access_token=bearer, audit=False)
@@ -220,6 +265,10 @@ async def gated_auth_middleware(
     if (own_origin and (at or _rt) and request.method not in _SAFE_METHODS
             and not cookie_origin_is_allowed(request)):
         return JSONResponse(status_code=403, content={"detail": _CROSS_ORIGIN_WRITE_DETAIL})
+    # Elsewhere main's rule stands (a Host-rewriting plain-HTTP proxy's page sends no Fetch
+    # Metadata and still writes), but a write the browser itself says another page made is refused.
+    if other_page and (at or _rt) and request.method not in _SAFE_METHODS:
+        return JSONResponse(status_code=403, content={"detail": _OTHER_PAGE_WRITE_DETAIL})
     if cookie_logout:
         return await call_next(request)
     if not at and not _rt:

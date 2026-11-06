@@ -1378,6 +1378,7 @@ def run_compress_context_with_progress_timeout(
 
 
 from agent.conversation_compression_checkpoint import _checkpoint_blocked, _checkpoint_incapable
+from agent.conversation_compression_feasibility import lazy_compression_feasibility_check
 
 
 def _lock_api_is_absent_on_session_db(lock_db: Any) -> bool:
@@ -1985,6 +1986,36 @@ def _lower_threshold_to_aux_context(
     )
 
 
+def _configured_compression_context_length(agent: Any) -> Optional[int]:
+    """``auxiliary.compression.context_length`` as configured now (a session's side tasks follow its
+    profile, so the value captured at agent start can belong to an earlier summariser)."""
+    try:
+        from agent.auxiliary_task_config import _get_auxiliary_task_config
+        raw = _get_auxiliary_task_config("compression").get("context_length")
+    except Exception:
+        logger.debug("Compression context_length unreadable; using the value from agent start", exc_info=True)
+        return getattr(agent, "_aux_compression_context_length_config", None)
+    try:
+        return int(raw) if raw is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _configured_custom_providers(agent: Any) -> Optional[list]:
+    """The provider entries as configured now, for measuring the compression model (a side task reads
+    them from config.yaml); the list captured at agent start inside a bypass session (its side tasks
+    never read the profile) or when config cannot be read."""
+    from agent.auxiliary_task_config import _SESSION_AUXILIARY
+    if _SESSION_AUXILIARY.get() is not None:
+        return getattr(agent, "_custom_providers", None)
+    try:
+        from hermes_cli.config import get_compatible_custom_providers, load_config_readonly
+        return get_compatible_custom_providers(load_config_readonly())
+    except Exception:
+        logger.debug("Provider entries unreadable; using the ones from agent start", exc_info=True)
+        return getattr(agent, "_custom_providers", None)
+
+
 def check_compression_model_feasibility(agent: Any) -> None:
     """Warn at session start if the aux compression context is below the threshold.
     Called from ``AIAgent.__init__`` (CLI sees it via ``_vprint``); the gateway wires ``status_callback``
@@ -2037,7 +2068,7 @@ def check_compression_model_feasibility(agent: Any) -> None:
         _aux_provider = (
             _aux_cfg_provider if _aux_cfg_provider and _aux_cfg_provider != "auto" else getattr(agent, "provider", "")
         )
-        _aux_cfg_ctx = getattr(agent, "_aux_compression_context_length_config", None)
+        _aux_cfg_ctx = _configured_compression_context_length(agent)
         if _aux_cfg_ctx is None and aux_inherits_main_route(agent, aux_model, aux_base_url):
             # Same model on the same route: reuse the main model's already-resolved window (which honours
             # model.context_length / provider pins). Re-resolving from scratch lost the pin and auto-lowered
@@ -2046,7 +2077,7 @@ def check_compression_model_feasibility(agent: Any) -> None:
         else:
             aux_context = get_model_context_length(
                 aux_model, base_url=aux_base_url, api_key=aux_api_key, config_context_length=_aux_cfg_ctx,
-                provider=_aux_provider, custom_providers=agent._custom_providers,
+                provider=_aux_provider, custom_providers=_configured_custom_providers(agent),
             )
         # Aux model must meet MINIMUM_CONTEXT_LENGTH like the main model, else it cannot summarise a full window.
         if aux_context and aux_context < MINIMUM_CONTEXT_LENGTH:
@@ -2075,41 +2106,6 @@ def check_compression_model_feasibility(agent: Any) -> None:
         raise
     except Exception as exc:
         logger.debug("Compression feasibility check failed (non-fatal): %s", exc)
-
-
-def revalidate_compression_feasibility(agent: Any) -> None:
-    """Re-run the aux feasibility probe after the main runtime changed (model switch, fallback activation,
-    primary restore). ``update_model()`` already voided the previous ceiling; probing now clamps the trigger
-    before the first compaction on the new window rather than after it (#114707). A probe failure leaves the
-    latch unset so the lazy probe at the next compaction re-raises hard rejections."""
-    agent._compression_feasibility_checked = False
-    if not getattr(agent, "context_compressor", None):
-        return
-    try:
-        check_compression_model_feasibility(agent)
-    except Exception as exc:
-        logger.debug("Compression feasibility re-check deferred to the next compaction: %s", exc)
-        return
-    agent._compression_feasibility_checked = True
-
-
-def ensure_compression_feasibility_checked(agent: Any, estimated_tokens: int) -> None:
-    """Run the deferred aux feasibility probe once a request first reaches ``MINIMUM_CONTEXT_LENGTH`` — the
-    smallest window any summariser may have — so an aux clamp lands before the first compaction fires on the
-    main-window threshold instead of after it (#114707). Below that size no summariser can be too small, so
-    short sessions keep the probe-free cold start (#28957). A probe failure leaves the latch unset for the
-    lazy probe in ``compress_context`` to re-raise hard rejections."""
-    if getattr(agent, "_compression_feasibility_checked", False) or not getattr(agent, "context_compressor", None):
-        return
-    from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
-    if int(estimated_tokens or 0) < MINIMUM_CONTEXT_LENGTH:
-        return
-    try:
-        check_compression_model_feasibility(agent)
-    except Exception as exc:
-        logger.debug("Compression feasibility probe deferred to the first compaction: %s", exc)
-        return
-    agent._compression_feasibility_checked = True
 
 
 def replay_compression_warning(agent: Any) -> None:
@@ -4062,13 +4058,11 @@ def compress_context(
     # _compression_warning so status replay still surfaces the warning. Marked checked
     # only after the probe completes (transient failures are swallowed inside). A hard
     # rejection propagates; retire the announced phase first so the client is not left compacting.
-    if not getattr(agent, "_compression_feasibility_checked", False):
-        try:
-            check_compression_model_feasibility(agent)
-        except Exception:
-            lifecycle.complete(force_terminal=True)
-            raise
-        agent._compression_feasibility_checked = True
+    try:
+        lazy_compression_feasibility_check(agent)
+    except Exception:
+        lifecycle.complete(force_terminal=True)
+        raise
     lease, _abort_prompt = _acquire_compression_lease(
         agent, commit_fence=commit_fence, lifecycle=lifecycle, system_message=system_message,
         approx_tokens=approx_tokens, attempt=attempt,
@@ -4430,9 +4424,7 @@ __all__ = [
     "COMPACTION_STATUS_MARKER",
     "check_compression_model_feasibility",
     "compress_context",
-    "ensure_compression_feasibility_checked",
     "is_compaction_progress_status",
     "replay_compression_warning",
-    "revalidate_compression_feasibility",
     "try_shrink_image_parts_in_messages",
 ]

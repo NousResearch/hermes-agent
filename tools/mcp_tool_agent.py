@@ -5,6 +5,7 @@ and re-injecting post-build tools."""
 import logging
 import json
 import threading
+from collections import OrderedDict
 from typing import Optional
 from tools.mcp_tool_common import _core
 
@@ -14,6 +15,14 @@ logger = logging.getLogger("tools.mcp_tool")
 # the reload RPC, gateway reload and late-binding refresh thread; the run loop
 # reads them during tool iteration and must never see a half-updated pair.
 _agent_tools_lock = threading.Lock()
+
+# (profile home, session id) -> (registry generation, toolset selection) of the tools[] this process last
+# pinned for that session. A rebuild from the pin in the SAME process (agent-cache eviction, ``/model``, a
+# fresh agent per turn) is the same conversation and gets the freeze test the between-turns refresh applies.
+# Another process (``--resume`` there, a fresh worker) has no entry: its generation counter is unrelated, so
+# it cannot tell a check_fn flip from a registration and appends as before. Bounded, oldest first.
+_PINNED_SNAPSHOTS: "OrderedDict[tuple, tuple]" = OrderedDict()
+_PINNED_SNAPSHOTS_MAX = 4096
 
 
 def _def_name(tool_def: dict) -> str:
@@ -67,8 +76,15 @@ def _drop_session_tools(agent, new_defs: list, new_names: set) -> tuple:
     return [entry for entry in new_defs if _def_name(entry) not in drops], new_names - drops
 
 
+def _frozen_tool_names(registered: set) -> frozenset:
+    """Names the tools[] freeze holds back: every name availability alone can bring into a build,
+    the registered tools and the Tool Search bridge ``assemble_tool_defs`` adds once anything defers."""
+    from tools.tool_search_catalog import BRIDGE_TOOL_NAMES
+    return frozenset(registered) | frozenset(BRIDGE_TOOL_NAMES)
+
+
 def _publish_tool_snapshot(
-    agent, new_defs: list, new_names: set, *, snapshot_generation: int,
+    agent, new_defs: list, new_names: set, *, snapshot_generation: int, built_generation: int, selection: tuple,
     staged_engine_names: set, content_aware: bool, prefix_registered: Optional[set]) -> Optional[set]:
     """Single atomic read-diff-publish under ``_agent_tools_lock`` so ``added`` matches what
     was published and a stale (older-generation) rebuild can't overwrite a newer one. Returns
@@ -82,10 +98,19 @@ def _publish_tool_snapshot(
         current_defs = _agent_tool_defs(agent)
         current = {_def_name(t) for t in current_defs}
         if prefix_registered is not None:
-            new_defs, new_names = _merge_preserving_prefix(current_defs, new_defs, prefix_registered)
+            # Neither the registry (read after the build) nor the toolset selection moved since the last
+            # snapshot: a name can only be new here because a check_fn flipped, and tools[] stays frozen
+            # for that (#101367). A registration or a widened selection appends as before.
+            recorded_selection = getattr(agent, "_tool_snapshot_selection", None)
+            frozen = built_generation == published_gen and selection == recorded_selection
+            held = _frozen_tool_names(prefix_registered) if frozen else frozenset()
+            new_defs, new_names = _merge_preserving_prefix(current_defs, new_defs, prefix_registered, held)
         new_defs, new_names = _drop_session_tools(agent, new_defs, new_names)
-        # Record the generation even when unchanged so an in-flight older caller can't clobber.
+        # Record the generation (the one read BEFORE the build: a registration that landed during it may
+        # be missing from these definitions) and selection even when unchanged, so an in-flight older
+        # caller can't clobber.
         agent._tool_snapshot_generation = max(published_gen, snapshot_generation)
+        agent._tool_snapshot_selection = selection
         # Same name set: nothing to publish, unless the caller is content_aware
         # (explicit reload, compaction) and the serialized schema bytes moved.
         if new_names == current and not (content_aware and _tool_defs_content_changed(agent, new_defs)):
@@ -117,20 +142,22 @@ def refresh_agent_mcp_tools(
     slot and the schema bytes already sent (a refreshed description is rendered ahead of the
     conversation), a still-registered tool whose ``check_fn`` merely flapped is carried forward
     (``check_fn`` gates exposure, never invocation), a deregistered tool is dropped, new tools
-    append at the tail. The caller owns the prompt-cache contract.
+    append at the tail, unless neither the registry generation nor the toolset selection moved since
+    the last snapshot: then only a ``check_fn`` flip can bring a name in, and tools[] stays frozen for
+    it (bridge tools included). The caller owns the prompt-cache contract.
 
     With ``preserve_prefix`` off (explicit ``/reload-mcp``, and a rebuild before the
     first turn) a same-name schema change is published. The caller has already
     accepted the cache break, or nothing has been cached yet."""
     from model_tools import get_tool_definitions
     from tools.registry import registry
+    from toolsets import agent_tool_surface, tool_selection_key
     enabled, disabled = _resolve_refresh_toolsets(agent, enabled_override, disabled_override)
     # Generation captured BEFORE the slow get_tool_definitions call (a slower caller holding an
     # OLDER set must not clobber a newer one); definitions computed OUTSIDE the lock.
     snapshot_generation = registry._generation
     from agent.delegation_backends import adopt_built_backend, saved_backend
     built_backend = saved_backend()
-    from toolsets import agent_tool_surface
     new_defs = agent_tool_surface(agent, list(
         get_tool_definitions(enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=quiet_mode) or []))
     new_names = {_def_name(t) for t in new_defs}
@@ -149,9 +176,12 @@ def refresh_agent_mcp_tools(
         # Explicit reload and pre-first-turn rebuild. A same-name description
         # change has to publish; between-turns refresh keeps preserve_prefix.
         content_aware = True
+    # Read after the build and the membership read: a registration that landed meanwhile counts as one.
+    built_generation = registry._generation
     added = _publish_tool_snapshot(
-        agent, new_defs, new_names, snapshot_generation=snapshot_generation,
-        staged_engine_names=staged_engine_names, content_aware=content_aware, prefix_registered=prefix_registered)
+        agent, new_defs, new_names, snapshot_generation=snapshot_generation, built_generation=built_generation,
+        selection=tool_selection_key(enabled, disabled), staged_engine_names=staged_engine_names,
+        content_aware=content_aware, prefix_registered=prefix_registered)
     backend_before = getattr(agent, "_delegation_backend", None)
     published_gen = getattr(agent, "_tool_snapshot_generation", -1)
     stale = isinstance(published_gen, int) and snapshot_generation < published_gen  # a newer snapshot won
@@ -198,6 +228,41 @@ def persist_agent_tool_names(agent) -> None:
         db.update_session_tool_names(session_id, pin)
     except Exception:
         logger.debug("tool_names persist skipped", exc_info=True)
+        return
+    _record_pinned_snapshot(agent, session_id)
+
+
+def _pinned_snapshot_key(session_id) -> tuple:
+    from hermes_constants import hermes_home_key
+    return hermes_home_key(), str(session_id)
+
+
+def _record_pinned_snapshot(agent, session_id) -> None:
+    """Remember what the pin just written was built against (see ``_PINNED_SNAPSHOTS``)."""
+    key = _pinned_snapshot_key(session_id)
+    generation = getattr(agent, "_tool_snapshot_generation", None)
+    selection = getattr(agent, "_tool_snapshot_selection", None)
+    with _agent_tools_lock:
+        _PINNED_SNAPSHOTS.pop(key, None)
+        if isinstance(generation, int) and isinstance(selection, tuple):
+            _PINNED_SNAPSHOTS[key] = (generation, selection)
+            while len(_PINNED_SNAPSHOTS) > _PINNED_SNAPSHOTS_MAX:
+                _PINNED_SNAPSHOTS.popitem(last=False)
+
+
+def _pin_restore_held(agent, registered: set) -> tuple[bool, frozenset]:
+    """(pinned here, held) for a restore from this session's pin: whether this process wrote the pin (the
+    rebuild is the same conversation), and the names it holds back: those the freeze holds when neither the
+    registry nor the agent's toolset selection has moved since."""
+    from tools.registry import registry
+    session_id = getattr(agent, "session_id", None)
+    if not session_id:
+        return False, frozenset()
+    with _agent_tools_lock:
+        pinned_against = _PINNED_SNAPSHOTS.get(_pinned_snapshot_key(session_id))
+    if pinned_against != (registry._generation, getattr(agent, "_tool_snapshot_selection", None)):
+        return pinned_against is not None, frozenset()
+    return True, _frozen_tool_names(registered)
 
 
 def _config_permitted_names(agent) -> set:
@@ -265,7 +330,10 @@ def restore_agent_tool_prefix(agent, saved) -> bool:
     catalog, per-surface dynamic parameters, the ``-q`` footprint): tools[] heads every request.
     Pinned by other code (``hermes update``, a legacy name list) a tool's contract may have moved,
     so each takes its current definition. A pinned tool this process did not build is carried
-    only while its toolset config allows it here; deregistered tools drop, new tools append."""
+    only while its toolset config allows it here; deregistered tools drop, new tools append. In the
+    process that wrote the pin a pinned Tool Search bridge tool keeps its slot (it is synthesized, never
+    registered, exactly as the between-turns refresh keeps it) and a tool new only because its ``check_fn``
+    flipped stays out (``_pin_restore_held``)."""
     pinned, same_code, pinned_defs = _pinned_tool_defs(saved, {_def_name(t): t for t in _agent_tool_defs(agent)})
     if not pinned:
         return False
@@ -275,9 +343,13 @@ def restore_agent_tool_prefix(agent, saved) -> bool:
     registered_names = {entry.name for entry in registry.get_all_entries()}
     carried = {_def_name(d) for d in pinned_defs if _def_name(d) not in fresh and _def_name(d) in registered_names}
     carried &= _config_permitted_names(agent) if carried else set()
+    pinned_here, held = _pin_restore_held(agent, registered_names)
+    if pinned_here:  # same conversation: the synthesized bridge keeps its slot, as in _merge_preserving_prefix
+        from tools.tool_search_catalog import BRIDGE_TOOL_NAMES
+        carried |= {_def_name(d) for d in pinned_defs if _def_name(d) in BRIDGE_TOOL_NAMES}
     merged = [d for d in pinned_defs if _def_name(d) in fresh or _def_name(d) in carried]
     pinned_names = {_def_name(d) for d in merged}
-    merged.extend(t for t in fresh_defs if _def_name(t) not in pinned_names)
+    merged.extend(t for t in fresh_defs if _def_name(t) not in pinned_names and _def_name(t) not in held)
     merged = _drop_gated_carried_tools(merged, carried)
     merged_names = {_def_name(t) for t in merged}
     _reinject_authorized_dynamic_tools(agent, merged, merged_names)
@@ -290,16 +362,20 @@ def restore_agent_tool_prefix(agent, saved) -> bool:
     if isinstance(saved, dict) and saved.get("delegation_backend"):
         from agent.delegation_backends import adopt_built_backend
         adopt_built_backend(agent, pinned, saved["delegation_backend"])
+    from tools.delegate_tool import adopt_session_delegation_mode
+    adopt_session_delegation_mode(agent)  # the restored delegate_task decides joined vs background from here on
     if not same_code or merged != list(pinned):
         persist_agent_tool_names(agent)
     return changed
 
 
-def _merge_preserving_prefix(current_defs: list, new_defs: list, registered_names: set) -> tuple[list, set]:
+def _merge_preserving_prefix(current_defs: list, new_defs: list, registered_names: set,
+                             held: frozenset | set = frozenset()) -> tuple[list, set]:
     """Fold a fresh tool snapshot into a live one without moving existing bytes. Ordered by
     ``current_defs`` (the cached request prefix): a name already sent keeps its slot and the
     schema bytes already sent; a name only in the live list is kept if still registered
-    (``check_fn`` flapped), else dropped; a name only in the fresh list is appended at the tail.
+    (``check_fn`` flapped), else dropped; a name only in the fresh list is appended at the tail
+    unless it is in ``held`` (a name that can only be new because a ``check_fn`` flipped).
 
     A refreshed schema is not substituted in place. Tool JSON is rendered ahead of the
     conversation, so one changed description means the next prompt no longer starts with the
@@ -321,7 +397,7 @@ def _merge_preserving_prefix(current_defs: list, new_defs: list, registered_name
         replacement = fresh.pop(name, None)
         if replacement is not None or name in BRIDGE_TOOL_NAMES or (name and name in registered_names):
             merged.append(entry)
-    merged.extend(fresh.values())
+    merged.extend(entry for name, entry in fresh.items() if name not in held)
     return merged, {_def_name(t) for t in merged}
 
 

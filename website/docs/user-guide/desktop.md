@@ -67,6 +67,8 @@ instructions. Behind the sign-in gate (below) it also signs out every browser th
 dashboard account; each must sign in again. The account tokens such a login keeps in its cookies work
 on the Webapp only as that login (the gateway refuses them as a bearer token, on a connection's URL and
 on its token refresh), so they end with it. A native Hermes app that signed in to the gateway on its own stays signed in.
+The deployment session token (`HERMES_DASHBOARD_SESSION_TOKEN`, see [Deployment session-token provider](./features/web-dashboard.md#deployment-session-token-provider-token-only-deployments))
+also works there on its own, as a bearer token or on a connection's URL, while the session-token provider is enabled.
 
 For a named profile, `hermes -p work webapp` opens the Webapp on `work`. Profiles the default gateway
 serves share its Webapp; a standalone profile's own gateway serves its own when its config turns it on.
@@ -74,8 +76,10 @@ serves share its Webapp; a standalone profile's own gateway serves its own when 
 **From another machine.** Set `webapp.host` to `0.0.0.0`; the gateway then requires the
 [dashboard sign-in gate](./features/web-dashboard.md#authentication-gated-mode) (username and password
 for a trusted LAN or VPN, OAuth/OIDC for anything internet-facing). Behind a reverse proxy or tunnel
-you run, keep the loopback host and set `webapp.public_url` to the address it serves instead; that
-requires the same sign-in. `hermes webapp` then opens the Webapp's address, where you sign in with
+you run on the same machine, keep the loopback host and set `webapp.public_url` to the address it
+serves instead; that requires the same sign-in. A proxy in another container or on another machine
+cannot reach that loopback address: see [Docker → Behind a tunnel or reverse proxy](./docker.md#webapp-behind-a-proxy).
+`hermes webapp` then opens the Webapp's address, where you sign in with
 your dashboard account: `webapp.public_url` when set; on the LAN, the address **Web Access → Start**
 registered Nous sign-in for, while it is still this machine's address and the Webapp's port; else the
 loopback address (a password provider, or sign-in you set up by hand for that address). One-use
@@ -116,7 +120,10 @@ always-on-top overlays, OS-window inspection, external-terminal launch and the u
 
 Chats written before the gateway owned sessions show their history but cannot be continued from the
 browser until they are adopted: run `hermes sessions adopt` once on the host (`hermes -p <profile>
-sessions adopt` for another profile), or open them once in the native Desktop, TUI or CLI.
+sessions adopt` for another profile), or open them once in the native Desktop, TUI or CLI. That
+includes chats a phone app started through the dashboard login under its own label (`mobile`, `ios`):
+they continue like Desktop chats. Rows a separate WebUI process wrote with its own agent, and old cron
+or subagent runs, stay read-only.
 
 ### Open it from your phone or another computer
 
@@ -136,9 +143,10 @@ and only that app can change it: a browser signed in over the network cannot.
 **Start** builds the Webapp if it is missing or out of date (the same build `hermes webapp` runs, which
 can take a few minutes the first time), registers its sign-in address with your Nous account when that
 address changed, saves the `webapp:` settings and restarts the gateway, which reads them when it
-starts. While a chat is running the gateway refuses to restart: the pane shows **Restart needed**, the
-settings apply on the next restart, and **Restart gateway** restarts it once the chat ends. **Stop**
-turns the Webapp off the same way. A Webapp you turned on for this computer only
+starts. Until it is done the pane names the step it is on and how long Start has run, also in a
+pane opened during it. While a chat is running the gateway refuses to restart: the pane shows
+**Restart needed**, the settings apply on the next restart, and **Restart gateway** restarts it once
+the chat ends. **Stop** turns the Webapp off the same way. A Webapp you turned on for this computer only
 (`webapp.enabled: true` without Web Access) shows as served on this computer.
 
 Web Access changes only the `webapp:` settings and keeps your `webapp.port`. It leaves
@@ -308,6 +316,17 @@ A real terminal lives in the right sidebar, next to the file browser:
 - **Ctrl+`** shows the terminal (opening one if none exist); **Ctrl+Shift+`** spawns an additional one. Multiple terminals stack in a tab rail — **Ctrl+Shift+↓/↑** walk between them, **Ctrl+Shift+W** closes the active one.
 - **Shells persist while hidden.** Closing or hiding the panel doesn't kill your shell — every open terminal stays mounted with its scrollback and running processes intact until you explicitly close it.
 - **Add to chat** — select terminal output and send it into the composer as context for your next message.
+
+**Per-gateway terminals.** Each terminal tab runs on the gateway it was opened on, and keeps running there
+when you pick another gateway in Sessions. **New terminal** (**+** on the terminal rail) opens on the
+gateway picked in Sessions. When an SSH gateway is registered, the chevron under **+** (or a
+right-click on **+**) opens one on **This device** or any SSH gateway, so several hosts can be open
+side by side. A tab shows its gateway as a small glyph on its rail square and in its tooltip
+(`zsh · NAS`); This device tabs are labeled only once tabs run on more than one host. URL/token and
+cloud gateways have no shell access, so a terminal opened while one is picked runs on This device
+and says so. After a relaunch, each tab reopens on its own gateway. Editing an SSH gateway
+disconnects its tabs (press Enter to reconnect). If a tab's gateway was removed, the tab says so and
+does not start a shell anywhere else.
 
 ### Live subagents
 
@@ -718,8 +737,28 @@ The [Webapp](#use-the-desktop-workspace-from-a-browser) loads the desktop plugin
 host that serves it, from the `desktop-plugins` folder of that host's Hermes root, whichever profile
 the tab is on. A new or removed plugin folder shows up within seconds; an edited `plugin.js` loads on
 **⌘K → Reload desktop plugins**, since a browser cannot watch the host's files. The desktop half of
-an agent+desktop package appears once native Desktop on that host has copied it into the folder.
-Install and remove desktop plugins from native Desktop or in the folder itself; a plugin's folder
+an agent+desktop package is copied into the folder by the host itself, so it also appears on a
+headless host that native Desktop never runs on.
+
+**Install** works from the Webapp too: **Capabilities → Plugins → Install** inspects the repository
+first, then has the host that serves the tab clone a desktop-only repository into that folder, under
+the same folder name native Desktop uses. The host installs exactly the commit the dialog showed (or
+the one you pinned) and refuses if that commit cannot be fetched. A package that also ships an agent
+plugin is installed once, as an agent plugin on that host, and the host copies its desktop half out of
+that checkout, as native Desktop does with a local backend. That install is held to the commit the
+dialog showed too: if the branch moved after you reviewed it, nothing is installed and the dialog
+reads the source again and shows the new commit for you to review before you click Install again
+(native Desktop works the same way). A catalog pick is held to the catalog pin the dialog showed: if the
+catalog re-pins the entry before you click Install, the dialog shows the new pin for review first. A
+backend older than the app cannot hold an install to the reviewed commit; the dialog says so and installs
+only if you choose **Install anyway**. If a package's agent half installs but its desktop half cannot
+follow because the source moved, the dialog says only the agent half is in, and installs again only with
+**Force reinstall**, which replaces both halves with the version shown. The desktop-only clone takes
+any source `hermes plugins install` takes, held to the reviewed commit. Because a browser tab asks for
+it, the clone refuses a plugin folder that contains symbolic links or is larger than 64 MB, and never
+replaces an installed plugin unless **Force reinstall** is checked. A plugin installed this way loads on the next scan; a plugin that
+starts disabled is turned on from its card. Removing one from **Capabilities → Plugins** deletes the
+folder on that host; the desktop half of a package is removed with the package. A plugin's folder
 access (`ctx.files`) is not available in a browser.
 
 **Capabilities → Plugins** is the one place for everything that extends
@@ -770,8 +809,11 @@ picker installs reviewed entries at their pinned commit into the selected
 profile, and **Install from Git** takes any other repository through the same
 review-then-install dialog; its optional **Pin to commit** field installs one
 exact 40-character commit SHA (private repos included), and pinned plugins
-carry a `pinned @ <sha8>` badge in the list. Old `Settings → Plugins` links
-redirect here.
+carry a `pinned @ <sha8>` badge in the list. **Install from Git** takes any
+git source `hermes plugins install` accepts, including private repos over
+`git@`/`ssh://` and local folders (`file://`). A desktop plugin folder that
+contains a symbolic link is refused. Old `Settings → Plugins` links redirect
+here.
 
 ## Troubleshooting
 

@@ -28,7 +28,7 @@ def rewind_in_transaction(self, conn, session_id, target_message_id, *,
         conn.execute(f"UPDATE messages SET active = 0 WHERE id IN ({_placeholders(ids)})", ids)
     if replacement is not None:
         self._insert_message_rows(conn, session_id, [replacement])
-        replacement_message_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+        replacement_message_id = int(replacement["_row_id"])
     conn.execute(
         "UPDATE sessions SET rewind_count = COALESCE(rewind_count, 0) + 1 WHERE id = ?", (session_id,))
     message_count, tool_call_count = self._active_transcript_counts(conn, session_id)

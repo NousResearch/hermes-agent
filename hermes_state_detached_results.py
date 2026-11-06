@@ -52,7 +52,7 @@ class SessionDetachedResultsMixin:
             if existing is not None:
                 return existing[0]
             self._check_transcript_write_guards(conn, session_id, None, reject_active_turn_lease=True)
-            msg_id = conn.execute(_INSERT_MESSAGE_SQL, row).lastrowid
+            msg_id = conn.execute(_INSERT_MESSAGE_SQL, row).fetchone()[0]
             self._bump_session_counters(conn, session_id, 1, 0, unit=True)
             return msg_id
 

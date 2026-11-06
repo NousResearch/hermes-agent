@@ -601,3 +601,38 @@ wherever `HERMES_HOME` points (see [Hermes home and profile isolation](#hermes-h
 
 The database file, WAL file (`state.db-wal`), and shared-memory file
 (`state.db-shm`) are all created in the same directory.
+
+## Session database backend
+
+`SessionDB` resolves its backend from the `database:` section of the owning
+profile's `config.yaml`:
+
+```yaml
+database:
+  backend: "sqlite"  # sqlite | postgres
+  # schema: "hermes_default"
+```
+
+- `backend` selects the conversation-state store for that profile. The
+  default is `sqlite`, and existing profiles are unaffected: a config without
+  these keys (or with `backend: "sqlite"`) opens the same local `state.db`
+  as before.
+- Selection is per profile: each profile resolves its own `database:`
+  section, and a profile's settings never borrow another profile's
+  configuration or credentials.
+- PostgreSQL (opt-in, `backend: "postgres"`) takes its connection string
+  from `HERMES_DATABASE_URL` in that profile's own `.env`, never from the
+  parent process environment for named profiles.
+- `schema` names the PostgreSQL schema for the profile. When omitted, a
+  stable name is derived from the profile and a hash of the local database
+  path so stores stay isolated; an explicit schema must match
+  `[a-z_][a-z0-9_]{0,62}` and must not start with `pg_`.
+
+This section lands the config surface, the backend dispatch seam, and the
+portable-SQL groundwork for a second store. The PostgreSQL backend module
+itself ships in the follow-up PR of this series; until it lands,
+`backend: "postgres"` fails fast instead of opening a store: without
+`HERMES_DATABASE_URL` the config resolution rejects the profile
+(`PostgreSQL requires HERMES_DATABASE_URL in ...`), and with the URL set the
+dispatch refuses the construction with
+`PostgreSQL support requires pip install 'hermes-agent[postgres]'`.

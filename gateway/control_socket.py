@@ -539,6 +539,11 @@ def rescan_gateway_profiles(home: Path, *, timeout: float = 8.0) -> Optional[dic
     return query_gateway_control(home, "rescan-profiles", timeout=timeout)
 
 
+def activate_gateway_whatsapp(home: Path, profile: str, *, timeout: float = 8.0) -> Optional[dict[str, Any]]:
+    """Ask a live gateway to connect one newly paired WhatsApp adapter in place."""
+    return query_gateway_control(home, "activate-whatsapp", params={"profile": profile}, timeout=timeout)
+
+
 def request_unserve_profile(home: Path, name: str) -> Optional[dict[str, Any]]:
     return query_gateway_control(home, "unserve-profile", params={"name": name}, timeout=8.0)
 

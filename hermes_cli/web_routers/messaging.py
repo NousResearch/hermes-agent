@@ -50,7 +50,7 @@ router = APIRouter()
 _config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
 _profile_scope = late("_profile_scope", "hermes_cli.web_server_profiles")
 _resolve_profile_dir = late("_resolve_profile_dir", "hermes_cli.web_server_profiles")
-_restart_gateway_after_whatsapp_onboarding = late("_restart_gateway_after_whatsapp_onboarding", "hermes_cli.web_server_messaging")
+_activate_gateway_whatsapp_after_onboarding = late("_activate_gateway_whatsapp_after_onboarding", "hermes_cli.web_server_messaging")
 _telegram_onboarding_request_sync = late("_telegram_onboarding_request_sync", "hermes_cli.web_server_messaging")
 _whatsapp_session_path = late("_whatsapp_session_path", "hermes_cli.web_server_messaging")
 _write_platform_enabled = late("_write_platform_enabled", "hermes_cli.web_server_messaging")
@@ -414,7 +414,20 @@ def _whatsapp_linked_account_from_session(session_path: Path) -> tuple[str | Non
 
 def _ensure_whatsapp_bridge_dependencies(bridge_dir: Path) -> None:
     """Install bridge dependencies when the dashboard is the setup surface."""
-    if (bridge_dir / "node_modules").exists():
+    from plugins.platforms.whatsapp.bridge_dependencies import bridge_dependencies_ready, bridge_dependency_install_lock
+    if bridge_dependencies_ready(bridge_dir):
+        return
+    try:
+        with bridge_dependency_install_lock(bridge_dir):
+            if not bridge_dependencies_ready(bridge_dir):
+                _install_whatsapp_bridge_dependencies_unlocked(bridge_dir)
+    except (OSError, TimeoutError) as exc:
+        raise HTTPException(status_code=500, detail=f"WhatsApp bridge dependency lock failed: {exc}") from exc
+
+
+def _install_whatsapp_bridge_dependencies_unlocked(bridge_dir: Path) -> None:
+    from plugins.platforms.whatsapp.bridge_dependencies import bridge_dependencies_ready, stamp_bridge_dependencies
+    if bridge_dependencies_ready(bridge_dir):
         return
 
     from hermes_constants import find_node_executable, with_hermes_node_path
@@ -447,6 +460,7 @@ def _ensure_whatsapp_bridge_dependencies(bridge_dir: Path) -> None:
     if result.returncode != 0:
         detail = "\n".join((result.stderr or result.stdout or "").strip().splitlines()[-10:])
         raise HTTPException(status_code=500, detail=f"npm install failed for WhatsApp bridge: {detail or 'no output'}")
+    stamp_bridge_dependencies(bridge_dir)
 
 
 def _spawn_whatsapp_pairing_process(session_path: Path, mode: str) -> subprocess.Popen:
@@ -763,6 +777,9 @@ async def apply_whatsapp_onboarding(pairing_id: str, body: WhatsAppOnboardingApp
     effective_profile = body.profile or profile or record_profile
     with _onboarding_save_errors("WhatsApp onboarding apply failed", "Failed to save WhatsApp setup."):
         with _config_profile_scope(effective_profile):
+            if record.proc is not None:
+                from plugins.platforms.whatsapp.bridge_dependencies import stamp_whatsapp_pairing
+                stamp_whatsapp_pairing(Path(record.session_path))
             save_env_value("WHATSAPP_MODE", mode)
             save_env_value("WHATSAPP_DM_POLICY", "pairing")
             # Blank means "keep the existing allowlist"; explicit clearing
@@ -778,8 +795,8 @@ async def apply_whatsapp_onboarding(pairing_id: str, body: WhatsAppOnboardingApp
         if record.proc is None or record.proc.poll() is not None:
             _whatsapp_onboarding_sessions.pop(pairing_id, None)
 
-    restart_result = _restart_gateway_after_whatsapp_onboarding(effective_profile)
-    return {"ok": True, "platform": "whatsapp", "needs_restart": not restart_result["restart_started"], **restart_result}
+    activation = await asyncio.to_thread(_activate_gateway_whatsapp_after_onboarding, effective_profile)
+    return {"ok": True, "platform": "whatsapp", **activation}
 
 
 async def _wait_whatsapp_pairing_flush(pairing_id: str) -> None:
@@ -791,11 +808,11 @@ async def _wait_whatsapp_pairing_flush(pairing_id: str) -> None:
         try:
             await asyncio.to_thread(record.proc.wait, timeout=3)
         except subprocess.TimeoutExpired as exc:
-            raise HTTPException(status_code=409, detail="WhatsApp is still saving its linked device. Wait a moment and try Save and restart again.") from exc
+            raise HTTPException(status_code=409, detail="WhatsApp is still saving its linked device. Wait a moment and try Save again.") from exc
     with _whatsapp_onboarding_lock:
         _release_whatsapp_reservation(record)
         if record.session_reserved:
-            raise HTTPException(status_code=409, detail="WhatsApp is still finishing pairing. Wait a moment and try Save and restart again.")
+            raise HTTPException(status_code=409, detail="WhatsApp is still finishing pairing. Wait a moment and try Save again.")
 
 
 @router.delete("/api/messaging/whatsapp/onboarding/{pairing_id}")

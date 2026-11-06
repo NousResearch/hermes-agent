@@ -873,26 +873,6 @@ export function WhatsAppOnboardingPanel({
     resetSetup();
   };
 
-  const watchRestartOutcome = async () => {
-    for (let i = 0; i < 20; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 1500));
-      try {
-        const st = await api.getActionStatus("gateway-restart", 5);
-        if (st.running) continue;
-        if (st.exit_code !== 0 && st.exit_code !== null) {
-          onRestartNeeded();
-          showToast(
-            `Gateway restart failed (exit ${st.exit_code}) — restart manually`,
-            "error",
-          );
-        }
-        return;
-      } catch {
-        // transient fetch error; keep polling
-      }
-    }
-  };
-
   const apply = async () => {
     if (!setup) return;
     setPhase("applying");
@@ -903,15 +883,26 @@ export function WhatsAppOnboardingPanel({
         allowed_users: allowedUsers,
       });
       resetSetup();
-      if (result.restart_started) {
-        showToast("WhatsApp saved; gateway restarting…", "success");
+      if (result.active || result.pending) {
+        showToast(
+          result.active
+            ? "WhatsApp connected without a gateway restart"
+            : "WhatsApp is connecting; the gateway stays available",
+          "success",
+        );
         setRestartNeeded(false);
-        setTimeout(() => void onChanged(), 4000);
-        void watchRestartOutcome();
-      } else {
+        if (result.pending) setTimeout(() => void onChanged(), 4000);
+      } else if (result.retrying) {
+        showToast("WhatsApp saved; the gateway is retrying its connection", "error");
+        setRestartNeeded(false);
+      } else if (result.needs_restart) {
         onRestartNeeded();
-        const detail = result.restart_error ? `: ${result.restart_error}` : "";
-        showToast(`WhatsApp saved; gateway restart failed${detail}`, "error");
+        showToast(
+          result.activation_error || "WhatsApp saved; start or update the gateway to connect it",
+          "error",
+        );
+      } else {
+        showToast(`WhatsApp saved; connection failed${result.reason ? `: ${result.reason}` : ""}`, "error");
       }
       await onChanged();
     } catch (applyError) {
@@ -934,7 +925,7 @@ export function WhatsAppOnboardingPanel({
         : "waiting";
   const setupHelp =
     phase === "connected" || phase === "applying"
-      ? "WhatsApp is linked but Hermes is not listening yet. Save and restart the gateway to finish setup."
+      ? "WhatsApp is linked. Save to connect it to the running gateway."
       : setup?.status === "installing"
         ? "Preparing the WhatsApp bridge. The QR code will appear here when it is ready."
         : setup?.status === "starting"

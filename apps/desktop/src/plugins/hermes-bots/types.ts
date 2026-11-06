@@ -297,6 +297,7 @@ export type GroupPrompt = GroupApprovalPrompt | GroupClarifyPrompt
 export type GroupActivityKind =
   | 'cancelled'
   | 'capped'
+  | 'degraded'
   | 'delivered'
   | 'failed'
   | 'held'

@@ -696,6 +696,7 @@ class ResponsesApiTransport(ProviderTransport):
         from agent.codex_responses_adapter import (
             _chat_messages_to_responses_input, _wire_model_identity, responses_endpoint_quirks,
         )
+        from agent.message_sanitization import needs_reasoning_echo
 
         self._last_issuer_model = _wire_model_identity(kwargs.get("model"))
         endpoint = kwargs.get("endpoint") or responses_endpoint_quirks(kwargs.get("base_url"))
@@ -706,6 +707,7 @@ class ResponsesApiTransport(ProviderTransport):
             current_issuer_kind=self._resolve_issuer_kind(kwargs, endpoint),
             current_issuer_model=self._last_issuer_model,
             native_compaction_eligible=_native_compaction_active(kwargs.get("context_management")),
+            require_reasoning_text_echo=needs_reasoning_echo(None, None, kwargs.get("base_url")),
         )
 
     def convert_tools(self, tools: Optional[list[dict[str, Any]]]) -> Any:

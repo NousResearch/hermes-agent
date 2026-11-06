@@ -1,0 +1,28 @@
+name: completion-proof
+repo: https://github.com/yuanshen101/completion-proof
+sha: "9e56131c2329cf081efde52d0e5751da3d20ecec"
+subdir: completion-proof
+description: "Revision-bound receipts for operator-configured checks; changed source, tests or artifacts make earlier passes stale."
+maintainer: yuanshen101
+tier: community
+category: tools
+requires_hermes: ">=0.22.7"
+version: "0.1.4"
+platforms: [linux]
+readme: true
+known_issues:
+  - "Native Windows and macOS are untested; Linux validation was performed under WSL2."
+  - "Configured checks run with the user's OS privileges and are not sandboxed."
+  - "The pre_verify reminder is bounded, not a fail-closed completion gate."
+  - "Receipts are local records, not cryptographic attestations."
+capabilities:
+  provides_tools:
+    - proof_list_checks
+    - proof_status
+    - proof_verify
+    - proof_report
+  provides_hooks:
+    - post_tool_call
+    - pre_verify
+  provides_middleware: []
+  requires_env: []

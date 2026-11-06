@@ -398,3 +398,26 @@ def test_refreshed_candidates_bad_answer_is_not_a_stale_credential(body):
     after_refresh = _candidate_outcome(stale, bad())
     assert ("stale fallback credential", None) not in after_refresh[1]
     assert after_refresh == _candidate_outcome(bad(), None)
+
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+def test_a_rebuilt_retrys_invalid_answer_is_classified_on_the_request_it_sent(monkeypatch, is_async):
+    seen = []
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_error_classification", lambda **kw: seen.append(kw["model"]))
+    create = AsyncMock if is_async else MagicMock
+    first = MagicMock(base_url="https://openrouter.ai/api/v1", api_key="k")
+    first.chat.completions.create = create(side_effect=sdk(401, "invalid api key"))
+    retry = MagicMock(base_url="https://openrouter.ai/api/v1", api_key="k2")
+    retry.chat.completions.create = create(return_value=SimpleNamespace(choices=None))
+    with patch.multiple(
+        "agent.auxiliary_client", _resolve_task_provider_model=lambda *_a: ("openrouter", "kimi-k2", None, None, None),
+        _get_cached_client=lambda *_a, **_k: (first, "kimi-k2"), _refresh_provider_credentials=lambda *_a, **_k: True,
+        _prepare_same_provider_retry=lambda **_k: (retry, {"model": "glm-5", "messages": _MESSAGES}),
+        _recoverable_pool_provider=lambda *_a, **_k: None, _try_main_agent_model_fallback=lambda *_a, **_k: (None, None, ""),
+        _try_configured_fallback_chain=lambda *_a, **_k: (None, None, ""),
+    ), pytest.raises(Exception):
+        if is_async:
+            asyncio.run(async_call_llm(task="title_generation", messages=_MESSAGES))
+        else:
+            call_llm(task="title_generation", messages=_MESSAGES)
+    assert seen[-1] == "glm-5", seen

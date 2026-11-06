@@ -3567,10 +3567,11 @@ def _retry_same_provider_sync(*, resolved_provider: str, resolved_api_mode: Opti
     retry_client, retry_kwargs = _prepare_same_provider_retry(
         task=task, resolved_provider=resolved_provider, resolved_api_mode=resolved_api_mode, async_mode=False, **prep,
     )
-    resp, exc = _outcome(_relay_sync_completion, retry_client, retry_kwargs, provider=resolved_provider, api_mode=resolved_api_mode)
+    resp, exc = _outcome(lambda: _validate_llm_response(_relay_sync_completion(
+        retry_client, retry_kwargs, provider=resolved_provider, api_mode=resolved_api_mode), task))
     if exc is not None:
         raise _ClassifiedAttempt(_classify_failure(exc, resolved_provider, retry_client, retry_kwargs.get("model"), None))
-    return _validate_llm_response(resp, task)
+    return resp
 
 
 async def _retry_same_provider_async(*, resolved_provider: str, resolved_api_mode: Optional[str], task: Optional[str], **prep) -> Any:
@@ -3578,10 +3579,13 @@ async def _retry_same_provider_async(*, resolved_provider: str, resolved_api_mod
     retry_client, retry_kwargs = _prepare_same_provider_retry(
         task=task, resolved_provider=resolved_provider, resolved_api_mode=resolved_api_mode, async_mode=True, **prep,
     )
-    resp, exc = await _aoutcome(_relay_async_completion(retry_client, retry_kwargs, provider=resolved_provider, api_mode=resolved_api_mode))
+    async def _send() -> Any:
+        resp = await _relay_async_completion(retry_client, retry_kwargs, provider=resolved_provider, api_mode=resolved_api_mode)
+        return await asyncio.to_thread(_validate_llm_response, resp, task)
+    resp, exc = await _aoutcome(_send())
     if exc is not None:
         raise _ClassifiedAttempt(_classify_failure(exc, resolved_provider, retry_client, retry_kwargs.get("model"), None))
-    return await asyncio.to_thread(_validate_llm_response, resp, task)
+    return resp
 
 
 def _creds_have_api_key(creds: dict[str, Any]) -> bool:

@@ -26,14 +26,23 @@ def _hook_source_of(name: str, module: Any) -> Optional[tuple]:
     return (name, str(Path(source).resolve())) if source else None
 
 
+# Registrations whose release changes no registry: a supervised task's lease only cancels the plugin's
+# own task (and runs from that task's done-callback), so it may release after the freeze.
+_RELEASE_AFTER_FREEZE = frozenset({"background_task"})
+# Set once at construction: ``kind`` decides the freeze exemption and ``_release`` is the raw inverse, so
+# neither may be rebound on a handle a plugin holds.
+_FIXED_FIELDS = frozenset({"kind", "key", "plugin_key", "persistent", "_release"})
+
+
 @dataclass
 class PluginRegistration:
     """One host-owned registration plus its inverse, so force reload unwinds registries in reverse order
-    (including restoring the entry an override replaced)."""
+    (including restoring the entry an override replaced). :meth:`dispose` is the only public release
+    path; the inverse itself is private."""
 
     kind: str
     key: str
-    release: Callable[[], None]
+    _release: Callable[[], None] = field(repr=False)
     plugin_key: str = ""
     # Process-global host infrastructure (e.g. dashboard-auth providers): kept out of ``_registration_order``
     # so unload-all cannot dispose it, but still disposed by a *targeted* unload and evicted on force
@@ -46,6 +55,11 @@ class PluginRegistration:
     _disposed: bool = field(default=False, init=False, repr=False)
     _on_dispose: Optional[Callable[[PluginRegistration], None]] = field(default=None, init=False, repr=False)
 
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in _FIXED_FIELDS and name in self.__dict__:
+            raise AttributeError(f"PluginRegistration.{name} is fixed once the registration is made")
+        object.__setattr__(self, name, value)
+
     @property
     def active(self) -> bool:
         """Whether this handle still owns an active registration."""
@@ -53,18 +67,20 @@ class PluginRegistration:
 
     def dispose(self) -> None:
         """Release this registration once; repeated disposal is harmless. After the hosted boot froze the
-        registries a retained handle cannot unregister, except a supervised task's lease: its release only
-        cancels the plugin's own task (and it runs from that task's done-callback), so no registry changes."""
+        registries a retained handle cannot unregister, except a supervised task's lease (see
+        ``_RELEASE_AFTER_FREEZE``)."""
         if self._disposed:
             return
-        if self.kind != "background_task":
+        if self.kind not in _RELEASE_AFTER_FREEZE:
             refuse_if_frozen("plugin registry")
         self._disposed = True
         try:
-            self.release()
+            self._release()
         finally:
             if self._on_dispose is not None:
                 self._on_dispose(self)
+
+    release = dispose  # the public name a plugin may call; the raw inverse stays ``_release``
 
 
 class PluginLedgerMixin:
@@ -80,7 +96,7 @@ class PluginLedgerMixin:
         """
         refuse_if_frozen("plugin registry")  # backstop for every registrar, ledger-owned ones included
         registration = PluginRegistration(
-            kind=kind, key=key, release=release, plugin_key=manifest_key(manifest), persistent=persistent)
+            kind=kind, key=key, _release=release, plugin_key=manifest_key(manifest), persistent=persistent)
         registration._on_dispose = lambda disposed: self._forget_registrations([disposed])
         self._ownership_ledger.setdefault(registration.plugin_key, []).append(registration)
         if not persistent:

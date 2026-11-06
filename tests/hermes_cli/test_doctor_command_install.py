@@ -1,6 +1,8 @@
 """Command diagnostics use the same selection and launch contract as setup."""
 
 import json
+import os
+import shlex
 from argparse import Namespace
 from pathlib import Path
 import shutil
@@ -192,3 +194,73 @@ def test_remedies_and_launcher_repairs_respect_install_owner(tmp_path, monkeypat
     else:
         assert not command.exists()
         assert "hermes pm repair" not in out
+
+
+def _linked_legacy_entry(project: Path, command: Path) -> Path:
+    entry = project / "venv" / "bin" / "hermes"
+    entry.parent.mkdir(parents=True)
+    entry.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    entry.chmod(0o755)
+    command.symlink_to(entry)
+    return entry
+
+
+@pytest.mark.platforms("posix")
+def test_npm_hermes_on_path_is_hijacking_and_is_not_rewritten(tmp_path, monkeypatch, capsys):
+    project, _home, command = _tree(tmp_path, monkeypatch)
+    entry = _linked_legacy_entry(project, command)
+    shadow_dir = tmp_path / "node_modules" / ".bin"
+    shadow_dir.mkdir(parents=True)
+    shadow = shadow_dir / "hermes"
+    shadow.write_text("#!/bin/sh\nexit 7\n", encoding="utf-8")
+    shadow.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{shadow_dir}{os.pathsep}{command.parent}")
+
+    doctor.run_doctor(Namespace(fix=True))
+
+    out = capsys.readouterr().out
+    assert "points to a different binary" in out
+    assert "npm uninstall -g hermes" in out
+    assert command.is_symlink() and command.resolve() == entry.resolve()
+    assert shadow.read_text(encoding="utf-8") == "#!/bin/sh\nexit 7\n"
+    assert "Fixed 1 issue" not in out
+
+
+@pytest.mark.platforms("posix")
+def test_unrelated_hermes_on_path_asks_for_a_reorder(tmp_path, monkeypatch, capsys):
+    project, _home, command = _tree(tmp_path, monkeypatch)
+    _linked_legacy_entry(project, command)
+    other_dir = tmp_path / "other-bin"
+    other_dir.mkdir()
+    other = other_dir / "hermes"
+    other.write_text("#!/bin/sh\nexit 9\n", encoding="utf-8")
+    other.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{other_dir}{os.pathsep}{command.parent}")
+
+    doctor.run_doctor(Namespace(fix=False))
+
+    out = capsys.readouterr().out
+    assert f"which hermes → {other}" in out
+    assert "earlier on your PATH" in out
+    assert "npm uninstall" not in out
+    assert command.is_symlink()
+
+
+@pytest.mark.platforms("posix")
+def test_forwarder_published_outside_the_tree_is_not_hijacking(tmp_path, monkeypatch, capsys):
+    project, _home, command = _tree(tmp_path, monkeypatch)
+    _linked_legacy_entry(project, command)
+    root = project.resolve()
+    forward = tmp_path / "usr-local-bin" / "hermes"
+    forward.parent.mkdir()
+    target = root / ".hermes" / "bin" / "hermes"
+    forward.write_text(f'#!/bin/sh\nexec {shlex.join([str(target)])} "$@"\n', encoding="utf-8")
+    forward.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{forward.parent}{os.pathsep}{command.parent}")
+
+    doctor.run_doctor(Namespace(fix=False))
+
+    out = capsys.readouterr().out
+    assert "PATH resolves `hermes` to the Hermes binary" in out
+    assert "points to a different binary" not in out
+    assert "All checks passed" in out

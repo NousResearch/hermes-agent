@@ -349,6 +349,62 @@ print(result.get("output", ""))
         self.assertEqual(result["tool_calls_made"], 1)
 
 
+    def _run_with_refusing_write(self, code):
+        """Run code against a dispatcher whose write_file refuses read_file
+        display text (the #136834 reproduction: a guard error returned as a
+        dict the script ignored)."""
+        def refusing_mock(function_name, function_args, task_id=None, user_task=None):
+            if function_name == "write_file":
+                return json.dumps({"error": (
+                    "Refusing to write internal read_file display text as file "
+                    "content. Strip read_file line-number prefixes or reconstruct "
+                    "the intended file contents before writing.")})
+            return _mock_handle_function_call(
+                function_name, function_args, task_id=task_id, user_task=user_task
+            )
+
+        with patch("model_tools.handle_function_call", side_effect=refusing_mock):
+            raw = execute_code(
+                code=code,
+                task_id="test-tool-error",
+                enabled_tools=list(SANDBOX_ALLOWED_TOOLS),
+            )
+        return json.loads(raw)
+
+    def test_tool_error_raises_when_result_ignored(self):
+        """#136834: a stub must raise on a tool error result, not hand back an
+        error dict the script can silently drop. Before the fix this script
+        ended status:success with its own false "updated" line."""
+        code = """
+from hermes_tools import write_file
+write_file("/tmp/SKILL.md", "1|display text with N| gutters")  # result ignored
+print("updated SKILL.md")
+"""
+        result = self._run_with_refusing_write(code)
+        self.assertEqual(result["status"], "error", msg=result)
+        combined = result.get("error", "") + result.get("output", "")
+        self.assertIn("ToolCallError", combined)
+        self.assertIn("Refusing to write internal read_file display text", combined)
+        self.assertNotIn("updated SKILL.md", result.get("output", ""))
+
+    def test_tool_error_catchable_via_toolcallerror(self):
+        """#136834: a script that wants the error can catch ToolCallError and
+        read both the message and the full refused result dict."""
+        code = """
+from hermes_tools import write_file, ToolCallError
+try:
+    write_file("/tmp/SKILL.md", "1|display text")
+except ToolCallError as e:
+    print("caught:" + str(e))
+    print("kept result:", isinstance(e.result, dict) and "error" in e.result)
+"""
+        result = self._run_with_refusing_write(code)
+        self.assertEqual(result["status"], "success", msg=result)
+        self.assertIn("caught:Refusing to write internal read_file display text",
+                      result["output"])
+        self.assertIn("kept result: True", result["output"])
+
+
     def test_concurrent_tool_calls_match_responses(self):
         """Regression for the UDS RPC race: multiple threads inside the
         sandbox calling terminal() concurrently must each receive their own

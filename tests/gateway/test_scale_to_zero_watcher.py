@@ -798,6 +798,17 @@ def test_unreadable_api_source_fails_awake(monkeypatch):
     assert r._scale_to_zero_is_idle() is False
 
 
+def test_unreadable_background_work_probe_fails_awake(monkeypatch):
+    """A failed delegation probe must block suspend rather than look idle."""
+    r = _work_count_runner(monkeypatch)
+
+    def _boom():
+        raise RuntimeError("delegation registry unavailable")
+
+    monkeypatch.setattr("tools.async_delegation.active_count", _boom)
+    assert r._scale_to_zero_is_idle() is False
+
+
 def test_missing_api_adapter_is_not_work(monkeypatch):
     """No api_server adapter at all (common: relay-only instance before the
     key existed) is a NORMAL state, not an unreadable source — must not hold

@@ -192,3 +192,33 @@ def reachable(repo: Path, tree: str | None, roots: tuple[str, ...] | None = None
     """Paths of every module *roots* (default ``config.HOSTED_ENTRY``) load at import time, in
     *tree* (``None``: the working tree)."""
     return _Graph(repo, tree).walk(config.HOSTED_ENTRY if roots is None else roots)
+
+
+def _function_import_names(tree: ast.Module) -> Iterator[str]:
+    """Absolute module names imported inside a function body (relative ones are skipped: the
+    audited roots use absolute imports)."""
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    yield from _prefixes(alias.name)
+            elif isinstance(node, ast.ImportFrom) and not node.level and node.module:
+                yield from _prefixes(node.module)
+                yield from (f"{node.module}.{alias.name}" for alias in node.names)
+
+
+def function_imports(repo: Path, tree: str | None, root: str) -> set[str]:
+    """Paths of the in-repo modules *root* imports inside a function: what the graph does not
+    follow. ``config.LAZY_IMPORTS_AUDITED`` roots must place each in ``HOSTED_ENTRY`` or
+    ``config.OFF_HOSTED_PATH``."""
+    graph = _Graph(repo, tree)
+    path = graph.module_file(root)
+    text = gitio.read_file(repo, tree, path) if path else None
+    if text is None:
+        return set()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", SyntaxWarning)
+        parsed = ast.parse(text)
+    return set(graph._found(_function_import_names(parsed))) - {path}

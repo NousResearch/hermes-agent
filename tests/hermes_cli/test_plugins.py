@@ -2077,6 +2077,28 @@ class TestThreadToolWhitelist:
 class TestPluginContext:
     """Tests for the PluginContext facade."""
 
+    def test_has_plugin_handles_registry_insert_during_probe(self):
+        """Regression for #137439: a load callback may extend the registry mid-probe."""
+        manager = PluginManager()
+        manifest = PluginManifest(name="probe", source="user")
+        context = PluginContext(manifest, manager)
+
+        class LoadingPlugin:
+            manifest = PluginManifest(name="trigger", source="user")
+
+            @property
+            def enabled(self):
+                manager._plugins["newly-loaded"] = LoadingPlugin()
+                return True
+
+        class LoadedPlugin:
+            manifest = PluginManifest(name="loaded", source="user")
+            enabled = True
+
+        manager._plugins["trigger"] = LoadingPlugin()
+        manager._plugins["loaded"] = LoadedPlugin()
+        assert context.has_plugin("loaded") is True
+
 
     def test_register_tool_override_blocked_without_operator_opt_in(self, tmp_path, monkeypatch):
         """override=True must be rejected when the operator hasn't opted in.

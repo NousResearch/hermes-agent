@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import re
 import selectors
 import shlex
 import shutil
@@ -39,6 +40,7 @@ _slot_files: dict[str, object] = {}
 
 
 NO_SUDO = -2  # install_packages: unprivileged host without sudo; the on_line stream carried the command to run as root
+PREFLIGHT_UNAVAILABLE = -3  # install_packages: this host's repositories do not carry the package list (e.g. Fedora names on Amazon Linux dnf)
 
 
 class InstallBusy(RuntimeError):
@@ -105,12 +107,45 @@ def install_packages(*, ask_password: Callable[[], str], on_line: Callable[[str]
         cmd = runtime.install_command()
         if cmd is None:
             raise RuntimeError("no supported package manager (apt-get, dnf, pacman) found on this host")
+        if runtime.package_manager() == "dnf":
+            # Any host with dnf gets the Fedora package list; on Amazon Linux those names do not resolve
+            # and the privileged run died opaquely (#136688). Abort with the failing names instead.
+            unavailable = dnf_unavailable_packages(list(runtime.PACKAGES["dnf"]))
+            if unavailable:
+                on_line("Bot Desktop: this host's repositories do not carry the Fedora package set; "
+                        "unavailable: " + ", ".join(unavailable))
+                on_line("  Install TigerVNC (Xvnc) and the Xfce core by hand, or run on a Fedora-family host.")
+                return PREFLIGHT_UNAVAILABLE
         if key is None:
             key = claim()
         return _run(cmd, ask_password=ask_password, on_line=on_line, timeout_seconds=timeout_seconds)
     finally:
         if key is not None:
             release(key)
+
+
+# dnf5 says "Error: No matching Packages found for <name>", dnf4 "No package <name> available." and
+# late dnf4 "Error: Unable to find a match: <name>"; all three land the name in a separate line token.
+_NO_MATCH_PATTERNS = (
+    re.compile(r"No matching Packages found for (\S+)"),
+    re.compile(r"No package (\S+) available"),
+    re.compile(r"Unable to find a match: (\S+)"),
+)
+
+
+def dnf_unavailable_packages(packages: list[str]) -> list[str]:
+    """Which of ``packages`` dnf cannot resolve in THIS host's enabled repositories, via a read-only
+    ``dnf -q list --available`` (no root, no transaction). Hosts with dnf but a non-Fedora package set
+    (Amazon Linux 2023) fail the whole transaction on the first unknown Fedora name; see #136688.
+    An empty list is also returned when the probe itself fails (offline metadata refresh, broken repo
+    cache): a failed probe is not evidence the packages are missing, so the install proceeds."""
+    try:
+        res = subprocess.run(["dnf", "-q", "list", "--available", *packages], capture_output=True,
+                             text=True, timeout=120, stdin=subprocess.DEVNULL, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    text = (res.stdout or "") + (res.stderr or "")
+    return [name for pattern in _NO_MATCH_PATTERNS for name in pattern.findall(text)]
 
 
 def _sudo_nopasswd() -> bool:

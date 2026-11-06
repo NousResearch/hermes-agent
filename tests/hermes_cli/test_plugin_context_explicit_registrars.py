@@ -6,6 +6,7 @@ import inspect
 
 import pytest
 
+from hermes_cli import plugins_loader
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 from hermes_cli.plugins_registrars import _SCOPED_PROVIDER_REGISTRARS, make_scoped_provider_registrar
 from hermes_constants import get_hermes_home
@@ -78,7 +79,7 @@ def test_explicit_registrars_still_ignore_calls_after_an_abandoned_load(caplog):
 
 
 @pytest.mark.parametrize("row", _SCOPED_PROVIDER_REGISTRARS, ids=lambda row: row[0])
-def test_make_scoped_provider_registrar_still_builds_a_working_method(row):
+def test_make_scoped_provider_registrar_still_builds_a_working_method(row, monkeypatch):
     """Main's factory stays importable and builds the same method main's setattr loop installed."""
     method, kind, registry_mod, base_ref, *_rest, doc, options = row
     built = make_scoped_provider_registrar(*row)
@@ -88,11 +89,21 @@ def test_make_scoped_provider_registrar_still_builds_a_working_method(row):
     manager = PluginManager()
     ctx = PluginContext(PluginManifest(name="probe", source="bundled"), manager)
     registry = importlib.import_module(registry_mod)
+    real, transactions = plugins_loader.replacement_coordinator, []
 
+    class RecordingCoordinator:
+        def __getattr__(self, attr):
+            return getattr(real, attr)
+
+        def transaction(self):
+            transactions.append(method)
+            return real.transaction()
+
+    monkeypatch.setattr(plugins_loader, "replacement_coordinator", RecordingCoordinator())
     provider = _provider_for(base_ref, name)
     handle = built(ctx, provider)
     try:
-        assert handle is not None and handle.kind == kind
+        assert handle is not None and handle.kind == kind and transactions == [method]
         assert registry.snapshot_registration(name, scope=manager.scope_key) is provider
     finally:
         if handle is not None:

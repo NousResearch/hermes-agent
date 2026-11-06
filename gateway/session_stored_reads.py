@@ -157,9 +157,10 @@ def _placeholders(values):
 
 def _durable_firsts(conn, segment, raw):
     """``{row id: first durable id}`` for the page rows a compaction re-wrote: a carried copy (its removed
-    original has the same identity, which carries the timestamp: the (session_id, active, timestamp)
-    index finds it) and a summary carrier (the first row with its ``message_uid``; only a carrier folds
-    by uid, so a pruned tool result keeps its own identity, as the display dedupe keeps it)."""
+    original has the same identity) and a summary carrier (the first row with its ``message_uid``; only a
+    carrier folds by uid, so a pruned tool result keeps its own identity, as the display dedupe keeps it).
+    A copy and a carrier keep the original's timestamp (``_insert_message_rows`` stamps it on the live
+    dict for exactly this), so both reads stay on the (session_id, active, timestamp) index."""
     identities = list({row['display_identity'] for row in raw if row['display_identity'] is not None})
     stamps = list({row['timestamp'] for row in raw if row['timestamp'] is not None})
     by_identity = dict(conn.execute(
@@ -167,10 +168,12 @@ def _durable_firsts(conn, segment, raw):
         f"session_id = ? AND active = 0 AND timestamp IN ({_placeholders(stamps)}) AND compacted = 0 "
         f"AND display_identity IN ({_placeholders(identities)}) GROUP BY display_identity",
         (segment, *stamps, *identities)).fetchall()) if identities and stamps else {}
-    uids = list({row['message_uid'] for row in raw if row['_compressed_summary'] and row['message_uid']})
+    carriers = [row for row in raw if row['_compressed_summary'] and row['message_uid'] and row['timestamp'] is not None]
+    uids, carrier_stamps = list({row['message_uid'] for row in carriers}), list({row['timestamp'] for row in carriers})
     by_uid = dict(conn.execute(
-        f"SELECT message_uid, MIN(id) FROM messages WHERE session_id = ? AND message_uid IN ({_placeholders(uids)})"
-        " GROUP BY message_uid", (segment, *uids)).fetchall()) if uids else {}
+        "SELECT message_uid, MIN(id) FROM messages INDEXED BY idx_messages_session_active WHERE session_id = ?"
+        f" AND active = 0 AND timestamp IN ({_placeholders(carrier_stamps)}) AND message_uid IN ({_placeholders(uids)})"
+        " GROUP BY message_uid", (segment, *carrier_stamps, *uids)).fetchall()) if carriers else {}
     return {row['id']: min(row['display_order'], by_identity.get(row['display_identity'], row['id']),
                            by_uid.get(row['message_uid'], row['id']) if row['_compressed_summary'] else row['id'])
             for row in raw}
@@ -278,6 +281,33 @@ def _bounded(message, budget):
         chars //= 2
 
 
+def _call_uids(calls, uids):
+    """Each call's own durable uid, in order: ``tool_call_uids`` maps a provider id to its uid, or to a list
+    of uids, one per occurrence, when folded turns repeat the id in one row (``index_tool_call_uids``)."""
+    from agent.message_sanitization import coalesce_tool_call_id
+    seen, out = {}, []
+    for call in calls:
+        call_id = coalesce_tool_call_id(call)
+        uid = uids.get(call_id) if isinstance(uids, dict) else None
+        if isinstance(uid, list):
+            nth = seen[call_id] = seen.get(call_id, -1) + 1
+            uid = uid[nth] if nth < len(uid) else None
+        out.append(uid if isinstance(uid, str) and uid else None)
+    return out
+
+
+def _paired_call(calls, uids, result_id, result_uid):
+    """The call of *calls* (one stored row) that a result with *result_id* / *result_uid* answers: the one
+    whose own uid it carries, else (a result without a uid) the row's last call naming its id."""
+    from agent.message_sanitization import tool_call_id_variants, tool_result_id_variants
+    variants = set(tool_result_id_variants(result_id))
+    matches = [(call, uid) for call, uid in zip(calls, _call_uids(calls, uids))
+               if variants & set(tool_call_id_variants(call))]
+    if result_uid:
+        return next((call for call, uid in matches if uid == result_uid), None)
+    return matches[-1][0] if matches else None
+
+
 def _call_context(db, page, segments):
     """The calls of the tool results on *page* whose call is not before them on it (it sits on an earlier
     page), as one empty assistant row: projected first, it labels those results and shows nothing itself.
@@ -302,14 +332,10 @@ def _call_context(db, page, segments):
             listed, uids = json.loads(raw_calls), json.loads(raw_uids) if raw_uids else {}
         except (TypeError, ValueError):
             continue
-        for call in listed if isinstance(listed, list) else ():
-            call_id = call.get('id') if isinstance(call, dict) else None
-            if call_id not in wanted or call_id in calls:
-                continue
-            uid = wanted[call_id][1]
-            if uid and not (isinstance(uids, dict) and uids.get(call_id) == uid):
-                continue  # another occurrence of a reused provider id (``tool_call_uids``: id -> uid)
-            calls[call_id] = call
+        listed = [call for call in listed if isinstance(call, dict)] if isinstance(listed, list) else []
+        for result_id, (_, result_uid) in wanted.items():
+            if result_id not in calls and (call := _paired_call(listed, uids, result_id, result_uid)) is not None:
+                calls[result_id] = call
     return [{'role': 'assistant', 'content': '', 'tool_calls': list(calls.values())}] if calls else []
 
 

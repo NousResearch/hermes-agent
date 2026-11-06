@@ -82,6 +82,23 @@ def test_show_defaults_to_env_task_id(worker_env):
     assert "runs" in d
 
 
+def test_show_places_bounded_worker_context_before_full_history(worker_env):
+    """The current operator context must survive a spill from old history (#137725)."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    conn = kbc.connect()
+    try:
+        kb.add_comment(conn, worker_env, "operator", "use the current deployment plan")
+    finally:
+        conn.close()
+
+    shown = kt._handle_show({})
+    assert shown.index('"worker_context"') < shown.index('"comments"')
+    assert "use the current deployment plan" in json.loads(shown)["worker_context"]
+
+
 def test_show_bare_call_outside_worker_returns_orientation_not_error(monkeypatch, worker_env):
     """#91431: chat profiles with the kanban toolset call kanban_show bare to orient
     themselves; with no dispatcher task in scope there is nothing to show, so the

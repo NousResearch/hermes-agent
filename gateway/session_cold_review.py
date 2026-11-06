@@ -85,7 +85,7 @@ def cold_review_parent(runner, source, session_key, session_id):
             session_id=session_id, platform=platform_key, gateway_session_key=session_key,
             session_db=getattr(runner._session_db, "_db", runner._session_db),
             # The session's backup providers, as its next turn would carry them: the reviewer inherits the chain.
-            fallback_model=None if api_runtime_locked() else runner._refresh_fallback_model(),
+            fallback_model=None if api_runtime_locked() else runner._fallback_chain_for(source),
             # The reviewer reads the transcript excerpt; this agent never runs a turn of its own.
             skip_memory=True)
         agent._end_session_on_close = False

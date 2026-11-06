@@ -84,8 +84,21 @@ def _serve_peer_client(monkeypatch, room, *, during_probe=lambda: None):
 
     monkeypatch.setattr("tui_gateway.hosted_room_peer_http.PeerRunsHTTPClient", FakeClient)
     params = {"room_id": "room-1", "member_id": "member-peer", "target_url": "https://peer.example.test",
-              "target_profile": "reviewer", "grant": "late.room.grant", "catalog": catalog}
+              "target_profile": "reviewer", "grant": _scoped_grant(room), "catalog": catalog}
     return params, probes
+
+
+def _scoped_grant(room):
+    """A grant whose (unverified) scope names this room: only such a grant is owed a revoke unprobed."""
+    import base64
+    import json
+
+    from gateway.hosted_rooms import local_authority_gateway_id
+
+    claims = {"room_id": "room-1", "member_id": "member-peer", "home_install_id": local_authority_gateway_id(),
+              "authority_gateway_id": room["authority_gateway_id"], "authority_epoch": room["authority_epoch"]}
+    payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).rstrip(b"=").decode()
+    return f"{payload}.c2ln"
 
 
 @pytest.mark.parametrize("disband_at", ["before", "probe", "publication"])
@@ -112,7 +125,7 @@ def test_serve_disband_and_register_never_leave_a_route_or_a_grant_behind(home, 
             return result
         monkeypatch.setattr(hosted_room_peer_transport, "route_identity", identity_then_disband)
     assert "error" in srv._methods["groups.peer.register"](3, params)
-    assert probes == ([] if disband_at == "before" else ["late.room.grant"])
+    assert probes == ([] if disband_at == "before" else [params["grant"]])
     assert hosted_room_links.load_room_links(hosted_rooms_default_db_path()) == ()
     assert methods_groups.get_hosted_room_service().peer_routes == {}
     assert _serve_owed() == [("room-1", "member-peer", "https://peer.example.test")]

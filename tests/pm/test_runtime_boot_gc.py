@@ -53,3 +53,45 @@ sys.stdin.readline()
     assert not first.exists()
     assert (state / "environments" / "second").is_dir()
     assert legacy.is_dir()
+
+
+def test_young_unleased_generations_are_capped(tmp_path, monkeypatch):
+    """A launch loop commits a generation per launch; the day-long grace alone never bounds them."""
+    import time
+    from pm.environments import install_state_dir, runtime_facts_path
+    from hermes_cli.runtime_state import collect_generations, lease_directory
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    generations = install_state_dir(repo) / "environments"
+    now = time.time()
+
+    def publish(name, age_seconds):
+        generation = generations / name
+        (generation / "venv").mkdir(parents=True)
+        (generation / "venv" / "pyvenv.cfg").write_text("home = fixture\n", encoding="utf-8")
+        marker = generation / ".lease-managed"
+        marker.touch()
+        os.utime(marker, (now - age_seconds, now - age_seconds))
+        return generation
+
+    selected = publish("selected", 0)
+    runtime_facts_path(repo).write_text(
+        json.dumps({"packages": {"venv": {"environment": str(selected / "venv")}}}))
+    # young[0] is the newest; every one is far inside the default grace window.
+    young = [publish(f"young-{index}", 60 * (index + 1)) for index in range(5)]
+    leased = publish("leased", 60 * 10)
+    legacy = generations / "legacy"  # pre-lease generation: no marker, never collected
+    legacy.mkdir()
+    release = lease_directory(leased)
+    try:
+        assert sorted(collect_generations(repo)) == sorted(young[2:])
+        assert all(generation.is_dir() for generation in (selected, leased, legacy, *young[:2]))
+        # The cap counts unleased generations only; a held lease is never a victim.
+        assert collect_generations(repo, keep_recent=0) == young[:2]
+        assert leased.is_dir()
+    finally:
+        release()
+    assert collect_generations(repo, keep_recent=0) == [leased]
+    assert selected.is_dir() and legacy.is_dir()

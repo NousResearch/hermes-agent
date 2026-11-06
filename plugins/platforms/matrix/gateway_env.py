@@ -30,5 +30,9 @@ ENV_OVERRIDES = (
 AUTHZ = {
     "allowed_users_env": "MATRIX_ALLOWED_USERS",
     "allow_all_env": "MATRIX_ALLOW_ALL_USERS",
+    # Passive rooms' shared session (mention turns with user_id cleared) is admitted only via a
+    # group-scoped grant, exactly like Telegram's observe-unmentioned mode (authz_mixin
+    # ``_chat_scoped_grant``).
+    "group_allowed_chats_env": "MATRIX_GROUP_ALLOWED_CHATS",
     "allowlist_suppresses_pairing": True,
 }

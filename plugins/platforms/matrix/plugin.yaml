@@ -39,3 +39,7 @@ optional_env:
     description: "Display name for the Matrix home room"
     prompt: "Home room display name"
     password: false
+  - name: MATRIX_PASSIVE_ROOMS
+    description: "Comma-separated Matrix room IDs that ingest non-mention messages as ambient room context without triggering an agent turn"
+    prompt: "Passive rooms (comma-separated room IDs)"
+    password: false

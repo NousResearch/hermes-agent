@@ -395,6 +395,8 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `MATRIX_REACTIONS` | 对入站消息启用处理生命周期 emoji 反应（默认：`true`）。设为 `false` 可禁用。 |
 | `MATRIX_REQUIRE_MENTION` | 在房间中要求 `@mention`（默认：`true`）。设为 `false` 可响应所有消息。 |
 | `MATRIX_FREE_RESPONSE_ROOMS` | bot 无需 `@mention` 即可响应的逗号分隔房间 ID |
+| `MATRIX_PASSIVE_ROOMS` | 被动房间的逗号分隔房间 ID：未 `@mention` 的消息仅作为环境上下文记录，不触发 agent 轮次、回复或已读回执；之后的 `@mention` 可见整个房间记录（仅上下文）。同时列入 `MATRIX_FREE_RESPONSE_ROOMS` 的房间按自由响应处理。 |
+| `MATRIX_GROUP_ALLOWED_CHATS` | 逗号分隔的房间 ID：房间内所有成员均被授权（组级授权）。被动房间必需——提及轮次落在无用户身份的共享会话中，网关仅通过此列表（或 `config.yaml` 中 `matrix:` 下的 `group_allowed_chats`）受理这些轮次。 |
 | `MATRIX_AUTO_THREAD` | 为房间消息自动创建线程（默认：`true`） |
 | `MATRIX_DM_MENTION_THREADS` | 在私聊中被 `@mention` 时创建线程（默认：`false`） |
 | `MATRIX_RECOVERY_KEY` | 设备密钥轮换后交叉签名验证的恢复密钥。推荐用于启用了交叉签名的 E2EE 设置。 |

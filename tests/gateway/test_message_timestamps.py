@@ -83,7 +83,7 @@ def test_early_embedded_local_time_renders_in_observed_context():
     content = f"[{local.replace(tzinfo=None).isoformat()}] hello"
     history, observed = _build_gateway_agent_history(
         [{"role": "user", "content": content, "observed": True}],
-        inject_timestamps=True, channel_prompt="observed Telegram group context",
+        inject_timestamps=True, channel_prompt="observed group context",
     )
 
     assert history == []

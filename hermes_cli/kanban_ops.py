@@ -29,6 +29,59 @@ def _kanban_config() -> dict:
         return {}
 
 
+def resolve_board_caps(board=None, *, cli_max=None):
+    """Per-board dispatch caps (FR #118116). Precedence, highest first:
+
+    1. ``cli_max``    — the CLI ``--max`` flag (dispatch verb only)
+    2. board.json     — ``kanban.max_spawn`` / ``kanban.max_in_progress_per_profile``
+                        pinned on this board
+    3. ``config.yaml`` — global ``kanban.max_spawn`` / ``kanban.max_in_progress_per_profile``
+
+    Returns ``(max_spawn, max_in_progress_per_profile)``; each is ``None`` when no
+    source sets it (cap off), so the caller keeps its current unbounded default.
+    The global value here is the raw ``kanban.*`` setting — NOT the memory-derived
+    ``max_in_progress`` default, which resolves elsewhere and stays untouched.
+    ``board=None`` targets the active board — same resolution as the dispatch
+    connect path (``HERMES_KANBAN_DB`` env pin / ``HERMES_KANBAN_BOARD`` /
+    ``boards switch`` symlink → ``default``), never a hardcoded default slug.
+    """
+    if board is None:
+        try:
+            board = kb.get_current_board()
+        except Exception:
+            board = None
+    cfg = _kanban_config()
+    try:
+        meta = kb.read_board_metadata(board)
+    except Exception:
+        meta = {}
+    board_spawn = _positive_int_or_none(meta.get("max_spawn")) if isinstance(meta, dict) else None
+    board_profile = _positive_int_or_none(meta.get("max_in_progress_per_profile")) if isinstance(meta, dict) else None
+    global_spawn = _positive_int_or_none(cfg.get("max_spawn"))
+    global_profile = _positive_int_or_none(cfg.get("max_in_progress_per_profile"))
+    max_spawn = (
+        cli_max if cli_max is not None
+        else board_spawn if board_spawn is not None
+        else global_spawn
+    )
+    max_in_progress_per_profile = (
+        board_profile if board_profile is not None
+        else global_profile
+    )
+    return max_spawn, max_in_progress_per_profile
+
+
+def _positive_int_or_none(value):
+    """Coerce a config/board cap to a positive int, ``None`` if unset/invalid."""
+    if value is None:
+        return None
+    try:
+        ivalue = int(value)
+    except (TypeError, ValueError):
+        return None
+    return ivalue if ivalue >= 1 else None
+
+
 def _poll_loop(interval: float, tick) -> int:
     """Run ``tick()`` every ``interval`` seconds (floor 0.1) until Ctrl-C."""
     try:
@@ -60,23 +113,20 @@ def _cmd_tail(args: argparse.Namespace) -> int:
 def _cmd_dispatch(args: argparse.Namespace) -> int:
     # Honour kanban.default_assignee, kanban.max_in_progress,
     # kanban.max_in_progress_per_profile and kanban.max_spawn with the same
-    # semantics as the gateway dispatch path.
+    # semantics as the gateway dispatch path — including the per-board
+    # override: CLI --max > board.json > config.yaml (resolve_board_caps).
     try:
         from hermes_cli.config import load_config
         _cfg = load_config()
         _kanban_cfg = _cfg.get("kanban", {}) if isinstance(_cfg, dict) else {}
         default_assignee = (_kanban_cfg.get("default_assignee") or "").strip() or None
-        max_in_progress_per_profile = kbd._positive_int(
-            _kanban_cfg.get("max_in_progress_per_profile"), None
-        )
         # Memory-derived default when unset — same fallback the gateway applies.
         max_in_progress = kbd.resolve_max_in_progress(
             kbd._positive_int(_kanban_cfg.get("max_in_progress"), None)
         )
-        # CLI --max is the more explicit signal, so it wins over kanban.max_spawn.
-        cli_max = getattr(args, "max", None)
-        max_spawn = (
-            cli_max if cli_max is not None else kbd._positive_int(_kanban_cfg.get("max_spawn"), None)
+        # Per-board caps: CLI --max wins over board.json, which wins over global.
+        max_spawn, max_in_progress_per_profile = resolve_board_caps(
+            cli_max=getattr(args, "max", None)
         )
     except Exception:
         default_assignee = max_in_progress_per_profile = max_in_progress = None

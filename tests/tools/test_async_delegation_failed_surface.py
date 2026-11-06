@@ -41,12 +41,29 @@ def test_a_failed_single_delegation_is_listed_for_its_session():
 
 
 def test_a_batch_that_completed_still_surfaces_its_failed_task():
-    _delegation("d-batch", status="completed", is_batch=True, goals=["scan api", "scan web"], task_indexes=[3, 4],
+    # A split unit stores the whole call's goals (dispatch_async_delegation_batch) and its own task indexes.
+    _delegation("d-batch", status="completed", is_batch=True, task_indexes=[3, 4],
+                goals=["scan auth", "scan db", "scan cache", "scan api", "scan web"],
                 result={"results": [{"task_index": 3, "status": "completed", "summary": "ok"},
                                     {"task_index": 4, "status": "timeout", "error": "no progress"}]})
 
     [row] = ad.failed_delegations_for_session("ui-1")
     assert (row["task_index"], row["goal"], row["status"], row["error"]) == (4, "scan web", "timeout", "no progress")
+
+
+def test_a_split_unit_labels_its_failed_task_with_that_tasks_goal():
+    """Through the real producer: a split unit stores the call's goals, so task 1 is 'B goal', not 'A goal'."""
+    from tools.process_registry import process_registry
+    handle = ad.dispatch_async_delegation_batch(
+        delegation_id="deleg_call-2", task_indexes=[1], goals=["A goal", "B goal"], context=None, toolsets=None,
+        role="leaf", model="m", session_key="", origin_ui_session_id="ui-1", max_async_children=2,
+        runner=lambda: {"results": [{"task_index": 1, "status": "error", "error": "boom"}],
+                        "total_duration_seconds": 0})
+    assert handle["status"] == "dispatched"
+    assert process_registry.completion_queue.get(timeout=10)["delegation_id"] == "deleg_call-2"
+
+    [row] = ad.failed_delegations_for_session("ui-1")
+    assert (row["task_index"], row["goal"], row["error"]) == (1, "B goal", "boom")
 
 
 def test_the_durable_parent_id_claims_rows_after_a_reload_remints_the_ui_session():

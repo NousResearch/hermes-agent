@@ -789,7 +789,6 @@ def failed_delegations_for_session(
     for delegation_id, state, dispatched_at, completed_at, task_json, result_json in rows:
         task, result = _json_object(task_json), redact_child_result(_json_object(result_json))
         goals = task.get("goals") if isinstance(task.get("goals"), list) and task["goals"] else [task.get("goal") or ""]
-        goal_for = dict(zip(task.get("task_indexes") or range(len(goals)), goals))
         tasks = result["results"] if isinstance(result.get("results"), list) else [] if task.get("is_batch") else [result]
         if not tasks and str(state).lower() in _FAILED_TASK_STATES:
             tasks = [{"task_index": 0, "error": result.get("error")}]
@@ -801,7 +800,9 @@ def failed_delegations_for_session(
             error = entry.get("error") or result.get("error")
             failed.append({
                 "delegation_id": delegation_id, "task_index": index, "status": status,
-                "goal": str(goal_for.get(index, goals[0]) or ""), "error": str(error) if error else None,
+                # ``goals`` is the whole call's list (split units store it too); task_index indexes it.
+                "goal": str((goals[index] if 0 <= index < len(goals) else goals[0]) or ""),
+                "error": str(error) if error else None,
                 "dispatched_at": dispatched_at, "completed_at": completed_at})
     return failed[:limit]
 

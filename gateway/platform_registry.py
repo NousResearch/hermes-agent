@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
 from hermes_constants import hermes_home_key
+from registry_freeze import check_at_freeze
 
 logger = logging.getLogger(__name__)
 
@@ -298,6 +299,15 @@ class PlatformRegistry:
             self._prune_scope(scope)
             return True
 
+    def pending_deferred(self) -> list[str]:
+        """``name`` (process-wide) or ``name@scope`` of every deferred loader not yet resolved,
+        in-flight ones included."""
+        with self._lock:
+            pending = {name for name in self._deferred}
+            pending |= {f"{name}@{scope}" for scope, loaders in self._scoped_deferred.items() for name in loaders}
+            pending |= {name if scope is None else f"{name}@{scope}" for scope, name in self._inflight}
+        return sorted(pending)
+
     def _resolve(self, name: str, scope: Optional[str] = None) -> None:
         """Run the deferred loader for *name* if one is pending."""
         loader: Optional[_Loader] = None
@@ -528,3 +538,11 @@ class PlatformRegistry:
 
 # Module-level singleton
 platform_registry = PlatformRegistry()
+
+
+def _pending_platforms() -> list[str]:
+    # Read the module attribute at call time: a test may swap the registry instance.
+    return [f"deferred platform {name}" for name in sys.modules[__name__].platform_registry.pending_deferred()]
+
+
+check_at_freeze(_pending_platforms)

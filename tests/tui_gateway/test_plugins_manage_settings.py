@@ -115,7 +115,7 @@ def test_frozen_save_is_saved_not_activated_and_starts_no_restart(plugins_home, 
     launched = []
     monkeypatch.setattr(discovery, "restart_mcp_servers_with_new_inputs", lambda names: launched.append(names))
     _manage(action="list")  # the hosted boot discovers plugins before it freezes
-    registry_freeze.freeze_registries()
+    monkeypatch.setattr(registry_freeze, "_frozen", True)  # its bundled platforms stay deferred here
 
     resp = _manage(action="settings", key="portable-demo", values={"show_chip": False})
     assert "result" in resp, resp

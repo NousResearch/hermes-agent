@@ -1,6 +1,6 @@
 name: visor
 repo: https://github.com/samundra0/visor
-sha: 2bd1da0e8148e6391261f3b79e59ba37b1b3b881
+sha: 17a8ba5f24030e8a04f6676168f7f594f46db53c
 subdir: hermes/plugin
 version: "1.9.0"
 title: Visor
@@ -12,10 +12,10 @@ docs_url: https://github.com/samundra0/visor
 requires_hermes: ">=0.21.5"
 readme: true
 platforms: []
-image: https://raw.githubusercontent.com/samundra0/visor/2bd1da0e8148e6391261f3b79e59ba37b1b3b881/docs/screenshots/visor-demo-board.png
+image: https://raw.githubusercontent.com/samundra0/visor/17a8ba5f24030e8a04f6676168f7f594f46db53c/docs/screenshots/visor-demo-board.png
 screenshots:
-  - https://raw.githubusercontent.com/samundra0/visor/2bd1da0e8148e6391261f3b79e59ba37b1b3b881/docs/screenshots/visor-demo-board.png
-  - https://raw.githubusercontent.com/samundra0/visor/2bd1da0e8148e6391261f3b79e59ba37b1b3b881/docs/screenshots/visor-canvas-ui.png
+  - https://raw.githubusercontent.com/samundra0/visor/17a8ba5f24030e8a04f6676168f7f594f46db53c/docs/screenshots/visor-demo-board.png
+  - https://raw.githubusercontent.com/samundra0/visor/17a8ba5f24030e8a04f6676168f7f594f46db53c/docs/screenshots/visor-canvas-ui.png
 capabilities:
   provides_tools:
     - visor_push

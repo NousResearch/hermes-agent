@@ -1,0 +1,19 @@
+name: loci
+title: Loci
+repo: https://github.com/AskLoci/loci-plugins
+sha: 1f1e340dd85540bae114703bef7f17d41a7005b0
+subdir: loci-hermes
+version: "0.1.0"
+description: Local models on your Mac for file summaries, document extraction, folder search, audio transcription and batch processing alongside Hermes.
+maintainer: AskLoci
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+platforms: [macos]
+docs_url: https://github.com/AskLoci/loci-plugins/tree/1f1e340dd85540bae114703bef7f17d41a7005b0/loci-hermes
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

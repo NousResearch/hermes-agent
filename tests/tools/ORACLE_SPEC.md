@@ -19,7 +19,8 @@ features, encodings, or situations are `OUT_OF_DOMAIN`, never `REFUSE`.
 For baseline diagnostics, if `empty search text` appears, classify as
 `UNMAPPED`. Otherwise, a numeric `ambiguous (N matches)` or
 `Found N matches for old_string` with N >= 2 maps to `AMBIGUOUS` before any
-`not found` label. A plain `not found` with no count maps to `NOT_FOUND`;
+`not found` label. A plain `not found` or `Could not find a match for old_string`
+with no count maps to `NOT_FOUND`;
 every other diagnostic is `UNMAPPED`. UNMAPPED is a finding, not either refusal
 code. Do not infer a count from the input to reinterpret a production error.
 
@@ -77,10 +78,12 @@ the seed and counts. Rule 4 has no generated in-domain class in this version;
 record its count as zero rather than fabricating coverage. Compare production outcome and exact resulting file bytes;
 compare site from a unified diff only when it has exactly one removed line:
 initialize a zero-based original cursor from the hunk's `-start` minus one;
-advance it for context and removed lines, not additions. The removed line's
-cursor gives `(cursor,cursor+1)` only if that removed content occurs on exactly
-one original line. If the diff has multiple removals, omits the change, or the
-content repeats, report site comparison unavailable,
+for every removed line record its cursor *before* advancing; advance the
+cursor after context and removed lines, not additions. The removed line's
+recorded cursor gives `(cursor,cursor+1)` only if that removed content equals
+exactly one original line content (empty equals only an empty content). If the
+diff has multiple removals, omits the change, or the content repeats, report
+site comparison unavailable,
 not a pass. A production
 difference is a finding, never a
 reason to discard a generated input or alter its expected value. Validate oracle
@@ -88,7 +91,7 @@ membership using separately constructed negative cases too.
 
 For this grammar, an independently implemented recognizer first checks all
 structural constraints above and returns `OUT_OF_DOMAIN` if any fail, before
-performing search. For example `b'xold\n'` with `-old/+new` is OOD due to a
+performing search. For example `b'a b\n'` with `-a/+new` is OOD due to a
 substring decoy; `b'old\n'` with `-old/+old` is OOD because it is a no-op.
 A blank `+` is replacement by a terminated blank line, distinct from no `+`,
 which deletes the line. For example `b'a\nold\nb\n'` with `-old/+` yields

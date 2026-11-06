@@ -5077,6 +5077,7 @@ export const frOverrides = {
       readAloud: 'Lire à voix haute',
       copyFullResponse: 'Copier la réponse complète',
       readAloudFullResponseHint: 'Maj+clic : lire la réponse complète',
+      contentRefusedNotice: 'Ce message a été refusé par le filtre de sécurité du modèle — essayez une autre requête.',
       editMessage: 'Modifier le message',
       expandMessage: 'Développer le message',
       scrollToBottom: 'Défiler vers le bas',

@@ -1825,14 +1825,19 @@ def register(ctx):
 
 - Return the text to show. `print()` writes to the gateway's stdout, and the user never sees it.
 - Take the session's working directory from `agent.runtime_cwd.resolve_agent_cwd()`, not `os.getcwd()`, which is the gateway's own directory. Resolve relative paths against it.
-- Read session identity with `gateway.session_context.get_session_env("HERMES_SESSION_PLATFORM")` and the other `HERMES_SESSION_*` names, not `os.environ`.
+- Read session identity with `get_session_env("HERMES_SESSION_PLATFORM")`, `get_session_env("HERMES_SESSION_CHAT_ID")` and the other `HERMES_SESSION_*` names, not `os.environ`. Import the function itself with `from gateway.session_context import get_session_env`: that name is the public seam, and `hermes plugins validate` reports `import gateway.session_context` as a private import.
 
 ```python
 from agent.runtime_cwd import resolve_agent_cwd
+from gateway.session_context import get_session_env
 
 def _handle_todo(raw_args: str) -> str:
     todo = resolve_agent_cwd() / "TODO.md"  # the session's folder, not the gateway's
     return todo.read_text() if todo.exists() else "No TODO.md here."
+
+def _handle_where(raw_args: str) -> str:
+    platform = get_session_env("HERMES_SESSION_PLATFORM")  # unbound: falls back to os.environ, then ""
+    return f"{platform or 'local'} chat {get_session_env('HERMES_SESSION_CHAT_ID') or '(none)'}"
 ```
 
 ### Ask the user to pick an option

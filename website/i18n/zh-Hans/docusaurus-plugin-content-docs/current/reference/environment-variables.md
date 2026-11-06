@@ -599,7 +599,7 @@ export HERMES_WRITE_SAFE_ROOT=/path/to/project:/home/you/.hermes
 | 变量 | 描述 |
 |----------|-------------|
 | `HERMES_TUI` | 设为 `1` 时启动 [TUI](../user-guide/tui.md) 而非经典 CLI。等同于传入 `--tui`。 |
-| `HERMES_TUI_DIR` | 预构建 `ui-tui/` 目录的路径（必须包含 `dist/entry.js` 和已填充的 `node_modules`）。供发行版和 Nix 使用以跳过首次启动时的 `npm install`。 |
+| `HERMES_TUI_DIR` | 预构建 `ui-tui/` 目录的路径（必须包含 `dist/entry.js` 和已填充的 `node_modules`）。供发行版和 Nix 使用以跳过首次启动时的 `pnpm install`。 |
 | `HERMES_TUI_RESUME` | 启动时按 ID 恢复特定 TUI 会话。设置后，`hermes --tui` 跳过创建新会话并接续指定会话——适用于断开连接或终端崩溃后重新连接。 |
 | `HERMES_TUI_THEME` | 强制 TUI 颜色主题：`light`、`dark` 或原始 6 字符背景十六进制（例如 `ffffff` 或 `1a1a2e`）。未设置时，Hermes 使用 `COLORFGBG` 和终端背景查询自动检测；此变量覆盖不设置 `COLORFGBG` 的终端（Ghostty、Warp、iTerm2 等）上的检测。 |
 | `HERMES_INFERENCE_MODEL` | 为 `hermes -z`/`hermes chat` 强制指定模型而不修改 `config.yaml`。与 `--provider` 标志配合使用。适用于需要每次运行覆盖默认模型的脚本调用者（sweeper、CI、批量运行器）。 |

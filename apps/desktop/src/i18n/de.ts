@@ -5069,6 +5069,7 @@ export const deOverrides = {
       readAloud: 'Vorlesen',
       copyFullResponse: 'Vollständige Antwort kopieren',
       readAloudFullResponseHint: 'Umschalt-Klick: vollständige Antwort vorlesen',
+      contentRefusedNotice: 'Diese Nachricht wurde vom Sicherheitsfilter des Modells abgelehnt – versuche eine andere Anfrage.',
       editMessage: 'Nachricht bearbeiten',
       expandMessage: 'Nachricht aufklappen',
       scrollToBottom: 'Nach unten scrollen',

@@ -34151,6 +34151,30 @@
             ],
             "default": null,
             "title": "Profile"
+          },
+          "undo_since": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Undo Since"
+          },
+          "undo_message_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Undo Message Id"
           }
         },
         "required": [
@@ -34172,6 +34196,17 @@
             },
             "title": "Checkpoints",
             "type": "array"
+          },
+          "undo_hint": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UndoRollbackHint"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -39880,6 +39915,17 @@
           "removed": {
             "title": "Removed",
             "type": "integer"
+          },
+          "undo_hint": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UndoRollbackHint"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -45960,6 +46006,28 @@
         ],
         "title": "UndoIntent",
         "type": "string"
+      },
+      "UndoRollbackHint": {
+        "additionalProperties": false,
+        "description": "``/undo``'s line naming the files the undone turns changed and pointing at ``/rollback``: ``files`` are\nthe changed paths, ``text`` is the rendered line in the backend's language.",
+        "properties": {
+          "files": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Files",
+            "type": "array"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "UndoRollbackHint",
+        "type": "object"
       },
       "Usage": {
         "additionalProperties": true,

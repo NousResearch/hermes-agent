@@ -1733,7 +1733,7 @@ _CLARIFY_NON_RESPONSE_PREFIXES = (
     "The user did not provide a response",  # tools/clarify_tool.TIMEOUT_RESPONSE
     "[user did not respond",  # gateway clarify delivery timeout
     "[clarify prompt could not be delivered",  # gateway UNDELIVERED*
-    "[oneshot mode:",  # hermes_cli/oneshot.py
+    "[oneshot mode:",  # the former in-process `hermes -z` runner
 )
 # Matched whole: as a prefix these would also swallow real answers that start the same way.
 _CLARIFY_NON_RESPONSE_TEXTS = (

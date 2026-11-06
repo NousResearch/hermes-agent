@@ -74,6 +74,13 @@ export const jaDelegationRouting: DelegationRoutingTranslations = {
   tierFast: '高速',
   tierUltrafast: '超高速',
   tierHint: '対応しているモデルのみ。',
+  daybreakLabel: 'Daybreak',
+  daybreakOff: 'オフ',
+  daybreakOn: 'オン',
+  daybreakHint: 'ガードレールを緩和した OpenAI の信頼済みアクセス（このルートのみ）。',
+  daybreakUnlisted: 'このモデルはお使いのアカウントで Daybreak の対象外です。オフにするか別のモデルを選んでください。',
+  daybreakNeedsPlugin:
+    'お使いの Advanced Delegation プラグインはまだ Daybreak ルートに対応していません。更新するか、オフにしてください。',
   optional: '任意',
   errors: { required: '必須', spaces: 'スペースは使えません', duplicate: 'この名前は別のルートで使われています' },
   saveRoute: 'ルートを保存',

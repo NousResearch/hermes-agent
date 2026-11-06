@@ -4379,6 +4379,7 @@ export const zhOverrides = {
       readAloud: '朗读',
       copyFullResponse: '复制完整回复',
       readAloudFullResponseHint: '按住 Shift 点击：朗读完整回复',
+      contentRefusedNotice: '该消息被模型的安全过滤器拒绝 — 请换一个问题重试。',
       editMessage: '编辑消息',
       expandMessage: '展开消息',
       scrollToBottom: '滚动到底部',

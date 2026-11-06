@@ -3981,3 +3981,8 @@ plan_usage:
   large_notice_limit: "Велика модель: досягнуто {name} ({resets})."
   large_notice_limit_stops: "Велика модель: досягнуто {name} ({resets}), до скидання вона не запуститься."
   large_notice_percent: "Велика модель: витрачає більше ліміту плану на повідомлення. Місячний ліміт великих моделей: використано {percent}."
+shared:
+  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  undo_rollback:
+    list: "↶ Файли, змінені у скасованих ходах: {files}. Виконайте /rollback, щоб переглянути контрольні точки й відновити одну."
+    more: "ще {count}"

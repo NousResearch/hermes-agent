@@ -207,3 +207,61 @@ class TestGatewayConfigSerialization:
         cfg = GatewayConfig(session_store_max_age_days=30)
         restored = GatewayConfig.from_dict(cfg.to_dict())
         assert restored.session_store_max_age_days == 30
+
+
+class TestPruneKeepsReceiptOwnedSessions:
+    """A routing entry whose session holds an open local creation receipt must not be
+    swept by the idle prune: the receipt is that session's resume channel, so dropping
+    the entry turns every later resume into ``admission_conflict`` (#149784). A receipt
+    whose session row has ended still prunes."""
+
+    @staticmethod
+    def _store_with_db(tmp_path):
+        from hermes_state import SessionDB
+
+        store = _make_store(tmp_path)
+        db = SessionDB(tmp_path / "state.db")
+        store._db = db
+        return store, db
+
+    def test_open_receipt_session_is_kept(self, tmp_path):
+        import time
+
+        from hermes_state_local import POLICY_PREFIX
+
+        store, db = self._store_with_db(tmp_path)
+        sid = "local-open-1"
+        db._write_sql("INSERT INTO sessions (id, source, started_at) VALUES (?, 'local', ?)",
+                      (sid, time.time()))
+        db.set_meta(POLICY_PREFIX + sid,
+                    json.dumps({"session_id": sid, "entry": {"session_id": sid}}))
+        store._entries["kept"] = _entry("kept", age_days=1000, session_id=sid)
+        store._entries["plain"] = _entry("plain", age_days=1000, session_id="sid_plain")
+        try:
+            removed = store.prune_old_entries(max_age_days=90)
+            assert removed == 1
+            assert "kept" in store._entries
+            assert "plain" not in store._entries
+        finally:
+            db.close()
+
+    def test_ended_receipt_session_still_prunes(self, tmp_path):
+        import time
+
+        from hermes_state_local import POLICY_PREFIX
+
+        store, db = self._store_with_db(tmp_path)
+        sid = "local-ended-1"
+        db._write_sql(
+            "INSERT INTO sessions (id, source, started_at, ended_at, end_reason) "
+            "VALUES (?, 'local', ?, ?, 'agent_close')",
+            (sid, time.time(), time.time()),
+        )
+        db.set_meta(POLICY_PREFIX + sid,
+                    json.dumps({"session_id": sid, "entry": {"session_id": sid}}))
+        store._entries["ended"] = _entry("ended", age_days=1000, session_id=sid)
+        try:
+            assert store.prune_old_entries(max_age_days=90) == 1
+            assert "ended" not in store._entries
+        finally:
+            db.close()

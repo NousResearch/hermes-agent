@@ -281,10 +281,35 @@ class SessionLifecycleMixin:
             entry.last_resume_marked_at = None
         return self._update_entry(session_key, _apply)
 
+    def _receipt_owned_open(self, session_id: str) -> bool:
+        """Whether ``session_id`` holds a local creation receipt whose session row is still open.
+        The receipt is that session's resume channel: sweeping its routing entry turns every later
+        resume into ``admission_conflict`` (#149784). Fails closed (keep) on probe errors, mirroring
+        ``_has_active_processes_safe``."""
+        db = self._db
+        if db is None:
+            return False
+        try:
+            from hermes_state_local import POLICY_PREFIX
+
+            with db._read_ctx() as conn:
+                row = conn.execute(
+                    "SELECT 1 FROM state_meta m JOIN sessions s "
+                    "ON s.id = CASE WHEN json_valid(m.value) "
+                    "THEN json_extract(m.value, '$.entry.session_id') END "
+                    "WHERE m.key = ? AND s.ended_at IS NULL",
+                    (POLICY_PREFIX + session_id,)).fetchone()
+            return row is not None
+        except Exception as exc:
+            logger.warning("receipt probe raised during prune for %s; keeping session: %s",
+                           session_id, exc)
+            return True
+
     def prune_old_entries(self, max_age_days: int) -> int:
         """Drop routing entries idle (by ``updated_at``) for more than max_age_days; suspended
-        entries and entries with active background processes are kept. Only the key -> session_id
-        mapping is dropped (the transcript stays). ``max_age_days <= 0`` disables. Returns count."""
+        entries, entries with active background processes and receipt-owned open sessions are
+        kept. Only the key -> session_id mapping is dropped (the transcript stays).
+        ``max_age_days <= 0`` disables. Returns count."""
         if max_age_days is None or max_age_days <= 0:
             return 0
         cutoff = _now() - timedelta(days=max_age_days)
@@ -296,6 +321,7 @@ class SessionLifecycleMixin:
                 # The callback is keyed by session_key, NOT session_id.
                 and not self._has_active_processes_safe(entry.session_key, context="prune")
                 and entry.updated_at < cutoff
+                and not self._receipt_owned_open(entry.session_id)
             ]
             for key in removed_keys:
                 self._entries.pop(key, None)

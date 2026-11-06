@@ -140,6 +140,9 @@ class BotCatalogEntry(_ClosedModel):
     setup: BotSetup = Field(default_factory=BotSetup)
     routines: list[BotRoutine] = Field(default_factory=list, max_length=32)
     presentation: BotPresentation
+    # Set by the loader for an entry served by a configured community source; a feed that
+    # carries this key is rejected (_source_catalog). None = the reviewed Hermes catalog.
+    source: str | None = None
 
     @field_validator("name")
     @classmethod
@@ -331,7 +334,10 @@ def _record_negative_fetch(cache: Path, now: float) -> None:
 
 def fetch_live_bot_catalog(*, force: bool = False) -> dict[str, Any] | None:
     """Fetch the published feed; failures are briefly cached before falling back to the tree."""
-    cache = _live_cache_path()
+    return _fetch_feed(LIVE_BOT_CATALOG_URL, _live_cache_path(), force=force)
+
+
+def _fetch_feed(url: str, cache: Path, *, force: bool = False) -> dict[str, Any] | None:
     now = time.time()
     try:
         if not force and cache.is_file() and now - cache.stat().st_mtime < LIVE_BOT_CATALOG_TTL_SECONDS:
@@ -344,7 +350,9 @@ def fetch_live_bot_catalog(*, force: bool = False) -> dict[str, Any] | None:
         import httpx
         from hermes_constants import mkdir_under_hermes_home
 
-        response = httpx.get(LIVE_BOT_CATALOG_URL, timeout=_REQUEST_TIMEOUT_SECONDS, follow_redirects=True)
+        # Redirects stay off for community feeds: the configured URL is the trust anchor.
+        response = httpx.get(
+            url, timeout=_REQUEST_TIMEOUT_SECONDS, follow_redirects=url == LIVE_BOT_CATALOG_URL)
         response.raise_for_status()
         if len(response.content) > _MAX_LIVE_BYTES:
             raise BotCatalogError("live bot catalog payload is too large")
@@ -358,8 +366,102 @@ def fetch_live_bot_catalog(*, force: bool = False) -> dict[str, Any] | None:
         return data
     except Exception as exc:
         _record_negative_fetch(cache, now)
-        logger.debug("Bot catalog live fetch failed: %s", exc)
+        logger.debug("Bot catalog fetch failed for %s: %s", url, exc)
         return None
+
+
+# --- Community catalog sources ----------------------------------------------------------------
+# A user may trust extra catalog feeds in config.yaml:
+#
+#   bots:
+#     catalog_sources:
+#       - id: hermesmade
+#         url: https://hermesmade.lol/api/hermes/bot-catalog.json
+#
+# A feed publishes the same closed, non-executable schema as the reviewed catalog (SOUL, prompts,
+# toolsets, and only ``official/...`` skills shipped with this client), so trusting a source never
+# runs code. Only config adds a source; a deep link can only name a bot one already serves.
+
+_SOURCE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+_MAX_SOURCES = 16
+_RESERVED_SOURCE_IDS = frozenset({"official", "nous", "hermes"})
+
+
+def configured_catalog_sources() -> list[tuple[str, str]]:
+    """``(id, url)`` for each valid ``bots.catalog_sources`` entry; invalid ones are logged and skipped."""
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        raw = (load_config_readonly().get("bots") or {}).get("catalog_sources") or []
+    except Exception as exc:
+        logger.debug("Bot catalog: could not read catalog_sources: %s", exc)
+        return []
+    if not isinstance(raw, list):
+        logger.warning("Bot catalog: bots.catalog_sources must be a list; ignored")
+        return []
+    sources: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for item in raw[:_MAX_SOURCES]:
+        source_id = str((item or {}).get("id") or "").strip() if isinstance(item, dict) else ""
+        url = str((item or {}).get("url") or "").strip() if isinstance(item, dict) else ""
+        if (not _SOURCE_ID_RE.fullmatch(source_id) or source_id in _RESERVED_SOURCE_IDS
+                or source_id in seen or not url.startswith("https://") or len(url) > 2048):
+            logger.warning("Bot catalog: invalid catalog source %r ignored", source_id or item)
+            continue
+        seen.add(source_id)
+        sources.append((source_id, url))
+    return sources
+
+
+def _source_cache_path(source_id: str) -> Path:
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / "cache" / "bot-catalog-sources" / f"{source_id}.json"
+
+
+def _source_catalog(source_id: str, url: str) -> tuple[list[BotCatalogEntry], set[str]]:
+    """Entries a community source serves (tagged ``source``) and the names it revoked."""
+    data = _fetch_feed(url, _source_cache_path(source_id))
+    if data is None:
+        return [], set()
+    revoked: set[str] = set()
+    try:
+        revoked = {item.name for item in _parse_removed({"removed": data.get("removed", [])}, url)}
+    except BotCatalogError as exc:
+        logger.warning("Bot catalog source %s: invalid removal list ignored: %s", source_id, exc)
+    raw_entries = data.get("entries")
+    if not isinstance(raw_entries, list):
+        logger.warning("Bot catalog source %s: entries must be a list", source_id)
+        return [], revoked
+    entries: list[BotCatalogEntry] = []
+    for index, raw in enumerate(raw_entries[:_MAX_ENTRIES]):
+        label = f"{source_id}#{index}"
+        try:
+            if not isinstance(raw, dict) or "source" in raw:
+                raise BotCatalogError(f"{label}: a feed may not set its own source")
+            # A community feed cannot claim the official tier, whatever it says.
+            entry = _parse_entry({**raw, "tier": "community"}, label)
+        except BotCatalogError as exc:
+            # One bad record never takes down the rest of the source's shelf.
+            logger.warning("Bot catalog source %s: entry skipped: %s", source_id, exc)
+            continue
+        if entry.name not in revoked:
+            entries.append(entry.model_copy(update={"source": source_id}))
+    return entries, revoked
+
+
+def _with_community_sources(entries: list[BotCatalogEntry]) -> list[BotCatalogEntry]:
+    """Append community entries; a name already served (official first, then earlier sources) wins."""
+    taken = {entry.name for entry in entries}
+    merged = list(entries)
+    for source_id, url in configured_catalog_sources():
+        for entry in _source_catalog(source_id, url)[0]:
+            if entry.name in taken:
+                logger.info("Bot catalog source %s: %r shadowed by an earlier catalog", source_id, entry.name)
+                continue
+            taken.add(entry.name)
+            merged.append(entry)
+    return merged
 
 
 def _live_entries(data: dict[str, Any]) -> list[BotCatalogEntry]:
@@ -394,7 +496,8 @@ def _resolved_catalog(catalog_dir: Path | None, include_live: bool) -> tuple[lis
             # A docs build that emitted its empty fallback is an outage, not an authoritative
             # request to erase the bundled catalog. Valid revocations remain authoritative even
             # when a newer entry schema cannot be loaded by this client.
-            return (entries or tree_entries), [*tree_removed, *live_removed]
+            return _with_community_sources(entries or tree_entries), [*tree_removed, *live_removed]
+        return _with_community_sources(tree_entries), tree_removed
     return tree_entries, tree_removed
 
 

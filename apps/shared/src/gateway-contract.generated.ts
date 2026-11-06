@@ -506,6 +506,7 @@ export interface BotCatalogEntryResult {
   setup: BotCatalogSetup
   routines?: BotCatalogRoutine[]
   presentation: BotCatalogPresentation
+  source?: string | null
 }
 export type BotTier = 'official' | 'community'
 export interface BotCatalogProfile {
@@ -576,6 +577,7 @@ export interface BotsInstallResult {
   path: string
   catalog_name: string
   catalog_version: string
+  catalog_source?: string | null
   source_profile: string
   copied_credentials?: string[]
   oauth_setup_required?: string[]

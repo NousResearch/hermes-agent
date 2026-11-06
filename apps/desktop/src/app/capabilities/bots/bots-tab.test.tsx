@@ -102,6 +102,8 @@ const request = vi.fn(async (method: string, _params?: Record<string, unknown>):
   return {}
 })
 
+const defaultRequest = request.getMockImplementation()!
+
 const kickoff = vi.fn(async () => 'session')
 const open = vi.fn(async () => 'session')
 const setupAction = vi.fn()
@@ -128,6 +130,7 @@ beforeEach(() => {
   closeBotMarketplaceRequest()
   $foregroundBotProfile.set('')
   vi.clearAllMocks()
+  request.mockImplementation(defaultRequest)
 })
 
 describe('Bot Marketplace picker boundary', () => {
@@ -158,6 +161,38 @@ describe('native Bot Marketplace behavior (mocked backend)', () => {
     expect(setupAction).toHaveBeenCalledWith('connect', 'gmail', expect.objectContaining({
       scope: 'research-assistant'
     }))
+  })
+
+  it('labels a community-source bot and warns that Hermes did not review it', async () => {
+    const community = { ...catalogEntry, name: 'fact-check-desk', title: 'Fact Check Desk', tier: 'community' as const, source: 'hermesmade' }
+    request.mockImplementation(async (method: string) => {
+      if (method === 'bots.catalog') {return { entries: [catalogEntry, community], removed: [] }}
+
+      if (method === 'bots.installed') {return { bots: [] }}
+
+      return {}
+    })
+    renderTab()
+
+    expect(await screen.findByText(/via hermesmade/)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Add Bot Fact Check Desk' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog.textContent).toContain('community catalog “hermesmade”')
+    expect(dialog.textContent).toContain('Hermes did not review this bot')
+  })
+
+  it('shows no community notice for a reviewed catalog bot', async () => {
+    request.mockImplementation(async (method: string) => {
+      if (method === 'bots.catalog') {return { entries: [catalogEntry], removed: [] }}
+
+      if (method === 'bots.installed') {return { bots: [] }}
+
+      return {}
+    })
+    renderTab()
+    fireEvent.click(await screen.findByRole('button', { name: 'Add Bot Research Assistant' }))
+    expect((await screen.findByRole('dialog')).textContent).not.toContain('Hermes did not review this bot')
+    expect(screen.queryByText(/via /)).toBeNull()
   })
 
   it('reviews the backend blueprint and keeps a committed install in setup instead of starting chat', async () => {

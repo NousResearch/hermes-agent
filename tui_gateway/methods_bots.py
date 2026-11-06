@@ -61,6 +61,7 @@ def _(rid, params: dict) -> dict:
             "path": str(receipt.path),
             "catalog_name": receipt.catalog_name,
             "catalog_version": receipt.catalog_version,
+            "catalog_source": entry.source,
             "source_profile": receipt.source_profile,
             "copied_credentials": list(receipt.copied_credentials),
             "oauth_setup_required": list(receipt.oauth_setup_required),

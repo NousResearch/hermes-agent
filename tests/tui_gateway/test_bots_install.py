@@ -47,6 +47,7 @@ def test_bots_catalog_and_install_return_authoritative_receipt(bot_home, monkeyp
         "path": str(bot_home / "profiles" / "rpc-researcher"),
         "catalog_name": "research-analyst",
         "catalog_version": "1.0.0",
+        "catalog_source": None,
         "source_profile": "default",
         "copied_credentials": [".env"],
         "oauth_setup_required": [],

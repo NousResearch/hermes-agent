@@ -7580,6 +7580,18 @@
           },
           "presentation": {
             "$ref": "#/components/schemas/BotCatalogPresentation"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source"
           }
         },
         "required": [
@@ -8393,6 +8405,18 @@
           "catalog_version": {
             "title": "Catalog Version",
             "type": "string"
+          },
+          "catalog_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Catalog Source"
           },
           "source_profile": {
             "title": "Source Profile",

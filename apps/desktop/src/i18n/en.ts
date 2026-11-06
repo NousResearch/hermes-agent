@@ -2067,6 +2067,9 @@ export const en: Translations = {
       remoteModelUnsupported: 'Model setup for a bot on another connection is not available from this window. Open that gateway directly to change its model.',
       notFound: catalog => `“${catalog}” is not available from this backend.`,
       creator: creator => `Created by ${creator}`,
+      fromSource: source => `via ${source}`,
+      communitySourceNotice: source =>
+        `From the community catalog “${source}”, which you added in config. Hermes did not review this bot; read its SOUL below before adding it.`,
       freshCopy: 'This creates a fresh profile. Future catalog changes do not alter your installed bot.',
       destination: profile => `Source profile: ${profile}. The new bot is created beside it on the same gateway.`,
       nameLabel: 'Bot name',

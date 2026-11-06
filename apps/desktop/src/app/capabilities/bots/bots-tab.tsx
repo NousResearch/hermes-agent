@@ -486,7 +486,10 @@ export function BotMarketplaceTab({
               <div className="min-w-0 flex-1">
                 <div className="text-xs font-medium text-(--ui-text-primary)">{candidate.title}</div>
                 <div className="truncate text-xs text-(--ui-text-secondary)">{candidate.summary}</div>
-                <div className="text-[0.7rem] text-(--ui-text-tertiary)">{m.creator(candidate.maintainer)}</div>
+                <div className="text-[0.7rem] text-(--ui-text-tertiary)">
+                  {m.creator(candidate.maintainer)}
+                  {candidate.source && <span> · {m.fromSource(candidate.source)}</span>}
+                </div>
               </div>
               <Button aria-label={`${m.add} ${candidate.title}`} onClick={() => openBotMarketplaceRequest(candidate.name)} size="xs" variant="secondary">
                 {m.add}
@@ -575,6 +578,7 @@ export function BotMarketplaceTab({
             <div className="min-h-0 space-y-5 overflow-y-auto pr-1">
               <div className="space-y-1 text-xs text-(--ui-text-secondary)">
                 <div>{m.creator(entry.maintainer)}</div>
+                {entry.source && <div className="text-(--ui-warning)">{m.communitySourceNotice(entry.source)}</div>}
                 <div>{entry.profile.description}</div>
                 <div>{m.destination(scopeProfile(scope))}</div>
                 <div>{m.freshCopy}</div>

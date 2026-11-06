@@ -85,6 +85,8 @@ class BotCatalogEntryResult(Result):
     setup: BotCatalogSetup
     routines: list[BotCatalogRoutine] = Field(default_factory=list)
     presentation: BotCatalogPresentation
+    # Configured community source id (``bots.catalog_sources``); absent for the reviewed catalog.
+    source: str | None = None
 
 
 class RemovedBotResult(Result):
@@ -153,6 +155,7 @@ class BotsInstallResult(Result):
     path: str
     catalog_name: str
     catalog_version: str
+    catalog_source: str | None = None
     source_profile: str
     copied_credentials: list[str] = Field(default_factory=list)
     oauth_setup_required: list[str] = Field(default_factory=list)

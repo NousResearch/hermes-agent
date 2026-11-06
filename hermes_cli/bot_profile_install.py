@@ -121,7 +121,11 @@ def _write_bot_config(staging: Path, entry: BotCatalogEntry) -> None:
     platform_toolsets_raw = config.get("platform_toolsets")
     platform_toolsets = dict(platform_toolsets_raw) if isinstance(platform_toolsets_raw, dict) else {}
     for platform in ("cli", "desktop", "cron"):
-        platform_toolsets[platform] = list(dict.fromkeys([_platform_default_toolset(platform), *required]))
+        # A reviewed bot runs on the platform composite plus its extras. A bot from a community
+        # catalog source gets exactly the toolsets it declares: the composite would hand an
+        # unreviewed SOUL terminal, file-write, code-execution and delegation tools.
+        base = [] if entry.source is not None else [_platform_default_toolset(platform)]
+        platform_toolsets[platform] = list(dict.fromkeys([*base, *required]))
     config["platform_toolsets"] = platform_toolsets
     # Tool availability is platform-scoped. Remove the legacy profile-editor pin so it cannot
     # contradict the canonical CLI/Desktop selections above.
@@ -175,6 +179,8 @@ def _write_bot_metadata(
             "catalog_name": entry.name,
             "catalog_version": entry.version,
             "maintainer": entry.maintainer,
+            # The community catalog source that served this blueprint; None = reviewed Hermes catalog.
+            "catalog_source": entry.source,
             "installed_at": datetime.now(timezone.utc).isoformat(),
             "source_profile": spec.source_profile,
         },

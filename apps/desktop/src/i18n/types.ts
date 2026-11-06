@@ -1871,6 +1871,8 @@ export interface Translations extends NoticeTranslations {
       remoteModelUnsupported: string
       notFound: (catalog: string) => string
       creator: (creator: string) => string
+      fromSource: (source: string) => string
+      communitySourceNotice: (source: string) => string
       freshCopy: string
       destination: (profile: string) => string
       nameLabel: string

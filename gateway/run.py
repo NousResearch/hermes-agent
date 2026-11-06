@@ -2177,7 +2177,7 @@ from gateway.session import (
 # send (via DeliveryRouter) and the media send agree.
 from gateway.delivery import DeliveryRouter
 from gateway.turn_lease import SessionTurnLeaseRegistry
-from gateway.session_state import SessionState, legacy_dict_property, legacy_lease_token_property
+from gateway.session_state import SessionState, legacy_dict_property
 from gateway.authz_mixin import GatewayAuthorizationMixin
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
 from gateway.slash_commands import GatewaySlashCommandsMixin
@@ -2263,8 +2263,8 @@ _AGENT_PENDING_SENTINEL = object()
 # ``SessionState.conversation`` (cleared via ``ConversationState.clear()``); this list remains for
 # plain-dict stores not yet folded in (``_pending_model_notes``, popped per-key by
 # _clear_conversation_scope) and the public test contract. NOT listed (different lifecycles): turn-scoped
-# _running_agents*/_active_session_leases/_busy_ack_ts/_turn_lease_tokens (_release_running_agent_state +
-# dispatch finally); _session_run_generation (monotonic; clearing breaks stale-run detection);
+# _running_agents*/_busy_ack_ts/turn.lease/turn.lease_tokens (_release_running_agent_state +
+# dispatch finally); persistent.run_generation (monotonic; clearing breaks stale-run detection);
 # _agent_cache (_evict_cached_agent); approval/slash-confirm (_clear_session_boundary_security_state).
 # The state itself now lives in ``SessionState.conversation`` (see gateway/session_state.py) and boundaries
 # clear it structurally via ``ConversationState.clear()`` — adding a field to ConversationState means every
@@ -2273,20 +2273,13 @@ _AGENT_PENDING_SENTINEL = object()
 # eviction path (_evict_cached_agent) with resource cleanup; boundaries call it explicitly.
 _CONVERSATION_SCOPED_STATE: tuple = (
     "_session_model_overrides",
-    "_pending_one_turn_model_restores",
-    "_session_reasoning_overrides",
-    "_session_service_tier_overrides",
     "_pending_model_notes",
-    "_last_resolved_model",
     "_queued_events",
     # Stall-watchdog "already notified" latch; cleared on /new so a fresh conversation can warn again.
     # See #72016.
     "_session_stall_notified",
     # Transcript-lag streak counter (#114266); a fresh conversation starts with no lag history.
-    "_transcript_lag_streaks",
-    # Sidecar notes staged but never consumed (turn aborted before run_sync) must not leak into a
-    # future conversation's first user message — session keys are source-derived and REUSED.
-    "_pending_turn_sidecar_notes")
+    "_transcript_lag_streaks")
 
 
 def _resolve_runtime_agent_kwargs() -> dict:
@@ -3367,24 +3360,11 @@ class GatewayRunner(
     # Legacy per-session dict attrs as LIVE views over ``self._sessions``; new code: _session_state(key)
     _running_agents = legacy_dict_property("_running_agents")
     _running_agents_ts = legacy_dict_property("_running_agents_ts")
-    _active_session_leases = legacy_dict_property("_active_session_leases")
     _busy_ack_ts = legacy_dict_property("_busy_ack_ts")
-    _turn_lease_tokens = legacy_lease_token_property()
-    _session_run_generation = legacy_dict_property("_session_run_generation")
     _session_model_overrides = legacy_dict_property("_session_model_overrides")
-    _pending_one_turn_model_restores = legacy_dict_property("_pending_one_turn_model_restores")
-    _session_reasoning_overrides = legacy_dict_property("_session_reasoning_overrides")
-    _session_service_tier_overrides = legacy_dict_property("_session_service_tier_overrides")
-    _last_resolved_model = legacy_dict_property("_last_resolved_model")
     _queued_events = legacy_dict_property("_queued_events")
-    _pending_turn_sidecar_notes = legacy_dict_property("_pending_turn_sidecar_notes")
     _pending_messages = legacy_dict_property("_pending_messages")
-    _pending_native_image_paths_by_session = legacy_dict_property(
-        "_pending_native_image_paths_by_session")
-    _session_ephemeral_pin = legacy_dict_property("_session_ephemeral_pin")
-    _session_vc_last = legacy_dict_property("_session_vc_last")
     _pending_approvals = legacy_dict_property("_pending_approvals")
-    _update_prompt_pending = legacy_dict_property("_update_prompt_pending")
 
     def _sessions_map(self) -> dict[str, SessionState]:
         """Per-session state map; lazily created so bare ``object.__new__`` test runners work."""
@@ -5179,14 +5159,10 @@ def _exit_after_graceful_shutdown(exit_code: int) -> None:
     """Flush stdio, release the PID file + lock, stamp the clean exit, flush opt-in metrics, hard-exit.
     ``os._exit`` (not ``sys.exit``): SystemExit runs ``Py_FinalizeEx``, which joins every non-daemon
     thread — exactly the hang a wedged worker causes. It bypasses ``atexit``, so the metrics flush,
-    PID/lock release and the bounded log drain (file handlers sit behind a ``QueueListener`` thread)
-    are done here explicitly; graceful teardown is already complete by the time this runs. See #53107.
-    The atexit-registered ``remove_pid_file`` / ``release_gateway_runtime_lock`` (``start_gateway``) never
-    run either. ``_stop_impl`` releases both on the full shutdown, but the EARLY exits — clean-fatal-config
-    (#51228) and startup-aborted-before-running — raise ``SystemExit`` right after ``runner.start()``
-    without ``_stop_impl``, so atexit was all that released them there; this backstop does now (#53107).
-    Both are idempotent (``remove_pid_file`` only unlinks this process's PID file; the lock release no-ops
-    once released): a no-op on the normal shutdown, the actual cleanup on the early exits.
+    PID/lock release, CPU profile and bounded log drain (``QueueListener`` thread) are done here explicitly.
+    The atexit ``remove_pid_file`` / ``release_gateway_runtime_lock`` (``start_gateway``) never run either:
+    ``_stop_impl`` releases both on full shutdown, but the EARLY exits (clean-fatal-config #51228,
+    startup-aborted) raise ``SystemExit`` without it, so this idempotent backstop does (#53107).
     """
     for stream in (sys.stdout, sys.stderr):
         with suppress(Exception):
@@ -5209,13 +5185,17 @@ def _exit_after_graceful_shutdown(exit_code: int) -> None:
         from hermes_cli.observability.shared_metrics_process import flush_before_hard_exit
         flush_before_hard_exit()  # the runtimes' atexit flush: open sessions + queued opt-in rows (bounded)
 
+    def _write_cpu_profile() -> None:  # --cpu-profile's atexit writer never runs past os._exit; no-op when off
+        from hermes_cli.cpu_profile import write_cpu_profile
+        write_cpu_profile()
+
     def _drain_logs() -> None:
         # os._exit bypasses the listener's atexit drain. Bounded, no restart — NOT flush_log_queue():
         # a listener wedged on the rotation lock would re-freeze shutdown in an unbounded stop() join.
         from hermes_logging import drain_log_queue
         drain_log_queue(timeout=1.0)
 
-    for _step in (_release_locks, _mark_exited, _flush_metrics, _drain_logs):
+    for _step in (_release_locks, _mark_exited, _flush_metrics, _write_cpu_profile, _drain_logs):
         _best_effort(_step)
     os._exit(exit_code)
 

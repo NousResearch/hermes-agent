@@ -1232,13 +1232,13 @@ def _write_config_key(key_path: str, value):
 
 
 def _write_config_keys(updates: dict) -> None:
-    """Set related dotted keys together: ONE backend write without a config file (remote), so a
-    refused key changes none of them; one raw round-trip save with the file backend."""
+    """Set related dotted keys in ONE write (remote: one backend write; file: one raw save): a refused key changes none."""
+    from .methods_config_set import _refuse_managed_keys
+    _refuse_managed_keys(*updates)  # an administrator-pinned key: refused whole, nothing written
     if not supports_file_tooling():
         _write_config_changes(updates)
         return
-    # Write-back round-trip: raw read is mandatory — saving the overlaid/expanded view would persist it.
-    cfg = _load_cfg_raw()
+    cfg = _load_cfg_raw()  # write-back round-trip: raw, never the overlaid/expanded view
     for key_path, value in updates.items():
         current = cfg
         *parents, leaf = key_path.split(".")

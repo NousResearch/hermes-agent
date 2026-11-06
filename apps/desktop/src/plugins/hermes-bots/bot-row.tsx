@@ -40,7 +40,7 @@ import {
   focusedRosterOwner,
   saveSelectedRosterBot
 } from './bot-state'
-import { ensureBotMetadata } from './canonical-chat'
+import { ensureBotMetadata, ensureBotProfile } from './canonical-chat'
 import {
   $botAttention,
   $botMeta,
@@ -393,8 +393,8 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
         <ContextMenuSeparator />
         <ContextMenuItem
           onSelect={() =>
-            void ensureBotMetadata(bot)
-              .then(() => onEdit(bot))
+            void ensureBotProfile(bot)
+              .then(onEdit)
               .catch(error => host.notifyError?.(error, b.bot.loadFailed))
           }
         >

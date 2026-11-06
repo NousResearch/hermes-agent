@@ -319,9 +319,15 @@ def _parse_structured_text(*, text: str, json_mode: bool, json_schema: Optional[
     a missing ``jsonschema`` package skips validation with a debug log."""
     if not (json_mode or json_schema is not None) or not text:
         return None, "text"
-    try:
-        parsed = json.loads(_strip_code_fences(text))
-    except (json.JSONDecodeError, ValueError):
+    # The whole reply first: a JSON value whose strings hold ``` fences is valid as it is, and
+    # its first fenced block is not the answer. A fenced or prose-wrapped reply falls back to it.
+    for candidate in (text.strip(), _strip_code_fences(text)):
+        try:
+            parsed = json.loads(candidate)
+            break
+        except (json.JSONDecodeError, ValueError):
+            continue
+    else:
         return None, "text"
     if json_schema is not None:
         try:

@@ -201,9 +201,9 @@ export function RoomCycleFooter({ cycle, labels, text, working }: {
 
 /** The room header: title (opens details), member avatar stack + status chips, Stop while
  *  the room works, and the overflow/details trigger. */
-export function RoomHeader({ backLabel, children, onBack, onStop, onTitle, stopLabel, title, titleExpanded, titleLabel, trailing, working }: {
+export function RoomHeader({ backLabel, children, onBack, onStop, onTitle, stopDisabled, stopLabel, title, titleExpanded, titleLabel, trailing, working }: {
   backLabel?: string; children?: ReactNode; onBack?: () => void; onStop?: () => void; onTitle?: () => void
-  stopLabel: string; title: ReactNode; titleExpanded?: boolean; titleLabel?: string; trailing?: ReactNode; working: boolean
+  stopDisabled?: boolean; stopLabel: string; title: ReactNode; titleExpanded?: boolean; titleLabel?: string; trailing?: ReactNode; working: boolean
 }) {
   // Inner column matches the transcript and composer (max-w-3xl) so every left edge lines up.
   return <header className="shrink-0 border-b border-(--ui-stroke-secondary) px-4 pb-2.5 pt-2">
@@ -221,7 +221,7 @@ export function RoomHeader({ backLabel, children, onBack, onStop, onTitle, stopL
         : <h2 className="min-w-0 truncate px-1 text-[0.9375rem] font-semibold text-foreground">{title}</h2>}
       <div className="ml-auto flex shrink-0 items-center gap-0.5">
         {working && onStop && <Tip label={stopLabel}>
-          <Button aria-label={stopLabel} className="text-(--ui-accent)" onClick={onStop} size="icon-sm" variant="ghost"><Codicon name="debug-stop" /></Button>
+          <Button aria-label={stopLabel} className="text-(--ui-accent)" disabled={stopDisabled} onClick={onStop} size="icon-sm" variant="ghost"><Codicon name="debug-stop" /></Button>
         </Tip>}
         {trailing}
       </div>

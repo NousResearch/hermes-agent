@@ -363,6 +363,7 @@ from hermes_cli.web_server_boundary import (  # re-exported: web_server.<name> s
     public_url_origins,
     should_require_auth,
 )
+from hermes_cli.tailnet_identity import connection_login as tailnet_connection_login
 
 
 def should_require_dashboard_auth(
@@ -386,7 +387,7 @@ async def host_header_middleware(request: Request, call_next):
     bound_host = getattr(app.state, "bound_host", None)
     if bound_host and not _is_accepted_host(
         request.headers.get("host", ""), bound_host, getattr(app.state, "trusted_public_hosts", frozenset())
-    ):
+    ) and not tailnet_connection_login(request, app.state):  # webapp.tailscale_logins
         return JSONResponse(
             status_code=400,
             content={

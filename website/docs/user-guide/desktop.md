@@ -162,6 +162,45 @@ whenever a profile has it turned on.
 If that build fails, the gateway reports the Webapp unavailable, and the page says so, until
 `hermes webapp` rebuilds it.
 
+### From your tailnet
+
+[Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve) can publish the Webapp on this
+computer's tailnet name, and then your Tailscale login signs you in. There is no password and no
+launch link, on your phone too. Keep the loopback `host`, leave `webapp.public_url` empty, and list
+the logins allowed in:
+
+```yaml
+webapp:
+  enabled: true
+  tailscale_logins: [you@example.com]
+```
+
+```bash
+hermes gateway restart
+tailscale serve --bg --https=8443 http://127.0.0.1:9120   # webapp.port
+```
+
+Then open `https://<this computer>.<your tailnet>.ts.net:8443` on any device signed in to Tailscale as
+one of those logins. Serve adds the login of the person behind each device to every request it
+forwards, and replaces any login the client sent. The Webapp accepts it only under these conditions:
+
+- the request comes from loopback, the only place Serve connects from;
+- the address is a `ts.net` name, so a web page that points its own name at `127.0.0.1` gets nothing;
+- the request comes from the Webapp's own page, not from another site.
+
+A login that passes is treated like a one-use launch link: the page signs the tab in. Every request
+after that needs the tab's sign-in, as usual. **Sign out** in Web Access still closes every tab, and a
+tab signs in again when it reloads the page. To revoke a login, remove it from the list and restart the
+gateway.
+
+:::warning Any account on this computer can claim a login on macOS and Windows
+Serve's login header comes over loopback. On Linux, the Webapp accepts it only from a connection
+owned by root (`tailscaled`) or by the account that runs Hermes. On macOS and Windows, the owner of the
+connection cannot be checked: any program on this computer can claim a listed login. Use
+`tailscale_logins` only where every account on the computer is already trusted with Hermes. Never use
+Funnel for the Webapp: Funnel sends no login, and it makes the address public.
+:::
+
 ### Terminal in the Webapp
 
 The terminal rail opens the host's interactive shell, running as a child of the gateway, in your home

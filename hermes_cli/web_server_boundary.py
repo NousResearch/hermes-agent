@@ -12,6 +12,8 @@ import re
 import urllib.parse
 from typing import Optional
 
+from hermes_cli.tailnet_identity import connection_login
+
 # Accepted Host values for loopback binds. DNS rebinding TTL-flips an attacker
 # hostname to 127.0.0.1 so the browser treats it as same-origin; validating Host
 # at the app layer rejects it. See GHSA-ppp5-vxwm-4cf7.
@@ -259,6 +261,8 @@ def ws_host_origin_reason(ws, state) -> Optional[str]:
     bound_host = getattr(state, "bound_host", None)
     if not bound_host:
         return None
+    if connection_login(ws, state):
+        return None  # tailscale serve proxied a listed login (webapp.tailscale_logins): its ts.net Host
     trusted_public_hosts = getattr(state, "trusted_public_hosts", frozenset())
     host_header = ws.headers.get("host", "")
     if not _is_accepted_host(host_header, bound_host, trusted_public_hosts):

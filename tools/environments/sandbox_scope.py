@@ -102,6 +102,18 @@ def sandbox_visible(sandbox_key: str) -> bool:
     return sandbox_key == current_sandbox_key()
 
 
+def producer_fields(sandbox_key: str) -> dict:
+    """The producer identity a notification about a hosted agent's record carries (nothing for a
+    local one's, so local events are unchanged)."""
+    return {"sandbox_key": sandbox_key} if sandbox_key else {}
+
+
+def event_visible(event: dict) -> bool:
+    """Whether the current activity may deliver, consume, suppress or drop *event*: only the agent
+    that produced it. Anything else leaves it queued for its owner."""
+    return sandbox_visible(str(event.get("sandbox_key") or ""))
+
+
 def require_identity(identity: SandboxIdentity, what: str) -> Scope:
     """The bound scope, when it is hosted and names *identity*'s agent; else refuse."""
     scope = hosted_scope()

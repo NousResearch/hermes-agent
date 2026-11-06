@@ -375,12 +375,65 @@ def check_idle_sandbox_suspended_not_destroyed(provider: RecordingSandboxProvide
     assert lifecycle[0].scope == a and lifecycle[0].sandbox == _identity(a)
 
 
+def _drain_all(registry: Any) -> list[dict]:
+    events = []
+    while not registry.completion_queue.empty():
+        events.append(registry.completion_queue.get_nowait())
+    return events
+
+
+def check_process_notifications_private(provider: RecordingSandboxProvider, a: Scope, b: Scope) -> None:
+    """Completion, watch and heartbeat events of A's background process carry A's sandbox identity,
+    and a drain under B (even with the same session key, or no filter at all) neither delivers,
+    consumes, suppresses nor drops them: they stay queued, and A's own drain receives them. Its live
+    output never reaches the (scope-less) UI sink."""
+    from tools.process_registry import ProcessSession, process_registry as registry
+    key = _identity(a).key
+    secret = f"PRIVATE-{_marker(a)}"
+    session = ProcessSession(
+        id=f"proc_{uuid.uuid4().hex[:12]}", command=f"echo {secret}", task_id=key, owner_task_id="t",
+        session_key="shared", sandbox_key=key, notify_on_complete=True, exited=True,
+        output_buffer=f"{secret}\n", watch_patterns=["PRIVATE"])
+    registry._completions_restored = True
+    _drain_all(registry)
+    sunk: list[str] = []
+    previous_sink, registry.on_output = registry.on_output, lambda s, chunk: sunk.append(chunk)
+    try:
+        with _bind(a):
+            registry._publish_finished(session, True)
+            session.exited = False
+            registry._check_watch_patterns(session, f"{secret}\n")
+            session._heartbeat_last, session.total_output_chars, session._heartbeat_total_at_last = 0.0, 10, 0
+            registry._emit_heartbeat(session, 1.0)
+            registry._emit_output(session, f"{secret}\n")
+        queued = list(registry.completion_queue.queue)
+        assert {e.get("type") for e in queued} >= {"completion", "watch_match", "heartbeat"}, queued
+        lost = [e for e in queued if e.get("sandbox_key") != key]
+        assert not lost, f"an event lost its producer identity: {lost}"
+        assert not sunk, "a hosted process's live output reached a UI sink"
+        from gateway.run import _drain_gateway_watch_events
+        with _bind(b):
+            for drain in (lambda: registry.drain_notifications(session_key="shared"),
+                          lambda: registry.drain_notifications(),
+                          lambda: _drain_gateway_watch_events(registry.completion_queue)):
+                assert secret not in json.dumps(drain(), default=str), "B received A's process event"
+        assert registry.drain_notifications() == [], "an unscoped drain received a hosted agent's event"
+        assert len(registry.completion_queue.queue) == len(queued), "a foreign drain dropped A's events"
+        with _bind(a):
+            mine = registry.drain_notifications(session_key="shared")
+        assert secret in json.dumps(mine, default=str) and registry.completion_queue.empty()
+    finally:
+        registry.on_output = previous_sink
+        _drain_all(registry)
+
+
 def checks() -> Iterator[tuple[str, Callable[..., None]]]:
     yield from (
         ("tools_address_own_sandbox", check_tools_address_own_sandbox),
         ("foreign_handle_refused", check_foreign_handle_refused),
         ("file_tools_never_touch_host", check_file_tools_never_touch_host),
         ("background_process_invisible", check_background_process_invisible),
+        ("process_notifications_private", check_process_notifications_private),
         ("idle_sandbox_kept_while_working", lambda p, a, b: check_idle_sandbox_kept_while_working(p, a)),
         ("idle_sandbox_suspended_not_destroyed", lambda p, a, b: check_idle_sandbox_suspended_not_destroyed(p, a)),
     )

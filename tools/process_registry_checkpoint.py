@@ -19,6 +19,7 @@ class ProcessCheckpointMixin:
 
     def _write_checkpoint(self, extra_entries: Optional[list[dict[str, Any]]] = None):
         """Write running process metadata to the checkpoint file atomically."""
+        from tools.environments.sandbox_scope import producer_fields
         from tools.process_registry import _checkpoint_path, _CHECKPOINT_FIELDS
 
         try:
@@ -38,6 +39,7 @@ class ProcessCheckpointMixin:
                     # See #77484.
                     entry["command"] = redact_sensitive_text(s.command, code_file=True)
                     entry["owner_task_id"] = s.owner_task_id or s.task_id
+                    entry.update(producer_fields(s.sandbox_key))  # a recovered hosted process stays its agent's
                     entries.append(entry)
                 if extra_entries:
                     tracked_ids = {item.get("session_id") for item in entries}
@@ -136,7 +138,7 @@ class ProcessCheckpointMixin:
             fields.update(
                 command=entry.get("command", "unknown"),
                 owner_task_id=entry.get("owner_task_id", "") or entry.get("task_id", ""),
-                started_at=entry.get("started_at", time.time()))
+                started_at=entry.get("started_at", time.time()), sandbox_key=entry.get("sandbox_key", ""))
             # detached: no Popen handle, but can report status + kill; a worker spawn's output log
             # (and recorded exit) outlives its spawner, so tail it from the start.
             fields["output_log"] = log

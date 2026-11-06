@@ -57,4 +57,10 @@ it('sends the client name only to an owner that lists client', () => {
     .toBe('gateway does not support these session options: yolo')
   expect(refusal(() => canonicalRequest('session.create', {}, { sources: ['cli'], parameters: [] }, undefined, { client })))
     .toBe('gateway does not support tui session policy; update/restart the gateway')
+  // The option replaces a client already in the params, and neither reaches an owner that doesn't take it.
+  const stale = { request_id: 'r', client: { name: 'other' } }
+  expect(canonicalRequest('session.create', stale, takes, undefined, { client }).params)
+    .toEqual({ request_id: 'r', source: 'tui', client })
+  expect(canonicalRequest('session.create', stale, owner, undefined, { client }).params)
+    .toEqual({ request_id: 'r', source: 'tui' })
 })

@@ -46,3 +46,15 @@ test('the policy calls isFocused as a method, the way BrowserWindow needs it', (
 
   assert.equal(shouldFocusToTakeKeyboard(new NativeLikeWindow()), true)
 })
+
+test('a native window destroyed after the caller checked it does not crash focus handling', () => {
+  // BrowserWindow can be destroyed between focusWindow's isDestroyed() guard
+  // and this native-handle query (for example after a renderer crash).
+  const destroyedWindow = {
+    isFocused() {
+      throw new TypeError('Object has been destroyed')
+    }
+  }
+
+  assert.equal(shouldFocusToTakeKeyboard(destroyedWindow), false)
+})

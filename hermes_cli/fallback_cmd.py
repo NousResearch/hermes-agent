@@ -5,6 +5,7 @@ Subcommands: ``list`` (default), ``add`` (same picker as `hermes model`), ``remo
 from __future__ import annotations
 
 import copy
+import sys
 from typing import Any, Dict, List, Optional
 
 from hermes_cli.fallback_config import get_fallback_chain
@@ -104,6 +105,47 @@ def _print_chain(heading: str, chain: list[dict[str, Any]]) -> None:
     print("".join(f"    {i}. {_format_entry(entry)}\n" for i, entry in enumerate(chain, 1)))
 
 
+def _noninteractive_entry(args) -> tuple[Optional[dict[str, Any]], list[str]]:
+    """Build a route from ``fallback add`` flags, or report which required flags are absent."""
+    values = {
+        "provider": getattr(args, "fallback_provider", None),
+        "model": getattr(args, "fallback_model", None),
+        "base_url": getattr(args, "fallback_base_url", None),
+        "api_mode": getattr(args, "fallback_api_mode", None),
+    }
+    supplied = any(value is not None for value in values.values())
+    if not supplied:
+        return None, []
+    entry = {key: str(value).strip() for key, value in values.items() if value is not None and str(value).strip()}
+    missing = [f"--{key}" for key in ("provider", "model") if key not in entry]
+    return (None, missing) if missing else (entry, [])
+
+
+def _append_fallback_entry(new_entry: dict[str, Any], primary_model_cfg: Any) -> None:
+    """Validate and persist one fallback entry without changing the configured primary route."""
+    from agent.backend_identity import same_deployment
+    from hermes_cli.config import load_config, save_config
+
+    new_ident = _identity(new_entry)
+    primary_entry = _extract_fallback_from_model_cfg(primary_model_cfg)
+    if primary_entry and same_deployment(_identity(primary_entry), new_ident):
+        print(f"\n  Selected model matches the current primary ({_format_entry(new_entry)}).")
+        print("  A provider cannot be a fallback for itself — no change.")
+        return
+
+    chain_config = load_config()
+    chain = _read_chain(chain_config)
+    if any(same_deployment(_identity(existing), new_ident) for existing in chain):
+        print(f"\n  {_format_entry(new_entry)} is already in the fallback chain — skipped.")
+        return
+    chain.append(new_entry)
+    _write_chain(chain_config, chain)
+    save_config(chain_config)
+    print(f"\n  Added fallback: {_format_entry(new_entry)}")
+    print(f"  Chain is now {_entries(len(chain))} long.\n")
+    print("  Run `hermes fallback list` to view, or `hermes fallback remove` to delete.")
+
+
 def _load_chain(empty_message: str):
     """Load config + chain; print ``empty_message`` block and return ``(config, None)`` when empty."""
     from hermes_cli.config import load_config
@@ -141,7 +183,18 @@ def cmd_fallback_list(args) -> None:
 def cmd_fallback_add(args) -> None:
     """Launch the same picker as `hermes model`, then append the selection to the chain."""
     from hermes_cli.main import _require_tty, select_provider_and_model
-    from hermes_cli.config import load_config, save_config
+    from hermes_cli.config import load_config
+    new_entry, missing = _noninteractive_entry(args)
+    if new_entry is not None:
+        _append_fallback_entry(new_entry, load_config().get("model"))
+        return
+    if missing and not sys.stdin.isatty():
+        print(
+            "Error: non-interactive `hermes fallback add` requires both --provider and --model; "
+            f"missing: {', '.join(missing)}.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
     _require_tty("fallback add")
 
     # Snapshot BEFORE the picker runs; both route stores must be restored on every exit path.
@@ -172,26 +225,8 @@ def cmd_fallback_add(args) -> None:
         print("\n  No fallback added.")
         return
 
-    from agent.backend_identity import same_deployment
-    new_ident = _identity(new_entry)
-    primary_entry = _extract_fallback_from_model_cfg(model_before)
-    if primary_entry and same_deployment(_identity(primary_entry), new_ident):
-        print(f"\n  Selected model matches the current primary ({_format_entry(new_entry)}).")
-        print("  A provider cannot be a fallback for itself — no change.")
-        return
-
     # Reload after primary restoration; picker-created providers/credentials remain.
-    final_cfg = load_config()
-    chain = _read_chain(final_cfg)
-    if any(same_deployment(_identity(existing), new_ident) for existing in chain):
-        print(f"\n  {_format_entry(new_entry)} is already in the fallback chain — skipped.")
-        return
-    chain.append(new_entry)
-    _write_chain(final_cfg, chain)
-    save_config(final_cfg)
-    print(f"\n  Added fallback: {_format_entry(new_entry)}")
-    print(f"  Chain is now {_entries(len(chain))} long.\n")
-    print("  Run `hermes fallback list` to view, or `hermes fallback remove` to delete.")
+    _append_fallback_entry(new_entry, model_before)
 
 
 def cmd_fallback_remove(args) -> None:

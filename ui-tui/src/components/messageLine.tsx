@@ -57,6 +57,7 @@ export const MessageLine = memo(function MessageLine({
   prev,
   reasoningActive = false,
   sections,
+  selected = false,
   t,
   timestamps = false,
   tools = []
@@ -232,7 +233,7 @@ export const MessageLine = memo(function MessageLine({
       const [head, ...rest] = userDisplay(msg.text).split('[long message]')
 
       return (
-        <Text color={body}>
+        <Text color={body} inverse={selected}>
           {head}
           <Text color={t.color.muted} dimColor>
             {T.longMessage}
@@ -249,7 +250,7 @@ export const MessageLine = memo(function MessageLine({
       const segments = splitComposerHighlights(msg.text)
 
       return (
-        <Text {...(body ? { color: body } : {})}>
+        <Text {...(body ? { color: body } : {})} inverse={selected}>
           {segments.map((segment, i) =>
             segment.ref ? (
               <Text color={t.color.accent} key={i}>
@@ -320,7 +321,7 @@ export const MessageLine = memo(function MessageLine({
 
       <Box>
         <NoSelect flexShrink={0} fromLeftEdge width={gutterWidth}>
-          <Text bold={msg.role === 'user'} color={prefix}>
+          <Text bold={msg.role === 'user'} color={prefix} inverse={selected}>
             {glyph}{' '}
           </Text>
         </NoSelect>
@@ -394,6 +395,8 @@ interface MessageLineProps {
   prev?: Msg
   reasoningActive?: boolean
   sections?: SectionVisibility
+  /** Backtrack browsing has this prompt selected: drawn in reverse video. */
+  selected?: boolean
   t: Theme
   /** `display.timestamps` — dim [HH:MM] label on user/assistant rows. */
   timestamps?: boolean

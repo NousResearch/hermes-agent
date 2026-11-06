@@ -42,7 +42,7 @@ def _store(key: tuple[str, str], generation: int, update: Mapping[str, Any]) -> 
         _progress[key] = entry  # a newer attempt owns this task id
         return
     if entry is None or entry["generation"] < generation:
-        entry = {"generation": generation, "tool": None, "progress_at": None}
+        entry = {"generation": generation, "tool": None, "progress_at": None, "active": False}
     entry.update(update)
     _progress[key] = entry
     while len(_progress) > _PROGRESS_LIMIT:
@@ -66,23 +66,35 @@ def record_task_progress(room_id: str, task_id: str, execution_generation: int, 
     never through ``project_room_member_activity``; the room driver already polls the member's ``info``
     during the turn, and this is how that answer reaches ``groups.state``. The member's clock stamps
     ``progress_at``: the time of its last frame, not of this poll. ``execution_generation`` is the attempt
-    the driver polled for; an answer naming another generation is not this attempt's progress."""
+    the driver polled for; an answer naming another generation is not this attempt's progress.
+    Live recovery also requires an explicitly active answer naming this exact generation; an empty
+    observation withdraws that confirmation without retiring the attempt's progress."""
     progress_at, tool = info.get("progress_at"), info.get("tool")
     reported = _generation(info.get("execution_generation"))
-    if (str(info.get("task_id") or "") != task_id or type(progress_at) not in (int, float)
-            or reported not in (None, execution_generation)):
-        return
+    matches = str(info.get("task_id") or "") == task_id and reported in (None, execution_generation)
+    update = {"active": matches and reported == execution_generation and info.get("active") is True}
+    if matches and type(progress_at) in (int, float):
+        update.update(tool=tool[:128] if isinstance(tool, str) and tool else None, progress_at=float(progress_at))
     with _progress_lock:
-        _store((room_id, task_id), int(execution_generation), {
-            "tool": tool[:128] if isinstance(tool, str) and tool else None, "progress_at": float(progress_at)})
+        _store((room_id, task_id), int(execution_generation), update)
 
 
 def forget_task_progress(room_id: str, task_id: str, execution_generation: int) -> None:
     """Drop the progress of ``execution_generation`` and everything before it: a late write from an attempt
     that already ended (or that Retry replaced) cannot repopulate the task's row."""
     with _progress_lock:
+        entry = _progress.get((room_id, task_id))
+        if entry is not None and entry["generation"] > execution_generation:
+            return  # the replacement may already have published its first frame
         _progress.pop((room_id, task_id), None)
         _store((room_id, task_id), int(execution_generation) + 1, {})
+
+
+def task_is_active(room_id: str, task_id: str, execution_generation: int) -> bool:
+    """Whether the last member observation confirmed this exact attempt is still running."""
+    with _progress_lock:
+        entry = _progress.get((room_id, task_id))
+        return bool(entry and entry["generation"] == execution_generation and entry["active"])
 
 
 def task_progress(room_id: str, task_id: str, execution_generation: int) -> dict[str, Any]:

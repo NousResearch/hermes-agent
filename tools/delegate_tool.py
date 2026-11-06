@@ -288,6 +288,12 @@ def _build_child_agent(
             request_overrides = {} if override_provider else dict(getattr(parent_agent, "request_overrides", {}) or {})
         parent_sid = getattr(parent_agent, "session_id", None)
         child_session_db = _open_child_session_db(parent_agent)
+        # Children run provider-less. Under compression.checkpoint_required the child arms the same gate
+        # (read inside the delegated profile scope, as the child reads it) and would die at its first
+        # compaction, so it inherits the provider, scoped as a fork. Cost: one initialize() per spawn.
+        from agent.conversation_compression_checkpoint import checkpoint_required_from_config
+
+        child_checkpoint_required = checkpoint_required_from_config()
         with delegated_child_context():
             try:
                 child = AIAgent(
@@ -295,7 +301,8 @@ def _build_child_agent(
                     enabled_toolsets=child_toolsets, disabled_toolsets=child_disabled_toolsets, quiet_mode=True,
                     ephemeral_system_prompt=child_prompt, log_prefix=f"[subagent-{task_index}]", platform="subagent",
                     side_agent=True,
-                    skip_context_files=True, skip_memory=True, clarify_callback=None,
+                    skip_context_files=True, skip_memory=not child_checkpoint_required,
+                    memory_agent_context="subagent", clarify_callback=None,
                     thinking_callback=(
                         (lambda text: _safe_progress(child_progress_cb, "_thinking", text) if text else None)
                         if child_progress_cb else None
@@ -330,6 +337,9 @@ def _build_child_agent(
     child_session_ref["session_id"] = getattr(child, "session_id", "") or ""
     child._progress_identity_ref = child_session_ref
     child._delegate_depth, child._delegate_role = child_depth, effective_role  # post-degrade role
+    # Plugins see one conversation per delegation tree.
+    from agent.prompt_cache_scope import conversation_id
+    child._inherited_conversation_id = conversation_id(parent_agent)
     child._subagent_id, child._parent_subagent_id = subagent_id, parent_subagent_id
     _apply_child_compression_cap(child, delegation_cfg)
     # Ownership chain for action=list/steer/stop; weakref so a finished parent

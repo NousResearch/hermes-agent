@@ -1,0 +1,21 @@
+name: onda
+title: Onda
+repo: https://github.com/getondaru/onda
+sha: a0d35f3e1a62d3e336ea30c9f9d2d79813db3cfc
+subdir: hermes
+version: "1.0.0"
+description: "Creator research through Onda's hosted MCP server (Streamable HTTP at https://api.getonda.ru/mcp): read your Projects, followed accounts and Hits (publications with far more views than their author has followers) on Instagram, YouTube and TikTok; on your explicit request, run a new collection or get an Instagram transcript. Agent Plugins v1 package (plugin.json + mcp.json), configuration only. Needs a paid Onda plan and Hermes native MCP OAuth (hermes mcp add onda --url https://api.getonda.ru/mcp --auth oauth --connect-timeout 300; the bundled mcp.json alone gets 401); browser sign-in with an emailed code, no API key; Hermes stores the OAuth tokens. Disclosure — hosted-only connector; every tool call goes to api.getonda.ru (remote tool list not covered by the pin); run_instagram, run_youtube and start_instagram_transcript spend units or transcription minutes of the user's Onda plan; Onda answers in Russian."
+maintainer: getondaru
+tier: community
+category: tools
+docs_url: https://github.com/getondaru/onda/tree/main/hermes
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+known_issues:
+- "Sign-in needs one extra command after install, because a portable plugin cannot declare an OAuth MCP server: hermes mcp add onda --url https://api.getonda.ru/mcp --auth oauth --connect-timeout 300"
+requires_hermes: ">=0.22.0"

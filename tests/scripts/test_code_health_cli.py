@@ -443,8 +443,8 @@ def test_allow_comment_lists_rules_by_comma_or_space(tmp_path, capsys, rules):
 
 def test_tooling_failure_exits_2_without_a_traceback(tmp_path, monkeypatch, capsys):
     repo, base = _ratchet_repo(tmp_path)
-    lock = {"packages": {"node_modules/typescript": {"version": "0.0.0-not-published"}}}
-    _commit(repo, {"package-lock.json": json.dumps(lock), "web/a.ts": "export const a = 1;\n"})
+    manifest = {"devDependencies": {"typescript": "0.0.0-not-published"}}
+    _commit(repo, {"package.json": json.dumps(manifest), "web/a.ts": "export const a = 1;\n"})
     if not shutil.which("npm") or not shutil.which("node"):
         pytest.skip("needs node + npm to reach the npm install path")
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))

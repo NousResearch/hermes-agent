@@ -122,7 +122,7 @@ jobs:
       - name: Install locked chat driver dependencies
         id: dependencies
         shell: bash
-        run: npm ci --workspace tests-js --include-workspace-root --omit=dev --ignore-scripts --no-audit --no-fund
+        run: pnpm install --frozen-lockfile --filter "{./tests-js}..." --prod --ignore-scripts
 
       - name: Fetch one exact downloadable artifact
         id: artifact
@@ -249,7 +249,7 @@ jobs:
     # before Playwright attaches (every x64 smoke there failed; the same commit's arm64 MSIX on a
     # GitHub-hosted runner chats), as the install/update GUI legs did (f1b290e7734).
     runs-on: ${{ inputs.arch == 'arm64' && 'windows-latest-32-arm-core' || 'windows-latest-32-core' }}
-    # windows-11-arm runners are much slower (npm ci alone runs 12+ minutes and
+    # windows-11-arm runners are much slower (the dependency install alone runs 12+ minutes and
     # the MSIX leg exceeds 30 total); x64 legs complete in ~14.
     timeout-minutes: 45
     cache-mode: read

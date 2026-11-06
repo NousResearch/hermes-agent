@@ -1,6 +1,6 @@
-"""Source orchestration uses real node-deps/npm in an isolated checkout.
+"""Source orchestration uses real node-deps/pnpm in an isolated checkout.
 
-Only PM's tool acquisition (and its installed-node record) is substituted with the host's node/npm. Small
+Only PM's tool acquisition (and its installed-node record) is substituted with the host's node/pnpm. Small
 workspace scripts stand in for the expensive UI compilers; subprocess failures,
 locked dependency selection, environment propagation and publication are real.
 """
@@ -77,7 +77,7 @@ def test_automatic_build_preserves_pm_admission_intent(monkeypatch):
     assert intent == [False]
 
 
-def test_installed_npm_does_not_authorize_missing_workspace_dependencies(source_checkout, monkeypatch):
+def test_installed_pnpm_does_not_authorize_missing_workspace_dependencies(source_checkout, monkeypatch):
     from hermes_cli.source_build import prepare_source_dependencies, source_build_env
 
     root, _ = source_checkout
@@ -94,26 +94,31 @@ def test_installed_npm_does_not_authorize_missing_workspace_dependencies(source_
 
 @pytest.fixture
 def source_checkout(tmp_path, monkeypatch):
-    node, npm = shutil.which("node"), shutil.which("npm")
-    assert node and npm, "source-build integration requires node and npm"
+    node, pnpm = shutil.which("node"), shutil.which("pnpm")
+    assert node and pnpm, "source-build integration requires node and pnpm"
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "tools"))
     monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "0")
-    monkeypatch.setenv("npm_config_cache", str(tmp_path / "npm-cache"))
     monkeypatch.setenv("ESBUILD_BINARY_PATH", "/wrong/esbuild")
     monkeypatch.setenv("HERMES_PYTHON", "/wrong/python")
-    (home / "npmrc").write_text("fund=false\n", encoding="utf-8")
+    (home / "npmrc").write_text(
+        "fund=false\nnode-get-windows-binary-host-mirror=https://mirror.invalid/get-windows/\n"
+        "//registry.invalid/:_authToken=npmrc-secret\nelectron-mirror=${MIRROR_BASE}/electron/\n"
+        "@scope:registry=https://registry.invalid/\nca[]=npmrc-array\nnodedir=${UNSET_NPMRC_VAR}\n",
+        encoding="utf-8")
+    monkeypatch.setenv("MIRROR_BASE", "https://mirror.invalid")
+    monkeypatch.delenv("UNSET_NPMRC_VAR", raising=False)
     monkeypatch.delenv("NPM_CONFIG_USERCONFIG", raising=False)
     acquired = []
 
     def acquire(name, *, base_env=None, explicit=False, verify=True):
         acquired.append(name)
-        assert name == "npm"
+        assert name == "pnpm"
 
         return Runner(name, {**(base_env or os.environ), "PATH": os.pathsep.join(
-            [str(Path(npm).parent), str(Path(node).parent), os.environ["PATH"]])})
+            [str(Path(pnpm).parent), str(Path(node).parent), os.environ["PATH"]])})
 
     monkeypatch.setattr(pm, "ensure", acquire)
     use_host_node_as_pm_node(monkeypatch)
@@ -121,13 +126,23 @@ def source_checkout(tmp_path, monkeypatch):
     root.mkdir()
     workspaces = ["ui-tui", "web", "apps/desktop", "unrelated"]
     manifest = {"name": "build-fixture", "private": True, "version": "1.0.0",
-                "workspaces": workspaces, "scripts": {"postinstall": "node log.mjs deps"}}
+                "scripts": {"postinstall": "node log.mjs deps"}}
     (root / "package.json").write_text(json.dumps(manifest), encoding="utf-8")
+    # verifyDepsBeforeRun mirrors the repository's: `pnpm run` never installs. It precedes the
+    # package list, which tests extend by appending.
+    (root / "pnpm-workspace.yaml").write_text(
+        "verifyDepsBeforeRun: false\npackages:\n" + "".join(f"  - {workspace}\n" for workspace in workspaces),
+        encoding="utf-8")
+    # A local package stands in for registry dependencies: pnpm links it into every installed
+    # workspace's node_modules, offline.
+    (root / "fixture-dep").mkdir()
+    (root / "fixture-dep/package.json").write_text('{"name": "fixture-dep", "version": "1.0.0"}', encoding="utf-8")
     for workspace in workspaces:
         directory = root / workspace
         directory.mkdir(parents=True)
         (directory / "package.json").write_text(json.dumps({
             "name": workspace.replace("/", "-"), "version": "1.0.0",
+            "dependencies": {"fixture-dep": f"file:{os.path.relpath(root / 'fixture-dep', directory)}"},
             "scripts": {"build": "node ../../scripts/build/build-desktop.mjs",
                         "builder": "node ../../scripts/build/package-desktop.mjs"}
             if workspace == "apps/desktop" else {},
@@ -137,15 +152,20 @@ def source_checkout(tmp_path, monkeypatch):
         "appendFileSync('events.jsonl', JSON.stringify({step: process.argv[2], "
         "python: process.env.HERMES_PYTHON, ci: process.env.CI, "
         "esbuild: process.env.ESBUILD_BINARY_PATH, "
-        "npmrc: process.env.NPM_CONFIG_USERCONFIG}) + '\\n');\n",
+        "npmrc: process.env.NPM_CONFIG_USERCONFIG, store: process.env.pnpm_config_store_dir, "
+        "mirror: process.env.npm_config_node_get_windows_binary_host_mirror, "
+        "electron: process.env.npm_config_electron_mirror, "
+        "skipped: Object.keys(process.env).filter(key => /^npm_config_(@.*|ca(\\[\\])?|nodedir)$/i.test(key)), "
+        "leaked: Object.values(process.env).some(value => value.includes('npmrc-secret'))}) + '\\n');\n",
         encoding="utf-8",
     )
-    subprocess.run([npm, "install", "--package-lock-only", "--ignore-scripts", "--offline",
-                    "--no-audit", "--no-fund"], cwd=root, check=True)
+    subprocess.run([pnpm, "install", "--lockfile-only", "--ignore-scripts", "--offline"], cwd=root, check=True,
+                   env={**os.environ, **{f"pnpm_config_{name}_dir": str(tmp_path / "pnpm" / name)
+                                         for name in ("store", "cache", "state")}})
     scripts = root / "scripts" / "build"
     scripts.mkdir(parents=True)
     repository = Path(__file__).resolve().parents[2]
-    for name in ("node-deps.mjs", "electron-runtime.mjs", "freshness.mjs", "frontend-common.mjs"):
+    for name in ("node-deps.mjs", "electron-runtime.mjs", "freshness.mjs", "frontend-common.mjs", "pnpm-lock.mjs"):
         shutil.copy2(repository / "scripts/build" / name, scripts / name)
     (root / ".gitignore").write_text("node_modules/\n**/dist/\n", encoding="utf-8")
     return root, acquired
@@ -213,7 +233,7 @@ def test_preparation_reuses_only_the_exact_completed_workspace_union(source_chec
     from hermes_cli.source_build import prepare_source_dependencies, source_build_env
 
     root, acquired = source_checkout
-    before = (root / "package-lock.json").read_bytes()
+    before = (root / "pnpm-lock.yaml").read_bytes()
     env = source_build_env()
     prepare_source_dependencies(root, ("ui-tui", "web"), env=env)
     first = _events(root)
@@ -222,31 +242,39 @@ def test_preparation_reuses_only_the_exact_completed_workspace_union(source_chec
     assert first[0]["ci"] == "1"
     assert "esbuild" not in first[0]
     assert first[0]["npmrc"] == str(Path(os.environ["HERMES_HOME"]) / "npmrc")
-    assert (root / "node_modules/ui-tui").exists()
-    assert (root / "node_modules/web").exists()
-    assert not (root / "node_modules/apps-desktop").exists()
-    assert not (root / "node_modules/unrelated").exists()
+    # npmrc settings reach install scripts as npm did it (node-pre-gyp mirrors); credentials never do.
+    assert first[0]["mirror"] == "https://mirror.invalid/get-windows/"
+    assert first[0]["electron"] == "https://mirror.invalid/electron/"
+    assert first[0]["skipped"] == []
+    assert first[0]["leaked"] is False
+    # pnpm's store lives under the Hermes root, never the user's XDG data dir.
+    assert first[0]["store"] == str(Path(os.environ["HERMES_HOME"]) / "cache/pnpm/store")
+    assert (Path(os.environ["HERMES_HOME"]) / "cache/pnpm/store").is_dir()
+    assert (root / "ui-tui/node_modules/fixture-dep").exists()
+    assert (root / "web/node_modules/fixture-dep").exists()
+    assert not (root / "apps/desktop/node_modules").exists()
+    assert not (root / "unrelated/node_modules").exists()
 
     prepare_source_dependencies(root, ("ui-tui", "web"), env=env)
     assert _events(root) == first
     prepare_source_dependencies(root, ("ui-tui", "web", "apps/desktop"), env=env)
     assert len(_events(root)) == 2
-    assert (root / "node_modules/apps-desktop").exists()
-    assert not (root / "node_modules/unrelated").exists()
-    assert (root / "package-lock.json").read_bytes() == before
-    assert acquired == ["npm"]
+    assert (root / "apps/desktop/node_modules/fixture-dep").exists()
+    assert not (root / "unrelated/node_modules").exists()
+    assert (root / "pnpm-lock.yaml").read_bytes() == before
+    assert acquired == ["pnpm"]
 
-    # A lock failure must not fall back to npm install and rewrite the lock.
-    (root / "package-lock.json").write_text("not json", encoding="utf-8")
+    # A lock failure must not fall back to an unlocked install that rewrites the lock.
+    (root / "pnpm-lock.yaml").write_text("not yaml", encoding="utf-8")
     with pytest.raises(subprocess.CalledProcessError):
         prepare_source_dependencies(root, ("ui-tui", "web"), env=env)
-    assert (root / "package-lock.json").read_text() == "not json"
+    assert (root / "pnpm-lock.yaml").read_text() == "not yaml"
     assert len(_events(root)) == 2
-    assert acquired == ["npm"]
+    assert acquired == ["pnpm"]
 
-    # Exercise PM rather than hiding a provisioning error behind system npm.
+    # Exercise PM rather than hiding a provisioning error behind system pnpm.
     from unittest.mock import patch
-    with patch.object(pm, "ensure", side_effect=pm.InstallError("npm", "unavailable")):
+    with patch.object(pm, "ensure", side_effect=pm.InstallError("pnpm", "unavailable")):
         with pytest.raises(pm.InstallError, match="unavailable"):
             source_build_env()
     assert len(_events(root)) == 2
@@ -265,12 +293,12 @@ def test_update_builds_selected_products_after_one_union_preparation(source_prod
     build_update_products(root, desktop=desktop)
     steps = [event["step"] for event in _events(root)]
     assert steps == ["deps", "tui", "web"] + (["desktop"] if desktop else [])
-    assert acquired == ["npm"]
+    assert acquired == ["pnpm"]
     assert (root / "ui-tui/dist/entry.js").read_text() == "tui"
     assert (root / "hermes_cli/web_dist/index.html").read_text() == "web"
     assert not _web_ui_build_needed(root / "web")
-    assert (root / "node_modules/apps-desktop").exists() == desktop
-    assert not (root / "node_modules/unrelated").exists()
+    assert (root / "apps/desktop/node_modules").exists() == desktop
+    assert not (root / "unrelated/node_modules").exists()
     assert app.read_text() == ("desktop" if desktop else "previous app")
     assert not list((root / "apps/desktop").glob(".staging-*"))
 
@@ -313,7 +341,7 @@ def test_update_failure_raises_without_retries_or_replacing_live_app(source_prod
     assert isinstance(failure.value.failures[0][1], subprocess.CalledProcessError)
     # ... but it no longer skips the independent products after it (was order[:index + 1]).
     assert [event["step"] for event in _events(root)] == ["deps", "tui", "web", "desktop"]
-    assert acquired == ["npm"]
+    assert acquired == ["pnpm"]
     assert not list((root / "apps/desktop").glob(".staging-*"))
     if step == "desktop":
         # A failed desktop build never replaces the live app nor stamps it.
@@ -322,10 +350,10 @@ def test_update_failure_raises_without_retries_or_replacing_live_app(source_prod
 
 
 @pytest.mark.platforms("linux")
-@pytest.mark.parametrize("failure", ["npm-unavailable", "desktop-after-long-feature-failure"])
+@pytest.mark.parametrize("failure", ["pnpm-unavailable", "desktop-after-long-feature-failure"])
 def test_unbuilt_desktop_is_named_on_one_whole_line(source_products, monkeypatch, capsys, failure):
     # The Desktop hand-off keys on this line: the receipt follow-up is truncated and leads with
-    # whichever product failed first, and an npm acquisition failure used to escape un-named.
+    # whichever product failed first, and a pnpm acquisition failure used to escape un-named.
     import hermes_cli.main_install_repair as install_repair
     from hermes_cli.source_build import ProductBuildError, build_update_products
 
@@ -336,8 +364,8 @@ def test_unbuilt_desktop_is_named_on_one_whole_line(source_products, monkeypatch
             raise error
         return raiser
 
-    if failure == "npm-unavailable":
-        monkeypatch.setattr(pm, "ensure", fail(pm.InstallError("npm", "unavailable")))
+    if failure == "pnpm-unavailable":
+        monkeypatch.setattr(pm, "ensure", fail(pm.InstallError("pnpm", "unavailable")))
         expected = "Desktop app build owed: Node dependencies failed"
     else:
         monkeypatch.setattr(install_repair, "_install_configured_features_missing_deps",
@@ -353,7 +381,7 @@ def test_unbuilt_desktop_is_named_on_one_whole_line(source_products, monkeypatch
 @pytest.mark.platforms("linux")
 def test_desktop_dependency_failure_still_builds_the_tui_and_web_ui(source_products, capsys):
     # A host whose compiler rejects a Desktop-only native addon (node-pty on g++ 9) used to lose
-    # every frontend with it: the union npm ci failed and nothing was built.
+    # every frontend with it: the union install failed and nothing was built.
     from hermes_cli.source_build import ProductBuildError, build_update_products
 
     root, _ = source_products
@@ -362,8 +390,9 @@ def test_desktop_dependency_failure_still_builds_the_tui_and_web_ui(source_produ
     with pytest.raises(ProductBuildError) as failure:
         build_update_products(root, desktop=True)
     assert [name for name, _ in failure.value.failures] == ["desktop dependencies"]
-    assert [event["step"] for event in _events(root)] == ["deps", "tui", "web"]
-    assert not (root / "node_modules/apps-desktop").exists()
+    # pnpm may run the root's postinstall before the desktop workspace's fails; only products count.
+    assert [event["step"] for event in _events(root) if event["step"] != "deps"] == ["tui", "web"]
+    assert not (root / "apps/desktop/node_modules").exists()
     out = capsys.readouterr().out
     assert "Desktop app build owed: desktop dependencies failed" in out
     assert "hermes uninstall --gui" in out
@@ -379,7 +408,7 @@ def test_module_cli_builds_the_requested_products(source_products, desktop, monk
     # run_module exercises __main__ while substituting only tool acquisition.
     monkeypatch.delitem(sys.modules, "hermes_cli.source_build", raising=False)
     runpy.run_module("hermes_cli.source_build", run_name="__main__")
-    assert acquired == ["npm"]
+    assert acquired == ["pnpm"]
     assert (root / "hermes_cli/web_dist/index.html").is_file()
     assert (root / "apps/desktop/release/linux-unpacked/hermes").exists() == desktop
 

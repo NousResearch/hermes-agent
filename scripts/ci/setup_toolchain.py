@@ -18,7 +18,8 @@ from pm.paths import lockfile_path
 from pm.registry import walk
 from pm.store import current_target
 
-_ROOTS = {"python": ["uv"], "node": ["npm"], "all": ["npm", "uv"]}
+# npm stays beside pnpm: website/ and the sidecars are standalone npm projects.
+_ROOTS = {"python": ["uv"], "node": ["npm", "pnpm"], "all": ["npm", "pnpm", "uv"]}
 
 
 def parse_package_list(value: str) -> list[str]:
@@ -216,11 +217,21 @@ def install(args) -> None:
         })
         outputs["uv-cache-path"] = str(uv_cache_dir())
     if "npm" in names:
+        # Outside the checkout: its package.json pins pnpm (devEngines), and npm
+        # warns about that on every command run inside it.
         cache = subprocess.check_output(
             [str(binaries["npm"]), "config", "get", "cache"],
-            env=environment, text=True, encoding="utf-8", timeout=60,
+            cwd=args.home.resolve(), env=environment, text=True, encoding="utf-8", timeout=60,
         ).strip()
         outputs["npm-cache-path"] = cache
+    if "pnpm" in names:
+        # pnpm hard-links from its store only within one drive and copies across
+        # drives; on Windows its default store is on the profile's drive, not the
+        # checkout's. The runner's temp dir, which holds this home, sits beside
+        # the workspace.
+        store = args.home.resolve() / "cache" / "pnpm" / "store"
+        exported["pnpm_config_store_dir"] = store
+        outputs["pnpm-store-path"] = str(store)
     file_commands("GITHUB_ENV", exported)
     file_commands("GITHUB_OUTPUT", outputs)
     add_path(path)

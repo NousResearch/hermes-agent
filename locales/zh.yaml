@@ -1710,10 +1710,10 @@ slash:
     description: "退出 CLI（加 --delete 可同时删除会话历史）"
 cli:
   backtrack:
-    title: "↺ 回溯 — 选择之前的提示"
-    keys_hint: "↑/↓ 选择 · Enter 编辑并重新发送 · f 从此处分叉 · Esc 关闭"
-    preview_label: "提示 {number} / {total}:"
-    more_lines: "…(还有 {count} 行)"
+    title: "↺ 对话记录 — 选择要编辑的提示"
+    keys_hint: "浏览对话记录 · ↑↓/jk 滚动 · ←→/hl 提示 · ↵ 编辑 · f 分叉 · esc 返回"
+    prime_hint: "再按一次 esc 编辑上一条消息"
+    no_previous: "没有可编辑的上一条消息。"
     editing_hint: "↺ 正在编辑提示 {number} — Enter 回溯到此处并发送 · Esc Esc 取消"
     edit_cancelled: "↺ 已取消回溯;未删除任何内容。"
     rewound: "↺ 已回溯到提示 {number}(已归档 {count} 条消息);正在发送编辑内容。"
@@ -3981,3 +3981,8 @@ plan_usage:
   large_notice_limit: "大型模型：已达{name}上限（{resets}）。"
   large_notice_limit_stops: "大型模型：已达{name}上限（{resets}），在此之前无法运行。"
   large_notice_percent: "大型模型：每条消息消耗更多套餐用量。每月大型模型上限：已用 {percent}。"
+shared:
+  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  undo_rollback:
+    list: "↶ 已撤销回合中更改的文件：{files}。运行 /rollback 列出检查点并恢复其中一个。"
+    more: "另外 {count} 个"

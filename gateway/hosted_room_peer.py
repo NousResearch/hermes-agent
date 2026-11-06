@@ -96,6 +96,24 @@ def gateway_room_grant_secret(root: Path | str | None = None) -> bytes:
     return _gateway_room_grant_secret_for_home(str(Path(root).expanduser().resolve()))
 
 
+def gateway_room_grant_secret_available(root: Path | str | None = None) -> bool:
+    """Whether this installation has, or can mint, its RoomLink secret, without minting it: a
+    read-only capability probe must never create the file (``gateway_room_grant_secret`` does,
+    when a grant is first issued)."""
+    if root is None:
+        from hermes_constants import get_hermes_home
+        root = os.environ.get("HERMES_HOME") or get_hermes_home()
+    home = Path(root).expanduser().resolve()
+    path = home / _ROOM_GRANT_SECRET_FILE
+    try:
+        return len(path.read_bytes()) == 32
+    except FileNotFoundError:
+        parent = home if home.exists() else next((p for p in home.parents if p.exists()), home)
+        return os.access(parent, os.W_OK | os.X_OK)
+    except OSError:
+        return False
+
+
 def derive_room_grant_secret(api_key: str) -> bytes:
     """Domain-separate room grants from the configured API key.
 
@@ -484,6 +502,30 @@ def decode_room_grant(secret: bytes, token: str, *, permission: str, now: float 
     if not isinstance(permissions := payload.get("permissions"), list) or permission not in permissions:
         raise HostedRoomGrantError("room grant does not allow this operation")
     return payload
+
+
+def room_grant_hard_expiry(token: str, *, now: float | None = None) -> float:
+    """When a grant and every renewal of it are dead (its status horizon), read without the secret:
+    the home only schedules by it. An unreadable token counts as living the longest horizon."""
+    try:
+        claims = json.loads(_split_token(token)[0].decode("ascii"))
+        return float(claims.get("status_expires_at", claims["expires_at"]))
+    except (ValueError, KeyError, TypeError, AttributeError):  # grant/base64/JSON errors are ValueErrors
+        return clock(now) + MAX_STATUS_GRANT_TTL_SECONDS
+
+
+def room_grant_matches_scope(
+    token: str, *, room_id: str, member_id: str, home_install_id: str,
+    authority_gateway_id: str, authority_epoch: int) -> bool:
+    """Read the scope the member's revoke endpoint acts on, without authenticating the token.
+    A refused registration must never schedule revocation of a different group's grant."""
+    expected = {"room_id": room_id, "member_id": member_id, "home_install_id": home_install_id,
+                "authority_gateway_id": authority_gateway_id, "authority_epoch": authority_epoch}
+    try:
+        claims = json.loads(_split_token(token)[0].decode("ascii"))
+        return all(claims.get(key) == value for key, value in expected.items())
+    except (ValueError, TypeError, AttributeError):
+        return False
 
 
 def room_grant_needs_dispatch_refresh(token: str, *, now: float | None = None, leeway_seconds: float = 5 * 60) -> bool:

@@ -1,6 +1,6 @@
 // Type declarations for the get-windows optionalDependency.
 //
-// get-windows ships no bundled types and is an optionalDependency. `npm ci`
+// get-windows ships no bundled types and is an optionalDependency. The install
 // can skip it when its native install fails, including Linux and Windows ARM64
 // where 9.3.0 has no prebuilt, so it can legitimately be absent from
 // node_modules. Declaring the module here keeps typecheck independent of

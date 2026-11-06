@@ -7,29 +7,29 @@ pre-commit:
     - name: lint web
       root: web/
       glob: "web/**/*.{js,ts,tsx}"
-      run: npx eslint {staged_files}
+      run: pnpm exec eslint {staged_files}
 
     - name: lint bootstrap installer
       root: apps/bootstrap-installer/
       glob: "*.{js,ts,tsx}"
-      run: npx eslint {staged_files}
+      run: pnpm exec eslint {staged_files}
 
     - name: lint desktop app
       root: apps/desktop/
       glob: "*.{js,ts,tsx}"
-      run: npx eslint {staged_files}
+      run: pnpm exec eslint {staged_files}
 
     - name: lint tui
       root: ui-tui/
       glob: "*.{js,ts,tsx}"
-      run: npx eslint {staged_files}
+      run: pnpm exec eslint {staged_files}
 
     - name: lint shared
       root: apps/shared/
       glob: "*.{js,ts,tsx}"
-      run: npx eslint {staged_files}
+      run: pnpm exec eslint {staged_files}
 
     - name: lint tests
       root: tests-js/
       glob: "*.{js,ts,tsx}"
-      run: npx eslint {staged_files}
+      run: pnpm exec eslint {staged_files}

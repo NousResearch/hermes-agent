@@ -169,6 +169,29 @@ def _verify_access_token(
         phase="verify" if audit else "bearer verify", log=_log, on_unreachable=_audit_unreachable)
 
 
+#: The header Hermes Desktop's "Session token" connection presents its token in, and the provider
+#: that alone may verify it there: the deployment session token (``HERMES_DASHBOARD_SESSION_TOKEN``).
+_SESSION_TOKEN_HEADER = "x-hermes-session-token"
+_SESSION_TOKEN_PROVIDER = "session-token"
+
+
+def _session_token_header_session(request: Request):
+    """The Session for the deployment session token in ``X-Hermes-Session-Token``, or ``None``.
+
+    The gate consults it only when no bearer was sent (a bearer wins). Only the registered
+    session-token provider verifies the value (constant time), so no other provider's token opens
+    anything through this header; on the gateway's Webapp it works only where that token would
+    work alone as a bearer. ``None`` leaves the request to the cookie path exactly as before."""
+    token = request.headers.get(_SESSION_TOKEN_HEADER, "")
+    if not token:
+        return None
+    provider = next(
+        (p for p in list_session_providers() if p.name == _SESSION_TOKEN_PROVIDER), None)
+    if provider is None or not webapp_sign_in.access_token_works_alone(request, token):
+        return None
+    return provider.verify_session(access_token=token)
+
+
 def peek_session(request: Request):
     """The verified Session a request to a PUBLIC path carries, or ``None``, with the gate's own
     checks (Webapp sign-in binding, bearers only a native app was given) and none of its side
@@ -176,12 +199,14 @@ def peek_session(request: Request):
     decide how much to show; an expired or unverifiable session reads as signed out."""
     bearer = _extract_bearer(request)
     if bearer:
-        if not webapp_sign_in.token_works_alone(request, bearer):
+        if not webapp_sign_in.access_token_works_alone(request, bearer):
             return None
         access_token, provider_hint = bearer, None
     else:
         gateway = webapp_sign_in.cookie_gateway(request)
         access_token, _rt = read_session_cookies(request, gateway)
+        if not access_token and not _rt:
+            return _session_token_header_session(request)
         if not access_token or (webapp_sign_in.applies(request) and not webapp_sign_in.check(request)):
             return None
         provider_hint = read_session_provider(request, gateway)
@@ -220,6 +245,21 @@ def _session_expired_response(request: Request) -> Response:
     return response
 
 
+def _cookie_write_refusal(
+        request: Request, *, own_origin: bool, other_page: bool, has_cookies: bool) -> Response | None:
+    """The 403 for a cookie write from the wrong page, or ``None``. Where writes must come from the
+    listener's own origin, any other origin is refused. Elsewhere main's rule stands (a
+    Host-rewriting plain-HTTP proxy's page sends no Fetch Metadata and still writes), but a write
+    the browser itself says another page made is refused."""
+    if not has_cookies or request.method in _SAFE_METHODS:
+        return None
+    if own_origin and not cookie_origin_is_allowed(request):
+        return JSONResponse(status_code=403, content={"detail": _CROSS_ORIGIN_WRITE_DETAIL})
+    if other_page:
+        return JSONResponse(status_code=403, content={"detail": _OTHER_PAGE_WRITE_DETAIL})
+    return None
+
+
 async def gated_auth_middleware(
     request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
     """Engaged only when ``app.state.auth_required is True``."""
@@ -248,7 +288,7 @@ async def gated_auth_middleware(
     if bearer:
         if cookie_logout:
             return await call_next(request)
-        if not webapp_sign_in.token_works_alone(request, bearer):
+        if not webapp_sign_in.access_token_works_alone(request, bearer):
             return _unauth_response(request, reason="invalid_or_expired_session")
         try:
             bearer_session = _verify_access_token(request, access_token=bearer, audit=False)
@@ -262,16 +302,20 @@ async def gated_auth_middleware(
     gateway = webapp_sign_in.cookie_gateway(request)
     at, _rt = read_session_cookies(request, gateway)
     provider_hint = read_session_provider(request, gateway)
-    if (own_origin and (at or _rt) and request.method not in _SAFE_METHODS
-            and not cookie_origin_is_allowed(request)):
-        return JSONResponse(status_code=403, content={"detail": _CROSS_ORIGIN_WRITE_DETAIL})
-    # Elsewhere main's rule stands (a Host-rewriting plain-HTTP proxy's page sends no Fetch
-    # Metadata and still writes), but a write the browser itself says another page made is refused.
-    if other_page and (at or _rt) and request.method not in _SAFE_METHODS:
-        return JSONResponse(status_code=403, content={"detail": _OTHER_PAGE_WRITE_DETAIL})
+    refusal = _cookie_write_refusal(
+        request, own_origin=own_origin, other_page=other_page, has_cookies=bool(at or _rt))
+    if refusal is not None:
+        return refusal
     if cookie_logout:
         return await call_next(request)
     if not at and not _rt:
+        # Hermes Desktop's "Session token" connection sends the deployment session token in its
+        # own header, not as a bearer. It is tried only with no session cookie at all, so a cookie
+        # session is served exactly as before; anything else gets main's no-cookie handling.
+        header_session = _session_token_header_session(request)
+        if header_session is not None:
+            request.state.session = header_session
+            return await call_next(request)
         # No session at all: try the silent portal bounce before /login.
         auto = _auto_sso_response(request)
         return auto if auto is not None else _unauth_response(request, reason="no_cookie")

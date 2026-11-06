@@ -258,7 +258,8 @@ def _hint_pick(content: str, hunk: Hunk,
 
 
 def _select_span(content: str, pattern: str, hunk: Hunk, cursor: int, *, ordered: bool,
-                 written: tuple[Span, ...] = (), successive: bool = False) -> tuple[Optional[Span], int, Optional[str]]:
+                 written: tuple[Span, ...] = (), successive: bool = False,
+                 removed: tuple[str, ...] = ()) -> tuple[Optional[Span], int, Optional[str]]:
     """``(span, candidates, conflict)``: the one source site this hunk may edit, else
     ``(None, candidates, conflict)``.
 
@@ -298,7 +299,8 @@ def _select_span(content: str, pattern: str, hunk: Hunk, cursor: int, *, ordered
     windows, hinted = _hint_pick(content, hunk, sites)
     hint = hunk.context_hint or ''
     if hint and any(_overlaps((pos, pos + len(hint)), w)
-                    for pos in _positions(content, hint) for w in written):
+                    for pos in _positions(content, hint) for w in written) and any(
+            _consumed(line, removed) for line in pattern.split('\n') if line.strip()):
         return None, 1, "its @@ hint overlaps text an earlier hunk wrote"
     if hinted:
         ranges = _edit_ranges(content, hinted, hunk)
@@ -507,7 +509,7 @@ def _plan_hunks(content: str, hunks: list[Hunk]) -> _Plan:
                       (index < len(hunks) and changed_patterns[index] == current))
         ordered = (index == 1 and len(hunks) > 1) or successive
         span, candidates, conflict = _select_span(content, pattern, hunk, cursor, ordered=ordered,
-                                                  written=tuple(written), successive=successive)
+                                                  written=tuple(written), successive=successive, removed=tuple(removed))
         if span is not None:
             new_content, edit, error, strategy = _window_edit(content, *span, pattern, replacement)
             error = error and f"{label} not found — {error}" or (None if edit else f"{label} not found")

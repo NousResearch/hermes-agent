@@ -171,3 +171,11 @@ def test_partial_consumption_does_not_fuzzy_write_a_different_block():
     result, files = apply(source, body)
     assert not result.success
     assert files.source == source and not files.writes
+
+
+def test_newly_written_context_may_be_used_as_hint():
+    source = 'a = 1\nc = 3\n'
+    body = '@@\n-a = 1\n+a = 1\n+b = 2\n@@ b = 2 @@\n b = 2\n-c = 3\n+c = 4'
+    result, files = apply(source, body)
+    assert result.success, result.error
+    assert files.source == 'a = 1\nb = 2\nc = 4\n'

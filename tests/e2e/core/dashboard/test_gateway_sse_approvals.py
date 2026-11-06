@@ -36,7 +36,7 @@ from tests.waiting import wait_until
 pytestmark = pytest.mark.platforms("linux")  # the reaper reads /proc
 TURN_TIMEOUT = 90.0
 REPLY = "sse-approval-final-" + secrets.token_hex(4)
-TERMINAL = {"completed", "failed", "cancelled"}
+TERMINAL = {"completed", "failed", "cancelled", "interrupted"}
 
 
 def _responder(victim: Path):
@@ -221,4 +221,5 @@ def test_approval_from_the_second_client_resumes_the_streamed_turn(scenario) -> 
 def test_late_client_sees_the_run_settled_with_nothing_pending(scenario) -> None:
     run = scenario["late_settled"]
     assert run.get("status") == "completed", run
-    assert not run.get("pending_controls"), run
+    # A settled run is answered from the adapter's run record, whose pending approval is ``approval``.
+    assert not run.get("pending_controls") and "approval" not in run, run

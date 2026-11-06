@@ -34,6 +34,34 @@ fills the password through Hermes. The tool result it sees is
 `{filled_fields: 1, origin: "https://github.com"}`; the password is also
 registered with the redactor so a later page read cannot echo it back.
 
+## Native HTTP Basic authentication
+
+`browser_vault` action `fill` also handles a browser-native **HTTP Basic**
+challenge when there is no HTML password field, including a failed navigation
+showing Chromium's error page. It uses Chromium's standard CDP authentication
+flow through the existing supervised browser connection, not page JavaScript.
+The saved identifier and password are supplied together; the model sees only
+status, the bound origin and target metadata.
+
+Exactly one open page must match a saved origin. Before resolving the password,
+Hermes requires a fresh **server** Basic challenge for that exact origin and the
+top-level document request. Proxy authentication, Digest and other schemes,
+child-frame challenges and cross-origin redirects are refused. One credential
+attempt is allowed per fill, with a timeout and interception cleanup. Do not
+automatically retry a refusal: the server may impose a cooldown.
+If neither interception disable nor session detach can be confirmed, native
+fills fail closed on that supervisor until its browser connection is replaced.
+
+Chromium retains successful HTTP authentication in its browser session, just as
+with a manually completed native prompt. This is not a vault lock or a logout;
+close the browser session to discard its native authentication state.
+A refusal does not clear previously cached browser credentials or prove they
+were unused; it means this fill did not complete a newly authorized login.
+On plain HTTP, Basic authentication is not encrypted on the network; use HTTPS where the
+site supports it. Backends without the supervised CDP transport cannot perform
+native authentication. Existing HTML form, payment, address and 2FA fills are
+unchanged.
+
 ## Two-factor codes
 
 Sites that ask for a code after the password are handled the same way:

@@ -500,6 +500,11 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     # asked to confirm a card, before the backend's fill_context is entered and before any value is resolved.
     page_origin = _bound_page_origin(effective_task_id, meta, meta.kind)
     if isinstance(page_origin, dict):
+        if meta.kind == "login":
+            current = _current_page_origin(effective_task_id)
+            if not current or current.startswith("chrome-error://"):
+                from tools.browser_vault_auth import fill_native_basic
+                return json.dumps(fill_native_basic(effective_task_id, meta, backend, handle, saved_origins(meta)))
         return json.dumps(page_origin)
     if meta.kind == "payment" and not _confirm_payment_fill(meta.label, page_origin):
         return json.dumps({"success": False, "error_type": "payment_declined",
@@ -509,10 +514,14 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
         refusal = snapshot_refusal(backend, handle, meta, page_origin)
         if refusal is not None:
             return json.dumps(refusal)
-        return _fill_bound_page(backend, handle, meta, page_origin, effective_task_id)
+        filled = _fill_bound_page(backend, handle, meta, page_origin, effective_task_id)
+    if filled is None:
+        from tools.browser_vault_auth import fill_native_basic
+        return json.dumps(fill_native_basic(effective_task_id, meta, backend, handle, saved_origins(meta)))
+    return filled
 
 
-def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, effective_task_id: str) -> str:
+def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, effective_task_id: str) -> Optional[str]:
     """Inspect the page, resolve the item's secret and write it; runs inside the backend's fill_context
     after the origin guard passed."""
     from agent.redact import register_vault_redaction_value
@@ -551,6 +560,8 @@ def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, eff
         if result is not None:
             classified.append(result)
     if not classified:
+        if meta.kind == "login":
+            return None  # leave the DOM backend context before native authentication
         return json.dumps({"success": False, "error": f"No {meta.kind} form fields were found on the current page."})
 
     # ── Resolve secret and fill (secret never enters any logged string) ─────

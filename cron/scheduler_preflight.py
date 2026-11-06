@@ -105,9 +105,16 @@ def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
 
     from hermes_cli.auth import AuthError, is_rate_limited_auth_error
     try:
+        alias = _sched._cron_alias_route(str(model), cfg,
+            provider=str(job.get("provider") or ""), base_url=str(job.get("base_url") or ""))
+        if alias is not None:
+            model, requested = alias.model, alias.provider
         from hermes_cli.runtime_provider import resolve_runtime_provider
         kwargs = {"requested": requested, "target_model": model}
-        if job.get("base_url"):
+        if alias is not None:
+            kwargs["explicit_base_url"] = alias.base_url or None
+            kwargs["explicit_api_key"] = alias.api_key or None
+        elif job.get("base_url"):
             kwargs["explicit_base_url"] = job.get("base_url")
         resolve_runtime_provider(**kwargs)
     except AuthError as exc:

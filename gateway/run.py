@@ -4488,12 +4488,12 @@ def _start_gateway_housekeeping(
     from gateway.run_delivery_queue_watch import DRAIN_LABEL, DeliveryQueueWatch, wait_for_next_tick
     from gateway.run_profile_reconcile import _mcp_config_reconciler, profile_scoped_chore
     from gateway.run_housekeeping_disk import housekeeping_media_caches, maybe_post_auto_prune_prompt
+    from gateway.run_housekeeping_heartbeat import runtime_heartbeat
     chores: list[tuple[int, str, Any]] = [
-        # First every tick: re-stamp ``updated_at`` in gateway_state.json so it is a real heartbeat.
-        # ``hermes gateway status`` / ``/api/status`` warn when it ages past 2x ``interval`` with the
-        # PID alive — the thread (or a chore blocked on the loop) wedged (#113372). Runs first so a
-        # wedged chore stops the NEXT stamp instead of a slow one delaying this tick's.
-        (1, "Runtime heartbeat", _write_runtime_status_quiet)]
+        # First every tick: re-stamp gateway_state.json (``updated_at`` ages past 2x ``interval`` with the PID
+        # alive -> status warns the thread wedged, #113372) and re-publish ``active_agents`` (#122813). Runs
+        # first so a wedged chore stops the NEXT stamp instead of a slow one delaying this tick's.
+        (1, "Runtime heartbeat", lambda: runtime_heartbeat(runner))]
     if adapters is not None or runner is not None:
         # Restart-safe cron workers run outside the gateway cgroup and queue their final send for
         # whichever gateway is live; drained here (not the scheduler tick) so external providers get it too.

@@ -11,11 +11,12 @@ needs confirmation, ``dangerous`` is blocked and ``--force`` does NOT override.
 from __future__ import annotations
 
 import ast
+import json
 import os
 import subprocess
 from datetime import datetime, timezone, UTC
 from pathlib import Path
-from typing import Iterator, List, Optional, Tuple
+from typing import Iterable, Iterator, List, Optional, Tuple
 
 from tools.plugin_guard_context import (
     STEP_DOWN, catalog_cap, is_agent_facing, is_authorized_keys_prose, is_base64_archive_roundtrip,
@@ -29,7 +30,8 @@ from tools.skills_guard import (
     Finding, ScanResult, SUSPICIOUS_BINARY_EXTENSIONS, _determine_verdict, format_scan_report,
     scan_file)
 
-PLUGIN_SCANNER_VERSION = "plugin-guard-v12"
+PLUGIN_SCANNER_VERSION = "plugin-guard-v13"
+PORTABLE_PLUGIN_SCHEMA = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
 
 # Never scanned: VCS internals, caches, vendored envs.
 EXCLUDED_DIRS = {
@@ -115,15 +117,107 @@ MAX_PLUGIN_SINGLE_FILE_KB = 1024       # 1MB single file
 _BYTECODE_SUFFIXES = (".pyc", ".pyo")
 
 
-def _walk(plugin_dir: Path) -> Iterator[tuple[Path, str]]:
-    """Yield (path, "a/b/c" relative path) for every non-excluded entry under plugin_dir."""
-    for f in plugin_dir.rglob("*"):
+def _walk(plugin_dir: Path, relative_paths: Iterable[str] | None = None) -> Iterator[tuple[Path, str]]:
+    """Yield (path, relative path) for every in-scope, non-excluded plugin entry."""
+    if relative_paths is None:
+        candidates = plugin_dir.rglob("*")
+    else:
+        scoped: list[Path] = []
+        for relative in sorted(relative_paths):
+            path = Path(relative)
+            if not path.is_absolute() and ".." not in path.parts:
+                scoped.append(plugin_dir / path)
+        candidates = iter(scoped)
+    for f in candidates:
         try:
             rel_parts = f.relative_to(plugin_dir).parts
         except ValueError:
             continue
         if not any(part in EXCLUDED_DIRS for part in rel_parts):
             yield f, "/".join(rel_parts)
+
+
+def _mcp_local_reference_paths(plugin_dir: Path, servers: dict[str, object]) -> set[str]:
+    """Files named by a portable package's MCP launch entries, constrained to the plugin root."""
+    root = plugin_dir.resolve()
+    referenced: set[str] = set()
+
+    def _resolve(value: str, base: Path) -> Path | None:
+        raw = value.strip()
+        if raw.startswith("-") and "=" in raw:
+            raw = raw.split("=", 1)[1]
+        raw = raw.replace("${PLUGIN_ROOT}", str(plugin_dir))
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            candidate = base / candidate
+        try:
+            resolved = candidate.resolve()
+        except (OSError, RuntimeError):
+            return None
+        return resolved if resolved.is_relative_to(root) else None
+
+    for server in servers.values():
+        if not isinstance(server, dict):
+            continue
+        base = root
+        cwd = server.get("cwd")
+        if isinstance(cwd, str) and (resolved_cwd := _resolve(cwd, plugin_dir)) is not None:
+            if resolved_cwd.is_dir():
+                base = resolved_cwd
+        values = [server.get("command")]
+        args = server.get("args")
+        if isinstance(args, list):
+            values.extend(args)
+        for value in values:
+            if not isinstance(value, str):
+                continue
+            resolved = _resolve(value, base)
+            if resolved is None or not resolved.is_file():
+                continue
+            referenced.add(resolved.relative_to(root).as_posix())
+    return referenced
+
+
+def _portable_plugin_paths(plugin_dir: Path) -> set[str] | None:
+    """Return files a portable Agent Plugin can load, or ``None`` for a native plugin."""
+    native_manifests = (plugin_dir / "plugin.yaml", plugin_dir / "plugin.yml")
+    if any(path.exists() or path.is_symlink() for path in native_manifests):
+        return None
+    manifest_path = plugin_dir / "plugin.json"
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        return None
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(manifest, dict) or manifest.get("$schema") != PORTABLE_PLUGIN_SCHEMA:
+        return None
+
+    paths = {"plugin.json"}
+    skills_root = plugin_dir / "skills"
+    if skills_root.is_symlink():
+        paths.add("skills")
+    elif skills_root.is_dir():
+        paths.update(
+            path.relative_to(plugin_dir).as_posix()
+            for path in skills_root.rglob("*")
+            if path.is_file() or path.is_symlink()
+        )
+
+    mcp_path = plugin_dir / "mcp.json"
+    if not mcp_path.exists() and not mcp_path.is_symlink():
+        return paths
+    paths.add("mcp.json")
+    if mcp_path.is_symlink():
+        return paths
+    try:
+        mcp_config = json.loads(mcp_path.read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return paths
+    servers = mcp_config.get("mcpServers") if isinstance(mcp_config, dict) else None
+    if not isinstance(servers, dict):
+        return paths
+    return paths | _mcp_local_reference_paths(plugin_dir, servers)
 
 
 def _finding(pattern_id: str, severity: str, category: str, file: str, match: str, description: str) -> Finding:
@@ -328,22 +422,28 @@ def _tracked_bytecode(plugin_dir: Path) -> set[str]:
     return {os.fsdecode(p) for p in out.split(b"\0") if p}
 
 
-def _bytecode_findings(plugin_dir: Path) -> list[Finding]:
+def _bytecode_findings(plugin_dir: Path, relative_paths: Iterable[str] | None = None) -> list[Finding]:
     """Tracked bytecode anywhere, plus bytecode outside ``__pycache__`` (CPython 3 never writes it
     there, so it was shipped even when the tree is not a checkout)."""
-    loose = {rel for f, rel in _walk(plugin_dir) if rel.endswith(_BYTECODE_SUFFIXES) and f.is_file()}
+    scoped = None if relative_paths is None else set(relative_paths)
+    loose = {rel for f, rel in _walk(plugin_dir, scoped)
+             if rel.endswith(_BYTECODE_SUFFIXES) and f.is_file()}
+    tracked = _tracked_bytecode(plugin_dir)
+    if scoped is not None:
+        tracked.intersection_update(scoped)
     return [_finding("bytecode_file", SEVERITY_REMAP["binary_file"], "structural", rel, "committed bytecode",
                      "committed Python bytecode runs in place of the scanned source (catalog rule 17)")
-            for rel in sorted(loose | _tracked_bytecode(plugin_dir))]
+            for rel in sorted(loose | tracked)]
 
 
-def _check_plugin_structure(plugin_dir: Path) -> list[Finding]:
+def _check_plugin_structure(plugin_dir: Path, relative_paths: Iterable[str] | None = None) -> list[Finding]:
     """Structural checks sized for plugin repositories."""
-    findings: list[Finding] = _bytecode_findings(plugin_dir)
+    scoped = None if relative_paths is None else set(relative_paths)
+    findings: list[Finding] = _bytecode_findings(plugin_dir, scoped)
     file_count = 0
     total_size = 0
     resolved_root = plugin_dir.resolve()
-    for f, rel in _walk(plugin_dir):
+    for f, rel in _walk(plugin_dir, scoped):
         if f.is_symlink():
             file_count += 1
             try:
@@ -384,8 +484,9 @@ def scan_plugin(plugin_dir: Path, source: str = "") -> ScanResult:
     """Scan a plugin directory (typically the temp clone); every external plugin is ``community`` trust."""
     all_findings: list[Finding] = []
     if plugin_dir.is_dir():
-        all_findings.extend(_check_plugin_structure(plugin_dir))
-        for f, rel in sorted(_walk(plugin_dir)):
+        portable_paths = _portable_plugin_paths(plugin_dir)
+        all_findings.extend(_check_plugin_structure(plugin_dir, portable_paths))
+        for f, rel in sorted(_walk(plugin_dir, portable_paths)):
             if f.is_file() and not f.is_symlink():
                 all_findings.extend(_filter_findings(scan_file(f, rel_path=rel), rel, f))
     verdict = _determine_verdict(all_findings)

@@ -20,8 +20,10 @@ For baseline diagnostics, use case-sensitive substring matching on the entire
 diagnostic: if `empty search text` appears, classify as `UNMAPPED`. Otherwise,
 a substring matching numeric `ambiguous (N matches)` or
 `Found N matches for old_string` with N >= 2 maps to `AMBIGUOUS` before any
-`not found` substring. Otherwise, `not found` or
-`Could not find a match for old_string` maps to `NOT_FOUND`;
+`not found` label. Otherwise, map to `NOT_FOUND` only if the complete diagnostic
+is `Could not find a match for old_string in the file`, or consists of a
+`hunk N (no hint) not found` label, where N is decimal, followed by ` — ` and
+that exact message. Do not match arbitrary `not found` substrings;
 every other diagnostic is `UNMAPPED`. UNMAPPED is a finding, not either refusal
 code. Do not infer a count from the input to reinterpret a production error.
 
@@ -34,8 +36,12 @@ unterminated line. In particular `b'a\n'` has one line, not a second empty
 unterminated line. The grammar rejects empty files and an empty unterminated
 suffix. Untouched pairs are copied byte-for-byte. Deleted pairs vanish
 including their terminator; each added replacement line has the file style's
-terminator, even when replacing an unterminated final line. This is the explicit
-contract for this narrow domain, not an observation about the baseline.
+terminator. For now, replacing an unterminated final line is OUT_OF_DOMAIN:
+the assignment requires a separate unterminated class and file-style
+replacement terminators, but the upstream contract does not settle whether a
+replacement must add the missing terminator. This restricted grammar retains
+unterminated-file cases whose selected line is terminated, and deletion of an
+unterminated final line. Expand only after that EOF policy is resolved.
 
 ## Generator-owned closed grammar
 
@@ -56,6 +62,9 @@ contains a newline byte. The three search cardinalities are 0, 1, or 2+
 physical winning-tier whole-line candidates. Duplicate blank lines are generated as
 ordinary candidates. Matching first selects byte-exact lines; only if there are
 none, select lines using the one fixed normalization pair `a b` ≡ `a\tb`.
+For replace cases, if any winning-tier candidate is unterminated, the case is
+OUT_OF_DOMAIN, even when the tier is ambiguous. If no candidate wins, or all
+winning candidates are terminated, this restriction does not exclude it.
 There are no other normalization equivalences in this language. The generator
 produces no substring candidate.
 That is essential: absence of a whole-line match is not sufficient to prove a
@@ -77,17 +86,21 @@ the oracle. Generator assertions validate the grammar and tags from actual
 bytes; every generated case must be independently accepted by the oracle and
 must not return `OUT_OF_DOMAIN`. Count cases per rule and tag combination;
 require nonzero count for every advertised feasible in-domain class and publish
-the seed and counts. Rule 4 has no generated in-domain class in this version;
+the seed and counts. Seed each feasible combination with at least one enumerated
+case before random sampling; missing any feasible class fails the run. Rule 4 has no generated in-domain class in this version;
 record its count as zero rather than fabricating coverage. Compare production outcome and exact resulting file bytes;
-compare site from a unified diff only when it has exactly one removed line:
-initialize a zero-based original cursor from the hunk's `-start` minus one;
+compare site from a unified diff only as a consistency check derived from output
+bytes, not independent evidence of the planner's internal site. Require exactly
+one framed removed line; initialize a zero-based original cursor from the
+`-start` of the unified-diff hunk containing that line minus one;
 for every removed line record its cursor *before* advancing; advance the
 cursor after context and removed lines, not additions. The removed line's
 recorded cursor gives `(cursor,cursor+1)` only if the removed payload, including
-its terminator or absence thereof, equals the complete original line pair at
-that cursor, and that pair's content occurs at exactly one original line index.
-If the diff has multiple removals, omits the change, fails either check, or the
-content repeats, report
+its terminator, equals the complete original line pair at that cursor, and that
+pair's content occurs at exactly one original line index. An unterminated
+removed line cannot be framed reliably because the diff has no missing-newline
+marker; report site comparison unavailable. If the diff has multiple removals,
+omits the change, fails either check, or the content repeats, report
 site comparison unavailable,
 not a pass. A production
 difference is a finding, never a
@@ -108,8 +121,8 @@ For this grammar, enumerate all exact whole-line candidates globally; if none,
 enumerate candidates under the fixed normalization pair. No
 candidates gives `REFUSE(NOT_FOUND)`; multiple gives `REFUSE(AMBIGUOUS)`;
 exactly one gives `WRITE` using the splice above. There is no cursor or hint.
-A nonempty replacement always creates exactly one terminated line. Replacements
-with content equal to search are excluded. The initial grammar does not cover Unicode, even
+A present `+` line, including a blank one, creates exactly one terminated
+line. Replacements with content equal to search are excluded. The initial grammar does not cover Unicode, even
 though a later expansion may introduce a fixed normalization list after its
 semantics are proven. Blank search is allowed and uses identical cardinality.
 
@@ -122,7 +135,7 @@ is WRITE; `R(code)` is REFUSE and leaves F unchanged; `OOD` is OUT_OF_DOMAIN.
 Each example is independently runnable against the real planner after adding
 the wrapper. Examples tagged OOD test membership, not planner correctness.
 
-### 1. Consumed provenance and newline preservation
+### 1. Consumed provenance and terminator policy
 
 In-domain: one hunk; exact line splice and per-line terminators as above.
 Multi-hunk provenance and written-context anchors are not covered (no
@@ -130,7 +143,7 @@ independent bounded model yet). A final unterminated line is its own class.
 
 * F=`b'a\nold\ntail\n'`; P=`b'-old\n+new\n'` → W((1,2), `b'a\nnew\ntail\n'`).
 * F=`b'a\r\nold\r\ntail\r\n'`; same P → W((1,2), `b'a\r\nnew\r\ntail\r\n'`).
-* F=`b'a\nold'`; same P → W((1,2), `b'a\nnew\n'`).
+* F=`b'a\nold'`; same P → OOD (unterminated final replacement); oracle does not write.
 
 ### 2. Global strict tier before lower tiers
 
@@ -196,8 +209,7 @@ Direct execution of `parse_v4a_patch` and `apply_v4a_operations` at the base,
 using a memory-backed reader/writer, produced these disagreements for the
 hand-computed **in-domain** examples above. `site` was not independently
 observable from the public apply result, so only outcomes and bytes were
-compared. Rule 1's unterminated-final example writes `b'a\nnew'`, not
-`b'a\nnew\n'`. Rule 6's ordinary deletion writes `b'a\n\nb\n'`, not
+compared. Rule 6's ordinary deletion writes `b'a\n\nb\n'`, not
 `b'a\nb\n'`; its unique blank deletion refuses with `empty search text`, and
 its duplicate blank deletion also refuses with `empty search text`, not the
 specified ambiguous category. A separate probe used input `b'a\n'`, search

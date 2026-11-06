@@ -1,6 +1,6 @@
 name: proofops
 repo: https://github.com/rasrobo/proofops
-sha: 359e05945e582ba7fc6e958fb705070803901d7e
+sha: b987b51e4f318b5aa486501010a4cfc47152bc6c
 description: >-
   Verification for completion claims. Hermes runs a declared plan of read-only checks against a live service, a deliverable or a system of record, and gets a receipt: each check's actual result, what it proves, and - printed on every receipt - what passing does NOT prove. Fourteen check types: HTTP status/JSON/body/headers, command exit codes, file and directory inventory, checksums, CSV shape, image dimensions, PDF pages/size/text, and read-only SQLite queries. Receipts are sealed with a sha256 digest and can be HMAC-signed, so editing a verdict after the run is detectable; `verify` reports valid / tampered / unsealed / needs-key. A check that could not run is reported NOT RUN - never a green tick - and the receipt carries claimable: false. Refuses undeclared origins, undeclared commands, unknown check types, and paths outside the plan's allowed_paths. Disclosure - network: HTTP GET only, against origins the plan names; shell: exactly the argv a plan lists, and only with operator opt-in; reads: files and SQLite databases only inside declared paths, SQLite opened read-only and single-statement; storage: receipts under the plugin's own data directory containing observed values, hostname, cwd and command output; credentials: none read or stored, signing is CLI-only; no telemetry; no network access at import or registration.
 maintainer: rasrobo

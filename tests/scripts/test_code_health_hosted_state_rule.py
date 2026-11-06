@@ -89,6 +89,31 @@ _RUNTIME_WRITES = {
     "loop": "for i in range(1):\n    X = {}\n",
     "while_body": "while True:\n    X = []\n    break\n",
     "match_body": "match 1:\n    case 1:\n        X = set()\n",
+    # an instance copy counts only when it is a fresh value assigned before any use, on every path
+    "class_copy_is_an_alias": "class C:\n    values = {}\n    def __init__(self):\n        self.values = C.values\n"
+                              "    def put(self, v):\n        self.values['v'] = v\n",
+    "class_copy_is_self_alias": "class C:\n    values = {}\n    def __init__(self):\n        self.values = self.values\n"
+                                "    def put(self, v):\n        self.values['v'] = v\n",
+    "class_write_before_copy": "class C:\n    values = {}\n    def __init__(self):\n        self.values['v'] = 1\n"
+                               "        self.values = {}\n",
+    "class_read_before_copy": "class C:\n    values = []\n    def __init__(self):\n        self.values.append(1)\n"
+                              "        self.values = []\n",
+    "class_early_return_before_copy": "class C:\n    values = {}\n    def __init__(self, skip=False):\n"
+                                      "        if skip:\n            return\n        self.values = {}\n"
+                                      "    def put(self, v):\n        self.values['v'] = v\n",
+    "class_conditional_init": "class C:\n    values = {}\n    if FLAG:\n        def __init__(self):\n"
+                              "            self.values = {}\n    def put(self, v):\n        self.values['v'] = v\n",
+    # a walrus through ``global`` rebinds the module name
+    "global_walrus": "X = None\ndef put(v):\n    global X\n    return (X := v)\n",
+    # a method defined under a class-body ``if``/``try`` is a method
+    "class_method_under_if": "class C:\n    values = {}\n    if True:\n        def put(self, v):\n"
+                             "            self.values['v'] = v\n",
+    "class_method_under_try": "class C:\n    values = []\n    try:\n        def put(self, v):\n"
+                              "            self.values.append(v)\n    except Exception:\n        pass\n",
+    # the defining module cannot see a write through a name imported from it: it is reported here
+    "imported_object_item": "from state import X\ndef put(v):\n    X['v'] = v\n",
+    "imported_object_method": "from state import X\ndef put(v):\n    X.append(v)\n",
+    "imported_object_attribute": "from state import X as Y\ndef put(v):\n    Y.value = v\n",
 }
 
 
@@ -148,6 +173,14 @@ def test_declarations_are_recognised_by_api_identity(src):
     "_T = {'a': 1}\nfor k in ('b',):\n    _T[k] = 2\n",
     # an imported module's state is judged in that module
     "import os\ndef f(v):\n    os.environ['X'] = v\n",
+    # an instance copy that is a fresh value, made first: per instance
+    "class C:\n    values = {}\n    def __init__(self):\n        super().__init__()\n        self.values = dict(C.values)\n"
+    "    def put(self, v):\n        self.values['v'] = v\n",
+    "class C:\n    values = []\n    def __init__(self):\n        self.values = [x for x in C.values]\n"
+    "    def put(self, v):\n        self.values.append(v)\n",
+    # reading a name imported from another module, or a walrus local to the function
+    "from state import X\ndef get(k):\n    return X.get(k)\n",
+    "def put(v):\n    return (X := v)\n",
 ])
 def test_declared_and_import_time_state_passes(src):
     assert not _hits(src)

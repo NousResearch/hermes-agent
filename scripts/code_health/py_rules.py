@@ -97,6 +97,9 @@ class _Binder(ast.NodeVisitor):
         self.module = self.scope = _Scope(kind="module")
         self.loads: dict[int, _Scope] = {}
         self.relative: set[str] = set()  # targets bound by a relative import (package unknown)
+        self.from_names: set[str] = set()  # targets bound by ``from m import X`` (an object of m)
+        self.import_lines: dict[str, int] = {}  # first line binding each from-import target
+        self.module_aliases: set[str] = set()  # targets bound by ``import m.n as a`` (a module)
 
     def _bind(self, name: str, scope: _Scope | None = None) -> None:
         (scope or self.scope).owner(name).others.add(name)
@@ -116,6 +119,8 @@ class _Binder(ast.NodeVisitor):
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
             top = alias.name.split(".")[0]
+            if alias.asname:
+                self.module_aliases.add(alias.name)
             self._import(alias.asname or top, alias.name if alias.asname else top)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
@@ -125,6 +130,8 @@ class _Binder(ast.NodeVisitor):
                 target = f"{node.module}.{alias.name}" if node.module else alias.name
                 if node.level:
                     self.relative.add(target)
+                self.from_names.add(target)
+                self.import_lines.setdefault(target, node.lineno)
                 self._import(alias.asname or alias.name, target)
 
     def visit_Name(self, node: ast.Name) -> None:
@@ -222,6 +229,10 @@ def canonical_tree(tree: ast.Module) -> ast.Module:
             root.imported, root.relative = True, node.relative
             for part in parts[1:]:
                 expr = ast.Attribute(expr, part, ast.Load())
+            # ``X`` from ``from m import X``: the outermost node is the imported object itself,
+            # spelled ``m.X``, and remembers the import line for rules that report the binding.
+            if target in binder.from_names and target not in binder.module_aliases:
+                expr.from_import = binder.import_lines.get(target, node.lineno)
             return ast.copy_location(expr, node)
 
     return ast.fix_missing_locations(_Spell().visit(tree))

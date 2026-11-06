@@ -904,13 +904,13 @@ class TestRunOnMCPLoopInterrupts:
 
         def _interrupt_soon():
             time.sleep(0.02)
-            set_interrupt(True, waiter_tid)
+            set_interrupt(True, waiter_tid, reason="terminal batch timeout")
 
         interrupter = threading.Thread(target=_interrupt_soon, daemon=True)
         interrupter.start()
 
         try:
-            with pytest.raises(InterruptedError):
+            with pytest.raises(InterruptedError, match="terminal batch timeout"):
                 _mcp_loop._run_on_mcp_loop(_slow_call(), timeout=10)
 
             deadline = time.time() + 2

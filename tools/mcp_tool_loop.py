@@ -148,7 +148,7 @@ def _running_loop() -> Optional[asyncio.AbstractEventLoop]:
 def _run_on_mcp_loop(coro_or_factory, timeout: float = 30):
     """Schedule a coroutine (or zero-arg factory — avoids leaking a never-awaited coroutine when the
     loop is down) on the MCP loop and block until done, polling so user interrupts are honored."""
-    from tools.interrupt import is_interrupted
+    from tools.interrupt import get_interrupt_reason, is_interrupted
     from agent.async_utils import safe_schedule_threadsafe
 
     loop = _running_loop()
@@ -168,7 +168,7 @@ def _run_on_mcp_loop(coro_or_factory, timeout: float = 30):
     while True:
         if is_interrupted():
             future.cancel()
-            raise InterruptedError("User sent a new message")
+            raise InterruptedError(get_interrupt_reason() or "MCP call interrupted")
         remaining = 0.1 if deadline is None else deadline - time.monotonic()
         if remaining <= 0:
             future.cancel()

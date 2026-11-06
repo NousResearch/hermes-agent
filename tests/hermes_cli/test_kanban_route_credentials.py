@@ -30,6 +30,10 @@ from hermes_cli.kanban_db_connect import connect
 
 PIN_MODEL = "deepseek/deepseek-v4.1-flash-1017"
 
+#: A prefix-valid but fake OpenRouter value. Concatenated so a secret scanner does not read this
+#: test file as holding a credential; the prefix matters because the registry ladder validates it.
+OR_SHAPED = "sk-" + "or-v1-fixture-not-a-real-key"
+
 
 def _write_profile(home: Path, name: str, dotenv: str = "", config: str = "model: {}\n") -> Path:
     profile = home / "profiles" / name
@@ -265,6 +269,25 @@ def _payload_for(profile: str, provider: str) -> dict:
         return rrc.probe_payload(provider)
 
 
+def _worker_openrouter_resolves(profile: str) -> bool:
+    """What the routed worker itself resolves for an OpenRouter pin in *profile*'s home.
+
+    The cross-check every openrouter regression test asserts against: ``agent_init`` reads
+    ``resolve_provider_client(provider, model, raw_codex=True)``, so ``(None, None)`` here is the
+    ``ProviderNotConfiguredError`` crash, and a client is a card that starts. Only the transport is
+    stubbed — credential resolution (pool, then ``OPENROUTER_API_KEY``) is the code under test, and
+    building the real HTTP client would import the host's bootstrap and touch the live install.
+    """
+    from unittest import mock
+
+    from agent import auxiliary_client as aux
+
+    with _profile_home(profile), mock.patch.object(aux, "_create_openai_client",
+                                                   lambda **kwargs: object()):
+        client, _model = aux.resolve_provider_client("openrouter", model=PIN_MODEL, raw_codex=True)
+    return client is not None
+
+
 def test_model_key_env_pointer_is_a_credential(fleet, monkeypatch):
     """A Desktop-saved ``model.key_env`` pointer is read by runtime, so the probe must see it."""
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
@@ -320,27 +343,61 @@ def test_keyless_local_provider_is_admitted(fleet, monkeypatch):
     assert creds["api_key"] == LMSTUDIO_NOAUTH_PLACEHOLDER
 
 
-def test_a_malformed_key_does_not_count_as_a_credential(fleet, monkeypatch):
-    """Runtime skips a key whose shape is wrong (#93593); the probe must not call it present."""
+def test_a_malformed_key_is_admitted_because_the_worker_accepts_it(fleet, monkeypatch):
+    """Round-2 review: the openrouter rung mirrors ``_try_openrouter``, which applies no prefix rule.
+
+    A non-empty value is handed to the client, so refusing a prefix-invalid key would park a card
+    the worker actually starts: it then fails at the provider with a 401 that names itself, which
+    is not the init crash this gate exists to prevent.
+    """
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     _write_profile(fleet, "malformed", "OPENROUTER_API_KEY=not-an-openrouter-key\n")
 
     payload = _payload_for("malformed", "openrouter")
-    assert payload["present"] is False, payload
-    assert rrc.route_credential_refusal("malformed", "openrouter") is not None
+    assert payload["present"] is True, payload
+    assert payload["sources"] == ["env:OPENROUTER_API_KEY"]
+    assert rrc.route_credential_refusal("malformed", "openrouter") is None
+    assert _worker_openrouter_resolves("malformed") is True
 
 
-def test_a_legacy_openai_key_shaped_like_openrouter_counts(fleet, monkeypatch):
-    """``OPENAI_API_KEY`` is a legacy OpenRouter home; runtime accepts it when it is sk-or-shaped."""
+def test_a_legacy_openai_key_is_not_a_credential_for_the_routed_worker(fleet, monkeypatch):
+    """Round-2 review: ``OPENAI_API_KEY`` is not a home for an OpenRouter pin.
+
+    ``_try_openrouter`` reads a pool entry and ``OPENROUTER_API_KEY`` only, so counting the legacy
+    home admitted a home whose worker then resolved no client at all.
+    """
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
-    _write_profile(fleet, "legacy", "OPENAI_API_KEY=sk-or-v1-legacy-fixture\n")
+    _write_profile(fleet, "legacy", f"OPENAI_API_KEY={OR_SHAPED}\n")
 
     payload = _payload_for("legacy", "openrouter")
-    assert payload["present"] is True, payload
-    assert "env:OPENAI_API_KEY" in payload["sources"]
-    assert rrc.route_credential_refusal("legacy", "openrouter") is None
+    assert payload["present"] is False, payload
+    assert "env:OPENAI_API_KEY" not in payload["sources"]
+    assert rrc.route_credential_refusal("legacy", "openrouter", PIN_MODEL) is not None
+    assert _worker_openrouter_resolves("legacy") is False
+
+
+def test_openrouter_ignores_the_model_key_env_pointer(fleet, monkeypatch):
+    """Round-2 review: a ``key_env`` pointer is a registry-provider rung, not an OpenRouter one.
+
+    ``_resolve_api_key_provider_secret`` reads it; the routed worker goes through
+    ``_try_openrouter``, which does not — so admitting this home was the same crash.
+    """
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    _write_profile(
+        fleet, "orpointed",
+        f"MY_OR_KEY={OR_SHAPED}\n",
+        "model:\n  default: deepseek/deepseek-v4.1-flash-1017\n  provider: openrouter\n"
+        "  key_env: MY_OR_KEY\n",
+    )
+
+    payload = _payload_for("orpointed", "openrouter")
+    assert payload["present"] is False, payload
+    assert payload["sources"] == []
+    assert rrc.route_credential_refusal("orpointed", "openrouter", PIN_MODEL) is not None
+    assert _worker_openrouter_resolves("orpointed") is False
 
 
 def test_an_env_backed_pool_row_without_its_key_is_not_a_credential(fleet, monkeypatch):

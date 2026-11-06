@@ -14,13 +14,20 @@ short-lived child process with the assignee's ``HERMES_HOME`` and the same scrub
 holds credential material for that provider — and never constructs a client: no network, no OAuth
 refresh, no single-use grant rotation, no pool write. A gate must not spend what it is measuring.
 
-**Decidable** providers are the ones whose credential ladder is exactly ``model.key_env`` → the
-registry's ``api_key_env_vars`` → the credential pool (the order
-``auth._resolve_api_key_provider_secret`` reads), plus ``openrouter`` whose runtime adds the legacy
-``OPENAI_API_KEY`` home. The probe mirrors that ladder read-only and counts only a *usable* secret
-— the same ``has_usable_secret`` / key-prefix rules runtime applies, so a malformed key in ``.env``
-is not mistaken for a credential. ``model.api_key`` in ``config.yaml`` is **not** a source: the
-registry ``api_key`` runtime never reads it (only an Azure-base-url anthropic route does).
+**Decidable** providers are exactly two shapes, each mirrored from the resolver its worker really
+runs:
+
+* ``openrouter``: the routed client path (``agent/agent_init.py::_routed_client_kwargs`` →
+  ``resolve_provider_client(raw_codex=True)`` → ``auxiliary_client._try_openrouter``) reads a
+  credential-pool entry with a runtime key, then ``_scoped_key_env("OPENROUTER_API_KEY")`` — and
+  nothing else. No ``model.key_env`` pointer, no ``OPENAI_API_KEY`` home, no prefix validation:
+  any non-empty value is handed to the client.
+* every other registry provider declared ``auth_type: api_key``: the ladder
+  ``auth._resolve_api_key_provider_secret`` reads — ``model.key_env`` (Desktop-saved pointer) → the
+  registry's ``api_key_env_vars`` (rotation siblings included) → the credential pool — with the
+  ``has_usable_secret`` and key-prefix rules runtime applies, so a malformed key in ``.env`` is not
+  mistaken for a credential. ``model.api_key`` in ``config.yaml`` is **not** a source: the registry
+  ``api_key`` runtime never reads it (only an Azure-base-url anthropic route does).
 **Everything else is undecidable here and admitted**: OAuth and external-process providers resolve
 a grant from the global-root pool or the subprocess's own login store, anthropic also reads the
 Claude Code / Hermes OAuth store, the local no-auth providers (``lmstudio``, ``actual``) are served
@@ -155,9 +162,9 @@ def provider_shape(provider: Optional[str]) -> tuple[str, tuple[str, ...], str]:
     """``(kind, api_key_env_vars, why)`` for a pinned provider id.
 
     ``kind == "api_key"`` only where "no usable credential material" is a *complete* explanation
-    for the worker's death: OpenRouter (whose runtime reads its env var plus the legacy
-    ``OPENAI_API_KEY`` home and the pool) and registry providers declared ``auth_type: api_key``
-    whose ladder is ``model.key_env`` → registry env vars → pool. A registry row is not enough on
+    for the worker's death: OpenRouter (whose routed client reads a pool entry and its own env var,
+    nothing else) and registry providers declared ``auth_type: api_key`` whose ladder is
+    ``model.key_env`` → registry env vars → pool. A registry row is not enough on
     its own — ``anthropic`` is declared ``api_key`` but also resolves the Claude Code / Hermes OAuth
     token, and ``lmstudio``/``actual`` are served a no-auth placeholder. Those, provider-owned
     secret resolution, OAuth, external-process and custom routes all answer ``"undecidable"`` with
@@ -223,8 +230,58 @@ def _local_endpoint_bypass() -> str:
     return ""
 
 
+def _openrouter_sources() -> list[str]:
+    """Mirror ``auxiliary_client._try_openrouter`` read-only — the resolver the routed worker runs.
+
+    ``_routed_client_kwargs`` calls ``resolve_provider_client(provider, model=…, raw_codex=True)``
+    with no explicit key, and for ``openrouter`` that is ``_try_openrouter``, whose entire
+    credential list is: a credential-pool entry with a runtime API key, then
+    ``_scoped_key_env("OPENROUTER_API_KEY")``. It does **not** read the ``model.key_env`` pointer,
+    the legacy ``OPENAI_API_KEY`` home, or the registry prefix rules — any non-empty value is
+    handed to the OpenRouter client. Counting those extra rungs here admitted homes whose worker
+    then died at init (or silently took the init fallback chain, breaking the pin), so this rung
+    mirrors the worker exactly: present means the worker gets a key, not that some other resolver
+    would.
+
+    Read-only: ``read_credential_pool`` never seeds, heals or persists (``load_pool`` would ingest
+    an env key into the pool as a side effect of merely asking). An ``env:<VAR>`` row is persisted
+    WITHOUT its secret and re-hydrated from that var on every load, so the row alone is not a
+    credential. A pool whose entries are all cooling still counts as present here — that is
+    provider health (t_376d9390), not a credential gap.
+    """
+    from hermes_cli.auth import read_credential_pool
+    from hermes_cli.config import get_env_value_prefer_dotenv
+
+    sources: list[str] = []
+    if (get_env_value_prefer_dotenv("OPENROUTER_API_KEY") or "").strip():
+        sources.append("env:OPENROUTER_API_KEY")
+    for row in read_credential_pool("openrouter") or []:
+        if not isinstance(row, Mapping):
+            continue
+        value = str(row.get("access_token") or row.get("runtime_api_key") or "").strip()
+        if value:
+            sources.append("auth.json")
+            break
+        source = str(row.get("source") or "")
+        if not source.startswith("env:"):
+            continue
+        env_name = source.split(":", 1)[1].strip()
+        if env_name and (get_env_value_prefer_dotenv(env_name) or "").strip():
+            sources.append(f"auth.json:{env_name}")
+            break
+    return sources
+
+
 def _usable_sources(provider: str, env_vars: Sequence[str]) -> list[str]:
-    """Mirror ``auth._resolve_api_key_provider_secret`` read-only: key_env → env vars → pool."""
+    """Mirror the worker's own credential resolution read-only for a registry ``api_key`` provider.
+
+    ``auth._resolve_api_key_provider_secret``: ``model.key_env`` → registry env vars → pool, with
+    the usable-secret / declared-prefix rules. ``openrouter`` does NOT use this ladder — its routed
+    client has its own resolver — so it takes :func:`_openrouter_sources`.
+    """
+    if provider == "openrouter":
+        return _openrouter_sources()
+
     from hermes_cli.auth import _model_level_key_env, _usable_declared_secret, read_credential_pool
     from hermes_cli.config import get_env_value_prefer_dotenv
 
@@ -248,14 +305,6 @@ def _usable_sources(provider: str, env_vars: Sequence[str]) -> list[str]:
     for env_var in candidates:
         if _usable_declared_secret(provider, get_env_value_prefer_dotenv(env_var), env_var):
             sources.append(f"env:{env_var}")
-    if provider == "openrouter":
-        # OPENAI_API_KEY is a legacy home for an OpenRouter key: runtime honours it only when it is
-        # OpenRouter-shaped and not bound to another origin by OPENAI_BASE_URL.
-        from hermes_cli.auth import looks_like_openrouter_key
-        legacy = get_env_value_prefer_dotenv("OPENAI_API_KEY")
-        if (legacy and not (get_env_value_prefer_dotenv("OPENAI_BASE_URL") or "").strip()
-                and looks_like_openrouter_key(legacy)):
-            sources.append("env:OPENAI_API_KEY")
     # ``read_credential_pool`` is a file read; ``load_pool`` would heal/ingest/persist as a side
     # effect of merely asking, which a gate must not do. An ``env:<VAR>`` row is persisted WITHOUT
     # its secret and re-hydrated from that env var on every load (``_seed_from_env``), so the row's

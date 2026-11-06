@@ -52,9 +52,13 @@ class PluginRegistration:
         return not self._disposed
 
     def dispose(self) -> None:
-        """Release this registration once; repeated disposal is harmless."""
+        """Release this registration once; repeated disposal is harmless. After the hosted boot froze the
+        registries a retained handle cannot unregister, except a supervised task's lease: its release only
+        cancels the plugin's own task (and it runs from that task's done-callback), so no registry changes."""
         if self._disposed:
             return
+        if self.kind != "background_task":
+            refuse_if_frozen("plugin registry")
         self._disposed = True
         try:
             self.release()
@@ -74,6 +78,7 @@ class PluginLedgerMixin:
 
         See #91701.
         """
+        refuse_if_frozen("plugin registry")  # backstop for every registrar, ledger-owned ones included
         registration = PluginRegistration(
             kind=kind, key=key, release=release, plugin_key=manifest_key(manifest), persistent=persistent)
         registration._on_dispose = lambda disposed: self._forget_registrations([disposed])
@@ -188,9 +193,12 @@ class PluginLedgerMixin:
     # one register() may deliberately create several closures for one hook.
 
     def _drop_fallback_hooks(self, hook_source: Optional[tuple]) -> None:
-        if hook_source is not None:
-            for handle in self._memory_hook_registrations.pop(hook_source, []):
-                handle.dispose()
+        if hook_source is None:
+            return
+        if self._memory_hook_registrations.get(hook_source):
+            refuse_if_frozen("plugin registry")  # before the pop, so a refused drop keeps the group owned
+        for handle in self._memory_hook_registrations.pop(hook_source, []):
+            handle.dispose()
 
     def _register_fallback_hook(self, context: Any, hook_source: Optional[tuple], hook_name: str,
                                 callback: Callable, *, hold_stream: bool = False) -> PluginRegistration:
@@ -226,7 +234,6 @@ class PluginLedgerMixin:
 
     def unload(self, plugin: str | PluginManifest | LoadedPlugin | None = None) -> bool:
         """Unload registrations while excluding discovery/deferred loading."""
-        refuse_if_frozen("plugin registry")
         with self._discovery_lock, _plugin_home_scope(self.home_path):
             return self._unload_scoped(plugin)
 
@@ -234,6 +241,7 @@ class PluginLedgerMixin:
         """Unload one plugin (or all when ``plugin=None``, as force rediscovery does). Every ledger registration
         — including on_unload callbacks and supervised tasks — is disposed in reverse acquisition order with
         identity-conditional inverses. Returns ``True`` when anything was found."""
+        refuse_if_frozen("plugin registry")
         unload_all = plugin is None
         if unload_all:
             target_keys = set(self._ownership_ledger) | set(self._plugins)

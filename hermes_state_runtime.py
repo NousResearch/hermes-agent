@@ -501,14 +501,14 @@ def mutate_runtime_session(db, *, epoch: int, principal_id: str, session_id: str
         _text(value)
     if type(expected_revision) is not int or expected_revision < 0:
         raise RuntimeStoreError('invalid_params')
-    from hermes_state_mutations import validate_action, apply_action
-    validate_action(operation, payload)
+    from hermes_state_mutations import validate_runtime_action, apply_action
+    # Validate the same immutable snapshot ownership discovery and the writer use.
+    payload = json.loads(_json(payload))
+    validate_runtime_action(db, operation, payload)
     if expected_generation is not None and (type(expected_generation) is not int or expected_generation < 0):
         raise RuntimeStoreError('invalid_params')
     if operation in {'delete', 'rewind', 'reset', 'branch', 'model', 'compress'} and expected_generation is None:
         raise RuntimeStoreError('invalid_params')
-    # Snapshot caller data before waiting for the writer lock.
-    payload = json.loads(_json(payload))
     key, digest = mutation_receipt_key(principal_id, session_id, request_id, operation=operation, payload=payload,
                                        expected_revision=expected_revision, expected_generation=expected_generation)
     # Generated targets must stay fixed across ownership discovery, expansion and SQLite retries.

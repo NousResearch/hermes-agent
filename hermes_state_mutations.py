@@ -55,6 +55,16 @@ def validate_action(operation, payload):
         raise RuntimeStoreError('invalid_params')
 
 
+def validate_runtime_action(db, operation, payload):
+    """Reject persisted value errors before ownership discovery or receipt preparation."""
+    validate_action(operation, payload)
+    if 'title' in payload:
+        try:
+            db.sanitize_title(payload['title'])
+        except ValueError as exc:
+            raise RuntimeStoreError('invalid_params', field='title', detail=str(exc)) from exc
+
+
 def _valid_branch_payload(payload):
     # ``through_message_id``: the physical row id of the last message the branch keeps (a stable
     # boundary, never a visible-message count); absent means the whole active transcript.

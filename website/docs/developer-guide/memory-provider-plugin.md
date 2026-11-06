@@ -296,8 +296,8 @@ first compaction with `BLOCKED_MISSING_PREREQUISITE`, so it loads the
 configured provider, initialized with `agent_context="subagent"` (`platform`,
 plus `parent_session_id` where the fork has a parent session, tells the shapes
 apart; the Feishu responder sets no platform, so it reports `cli`). A
-delegated subagent loads it only when its parent holds one: the
-children of an `--ignore-rules` session stay provider-less and fail closed at
+delegated subagent loads it only when its parent did not opt out of memory:
+the children of an `--ignore-rules` session stay provider-less and fail closed at
 compaction, as their parent does. The detached review and `/btw` forks are
 different: they are persistence-isolated (no session DB, no provider), so
 neither the compaction gate nor the prune gate applies to them. Not covered

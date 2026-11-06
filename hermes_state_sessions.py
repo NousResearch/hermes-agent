@@ -396,13 +396,9 @@ class SessionSessionsMixin:
 
     def list_session_lineage_rows(self: Any) -> list[dict[str, Any]]:
         """Read the minimal metadata used to report ids duplicated across profile stores."""
+        from hermes_state_lineage import session_lineage_rows
         with self._read_ctx() as conn:
-            columns = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
-            optional = ("parent_session_id", "end_reason", "profile_name", "session_key", "message_count")
-            projection = ", ".join(["id", "ended_at", *(name if name in columns else f"NULL AS {name}" for name in optional)])
-            return [dict(row) for row in conn.execute(
-                f"SELECT {projection} FROM sessions"
-            ).fetchall()]
+            return session_lineage_rows(conn)
 
     def set_expiry_finalized(self, session_id: str, finalized: bool = True) -> None:
         """Mirror ``SessionEntry.expiry_finalized`` so it survives a lost sessions.json.

@@ -800,11 +800,13 @@ def test_multiplex_recovery_isolates_profile_failures(tmp_path):
 
     stop = threading.Event()
     recovery_homes: list[str] = []
+    recovery_contexts: list[tuple[str, object, object]] = []
     tick_homes: list[str] = []
 
-    def _recover():
+    def _recover(*, adapters=None, loop=None):
         home = str(get_hermes_home())
         recovery_homes.append(home)
+        recovery_contexts.append((home, adapters, loop))
         if home == str(failing_home):
             raise sqlite3.OperationalError("unable to open database file")
         return 0
@@ -826,6 +828,10 @@ def test_multiplex_recovery_isolates_profile_failures(tmp_path):
             kwargs={
                 "interval": 0,
                 "profile_homes": [("failing", failing_home), ("healthy", healthy_home)],
+                "adapters": "default-adapters",
+                "loop": "event-loop",
+                "profile_adapters": {"healthy": "healthy-adapters"},
+                "default_profile": "failing",
             },
             daemon=True,
         )
@@ -836,6 +842,10 @@ def test_multiplex_recovery_isolates_profile_failures(tmp_path):
 
     assert not thread.is_alive()
     assert recovery_homes == [str(failing_home), str(healthy_home)]
+    assert recovery_contexts == [
+        (str(failing_home), "default-adapters", "event-loop"),
+        (str(healthy_home), "healthy-adapters", "event-loop"),
+    ]
     # The failing profile stays in rotation: its ledger may still hold jobs.
     assert set(tick_homes) == {str(failing_home), str(healthy_home)}
 

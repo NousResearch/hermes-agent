@@ -72,9 +72,12 @@ def _run(argv: list[str] | tuple[str, ...], deadline: float, *, encoding: str | 
 
 
 def _verify_binding(verify, *args, **kwargs):
+    # OSError belongs here: a definition the verifier cannot READ proves nothing about the installed
+    # identity, and letting it escape made discover_existing_gateway_service report a healthy service
+    # manager as unavailable (#150136).
     try:
         return verify(*args, **kwargs)
-    except (ValueError, TypeError, KeyError, AttributeError, ExpatError) as exc:
+    except (ValueError, TypeError, KeyError, AttributeError, ExpatError, OSError) as exc:
         reason = str(exc)
         raise RuntimeStartError(reason if reason in {
             "profile_mismatch", "service_account_mismatch", "service_disabled"
@@ -219,14 +222,16 @@ def _launchd(home: Path, deadline: float) -> ExistingService | None:
 
 
 def _windows(home: Path, deadline: float) -> ExistingService | None:
-    from hermes_cli.gateway_windows import _decode_schtasks_output
+    from hermes_cli.gateway_windows import _decode_schtasks_output, utf8_console_argv
     suffix = service_suffix(home)
     name = f"Hermes_Gateway{'_' + suffix if suffix else ''}"
 
     def query(refusal: str, *argv: str) -> str:
         # schtasks/whoami write the console code page, and /XML declares UTF-16 over those bytes:
         # decode like the drift check does (#116193) instead of the locale codec or raw bytes (#139083).
-        result = _run(list(argv), deadline, encoding=None)
+        # The console is UTF-8 because that page is the only one that can carry every character of a
+        # path; the OEM page replaced the rest with '?' before we ever saw the bytes (#150136).
+        result = _run(utf8_console_argv(argv), deadline, encoding=None)
         if result.returncode:
             raise RuntimeStartError(refusal)
         return _decode_schtasks_output(result.stdout or b"")

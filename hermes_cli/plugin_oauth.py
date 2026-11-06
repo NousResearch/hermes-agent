@@ -180,7 +180,9 @@ def plugin_key(plugin_dir: Path) -> str:
 
 
 def _idp_hosts(client: OAuthClient) -> str:
-    return ", ".join(dict.fromkeys(urlparse(url).hostname for url in (client.authorize_url, client.token_url)))
+    return ", ".join(dict.fromkeys(
+        host for url in (client.authorize_url, client.token_url)
+        if url and (host := urlparse(url).hostname)))
 
 
 def oauth_notice(manifest: Mapping[str, Any]) -> str:

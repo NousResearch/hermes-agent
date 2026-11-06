@@ -291,6 +291,13 @@ def _canon_repl(kind, search):
     return b"new" if search != b"new" else b"old"
 
 
+def _add_witnesses(witnesses, contents, unterminated, search, repl, final, kind, target, tier, pos, card):
+    for style in ("LF", "CRLF"):
+        key = _key(style, final, kind, target, tier, pos, card)
+        if key not in witnesses:
+            witnesses[key] = (*_render(contents, style, unterminated, search, repl), key)
+
+
 def enumerate_corpus(seed: int = SEED, sample_n: int = SAMPLE_N):
     """Exhaustive feasible classes, one enumerated witness each, then a sample."""
     rng = random.Random(seed)
@@ -339,13 +346,8 @@ def enumerate_corpus(seed: int = SEED, sample_n: int = SAMPLE_N):
                             slot = rng.randrange(seen)
                             take = slot < sample_n
                         repl = _canon_repl(kind, search)
-                        for style in ("LF", "CRLF"):
-                            key = _key(style, final, kind, target, tier, pos, card)
-                            if key not in witnesses:
-                                witnesses[key] = (
-                                    *_render(contents, style, unterminated, search, repl),
-                                    key,
-                                )
+                        _add_witnesses(witnesses, contents, unterminated, search, repl,
+                                       final, kind, target, tier, pos, card)
                         if take:
                             style = "CRLF" if (slot or 0) % 2 else "LF"
                             sample_repl = repl

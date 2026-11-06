@@ -25,6 +25,7 @@ plugin's own backend can be checked by recording the same two things. They raise
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import subprocess
@@ -473,6 +474,41 @@ def check_process_notifications_private(provider: RecordingSandboxProvider, a: S
         _drain_all(registry)
 
 
+def check_oversized_results_stay_in_sandbox(provider: RecordingSandboxProvider, a: Scope, b: Scope) -> None:
+    """An oversized tool result of A is written straight into A's sandbox (never this host's
+    spillover directory, never another agent's sandbox), under a name carrying A's identity; with no
+    sandbox of its own it is truncated inline instead."""
+    from tools.tool_result_storage import get_spillover_dir, maybe_persist_tool_result
+    secret = f"RESULT-{_marker(a)}"
+    spill = get_spillover_dir()
+    before = set(spill.iterdir()) if spill.is_dir() else set()
+    with _bind(b):
+        call_tool("terminal", {"command": "true"}, task_id="t")
+        env_b = _env_for("t")
+    with _bind(a):
+        assert PERSISTED_MARK not in maybe_persist_tool_result(secret * 4, "probe", "same-id", env=None, threshold=1)
+        bare: list[str] = []
+        unguarded = type("Unguarded", (), {  # an environment object that never went through the guard
+            "get_temp_dir": lambda self, **kw: "/tmp",  # no-tmp: ok — never created on the host
+            "execute": lambda self, command, **kw: bare.append(kw.get("stdin_data") or "") or {"output": "", "returncode": 0}})()
+        for foreign in (env_b, unguarded):
+            assert PERSISTED_MARK not in maybe_persist_tool_result(secret * 4, "probe", "same-id", env=foreign, threshold=1)
+        assert not bare, "a hosted result was written through an environment that is not the agent's sandbox"
+        call_tool("terminal", {"command": "true"}, task_id="t")
+        seen = len(provider.calls)
+        stub = maybe_persist_tool_result(secret * 4, "probe", "same-id", env=_env_for("t"), threshold=1)
+    after = set(spill.iterdir()) if spill.is_dir() else set()
+    assert after == before, f"a hosted result was written on this host: {sorted(after - before)}"
+    writes = [c for c in provider.calls[seen:] if c.op == "execute" and secret in c.stdin]
+    assert writes and all(c.sandbox == _identity(a) for c in writes), "the result did not go to A's sandbox"
+    assert not [c for c in provider.calls if c.sandbox == _identity(b) and secret in c.stdin]
+    digest = hashlib.sha256(_identity(a).key.encode("utf-8")).hexdigest()[:16]
+    assert PERSISTED_MARK in stub and f"{digest}-same-id" in stub, stub
+
+
+PERSISTED_MARK = "Full output saved to:"
+
+
 def checks() -> Iterator[tuple[str, Callable[..., None]]]:
     yield from (
         ("tools_address_own_sandbox", check_tools_address_own_sandbox),
@@ -480,6 +516,7 @@ def checks() -> Iterator[tuple[str, Callable[..., None]]]:
         ("file_tools_never_touch_host", check_file_tools_never_touch_host),
         ("background_process_invisible", check_background_process_invisible),
         ("process_notifications_private", check_process_notifications_private),
+        ("oversized_results_stay_in_sandbox", check_oversized_results_stay_in_sandbox),
         ("idle_sandbox_kept_while_working", lambda p, a, b: check_idle_sandbox_kept_while_working(p, a)),
         ("idle_sandbox_suspended_not_destroyed", lambda p, a, b: check_idle_sandbox_suspended_not_destroyed(p, a)),
     )

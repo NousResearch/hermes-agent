@@ -327,7 +327,8 @@ class TestCaptureResponse:
         parsed = json.loads(out)
         assert parsed["mode"] == "ax"
         assert parsed["total_elements"] == 600
-        assert len(parsed["elements"]) == cu_tool._DEFAULT_MAX_ELEMENTS
+        assert "elements" not in parsed
+        assert parsed["summary"].count("\n  #") == cu_tool._DEFAULT_MAX_ELEMENTS
         assert parsed["truncated_elements"] == 600 - cu_tool._DEFAULT_MAX_ELEMENTS
         # Truncation must be visible in the human summary so the model knows
         # the JSON view is partial and can re-issue with a tighter scope.
@@ -348,7 +349,8 @@ class TestCaptureResponse:
             )
         parsed = json.loads(out)
         # Ignored: cap stays at the fixed default regardless of the argument.
-        assert len(parsed["elements"]) == cu_tool._DEFAULT_MAX_ELEMENTS
+        assert "elements" not in parsed
+        assert parsed["summary"].count("\n  #") == cu_tool._DEFAULT_MAX_ELEMENTS
         assert parsed["total_elements"] == 5000
         assert parsed["truncated_elements"] == 5000 - cu_tool._DEFAULT_MAX_ELEMENTS
         # The full tree is spilled so nothing is lost.
@@ -1872,6 +1874,60 @@ class TestStructuredElementsConsumption:
         assert out[0].bounds == (10, 20, 80, 30)
         assert out[1].bounds == (100, 50, 200, 24)
 
+    def test_structured_parser_keeps_parent_index_for_menu_filtering(self):
+        from tools.computer_use.cua_backend_parse import _parse_elements_from_structured
+
+        out = _parse_elements_from_structured([
+            {"element_index": 1, "role": "AXMenuBar", "label": "", "parent_index": None},
+            {"element_index": 2, "role": "AXMenuBarItem", "label": "Apple", "parent_index": 1},
+            {"element_index": 3, "role": "AXMenuItem", "label": "Recent Items", "parent_index": 2},
+        ])
+
+        assert [element.parent_index for element in out] == [None, 1, 2]
+
+
+class TestCompactCaptureOutput:
+    """Regression for #135713: capture should not duplicate or cache menu contents."""
+
+    def test_ax_capture_hides_menu_subtree_and_uses_one_element_list(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from tools.computer_use.backend import CaptureResult, UIElement
+        from tools.computer_use.tool import _capture_response
+
+        cap = CaptureResult(
+            mode="ax", width=100, height=100, app="Calculator", window_title="Calculator",
+            elements=[
+                UIElement(index=1, role="AXMenuBar", parent_index=None),
+                UIElement(index=2, role="AXMenuBarItem", label="Apple", parent_index=1),
+                UIElement(index=3, role="AXMenuItem", label="Recent Items", parent_index=2),
+                UIElement(index=4, role="AXMenuItem", label="private-file.txt", parent_index=3),
+                UIElement(index=5, role="AXButton", label="Add", parent_index=None),
+            ],
+        )
+
+        body = json.loads(_capture_response(cap))
+
+        assert "elements" not in body
+        assert "#5 AXButton 'Add'" in body["summary"]
+        assert "Recent Items" not in body["summary"]
+        assert "private-file.txt" not in body["summary"]
+        assert body["total_elements"] == 1
+        assert body["menu_elements_omitted"] == 4
+
+    def test_capture_can_include_menu_subtree_on_request(self):
+        from tools.computer_use.backend import CaptureResult, UIElement
+        from tools.computer_use.tool import _capture_response
+
+        cap = CaptureResult(mode="ax", width=100, height=100, elements=[
+            UIElement(index=1, role="AXMenuBar"),
+            UIElement(index=2, role="AXMenuBarItem", label="Apple", parent_index=1),
+        ])
+
+        body = json.loads(_capture_response(cap, include_menus=True))
+
+        assert "#2 AXMenuBarItem 'Apple'" in body["summary"]
+        assert "menu_elements_omitted" not in body
+
 
     def test_vision_capture_falls_back_to_get_window_state_when_screenshot_dropped(self):
         """cua-driver >=0.5.x dropped the standalone `screenshot` MCP tool and
@@ -2257,9 +2313,8 @@ class TestCapturePayloadBudget:
         assert d["label"] == "OK"
         assert "label_truncated" not in d
 
-    def test_aux_vision_branch_respects_element_cap(self):
-        """The aux-vision payload must carry the same capped element list as
-        every other capture branch, not the full untruncated tree."""
+    def test_aux_vision_branch_reports_element_cap_once_in_summary(self):
+        """The auxiliary-vision payload keeps its element list in the summary only."""
         from tools.computer_use.backend import CaptureResult, UIElement
         from tools.computer_use import tool as cu_tool
 
@@ -2279,7 +2334,7 @@ class TestCapturePayloadBudget:
             )
         assert out is not None
         payload = json.loads(out)
-        assert len(payload["elements"]) == 5
+        assert "elements" not in payload
         assert payload["total_elements"] == 50
         assert payload["truncated_elements"] == 45
 

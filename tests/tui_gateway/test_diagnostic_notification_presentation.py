@@ -36,7 +36,7 @@ def test_tui_kanban_splits_diagnostics_from_results_before_wake(tmp_path, monkey
     owner = tmp_path / "owner"
     owner.mkdir()
     (owner / "config.yaml").write_text(f"display: {{suppress_warning_notifications: {str(suppress).lower()}}}")
-    monkeypatch.setattr(server, "_collect_kanban_notifications", lambda session: [])
+    monkeypatch.setattr(server, "_collect_kanban_notifications", lambda session, **kwargs: [])
     emitted, submitted = [], []
     monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
     monkeypatch.setattr(server, "_notif_submit", lambda *args, **kwargs: submitted.append((args, kwargs)))

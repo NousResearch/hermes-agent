@@ -20,7 +20,7 @@ const timeoutAdvice = [
   ['ar', 'لم تستجب البوابة في الوقت', 'جهاز أحد البوتات', 'تحديث'],
   ['ru', 'Шлюз не ответил вовремя', 'компьютер бота', 'Обновить'],
   ['fr', 'passerelle n’a pas répondu à temps', 'l’ordinateur d’un bot', 'Actualiser'],
-  ['de', 'Gateway hat nicht rechtzeitig geantwortet', 'Computer eines bots', 'Aktualisieren'],
+  ['de', 'Gateway hat nicht rechtzeitig geantwortet', 'Computer eines Bots', 'Aktualisieren'],
   ['es', 'pasarela no respondió a tiempo', 'equipo de un bot', 'Actualizar']
 ] as const
 
@@ -53,4 +53,25 @@ it.each(timeoutAdvice)('explains read timeouts and retries both state and histor
   await act(async () => { fireEvent.click(within(screen.getByRole('alert')).getByRole('button')) })
   expect(screen.queryByRole('alert')).toBeNull()
   expect(screen.getByText(room.name)).toBeTruthy()
+})
+
+it('says a Retry was refused because the bot may still be working, not its reason code', async () => {
+  locale.value = 'en'
+  const room = { room_id: 'busy', name: 'Busy', members: [{ member_id: 'a', profile: 'a', handle: 'a', display_name: 'Ada' }] }
+  const action = { kind: 'retry', task_id: 't', member_id: 'a', execution_generation: 1 }
+
+  answerGroupRequests(request, { local: method => {
+    if (method === 'groups.retry') {
+      throw Object.assign(new Error('session_busy'), { code: 4001, data: {
+        reason: 'session_busy', field: 'home', detail: 'an older home of this profile may still run this turn: /a/b' } })
+    }
+
+    return ({ 'groups.capabilities': CANONICAL_GROUP_CAPABILITIES, 'groups.log': { events: [], has_more: false },
+      'groups.state': { room, driver_status: { running: true, working: false, pending_actions: [action] } } } as Record<string, unknown>)[method]
+  } })
+  render(<CanonicalGroupWorkspace binding={{ connectionId: 'local', profile: 'default', roomId: room.room_id }} />)
+  const retry = await screen.findByRole('button', { name: 'Retry' })
+  await act(async () => { fireEvent.click(retry) })
+  await screen.findByText(CANONICAL_GROUP_LOCALES.en.retryBusy.replace('{name}', 'Ada'))
+  expect(document.body.textContent).not.toContain('session_busy')
 })

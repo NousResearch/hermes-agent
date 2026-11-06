@@ -65,9 +65,10 @@ function eventTimeMs(timestamp?: number) {
   return Number.isFinite(new Date(at).getTime()) ? at : undefined
 }
 
-function EventBody({ event, notice }: { event: CanonicalGroupEvent; notice?: string }) {
+function EventBody({ event, notice, noAnswer }: { event: CanonicalGroupEvent; notice?: string; noAnswer?: string }) {
   if (notice) {
-    const detail = event.payload.error || event.payload.reason || event.payload.reason_code
+    const reason = event.payload.error || event.payload.reason || event.payload.reason_code
+    const detail = reason === 'member_unavailable' ? noAnswer : reason
 
     return <p className="min-w-0 text-[0.6875rem] text-(--ui-text-tertiary)" data-selectable-text="true">
       <strong className="font-medium text-(--ui-text-secondary)">{notice}</strong>{detail && <>: {detail}</>}
@@ -227,7 +228,7 @@ function HistoryRow({ avatarFor, binding, disabled, event, notices, onReply, ros
   if (notice) {
     return <RoomNoticeRow avatar={member && avatarFor?.(member.profile || member.handle, 16)} kind={event.kind}>
       {author && <span className="shrink-0 font-medium text-(--ui-text-secondary)">{author}</span>}
-      <EventBody event={event} notice={notice} />
+      <EventBody event={event} noAnswer={labels.turnNoAnswer} notice={notice} />
     </RoomNoticeRow>
   }
 

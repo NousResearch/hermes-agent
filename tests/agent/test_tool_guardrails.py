@@ -272,6 +272,54 @@ def test_web_search_cap_blocks_after_limit_regardless_of_hard_stop():
     assert decision.should_halt is True
 
 
+def _successful_search(controller, query):
+    assert controller.before_call("web_search", {"query": query}).action == "allow"
+    return controller.after_call("web_search", {"query": query}, '{"ok": true}', failed=False)
+
+
+def test_web_search_budget_warning_fires_in_last_fifth_but_not_before():
+    # cap=10 -> warning band starts at 10 - max(1, 10//5) = 8 successful searches.
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(loop_caps=LoopCapConfig(max_web_searches=10))
+    )
+    decisions = [_successful_search(controller, f"q{i}") for i in range(10)]
+
+    assert [d.action for d in decisions[:7]] == ["allow"] * 7
+    assert [d.action for d in decisions[7:]] == ["warn"] * 3
+    assert {d.code for d in decisions[7:]} == {"loop_web_search_budget_warning"}
+    # At the 8th search, 2 of 10 remain; the message must carry the real count.
+    assert "8/10" in decisions[7].message
+    assert "2 left" in decisions[7].message
+    # A warning is advisory: the hard block only lands on the (cap+1)-th call.
+    assert decisions[-1].should_halt is False
+    assert controller.before_call("web_search", {"query": "q10"}).code == "loop_web_search_cap"
+
+
+def test_web_search_budget_warning_is_disabled_with_warnings():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            warnings_enabled=False,
+            loop_caps=LoopCapConfig(max_web_searches=10),
+        )
+    )
+    decisions = [_successful_search(controller, f"q{i}") for i in range(10)]
+    assert [d.action for d in decisions] == ["allow"] * 10
+
+
+def test_web_search_budget_warning_does_not_mask_failure_diagnostics():
+    # cap=3 puts the 2nd and 3rd searches inside the warning band; a FAILED search
+    # still takes its failure path and must never report the budget warning.
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(loop_caps=LoopCapConfig(max_web_searches=3))
+    )
+    codes = []
+    for i in range(3):
+        assert controller.before_call("web_search", {"query": f"q{i}"}).action == "allow"
+        codes.append(
+            controller.after_call("web_search", {"query": f"q{i}"}, '{"error":"boom"}', failed=True).code
+        )
+    assert "loop_web_search_budget_warning" not in codes
+
 
 
 

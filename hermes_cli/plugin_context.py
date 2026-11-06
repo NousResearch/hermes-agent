@@ -1,28 +1,20 @@
 """``PluginContext``: the ``ctx`` every plugin's ``register(ctx)`` receives.
 
-Import it from :mod:`hermes_cli.plugins` (the public path, re-exported there). Functions and classes the
-methods call are read from that facade at call time (``_facade()``), so a patch on
-``hermes_cli.plugins.<name>`` reaches ctx methods as it did when the class lived there.
+Import it from :mod:`hermes_cli.plugins` (the public path, re-exported there). Every name the method
+bodies read that ``hermes_cli.plugins`` also binds (functions, classes, constants, ``logger``,
+``replacement_coordinator``, stdlib modules) is read from that facade at call time (``_facade()``), so
+a patch on ``hermes_cli.plugins.<name>`` reaches ctx methods as it did when the class lived there.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
-import logging
-import re
-from contextlib import suppress
-from functools import cached_property, wraps
+from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Optional
 
-from registration_lifecycle import replacement_coordinator
-from hermes_cli.middleware import VALID_MIDDLEWARE
 from hermes_cli.plugins_capability_ctx import PluginCapabilityCtxMixin
-from hermes_cli.plugins_dispatch import (
-    DEFAULT_SYSTEM_PROMPT_SECTION_MAX_CHARS, HERMES_EVENT_NAMESPACE, MAX_SYSTEM_PROMPT_SECTION_CHARS,
-    SYSTEM_PROMPT_SECTION_POSITIONS,
-)
+from hermes_cli.plugins_dispatch import DEFAULT_SYSTEM_PROMPT_SECTION_MAX_CHARS
 from hermes_cli.plugins_ledger import PluginRegistration
 from hermes_cli.plugins_loader import _serialized_replacement
 from hermes_cli.plugins_manifest import PluginManifest
@@ -32,8 +24,6 @@ from hermes_cli.plugins_state import PluginState
 if TYPE_CHECKING:
     from hermes_cli.plugins import PluginManager
 
-# The facade's logger, so log records keep the ``hermes_cli.plugins`` name.
-logger = logging.getLogger("hermes_cli.plugins")
 _UNSET = object()
 
 
@@ -77,7 +67,7 @@ class PluginContext(PluginCapabilityCtxMixin):
         try:
             return _facade()._plugin_relative_segments(key)
         except ValueError:
-            logger.warning("Rejected config path %r from plugin %s", key, self.plugin_id)
+            _facade().logger.warning("Rejected config path %r from plugin %s", key, self.plugin_id)
             raise
 
     def get_config(self, key: str, default: Any = None) -> Any:
@@ -87,8 +77,8 @@ class PluginContext(PluginCapabilityCtxMixin):
         entry = _facade()._plugin_settings_entry(_facade().load_config_readonly() or {}, self.plugin_id)
         if entry is None:
             return default
-        value = _facade()._nested_plugin_value(entry.get("settings"), segments, _UNSET)
-        if value is not _UNSET:
+        value = _facade()._nested_plugin_value(entry.get("settings"), segments, _facade()._UNSET)
+        if value is not _facade()._UNSET:
             return value
         return _facade()._nested_plugin_value(entry.get("config"), segments, default)
 
@@ -114,8 +104,8 @@ class PluginContext(PluginCapabilityCtxMixin):
         """Warn-and-ignore gate shared by every registrar that requires a base class."""
         if isinstance(obj, base_class):
             return False
-        logger.warning("Plugin '%s' tried to register %s %s that does not inherit from %s. Ignoring.",
-                       self.manifest.name, article, label, base_class.__name__)
+        _facade().logger.warning("Plugin '%s' tried to register %s %s that does not inherit from %s. Ignoring.",
+                                 self.manifest.name, article, label, base_class.__name__)
         return True
 
     def _refuse(self, what: str) -> ValueError:
@@ -133,7 +123,7 @@ class PluginContext(PluginCapabilityCtxMixin):
         restore: Callable[[Any], bool],
     ) -> PluginRegistration:
         """Track one generation in a replaceable manager-local registration slot."""
-        lease = replacement_coordinator.acquire(slot, current=current, previous=previous, restore=restore)
+        lease = _facade().replacement_coordinator.acquire(slot, current=current, previous=previous, restore=restore)
         return self._track(kind, key, lease.dispose)
 
     def _track_mapping_entry(
@@ -142,7 +132,7 @@ class PluginContext(PluginCapabilityCtxMixin):
         """Store ``entry`` under ``key`` in a manager-local mapping and lease the slot; unload restores
         ``previous`` (default: the displaced entry, or removes the key) only while ``entry`` is still
         current."""
-        if previous is _UNSET:
+        if previous is _facade()._UNSET:
             previous = mapping.get(key)
         mapping[key] = entry
         return self._track_replacement(
@@ -156,7 +146,7 @@ class PluginContext(PluginCapabilityCtxMixin):
     ) -> PluginRegistration:
         """Store + lease a manager-mapping entry, then debug-log ``log_fmt % (plugin name, *log_args)``."""
         handle = self._track_mapping_entry(kind, key, mapping, entry, previous)
-        logger.debug(log_fmt, self.manifest.name, *log_args)
+        _facade().logger.debug(log_fmt, self.manifest.name, *log_args)
         return handle
 
     def _register_scoped_provider(
@@ -178,7 +168,7 @@ class PluginContext(PluginCapabilityCtxMixin):
         except ValueError as exc:
             if reject_message is None:
                 raise
-            logger.warning(reject_message, self.manifest.name, exc)
+            _facade().logger.warning(reject_message, self.manifest.name, exc)
             return None
         if (register is not None and not accepted) or registry.snapshot_registration(
             registry_name, scope=scope
@@ -187,7 +177,7 @@ class PluginContext(PluginCapabilityCtxMixin):
         handle = self._manager._track_scoped_registration(
             self.manifest, kind, registry_name, registry, provider, previous
         )
-        logger.info("Plugin '%s' registered %s: %s", self.manifest.name, label, registry_name)
+        _facade().logger.info("Plugin '%s' registered %s: %s", self.manifest.name, label, registry_name)
         return handle
 
     @property
@@ -236,19 +226,19 @@ class PluginContext(PluginCapabilityCtxMixin):
         if not callable(callback):
             raise TypeError("on_unload callback must be callable")
         handle = self._track("on_unload", getattr(callback, "__name__", "callback"), callback)
-        logger.debug("Plugin %s registered on_unload callback", self.manifest.name)
+        _facade().logger.debug("Plugin %s registered on_unload callback", self.manifest.name)
         return handle
 
     def spawn_task(self, coro, *, name: Optional[str] = None) -> asyncio.Task:
         """Spawn a supervised asyncio task; unload/force reload cancels it. Needs a running loop."""
-        if not asyncio.iscoroutine(coro):
+        if not _facade().asyncio.iscoroutine(coro):
             raise TypeError("spawn_task expects a coroutine")
-        loop = asyncio.get_running_loop()
+        loop = _facade().asyncio.get_running_loop()
         task_name = name or f"plugin:{self.plugin_id}:task"
         task = loop.create_task(coro, name=task_name)
         handle = self._track("background_task", task_name, lambda: task.done() or task.cancel())
         task.add_done_callback(lambda _t: handle.dispose())
-        logger.debug("Plugin %s spawned supervised task: %s", self.manifest.name, task_name)
+        _facade().logger.debug("Plugin %s spawned supervised task: %s", self.manifest.name, task_name)
         return task
 
     def register_approval_transport(self, name: str, present_fn: Callable) -> None:
@@ -260,7 +250,7 @@ class PluginContext(PluginCapabilityCtxMixin):
         clean = str(name).strip().lower()
         if clean == "builtin":
             raise ValueError("approval transport name 'builtin' is reserved")
-        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", clean):
+        if not _facade().re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", clean):
             raise ValueError("approval transport name must match [a-z0-9][a-z0-9_-]{0,63}")
         if not callable(present_fn):
             raise TypeError("approval transport present_fn must be callable")
@@ -271,7 +261,7 @@ class PluginContext(PluginCapabilityCtxMixin):
             name=clean, present=present_fn, plugin_id=self.plugin_id,
             profile_home=str(_facade().get_hermes_home().resolve()),
         )
-        logger.info("Plugin %s registered approval transport: %s", self.plugin_id, clean)
+        _facade().logger.info("Plugin %s registered approval transport: %s", self.plugin_id, clean)
         # Duplicate names are rejected above, so there is never a displaced previous entry to restore;
         # tracking makes unload/force-reload remove this transport.
         self._track_mapping_entry("approval_transport", clean, transports, entry, None)
@@ -296,8 +286,8 @@ class PluginContext(PluginCapabilityCtxMixin):
         scope = self._manager.scope_key
         previous = registry.snapshot_registration(name, scope=scope)
         if previous is None and not override and registry.get_entry(name, scope=scope) is not None:
-            logger.warning("Plugin %s tried to shadow global tool %s without override=True",
-                           self.manifest.name, name)
+            _facade().logger.warning("Plugin %s tried to shadow global tool %s without override=True",
+                                     self.manifest.name, name)
             return None
         registry.register(
             name=name, toolset=toolset, schema=schema, handler=handler, check_fn=check_fn,
@@ -312,8 +302,8 @@ class PluginContext(PluginCapabilityCtxMixin):
                 self.manifest, "tool", name, registry, registered, previous,
                 finalize=lambda: self._manager._remove_tool_name_if_unowned(name),
             )
-        logger.debug("Plugin %s registered tool: %s%s", self.manifest.name, name,
-                     " (override)" if override else "")
+        _facade().logger.debug("Plugin %s registered tool: %s%s", self.manifest.name, name,
+                               " (override)" if override else "")
         return handle
 
     def call_mcp(
@@ -343,8 +333,8 @@ class PluginContext(PluginCapabilityCtxMixin):
         timeout = max(1.0, min(timeout, 600.0))
         from tools.mcp_tool_handlers import _make_tool_handler
         raw = _make_tool_handler(server, tool, timeout)(dict(arguments or {}))
-        logger.debug("Plugin %s called MCP %s/%s (timeout=%ss, %d chars returned)",
-                     self.manifest.name, server, tool, timeout, len(raw or ""))
+        _facade().logger.debug("Plugin %s called MCP %s/%s (timeout=%ss, %d chars returned)",
+                               self.manifest.name, server, tool, timeout, len(raw or ""))
         return self._mcp_envelope(raw)
 
     _MCP_RESULT_CHAR_CAP = 65536
@@ -358,7 +348,7 @@ class PluginContext(PluginCapabilityCtxMixin):
         if truncated:
             raw = raw[: cls._MCP_RESULT_CHAR_CAP] + "… [truncated]"
         try:
-            parsed: Any = json.loads(raw)
+            parsed: Any = _facade().json.loads(raw)
         except (ValueError, TypeError):
             parsed = None
         if isinstance(parsed, dict) and "error" in parsed:
@@ -472,13 +462,13 @@ class PluginContext(PluginCapabilityCtxMixin):
         field; without it the command registers parameterless there but still accepts trailing text."""
         clean = name.lower().strip().lstrip("/").replace(" ", "-")
         if not clean:
-            logger.warning("Plugin '%s' tried to register a command with an empty name.", self.manifest.name)
+            _facade().logger.warning("Plugin '%s' tried to register a command with an empty name.", self.manifest.name)
             return
-        with suppress(Exception):  # reject if it conflicts with a built-in command
+        with _facade().suppress(Exception):  # reject if it conflicts with a built-in command
             from hermes_cli.commands import resolve_command
             if resolve_command(clean) is not None:
-                logger.warning("Plugin '%s' tried to register command '/%s' which conflicts "
-                               "with a built-in command. Skipping.", self.manifest.name, clean)
+                _facade().logger.warning("Plugin '%s' tried to register command '/%s' which conflicts "
+                                         "with a built-in command. Skipping.", self.manifest.name, clean)
                 return
         hint = (args_hint or "").strip()
         entry = {
@@ -506,9 +496,9 @@ class PluginContext(PluginCapabilityCtxMixin):
         """Register the (single) ``agent.context_engine.ContextEngine`` replacing the built-in
         ContextCompressor; a second registration is rejected with a warning."""
         if self._manager._context_engine is not None:
-            logger.warning("Plugin '%s' tried to register a context engine, but one is "
-                           "already registered. Only one context engine plugin is allowed.",
-                           self.manifest.name)
+            _facade().logger.warning("Plugin '%s' tried to register a context engine, but one is "
+                                     "already registered. Only one context engine plugin is allowed.",
+                                     self.manifest.name)
             return
         from agent.context_engine import ContextEngine
         if self._wrong_type(engine, ContextEngine, "context engine"):
@@ -520,7 +510,7 @@ class PluginContext(PluginCapabilityCtxMixin):
             current=engine, previous=previous,
             restore=lambda replacement: self._manager._restore_value("_context_engine", engine, replacement),
         )
-        logger.info("Plugin '%s' registered context engine: %s", self.manifest.name, engine.name)
+        _facade().logger.info("Plugin '%s' registered context engine: %s", self.manifest.name, engine.name)
         return handle
 
     def register_context_reference(self, provider) -> None:
@@ -534,9 +524,9 @@ class PluginContext(PluginCapabilityCtxMixin):
         try:
             self._staged.append(self._manager._track_context_reference(self.manifest, provider, _register))
         except ValueError as exc:
-            logger.warning("Plugin '%s' context reference registration failed: %s", self.manifest.name, exc)
+            _facade().logger.warning("Plugin '%s' context reference registration failed: %s", self.manifest.name, exc)
             return
-        logger.info("Plugin '%s' registered context reference: @%s:", self.manifest.name, provider.prefix)
+        _facade().logger.info("Plugin '%s' registered context reference: @%s:", self.manifest.name, provider.prefix)
 
     def register_memory_provider(self, provider) -> None:
         """Record a memory provider (inert). Activation is owned by ``plugins/memory`` via
@@ -546,8 +536,8 @@ class PluginContext(PluginCapabilityCtxMixin):
         if self._wrong_type(provider, MemoryProvider, "memory provider"):
             return
         self._memory_provider = provider
-        logger.debug("Plugin '%s' registered memory provider: %s", self.manifest.name,
-                     getattr(provider, "name", "?"))
+        _facade().logger.debug("Plugin '%s' registered memory provider: %s", self.manifest.name,
+                               getattr(provider, "name", "?"))
 
     @_serialized_replacement
     def register_dashboard_auth_provider(self, provider) -> Optional[PluginRegistration]:
@@ -560,7 +550,7 @@ class PluginContext(PluginCapabilityCtxMixin):
             return
         launch_scope = _facade().hermes_home_key(_facade().get_process_hermes_home())
         if self._manager.scope_key != launch_scope:
-            logger.warning(
+            _facade().logger.warning(
                 "Plugin '%s' tried to register dashboard-auth provider %r "
                 "from profile scope %s; ignoring it because dashboard auth "
                 "is owned by launch scope %s.",
@@ -582,13 +572,13 @@ class PluginContext(PluginCapabilityCtxMixin):
             # place via the upsert.
             register_global_provider(provider)
         except (TypeError, ValueError) as e:
-            logger.warning("Plugin '%s' failed to register dashboard-auth provider %r: %s",
-                           self.manifest.name, getattr(provider, "name", "?"), e)
+            _facade().logger.warning("Plugin '%s' failed to register dashboard-auth provider %r: %s",
+                                     self.manifest.name, getattr(provider, "name", "?"), e)
             return
         handle = self._track("dashboard_auth_provider", registry_name,
                              lambda: unregister_global_provider(registry_name, provider), persistent=True)
-        logger.info("Plugin '%s' registered dashboard-auth provider: %s (%s)", self.manifest.name,
-                    registry_name, provider.display_name)
+        _facade().logger.info("Plugin '%s' registered dashboard-auth provider: %s (%s)", self.manifest.name,
+                              registry_name, provider.display_name)
         return handle
 
     @_serialized_replacement
@@ -622,7 +612,7 @@ class PluginContext(PluginCapabilityCtxMixin):
             self.manifest, "platform", name, platform_registry, current, previous,
             finalize=lambda: self._manager._remove_platform_name_if_unowned(name),
         )
-        logger.debug("Plugin %s registered platform: %s", self.manifest.name, name)
+        _facade().logger.debug("Plugin %s registered platform: %s", self.manifest.name, name)
         return handle
 
     def register_slack_action_handler(
@@ -641,7 +631,7 @@ class PluginContext(PluginCapabilityCtxMixin):
         handlers.append(entry)
         handle = self._track("slack_action_handler", repr(action_id),
                              lambda: self._manager._remove_identity(handlers, entry))
-        logger.debug("Plugin %s registered Slack action handler: %s", self.manifest.name, action_id)
+        _facade().logger.debug("Plugin %s registered Slack action handler: %s", self.manifest.name, action_id)
         return handle
 
     def register_platform_handler(self, platform: str, factory: Callable) -> None:
@@ -658,8 +648,8 @@ class PluginContext(PluginCapabilityCtxMixin):
         if not key:
             raise self._refuse("a platform handler factory with an empty platform name")
         self._manager._platform_handler_factories.setdefault(key, []).append((factory, self.manifest.name))
-        logger.debug("Plugin %s registered %s handler factory: %s", self.manifest.name, key,
-                     getattr(factory, "__name__", repr(factory)))
+        _facade().logger.debug("Plugin %s registered %s handler factory: %s", self.manifest.name, key,
+                               getattr(factory, "__name__", repr(factory)))
 
     def register_telegram_handler(self, factory: Callable) -> None:
         """``register_platform_handler("telegram", factory)``. PTB dispatches only the FIRST matching
@@ -700,9 +690,9 @@ class PluginContext(PluginCapabilityCtxMixin):
         try:
             count = _register(patterns, source=f"plugin:{self.manifest.name}")
         except Exception as exc:
-            logger.warning("Plugin '%s' redaction pattern registration failed: %s", self.manifest.name, exc)
+            _facade().logger.warning("Plugin '%s' redaction pattern registration failed: %s", self.manifest.name, exc)
             return 0
-        logger.debug("Plugin %s registered %d redaction pattern(s)", self.manifest.name, count)
+        _facade().logger.debug("Plugin %s registered %d redaction pattern(s)", self.manifest.name, count)
         return count
 
     def register_locale(
@@ -726,8 +716,8 @@ class PluginContext(PluginCapabilityCtxMixin):
         entry = register_pack(lang_id, surface, messages, source=f"plugin:{self.manifest.name}",
                               endonym=endonym, rtl=rtl)
         handle = self._track("locale", f"{lang_id}.{surface}", lambda: unregister_pack(entry))
-        logger.debug("Plugin %s registered locale: %s/%s (%d keys)", self.manifest.name, lang_id, surface,
-                     len(messages))
+        _facade().logger.debug("Plugin %s registered locale: %s/%s (%d keys)", self.manifest.name, lang_id, surface,
+                               len(messages))
         return handle
 
     def register_locale_dir(
@@ -738,14 +728,14 @@ class PluginContext(PluginCapabilityCtxMixin):
         ``{endonym, rtl}``. A broken file is skipped with a warning so one typo never disables the pack."""
         from agent.i18n_layers import scan_locale_dir
         handles: list[PluginRegistration] = []
-        for lang_id, surface, file in scan_locale_dir(Path(path)):
+        for lang_id, surface, file in scan_locale_dir(_facade().Path(path)):
             meta = dict((metadata or {}).get(lang_id) or {})
             try:
                 handles.append(self.register_locale(
                     lang_id, file, surface=surface, endonym=meta.get("endonym"), rtl=bool(meta.get("rtl", False)),
                 ))
             except Exception as exc:
-                logger.warning("Plugin '%s' locale file %s skipped: %s", self.manifest.name, file, exc)
+                _facade().logger.warning("Plugin '%s' locale file %s skipped: %s", self.manifest.name, file, exc)
         return handles
 
     def register_hook(self, hook_name: str, callback: Callable, *, hold_stream: bool = False) -> PluginRegistration:
@@ -756,7 +746,7 @@ class PluginContext(PluginCapabilityCtxMixin):
         """Register behavior-changing middleware (request kinds rewrite the payload, execution kinds
         wrap the callback). Unknown kinds warn but are stored."""
         return self._track_callback(
-            "middleware", kind, callback, self._manager._middleware, VALID_MIDDLEWARE
+            "middleware", kind, callback, self._manager._middleware, _facade().VALID_MIDDLEWARE
         )
 
     def register_session_env(self, names, resolver: Callable[[str], Any]) -> PluginRegistration:
@@ -771,11 +761,11 @@ class PluginContext(PluginCapabilityCtxMixin):
     ) -> PluginRegistration:
         """Append ``callback`` under ``key`` (warning on unknown ``key``) and lease its removal."""
         if key not in valid:
-            logger.warning("Plugin '%s' registered unknown %s '%s' (valid: %s)", self.manifest.name, kind,
-                           key, ", ".join(sorted(valid)))
+            _facade().logger.warning("Plugin '%s' registered unknown %s '%s' (valid: %s)", self.manifest.name, kind,
+                                     key, ", ".join(sorted(valid)))
         mapping.setdefault(key, []).append(callback)
         handle = self._track(kind, key, lambda: self._manager._remove_callback(mapping, key, callback))
-        logger.debug("Plugin %s registered %s: %s", self.manifest.name, kind, key)
+        _facade().logger.debug("Plugin %s registered %s: %s", self.manifest.name, kind, key)
         return handle
 
     def register_system_prompt_section(
@@ -789,12 +779,12 @@ class PluginContext(PluginCapabilityCtxMixin):
                              "using letters, numbers, '.', '_', or '-'")
         if not isinstance(content, str) and not callable(content):
             raise TypeError("system prompt section content must be a string or callable")
-        if position not in SYSTEM_PROMPT_SECTION_POSITIONS:
+        if position not in _facade().SYSTEM_PROMPT_SECTION_POSITIONS:
             raise ValueError("system prompt section position must be one of: "
-                             + ", ".join(sorted(SYSTEM_PROMPT_SECTION_POSITIONS)))
+                             + ", ".join(sorted(_facade().SYSTEM_PROMPT_SECTION_POSITIONS)))
         if (isinstance(max_chars, bool) or not isinstance(max_chars, int)
-                or not 0 < max_chars <= MAX_SYSTEM_PROMPT_SECTION_CHARS):
-            raise ValueError(f"system prompt section max_chars must be between 1 and {MAX_SYSTEM_PROMPT_SECTION_CHARS}")
+                or not 0 < max_chars <= _facade().MAX_SYSTEM_PROMPT_SECTION_CHARS):
+            raise ValueError(f"system prompt section max_chars must be between 1 and {_facade().MAX_SYSTEM_PROMPT_SECTION_CHARS}")
         existing = self._manager._system_prompt_sections.get(id)
         if existing is not None:
             raise ValueError(f"system prompt section {id!r} is already registered by plugin {existing.plugin!r}")
@@ -812,15 +802,15 @@ class PluginContext(PluginCapabilityCtxMixin):
         single-worker queue: order preserved, a blocking subscriber cannot stall the emitter."""
         plugin_key = self.plugin_id
         if not event or not isinstance(event, str):
-            logger.warning("Plugin '%s' tried to emit an invalid event name %r", plugin_key, event)
+            _facade().logger.warning("Plugin '%s' tried to emit an invalid event name %r", plugin_key, event)
             raise ValueError(f"Plugin '{plugin_key}' emit() requires a non-empty event name")
         if ":" in event:
-            logger.warning("Plugin '%s' tried to emit namespaced/reserved event '%s' — a plugin may only emit "
-                           "bare event names under its own '%s:' namespace (the '%s:' prefix is reserved "
-                           "for core, and foreign namespaces are forbidden)",
-                           plugin_key, event, plugin_key, HERMES_EVENT_NAMESPACE)
+            _facade().logger.warning("Plugin '%s' tried to emit namespaced/reserved event '%s' — a plugin may only emit "
+                                     "bare event names under its own '%s:' namespace (the '%s:' prefix is reserved "
+                                     "for core, and foreign namespaces are forbidden)",
+                                     plugin_key, event, plugin_key, _facade().HERMES_EVENT_NAMESPACE)
             raise ValueError(f"Plugin '{plugin_key}' may not emit '{event}': emit only the bare event name; "
-                             f"the namespace is forced to '{plugin_key}:' and the '{HERMES_EVENT_NAMESPACE}:' "
+                             f"the namespace is forced to '{plugin_key}:' and the '{_facade().HERMES_EVENT_NAMESPACE}:' "
                              f"prefix is reserved for core")
         if payload is not None and not isinstance(payload, dict):
             raise TypeError(f"Plugin '{plugin_key}' emit() payload must be a dict or None")
@@ -832,7 +822,7 @@ class PluginContext(PluginCapabilityCtxMixin):
         if not event or not isinstance(event, str):
             raise ValueError(f"Plugin '{self.manifest.name}' subscribe() requires a non-empty event name")
         self._manager._subscribe_event(self.plugin_id, event, callback)
-        logger.debug("Plugin %s subscribed to event: %s", self.manifest.name, event)
+        _facade().logger.debug("Plugin %s subscribed to event: %s", self.manifest.name, event)
 
     from hermes_cli.plugins_content import register_automation_blueprint, register_skill
     from hermes_cli.plugin_rpc import emit_to_session, register_rpc
@@ -848,10 +838,10 @@ def _ignore_after_abandoned_load(method):
     """Turn a registrar into a no-op once the context's load timed out: the abandoned worker thread may
     still be executing register(), and a late registration would land in registries that the failure
     path already swept (#108139)."""
-    @wraps(method)
+    @_facade().wraps(method)
     def wrapped(self, *args, **kwargs):
         if getattr(self, "_load_abandoned", False):
-            logger.warning(
+            _facade().logger.warning(
                 "Plugin '%s' called %s() after its load timed out; ignored", self.manifest.name,
                 method.__name__,
             )

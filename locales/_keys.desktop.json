@@ -2281,6 +2281,8 @@
     "notifications.voice.noSpeechDetected",
     "notifications.voice.playbackFailed",
     "notifications.voice.recordingFailed",
+    "notifications.voice.retryTranscription",
+    "notifications.voice.saveRecording",
     "notifications.voice.sayStopToEnd",
     "notifications.voice.transcriptionFailed",
     "notifications.voice.transcriptionUnavailable",

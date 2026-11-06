@@ -119,6 +119,7 @@ def adapter(monkeypatch):
         "DISCORD_IGNORED_CHANNELS",
         "DISCORD_HISTORY_BACKFILL",
         "DISCORD_HISTORY_BACKFILL_LIMIT",
+        "DISCORD_HISTORY_ALLOWED_BOTS",
         "DISCORD_ALLOW_BOTS",
     ):
         monkeypatch.delenv(_var, raising=False)
@@ -561,6 +562,35 @@ def test_discord_history_allowed_bots_yaml_bridge(adapter, monkeypatch):
     assert seeded is not None and seeded["history_allowed_bots"]
     adapter.config.extra["history_allowed_bots"] = seeded["history_allowed_bots"]
     assert adapter._get_history_allowed_bots() == {"77", "88"}
+
+
+@pytest.mark.asyncio
+async def test_fetch_channel_context_history_allowed_bots_applies_to_reply_window(adapter, monkeypatch):
+    """The reply-anchored window is filtered by history_allowed_bots too, not only the primary scan."""
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    adapter.config.extra["history_backfill_limit"] = 10
+    adapter.config.extra["history_allowed_bots"] = "77"
+
+    bot_user = adapter._client.user
+    human = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
+    unlisted_bot = SimpleNamespace(id=55, display_name="Mallory", name="Mallory", bot=True)
+
+    channel = FakeHistoryChannel(
+        [
+            make_history_message(author=human, content="latest note", msg_id=6),
+            make_history_message(author=bot_user, content="our prior response", msg_id=5),
+            make_history_message(author=unlisted_bot, content="planted near the target", msg_id=4),
+            make_history_message(author=human, content="the message being replied to", msg_id=3),
+        ],
+        channel_id=123,
+    )
+
+    result = await adapter._fetch_channel_context(
+        channel, before=make_message(channel=channel, content="follow-up"), reply_target=SimpleNamespace(id=4),
+    )
+
+    assert "planted near the target" not in result
+    assert "[Alice] the message being replied to" in result
 
 
 @pytest.mark.asyncio

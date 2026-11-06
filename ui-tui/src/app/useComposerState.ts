@@ -9,6 +9,7 @@ import { useCallback, useMemo, useRef, useState } from 'react'
 
 import type { PasteEvent } from '../components/textInput.js'
 import { droppedTokens, imageToken, nextImageIndex } from '../domain/attachments.js'
+import { buildEditorSeed, stripLastReplyBlock } from '../domain/editorContext.js'
 import { collapsePasteSpan, expandPasteChip, insideSpan, type PasteSpan, shiftSpan } from '../domain/pasteExpand.js'
 import type { ClipboardPasteResponse, ImageAttachResponse, InputDetectDropResponse } from '../gatewayTypes.js'
 import { useCompletion } from '../hooks/useCompletion.js'
@@ -120,7 +121,7 @@ export function looksLikeDroppedPath(text: string): boolean {
   return false
 }
 
-export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions): UseComposerStateResult {
+export function useComposerState({ getLastReply, gw, submitRef, sys }: UseComposerStateOptions): UseComposerStateResult {
   const [input, setInputState] = useState('')
   const [inputBuf, setInputBufState] = useState<string[]>([])
   const composerRevision = useRef(0)
@@ -594,8 +595,12 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
     const dir = mkdtempSync(join(tmpdir(), 'hermes-'))
     const file = join(dir, 'prompt.md')
     const [cmd, ...args] = resolveEditor()
+    // display.editor_include_last_reply: show the agent's previous reply under the draft as `#`
+    // comments, and strip the marker block again on save so it never reaches the model.
+    const withReply = getUiState().editorIncludeLastReply
+    const draft = [...inputBuf, input].join('\n')
 
-    writeFileSync(file, [...inputBuf, input].join('\n'))
+    writeFileSync(file, withReply ? buildEditorSeed(draft, getLastReply()) : draft)
 
     let exitCode: null | number = null
 
@@ -608,7 +613,8 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
         return
       }
 
-      const text = readFileSync(file, 'utf8').trimEnd()
+      const saved = readFileSync(file, 'utf8')
+      const text = (withReply ? stripLastReplyBlock(saved) : saved).trimEnd()
 
       if (!text) {
         return
@@ -626,7 +632,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
     } finally {
       rmSync(dir, { force: true, recursive: true })
     }
-  }, [enqueue, input, inputBuf, setInput, setInputBuf, submitRef])
+  }, [enqueue, getLastReply, input, inputBuf, setInput, setInputBuf, submitRef])
 
   const actions = useMemo(
     () => ({

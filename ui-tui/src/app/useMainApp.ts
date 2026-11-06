@@ -287,6 +287,19 @@ function copyMeasuredHeights(
   }
 }
 
+/** Text of the most recent assistant turn in the transcript (`\'\'` when there is none). */
+export function lastAssistantText(items: readonly Msg[]): string {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const msg = items[i]!
+
+    if (msg.role === 'assistant' && msg.kind !== 'intro' && msg.text?.trim()) {
+      return msg.text
+    }
+  }
+
+  return ''
+}
+
 export function useMainApp(gw: GatewayClient) {
   const { exit } = useApp()
   const { stdout } = useStdout()
@@ -448,6 +461,7 @@ export function useMainApp(gw: GatewayClient) {
   }, [selection])
 
   const composer = useComposerState({
+    getLastReply: () => lastAssistantText(historyItemsRef.current),
     gw,
     submitRef,
     sys: text => sysRef.current(text)

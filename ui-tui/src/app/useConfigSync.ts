@@ -353,6 +353,7 @@ export const applyDisplay = (
     // of silently changing approval behavior until the next successful poll.
     ...(cfg ? { destructiveSlashConfirm: approvals?.destructive_slash_confirm !== false } : {}),
     detailsMode: resolveDetailsMode(d),
+    editorIncludeLastReply: !!d.editor_include_last_reply,
     detailsModeCommandOverride: false,
     focusView: !!d.focus_view,
     indicatorStyle: normalizeIndicatorStyle(d.tui_status_indicator),

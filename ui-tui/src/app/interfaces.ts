@@ -349,6 +349,8 @@ export interface TranscriptRow {
 }
 
 export interface UiState {
+  /** `display.editor_include_last_reply`: seed $EDITOR with the previous reply as comments. */
+  editorIncludeLastReply: boolean
   gatewayConnected?: boolean
   battery: boolean
   batteryStatus: BatteryInfo | null
@@ -469,6 +471,8 @@ export interface ComposerState {
 }
 
 export interface UseComposerStateOptions {
+  /** Text of the last assistant message, for `display.editor_include_last_reply`. */
+  getLastReply: () => string
   gw: GatewayClient
   submitRef: MutableRefObject<(value: string) => void>
   sys: (text: string) => void

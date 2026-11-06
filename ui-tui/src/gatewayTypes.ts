@@ -119,6 +119,8 @@ export interface ConfigDisplayConfig {
   bell_on_prompt?: boolean
   busy_input_mode?: string
   details_mode?: string
+  /** Seed `$EDITOR` with the previous reply as `#` comments (stripped again on save). */
+  editor_include_last_reply?: boolean
   /** Focus view (/focus) — display-only reduced-output mode. */
   focus_view?: boolean
   inline_diffs?: boolean

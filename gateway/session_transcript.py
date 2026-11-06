@@ -10,6 +10,7 @@ import logging
 import threading
 import time
 from agent.turn_context import extract_api_content_sidecar
+from agent.context_compressor import _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 if TYPE_CHECKING:
@@ -161,8 +162,16 @@ class SessionTranscriptMixin:
         """Serialize transcript draining across queue migration boundaries. A session with no usable
         store is NOT skipped: the write is queued and counted like any other failed append, so a
         dead/unopenable state.db escalates and spools instead of dropping turns silently
-        (#114266)."""
+        (#114266).
+
+        Skip the write when the message dict already carries ``_DB_PERSISTED_MARKER`` (the agent
+        already flushed it via _flush_messages_to_session_db). This prevents the duplicate-write
+        bug (#860 revisited) where the gateway transcript path re-persists a turn the agent wrote
+        directly.
+        """
         if skip_db:
+            return
+        if message.get(_DB_PERSISTED_MARKER):
             return
         with self._get_transcript_drain_lock():
             self._append_to_transcript_serialized(self._follow_reroutes(session_id), message)

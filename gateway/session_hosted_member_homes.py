@@ -35,7 +35,7 @@ class MemberHomeUnknownError(RoomStopPendingError):
         super().__init__(
             f"Group chat work for '{profile}' may still be running, but that profile is no longer "
             "configured here. Add it back to hosted_rooms.profiles so its Stop can be confirmed, "
-            "or Discard the turn, then retry deletion.")
+            "then retry deletion.")
 
 
 def _key(room_id, member_id):
@@ -46,6 +46,8 @@ def record_member_home(db, room_id, member_id, home):
     """Remember each home a member's daemon was reached at, so the proof still covers it once the
     roster no longer names it (a ``hosted_rooms.profiles`` entry removed, then a restart)."""
     key, home = _key(room_id, member_id), str(home)
+    if Path(home) in _recorded_homes(db, room_id, member_id):
+        return  # every resolve calls this: a read keeps the common case off the writer
     def write(conn):
         row = conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()
         homes = json.loads(row[0]) if row is not None else []

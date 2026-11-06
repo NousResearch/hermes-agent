@@ -379,7 +379,22 @@ def get_default_model_from_cache(provider: str) -> str | None:
 def seed_cache_from_checkout(project_root: Path | str) -> bool:
     """Overwrite the disk cache with the checkout's ``website/static/api/model-catalog.json``.
     After ``hermes update`` that file IS the newest catalog, so the picker stays current even when
-    the remote fetch is bot-gated. Validated, then written via the same atomic writer."""
+    the remote fetch is bot-gated. Validated, then written via the same atomic writer.
+
+    A configured ``model_catalog.url`` is the operator's OWN manifest, and the checkout's file
+    is not it: seeding from the checkout would silently replace that manifest (and the default
+    label it carries) with the published one until the next fetch, so the seed is skipped
+    whenever a custom URL is configured and the normal fetch keeps serving the operator's one.
+    """
+    try:
+        configured_url = str(_load_catalog_config().get("url") or "").strip()
+    except Exception:
+        logger.exception("Could not read the configured model catalog URL")
+        configured_url = ""
+    if configured_url and configured_url != DEFAULT_CATALOG_URL:
+        logger.info("model catalog seed from checkout skipped: a custom manifest URL is configured")
+        return False
+
     src = Path(project_root) / "website" / "static" / "api" / "model-catalog.json"
     try:
         with open(src, encoding="utf-8-sig") as fh:

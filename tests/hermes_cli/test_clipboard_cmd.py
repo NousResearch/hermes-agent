@@ -146,3 +146,15 @@ def test_real_extractor_replaces_a_writable_destination(tmp_path, monkeypatch, c
     assert json.loads(out) == {"ok": True, "path": str(dest), "mime": "image/png", "bytes": len(_PNG)}
     assert dest.read_bytes() == _PNG
     assert os.listdir(dest.parent) == ["paste.png"]
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("mode", [0o600, 0o640], ids=["mkstemp-0600", "shared-0640"])
+def test_replacing_a_destination_keeps_its_permissions(tmp_path, monkeypatch, capsys, mode):
+    monkeypatch.setattr(clipboard, "save_clipboard_image", _fake_save(_PNG))
+    dest = _existing(tmp_path, mode)
+
+    code, _, _ = _run(capsys, "--out", str(dest), "--json")
+
+    assert (code, dest.read_bytes()) == (0, _PNG)
+    assert dest.stat().st_mode & 0o777 == mode

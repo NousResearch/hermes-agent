@@ -244,8 +244,12 @@ async def test_refused_watch_wake_logs_the_refusal_code(tmp_path, monkeypatch, c
         with caplog.at_level(logging.WARNING, logger='gateway.run'):
             with pytest.raises(WakeNotAccepted):
                 await runner._inject_watch_notification('[done]', evt, raise_not_accepted=True)
+        sid = metadata['gateway_session_id']
+        # The line must name the refusing branch: the drifting snapshot rebuilds another key, and the
+        # pin/route pair says whether the pin is the route's own session (#143720).
         assert [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING
                 and 'not admitted' in r.getMessage()] == [
-            'Watch notification not admitted for discord chat=42: admission_conflict']
+            'Watch notification not admitted for discord chat=42 (type=completion session_id=proc_x '
+            f'pinned={sid} route_session={sid} retry=0 permanent=False): admission_conflict']
     finally:
         authority.db.close()

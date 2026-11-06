@@ -57,7 +57,11 @@ def test_a_child_rotated_past_any_hop_budget_resolves_to_its_newest_segment(tmp_
             db.end_session(f"seg-{i - 1:03d}", "compression")
             db.create_session(f"seg-{i:03d}", source="subagent", parent_session_id=f"seg-{i - 1:03d}",
                               model_config=marker)
+        reads, get_session = [], db.get_session
+        db.get_session = lambda sid: reads.append(sid) or get_session(sid)
         assert stored_child_session(db, "sa-0-long", ["parent"]) == "seg-079"
+        # The 80 segments share their chain: one lookup reads each row once, not a walk per segment.
+        assert len(reads) == len(set(reads)) == 81, len(reads)
     finally:
         db.close()
 

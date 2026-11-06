@@ -36,27 +36,57 @@ def stored_child_session(db: Any, subagent_id: str, conversation_ids: Iterable[s
         f"{_sql_json_extract('model_config', '$.' + SUBAGENT_ID_KEY)} = ? ORDER BY started_at DESC, id DESC",
         (subagent_id,),
     )
-    owned = [row["id"] for row in rows if _descends_from(db, row["id"], ancestors)]
+    get, owns = _lineage_reader(db, ancestors)
+    owned = [row["id"] for row in rows if owns(row["id"])]
     # The tip is the owned segment no owned segment continues by compression; ``started_at`` only breaks
     # a tie, since the wall clock can step back between a rotation's two rows.
     owned_ids = frozenset(owned)
-    continued = {seg["parent_session_id"] for seg in map(db.get_session, owned)
-                 if seg is not None and seg.get("parent_session_id") in owned_ids and db._is_compression_child_row(seg)}
+    continued = {seg["parent_session_id"] for seg in map(get, owned)
+                 if seg is not None and seg.get("parent_session_id") in owned_ids and _continues(db, seg, get)}
     return next((sid for sid in owned if sid not in continued), None)
 
 
-def _descends_from(db: Any, session_id: str, ancestors: frozenset[str]) -> bool:
-    # Each rotation is a hop, so a long-lived child's chain has no useful bound; ``seen`` ends a cycle.
-    current, seen = db.get_session(session_id), set()
-    while current is not None and current["id"] not in seen:
-        if current["id"] in ancestors:
-            return True
-        seen.add(current["id"])
-        parent = current.get("parent_session_id")
-        if not parent or not (_delegated_from(current, parent) or db._is_compression_child_row(current)):
-            return False
-        current = db.get_session(parent)
-    return False
+def _lineage_reader(db: Any, ancestors: frozenset[str]):
+    """``(get, owns)`` for one lookup. ``get`` reads each session row at most once; ``owns(sid)`` says whether
+    *sid*'s chain reaches *ancestors* and records the verdict for every row it walked, since all of a
+    child's segments share the chain above them (with ``compression.in_place: false`` every rotation is
+    one more segment). Each rotation is a hop, so a long-lived child's chain has no useful bound; a row
+    met twice on one walk ends a cycle."""
+    rows: dict[str, Any] = {}
+    verdicts: dict[str, bool] = {}
+
+    def get(session_id: str) -> Any:
+        if session_id not in rows:
+            rows[session_id] = db.get_session(session_id)
+        return rows[session_id]
+
+    def owns(session_id: str) -> bool:
+        path: dict[str, None] = {}
+        current, verdict = get(session_id), False
+        while current is not None:
+            sid = current["id"]
+            if sid in verdicts or sid in ancestors:
+                verdict = verdicts.get(sid, True)
+                break
+            if sid in path:
+                break
+            path[sid] = None
+            parent = current.get("parent_session_id")
+            if not parent or not (_delegated_from(current, parent) or _continues(db, current, get)):
+                break
+            current = get(parent)
+        verdicts.update(dict.fromkeys(path, verdict))
+        return verdict
+
+    return get, owns
+
+
+def _continues(db: Any, row: dict[str, Any], get) -> bool:
+    """``SessionDB._is_compression_child_row`` over the lookup's cached rows: not a branch, delegate, tool or
+    reset child of its parent, and the parent ended ``compression``."""
+    parent = get(row["parent_session_id"]) if row.get("parent_session_id") else None
+    return bool(parent and not db._is_explicit_fork_child_row(row, include_reset=True)
+                and parent.get("end_reason") == "compression")
 
 
 def _delegated_from(row: dict[str, Any], parent: str) -> bool:

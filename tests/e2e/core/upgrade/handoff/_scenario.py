@@ -311,6 +311,7 @@ def run(column: str, root: Path) -> SimpleNamespace:
 
             o.up = inst.update()
             o.sha_after = inst.sha()
+            o.layout_after = {rel: (inst.checkout / rel).is_file() for rel in X.NEXT_MOVE}
 
             o.ident = X.settle_gateway(inst, o.old_pid)
             model.release.set()
@@ -407,6 +408,10 @@ class HandoffProperties:
 
     def test_update_moves_the_checkout(self, fleet):
         assert fleet.sha_after == fleet.target, f"the update did not move the checkout\n{fleet.diag}"
+        if fleet.column == "head":
+            old, new = X.NEXT_MOVE
+            assert fleet.layout_after == {old: False, new: True}, (
+                f"NEXT moved {old} to {new}; the checkout has {fleet.layout_after}\n{fleet.diag}")
 
     def test_restart_wait_ends_within_its_cap(self, fleet):
         """A gateway that will not drain is stopped at ``agent.restart_after_turn_timeout``: the update

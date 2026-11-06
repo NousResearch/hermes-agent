@@ -536,14 +536,13 @@ def test_every_shipped_module_imports_from_a_clean_first_party_graph(tmp_path):
 
 def _pre_handoff_tag() -> tuple[str, str] | None:
     """Newest release tag whose updater still ran post-pull phases in the pre-pull interpreter."""
-    cp = _git("for-each-ref", "--merged=HEAD", "--sort=-version:refname",
-              "--format=%(refname:short)", "refs/tags/v20*")
-    for tag in cp.stdout.split()[:15] if cp.returncode == 0 else []:
-        if _git("cat-file", "-e", f"{tag}:hermes_cli/update_handoff.py").returncode == 0:
-            continue
-        grep = _git("grep", "-l", "def _purge_stale_hermes_modules", tag, "--", "hermes_cli")
-        return (tag, grep.stdout.strip()) if grep.returncode == 0 and grep.stdout.strip() else None
-    return None
+    from tests.e2e.core.upgrade import _install_helpers as I
+
+    tag = next((t for t in I.release_tags() if I.updater_generation(t) == "pre-handoff"), None)
+    if tag is None:
+        return None
+    grep = _git("grep", "-l", "def _purge_stale_hermes_modules", tag, "--", "hermes_cli")
+    return (tag, grep.stdout.strip()) if grep.returncode == 0 and grep.stdout.strip() else None
 
 
 def _copy_tree(src: Path, dst: Path, names: list[str]) -> None:

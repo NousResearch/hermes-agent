@@ -14,6 +14,7 @@ of that this module stages what a real user machine looks like to the installer 
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import os
@@ -50,6 +51,62 @@ def head_sha() -> str:
     return git("rev-parse", os.environ.get("HERMES_E2E_INSTALL_REF") or "HEAD", cwd=H.WORKTREE)
 
 
+# Release tags only: ``v<calver>`` (to v2026.9.24) and ``v0.<minor>.<patch>`` (from v0.21.6). Canary
+# builds (``+canary.*``), release candidates (``rc.*``) and abandoned candidates are not releases.
+_RELEASE_TAG_EXCLUDES = ("*+*", "rc.*", "abandoned-*")
+# The updater generation a release ships, by the first file of that generation present in its tree;
+# newest first. A start version of each is the set an update has to survive from.
+UPDATER_GENERATIONS = (
+    ("by-path", "hermes_cli/update_completion.py"),
+    ("handoff", "hermes_cli/update_handoff.py"),
+    ("pre-handoff", None),
+)
+
+
+def updater_generation(tag: str) -> str:
+    """Which updater ``tag`` ships: the newest generation whose marker file its tree contains."""
+    for name, marker in UPDATER_GENERATIONS:
+        if marker is None or subprocess.run(["git", "cat-file", "-e", f"{tag}:{marker}"], cwd=str(H.WORKTREE),
+                                            capture_output=True, check=False).returncode == 0:
+            return name
+    raise AssertionError(f"no updater generation matches {tag}")
+
+
+def release_tags(ref: str = "HEAD") -> list[str]:
+    """Release tags reachable from ``ref``, newest first."""
+    out = git("tag", "--merged", ref, "--sort=-creatordate", "--list", "v[0-9]*", cwd=H.WORKTREE)
+    return [t for t in out.split() if not any(Path(t).match(p) for p in _RELEASE_TAG_EXCLUDES)]
+
+
+@dataclass(frozen=True)
+class UpgradeBase:
+    """Where an update starts: the commit, and the tag or ref it was chosen by."""
+    ref: str
+    commit: str
+
+
+@functools.cache
+def upgrade_base() -> UpgradeBase | None:
+    """The start version of the upgrade suites; None when no release is reachable (a tagless checkout).
+
+    ``HERMES_E2E_UPGRADE_BASE`` picks it: a tag, a commit, or an updater generation name
+    (``by-path``, ``handoff``, ``pre-handoff``: the newest release that ships that updater). Unset, it
+    is N-1, the newest release before HEAD. ``HERMES_E2E_N1_REF`` is an older name for the same knob.
+    """
+    chosen = os.environ.get("HERMES_E2E_UPGRADE_BASE") or os.environ.get("HERMES_E2E_N1_REF") or ""
+    generations = {name for name, _ in UPDATER_GENERATIONS}
+    if chosen and chosen not in generations:
+        return UpgradeBase(chosen, git("rev-parse", f"{chosen}^{{commit}}", cwd=H.WORKTREE))
+    tags = release_tags("HEAD~1")
+    if chosen:
+        tags = [t for t in tags if updater_generation(t) == chosen]
+    if not tags:
+        if chosen:
+            raise AssertionError(f"HERMES_E2E_UPGRADE_BASE={chosen}: no release before HEAD ships that updater")
+        return None
+    return UpgradeBase(tags[0], git("rev-parse", f"{tags[0]}^{{commit}}", cwd=H.WORKTREE))
+
+
 def make_origin(root: Path, ref: str) -> Path:
     """Bare origin with ``main`` at ``ref``.
 
@@ -67,8 +124,11 @@ def make_origin(root: Path, ref: str) -> Path:
     return origin
 
 
-def publish_commit(origin: Path, scratch: Path, message: str, files: dict[str, str]) -> str:
-    """Add one upstream commit on origin/main (a new release the user updates to); returns its sha."""
+def publish_commit(origin: Path, scratch: Path, message: str, files: dict[str, str],
+                   moves: dict[str, str] | None = None) -> str:
+    """Add one upstream commit on origin/main (a new release the user updates to); returns its sha.
+
+    ``moves`` renames tracked files (``{old: new}``), the shape a layout change ships in."""
     work = scratch / f"publish-{hashlib.sha1(message.encode()).hexdigest()[:8]}"
     if work.exists():
         shutil.rmtree(work)
@@ -76,6 +136,10 @@ def publish_commit(origin: Path, scratch: Path, message: str, files: dict[str, s
            "GIT_COMMITTER_NAME": "e2e", "GIT_COMMITTER_EMAIL": "e2e@example.invalid"}
     git("clone", "-q", "--shared", "--no-checkout", "-b", "main", str(origin), str(work), cwd=scratch, env=env)
     git("reset", "-q", "main", cwd=work, env=env)
+    for old, new in (moves or {}).items():
+        (work / new).parent.mkdir(parents=True, exist_ok=True)
+        git("checkout", "-q", "main", "--", old, cwd=work, env=env)
+        git("mv", old, new, cwd=work, env=env)
     for rel, text in files.items():
         p = work / rel
         p.parent.mkdir(parents=True, exist_ok=True)

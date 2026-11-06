@@ -779,6 +779,7 @@ def _resume_materialize_minted(ctx: _Resume) -> None:
             ctx.target,
             source=_resolve_session_source(_str_param(ctx.params, "source") or None),
             model=_resolve_model(),
+            session_key=ctx.target,  # born keyed: a materialized row must not re-open the NULL-key wound
             profile_name=profile_name_for_home(ctx.profile_home) or _response_profile_name(ctx.profile),
         )
         ctx.found = ctx.db.get_session(ctx.target)
@@ -788,6 +789,32 @@ def _resume_materialize_minted(ctx: _Resume) -> None:
         )
     except Exception:
         logger.warning("failed to materialize session row for %s", ctx.target, exc_info=True)
+
+
+def _heal_minted_row_key(ctx: _Resume) -> None:
+    """Backfill a historical row's never-persisted ``session_key`` (#149905).
+
+    Rows written before the key column was stamped carry a minted-shape id with
+    ``session_key IS NULL``: resume finds them by id, but the canonical gateway rebuilds a
+    messaging lane from that column, so the chat reopens read-only forever. The id IS the
+    key the server minted for this chat — stamp it back (NULL-only; a legal key is never
+    touched). Legacy-local history (cli/oneshot/...) is excluded: an EMPTY key is exactly
+    what keeps ``validate_legacy_row`` willing to adopt that row canonically, so healing
+    those would trade a readable zombie for a not_found. Fail-open: like the materialize
+    path above, a failed heal never blocks the resume.
+    """
+    try:
+        row = ctx.found
+        if not row or not _is_server_minted_key(ctx.target) or (row.get("session_key") or "").strip():
+            return
+        from hermes_state_local_migration import legacy_history_row
+        if legacy_history_row(row):
+            return
+        if ctx.db.stamp_session_key_if_null(ctx.target, ctx.target) > 0:
+            ctx.found = ctx.db.get_session(ctx.target)
+            logger.info("healed never-persisted session_key on resumed row %s", ctx.target)
+    except Exception:
+        logger.warning("session_key heal skipped for %s", ctx.target, exc_info=True)
 
 
 def _resume_locate(ctx: _Resume) -> dict | None:
@@ -1053,6 +1080,7 @@ def _(rid, params: dict) -> dict:
             return _db_unavailable_error(rid, code=5000)
         if (resp := _resume_locate(ctx)) is not None:
             return resp
+        _heal_minted_row_key(ctx)
         _resume_follow_tip(ctx)
         if (resp := _resume_guard(ctx)) is not None:
             return resp

@@ -923,6 +923,24 @@ class SessionSessionsMixin:
             (),
         ) or 0)
 
+    def stamp_session_key_if_null(self, session_id: str, session_key: str) -> int:
+        """Backfill one historical row's never-persisted ``session_key``; return rows stamped.
+
+        Older writers left minted-shape rows with ``session_key IS NULL`` (#149905): resume
+        finds them by id, but the canonical gateway rebuilds a lane from that column, so the
+        chat reopens read-only forever. NULL-only by construction — a row that already
+        carries its key is never touched. ``profile_name`` is deliberately out of scope:
+        adoption eligibility (``hermes_state_local_migration.validate_legacy_row``) reads an
+        EMPTY key as the admission gate for old local history, so this primitive must never
+        widen beyond the one column.
+        """
+        if not session_id or not (session_key or "").strip():
+            return 0
+        return int(self._write_rowcount(
+            "UPDATE sessions SET session_key = ? WHERE id = ? AND session_key IS NULL",
+            (session_key, session_id),
+        ) or 0)
+
     def _set_lineage_column(self, column: str, session_id: str, value: Any, *,
                             extra_set_sql: str = "") -> bool:
         """Set one ``sessions`` column across a whole compression lineage: Desktop projects roots

@@ -130,3 +130,55 @@ def test_a_result_is_labelled_by_its_occurrence_of_a_provider_id_repeated_in_one
         page = [row for row in db.get_messages_as_conversation(target, include_row_ids=True) if row['_row_id'] == second]
         projected = display_projection(_call_context(db, page, [target]) + page, str(tmp_path))
         assert [(row['name'], row.get('args')) for row in projected] == [('write_file', {'path': 'f2'})]
+
+
+class _Rows:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def fetchall(self):
+        return self._rows
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+    def __iter__(self):
+        return iter(self._rows)
+
+
+@pytest.mark.asyncio
+async def test_a_compaction_committing_inside_a_lineage_read_drops_nothing(tmp_path, monkeypatch):
+    """A rotated lineage reads its display rows and its removed rows' identities; a compaction that carries
+    the tip's last reply commits between those two statements. Both must see one generation."""
+    from agent.context_compressor import SUMMARY_PREFIX
+    from gateway.session_authority import initialize_session_authority
+    from tests.gateway.test_session_stored_reads import _legacy_owner, _native
+
+    store, db, runner = _legacy_owner(tmp_path, monkeypatch)
+    authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='owner')
+    native = _native(authority, tmp_path, 'native')
+    original, fired = db._read_retrying_ioerr, []
+
+    class Conn:
+        def __init__(self, conn):
+            self._conn = conn
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+        def execute(self, sql, *args):
+            cursor = self._conn.execute(sql, *args)
+            if fired or 'compacted, display_order' not in sql or 'tui-tip' not in str(args):
+                return cursor
+            rows = cursor.fetchall()  # the display rows are read; the removed rows' read comes next
+            fired.append(True)
+            _compact_carrying_tail(db, 'tui-tip', f'{SUMMARY_PREFIX}\n## Goal\nrotated', tail_rows=1)
+            return _Rows(rows)
+    monkeypatch.setattr(db, '_read_retrying_ioerr', lambda fn: original(lambda conn: fn(Conn(conn))))
+    try:
+        assert _flat(await _pages(native, 'tui-tip', 10)) == [
+            'before compression', 'old answer', 'after compression', 'new answer']
+        assert fired
+    finally:
+        await native.close()
+        store.close_all_db_handles()

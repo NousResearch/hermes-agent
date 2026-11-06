@@ -195,8 +195,8 @@ def worker_history(db, conn, sid, payload):
     rows = conn.execute(f'SELECT {"session_id, compacted, display_order, " if display else ""}{db._CONVERSATION_ROW_COLUMNS} FROM messages '
                         f'WHERE session_id IN ({",".join("?" for _ in ids)}){active} ORDER BY id', ids).fetchall()
     if display:  # the owner's display reads' rule: a message whose newest copy was removed stays hidden
-        from hermes_state_messages import SessionMessagesMixin
-        rows = SessionMessagesMixin._with_removed_identities(view, rows, ids)
+        from hermes_state_display_set import with_removed_identities
+        rows = with_removed_identities(view, rows, ids)
     if payload['include_compacted']:
         rows = db._dedupe_display_generations(rows, drop_removed=display)
     return {'messages': db._rows_to_conversation(rows, session_id=target,

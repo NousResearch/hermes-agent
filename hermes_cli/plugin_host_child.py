@@ -210,6 +210,12 @@ class HostRuntime:
         return self._send_call("facade", plugin_key, {"facade": facade, "method": method, "probe": _probe,
                                                       "args": args, "kwargs": kwargs}, allow_objects=False)
 
+    def session_event(self, plugin_id: str, session_id: str, event: str, payload: dict) -> Any:
+        """``emit_plugin_session_event`` in the gateway process, which holds the sessions. ``payload``
+        is already plain JSON, so it travels as is (no ``encode``: its keys are the plugin's own)."""
+        return self.channel.call("session_event", {"plugin_id": plugin_id, "session_id": session_id,
+                                                   "event": event, "payload": payload})
+
     def spawn(self, coro: Any, *, name: Optional[str] = None) -> Any:
         if not inspect.iscoroutine(coro):
             raise TypeError("spawn_task() requires a coroutine object")
@@ -600,6 +606,8 @@ def main() -> int:
     logging.basicConfig(stream=sys.stderr, level=os.environ.get("HERMES_PLUGIN_HOST_LOG_LEVEL", "WARNING"),
                         format="%(levelname)s %(name)s: %(message)s")
     runtime = HostRuntime(reader, writer)
+    from hermes_cli import plugin_events
+    plugin_events._session_event_forwarder = runtime.session_event
     runtime.channel.start()
     runtime.stopped.wait()
     runtime.channel.close("host shutdown")

@@ -1997,12 +1997,23 @@ listens for the event frame of type `plugin.<plugin_id>.pane.changed`:
   client that reconnects replays them. `session_id` may be the conversation's id or its agent's current
   id (compression gives the agent a new one), so a tool or hook can pass the `session_id` it received.
   `payload` is a JSON dict. The call returns `True` when a live viewer took the frame, `False` when no
-  client is viewing or this process holds no such session. `hermes_cli.plugin_events.emit_plugin_session_event(plugin_id, session_id, event, payload)`
-  is the same call for code without `ctx`.
+  client is viewing or this process holds no such session. `ctx.emit_to_session` looks the session up in
+  your plugin's own profile, also from a thread you started. `hermes_cli.plugin_events.emit_plugin_session_event(plugin_id, session_id, event, payload)`
+  is the same call for code without `ctx`; it uses the caller's profile scope, so from your own thread on
+  a gateway that serves several profiles, use `ctx.emit_to_session`.
+- **`plugins.isolation: host`:** both work the same. Handlers run in the plugin host process, and both
+  emit calls are forwarded to the gateway process, looked up in the host's profile.
 - **Where it works:** on a gateway that owns sessions (its session authority, as on the shared
   `hermes gateway run` gateway that attached frontends use). A backend without one answers the method
   with `-32601`. In a process without one (`hermes chat`, cron, a
   `dashboard.turn_isolation` compute child) `emit_to_session` returns `False`.
+- **Detect it first.** An owner that serves plugin methods lists `plugin-rpc-v1` in
+  `runtime.describe`'s `capabilities`. Call `plugin.*` only when it does: then `-32601` means that plugin
+  method is not loaded (the plugin is disabled, not installed, or has no such method), while a backend
+  without the capability serves no plugin methods at all. The contract declares the namespace once as
+  `plugin.{plugin_id}.{name}` (`CanonicalRpcNamespaces` in the generated TypeScript,
+  `x-canonical-namespaces` in the OpenRPC document): params are an open object with an optional
+  `session_id`, and the result is whatever JSON your handler returns.
 
 **Security.** A plugin method gets the same gate as a plugin slash command on that gateway: the connection
 needs the `session:control` capability, and a call that names a `session_id` must pass that session's

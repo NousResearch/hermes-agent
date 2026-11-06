@@ -67,13 +67,17 @@ def parse_retry_after_seconds(value_or_headers: Any) -> Optional[float]:
 # Free-text "reset" grammars providers put in error bodies, tried in order. One table so the
 # conversation loop's error context and the credential pool's cooldown agree on the same wait.
 _QUOTA_RESET_DELAY_RE = re.compile(r"quotaResetDelay[:\s\"]+(\d+(?:\.\d+)?)(ms|s)", re.IGNORECASE)
-# "Resets in 4hr 5min" (weekly usage limits), "resets in 2 hours 5 minutes", "resets in 30s".
+# "Resets in 4hr 5min" (weekly usage limits), "resets in 2 hours 5 minutes", "resets in 30s",
+# "will reset in 2 days, 18 hours" (spent daily/weekly quotas), "reset after 18h31m10s".
+# A multi-day quota read as "no reset" benched the credential for the 1 h default and retried
+# into the same wall, so the day unit and the compact/comma-joined forms matter.
+_DURATION_UNIT = r"(?:days?|d|hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)(?![a-z])"
+_DURATION_PART = rf"\d+(?:\.\d+)?\s*{_DURATION_UNIT}"
 _RESETS_IN_RE = re.compile(
-    r"resets?\s+in\s+"
-    r"(?:(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)\b\s*)?"
-    r"(?:(\d+(?:\.\d+)?)\s*(?:m|min|mins|minute|minutes)\b\s*)?"
-    r"(?:(\d+(?:\.\d+)?)\s*(?:s|sec|secs|second|seconds)\b)?", re.IGNORECASE,
+    rf"resets?\s+(?:in|after)\s+({_DURATION_PART}(?:\s*,?\s*(?:and\s+)?{_DURATION_PART})*)", re.IGNORECASE,
 )
+_DURATION_PART_RE = re.compile(rf"(\d+(?:\.\d+)?)\s*({_DURATION_UNIT})", re.IGNORECASE)
+_UNIT_SECONDS = {"d": 86_400, "h": 3_600, "m": 60, "s": 1}
 _RETRY_AFTER_SECONDS_RE = re.compile(r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)", re.IGNORECASE)
 # The plan usage-limit body field as it appears once stringified: ``'resets_in_seconds': 30995``.
 _RESETS_IN_SECONDS_FIELD_RE = re.compile(r"resets_in_seconds\W{1,4}(\d+(?:\.\d+)?)", re.IGNORECASE)
@@ -85,9 +89,8 @@ def _quota_reset_seconds(m: re.Match[str]) -> float:
 
 
 def _resets_in_seconds(m: re.Match[str]) -> Optional[float]:
-    if not any(m.groups()):  # "resets in" with no unit-bearing number: not this grammar
-        return None
-    return float(m.group(1) or 0) * 3600 + float(m.group(2) or 0) * 60 + float(m.group(3) or 0)
+    return sum(float(amount) * _UNIT_SECONDS[unit[0].lower()]
+               for amount, unit in _DURATION_PART_RE.findall(m.group(1)))
 
 
 # An explicit "retry after N s" wins over "resets in ..." (the credential pool's precedence):

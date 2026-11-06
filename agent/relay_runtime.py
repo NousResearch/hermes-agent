@@ -950,6 +950,16 @@ def managed_callback_guard():
         _MANAGED_CALLBACK_DEPTH.reset(token)
 
 
+def in_managed_callback() -> bool:
+    """Whether this context is inside a managed Relay callback (see ``managed_callback_guard``).
+
+    Read this BEFORE entering a saved Context, then re-establish the guard inside it: a context
+    captured outside the callback carries depth 0 and would otherwise reopen nested managed
+    execution, which deadlocks against the outer loop blocked in the callback (#77244).
+    """
+    return _MANAGED_CALLBACK_DEPTH.get() > 0
+
+
 def _warn_on_error(what: str, callback: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
     """Run fail-open telemetry work: log ``Hermes Relay <what> failed`` and return None on error."""
     try:

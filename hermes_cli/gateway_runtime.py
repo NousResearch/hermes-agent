@@ -364,9 +364,25 @@ def _fenced_verdict(home: Path, timeout: float) -> GatewayDiscovery:
 
 
 _REPLACE_FAILED_DETAIL = "an older Hermes gateway still owns this profile after a stop; run: hermes gateway stop"
-# ``draining`` reasons after which the owner is going away by itself: its own idle exit, or the
-# older-Hermes owner this call just stopped. Ensure waits it out and starts the current owner.
-_RETIRING = frozenset({"idle_exit", "replaced"})
+# ``draining`` verdicts a client must NOT wait out: the update fence (nothing moves it inside the
+# client's budget — the install is held, not the owner) and, via ``attachable``, a restart's
+# after-turn wait (that owner is still dialled to answer a parked approval/clarify, #139041).
+_NOT_RETIRING = frozenset({"update_paused"})
+
+
+def _is_retiring(observed: GatewayDiscovery) -> bool:
+    """Whether this verdict is an owner that is going away by itself: wait it out, then start.
+
+    Every ``draining`` state that is not attachable is one — its own idle exit, the older-Hermes
+    owner this call just stopped, and the drains that publish no reason at all (``stop()``, a
+    dashboard drain, an exiting rollout). Discovery reports those last ones as ``draining`` with
+    ``reason_code=None`` (the owner is still a live process and its lock is held, so it is not
+    ``absent`` yet), and answering that transient state terminally is how a client used to refuse
+    in ~1 s having spent none of its admission budget and submitted nothing — a ``Gateway draining:
+    not_ready`` wake lost for the whole restart window."""
+    if observed.state != "draining" or attachable(observed):
+        return False
+    return observed.reason_code not in _NOT_RETIRING
 
 
 def _observe_replacing_stale(home: Path, deadline: float, replaced: set[Path]) -> GatewayDiscovery:
@@ -401,7 +417,9 @@ def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float = DEFAULT
     owner/start request is observed this invocation never launches another.
     ``idle_exit``: an unmanaged daemon this call starts ends itself once idle (client entrypoints:
     chat, TUI, cron/kanban/ACP clients). A gateway that is ending that way reports ``draining``
-    (``idle_exit``); this call waits for it to go and starts the replacement transparently.
+    (``idle_exit``); this call waits for it to go and starts the replacement transparently. Every
+    non-attachable ``draining`` verdict is waited out the same way (``_is_retiring``): a drain that
+    publishes no reason is a transient owner loss, never a terminal answer with the budget unspent.
     """
     import time
     from hermes_cli.gateway_runtime_service import (
@@ -421,6 +439,9 @@ def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float = DEFAULT
     # still held for a moment after its control socket closes, which reads as "starting"), then
     # start the replacement this call owes the client.
     retiring = False
+    # True once this call has waited a drain out: a budget spent that way is an admission loss and
+    # is reported as one, not as a cold start that merely ran out of time.
+    drain_waited = False
     replaced: set[Path] = set()
     delay = 0.025
     try:
@@ -434,8 +455,9 @@ def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float = DEFAULT
             observed = _observe_replacing_stale(home, deadline, replaced)
             if observed.reason_code == "control_timeout":
                 return GatewayDiscovery("starting", reason_code="deadline")
-            if observed.state == "draining" and observed.reason_code in _RETIRING:
+            if _is_retiring(observed):
                 retiring, requested, child = True, False, None
+                drain_waited = True
                 time.sleep(min(0.1, remaining(deadline)))
                 continue
             if observed.state not in {"absent", "starting"}:
@@ -486,6 +508,11 @@ def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float = DEFAULT
             # within ~50 ms instead of up to 250 ms later on every cold start.
             delay = min(delay * 1.5, 0.05)
     except TimeoutError:
+        if drain_waited:
+            # A drain that outlived the client's budget is a bounded, classified admission loss: the
+            # owner never left, so this call never started anything. ``drain_deadline`` keeps it
+            # distinguishable from a cold start that ran out of time (``starting``/``deadline``).
+            return GatewayDiscovery("draining", reason_code="drain_deadline")
         return GatewayDiscovery("starting", reason_code="deadline")
     except RuntimeStartError as exc:
         return GatewayDiscovery(exc.state, reason_code=exc.reason)

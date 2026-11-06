@@ -523,3 +523,82 @@ def test_dead_unmanaged_start_is_a_prompt_terminal_verdict(tmp_path, monkeypatch
     assert "RuntimeError: boot failed with key" in result.detail, result.detail
     assert secret not in result.detail and "OLD_RUN_TRACEBACK" not in result.detail
     assert "gateway-stdio.log" in result.detail
+
+
+def _owner_endpoint(runtime, home):
+    return runtime.GatewayEndpoint(
+        profile_id=str(home), instance_id="owner", authority_epoch=1, runtime_protocol=1,
+        api_origin="http://127.0.0.1:9", supervisor="external", capabilities=frozenset())
+
+
+def _drain_client(tmp_path, monkeypatch, states):
+    """A client bootstrap whose discovery walks *states* (then ``absent``), recording spawns."""
+    from hermes_cli import gateway_runtime as runtime, gateway_runtime_service as service, gateway_runtime_start as start
+
+    root = tmp_path / ".hermes"
+    home = root / "profiles" / "alpha"
+    home.mkdir(parents=True, mode=0o700)
+    plan = list(states)
+    seen, spawned = [], []
+
+    def discover(*a, **k):
+        seen.append(1)
+        state = plan.pop(0) if plan else "absent"
+        if state == "ready":
+            return runtime.GatewayDiscovery("ready", _owner_endpoint(runtime, home))
+        return runtime.GatewayDiscovery(state)
+
+    monkeypatch.setattr(runtime, "_update_fenced", lambda homes: False)
+    monkeypatch.setattr(runtime, "discover_gateway_endpoint", discover)
+    monkeypatch.setattr(service, "discover_existing_gateway_service", lambda *a, **k: None)
+    monkeypatch.setattr(start, "spawn_unmanaged_gateway", lambda target, **k: spawned.append(Path(target)))
+    return runtime, root, home, seen, spawned
+
+
+@pytest.mark.platforms("linux", "macos")
+def test_a_drain_that_publishes_no_reason_is_waited_out_and_replaced(tmp_path, monkeypatch):
+    """A run admitted on the release instant is not a ~1 s refusal (PRX-6227).
+
+    ``stop()`` and a dashboard drain report ``draining`` with no reason ``_RETIRING`` names.
+    Answering that transient state terminally spent none of the client's budget, submitted nothing
+    and lost the dispatch for the whole restart window. Such an owner is on its way out: wait for
+    it to go, then start the replacement in the same invocation and admit."""
+    runtime, root, home, seen, spawned = _drain_client(
+        tmp_path, monkeypatch, ["draining", "draining", "absent", "absent", "ready"])
+
+    result = runtime.ensure_gateway_runtime(home, timeout=5.0)
+
+    assert result.state == "ready", result
+    assert spawned == [root.resolve()]
+    assert len(seen) >= 5
+
+
+@pytest.mark.platforms("linux", "macos")
+def test_a_drain_that_outlives_the_budget_is_a_classified_deadline(tmp_path, monkeypatch):
+    """A wedged drain is still a bounded loss, and a classified one: not ``not_ready`` in ~1 s."""
+    runtime, _root, home, _seen, spawned = _drain_client(tmp_path, monkeypatch, ["draining"] * 1000)
+
+    before = time.monotonic()
+    result = runtime.ensure_gateway_runtime(home, timeout=0.3)
+
+    assert (result.state, result.reason_code) == ("draining", "drain_deadline"), result
+    assert time.monotonic() - before < 5
+    assert spawned == []
+
+
+@pytest.mark.platforms("linux", "macos")
+def test_a_restart_wait_drain_is_still_attached_rather_than_waited(tmp_path, monkeypatch):
+    """The wait must not swallow the one drain a client has to DIAL (#139041).
+
+    A restart's after-turn wait is attachable: it still owns turns and answers a parked
+    approval/clarify, so ensure hands it out instead of waiting for it to go."""
+    runtime, _root, home, _seen, spawned = _drain_client(tmp_path, monkeypatch, [])
+    observed = runtime.GatewayDiscovery("draining", _owner_endpoint(runtime, home), reason_code="restart_wait")
+    monkeypatch.setattr(runtime, "discover_gateway_endpoint", lambda *a, **k: observed)
+
+    result = runtime.ensure_gateway_runtime(home, timeout=2.0)
+
+    assert (result.state, result.reason_code) == ("draining", "restart_wait")
+    assert result.endpoint is not None
+    assert spawned == []
+

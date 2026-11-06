@@ -1655,18 +1655,18 @@ def _cron_tick_profile_homes(config: object) -> list[tuple[str, Path]]:
     """Profile homes the in-process ticker visits: the served set PLUS the process-active
     profile: ``profiles_to_serve`` lists default + every live named profile, but a ``--profile
     <name>`` gateway's own profile may sit outside ``profiles/`` (custom HERMES_HOME). One host
-    process ticks all of them regardless of ``gateway.multiplex_profiles``. Adapter startup
-    already skips ``active``."""
-    from hermes_cli.profiles import get_active_profile_name, get_profile_dir
+    process ticks all of them regardless of ``gateway.multiplex_profiles``. A standalone named
+    gateway instead owns only its own cron store. Adapter startup already skips ``active``."""
+    from hermes_cli.profiles import get_active_profile_name, profile_is_standalone
 
-    homes = _multiplex_profile_homes(config)
     active = get_active_profile_name() or "default"  # launch profile, pre-identity (ticker boot)
-    if any(name == active for name, _home in homes):
+    active_home = get_hermes_home()
+    if active != "default" and profile_is_standalone(active_home):
+        return [(active, active_home)]
+    homes = _multiplex_profile_homes(config)
+    if any(home.resolve() == active_home.resolve() for _name, home in homes):
         return homes
-    try:
-        return homes + [(active, get_profile_dir(active))]
-    except Exception:
-        return homes
+    return homes + [(active, active_home)]
 
 
 def _cron_profile_gate(name: str, home: Path) -> bool:

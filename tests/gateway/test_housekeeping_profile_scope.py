@@ -318,3 +318,65 @@ def test_multiplexed_plugin_update_check_visits_every_served_profiles_plugins(tw
     assert checked == [(a / "plugins", False), (b / "plugins", True)]
     assert (a / "plugin-update-checks" / "last-run").exists()
     assert (b / "plugin-update-checks" / "last-run").exists()
+
+
+def test_multiplexed_checkpoint_prune_tick_prunes_every_served_profile_store(two_homes):
+    """The checkpoint prune tick reaches each served profile's OWN store.
+
+    The chore resolves its store through ``_resolve_checkpoint_base()`` ->
+    ``get_hermes_home()/checkpoints`` at call time and reads ``checkpoints.retention_days``
+    from the profile's own ``config.yaml``, so it is a per-profile chore. Unscoped it pruned
+    the launch home on every pass and left a served profile's store to grow with nobody
+    pruning it. Real stores, real config files: nothing here is patched.
+
+    Repro shape: on a multiplexed host the launch store's ``.last_prune`` marker is hours
+    old while the served profiles' markers are weeks back, at the hour multiplexing started.
+    """
+    import os
+
+    import tools.checkpoint_manager as checkpoints
+    from agent.secret_scope import set_multiplex_active
+    from tools.checkpoint_maintenance import _PRUNE_MARKER_NAME
+
+    a, b = two_homes
+    for home in (a, b):
+        (home / "config.yaml").write_text(
+            "model:\n  provider: nous\n"
+            "checkpoints:\n"
+            "  auto_prune: true\n"
+            "  retention_days: 7\n"
+            "  min_interval_hours: 0\n"
+            "  max_total_size_mb: 1\n",
+            encoding="utf-8")
+        # ``CheckpointManager`` writes under ``CHECKPOINT_BASE``, which the module resolves at
+        # call time and lets a test pin: each home gets a real store at its own root. One
+        # oversized snapshot under a 1 MB cap is the deterministic prune: the cap drops the
+        # oldest commit of the project, whatever the age of the store.
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(checkpoints, "CHECKPOINT_BASE", home / "checkpoints")
+            project = home / "project"
+            project.mkdir()
+            manager = checkpoints.CheckpointManager(enabled=True, max_total_size_mb=0)
+            blob = project / "old.bin"
+            blob.write_bytes(os.urandom(1_300_000))
+            assert manager.ensure_checkpoint(str(project), "large-oldest")
+            blob.unlink()
+            (project / "small.txt").write_text("1", encoding="utf-8")
+            manager.new_turn()
+            assert manager.ensure_checkpoint(str(project), "small-new")
+
+    set_multiplex_active(True)
+    try:
+        _run_60_ticks(SimpleNamespace(config=SimpleNamespace(multiplex_profiles=True)))
+    finally:
+        set_multiplex_active(False)
+
+    for home in (a, b):
+        assert (home / "checkpoints" / _PRUNE_MARKER_NAME).exists(), (
+            f"{home.name}'s store was never visited by the prune tick")
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(checkpoints, "CHECKPOINT_BASE", home / "checkpoints")
+            manager = checkpoints.CheckpointManager(enabled=True, max_total_size_mb=0)
+            kept = [row["reason"] for row in manager.list_checkpoints(str(home / "project"))]
+            assert "large-oldest" not in kept, (
+                f"{home.name}'s store kept a snapshot the 1 MB cap had to drop: {kept}")

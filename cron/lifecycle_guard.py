@@ -1003,6 +1003,10 @@ def _read_referenced_script_unlocked(
         return None, True
     flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
     try:
+        # macOS can stall open() on protected directories even with O_NONBLOCK,
+        # holding the SQLite lifecycle lock. Keep fstat below for file races.
+        if path.is_dir():
+            return None, False
         descriptor = os.open(path, flags)
     except (OSError, ValueError):
         # OSError: unreadable/missing/over-long. ValueError: embedded NUL in *path*. Either is

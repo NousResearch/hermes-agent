@@ -107,11 +107,11 @@ export function prepareNodeDependencies({ source, workspaces, env = process.env,
     && Boolean(JSON.parse(readFileSync(join(source, 'apps/desktop/package.json'), 'utf8')).devDependencies?.electron)
   const pnpm = pnpmCommand({ env })
   const version = pnpmVersion(pnpm, { source, env })
-  // pnpm-workspace.yaml sets pmOnFail: ignore (so the lock stays one YAML document),
-  // which also stops pnpm from enforcing the root devEngines pin: enforce it here.
-  const pinned = JSON.parse(readFileSync(join(source, 'package.json'), 'utf8')).devEngines?.packageManager
-  if (pinned?.name === 'pnpm' && pinned.version !== version) {
-    throw new Error(`pnpm ${pinned.version} is required (root package.json devEngines), found ${version} at ${pnpm}`)
+  // pnpm never checks its own version here (pmOnFail: ignore keeps the lock one YAML
+  // document): PM's pin is the one this checkout's lockfile was written with.
+  const pinned = JSON.parse(readFileSync(join(source, 'pm/lock.json'), 'utf8')).packages.pnpm.version
+  if (pinned !== version) {
+    throw new Error(`pnpm ${pinned} is required (pm/lock.json), found ${version} at ${pnpm}`)
   }
   // The root project is always installed with a filtered install. The release-age
   // policy is enforced where the lockfile is written (CI), not re-fetched per user.

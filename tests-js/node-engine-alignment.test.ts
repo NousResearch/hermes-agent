@@ -55,5 +55,4 @@ test('exact independently managed Node satisfies all declared lockfile engines',
 
 test('the managed pnpm is exactly the one the repository requires, and any other fails', (): void => {
   assert.ok(semver.valid(pins.pnpm.version), 'pnpm must be an exact pin')
-  assert.deepEqual(root.devEngines?.packageManager, { name: 'pnpm', version: pins.pnpm.version, onFail: 'warn' })
 })

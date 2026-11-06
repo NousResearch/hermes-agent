@@ -217,11 +217,9 @@ def install(args) -> None:
         })
         outputs["uv-cache-path"] = str(uv_cache_dir())
     if "npm" in names:
-        # Outside the checkout: its package.json pins pnpm (devEngines), and npm
-        # warns about that on every command run inside it.
         cache = subprocess.check_output(
             [str(binaries["npm"]), "config", "get", "cache"],
-            cwd=args.home.resolve(), env=environment, text=True, encoding="utf-8", timeout=60,
+            env=environment, text=True, encoding="utf-8", timeout=60,
         ).strip()
         outputs["npm-cache-path"] = cache
     if "pnpm" in names:

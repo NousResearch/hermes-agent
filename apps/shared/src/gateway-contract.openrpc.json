@@ -44186,6 +44186,18 @@
             ],
             "default": null,
             "title": "Accepting Steer"
+          },
+          "child_session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Child Session Id"
           }
         },
         "required": [

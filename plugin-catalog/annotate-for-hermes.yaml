@@ -1,6 +1,6 @@
 name: annotate-for-hermes
 repo: https://github.com/LarryLemonBot/annotate-for-hermes
-sha: 1326e5a91410c1fa748519452255ba9201e852da
+sha: 71c688fd2dd26554e404b467b48bff6d2ecfdb32
 title: "Annotate for Hermes"
 description: >-
   Annotate for Hermes adds response annotations: highlight assistant text, add
@@ -8,24 +8,26 @@ description: >-
   Review, edit or remove each annotation, then send all selections with an ordinary
   reply. Disclosure — Desktop-only; uses the public composer
   annotation API and draft/session SDK, renders its own popovers, and temporarily
-  highlights selected text. No network calls, credentials, telemetry, model calls,
-  Python hooks, automatic sends, self-updater or changes to application files.
+  highlights selected text. Optional dictation uses Hermes and its configured
+  speech-to-text provider; only the transcript enters the attachment. The plugin
+  makes no direct network or model calls and stores no credentials or telemetry.
+  No Python hooks, automatic sends, self-updater or changes to application files.
 maintainer: LarryLemonBot
 tier: community
 category: desktop
 version: "1.0.0"
 requires_hermes: ">=0.22.5"
 docs_url: https://github.com/LarryLemonBot/annotate-for-hermes#readme
-platforms: [linux, macos, windows]
-image: https://raw.githubusercontent.com/LarryLemonBot/annotate-for-hermes/1326e5a91410c1fa748519452255ba9201e852da/docs/catalog-banner.png
+platforms: [macos]
+image: https://raw.githubusercontent.com/LarryLemonBot/annotate-for-hermes/71c688fd2dd26554e404b467b48bff6d2ecfdb32/docs/catalog-banner.png
 screenshots:
-  - https://raw.githubusercontent.com/LarryLemonBot/annotate-for-hermes/1326e5a91410c1fa748519452255ba9201e852da/docs/annotation-preview.png
+  - https://raw.githubusercontent.com/LarryLemonBot/annotate-for-hermes/71c688fd2dd26554e404b467b48bff6d2ecfdb32/docs/annotation-preview.png
 known_issues:
-  - "Development preview: requires the response-annotations v1 Desktop API from PR #146959. Stock Hermes 0.22.5 does not provide it. Do not merge this entry until the API is released and both compatibility floors are updated."
+  - "Development preview: requires the response-annotations v1 Desktop API from PR #146959. Stock Hermes through v0.23.0 does not provide it. This pin is the macOS hackathon preview; its v0.23.0 developer patch is newer than the original core proposal. Do not merge this entry until the API is released and both compatibility floors are updated."
+  - "Only macOS runtime behavior has been exercised. Windows, Linux, screen readers, touch, and the official updater path remain unverified."
   - "Unsaved popover comments and source highlights do not survive an app reload. Draft attachments do."
 capabilities:
   provides_tools: []
   provides_hooks: []
   provides_middleware: []
   requires_env: []
-

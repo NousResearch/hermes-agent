@@ -116,6 +116,7 @@ class HostedRoomRuntime:
         task_progress: Callable[[str, str, int, Mapping[str, Any]], None] | None = None,
         retire_task_progress: Callable[[str, str, int], None] | None = None,
         remote_member: Callable[[str, str], bool] | None = None,
+        confirm_deferred_stop: Callable[[str, Mapping[str, Any]], bool] | None = None,
         maintain: Callable[[], Any] | None = None,
         clock: Callable[[], float] = time.time,
         lease_ttl_seconds: float = 30.0, poll_interval_seconds: float = 5.0,
@@ -143,7 +144,7 @@ class HostedRoomRuntime:
         self.prepare_room, self.publish_terminal = prepare_room, publish_terminal
         self.pending_action, self.task_progress, self.clock = pending_action, task_progress, clock
         self.retire_task_progress = retire_task_progress
-        self.remote_member = remote_member
+        self.remote_member, self.confirm_deferred_stop = remote_member, confirm_deferred_stop
         self.maintain = maintain  # once per worker cycle, outside any room (owed grant revokes)
         for name, value in positive.items():
             setattr(self, name, float(value))
@@ -226,6 +227,10 @@ class HostedRoomRuntime:
         hint: a fast-path fence failure re-reads and re-routes instead of surfacing it.
         Preparation defers acknowledgement to the worker: only durable state and wakeup
         are safe under its policy lock, which Discard may also hold recursively.
+        A turn this read finds deferred (the worker may defer it after the caller's snapshot)
+        is cancelled only once ``confirm_deferred_stop`` confirms its member's Stop; unconfirmed,
+        or without acknowledgement (no peer call under the policy lock), it is returned as is. The cancel is fenced on the cancel generation this read saw, so
+        a turn that moved on meanwhile is re-routed.
         """
         for _ in range(_CANCEL_ROUTE_RETRIES):
             before = state.get_task(self.db_path, identity)
@@ -237,6 +242,9 @@ class HostedRoomRuntime:
             if before["status"] == "stopping":
                 cancel_id = before["cancel_id"]  # join the already persisted stop generation
             direct = before["status"] in {"queued", "deferred"}
+            if before["status"] == "deferred" and self.confirm_deferred_stop is not None and (
+                    not acknowledge or not self.confirm_deferred_stop(identity.room_id, before)):
+                return before
             try:
                 result = (state.cancel_task if direct else state.begin_task_cancel)(
                     self.db_path, identity, cancel_id=cancel_id,

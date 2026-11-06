@@ -216,7 +216,7 @@ class HostedRoomService:
             prepare_room=self._prepare_tracked, publish_terminal=self.publish_terminal,
             pending_action=self._set_pending_action, task_progress=record_task_progress,
             retire_task_progress=forget_task_progress,
-            remote_member=self._member_is_peer,
+            remote_member=self._member_is_peer, confirm_deferred_stop=self._stop_deferred_peer,
             maintain=self.retry_owed_revokes,
             poll_interval_seconds=_HOSTED_ROOM_IDLE_FALLBACK_SECONDS,
             active_poll_interval_seconds=_HOSTED_ROOM_ACTIVE_POLL_SECONDS,
@@ -968,15 +968,16 @@ class HostedRoomService:
                         and (action.get("task_id"), action.get("execution_generation")) in stopped]:
                 self._pending_actions.pop(key, None)
         # Stopping a member on another gateway waits on the network: never under the policy lock.
+        # The snapshot only picks the tasks: the worker can defer a stopping turn at any point, so
+        # cancel decides on its own read (``confirm_deferred_stop``), the count on the state it left.
         for task in tasks.values():
-            if task["status"] == "deferred" and not self._stop_deferred_peer(room_id, task):
-                unconfirmed += 1
-                continue
             own_cancel_id = (
                 task.get("status") == "stopping" and str(task.get("cancel_id") or ""))
             result = self.runtime.cancel(task["identity"], cancel_id=own_cancel_id or cancel_id)
             if result["status"] == "stopping":
                 pending += 1
+            elif result["status"] == "deferred":
+                unconfirmed += 1
         # Disband waits for every member's Stop, a member on another gateway included: a deferred
         # turn its gateway has not confirmed stopped holds it until confirmed or Discarded.
         if require_acknowledged and (pending or unconfirmed):

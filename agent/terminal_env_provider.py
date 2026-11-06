@@ -64,8 +64,10 @@ class TerminalEnvironmentProvider(ProviderBase):
     ``scope=`` (the bound scope) and ``sandbox=`` (the identity), and ``task_id`` is the identity's
     key. The environment it returns is wrapped by core in ``ScopedEnvironment``, which refuses any call
     made under another agent's scope (or under none) before it reaches the backend, and passes the
-    bound scope as ``scope=`` to ``execute``, ``fetch_file``, ``fetch_realpath`` and the long-lived
-    process methods, which a hosted environment implements:
+    bound scope as ``scope=`` to every operation. The environment must implement the hosted operation
+    interface (``sandbox_scope.require_hosted_interface``: ``execute``, ``cleanup`` and the long-lived
+    process methods, plus ``fetch_file``/``fetch_realpath``/``get_temp_dir``/``stop_idle`` when present,
+    each accepting ``scope=``) or it is refused at creation. The long-lived process methods are:
 
     * ``start_process(name, argv, *, child_env=None, scope)`` → ``ProcessStream`` with stdin and stdout
       open as byte pipes; ``attach_process(name, *, scope)`` → the running process's stream, or

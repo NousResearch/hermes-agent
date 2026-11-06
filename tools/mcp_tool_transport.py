@@ -376,6 +376,8 @@ class MCPServerTransportMixin:
 
     async def _run_stdio(self, config: dict):
         """Run the server using stdio transport."""
+        from tools.hosted_tool_policy import refuse_on_host
+        refuse_on_host(f"MCP server '{self.name}' (stdio)", "it would start a process on this host")
         if config.get("identity_header") is not None:  # copy-pasted HTTP block: warn, don't mislead
             logger.warning("MCP server '%s': identity_header is only supported on "
                            "HTTP/SSE transports — ignored for stdio servers", self.name)

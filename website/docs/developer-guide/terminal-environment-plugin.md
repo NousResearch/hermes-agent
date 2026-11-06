@@ -298,18 +298,39 @@ identity), and `task_id` is `sandbox.key`. Create or resume the sandbox that
 **The guard.** Hermes wraps the environment you return in
 `ScopedEnvironment`. Every call made through it first checks that the bound
 scope names the same agent, and raises `CrossAgentHandleRefused` otherwise
-(including when no scope is bound; only `cleanup` and `stop_idle` run
-unscoped, for the idle reaper). Your environment's `execute`, `fetch_file` and
-`fetch_realpath` receive the bound scope as `scope=` when they declare that
-parameter, so the backend can check it too.
+(including when no scope is bound), then passes that scope to your method as
+`scope=`. Your environment must implement the hosted operation interface:
+`execute`, `cleanup`, `start_process`, `attach_process` and `stop_process`,
+plus `fetch_file`, `fetch_realpath`, `get_temp_dir` and `stop_idle` when it
+has them, each accepting `scope=` (a named parameter or `**kwargs`). An
+environment that lacks one, or would drop the scope, is refused with
+`HostedSandboxRequired` when it is created. The idle reaper runs with no scope
+bound: its `stop_idle` (suspend: keep the workspace, resume on the next call)
+and `cleanup` (destroy) calls run under the scope that created the sandbox. An
+idle hosted sandbox is suspended with `stop_idle` when you implement it; a
+sandbox with a background process still running is never reaped.
 
 **Tools.** In a hosted scope the terminal, `execute_code` (always the remote
 kernel, never the host's), background processes and the file tools (read,
 write, patch, search) all go through your environment. The file tools never
-take a host fast path and never open, write or list the requested path on the
-host (the credential denylist still normalises the path string, which can
-`lstat` its components). Background processes are stamped with the agent's
-sandbox key, and another agent's process is indistinguishable from a missing one.
+take a host fast path and never open, write, list, stat or dereference the
+requested path on the host: their path policies (credential denylists,
+protected files) judge the path's lexical form. Media the agent names (vision,
+video, image-generation references) is read inside the sandbox, and an
+oversized tool result is written into it, never on the host. Background
+processes, and the completion, watch and heartbeat events they produce, carry
+the agent's sandbox key; another agent's process is indistinguishable from a
+missing one and its events stay queued for it.
+
+**Refused in a hosted scope.** Tools with no sandbox route yet fail closed
+before any setup, file or process (`tools/hosted_tool_policy.py`): the
+browser tools, computer use and desktop UI, image/video generation, text to
+speech, skills, cron jobs and their scripts, delegation, kanban, catalog and
+connection management, onboarding, and every MCP server from the profile's
+config (stdio servers are never started). So are the paths outside the tool
+registry that would act on the host: checkpoints and rollback, inline skill
+shell, `@`-references, the workspace git probe, media delivery by host path,
+connector file inputs, document extraction and voice transcription.
 
 **Long-lived processes.** A hosted environment also implements:
 
@@ -335,7 +356,10 @@ broker exists yet, so Hermes passes none.
 **Conformance.** `tools/environments/sandbox_conformance.py` holds the
 isolation checks Hermes runs against its recording stub backend
 (`tests/tools/test_sandbox_scope_conformance.py`): A's tools only address A's
-sandbox; a handle naming another agent is refused; no file tool touches the
-host filesystem (checked with a planted host file and an audit hook); a
-background process started by A is invisible to B. Run the same checks
+sandbox; a handle naming another agent is refused; no file tool or media read
+touches the host filesystem (checked with a planted host file and symlink, an
+audit hook and `stat`/`lstat`/`readlink` observation); a background process
+started by A, and its events, are invisible to B; an oversized result stays in
+the sandbox; running work keeps a sandbox alive and an idle one is suspended
+under its owner's scope; host-only tools are refused. Run the same checks
 against your provider.

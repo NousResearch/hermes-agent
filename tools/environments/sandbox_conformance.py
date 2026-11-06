@@ -16,6 +16,8 @@ the tool registry, then asserts one isolation invariant:
   their directory) and go to the sandbox instead;
 * :func:`check_media_never_read_on_host` — media a hosted agent names is read in its sandbox, never
   on this host (not even the profile's media cache);
+* :func:`check_host_tools_refused` — a tool with no sandbox route (browser, desktop, media
+  generation, TTS, skills, cron, delegation, MCP servers) is refused before its handler runs;
 * :func:`check_background_process_invisible` — a background process started by A is missing for B;
 * :func:`check_host_backend_refused` — with a host backend configured, a hosted scope's tools
   fail closed instead of running here (backend-independent: run it with ``terminal.backend: local``).
@@ -544,6 +546,38 @@ def check_media_never_read_on_host(provider: RecordingSandboxProvider, a: Scope,
     assert all(any(str(p) in r for r in reads) for p in planted), "a media path was not read in the sandbox"
 
 
+def check_host_tools_refused(provider: RecordingSandboxProvider, a: Scope, b: Scope) -> None:
+    """Every registered tool that would run or read on this host (``tools.hosted_tool_policy``:
+    browser, desktop, media generation, TTS, skills, cron, delegation, MCP servers, ...) is refused
+    under a hosted scope before its handler runs, and still reaches its handler with no scope bound."""
+    from tools.hosted_tool_policy import refused_toolsets
+    from tools.registry import registry
+    names = [n for n in registry.get_all_tool_names()
+             if (ts := registry.get_toolset_for_tool(n) or "") in refused_toolsets() or ts.startswith("mcp-")]
+    assert names, "no host tool is registered to check"
+    reached: list[str] = []
+    originals = {}
+    for name in names:
+        entry = registry.get_entry(name)
+        originals[name] = (entry, entry.handler, entry.is_async)
+        entry.handler = lambda args, _n=name, **kw: reached.append(_n) or json.dumps({"ok": True})
+        entry.is_async = False
+    try:
+        with _bind(a):
+            for name in names:
+                result = call_tool(name, {}, task_id="t")
+                assert "not available to a hosted agent" in json.dumps(result), f"{name} was not refused: {result}"
+        assert not reached, f"a refused tool's handler ran: {reached}"
+        for name in names:  # a local call carries its required arguments, or it is refused before the handler
+            required = (registry.get_entry(name).schema.get("parameters") or {}).get("required") or ()
+            call_tool(name, {key: "x" for key in required}, task_id="t")
+        assert sorted(reached) == sorted(names), "a local call no longer reaches its handler"
+    finally:
+        for entry, handler, is_async in originals.values():
+            entry.handler, entry.is_async = handler, is_async
+    assert not [c for c in provider.calls if c.sandbox == _identity(a)], "a refused tool reached the sandbox"
+
+
 def checks() -> Iterator[tuple[str, Callable[..., None]]]:
     yield from (
         ("tools_address_own_sandbox", check_tools_address_own_sandbox),
@@ -552,6 +586,7 @@ def checks() -> Iterator[tuple[str, Callable[..., None]]]:
         ("media_never_read_on_host", check_media_never_read_on_host),
         ("background_process_invisible", check_background_process_invisible),
         ("process_notifications_private", check_process_notifications_private),
+        ("host_tools_refused", check_host_tools_refused),
         ("oversized_results_stay_in_sandbox", check_oversized_results_stay_in_sandbox),
         ("idle_sandbox_kept_while_working", lambda p, a, b: check_idle_sandbox_kept_while_working(p, a)),
         ("idle_sandbox_suspended_not_destroyed", lambda p, a, b: check_idle_sandbox_suspended_not_destroyed(p, a)),

@@ -47,8 +47,16 @@ export const cancelBacktrackPrime = () => {
 
 export const armPendingRewind = (pending: PendingRewind) => $pendingRewind.set(pending)
 
+// Bumped by every cancel, armed or not: an edit whose send is still in flight when the user starts
+// over (Esc Esc, /rewind, a queue edit) must not be re-armed by that send's refusal.
+let cancelGeneration = 0
+
+export const rewindCancelGeneration = () => cancelGeneration
+
 /** Drop the armed edit; nothing was cut. `sys` prints the cancel notice (explicit cancels only). */
 export function cancelPendingRewind(sys?: (text: string) => void): boolean {
+  cancelGeneration++
+
   if (!$pendingRewind.get()) {
     return false
   }

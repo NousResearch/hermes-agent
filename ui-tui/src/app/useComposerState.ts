@@ -131,9 +131,9 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
   // Bumped whenever the draft is not just added to at the end (cleared, submitted, replaced, edited
   // mid-text): an edit's image restore follows the user's typing only within the draft it began on.
   const draftLife = useRef(0)
-  // Bumped only when the draft is emptied (cleared, submitted): text arriving late from browse (a
-  // paste still resolving, keys queued behind it) belongs to the draft it was typed into, and an
-  // edit inside that draft (backspace, mid-text) keeps it.
+  // Bumped only when the draft ends (clearIn: cleared, submitted, Esc Esc): text arriving late from
+  // browse (a paste still resolving, keys queued behind it) belongs to the draft it was typed into.
+  // An edit inside that draft (backspace to empty, a `\`+Enter continuation, mid-text) keeps it.
   const draftEpoch = useRef(0)
 
   const inputBufRef = useRef<string[]>([])
@@ -168,10 +168,6 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
 
     if (!inputRef.current.startsWith(prev) || !inputRef.current) {
       draftLife.current++
-    }
-
-    if (!inputRef.current) {
-      draftEpoch.current++
     }
 
     if (pasteSpanRef.current) {
@@ -209,6 +205,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
 
   const clearIn = useCallback(() => {
     draftLife.current++
+    draftEpoch.current++
     setPasteSpan(null)
     setInput('')
     setInputBuf([])

@@ -933,6 +933,7 @@
   "slashCmd.core.rewind.cancelled",
   "slashCmd.core.rewind.done",
   "slashCmd.core.rewind.editNotSent",
+  "slashCmd.core.rewind.editNotSentUnknown",
   "slashCmd.core.rewind.forked",
   "slashCmd.core.rewind.imagesKeptAsNotes",
   "slashCmd.core.rewind.noPrevious",

@@ -164,6 +164,23 @@ describe('a browse paste still resolving belongs to the draft it was typed into'
     expect(composer().state.input).toBe('second')
   })
 
+  it('backspacing the draft to empty is still the same draft: a resolving paste lands, no notice', async () => {
+    const releases = held()
+    const { composer, sys } = mount(rpc)
+
+    composer().actions.setInput('ab')
+    const pasted = composer().actions.appendPaste('/shots/shot.png')
+
+    composer().actions.setInput('')
+    await flush()
+    releases[0]!()
+    await pasted
+    await settle()
+
+    expect(composer().refs.tokensRef.current.map(token => token.kind)).toEqual(['image'])
+    expect(sys).not.toHaveBeenCalled()
+  })
+
   it('control: typing on in the same draft keeps the paste and the keys, in order', async () => {
     const releases = held()
     const { composer } = mount(rpc)
@@ -184,7 +201,9 @@ describe('a browse paste still resolving belongs to the draft it was typed into'
 describe('an armed edit through the real submit path', () => {
   const staged = (path: string) => ({ mime: 'image/png', name: 'x.png', path: path.replace('/shots/', '/cache/') })
 
-  async function armWithChips(rewindRefusals: number) {
+  const busy = () => new JsonRpcGatewayError('session_busy', { code: 4001, data: { reason: 'session_busy' } })
+
+  async function armWithChips(rewindRefusals: number, fail: () => Promise<never> = async () => Promise.reject(busy())) {
     vi.mocked(stageImagePath).mockImplementation(async path => staged(path) as any)
     let refusals = rewindRefusals
 
@@ -195,7 +214,7 @@ describe('an armed edit through the real submit path', () => {
 
       if (method === 'session.mutate' && params.operation === 'rewind') {
         if (refusals-- > 0) {
-          throw new JsonRpcGatewayError('session_busy', { code: 4001, data: { reason: 'session_busy' } })
+          return fail()
         }
 
         return { session_id: 'A', operation: 'rewind', revision: 8, execution_generation: 4, rewound_count: 2 }
@@ -278,5 +297,41 @@ describe('an armed edit through the real submit path', () => {
 
     expect(pastes?.display).toBe(shown)
     expect(pastes?.pastes.map(paste => paste.text)).toEqual([block])
+  })
+
+  it('Esc Esc while the edit is still sending: its refusal brings the draft back but never re-arms it', async () => {
+    let refuse!: () => void
+    const { composer, submit } = await armWithChips(1, () => new Promise((_, reject) => (refuse = () => reject(busy()))))
+    const display = composer().state.input
+
+    submit().dispatchSubmission(display)
+    await flush()
+    composer().actions.setInput(' ')
+    composer().actions.setInput('')
+    $overlayState.set({ ...$overlayState.get(), rewind: null })
+    const { cancelPendingRewind } = await import('../app/backtrackStore.js')
+
+    cancelPendingRewind()
+    refuse()
+    await settle()
+
+    expect(composer().state.input).toBe(display)
+    expect($pendingRewind.get()).toBeNull()
+  })
+
+  it('a transport error after a switch away never claims nothing was removed', async () => {
+    let fail!: () => void
+    const { submit, sys } = await armWithChips(1, () => new Promise((_, reject) => (fail = () => reject(new Error('socket closed')))))
+
+    submit().dispatchSubmission('edited')
+    await flush()
+    patchUiState({ sid: 'B' })
+    fail()
+    await settle()
+
+    const said = sys.mock.calls.map(([text]) => String(text)).join('\n')
+
+    expect(said).toContain('may have been applied')
+    expect(said).not.toContain('nothing was removed')
   })
 })

@@ -1167,16 +1167,8 @@ async def test_slack_native_progress_correlates_concurrent_duplicate_tools_by_id
     assert second_completed["metadata"]["recipient_team_id"] == "T1"
     assert second_completed["metadata"]["recipient_user_id"] == "U1"
     assert adapter.native_updates[-1]["tasks"] == [
-        {
-            "id": "call-a",
-            "title": "web_search - alpha",
-            "status": "complete",
-        },
-        {
-            "id": "call-b",
-            "title": "web_search - beta",
-            "status": "error",
-        },
+        {"id": "call-a", "title": "Searching the web", "detail": "alpha", "status": "complete"},
+        {"id": "call-b", "title": "Searching the web", "detail": "beta", "status": "error"},
     ]
     assert adapter.sent == []
     assert adapter.native_stops == 1
@@ -1202,11 +1194,11 @@ async def test_slack_native_failure_keeps_editing_one_live_text_fallback(
     assert result["final_response"] == "done"
     assert len(adapter.native_updates) == 1
     assert len(adapter.sent) == 1
-    assert adapter.sent[0]["content"].endswith("web_search - alpha - running")
+    assert adapter.sent[0]["content"].endswith("Searching the web for alpha - running")
     assert len(adapter.edits) >= 2
     assert {edit["message_id"] for edit in adapter.edits} == {"progress-1"}
-    assert adapter.edits[-1]["content"].endswith("web_search - beta - error")
-    assert "web_search - alpha - complete" in adapter.edits[-1]["content"]
+    assert adapter.edits[-1]["content"].endswith("Searching the web for beta - error")
+    assert "Searching the web for alpha - complete" in adapter.edits[-1]["content"]
     assert adapter.native_stops == 1
 
 
@@ -1367,7 +1359,7 @@ async def test_slack_explicit_all_in_unsupported_card_destination_falls_back_to_
     assert len(adapter.native_updates) == 1
     assert len(adapter.sent) == 1
     assert adapter.edits
-    assert "web_search" in adapter.edits[-1]["content"]
+    assert "Searching the web for alpha" in adapter.edits[-1]["content"]
 
 
 @pytest.mark.asyncio

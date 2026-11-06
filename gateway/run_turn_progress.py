@@ -102,6 +102,17 @@ def publish_worker_tool_event(authority, session_id, generation, frame) -> bool:
     return True
 
 
+# Room for a native task card step's argument, which the card shows under the step rather than in
+# its title: ``tool_preview_length`` when the operator set one, else enough for a typical command.
+_TASK_CARD_DETAIL_DEFAULT = 200
+
+
+def _task_card_detail_cap() -> int:
+    from agent.display import get_tool_preview_max_len
+    cap = get_tool_preview_max_len()
+    return cap if cap > 0 else _TASK_CARD_DETAIL_DEFAULT
+
+
 class GatewayTurnProgressMixin:
     # ── shared thread→loop plumbing ─────────────────────────────────────────────────────────
 
@@ -366,6 +377,8 @@ class GatewayTurnProgressMixin:
         # dynamically so the state is visible where it lives.
         publication_suppressed: bool = False
         anonymous_seq: int = 0
+        # Text-fallback line per task ("Searching the web for alpha"), composed like text progress.
+        labels: dict[str, str] = dataclasses.field(default_factory=dict)
 
         @staticmethod
         def _compact(value: Any, limit: int = 120) -> str:
@@ -379,14 +392,27 @@ class GatewayTurnProgressMixin:
             labels = {"in_progress": t("gateway.progress.task_status_running"),
                       "complete": t("gateway.progress.task_status_complete"),
                       "error": t("gateway.progress.task_status_error")}
-            lines = [t("gateway.progress.task_line", title=task["title"], status=labels.get(task["status"], task["status"]))
+            lines = [t("gateway.progress.task_line", title=self.labels.get(task["id"], task["title"]),
+                       status=labels.get(task["status"], task["status"]))
                      for task in self.visible_tasks()]
             return t("gateway.progress.task_card_title") + "\n" + "\n".join(lines)
 
-        def _upsert(self, call_id: str, title: str) -> dict[str, str]:
+        def _upsert(self, call_id: str, tool_name: str, preview: Any = "") -> dict[str, str]:
+            # Named like text progress: the friendly verb is the step ("Searching the web") and the
+            # argument travels as its own ``detail``, which the card renders under the step instead
+            # of cutting it into the title. Tools without a curated verb keep their name.
+            from agent.display import get_tool_verb, tool_verb_connector, verb_drops_preview
+            verb = get_tool_verb(tool_name)
+            detail = "" if verb and verb_drops_preview(tool_name) else self._compact(preview, _task_card_detail_cap())
+            if verb:
+                label = f"{verb}{tool_verb_connector(tool_name)}{detail}" if detail else verb
+            else:
+                label = f"{tool_name} - {detail}" if detail else tool_name
             if call_id not in self.tasks:
                 self.task_order.append(call_id)
-            self.tasks[call_id] = {"id": call_id, "title": self._compact(title), "status": "in_progress"}
+            self.labels[call_id] = self._compact(label)
+            self.tasks[call_id] = {"id": call_id, "title": self._compact(verb or tool_name), "detail": detail,
+                                   "status": "in_progress"}
             return self.tasks[call_id]
 
         def apply_event(self, raw: Any) -> bool:
@@ -399,8 +425,7 @@ class GatewayTurnProgressMixin:
                 call_id = f"anonymous_{self.anonymous_seq}"
             tool_name = str(raw.get("tool_name") or "tool")
             if event_type == "tool.started":
-                preview = self._compact(raw.get("preview"), 64)
-                self._upsert(call_id, f"{tool_name} - {preview}" if preview else tool_name)
+                self._upsert(call_id, tool_name, raw.get("preview"))
                 return True
             # Completion-only events are rare but valid on some runtimes; keep their real ID instead
             # of guessing a same-name pending call.
@@ -833,7 +858,7 @@ class GatewayTurnProgressMixin:
         name = str(tool_name or "tool")
         self._ctx.progress_queue.put({
             "type": "tool.started", "tool_call_id": str(call_id or ""), "tool_name": name,
-            "preview": build_tool_preview(name, args or {}, max_len=64) or "",
+            "preview": build_tool_preview(name, args or {}, max_len=_task_card_detail_cap()) or "",
         })
 
     def native_tool_complete_callback(self, call_id, tool_name, args, result):

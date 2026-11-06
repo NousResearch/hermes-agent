@@ -2,7 +2,7 @@
 # Pinned to the plugin's current commit; bump sha and version together.
 name: creature-workshop
 repo: https://gitlab.creature-workshop.com/ksoft/hermes/creature-workshop-plugin
-sha: 5df524291547cab870f71ad6a2ccb218f175284f
+sha: 3b82498cb73186f8548a9523838d040755083d8b
 title: Creature Workshop
 description: |
   Manage your project's development lifecycle all in one place: your project.
@@ -14,7 +14,7 @@ maintainer: jerrod-storm
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
-version: "0.0.0"
+version: "0.1.0-dev.1"
 docs_url: https://gitlab.creature-workshop.com/ksoft/hermes/creature-workshop-plugin/-/blob/main/README.md
 platforms:
   - linux

@@ -276,16 +276,20 @@ class HeartbeatManager:
         if interval_seconds < MIN_INTERVAL_SECONDS:
             raise ValueError(f"interval must be at least {MIN_INTERVAL_SECONDS}s")
         if prompt.startswith(HEARTBEAT_FILE_MARKER):
-            if prompt == HEARTBEAT_FILE_MARKER:
-                # The default file is blank-and-ready: create it empty on first use so the user has a
-                # home to write into. Explicit paths stay strict — no auto-create for a typo'd path.
-                path = heartbeat_file_path(prompt)
-                if path is not None and not path.exists():
-                    path.write_text("", encoding="utf-8")
-            # Fail fast at set time: a typo'd path should surface NOW, not silently on tick 47.
+            # 11-06 design ruling (his): no auto-create, in either form. The default file is the
+            # standing-orders doc the USER maintains — if it is missing when /heartbeat file is
+            # invoked, that is a real problem to surface NOW, not an empty file to write into.
+            # Blank-but-existing stays honored (idle); explicit paths were already strict.
             path = heartbeat_file_path(prompt)
             if path is None:  # defensive: marker present but resolver disagreed — default house file
                 path = Path(DEFAULT_HEARTBEAT_FILE)
+            if not path.exists():
+                raise ValueError(
+                    f"heartbeat orders file does not exist: {path} — create it first "
+                    f"(a blank file is honored as quietly idle), or give /heartbeat file "
+                    f"an explicit path."
+                )
+            # Fail fast at set time: a typo'd path should surface NOW, not silently on tick 47.
             try:
                 read_heartbeat_file(path)
             except ValueError as exc:

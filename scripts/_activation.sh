@@ -56,7 +56,8 @@ hermes_compose_env() {
         echo "no bootstrap Python found; run setup-hermes.sh" >&2
         return 1
     }
-    script="$(PYTHONHOME= PYTHONPATH="$repo" "$python" -m pm.environments --format "$dialect")" &&
+    script="$(PYTHONHOME= PYTHONPATH="$repo" PYTHONIOENCODING=utf-8 \
+        "$python" -m pm.environments --format "$dialect")" &&
         [ -n "$script" ] || {
         echo "could not read pm env (run ./setup-hermes.sh first)" >&2
         return 1

@@ -7,7 +7,10 @@ the already-open session kept the computed threshold from agent creation.
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
+
+import pytest
 
 from agent.context_compressor import ContextCompressor
 from tui_gateway import server
@@ -300,11 +303,35 @@ def test_removing_codex_native_compaction_restores_false(monkeypatch):
     assert session["agent"].codex_responses_native_compaction is False
 
 
-def test_removing_codex_native_threshold_restores_default(monkeypatch):
+@pytest.mark.parametrize("compression", [{}, {"codex_responses_compact_threshold": None}])
+def test_unset_codex_native_threshold_restores_automatic_without_warning(
+    monkeypatch, caplog, compression
+):
     session, _ = _neutral_session()
     session["agent"].codex_responses_compact_threshold = 120_000
-    _sync_with_cfg(monkeypatch, session, {"compression": {}})
-    assert session["agent"].codex_responses_compact_threshold == 200_000
+    with caplog.at_level(logging.WARNING):
+        _sync_with_cfg(monkeypatch, session, {"compression": compression})
+
+    assert session["agent"].codex_responses_compact_threshold is None
+    assert "codex_responses_compact_threshold" not in caplog.text
+
+
+@pytest.mark.parametrize("invalid", [True, 0, -1, 1.5, "invalid"])
+def test_invalid_codex_native_threshold_restores_automatic_with_truthful_warning(
+    monkeypatch, caplog, invalid
+):
+    session, _ = _neutral_session()
+    session["agent"].codex_responses_compact_threshold = 120_000
+    with caplog.at_level(logging.WARNING):
+        _sync_with_cfg(
+            monkeypatch,
+            session,
+            {"compression": {"codex_responses_compact_threshold": invalid}},
+        )
+
+    assert session["agent"].codex_responses_compact_threshold is None
+    assert "using the automatic threshold derived from local compression" in caplog.text
+    assert "using 200000" not in caplog.text
 
 
 def test_apply_live_compression_config_is_self_contained():

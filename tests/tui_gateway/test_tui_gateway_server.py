@@ -16515,7 +16515,7 @@ def test_session_branch_stored_copies_parent_history_without_returning_transcrip
     monkeypatch.setattr(
         server,
         "_seed_branch_row",
-        lambda _record, _key, _parent, history, *_args: seen.update(history=list(history)),
+        lambda _record, _key, _parent, history, *_args, **_kwargs: seen.update(history=list(history)),
     )
     monkeypatch.setattr(server, "_make_agent", lambda *_args, **_kwargs: _FakeAgent())
     monkeypatch.setattr(server, "_session_info", lambda *_args: {"model": "test-model"})

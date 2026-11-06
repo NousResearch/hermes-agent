@@ -147,6 +147,21 @@ def _dict_list(value):
     return value is None or (isinstance(value, list) and all(isinstance(e, dict) for e in value))
 
 
+def cli_launch_route_pinned(policy, frozen, model):
+    """Only the still-current CLI launch selection suppresses startup fallback."""
+    from gateway.session_policy import profile_target
+    request = json.loads(policy.request_json)
+    launched = policy.source in {'cli', 'oneshot'} and (
+        bool(str(request.get('model') or '').strip())
+        or str(request.get('provider') or '').strip().lower() not in {'', 'auto'}
+    )
+    if not launched or frozen.get('_cli_launch_route_released'):
+        return False
+    # A following session can adopt a changed profile route without a mutation.
+    original = json.loads(policy.config_json)
+    return profile_target(original) == profile_target(frozen) and (not policy.model or policy.model == model)
+
+
 def route_runtime(policy, frozen, model, key, *, fallback=True):
     """``(runtime, fallback_entry)`` for a launch-policy route: the session's FROZEN config and launch
     credential, walking its own fallback chain on an AuthError unless ``fallback=False`` (a session
@@ -181,7 +196,7 @@ def route_runtime(policy, frozen, model, key, *, fallback=True):
         # route's own ``fallback_providers`` before the turn is refused. Only a launch URL is
         # explicit (classic one-shot parity): the frozen ``model.base_url`` is resolved by
         # the provider chain, which keeps the credential pool an explicit URL would drop.
-        if not fallback:
+        if not fallback or cli_launch_route_pinned(policy, frozen, model):
             # Takes no config argument: it reads `frozen` only through the frozen_runtime_config scope above, so it must stay inside that `with`.
             return resolve_runtime_provider(requested=provider, target_model=model,
                 explicit_base_url=launch_url, explicit_api_key=key), None

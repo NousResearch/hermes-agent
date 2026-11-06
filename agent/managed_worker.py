@@ -431,13 +431,49 @@ def execute(frame, channel):
 def _construct_agent(frame, factory, policy, **kwargs):
     """Agent construction resolves the provider credentials; a Kanban attempt that fails here
     still books the one-shot exit mapping (quota wall 75, re-login 78) before the crash."""
+    from gateway.session_worker_construct import cli_launch_route_pinned
+    # Initial immutable receipt is a fail-closed default if effective policy cannot be read.
+    pinned = cli_launch_route_pinned(policy, json.loads(policy.config_json), policy.model)
+    route_failed = True
     try:
         from gateway.session_worker_construct import worker_route
-        return factory(**{**kwargs, **worker_route(policy, kwargs)})
+        frozen, model = policy.effective()
+        pinned = cli_launch_route_pinned(policy, frozen, model)
+        route = worker_route(policy, kwargs)
+        route_failed = False
+        return factory(**{**kwargs, **route})
     except Exception as exc:
         from gateway.session_kanban import record_start_failure
         record_start_failure(frame, exc)
-        raise
+        if not route_failed:
+            raise
+        if not pinned:
+            raise
+        # The primary failure used to be swallowed when a fallback resolved. Keep
+        # the worker's exit classification but never emit its untrusted error text.
+        from hermes_cli.auth import AuthError, is_rate_limited_auth_error
+        from hermes_cli.auth_constants import CODEX_RATE_LIMITED_CODE
+        from hermes_cli.runtime_provider_custom import LocalRuntimeUnavailableError
+        from hermes_cli.cli_route_diagnostics import pinned_route_message, safe_runtime_store_error
+        from hermes_state_runtime import RuntimeStoreError
+        message = pinned_route_message(exc)
+        if isinstance(exc, RuntimeStoreError):
+            safe = safe_runtime_store_error(exc)
+        elif isinstance(exc, AuthError):
+            import math
+            retry_after = exc.retry_after
+            if (isinstance(retry_after, bool) or not isinstance(retry_after, (int, float))
+                    or not (-1_000_000_000 <= retry_after <= 1_000_000_000) or not math.isfinite(retry_after)):
+                retry_after = None
+            code = exc.code if exc.code in ('invalid_provider', 'upstream_blocked', 'temporarily_unavailable') else None
+            safe = AuthError(message, code=CODEX_RATE_LIMITED_CODE if is_rate_limited_auth_error(exc) else code,
+                             relogin_required=bool(exc.relogin_required), retry_after=retry_after,
+                             retryable=exc.retryable if isinstance(exc.retryable, bool) else None)
+        elif isinstance(exc, LocalRuntimeUnavailableError):
+            safe = LocalRuntimeUnavailableError(message, retryable=exc.retryable is True)
+        else:
+            safe = RuntimeError(message)
+    raise safe from None
 
 
 def hello():

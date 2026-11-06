@@ -864,6 +864,8 @@ class CLIModelSwitchMixin:
                 return False
             finally:
                 self._confirmed_switch_warning = None  # this switch's confirmation only
+        if not getattr(self, "_model_switch_one_turn", False):
+            self._startup_route_pin_released = True
         return True
 
     def _apply_model_switch_result(

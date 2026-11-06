@@ -1142,3 +1142,42 @@ class TestWindowsLockedProfileCopy:
         dst, err = bc.snapshot_real_profile("chrome", src=str(root))
         assert dst is None
         assert err
+
+
+@pytest.mark.parametrize("configured, os_default, expected", [
+    ("chrome", None, "chrome"),            # override wins over a non-Chromium (Firefox) default
+    (" Brave-Origin ", "edge", "brave-origin"),  # override wins over a Chromium default; normalized
+    ("", "edge", "edge"),                  # empty -> OS default
+    ("firefox", None, None),               # invalid -> ignored, OS default (non-Chromium) stands
+    ("opera", "chrome", "chrome"),         # invalid -> ignored, OS default used
+])
+def test_real_profile_browser_override(configured, os_default, expected):
+    from hermes_cli import browser_connect as bc
+
+    cfg = {"browser": {"real_profile_browser": configured}}
+    with patch("hermes_cli.config.load_config", return_value=cfg), \
+         patch.object(bc, "_detect_default_linux", return_value=os_default):
+        assert bc.detect_default_chromium("Linux") == expected
+
+
+def test_real_profile_browser_invalid_value_is_none_and_warns(caplog):
+    from hermes_cli import browser_connect as bc
+
+    with patch("hermes_cli.config.load_config", return_value={"browser": {"real_profile_browser": "zen"}}), \
+         caplog.at_level("WARNING", logger=bc.logger.name):
+        assert bc._configured_real_profile_browser() is None
+    assert "real_profile_browser" in caplog.text
+
+
+def test_unsupported_default_message_mentions_override():
+    from tools import browser_session_real_profile as rp
+
+    assert "browser.real_profile_browser" in rp._unsupported_reason(None)
+
+
+def test_installed_chromium_browsers_uses_executable_lookup(monkeypatch):
+    import hermes_cli.browser_connect as bc
+
+    present = {"edge", "chrome"}
+    monkeypatch.setattr(bc, "chromium_executable", lambda key, system=None: "/x" if key in present else None)
+    assert bc.installed_chromium_browsers("Linux") == ["chrome", "edge"]

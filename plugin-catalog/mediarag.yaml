@@ -1,12 +1,7 @@
 name: mediarag
 repo: https://github.com/dyiapanis/mediarag
 sha: 7dc0b6bb3d3e27e8eb26465919717dde20ca4907
-description: "Multimodal local semantic search across your documents, notes, images, audio and subtitles.
-
-Disclosure — First setup downloads the ~480 MB EmbeddingGemma-2 ONNX weights from Hugging Face at a pinned revision; every search after that runs offline.
-Disclosure — Indexes the folders you point it at, which sit outside the plugin's own directory, and runs `pandoc`, `pdftotext`, `ffmpeg` and `curl` from PATH to convert what it finds.
-Disclosure — `mediarag_add_source` fetches user-supplied http(s) URLs (public hosts only, re-checked on every redirect) and runs packaged or user `sources.d` adapters as local subprocesses; the optional Raindrop.io adapter sends RAINDROP_API_TOKEN to Raindrop's API.
-Disclosure — The standalone MCP launcher can build its own Python environment with `uv` from PyPI (~1.7 GB incl. torch), only when MEDIARAG_AUTO_BOOTSTRAP=1."
+description: "Multimodal local semantic search across your documents, notes, images, audio and subtitles.\n\nDisclosure — First setup downloads the ~480 MB EmbeddingGemma-2 ONNX weights from Hugging Face at a pinned revision; every search after that runs offline.\nDisclosure — Indexes the folders you point it at, which sit outside the plugin's own directory, and runs `pandoc`, `pdftotext`, `ffmpeg` and `curl` from PATH to convert what it finds.\nDisclosure — `mediarag_add_source` fetches user-supplied http(s) URLs (public hosts only, re-checked on every redirect) and runs packaged or user `sources.d` adapters as local subprocesses; the optional Raindrop.io adapter sends RAINDROP_API_TOKEN to Raindrop's API.\nDisclosure — The standalone MCP launcher can build its own Python environment with `uv` from PyPI (~1.7 GB incl. torch), only when MEDIARAG_AUTO_BOOTSTRAP=1."
 maintainer: dyiapanis
 tier: community
 category: tools

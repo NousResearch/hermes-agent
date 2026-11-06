@@ -969,6 +969,37 @@ class TestBuildSkillsSystemPromptConditional:
 
 
 
+    @staticmethod
+    def _mcp_skill(monkeypatch, tmp_path, condition):
+        """A skill gated on the MCP server name ``iris``, with ``iris`` registered as the
+        alias of its ``mcp-iris`` toolset (the shape mcp_tool_registration leaves behind)."""
+        from tools.registry import registry
+        monkeypatch.setattr(registry, "get_registered_toolset_aliases", lambda: {"iris": "mcp-iris"})
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "research" / "iris-search"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: iris-search\ndescription: Search Iris\nmetadata:\n  hermes:\n"
+            f"    {condition}: [iris]\n---\n"
+        )
+
+    def test_requires_mcp_server_name_shown_when_server_connected(self, monkeypatch, tmp_path):
+        """#149651: the session holds toolset ``mcp-iris``; ``requires_toolsets: [iris]`` must match it."""
+        self._mcp_skill(monkeypatch, tmp_path, "requires_toolsets")
+        result = build_skills_system_prompt(available_tools={"mcp_iris_search"}, available_toolsets={"mcp-iris"})
+        assert "iris-search" in result
+
+    def test_requires_mcp_server_name_hidden_when_server_absent(self, monkeypatch, tmp_path):
+        self._mcp_skill(monkeypatch, tmp_path, "requires_toolsets")
+        result = build_skills_system_prompt(available_tools={"terminal"}, available_toolsets={"terminal"})
+        assert "iris-search" not in result
+
+    def test_fallback_for_mcp_server_name_hidden_when_server_connected(self, monkeypatch, tmp_path):
+        """#149651: the fallback for ``iris`` must step aside once ``mcp-iris`` is live."""
+        self._mcp_skill(monkeypatch, tmp_path, "fallback_for_toolsets")
+        result = build_skills_system_prompt(available_tools={"mcp_iris_search"}, available_toolsets={"mcp-iris"})
+        assert "iris-search" not in result
+
     def test_no_args_shows_all_skills(self, monkeypatch, tmp_path):
         """Backward compat: calling with no args shows everything."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

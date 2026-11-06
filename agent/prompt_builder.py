@@ -1186,6 +1186,21 @@ def _skill_should_show(
     )
 
 
+def _with_toolset_aliases(available_toolsets: set[str] | None) -> set[str] | None:
+    """``available_toolsets`` plus every registered alias whose target is in it.
+
+    An MCP server's tools live in toolset ``mcp-<server>`` and the bare ``<server>`` is only a
+    registry alias, so a skill gated on the name the operator configured (``requires_toolsets:
+    [iris]``) never matched and was hidden even with the server connected (#149651). Expanded once
+    per build, before the cache key, so every gate below sees the same set."""
+    if not available_toolsets:
+        return available_toolsets
+    from tools.registry import registry
+    aliases = registry.get_registered_toolset_aliases()
+    return set(available_toolsets) | {
+        alias for alias, target in aliases.items() if target in available_toolsets}
+
+
 def _plugin_skill_prompt_rows(
     disabled: set[str], available_tools: set[str] | None, available_toolsets: set[str] | None,
     session_platform: str | None,
@@ -1368,6 +1383,7 @@ def _build_skills_system_prompt_inner(
     skills_dir: Path, extra_roots: list[tuple[int, Path]], available_tools: set[str] | None,
     available_toolsets: set[str] | None, compact_categories: frozenset[str] | None,
 ) -> str:
+    available_toolsets = _with_toolset_aliases(available_toolsets)
     # The resolved platform is part of the key: per-platform disabled-skill lists need distinct cache entries.
     _platform_hint = _current_session_platform_hint()
     disabled = get_disabled_skill_names(_platform_hint or None)

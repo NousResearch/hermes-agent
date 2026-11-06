@@ -72,6 +72,50 @@ def test_write_run_report_creates_both_files(curator_env):
     assert run_dir.parent == curator._reports_root()
 
 
+def test_truncated_review_report_marks_run_incomplete_and_lists_pending_skills(
+    curator_env, monkeypatch
+):
+    curator = curator_env["curator"]
+    usage = curator_env["skill_usage"]
+    skills = curator_env["home"] / "skills"
+    for name in ("alpha", "beta"):
+        directory = skills / name
+        directory.mkdir()
+        (directory / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: test\n---\n"
+        )
+        usage.mark_agent_created(name)
+
+    notice = "The model's reply was cut off before it finished."
+    monkeypatch.setattr(
+        curator,
+        "_run_llm_review",
+        lambda _prompt: {
+            "final": notice,
+            "summary": notice,
+            "model": "test",
+            "provider": "test",
+            "tool_calls": [],
+            "error": "review response was truncated",
+            "incomplete": True,
+        },
+    )
+    summaries = []
+    curator.run_curator_review(
+        on_summary=summaries.append, synchronous=True, consolidate=True, dry_run=True
+    )
+
+    state = curator.load_state()
+    report = json.loads(Path(state["last_report_path"], "run.json").read_text())
+    assert report["incomplete"] is True
+    assert report["pending_skills"] == ["alpha", "beta"]
+    assert report["llm_error"] == "review response was truncated"
+    assert any(
+        "incomplete" in summary.lower() and "pending" in summary.lower()
+        for summary in summaries
+    )
+
+
 
 
 

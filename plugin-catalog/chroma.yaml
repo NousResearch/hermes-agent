@@ -1,7 +1,7 @@
 name: chroma
 repo: https://github.com/TobiasDraven/chroma-for-hermes
 subdir: chroma
-sha: 1d7b5a420c42a1d60125a0e447270b4465c6c20a
+sha: 494770ba8beebaa82bb26ba28199ef70bd96b432
 title: Chroma
 description: >-
   Browse, import and manage 94 Hermes skins from a Desktop pane: filter by pack,
@@ -32,10 +32,10 @@ category: desktop
 requires_hermes: ">=0.22.2"
 docs_url: https://github.com/TobiasDraven/chroma-for-hermes#readme
 version: "2.9.1"
-image: https://raw.githubusercontent.com/TobiasDraven/chroma-for-hermes/1d7b5a420c42a1d60125a0e447270b4465c6c20a/docs/catalog-banner.png
+image: https://raw.githubusercontent.com/TobiasDraven/chroma-for-hermes/494770ba8beebaa82bb26ba28199ef70bd96b432/docs/catalog-banner.png
 screenshots:
-  - https://raw.githubusercontent.com/TobiasDraven/chroma-for-hermes/1d7b5a420c42a1d60125a0e447270b4465c6c20a/docs/screenshots/picker.png
-  - https://raw.githubusercontent.com/TobiasDraven/chroma-for-hermes/1d7b5a420c42a1d60125a0e447270b4465c6c20a/docs/hermes-chroma.png
+  - https://raw.githubusercontent.com/TobiasDraven/chroma-for-hermes/494770ba8beebaa82bb26ba28199ef70bd96b432/docs/screenshots/picker.png
+  - https://raw.githubusercontent.com/TobiasDraven/chroma-for-hermes/494770ba8beebaa82bb26ba28199ef70bd96b432/docs/hermes-chroma.png
 readme: true
 platforms: []
 capabilities:

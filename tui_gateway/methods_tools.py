@@ -1943,7 +1943,7 @@ def _(rid, params: dict) -> dict:
     cmd = params.get("command", "")
     if not cmd:
         return _err(rid, 4004, "empty command")
-    raw_stdout = bool(params.get("raw_stdout", False))
+    raw_stdout = params.get("raw_stdout") is True
     try:
         approval = _tools_mod("tools.approval_detection")
         is_hardline, hardline_desc = approval.detect_hardline_command(cmd)

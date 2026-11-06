@@ -51,7 +51,7 @@ async def shell_exec(connection, ref, params):
     from tools.approval_detection import detect_dangerous_command, detect_hardline_command
     if detect_hardline_command(command)[0] or detect_dangerous_command(command)[0]:
         raise RuntimeStoreError('dangerous_command')
-    return await asyncio.to_thread(_run, command, policy.cwd, params.get('raw_stdout', False))
+    return await asyncio.to_thread(_run, command, policy.cwd, params.get('raw_stdout') is True)
 
 
 def _run(command, cwd, raw_stdout=False):

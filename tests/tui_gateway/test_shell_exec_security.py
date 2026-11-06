@@ -71,3 +71,23 @@ def test_shell_exec_default_redacts_structured_token(monkeypatch):
 
     assert token not in response["result"]["stdout"]
     assert "snapshot_token" in response["result"]["stdout"]
+
+
+def test_shell_exec_string_raw_stdout_value_still_redacts(monkeypatch):
+    """A non-bool ``raw_stdout`` (e.g. the string ``"false"``) must NOT opt out of
+    redaction — only the strict boolean ``True`` activates the raw branch, so a
+    client that sends ``raw_stdout: "false"`` still gets force-redacted output."""
+    token = "1341a55f03ce51f23d46420e9bcd6226"
+    payload = '{"snapshot_token":"' + token + '","snapshots":[]}'
+
+    def fake_run(command, **kwargs):
+        return subprocess.CompletedProcess(command, 0, stdout=payload, stderr="")
+
+    monkeypatch.setattr(server.subprocess, "run", fake_run)
+
+    response = server.handle_request(
+        {"id": "str-false", "method": "shell.exec", "params": {"command": "probe.py", "raw_stdout": "false"}}
+    )
+
+    assert token not in response["result"]["stdout"]
+    assert "snapshot_token" in response["result"]["stdout"]

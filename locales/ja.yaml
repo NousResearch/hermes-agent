@@ -701,6 +701,8 @@ gateway:
     cron_session_read_only: "⚠️ このチャットはスケジュールされたジョブ専用で、そのジョブしか実行しないため、メッセージは実行されませんでした。送信するには新しいチャットを開始してください。"
     workspace_unavailable: "⚠️ このチャットの作業フォルダーが見つかりません（{path}）。そのためメッセージは実行されませんでした。フォルダーを作り直すか、チャットを別のフォルダーへ移動してから（CLI では `/worktree new`、デスクトップアプリでは「Move to project」）、もう一度送信してください。"
     launch_credentials_unavailable: "⚠️ このチャットは開始時の API キーをもう使えないため{detail}、このチャットでは何も実行できません。開いているチャットが自動で別のキーに切り替わることはないので、/retry でも同じように失敗します。/new で現在のキーを使う新しいチャットを始めてください。"
+    model_fallback: "⚠️ モデルフォールバック：{old_model}（{old_provider}）が利用不可（{reason}）のため、{new_model}（{new_provider}）に切り替えました。"
+    model_fallback_retry: " 約{remaining}秒後に主経路への再試行が可能になります。復帰は保証されません。"
   skills:
     disabled: "**{name}** スキルはインストールされていますが無効です。\n有効化するには: `hermes skills config`"
     not_installed: "**{name}** スキルは利用可能ですがインストールされていません。\nインストールするには: `hermes skills install {install_name}`"

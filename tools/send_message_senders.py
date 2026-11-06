@@ -243,6 +243,171 @@ async def _telegram_send_one_media(bot, chat_id, media_path, is_voice, *, captio
                 os.remove(thumb_path)
 
 
+def _telegram_rich_messages_opt_in() -> bool:
+    """Return True when ``platforms.telegram.extra.rich_messages`` is enabled.
+
+    Mirrors the live adapter's opt-in gate so cron standalone fallback and
+    ``hermes send`` honor the same config knob.
+    """
+    try:
+        from gateway.config import Platform, load_gateway_config
+
+        cfg = load_gateway_config()
+        pconfig = cfg.platforms.get(Platform.TELEGRAM) if cfg else None
+        extra = getattr(pconfig, "extra", None) or {}
+        raw = extra.get("rich_messages", False)
+    except Exception:
+        return False
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return raw != 0
+    if isinstance(raw, str):
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(raw)
+
+
+def _standalone_telegram_rich_eligible(content: str) -> bool:
+    """Content gates for standalone ``sendRichMessage`` (adapter parity).
+
+    Reuses the live :class:`TelegramAdapter` helpers so eligibility stays in
+    lockstep with the gateway path (tables / task lists / details / math,
+    CJK skip, details+math crash shape, 32k cap).
+    """
+    if not content or not content.strip():
+        return False
+    if not _telegram_rich_messages_opt_in():
+        return False
+    try:
+        from plugins.platforms.telegram.adapter import TelegramAdapter
+
+        probe = TelegramAdapter.__new__(TelegramAdapter)
+        # Unbound instance: only class-level helpers + content methods needed.
+        probe._rich_messages_enabled = True
+        probe._rich_send_disabled = False
+        if not probe._needs_rich_rendering(content):
+            return False
+        if probe._has_telegram_desktop_details_math_crash_shape(content):
+            return False
+        if probe._has_telegram_desktop_cjk_rich_garble_shape(content):
+            return False
+        if not probe._content_fits_rich_limits(content):
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def _is_standalone_rich_fallback_error(exc: Exception) -> bool:
+    """True ⇒ permanent/capability error ⇒ safe to fall back to MarkdownV2.
+
+    Prefers the live adapter classifier, then adds string heuristics for plain
+    ``Exception`` mocks and non-PTB wrappers that carry ``Bad Request`` /
+    ``method not found`` text without the real exception class.
+    """
+    try:
+        from plugins.platforms.telegram.adapter import TelegramAdapter
+
+        probe = TelegramAdapter.__new__(TelegramAdapter)
+        if probe._is_rich_fallback_error(exc):
+            return True
+    except Exception:
+        pass
+    s = str(exc).lower()
+    name = exc.__class__.__name__.lower()
+    if name in {"badrequest", "endpointnotfound", "invalidtoken"}:
+        return True
+    if name.endswith("badrequest"):
+        return True
+    if "bad request" in s or "can't parse" in s or "cannot parse" in s:
+        return True
+    if ("method" in s or "endpoint" in s) and (
+        "not found" in s or "does not exist" in s or "unsupported" in s
+    ):
+        return True
+    if "unsupported" in s or "not implemented" in s or "no such method" in s:
+        return True
+    return False
+
+
+async def _try_send_telegram_rich(
+    bot,
+    chat_id,
+    content: str,
+    *,
+    thread_kwargs: dict | None = None,
+    disable_link_previews: bool = False,
+):
+    """Attempt one ``sendRichMessage`` via the standalone Bot.
+
+    Returns the raw API result on success, ``None`` to fall back to the legacy
+    MarkdownV2 path (permanent / capability errors), or **raises** on transient
+    failures so callers do not double-send (same contract as the live adapter).
+    """
+    import inspect
+
+    if not inspect.iscoroutinefunction(getattr(bot, "do_api_request", None)):
+        return None
+    if not _standalone_telegram_rich_eligible(content):
+        return None
+
+    try:
+        from plugins.platforms.telegram.adapter import TelegramAdapter
+
+        probe = TelegramAdapter.__new__(TelegramAdapter)
+        payload = {
+            "chat_id": chat_id,
+            "rich_message": probe._rich_message_payload(content),
+        }
+    except Exception as exc:
+        logger.debug(
+            "send_message: standalone rich payload build failed (%s) — MarkdownV2",
+            _sanitize_error_text(exc),
+        )
+        return None
+
+    for key, value in (thread_kwargs or {}).items():
+        if value is not None:
+            payload[key] = value
+    if disable_link_previews:
+        payload["link_preview_options"] = {"is_disabled": True}
+
+    try:
+        msg = await bot.do_api_request("sendRichMessage", api_kwargs=payload)
+    except Exception as exc:
+        is_fallback = _is_standalone_rich_fallback_error(exc)
+        if is_fallback:
+            logger.debug(
+                "send_message: standalone sendRichMessage rejected (%s) — MarkdownV2",
+                _sanitize_error_text(exc),
+            )
+            return None
+        # Transient / network / flood: request may have landed. Do NOT legacy
+        # resend (duplicate risk) — surface the failure to the caller.
+        logger.warning(
+            "send_message: standalone sendRichMessage transient failure "
+            "(no legacy resend): %s",
+            _sanitize_error_text(exc),
+        )
+        raise
+
+    message_id = None
+    if isinstance(msg, dict):
+        message_id = msg.get("message_id")
+        if message_id is None:
+            message_id = (msg.get("result") or {}).get("message_id")
+    else:
+        message_id = getattr(msg, "message_id", None)
+    if message_id is not None:
+        try:
+            from gateway import rich_sent_store
+
+            rich_sent_store.record(str(chat_id), str(message_id), content)
+        except Exception:
+            pass
+    return msg
+
+
 def _telegram_format(message):
     """``(formatted, parse_mode, has_html)``: text already containing HTML tags is sent as
     HTML; otherwise Markdown -> MarkdownV2 via the adapter's ``format_message``."""
@@ -257,7 +422,18 @@ def _telegram_format(message):
 
 
 async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
-    """One-shot Telegram Bot API send; parse failures fall back to plain text."""
+    """One-shot Telegram Bot API send; parse failures fall back to plain text.
+
+    Prefers Bot API 10.1 ``sendRichMessage`` when the gateway's
+    ``platforms.telegram.extra.rich_messages`` opt-in is on and the body needs
+    constructs MarkdownV2 degrades (GFM tables, task lists, details, math).
+    This keeps cron's standalone fallback (and ``hermes send``) on parity with
+    the live gateway adapter — without it, any live-adapter miss delivered
+    tables as bullet lists while the job still reported ``ok``.
+
+    Otherwise text already containing HTML tags is sent as HTML; anything else
+    goes markdown→MarkdownV2 via the adapter's ``format_message``.
+    """
     try:
         formatted, send_parse_mode, _has_html = _telegram_format(message)
         bot = _telegram_bot(token)
@@ -276,6 +452,46 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         _cap, _ = _media_caption_split(message, media_files, max_caption_len=_TELEGRAM_CAPTION_LIMIT)
         if _cap is not None and utf16_len(formatted) <= _TELEGRAM_CAPTION_LIMIT:
             _tg_caption, formatted = formatted, ""  # suppress the separate text send below
+
+        # Bot API 10.1 rich fast-path for table/task-list bodies when the
+        # live-adapter path is unavailable (cron standalone fallthrough,
+        # hermes send). Skip when HTML was requested, when the body is riding
+        # as a media caption, or when there is no text body left to send.
+        if (
+            not _has_html
+            and _tg_caption is None
+            and formatted.strip()
+            and message
+            and message.strip()
+        ):
+            # Transient rich failure: do not legacy-resend — propagate so the
+            # outer handler reports an error rather than risking a duplicate.
+            rich_result = await _try_send_telegram_rich(
+                bot,
+                int_chat_id,
+                message,
+                thread_kwargs=thread_kwargs,
+                disable_link_previews=disable_link_previews,
+            )
+            if rich_result is not None:
+                # Normalize to a .message_id attribute so the shared
+                # success return below works for both PTB Message objects
+                # and raw Bot API dicts from do_api_request.
+                if isinstance(rich_result, dict):
+                    from types import SimpleNamespace as _SNS
+
+                    _rid = rich_result.get("message_id")
+                    if _rid is None:
+                        _rid = (rich_result.get("result") or {}).get(
+                            "message_id"
+                        )
+                    last_msg = _SNS(message_id=_rid)
+                else:
+                    last_msg = rich_result
+                # Rich handled the text body. Still attach any media files via
+                # the legacy media path below (media has no rich endpoint).
+                formatted = ""
+
         # Chunk *after* formatting, in UTF-16 units: escaping can push a raw-<4096 message over.
         for chunk in BasePlatformAdapter.truncate_message(formatted, 4096, len_fn=utf16_len) if formatted.strip() else ():
             last_msg = await _telegram_send_text_chunk(bot, int_chat_id, chunk, send_parse_mode, _has_html, text_kwargs)

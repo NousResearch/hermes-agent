@@ -246,6 +246,40 @@ git push --tags
 
 Recipients who run `hermes profile update research-bot` will pull the latest.
 
+### Step 6 — Ship release notes with `changelogs/` (optional)
+
+Give installers a reason to trust an update: tell them what changed. Drop one
+Markdown (or plain-text) file per release in a `changelogs/` directory at the
+repo root, named for the version:
+
+```
+changelogs/
+├── 1.0.0.md
+├── 1.1.0.md
+└── 1.2.0.md        # a leading "v" is fine too: v1.2.0.md
+```
+
+When someone runs `hermes profile update`, Hermes prints the notes for **every
+version between the one they had and the one they're moving to**, oldest first —
+so a user who jumps from `1.0.0` to `1.2.0` sees `1.1.0` then `1.2.0`. Files
+outside that range, and files whose name isn't a version, are ignored. No
+`changelogs/` directory means nothing extra is printed; it is purely opt-in.
+
+Keep each file to human-readable release notes — what changed, and anything the
+installer must do (new env vars, migrations). Hermes treats the contents as
+untrusted text: it prints them verbatim with terminal control characters
+stripped and **never executes them**, reads at most 64 KiB per file, caps the
+number of files, and ignores symlinks — so the directory is safe to ship even in
+a public, third-party distribution.
+
+:::note
+If you declare an explicit [`distribution_owned`](#distribution-owned-vs-user-owned)
+allowlist, add `changelogs/` to it — otherwise the directory is not refreshed on
+update and installers keep seeing the notes from the version they first
+installed. Distributions that don't declare `distribution_owned` (the common
+case) pick up `changelogs/` automatically.
+:::
+
 ### What the repo looks like
 
 A complete authored distribution:
@@ -263,6 +297,9 @@ research-bot/
 │   └── citation-lookup/SKILL.md
 ├── cron/
 │   └── jobs.json                # cron definitions; installed paused
+├── changelogs/                  # release notes shown on update (optional, see Step 6)
+│   ├── 1.0.0.md
+│   └── 1.1.0.md
 └── README.md                    # human-facing description (optional)
 ```
 
@@ -413,6 +450,14 @@ What happens:
 2. Replaces distribution-owned files (SOUL, mcp.json) and shipped skills, then merges `cron/jobs.json` by job id. Your own jobs stay, shipped job definitions refresh without changing your paused/enabled choice, and newly shipped jobs arrive paused.
 3. **Preserves** your `config.yaml` — you may have tuned the model, temperature, or other settings. Pass `--force-config` to overwrite.
 4. **Never touches** user data: memories, sessions, auth, `.env`, logs, state.
+
+When it finishes, Hermes prints a short summary of what changed: the version you
+moved from and to, the author's release notes for each version in between (if the
+distribution ships [`changelogs/`](#step-6--ship-release-notes-with-changelogs-optional)),
+and an **environment-variable delta** — which keys this version adds (copy them
+into `.env`), which it no longer needs, and which changed. The env list is read
+from the manifest and mirrored in the regenerated `.env.EXAMPLE`, so you know
+exactly what to set before the agent next runs.
 
 No re-downloading the whole archive. No stomping your local changes to config. No deleting your conversation history.
 

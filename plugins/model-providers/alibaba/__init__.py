@@ -37,7 +37,10 @@ alibaba_token_plan = DashScopeProfile(
     description="Alibaba Cloud Model Studio Token Plan (flat-token tier)",
     signup_url="https://help.aliyun.com/zh/model-studio/",
     env_vars=("ALIBABA_TOKEN_PLAN_API_KEY", "ALIBABA_TOKEN_PLAN_BASE_URL"),
-    base_url="https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1", auth_type="api_key",
+    base_url="https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+    # Chat may override the base to .../apps/anthropic. That host 404s /models.
+    models_url="https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/models",
+    auth_type="api_key",
 )
 
 alibaba_token_plan_cn = DashScopeProfile(
@@ -46,7 +49,9 @@ alibaba_token_plan_cn = DashScopeProfile(
     description="Alibaba Cloud Model Studio Token Plan, mainland-China endpoint",
     signup_url="https://help.aliyun.com/zh/model-studio/",
     env_vars=("ALIBABA_TOKEN_PLAN_CN_API_KEY", "ALIBABA_TOKEN_PLAN_API_KEY", "ALIBABA_TOKEN_PLAN_CN_BASE_URL"),
-    base_url="https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1", auth_type="api_key",
+    base_url="https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+    models_url="https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/models",
+    auth_type="api_key",
 )
 
 register_provider(alibaba)

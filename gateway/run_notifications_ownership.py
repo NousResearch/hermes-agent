@@ -174,6 +174,32 @@ class GatewayNotificationOwnershipMixin:
         )
         return True
 
+    async def _watch_route_identity_drifted(self, evt: dict, source: Any) -> bool:
+        """True when the notice's own routing snapshot no longer rebuilds the key it is pinned to.
+
+        The session authority refuses a notice whose ``source`` derives a different session key
+        than the route the event is pinned to (``session_automation._owner``'s identity check),
+        with ``admission_conflict``. That mismatch is a property of the queued snapshot itself —
+        a rewritten routing row, a participant rename, a thread re-key, or a later keying-config
+        flip — so every redelivery rebuilds the same source and is refused the same way (#143720).
+        Unlike a notice pinned to a session its route no longer runs (which a /resume can reopen,
+        d6635ffe03b) nothing on the route side can re-derive the snapshot, so this refusal is
+        permanent and the drain's attempt cap may drop the event instead of retrying forever.
+
+        Only the identity sub-case is proven here; a refusal whose cause this cannot re-derive
+        stays transient, because retry may still succeed.
+        """
+        pinned_key = str(evt.get("session_key") or "").strip()
+        if not pinned_key.startswith("agent:") or source is None:
+            return False
+        store = getattr(cast(Any, self), "session_store", None)
+        if store is None:
+            return False
+        try:
+            return await asyncio.to_thread(store._generate_session_key, source) != pinned_key
+        except Exception:  # health: allow BLE001 -- fail closed: unprovable drift must stay transient, and key derivation on a duck-typed source raises whatever the source is missing
+            return False  # Unprovable drift stays transient: only proof may end a retry loop.
+
     async def _resolve_async_delegation_session(
         self, session_entry: SessionEntry, pinned_session_id: str, proven_session_id: str = "",
         completion_ids: Sequence[str] = (),

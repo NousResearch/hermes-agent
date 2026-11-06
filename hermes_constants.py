@@ -770,7 +770,14 @@ def get_subprocess_home(env: dict[str, str] | None = None) -> str | None:
     """
     env = env or {}
     profile_home = _profile_home_path(env)
-    mode = _env_get(env, "TERMINAL_HOME_MODE", "auto").lower() or "auto"
+    from tools.terminal_scope import enforce_no_refusal, get_terminal_scope, terminal_env
+    # Explicit child policy wins; otherwise a bound scope must not read launch policy.
+    scope = get_terminal_scope()
+    if scope is not None:
+        enforce_no_refusal()
+    mode = (_env_get(env, "TERMINAL_HOME_MODE", "auto") if scope is None
+            else str(env.get("TERMINAL_HOME_MODE") or terminal_env("TERMINAL_HOME_MODE", "auto")))
+    mode = mode.strip().lower() or "auto"
     mode = _HOME_MODE_ALIASES.get(mode, mode)
 
     if mode == "profile":
@@ -788,13 +795,18 @@ def get_subprocess_home(env: dict[str, str] | None = None) -> str | None:
     return None
 
 
-def apply_subprocess_home_env(env: MutableMapping[str, str]) -> None:
+def apply_subprocess_home_env(env: MutableMapping[str, str], *, use_terminal_scope: bool = False) -> None:
     """Apply Hermes' subprocess HOME contract to *env* in-place: ``HOME``/``HERMES_REAL_HOME``
     per the home mode, and the temp vars re-pointed at ``env["HERMES_HOME"]``'s scratch dir."""
     real_home = get_real_home(env)
     if real_home:
         env["HERMES_REAL_HOME"] = real_home
-    home = get_subprocess_home(env)
+    lookup = dict(env)
+    if use_terminal_scope:
+        from tools.terminal_scope import get_terminal_scope
+        if get_terminal_scope() is not None:
+            lookup.pop("TERMINAL_HOME_MODE", None)
+    home = get_subprocess_home(lookup)
     if home:
         env["HOME"] = home
     apply_scratch_tmp_env(env)

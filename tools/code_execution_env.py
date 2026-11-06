@@ -144,7 +144,7 @@ def _build_child_env(*, rpc_endpoint: str, rpc_token: str, tmpdir: str,
     if _tz_name and not _IS_WINDOWS:
         child_env["TZ"] = _tz_name
     child_env.pop("HERMES_TIMEZONE", None)
-    apply_subprocess_home_env(child_env)
+    apply_subprocess_home_env(child_env, use_terminal_scope=True)
     # Multiplexed gateway/Desktop (#110303): the server process env carries the machine-default
     # HERMES_HOME, but this turn runs under a per-profile override (ContextVar bound per turn).
     # The scrub above passed the stale default through; rewrite it so skill scripts see the

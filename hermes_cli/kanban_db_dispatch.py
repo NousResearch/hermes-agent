@@ -2806,6 +2806,18 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
         # A multiplexer dispatching for another profile must not hand it the launch
         # profile's .env settings / TERMINAL_* policy — a standalone dispatcher never would.
         strip_launch_profile_env(env, profile_home)
+    else:
+        # The child will resolve the profile; do not carry the launch policy
+        # across that boundary. Task-owned workspace and runtime pins follow.
+        from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP
+
+        from hermes_cli.env_loader import managed_dotenv_keys
+        # Managed dotenv is instance policy, not launch-profile residue.
+        managed_names = {key.upper() for key in managed_dotenv_keys()}
+        terminal_names = set(TERMINAL_CONFIG_ENV_MAP.values()) - managed_names
+        for key in list(env):
+            if key.upper() in terminal_names:
+                env.pop(key, None)
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id

@@ -265,6 +265,76 @@ class TestExternalDirsIndexing:
         assert result["shadowed_by_external"] == []
 
 
+class TestLocalSameNameSkill:
+    """A same-name skill the user installed elsewhere in the local tree wins over the bundled one:
+    two same-tier skills with one name make skill_view refuse both as ambiguous."""
+
+    def _patches(self, bundled, skills_dir, manifest_file):
+        from contextlib import ExitStack
+        stack = ExitStack()
+        stack.enter_context(patch("tools.skills_sync._get_bundled_dir", return_value=bundled))
+        stack.enter_context(patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"))
+        stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
+        stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
+        stack.enter_context(patch("agent.skill_utils.get_external_skills_dirs", return_value=[]))
+        return stack
+
+    def _skill(self, root, rel, body="# Body\n", name="himalaya"):
+        d = root / rel
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "SKILL.md").write_text(f"---\nname: {name}\n---\n{body}")
+        return d
+
+    def _setup(self, tmp_path):
+        bundled = tmp_path / "bundled"
+        self._skill(bundled, "email/himalaya", body="# bundled\n")
+        self._skill(bundled, "creative/ascii-art", name="ascii-art")
+        skills_dir = tmp_path / "user_skills"
+        self._skill(skills_dir, "himalaya", body="# user\n")
+        return bundled, skills_dir, skills_dir / ".bundled_manifest"
+
+    def test_not_seeded_beside_local_skill(self, tmp_path):
+        bundled, skills_dir, manifest_file = self._setup(tmp_path)
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=True)
+            manifest = _read_manifest()
+        assert result["shadowed_by_local"] == ["himalaya"]
+        assert not (skills_dir / "email" / "himalaya").exists()
+        assert "himalaya" not in manifest
+        assert "# user" in (skills_dir / "himalaya" / "SKILL.md").read_text()
+        assert "ascii-art" in result["copied"]
+
+    def test_matches_directory_name(self, tmp_path):
+        bundled, skills_dir, manifest_file = self._setup(tmp_path)
+        shutil.rmtree(skills_dir / "himalaya")
+        self._skill(skills_dir, "himalaya", name="my-mail")
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=True)
+        assert result["shadowed_by_local"] == ["himalaya"]
+
+    def test_pristine_earlier_copy_removed(self, tmp_path):
+        bundled, skills_dir, manifest_file = self._setup(tmp_path)
+        seeded = skills_dir / "email" / "himalaya"
+        shutil.copytree(bundled / "email" / "himalaya", seeded)
+        manifest_file.write_text(f"himalaya:{dir_hash(seeded)}\n")
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=True)
+            manifest = _read_manifest()
+        assert result["shadowed_by_local"] == ["himalaya"]
+        assert not seeded.exists()
+        assert "himalaya" not in manifest
+
+    def test_edited_earlier_copy_kept(self, tmp_path):
+        bundled, skills_dir, manifest_file = self._setup(tmp_path)
+        seeded = skills_dir / "email" / "himalaya"
+        shutil.copytree(bundled / "email" / "himalaya", seeded)
+        manifest_file.write_text(f"himalaya:{dir_hash(seeded)}\n")
+        (seeded / "SKILL.md").write_text("---\nname: himalaya\n---\n# edited\n")
+        with self._patches(bundled, skills_dir, manifest_file):
+            sync_skills(quiet=True)
+        assert "# edited" in (seeded / "SKILL.md").read_text()
+
+
 class TestRenamedBundledSkillRecovery:
     """Upstream renames/recategorizations must not strand the user's copy.
 

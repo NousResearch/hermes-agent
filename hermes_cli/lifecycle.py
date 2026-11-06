@@ -37,6 +37,25 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> list[Any]:
     return _plugin_hooks(hook_name, **kwargs)
 
 
+def admission_refusal(hook_name: str, **kwargs: Any) -> str | None:
+    """Run a policy admission hook and return its first refusal message.
+
+    Admission hooks share the established ``pre_tool_call`` block directive, while
+    also accepting the compact result used by hosts that wrap a failed turn.
+    ``None`` remains an allow decision so adding no hook changes no surface.
+    """
+    for result in invoke_hook(hook_name, **kwargs):
+        if result is False:
+            return f"{hook_name} refused the request"
+        if not isinstance(result, dict):
+            continue
+        refused = result.get("action") == "block" or result.get("allow") is False or result.get("failed") is True
+        if refused:
+            message = result.get("error") or result.get("message")
+            return str(message) if isinstance(message, str) and message.strip() else f"{hook_name} refused the request"
+    return None
+
+
 async def ainvoke_hook(hook_name: str, **kwargs: Any) -> list[Any]:
     """:func:`invoke_hook` for callers on an event loop: same observers-then-plugins
     composition, with ``async def`` plugin callbacks awaited on that loop."""

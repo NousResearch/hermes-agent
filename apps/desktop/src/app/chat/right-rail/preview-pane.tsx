@@ -58,7 +58,7 @@ import {
   waitAnnotateEvent
 } from './preview-annotate-host'
 import { ArtifactPreview } from './preview-artifact'
-import { PreviewBrowserBar } from './preview-browser-bar'
+import { PreviewBrowserToolbar } from './preview-browser-bar'
 import { mountBrowserPreviewFrame, type PreviewNavigationSurface } from './preview-browser-frame'
 import { PreviewBrowserFrameHint } from './preview-browser-frame-hint'
 import {
@@ -1470,8 +1470,8 @@ export function PreviewPane({
 
         {usesBrowserIframe && !isBlankPage && <PreviewBrowserFrameHint target={target} />}
 
-        {usesWebview && (
-          <PreviewBrowserBar
+        {webSurface && (
+          <PreviewBrowserToolbar
             annotateMode={annotate.mode}
             canGoBack={history.back}
             canGoForward={history.forward}

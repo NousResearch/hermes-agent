@@ -1,5 +1,6 @@
 import './ui/page.css'
 
+import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
@@ -11,6 +12,7 @@ import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { $gateway } from '@/store/gateway'
 import { OFFICIAL_SKILLS_KEY } from '@/store/hub-actions'
+import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -66,6 +68,7 @@ export function CapabilitiesView({
   ...props
 }: CapabilitiesViewProps) {
   const { t } = useI18n()
+  const redesigned = useStore($simplifiedAgentMode) && !embedded
   // Both hooks run unconditionally (rules of hooks); embedded picks the local
   // one so tab clicks inside a dialog don't rewrite the page URL.
   const routeTab = useRouteEnumParam('tab', CAPABILITY_MODES, 'skills')
@@ -170,9 +173,14 @@ export function CapabilitiesView({
     <PageSearchShell
       {...props}
       activeTab={mode}
+      data-capabilities-v2={redesigned || undefined}
       onTabChange={id => setMode(id as CapabilityMode)}
+      pageTitle={embedded ? undefined : t.sidebar.nav.capabilities}
       // Every tab renders the shared CapabilitySearch beside its own results.
       searchHidden
+      searchTrailingAction={redesigned && mode !== 'plugins' && scope.options.length > 1
+        ? <CapabilityScopeSelector compact scope={scope} />
+        : undefined}
       tabs={[
         { id: 'skills', label: t.skills.tabSkills, meta: skills?.length ?? null },
         { id: 'plugins', label: t.skills.tabPlugins },
@@ -182,7 +190,7 @@ export function CapabilitiesView({
       tabsAlign="start"
     >
       <div className="flex h-full flex-col">
-        {mode !== 'plugins' && <CapabilityScopeSelector scope={scope} />}
+        {!redesigned && mode !== 'plugins' && <CapabilityScopeSelector scope={scope} />}
         <div className="flex min-h-0 flex-1 flex-col">{loadGate ?? tabContent[mode]()}</div>
       </div>
     </PageSearchShell>

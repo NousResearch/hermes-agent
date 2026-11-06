@@ -34,8 +34,10 @@ import {
 } from '@/store/layout'
 import { REVIEW_PANE_ID } from '@/store/review'
 import { $unreadSessionCount } from '@/store/session-dot-state'
+import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
 import { $titlebarAppActionsSide, TITLEBAR_FIXED_TOOLS } from '@/store/titlebar-app-actions'
 
+import { usePortalRedesign } from '../redesign/use-portal-redesign'
 import { appViewForPath, hidesFixedTitlebarClusters, isOverlayView } from '../routes'
 
 import {
@@ -184,6 +186,8 @@ function useSidebarEdges(): { left: SidebarEdge; right: SidebarEdge } {
 }
 
 export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }: TitlebarControlsProps) {
+  const simplified = useStore($simplifiedAgentMode)
+  const portal = usePortalRedesign()
   const { t } = useI18n()
   const navigate = useNavigate()
   const location = useLocation()
@@ -264,6 +268,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       actionId: 'nav.settings',
       icon: <TitlebarIcon name="settings-gear" />,
       id: 'settings',
+      hidden: simplified,
       label: t.titlebar.openSettings,
       onSelect: () => {
         triggerHaptic('open')
@@ -272,6 +277,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     },
     {
       ...TITLEBAR_FIXED_TOOLS.layout,
+      hidden: portal && interfaceMode === 'simple',
       className: 'group/tool',
       // Hover + held ⌘/Ctrl morphs the glyph into its reset form (see
       // LayoutGlyph) — the mod-click telegraphs itself before it happens.

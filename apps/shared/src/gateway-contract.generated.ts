@@ -806,7 +806,7 @@ export interface SharedMetricsDesktopModeDay {
 }
 export interface SharedMetricsDesktopActionDay {
   action: string
-  via: 'click' | 'menu' | 'palette' | 'shortcut'
+  via: 'click' | 'menu' | 'palette' | 'shortcut' | 'state'
   count: number
 }
 export interface SharedMetricsDesktopDailyResult {

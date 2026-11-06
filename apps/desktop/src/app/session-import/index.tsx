@@ -1,5 +1,7 @@
+import './session-import.css'
+
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import { MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
 import { Button } from '@/components/ui/button'
@@ -34,6 +36,12 @@ export function SessionImportView({ owner, onClose, onOpenSession }: SessionImpo
   const [selected, setSelected] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
   const [error, setError] = useState('')
+  const pageRef = useRef<HTMLElement>(null)
+  useLayoutEffect(() => {
+    if (pageRef.current) {
+      pageRef.current.scrollTop = 0
+    }
+  }, [selected])
   const lifetime = useRef<AbortController | null>(null)
   // eslint-disable-next-line no-restricted-syntax -- lifetime cancellation, not a mirrored reactive value
   useEffect(() => {
@@ -132,8 +140,8 @@ export function SessionImportView({ owner, onClose, onOpenSession }: SessionImpo
         </Button>
       }
     >
-      <section aria-label={copy.title} className="session-import flex h-full min-h-0 flex-col">
-        <header className="px-8 pb-6 pt-12">
+      <section aria-label={copy.title} className="session-import flex h-full min-h-0 flex-col" ref={pageRef}>
+        <header className="px-8 pb-6 pt-12 [[data-page-surface]_&]:px-6 [[data-page-surface]_&]:pt-4">
           <h1 className="text-3xl font-semibold tracking-tight text-(--ui-text-primary)">{copy.title}</h1>
           <p className="mt-2 text-sm text-(--ui-text-secondary)">{copy.subtitle}</p>
           <div className="mt-5 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-(--ui-text-secondary)">
@@ -147,7 +155,7 @@ export function SessionImportView({ owner, onClose, onOpenSession }: SessionImpo
             </span>
           </div>
         </header>
-        <div className="grid min-h-0 flex-1 grid-cols-[minmax(17rem,0.85fr)_minmax(0,1.6fr)] border-t border-(--ui-stroke-tertiary) max-[760px]:grid-cols-1">
+        <div className="session-import-body grid min-h-0 flex-1 grid-cols-[minmax(17rem,0.85fr)_minmax(0,1.6fr)] border-t border-(--ui-stroke-tertiary) max-[760px]:grid-cols-1">
           <aside
             className={cn(
               'flex min-h-0 flex-col bg-(--ui-sidebar-surface-background)',
@@ -178,7 +186,7 @@ export function SessionImportView({ owner, onClose, onOpenSession }: SessionImpo
                 />
               )}
             </div>
-            <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-5">
+            <div className="session-import-list min-h-0 flex-1 overflow-y-auto px-3 pb-5">
               {sessions.isPending && <Loader className="mx-auto my-12" label={copy.scanning} />}
               {sessions.isError && (
                 <ErrorState className="p-5" description={copy.scanHelp} title={copy.scanError}>
@@ -269,7 +277,7 @@ export function SessionImportView({ owner, onClose, onOpenSession }: SessionImpo
                     {current.label} · {current.turn_count} {copy.messages}
                   </p>
                 </div>
-                <div aria-live="polite" className="min-h-0 flex-1 overflow-y-auto px-8 pb-8" key={current.id}>
+                <div aria-live="polite" className="session-import-preview min-h-0 flex-1 overflow-y-auto px-8 pb-8" key={current.id}>
                   {preview.isPending && <Loader className="mx-auto my-12" label={copy.previewLoading} />}
                   {preview.isError && (
                     <ErrorState description={copy.previewHelp} title={copy.previewError}>

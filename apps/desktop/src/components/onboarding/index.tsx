@@ -4,7 +4,6 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Codicon } from '@/components/ui/codicon'
 import { Input } from '@/components/ui/input'
 import { Progress } from '@/components/ui/progress'
 import { getGlobalModelOptions } from '@/hermes'
@@ -37,6 +36,7 @@ import {
   startProviderOAuth
 } from '@/store/onboarding'
 import { $onboardingSurfaces, onboardingSurfaceActive } from '@/store/onboarding-presence'
+import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
 import type { OAuthProvider } from '@/types/hermes'
 
 import { DocsLink, FlowPanel, Status } from './flow'
@@ -50,6 +50,7 @@ import {
   ProviderRow,
   sortProviders
 } from './providers'
+import { OnboardingSurface } from './surface'
 
 export {
   FeaturedProviderRow,
@@ -414,61 +415,24 @@ export function DesktopOnboardingOverlay({
   const bare = ready && (freeTierIntro || (!showPicker && flow.status === 'confirming_model'))
 
   return (
-    <div
-      className={cn(
-        'fixed inset-0 z-(--z-onboarding) flex items-center justify-center bg-(--ui-chat-surface-background) p-6 transition-opacity duration-[520ms] ease-out',
-        // On the bare confirm screen, hold the surface (text-out + hold) so the
-        // per-element exit plays before it dissolves.
-        bare && leaving ? '[transition-delay:660ms]' : '',
-        leaving ? 'pointer-events-none opacity-0' : 'opacity-100'
-      )}
-      // Masks the whole app until onboarding finishes — must stay filled under
-      // window glass or the shell shows through. Contract:
-      // `[data-glass-opaque]` in styles.css.
-      data-glass-opaque=""
-    >
-      <div
-        className={cn(
-          'relative w-full max-w-[45rem] transition-all duration-500 ease-out',
-          bare
-            ? ''
-            : 'overflow-hidden rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) shadow-nous',
-          // Bare confirm screen orchestrates its own per-element exit; the
-          // carded states use the simple lift/blur dissolve.
-          leaving && !bare
-            ? '-translate-y-1 scale-[0.985] opacity-0 blur-[2px]'
-            : 'translate-y-0 scale-100 opacity-100 blur-0'
-        )}
-      >
-        {showPicker || !ready ? <Header /> : null}
-        {onboarding.manual ? (
-          <Button
-            aria-label={t.common.close}
-            className="absolute right-3 top-3 z-10 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
-            onClick={() => closeManualOnboarding()}
-            size="icon-sm"
-            variant="ghost"
-          >
-            <Codicon name="close" size="1rem" />
-          </Button>
-        ) : null}
-        <div className="grid gap-3 p-5">
-          {reason ? <ReasonNotice reason={reason} /> : null}
-          {ready && showPicker && !freeTierIntro && !onboarding.manual ? <FreeTierSetupNotice ctx={ctx} /> : null}
-          {ready ? (
-            freeTierIntro ? (
-              <FreeTierReadyPanel leaving={leaving} onDismiss={dismissFreeTierIntro} />
-            ) : showPicker ? (
-              <Picker ctx={ctx} />
-            ) : (
-              <FlowPanel ctx={ctx} flow={flow} leaving={leaving} onBegin={finalizeOnboarding} />
-            )
+    <OnboardingSurface bare={bare} leaving={leaving} manual={onboarding.manual}>
+      {showPicker || !ready ? <Header page={!onboarding.manual} /> : null}
+      <div className="onboarding-body grid gap-3 p-5">
+        {reason ? <ReasonNotice reason={reason} /> : null}
+        {ready && showPicker && !freeTierIntro && !onboarding.manual ? <FreeTierSetupNotice ctx={ctx} /> : null}
+        {ready ? (
+          freeTierIntro ? (
+            <FreeTierReadyPanel leaving={leaving} onDismiss={dismissFreeTierIntro} />
+          ) : showPicker ? (
+            <Picker ctx={ctx} />
           ) : (
-            <Preparing boot={boot} />
-          )}
-        </div>
+            <FlowPanel ctx={ctx} flow={flow} leaving={leaving} onBegin={finalizeOnboarding} />
+          )
+        ) : (
+          <Preparing boot={boot} />
+        )}
       </div>
-    </div>
+    </OnboardingSurface>
   )
 }
 
@@ -573,12 +537,14 @@ function Preparing({ boot }: { boot: DesktopBootState }) {
   )
 }
 
-function Header() {
+function Header({ page }: { page: boolean }) {
   const { t } = useI18n()
+  const simplified = useStore($simplifiedAgentMode)
+  const Heading = simplified && page ? 'h1' : 'h2'
 
   return (
-    <div className="bg-(--ui-chat-bubble-background) px-5 pt-5 pb-1">
-      <h2 className="text-[0.9375rem] font-semibold tracking-tight">{t.onboarding.headerTitle}</h2>
+    <div className="onboarding-heading bg-(--ui-chat-bubble-background) px-5 pt-5 pb-1">
+      <Heading className="text-[0.9375rem] font-semibold tracking-tight">{t.onboarding.headerTitle}</Heading>
       <p className="mt-1 max-w-xl text-[0.8125rem] leading-5 text-(--ui-text-tertiary)">{t.onboarding.headerDesc}</p>
     </div>
   )

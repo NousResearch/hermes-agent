@@ -13,6 +13,7 @@ import {
 import { useTourMarker } from '@/app/chat/tour-marker'
 import type { GatewayRequester } from '@/app/contrib/types'
 import { useHudComposerDrag } from '@/app/hud/composer-drag'
+import { ComposerSurfaceBacking } from '@/app/redesign/composer-surface-backing'
 import { useBusyInputMode } from '@/app/session/hooks/use-busy-input-mode'
 import { composerFloatingStrip, composerInputBacking, composerSurfaceRing } from '@/components/chat/composer-dock'
 import { useSetupChatView } from '@/components/onboarding/first-run/assembly'
@@ -1461,7 +1462,7 @@ export function ChatBar({
                 data-slot="composer-surface"
                 ref={composerSurfaceRef}
               >
-                <div aria-hidden className={composerInputBacking} />
+                <ComposerSurfaceBacking guidedChat={guidedChat} hudMode={hudMode} />
                 {codingRowShown && (
                   <StatusDrawerContent collapsed={statusDrawerCollapsed} id={codingDrawerId}>
                     <CodingStatusRow
@@ -1503,7 +1504,7 @@ export function ChatBar({
                   <VoicePlaybackActivity />
                   {queueEdit && editingQueuedPrompt && <QueuedEditBanner onExit={exitQueuedEdit} />}
                   {attachments.length > 0 && <AttachmentList attachments={attachments} onRemove={onRemoveAttachment} />}
-                  <div className={cn('grid w-full', controlRowGridClass(singleColumn, stacked))}>
+                  <div className={cn('composer-input-row grid w-full', controlRowGridClass(singleColumn, stacked))}>
                     <div className="flex translate-y-[3px] items-start gap-(--composer-control-gap) self-start [grid-area:menu]">
                       {contextMenu}
                       <ContribSlot area={COMPOSER_AREAS.leading} />

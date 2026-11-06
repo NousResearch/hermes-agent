@@ -179,7 +179,11 @@ export function useComposerMetrics({
     // oscillating across the wrap boundary as the input switches widths.
     const editor = editorRef.current
 
-    if (editor && editor.scrollHeight > COMPOSER_SINGLE_LINE_MAX_PX) {
+    // A skin's taller writing area is not wrapped text; otherwise an empty
+    // draft repeatedly expands here and collapses in the emptiness effect.
+    const baseline = editor ? parseFloat(getComputedStyle(editor).minHeight) || 0 : 0
+
+    if (editor && editor.scrollHeight > Math.max(COMPOSER_SINGLE_LINE_MAX_PX, baseline)) {
       setExpanded(true)
     }
 

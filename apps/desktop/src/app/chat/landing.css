@@ -1,0 +1,33 @@
+/* Source illustration: Figma Brand rev, 491:35006. Decoration only; the editor
+   stays in its stable host through draft creation and the first response. */
+[data-chat-landing='true'] {
+  container: chat-landing / size;
+}
+
+.chat-landing-art {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 80%;
+  object-fit: cover;
+  object-position: center 65%;
+  filter: grayscale(1);
+  opacity: 0.16;
+  mask-image: linear-gradient(black, transparent 90%);
+  pointer-events: none;
+}
+
+.dark .chat-landing-art {
+  opacity: 0.45;
+}
+
+/* A short pane or software keyboard needs the ordinary bottom dock. */
+@container chat-landing (min-height: 34rem) {
+  [data-chat-landing='true'] [data-slot='composer-dock']:not([data-popped-out]) {
+    top: 50%;
+    bottom: auto;
+    translate: -50% -50%;
+    width: min(36rem, calc(100% - 2rem));
+    padding-bottom: 0;
+  }
+}

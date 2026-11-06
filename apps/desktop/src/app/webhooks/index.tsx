@@ -425,6 +425,7 @@ function ProfileOwnedWebhooksView({ backendProfile, onClose }: ProfileOwnedWebho
 
   return (
     <Panel onClose={onClose}>
+      <PanelHeader hideInClassic={loading || !subscriptions.length} subtitle={w.hint} title={w.subscriptions(subscriptions.length)} />
       {loading ? (
         <PageLoader label={w.loading} />
       ) : subscriptions.length === 0 ? (
@@ -450,7 +451,6 @@ function ProfileOwnedWebhooksView({ backendProfile, onClose }: ProfileOwnedWebho
         </>
       ) : (
         <>
-          <PanelHeader subtitle={w.hint} title={w.subscriptions(subscriptions.length)} />
           {banners}
           <PanelBody>
             <PanelList

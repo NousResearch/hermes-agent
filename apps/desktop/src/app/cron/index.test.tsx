@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { QueryClientProvider } from '@tanstack/react-query'
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as HermesApi from '@/hermes'
@@ -8,6 +8,7 @@ import type { CronJob, SessionInfo } from '@/hermes'
 import { queryClient } from '@/lib/query-client'
 import { $cronFocusJobId, $cronJobs, setCronFocusJobId, setCronJobs } from '@/store/cron'
 import { notifyCronChanged, setChangeEventsAvailable } from '@/store/live-sync'
+import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
 
 import { CronView } from './index'
 
@@ -88,6 +89,19 @@ afterEach(() => {
   setCronFocusJobId(null)
   setChangeEventsAvailable(false)
   vi.clearAllMocks()
+  $agentSidebarChoice.set(null)
+})
+
+it('returns keyboard focus to the V2 page after cancelling the routine editor', async () => {
+  $agentSidebarChoice.set(true)
+  await renderLoadedCron()
+  const opener = screen.getByRole('button', { name: 'New cron' })
+  opener.focus()
+  fireEvent.click(opener)
+  await waitFor(() => expect(document.activeElement?.id).toBe('cron-name'))
+  fireEvent.keyDown(document.activeElement!, { key: 'Escape' })
+  await waitFor(() => expect(document.activeElement).toBe(opener))
+  expect(screen.getByRole('heading', { name: 'Routines' })).toBeTruthy()
 })
 
 describe('CronView queued trigger feedback (#70826)', () => {

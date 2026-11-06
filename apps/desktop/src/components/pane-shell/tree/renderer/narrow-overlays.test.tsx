@@ -74,6 +74,16 @@ const revealPane = (id: string) => {
 
 const overlayTab = (paneId: string) => document.querySelector<HTMLElement>(`[data-narrow-overlay-tab="${paneId}"]`)
 
+it('reveals a pane unhidden by the same user action before React rerenders', () => {
+  $hiddenTreePanes.set(new Set(['sessions']))
+  render(<NarrowOverlays />)
+  act(() => {
+    $hiddenTreePanes.set(new Set())
+    window.dispatchEvent(new CustomEvent(PANE_TOGGLE_REVEAL_EVENT, { detail: { id: 'sessions', mode: 'open' } }))
+  })
+  expect(document.querySelector('[data-narrow-overlay="sessions"]')).not.toBeNull()
+})
+
 // The page the browser-hosted Desktop serves (its bridge writes this marker).
 const asBrowserHost = () => {
   window.document.documentElement.dataset.hermesDesktopHost = 'browser'

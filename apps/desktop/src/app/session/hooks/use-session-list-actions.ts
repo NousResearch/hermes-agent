@@ -9,6 +9,7 @@ import {
   normalizeSessionSource
 } from '@/lib/session-source'
 import { gatewayActivationEpoch } from '@/store/gateway'
+import { captureIaPinCounts } from '@/store/ia-pin-metrics'
 import {
   $pinnedSessionIds,
   $sessionsLimit,
@@ -353,6 +354,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       // pre-archive-commit can land post-prune, and only the generation
       // delta (not tombstone membership) still names the doomed row then.
       const removalSnapshot = captureSessionTombstoneGenerations()
+      const recordPinCounts = captureIaPinCounts(sessionProfile)
 
       try {
         const limit = $sessionsLimit.get()
@@ -397,6 +399,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         }
 
         if (owns()) {
+          recordPinCounts(result)
           const recents = result.recents
           const recentsErrors = recents.errors ?? result.errors
 

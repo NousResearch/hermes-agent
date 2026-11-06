@@ -1,3 +1,4 @@
+import { COMPOSER_HEART_CONFIG, HeartField } from '@/components/chat/vibe-hearts'
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
 
@@ -49,5 +50,15 @@ export function QueuedEditBanner({ onExit }: { onExit: (action: 'cancel' | 'save
         </Button>
       </div>
     </div>
+  )
+}
+
+export function ComposerHeartField() {
+  return (
+    <HeartField
+      className="absolute inset-x-0 z-30"
+      config={COMPOSER_HEART_CONFIG}
+      style={{ top: 0, bottom: 'calc(var(--composer-measured-height) + 0.25rem)' }}
+    />
   )
 }

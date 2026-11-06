@@ -1,0 +1,75 @@
+/* Figma 491:35004 specifies the colors and 2px edge, but no motion timeline. */
+.portal-composer-edge {
+  position: absolute;
+  z-index: 5;
+  inset: auto 0 0;
+  height: 2px;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.portal-composer-edge::before {
+  content: '';
+  display: block;
+  height: 100%;
+  width: 200%;
+  background: linear-gradient(
+    to right,
+    var(--portal-brand-blue),
+    var(--portal-spectrum-red) 42%,
+    var(--portal-spectrum-yellow) 50%,
+    var(--portal-spectrum-red) 92%,
+    var(--portal-brand-blue)
+  );
+  animation: portal-composer-spectrum 14s ease-in-out infinite alternate;
+}
+
+[data-slot='composer-surface']:has(> .portal-composer-edge) {
+  container: portal-composer / inline-size;
+  --composer-surface-pad-x: 1rem;
+  --composer-surface-pad-y: 1rem;
+  --composer-input-min-height: 4.5rem;
+  --composer-input-max-height: min(9.375rem, 25dvh);
+  --composer-row-gap: 1rem;
+  border-radius: 9px 9px 0 0;
+}
+
+[data-slot='composer-surface']:has(> .portal-composer-edge) [data-slot='composer-rich-input'] {
+  padding-inline: 0;
+}
+
+/* Keep the native single-column fallback for very narrow/touch panes. */
+@container portal-composer (min-width: 12rem) {
+  .composer-input-row {
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas: 'input input' 'menu controls';
+    gap: var(--composer-row-gap);
+    align-items: start;
+  }
+}
+
+@container portal-composer (max-width: 20rem) {
+  [data-slot='composer-fade'] {
+    --composer-surface-pad-x: 0.5rem;
+  }
+}
+
+@media (max-height: 34rem) {
+  [data-slot='composer-surface']:has(> .portal-composer-edge) {
+    --composer-surface-pad-y: 0.75rem;
+    --composer-input-min-height: 3rem;
+    --composer-row-gap: 0.5rem;
+  }
+}
+
+@keyframes portal-composer-spectrum {
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .portal-composer-edge::before {
+    animation: none;
+  }
+}

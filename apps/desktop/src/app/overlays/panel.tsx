@@ -1,3 +1,6 @@
+import './panel.css'
+
+import { useStore } from '@nanostores/react'
 import type { ReactNode } from 'react'
 
 import { ActionsContextMenu, ActionsMenu, type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
@@ -8,6 +11,7 @@ import { SearchField } from '@/components/ui/search-field'
 import { Tip } from '@/components/ui/tooltip'
 import { translateNow } from '@/i18n'
 import { cn } from '@/lib/utils'
+import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
 
 import { OVERLAY_TOP_CLEARANCE, OverlayView } from './overlay-view'
 
@@ -49,7 +53,7 @@ export function Panel({
       closeLabel={closeLabel}
       // Header title rides up next to the floating close button — see
       // OVERLAY_TOP_CLEARANCE, the shared clearance every overlay column uses.
-      contentClassName={cn('flex h-full min-h-0 flex-col px-4 pb-4 sm:px-5', OVERLAY_TOP_CLEARANCE, contentClassName)}
+      contentClassName={cn('management-panel flex h-full min-h-0 flex-col px-4 pb-4 sm:px-5', OVERLAY_TOP_CLEARANCE, contentClassName)}
       onClose={onClose}
       rootClassName={cn('flex h-full w-full flex-col', className)}
     >
@@ -63,17 +67,25 @@ interface PanelHeaderProps {
   actions?: ReactNode
   subtitle?: ReactNode
   title: ReactNode
+  simplifiedTitle?: ReactNode
+  /** Classic empty states omit chrome; V2 pages keep their heading. */
+  hideInClassic?: boolean
 }
 
-export function PanelHeader({ actions, subtitle, title }: PanelHeaderProps) {
+export function PanelHeader({ actions, subtitle, title, simplifiedTitle, hideInClassic }: PanelHeaderProps) {
+  const simplified = useStore($simplifiedAgentMode)
+  const Heading = simplified ? 'h1' : 'h2'
+
+  if (hideInClassic && !simplified) {return null}
+
   return (
     // The overlay's close (X) is absolutely positioned at right-3 and costs no
     // layout space, so header actions would otherwise slide right up against it.
     // Reserve clearance (button footprint from the card edge + a small gap) on
     // the right whenever actions are present.
-    <header className={cn('mb-3 flex shrink-0 items-start justify-between gap-3', actions ? 'pr-8' : undefined)}>
+    <header className={cn('panel-header mb-3 flex shrink-0 items-start justify-between gap-3', actions ? 'pr-8' : undefined)}>
       <div className="min-w-0">
-        <h2 className="text-sm font-semibold text-foreground">{title}</h2>
+        <Heading className="text-[length:var(--page-title-size,0.875rem)] leading-tight font-semibold text-foreground">{simplified ? simplifiedTitle ?? title : title}</Heading>
         {subtitle ? <p className="truncate text-xs text-muted-foreground/80">{subtitle}</p> : null}
       </div>
       {actions ? <div className="flex shrink-0 items-center gap-1.5">{actions}</div> : null}
@@ -125,7 +137,7 @@ export function PanelList({
   return (
     // Full-width and height-capped when stacked (narrow); a fixed 13rem rail
     // beside the detail when wide.
-    <div className={cn('flex w-full shrink-0 flex-col max-[47.5rem]:max-h-[40%] min-[47.5rem]:w-52', className)}>
+    <div className={cn('panel-list flex w-full shrink-0 flex-col max-[47.5rem]:max-h-[40%] min-[47.5rem]:w-52', className)}>
       {onSearchChange ? (
         <SearchField
           aria-label={searchLabel ?? searchPlaceholder ?? ''}
@@ -183,12 +195,13 @@ export function PanelListRow({
   const row = (
     <div
       className={cn(
-        'group/row row-hover relative flex h-7 w-full items-center rounded-md text-[0.78rem] hover:text-foreground',
+        'panel-row group/row row-hover relative flex h-7 w-full items-center rounded-md text-[0.78rem] hover:text-foreground',
         active ? 'bg-(--ui-row-active-background) text-foreground' : 'text-(--ui-text-secondary)'
       )}
       data-panel-row={rowKey}
     >
       <RowButton
+        aria-current={active || undefined}
         className="flex h-full min-w-0 flex-1 items-center gap-2 rounded-md pl-2 pr-1 text-left"
         onClick={onSelect}
       >
@@ -200,7 +213,7 @@ export function PanelListRow({
           ) : null)}
         <span className="min-w-0 flex-1 truncate font-medium text-foreground/85">{title}</span>
       </RowButton>
-      {meta ? <span className="shrink-0 pr-2 text-[0.62rem] tabular-nums text-muted-foreground/45">{meta}</span> : null}
+      {meta ? <span className="panel-row-meta shrink-0 pr-2 text-[0.62rem] tabular-nums text-muted-foreground/45">{meta}</span> : null}
       {menuItems ? (
         <div className="shrink-0 pr-1">
           <PanelRowMenu items={menuItems} label={menuLabel} />
@@ -278,7 +291,7 @@ export function PanelRowMenu({ items, label = 'Actions' }: { items: PanelMenuIte
 // trace inspector), so the content stretches the full available width.
 export function PanelDetail({ children, className }: { children: ReactNode; className?: string }) {
   return (
-    <div className={cn('min-h-0 flex-1 overflow-y-auto overscroll-contain', className)}>
+    <div className={cn('panel-detail min-h-0 flex-1 overflow-y-auto overscroll-contain', className)}>
       <div className="space-y-4 pb-6 pl-1 pr-2">{children}</div>
     </div>
   )
@@ -309,7 +322,7 @@ export function PanelEmpty({ action, description, icon = 'inbox', title }: Panel
 
 export function PanelSectionLabel({ children, className }: { children: ReactNode; className?: string }) {
   return (
-    <div className={cn('text-[0.6rem] font-medium uppercase tracking-wider text-muted-foreground/50', className)}>
+    <div className={cn('panel-section-label text-[0.6rem] font-medium uppercase tracking-wider text-muted-foreground/50', className)}>
       {children}
     </div>
   )
@@ -323,7 +336,7 @@ export interface PanelMetaRow {
 
 export function PanelMeta({ className, rows }: { className?: string; rows: PanelMetaRow[] }) {
   return (
-    <dl className={cn('grid grid-cols-[5rem_1fr] gap-x-2 gap-y-1 text-[0.7rem]', className)}>
+    <dl className={cn('panel-meta grid grid-cols-[5rem_1fr] gap-x-2 gap-y-1 text-[0.7rem]', className)}>
       {rows.map((row, i) => (
         <div className="contents" key={typeof row.label === 'string' ? row.label : i}>
           <dt className="truncate text-muted-foreground/55">{row.label}</dt>
@@ -340,7 +353,7 @@ export function PanelBlock({ children, className }: { children: ReactNode; class
   return (
     <pre
       className={cn(
-        'max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-foreground/5 p-2.5 text-[0.68rem] leading-relaxed text-foreground/80',
+        'panel-block max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-foreground/5 p-2.5 text-[0.68rem] leading-relaxed text-foreground/80',
         className
       )}
     >

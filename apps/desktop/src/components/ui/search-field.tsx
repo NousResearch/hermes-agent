@@ -1,4 +1,4 @@
-import { type KeyboardEventHandler, type ReactNode, type RefObject, useState } from 'react'
+import { type FocusEventHandler, type KeyboardEventHandler, type ReactNode, type RefObject, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -21,6 +21,7 @@ interface SearchFieldProps {
   inputClassName?: string
   loading?: boolean
   onClear?: () => void
+  onFocus?: FocusEventHandler<HTMLInputElement>
   onKeyDown?: KeyboardEventHandler<HTMLInputElement>
   inputRef?: RefObject<HTMLInputElement | null>
   trailingAction?: ReactNode
@@ -52,6 +53,7 @@ export function SearchField({
   loading = false,
   onClear,
   onKeyDown,
+  onFocus,
   inputRef,
   trailingAction,
   leadingContent,
@@ -104,6 +106,7 @@ export function SearchField({
           inputClassName
         )}
         onChange={event => onChange(event.target.value)}
+        onFocus={onFocus}
         onKeyDown={onKeyDown}
         placeholder={effectivePlaceholder}
         ref={inputRef}

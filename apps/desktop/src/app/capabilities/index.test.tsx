@@ -69,6 +69,7 @@ vi.mock('react-router', async importOriginal => ({
 // component-tree transform is paid during collection, not billed against the
 // first test's testTimeout — same flake class as messaging/index.test.tsx.
 const { CapabilitiesView } = await import('./index')
+const { $agentSidebarChoice } = await import('@/store/simplified-agent-mode')
 
 function toolset(overrides: Record<string, unknown> = {}) {
   return {
@@ -120,6 +121,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  $agentSidebarChoice.set(null)
   vi.clearAllMocks()
   // Shared singleton client — drop cached skills/toolsets so each test refetches.
   queryClient.clear()
@@ -146,7 +148,8 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     expect(setToolsetEnabled.mock.calls[0].slice(0, 2)).toEqual(['web', false])
   })
 
-  it('scopes Tools config to the profile chosen in the selector', async () => {
+  it.each([false, true])('scopes Tools per profile (V2=%s)', async enabled => {
+    $agentSidebarChoice.set(enabled)
     // Two profiles → the "Configuring:" selector renders. Picking a non-active
     // profile must re-fetch toolsets scoped to THAT profile.
     // jsdom's scrollIntoView is missing/non-functional; Radix Select calls it
@@ -183,7 +186,8 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     await waitFor(() => expect(getToolsets).toHaveBeenCalledWith('researcher'))
   })
 
-  it('scopes the Skills tab (and skill toggles) to the profile chosen in the selector', async () => {
+  it.each([false, true])('scopes Skills per profile (V2=%s)', async enabled => {
+    $agentSidebarChoice.set(enabled)
     // The selector is Capabilities-WIDE: picking a profile on the Skills tab
     // must refetch the skill list scoped to it, and route toggles there too.
     Element.prototype.scrollIntoView = vi.fn()

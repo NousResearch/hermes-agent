@@ -1,0 +1,11 @@
+/* Keep list/detail controls usable when window chrome and the page header take most of the height. */
+@media (max-height: 600px) {
+  [data-page-surface]:has(.master-detail) {
+    overflow-y: auto;
+  }
+
+  [data-page-surface] > .page-search-body:has(.master-detail) {
+    min-height: 24rem;
+    flex-shrink: 0;
+  }
+}

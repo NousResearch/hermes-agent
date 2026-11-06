@@ -430,7 +430,7 @@ function ConfigSettingsInner({
                 }}
                 size="sm"
               >
-                {t.skills.refresh}
+                {t.common.retry}
               </Button>
             }
             icon="error"

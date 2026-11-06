@@ -1,5 +1,6 @@
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introZhHant } from './intro-zh-hant'
+import { simplifiedAgentsCopy } from './simplified-agents'
 import { zhHantArtifacts } from './zh-hant_artifacts'
 import { zhHantAssistant } from './zh-hant_assistant'
 import { zhHantBoot } from './zh-hant_boot'
@@ -14,6 +15,7 @@ import { zhHantFirstRun } from './zh-hant_first_run'
 import { zhHantSettings } from './zh-hant_settings'
 
 export const zhHantOverrides = {
+  simplifiedAgents: simplifiedAgentsCopy['zh-hant'],
 
   catalog: {
     add: '新增',

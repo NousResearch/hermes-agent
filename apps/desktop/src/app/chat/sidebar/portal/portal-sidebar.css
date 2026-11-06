@@ -1,0 +1,278 @@
+/* The normal agent sidebar; classic rollback keeps its own styling. */
+:root:has(.portal-sidebar) {
+  --sessions-pane-width: 20rem;
+}
+
+.portal-sidebar {
+  position: relative;
+  height: calc(100% - var(--titlebar-height));
+  margin-top: var(--titlebar-height);
+  min-width: 0;
+  overflow: hidden;
+  border-right: 1px solid var(--sidebar-edge-border);
+  border-bottom: 3px solid var(--portal-brand-blue);
+  border-radius: 9px 9px 0 0;
+  background: var(--ui-sidebar-surface-background);
+  color: var(--ui-text-primary);
+  font-size: 0.8125rem;
+}
+
+.portal-sidebar-brand {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1rem 1.25rem 1.5rem;
+}
+
+.portal-sidebar-badge {
+  display: grid;
+  place-items: center;
+  width: 2.5rem;
+  height: 3.5rem;
+  flex-shrink: 0;
+  border-radius: 0.375rem;
+  background: var(--portal-brand-blue);
+}
+
+.portal-sidebar-badge img {
+  width: 1.5rem;
+  height: 2.75rem;
+  transform: rotate(15deg);
+}
+
+.portal-sidebar-identity {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.portal-sidebar-wordmark {
+  font-size: 1.5rem;
+  line-height: 1.2;
+  letter-spacing: -0.04em;
+}
+
+.portal-sidebar-byline {
+  color: var(--ui-text-tertiary);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  letter-spacing: 0.01em;
+}
+
+.portal-sidebar-content {
+  min-width: 0;
+  gap: 0.75rem;
+  padding: 0 1.25rem 1rem;
+  overflow-y: auto;
+}
+
+.portal-sidebar-search {
+  margin: 0;
+  padding-inline: 0.5rem;
+  color: var(--ui-text-tertiary);
+}
+
+.portal-sidebar-sections {
+  display: flex;
+  flex: 1;
+  min-height: 12rem;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.portal-sidebar [data-slot='new-session-split'] > button {
+  background: color-mix(in srgb, var(--ui-text-primary) 5%, transparent);
+  color: var(--ui-text-primary);
+  min-height: 2.5rem;
+  border-radius: 0;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+  font-weight: 400;
+}
+
+.portal-sidebar [data-slot='new-session-split'] > button:first-child {
+  border-radius: 0.375rem 0 0 0.375rem;
+  padding-inline: 0.75rem 0.5rem;
+}
+
+.portal-sidebar [data-slot='new-session-split'] > button:last-of-type {
+  border-top-right-radius: 0.375rem;
+  border-bottom-right-radius: 0.375rem;
+}
+
+.portal-sidebar [data-slot='new-session-split'] > button:is(:hover, [data-state='open']) {
+  background: var(--chrome-action-hover);
+}
+
+.portal-sidebar [data-slot='new-session-split']:has([aria-expanded='true']) {
+  border-radius: 0.5rem;
+  outline: 2px solid var(--dt-ring);
+}
+
+.portal-sidebar [data-slot='new-session-split'] > button[role='combobox'] {
+  width: 3.75rem;
+  padding-inline: 0.5rem;
+  gap: 0.375rem;
+  border-color: color-mix(in srgb, var(--ui-text-primary) 10%, transparent);
+}
+
+.portal-sidebar [data-slot='new-session-shortcut'] {
+  background: color-mix(in srgb, var(--ui-text-primary) 5%, transparent);
+  padding-inline: 0.375rem;
+  font-size: 0.6875rem;
+  line-height: 1rem;
+}
+
+.portal-sidebar [data-slot='new-session-avatar'] {
+  padding: 0;
+  border-radius: 0.375rem;
+}
+
+.portal-sidebar [data-slot='new-session-avatar'] > span {
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: inherit;
+}
+
+/* The select is portaled to body; scope it to the mounted Portal sidebar. */
+:root:has(.portal-sidebar) .new-session-picker {
+  border-radius: 0.625rem;
+}
+
+:root:has(.portal-sidebar) .new-session-picker [data-slot='select-label'] {
+  padding-block: 0;
+  height: 0;
+  overflow: hidden;
+}
+
+:root:has(.portal-sidebar) .new-session-picker [data-slot='select-item'] {
+  border-radius: 0.4375rem;
+  font-size: 0.8125rem;
+}
+
+:root:has(.portal-sidebar) .new-session-picker [data-slot='select-item'][data-state='checked'] {
+  background: color-mix(in srgb, var(--dt-primary) 15%, var(--dt-popover));
+}
+
+:root:has(.portal-sidebar) .new-session-picker [data-slot='select-item'] > span:first-child {
+  color: var(--dt-primary);
+}
+
+:root:has(.portal-sidebar) .new-session-picker [data-slot='new-session-option-avatar'] {
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 0.4375rem;
+}
+
+:root:has(.portal-sidebar) .new-session-picker [data-slot='select-item'] .text-xs {
+  font-size: 0.6875rem;
+}
+
+.portal-sidebar [data-slot='sidebar-section-label'] {
+  padding: 0.625rem 0.5rem;
+  color: var(--ui-text-tertiary);
+  font-size: 0.8125rem;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.portal-sidebar [data-slot='sidebar-section-label'] > span:first-child {
+  display: none;
+}
+
+.portal-sidebar [data-slot='pinned-section'] [data-slot='sidebar-section-label'] {
+  flex: none;
+}
+
+.portal-sidebar [data-slot='gateway-heading'] {
+  min-height: 2.5rem;
+  margin-bottom: 0.25rem;
+  background: transparent;
+  font-size: 0.8125rem;
+}
+
+.portal-sidebar [data-slot='gateway-heading'][aria-current='true'] {
+  background: var(--chrome-action-hover);
+}
+
+.portal-sidebar [data-slot='agent-heading'] {
+  min-height: 2.5rem;
+  padding-inline: 0;
+}
+
+.portal-sidebar [data-slot='agent-heading'] > [data-slot='row-button'] {
+  font-size: 0.8125rem;
+}
+
+.portal-sidebar [data-slot='gateway-group'] + [data-slot='gateway-group'] {
+  margin-top: 1rem;
+}
+
+.portal-agent-sessions {
+  margin: 0.125rem 0 0.75rem 1.125rem;
+  border-left: 1px solid var(--sidebar-edge-border);
+  padding-left: 0.625rem;
+}
+
+.portal-sidebar [data-session-key] > button,
+.portal-agent-sessions > button {
+  min-height: 2.25rem;
+  font-size: 0.8125rem;
+  color: var(--ui-text-secondary);
+}
+
+.portal-sidebar [data-session-key] > button[aria-current='page'],
+.portal-agent-sessions > button[aria-current='page'] {
+  color: var(--ui-text-primary);
+}
+
+@media (max-height: 40rem) {
+  .portal-sidebar-brand {
+    padding-block: 0.5rem 0.75rem;
+  }
+
+  .portal-sidebar-badge {
+    height: 2.5rem;
+  }
+  .portal-sidebar-badge img {
+    height: 2rem;
+  }
+}
+
+/* Content-sized pins; the cap only matters once their list needs to scroll. */
+.portal-sidebar [data-slot='pinned-section'] {
+  flex: 0 1 auto;
+  min-height: 2.5rem;
+  max-height: 45%;
+}
+
+.portal-sidebar [data-slot='agent-section'] {
+  flex: 1 1 0%;
+}
+
+.portal-pinned-empty {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0.625rem;
+  border: 1px dashed var(--sidebar-edge-border);
+  border-radius: 0.25rem;
+  color: var(--ui-text-secondary);
+  font-size: 0.6875rem;
+  line-height: 1.4;
+}
+
+.portal-pinned-empty-icon {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 1.9375rem;
+  height: 1.9375rem;
+  border-radius: 0.25rem;
+  background: color-mix(in srgb, var(--portal-brand-blue) 15%, transparent);
+  color: var(--dt-primary);
+}

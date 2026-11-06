@@ -10,6 +10,11 @@ export function SettingsSubpageHeader({ group, child }: { group: OverlayNavGroup
   const grandchild = child?.children?.find(link => link.active)
 
   return (
-    <OverlayBreadcrumbHeader child={child} grandchild={grandchild} group={group} rootLabel={t.commandCenter.settings} />
+    <OverlayBreadcrumbHeader
+      child={child}
+      grandchild={grandchild}
+      group={group}
+      rootLabel={t.commandCenter.settings}
+    />
   )
 }

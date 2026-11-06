@@ -117,7 +117,6 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const navigate = useNavigate()
   const [artifacts, setArtifacts] = useState<ArtifactRecord[] | null>(null)
   const [query, setQuery] = useState('')
-
   const [kindFilter, setKindFilter] = useRouteEnumParam('tab', ARTIFACT_FILTERS, 'all')
 
   const [failedImageIds, setFailedImageIds] = useState<Set<string>>(() => new Set())
@@ -324,6 +323,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       activeTab={kindFilter}
       onSearchChange={setQuery}
       onTabChange={id => setKindFilter(id as typeof kindFilter)}
+      pageTitle={t.simplifiedAgents.library}
       searchHidden={counts.all === 0}
       searchHints={searchHints}
       searchPlaceholder={a.search}
@@ -355,15 +355,15 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         <div className="grid h-full place-items-center px-6 text-center">
           <div>
             <div className="text-sm font-medium">{a.noArtifactsTitle}</div>
-            <div className="mt-1 text-xs text-muted-foreground">{a.noArtifactsDesc}</div>
+            {counts.all === 0 && <div className="mt-1 text-xs text-muted-foreground">{a.noArtifactsDesc}</div>}
           </div>
         </div>
       ) : (
-        <div className="h-full overflow-y-auto [scrollbar-gutter:stable]">
-          <div className="flex flex-col gap-3 px-3 pb-2">
+        <div className="mx-auto h-full w-full max-w-[var(--page-content-max-width,none)] overflow-y-auto [scrollbar-gutter:stable]">
+          <div className="flex flex-col gap-3 px-[var(--page-content-inset,0.75rem)] pb-2">
             {visibleImageArtifacts.length > 0 && (
               <section className="flex flex-col">
-                <div className="sticky top-0 z-10 -mx-3 flex h-7 items-center gap-3 overflow-x-auto bg-background px-3">
+                <div className="sticky top-0 z-10 mx-[calc(-1*var(--page-content-inset,0.75rem))] flex h-7 items-center gap-3 overflow-x-auto bg-background px-[var(--page-content-inset,0.75rem)]">
                   <ArtifactsPagination
                     className="ml-auto justify-end px-0"
                     itemLabel={a.itemsImage}
@@ -380,7 +380,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                       failedImage={failedImageIds.has(artifact.id)}
                       key={artifact.id}
                       onImageError={markImageFailed}
-                      onOpenChat={sessionId => openSessionFromPicker(sessionId, navigate)}
+                      onOpenChat={openChat}
                     />
                   ))}
                 </div>
@@ -389,7 +389,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
             {visibleFileArtifacts.length > 0 && (
               <section className="flex flex-col">
-                <div className="sticky top-0 z-10 -mx-3 flex h-7 items-center gap-3 overflow-x-auto bg-background px-3">
+                <div className="sticky top-0 z-10 mx-[calc(-1*var(--page-content-inset,0.75rem))] flex h-7 items-center gap-3 overflow-x-auto bg-background px-[var(--page-content-inset,0.75rem)]">
                   <ArtifactsPagination
                     className="ml-auto justify-end px-0"
                     itemLabel={itemsLabel(kindFilter, a)}

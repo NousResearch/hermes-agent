@@ -21,6 +21,8 @@ vi.mock('../capabilities', () => ({ CapabilitiesView: () => null }))
 vi.mock('../messaging', () => ({ MessagingView: () => null }))
 vi.mock('../artifacts', () => ({ ArtifactsView: () => null }))
 vi.mock('../chat/sidebar', () => ({ ChatSidebar: () => null }))
+vi.mock('../chat/sidebar/portal/portal-sidebar', () => ({ PortalSidebar: () => null }))
+vi.mock('@/app/redesign/use-portal-redesign', () => ({ usePortalRedesign: () => false }))
 vi.mock('../right-sidebar/terminal/chrome', () => ({ TerminalPaneChrome: () => null }))
 vi.mock('../shell/hooks/use-status-snapshot', () => ({ useStatusSnapshot: () => ({}) }))
 vi.mock('../shell/hooks/use-statusbar-items', () => ({

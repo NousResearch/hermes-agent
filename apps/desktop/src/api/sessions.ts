@@ -398,7 +398,7 @@ export function mutateSessionFenced<T>(key: string, read: () => Promise<SessionM
   })
 }
 
-function mutateSessionHttp<T>(id: string, method: 'PATCH' | 'DELETE', payload: Record<string, unknown>, profile?: ProfileScope): Promise<T> {
+export function mutateSessionHttp<T>(id: string, method: 'PATCH' | 'DELETE', payload: Record<string, unknown>, profile?: ProfileScope): Promise<T> {
   // Null is the window's v1 route (its primary, local or remote); defaulting it to
   // the registry's 'local' source would pin a remote primary's edits to this machine.
   const scope = { connectionId: getApiRequestConnection(), ...sessionScoped(profile) }
@@ -423,8 +423,8 @@ function mutateSessionHttp<T>(id: string, method: 'PATCH' | 'DELETE', payload: R
   return mutateSessionFenced(key, () => hermesApi<SessionMutationSnapshot>({ ...scope, path: `${path}/mutation-snapshot${suffix}` }), send)
 }
 
-export function setSessionArchived(id: string, archived: boolean, profile?: string | null): Promise<{ ok: boolean }> {
-  return mutateSessionHttp(id, 'PATCH', { archived, ...(archived ? { pinned: false } : {}) }, sessionWriteProfile(profile))
+export function setSessionArchived(id: string, archived: boolean, profile?: ProfileScope): Promise<{ ok: boolean }> {
+  return mutateSessionHttp(id, 'PATCH', { archived, ...(archived ? { pinned: false } : {}) }, profile && typeof profile === 'object' ? profile : sessionWriteProfile(profile))
 }
 
 export function setSessionPinnedRemote(id: string, pinned: boolean, profile?: string | null): Promise<{ ok: boolean }> {

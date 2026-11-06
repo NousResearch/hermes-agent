@@ -1,0 +1,131 @@
+import './portal-sidebar.css'
+
+import { type ComponentProps } from 'react'
+
+import wing from '@/assets/catalog-wing.svg'
+import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
+import { SearchField } from '@/components/ui/search-field'
+import { Sidebar, SidebarContent } from '@/components/ui/sidebar'
+import { Tip } from '@/components/ui/tooltip'
+import { recordIaAction } from '@/store/ia-metrics'
+import { toggleSidebarOpen } from '@/store/layout'
+import { $newChatProfile } from '@/store/profile'
+
+import type { ChatSidebar } from '../index'
+import { SidebarLoadMoreRow } from '../load-more-row'
+import { SidebarLoadErrorState, SidebarSessionSkeletons, SidebarStorageCorruptNotice } from '../section-states'
+import { SimplifiedAgentList } from '../simplified-agent-list'
+import { SimplifiedBotChatRow } from '../simplified-bot-chat-row'
+import { SimplifiedNewSession } from '../simplified-new-session'
+import { SimplifiedPinnedSessions } from '../simplified-pinned-sessions'
+import { SimplifiedSessionList } from '../simplified-session-list'
+import { useAgentSidebar } from '../use-agent-sidebar'
+
+import { PortalPinnedEmpty } from './portal-pinned-empty'
+
+export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
+  const {
+    t,
+    all,
+    query,
+    setQuery,
+    search,
+    rows,
+    shared,
+    agents,
+    expanded,
+    setExpanded,
+    revealSession,
+    loading,
+    error,
+    loadingMore,
+    loadMore,
+    resumePinned,
+    pinned,
+    hasMore
+  } = useAgentSidebar(props)
+
+  return (
+    <Sidebar className="portal-sidebar" collapsible="none" data-tour="sessions-sidebar">
+      <header className="portal-sidebar-brand">
+        <span aria-hidden className="portal-sidebar-badge">
+          <img alt="" src={wing} />
+        </span>
+        <div className="portal-sidebar-identity">
+          <span className="portal-sidebar-wordmark">Hermes</span>
+          <span className="portal-sidebar-byline">// Nous Research</span>
+        </div>
+        <Tip label={t.titlebar.hideSidebar}>
+          <Button aria-label={t.titlebar.hideSidebar} onClick={toggleSidebarOpen} size="icon-xs" variant="ghost">
+            <Codicon name="layout-sidebar-left-off" />
+          </Button>
+        </Tip>
+      </header>
+      <SidebarContent className="portal-sidebar-content">
+        <SimplifiedNewSession
+          onFallback={() => {
+            $newChatProfile.set(null)
+            props.onNavigate({
+              id: 'new-session',
+              label: t.sidebar.nav['new-session'],
+              action: 'new-session',
+              icon: () => null,
+              keybindActionId: 'session.new'
+            })
+          }}
+          sessions={all}
+        />
+        <SearchField
+          aria-label={t.sidebar.searchAria}
+          containerClassName="portal-sidebar-search"
+          loading={search.pending}
+          onChange={setQuery}
+          onFocus={() => recordIaAction('ia.search.opened')}
+          placeholder={t.sidebar.searchPlaceholder}
+          value={query}
+        />
+        <SidebarStorageCorruptNotice />
+        {search.failed && (
+          <p className="text-xs text-destructive" role="alert">
+            {t.errors.genericFailure}
+          </p>
+        )}
+        <div className="portal-sidebar-sections">
+          <SimplifiedPinnedSessions
+            {...shared}
+            emptyState={!loading && !error && !search.pending && !search.failed && !query.trim() && <PortalPinnedEmpty />}
+            onResumeSession={resumePinned}
+            sessions={pinned}
+          />
+          <SimplifiedAgentList
+            agents={agents}
+            expanded={expanded}
+            onToggle={(id, open) => setExpanded(current => ({ ...current, [id]: !open }))}
+            renderSessions={(sessions, agent) => (
+              <div className="portal-agent-sessions">
+                <SimplifiedBotChatRow agent={agent} />
+                <SimplifiedSessionList {...shared} sessions={sessions} />
+              </div>
+            )}
+            revealSession={revealSession}
+            searching={Boolean(query.trim())}
+          />
+        </div>
+        {loading && rows.length === 0 && <SidebarSessionSkeletons />}
+        {query.trim() && search.pending && (
+          <p className="sr-only" role="status">
+            {t.common.loading}
+          </p>
+        )}
+        {!loading && !search.pending && !search.failed && rows.length === 0 && (
+          <p className="py-3 text-xs text-(--ui-text-tertiary)">
+            {query ? t.sidebar.noMatch(query) : t.sidebar.noSessions}
+          </p>
+        )}
+        {hasMore && <SidebarLoadMoreRow loading={loading || loadingMore} onClick={() => void loadMore()} step={0} />}
+        {error && <SidebarLoadErrorState onRetry={() => void props.onRetrySessions()} />}
+      </SidebarContent>
+    </Sidebar>
+  )
+}

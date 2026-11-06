@@ -1,12 +1,15 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { createRef } from 'react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as ConfigApi from '@/api/config'
+import type * as Notifications from '@/store/notifications'
+import { notifyError } from '@/store/notifications'
 import { $settingsRequestProfile } from '@/store/settings-scope'
+import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
 
 import type { ConfigSettings as ConfigSettingsType } from './config-settings'
 
@@ -36,6 +39,11 @@ vi.mock('@/hermes', async () => ({
 
 vi.mock('../hooks/use-on-profile-switch', () => ({
   useOnProfileSwitch: () => {}
+}))
+
+vi.mock('@/store/notifications', async importOriginal => ({
+  ...(await importOriginal<typeof Notifications>()),
+  notifyError: vi.fn()
 }))
 
 // The real stores pull in the gateway/profile stack, which needs a live
@@ -78,6 +86,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  $agentSidebarChoice.set(null)
   vi.clearAllMocks()
 })
 
@@ -96,7 +105,53 @@ function renderConfigSettings(activeSectionId = 'safety') {
   return { importInputRef }
 }
 
-describe('ConfigSettings autosave', () => {
+describe.each([false, true])('ConfigSettings autosave, simplified mode %s', simplified => {
+  beforeEach(() => $agentSidebarChoice.set(simplified))
+
+  it.each(['record', 'schema'])('recovers from a failed %s read without writing settings', async failedRead => {
+    scopeProfileMock.set('research')
+    getHermesConfigRecord.mockResolvedValue({ checkpoints: { enabled: false } })
+    const failedRequest = failedRead === 'record' ? getHermesConfigRecord : getHermesConfigSchema
+    failedRequest.mockRejectedValueOnce(new Error('Gateway unavailable'))
+
+    renderConfigSettings()
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry' }))
+
+    expect((await screen.findByRole('switch')).getAttribute('aria-checked')).toBe('false')
+    expect(failedRequest).toHaveBeenCalledTimes(2)
+    expect(getHermesConfigRecord.mock.calls.every(([profile]) => profile === 'research')).toBe(true)
+    expect(saveHermesConfig).not.toHaveBeenCalled()
+  })
+
+  it('keeps the draft after a failed save and retries the edit on its original profile', async () => {
+    scopeProfileMock.set('research')
+    getHermesConfigRecord.mockResolvedValue({ checkpoints: { enabled: false } })
+    const failure = new Error('Gateway unavailable')
+    saveHermesConfig.mockRejectedValueOnce(failure)
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+
+    try {
+      renderConfigSettings()
+      const toggle = await screen.findByRole('switch')
+      fireEvent.click(toggle)
+      await vi.advanceTimersByTimeAsync(700)
+      await vi.waitFor(() => expect(notifyError).toHaveBeenCalledWith(failure, expect.any(String)))
+      expect(toggle.getAttribute('aria-checked')).toBe('true')
+
+      fireEvent.click(toggle)
+      fireEvent.click(toggle)
+      await vi.advanceTimersByTimeAsync(700)
+      await vi.waitFor(() => expect(saveHermesConfig).toHaveBeenCalledTimes(2))
+      expect(saveHermesConfig.mock.calls).toEqual([
+        [{ checkpoints: { enabled: true } }, 'research'],
+        [{ checkpoints: { enabled: true } }, 'research']
+      ])
+      expect(toggle.getAttribute('aria-checked')).toBe('true')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('sends a later revert instead of diffing it away against the stale page-load baseline', async () => {
     getHermesConfigRecord.mockResolvedValue({ checkpoints: { enabled: false }, other: 'untouched' })
 

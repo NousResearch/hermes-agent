@@ -7,6 +7,7 @@
  */
 import { act, cleanup, render, screen, within } from '@testing-library/react'
 import { type ReactNode, useEffect } from 'react'
+import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { TreeGroup } from '@/components/pane-shell/tree/renderer/tree-group'
@@ -33,13 +34,15 @@ const probe = (
 )
 
 const workspaceZone = (chatRoutes: ReactNode) => (
-  <ContribWiringContext.Provider value={wiring(chatRoutes)}>
-    <TreeGroup
-      leftEdge
-      node={{ active: 'workspace', id: 'main-zone', panes: ['workspace'], type: 'group' }}
-      rightEdge
-    />
-  </ContribWiringContext.Provider>
+  <MemoryRouter>
+    <ContribWiringContext.Provider value={wiring(chatRoutes)}>
+      <TreeGroup
+        leftEdge
+        node={{ active: 'workspace', id: 'main-zone', panes: ['workspace'], type: 'group' }}
+        rightEdge
+      />
+    </ContribWiringContext.Provider>
+  </MemoryRouter>
 )
 
 afterEach(() => {

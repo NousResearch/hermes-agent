@@ -100,3 +100,24 @@
 @container (max-width: 960px) { .catalog-bento, .catalog-feature-row, .catalog-filtered-results > :is(.masonry, .catalog-grid) { grid-template-columns: repeat(2, minmax(0, 1fr)); } .catalog-bento { grid-auto-flow: row dense; } .catalog-bento > [data-catalog-card] { grid-column: auto / span var(--bento-w, 1); grid-row: auto / span var(--bento-h, 1); } }
 @container (max-width: 720px) { .catalog-bento, .catalog-filtered-results > :is(.masonry, .catalog-grid) { grid-template-columns: repeat(2, minmax(0, 1fr)); } .catalog-banner-list { grid-template-columns: minmax(0, 1fr); } .catalog-section-heading { padding-top: 32px; } .catalog-filter-bar > div:first-child { flex-wrap: wrap; } }
 @container (max-width: 440px) { .catalog-bento, .catalog-feature-row, .catalog-filtered-results > :is(.masonry, .catalog-grid) { grid-template-columns: minmax(0, 1fr); } .catalog-bento > [data-catalog-card] { grid-column: auto; grid-row: auto; } [data-catalog-variant=hero] .catalog-card-copy { max-width: 100%; } }
+
+/* In V2's narrow catalog, artwork gets its own space instead of sitting under copy. */
+@container (max-width: 440px) {
+  [data-capabilities-v2] [data-catalog-card][data-catalog-variant=hero] .catalog-card-image {
+    position: static;
+    width: 100%;
+    height: auto;
+    aspect-ratio: 3 / 1;
+    border-radius: var(--radius-md);
+    mask-image: none;
+    z-index: auto;
+  }
+
+  [data-capabilities-v2] [data-catalog-variant=hero] .catalog-card-footer {
+    max-width: 100%;
+  }
+
+  [data-capabilities-v2] [data-catalog-variant=hero] .catalog-card-copy button > span {
+    font-size: 1.5rem;
+  }
+}

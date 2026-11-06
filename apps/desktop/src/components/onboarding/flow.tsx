@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 
 import { HandoffResult } from '@/components/free-tier/sign-in-dialog'
 import { ModelPickerDialog } from '@/components/model-picker'
@@ -255,6 +255,7 @@ function ConfirmingModelPanel({
   // dropdown — gives us search, multi-provider listing if relevant, and
   // a familiar UI for users who'll see this picker again later.
   const [pickerOpen, setPickerOpen] = useState(false)
+  const changeButton = useRef<HTMLButtonElement>(null)
 
   // Pull pricing + tier for the just-picked default so the confirm card
   // shows the same $/Mtok + Free/Pro info the picker and CLI do.
@@ -309,6 +310,7 @@ function ConfirmingModelPanel({
           className="mt-0.5 text-xs"
           disabled={flow.saving}
           onClick={() => setPickerOpen(true)}
+          ref={changeButton}
           size="inline"
           variant="text"
         >
@@ -341,6 +343,12 @@ function ConfirmingModelPanel({
         contentClassName="z-(--z-onboarding-popover)"
         currentModel={flow.currentModel}
         currentProvider={flow.providerSlug}
+        onCloseAutoFocus={event => {
+          if (changeButton.current?.isConnected) {
+            event.preventDefault()
+            changeButton.current.focus({ preventScroll: true })
+          }
+        }}
         onOpenChange={setPickerOpen}
         onSelect={({ model, provider }) => {
           // The picker lists models from every configured provider, not just

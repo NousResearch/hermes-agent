@@ -1,0 +1,49 @@
+/* V2 page density. Classic cards retain their existing utility styles. */
+[data-page-surface] .management-panel {
+  --page-title-size: 1.875rem;
+  padding: 1rem 1.5rem 1.5rem;
+}
+
+[data-page-surface] .panel-header {
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 1.5rem;
+  padding-right: 0;
+}
+
+[data-page-surface] .panel-row {
+  height: 2.75rem;
+  flex-shrink: 0;
+  font-size: 0.875rem;
+}
+
+[data-page-surface] .panel-row-meta,
+[data-page-surface] .panel-section-label {
+  color: var(--ui-text-tertiary);
+  font-size: 0.75rem;
+}
+
+[data-page-surface] .panel-meta {
+  grid-template-columns: minmax(5rem, 8rem) minmax(0, 1fr);
+  gap: 0.5rem 1rem;
+  font-size: 0.8125rem;
+}
+
+[data-page-surface] .panel-meta dt {
+  color: var(--ui-text-tertiary);
+}
+
+[data-page-surface] .panel-block {
+  padding: 1rem;
+  font-size: 0.8125rem;
+}
+
+@media (min-width: 47.5rem) {
+  [data-page-surface] .panel-list {
+    width: clamp(15rem, 24vw, 20rem);
+  }
+
+  [data-page-surface] .panel-detail > div {
+    padding-left: 1rem;
+  }
+}

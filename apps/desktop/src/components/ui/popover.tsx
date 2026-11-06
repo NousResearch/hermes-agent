@@ -76,6 +76,7 @@ function PopoverContent({
         className={cn(popoverContentVariants({ variant }), className)}
         collisionPadding={collisionPadding}
         data-slot="popover-content"
+        data-variant={variant ?? 'default'}
         sideOffset={sideOffset}
         {...props}
       >
@@ -96,6 +97,7 @@ function PopoverContent({
                       'rounded-[1px]'
                     : 'border-r border-b border-(--ui-stroke-secondary) backdrop-blur-md'
                 )}
+                data-slot="popover-arrow"
               />
             </span>
           </PopoverPrimitive.Arrow>

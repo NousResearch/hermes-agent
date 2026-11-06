@@ -5,10 +5,10 @@
 // surface. Fully translated locale files may satisfy this interface directly;
 // partial locales should use `defineLocale()` so missing desktop-only strings
 // fall back to English while new keys remain type-checked.
-
 import type { ErrorCodeKey } from '@/lib/error-surface'
 import type { TipId } from '@/lib/tips/catalog'
 
+import type { SimplifiedAgentsCopy } from './simplified-agents'
 import type { AppTourTranslations } from './types_app_tour'
 import type { BillingTranslations } from './types_billing'
 import type { BootTranslations } from './types_boot'
@@ -92,6 +92,7 @@ interface ModeOptionCopy {
 }
 
 export interface Translations extends NoticeTranslations {
+  simplifiedAgents: SimplifiedAgentsCopy
   /** Shared-metrics consent: first-run dialog + Settings › Safety toggles. */
   sharedMetrics: SharedMetricsTranslations
   appTour: AppTourTranslations

@@ -1,0 +1,96 @@
+import { useStore } from '@nanostores/react'
+import type { CSSProperties } from 'react'
+import { useLocation } from 'react-router'
+
+import { $narrowOverlayPaneIds } from '@/components/pane-shell/narrow-overlay-state'
+import { $narrowViewport, $paneVisible, togglePaneVisible } from '@/components/pane-shell/tree/store'
+import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
+import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
+import { useI18n } from '@/i18n'
+import { cn } from '@/lib/utils'
+import { $showsAdvancedChrome } from '@/store/interface-mode'
+import { $rightRailActiveTabId, setFileBrowserOpen } from '@/store/layout'
+import { $visiblePreviewTabs, browserTabFor, toggleBrowserTab } from '@/store/preview'
+import { PREVIEW_TILE_PREFIX } from '@/store/preview-explicit'
+import { toggleReview } from '@/store/review'
+import { $focusedSessionIsTile } from '@/store/session-focus'
+import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
+
+import { usePortalRedesign } from '../redesign/use-portal-redesign'
+import { toggleTerminalPane } from '../right-sidebar/terminal/reveal-focus'
+import { appViewForPath } from '../routes'
+import { useTitlebarHeight } from '../shell/use-touch-titlebar'
+
+/** Only presentation lives here; the existing pane owners handle reveal and focus. */
+export function DeveloperRail() {
+  const portal = usePortalRedesign()
+  const advanced = useStore($showsAdvancedChrome)
+  const enabled = useStore($simplifiedAgentMode) && (!portal || advanced)
+  const focusedChat = useStore($focusedSessionIsTile)
+  const { pathname } = useLocation()
+
+  return enabled && (focusedChat || appViewForPath(pathname) === 'chat') ? <DeveloperTools /> : null
+}
+
+function DeveloperTools() {
+  const { t } = useI18n()
+  const titlebarHeight = useTitlebarHeight()
+  const narrow = useStore($narrowViewport)
+  const overlays = useStore($narrowOverlayPaneIds)
+  const files = useStore($paneVisible('files'))
+  const terminal = useStore($paneVisible('terminal'))
+  const review = useStore($paneVisible('review'))
+  const previewTabs = useStore($visiblePreviewTabs)
+  const activeTabId = useStore($rightRailActiveTabId)
+  const browserTab = browserTabFor(previewTabs, activeTabId)
+  const browser = useStore($paneVisible(`${PREVIEW_TILE_PREFIX}:${browserTab?.id ?? ''}`))
+
+  const tools = [
+    {
+      label: t.sidebar.files,
+      icon: 'files',
+      action: 'view.showFiles',
+      active: narrow ? overlays.has('files') : files,
+      run: () => (narrow ? setFileBrowserOpen(!overlays.has('files')) : togglePaneVisible('files'))
+    },
+    {
+      label: t.sidebar.terminal,
+      icon: 'terminal',
+      action: 'view.showTerminal',
+      active: terminal,
+      run: toggleTerminalPane
+    },
+    {
+      label: t.sidebar.review,
+      icon: 'git-compare',
+      action: 'view.toggleReview',
+      active: narrow ? overlays.has('review') : review,
+      run: toggleReview
+    },
+    { label: t.preview.tab, icon: 'globe', action: 'view.showBrowser', active: browser, run: toggleBrowserTab }
+  ]
+
+  return (
+    <nav
+      aria-label={t.rightSidebar.panelsAria}
+      className="relative z-40 mt-(--titlebar-height) flex w-12 shrink-0 flex-col items-center gap-1 overflow-y-auto border-l border-(--sidebar-edge-border) bg-(--ui-sidebar-surface-background) py-2"
+      style={{ '--titlebar-height': `${titlebarHeight}px` } as CSSProperties}
+    >
+      {tools.map(tool => (
+        <Tip key={tool.action} label={<TipKeybindLabel actionId={tool.action} text={tool.label} />}>
+          <Button
+            aria-label={tool.label}
+            aria-pressed={tool.active}
+            className={cn(tool.active && 'bg-(--chrome-action-hover) text-(--ui-text-primary)')}
+            onClick={() => tool.run()}
+            size="icon"
+            variant="ghost"
+          >
+            <Codicon name={tool.icon} />
+          </Button>
+        </Tip>
+      ))}
+    </nav>
+  )
+}

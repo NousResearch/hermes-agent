@@ -102,6 +102,8 @@ function DialogContent({
   chrome,
   overlayClassName,
   onOpenAutoFocus,
+  onCloseAutoFocus,
+  onFocusCapture,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean
@@ -136,6 +138,34 @@ function DialogContent({
   // dialog-portal-context.ts. State (not just a ref) so consumers re-render once
   // the node mounts.
   const [contentNode, setContentNode] = React.useState<HTMLElement | null>(null)
+  const pageOpener = React.useRef<HTMLElement | null>(null)
+
+  function handleFocusCapture(event: React.FocusEvent<HTMLDivElement>) {
+    // React autoFocus runs before Radix's open autofocus event.
+    const previous = event.relatedTarget
+    if (previous instanceof HTMLElement && !event.currentTarget.contains(previous) && previous.closest('[data-page-surface]')) {
+      pageOpener.current = previous
+    }
+    onFocusCapture?.(event)
+  }
+
+  function handleOpenAutoFocus(event: Event) {
+    const active = document.activeElement
+    // Programmatic page dialogs have no Radix Trigger to restore on close.
+    if (active instanceof HTMLElement && active.closest('[data-page-surface]')) {
+      pageOpener.current = active
+    }
+    onOpenAutoFocus?.(event)
+  }
+
+  function handleCloseAutoFocus(event: Event) {
+    onCloseAutoFocus?.(event)
+    if (!event.defaultPrevented && pageOpener.current?.isConnected) {
+      pageOpener.current.focus({ preventScroll: true })
+      event.preventDefault()
+    }
+    pageOpener.current = null
+  }
 
   // Opened from inside another dialog (e.g. an image lightbox over a detail
   // modal): both layers step above the parent so its scrim dims the parent too.
@@ -177,7 +207,9 @@ function DialogContent({
             'gap-0'
           )}
           data-slot="dialog-content"
-          onOpenAutoFocus={onOpenAutoFocus}
+          onCloseAutoFocus={handleCloseAutoFocus}
+          onFocusCapture={handleFocusCapture}
+          onOpenAutoFocus={handleOpenAutoFocus}
           ref={setContentNode}
           {...props}
         >
@@ -230,7 +262,9 @@ function DialogContent({
           className
         )}
         data-slot="dialog-content"
-        onOpenAutoFocus={onOpenAutoFocus}
+        onCloseAutoFocus={handleCloseAutoFocus}
+        onFocusCapture={handleFocusCapture}
+        onOpenAutoFocus={handleOpenAutoFocus}
         ref={setContentNode}
         {...props}
       >

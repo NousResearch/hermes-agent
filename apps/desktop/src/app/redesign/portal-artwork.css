@@ -1,0 +1,20 @@
+/* Opacity lives in the SVG (following the parent color-scheme), so transparent
+   native glass surfaces cannot expose the full-strength wing. */
+:root:has([data-portal-redesign='true']) :is(
+  .portal-sidebar,
+  [data-slot='composer-bounds'],
+  [data-page-surface],
+  [data-page-surface] [data-glass-raised],
+  [data-page-surface] [data-tour='overlay-nav']
+) {
+  background-image: url('../../assets/portal-wing.svg');
+  background-position: center;
+  background-size: 95vw auto;
+  background-repeat: no-repeat;
+  background-attachment: fixed;
+}
+
+/* Figma's light rail (606:13784) is opaque. */
+:root:not(.dark):has([data-portal-redesign='true']) :is(.portal-sidebar, [data-page-surface] [data-tour='overlay-nav']) {
+  background-image: none;
+}

@@ -470,7 +470,7 @@ if (typeof window !== 'undefined') {
 
 // ─── Context ────────────────────────────────────────────────────────────────
 
-interface ThemeContextValue {
+export interface ThemeContextValue {
   theme: DesktopTheme
   themeName: string
   mode: ThemeMode

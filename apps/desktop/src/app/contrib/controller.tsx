@@ -1,3 +1,5 @@
+import '../redesign/portal-artwork.css'
+
 import { useStore } from '@nanostores/react'
 import { atom, computed } from 'nanostores'
 import type { CSSProperties, ReactElement, PointerEvent as ReactPointerEvent } from 'react'
@@ -113,12 +115,14 @@ import {
 } from '../chat/session-tile'
 import { AppContextMenu } from '../context-menu/app-context-menu'
 import { HudShell } from '../hud/hud-shell'
+import { usePortalRedesign } from '../redesign/use-portal-redesign'
 import { $terminalTakeover, setTerminalTakeover } from '../right-sidebar/store'
 import { terminalPaletteToggle } from '../right-sidebar/terminal/reveal-focus'
 import { $workspaceIsPage, WORKSPACE_PAGE_HEADER_AREA } from '../routes'
 import { Butterbar } from '../shell/butterbar'
 import { TermsButterbar } from '../shell/terms-butterbar'
 
+import { DeveloperRail } from './developer-rail'
 import { BASIC_TREE, DEFAULT_TREE, registerLayoutPresets } from './layout-presets'
 import { bindLayoutSides } from './layout-sides'
 import { FilesPane, LogsPane, ReviewPaneContent } from './panes'
@@ -191,32 +195,34 @@ const workspaceTabDrag = (event: ReactPointerEvent<HTMLElement>, onTap: () => vo
   return true
 }
 
-registry.registerMany([
-  {
-    id: 'sessions',
-    area: 'panes',
-    // String fallback only (menus, drag ghosts); the tab itself renders
-    // `tabTitle` below so the strip follows `display.language` once it loads.
-    title: translateNow('sidebar.sessions'),
-    // Collapsible: leaves the grid on narrow viewports (edge overlay instead).
-    // dock: where a RE-ADOPTED pane lands (healed from a stale dismissal) —
-    // its default-ish spot beside main, not a random same-placement stack.
-    data: {
-      placement: 'left',
-      collapsible: true,
-      dock: { pane: 'workspace', pos: 'left' },
-      revealAliases: ['chat-sidebar'],
-      // Standing chrome: no close gestures at all — the tab is shown/hidden
-      // (zone menu Show/Hide rows + the auto-registered ⌘K toggle below).
-      hideOnly: true,
-      tabTitle: () => <LocalizedTabTitle select={t => t.sidebar.sessions} />,
-      tabTitleText: () => translateNow('sidebar.sessions'),
-      width: `${SIDEBAR_DEFAULT_WIDTH}px`,
-      minWidth: `${SIDEBAR_DEFAULT_WIDTH}px`,
-      maxWidth: `${SIDEBAR_MAX_WIDTH}px`
-    },
-    render: () => <WiredPane part="sidebar" />
+const sessionsPane = {
+  id: 'sessions',
+  area: 'panes',
+  // String fallback only (menus, drag ghosts); the tab itself renders
+  // `tabTitle` below so the strip follows `display.language` once it loads.
+  title: translateNow('sidebar.sessions'),
+  // Collapsible: leaves the grid on narrow viewports (edge overlay instead).
+  // dock: where a RE-ADOPTED pane lands (healed from a stale dismissal) —
+  // its default-ish spot beside main, not a random same-placement stack.
+  data: {
+    placement: 'left',
+    collapsible: true,
+    dock: { pane: 'workspace', pos: 'left' },
+    revealAliases: ['chat-sidebar'],
+    // Standing chrome: no close gestures at all — the tab is shown/hidden
+    // (zone menu Show/Hide rows + the auto-registered ⌘K toggle below).
+    hideOnly: true,
+    tabTitle: () => <LocalizedTabTitle select={t => t.sidebar.sessions} />,
+    tabTitleText: () => translateNow('sidebar.sessions'),
+    width: `var(--sessions-pane-width, ${SIDEBAR_DEFAULT_WIDTH}px)`,
+    minWidth: `${SIDEBAR_DEFAULT_WIDTH}px`,
+    maxWidth: `${SIDEBAR_MAX_WIDTH}px`
   },
+  render: () => <WiredPane part="sidebar" />
+}
+
+registry.registerMany([
+  sessionsPane,
   {
     id: 'workspace',
     area: 'panes',
@@ -783,7 +789,8 @@ registerPaneCloser('files', () =>
 
 export function ContribController() {
   const sidebarOpen = useStore($sidebarOpen)
-  const statusbarVisible = useStore($statusbarVisible)
+  const portal = usePortalRedesign()
+  const statusbarVisible = useStore($statusbarVisible) && !portal
 
   // HUD mode is the SAME app with its frame removed: the wiring (gateway,
   // sessions, streams, submit) mounts identically, and only the shell around
@@ -828,9 +835,14 @@ export function ContribController() {
           // painted by <body> is the only thing between the page and the
           // vibrancy material.
           data-contrib-shell=""
+          data-portal-redesign={portal || undefined}
           style={{ '--titlebar-height': '0px' } as CSSProperties}
         >
-          <LayoutTreeRoot titlebar />
+          <div className="flex min-h-0 flex-1">
+            <WiredPane part="globalNav" />
+            <LayoutTreeRoot titlebar />
+            <DeveloperRail />
+          </div>
 
           {/* "Close running tab?" — the busy/input-blocked tile close gate. */}
           <SessionTileCloseConfirm />

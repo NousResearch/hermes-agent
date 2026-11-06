@@ -1,5 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type * as Nanostores from 'nanostores'
+import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { deleteProfile, getProfileSoul, updateProfileSoul } from '@/hermes'
@@ -103,7 +104,11 @@ function realClick(el: HTMLElement) {
 // mount setState isn't left unwrapped.
 async function renderProfilesView() {
   await act(async () => {
-    render(<ProfilesView onClose={vi.fn()} />)
+    render(
+      <MemoryRouter initialEntries={['/profiles?manage=true']}>
+        <ProfilesView onClose={vi.fn()} />
+      </MemoryRouter>
+    )
   })
 }
 

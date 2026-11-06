@@ -57,7 +57,7 @@ export function OverlaySplitLayout({ children, className }: OverlaySplitLayoutPr
         // Narrow: one column, and pin rows to [nav-bar auto | main 1fr] — without
         // an explicit template the grid's default align-content:stretch splits the
         // height evenly across the two rows, shoving the content to mid-screen.
-        'grid h-full min-h-0 flex-1 grid-cols-[13rem_minmax(0,1fr)] overflow-hidden bg-transparent max-[47.5rem]:grid-cols-1 max-[47.5rem]:grid-rows-[auto_minmax(0,1fr)]',
+        'grid h-full min-h-0 flex-1 grid-cols-[var(--page-nav-width,13rem)_minmax(0,1fr)] overflow-hidden bg-transparent max-[47.5rem]:grid-cols-1 max-[47.5rem]:grid-rows-[auto_minmax(0,1fr)]',
         className
       )}
     >
@@ -126,7 +126,8 @@ export const OverlayNavItem = memo(function OverlayNavItem({
       aria-current={current ? 'page' : undefined}
       aria-pressed={pressed}
       className={cn(
-        'row-hover flex h-7 w-full shrink-0 items-center justify-start gap-2 rounded-md border px-2 text-left text-[length:var(--conversation-text-font-size)] font-normal transition-colors',
+        'row-hover flex w-full shrink-0 items-center justify-start gap-2 rounded-md border px-2 text-left text-[length:var(--conversation-text-font-size)] font-normal transition-colors',
+        nested ? 'min-h-7' : 'min-h-(--page-nav-row-height,1.75rem)',
         nested
           ? active
             ? current
@@ -287,6 +288,7 @@ export function OverlayNav({ footer, groups }: { footer?: ReactNode; groups: Ove
                           {child.children?.map(grandchild => (
                             <OverlayNavItem
                               active={grandchild.active}
+                              current={grandchild.active}
                               icon={grandchild.icon}
                               id={grandchild.id}
                               key={grandchild.id}

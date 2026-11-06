@@ -1,7 +1,11 @@
+import './capability-search.css'
+
+import { useStore } from '@nanostores/react'
 import type { ReactNode } from 'react'
 
 import { Badge } from '@/components/ui/badge'
 import { SearchField } from '@/components/ui/search-field'
+import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
 
 /** The one search field every Capabilities tab uses: the boxed SearchField
  *  with the tab's name as a scope badge and the tab's own actions (add, view
@@ -21,22 +25,36 @@ export function CapabilitySearch({
   scope: string
   value: string
 }) {
-  return (
+  const redesigned = useStore($simplifiedAgentMode)
+  const toolbarActions = actions ? (
+    <div className="flex min-w-0 flex-wrap items-center justify-end gap-3 justify-self-end" data-catalog-actions>
+      {actions}
+    </div>
+  ) : undefined
+
+  const field = (
     <SearchField
       containerClassName="h-10 w-full min-w-0 rounded-2xl bg-(--dt-card) py-0"
       hints={hints}
-      leadingContent={<Badge size="xs" variant="muted">{scope}</Badge>}
+      leadingContent={
+        <Badge size="xs" variant="muted">
+          {scope}
+        </Badge>
+      }
       onChange={onChange}
       placeholder={placeholder}
-      trailingAction={
-        actions ? (
-          <div className="flex min-w-0 flex-wrap items-center justify-end gap-3 justify-self-end" data-catalog-actions>
-            {actions}
-          </div>
-        ) : undefined
-      }
+      trailingAction={redesigned ? undefined : toolbarActions}
       value={value}
       variant="box"
     />
+  )
+
+  return redesigned ? (
+    <div className="capability-search-v2">
+      {field}
+      {toolbarActions}
+    </div>
+  ) : (
+    field
   )
 }

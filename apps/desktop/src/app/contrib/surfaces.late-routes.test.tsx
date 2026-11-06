@@ -26,6 +26,8 @@ vi.mock('@/store/session', () => ({
 }))
 vi.mock('../chat', () => ({ ChatView: () => <div data-testid="chat-view" /> }))
 vi.mock('../chat/sidebar', () => ({ ChatSidebar: () => null }))
+vi.mock('../chat/sidebar/portal/portal-sidebar', () => ({ PortalSidebar: () => null }))
+vi.mock('@/app/redesign/use-portal-redesign', () => ({ usePortalRedesign: () => false }))
 vi.mock('../right-sidebar/terminal/chrome', () => ({ TerminalPaneChrome: () => null }))
 vi.mock('../shell/hooks/use-status-snapshot', () => ({ useStatusSnapshot: () => ({}) }))
 vi.mock('../shell/hooks/use-statusbar-items', () => ({

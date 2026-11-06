@@ -95,8 +95,8 @@ export function NarrowOverlays() {
     [solo, panes, inTree, hiddenPanes]
   )
 
-  const collapsiblesRef = useRef(collapsibles)
-  collapsiblesRef.current = collapsibles
+  const panesRef = useRef(panes)
+  panesRef.current = panes
 
   useEffect(() => {
     const active = narrow && !solo && reveal ? collapsibles.find(p => p.id === reveal.id) : undefined
@@ -124,7 +124,16 @@ export function NarrowOverlays() {
         return
       }
 
-      const match = collapsiblesRef.current.find(p => p.id === id || paneChrome(p).revealAliases?.includes(id))
+      // Open actions can unhide a pane and dispatch before React paints that change.
+      const currentTree = $layoutTree.get()
+      const match = panesRef.current.find(
+        p =>
+          paneChrome(p).collapsible &&
+          !$hiddenTreePanes.get().has(p.id) &&
+          currentTree &&
+          findGroupOfPane(currentTree, p.id) &&
+          (p.id === id || paneChrome(p).revealAliases?.includes(id))
+      )
 
       if (!match) {
         return
@@ -142,7 +151,8 @@ export function NarrowOverlays() {
           // The browser host's titlebar Hide names the zone (its alias) while a
           // zone mate may be showing; native close names one pane, as on main.
           const currentTree = $layoutTree.get()
-          const targetZone = currentTree && hostHas('narrowOverlayChrome') ? findGroupOfPane(currentTree, match.id) : null
+          const targetZone =
+            currentTree && hostHas('narrowOverlayChrome') ? findGroupOfPane(currentTree, match.id) : null
 
           return current && (current.id === match.id || targetZone?.panes.includes(current.id)) ? null : current
         }

@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render } from '@testing-library/react'
+import { MemoryRouter } from 'react-router'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
@@ -77,7 +78,11 @@ function renderOneStrip() {
   const node = $layoutTree.get()!
   const zone = (node.type === 'split' ? node.children[0] : node) as never
 
-  render(<TreeGroup node={zone} parentAxis="row" />)
+  render(
+    <MemoryRouter>
+      <TreeGroup node={zone} parentAxis="row" />
+    </MemoryRouter>
+  )
 }
 
 const tabEl = (paneId: string) => document.querySelector<HTMLElement>(`[data-tree-tab="${paneId}"]`)

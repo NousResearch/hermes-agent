@@ -88,6 +88,14 @@ export const $unconfirmedPinWrites = atom<ReadonlySet<string>>(new Set())
 // slow ones), short enough that a genuine server-side change still wins.
 const WRITE_GUARD_MS = 10_000
 
+// A newer shared pin write supersedes older optimistic values in other pin surfaces.
+export const $sessionPinWriteIntent = atom<{
+  id: string
+  connectionId: string | null
+  profile: string
+  value: boolean
+} | null>(null)
+
 function publishUnconfirmed(): void {
   const published = $unconfirmedPinWrites.get()
 
@@ -225,6 +233,12 @@ function applyRowPinned(pinId: string, pinned: boolean, profile?: null | string)
 
 /** PATCH the flag, guarding reads against pages that predate the write. */
 function writePin(id: string, pinned: boolean, profile?: null | string): Promise<void> {
+  $sessionPinWriteIntent.set({
+    id,
+    connectionId: $connection.get()?.connectionId?.trim() || ambientOwnerConnectionId() || null,
+    profile: normalizeProfileKey(profile || $activeGatewayProfile.get()),
+    value: pinned
+  })
   unconfirmed.set(id, { at: Date.now(), value: pinned })
   applyRowPinned(id, pinned, profile)
 

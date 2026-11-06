@@ -49,11 +49,16 @@ export function titlebarAppActionsClusterCounts(
   side: TitlebarAppActionsSide,
   leftExtras = 0,
   rightExtras = 0,
-  mode: InterfaceMode = DEFAULT_INTERFACE_MODE
+  mode: InterfaceMode = DEFAULT_INTERFACE_MODE,
+  portal = false
 ): { left: number; right: number } {
   const shown = shownInMode(mode)
   const sidebar = 1
-  const appActions = APP_ACTION_IDS.filter(id => shown(TITLEBAR_FIXED_TOOLS[id])).length
+
+  const appActions = APP_ACTION_IDS.filter(id =>
+    shown(TITLEBAR_FIXED_TOOLS[id]) && !(portal && (id === 'settings' || (id === 'layout' && mode === 'simple')))
+  ).length
+
   const rightFixed = RIGHT_FIXED_IDS.filter(id => shown(TITLEBAR_FIXED_TOOLS[id])).length
 
   if (side === 'left') {

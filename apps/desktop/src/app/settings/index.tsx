@@ -38,6 +38,7 @@ import { bindingsFor } from '@/store/keybinds'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { notifyError } from '@/store/notifications'
 import { $settingsScopeProfile } from '@/store/settings-scope'
+import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
 
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { OverlayIconButton } from '../overlays/overlay-chrome'
@@ -64,6 +65,7 @@ import {
 } from './plugin-settings'
 import { SettingsBreadcrumbContext } from './primitives'
 import { PROVIDER_VIEWS, ProvidersSettings, type ProviderView } from './providers-settings'
+import { redesignSettingsNavigation } from './redesign-navigation'
 import { SessionsSettings } from './sessions-settings'
 import { SettingsSubpageHeader } from './subpage-navigation'
 import { resolveSettingsSubpage, settingsSubpageIcon, settingsSubpages } from './subpages'
@@ -102,6 +104,7 @@ const SUBPAGE_VIEWS: Partial<Record<SettingsViewId, ComponentType<{ subpage?: st
 }
 
 export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: SettingsPageProps) {
+  const simplified = useStore($simplifiedAgentMode)
   const scopeProfile = useStore($settingsScopeProfile)
   const activeConnectionId = useStore($activeConnectionId)
   const { t } = useI18n()
@@ -604,7 +607,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   return (
     <OverlayView closeLabel={t.settings.closeSettings} edgeBadge={searchPill} onClose={onClose}>
       <OverlaySplitLayout>
-        <OverlayNav footer={navFooter} groups={navGroups} />
+        <OverlayNav footer={navFooter} groups={simplified ? redesignSettingsNavigation(navGroups) : navGroups} />
 
         <OverlayMain className="px-0 pb-0">
           <SettingsBreadcrumbContext.Provider value>

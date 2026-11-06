@@ -1,0 +1,80 @@
+import { useStore } from '@nanostores/react'
+import { useState } from 'react'
+import { useNavigate } from 'react-router'
+
+import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
+import { ProfileGlyph } from '@/components/ui/profile-glyph'
+import { RowButton } from '@/components/ui/row-button'
+import { SearchField } from '@/components/ui/search-field'
+import { useI18n } from '@/i18n'
+import { resolveProfileColor } from '@/lib/profile-color'
+import { $profileColors } from '@/store/profile'
+
+import { useFleetRoster } from '../chat/sidebar/use-fleet-roster'
+import { useSimplifiedAgents } from '../chat/sidebar/use-simplified-agents'
+import { Panel, PanelEmpty, PanelHeader } from '../overlays/panel'
+import { PROFILES_ROUTE, SETTINGS_ROUTE } from '../routes'
+
+export function AgentDirectory({ onClose }: { onClose: () => void }) {
+  const { t } = useI18n()
+  const navigate = useNavigate()
+  const colors = useStore($profileColors)
+  const [query, setQuery] = useState('')
+  useFleetRoster(true)
+  const { agents } = useSimplifiedAgents([])
+  const needle = query.trim().toLocaleLowerCase()
+  const visible = agents.filter(agent => `${agent.label} ${agent.gateway}`.toLocaleLowerCase().includes(needle))
+
+  return (
+    <Panel onClose={onClose}>
+      <PanelHeader
+        actions={
+          <Button onClick={() => navigate(`${PROFILES_ROUTE}?manage=true`)} variant="secondary">
+            {t.profiles.manageProfiles}
+          </Button>
+        }
+        title={t.simplifiedAgents.agents}
+      />
+      <SearchField
+        aria-label={t.simplifiedAgents.agents}
+        containerClassName="mb-6 max-w-md"
+        onChange={setQuery}
+        placeholder={t.titlebar.search}
+        value={query}
+      />
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {visible.length === 0 ? (
+          <PanelEmpty icon="robot" title={needle ? t.commandCenter.noResults : t.profiles.noProfiles} />
+        ) : (
+          <div className="grid content-start gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            {visible.map(agent => (
+              <RowButton
+                aria-label={`${t.simplifiedAgents.settings}: ${agent.label} · ${agent.gateway}`}
+                className="group flex min-w-0 items-center gap-4 rounded-lg border border-border bg-card p-5 text-left hover:bg-accent"
+                key={agent.id}
+                onClick={() => {
+                  const params = new URLSearchParams({ agent: agent.profile })
+
+                  if (agent.connectionId) {params.set('connection', agent.connectionId)}
+                  navigate(`${SETTINGS_ROUTE}?${params}`)
+                }}
+              >
+                <ProfileGlyph
+                  color={resolveProfileColor(agent.profile, colors)}
+                  isDefault={agent.profile === 'default'}
+                  name={agent.label}
+                />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-base font-medium text-foreground">{agent.label}</span>
+                  <span className="mt-1 block truncate text-xs text-muted-foreground">{agent.gateway}</span>
+                </span>
+                <Codicon className="text-muted-foreground group-hover:text-foreground" name="chevron-right" />
+              </RowButton>
+            ))}
+          </div>
+        )}
+      </div>
+    </Panel>
+  )
+}

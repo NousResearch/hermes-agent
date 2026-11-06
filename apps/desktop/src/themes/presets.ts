@@ -20,6 +20,7 @@
 
 import { THEME_PRESET_PALETTES } from '@hermes/shared'
 
+import { portalTheme } from './portal'
 import { skinToDesktopTheme } from './skin'
 import type { DesktopTheme, DesktopThemeTypography } from './types'
 
@@ -442,6 +443,7 @@ export const slateTheme: DesktopTheme = {
 }
 
 export const BUILTIN_THEMES: Record<string, DesktopTheme> = {
+  portal: portalTheme,
   nous: nousTheme,
   github: githubTheme,
   catppuccin: catppuccinTheme,

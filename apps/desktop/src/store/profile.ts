@@ -36,6 +36,8 @@ import type { SessionOwnerRoute } from '@/store/session-request-router'
 import { reloadOpenStarmapGraph, resetStarmapGraph } from '@/store/starmap'
 import type { ProfileInfo } from '@/types/hermes'
 
+import { $simplifiedAgentMode } from './simplified-agent-mode'
+
 // Canonical key for a profile: trimmed, empty → "default". Used everywhere we
 // compare a session's owning profile against the live gateway's profile.
 export function normalizeProfileKey(name: string | null | undefined): string {
@@ -969,6 +971,12 @@ persistStore($showAllProfiles, (value, options) => persistBoolean(SHOW_ALL_PROFI
 // in sync.
 export const $profileScope = computed([$showAllProfiles, $activeGatewayProfile], (showAll, gateway) =>
   showAll ? ALL_PROFILES : normalizeProfileKey(gateway)
+)
+
+// Browsing every agent must not change the owner of project or settings operations.
+export const $sessionListProfileScope = computed(
+  [$showAllProfiles, $activeGatewayProfile, $simplifiedAgentMode],
+  (showAll, gateway, simplified) => (showAll || simplified ? ALL_PROFILES : normalizeProfileKey(gateway))
 )
 
 // Switch the active context to `name`: leave "All profiles" mode, point new

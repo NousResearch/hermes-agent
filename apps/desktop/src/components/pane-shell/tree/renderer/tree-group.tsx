@@ -23,6 +23,7 @@ import {
 } from 'react'
 
 import { ShellMenuItems } from '@/app/context-menu/shell-menu-items'
+import { usePortalZoneHeader } from '@/app/redesign/portal-conversation-header'
 import { TITLEBAR_DRAG_HANDLE_WIDTH } from '@/app/shell/titlebar'
 import { ActionsContextMenu, type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
 import { Codicon } from '@/components/ui/codicon'
@@ -101,7 +102,6 @@ import { startPaneDrag } from './drag-session'
 import { KeepAlivePaneSlot, useStablePaneHosts } from './keep-alive-panes'
 import { PaneBody } from './pane-body'
 import { usePanelTitlebar } from './panel-titlebar'
-import { tabStripVisibleForZone } from './strip-visibility'
 import { useActiveTabVisible } from './tab-strip-scroll'
 import { paneChrome } from './track-model'
 import { useZoneHeaderLayout } from './zone-header-layout'
@@ -544,14 +544,11 @@ export function TreeGroup({
   const hostedPanes = stableHosts ? node.panes.filter(id => paneChrome(paneFor(id)).lifecycleKeepAlive) : []
   const inlinePanes = mountedPanes.filter(id => !stableHosts || !paneChrome(paneFor(id)).lifecycleKeepAlive)
 
-  // ONE header style: the app's compact pane-header. Whether this zone shows
-  // it is the resolver's call, not this component's — see strip-visibility.ts
-  // for the precedence. The same resolver answers for the toggle command, so
-  // the keystroke and the screen always agree about which way "toggle" points.
-  const stripVisible = tabStripVisibleForZone({
+  // Portal replaces chat-only tabs with conversation chrome. Other zones
+  // retain the shared strip resolver and their persisted visibility choices.
+  const { stripVisible, conversationHeader } = usePortalZoneHeader(node, {
     active: activeId,
     isCollapsePane,
-    mode: node.tabStrip,
     paneFor,
     shown
   })
@@ -950,6 +947,8 @@ export function TreeGroup({
           )}
         </div>
       )}
+
+      {conversationHeader}
 
       {/* Body: the zone's pane content — the active pane and bounded hot-hidden
           cache stay mounted in absolute layers; parked panes are unmounted.

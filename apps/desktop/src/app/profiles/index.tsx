@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useLocation } from 'react-router'
 
 import { CodeEditor } from '@/components/chat/code-editor'
 import { PageLoader } from '@/components/page-loader'
@@ -14,6 +15,7 @@ import { resolveProfileColor } from '@/lib/profile-color'
 import { normalize } from '@/lib/text'
 import { notify, notifyError } from '@/store/notifications'
 import { $profileColors, profileLabel, refreshProfiles } from '@/store/profile'
+import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import {
@@ -39,7 +41,20 @@ interface ProfilesViewProps {
   onClose: () => void
 }
 
+const AgentDirectory = lazy(async () => ({ default: (await import('../agent-settings/directory')).AgentDirectory }))
+
 export function ProfilesView({ onClose }: ProfilesViewProps) {
+  const simplified = useStore($simplifiedAgentMode)
+  const { search } = useLocation()
+
+  return simplified && new URLSearchParams(search).get('manage') !== 'true' ? (
+    <Suspense fallback={<PageLoader />}><AgentDirectory onClose={onClose} /></Suspense>
+  ) : (
+    <ProfileManager onClose={onClose} />
+  )
+}
+
+function ProfileManager({ onClose }: ProfilesViewProps) {
   const { t } = useI18n()
   const p = t.profiles
   const [profiles, setProfiles] = useState<null | ProfileInfo[]>(null)
@@ -104,6 +119,7 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
 
   return (
     <Panel closeLabel={p.close} onClose={onClose}>
+      <PanelHeader hideInClassic={!profiles?.length} subtitle={profiles ? p.count(profiles.length) : undefined} title={p.title} />
       {!profiles ? (
         <PageLoader label={p.loading} />
       ) : profiles.length === 0 ? (
@@ -119,7 +135,6 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
         />
       ) : (
         <>
-          <PanelHeader subtitle={p.count(profiles.length)} title={p.title} />
           <PanelBody>
             <PanelList
               onSearchChange={setQuery}

@@ -712,7 +712,7 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
 
   return (
     <Panel closeLabel={c.close} onClose={onClose}>
-      <PanelHeader subtitle={c.count(totalCount)} title={c.title} />
+      <PanelHeader simplifiedTitle={t.simplifiedAgents.routines} subtitle={c.count(totalCount)} title={c.title} />
 
       {loading && jobs.length === 0 ? (
         <PageLoader label={c.loading} />
@@ -1253,6 +1253,14 @@ export function DeliverCheckboxes({
   )
 }
 
+function focusCronName(event: Event) {
+  const input = (event.target as HTMLElement).querySelector<HTMLInputElement>('#cron-name')
+  if (input) {
+    event.preventDefault()
+    input.focus()
+  }
+}
+
 function CronEditorDialog({
   blueprintProfile,
   editor,
@@ -1450,7 +1458,7 @@ function CronEditorDialog({
 
   return (
     <Dialog onOpenChange={value => !value && !saving && onClose()} open={open}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="max-w-lg" onOpenAutoFocus={focusCronName}>
         <DialogHeader>
           <DialogTitle>{isEdit ? c.editTitle : c.createTitle}</DialogTitle>
           <DialogDescription>{isEdit ? c.editDesc : c.createDesc}</DialogDescription>
@@ -1534,7 +1542,6 @@ function CronEditorDialog({
 
             <Field htmlFor="cron-name" label={c.nameLabel} optional optionalLabel={c.optional}>
               <Input
-                autoFocus
                 id="cron-name"
                 onChange={event => setName(event.target.value)}
                 placeholder={c.namePlaceholder}

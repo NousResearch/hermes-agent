@@ -10,7 +10,6 @@ import { sessionShouldHaveTranscript } from '@/app/session/hooks/use-session-act
 import { Thread } from '@/components/assistant-ui/thread'
 import { TranscriptWindowProvider } from '@/components/assistant-ui/thread/transcript-window'
 import { Backdrop } from '@/components/Backdrop'
-import { COMPOSER_HEART_CONFIG, HeartField } from '@/components/chat/vibe-hearts'
 import { useSetupChatView } from '@/components/onboarding/first-run/assembly'
 import { $introHoldsThread } from '@/components/onboarding/first-run/intro'
 import { IntroCopy } from '@/components/onboarding/first-run/intro-copy'
@@ -61,6 +60,7 @@ import { ChatDropOverlay } from './chat-drop-overlay'
 import { dropOverlayKind, useShowChatBar } from './chat-surface-state'
 import { ChatSwapOverlay, ChatSyncBadge } from './chat-swap-overlay'
 import { ChatBar, ChatBarFallback } from './composer'
+import { ComposerHeartField } from './composer/chat-bar-parts'
 import { FloatingComposerSurface } from './composer/floating-surface'
 import { requestComposerInsert } from './composer/focus'
 import { droppedFileInlineRefs } from './composer/inline-refs'
@@ -74,6 +74,7 @@ import { useHistoryWindow } from './history-window'
 import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-actions'
 import { useFileDropZone } from './hooks/use-file-drop-zone'
 import { shouldShowIntro } from './intro-visibility'
+import { ChatLandingArt, useChatLanding } from './landing'
 import { ProfileTag } from './profile-tag'
 import { ResumeExhaustedOverlay } from './resume-exhausted-overlay'
 import { isRouteSessionMismatch } from './route-session-state'
@@ -652,6 +653,8 @@ const ChatViewContent = memo(function ChatViewContent({
     selectedSessionId
   })
 
+  const landing = useChatLanding(showIntro, introHoldsThread, setupChat, introPersonality, introSeed)
+
   // Session is still loading if the route references a session we haven't
   // resumed yet. Brand-new routed drafts are empty on purpose once a runtime
   // is bound. A session the list already knows has history must keep the
@@ -752,6 +755,7 @@ const ChatViewContent = memo(function ChatViewContent({
         'relative isolate flex h-full min-w-0 flex-col overflow-hidden bg-(--ui-chat-surface-background)',
         className
       )}
+      data-chat-landing={landing.centered}
       data-chat-surface=""
       data-chat-unfocused={surfaceFocused || surfaceHovered ? undefined : ''}
       data-composer-surface-id={composerSurfaceId}
@@ -792,11 +796,12 @@ const ChatViewContent = memo(function ChatViewContent({
           data-slot="composer-bounds"
           {...dropHandlers}
         >
+          <ChatLandingArt visible={landing.centered} />
           <Thread
             clampToComposer={showChatBar}
             cwd={currentCwd}
             gateway={gateway}
-            intro={showIntro ? { personality: introPersonality, seed: introSeed } : undefined}
+            intro={landing.intro}
             loading={threadLoading}
             onBranchInNewChat={onBranchInNewChat}
             onCancel={haltRun}
@@ -813,16 +818,7 @@ const ChatViewContent = memo(function ChatViewContent({
           {showChatBar && <ScrollToBottomButton sessionId={activeSessionId} />}
           {/* Vibe hearts rise from the composer only when no pet is out (else
               they play on the pet). Fired by the core `reaction` event. */}
-          {!petPresent && (
-            <HeartField
-              className="absolute inset-x-0 z-30"
-              config={COMPOSER_HEART_CONFIG}
-              style={{
-                top: 0,
-                bottom: 'calc(var(--composer-measured-height) + 0.25rem)'
-              }}
-            />
-          )}
+          {!petPresent && <ComposerHeartField />}
           {/* A session drag hovering an EDGE hands the visual to the zone
               target; the link overlay shows only for the center region. */}
           <ChatDropOverlay kind={overlayKind} />

@@ -32,6 +32,80 @@ hermes desktop
 
 That uses your current config, keys, sessions, and skills.
 
+## Agent workspace
+
+The redesigned workspace is the default for both new and existing installations, with a global
+navigation rail beside New session, pinned chats, and chats nested under their agents.
+No sidebar opt-in or Portal skin selection is required. Your saved skin, including custom skins,
+and light/dark/system appearance continue to apply independently of the layout.
+The rail opens Chats, Agent settings (the existing Profiles view), Capabilities,
+Library (Artifacts), and Routines (Scheduled jobs). Capabilities opens the existing page
+for Skills, Connectors, Plugins, and Tools. The gear at the bottom opens an index of existing settings and utilities;
+these shortcuts preserve each destination's current profile and gateway scope. The global rail
+stays visible when sessions are hidden. Sessions appear only in Chats; other global pages
+use that space, and returning to Chats preserves your sidebar visibility preference.
+
+Enabled plugins that contribute pages appear beneath Routines in the rail.
+Select a page to open it; use the Plugins tab in Capabilities to manage plugin settings. Pinned chats also remain under their agents.
+Pinned rows show the profile name; rows under an agent show age and a pin marker when applicable.
+Agents are grouped by gateway; clicking an agent opens its settings. New session lets you choose
+an agent when there is more than one; Start blank uses the current gateway's default agent.
+
+The sidebar replaces the Bots tab and gateway/profile selectors with gateway-grouped agents.
+Each agent includes its canonical **Bot Chat**. Changing the layout does not migrate, relabel or
+delete profiles, conversations or pins. For recovery, turn off **Settings → Appearance →
+Window layout → Simplified agent mode** to return to the classic shell; turn it on to restore
+the redesigned workspace. The earlier experimental sidebar is no longer a separate layout.
+
+### Dogfood the public redesign against your gateway
+
+Use a public checkout of `feat/desktop-redesign`, not the preserved private checkout. From that
+checkout, prepare its pinned Python, Node and pnpm environment, then launch through the normal
+Desktop command so runtime and Electron preparation are not skipped:
+
+```bash
+git clone --branch feat/desktop-redesign https://github.com/NousResearch/hermes-agent.git hermes-redesign
+cd hermes-redesign
+source ./activate
+pnpm install --frozen-lockfile
+hermes desktop
+```
+
+Finish active gateway work before launching a different runtime revision. Keep your usual
+Hermes home/profile if you intend to see your real conversations; activation does not make an
+isolated test home for you. For a disposable test, select a separate `HERMES_HOME` and
+`HERMES_RUNTIME_DIR` before activation, as described in the developer setup guide.
+
+For renderer development after preparation, `cd apps/desktop && pnpm run dev` starts Vite
+and native Electron. The existing `HERMES_DESKTOP_HERMES_ROOT=/absolute/path/to/runtime-checkout`
+override can select a different prepared source runtime. Opening port 5174 in a browser or
+running `pnpm run dev:mock` does not connect that renderer to your real gateway. Without a
+runtime override, a development app prefers its own checkout; bundled release apps use their
+bundled runtime instead.
+
+For local dogfooding, keep the same Hermes home and profile as your usual CLI/gateway
+(including your existing `HERMES_HOME` override, if any), and select the local connection.
+Do not use `scripts/dev-sandbox.sh` for this check: it intentionally isolates user state.
+Native Desktop invokes `hermes gateway ensure --json`, attaching to the canonical gateway
+for that home or starting it when absent; it does not launch a parallel `serve` owner.
+A saved remote/Cloud connection instead connects to that selected gateway. A stale local
+gateway can be restarted by the existing startup policy; finish active work before testing
+against a different runtime revision.
+
+Before launch, run `hermes gateway status` from your usual runtime environment
+(`hermes -p <profile> gateway status` for a named profile). In the native app, verify the
+selected gateway/profile, open a known conversation and a pinned chat, and compare their
+history with the CLI. Switch light/dark and a custom skin, navigate away and back, then
+restart Desktop and check the same conversations and pins. Only send a dogfood message
+when you intend to create a real turn. A shell screenshot or mock session list cannot prove
+which gateway owns a conversation.
+
+If the app appears disconnected from your usual gateway, compare the selected connection,
+home, profile and runtime checkout first. This guide does not establish the cause of that
+symptom. Keep diagnostic logs outside any personal vault and redact private content before sharing.
+To recover, close the development app and reopen your usual native installation; do not
+delete session data, pins, profile directories or Electron storage.
+
 ## Use the Desktop workspace from a browser
 
 The gateway can serve this workspace to a normal browser: sessions, profiles, Capabilities, Messaging,

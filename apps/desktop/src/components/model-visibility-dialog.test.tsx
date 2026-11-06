@@ -8,6 +8,7 @@ import { I18nProvider } from '@/i18n'
 import { $confirmRequest } from '@/store/confirm'
 import { $customModels } from '@/store/custom-models'
 import { $knownModels, $visibleModels, modelVisibilityKey, setVisibleModels } from '@/store/model-visibility'
+import { $collapsedProviders } from '@/store/provider-collapse'
 import { stubResizeObserver } from '@/test/jsdom'
 
 import { ModelVisibilityDialog } from './model-visibility-dialog'
@@ -49,6 +50,7 @@ beforeEach(() => {
   $customModels.set([])
   $visibleModels.set(null)
   $knownModels.set(null)
+  $collapsedProviders.set([])
   vi.mocked(requestModelOptions).mockResolvedValue(OPTIONS)
 })
 
@@ -139,5 +141,25 @@ describe('Edit Models reset', () => {
     renderDialog()
 
     expect(screen.queryByRole('button', { name: /reset to defaults/i })).toBeNull()
+  })
+})
+
+describe('Edit Models provider collapse', () => {
+  it('folds a provider while searching without changing the stored collapse', async () => {
+    renderDialog()
+    await screen.findByRole('switch', { name: /gpt-5\.5/i })
+
+    const input = screen.getByPlaceholderText(/search/i)
+    fireEvent.change(input, { target: { value: 'e' } })
+    await screen.findByRole('switch', { name: /qwen3/i })
+
+    fireEvent.click(screen.getByRole('button', { name: /openai codex/i }))
+
+    await waitFor(() => expect(screen.queryByRole('switch', { name: /gpt-5\.5/i })).toBeNull())
+    expect(screen.getByRole('switch', { name: /qwen3/i })).toBeDefined()
+    expect($collapsedProviders.get()).toEqual([])
+
+    fireEvent.change(input, { target: { value: '' } })
+    await screen.findByRole('switch', { name: /gpt-5\.5/i })
   })
 })

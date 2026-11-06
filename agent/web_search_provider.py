@@ -86,6 +86,13 @@ class WebSearchProvider(ProviderBase):
         the dispatcher awaits coroutine functions)."""
         return False
 
+    def supports_client_side(self) -> bool:
+        """True if this provider executes calls from this process. Server-side-only providers
+        (provider-executed tool declarations a transport swaps in, e.g. openai-native on the
+        Codex Responses endpoint) return False so client-side autodetect never selects them;
+        an explicit ``web.search_backend`` pin still reaches them (#137475)."""
+        return True
+
     def search(self, query: str, limit: int = 5) -> dict[str, Any]:
         """Execute a web search. Callers gate on :meth:`supports_search`."""
         raise NotImplementedError(

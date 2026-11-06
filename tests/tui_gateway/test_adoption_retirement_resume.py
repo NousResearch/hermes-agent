@@ -85,3 +85,38 @@ def test_completed_resume_does_not_repeat_adoption(gateway, monkeypatch):
     monkeypatch.setattr(SessionDB, "adopt_session_lineage_from", no_adoption)
     response = _resume(mod, sid, "completed")
     assert not response.get("error"), response.get("error")
+
+
+def test_default_resume_does_not_take_over_an_explicit_named_donor(gateway, monkeypatch):
+    from hermes_state_adoption_records import retirement_pending_source
+
+    mod, default, profile_home = gateway
+    other_home = profile_home.parent / "science"
+    other_home.mkdir()
+    sid = "explicit-named-donor-resume"
+    other, target = SessionDB(other_home / "state.db"), SessionDB(profile_home / "state.db")
+    try:
+        _seed_stranded(other, sid)
+        with monkeypatch.context() as patch:
+            patch.setattr(SessionDB, "_retire_donor_segment", _retire_fails_for(sid))
+            outcome = target.adopt_session_lineage_from(other, sid)
+        assert outcome["adopted"] and not outcome["donor_retired"]
+        source = str(other.db_path.resolve())
+        assert retirement_pending_source(target, sid) == source
+        before_other = [tuple(row) for row in other._conn.execute("SELECT * FROM sessions ORDER BY id")]
+        before_default = [tuple(row) for row in default._conn.execute("SELECT * FROM sessions ORDER BY id")]
+        response = _resume(mod, sid, "named-donor")
+        assert response["error"]["code"] == 5000
+        assert "multiple live owners" in response["error"]["message"]
+        assert [tuple(row) for row in other._conn.execute("SELECT * FROM sessions ORDER BY id")] == before_other
+        assert [tuple(row) for row in default._conn.execute("SELECT * FROM sessions ORDER BY id")] == before_default
+        assert retirement_pending_source(target, sid) == source
+        completed = target.adopt_session_lineage_from(other, sid, _pending_only=True)
+        assert completed["adopted"] and completed["donor_retired"]
+        response = _resume(mod, sid, "named-donor-completed")
+        assert not response.get("error"), response.get("error")
+        assert response["result"]["resumed"] == sid
+        target.append_message(sid, "user", "Explicit transfer remains usable")
+    finally:
+        target.close()
+        other.close()

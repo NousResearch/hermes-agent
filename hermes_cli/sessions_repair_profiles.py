@@ -31,6 +31,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import sqlite3
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -195,6 +196,14 @@ class RepairPlan:
     def _add(self, finding: Finding) -> None:
         self.findings.append(finding)
 
+    def _add_session_fix(self, finding: Finding, store: Store, held: dict[str, str], write) -> None:
+        if finding.subject in held:
+            finding.action = None
+            finding.reason = held[finding.subject]
+        else:
+            finding._fix = _session_fix(store, finding.subject, write)
+        self._add(finding)
+
     @property
     def repairable(self) -> list[Finding]:
         return [f for f in self.findings if f.repairable]
@@ -223,8 +232,11 @@ class RepairPlan:
         store_rows = {}
         live_paths = {store.db_path for store in self.stores}
         for store in self.physical_stores:
-            store_rows[store.db_path] = session.db(
-                store, inventory_only=store.db_path not in live_paths).list_session_lineage_rows()
+            try:
+                store_rows[store.db_path] = session.db(
+                    store, inventory_only=store.db_path not in live_paths).list_session_lineage_rows()
+            except sqlite3.DatabaseError as exc:
+                raise type(exc)(f"Could not inventory {store.db_path}: {exc}") from exc
             for row in store_rows[store.db_path]:
                 by_id.setdefault(str(row["id"]), []).append((store, row))
         for session_id, copies in sorted(by_id.items()):
@@ -270,23 +282,23 @@ class RepairPlan:
                 continue
             self._plan_foreign_row(store, row, moving)
         for row in crossed["mislabelled"]:
-            if row["id"] in moving or row["id"] in held:
+            if row["id"] in moving:
                 continue  # the move stamps the right label
-            self._add(Finding(
+            self._add_session_fix(Finding(
                 "mislabelled", store.profile, row["id"],
                 f"profile_name={row['profile_name']!r} but key {row['session_key']!r} belongs to "
                 f"{row['key_profile']!r}", action=f"relabel to {row['key_profile']!r}",
-                _fix=_session_fix(store, row["id"], lambda db, sid=row["id"]: {
-                    "relabelled": db.relabel_sessions_to_key_profile([sid])})))
+                ), store, held, lambda db, sid=row["id"]: {
+                    "relabelled": db.relabel_sessions_to_key_profile([sid])})
         for row in crossed["crossed_parents"]:
-            if row["id"] in moving or row["id"] in held:
+            if row["id"] in moving:
                 continue  # the import drops a parent that is not in the target store
-            self._add(Finding(
+            self._add_session_fix(Finding(
                 "crossed_parent", store.profile, row["id"],
                 f"{row['key_profile']!r} row inherits from parent {row['parent_session_id']} keyed under "
                 f"{row['parent_profile']!r}", action="sever parent_session_id",
-                _fix=_session_fix(store, row["id"], lambda db, sid=row["id"]: {
-                    "severed": db.sever_crossed_parents([sid])})))
+                ), store, held, lambda db, sid=row["id"]: {
+                    "severed": db.sever_crossed_parents([sid])})
 
     def _would_move(self, store: Store, row: dict[str, Any]) -> bool:
         """Mirror of :meth:`_plan_foreign_row`: does the plan copy this row to another store?"""

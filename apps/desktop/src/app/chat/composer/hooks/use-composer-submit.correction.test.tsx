@@ -1,14 +1,23 @@
 import { JsonRpcGatewayError } from '@hermes/shared'
-import { act, cleanup, renderHook } from '@testing-library/react'
+import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import type { PropsWithChildren } from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
 
+import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import type { usePromptActions } from '@/app/session/hooks/use-prompt-actions'
 import { Harness } from '@/app/session/hooks/use-prompt-actions/index-test-utils'
+import type { HermesGateway } from '@/hermes'
 import { notifyCorrectionRecovery } from '@/lib/correction-delivery'
-import { clearSessionDraft, mainComposerScope, setComposerTerminalSelection, stashSessionDraft, takeSessionDraft } from '@/store/composer'
+import {
+  clearSessionDraft,
+  mainComposerScope,
+  setComposerTerminalSelection,
+  stashSessionDraft,
+  takeSessionDraft
+} from '@/store/composer'
 import { type ComposerDraftRetry, matchingDraftRetry } from '@/store/composer-draft-retry'
 import { clearQueuedPrompts, enqueueQueuedPrompt, getQueuedPrompts } from '@/store/composer-queue'
+import { $gateway, setPrimaryGateway } from '@/store/gateway'
 import { $notifications, clearNotifications } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
 import { clearAllPrompts, setApprovalRequest } from '@/store/prompts'
@@ -33,7 +42,7 @@ function deferred<T>() {
   return { promise, resolve }
 }
 
-function fixture(reply: unknown, held = false, busy = { current: true }) {
+function fixture(reply: unknown, held = false, busy = { current: true }, reconnect = false) {
   const gate = deferred<void>()
   const selected = { current: 'A' as string | null }
   const runtime = { current: 'rt-A' as string | null }
@@ -43,6 +52,11 @@ function fixture(reply: unknown, held = false, busy = { current: true }) {
   editor.textContent = draft.current
 
   const request = vi.fn(async () => {
+    if (reconnect && request.mock.calls.length === 1) {
+      gateway.connectionState = 'closed'
+      throw new Error('connection closed')
+    }
+
     if (held) {
       await gate.promise
     }
@@ -53,6 +67,20 @@ function fixture(reply: unknown, held = false, busy = { current: true }) {
 
     return reply as never
   })
+
+  // Recording transport only. The real request hook publishes the fresh descriptor and replays.
+  const gateway = {
+    request,
+    connectionState: 'open',
+    connect: vi.fn(async () => {
+      gateway.connectionState = 'open'
+    })
+  }
+
+  if (reconnect) {
+    setPrimaryGateway(gateway as unknown as HermesGateway, 'default')
+    $gateway.set(gateway as unknown as HermesGateway)
+  }
 
   const clear = vi.fn(() => {
     draft.current = ''
@@ -78,13 +106,15 @@ function fixture(reply: unknown, held = false, busy = { current: true }) {
   let actions!: ReturnType<typeof usePromptActions>
 
   function Wrapper({ children }: PropsWithChildren) {
+    const { requestGateway } = useGatewayRequest()
+
     return (
       <Harness
         activeSessionIdRef={runtime}
         getRoutedStoredSessionId={() => selected.current}
         onReady={() => {}}
         refreshSessions={async () => {}}
-        requestGateway={request}
+        requestGateway={reconnect ? requestGateway : request}
         runtimeIdByStoredSessionIdRef={{
           current: new Map([
             ['A', 'rt-A'],
@@ -153,6 +183,7 @@ function fixture(reply: unknown, held = false, busy = { current: true }) {
 
   return {
     hook,
+    gateway,
     retry,
     request,
     submit,
@@ -182,11 +213,13 @@ async function copyRecovery(text: string, knownUnsent = false) {
   const writeText = vi.fn(async () => {})
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
   clearNotifications()
+
   const recovery = $notifications
     .get()
     .find(
       n => n.persistent && n.action && (knownUnsent ? /not sent|未发送/ : /unconfirmed|未确认/).test(n.message ?? '')
     )
+
   expect(recovery?.message).toMatch(knownUnsent ? /not sent|未发送/ : /unconfirmed|未确认/)
   await act(async () => recovery!.action!.onClick())
   expect(writeText).toHaveBeenCalledExactlyOnceWith(text)
@@ -215,6 +248,9 @@ afterEach(() => {
   $notifications.set([])
   $connection.set(null)
   $activeGatewayProfile.set('default')
+  setPrimaryGateway(null)
+  $gateway.set(null)
+  vi.unstubAllGlobals()
 })
 
 it.each(outcomes)('uncertain %j retains exact draft without a new turn', async reply => {
@@ -247,15 +283,19 @@ it.each(
   act(() => {
     requestComposerSubmit('external A\n你好', { target: 'main', displayKind })
   })
+
   if (change === 'navigation') {
     act(() => h.navigate())
   }
+
   if (change === 'profile') {
     $activeGatewayProfile.set('other')
   }
+
   if (change === 'connection') {
     $connection.set({ mode: 'remote', wsUrl: 'ws://other' } as never)
   }
+
   mainComposerScope.add({ id: 'B-file', kind: 'url', label: 'B file' })
   await act(async () => h.release())
   expect(h.request).toHaveBeenCalledExactlyOnceWith(displayKind ? 'session.steer' : 'session.redirect', {
@@ -376,26 +416,29 @@ it.each([{ status: 'queued' }, { status: 'rejected' }])(
   }
 )
 
-it.each(['navigation', 'profile', 'connection'] as const)('known-undelivered steer after %s queues nothing', async change => {
-  const h = fixture({ status: 'rejected', delivered: false }, true)
-  await act(async () => h.hook.result.current.submitDraft())
+it.each(['navigation', 'profile', 'connection'] as const)(
+  'known-undelivered steer after %s queues nothing',
+  async change => {
+    const h = fixture({ status: 'rejected', delivered: false }, true)
+    await act(async () => h.hook.result.current.submitDraft())
 
-  if (change === 'navigation') {
-    act(() => h.navigate())
+    if (change === 'navigation') {
+      act(() => h.navigate())
+    }
+
+    if (change === 'profile') {
+      $activeGatewayProfile.set('other')
+    }
+
+    if (change === 'connection') {
+      $connection.set({ mode: 'remote', wsUrl: 'ws://other' } as never)
+    }
+
+    await act(async () => h.release())
+    expect(getQueuedPrompts('A')).toEqual([])
+    expect(getQueuedPrompts('B')).toEqual([])
   }
-
-  if (change === 'profile') {
-    $activeGatewayProfile.set('other')
-  }
-
-  if (change === 'connection') {
-    $connection.set({ mode: 'remote', wsUrl: 'ws://other' } as never)
-  }
-
-  await act(async () => h.release())
-  expect(getQueuedPrompts('A')).toEqual([])
-  expect(getQueuedPrompts('B')).toEqual([])
-})
+)
 
 it.each([true, false])('canonical known-safe fallback holds Enter/Next until acceptance=%s', async accepted => {
   $connection.set({ mode: 'remote', wsUrl: 'ws://fixture/?native_dial=browser' } as never)
@@ -488,7 +531,12 @@ it.each([undefined, 'existing-correction-notice'])('Copy failure reuses notice %
   const id = notifyCorrectionRecovery(text, true, noticeId)
 
   for (let attempt = 0; attempt < 3; attempt++) {
-    await act(async () => $notifications.get().find(n => n.id === id)!.action!.onClick())
+    await act(async () =>
+      $notifications
+        .get()
+        .find(n => n.id === id)!
+        .action!.onClick()
+    )
     expect($notifications.get()).toHaveLength(1)
     expect($notifications.get()[0]).toMatchObject({ id, persistent: true })
   }
@@ -526,6 +574,7 @@ it.each([true, false].flatMap(busy => [true, false].map(settle => ({ busy, settl
     expect(h.submit).toHaveBeenCalledTimes(1)
     expect(h.queue).toHaveBeenCalledExactlyOnceWith(retry.id)
     await act(async () => admission.resolve(settle === true))
+
     if (settle !== true) {
       expect(h.retry.current).toEqual(retry)
       await act(async () => h.hook.result.current.steerDraft('steer'))
@@ -533,3 +582,79 @@ it.each([true, false].flatMap(busy => [true, false].map(settle => ({ busy, settl
     }
   }
 )
+
+// Adolanium #6678917819: exercise composer -> prompt action -> real request-hook reconnect.
+it.each(
+  (['steer', 'interrupt'] as const).flatMap(mode =>
+    ['unchanged', 'new-text', 'attachment', 'navigation', 'profile', 'connection', 'same-id-endpoint'].map(change => ({
+      mode,
+      change
+    }))
+  )
+)('accepted $mode reconnect clears only owned draft after $change', async ({ mode, change }) => {
+  const original = {
+    mode: 'remote' as const,
+    connectionId: 'fixture',
+    profile: 'default',
+    baseUrl: 'http://127.0.0.1:5151',
+    wsUrl: 'ws://127.0.0.1:5151/api/ws',
+    token: 'synthetic',
+    authMode: 'token' as const,
+    isFullscreen: false,
+    nativeOverlayWidth: 0,
+    windowButtonPosition: null,
+    logs: []
+  }
+
+  const refreshed = { ...original }
+  const getConnection = vi.fn(async () => refreshed)
+  vi.stubGlobal('hermesDesktop', {
+    getConnection,
+    getGatewayWsUrl: vi.fn(async () => ({ ok: true, wsUrl: refreshed.wsUrl }))
+  })
+  $connection.set(original)
+  const h = fixture({ status: mode === 'steer' ? 'queued' : 'redirected' }, true, { current: true }, true)
+  await act(async () => h.hook.result.current.steerDraft(mode))
+  await waitFor(() => expect(h.request).toHaveBeenCalledTimes(2))
+  expect(getConnection).toHaveBeenCalledExactlyOnceWith()
+  expect($connection.get()).toBe(refreshed)
+  expect($connection.get()).not.toBe(original)
+
+  if (change === 'new-text') {
+    h.type('newer draft')
+  }
+
+  if (change === 'attachment') {
+    mainComposerScope.add({ id: 'new', kind: 'url', label: 'new' })
+  }
+
+  if (change === 'navigation') {
+    act(() => h.navigate())
+  }
+
+  if (change === 'profile') {
+    $activeGatewayProfile.set('other')
+  }
+
+  if (change === 'connection') {
+    $connection.set({ ...refreshed, connectionId: 'other' })
+  }
+
+  if (change === 'same-id-endpoint') {
+    $connection.set({ ...refreshed, baseUrl: 'http://127.0.0.1:5152', wsUrl: 'ws://127.0.0.1:5152/api/ws' })
+  }
+
+  await act(async () => h.release())
+  expect(h.draft.current).toBe(
+    change === 'unchanged'
+      ? ''
+      : change === 'navigation'
+        ? 'B draft'
+        : change === 'new-text'
+          ? 'newer draft'
+          : '  exact draft\n你好  '
+  )
+  expect(mainComposerScope.$attachments.get()).toHaveLength(change === 'attachment' ? 1 : 0)
+  expect(h.queue).not.toHaveBeenCalled()
+  expect(h.submit).not.toHaveBeenCalled()
+})

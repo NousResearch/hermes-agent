@@ -3342,10 +3342,14 @@ export interface SessionListParams {
   profile?: string | null
   title?: string | null
   limit?: number | null
+  offset?: number
   include_hidden?: boolean
 }
 export interface SessionListResult {
   sessions: SessionListRow[]
+  offset?: number
+  limit?: number
+  has_more?: boolean
 }
 /** ``methods_session._session_row_summary``; ``resolved_id`` only on a title lookup that followed a compression lineage to its tip. */
 export interface SessionListRow {
@@ -5185,12 +5189,16 @@ export interface CanonicalListParams {
   profile?: string | null
   scope?: 'live' | 'stored'
   limit?: number
+  offset?: number
   title?: string | null
   include_hidden?: boolean
 }
 export interface CanonicalListResult {
   sessions: CanonicalSessionListRow[]
   scope: 'stored' | 'live'
+  offset?: number
+  limit?: number
+  has_more?: boolean
 }
 export interface CanonicalSessionListRow {
   session_id: string
@@ -5203,6 +5211,7 @@ export interface CanonicalSessionListRow {
   model?: string | null
   resolved_id?: string | null
   root_title?: string | null
+  preview?: string | null
 }
 export interface CanonicalControlParams {
   profile?: string | null

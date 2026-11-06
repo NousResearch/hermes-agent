@@ -93,8 +93,19 @@ class CLIStatusBarMixin:
             mode = app.vi_state.input_mode
             if mode in (InputMode.INSERT, InputMode.INSERT_MULTIPLE):
                 return t("cli.status_bar.vim_insert")
-            if mode == InputMode.REPLACE:
+            if mode in (InputMode.REPLACE, InputMode.REPLACE_SINGLE):
                 return t("cli.status_bar.vim_replace")
+            if mode == InputMode.NAVIGATION:
+                from prompt_toolkit.selection import SelectionType
+
+                buf = getattr(app, "current_buffer", None)
+                selection = getattr(buf, "selection_state", None)
+                if selection is not None:
+                    if selection.type == SelectionType.LINES:
+                        return t("cli.status_bar.vim_visual_line")
+                    if selection.type == SelectionType.BLOCK:
+                        return t("cli.status_bar.vim_visual_block")
+                    return t("cli.status_bar.vim_visual")
             return t("cli.status_bar.vim_normal")
         except Exception:
             return ""

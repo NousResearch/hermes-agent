@@ -2,9 +2,10 @@ import type { QueueItem } from '../hooks/useQueue.js'
 import { t } from '../i18n/runtime.js'
 import { savePendingInput } from '../lib/pendingInputs.js'
 
-const LIST_VERBS = new Set(['list', 'ls', 'show'])
-const REMOVE_VERBS = new Set(['rm', 'remove', 'delete', 'del', 'pop'])
-const EDIT_VERBS = new Set(['edit', 'set'])
+import { isQueueItemProtected, parseQueueCommand, type QueueCommand } from './queueCommands.js'
+import type { SlashRunCtx } from './slash/types.js'
+import { captureDestination, isCurrentDestination, type SubmissionDestination } from './submissionDestination.js'
+import { getUiState } from './uiStore.js'
 
 const USAGE_KEY = {
   add: 'slashCmd.core.queue.usageAdd',
@@ -29,24 +30,15 @@ export interface QueueSurface {
   rows: string[]
 }
 
+const PREVIEW_CHARS = 50
+
+export const previewOf = (text: string): string => {
+  const flat = text.replace(/\n/g, ' ')
+
+  return `${flat.slice(0, PREVIEW_CHARS)}${flat.length > PREVIEW_CHARS ? '…' : ''}`
+}
+
 const argumentOf = (command: string) => /^\/\S+\s+([\s\S]+)$/.exec(command)?.[1] ?? ''
-
-const splitHead = (payload: string) => {
-  const head = payload.split(/\s+/, 1)[0] ?? ''
-
-  return { head, rest: payload.slice(head.length).trim(), verb: head.toLowerCase() }
-}
-
-// Same bound as the classic CLI: a non-index token is a prompt, not a verb argument.
-const indexToken = (token: string): number | null => {
-  if (!/^\d+$/.test(token)) {
-    return null
-  }
-
-  const value = Number(token)
-
-  return Number.isSafeInteger(value) ? value : null
-}
 
 const enqueuePlan = (payload: string, displayPayload: string): QueuePlan => ({
   display: displayPayload || payload,
@@ -54,256 +46,407 @@ const enqueuePlan = (payload: string, displayPayload: string): QueuePlan => ({
   text: payload
 })
 
-const planEdit = (rest: string, payload: string, displayPayload: string): QueuePlan => {
-  if (!rest) {
+const resolvePayloads = (displayPayload: string, payload: string, pattern: RegExp, fallback: string) => {
+  const text = payload.replace(pattern, '') || fallback
+  const display = displayPayload === payload ? text : displayPayload.replace(pattern, '') || text
+
+  return { display, text }
+}
+
+const planUsage = (displayPayload: string): QueuePlan => {
+  const head = displayPayload.split(/\s+/, 1)[0]?.toLowerCase() ?? ''
+
+  if (head === 'edit' || head === 'set') {
     return { key: 'edit', kind: 'usage' }
   }
 
-  const token = rest.split(/\s+/, 1)[0] ?? ''
-  const index = indexToken(token)
-
-  if (index === null) {
-    return enqueuePlan(payload, displayPayload)
-  }
-
-  const text = rest.slice(token.length).trim()
-
-  if (!text) {
-    return { key: 'edit', kind: 'usage' }
-  }
-
-  // A collapsed paste keeps its label on the row and the expanded text as the prompt.
-  const display = displayPayload === payload ? text : displayPayload.replace(/^\S+\s+\S+\s*/, '') || text
-
-  return { display, index, kind: 'edit', text }
-}
-
-const planRemove = (rest: string, payload: string, displayPayload: string): QueuePlan => {
-  if (!rest) {
-    return { key: 'remove', kind: 'usage' }
-  }
-
-  const bits = rest.split(/\s+/)
-  const index = indexToken(bits[0] ?? '')
-
-  if (index === null) {
-    return enqueuePlan(payload, displayPayload)
-  }
-
-  return bits.length === 1 ? { index, kind: 'remove' } : { key: 'remove', kind: 'usage' }
-}
-
-const planMove = (rest: string, payload: string, displayPayload: string): QueuePlan => {
-  if (!rest) {
+  if (head === 'move') {
     return { key: 'move', kind: 'usage' }
   }
 
-  const bits = rest.split(/\s+/)
-  const from = indexToken(bits[0] ?? '')
-
-  if (from === null) {
-    return enqueuePlan(payload, displayPayload)
+  if (head === 'add') {
+    return { key: 'add', kind: 'usage' }
   }
 
-  const to = bits.length === 2 ? indexToken(bits[1] ?? '') : null
+  return { key: 'remove', kind: 'usage' }
+}
 
-  return to === null ? { key: 'move', kind: 'usage' } : { from, kind: 'move', to }
+const planFromCommand = (cmd: QueueCommand, displayPayload: string, payload: string): QueuePlan => {
+  switch (cmd.kind) {
+    case 'prompt':
+      return enqueuePlan(payload, displayPayload)
+
+    case 'list':
+      return { kind: 'list' }
+
+    case 'clear':
+      return { kind: 'clear' }
+
+    case 'remove':
+      return { index: cmd.index, kind: 'remove' }
+    case 'edit': {
+      const { display, text } = resolvePayloads(displayPayload, payload, /^\S+\s+\S+\s*/, cmd.text)
+
+      return { display, index: cmd.index, kind: 'edit', text }
+    }
+
+    case 'move':
+      return { from: cmd.from, kind: 'move', to: cmd.to }
+    case 'add': {
+      const { display, text } = resolvePayloads(displayPayload, payload, /^\S+\s*/, cmd.text)
+
+      return { display, kind: 'enqueue', text }
+    }
+
+    case 'error':
+      return planUsage(displayPayload)
+  }
 }
 
 /** Classic CLI `/queue` routing. Anything that is not a management verb stays a prompt. */
 export function planQueueSlash(displayCommand: string, expandedCommand: string): QueuePlan {
-  const payload = argumentOf(expandedCommand).trim()
   const displayPayload = argumentOf(displayCommand).trim()
+  const payload = argumentOf(expandedCommand).trim()
 
-  if (!payload) {
+  if (!displayPayload && !payload) {
     return { kind: 'list' }
   }
 
-  const { head, rest, verb } = splitHead(payload)
+  const cmd = parseQueueCommand(displayPayload)
 
-  if (verb === 'add') {
-    const displayRest = displayPayload.slice(head.length).trim()
-
-    return rest ? { display: displayRest || rest, kind: 'enqueue', text: rest } : { key: 'add', kind: 'usage' }
-  }
-
-  if (LIST_VERBS.has(verb)) {
-    return rest ? enqueuePlan(payload, displayPayload) : { kind: 'list' }
-  }
-
-  if (verb === 'clear') {
-    return rest ? enqueuePlan(payload, displayPayload) : { kind: 'clear' }
-  }
-
-  if (EDIT_VERBS.has(verb)) {
-    return planEdit(rest, payload, displayPayload)
-  }
-
-  if (REMOVE_VERBS.has(verb)) {
-    return planRemove(rest, payload, displayPayload)
-  }
-
-  if (verb === 'move') {
-    return planMove(rest, payload, displayPayload)
-  }
-
-  return enqueuePlan(payload, displayPayload)
+  return planFromCommand(cmd, displayPayload, payload)
 }
 
-const clip = (text: string) => {
-  const flat = text.replace(/\n/g, ' ')
+const isProtected = (item: QueueItem): boolean =>
+  Boolean(item.inFlight || isQueueItemProtected(item, getUiState().info?.pending_submissions))
 
-  return `${flat.slice(0, 80)}${flat.length > 80 ? '…' : ''}`
+export const listQueue = (items: QueueItem[], destination?: SubmissionDestination): string => {
+  if (destination && !isCurrentDestination(destination)) {
+    return t('slashCmd.core.queue.changed')
+  }
+
+  if (!items.length) {
+    return t('slashCmd.core.queue.empty')
+  }
+
+  const receipts = getUiState().info?.pending_submissions
+
+  const rows = items.map((item, index) => {
+    const status = item.inFlight
+      ? t('slashCmd.core.queue.inFlight')
+      : isQueueItemProtected(item, receipts)
+        ? t('slashCmd.core.queue.authorityOwned')
+        : item.failed
+          ? t('slashCmd.core.queue.unconfirmed')
+          : t('slashCmd.core.queue.pending')
+
+    return `${index + 1}. [${status}] ${previewOf(item.display ?? item.text)}`
+  })
+
+  return [t('slashCmd.core.queue.localHeader'), ...rows].join('\n')
 }
 
-const shownRows = (surface: QueueSurface) =>
-  surface.rows.length >= surface.items.length ? surface.rows : surface.items.map(item => item.display)
-
-const listNotice = (rows: string[]) => {
-  if (!rows.length) {
-    return `${t('slashCmd.core.queue.empty')}  ${t('slashCmd.core.queue.usage')}`
+export const removeQueueItem = (
+  index: number,
+  items: QueueItem[],
+  removeQueue: (i: number) => void,
+  refresh?: () => void,
+  destination?: SubmissionDestination,
+  _totalRows?: number
+): string => {
+  if (destination && !isCurrentDestination(destination)) {
+    return t('slashCmd.core.queue.changed')
   }
 
-  const lines = rows.map((row, index) => `  ${index + 1}. ${clip(row)}`)
+  // Local protection: server-tail rows cannot be removed here
+  if (index < 1 || index > items.length) {
+    return t('slashCmd.core.queue.invalidIndex', String(items.length))
+  }
 
-  return `${t('slashCmd.core.queue.pendingHeader', String(rows.length))}\n${lines.join('\n')}`
+  const item = items[index - 1]
+
+  if (!item || isProtected(item)) {
+    return t('slashCmd.core.queue.protected')
+  }
+
+  try {
+    removeQueue(index - 1)
+  } catch (error) {
+    return t('slashCmd.core.queue.notSaved', String(error))
+  }
+
+  const present = items.some(row => row === item || Boolean(item.submissionId && row.submissionId === item.submissionId))
+
+  if (present) {
+    return t('slashCmd.core.queue.kept', String(index))
+  }
+
+  refresh?.()
+
+  return t('slashCmd.core.queue.removed', String(index), previewOf(item.display ?? item.text))
 }
 
-const outOfRange = (index: number, size: number) => index < 1 || index > size
-
-const isServerRow = (index: number, surface: QueueSurface) =>
-  index >= surface.items.length && index < shownRows(surface).length
-
-const clearQueue = (surface: QueueSurface) => {
-  const count = Math.max(shownRows(surface).length, surface.items.length)
-
-  for (let index = count - 1; index >= 0; index -= 1) {
-    surface.removeAt(index)
+export const editQueueItem = (
+  index: number,
+  rawText: string,
+  rawDisplay: string | undefined,
+  items: QueueItem[],
+  refresh?: () => void,
+  expand?: (s: string) => string,
+  attachments?: QueueItem['attachments'],
+  destination?: SubmissionDestination,
+  totalRows?: number
+): string => {
+  if (destination && !isCurrentDestination(destination)) {
+    return t('slashCmd.core.queue.changed')
   }
 
-  surface.refresh()
+  const rowCount = totalRows ?? items.length
 
-  return t(count === 1 ? 'slashCmd.core.queue.clearedOne' : 'slashCmd.core.queue.clearedOther', String(count))
-}
-
-const removeItem = (index: number, surface: QueueSurface) => {
-  const rows = shownRows(surface)
-
-  if (outOfRange(index, rows.length)) {
-    return t('slashCmd.core.queue.notFound', String(index), String(rows.length))
+  if (index < 1 || index > rowCount) {
+    return t('slashCmd.core.queue.invalidIndex', String(items.length))
   }
 
-  const item = surface.items[index - 1]
-
-  if (item?.inFlight) {
-    return t('slashCmd.core.queue.alreadyStarted', String(index))
-  }
-
-  const preview = clip(item?.display ?? rows[index - 1] ?? '')
-
-  surface.removeAt(index - 1)
-  surface.refresh()
-
-  return t('slashCmd.core.queue.removed', String(index), preview)
-}
-
-const editItem = (plan: Extract<QueuePlan, { kind: 'edit' }>, surface: QueueSurface) => {
-  const size = shownRows(surface).length
-  const index = plan.index - 1
-
-  if (outOfRange(plan.index, size)) {
-    return t('slashCmd.core.queue.notFound', String(plan.index), String(size))
-  }
-
-  if (isServerRow(index, surface)) {
+  if (index > items.length) {
     return t('slashCmd.core.queue.gatewayFifo')
   }
 
-  const item = surface.items[index]
+  const item = items[index - 1]
 
-  if (!item || item.inFlight) {
-    return t('slashCmd.core.queue.alreadyStarted', String(plan.index))
+  if (!item || isProtected(item)) {
+    return t('slashCmd.core.queue.protected')
   }
 
-  const previous = { display: item.display, text: item.text }
+  const text = expand ? expand(rawText) : rawText
+  const display = rawDisplay ?? (rawText === text ? text : rawText)
+  const previous = { attachments: item.attachments, display: item.display, text: item.text }
 
-  item.text = plan.text
-  item.display = plan.display
+  item.text = text
+  item.display = display
+
+  if (attachments && attachments.length > 0) {
+    item.attachments = attachments
+  }
 
   try {
     savePendingInput(item)
   } catch (error) {
     item.text = previous.text
     item.display = previous.display
+    item.attachments = previous.attachments
 
-    return t('canonical.queue.notSavedDraftKept', (error as Error).message)
+    return t('slashCmd.core.queue.notSaved', String(error))
   }
 
-  surface.refresh()
+  refresh?.()
 
-  return t('slashCmd.core.queue.updated', String(plan.index), clip(plan.text))
+  return t('slashCmd.core.queue.updated', String(index), previewOf(rawText))
 }
 
-const restamp = (items: QueueItem[]) => {
-  const base = Date.now()
-
-  items.forEach((item, index) => {
-    item.createdAt = base + index
-    savePendingInput(item)
-  })
-}
-
-const moveItem = (from: number, to: number, surface: QueueSurface) => {
-  const size = shownRows(surface).length
-
-  if (outOfRange(from, size) || outOfRange(to, size)) {
-    return t('slashCmd.core.queue.moveOutOfRange', String(size))
+export const moveQueueItem = (
+  from: number,
+  to: number,
+  items: QueueItem[],
+  refresh?: () => void,
+  destination?: SubmissionDestination,
+  totalRows?: number
+): string => {
+  if (destination && !isCurrentDestination(destination)) {
+    return t('slashCmd.core.queue.changed')
   }
 
-  if (isServerRow(from - 1, surface) || isServerRow(to - 1, surface)) {
+  const rowCount = totalRows ?? items.length
+
+  if (from < 1 || from > rowCount || to < 1 || to > rowCount) {
+    return t('slashCmd.core.queue.moveOutOfRange', String(items.length))
+  }
+
+  if (from > items.length || to > items.length) {
     return t('slashCmd.core.queue.gatewayFifo')
   }
 
-  const source = surface.items[from - 1]
-  const target = surface.items[to - 1]
+  const low = Math.min(from, to) - 1
+  const high = Math.max(from, to) - 1
 
-  if (!source || !target || source.inFlight || target.inFlight) {
-    return t('slashCmd.core.queue.alreadyStarted', String(from))
+  // Middle-row protection: moving must not reorder across protected rows
+  const hasProtected = items.slice(low, high + 1).some(row => !row || isProtected(row))
+
+  if (hasProtected) {
+    return t('slashCmd.core.queue.protected')
   }
 
   if (from !== to) {
-    const [moved] = surface.items.splice(from - 1, 1)
+    const backup = items.map(item => ({ createdAt: item.createdAt, item }))
+    const [moved] = items.splice(from - 1, 1)
+    items.splice(to - 1, 0, moved!)
+    const base = Date.now()
 
-    surface.items.splice(to - 1, 0, moved!)
-    restamp(surface.items)
+    try {
+      for (let i = 0; i < items.length; i++) {
+        items[i]!.createdAt = base + i
+        savePendingInput(items[i]!)
+      }
+    } catch (error) {
+      // Failed persistence rolls back array order and journal timestamps
+      backup.forEach(({ createdAt, item }, i) => {
+        item.createdAt = createdAt
+        items[i] = item
+      })
+
+      for (const { item } of backup) {
+        try {
+          savePendingInput(item)
+        } catch (rollbackError) {
+          return t('slashCmd.core.queue.notSaved', `${String(error)}; rollback failed: ${String(rollbackError)}`)
+        }
+      }
+
+      return t('slashCmd.core.queue.notSaved', String(error))
+    }
   }
 
-  surface.refresh()
+  refresh?.()
 
   return t('slashCmd.core.queue.moved', String(from), String(to))
 }
 
+export const clearQueue = (
+  items: QueueItem[],
+  removeQueue: (i: number) => void,
+  refresh?: () => void,
+  destination?: SubmissionDestination
+): string[] => {
+  const current = () =>
+    (!destination || isCurrentDestination(destination)) &&
+    items.every(item => !item.destination || isCurrentDestination(item.destination))
+
+  if (!current()) {
+    return [t('slashCmd.core.queue.changed')]
+  }
+
+  const snapshot = [...items]
+
+  const present = (item: QueueItem) =>
+    items.some(row => row === item || Boolean(item.submissionId && row.submissionId === item.submissionId))
+
+  let removed = 0
+  let stoppedReason: string | null = null
+
+  // Local protection: clear descending, only touching local items (never server rows)
+  for (let index = snapshot.length - 1; index >= 0; index--) {
+    const item = snapshot[index]!
+
+    if (!current() || items[index] !== item) {
+      stoppedReason = t('slashCmd.core.queue.changed')
+
+      break
+    }
+
+    if (isProtected(item)) {
+      continue
+    }
+
+    try {
+      removeQueue(index)
+    } catch (error) {
+      stoppedReason = t('slashCmd.core.queue.notSaved', String(error))
+
+      break
+    }
+
+    if (!present(item)) {
+      removed++
+    }
+  }
+
+  refresh?.()
+
+  const summary = t('slashCmd.core.queue.clearSummary', String(removed), String(snapshot.length - removed))
+
+  return stoppedReason ? [stoppedReason, summary] : [summary]
+}
+
 /** Apply a management plan to the live composer queue. Enqueue stays with the submit path. */
 export function applyQueuePlan(plan: Exclude<QueuePlan, { kind: 'enqueue' }>, surface: QueueSurface): string {
-  if (plan.kind === 'usage') {
-    return t(USAGE_KEY[plan.key])
+  switch (plan.kind) {
+    case 'usage':
+      return t(USAGE_KEY[plan.key])
+
+    case 'list':
+      return listQueue(surface.items)
+
+    case 'clear':
+      return clearQueue(surface.items, surface.removeAt, surface.refresh).join('\n')
+
+    case 'remove':
+      return removeQueueItem(plan.index, surface.items, surface.removeAt, surface.refresh, undefined, surface.rows.length)
+
+    case 'edit':
+      return editQueueItem(plan.index, plan.text, plan.display, surface.items, surface.refresh, undefined, undefined, undefined, surface.rows.length)
+
+    case 'move':
+      return moveQueueItem(plan.from, plan.to, surface.items, surface.refresh, undefined, surface.rows.length)
+  }
+}
+
+/** Classic CLI `/queue` slash command handler in Ink composer context. */
+export function runQueueSlashCommand(arg: string, ctx: SlashRunCtx, _cmd?: string): void {
+  const command = parseQueueCommand(arg)
+  const sys = ctx.transcript.sys
+
+  if (command.kind === 'prompt') {
+    const text = ctx.expand ? ctx.expand(arg) : arg
+    const destination = captureDestination()
+    ctx.composer.enqueue(text, arg, destination, ctx.attachments ?? [])
+    ctx.composer.refresh?.()
+
+    return sys(t('slashCmd.core.queue.queued', previewOf(arg)))
   }
 
-  if (plan.kind === 'list') {
-    return listNotice(shownRows(surface))
+  if (command.kind === 'error') {
+    return sys(t('slashCmd.core.queue.usage'))
   }
 
-  if (plan.kind === 'clear') {
-    return clearQueue(surface)
+  const items = ctx.composer.queueRef.current
+  const destination = captureDestination()
+  const refresh = ctx.composer.refresh ? () => ctx.composer.refresh!() : undefined
+  const removeQueue = (i: number) => ctx.composer.removeQueue(i)
+
+  if (command.kind === 'list') {
+    return sys(listQueue(items, destination))
   }
 
-  if (plan.kind === 'remove') {
-    return removeItem(plan.index, surface)
+  if (command.kind === 'remove') {
+    return sys(removeQueueItem(command.index, items, removeQueue, refresh, destination))
   }
 
-  if (plan.kind === 'edit') {
-    return editItem(plan, surface)
+  if (command.kind === 'edit') {
+    return sys(
+      editQueueItem(
+        command.index,
+        command.text,
+        command.display,
+        items,
+        refresh,
+        ctx.expand,
+        ctx.attachments,
+        destination
+      )
+    )
   }
 
-  return moveItem(plan.from, plan.to, surface)
+  if (command.kind === 'move') {
+    return sys(moveQueueItem(command.from, command.to, items, refresh, destination))
+  }
+
+  if (command.kind === 'add') {
+    const text = ctx.expand ? ctx.expand(command.text) : command.text
+    ctx.composer.enqueue(text, command.text, destination, ctx.attachments ?? [])
+    refresh?.()
+
+    return sys(t('slashCmd.core.queue.queued', previewOf(command.text)))
+  }
+
+  const lines = clearQueue(items, removeQueue, refresh, destination)
+  lines.forEach(line => sys(line))
 }

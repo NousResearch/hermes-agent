@@ -57,7 +57,9 @@ def resolve_local_target(authority, actor, sid):
         raise RuntimeStoreError('not_found')
     from hermes_state_local import POLICY_PREFIX
     with db._read_ctx() as conn:
-        from hermes_state_local_migration import LEGACY_PREFIX
+        from hermes_state_local_migration import LEGACY_PREFIX, validate_delegated_history
+        validate_delegated_history(conn, row, subject=actor.subject, profile_id=actor.profile_id,
+                                   profile_name=db._own_profile_name() or 'default')
         bound = conn.execute('SELECT 1 FROM state_meta WHERE key IN (?,?)',
             (POLICY_PREFIX + (row.get('chat_id') or sid), LEGACY_PREFIX + (row.get('chat_id') or sid))).fetchone()
         if bound and row.get('chat_id'):
@@ -248,7 +250,7 @@ def adopts_client_history(authority, actor, row):
             or getattr(authority, '_native_legacy_transports', {}).get(actor.transport_id) != actor):
         return False
     try:
-        validate_legacy_row(authority.db, row, subject=actor.subject)
+        validate_legacy_row(authority.db, row, subject=actor.subject, profile_id=actor.profile_id)
     except RuntimeStoreError:
         return False
     return True
@@ -261,7 +263,7 @@ def adopt_legacy_session(authority, actor, row):
             or not {'session:read', 'session:create'} <= actor.capabilities):
         raise RuntimeStoreError('not_found')
     from hermes_state_local_migration import legacy_creation_source, validate_legacy_row
-    validate_legacy_row(authority.db, row, subject=actor.subject)
+    validate_legacy_row(authority.db, row, subject=actor.subject, profile_id=actor.profile_id)
     authority._require_admission_open()
     from gateway.run import _load_gateway_config, _resolve_gateway_model
     from gateway.session_policy import build_policy, bind_launch_key

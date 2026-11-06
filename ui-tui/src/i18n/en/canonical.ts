@@ -39,6 +39,7 @@ export const canonicalEn = {
     // hooks/useQueue.ts, app/useSubmission.ts, app/useComposerState.ts — the local input journal.
     queue: {
       unconfirmedPrefix: '[unconfirmed · Alt+K retry] ',
+      blockedRecovery: 'Queue paused: first input is unconfirmed. Alt+K retries the same submission; with an empty composer, ↑ selects it, then Ctrl+X discards it.',
       // {0}=admission status identifier (unknown; queued rows render plain), {1}=input text
       serverRow: (status: string, text: string) => `[${status}] ${text}`,
       // {0}=input text of a turn lost when the gateway restarted (status unknown): it pauses the queue

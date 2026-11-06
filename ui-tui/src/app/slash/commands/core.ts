@@ -29,6 +29,7 @@ import {
 import type { Msg, PanelSection } from '../../../types.js'
 import type { StatusBarMode } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
+import { runQueueSlashCommand } from '../../queueSlash.js'
 import { getUiState, patchUiState, sessionCwd } from '../../uiStore.js'
 import { openRewindPicker } from '../canonicalRewindPicker.js'
 import { canonicalRewind, canonicalTitle } from '../canonicalSessionCommands.js'
@@ -847,19 +848,10 @@ export const coreCommands: SlashCommand[] = [
 
   {
     aliases: ['q'],
-    help: 'inspect or enqueue a message',
+    help: 'list, rm <n>, clear local queue, or enqueue a prompt (prefix literal reserved words)',
     name: 'queue',
-    run: (arg, ctx) => {
-      if (!arg) {
-        const count = ctx.composer.queueRef.current.length
-
-        return ctx.transcript.sys(
-          t(count === 1 ? 'slashCmd.core.queue.countOne' : 'slashCmd.core.queue.countOther', String(count))
-        )
-      }
-
-      ctx.composer.enqueue(arg)
-      ctx.transcript.sys(t('slashCmd.core.queue.queued', previewOf(arg)))
+    run: (arg, ctx, cmd) => {
+      runQueueSlashCommand(arg, ctx, cmd)
     }
   },
 

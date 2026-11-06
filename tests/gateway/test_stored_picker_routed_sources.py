@@ -11,7 +11,15 @@ import pytest
 
 
 async def _owner(tmp_path, monkeypatch):
-    from gateway import run
+    # The test runner already selected dependencies. Importing the runner must not
+    # perform install recovery/activation against the checkout's enclosing real home.
+    from hermes_cli import _early_recovery, venv_sync
+    from pm import environments
+    with monkeypatch.context() as bootstrap:
+        bootstrap.setattr(_early_recovery, 'restore_interrupted_pull', lambda *args, **kwargs: False)
+        bootstrap.setattr(venv_sync, 'prepare_launch', lambda *args, **kwargs: None)
+        bootstrap.setattr(environments, 'activate_dependencies', lambda *args, **kwargs: None)
+        from gateway import run
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore
     from gateway.session_authority import initialize_session_authority

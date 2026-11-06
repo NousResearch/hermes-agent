@@ -75,6 +75,8 @@ def authorize_history(conn, actor, session_id, *, claim=False):
     row = conn.execute('SELECT * FROM sessions WHERE id=?', (session_id,)).fetchone()
     if row is None:
         return False
+    from hermes_state_local_migration import validate_delegated_history
+    validate_delegated_history(conn, dict(row), subject=actor.subject, profile_id=actor.profile_id)
     # Import intentionally strips routes. Never reinterpret a cold native/API
     # transcript as imported history, even if stale import metadata exists.
     if row['session_key'] or row['chat_id'] or row['origin_json']:
@@ -114,12 +116,32 @@ def same_history_owner(conn, anchor_id, session_id):
     subagent's own compression chain, mounted as one chat). A bound (imported) anchor therefore
     never reaches unbound rows.
     """
-    columns = 'SELECT source,user_id,session_key,chat_id,origin_json FROM sessions WHERE id=?'
+    columns = 'SELECT * FROM sessions WHERE id=?'
     anchor, row = (conn.execute(columns, (sid,)).fetchone() for sid in (anchor_id, session_id))
     if anchor is None or row is None:
         return False
+    from hermes_state_local_migration import delegated_history, validate_delegated_history
+    if delegated_history(dict(anchor)) or delegated_history(dict(row)):
+        # Chain walking has no caller: only an existing control/local receipt can supply
+        # authenticated authority. A parent pointer or a matching user label cannot.
+        from hermes_state_local import POLICY_PREFIX
+        saved = history_binding(conn, anchor_id)
+        local = conn.execute('SELECT value FROM state_meta WHERE key=?',
+                             (POLICY_PREFIX + (anchor['chat_id'] or anchor_id),)).fetchone()
+        try:
+            if saved is not None:
+                profile_id, subject = json.loads(saved)
+            elif local is not None:
+                receipt = json.loads(local[0])
+                profile_id, subject = receipt['profile_id'], receipt['principal_id']
+            else:
+                return False
+            for member in (anchor, row):
+                validate_delegated_history(conn, dict(member), subject=subject, profile_id=profile_id)
+        except (RuntimeStoreError, ValueError, TypeError, KeyError):
+            return False
     if row['session_key'] or row['chat_id'] or row['origin_json']:
-        return tuple(row)[1:4] == tuple(anchor)[1:4]
+        return all(row[key] == anchor[key] for key in ('user_id', 'session_key', 'chat_id'))
     binding = history_binding(conn, session_id)
     if not _bindings_agree(binding, history_binding(conn, anchor_id)):
         return False

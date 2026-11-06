@@ -55,7 +55,7 @@ async def test_stored_picker_survives_upgrade_and_resumes_without_copying(tmp_pa
     assert {r['id'] for r in result['result']['sessions']} == {'old-cli', 'tui-tip', 'old-gui'}
     assert db._conn.total_changes == before
     assert authority.sessions == {}
-    assert (await listing(native))['result'] == {'scope': 'live', 'sessions': []}
+    assert (await listing(native))['result'] == {'scope': 'live', 'sessions': [], 'offset': 0, 'limit': 200, 'has_more': False}
     assert len((await listing(native, scope='stored', limit=1))['result']['sessions']) == 1
 
     remote = AuthorityConnection(authority, object(), {'provider': 'remote', 'user_id': 'remote',

@@ -15,7 +15,7 @@ import type { Msg } from '../types.js'
 import { reportSlashCommand } from './createSlashHandler.js'
 import type { BusyInputMode, ComposerActions, ComposerRefs, ComposerState, ComposerToken, SlashHandler } from './interfaces.js'
 import { stagePastes } from './pasteStore.js'
-import { applyQueuePlan, planQueueSlash } from './queueSlash.js'
+import { isQueueAdministrativeCommand } from './queueCommands.js'
 import { findSlashCommand } from './slash/registry.js'
 import { submitPrompt } from './submissionCore.js'
 import { captureDestination, isCurrentDestination, type SubmissionDestination } from './submissionDestination.js'
@@ -377,32 +377,26 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
         const parsed = parseSlashCommand(full)
 
-        if (parsed.name === 'queue' || parsed.name === 'q') {
-          // The catalog advertises list/edit/rm/move/clear. Enqueueing those words
-          // is what sent them to the model. Handle them before the slash handler.
+        if (isQueueAdministrativeCommand(parsed.name, parsed.arg)) {
+          composerActions.clearIn()
+          slashRef.current(full, { attachments: submission.attachments, expand: expandTokens(submissionTokens) })
+
+          return
+        }
+
+        const queued =
+          parsed.name === 'queue' || parsed.name === 'q' ? queueItemFromSlash(slash.display, slash.command) : undefined
+
+        if (queued) {
+          // Handled here, before the slash handler, so it is counted here.
           reportSlashCommand(gw, parsed.name, getUiState().sid)
-          const plan = planQueueSlash(slash.display, slash.command)
 
-          if (plan.kind === 'enqueue') {
-            const preview = plan.display.slice(0, 50)
+          const saved = journaled(() =>
+            composerActions.enqueue(queued.text, queued.display, destination, submission.attachments)
+          )
 
-            const saved = journaled(() =>
-              composerActions.enqueue(plan.text, plan.display, destination, submission.attachments)
-            )
-
-            if (saved) {
-              sys(`queued: "${preview}${plan.display.length > 50 ? '…' : ''}"`)
-            }
-          } else {
-            composerActions.clearIn()
-            sys(
-              applyQueuePlan(plan, {
-                items: composerRefs.queueRef.current,
-                refresh: () => composerActions.setQueueEdit(null),
-                removeAt: index => composerActions.removeQueue(index),
-                rows: composerState.queuedDisplay
-              })
-            )
+          if (saved) {
+            sys(`queued: "${queued.display.slice(0, 50)}${queued.display.length > 50 ? '…' : ''}"`)
           }
         } else {
           // Attachment commands capture the cleared composer's revision.

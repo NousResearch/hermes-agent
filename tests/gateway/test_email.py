@@ -1044,6 +1044,30 @@ class TestReconnectSeenUidsRestore(unittest.TestCase):
         asyncio.run(adapter.disconnect())
 
 
+    def test_reconnect_never_restores_another_profiles_snapshot(self):
+        """One adapter module serves every multiplexed profile: two profiles polling one mailbox keep
+        separate baselines, so B's reconnect never inherits A's seen set."""
+        import asyncio
+        import tempfile
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        def make_in(home):
+            token = set_hermes_home_override(home)
+            try:
+                return self._make_adapter()
+            finally:
+                reset_hermes_home_override(token)
+
+        with tempfile.TemporaryDirectory() as home_a, tempfile.TemporaryDirectory() as home_b:
+            first = make_in(home_a)
+            self.assertTrue(self._run_connect(first, b"1 2", is_reconnect=False))
+            asyncio.run(first.disconnect())
+            other = make_in(home_b)
+            self.assertTrue(self._run_connect(other, b"1 2 3", is_reconnect=True))
+            self.assertEqual(other._seen_uids, {b"1", b"2", b"3"})  # no snapshot of its own: mark all seen
+            asyncio.run(other.disconnect())
+
+
 class TestSendEmailStandalone(unittest.TestCase):
     """Test the standalone _send_email function in send_message_tool."""
 

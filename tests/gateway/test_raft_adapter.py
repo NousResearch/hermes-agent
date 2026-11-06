@@ -296,3 +296,42 @@ class TestMultiplexProfileScope:
             assert "--profile default-profile-slug" in ctx.platform_kwargs["platform_hint"]
         finally:
             set_multiplex_active(False)
+
+
+class TestCrossProfileActivity:
+    """One canonical adapter module serves every profile in the process, so the live-adapter set
+    is shared: a hook fired in profile A must reach only A's connected Raft adapter."""
+
+    @pytest.mark.asyncio
+    async def test_hook_activity_stays_in_the_invoking_profile(self, tmp_path, monkeypatch):
+        import plugins.platforms.raft.adapter as raft_mod
+        from gateway.platform_registry import platform_registry
+        from hermes_cli.plugins import get_plugin_manager, invoke_hook
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        monkeypatch.setattr(raft_mod.shutil, "which", lambda name: None)  # no bridge subprocess
+        home_a, home_b = tmp_path / "a", tmp_path / "profiles" / "b"
+        adapters = {}
+        for name, home in (("a", home_a), ("b", home_b)):
+            home.mkdir(parents=True)
+            token = set_hermes_home_override(str(home))
+            try:
+                get_plugin_manager().discover_and_load()
+                assert platform_registry.get("raft") is not None  # materialize: registers the hooks
+                adapter = _make_adapter(host="127.0.0.1")
+                assert await adapter.connect()
+                adapters[name] = adapter
+            finally:
+                reset_hermes_home_override(token)
+        try:
+            token = set_hermes_home_override(str(home_a))
+            try:
+                invoke_hook("pre_tool_call", platform="raft", session_id="sess-a", turn_id="turn-a",
+                            tool_name="terminal", args={"command": "cat secret"})
+            finally:
+                reset_hermes_home_override(token)
+            assert adapters["a"]._activity_queue.size == 1
+            assert adapters["b"]._activity_queue.size == 0
+        finally:
+            for adapter in adapters.values():
+                await adapter.disconnect()

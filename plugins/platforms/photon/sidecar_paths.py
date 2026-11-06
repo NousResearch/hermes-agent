@@ -25,6 +25,8 @@ SOURCE_SIDECAR_DIR = Path(__file__).parent / "sidecar"
 _MIRROR_FILES = ("index.mjs", "package.json", "package-lock.json", "patch-spectrum-mixed-attachments.mjs")
 # Tests monkeypatch these module globals directly; the accessors honor a non-None value.
 _SIDECAR_DIR: Optional[Path] = None
+# Resolved dirs keyed by profile home (``hermes_home_key``); see ``_sidecar_dir``.
+_RESOLVED_SIDECAR_DIRS: dict[str, Path] = {}
 # Written by `hermes photon install-sidecar` on npm failure so check_requirements() can
 # surface the root cause later; cleared on success.
 _NPM_ERROR_LOG: Optional[Path] = None
@@ -88,11 +90,18 @@ def resolve_sidecar_dir(source_dir: Optional[Path] = None) -> Path:
 
 
 def _sidecar_dir() -> Path:
-    """Sidecar runtime dir, resolved once on first use (never at import)."""
-    global _SIDECAR_DIR
-    if _SIDECAR_DIR is None:
-        _SIDECAR_DIR = resolve_sidecar_dir()
-    return _SIDECAR_DIR
+    """Sidecar runtime dir, resolved once per profile home on first use (never at import).
+
+    Per home, not per process: the resolved dir can be a mirror under the profile's own home
+    (read-only install tree), and one module serves every profile in the gateway process."""
+    if _SIDECAR_DIR is not None:
+        return _SIDECAR_DIR
+    from hermes_constants import hermes_home_key
+    key = hermes_home_key()
+    resolved = _RESOLVED_SIDECAR_DIRS.get(key)
+    if resolved is None:
+        resolved = _RESOLVED_SIDECAR_DIRS[key] = resolve_sidecar_dir()
+    return resolved
 
 
 def _npm_error_log() -> Path:

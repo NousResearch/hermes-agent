@@ -642,6 +642,10 @@ See `plugins/platforms/line/adapter.py` for the full LINE postback implementatio
 
 See `plugins/platforms/irc/` in the repo for a complete working example — a full async IRC adapter with zero external dependencies. `plugins/platforms/teams/` covers Bot Framework / Adaptive Cards, `plugins/platforms/google_chat/` covers OAuth-based REST APIs, and `plugins/platforms/line/` covers webhook-driven Messaging APIs with platform-specific slow-LLM UX.
 
+When copying one of these, change its `__init__.py` import: bundled plugins load their entry module by its canonical `plugins.platforms.<name>.adapter` path, so a copied `__init__.py` would register the bundled adapter instead of yours. User plugins use `from .adapter import register`.
+
+**Module state is per profile.** A bundled adapter module is loaded once per process and shared by every profile the gateway serves, so module- and class-level state must be keyed by profile (`hermes_constants.hermes_home_key()`) unless it is a process-wide fact. Threads that carry no profile scope (e.g. an HTTP server's request threads) use what the adapter instance captured at construction, never a current-profile lookup.
+
 ---
 
 ## Step-by-Step Checklist (Built-in Path)

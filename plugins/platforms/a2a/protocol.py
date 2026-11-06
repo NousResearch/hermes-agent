@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from gateway.platforms._shared import coerce_port as _coerce_int
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, hermes_home_key
 
 PROTOCOL_VERSION = "1.0"
 
@@ -276,8 +276,7 @@ class RateLimiter:
 
 
 class Metrics:
-    """Counters for A2A operations (module singleton ``metrics`` shared by the inbound adapter
-    and outbound tools; not persisted)."""
+    """Counters for A2A operations, one set per profile (see ``metrics_for``); not persisted."""
 
     _COUNTERS = ("inbound_total", "outbound_total", "streams_started", "push_sent", "push_failed",
                  "tasks_completed", "tasks_failed", "anti_loop_triggers", "rate_limit_triggers")
@@ -299,7 +298,35 @@ class Metrics:
                 "avg_latency_ms": round(self.avg_latency() * 1000, 1)}
 
 
-metrics = Metrics()
+
+# One module serves every profile in the process, so counters are kept per profile home: profile
+# B's /metrics endpoint and a2a_list must not report profile A's traffic.
+_METRICS: dict[str, Metrics] = {}
+_METRICS_LOCK = threading.Lock()
+
+
+def metrics_for(scope: Optional[str] = None) -> Metrics:
+    """The counters of profile *scope* (a ``hermes_home_key``), default the current profile."""
+    key = scope or hermes_home_key()
+    with _METRICS_LOCK:
+        found = _METRICS.get(key)
+        if found is None:
+            found = _METRICS[key] = Metrics()
+        return found
+
+
+class _CurrentProfileMetrics:
+    """``metrics``: the current profile's :class:`Metrics` (outbound tools run in the agent's scope).
+    The adapter's HTTP threads carry no scope, so it uses the instance it captured at construction."""
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(metrics_for(), name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        setattr(metrics_for(), name, value)
+
+
+metrics = _CurrentProfileMetrics()
 
 
 class TaskStore:

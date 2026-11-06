@@ -58,3 +58,41 @@ def test_readonly_install_mirrors_to_hermes_home(tmp_path, monkeypatch):
     assert (expected / "package.json").exists()
 
 
+def test_readonly_install_bridge_dir_is_per_profile(tmp_path, monkeypatch):
+    """One adapter module serves every profile: on a read-only install each profile's adapter
+    runs the bridge mirrored under ITS home, not the copy made for whichever profile came first."""
+    from gateway.config import PlatformConfig
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from plugins.platforms.whatsapp import adapter as wa_adapter
+
+    install_root = tmp_path / "install"
+    install_bridge = install_root / "scripts" / "whatsapp-bridge"
+    _seed_install_tree(install_bridge)
+    monkeypatch.setattr(
+        whatsapp_common, "__file__",
+        str(install_root / "gateway" / "platforms" / "whatsapp_common.py"),
+    )
+    _real_touch = Path.touch
+
+    def _fake_touch(self, *a, **kw):
+        if self.name == ".write_test" and install_bridge in self.parents:
+            raise PermissionError("read-only install tree")
+        return _real_touch(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "touch", _fake_touch)
+    monkeypatch.setattr(wa_adapter, "_BRIDGE_DIRS", {}, raising=False)  # start with no resolved home
+
+    def script_for(name):
+        home = tmp_path / name
+        home.mkdir()
+        token = set_hermes_home_override(str(home))
+        try:
+            config = PlatformConfig(enabled=True, extra={"session_path": str(home / "wa")})
+            return Path(wa_adapter.WhatsAppAdapter(config)._bridge_script), home
+        finally:
+            reset_hermes_home_override(token)
+
+    for name in ("a", "b"):
+        script, home = script_for(name)
+        assert script == home / "scripts" / "whatsapp-bridge" / "bridge.js"
+        assert script.read_text() == "// bridge\n"

@@ -765,6 +765,9 @@ export interface SessionMessage {
   display_kind?:
     | 'async_delegation_complete'
     | 'auto_continue'
+    // A safety-refused turn the backend dropped from the model's context but
+    // retained for display (agent/turn_failure_copy.py CONTENT_REFUSED_DISPLAY_KIND).
+    | 'content_refused'
     | 'failed_turn'
     | 'hidden'
     | 'model_switch'

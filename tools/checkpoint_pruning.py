@@ -82,7 +82,7 @@ class Pruner:
     def _rewrite(self, ref: str, original: list[str], keep: list[str], *, gc: bool) -> None:
         parent = None
         for sha in keep:
-            metadata = self._git(["log", "-1", "--format=%T%x00%aI%x00%cI%x00%s", sha])
+            metadata = self._git(["log", "-1", "--format=%T%x00%aI%x00%cI%x00%B", sha])  # whole body: keeps the take-time line
             fields = metadata.split("\x00", 3)
             if len(fields) != 4:
                 raise PruneError(f"invalid checkpoint metadata: {sha}")

@@ -243,9 +243,12 @@ class CLILoopsMixin:
             else t("cli.undo.removes_last_turns", count=_undo_n))
         if self._confirm_destructive_slash("undo", _undo_desc, cmd_original=cmd_original) is None:
             return True  # confirmation cancelled — command handled, keep REPL alive
+        before = list(self.conversation_history)
         turns_undone = self.undo_last(_undo_n)
         if turns_undone:  # None when nothing was rewound
             self._record_model_friction("undo", turns_undone)
+            from hermes_cli.cli_undo_hint import print_undo_rollback_hint
+            print_undo_rollback_hint(self, before, turns_undone)
 
     def _cmd_skills(self, cmd_original: str):
         with self._busy_command(self._slow_command_status(cmd_original)):

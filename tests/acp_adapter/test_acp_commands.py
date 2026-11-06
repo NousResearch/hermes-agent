@@ -92,7 +92,13 @@ def test_acp_real_agent_gets_session_db_for_recall(monkeypatch):
         return module
 
     monkeypatch.setitem(sys.modules, "run_agent", mod("run_agent", AIAgent=CapturingAgent))
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"model": {"default": "m", "provider": "p"}})
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {
+            "model": {"default": "m", "provider": "p"},
+            "fallback_providers": [{"provider": "deepseek", "model": "deepseek-v4-flash"}],
+        },
+    )
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.runtime_provider",
@@ -116,6 +122,10 @@ def test_acp_real_agent_gets_session_db_for_recall(monkeypatch):
     assert captured["session_db"] is sentinel_db
     assert captured["platform"] == "acp"
     assert captured["session_id"] == "acp-session"
+    # Same chokepoint as the CLI/gateway/TUI/cron: without the chain an ACP session cannot fail over.
+    assert [(e.get("provider"), e.get("model")) for e in captured["fallback_model"]] == [
+        ("deepseek", "deepseek-v4-flash")
+    ]
 
 
 @pytest.mark.asyncio

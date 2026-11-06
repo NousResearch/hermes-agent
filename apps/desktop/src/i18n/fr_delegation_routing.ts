@@ -77,6 +77,14 @@ export const frDelegationRouting: DelegationRoutingTranslations = {
   tierFast: 'Rapide',
   tierUltrafast: 'Ultra-rapide',
   tierHint: 'Uniquement sur les modèles qui la proposent.',
+  daybreakLabel: 'Daybreak',
+  daybreakOff: 'Désactivé',
+  daybreakOn: 'Activé',
+  daybreakHint: 'Accès de confiance OpenAI avec moins de garde-fous, pour cette route uniquement.',
+  daybreakUnlisted:
+    'Ce modèle n’est pas listé pour Daybreak sur votre compte. Désactivez-le ou choisissez un autre modèle.',
+  daybreakNeedsPlugin:
+    'Votre plugin Advanced Delegation ne gère pas encore les routes Daybreak. Mettez-le à jour ou désactivez ceci.',
   optional: 'facultatif',
   errors: { required: 'Obligatoire', spaces: "Pas d'espaces", duplicate: 'Une autre route utilise déjà ce nom' },
   saveRoute: 'Enregistrer la route',

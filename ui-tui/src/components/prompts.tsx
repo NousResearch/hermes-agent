@@ -18,7 +18,7 @@ const APPROVAL_OPTS_SMART_DENY = ['once', 'deny'] as const
 const approvalLabels = (): Record<ApprovalChoice, string> => {
   const p = messages().prompt.approval
 
-  return { always: p.always, deny: p.deny, once: p.once, session: p.session }
+  return { always: p.always, deny: p.deny, once: p.once, session: p.session, tell: p.tell }
 }
 
 const CMD_PREVIEW_LINES = 10
@@ -35,7 +35,9 @@ export function commandPage(total: number, page: number, size = CMD_PREVIEW_LINE
   return { end: Math.min(total, start + size), pages, start }
 }
 
-type ApprovalChoice = 'always' | 'deny' | 'once' | 'session'
+// `tell` is local to this prompt: it answers the gateway with a plain deny, after steering the typed
+// instruction into the running turn (#25693).
+type ApprovalChoice = 'always' | 'deny' | 'once' | 'session' | 'tell'
 
 export function approvalOptions(req: ApprovalReq): readonly ApprovalChoice[] {
   if (req.choices) {
@@ -48,6 +50,13 @@ export function approvalOptions(req: ApprovalReq): readonly ApprovalChoice[] {
   }
 
   return req.allowPermanent === false ? APPROVAL_OPTS_NO_ALWAYS : APPROVAL_OPTS
+}
+
+/** The rows the prompt shows: the gateway's choices, plus "No, and tell Hermes…" wherever Deny is one. */
+export function approvalRows(req: ApprovalReq): readonly ApprovalChoice[] {
+  const opts = approvalOptions(req)
+
+  return opts.includes('deny') ? [...opts, 'tell'] : opts
 }
 
 type ApprovalKey = {
@@ -107,18 +116,32 @@ export function approvalAction(
   return { kind: 'noop' }
 }
 
-export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptProps) {
+export function ApprovalPrompt({ cols = 80, onChoice, onTell, req, t }: ApprovalPromptProps) {
   const T = useT()
   const [sel, setSel] = useState(0)
   const [page, setPage] = useState(0)
-  const opts = approvalOptions(req)
+  const [telling, setTelling] = useState(false)
+  const [instruction, setInstruction] = useState('')
+  const opts = approvalRows(req)
 
   useEffect(() => setPage(0), [req])
 
   useInput((ch, key) => {
+    if (telling) {
+      // The command stays held while the user types; Esc returns to the choices without answering.
+      if (key.escape) {
+        setTelling(false)
+      }
+
+      return
+    }
+
     const action = approvalAction(ch, key, sel, opts)
 
-    if (action.kind === 'choose') {
+    if (action.kind === 'choose' && action.choice === 'tell') {
+      setSel(opts.indexOf('tell'))
+      setTelling(true)
+    } else if (action.kind === 'choose') {
       onChoice(action.choice)
     } else if (action.kind === 'move') {
       setSel(s => s + action.delta)
@@ -167,7 +190,24 @@ export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptPr
         </Text>
       ))}
 
-      <Text color={t.color.muted}>↑/↓ select · Enter confirm · 1-{opts.length} quick pick · Esc/Ctrl+C deny</Text>
+      {telling ? (
+        <Box paddingLeft={2}>
+          <Text color={t.color.label}>{'> '}</Text>
+          <TextInput
+            color={t.color.text}
+            columns={Math.max(20, cols - 10)}
+            onChange={setInstruction}
+            onSubmit={value => (value.trim() ? onTell(value.trim()) : setTelling(false))}
+            value={instruction}
+          />
+        </Box>
+      ) : null}
+
+      <Text color={t.color.muted}>
+        {telling
+          ? T.prompt.approval.tellHint
+          : `↑/↓ select · Enter confirm · 1-${opts.length} quick pick · Esc/Ctrl+C deny`}
+      </Text>
     </Box>
   )
 }
@@ -472,6 +512,7 @@ export function ConfirmPrompt({ onCancel, onConfirm, req, t }: ConfirmPromptProp
 interface ApprovalPromptProps {
   cols?: number
   onChoice: (s: string) => void
+  onTell: (instruction: string) => void
   req: ApprovalReq
   t: Theme
 }

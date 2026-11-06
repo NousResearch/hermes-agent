@@ -67,6 +67,8 @@ instructions. Behind the sign-in gate (below) it also signs out every browser th
 dashboard account; each must sign in again. The account tokens such a login keeps in its cookies work
 on the Webapp only as that login (the gateway refuses them as a bearer token, on a connection's URL and
 on its token refresh), so they end with it. A native Hermes app that signed in to the gateway on its own stays signed in.
+The deployment session token (`HERMES_DASHBOARD_SESSION_TOKEN`, see [Deployment session-token provider](./features/web-dashboard.md#deployment-session-token-provider-token-only-deployments))
+also works there on its own, as a bearer token or on a connection's URL, while the session-token provider is enabled.
 
 For a named profile, `hermes -p work webapp` opens the Webapp on `work`. Profiles the default gateway
 serves share its Webapp; a standalone profile's own gateway serves its own when its config turns it on.
@@ -74,8 +76,10 @@ serves share its Webapp; a standalone profile's own gateway serves its own when 
 **From another machine.** Set `webapp.host` to `0.0.0.0`; the gateway then requires the
 [dashboard sign-in gate](./features/web-dashboard.md#authentication-gated-mode) (username and password
 for a trusted LAN or VPN, OAuth/OIDC for anything internet-facing). Behind a reverse proxy or tunnel
-you run, keep the loopback host and set `webapp.public_url` to the address it serves instead; that
-requires the same sign-in. `hermes webapp` then opens the Webapp's address, where you sign in with
+you run on the same machine, keep the loopback host and set `webapp.public_url` to the address it
+serves instead; that requires the same sign-in. A proxy in another container or on another machine
+cannot reach that loopback address: see [Docker → Behind a tunnel or reverse proxy](./docker.md#webapp-behind-a-proxy).
+`hermes webapp` then opens the Webapp's address, where you sign in with
 your dashboard account: `webapp.public_url` when set; on the LAN, the address **Web Access → Start**
 registered Nous sign-in for, while it is still this machine's address and the Webapp's port; else the
 loopback address (a password provider, or sign-in you set up by hand for that address). One-use

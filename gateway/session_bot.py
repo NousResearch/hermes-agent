@@ -15,7 +15,7 @@ from gateway.session_contract import SessionActor, SessionRef
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent
 from hermes_state_runtime import RuntimeStoreError, get_session_admission
-from tools.bot_failure_reasons import HELD_NOT_SENT
+from tools.bot_failure_reasons import HELD_NOT_SENT, UNKNOWN
 from tools.bot_live_delivery import _TERMINAL, _delivery_id, _read
 logger = logging.getLogger(__name__)
 from gateway.session_bot_mailbox import (mailbox_lock, read_receipt, write_receipt,
@@ -424,7 +424,12 @@ def _admission_outcome(authority, admission_id, fallback=None):
     reply = (fallback or {}).get('reply', '')
     if saved is not None:
         reply = saved['result'].get('final_response', '')
-        status = 'settled' if row['outcome'] == 'completed' else 'failed'
+        # A turn stopped mid-run (the sender's message_agent cancel, or a Stop on the target) did
+        # not fail: the sender hears ``cancelled``, never a failure to retry or report as broken.
+        status = {'completed': 'settled', 'interrupted': 'cancelled'}.get(row['outcome'], 'failed')
+        from gateway.session_bot_outcome import owner_stopped
+        if status == 'cancelled' and owner_stopped(saved['result']):
+            status = 'failed'  # its gateway stopped mid-turn: never re-run, and nobody cancelled it
         # A successful bare silence marker is a delivery decision (same rule as the gateway and
         # the live Bot Chat completion): the turn stays in the target's transcript, the sender
         # never sees the marker as prose.
@@ -484,6 +489,11 @@ def _result(authority, record):
         status, reply = _admission_outcome(authority, retry_id)
     else:
         status, reply = _admission_outcome(authority, record['admission_id'], record)
+        if status == 'failed' and (record.get('retry') or {}).get('refused') == 'cancelled':
+            status = 'cancelled'  # its sender withdrew it (``session_bot_cancel``); its retry never ran
+    if status == 'settled' and not reply:
+        from gateway.session_bot_outcome import forgotten_reply
+        reply = forgotten_reply(authority, current, record) or ''
     error = reason = None
     if status == 'failed':
         try:
@@ -507,6 +517,9 @@ def _failure(authority, admission_id):
     from gateway.session_results import admission_result
     from tools.bot_failure_reasons import classify_agent_error, turn_failure_text
     saved = (admission_result(authority.db, admission_id) or {}).get('result') or {}
+    from gateway.session_bot_outcome import OWNER_STOPPED_ERROR, owner_stopped
+    if owner_stopped(saved):
+        return OWNER_STOPPED_ERROR, UNKNOWN  # never a retryable class: its steps may already have run
     error = saved.get('error') or saved.get('final_response') or 'Bot Chat delivery failed'
     return error, classify_agent_error(turn_failure_text(saved.get('error'), saved.get('failure_reason')) or error)
 
@@ -771,8 +784,11 @@ def _watch_reply(authority, home, key, admission_id):
 
 async def deliver(connection, params):
     from gateway.session_runtime_workers import track_mutation
+    from gateway.session_bot_state import bot_chat_state
     connection.authority._require_admission_open()
-    return await asyncio.shield(track_mutation(connection.authority, _deliver(connection, params)))
+    answer = await asyncio.shield(track_mutation(connection.authority, _deliver(connection, params)))
+    # Not part of the receipt (it is stale a second later): the sender's ack and its runner's replays.
+    return {**answer, 'target_state': bot_chat_state(connection.authority, answer['session_id'])}
 
 
 def _require_same_delivery(record, actor, message, author, category):

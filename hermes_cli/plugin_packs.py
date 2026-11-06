@@ -363,6 +363,7 @@ def install_pack_plugins(
         _set_plugin_enabled,
     )
     from hermes_cli.plugins_admission import AdmissionRefused
+    from hermes_cli.plugins_cmd_catalog import raise_if_removed
     from hermes_cli.plugins_cmd_install import interactive_scan_decision, recorded_install
     results: list[PackInstallResult] = []
     # Built once: a caution verdict prints the findings and asks, exactly as `plugins install` does.
@@ -380,6 +381,8 @@ def install_pack_plugins(
         identifier = rp.identifier
         console.print(f"[dim]Installing {display} @ {rp.entry.ref[:12]}...[/dim]")
         try:
+            if not rp.entry.repo:  # a name-only recall names the catalog entry; the core sees only its repo
+                raise_if_removed(rp.entry.name or "")
             # A bare pack name resolved through the plugin catalog; repo entries are custom sources.
             _target, manifest, installed_name = recorded_install(
                 lambda: _install_plugin_core(
@@ -402,7 +405,7 @@ def install_pack_plugins(
 
         try:
             _set_plugin_enabled(installed_name, enable=True)
-        except AdmissionRefused as exc:
+        except (AdmissionRefused, PluginOperationError) as exc:
             _fail(display, str(exc))
             continue
 

@@ -23,7 +23,8 @@ from agent.model_metadata import is_output_cap_error, parse_available_output_tok
 from agent.retry_utils import is_zai_coding_overload_error, zai_coding_overload_retry_ceiling
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.message_sanitization import (
-    _looks_like_corrupt_image_rejection, _looks_like_image_content_rejection, _sanitize_messages_non_ascii,
+    _looks_like_corrupt_image_rejection, _looks_like_image_content_rejection, _messages_carry_images,
+    _sanitize_messages_non_ascii,
     _sanitize_messages_surrogates, _sanitize_structure_non_ascii, _sanitize_structure_surrogates,
     _strip_images_from_messages, _strip_non_ascii, close_interrupted_tool_sequence, record_reasoning_field_rejection,
 )
@@ -287,9 +288,11 @@ def recover_before_classification(
             # request would loop on the same error.
             if _strip_request_images_and_retry(agent, api_messages):
                 return True, active_system_prompt
-        else:
+        elif _messages_carry_images(api_messages or messages):
             # Record the model; the retry re-enters build_api_request with the same
             # api_messages and strip_images_for_rejecting_model strips them there.
+            # A request with no image never marks: a 4xx body can echo the user's own text
+            # ("X is not a multimodal model"), and a wrong mark blinds a vision model until /new.
             _rejected.add(_model_key)
             _vlines(
                 agent,

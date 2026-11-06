@@ -8,3 +8,9 @@ tier: community
 category: desktop
 requires_hermes: ">=0.22.6"
 version: "0.1.4"
+docs_url: https://github.com/annipu/hermes-output-enhancement/blob/cf729a2cf80760300f3275684700563d994e0355/README.md
+screenshots:
+  - https://raw.githubusercontent.com/annipu/hermes-output-enhancement/cf729a2cf80760300f3275684700563d994e0355/snapshots/0.1.2/en-light-off.png
+  - https://raw.githubusercontent.com/annipu/hermes-output-enhancement/cf729a2cf80760300f3275684700563d994e0355/snapshots/0.1.2/en-light-on.png
+  - https://raw.githubusercontent.com/annipu/hermes-output-enhancement/cf729a2cf80760300f3275684700563d994e0355/snapshots/0.1.2/en-dark-off.png
+  - https://raw.githubusercontent.com/annipu/hermes-output-enhancement/cf729a2cf80760300f3275684700563d994e0355/snapshots/0.1.2/en-dark-on.png

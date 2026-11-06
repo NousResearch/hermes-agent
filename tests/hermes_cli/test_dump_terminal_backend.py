@@ -18,6 +18,13 @@ def _terminal_line(out: str) -> str:
     raise AssertionError(f"no 'terminal:' line in dump output:\n{out}")
 
 
+def _mcp_servers_line(out: str) -> str:
+    for line in out.splitlines():
+        if line.strip().startswith("mcp_servers:"):
+            return line
+    raise AssertionError(f"no 'mcp_servers:' line in dump output:\n{out}")
+
+
 def _seed(home: Path, *, config_yaml: str, env_text: str) -> None:
     home.mkdir(parents=True, exist_ok=True)
     (home / "config.yaml").write_text(config_yaml)
@@ -91,5 +98,19 @@ def test_dump_reports_config_backend_when_no_override(monkeypatch, capsys, tmp_p
     line = _terminal_line(capsys.readouterr().out)
     assert "docker" in line
     assert "overrides" not in line
+
+
+def test_dump_counts_top_level_mcp_servers(monkeypatch, capsys, tmp_path):
+    """Configured MCP servers are stored at the top level, not under ``mcp``."""
+    from hermes_cli import dump
+    from hermes_cli.config import get_hermes_home
+
+    monkeypatch.setattr(dump, "get_project_root", lambda: tmp_path / "noproject")
+    home = get_hermes_home()
+    _seed(home, config_yaml="mcp_servers:\n  example:\n    command: example-mcp\n", env_text="")
+
+    dump.run_dump(SimpleNamespace(show_keys=False))
+
+    assert _mcp_servers_line(capsys.readouterr().out).endswith("1")
 
 

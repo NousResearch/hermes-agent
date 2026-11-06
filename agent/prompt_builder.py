@@ -11,6 +11,7 @@ import os
 import queue
 import sys
 import threading
+import time
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -1090,6 +1091,7 @@ def clear_skills_system_prompt_cache(*, clear_snapshot: bool = False) -> None:
     """Drop the in-process skills prompt cache (and optionally the disk snapshot)."""
     with _SKILLS_PROMPT_CACHE_LOCK:
         _SKILLS_PROMPT_CACHE.clear()
+        _MANIFEST_MEMO.clear()
     try:
         if clear_snapshot:
             _skills_prompt_snapshot_path().unlink(missing_ok=True)
@@ -1097,8 +1099,17 @@ def clear_skills_system_prompt_cache(*, clear_snapshot: bool = False) -> None:
         logger.debug("Could not remove skills prompt snapshot: %s", e)
 
 
+_MANIFEST_MEMO: dict[str, tuple[float, dict[str, list[int]]]] = {}
+
+
 def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
-    """File-signature manifest of every SKILL.md and DESCRIPTION.md."""
+    """File-signature manifest of every SKILL.md and DESCRIPTION.md (memoized for 60s to avoid redundant walks during turns)."""
+    now = time.monotonic()
+    key = str(skills_dir)
+    cached = _MANIFEST_MEMO.get(key)
+    if cached is not None and now - cached[0] < 60.0:
+        return cached[1]
+
     manifest: dict[str, list[int]] = {}
     skills_dir_str = str(skills_dir)
     prefix_len = len(os.path.join(skills_dir_str, ""))
@@ -1113,6 +1124,7 @@ def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
                     manifest[path[prefix_len:]] = list(file_cache_version(path, st, always_digest=True))
             except OSError:
                 pass
+    _MANIFEST_MEMO[key] = (now, manifest)
     return manifest
 
 

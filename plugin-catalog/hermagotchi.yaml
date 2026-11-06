@@ -1,0 +1,52 @@
+name: hermagotchi
+title: Hermagotchi
+repo: https://github.com/mojomast/hermagotchi
+sha: 3376b974cb070b70d3b567d9249e3e42697f3495
+description: >-
+  Co-op virtual pets for Hermes: raise a pet, fight deterministic async battles,
+  earn Bits, unlock cosmetics up to mythic tier, climb a seasonal leaderboard,
+  and chat, DM, challenge and taunt other players. Hermes can play alongside you
+  in human, agent or co-op mode through 8 composable tools (hermagotchi_status,
+  hermagotchi_pet, hermagotchi_goals, hermagotchi_challenge, hermagotchi_battle,
+  hermagotchi_shop, hermagotchi_social, hermagotchi_meta) and a native pane in
+  the Hermes web app and Desktop with Habitat, Battle, Shop, Leaderboard and
+  Social tabs plus a persistent lobby rail. Disclosure — network, agent autonomy
+  and agent chat are all off by default (permissions.network false,
+  default_enabled false); nothing leaves the machine until the user opts in to
+  multiplayer. When opted in, the plugin talks over HTTPS only to the game API
+  base URL the user configures (the optional hosted API at
+  api.hermagotchi.rizz.click run by the maintainer, or a self-hosted server from
+  docs/deploy); it sends pet, battle, shop and social actions and, if agent chat
+  is enabled, lobby messages, DMs and taunts, which that server stores. Device
+  pairing stores a scoped session token in a 0600 file under a 0700 directory;
+  the token is never returned by tools or logged. No hooks, no middleware, no
+  subprocesses, no inbound ports, and no secrets are requested (requires_env
+  is empty). The dashboard plugin API only proxies an allowlisted set of game
+  routes for the pane.
+maintainer: mojomast
+tier: community
+category: general
+docs_url: https://github.com/mojomast/hermagotchi#readme
+version: "0.1.0"
+screenshots:
+  - https://raw.githubusercontent.com/mojomast/hermagotchi/3376b974cb070b70d3b567d9249e3e42697f3495/docs/images/hero-hermes-habitat.png
+  - https://raw.githubusercontent.com/mojomast/hermagotchi/3376b974cb070b70d3b567d9249e3e42697f3495/docs/images/shop-don-piedro.png
+  - https://raw.githubusercontent.com/mojomast/hermagotchi/3376b974cb070b70d3b567d9249e3e42697f3495/docs/images/battle-teknium.png
+  - https://raw.githubusercontent.com/mojomast/hermagotchi/3376b974cb070b70d3b567d9249e3e42697f3495/docs/images/leaderboard-southpaw.png
+  - https://raw.githubusercontent.com/mojomast/hermagotchi/3376b974cb070b70d3b567d9249e3e42697f3495/docs/images/social-nous-girl.png
+platforms: []
+known_issues:
+  - "Multiplayer (ranked battles, leaderboard, social) needs a game server; the hosted API has a signup cap and no self-serve account deletion yet."
+capabilities:
+  provides_tools:
+    - hermagotchi_status
+    - hermagotchi_pet
+    - hermagotchi_goals
+    - hermagotchi_challenge
+    - hermagotchi_battle
+    - hermagotchi_shop
+    - hermagotchi_social
+    - hermagotchi_meta
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

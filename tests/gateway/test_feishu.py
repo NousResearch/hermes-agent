@@ -2036,6 +2036,66 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
         adapter._dispatch_inbound_event = AsyncMock()
         return adapter
 
+    def _bot_mention(self):
+        return SimpleNamespace(
+            key="@_user_1",
+            id=SimpleNamespace(open_id="ou_bot", user_id=""),
+            name="Hermes",
+        )
+
+    def _mention_message(self, text, **reply_fields):
+        return SimpleNamespace(
+            content=json.dumps({"text": text}),
+            message_type="text",
+            message_id="m-mention",
+            mentions=[self._bot_mention()],
+            chat_id="oc_chat",
+            parent_id=reply_fields.get("parent_id"),
+            upper_message_id=reply_fields.get("upper_message_id"),
+            root_id=reply_fields.get("root_id"),
+            thread_id=None,
+        )
+
+    def test_pure_bot_mention_without_reply_is_ignored(self):
+        adapter = self._build_adapter()
+        message = self._mention_message("@_user_1")
+
+        asyncio.run(adapter._process_inbound_message(
+            data=message, message=message, sender_id=None, chat_type="group", message_id="m-mention",
+        ))
+
+        adapter._dispatch_inbound_event.assert_not_awaited()
+        adapter._fetch_message_text.assert_not_awaited()
+
+    def test_pure_bot_mention_with_reply_dispatches_quote_context(self):
+        adapter = self._build_adapter()
+        adapter._fetch_message_text = AsyncMock(return_value="Can you explain this question?")
+        message = self._mention_message("@_user_1", root_id="om_quoted")
+
+        asyncio.run(adapter._process_inbound_message(
+            data=message, message=message, sender_id=None, chat_type="group", message_id="m-mention",
+        ))
+
+        adapter._fetch_message_text.assert_awaited_once_with("om_quoted")
+        event = adapter._dispatch_inbound_event.await_args.args[0]
+        self.assertEqual(event.reply_to_message_id, "om_quoted")
+        self.assertEqual(event.reply_to_text, "Can you explain this question?")
+        self.assertEqual(event.text, "[Replied to: Can you explain this question?]")
+
+    def test_message_with_body_and_reply_keeps_body_unchanged(self):
+        adapter = self._build_adapter()
+        adapter._fetch_message_text = AsyncMock(return_value="quoted question")
+        message = self._mention_message("@_user_1 follow-up", root_id="om_quoted")
+
+        asyncio.run(adapter._process_inbound_message(
+            data=message, message=message, sender_id=None, chat_type="group", message_id="m-mention",
+        ))
+
+        event = adapter._dispatch_inbound_event.await_args.args[0]
+        self.assertEqual(event.text, "follow-up")
+        self.assertEqual(event.reply_to_message_id, "om_quoted")
+        self.assertEqual(event.reply_to_text, "quoted question")
+
     def test_post_caption_is_preserved_when_text_attachment_is_inlined(self):
         adapter = self._build_adapter()
         adapter._download_feishu_message_resources = AsyncMock(

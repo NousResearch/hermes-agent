@@ -19,6 +19,9 @@ from hermes_state_runtime import RuntimeStoreError
 CALL_TIMEOUT_SECONDS = 120
 MAX_MESSAGE_CHARS = 8000
 MAX_RESULT_CHARS = 16000
+# Handles the bound DM may address a delegation to; the retained request state
+# (its submitted event payload) carries this member for every later result poll.
+_RECIPIENTS = ('server', 'flohmarkt', 'buchhaltung', 'listing')
 
 _worker_lock = threading.Lock()
 _poll_lock = threading.Lock()
@@ -49,7 +52,7 @@ def _identity_failure(identity, recipient, message):
         return 'not_private_dm'
     if identity['PROFILE'] != 'default':
         return 'wrong_profile'
-    if recipient != 'server':
+    if recipient is not None and recipient not in _RECIPIENTS:
         return 'recipient_not_allowed'
     if not isinstance(message, str) or not message.strip() or len(message) > MAX_MESSAGE_CHARS:
         return 'invalid_message'
@@ -228,9 +231,26 @@ def _wait(service, room_id, event, deadline, members, approved, *, poll=False):
             threading.Event().wait(min(0.1, remaining))
 
 
-def _submit_or_resume(service, room_id, key, message, deadline):
+def _submission_addressee(text):
+    """The allowed member handle this retained request addresses, or None.
+
+    This is the relay's durable request state: the submitted user event itself
+    carries the delegation context in its leading mention, so every later poll
+    derives the member from the request book instead of assuming ``server``.
+    """
+    if not isinstance(text, str):
+        return None
+    match = re.match(r'@([A-Za-z0-9][A-Za-z0-9._:-]*) ', text)
+    if match is None:
+        return None
+    addressee = match.group(1)
+    return addressee if addressee in _RECIPIENTS else None
+
+
+def _submit_or_resume(service, room_id, recipient, key, message, deadline):
     event_id = hosted_rooms.user_event_id('telegram-relay:' + key)
-    payload = {'thread_id': 'telegram-relay:' + key, 'text': '@server ' + message.strip()}
+    payload = {'thread_id': 'telegram-relay:' + key,
+               'text': '@' + recipient + ' ' + message.strip()}
     if time.monotonic() >= deadline:
         raise RuntimeError('deadline expired before submission')
     # Immutable event content plus the unique room/event key is the durable retry guard.
@@ -258,7 +278,7 @@ def _operation(runner, recipient, message, request_id, deadline, result, sync):
     if time.monotonic() >= deadline:
         return {'status': 'timeout', 'reason': 'relay_incomplete_outcome_unknown'}
     if request_id is None:
-        event = _submit_or_resume(service, room_id, key, message, deadline)
+        event = _submit_or_resume(service, room_id, recipient, key, message, deadline)
     else:
         event = hosted_rooms.get_event(service.db_path, room_id=room_id,
             event_id=hosted_rooms.user_event_id('telegram-relay:' + key))
@@ -266,7 +286,7 @@ def _operation(runner, recipient, message, request_id, deadline, result, sync):
             return {'status': 'incomplete', 'reason': 'submission_pending'}
         payload = event['payload']
         if (event['kind'] != 'message.user' or payload.get('thread_id') != 'telegram-relay:' + key
-                or not isinstance(payload.get('text'), str) or not payload['text'].startswith('@server ')):
+                or _submission_addressee(payload.get('text')) is None):
             return {'status': 'denied', 'reason': 'invalid_submission'}
     return _wait(service, room_id, event, deadline, members, approved, poll=request_id is not None)
 
@@ -318,7 +338,9 @@ def delegate(runner, *, recipient, message):
 
 
 def room_result(runner, *, request_id):
-    """Read only one fixed-room discussion after reauthorizing the bound DM."""
+    """Read only one fixed-room discussion after reauthorizing the bound DM; the
+    addressed member is derived from the retained request, never hardcoded or picked.
+    """
     if not isinstance(request_id, str) or re.fullmatch(r'[0-9a-f]{64}', request_id) is None:
         return {'status': 'denied', 'reason': 'invalid_request_id'}
-    return _run(runner, recipient='server', message='result', request_id=request_id)
+    return _run(runner, recipient=None, message='result', request_id=request_id)

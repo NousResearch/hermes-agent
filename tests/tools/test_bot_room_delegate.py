@@ -24,7 +24,7 @@ def test_disabled_tool_cannot_execute_even_with_identity_kwargs(tmp_path, monkey
     assert result['status'] == 'denied'
     schema = registry.get_schema('bot_room_delegate')['parameters']
     assert set(schema['properties']) == {'recipient', 'message'}
-    assert schema['properties']['recipient']['enum'] == ['server']
+    assert schema['properties']['recipient']['enum'] == ['server', 'flohmarkt', 'buchhaltung', 'listing']
     assert schema['additionalProperties'] is False
 
 

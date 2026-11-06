@@ -671,6 +671,101 @@ def test_allowlisted_sender_gets_only_non_sensitive_denial_stage(relay):
     assert events(relay) == before
 
 
+WIDENED_RECIPIENTS = ['flohmarkt', 'buchhaltung', 'listing']
+FLEET_ROSTER = ([{'member_id': 'worker', 'profile': 'server', 'handle': 'server'},
+                 {'member_id': 'flo', 'profile': 'flohmarkt', 'handle': 'flohmarkt'},
+                 {'member_id': 'buch', 'profile': 'buchhaltung', 'handle': 'buchhaltung'},
+                 {'member_id': 'lis', 'profile': 'listing', 'handle': 'listing'}])
+
+
+def prepare_fleet_room(relay, monkeypatch):
+    """Second fixture room whose roster carries the widened recipient member set."""
+    served = {name: relay.home for name in ['server', 'default', *WIDENED_RECIPIENTS]}
+    monkeypatch.setattr(relay.service, 'profile_homes', lambda: served)
+    relay.service.authorize_room('desktop-owner', 'fleet-room', create=True)
+    rooms.create_room(relay.db.db_path, room_id='fleet-room', name='Fleet',
+                      authority_gateway_id=rooms.local_authority_gateway_id(), members=FLEET_ROSTER)
+    relay.config['room_id'] = 'fleet-room'
+    relay.config['members'] = ['server', *WIDENED_RECIPIENTS]
+
+
+def fleet_events(relay):
+    return rooms.read_events(relay.db.db_path, room_id='fleet-room')['events']
+
+
+@pytest.mark.parametrize('recipient', WIDENED_RECIPIENTS)
+def test_widened_recipients_are_accepted_and_delivered(relay, monkeypatch, recipient):
+    from gateway.hosted_room_telegram_relay import room_result
+    from gateway import hosted_room_discussion as discussion
+    prepare_fleet_room(relay, monkeypatch)
+    assert fleet_events(relay) == []
+    submitted = relay.call(recipient=recipient, message='Run the ' + recipient + ' task')
+    assert submitted['status'] == 'timeout'
+    request_id = submitted['request_id']
+    wait_for_worker()
+    user = next(e for e in fleet_events(relay) if e['kind'] == 'message.user')
+    assert user['payload']['text'] == '@' + recipient + ' Run the ' + recipient + ' task'
+    assert room_result(relay.runner, request_id=request_id)['status'] == 'incomplete'
+    room = relay.service._room('fleet-room')
+    task = discussion.plan_next_task(room, fleet_events(relay),
+        local_profiles=['server', *WIDENED_RECIPIENTS]).task
+    assert task.member.handle == recipient
+    publication = discussion.plan_publication(room, fleet_events(relay), task, status='settled',
+        result={'text': 'CURRENT RESULT'}, local_profiles=['server', *WIDENED_RECIPIENTS])
+    for event in publication.events:
+        rooms.append_event(relay.db.db_path, **event.append_kwargs('fleet-room'))
+    gateway, epoch = relay.service._owned_authority('fleet-room')
+    rooms.append_event(relay.db.db_path, room_id='fleet-room', event_id='fleet-terminal',
+        kind='room.activity', actor={'kind': 'gateway', 'id': gateway},
+        payload={'status': 'settled', 'reason_code': 'silent_round',
+                 'thread_id': user['payload']['thread_id'], 'discussion_event_id': user['event_id']},
+        authority_gateway_id=gateway, authority_epoch=epoch)
+    result = room_result(relay.runner, request_id=request_id)
+    assert result['status'] == 'completed'
+    assert result['text'] == recipient + ': CURRENT RESULT'
+
+
+@pytest.mark.parametrize('recipient', ['codex', 'shop', 'testbot'])
+def test_outside_recipients_are_refused_before_submission(relay, recipient):
+    before = events(relay)
+    assert relay.call(recipient=recipient) == {
+        'status': 'denied', 'reason': 'relay_not_authorized', 'check': 'recipient_not_allowed'}
+    assert events(relay) == before
+
+
+def test_poll_resolves_delegated_member_from_retained_request(relay, monkeypatch):
+    from gateway.hosted_room_telegram_relay import room_result
+    from gateway import hosted_room_discussion as discussion
+    prepare_fleet_room(relay, monkeypatch)
+    submitted = relay.call(recipient='flohmarkt', message='Inspect flohmarkt task')
+    assert submitted['status'] == 'timeout'
+    request_id = submitted['request_id']
+    wait_for_worker()
+    user = next(e for e in fleet_events(relay) if e['kind'] == 'message.user')
+    assert user['payload']['text'].startswith('@flohmarkt ')
+    forged = dict(user, payload={**user['payload'], 'text': '@codex forged task'})
+    monkeypatch.setattr(rooms, 'get_event', lambda *args, **kwargs: forged)
+    assert room_result(relay.runner, request_id=request_id)['status'] == 'denied'
+    monkeypatch.setattr(rooms, 'get_event', lambda *args, **kwargs: user)
+    room = relay.service._room('fleet-room')
+    task = discussion.plan_next_task(room, fleet_events(relay),
+        local_profiles=['server', *WIDENED_RECIPIENTS]).task
+    assert task.member.handle == 'flohmarkt'
+    publication = discussion.plan_publication(room, fleet_events(relay), task, status='settled',
+        result={'text': 'FLOHMARKT RESULT'}, local_profiles=['server', *WIDENED_RECIPIENTS])
+    for event in publication.events:
+        rooms.append_event(relay.db.db_path, **event.append_kwargs('fleet-room'))
+    gateway, epoch = relay.service._owned_authority('fleet-room')
+    rooms.append_event(relay.db.db_path, room_id='fleet-room', event_id='fleet-terminal',
+        kind='room.activity', actor={'kind': 'gateway', 'id': gateway},
+        payload={'status': 'settled', 'reason_code': 'silent_round',
+                 'thread_id': user['payload']['thread_id'], 'discussion_event_id': user['event_id']},
+        authority_gateway_id=gateway, authority_epoch=epoch)
+    result = room_result(relay.runner, request_id=request_id)
+    assert result['status'] == 'completed'
+    assert result['text'] == 'flohmarkt: FLOHMARKT RESULT'
+
+
 def test_unlisted_sender_does_not_get_diagnostic_stage(relay):
     relay.context['user_id'] = relay.context['chat_id'] = 'foreign'
     result = relay.call()

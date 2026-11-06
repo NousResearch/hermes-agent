@@ -30,16 +30,20 @@ registry.register(
     schema={
         'name': 'bot_room_delegate',
         'description': 'Delegate an explicit task to the configured Bot Mode room from an authorized '
-                       'Telegram private DM. Returns only this discussion’s committed replies. '
-                       'Timeout/incomplete means work may still be pending; do not claim completion '
-                       'or silently resubmit. If a request_id is returned, use bot_room_result. '
-                       'If no request_id is present, authorization did not complete and no task was submitted. '
-                       'A denied result may include a coarse check label for the configured sender, never identifiers. '
-                       'Room member sessions retain their normal room history.',
+                       'Telegram private DM. The recipient (a room member handle) receives the '
+                       'delegation; recipient-enum erweitert 06.11. auf '
+                       'server/flohmarkt/buchhaltung/listing. Returns only this discussion’s '
+                       'committed replies. Timeout/incomplete means work may still be pending; do not '
+                       'claim completion or silently resubmit. If a request_id is returned, use '
+                       'bot_room_result. If no request_id is present, authorization did not complete '
+                       'and no task was submitted. A denied result may include a coarse check label '
+                       'for the configured sender, never identifiers. Room member sessions retain '
+                       'their normal room history.',
         'parameters': {
             'type': 'object', 'additionalProperties': False,
             'properties': {
-                'recipient': {'type': 'string', 'enum': ['server']},
+                'recipient': {'type': 'string',
+                              'enum': ['server', 'flohmarkt', 'buchhaltung', 'listing']},
                 'message': {'type': 'string', 'minLength': 1, 'maxLength': 8000},
             },
             'required': ['recipient', 'message'],
@@ -62,8 +66,9 @@ registry.register(
     schema={
         'name': 'bot_room_result',
         'description': 'Read committed results for a retained bot_room_delegate request_id from the '
-                       'same authorized Telegram DM. On timeout retain request_id and poll again; '
-                       'never resubmit silently. Incomplete means pending or unfinished work.',
+                       'same authorized Telegram DM. The delegated room member is derived from the '
+                       'retained request; on timeout retain request_id and poll again; never '
+                       'resubmit silently. Incomplete means pending or unfinished work.',
         'parameters': {
             'type': 'object', 'additionalProperties': False,
             'properties': {'request_id': {'type': 'string', 'pattern': '^[0-9a-f]{64}$'}},

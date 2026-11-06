@@ -22,6 +22,8 @@ _HEAD = b"*** Begin Patch\n*** Update File: f\n@@\n"
 _TAIL = b"*** End Patch\n"
 _PREFIX = "Patch validation failed (no files were modified):\n  • f: "
 _AMB_N = re.compile(r"ambiguous \(([1-9]\d*) matches\)")
+# The planner's Found-N diagnostic normally includes extra lines, so its live
+# form is UNMAPPED; the single-line form is retained by the approved spec.
 _FOUND_N = re.compile(r"Found ([1-9]\d*) matches for old_string")
 _NOT_FOUND = re.compile(
     r"hunk [0-9]+ \(no hint\) not found — "
@@ -625,13 +627,17 @@ def _apply_prod(file: bytes, patch: bytes):
 
 
 def _compare(src, patch, expected):
+    if expected is OOD:
+        return "out-of-domain", None, src, None
     code, out, diff = _apply_prod(src, patch)
     if isinstance(expected, Write):
         if code == "WRITE" and out == expected.new_text:
             site = site_from_diff(diff, src)
-            if site is not None and site != expected.site:
-                return "site-mismatch", code, out, site
-            return ("agree-site" if site == expected.site else "agree-site-unavailable"), code, out, site
+            if site is None:
+                return "site-unavailable", code, out, None
+            if site != expected.site:
+                return "finding", code, out, site
+            return "agree-site", code, out, site
         return "finding", code, out, None
     if code == expected.code and out == src:
         return "agree-refuse", code, out, None
@@ -643,3 +649,10 @@ def test_comparison_never_accepts_wrong_output_or_refusal(monkeypatch):
     monkeypatch.setattr(__import__(__name__, fromlist=["_apply_prod"]), "_apply_prod",
                         lambda *_: ("WRITE", b"wrong\n", ""))
     assert _compare(b"old\n", b"patch", expected)[0] == "finding"
+    module = __import__(__name__, fromlist=["_apply_prod"])
+    monkeypatch.setattr(module, "_apply_prod", lambda *_: ("WRITE", b"new\n", ""))
+    assert _compare(b"old\n", b"patch", expected)[0] == "site-unavailable"
+    monkeypatch.setattr(module, "_apply_prod", lambda *_: pytest.fail("OOD called planner"))
+    assert _compare(b"old\n", b"patch", OOD)[0] == "out-of-domain"
+    monkeypatch.setattr(module, "_apply_prod", lambda *_: ("WRITE", b"new\n", _unified(b"old\n", b"new\n")))
+    assert _compare(b"old\n", b"patch", Write((1, 2), b"new\n"))[0] == "finding"

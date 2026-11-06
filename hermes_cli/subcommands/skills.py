@@ -60,7 +60,8 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
         help="Override the skill name (useful when installing from a URL whose SKILL.md has no `name:` frontmatter)",
     )
     _flag(skills_install, "--force", help="Install despite blocked scan verdict")
-    add_yes_flag(skills_install, "Skip confirmation prompt (needed in TUI mode)")
+    _flag(skills_install, "--review", help="Review a scan-blocked package in a local terminal; requires typing its full hash")
+    add_yes_flag(skills_install, "Skip confirmation prompt (does not approve --review)")
 
     skills_inspect = skills_subparsers.add_parser(
         "inspect", help="Preview a skill without installing")

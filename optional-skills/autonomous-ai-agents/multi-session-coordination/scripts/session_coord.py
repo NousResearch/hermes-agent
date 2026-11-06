@@ -210,7 +210,12 @@ BOARD_WIRE_BEGIN = "<!-- BEGIN session-coord managed board-v2 -->"
 BOARD_WIRE_END = "<!-- END session-coord managed board-v2 -->"
 BOT_BOARD_WIRE_BEGIN = "<!-- BEGIN session-coord managed bot-board-v2 -->"
 BOT_BOARD_WIRE_END = "<!-- END session-coord managed bot-board-v2 -->"
-BOARD_WIRE_HASH = "b77c3929f040771f801828141074975c0e7d808f1a7b926027d1d71980332900"
+# Accepted board-v2 fingerprints: the current block and the 2.6.1 block (same
+# protocol; only its register example differs).
+BOARD_WIRE_HASHES = frozenset({
+    "eb63d57a3bd8ac941a55668d2acc1a20f53592f5668701fa2a58729b03208b2f",
+    "b77c3929f040771f801828141074975c0e7d808f1a7b926027d1d71980332900",
+})
 BOT_BOARD_WIRE_HASH = "ec85e48d40b01f3fdc502e99d00808c3b935ba6f9504b949b246a7fdd7e5abab"
 
 
@@ -238,7 +243,7 @@ def _current_memory_enrollment(text):
     if block.count(prefix) != 5:
         return False
     normalized = block.replace(prefix, "python3 {sc}")
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest() == BOARD_WIRE_HASH
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest() in BOARD_WIRE_HASHES
 
 
 def _current_bot_enrollment(text, botname):

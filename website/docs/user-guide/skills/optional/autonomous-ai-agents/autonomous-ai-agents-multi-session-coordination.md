@@ -16,7 +16,7 @@ Coordinate concurrent sessions: claim shared resources.
 |---|---|
 | Source | Optional — install with `hermes skills install official/autonomous-ai-agents/multi-session-coordination` |
 | Path | `optional-skills/autonomous-ai-agents/multi-session-coordination` |
-| Version | `2.6.1` |
+| Version | `2.6.2` |
 | Author | Tobias Musser (P2ppyJack), Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos |

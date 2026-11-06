@@ -7,7 +7,7 @@ only the installer-owned text.
 
 ```text
 <!-- BEGIN session-coord managed board-v2 -->
-STANDING RULE — session-coord (board-wire v2): Before mutating shared resources (files, skills, memory, cron store, remote boxes, or desktop UI), first run `python3 '<session_coord_path>' status`. Register once per task with `ID=$(python3 '<session_coord_path>' register --task '...' --surface <surface>)`, then atomically claim every required resource with `python3 '<session_coord_path>' claim --id $ID --res <key> [--res <key2>]`. Continue only after CLAIMED; when HELD/QUEUED, do not mutate the requested resources—use `check`, `inbox`, or one bounded `--wait` shell call and wait for release. Run `python3 '<session_coord_path>' done --id $ID` at task end. Priorities are user-set; never `steal` without explicit approval. Full protocol: skill multi-session-coordination. Off-switch: `python3 '<session_coord_path>' disable`.
+STANDING RULE — session-coord (board-wire v2): Before mutating shared resources (files, skills, memory, cron store, remote boxes, or desktop UI), first run `python3 '<session_coord_path>' status`. Register once per task with `ID=$(python3 '<session_coord_path>' register --task '...' --surface <surface> | head -1)` (its first output line is the ID; co-worker notes follow), then atomically claim every required resource with `python3 '<session_coord_path>' claim --id $ID --res <key> [--res <key2>]`. Continue only after CLAIMED; when HELD/QUEUED, do not mutate the requested resources—use `check`, `inbox`, or one bounded `--wait` shell call and wait for release. Run `python3 '<session_coord_path>' done --id $ID` at task end. Priorities are user-set; never `steal` without explicit approval. Full protocol: skill multi-session-coordination. Off-switch: `python3 '<session_coord_path>' disable`.
 <!-- END session-coord managed board-v2 -->
 ```
 
@@ -23,6 +23,8 @@ selected profile passes real Hermes capability and policy checks.
   copied to `MEMORY.md.bak-<timestamp>`.
 - A customized, duplicate, or malformed block is preserved and reported as
   `ACTION NEEDED`; compare it manually rather than deleting user-authored text.
+- A block written by 2.6.1, whose register example captured the whole command
+  output, is upgraded in place; `status` counts either version as wired.
 - A current managed block is a no-op on rerun.
 
 Preview with `python3 install.py --check`. Install with `python3 install.py`.

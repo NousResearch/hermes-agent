@@ -301,11 +301,20 @@ JOUT=$(co status --json 2>/dev/null)
 if echo "$JOUT" | grep -q '"unwired_profiles".*plainprofile'; then ok "13b. --json carries unwired_profiles"; else bad "13b. $JOUT"; fi
 cat >> "$D/profiles/plainprofile/memories/MEMORY.md" <<'EOF'
 <!-- BEGIN session-coord managed board-v2 -->
-STANDING RULE — session-coord (board-wire v2): Before mutating shared resources (files, skills, memory, cron store, remote boxes, or desktop UI), first run `python3 /fixture/session_coord.py status`. Register once per task with `ID=$(python3 /fixture/session_coord.py register --task '...' --surface <surface>)`, then atomically claim every required resource with `python3 /fixture/session_coord.py claim --id $ID --res <key> [--res <key2>]`. Continue only after CLAIMED; when HELD/QUEUED, do not mutate the requested resources—use `check`, `inbox`, or one bounded `--wait` shell call and wait for release. Run `python3 /fixture/session_coord.py done --id $ID` at task end. Priorities are user-set; never `steal` without explicit approval. Full protocol: skill multi-session-coordination. Off-switch: `python3 /fixture/session_coord.py disable`.
+STANDING RULE — session-coord (board-wire v2): Before mutating shared resources (files, skills, memory, cron store, remote boxes, or desktop UI), first run `python3 /fixture/session_coord.py status`. Register once per task with `ID=$(python3 /fixture/session_coord.py register --task '...' --surface <surface> | head -1)` (its first output line is the ID; co-worker notes follow), then atomically claim every required resource with `python3 /fixture/session_coord.py claim --id $ID --res <key> [--res <key2>]`. Continue only after CLAIMED; when HELD/QUEUED, do not mutate the requested resources—use `check`, `inbox`, or one bounded `--wait` shell call and wait for release. Run `python3 /fixture/session_coord.py done --id $ID` at task end. Priorities are user-set; never `steal` without explicit approval. Full protocol: skill multi-session-coordination. Off-switch: `python3 /fixture/session_coord.py disable`.
 <!-- END session-coord managed board-v2 -->
 EOF
 OUT=$(co status 2>&1)
 if echo "$OUT" | grep -q "UNWIRED"; then bad "13c. managed rule should clear the flag: $OUT"; else ok "13c. managed standing rule clears the flag"; fi
+# 13d. a board-v2 block written by 2.6.1 is still an enrollment (install.py upgrades its text)
+mkdir -p "$D/profiles/olderprofile/memories"
+cat > "$D/profiles/olderprofile/memories/MEMORY.md" <<'EOF'
+<!-- BEGIN session-coord managed board-v2 -->
+STANDING RULE — session-coord (board-wire v2): Before mutating shared resources (files, skills, memory, cron store, remote boxes, or desktop UI), first run `python3 /fixture/session_coord.py status`. Register once per task with `ID=$(python3 /fixture/session_coord.py register --task '...' --surface <surface>)`, then atomically claim every required resource with `python3 /fixture/session_coord.py claim --id $ID --res <key> [--res <key2>]`. Continue only after CLAIMED; when HELD/QUEUED, do not mutate the requested resources—use `check`, `inbox`, or one bounded `--wait` shell call and wait for release. Run `python3 /fixture/session_coord.py done --id $ID` at task end. Priorities are user-set; never `steal` without explicit approval. Full protocol: skill multi-session-coordination. Off-switch: `python3 /fixture/session_coord.py disable`.
+<!-- END session-coord managed board-v2 -->
+EOF
+OUT=$(co status 2>&1)
+if echo "$OUT" | grep -q "UNWIRED"; then bad "13d. 2.6.1 managed rule should still count as wired: $OUT"; else ok "13d. 2.6.1 managed rule still counts as wired"; fi
 
 echo
 echo "RESULT: $PASS passed, $FAIL failed"

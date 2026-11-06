@@ -1,0 +1,18 @@
+name: better-tg-cli
+title: Better-TG-CLI
+repo: https://github.com/TheVilfer/better-tg-cli
+sha: "0a73b787509dd385c9ef555bc16ed2e34d9ab4af"
+subdir: agent-plugin
+description: "Telegram on your own account (not a bot) through a local MCP server and a skill: read and search chats, threads, comments and forum topics, press bot buttons, and send, edit, react or forward only after you approve each action. Portable Agent Plugins v1 package (mcp.json + skills/). Disclosure — Runs the `better-tg-cli@0.39.6` npm package locally over stdio through `npx` (Node.js 20+; no runtime dependencies, downloaded from npm on first start), in the plugin's data folder. Network: Telegram's own servers over MTProto; the project's login service (better-tg-cli.com) only while you log in with a login key. No telemetry. Login happens once in your own terminal (`npx -y better-tg-cli onboard`); the session and the app's API hash are the CLI's own, stored in its own items in the macOS Keychain, the Linux Secret Service, Windows DPAPI or a 0600 file in ~/.config/tg, and anyone holding that session controls the Telegram account. It never reads Hermes' secrets or another tool's login. mcp.json forwards only DBUS_SESSION_BUS_ADDRESS, XDG_RUNTIME_DIR and the CLI's own TG_PROFILE, TG_READ_ONLY, TG_LOG_LEVEL, TG_FLOOD_WAIT_MAX, TG_TRANSPORT, TG_NO_UPDATE_CHECK; no credential. Tools that change state (send, edit, delete for everyone, react, forward, pin, leave a chat) go through MCP elicitation, one Allow Once / Deny per action; unattended runs time out and nothing is sent. Writing without asking can only be switched on by a person in a terminal or OS dialog, never over MCP; login, logout and account transfer are not exposed. Every write is logged locally. The server runs its bundled CLI as a child process per tool call. The tool set comes from the pinned npm version."
+maintainer: TheVilfer
+tier: community
+category: tools
+requires_hermes: ">=0.22.3"
+docs_url: https://github.com/TheVilfer/better-tg-cli/blob/0a73b787509dd385c9ef555bc16ed2e34d9ab4af/agent-plugin/README.md
+version: "0.39.6"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

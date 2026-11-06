@@ -193,6 +193,30 @@ def test_pending_response_records_kanban_timeout(monkeypatch):
     )
 
 
+def test_kanban_timeout_records_last_action_when_available(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-123")
+    record = MagicMock(name="record_task_failure")
+    conn = SimpleNamespace(close=lambda: None)
+    monkeypatch.setattr("hermes_cli.kanban_db_connect.connect", lambda: conn)
+    monkeypatch.setattr("hermes_cli.kanban_db_dispatch._record_task_failure", record)
+    agent = _LimitAgent()
+    agent._last_activity_desc = "tool completed: terminal (1.2s)"
+
+    _finalize(
+        agent,
+        final_response=None,
+        exit_reason="unknown",
+        pending_verification_response="composed report",
+    )
+
+    assert record.call_args.kwargs["event_payload_extra"] == {
+        "budget_used": 60,
+        "budget_max": 60,
+        "last_action": "tool completed: terminal (1.2s)",
+    }
+
+
 def test_published_pending_candidate_is_not_duplicated_by_finalizer(monkeypatch):
     """When budget exhaustion preserves a verification candidate that is
     already the tail assistant message, the finalizer must NOT append a

@@ -1,4 +1,5 @@
 """A plugin's frontend reaches its own Python half through the session authority, and back."""
+import asyncio
 import threading
 from types import SimpleNamespace
 
@@ -61,6 +62,26 @@ async def test_plugin_method_is_gated_like_a_session_verb_and_leaves_with_its_pl
         # An async handler's body runs in the worker too, so blocking work in it never stalls the loop.
         reply = await owner.dispatch({'id': 2, 'method': 'plugin.pane-demo.pane.thread', 'params': {}})
         assert reply['result'] != threading.get_ident()
+        # A concurrent reload holds the discovery lock: this call waits for it, the loop does not.
+        held, release = threading.Event(), threading.Event()
+
+        def reloading():
+            with manager._discovery_lock:
+                held.set()
+                release.wait(10)
+        reload = threading.Thread(target=reloading)
+        reload.start()
+        held.wait(5)
+        safety = threading.Timer(5, release.set)  # a blocked loop gets control back only from this
+        safety.start()
+        pending = asyncio.ensure_future(call(owner, n=5))
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert not release.is_set() and not pending.done()
+        release.set()
+        safety.cancel()
+        assert (await pending)['n'] == 5
+        reload.join(5)
         manager.unload('pane-demo')
         assert (await call(owner, session_id='s', n=3))['code'] == -32601
     finally:

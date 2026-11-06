@@ -16,6 +16,16 @@ from hermes_state_runtime import RuntimeStoreError
 logger = logging.getLogger(__name__)
 
 
+async def resolve_plugin_rpc(method):
+    """The plugin handler serving ``method``, looked up in a worker: discovery waits on the lock a
+    concurrent ``reload-plugins`` holds, which must stall this call only, never the gateway loop."""
+    from hermes_cli.plugin_events import PLUGIN_EVENT_PREFIX
+    if not isinstance(method, str) or not method.startswith(PLUGIN_EVENT_PREFIX):
+        return None
+    from hermes_cli.plugin_rpc import plugin_rpc_handler
+    return await asyncio.to_thread(plugin_rpc_handler, method)
+
+
 async def call_plugin_rpc(connection, ref, method, handler, params):
     if ref.session_id is not None and not isinstance(ref.session_id, str):
         raise RuntimeStoreError('invalid_params', field='session_id')

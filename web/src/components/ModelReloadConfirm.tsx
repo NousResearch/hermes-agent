@@ -12,19 +12,16 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
  *
  * Shared by the chat sidebar picker and the Models page so both behave
  * identically. `model` is the short model name awaiting confirmation, or null
- * when the dialog is closed. `notice`: the backend's switch warning (Nous window
- * plans, Large model), shown under the body; absent for everyone else.
+ * when the dialog is closed.
  */
 export function ModelReloadConfirm({
   model,
   description,
-  notice,
   onCancel,
 }: {
   model: string | null;
   /** Override the default body copy (e.g. the Models-page phrasing). */
   description?: string;
-  notice?: string | null;
   onCancel: () => void;
 }) {
   const body =
@@ -34,7 +31,7 @@ export function ModelReloadConfirm({
     <ConfirmDialog
       open={model !== null}
       title="Switch model?"
-      description={notice ? `${body}\n\n⚠ ${notice}` : body}
+      description={body}
       confirmLabel="Reload"
       onConfirm={() => window.location.reload()}
       onCancel={onCancel}

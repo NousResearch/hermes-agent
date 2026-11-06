@@ -1,8 +1,11 @@
 """Plan-usage chrome for the model pickers (CLI radiolist and the gateway ``model.options`` inventory).
 
 On a usage-window plan every listed model is included, so the picker shows how much of each allowance
-is used instead of per-token prices. Each model row carries one word, ``Small`` / ``Medium`` /
-``Large`` / ``Free``, that the gateway sends per caller (``usage_level`` on ``/v1/models``).
+is used instead of per-token prices. Each priced model row carries the gateway's cost multiplier
+against one base model (``usage_multiplier`` on ``/v1/models``, already rounded), shown as ``3×`` /
+``0.4×`` (``<0.1×`` below 0.1); $0 rows say ``Free``. The base model is named beside ``data``
+(``usage_basis``, shown as ``1× = <name> price``). Hermes
+only formats what the gateway sends: it never derives a multiplier or a tier from prices.
 
 Every other account (credit-grant, pay-as-you-go, free tier) gets nothing from here.
 """
@@ -10,6 +13,7 @@ Every other account (credit-grant, pay-as-you-go, free tier) gets nothing from h
 from __future__ import annotations
 
 import logging
+import math
 import time
 from dataclasses import dataclass
 from typing import Any, Literal, Optional
@@ -24,12 +28,10 @@ GaugeStyle = Literal["green", "yellow", "red"]
 _YELLOW_BELOW = 0.5
 _RED_BELOW = 0.2
 
-# Per-model label on a window plan, as the gateway sends it (``usage_level``). Display words only.
-USAGE_LEVELS = ("free", "low", "medium", "top_tier")
-# Words, limit lines and switch notices come from ``plan_usage.*`` in locales/ (``usage_level_label``,
+# Words and limit lines come from ``plan_usage.*`` in locales/ (``usage_chip_label``, ``basis_line``,
 # ``_t``); the `hermes model` setup picker passes ``lang="en"`` (its own text is English, as on main).
-# One line for that picker, shown only when a Large row is listed.
-TOP_TIER_FOOTNOTE = "Large models also use your monthly large-model limit."
+# The multiplier sign the chips use (a real multiplication sign, not the letter x).
+MULTIPLIER_SIGN = "\u00d7"
 # Window pickers split the list here; messaging pickers just order recommended first.
 SECTION_RECOMMENDED = "Recommended"
 SECTION_OTHER = "Other models"
@@ -83,9 +85,7 @@ class PickerUsage:
     paused_reason: Optional[str] = None
     # Window only: our picks, in order; pickers list them first. Every model is usable.
     featured_model_ids: tuple[str, ...] = ()
-    # Window only: model ids the gateway labels Large in this caller's ``/v1/models``. Empty until applied.
-    top_tier_ids: frozenset[str] = frozenset()
-    # Window only: model ids that draw on nothing (the gateway's ``free`` word or a free catalog row). A full
+    # Window only: model ids that draw on nothing (a ``:free`` id or a free catalog row). A full
     # allowance never blocks them. Empty until applied.
     free_ids: frozenset[str] = frozenset()
     # Window only: model ids the gateway bills to a subscription the account holds (``billing_mode:
@@ -99,25 +99,19 @@ class PickerUsage:
     def gauge(self, label: str) -> Optional[UsageGauge]:
         return next((g for g in self.gauges if g.label == label), None)
 
-    def is_top_tier(self, model_id: str) -> bool:
-        """The gateway's ``top_tier`` mark. Unmarked: not top tier (fail open)."""
-        return model_id in self.top_tier_ids
-
     def with_pricing(self, pricing: Optional[dict[str, dict[str, Any]]]) -> PickerUsage:
-        """A copy that reads the gateway's ``top_tier`` marks from *pricing* (picker pricing shape)."""
+        """A copy that knows which rows of *pricing* (picker pricing shape) are free or subscription-billed."""
         if not pricing:
             return self
-        levels = usage_levels(list(pricing), pricing)  # same rule as the tags and agent.plan_limits.is_top_tier
-        free = frozenset(m for m, level in levels.items() if level == "free")
-        marked = frozenset(m for m, level in levels.items() if level == "top_tier")
+        free = frozenset(usage_free_models(list(pricing), pricing))
         subscribed = frozenset(m for m in pricing if is_subscription_billed_row(pricing.get(m)))
         from dataclasses import replace
-        return replace(self, top_tier_ids=marked, free_ids=free, subscription_ids=subscribed)
+        return replace(self, free_ids=free, subscription_ids=subscribed)
 
     def exhausted_gauge(self, model_id: str) -> Optional[UsageGauge]:
-        """Window only: the spent allowance that stops this model (an all-scope one, or the top-tier one for a
-        top-tier model; of several, the one that frees up last), or None while it still has included room. A
-        free model is never stopped. Same rule as agent/plan_limits.py ``blocking_gauge``."""
+        """Window only: the spent all-scope allowance that stops this model (of several, the one that frees up
+        last), or None while it still has included room. A free model is never stopped. Same rule as
+        agent/plan_limits.py ``blocking_gauge``. A top-tier allowance never dims a row."""
         if model_id in self.free_ids or model_id.endswith(":free"):
             return None
         spent = [g for g in self.gauges_for_model(model_id) if g.left_fraction <= 0.0]
@@ -152,20 +146,6 @@ class PickerUsage:
             return f"{head} · {_t('then_wait' + large, lang)}"
         return head
 
-    def large_model_notice(self, model_id: str, *, detail: bool = True, lang: Optional[str] = None) -> str:
-        """The warning shown when someone switches to a Large model (never a confirm). ``detail`` adds the
-        allowance state; pass False for a stale snapshot, whose percents could mislead."""
-        g = self.exhausted_gauge(model_id) if detail and not self.paused_reason else None
-        if g is not None:
-            if self.credits_pay:
-                return _t("large_notice_credits", lang)
-            key = "large_notice_limit_stops" if self.credits_pay is False else "large_notice_limit"
-            return _t(key, lang, name=_limit_name(g, lang), resets=_resets(g.resets_at_ms, lang))
-        top = next((g for g in self.gauges if g.scope == GAUGE_TOP_TIER), None) if detail else None
-        if top is not None:
-            return _t("large_notice_percent", lang, percent=top.percent_used)
-        return _t("large_notice", lang)
-
     @property
     def included_summary(self) -> str:
         """Header suffix: every row is included, unless an allowance is full (then what happens next) or the
@@ -176,9 +156,8 @@ class PickerUsage:
         return self.limit_line(lang="en") or "every model below is included"
 
     def gauges_for_model(self, model_id: str) -> tuple[UsageGauge, ...]:
-        """Every all-scope allowance, plus the top-tier ones when the model draws on them."""
-        top = self.is_top_tier(model_id)
-        return tuple(g for g in self.gauges if g.scope == "all" or (g.scope == "top_tier" and top))
+        """Every all-scope allowance (the ones that stop every paid model)."""
+        return tuple(g for g in self.gauges if g.scope == "all")
 
     def to_payload(self) -> dict[str, Any]:
         """Wire shape for ``model.options`` (``ModelOptionProvider.plan_usage``)."""
@@ -190,10 +169,8 @@ class PickerUsage:
                  "resets_at_ms": g.resets_at_ms, "scope": g.scope, "title": g.title}
                 for g in self.gauges
             ],
-            # The gateway's marks (what the desktop's used-up notes read).
-            "top_tier_model_ids": sorted(self.top_tier_ids),
-            # Subscription-billed: still ``free`` in ``usage_levels`` (never dimmed), but
-            # pickers show no "Free" tag on them (``plan-usage.ts`` ``usageTag``).
+            # Subscription-billed: still in ``usage_free_models`` (never dimmed), but
+            # pickers show no "Free" chip on them (``plan-usage.ts`` ``usageChip``).
             "subscription_model_ids": sorted(self.subscription_ids),
             "featured_model_ids": list(self.featured_model_ids),
             "paused_reason": self.paused_reason,
@@ -250,22 +227,11 @@ def split_recommended(
     return head, [m for m in model_ids if m not in seen]
 
 
-def usage_levels(model_ids: list[str], pricing: Optional[dict[str, dict[str, Any]]]) -> dict[str, str]:
-    """``{model: "free" | "low" | "medium" | "top_tier"}`` from what the gateway stamped on this
-    caller's catalog. An older gateway sends no ``usage_level``: then only what it does send is used
-    (its ``top_tier`` mark, and a $0/$0 row is ``free``); every other row gets no label."""
+def usage_free_models(model_ids: list[str], pricing: Optional[dict[str, dict[str, Any]]]) -> list[str]:
+    """The listed models that draw nothing from the window: a ``:free`` id or a row the catalog lists as
+    free (subscription-billed rows count: that subscription pays). A full allowance never dims them."""
     from agent.plan_limits import is_free
-    out: dict[str, str] = {}
-    for mid in model_ids:
-        row = (pricing or {}).get(mid) or {}
-        level = row.get("usage_level")
-        if is_free(mid, pricing):
-            out[mid] = "free"
-        elif level in USAGE_LEVELS:
-            out[mid] = level
-        elif row.get("top_tier") is True:
-            out[mid] = "top_tier"
-    return out
+    return [mid for mid in model_ids if is_free(mid, pricing)]
 
 
 def is_subscription_billed_row(pricing_row: Any) -> bool:
@@ -274,13 +240,69 @@ def is_subscription_billed_row(pricing_row: Any) -> bool:
     return _is_subscription_billed(pricing_row)
 
 
-def usage_tag_levels(model_ids: list[str], pricing: Optional[dict[str, dict[str, Any]]]) -> dict[str, str]:
-    """The levels a picker row shows a tag for: :func:`usage_levels` without the subscription-billed rows.
-    Those still draw nothing from the window (``usage_levels`` keeps them ``free``, which is what keeps a full
-    allowance from dimming them), but "Free" would read as free of charge when that subscription pays. The
-    gateway gives them no plan label either. Display only."""
-    levels = usage_levels(model_ids, pricing)
-    return {m: lv for m, lv in levels.items() if not is_subscription_billed_row((pricing or {}).get(m))}
+# A multiplier above this is not a real price ratio: the row shows no chip rather than ``1e+308×``.
+MAX_USAGE_MULTIPLIER = 100_000
+
+
+def usage_multiplier(pricing_row: Any) -> Optional[float]:
+    """The gateway's ``usage_multiplier`` on a catalog row (a finite number above 0 and at most
+    :data:`MAX_USAGE_MULTIPLIER`, never a bool), or None. Only usage-window callers' catalogs carry it;
+    it is already rounded, so this never re-rounds."""
+    value = pricing_row.get("usage_multiplier") if isinstance(pricing_row, dict) else None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if math.isfinite(value) and 0 < value <= MAX_USAGE_MULTIPLIER else None
+
+
+def format_usage_multiplier(value: float) -> str:
+    """``<0.1×`` below 0.1, else the gateway's rounded value as sent (``0.4×``, ``3×``, ``15×``). Twin of
+    apps/shared ``formatUsageMultiplier``."""
+    if value < 0.1:
+        return f"<0.1{MULTIPLIER_SIGN}"
+    # One decimal at most (the gateway sends one below 1): a float artefact never prints 0.30000000000000004.
+    # Half rounds up, like the TypeScript twin's Math.round (Python's round() would send 0.25 to 0.2).
+    number = str(int(value)) if float(value).is_integer() else f"{math.floor(value * 10 + 0.5) / 10:g}"
+    return f"{number}{MULTIPLIER_SIGN}"
+
+
+def free_label(lang: Optional[str] = None) -> str:
+    """The ``Free`` chip in the catalog language."""
+    return _t("level_free", lang)
+
+
+def usage_chip_label(model_id: str, pricing: Optional[dict[str, dict[str, Any]]], lang: Optional[str] = None) -> str:
+    """The chip a window-plan picker row shows: ``Free`` (wins over any multiplier), ``0.4×`` / ``N×`` from the
+    gateway's ``usage_multiplier``, or ``""``. A subscription-billed row gets none: "Free" would read as free
+    of charge when that subscription pays, and the gateway sends it no multiplier. Display only."""
+    row = (pricing or {}).get(model_id)
+    if is_subscription_billed_row(row):
+        return ""
+    from agent.plan_limits import is_free
+    if is_free(model_id, pricing):
+        return free_label(lang)
+    value = usage_multiplier(row)
+    return format_usage_multiplier(value) if value is not None else ""
+
+
+def usage_basis() -> Optional[dict[str, str]]:
+    """``{"model_id", "name"}``: the base model the gateway priced this caller's Nous catalog against (sent
+    beside ``data``, never on a row), or None. Cache-only; never raises."""
+    try:
+        from hermes_cli.models_pricing import nous_usage_basis
+        return nous_usage_basis()
+    except Exception:
+        return None
+
+
+def basis_line(model_ids: list[str], pricing: Optional[dict[str, dict[str, Any]]], lang: Optional[str] = None,
+               basis: Optional[dict[str, str]] = None) -> str:
+    """``1× = Model A price`` under a window-plan picker's section headings, named by the gateway: shown
+    when the gateway sent a basis (*basis*, else :func:`usage_basis`) and at least one listed row shows a
+    multiplier. The basis row itself need not be listed. ``""`` otherwise."""
+    basis = basis if basis is not None else usage_basis()
+    if not basis or not any(usage_chip_label(m, pricing, lang).endswith(MULTIPLIER_SIGN) for m in model_ids):
+        return ""
+    return _t("basis_line", lang, model=basis.get("name") or basis.get("model_id") or "")
 
 
 def is_free_model(pricing_row: Optional[dict[str, Any]]) -> bool:
@@ -348,16 +370,6 @@ def _limit_name(g: UsageGauge, lang: Optional[str] = None) -> str:
     if g.label in (GAUGE_TODAY, GAUGE_WEEK, GAUGE_MONTH, GAUGE_TOP_TIER):
         return _t(f"limit_{g.label}", lang)
     return g.title or g.label
-
-
-# The levels a picker row names: Large (its own monthly limit) and Free (never runs out). Small / Medium
-# only change how fast usage drains, so they carry no tag.
-SHOWN_USAGE_LEVELS = ("free", "top_tier")
-
-
-def usage_level_label(level: Optional[str], lang: Optional[str] = None) -> str:
-    """The row tag in the catalog language (``Large`` / ``Free``); "" for every other level."""
-    return _t(f"level_{level}", lang) if level in SHOWN_USAGE_LEVELS else ""
 
 
 def _get(obj: Any, name: str, default: Any = None) -> Any:
@@ -428,54 +440,27 @@ def nous_picker_usage(*, warm: bool = False, any_age: bool = False) -> Optional[
         return None
 
 
-def _nous_catalog(*, fetch: bool = False) -> dict[str, dict[str, Any]]:
-    """This profile's Nous ``/v1/models`` rows: its resident cache, one fetch only when ``fetch``. Never a
-    catalog cached for another credential (another profile's plan marks different models Large)."""
-    from hermes_cli.models_pricing import get_pricing_for_provider
-    rows = get_pricing_for_provider("nous", cached_only=True) or {}
-    if not rows and fetch:
-        rows = get_pricing_for_provider("nous") or {}
-    return rows
-
-
-def large_model_notice(
-    model_id: str, provider: str, *, fetch: bool = False, lang: Optional[str] = None,
-) -> Optional[str]:
-    """Warning line for a switch to a Large model, or None. Window plans only. The gateway decides "Large"
-    (``usage_level: top_tier``; older gateways ``top_tier: true``) and stamps it ONLY on a usage-window
-    caller's catalog, so a marked row is itself proof of a window plan. With a plan snapshot the catalog may
-    be fetched once (``fetch``); without one only the resident cache is read, so any other account adds no
-    network call. Never raises."""
-    try:
-        if str(provider or "").strip().lower() != "nous" or not model_id:
-            return None
-        fresh = nous_picker_usage()
-        usage = fresh or nous_picker_usage(any_age=True)
-        rows = _nous_catalog(fetch=fetch and usage is not None)
-        row = rows.get(model_id)
-        if not row:
-            return None
-        if usage_levels([model_id], {model_id: row}).get(model_id) != "top_tier":
-            return None
-        if usage is None:
-            return _t("large_notice", lang)
-        return usage.with_pricing({model_id: row}).large_model_notice(model_id, detail=fresh is not None, lang=lang)
-    except Exception:
-        logging.getLogger(__name__).debug("Large-model notice unavailable", exc_info=True)
-        return None
+def payload_chip_label(provider_row: Any, model_id: str, lang: Optional[str] = None) -> str:
+    """:func:`usage_chip_label` from a ``model.options`` provider row (``usage_free_models`` /
+    ``usage_multipliers``, which only a window plan's row carries). ``""`` for every other row."""
+    plan = provider_row.get("plan_usage") if isinstance(provider_row, dict) else None
+    if not isinstance(plan, dict) or plan.get("kind") != "usage_window":
+        return ""
+    if model_id in (plan.get("subscription_model_ids") or ()):
+        return ""
+    if model_id in (provider_row.get("usage_free_models") or ()):
+        return free_label(lang)
+    multipliers = provider_row.get("usage_multipliers")
+    value = usage_multiplier({"usage_multiplier": multipliers.get(model_id)}) if isinstance(multipliers, dict) else None
+    return format_usage_multiplier(value) if value is not None else ""
 
 
 def window_row_labels(provider_row: Any, model_ids: list) -> list[str]:
-    """CLI picker rows: ``model-b   Large`` from the payload's ``usage_levels``, which only a window plan's
-    row carries (the TUI's rule: Large / Free only). Any other row, or anything unexpected: the bare ids."""
+    """CLI picker rows: ``model-b   3×`` / ``model-free:free   Free`` from the payload's chips
+    (:func:`payload_chip_label`), which only a window plan's row carries. Any other row, or anything
+    unexpected: the bare ids."""
     ids = [str(m) for m in model_ids]
-    plan = provider_row.get("plan_usage") if isinstance(provider_row, dict) else None
-    levels = provider_row.get("usage_levels") if isinstance(plan, dict) and plan.get("kind") == "usage_window" else None
-    # Subscription-billed rows keep their ``free`` level but carry no tag.
-    subscribed = (set(plan.get("subscription_model_ids") or ())
-                  if isinstance(plan, dict) and isinstance(levels, dict) else set())
-    tags = ([usage_level_label(None if m in subscribed else levels.get(m)) for m in ids]
-            if isinstance(levels, dict) else [])
+    tags = [payload_chip_label(provider_row, m) for m in ids]
     if not any(tags):
         return ids
     width = min(max(len(m) for m in ids), 48)
@@ -483,7 +468,7 @@ def window_row_labels(provider_row: Any, model_ids: list) -> list[str]:
 
 
 def picker_row_suffix(provider_row: Any, model_id: str) -> str:
-    """Messaging pickers: ``Large`` / ``Free`` for one row, from the labels
+    """Messaging pickers: ``3×`` / ``Free`` for one row, from the labels
     ``model_switch_providers._attach_window_model_notes`` stamps (window plans only); "" otherwise."""
     if not isinstance(provider_row, dict):
         return ""
@@ -508,7 +493,7 @@ def plan_gauge_lines(usage: PickerUsage) -> list[str]:
     )]
 
 
-def window_plan_default(model_ids: list[str], pricing: Optional[dict] = None) -> str:
+def window_plan_default(model_ids: list[str]) -> str:
     """A usage-window plan's first featured pick that is listed (the picker's top Recommended row), or
     "" for every other account. Cache-only: the caller's fresh tier read just filled the snapshot. Never raises."""
     try:
@@ -516,11 +501,7 @@ def window_plan_default(model_ids: list[str], pricing: Optional[dict] = None) ->
         if usage is None:
             return ""
         recommended, _other = split_recommended(model_ids, usage.featured_model_ids)
-        rows = pricing or {}
-        # A default must not spend the Large allowance: skip Large picks (a user can still choose one).
-        usable = [mid for mid in recommended if not (rows.get(mid) or {}).get("top_tier")
-                  and (rows.get(mid) or {}).get("usage_level") != "top_tier"]
-        return usable[0] if usable else ""
+        return recommended[0] if recommended else ""
     except Exception:
         logging.getLogger(__name__).debug("Window plan default unavailable", exc_info=True)
         return ""
@@ -528,7 +509,7 @@ def window_plan_default(model_ids: list[str], pricing: Optional[dict] = None) ->
 
 def annotate_window_plan_rows(provider_data: dict, model_ids: list) -> tuple[list, Optional[str]]:
     """``(labels, limit_line)`` for the /model picker's model stage. On a Nous usage-window plan rows carry
-    the TUI's ``Large`` / ``Free`` tags, and with a full allowance ``limit_line`` (above the hint) says it
+    the TUI's ``3×`` / ``Free`` chips, and with a full allowance ``limit_line`` (above the hint) says it
     once, with what happens next. Every other account: the bare ids and None. Display only."""
     if str((provider_data or {}).get("slug") or "").lower() != "nous":
         return list(model_ids), None

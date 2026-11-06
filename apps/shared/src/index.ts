@@ -106,17 +106,22 @@ export {
 } from './json-rpc-gateway'
 export { modelSearchText } from './model-search-text'
 export {
+  formatUsageMultiplier,
   gaugeScope,
   gaugeTitle,
-  hasTopTier,
+  isPlanFree,
   PAYMENT_PAUSE_REASON,
   planBlocks,
   planLimit,
+  providerUsageBasis,
   sectionAt,
   splitRecommended,
-  type UsageLevel,
-  usageLevel,
-  usageTag
+  type UsageBasis,
+  usageBasis,
+  type UsageChip,
+  usageChip,
+  type UsageTone,
+  usageTone
 } from './plan-usage'
 export {
   DEFAULT_REASONING_EFFORT,

@@ -174,18 +174,12 @@ class RateLimitCreditsMixin:
             blocking = state.depleted or state.window_exhausted or state.top_tier_exhausted
             if blocking and not model_is_free and rewarm_pricing_before_depleted_notice(self):
                 return  # a cold catalog cannot say the model is billed elsewhere; the warm's re-run decides
-            model_is_top_tier = False
-            if state.is_usage_window and not model_is_free:
-                # The top-tier approach warning only matters while on a top-tier model (gateway mark).
-                from agent.plan_limits import cached_pricing, is_top_tier
-                model_is_top_tier = is_top_tier(getattr(self, "model", "") or "",
-                                                cached_pricing(getattr(self, "base_url", "") or ""))
             session_id = getattr(self, "session_id", None)
             if state.is_usage_window:
                 from agent.credits_tracker import restore_window_notices
                 restore_window_notices(session_id, latch)
             to_show, to_clear = evaluate_credits_notices(
-                state, latch, model_is_free=model_is_free, model_is_top_tier=model_is_top_tier)
+                state, latch, model_is_free=model_is_free)
             if state.is_usage_window:
                 from agent.credits_tracker import remember_window_notices
                 remember_window_notices(session_id, latch)

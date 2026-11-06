@@ -1,4 +1,4 @@
-// health: allow FILE_LINES -- locale data: translated copy for the usage-window plan UI (allowance gauges, Large/Free tags, the limit card), one key per string
+// health: allow FILE_LINES -- locale data: translated copy for the usage-window plan UI (allowance gauges, multiplier/Free chips, the limit card), one key per string
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { deBoot } from './de_boot'
@@ -4491,10 +4491,13 @@ export const deOverrides = {
     limitThenWaitLarge: 'Große Modelle bis dahin pausiert',
     percentUsed: (percent: string) => `${percent} genutzt`,
     resetsIn: (duration: string) => `Zurücksetzung in ${duration}`,
-    usageLevels: { free: 'Kostenlos', top_tier: 'Groß' },
+    usageFree: 'Kostenlos',
+    usageBasis: (model: string) => `1× = Preis von ${model}`,
+    usageMultiplierTip: (multiplier: string, model: string) =>
+      `Verbraucht pro Anfrage etwa ${multiplier}× so viel von deinem Plan wie ${model}.`,
+    usageLessTip: (model: string) => `Verbraucht pro Anfrage weniger von deinem Plan als ${model}.`,
     sectionRecommended: 'Empfohlen',
-    sectionOther: 'Weitere Modelle',
-    largeFootnote: 'Große Modelle zählen auch zu deinem Monatslimit für große Modelle.'
+    sectionOther: 'Weitere Modelle'
   },
   modelVisibility: {
     title: 'Modelle',

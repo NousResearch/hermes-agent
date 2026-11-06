@@ -355,10 +355,6 @@ def _model_flow_nous(config, current_model="", args=None):
         return
     config = _nous_persist_selection(selected, creds)
     print(f"Default model set to: {selected} (via Nous Portal)")
-    if _usage is not None:
-        from hermes_cli.model_picker_usage import large_model_notice
-        if _notice := large_model_notice(selected, "nous"):
-            print(f"⚠ {_notice}")
     # Offer Tool Gateway enablement for paid subscribers
     prompt_enable_tool_gateway(config)
 

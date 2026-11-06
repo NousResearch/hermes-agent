@@ -608,10 +608,10 @@ def _usage_window_refusal(agent, classified, api_messages=None) -> tuple[str, Op
         return "", None, None
     try:
         from agent.credits_tracker import _window_hard_stop, window_stop_resets_at_ms
-        from agent.plan_limits import current_model_is_top_tier
         state = getattr(agent, "_credits_state", None)
-        top_tier = current_model_is_top_tier(agent)
-        stop = _window_hard_stop(state, model_is_free=False, model_is_top_tier=top_tier) if state is not None else None
+        # A full all-scope allowance explains the refusal, and a full top-tier allowance only when none is
+        # (``_stop_gauge``).
+        stop = _window_hard_stop(state, model_is_free=False) if state is not None else None
         # The server may word the refusal itself (``display_message`` on the 402): shown verbatim, so a
         # reword ships with the API. Without it, the stop line Hermes builds from the gauges.
         display = context.get("display_message")
@@ -628,7 +628,7 @@ def _usage_window_refusal(agent, classified, api_messages=None) -> tuple[str, Op
             message = server_message
         else:
             return "", None, None
-        resets_ms = window_stop_resets_at_ms(state, model_is_top_tier=top_tier) if state is not None else None
+        resets_ms = window_stop_resets_at_ms(state) if state is not None else None
         limit = None
         try:
             from agent.model_metadata import estimate_messages_tokens_rough

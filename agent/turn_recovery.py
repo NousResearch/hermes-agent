@@ -640,9 +640,8 @@ def _usage_window_reset_context(agent) -> dict[str, float]:
     pool keeps its default bench."""
     try:
         from agent.credits_tracker import window_stop_resets_at_ms
-        from agent.plan_limits import current_model_is_top_tier
         state = getattr(agent, "_credits_state", None)
-        resets_ms = (window_stop_resets_at_ms(state, model_is_top_tier=current_model_is_top_tier(agent))
+        resets_ms = (window_stop_resets_at_ms(state)
                      if state is not None else None)
     except Exception:
         logger.debug("usage-window reset unavailable for the pool", exc_info=True)

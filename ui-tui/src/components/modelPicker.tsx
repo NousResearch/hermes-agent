@@ -2,7 +2,14 @@ import { Box, Text, useInput, useStdout } from '@hermes/ink'
 import { fuzzyRank } from '@hermes/shared/fuzzy'
 import type { ModelOptionProvider, ModelOptionsResult } from '@hermes/shared/gateway-events'
 import { modelSearchText } from '@hermes/shared/model-search-text'
-import { hasTopTier, planBlocks, planLimitLine, sectionAt, usageLevel, usageTag } from '@hermes/shared/plan-usage'
+import {
+  formatUsageMultiplier,
+  planBlocks,
+  planLimitLine,
+  sectionAt,
+  usageBasis,
+  usageChip
+} from '@hermes/shared/plan-usage'
 import { REASONING_EFFORTS } from '@hermes/shared/reasoning-effort'
 import { useEffect, useMemo, useState } from 'react'
 
@@ -74,7 +81,8 @@ export function providerIndexAfterClearingFilter(
  *  Up to two section titles ("Recommended" / "Other models") ride inside the list, so the window shrinks
  *  by two rows to keep the overlay's height fixed; a query is its own order, so no sections while
  *  filtering. Past an allowance, one line in the footnote row says what happens next (pay as you go, or
- *  wait); rows it stops are dimmed rather than annotated. */
+ *  wait); rows it stops are dimmed rather than annotated. Otherwise that row names the base model every
+ *  multiplier chip is against (`1× = <model> price`), when it is listed. */
 function planListLayout(
   provider: ModelOptionProvider | undefined,
   models: readonly string[],
@@ -83,11 +91,12 @@ function planListLayout(
   M: ReturnType<typeof useT>['pickers']['model']
 ) {
   const sectioned = !filtering && sectionAt(provider, models, 0) !== null
-  const levelled = models.some(m => usageLevel(provider, m))
+  const levelled = models.some(m => usageChip(provider, m))
   const limitLine = levelled ? planLimitLine(provider, Date.now(), M.plan) : ''
+  const basis = usageBasis(provider, models)
 
   return {
-    footnote: limitLine || (hasTopTier(provider, models) ? M.plan.largeFootnote : ''),
+    footnote: limitLine || (basis ? M.plan.basis(basis.name) : ''),
     levelled,
     nameWidth: levelled ? Math.min(Math.max(...models.map(m => m.length), 0), Math.max(10, width - 22)) : 0,
     sectioned,
@@ -95,7 +104,7 @@ function planListLayout(
   }
 }
 
-// health: allow CC -- usage-window plans: Large/Free tags, section titles and dimmed rows (layout in planListLayout); this component was over target on main
+// health: allow CC -- usage-window plans: multiplier/Free chips, section titles and dimmed rows (layout in planListLayout); this component was over target on main
 export function ModelPicker({
   allowPersistGlobal = true,
   gw,
@@ -855,9 +864,9 @@ export function ModelPicker({
 
         const prefix = modelIdx === idx ? '▸ ' : row === currentModel ? '* ' : '  '
         const section = sectioned ? sectionAt(provider, models, idx) : null
-        // Window plans: a tag only for Large / Free; a model a full allowance stops is dimmed.
-        const tag = usageTag(provider, row)
-        const level = tag ? M.plan.levels[tag] : ''
+        // Window plans: the gateway's multiplier (`3×`, `0.4×`, `<0.1×`) or Free; a model a full allowance stops is dimmed.
+        const chip = usageChip(provider, row)
+        const level = !chip ? '' : chip.kind === 'free' ? M.plan.free : formatUsageMultiplier(chip.value)
         const blocked = levelled && planBlocks(provider, row)
 
         if (section) {

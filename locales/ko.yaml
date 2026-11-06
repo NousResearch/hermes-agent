@@ -3961,10 +3961,10 @@ tips:
     p10: "리마인더를 설정하거나 반복 작업을 예약해 줘"
     p11: "/ 를 입력해 명령을 둘러보거나 Ctrl+P로 팔레트를 여세요"
 
-# Window plans (Nous subscription with included usage): picker words, limit lines, Large-model notice.
+# Window plans (Nous subscription with included usage): picker chips (Free, the 1× basis line), limit lines.
 plan_usage:
   level_free: "무료"
-  level_top_tier: "대형"
+  basis_line: "1× = {model} 가격"
   resets_in: "{duration} 후 초기화"
   resets_soon: "곧 초기화"
   limit_reached: "{name} 한도에 도달했습니다 · {resets}"
@@ -3976,11 +3976,6 @@ plan_usage:
   then_credits_large: "대형 모델은 이제 크레딧을 사용합니다(종량제)"
   then_wait: "그때까지 무료 모델만 사용 가능"
   then_wait_large: "그때까지 대형 모델 일시 중지"
-  large_notice: "대형 모델: 메시지당 플랜 사용량을 더 많이 씁니다."
-  large_notice_credits: "대형 모델: 메시지당 크레딧을 더 많이 씁니다(종량제)."
-  large_notice_limit: "대형 모델: {name} 한도에 도달했습니다({resets})."
-  large_notice_limit_stops: "대형 모델: {name} 한도에 도달했습니다({resets}). 그때까지 실행되지 않습니다."
-  large_notice_percent: "대형 모델: 메시지당 플랜 사용량을 더 많이 씁니다. 대형 모델 월간 한도: {percent} 사용."
 shared:
   # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
   undo_rollback:

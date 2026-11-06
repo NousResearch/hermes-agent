@@ -1,4 +1,4 @@
-// health: allow FILE_LINES -- locale data: translated copy for the usage-window plan UI (allowance gauges, Large/Free tags, the limit card), one key per string
+// health: allow FILE_LINES -- locale data: translated copy for the usage-window plan UI (allowance gauges, multiplier/Free chips, the limit card), one key per string
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
@@ -3155,10 +3155,13 @@ export const ruOverrides = {
     limitThenWaitLarge: 'крупные модели приостановлены до сброса',
     percentUsed: percent => `${percent} использовано`,
     resetsIn: duration => `сброс через ${duration}`,
-    usageLevels: { free: 'Бесплатно', top_tier: 'Крупная' },
+    usageFree: 'Бесплатно',
+    usageBasis: model => `1× = цена ${model}`,
+    usageMultiplierTip: (multiplier, model) =>
+      `Расходует за запрос примерно в ${multiplier}× больше лимита тарифа, чем ${model}.`,
+    usageLessTip: model => `Расходует за запрос меньше лимита тарифа, чем ${model}.`,
     sectionRecommended: 'Рекомендуемые',
-    sectionOther: 'Другие модели',
-    largeFootnote: 'Крупные модели также расходуют месячный лимит крупных моделей.'
+    sectionOther: 'Другие модели'
   },
 
   modelVisibility: {

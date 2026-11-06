@@ -24931,11 +24931,11 @@
             ],
             "default": null
           },
-          "usage_levels": {
+          "usage_multipliers": {
             "anyOf": [
               {
                 "additionalProperties": {
-                  "type": "string"
+                  "type": "number"
                 },
                 "type": "object"
               },
@@ -24944,7 +24944,46 @@
               }
             ],
             "default": null,
-            "title": "Usage Levels"
+            "title": "Usage Multipliers"
+          },
+          "usage_basis": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Usage Basis"
+          },
+          "usage_basis_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Usage Basis Name"
+          },
+          "usage_free_models": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Usage Free Models"
           },
           "limit": {
             "anyOf": [
@@ -27735,13 +27774,6 @@
               "$ref": "#/components/schemas/PlanUsageGauge"
             },
             "title": "Gauges",
-            "type": "array"
-          },
-          "top_tier_model_ids": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Top Tier Model Ids",
             "type": "array"
           },
           "subscription_model_ids": {

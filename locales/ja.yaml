@@ -3961,10 +3961,10 @@ tips:
     p10: "リマインダーを設定するか、定期タスクをスケジュールして"
     p11: "/ でコマンドを参照、Ctrl+P でパレットを開けます"
 
-# Window plans (Nous subscription with included usage): picker words, limit lines, Large-model notice.
+# Window plans (Nous subscription with included usage): picker chips (Free, the 1× basis line), limit lines.
 plan_usage:
   level_free: "無料"
-  level_top_tier: "大"
+  basis_line: "1× = {model} の料金"
   resets_in: "{duration}後にリセット"
   resets_soon: "まもなくリセット"
   limit_reached: "{name}の上限に達しました · {resets}"
@@ -3976,11 +3976,6 @@ plan_usage:
   then_credits_large: "大型モデルはクレジットを使用中（従量課金）"
   then_wait: "それまでは無料モデルのみ"
   then_wait_large: "それまで大型モデルは一時停止"
-  large_notice: "大型モデル：1メッセージあたりプランの利用量を多く消費します。"
-  large_notice_credits: "大型モデル：1メッセージあたりクレジットを多く消費します（従量課金）。"
-  large_notice_limit: "大型モデル：{name}の上限に達しました（{resets}）。"
-  large_notice_limit_stops: "大型モデル：{name}の上限に達しました（{resets}）。それまで実行できません。"
-  large_notice_percent: "大型モデル：1メッセージあたりプランの利用量を多く消費します。大型モデルの月間上限：{percent} 使用。"
 shared:
   # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
   undo_rollback:

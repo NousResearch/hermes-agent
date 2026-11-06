@@ -30,8 +30,6 @@ export interface AgentNoticePayload {
 
 /** `credits.window_limit` (agent/credits_tracker.py CREDITS_WINDOW_LIMIT_KEY). */
 const WINDOW_LIMIT_KEY = 'credits.window_limit'
-/** `model.large_notice` (tui_gateway/model_switch.py LARGE_MODEL_NOTICE_KEY): switched to a Large model. */
-const LARGE_MODEL_NOTICE_KEY = 'model.large_notice'
 
 /** `credits.window.<gauge id>`: a window plan's 90% heads-up (CREDITS_WINDOW_APPROACH_PREFIX). */
 const WINDOW_APPROACH_PREFIX = 'credits.window.'
@@ -91,8 +89,8 @@ export function noticeAccent(payload: AgentNoticePayload | undefined): string | 
   }
 
   // A window plan's 90% heads-up (`credits.window.<id>`, agent/credits_tracker.py): orange, like the
-  // credits gauge past 75%. Same for the Large-model warning.
-  if (payload?.key?.startsWith(WINDOW_APPROACH_PREFIX) || payload?.key === LARGE_MODEL_NOTICE_KEY) {
+  // credits gauge past 75%.
+  if (payload?.key?.startsWith(WINDOW_APPROACH_PREFIX)) {
     return 'var(--ui-orange)'
   }
 
@@ -171,11 +169,6 @@ export function splitMeta(text: string): [primary: string, meta: string | undefi
   }
 
   return [text.slice(0, at), text.slice(at + 3) || undefined]
-}
-
-/** Settings → Model's default-model apply returns the Large-model warning on its response (no session event). */
-export function showLargeModelNotice(text: string): void {
-  showAgentNotice({ key: LARGE_MODEL_NOTICE_KEY, kind: 'ttl', level: 'warn', text, ttl_ms: 8000 })
 }
 
 /** Render a `notification.show` notice as a toast (no-op when it has no text). */

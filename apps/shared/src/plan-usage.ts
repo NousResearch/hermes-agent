@@ -1,9 +1,13 @@
 /**
  * Usage-window plan chrome shared by every model picker (desktop dialog + composer menu, TUI).
  *
- * The gateway sends each model's word per caller (`usage_level` on `/v1/models`); the backend copies
- * it into `ModelOptionProvider.usage_levels`. Non-window providers have no `usage_levels` / `plan_usage`, so every helper
- * returns the empty answer and their pickers are unchanged.
+ * The gateway sends each priced model's cost multiplier against one base model per window caller
+ * (`usage_multiplier` on each `/v1/models` row, already rounded, and the base model beside `data`); the backend
+ * copies them into `ModelOptionProvider.usage_multipliers` / `usage_basis` + `usage_basis_name`, with the models
+ * that draw nothing in
+ * `usage_free_models`. Non-window providers have none of these nor `plan_usage`, so every helper returns the
+ * empty answer and their pickers are unchanged. Clients only format the value (plus a fixed colour by the value, `usageTone`): never derive a
+ * multiplier or a tier from prices.
  *
  * Words are each client's own translated copy (desktop `t.modelPicker`, TUI `pickers.model.plan`).
  * Python twin: hermes_cli/model_picker_usage.py.
@@ -13,40 +17,102 @@ import type { ModelOptionProvider, PlanUsageGauge, UsageLimit } from './gateway-
 /** A usage-window plan's limit on a refused turn (error_surface.usage_limit, agent/plan_limits.py). */
 export type { UsageLimit }
 
-export type UsageLevel = 'free' | 'low' | 'medium' | 'top_tier'
+type PlanProvider =
+  | Partial<
+      Pick<
+        ModelOptionProvider,
+        'plan_usage' | 'usage_basis' | 'usage_basis_name' | 'usage_free_models' | 'usage_multipliers'
+      >
+    >
+  | null
+  | undefined
 
-const USAGE_LEVELS = new Set<string>(['free', 'low', 'medium', 'top_tier'])
+/** What a window-plan picker row shows in its chip slot: Free, or the gateway's cost multiplier. */
+export type UsageChip = { kind: 'free' } | { kind: 'multiplier'; value: number }
 
-type PlanProvider = Partial<Pick<ModelOptionProvider, 'plan_usage' | 'usage_levels'>> | null | undefined
+const isWindow = (provider: PlanProvider) => provider?.plan_usage?.kind === 'usage_window'
 
-export function usageLevel(provider: PlanProvider, model: string): UsageLevel | null {
-  // Window plans only: any other account keeps its main-branch row even if the field were sent.
-  if (provider?.plan_usage?.kind !== 'usage_window') {
+/** True when *model* draws nothing from the window (a `:free` id or a free catalog row): a full allowance never
+ *  dims it. Subscription-billed rows count too (that subscription pays). Window plans only. */
+export function isPlanFree(provider: PlanProvider, model: string): boolean {
+  return isWindow(provider) && (model.endsWith(':free') || (provider?.usage_free_models ?? []).includes(model))
+}
+
+/** A multiplier above this is not a real price ratio: the row shows no chip (Python twin
+ *  `MAX_USAGE_MULTIPLIER`). */
+export const MAX_USAGE_MULTIPLIER = 100_000
+
+/** The gateway's multiplier for *model* (a finite number above 0, at most {@link MAX_USAGE_MULTIPLIER}), or null.
+ *  Window plans only. */
+function multiplierOf(provider: PlanProvider, model: string): null | number {
+  const value = provider?.usage_multipliers?.[model]
+
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= MAX_USAGE_MULTIPLIER
+    ? value
+    : null
+}
+
+/**
+ * The chip a window-plan picker row shows: `free` (wins over any multiplier) or the gateway's `multiplier`;
+ * null for a row with neither and for every other account (even if a field were sent). A row billed to a
+ * subscription the account holds (`plan_usage.subscription_model_ids`) is never dimmed but carries no chip:
+ * "Free" would read as free of charge when that subscription pays, and the gateway sends it no multiplier.
+ */
+export function usageChip(provider: PlanProvider, model: string): UsageChip | null {
+  if (!isWindow(provider) || (provider?.plan_usage?.subscription_model_ids ?? []).includes(model)) {
     return null
   }
 
-  const level = provider.usage_levels?.[model]
-
-  return level && USAGE_LEVELS.has(level) ? (level as UsageLevel) : null
-}
-
-/** The tag a picker row shows: only Large (it has its own monthly limit) and Free (never runs out). Small /
- *  Medium change only how fast usage drains, so they carry no tag. A row billed to a subscription the account
- *  holds (`plan_usage.subscription_model_ids`) keeps its `free` level, so it is never dimmed, but carries no
- *  tag: "Free" would read as free of charge when that subscription pays. */
-export function usageTag(provider: PlanProvider, model: string): 'free' | 'top_tier' | null {
-  const level = usageLevel(provider, model)
-
-  if (level && (provider?.plan_usage?.subscription_model_ids ?? []).includes(model)) {
-    return null
+  if (isPlanFree(provider, model)) {
+    return { kind: 'free' }
   }
 
-  return level === 'free' || level === 'top_tier' ? level : null
+  const value = multiplierOf(provider, model)
+
+  return value === null ? null : { kind: 'multiplier', value }
 }
 
-/** True when any listed model is Large (the footnote shows only then). */
-export function hasTopTier(provider: PlanProvider, models: readonly string[]): boolean {
-  return models.some(model => usageLevel(provider, model) === 'top_tier')
+/** `<0.1×` below 0.1, else the gateway's rounded value as sent (`0.4×`, `3×`, `15×`). Python twin:
+ *  hermes_cli/model_picker_usage.py `format_usage_multiplier`. */
+export function formatUsageMultiplier(value: number): string {
+  if (value < 0.1) {
+    return '<0.1×'
+  }
+
+  // One decimal at most (the gateway sends one below 1), so a float artefact never prints 0.30000000000000004.
+  return `${Number.isInteger(value) ? value : Math.round(value * 10) / 10}×`
+}
+
+/** How loud a multiplier chip is: `low` (plain), `mid` (amber), `high` (red). Fixed cutoffs on the multiplier
+ *  as sent, so the same model reads the same on every account; retune them if the base model changes. */
+export type UsageTone = 'high' | 'low' | 'mid'
+
+export const USAGE_TONE_MID_FROM = 15
+export const USAGE_TONE_HIGH_FROM = 50
+
+export function usageTone(value: number): UsageTone {
+  return value >= USAGE_TONE_HIGH_FROM ? 'high' : value >= USAGE_TONE_MID_FROM ? 'mid' : 'low'
+}
+
+/** The base model every multiplier is against, with the gateway's name for it. */
+export type UsageBasis = { id: string; name: string }
+
+/** The gateway's base model for this window provider (named by the gateway, else its id), or null. */
+export function providerUsageBasis(provider: PlanProvider): null | UsageBasis {
+  const id = isWindow(provider) ? provider?.usage_basis : null
+
+  return id ? { id, name: provider?.usage_basis_name || id } : null
+}
+
+/**
+ * The base model every multiplier is against (`1×`), for the muted `1× = <name> price` line under a window-plan
+ * picker's section headings: when the gateway sent one and at least one of *models* shows a multiplier (the
+ * base row itself need not be listed). null otherwise and for every other account.
+ */
+export function usageBasis(provider: PlanProvider, models: readonly string[]): null | UsageBasis {
+  const basis = providerUsageBasis(provider)
+
+  return basis && models.some(model => usageChip(provider, model)?.kind === 'multiplier') ? basis : null
 }
 
 /**
@@ -128,10 +194,9 @@ export function gaugeTitle(
 
 /**
  * The full allowance that stops *model* on a window plan, or undefined while it still has included
- * room. Same rule as agent/plan_limits.py `blocking_gauge`: a free
- * model (gateway word `free`) is never blocked; a full
- * `all` gauge blocks every paid model; a full `top_tier` gauge blocks the gateway's top-tier models. Of
- * several full gauges, the one that frees up last.
+ * room. Same rule as agent/plan_limits.py `blocking_gauge`: a free model ({@link isPlanFree}) is never
+ * blocked; a full `all` gauge blocks every paid model; a full `top_tier` gauge blocks no row. Of several full
+ * gauges, the one that frees up last.
  */
 export function blockingGauge(provider: PlanProvider | null | undefined, model: string): PlanUsageGauge | undefined {
   const usage = provider?.plan_usage
@@ -140,15 +205,11 @@ export function blockingGauge(provider: PlanProvider | null | undefined, model: 
     return undefined
   }
 
-  if (usageLevel(provider, model) === 'free' || model.endsWith(':free')) {
+  if (isPlanFree(provider, model) || model.endsWith(':free')) {
     return undefined
   }
 
-  const topTier = usageLevel(provider, model) === 'top_tier' || (usage.top_tier_model_ids ?? []).includes(model)
-
-  const full = (usage.gauges ?? []).filter(
-    g => g.left_fraction <= 0 && (gaugeScope(g) === 'all' || (gaugeScope(g) === 'top_tier' && topTier))
-  )
+  const full = (usage.gauges ?? []).filter(g => g.left_fraction <= 0 && gaugeScope(g) === 'all')
 
   return full.reduce<PlanUsageGauge | undefined>(
     (last, g) => (!last || (g.resets_at_ms ?? 0) > (last.resets_at_ms ?? 0) ? g : last),

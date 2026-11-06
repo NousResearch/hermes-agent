@@ -2,10 +2,13 @@ import type { ModelOptionProvider } from '@hermes/shared/gateway-events'
 import {
   blockingGauge,
   formatResetsIn,
+  formatUsageMultiplier,
   PLAN_LIMIT_WORDS_EN,
   planBlocks,
   planLimitLine,
-  usageTag
+  usageBasis,
+  usageChip,
+  usageTone
 } from '@hermes/shared/plan-usage'
 import { describe, expect, it } from 'vitest'
 
@@ -20,7 +23,10 @@ const window = (
   gauges: { label: string; left_fraction: number; resets_at_ms?: number; scope?: string }[]
 ): Provider => ({
   plan_usage: { gauges: gauges.map(g => ({ style: 'bar', ...g })), kind: 'usage_window' },
-  usage_levels: { 'a/free:free': 'free', 'a/low': 'low', 'a/large': 'top_tier', 'a/zero': 'free' }
+  usage_basis: 'a/low',
+  usage_basis_name: 'Low Model',
+  usage_free_models: ['a/free:free', 'a/zero'],
+  usage_multipliers: { 'a/large': 40, 'a/low': 1, 'a/tiny': 0.25 }
 })
 
 describe('blockingGauge / planBlocks (the one rule, agent/plan_limits.py twin)', () => {
@@ -41,12 +47,12 @@ describe('blockingGauge / planBlocks (the one rule, agent/plan_limits.py twin)',
     expect(planBlocks(dayFull, 'a/low')).toBe(true)
   })
 
-  it('a full top-tier gauge blocks only top-tier models', () => {
-    expect(planBlocks(topFull, 'a/large')).toBe(true)
+  it('a full top-tier gauge blocks no model', () => {
+    expect(planBlocks(topFull, 'a/large')).toBe(false)
     expect(planBlocks(topFull, 'a/low')).toBe(false)
   })
 
-  it('free models are never used up (gateway word, :free id)', () => {
+  it('free models are never used up (free catalog row, :free id)', () => {
     expect(planBlocks(dayFull, 'a/zero')).toBe(false)
     expect(planBlocks(dayFull, 'other/x:free')).toBe(false)
   })
@@ -60,10 +66,13 @@ describe('blockingGauge / planBlocks (the one rule, agent/plan_limits.py twin)',
     expect(blockingGauge(both, 'a/low')?.label).toBe('week')
   })
 
-  it('non-window accounts are never blocked or tagged', () => {
+  it('non-window accounts are never blocked or chipped', () => {
+    const credits = { plan_usage: { kind: 'credits' }, usage_basis: 'a/low', usage_multipliers: { 'a/low': 1 } }
+
     expect(planBlocks({ plan_usage: { kind: 'credits' } } as Provider, 'a/low')).toBe(false)
     expect(planBlocks(undefined, 'a/low')).toBe(false)
-    expect(usageTag({ plan_usage: { kind: 'credits' } } as Provider, 'a/large')).toBeNull()
+    expect(usageChip(credits as Provider, 'a/low')).toBeNull()
+    expect(usageBasis(credits as Provider, ['a/low'])).toBeNull()
     expect(planLimitLine({ plan_usage: { kind: 'credits' } } as Provider, NOW)).toBe('')
   })
 
@@ -92,24 +101,76 @@ describe('blockingGauge / planBlocks (the one rule, agent/plan_limits.py twin)',
     expect(planLimitLine(paying(dayFull, null), NOW)).toBe('Daily limit reached · resets in 3h')
   })
 
-  it('row tags: only Large and Free; Small / Medium rows carry none', () => {
-    expect(usageTag(dayFull, 'a/large')).toBe('top_tier')
-    expect(usageTag(dayFull, 'a/free:free')).toBe('free')
-    expect(usageTag(dayFull, 'a/low')).toBeNull()
+  it("row chips: the gateway's multiplier, Free wins, nothing derived", () => {
+    expect(usageChip(dayFull, 'a/large')).toEqual({ kind: 'multiplier', value: 40 })
+    expect(usageChip(dayFull, 'a/low')).toEqual({ kind: 'multiplier', value: 1 })
+    expect(usageChip(dayFull, 'a/free:free')).toEqual({ kind: 'free' })
+    expect(usageChip(dayFull, 'a/unpriced')).toBeNull()
+    // Free wins over any multiplier; malformed values are ignored.
+    expect(usageChip({ ...dayFull, usage_multipliers: { 'b/x:free': 3 } }, 'b/x:free')).toEqual({ kind: 'free' })
+
+    for (const bad of [0, -1, 100_001, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(usageChip({ ...dayFull, usage_multipliers: { 'b/x': bad } }, 'b/x')).toBeNull()
+    }
+
+    expect(usageChip({ ...dayFull, usage_multipliers: { 'b/x': 100_000 } }, 'b/x')).toEqual({
+      kind: 'multiplier',
+      value: 100_000
+    })
   })
 
-  it("subscription-billed rows: never dimmed, no Free tag", () => {
+  it('formats the multiplier as sent: <0.1× below 0.1, one decimal below 1, else N×', () => {
+    expect(formatUsageMultiplier(0.05)).toBe('<0.1×')
+    expect(formatUsageMultiplier(0.1)).toBe('0.1×')
+    expect(formatUsageMultiplier(0.4)).toBe('0.4×')
+    expect(formatUsageMultiplier(0.25)).toBe('0.3×')
+    expect(formatUsageMultiplier(0.1 + 0.2)).toBe('0.3×')
+    expect(formatUsageMultiplier(1)).toBe('1×')
+    expect(formatUsageMultiplier(7)).toBe('7×')
+    expect(formatUsageMultiplier(15)).toBe('15×')
+  })
+
+  it('tones a multiplier by fixed cutoffs: plain under 15×, amber from 15×, red from 50×', () => {
+    expect([0.4, 1, 10, 14].map(usageTone)).toEqual(['low', 'low', 'low', 'low'])
+    expect([15, 20, 40, 45].map(usageTone)).toEqual(['mid', 'mid', 'mid', 'mid'])
+    expect([50, 55, 110, 1000].map(usageTone)).toEqual(['high', 'high', 'high', 'high'])
+  })
+
+  it('the basis line: the gateway name whenever a multiplier shows, listed or not', () => {
+    const named = { id: 'a/low', name: 'Low Model' }
+    expect(usageBasis(dayFull, ['a/low', 'a/large'])).toEqual(named)
+    // The basis row need not be listed (an org allowlist can hide it).
+    expect(usageBasis(dayFull, ['a/large'])).toEqual(named)
+    expect(usageBasis(dayFull, ['a/low', 'a/free:free'])).toEqual(named)
+    expect(usageBasis({ ...dayFull, usage_multipliers: {} }, ['a/low'])).toBeNull()
+    expect(usageBasis({ ...dayFull, usage_basis: null }, ['a/large'])).toBeNull()
+    // No name from the gateway: the id.
+    expect(usageBasis({ ...dayFull, usage_basis_name: null }, ['a/large'])).toEqual({ id: 'a/low', name: 'a/low' })
+  })
+
+  it('a usage_levels payload shows only Free', () => {
+    const old = {
+      plan_usage: { gauges: [], kind: 'usage_window' },
+      usage_free_models: ['a/zero'],
+      usage_levels: { 'a/large': 'top_tier', 'a/zero': 'free' }
+    } as Provider
+
+    expect(usageChip(old, 'a/large')).toBeNull()
+    expect(usageChip(old, 'a/zero')).toEqual({ kind: 'free' })
+  })
+
+  it('subscription-billed rows: never dimmed, no Free chip', () => {
     const subscribed: Provider = {
       ...dayFull,
       plan_usage: { ...dayFull.plan_usage!, subscription_model_ids: ['a/zero'] }
     }
 
     expect(planBlocks(subscribed, 'a/zero')).toBe(false)
-    expect(usageTag(subscribed, 'a/zero')).toBeNull()
-    expect(usageTag(subscribed, 'a/free:free')).toBe('free')
-    expect(usageTag(subscribed, 'a/large')).toBe('top_tier')
-    // An older backend without the field: unchanged.
-    expect(usageTag(dayFull, 'a/zero')).toBe('free')
+    expect(usageChip(subscribed, 'a/zero')).toBeNull()
+    expect(usageChip(subscribed, 'a/free:free')).toEqual({ kind: 'free' })
+    expect(usageChip(subscribed, 'a/large')).toEqual({ kind: 'multiplier', value: 40 })
+    // Without the field: Free.
+    expect(usageChip(dayFull, 'a/zero')).toEqual({ kind: 'free' })
   })
 
   it('formats the reset compactly', () => {

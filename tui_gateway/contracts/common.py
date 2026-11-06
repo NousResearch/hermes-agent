@@ -291,9 +291,7 @@ class PlanUsage(Result):
     kind: str
     plan: str | None = None
     gauges: list[PlanUsageGauge] = Field(default_factory=list)
-    # Ids the gateway labels ``top_tier`` (Large).
-    top_tier_model_ids: list[str] = Field(default_factory=list)
-    # Ids billed to a subscription the account holds: ``free`` in ``usage_levels`` (never dimmed), no "Free" tag.
+    # Ids billed to a subscription the account holds: in ``usage_free_models`` (never dimmed), no "Free" chip.
     subscription_model_ids: list[str] = Field(default_factory=list)
     featured_model_ids: list[str] = Field(default_factory=list)
     paused_reason: str | None = None

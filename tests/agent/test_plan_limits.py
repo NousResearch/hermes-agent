@@ -20,7 +20,9 @@ _REAL_PORTAL_FREE_MODELS = pl._portal_free_models
 PRICING = {
     "example/model-a": {"prompt": "0.00000001", "completion": "0.0000001", "name": "Model A"},
     "example/model-b": {"prompt": "0.0000004", "completion": "0.000004", "name": "Model B"},
-    "example/model-c": {"prompt": "0.000005", "completion": "0.000025", "top_tier": True, "name": "Model C"},
+    # Tier marks on a row: ignored.
+    "example/model-c": {"prompt": "0.000005", "completion": "0.000025", "top_tier": True, "usage_level": "top_tier",
+                        "name": "Model C"},
     "example/model-free:free": {"prompt": "0", "completion": "0", "name": "Model Free"},
 }
 FEATURED = ("example/model-a", "example/model-b", "example/model-c", "example/model-free:free")
@@ -57,22 +59,11 @@ class TestTheRule:
         for model in ("example/model-a", "example/model-b", "example/model-c"):
             assert pl.is_blocked(model, DAY_FULL, PRICING)
 
-    def test_a_full_top_tier_gauge_blocks_only_marked_models(self):
-        assert pl.is_blocked("example/model-c", TOP_FULL, PRICING)
-        assert not pl.is_blocked("example/model-b", TOP_FULL, PRICING)
-        assert not pl.is_blocked("example/model-a", TOP_FULL, PRICING)
-
-    def test_an_unmarked_or_unpriced_model_is_not_top_tier_fail_open(self):
-        assert not pl.is_top_tier("example/model-b", PRICING)
-        assert not pl.is_top_tier("unknown/model", PRICING)
-        assert not pl.is_top_tier("example/model-c", {})
-
-    def test_the_usage_level_word_marks_top_tier_too(self):
-        """Today's gateway sends both marks; either one alone is enough, and a free row never is."""
-        level_only = {"example/model-d": {"prompt": "0.000005", "completion": "0.000025", "usage_level": "top_tier"}}
-        assert pl.is_top_tier("example/model-d", level_only)
-        free_marked = {"example/model-e:free": {"prompt": "0", "completion": "0", "usage_level": "top_tier"}}
-        assert not pl.is_top_tier("example/model-e:free", free_marked)
+    def test_an_older_servers_full_top_tier_gauge_blocks_no_model_up_front(self):
+        """A full top-tier gauge blocks no model up front (``usage_level`` / ``top_tier`` marks included)."""
+        for model in PRICING:
+            assert not pl.is_blocked(model, TOP_FULL, PRICING)
+        assert not hasattr(pl, "is_top_tier") and not hasattr(pl, "current_model_is_top_tier")
 
     def test_nothing_full_blocks_nothing(self):
         assert not any(pl.is_blocked(m, HEALTHY, PRICING) for m in PRICING)
@@ -117,7 +108,7 @@ class TestSuggestions:
     def test_a_model_whose_context_cannot_hold_the_conversation_is_skipped(self, monkeypatch):
         monkeypatch.setattr(pl, "_fits_context", lambda model, needed, base_url: model != "example/model-a")
         out = pl.suggest_models("example/model-c", TOP_FULL, pricing=PRICING, featured=FEATURED, needed_tokens=500_000)
-        # The large model is still blocked; the free pick fills the second slot.
+        # The current model is never offered; the free pick fills the second slot.
         assert [s.model for s in out] == ["example/model-b", "example/model-free:free"]
 
     def test_fits_context_leaves_headroom_for_the_reply(self, monkeypatch):
@@ -174,9 +165,9 @@ class TestLimitHit:
         assert hit.gauge_id == "day" and hit.limit_name == "daily"
         assert [s.model for s in hit.suggestions] == ["example/model-free:free"]
 
-    def test_an_unmarked_model_refused_with_the_top_tier_spent_still_explains_it(self, monkeypatch):
-        """The 402 says this model was refused; with no mark in the cache, the full top-tier gauge is the
-        only explanation."""
+    def test_a_refusal_with_an_older_servers_top_tier_spent_still_explains_it(self, monkeypatch):
+        """The 402 says this model was refused; with no all-scope gauge full, a full top-tier
+        gauge is the only explanation (no catalog mark needed)."""
         monkeypatch.setattr(pl, "cached_pricing", lambda base_url: {})
         hit = pl.limit_hit(_agent("example/model-c", TOP_FULL), message="x")
         assert hit is not None and hit.gauge_id == "top_tier"

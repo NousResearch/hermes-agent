@@ -1,4 +1,4 @@
-// health: allow FILE_LINES -- locale data: translated copy for the usage-window plan UI (allowance gauges, Large/Free tags, the limit card), one key per string
+// health: allow FILE_LINES -- locale data: translated copy for the usage-window plan UI (allowance gauges, multiplier/Free chips, the limit card), one key per string
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
@@ -4475,10 +4475,13 @@ export const esOverrides = {
     limitThenWaitLarge: 'modelos grandes en pausa hasta entonces',
     percentUsed: (percent: string) => `${percent} usado`,
     resetsIn: (duration: string) => `se restablece en ${duration}`,
-    usageLevels: { free: 'Gratis', top_tier: 'Grande' },
+    usageFree: 'Gratis',
+    usageBasis: (model: string) => `1× = precio de ${model}`,
+    usageMultiplierTip: (multiplier: string, model: string) =>
+      `Usa unas ${multiplier}× veces el uso de tu plan por solicitud que ${model}.`,
+    usageLessTip: (model: string) => `Usa menos del uso de tu plan por solicitud que ${model}.`,
     sectionRecommended: 'Recomendados',
-    sectionOther: 'Otros modelos',
-    largeFootnote: 'Los modelos grandes también cuentan para tu límite mensual de modelos grandes.'
+    sectionOther: 'Otros modelos'
   },
   modelVisibility: {
     title: 'Modelos',

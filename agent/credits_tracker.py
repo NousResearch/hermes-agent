@@ -243,25 +243,22 @@ def _window_approach_text(g: WindowGauge) -> str:
     return f"⚠ {pct}% of your {gauge_limit_name(g)} limit used{_resets(g.resets_at_ms)}"
 
 
-def _stop_gauge(state: CreditsState, *, model_is_top_tier: Optional[bool]) -> Optional[WindowGauge]:
+def _stop_gauge(state: CreditsState) -> Optional[WindowGauge]:
     """The full allowance behind the limit line, by :func:`agent.plan_limits.blocking_gauge` (the rule
-    ``limit_hit`` reads, so the line, the retry time and the card agree). A full top-tier allowance counts only on
-    a refusal: the API stamps ``spend-source`` on every admitted request and never on a 402, so header-sourced
-    + no source = this model was refused; an ``included`` source means the model is not top-tier and a seed
-    cannot know the model. A refusal no all-scope allowance explains is the top-tier one (a cold catalog).
-    ``model_is_top_tier=None`` (tier unknown) counts the top-tier allowance as one that may stop the model, so
-    of several full ones the later reset wins and no retry is promised before the model can run."""
+    ``limit_hit`` reads, so the line, the retry time and the card agree). A full all-scope allowance is the
+    stop. A full top-tier allowance counts only on a refusal no all-scope one explains: the API stamps ``spend-source``
+    on every admitted request and never on a 402, so header-sourced + no source = this model was refused."""
     if not state.is_usage_window:
         return None
     from agent.plan_limits import blocking_gauge
     refused = state.from_header and state.spend_source is None
-    g = blocking_gauge("", state.gauges, free=False, top_tier=refused and model_is_top_tier is not False)
+    g = blocking_gauge("", state.gauges, free=False, top_tier=False)
     if g is None and refused and state.top_tier_exhausted:
         return state.top_tier_gauge
     return g
 
 
-def _window_hard_stop(state: CreditsState, *, model_is_free: bool, model_is_top_tier: Optional[bool] = False) -> Optional[str]:
+def _window_hard_stop(state: CreditsState, *, model_is_free: bool) -> Optional[str]:
     """Blocking copy for a usage-window account, or None. ``paid_access`` is the portal's word (dunning);
     then: payment paused with no credits (credits keep a paused plan going whatever the setting says; a
     card update restores included usage), the large-model allowance used with no pay path, the window used with no
@@ -278,7 +275,7 @@ def _window_hard_stop(state: CreditsState, *, model_is_free: bool, model_is_top_
         return None
     from agent.plan_limits import credits_action
     action = _CREDITS_STEP[credits_action(state.keep_going_on_credits, purchased)]
-    g = _stop_gauge(state, model_is_top_tier=model_is_top_tier)
+    g = _stop_gauge(state)
     if g is None:
         return None
     if g.scope == SCOPE_TOP_TIER:
@@ -287,11 +284,11 @@ def _window_hard_stop(state: CreditsState, *, model_is_free: bool, model_is_top_
     return f"✕ You've hit your {gauge_limit_name(g)} limit{_resets(g.resets_at_ms)} · {action}"
 
 
-def window_stop_resets_at_ms(state: CreditsState, *, model_is_top_tier: Optional[bool] = False) -> Optional[int]:
+def window_stop_resets_at_ms(state: CreditsState) -> Optional[int]:
     """When the allowance behind :func:`_window_hard_stop`'s limit line frees up (the same gauge)."""
     if state.unmetered:
         return None
-    g = _stop_gauge(state, model_is_top_tier=model_is_top_tier)
+    g = _stop_gauge(state)
     return g.resets_at_ms if g is not None else None
 
 
@@ -333,13 +330,12 @@ def _reconcile_sticky(key: str, text: Optional[str], level: str, latch: dict, to
         texts.pop(key, None)
 
 
-def _evaluate_window_notices(state: CreditsState, latch: dict, *, model_is_free: bool,
-                             model_is_top_tier: bool = False) -> tuple[list, list]:
+def _evaluate_window_notices(state: CreditsState, latch: dict, *, model_is_free: bool) -> tuple[list, list]:
     """Notice policy for a usage-window account (see :func:`evaluate_credits_notices` for the contract).
 
     Approach: each allowance warns once at 90% per reset (``credits.window.<id>``, a TTL heads-up; the
-    limit line takes over when it runs out). The top-tier allowance warns only while the session is on a
-    top-tier model (no other model moves it); a free model warns about nothing. grant_spent never fires (no
+    limit line takes over when it runs out). A top-tier allowance never warns; a free model warns about
+    nothing. grant_spent never fires (no
     grant); a payment pause / depleted account reuses ``credits.depleted`` and its ``credits.restored``."""
     to_show: list = []
     to_clear: list = []
@@ -349,7 +345,7 @@ def _evaluate_window_notices(state: CreditsState, latch: dict, *, model_is_free:
         _reconcile_sticky(CREDITS_USAGE_KEY, None, "info", latch, to_show, to_clear)
         latch["usage_band"] = None
     for g in state.gauges:
-        relevant = not model_is_free and (g.scope != SCOPE_TOP_TIER or model_is_top_tier)
+        relevant = not model_is_free and g.scope != SCOPE_TOP_TIER
         if relevant and not g.full and g.used_fraction >= WINDOW_APPROACH_FRACTION \
                 and warned.get(g.id) != g.resets_at_ms:
             # A heads-up, not a state: shown once (TTL) and never re-shown for the same reset.
@@ -361,7 +357,7 @@ def _evaluate_window_notices(state: CreditsState, latch: dict, *, model_is_free:
         to_clear.append(CREDITS_GRANT_SPENT_KEY)
         active.discard(CREDITS_GRANT_SPENT_KEY)
 
-    stop = _window_hard_stop(state, model_is_free=model_is_free, model_is_top_tier=model_is_top_tier)
+    stop = _window_hard_stop(state, model_is_free=model_is_free)
     limit = stop is not None and stop not in (_PAUSED_TEXT, _PAUSED_OTHER_TEXT, _DEPLETED_TEXT)
     was_stopped = CREDITS_DEPLETED_KEY in active or CREDITS_WINDOW_LIMIT_KEY in active
     _reconcile_sticky(CREDITS_WINDOW_LIMIT_KEY, stop if limit else None, "error", latch, to_show, to_clear)
@@ -430,15 +426,14 @@ def is_free_tier_model(model: str, base_url: str = "") -> bool:
 
 
 def evaluate_credits_notices(state: CreditsState, latch: dict, *, model_is_free: bool = False,
-                             model_is_top_tier: bool = False) -> tuple[list[AgentNotice], list[str]]:
+                             ) -> tuple[list[AgentNotice], list[str]]:
     """Reconcile credits notices against the latch (see :func:`new_credits_latch`); mutates ``latch`` IN
     PLACE. Pure — no I/O, no agent/run_agent imports. ``model_is_free`` suppresses ``credits.depleted`` (a
     depleted account on a free model keeps inferencing) WITHOUT emitting "restored" — that fires only on a
     genuine ``paid_access`` flip back to True. Returns ``(to_show, to_clear)``; caller emits to_clear FIRST.
     A usage-window state (day/week percents, no grant) takes the window policy; everything else is unchanged."""
     if state.is_usage_window:
-        return _evaluate_window_notices(state, latch, model_is_free=model_is_free,
-                                        model_is_top_tier=model_is_top_tier)
+        return _evaluate_window_notices(state, latch, model_is_free=model_is_free)
     to_show: list[AgentNotice] = []
     to_clear: list[str] = []
     uf, active = state.used_fraction, latch["active"]

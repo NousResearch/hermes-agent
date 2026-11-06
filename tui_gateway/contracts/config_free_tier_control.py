@@ -563,8 +563,13 @@ class ModelOptionProvider(OpenModel):
     free_tier_row: bool | None = None
     unavailable_models: list[str] | None = None
     plan_usage: PlanUsage | None = None
-    # Usage-window plans only: the gateway's per-plan word per model (free / low / medium / top_tier).
-    usage_levels: dict[str, str] | None = None
+    # Usage-window plans only: the gateway's cost multiplier per priced model (already rounded), the base
+    # model they are against (``1×``) with the gateway's name for it, and the models that draw nothing
+    # from the window (never dimmed).
+    usage_multipliers: dict[str, float] | None = None
+    usage_basis: str | None = None
+    usage_basis_name: str | None = None
+    usage_free_models: list[str] | None = None
     limit: ProviderLimit | None = None
     usage: ProviderUsage | None = None
 

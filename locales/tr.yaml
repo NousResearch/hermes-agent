@@ -3961,10 +3961,10 @@ tips:
     p10: "Bir hatırlatıcı kur veya yinelenen bir görev zamanla"
     p11: "Komutlara göz atmak için / yazın, palet için Ctrl+P"
 
-# Window plans (Nous subscription with included usage): picker words, limit lines, Large-model notice.
+# Window plans (Nous subscription with included usage): picker chips (Free, the 1× basis line), limit lines.
 plan_usage:
   level_free: "Ücretsiz"
-  level_top_tier: "Büyük"
+  basis_line: "1× = {model} fiyatı"
   resets_in: "{duration} sonra sıfırlanır"
   resets_soon: "yakında sıfırlanır"
   limit_reached: "{name} limitine ulaşıldı · {resets}"
@@ -3976,11 +3976,6 @@ plan_usage:
   then_credits_large: "büyük modeller artık kredilerini kullanıyor (kullandıkça öde)"
   then_wait: "o zamana kadar yalnızca ücretsiz modeller"
   then_wait_large: "büyük modeller o zamana kadar duraklatıldı"
-  large_notice: "Büyük model: mesaj başına planından daha fazla kullanım harcar."
-  large_notice_credits: "Büyük model: mesaj başına daha fazla kredi harcar (kullandıkça öde)."
-  large_notice_limit: "Büyük model: {name} limitine ulaşıldı ({resets})."
-  large_notice_limit_stops: "Büyük model: {name} limitine ulaşıldı ({resets}), o zamana kadar çalışmaz."
-  large_notice_percent: "Büyük model: mesaj başına planından daha fazla kullanım harcar. Aylık büyük model limiti: {percent} kullanıldı."
 shared:
   # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
   undo_rollback:

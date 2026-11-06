@@ -3961,10 +3961,10 @@ tips:
     p10: "Socraigh meabhrúchán nó sceidealaigh tasc athfhillteach"
     p11: "Clóscríobh / chun orduithe a bhrabhsáil, nó Ctrl+P don phailéad"
 
-# Window plans (Nous subscription with included usage): picker words, limit lines, Large-model notice.
+# Window plans (Nous subscription with included usage): picker chips (Free, the 1× basis line), limit lines.
 plan_usage:
   level_free: "Saor in aisce"
-  level_top_tier: "Mór"
+  basis_line: "1× = praghas {model}"
   resets_in: "athshocrú i gceann {duration}"
   resets_soon: "athshocrú go luath"
   limit_reached: "Teorainn {name} bainte amach · {resets}"
@@ -3976,11 +3976,6 @@ plan_usage:
   then_credits_large: "úsáideann samhlacha móra do chreidmheasanna anois (íoc de réir úsáide)"
   then_wait: "samhlacha saor in aisce amháin go dtí sin"
   then_wait_large: "samhlacha móra ar sos go dtí sin"
-  large_notice: "Samhail mhór: úsáideann sí níos mó de d’úsáid plean in aghaidh na teachtaireachta."
-  large_notice_credits: "Samhail mhór: úsáideann sí níos mó creidmheasanna in aghaidh na teachtaireachta (íoc de réir úsáide)."
-  large_notice_limit: "Samhail mhór: tá do theorainn {name} bainte amach ({resets})."
-  large_notice_limit_stops: "Samhail mhór: tá do theorainn {name} bainte amach ({resets}), mar sin ní rithfidh sí go dtí sin."
-  large_notice_percent: "Samhail mhór: úsáideann sí níos mó de d’úsáid plean in aghaidh na teachtaireachta. Teorainn mhíosúil na samhlacha móra: {percent} úsáidte."
 shared:
   # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
   undo_rollback:

@@ -5,7 +5,7 @@ button can never disagree:
 
 * a free model is never blocked;
 * a full gauge with scope ``all`` (day / week / month / any new one) blocks every paid model;
-* a full ``top_tier`` gauge blocks the models the gateway marks top tier.
+* a full ``top_tier`` gauge explains a refusal only; it never blocks a row up front.
 
 Hermes never switches model on its own. When a request is refused, :func:`limit_hit` describes the
 limit and names up to two models from the plan's recommended list (in order) that still
@@ -85,7 +85,7 @@ class LimitHit:
 def cached_pricing(base_url: str = "") -> dict:
     """The calling profile's own cached Nous catalog (never fetches); ``base_url`` is not needed for it. Only
     the profile-keyed read: a process serving several profiles holds their catalogs side by side, and a
-    usage level (Large / Free) is per plan, so another profile's catalog must never answer."""
+    row's plan chrome (multiplier / Free) is per plan, so another profile's catalog must never answer."""
     try:
         from hermes_cli.models_pricing import get_pricing_for_provider
         return get_pricing_for_provider(PROVIDER, cached_only=True) or {}
@@ -117,19 +117,6 @@ def is_free(model: str, pricing: Optional[dict]) -> bool:
         return False
 
 
-def is_top_tier(model: str, pricing: Optional[dict]) -> bool:
-    """The gateway marks the model top tier (``usage_level: top_tier``, or an older gateway's ``top_tier:
-    true``), read by the same rule as the picker tags. Unmarked or no catalog: not top tier."""
-    if not model:
-        return False
-    try:
-        from hermes_cli.model_picker_usage import usage_levels
-        return usage_levels([model], pricing).get(model) == "top_tier"
-    except Exception:
-        logger.debug("Usage level lookup failed", exc_info=True)
-        return False
-
-
 def model_label(model: str, pricing: Optional[dict]) -> str:
     entry = (pricing or {}).get(model)
     name = entry.get("name") if isinstance(entry, dict) else None
@@ -149,20 +136,9 @@ def blocking_gauge(model: str, gauges: Iterable[Any], *, free: bool, top_tier: b
     return max(full, key=lambda g: g.resets_at_ms or 0) if full else None
 
 
-def current_model_is_top_tier(agent: Any) -> Optional[bool]:
-    """*agent*'s current model is top tier, by its own profile's cached catalog (see :func:`is_top_tier`), or
-    None when the catalog has no row for it (cold, or its 300 s cache lapsed): the tier is unknown."""
-    model = str(getattr(agent, "model", "") or "")
-    return _top_tier_mark(model, cached_pricing(str(getattr(agent, "base_url", "") or "")))
-
-
-def _top_tier_mark(model: str, pricing: Optional[dict]) -> Optional[bool]:
-    return is_top_tier(model, pricing) if model in (pricing or {}) or is_free(model, pricing) else None
-
-
 def is_blocked(model: str, gauges: Iterable[Any], pricing: Optional[dict]) -> bool:
-    return blocking_gauge(model, gauges, free=is_free(model, pricing),
-                          top_tier=is_top_tier(model, pricing)) is not None
+    """A full all-scope gauge stops *model* (no model is known to draw on a top-tier allowance)."""
+    return blocking_gauge(model, gauges, free=is_free(model, pricing), top_tier=False) is not None
 
 
 # ── suggestions ──────────────────────────────────────────────────────────────────────────────────
@@ -259,12 +235,11 @@ def limit_hit(agent: Any, *, message: str, needed_tokens: Optional[int] = None) 
         base_url = str(getattr(agent, "base_url", "") or "")
         pricing = cached_pricing(base_url)
         gauges = tuple(getattr(state, "gauges", ()) or ())
-        # A model the cached catalog has no row for may be top tier: count its full top-tier gauge too, so
-        # the card never names an earlier reset than the one that frees it.
-        g = blocking_gauge(model, gauges, free=is_free(model, pricing), top_tier=_top_tier_mark(model, pricing) is not False)
+        # A full all-scope gauge explains the refusal (the rule
+        # ``credits_tracker._stop_gauge`` reads, so the line, the retry time and the card agree).
+        g = blocking_gauge(model, gauges, free=is_free(model, pricing), top_tier=False)
         if g is None:
-            # The 402 says this model was refused; without a top-tier mark in the cache a full top-tier
-            # gauge is still the only explanation.
+            # The 402 says this model was refused; a full top-tier gauge is then the only explanation.
             from agent.usage_gauges import top_tier_gauge
             top = top_tier_gauge(gauges)
             g = top if top is not None and top.full else None

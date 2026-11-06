@@ -1,4 +1,4 @@
-# health: allow FILE_LINES -- usage-window plans: /model picker hooks only (a multi-row hint, Large/Free row labels); the logic lives in hermes_cli/model_picker_usage.py
+# health: allow FILE_LINES -- usage-window plans: /model picker hooks only (a multi-row hint, multiplier/Free row chips); the logic lives in hermes_cli/model_picker_usage.py
 """prompt_toolkit TUI construction, key-binding handlers, and overlay display fragments for the
 interactive CLI. Mixin bound onto ``HermesCLI`` via the MRO; cli.py-internal symbols are imported
 LAZILY inside each method (``from cli import ...``) — never at module load (import cycle)."""

@@ -347,8 +347,6 @@ class GatewayModelCommandsMixin:
             lines.append(t("gateway.model.prompt_caching_enabled"))
         if result.warning_message:
             lines.append(t("gateway.model.warning_prefix", warning=result.warning_message))
-        if getattr(result, "usage_notice", ""):
-            lines.append(f"⚠️ {result.usage_notice}")
         if ctx.persist_global and global_error is not None:
             # Never claim a clean global commit the disk did not take (#100314).
             lines.append(t("gateway.model.warning_prefix", warning=global_error))

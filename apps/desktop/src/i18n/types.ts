@@ -1,4 +1,4 @@
-// health: allow FILE_LINES -- the copy contract for the usage-window plan keys every locale adds (allowance gauges, Large/Free tags, the limit card)
+// health: allow FILE_LINES -- the copy contract for the usage-window plan keys every locale adds (allowance gauges, multiplier/Free chips, the limit card)
 // Desktop i18n type contract.
 //
 // `Translations` is the single source of truth for every translatable string
@@ -3512,11 +3512,16 @@ export interface Translations extends NoticeTranslations {
     limitThenWaitLarge: string
     percentUsed: (percent: string) => string
     resetsIn: (duration: string) => string
-    /** Window plans: the gateway's per-model word (free / low / medium / top_tier). */
-    usageLevels: { free: string; top_tier: string }
+    /** Window plans: the chip on a $0 row (every other row shows the gateway's multiplier, e.g. `3×`). */
+    usageFree: string
+    /** Window plans: the muted line naming the base model every multiplier is against. */
+    usageBasis: (model: string) => string
+    /** Chip tooltip, multiplier 1 or more (`multiplier` is the number without the sign). */
+    usageMultiplierTip: (multiplier: string, model: string) => string
+    /** Chip tooltip, multiplier under 1. */
+    usageLessTip: (model: string) => string
     sectionRecommended: string
     sectionOther: string
-    largeFootnote: string
   }
 
   modelVisibility: {

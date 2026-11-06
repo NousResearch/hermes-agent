@@ -173,15 +173,15 @@ const WINDOW_USAGE = {
   gauges: [
     { label: 'day', left_fraction: 0.82, scope: 'all', style: 'green' },
     { label: 'week', left_fraction: 0.97, scope: 'all', style: 'green' }
-  ],
-  top_tier_model_ids: ['example/model-b']
+  ]
 }
 
-// The gateway's per-plan words, passed through by the backend (Hermes never computes them).
-const WINDOW_LEVELS = {
-  'example/model-d': 'medium',
-  'example/model-b': 'top_tier',
-  'example/model-free:free': 'free'
+// The gateway's multipliers and basis, passed through by the backend (Hermes never computes them).
+const WINDOW_CHIPS = {
+  usage_basis: 'example/model-d',
+  usage_basis_name: 'Model D',
+  usage_free_models: ['example/model-free:free'],
+  usage_multipliers: { 'example/model-b': 15, 'example/model-d': 1 }
 }
 
 // What an older backend sent for a credit-grant subscription; the picker no longer draws it.
@@ -192,7 +192,7 @@ const CREDIT_GRANT_USAGE = {
 }
 
 describe('ModelPickerDialog plan usage', () => {
-  it('shows usage words and no prices on a usage-window plan', async () => {
+  it('shows the multiplier chips, the basis line and no prices on a usage-window plan', async () => {
     vi.mocked(requestModelOptions).mockResolvedValue({
       providers: [
         {
@@ -201,7 +201,7 @@ describe('ModelPickerDialog plan usage', () => {
           models: ['example/model-d', 'example/model-b', 'example/model-free:free'],
           authenticated: true,
           plan_usage: WINDOW_USAGE,
-          usage_levels: WINDOW_LEVELS
+          ...WINDOW_CHIPS
         }
       ]
     })
@@ -211,11 +211,16 @@ describe('ModelPickerDialog plan usage', () => {
     // Gauges read as used and fill up: 0.82 left → 18% used, 0.97 left → 3% used.
     expect(screen.getByText('18% used')).toBeTruthy()
     expect(screen.getByText('3% used')).toBeTruthy()
-    // Only Large / Free carry a tag; the footnote shows because a top-tier row is listed.
+    // The gateway's multiplier replaces the old word; Free keeps its chip; one line names the basis.
     expect(screen.getByText('Free')).toBeTruthy()
-    expect(screen.queryByText('Medium')).toBeNull()
-    expect(screen.getByText('Large')).toBeTruthy()
-    expect(screen.getByText('Large models also use your monthly large-model limit.')).toBeTruthy()
+    expect(screen.getByText('15×')).toBeTruthy()
+    expect(screen.getByText('1×')).toBeTruthy()
+    expect(screen.getByText('15×').getAttribute('title')).toBe(
+      "Uses about 15× as much of your plan's usage per request as Model D."
+    )
+    expect(screen.getByText('1× = Model D price')).toBeTruthy()
+    expect(screen.queryByText('Large')).toBeNull()
+    expect(screen.queryByText(/large-model limit/)).toBeNull()
     expect(screen.getByText('Window Plan')).toBeTruthy()
     expect(screen.queryByText('★')).toBeNull()
     // No featured picks in the plan: one flat list, no section titles.
@@ -238,7 +243,7 @@ describe('ModelPickerDialog plan usage', () => {
             ...WINDOW_USAGE,
             gauges: [...WINDOW_USAGE.gauges, { label: 'month', left_fraction: 0.6, scope: 'all', style: 'green' }]
           },
-          usage_levels: WINDOW_LEVELS
+          ...WINDOW_CHIPS
         }
       ]
     })
@@ -263,7 +268,7 @@ describe('ModelPickerDialog plan usage', () => {
               ...WINDOW_USAGE.gauges
             ]
           },
-          usage_levels: WINDOW_LEVELS
+          ...WINDOW_CHIPS
         }
       ]
     })
@@ -273,7 +278,7 @@ describe('ModelPickerDialog plan usage', () => {
     expect(screen.getByText('50% used')).toBeTruthy()
   })
 
-  it('dims rows a spent allowance stops instead of annotating them, never a free row', async () => {
+  it('a spent top-tier allowance dims no row', async () => {
     vi.mocked(requestModelOptions).mockResolvedValue({
       providers: [
         {
@@ -288,15 +293,15 @@ describe('ModelPickerDialog plan usage', () => {
               { label: 'top_tier', left_fraction: 0, scope: 'top_tier', style: 'red' }
             ]
           },
-          usage_levels: WINDOW_LEVELS
+          ...WINDOW_CHIPS
         }
       ]
     })
     renderPicker({ currentModel: 'example/model-d', currentProvider: 'nous' })
 
-    // Only the top-tier row draws on the spent top-tier allowance: it dims; Medium and Free still have room.
-    const large = await screen.findByText('example/model-b')
-    expect(large.closest('span')?.className).toContain('text-muted-foreground')
+    // A top-tier allowance dims nothing.
+    const pricey = await screen.findByText('example/model-b')
+    expect(pricey.closest('span')?.className).not.toContain('text-muted-foreground')
     expect(screen.getByText('example/model-free:free').closest('span')?.className).not.toContain(
       'text-muted-foreground'
     )
@@ -315,7 +320,7 @@ describe('ModelPickerDialog plan usage', () => {
             ...WINDOW_USAGE,
             gauges: [{ label: 'day', left_fraction: 0, scope: 'all', style: 'red' }]
           },
-          usage_levels: WINDOW_LEVELS
+          ...WINDOW_CHIPS
         }
       ]
     })
@@ -324,6 +329,11 @@ describe('ModelPickerDialog plan usage', () => {
     // A spent all-model allowance is said once, above the list, not on every paid row.
     expect(await screen.findByText('Daily limit reached', { exact: false })).toBeTruthy()
     expect(screen.queryByText('used up')).toBeNull()
+    // Paid rows dim; the free row never does.
+    expect(screen.getByText('example/model-b').closest('span')?.className).toContain('text-muted-foreground')
+    expect(screen.getByText('example/model-free:free').closest('span')?.className).not.toContain(
+      'text-muted-foreground'
+    )
   })
 
   it('says paid models now use credits (pay as you go) when top-up credits will pay', async () => {
@@ -339,7 +349,7 @@ describe('ModelPickerDialog plan usage', () => {
             credits_pay: true,
             gauges: [{ label: 'week', left_fraction: 0, scope: 'all', style: 'red' }]
           },
-          usage_levels: WINDOW_LEVELS
+          ...WINDOW_CHIPS
         }
       ]
     })
@@ -351,7 +361,7 @@ describe('ModelPickerDialog plan usage', () => {
     expect(screen.queryByText('uses credits')).toBeNull()
   })
 
-  it('says pay as you go once in the limit line, not on each Large row, when credits pay', async () => {
+  it('words a spent top-tier allowance once in the limit line when credits pay', async () => {
     vi.mocked(requestModelOptions).mockResolvedValue({
       providers: [
         {
@@ -367,7 +377,7 @@ describe('ModelPickerDialog plan usage', () => {
               { label: 'top_tier', left_fraction: 0, scope: 'top_tier', style: 'red' }
             ]
           },
-          usage_levels: WINDOW_LEVELS
+          ...WINDOW_CHIPS
         }
       ]
     })
@@ -411,7 +421,7 @@ describe('ModelPickerDialog plan usage', () => {
           models: ['example/model-b', 'example/model-d', 'example/model-free:free'],
           authenticated: true,
           plan_usage: { ...WINDOW_USAGE, featured_model_ids: ['example/model-b'] },
-          usage_levels: WINDOW_LEVELS
+          ...WINDOW_CHIPS
         }
       ]
     })
@@ -421,7 +431,7 @@ describe('ModelPickerDialog plan usage', () => {
     expect(screen.getByText('Other models')).toBeTruthy()
   })
 
-  it('shows no sections or usage words for a credit-grant account', async () => {
+  it('shows no sections or usage chips for a credit-grant account', async () => {
     vi.mocked(requestModelOptions).mockResolvedValue({
       providers: [
         {
@@ -431,7 +441,8 @@ describe('ModelPickerDialog plan usage', () => {
           authenticated: true,
           pricing: { 'example/model-d': { input: '$1.00', output: '$5.00', free: false } },
           plan_usage: { ...CREDIT_GRANT_USAGE, featured_model_ids: ['example/model-d'] },
-          usage_levels: { 'example/model-d': 'top_tier' }
+          usage_basis: 'example/model-d',
+          usage_multipliers: { 'example/model-d': 1 }
         }
       ]
     })
@@ -439,7 +450,81 @@ describe('ModelPickerDialog plan usage', () => {
 
     expect(await screen.findByText('$1.00 / $5.00')).toBeTruthy()
     expect(screen.queryByText('Recommended')).toBeNull()
+    expect(screen.queryByText('1×')).toBeNull()
+    expect(screen.queryByText(/1× =/)).toBeNull()
+  })
+
+  it('shows only Free for a usage_levels payload', async () => {
+    vi.mocked(requestModelOptions).mockResolvedValue({
+      providers: [
+        {
+          slug: 'nous',
+          name: 'Nous',
+          models: ['example/model-b', 'example/model-free:free'],
+          authenticated: true,
+          plan_usage: WINDOW_USAGE,
+          usage_free_models: ['example/model-free:free'],
+          usage_levels: { 'example/model-b': 'top_tier', 'example/model-free:free': 'free' }
+        }
+      ]
+    })
+    renderPicker({ currentModel: 'example/model-b', currentProvider: 'nous' })
+
+    expect(await screen.findByText('Free')).toBeTruthy()
     expect(screen.queryByText('Large')).toBeNull()
+    expect(screen.queryByText(/×/)).toBeNull()
+  })
+
+  it('names the basis with the gateway name even when that model is not listed', async () => {
+    vi.mocked(requestModelOptions).mockResolvedValue({
+      providers: [
+        {
+          slug: 'nous',
+          name: 'Nous',
+          models: ['example/model-a'],
+          authenticated: true,
+          plan_usage: WINDOW_USAGE,
+          usage_basis: 'example/model-d',
+          usage_basis_name: 'Gateway Model D',
+          usage_multipliers: { 'example/model-a': 0.05 }
+        }
+      ]
+    })
+    renderPicker({ currentModel: 'example/model-a', currentProvider: 'nous' })
+
+    const chip = await screen.findByText('<0.1×')
+    expect(chip.getAttribute('title')).toBe("Uses less of your plan's usage per request than Gateway Model D.")
+    expect(screen.getByText('1× = Gateway Model D price')).toBeTruthy()
+  })
+
+  it('shows decimals under 1 and tones pricier multipliers amber, then red', async () => {
+    vi.mocked(requestModelOptions).mockResolvedValue({
+      providers: [
+        {
+          slug: 'nous',
+          name: 'Nous',
+          models: ['example/model-a', 'example/model-b', 'example/model-c', 'example/model-d'],
+          authenticated: true,
+          plan_usage: WINDOW_USAGE,
+          usage_basis: 'example/model-x',
+          usage_basis_name: 'Gateway Model X',
+          usage_multipliers: {
+            'example/model-a': 0.4,
+            'example/model-b': 10,
+            'example/model-c': 20,
+            'example/model-d': 55
+          }
+        }
+      ]
+    })
+    renderPicker({ currentModel: 'example/model-z', currentProvider: 'nous' })
+
+    const tone = (text: string) => screen.getByText(text).getAttribute('data-usage-tone')
+    const cheap = await screen.findByText('0.4×')
+    expect(cheap.getAttribute('title')).toBe(
+      "Uses about 0.4× as much of your plan's usage per request as Gateway Model X."
+    )
+    expect([tone('0.4×'), tone('10×'), tone('20×'), tone('55×')]).toEqual(['low', 'low', 'mid', 'high'])
   })
 })
 

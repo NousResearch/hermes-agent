@@ -1,12 +1,17 @@
 import type { ModelOptionProvider, ModelPricing, PlanUsage, PlanUsageGauge } from '@hermes/shared'
 import {
+  formatUsageMultiplier,
   gaugeTitle,
-  hasTopTier,
   PAYMENT_PAUSE_REASON,
   planBlocks,
   planLimit,
+  providerUsageBasis,
   splitRecommended,
-  usageTag
+  type UsageBasis,
+  usageBasis,
+  type UsageChip,
+  usageChip,
+  usageTone
 } from '@hermes/shared'
 import { fuzzyRank, modelSearchText } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
@@ -355,6 +360,8 @@ function ModelResults({
 
         const unavailable = new Set(provider.unavailable_models ?? [])
         const accountLimited = accountResetMs(provider) !== null
+        // Window plans: the base model every multiplier is against (named by the gateway).
+        const basis = usageBasis(provider, models)
 
         const renderModel = (model: string) => {
           const isCurrent = model === currentModel && catalogProviderMatches(provider, currentProvider)
@@ -412,7 +419,11 @@ function ModelResults({
                 </Badge>
               )}
               {provider.plan_usage?.kind === 'usage_window' ? (
-                <UsageLevelTag isCurrent={isCurrent} level={usageTag(provider, model)} />
+                <UsageMultiplierChip
+                  basis={providerUsageBasis(provider)}
+                  chip={usageChip(provider, model)}
+                  isCurrent={isCurrent}
+                />
               ) : (
                 <ModelPrice isCurrent={isCurrent} price={price} />
               )}
@@ -434,6 +445,7 @@ function ModelResults({
                 </InlineNotice>
               </div>
             )}
+            {basis && <UsageBasisLine basis={basis} className="px-6 pb-0.5 pt-1" />}
             {split ? (
               <>
                 <ModelSectionLabel>{copy.sectionRecommended}</ModelSectionLabel>
@@ -443,11 +455,6 @@ function ModelResults({
               </>
             ) : (
               models.map(renderModel)
-            )}
-            {hasTopTier(provider, models) && (
-              <div className="px-6 pb-2 pt-1 text-[0.62rem] leading-relaxed text-muted-foreground">
-                {copy.largeFootnote}
-              </div>
             )}
             {groupDownloads.map(job => (
               <DownloadingModelRow jobId={job.jobId} key={job.jobId} owner={owner} target={job.target} />
@@ -632,34 +639,68 @@ function ModelSectionLabel({ children }: { children: string }) {
   )
 }
 
-/** Window plans: Large (its own monthly limit) or Free (never runs out); other models carry no tag. */
-export function UsageLevelTag({
-  isCurrent = false,
-  level
+/**
+ * Window plans: the gateway's cost multiplier against one base model (`3×`, `0.4×`, `<0.1×`) or Free (never runs
+ * out); rows with neither carry no chip. Pricier multipliers are amber, then red (`usageTone`); the selected row
+ * keeps its inverted style.
+ */
+export function UsageMultiplierChip({
+  basis,
+  chip,
+  isCurrent = false
 }: {
+  basis?: null | UsageBasis
+  chip: UsageChip | null
   isCurrent?: boolean
-  level: 'free' | 'top_tier' | null
 }) {
   const { t } = useI18n()
+  const copy = t.modelPicker
 
-  if (!level) {
+  if (!chip) {
     return null
   }
+
+  const basisName = basis?.name ?? null
+
+  const title =
+    chip.kind === 'multiplier' && basisName
+      ? chip.value < 0.1
+        ? copy.usageLessTip(basisName)
+        : copy.usageMultiplierTip(formatUsageMultiplier(chip.value).replace('×', ''), basisName)
+      : undefined
+
+  const tone = chip.kind === 'multiplier' ? usageTone(chip.value) : null
 
   return (
     <span
       className={cn(
-        'shrink-0 rounded-sm px-1 py-0.5 font-sans text-[0.62rem] font-medium',
+        'shrink-0 rounded-sm px-1 py-0.5 font-sans text-[0.62rem] font-medium tabular-nums',
         isCurrent
           ? 'bg-primary-foreground/20 text-primary-foreground'
-          : level === 'free'
+          : chip.kind === 'free'
             ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
-            : 'bg-amber-500/15 text-amber-700 dark:text-amber-400'
+            : tone === 'high'
+              ? 'bg-red-500/15 text-red-600 dark:text-red-400'
+              : tone === 'mid'
+                ? 'bg-amber-500/15 text-amber-700 dark:text-amber-400'
+                : 'bg-muted text-muted-foreground'
       )}
-      title={level === 'top_tier' ? t.modelPicker.largeFootnote : undefined}
+      data-usage-tone={tone ?? undefined}
+      title={title}
     >
-      {t.modelPicker.usageLevels[level]}
+      {chip.kind === 'free' ? copy.usageFree : formatUsageMultiplier(chip.value)}
     </span>
+  )
+}
+
+/** Window plans: the muted `1× = <base model> price` line naming what every multiplier is against. */
+export function UsageBasisLine({ basis, className }: { basis: UsageBasis; className?: string }) {
+  const { t } = useI18n()
+
+  return (
+    <div className={cn('text-[0.62rem] leading-snug text-muted-foreground', className)}>
+      {t.modelPicker.usageBasis(basis.name)}
+    </div>
   )
 }
 

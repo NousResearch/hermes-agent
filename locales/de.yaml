@@ -3961,10 +3961,10 @@ tips:
     p10: "Richte eine Erinnerung ein oder plane eine wiederkehrende Aufgabe"
     p11: "Geben Sie / ein, um Befehle zu durchsuchen, oder Ctrl+P für die Palette"
 
-# Window plans (Nous subscription with included usage): picker words, limit lines, Large-model notice.
+# Window plans (Nous subscription with included usage): picker chips (Free, the 1× basis line), limit lines.
 plan_usage:
   level_free: "Kostenlos"
-  level_top_tier: "Groß"
+  basis_line: "1× = Preis von {model}"
   resets_in: "Zurücksetzung in {duration}"
   resets_soon: "Zurücksetzung bald"
   limit_reached: "{name} erreicht · {resets}"
@@ -3976,11 +3976,6 @@ plan_usage:
   then_credits_large: "Große Modelle nutzen jetzt dein Guthaben (Pay-as-you-go)"
   then_wait: "bis dahin nur kostenlose Modelle"
   then_wait_large: "Große Modelle bis dahin pausiert"
-  large_notice: "Großes Modell: verbraucht pro Nachricht mehr von deinem Plan."
-  large_notice_credits: "Großes Modell: verbraucht pro Nachricht mehr Guthaben (Pay-as-you-go)."
-  large_notice_limit: "Großes Modell: {name} erreicht ({resets})."
-  large_notice_limit_stops: "Großes Modell: {name} erreicht ({resets}), es läuft bis dahin nicht."
-  large_notice_percent: "Großes Modell: verbraucht pro Nachricht mehr von deinem Plan. Monatslimit für große Modelle: {percent} genutzt."
 shared:
   # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
   undo_rollback:

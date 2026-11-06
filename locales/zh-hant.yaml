@@ -3961,10 +3961,10 @@ tips:
     p10: "設定提醒或排程一項定期任務"
     p11: "輸入 / 瀏覽指令，或按 Ctrl+P 開啟指令面板"
 
-# Window plans (Nous subscription with included usage): picker words, limit lines, Large-model notice.
+# Window plans (Nous subscription with included usage): picker chips (Free, the 1× basis line), limit lines.
 plan_usage:
   level_free: "免費"
-  level_top_tier: "大"
+  basis_line: "1× = {model} 的價格"
   resets_in: "{duration}後重設"
   resets_soon: "即將重設"
   limit_reached: "已達{name}上限 · {resets}"
@@ -3976,11 +3976,6 @@ plan_usage:
   then_credits_large: "大型模型現在使用你的額度（按量付費）"
   then_wait: "在此之前僅可使用免費模型"
   then_wait_large: "在此之前大型模型已暫停"
-  large_notice: "大型模型：每則訊息消耗更多方案用量。"
-  large_notice_credits: "大型模型：每則訊息消耗更多額度（按量付費）。"
-  large_notice_limit: "大型模型：已達{name}上限（{resets}）。"
-  large_notice_limit_stops: "大型模型：已達{name}上限（{resets}），在此之前無法執行。"
-  large_notice_percent: "大型模型：每則訊息消耗更多方案用量。每月大型模型上限：已用 {percent}。"
 shared:
   # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
   undo_rollback:

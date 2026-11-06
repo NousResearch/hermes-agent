@@ -4453,7 +4453,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
 
     def _build_model_keyboard(self, models: list, page: int, provider: Optional[dict] = None) -> tuple:
         """Build paginated model buttons. Returns (keyboard, page_info_text). Window plans: each button
-        carries the plan word (``model-b · Large``) from the provider row; other accounts are unchanged."""
+        carries the plan chip (``model-b · 3×``) from the provider row; other accounts are unchanged."""
         from hermes_cli.model_picker_usage import picker_row_suffix
         page_models, page_meta = self._format_choice_page(models, page, self._MODEL_PAGE_SIZE)
         start = page_meta["start"]

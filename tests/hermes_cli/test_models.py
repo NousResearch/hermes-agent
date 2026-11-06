@@ -173,11 +173,11 @@ class TestPartitionNousModelsByTier:
         usage = mpu.PickerUsage(plan="Window Plan", gauges=(), featured_model_ids=("not/listed", "example/model-a"))
         monkeypatch.setattr(mpu, "nous_picker_usage", lambda **kw: usage)
         assert m.recommended_nous_default_model()["model"] == "example/model-a"
-        # A Large featured pick is never the default: the next listed recommendation is.
+        # No tier skips a pick: ``usage_level: top_tier`` on the first pick is ignored.
         usage_c = mpu.PickerUsage(plan="Window Plan", gauges=(), featured_model_ids=("example/model-c", "example/model-a"))
         monkeypatch.setattr(mpu, "nous_picker_usage", lambda **kw: usage_c)
         monkeypatch.setattr(mp, "get_pricing_for_provider", lambda slug, **kw: {"example/model-c": {"usage_level": "top_tier"}})
-        assert m.recommended_nous_default_model()["model"] == "example/model-a"
+        assert m.recommended_nous_default_model()["model"] == "example/model-c"
         # Every other account (no window plan) keeps the silent default.
         monkeypatch.setattr(mpu, "nous_picker_usage", lambda **kw: None)
         assert m.recommended_nous_default_model()["model"] == "example/model-b"

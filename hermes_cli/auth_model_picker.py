@@ -48,17 +48,13 @@ def _confirm_selection_guards(
     return response in {"y", "yes"}
 
 
-# Usage column on a window plan: "Large" / "Free" (other levels carry no tag).
-_COST_COL = len("Large")
 _GAUGE_GAP = "  "
-# Style per gateway level: Free green, Large yellow (it draws on its own limit), the rest plain.
-_LEVEL_STYLE = {"free": "green", "top_tier": "yellow"}
 
 
 class _ModelPickerRows:
     """Column-aligned picker rows.
 
-    Usage-window plan: ``Large`` / ``Free`` on the rows the gateway marks, exactly as
+    Usage-window plan: the gateway's cost multiplier (``3×`` / ``0.4×`` / ``<0.1×``) or ``Free`` per row, exactly as
     the gateway sent it on this caller's catalog. Every other account keeps ``$/Mtok``.
 
     Chrome is emitted as styled segments, not ANSI baked into one string — curses addnstr would
@@ -76,23 +72,28 @@ class _ModelPickerRows:
         self.notes = notes or {}
         self.window_mode = usage is not None
         if self.window_mode:
-            # The gateway's ``top_tier`` marks decide which rows a full large-model limit dims.
+            # Free rows (never dimmed by a full allowance) come from the catalog.
             usage = usage.with_pricing(pricing)
         self.usage = usage
         if self.window_mode:
-            from hermes_cli.model_picker_usage import usage_tag_levels
-            # Tags only: dimming reads ``usage.blocks`` (free_ids), so subscription-billed rows still never dim.
-            self.levels = usage_tag_levels(all_models, pricing)
+            from hermes_cli.model_picker_usage import basis_line, free_label, usage_chip_label
+            # Chips only: dimming reads ``usage.blocks`` (free_ids), so subscription-billed rows still never dim.
+            # This picker's own text is English (as on main).
+            self.chips = {m: chip for m in all_models if (chip := usage_chip_label(m, pricing, "en"))}
+            self.free_chip = free_label("en")
+            self.chip_col = max((len(c) for c in self.chips.values()), default=0)
+            self.basis = basis_line(all_models, pricing, "en")
             self.has_pricing = False
             self.has_cache = False
             self.any_on_sale = False
             self.price_col = self.cache_col = 0
             self._price_cache = {}
-            self.has_top_tier = "top_tier" in self.levels.values()
             self.name_col = max((len(m) for m in all_models), default=0) + 2
             return
-        self.levels = {}
-        self.has_top_tier = False
+        self.chips = {}
+        self.free_chip = ""
+        self.chip_col = 0
+        self.basis = ""
         self.has_pricing = bool(pricing and any(pricing.get(m) for m in all_models))
         # Leave room for a leading "★ " on sale rows (Nous only).
         name_pad = 3 if sale_chrome else 2
@@ -136,12 +137,11 @@ class _ModelPickerRows:
             self.cache_col = max(self.cache_col, 5)  # minimum: "Cache" header
 
     def _cost_segments(self, mid: str) -> list[tuple[str, str | None]]:
-        """Window row: padded name (dim when a full allowance stops it) + Large / Free."""
+        """Window row: padded name (dim when a full allowance stops it) + ``3×`` / ``Free`` (Free green,
+        every multiplier plain: one neutral style, so no client-side tiering)."""
         segs: list[tuple[str, str | None]] = [(f"{mid:<{self.name_col}}", "dim" if self.usage.blocks(mid) else None)]
-        from hermes_cli.model_picker_usage import usage_level_label
-        level = self.levels.get(mid)
-        word = usage_level_label(level, "en")
-        segs.extend(((_GAUGE_GAP, None), (f"{word:<{_COST_COL}}", _LEVEL_STYLE.get(level or ""))))
+        chip = self.chips.get(mid, "")
+        segs.extend(((_GAUGE_GAP, None), (f"{chip:<{self.chip_col}}", "green" if chip and chip == self.free_chip else None)))
         return segs
 
     def segments(self, mid: str) -> list[tuple[str, str | None]]:
@@ -186,6 +186,8 @@ class _ModelPickerRows:
                 suffix = f" — {self.usage.included_summary}" if i == 0 else ""
                 lines.append(f"{pad}{line}{suffix}")
             lines.append(f"{pad}{'':>{self.name_col}}{_GAUGE_GAP}Usage")
+            if self.basis:  # what every multiplier is against, just above the Recommended / Other rows
+                lines.append(f"{pad}{self.basis}")
             return lines
         if self.has_pricing:
             header = f"{pad}{'':>{self.name_col}} {'In':>{self.price_col}}  {'Out':>{self.price_col}}"
@@ -201,13 +203,6 @@ class _ModelPickerRows:
         """*title* plus the description lines (headers / gauges), newline-joined."""
         lines = self.description_lines()
         return title + ("\n" + "\n".join(lines) if lines else "")
-
-    def footnote(self) -> str:
-        """Window plan with a Large row listed: the one line that says what Large means."""
-        if not self.has_top_tier:
-            return ""
-        from hermes_cli.model_picker_usage import TOP_TIER_FOOTNOTE
-        return TOP_TIER_FOOTNOTE
 
 
 def _picker_order(model_ids: list[str], current_model: str, window_usage) -> tuple[list[str], dict[int, str], int]:
@@ -234,7 +229,7 @@ def _picker_order(model_ids: list[str], current_model: str, window_usage) -> tup
 
 
 def _print_numbered_rows(rows: _ModelPickerRows, menu_title: str, ordered: list[str], sections: dict[int, str]) -> int:
-    """The no-curses fallback's title, numbered rows (+ custom / skip) and footnote; returns the number width."""
+    """The no-curses fallback's title, numbered rows (+ custom / skip); returns the number width."""
     from hermes_cli.curses_ui import colorize_gauge_bars_ansi, format_radio_item_ansi
     from hermes_cli.colors import Colors, color
     n, _DIM, _RESET = len(ordered), "\033[2m", "\033[0m"
@@ -249,8 +244,6 @@ def _print_numbered_rows(rows: _ModelPickerRows, menu_title: str, ordered: list[
         print(f"  {i:>{num_width}}. {format_radio_item_ansi(rows.segments(mid))}")
     print(f"  {n + 1:>{num_width}}. {_CUSTOM_LABEL}")
     print(f"  {n + 2:>{num_width}}. {_SKIP_LABEL}")
-    if footnote := rows.footnote():
-        print(f"  {_DIM}{footnote}{_RESET}")
     return num_width
 
 
@@ -320,8 +313,6 @@ def _prompt_model_selection(
         if _unavailable:
             desc_lines.extend(f"   {rows.label(mid)}" for mid in _unavailable)
             desc_lines.append(f"  ── {unavailable_footer} ──")
-        if footnote := rows.footnote():
-            desc_lines.append(f"     {footnote}")
 
         # Search haystack = label + aliases for brand-less wire ids (Kimi `k3` ↔ "kimi"); skip when
         # model_search_text adds nothing beyond the bare id.

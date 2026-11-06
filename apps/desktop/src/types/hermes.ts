@@ -1983,8 +1983,6 @@ export interface ModelAssignmentResponse {
   confirm_message?: string
   confirm_required?: boolean
   model?: string
-  /** Window plans, Large model: a warning to show (never a confirm). */
-  notice?: string
   ok: boolean
   provider?: string
   reset?: boolean

@@ -3978,10 +3978,10 @@ tips:
     p10: "Állíts be emlékeztetőt, vagy ütemezz ismétlődő feladatot"
     p11: "Írj / jelet a parancsokhoz, vagy nyomj Ctrl+P-t a palettához"
 
-# Window plans (Nous subscription with included usage): picker words, limit lines, Large-model notice.
+# Window plans (Nous subscription with included usage): picker chips (Free, the 1× basis line), limit lines.
 plan_usage:
   level_free: "Ingyenes"
-  level_top_tier: "Nagy"
+  basis_line: "1× = {model} ára"
   resets_in: "visszaáll: {duration}"
   resets_soon: "hamarosan visszaáll"
   limit_reached: "Elérted a(z) {name} korlátot · {resets}"
@@ -3993,11 +3993,6 @@ plan_usage:
   then_credits_large: "a nagy modellek most a kreditjeidet használják (használat alapú fizetés)"
   then_wait: "addig csak ingyenes modellek"
   then_wait_large: "a nagy modellek addig szünetelnek"
-  large_notice: "Nagy modell: üzenetenként többet használ a csomagodból."
-  large_notice_credits: "Nagy modell: üzenetenként több kreditet használ (használat alapú fizetés)."
-  large_notice_limit: "Nagy modell: elérted a(z) {name} korlátot ({resets})."
-  large_notice_limit_stops: "Nagy modell: elérted a(z) {name} korlátot ({resets}), így addig nem fut."
-  large_notice_percent: "Nagy modell: üzenetenként többet használ a csomagodból. Nagy modellekre vonatkozó havi korlát: {percent} felhasználva."
 shared:
   # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
   undo_rollback:

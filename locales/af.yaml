@@ -3961,10 +3961,10 @@ tips:
     p10: "Stel 'n herinnering of skeduleer 'n herhalende taak"
     p11: "Tik / om deur opdragte te blaai, of Ctrl+P vir die palet"
 
-# Window plans (Nous subscription with included usage): picker words, limit lines, Large-model notice.
+# Window plans (Nous subscription with included usage): picker chips (Free, the 1× basis line), limit lines.
 plan_usage:
   level_free: "Gratis"
-  level_top_tier: "Groot"
+  basis_line: "1× = prys van {model}"
   resets_in: "stel terug oor {duration}"
   resets_soon: "stel binnekort terug"
   limit_reached: "{name} bereik · {resets}"
@@ -3976,11 +3976,6 @@ plan_usage:
   then_credits_large: "groot modelle gebruik nou jou krediete (betaal soos jy gebruik)"
   then_wait: "net gratis modelle tot dan"
   then_wait_large: "groot modelle tot dan gepouseer"
-  large_notice: "Groot model: gebruik meer van jou plan per boodskap."
-  large_notice_credits: "Groot model: gebruik meer krediete per boodskap (betaal soos jy gebruik)."
-  large_notice_limit: "Groot model: {name} bereik ({resets})."
-  large_notice_limit_stops: "Groot model: {name} bereik ({resets}), dit sal nie tot dan loop nie."
-  large_notice_percent: "Groot model: gebruik meer van jou plan per boodskap. Maandelikse limiet vir groot modelle: {percent} gebruik."
 shared:
   # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
   undo_rollback:

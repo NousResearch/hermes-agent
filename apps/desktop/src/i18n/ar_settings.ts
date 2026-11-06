@@ -1050,10 +1050,12 @@ export const arSettings = {
     limitThenWaitLarge: 'النماذج الكبيرة متوقفة مؤقتًا حتى ذلك الحين',
     percentUsed: percent => `${percent} مستخدم`,
     resetsIn: duration => `يُعاد التعيين خلال ${duration}`,
-    usageLevels: { free: 'مجاني', top_tier: 'كبير' },
+    usageFree: 'مجاني',
+    usageBasis: model => `1× = سعر ${model}`,
+    usageMultiplierTip: (multiplier, model) => `يستهلك لكل طلب نحو ${multiplier}× من استخدام خطتك مقارنةً بـ ${model}.`,
+    usageLessTip: model => `يستهلك لكل طلب استخدامًا أقل من خطتك مقارنةً بـ ${model}.`,
     sectionRecommended: 'موصى بها',
-    sectionOther: 'نماذج أخرى',
-    largeFootnote: 'تستهلك النماذج الكبيرة أيضًا حدّك الشهري للنماذج الكبيرة.'
+    sectionOther: 'نماذج أخرى'
   },
   modelVisibility: {
     title: 'النماذج',

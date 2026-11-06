@@ -6563,7 +6563,7 @@ def _define_discord_view_classes() -> None:
                     discord.SelectOption(
                         label=_truncate_discord_component_text(model_id.split("/")[-1], _DISCORD_SELECT_FIELD_LIMIT),
                         value=_truncate_discord_component_text(model_id, _DISCORD_SELECT_FIELD_LIMIT),
-                        # Usage-window plans: "Large" / "Free" (empty for every other account).
+                        # Usage-window plans: "3×" / "Free" (empty for every other account).
                         description=(_truncate_discord_component_text(suffix, _DISCORD_SELECT_FIELD_LIMIT)
                                      if (suffix := picker_row_suffix(provider, model_id)) else None),
                     )

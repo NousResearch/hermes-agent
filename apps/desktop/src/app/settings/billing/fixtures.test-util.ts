@@ -86,7 +86,6 @@ function windowPlan(
         }
       ],
       featured_model_ids: ['example/model-a', 'example/model-c'],
-      top_tier_model_ids: ['example/model-c'],
       kind: 'usage_window',
       paused_reason: paused ? 'payment_past_due' : null,
       plan: 'Window Plan'

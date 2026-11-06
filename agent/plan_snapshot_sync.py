@@ -62,7 +62,7 @@ def _refresh(plan_changed: bool, key: str) -> None:
         if getattr(get_nous_portal_account_info(force_fresh=True), "source", None) == "error":
             _last_attempt.pop(key, None)  # a failed fetch (reported, not raised) is no attempt either
         if plan_changed:
-            # The per-model levels (Large / Free tags) come with the catalog; refetch so they move with the plan.
+            # The per-model chips (multiplier / Free) come with the catalog; refetch so they move with the plan.
             from hermes_cli.models_pricing import get_pricing_for_provider
             get_pricing_for_provider("nous", force_refresh=True)
     except Exception:

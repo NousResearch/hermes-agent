@@ -1703,10 +1703,12 @@ export const zhHantSettings = {
     limitThenWaitLarge: '在此之前大型模型已暫停',
     percentUsed: percent => `已用 ${percent}`,
     resetsIn: duration => `${duration}後重設`,
-    usageLevels: { free: '免費', top_tier: '大' },
+    usageFree: '免費',
+    usageBasis: model => `1× = ${model} 的價格`,
+    usageMultiplierTip: (multiplier, model) => `每次請求消耗的方案用量約為 ${model} 的 ${multiplier}×。`,
+    usageLessTip: model => `每次請求消耗的方案用量少於 ${model}。`,
     sectionRecommended: '推薦',
-    sectionOther: '其他模型',
-    largeFootnote: '大型模型也會消耗你的每月大型模型額度。'
+    sectionOther: '其他模型'
   },
 
   modelVisibility: {

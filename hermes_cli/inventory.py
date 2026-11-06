@@ -1005,12 +1005,17 @@ def _apply_pricing(rows: list[dict], *, force_fresh_nous_tier: bool = False, cac
                 row["free_tier"] = False
                 row["unavailable_models"] = []
             if plan_usage is not None:
-                from hermes_cli.model_picker_usage import usage_levels
-                # The gateway's per-plan word per model (free / low / medium / top_tier).
-                row["usage_levels"] = usage_levels(list(models), raw_pricing)
-                # Top-tier marks from the gateway (it decides, not the client).
+                from hermes_cli.model_picker_usage import usage_basis, usage_free_models, usage_multiplier
+                # Window plans: the gateway's cost multiplier per priced model (as sent, already rounded) and
+                # the base model they are against, with its name; the client never derives either from prices.
+                row["usage_multipliers"] = {m: v for m in models if (v := usage_multiplier(raw_pricing.get(m))) is not None}
+                basis = usage_basis() if row["usage_multipliers"] else None
+                row["usage_basis"] = basis["model_id"] if basis else None
+                row["usage_basis_name"] = basis["name"] if basis else None
+                # Rows that draw nothing from the window (never dimmed; "Free" unless subscription-billed).
+                row["usage_free_models"] = usage_free_models(list(models), raw_pricing)
                 row["plan_usage"] = plan_usage.with_pricing({m: raw_pricing.get(m) for m in models}).to_payload()
-                # Window plans: the picker shows the usage word, not per-token prices.
+                # Window plans: the picker shows the multiplier, not per-token prices.
                 row.pop("pricing", None)
 
 

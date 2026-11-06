@@ -3961,10 +3961,10 @@ tips:
     p10: "Постав нагадування або заплануй повторюване завдання"
     p11: "Введіть /, щоб переглянути команди, або Ctrl+P для палітри"
 
-# Window plans (Nous subscription with included usage): picker words, limit lines, Large-model notice.
+# Window plans (Nous subscription with included usage): picker chips (Free, the 1× basis line), limit lines.
 plan_usage:
   level_free: "Безкоштовно"
-  level_top_tier: "Велика"
+  basis_line: "1× = ціна {model}"
   resets_in: "скидання через {duration}"
   resets_soon: "скоро скидання"
   limit_reached: "Досягнуто {name} · {resets}"
@@ -3976,11 +3976,6 @@ plan_usage:
   then_credits_large: "великі моделі тепер використовують ваші кредити (оплата за використання)"
   then_wait: "до скидання лише безкоштовні моделі"
   then_wait_large: "великі моделі призупинено до скидання"
-  large_notice: "Велика модель: витрачає більше ліміту плану на повідомлення."
-  large_notice_credits: "Велика модель: витрачає більше кредитів на повідомлення (оплата за використання)."
-  large_notice_limit: "Велика модель: досягнуто {name} ({resets})."
-  large_notice_limit_stops: "Велика модель: досягнуто {name} ({resets}), до скидання вона не запуститься."
-  large_notice_percent: "Велика модель: витрачає більше ліміту плану на повідомлення. Місячний ліміт великих моделей: використано {percent}."
 shared:
   # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
   undo_rollback:

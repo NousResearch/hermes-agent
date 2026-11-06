@@ -5073,7 +5073,7 @@ class SlackAdapter(BasePlatformAdapter):
         options = []
         for idx, model_id in enumerate(models):
             short = model_id.split("/")[-1] if "/" in model_id else model_id
-            # Window plans: "Large" / "Free" rides on the option; others unchanged.
+            # Window plans: "3×" / "Free" rides on the option; others unchanged.
             suffix = picker_row_suffix(provider, model_id)
             text = f"{short[:75 - len(suffix) - 3]} · {suffix}" if suffix else short[:75]
             options.append({

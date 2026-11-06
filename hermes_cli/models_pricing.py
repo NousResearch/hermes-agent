@@ -274,18 +274,16 @@ def fetch_models_with_pricing(
             # Nous Portal-only: the gateway bills this row to a subscription the account holds, not to credits.
             if include_sale_original and item.get("billing_mode") == "subscription":
                 entry["billing_mode"] = "subscription"
-            # Usage-window plans only (only those callers ever see the mark): the gateway marks the
-            # models that count against the plan's monthly large-model limit.
-            if include_sale_original and item.get("top_tier") is True:
-                entry["top_tier"] = True
-            # Same callers: the gateway's per-plan picker label (free / low / medium / top_tier).
-            if include_sale_original and isinstance(item.get("usage_level"), str):
-                entry["usage_level"] = item["usage_level"]
+            # Usage-window callers only (only they ever get it): the gateway's cost multiplier against
+            # one base model, already rounded. ``usage_level`` / ``top_tier`` are ignored.
+            if include_sale_original:
+                from hermes_cli.model_picker_usage import usage_multiplier
+                if (multiplier := usage_multiplier(item)) is not None:
+                    entry["usage_multiplier"] = multiplier
             # Nous only: the catalog's display name, so a limit line can name a model the way the
-            # picker does ("Model A", not the routed id).
-            if include_sale_original and isinstance(item.get("name"), str) and item["name"].strip() \
-                    and item["name"].strip() != mid:
-                entry["name"] = item["name"].strip()
+            # picker does ("Model A", not the routed id). Sanitized: limit lines print it in a terminal.
+            if include_sale_original and (name := _display_text(item.get("name"))) and name != mid:
+                entry["name"] = name
             # Nous Portal-only: on-sale rows join the picker, which must not offer a tool-less model.
             if include_sale_original and not _openrouter_model_supports_tools(item):
                 entry["tools"] = False
@@ -294,7 +292,57 @@ def fetch_models_with_pricing(
                 entry["generation"] = True
             result[mid] = entry
 
+    # Usage-window callers only: the base model the multipliers are against, named beside ``data``
+    # (``{"model_id", "name"}``), kept with this catalog entry (same key, same lifetime).
+    if include_sale_original:
+        _remember_usage_basis(cache_key, payload.get("usage_basis"))
     return _cache_catalog(cache_key, result, cache_ttl_seconds)
+
+
+# The gateway's ``usage_basis`` per catalog cache key (Nous only), read with that catalog.
+_usage_basis_by_catalog: dict[str, dict[str, str]] = {}
+
+
+# The basis id/name are portal-sent free text printed verbatim in the CLI and TUI pickers: capped so a
+# long one cannot break the layout (control characters are stripped first, ``_display_text``).
+_USAGE_BASIS_TEXT_MAX = 64
+
+
+def _display_text(value: Any, limit: int = _USAGE_BASIS_TEXT_MAX) -> str:
+    """*value* made safe to print in a terminal: ANSI sequences, control characters and invisible Unicode
+    tag characters removed, whitespace collapsed to single spaces, capped at *limit* characters. ``""`` for a
+    non-string or when nothing printable is left."""
+    if not isinstance(value, str):
+        return ""
+    from tools.ansi_strip import sanitize_display_text, strip_unicode_tags
+    text = " ".join(strip_unicode_tags(sanitize_display_text(value)).split())
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def _remember_usage_basis(cache_key: str, value: Any) -> None:
+    """Keep ``{"model_id", "name"}`` for *cache_key*, sanitized for display; drop it when absent, malformed or
+    empty once sanitized."""
+    model_id = _display_text(value.get("model_id")) if isinstance(value, dict) else ""
+    if not model_id:
+        _usage_basis_by_catalog.pop(cache_key, None)
+        return
+    _usage_basis_by_catalog[cache_key] = {
+        "model_id": model_id,
+        "name": _display_text(value.get("name")) or model_id,
+    }
+
+
+def nous_usage_basis() -> Optional[dict[str, str]]:
+    """``{"model_id", "name"}`` the caller's cached Nous catalog was priced against (window plans), or
+    None. Cache-only: reads what the last ``/v1/models`` fetch for the current credential returned."""
+    try:
+        from hermes_cli.models import _pricing_profile_key
+        cache_key = _pricing_provider_cache_keys.get((_pricing_profile_key(), "nous"))
+    except Exception:
+        return None
+    if cache_key is None or _cached_catalog(cache_key) is None:
+        return None
+    return _usage_basis_by_catalog.get(cache_key)
 
 
 def fetch_ai_gateway_pricing(timeout: float = 8.0, *, force_refresh: bool = False) -> dict[str, dict[str, str]]:

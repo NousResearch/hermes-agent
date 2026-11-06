@@ -161,20 +161,23 @@ describe('usage-window plan rows', () => {
             kind: 'usage_window'
           },
           slug: 'nous',
-          usage_levels: { 'example/model-free:free': 'free', 'example/model-b': 'medium' }
+          usage_free_models: ['example/model-free:free'],
+          usage_multipliers: { 'example/model-b': 3 }
         }
       ]
     })
     renderMenu({ model: 'example/model-free:free', provider: 'nous' })
 
     await screen.findByText('Free')
-    // Only Large / Free carry a tag. A spent all-model allowance shows once under the provider, not on each row.
-    expect(screen.queryByText('Medium')).toBeNull()
+    // The gateway's multiplier in the old tag slot; no basis sent, so no basis line. A spent all-model
+    // allowance shows once under the provider, not on each row.
+    expect(screen.getByText('3×')).toBeTruthy()
+    expect(screen.queryByText(/1× =/)).toBeNull()
     expect(screen.getByText('Daily limit reached', { exact: false })).toBeTruthy()
     expect(screen.queryByText('used up')).toBeNull()
   })
 
-  it('marks only Large rows when the large-model limit is spent; pay as you go is said once, not per row', async () => {
+  it('shows the basis line once and words a top-tier limit once, never per row', async () => {
     getGlobalModelOptions.mockResolvedValue({
       providers: [
         {
@@ -190,18 +193,21 @@ describe('usage-window plan rows', () => {
             kind: 'usage_window'
           },
           slug: 'nous',
-          usage_levels: {
-            'example/model-a': 'low',
-            'example/model-free:free': 'free',
-            'example/model-b': 'top_tier'
-          }
+          usage_basis: 'example/model-a',
+          usage_basis_name: 'Model A',
+          usage_free_models: ['example/model-free:free'],
+          usage_multipliers: { 'example/model-a': 1, 'example/model-b': 0.5 },
+          // Tier words: ignored.
+          usage_levels: { 'example/model-b': 'top_tier' }
         }
       ]
     })
     renderMenu({ model: 'example/model-free:free', provider: 'nous' })
 
-    await screen.findByText('Large')
-    expect(screen.queryByText('Small')).toBeNull()
+    await screen.findByText('0.5×')
+    expect(screen.getByText('1×')).toBeTruthy()
+    expect(screen.getAllByText('1× = Model A price')).toHaveLength(1)
+    expect(screen.queryByText('Large')).toBeNull()
     expect(screen.queryByText('uses credits')).toBeNull()
     expect(screen.getByText('· Large models now use your credits (pay as you go)', { exact: false })).toBeTruthy()
   })

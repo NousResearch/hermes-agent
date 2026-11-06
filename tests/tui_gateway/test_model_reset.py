@@ -26,7 +26,7 @@ def test_reset_drops_the_pin_and_adopts_config_without_repinning(monkeypatch, tm
         return SimpleNamespace(
             success=True, new_model=kw["raw_input"], target_provider=kw["explicit_provider"], base_url="",
             api_key="k", api_mode="chat_completions", warning_message="", model_info=None, error_message="",
-            runtime_capabilities=None, request_overrides=None, usage_notice="")
+            runtime_capabilities=None, request_overrides=None)
 
     monkeypatch.setattr("hermes_cli.model_switch.switch_model", _switch_model)
     agent = _Agent()

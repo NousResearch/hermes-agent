@@ -107,7 +107,6 @@ export interface PlanUsage {
   kind: string
   plan?: string | null
   gauges?: PlanUsageGauge[]
-  top_tier_model_ids?: string[]
   subscription_model_ids?: string[]
   featured_model_ids?: string[]
   paused_reason?: string | null
@@ -848,7 +847,10 @@ export interface ModelOptionProvider {
   free_tier_row?: boolean | null
   unavailable_models?: string[] | null
   plan_usage?: PlanUsage | null
-  usage_levels?: Record<string, string> | null
+  usage_multipliers?: Record<string, number> | null
+  usage_basis?: string | null
+  usage_basis_name?: string | null
+  usage_free_models?: string[] | null
   limit?: ProviderLimit | null
   usage?: ProviderUsage | null
   [key: string]: unknown

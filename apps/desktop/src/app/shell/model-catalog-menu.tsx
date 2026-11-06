@@ -2,10 +2,11 @@ import type { ModelOptionProvider, ModelOptionsResult, ModelPricing } from '@her
 import {
   DEFAULT_REASONING_EFFORT,
   planBlocks,
+  providerUsageBasis,
   sectionAt,
   splitRecommended,
-  usageLevel,
-  usageTag
+  usageBasis,
+  usageChip
 } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
@@ -21,7 +22,7 @@ import {
   useState
 } from 'react'
 
-import { PlanLimitLine, UsageLevelTag } from '@/components/model-picker'
+import { PlanLimitLine, UsageBasisLine, UsageMultiplierChip } from '@/components/model-picker'
 import { ProviderStatusChip } from '@/components/provider-status-chip'
 import { Badge } from '@/components/ui/badge'
 import { Codicon } from '@/components/ui/codicon'
@@ -826,6 +827,8 @@ export function ModelCatalogMenu({
                 {/* Window plans past an allowance: one line saying what happens next (pay as you go
                     or wait for the reset) instead of a note on every row. */}
                 {!collapsed && !search ? <PlanLimitLine className="px-2 pb-1" provider={group.provider} /> : null}
+                {/* Window plans: what every multiplier is against, once under the group heading. */}
+                {!collapsed && !search ? <GroupUsageBasis group={group} /> : null}
                 {!collapsed &&
                   group.families.map((family, familyIdx) => (
                     <Fragment key={`${group.provider.slug}:${family.id}`}>
@@ -1015,7 +1018,7 @@ interface ModelFamilyRowProps {
  *  model, plus the hover-revealed options submenu. Shared by the Favorites
  *  section and the provider groups, so the two can never paint a model
  *  differently. */
-// health: allow CC -- usage-window plans: the Large/Free tag replaces the price on tagged rows; this row was over target on main
+// health: allow CC -- usage-window plans: the multiplier/Free chip replaces the price on window rows; this row was over target on main
 function ModelFamilyRow({
   controller,
   current,
@@ -1056,8 +1059,9 @@ function ModelFamilyRow({
   // fronts the base, so fall back to it when only the fast variant is unpriced.
   const pricing = provider.pricing?.[family.id] ?? (family.fastId ? provider.pricing?.[family.fastId] : undefined)
 
-  // Window plans: no price (the plan covers it); the tag shows only for Large / Free.
-  const rowLevel = usageLevel(provider, family.id)
+  // Window plans: no price (the plan covers it); the gateway's multiplier or Free instead.
+  const windowPlan = provider.plan_usage?.kind === 'usage_window'
+  const chip = usageChip(provider, family.id)
 
   // Managed local model loading into memory right now: real load percent,
   // keyed by exact model id (remote providers never collide with GGUF stems).
@@ -1190,8 +1194,8 @@ function ModelFamilyRow({
             <span className="text-[0.62rem] tabular-nums text-(--ui-text-tertiary)">{loadProgress.percent}%</span>
           </span>
         ) : null}
-        {showPricing && pricing && !rowLevel ? <ModelPrice pricing={pricing} /> : null}
-        {rowLevel ? <UsageLevelTag level={usageTag(provider, family.id)} /> : null}
+        {showPricing && pricing && !windowPlan ? <ModelPrice pricing={pricing} /> : null}
+        {windowPlan ? <UsageMultiplierChip basis={providerUsageBasis(provider)} chip={chip} /> : null}
         {settings.map(setting => (
           <ModelChip key={setting} setting>
             {setting}
@@ -1467,6 +1471,13 @@ function recommendedFirst(provider: ModelOptionProvider, families: ModelFamily[]
   const byId = new Map(families.map(family => [family.id, family]))
 
   return [...split.recommended, ...split.other].flatMap(id => byId.get(id) ?? [])
+}
+
+// Window plans: the `1× = <base model> price` line when any family in the group shows a multiplier.
+function GroupUsageBasis({ group }: { group: ProviderGroup }): ReactElement | null {
+  const basis = usageBasis(group.provider, group.families.map(family => family.id))
+
+  return basis ? <UsageBasisLine basis={basis} className="px-2 pb-0.5" /> : null
 }
 
 // Window plans, no query: "Recommended" above the first of the plan's featured families and

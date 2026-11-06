@@ -3961,10 +3961,10 @@ tips:
     p10: "اضبط تذكيرًا أو جدولة مهمة متكررة"
     p11: "اكتب / لاستعراض الأوامر، أو Ctrl+P للوحة الأوامر"
 
-# Window plans (Nous subscription with included usage): picker words, limit lines, Large-model notice.
+# Window plans (Nous subscription with included usage): picker chips (Free, the 1× basis line), limit lines.
 plan_usage:
   level_free: "مجاني"
-  level_top_tier: "كبير"
+  basis_line: "1× = سعر {model}"
   resets_in: "يُعاد التعيين خلال {duration}"
   resets_soon: "يُعاد التعيين قريبًا"
   limit_reached: "تم بلوغ الحد {name} · {resets}"
@@ -3976,11 +3976,6 @@ plan_usage:
   then_credits_large: "النماذج الكبيرة تستخدم رصيدك الآن (الدفع حسب الاستخدام)"
   then_wait: "النماذج المجانية فقط حتى ذلك الحين"
   then_wait_large: "النماذج الكبيرة متوقفة مؤقتًا حتى ذلك الحين"
-  large_notice: "نموذج كبير: يستهلك المزيد من استخدام خطتك لكل رسالة."
-  large_notice_credits: "نموذج كبير: يستهلك المزيد من الرصيد لكل رسالة (الدفع حسب الاستخدام)."
-  large_notice_limit: "نموذج كبير: تم بلوغ حدك {name} ({resets})."
-  large_notice_limit_stops: "نموذج كبير: تم بلوغ حدك {name} ({resets})، لذا لن يعمل حتى ذلك الحين."
-  large_notice_percent: "نموذج كبير: يستهلك المزيد من استخدام خطتك لكل رسالة. الحد الشهري للنماذج الكبيرة: {percent} مستخدم."
 shared:
   # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
   undo_rollback:

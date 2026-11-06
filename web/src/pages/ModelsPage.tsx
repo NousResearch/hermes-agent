@@ -965,8 +965,6 @@ function ModelSettingsPanel({
   const [pendingReloadModel, setPendingReloadModel] = useState<string | null>(
     null,
   );
-  // Nous window plans, Large model: the backend's switch warning (never a confirm).
-  const [switchNotice, setSwitchNotice] = useState<string | null>(null);
 
   const mainProv = aux?.main.provider ?? "";
   const mainModel = aux?.main.model ?? "";
@@ -1107,7 +1105,6 @@ function ModelSettingsPanel({
                 model,
               });
               if (!result.confirm_required) {
-                setSwitchNotice(result.notice ?? null);
                 setPendingReloadModel(model.split("/").slice(-1)[0]);
               }
               return result;
@@ -1127,7 +1124,6 @@ function ModelSettingsPanel({
 
         <ModelReloadConfirm
           model={pendingReloadModel}
-          notice={switchNotice}
           onCancel={() => setPendingReloadModel(null)}
         />
         {moaModalOpen && moa && (

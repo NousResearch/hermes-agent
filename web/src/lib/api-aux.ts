@@ -43,7 +43,4 @@ export interface ModelAssignmentResponse {
    *  Switching main never clears aux pins; this lets the UI warn the user
    *  their helper tasks aren't following the switch. Only set on scope:'main'. */
   stale_aux?: StaleAuxAssignment[];
-  /** Nous window plans, Large model: a one-line warning (never a confirm). Absent for every other
-   *  plan, provider and model. Only set on scope:'main'. */
-  notice?: string;
 }

@@ -14,17 +14,26 @@ export const queryClient = new QueryClient({
 })
 
 // A cache-only `model.options` read can answer for Nous before the backend has re-warmed its catalog /
-// entitlement caches (`pricing_pending` / `free_tier_pending`): no Large / Free tags and, while the
+// entitlement caches (`pricing_pending` / `free_tier_pending`): no multiplier / Free chips and, while the
 // entitlement is unknown, every model locked. The model menu re-reads every 2s until a warm row lands,
-// so a warm reply followed by a pending one made the tags blink off and on. Keep what the last warm row
-// said until a warm one replaces it. Window plans only: only their rows carry `usage_levels`.
-const WARM_NOUS_FIELDS = ['usage_levels', 'pricing', 'unavailable_models', 'free_tier', 'warning'] as const
+// so a warm reply followed by a pending one made the chips blink off and on. Keep what the last warm row
+// said until a warm one replaces it. Window plans only: only their rows carry `usage_multipliers`.
+const WARM_NOUS_FIELDS = [
+  'usage_multipliers',
+  'usage_basis',
+  'usage_basis_name',
+  'usage_free_models',
+  'pricing',
+  'unavailable_models',
+  'free_tier',
+  'warning'
+] as const
 
 const isPendingNous = (row: ModelOptionProvider) =>
   row.slug === 'nous' && Boolean(row.pricing_pending || row.free_tier_pending)
 
 // A merged result keeps its pending flags, so its own row no longer reads as warm: remember which warm row
-// it was built from, or a second pending reply in a row would drop the tags again.
+// it was built from, or a second pending reply in a row would drop the chips again.
 const warmSource = new WeakMap<object, ModelOptionProvider>()
 
 export function keepWarmNousRow(oldData: unknown, newData: unknown): unknown {
@@ -33,7 +42,7 @@ export function keepWarmNousRow(oldData: unknown, newData: unknown): unknown {
 
   const warm =
     (prev && warmSource.get(prev)) ??
-    prev?.providers?.find(row => row.slug === 'nous' && row.usage_levels && !isPendingNous(row))
+    prev?.providers?.find(row => row.slug === 'nous' && row.usage_multipliers && !isPendingNous(row))
 
   if (!warm || !next?.providers?.some(isPendingNous)) {
     return replaceEqualDeep(oldData, newData)
@@ -51,8 +60,8 @@ export function keepWarmNousRow(oldData: unknown, newData: unknown): unknown {
       kept[field] = warm[field]
     }
 
-    // The kept `usage_levels` still say `free` for subscription-billed rows; the ids
-    // that keep the "Free" tag off them ride on `plan_usage` (whose gauges stay fresh), so carry them too.
+    // The kept `usage_free_models` still list subscription-billed rows; the ids that keep the
+    // "Free" chip off them ride on `plan_usage` (whose gauges stay fresh), so carry them too.
     const subscribed = warm.plan_usage?.subscription_model_ids
 
     if (row.plan_usage && subscribed?.length) {

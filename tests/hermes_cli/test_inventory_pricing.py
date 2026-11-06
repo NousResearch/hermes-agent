@@ -111,7 +111,11 @@ def test_apply_pricing_omits_sale_when_original_not_cheaper(monkeypatch):
 def test_apply_pricing_window_plan_drops_prices_and_stamps_plan_usage(monkeypatch):
     _patch_pricing(
         monkeypatch, free_tier=False,
-        pricing={"nous": {"a/m": {"prompt": "0.000001", "completion": "0.000005", "usage_level": "medium"}}},
+        pricing={"nous": {
+            "a/m": {"prompt": "0.000001", "completion": "0.000005", "usage_multiplier": 3},
+            "base/m": {"prompt": "0.0000003", "completion": "0.0000006", "usage_multiplier": 1},
+            "gift/m:free": {"prompt": "0", "completion": "0"},
+        }},
     )
     monkeypatch.setattr(
         "hermes_cli.model_picker_usage.nous_picker_usage",
@@ -121,14 +125,19 @@ def test_apply_pricing_window_plan_drops_prices_and_stamps_plan_usage(monkeypatc
                                           day_resets_at_ms=1, week_resets_at_ms=2)}
         ),
     )
-    rows = [{"slug": "nous", "models": ["a/m"]}]
+    monkeypatch.setattr("hermes_cli.model_picker_usage.usage_basis",
+                        lambda: {"model_id": "base/m", "name": "Base Model"})
+    rows = [{"slug": "nous", "models": ["a/m", "base/m", "gift/m:free"]}]
     inv._apply_pricing(rows)
     assert "pricing" not in rows[0]
     assert rows[0]["plan_usage"]["kind"] == "usage_window"
     assert rows[0]["plan_usage"]["plan"] == "Window Plan"
-    # The gateway's word, passed through; no prices and no Hermes-side bands.
-    assert rows[0]["usage_levels"] == {"a/m": "medium"}
-    assert "cost_intensity" not in rows[0]
+    # The gateway's multipliers and basis, passed through; no prices and no Hermes-side tiers.
+    assert rows[0]["usage_multipliers"] == {"a/m": 3, "base/m": 1}
+    assert rows[0]["usage_basis"] == "base/m"
+    assert rows[0]["usage_basis_name"] == "Base Model"
+    assert rows[0]["usage_free_models"] == ["gift/m:free"]
+    assert "usage_levels" not in rows[0] and "cost_intensity" not in rows[0]
 
 
 def test_apply_pricing_credit_grant_keeps_prices_and_stamps_plan_usage(monkeypatch):

@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 # (credential, model) pair until an explicit ``hermes auth reset`` clears model_cooldowns (#71970).
 MODEL_ENTITLEMENT_BENCH_SECONDS = 365 * 24 * 60 * 60
 # A usage-window plan limit: this model is refused until the allowance resets; every other model
-# (a Free or non-Large one) stays usable on the same credential.
+# (a Free one, or any while another allowance has room) stays usable on the same credential.
 FAILURE_REASON_USAGE_WINDOW = "usage_window"
 
 

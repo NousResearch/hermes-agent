@@ -65,7 +65,10 @@ const warm: ModelOptionsResult = {
       name: 'Nous Portal',
       slug: 'nous',
       unavailable_models: [],
-      usage_levels: { 'example/model-a': 'top_tier', 'example/model-free:free': 'free' }
+      usage_basis: 'example/model-a',
+      usage_basis_name: 'Model A',
+      usage_free_models: ['example/model-free:free'],
+      usage_multipliers: { 'example/model-a': 1 }
     }
   ]
 }
@@ -83,11 +86,14 @@ const pending: ModelOptionsResult = {
 }
 
 describe('keepWarmNousRow', () => {
-  it('keeps the last warm Large / Free tags while a cache-only read is still pending', () => {
+  it('keeps the last warm multiplier / Free chips while a cache-only read is still pending', () => {
     const merged = keepWarmNousRow(warm, pending) as ModelOptionsResult
     const row = merged.providers?.[0]
 
-    expect(row?.usage_levels).toEqual(warm.providers?.[0].usage_levels)
+    expect(row?.usage_multipliers).toEqual(warm.providers?.[0].usage_multipliers)
+    expect(row?.usage_basis).toBe('example/model-a')
+    expect(row?.usage_basis_name).toBe('Model A')
+    expect(row?.usage_free_models).toEqual(['example/model-free:free'])
     expect(row?.unavailable_models).toEqual([])
     // Still pending, so the menu keeps re-reading until the warm row lands.
     expect(row?.free_tier_pending).toBe(true)
@@ -98,16 +104,16 @@ describe('keepWarmNousRow', () => {
     expect(keepWarmNousRow(undefined, pending)).toEqual(pending)
   })
 
-  it('keeps the warm tags across several pending replies in a row', () => {
+  it('keeps the warm chips across several pending replies in a row', () => {
     const once = keepWarmNousRow(warm, pending)
     const twice = keepWarmNousRow(once, structuredClone(pending)) as ModelOptionsResult
     const row = twice.providers?.[0]
 
-    expect(row?.usage_levels).toEqual(warm.providers?.[0].usage_levels)
+    expect(row?.usage_multipliers).toEqual(warm.providers?.[0].usage_multipliers)
     expect(row?.unavailable_models).toEqual([])
   })
 
-  it("keeps the warm subscription-billed ids (no Free tag) on the pending row's fresh plan_usage", () => {
+  it("keeps the warm subscription-billed ids (no Free chip) on the pending row's fresh plan_usage", () => {
     const gauges = [{ label: 'day', left_fraction: 0.5, style: 'bar' }]
     const fresh = [{ label: 'day', left_fraction: 0.2, style: 'bar' }]
 
@@ -116,7 +122,7 @@ describe('keepWarmNousRow', () => {
         {
           ...warm.providers![0],
           plan_usage: { gauges, kind: 'usage_window', subscription_model_ids: ['example/model-sub'] },
-          usage_levels: { ...warm.providers![0].usage_levels, 'example/model-sub': 'free' }
+          usage_free_models: [...(warm.providers![0].usage_free_models ?? []), 'example/model-sub']
         }
       ]
     }
@@ -127,7 +133,7 @@ describe('keepWarmNousRow', () => {
 
     const row = (keepWarmNousRow(warmSubscribed, pendingSubscribed) as ModelOptionsResult).providers?.[0]
 
-    expect(row?.usage_levels?.['example/model-sub']).toBe('free')
+    expect(row?.usage_free_models).toContain('example/model-sub')
     expect(row?.plan_usage?.subscription_model_ids).toEqual(['example/model-sub'])
     // The gauges are the pending row's own (fresh), not the warm row's.
     expect(row?.plan_usage?.gauges).toEqual(fresh)

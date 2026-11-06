@@ -1413,7 +1413,8 @@ def list_picker_providers(
 
 def _attach_window_model_notes(providers: list[dict]) -> None:
     """Nous on a usage-window plan, for the messaging pickers (same words as the CLI/TUI/desktop pickers):
-    ``model_labels`` {id: "Large" | "Free"} (plan shape, any-age snapshot; other levels carry no tag), and
+    ``model_labels`` {id: "3×" | "0.4×" | "<0.1×" | "Free"} (the gateway's multiplier as sent; plan shape, any-age
+    snapshot; rows without one carry no chip), and
     from a fresh snapshot only (a stale percent would mislabel it) ``plan_line`` (the limit line: "Weekly
     limit reached · resets in 21h · paid models now use your credits (pay as you go)").
     Every field is omitted when empty and for any account not on a window plan. Never raises."""
@@ -1421,7 +1422,7 @@ def _attach_window_model_notes(providers: list[dict]) -> None:
         nous = next((p for p in providers if str(p.get("slug", "")).lower() == "nous"), None)
         if nous is None:
             return
-        from hermes_cli.model_picker_usage import nous_picker_usage, usage_level_label, usage_tag_levels
+        from hermes_cli.model_picker_usage import nous_picker_usage, usage_chip_label
         fresh = nous_picker_usage()
         usage = fresh or nous_picker_usage(any_age=True)
         if usage is None:
@@ -1429,8 +1430,8 @@ def _attach_window_model_notes(providers: list[dict]) -> None:
         from agent.plan_limits import cached_pricing
         pricing = cached_pricing()  # this profile's catalog only (cache-only, no credential refresh)
         models = [str(m) for m in nous.get("models", [])]
-        # Subscription-billed rows carry no tag (usage_tag_levels).
-        labels = {m: label for m, lv in usage_tag_levels(models, pricing).items() if (label := usage_level_label(lv))}
+        # Subscription-billed rows carry no chip (usage_chip_label).
+        labels = {m: label for m in models if (label := usage_chip_label(m, pricing))}
         if labels:
             nous["model_labels"] = labels
         if fresh is None:

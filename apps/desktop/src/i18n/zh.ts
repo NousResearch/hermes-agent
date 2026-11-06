@@ -1,4 +1,4 @@
-// health: allow FILE_LINES -- locale data: translated copy for the usage-window plan UI (allowance gauges, Large/Free tags, the limit card), one key per string
+// health: allow FILE_LINES -- locale data: translated copy for the usage-window plan UI (allowance gauges, multiplier/Free chips, the limit card), one key per string
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
@@ -3895,10 +3895,12 @@ export const zhOverrides = {
     limitThenWaitLarge: '在此之前大型模型已暂停',
     percentUsed: percent => `已用 ${percent}`,
     resetsIn: duration => `${duration}后重置`,
-    usageLevels: { free: '免费', top_tier: '大' },
+    usageFree: '免费',
+    usageBasis: model => `1× = ${model} 的价格`,
+    usageMultiplierTip: (multiplier, model) => `每次请求消耗的套餐用量约为 ${model} 的 ${multiplier}×。`,
+    usageLessTip: model => `每次请求消耗的套餐用量少于 ${model}。`,
     sectionRecommended: '推荐',
-    sectionOther: '其他模型',
-    largeFootnote: '大型模型也会消耗你的每月大型模型额度。'
+    sectionOther: '其他模型'
   },
 
   modelVisibility: {

@@ -558,7 +558,7 @@ def recommended_nous_default_model() -> dict[str, Any]:
         model_ids, _unavailable = partition_nous_models_by_tier(model_ids, pricing, free_tier=True)
         # Never default onto a subscription-billed row: spending that plan is the user's call.
         model_ids = [mid for mid in model_ids if not _is_subscription_billed(pricing.get(mid))] or model_ids
-    model = "" if free_tier else model_picker_usage.window_plan_default(model_ids, pricing)
+    model = "" if free_tier else model_picker_usage.window_plan_default(model_ids)
     return {"provider": "nous", "model": model or pick_silent_default_model(model_ids, provider="nous"),
             "free_tier": bool(free_tier)}
 

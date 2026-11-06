@@ -1,4 +1,4 @@
-// health: allow FILE_LINES -- locale data: translated copy for the usage-window plan UI (allowance gauges, Large/Free tags, the limit card), one key per string
+// health: allow FILE_LINES -- locale data: translated copy for the usage-window plan UI (allowance gauges, multiplier/Free chips, the limit card), one key per string
 import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 
 import { enAppTour } from './en_app_tour'
@@ -4048,10 +4048,13 @@ export const en: Translations = {
     limitThenWaitLarge: 'Large models paused until then',
     percentUsed: percent => `${percent} used`,
     resetsIn: duration => `resets in ${duration}`,
-    usageLevels: { free: 'Free', top_tier: 'Large' },
+    usageFree: 'Free',
+    usageBasis: model => `1× = ${model} price`,
+    usageMultiplierTip: (multiplier, model) =>
+      `Uses about ${multiplier}× as much of your plan's usage per request as ${model}.`,
+    usageLessTip: model => `Uses less of your plan's usage per request than ${model}.`,
     sectionRecommended: 'Recommended',
-    sectionOther: 'Other models',
-    largeFootnote: 'Large models also use your monthly large-model limit.'
+    sectionOther: 'Other models'
   },
 
   modelVisibility: {

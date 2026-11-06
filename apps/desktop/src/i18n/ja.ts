@@ -1,4 +1,4 @@
-// health: allow FILE_LINES -- locale data: translated copy for the usage-window plan UI (allowance gauges, Large/Free tags, the limit card), one key per string
+// health: allow FILE_LINES -- locale data: translated copy for the usage-window plan UI (allowance gauges, multiplier/Free chips, the limit card), one key per string
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
@@ -2909,10 +2909,13 @@ export const jaOverrides = {
     limitThenWaitLarge: 'それまで大型モデルは一時停止',
     percentUsed: percent => `${percent} 使用済み`,
     resetsIn: duration => `${duration}後にリセット`,
-    usageLevels: { free: '無料', top_tier: '大' },
+    usageFree: '無料',
+    usageBasis: model => `1× = ${model} の料金`,
+    usageMultiplierTip: (multiplier, model) =>
+      `1 リクエストあたり ${model} の約 ${multiplier}× のプラン使用量を消費します。`,
+    usageLessTip: model => `1 リクエストあたりのプラン使用量は ${model} より少なくなります。`,
     sectionRecommended: 'おすすめ',
-    sectionOther: 'その他のモデル',
-    largeFootnote: '大型モデルは大型モデルの月間上限も消費します。'
+    sectionOther: 'その他のモデル'
   },
 
   modelVisibility: {

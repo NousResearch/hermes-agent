@@ -63,13 +63,15 @@ export const pickersEn = {
         noMatches: 'no providers match',
         hint: '↑/↓ select · Enter choose · ^d disconnect · Esc clear/back · q close'
       },
-      // Window plans (Nous subscription with included usage): the per-model word, section titles and limit
-      // notes. Same words as the desktop picker (`modelPicker`).
+      // Window plans (Nous subscription with included usage): the Free chip (other rows show the gateway's
+      // multiplier, e.g. `3×`), the base-model line, section titles and limit notes. Same words as the
+      // desktop picker (`modelPicker`).
       plan: {
-        levels: { free: 'Free', top_tier: 'Large' },
+        free: 'Free',
+        // {0} = the base model every multiplier is against.
+        basis: (model: string) => `1× = ${model} price`,
         sectionRecommended: 'Recommended',
         sectionOther: 'Other models',
-        largeFootnote: 'Large models also use your monthly large-model limit.',
         // {0} = a duration like `3h` or `2d 4h`.
         resetsIn: (duration: string) => `resets in ${duration}`,
         // {0} = a limit name from `limitNames` ("weekly"). English capitalises it.

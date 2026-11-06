@@ -571,9 +571,10 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
  * Re-scope Sessions to one registered gateway, landing on the profile the
  * caller names or the one last used there.
  *
- * Every registered gateway is already connected (store/gateway-persistence),
- * so this is the same live activation a profile pick or a cross-gateway resume
- * makes: no session wipe, no barrier, no confirm. A gateway that is down fails
+ * Other registered remote gateways are kept connected (store/gateway-persistence);
+ * This device is connected on demand when explicitly selected. This is the same
+ * live activation a profile pick or a cross-gateway resume makes: no session
+ * wipe, no barrier, no confirm. A gateway that is down fails
  * at the open, before anything in front is touched. Sessions on the gateway left
  * behind keep streaming on their own sockets, and the lists re-read for the
  * new scope because the active connection id moved. Session RPCs route by

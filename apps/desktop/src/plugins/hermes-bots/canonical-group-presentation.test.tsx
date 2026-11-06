@@ -113,7 +113,7 @@ it('keeps failed, cancelled, deferred and unavailable work visible without print
   const { container } = render(<CanonicalGroupHistory binding={binding} events={events} members={members} />)
 
   for (const label of ['Turn failed', 'Turn cancelled', 'Turn deferred', 'Member unavailable',
-    'Group stopped', 'Group disbanded', 'Group ownership changed', 'Group work limit reached']) {
+    'Stop requested', 'Group disbanded', 'Group ownership changed', 'Group work limit reached']) {
     expect(screen.getByText(label)).toBeTruthy()
   }
 
@@ -122,7 +122,7 @@ it('keeps failed, cancelled, deferred and unavailable work visible without print
   }
 
   expect(screen.getAllByText('Code Helper')).toHaveLength(4)
-  expect(screen.getByText('Group stopped').parentElement?.textContent).toBe('Group stopped')
+  expect(screen.getByText('Stop requested').parentElement?.textContent).toBe('Stop requested')
   expect(container.textContent).not.toMatch(/turn\.(settled|started)|constructor/)
 })
 

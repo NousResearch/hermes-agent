@@ -1,7 +1,8 @@
-import { atom, host, randomUuid, useQuery, useValue } from '@hermes/plugin-sdk'
+import { atom, host, useQuery, useValue } from '@hermes/plugin-sdk'
 import { useEffect, useMemo } from 'react'
 
-import { canonicalGroupRequest, discoverCanonicalGroups, listCanonicalRooms } from './canonical-groups'
+import type { CanonicalGroupMessages } from './canonical-group-locales'
+import { disbandCanonicalGroup, discoverCanonicalGroups, listCanonicalRooms } from './canonical-groups'
 import type { CanonicalGroupBinding, CanonicalGroupRoute, CanonicalRoom, CanonicalRoomMember } from './canonical-groups'
 import { $groupChats, uniqueGroupChatName, updateGroupChat } from './group-chat'
 import { liveGroupChatNames } from './group-membership'
@@ -45,6 +46,7 @@ function canonicalGroupKey(route: CanonicalGroupRoute, roomId: string): string {
 export function registerCanonicalGroup(route: CanonicalGroupRoute, room: CanonicalRoom, { created = false } = {}): string {
   // A native Rename (or a rename seen on refresh) moves our durable owner record too.
   const records = $groupChats.get()
+
   const previous = Object.entries(records).find(([, record]) => {
     const owner = record.engine
 
@@ -175,6 +177,12 @@ function canonicalGroupViews({ connectionId, profile, roomId }: CanonicalGroupBi
   return views
 }
 
+/** Close every view of a confirmed disbanded room. */
+export function endCanonicalGroup(binding: CanonicalGroupBinding): void {
+  canonicalGroupViews(binding).forEach(closeGroupChatMainTab)
+  forgetCanonicalGroup(binding)
+}
+
 /** One gateway Group Chat as the roster lists it: its exact authority binding and
  *  the `canonical:` key the open path takes. */
 export interface GatewayGroupRoom {
@@ -262,8 +270,8 @@ export function useGatewayGroupRooms(): GatewayGroupRoom[] {
 
 /** Disband on the room's own gateway, then retire it everywhere this window shows it.
  *  A refusal rejects before anything is dropped, so the row stays and the confirm shows why. */
-export async function disbandGatewayGroupRoom(room: GatewayGroupRoom, doneMessage: string): Promise<void> {
-  await canonicalGroupRequest(room.binding, 'groups.disband', { room_id: room.binding.roomId, cancel_id: randomUuid() })
+export async function disbandGatewayGroupRoom(room: GatewayGroupRoom, doneMessage: string, labels: CanonicalGroupMessages): Promise<void> {
+  if (!await disbandCanonicalGroup(room.binding, labels)) {throw new Error(labels.disbandUnconfirmed)}
   // Collect before forgetting: the bindings are the only record of which views alias this room.
   canonicalGroupViews(room.binding).add(room.key).forEach(closeGroupChatMainTab)
   forgetCanonicalGroup(room.binding)

@@ -7,10 +7,9 @@
 #   -SkipSetup            deprecated alias for -NonInteractive
 #   -IncludeDesktop       add the desktop build stage
 #   -ProtocolVersion      print the stage protocol version
-#   -SkipBrowser          do not install the browser tools (agent-browser +
-#                         Chromium); remembered by later
-#                         installs and `hermes update`, undone by
-#                         `hermes pm install agent-browser`
+#   -SkipBrowser          do not install the browser (Chromium); remembered by
+#                         later installs and `hermes update`, undone by
+#                         `hermes pm install chromium`
 #   -SkipComputerUse      do not install the computer-use driver (cua-driver);
 #                         remembered the same way, undone by
 #                         `hermes pm install cua-driver`
@@ -38,8 +37,8 @@ param(
     [switch]$Json,
     [switch]$IncludeDesktop,
     # Same opt-out as install.sh --skip-browser: PM records it, so later
-    # installs and `hermes update` keep the browser tools off until
-    # `hermes pm install agent-browser` opts back in.
+    # installs and `hermes update` keep the browser off until
+    # `hermes pm install chromium` opts back in.
     [switch]$SkipBrowser,
     [switch]$SkipComputerUse,
     # Print the paths this install would use, as JSON on stdout, and exit
@@ -555,6 +554,54 @@ function Get-Uv {
     return $uvExe
 }
 
+# git.exe can be present while git-remote-https is not: an older installer
+# moved the tree with Move-Item, which left half of it behind on a sharing
+# violation (see Invoke-WhileHeld). --exec-path is where git looks up
+# remote helpers, so a tree that fails this is not an install.
+function Test-PinnedGitHttpsReady([string]$GitExe) {
+    if (-not (Test-Path -LiteralPath $GitExe)) { return $false }
+    $global:LASTEXITCODE = 0
+    try {
+        $exec = Invoke-Native { & $GitExe --exec-path 2>$null }
+    } catch {
+        return $false
+    }
+    if ($LASTEXITCODE -or -not $exec) { return $false }
+    # No .exe suffix when pwsh drives a POSIX git (the Linux installer tests).
+    $core = "$exec".Trim()
+    return ((Test-Path -LiteralPath (Join-Path $core 'git-remote-https.exe')) -or
+            (Test-Path -LiteralPath (Join-Path $core 'git-remote-https')))
+}
+
+# A file held without delete sharing (Defender scanning fresh files, a
+# lingering post-install child) refuses a directory rename or delete for a
+# few seconds. Windows PowerShell's Move-Item then copies file by file and
+# stops at the held one, leaving cmd\git.exe without git-remote-https at the
+# destination; [IO.Directory]::Move on one volume is a single rename that
+# moves all or nothing. Retry like pm's Store.publish so a passing hold
+# does not fail the install.
+function Invoke-WhileHeld([scriptblock]$Action) {
+    $delay = 1
+    for ($attempt = 1; ; $attempt++) {
+        try { & $Action; return } catch {
+            $e = $_.Exception
+            if ($e -is [System.Management.Automation.MethodInvocationException]) { $e = $e.InnerException }
+            $held = ($e -is [IO.IOException]) -or ($e -is [UnauthorizedAccessException])
+            if (-not $held -or $attempt -ge 6) { throw }
+            Start-Sleep -Seconds $delay
+            $delay *= 2
+        }
+    }
+}
+
+# PortableGit ships etc\hosts read-only. Remove-Item -Force leaves that bit
+# set, and then the broken tree cannot be replaced.
+function Remove-PinnedGitTree([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    Invoke-Native { attrib.exe -R "$Path\*" /S /D } | Out-Null
+    Invoke-WhileHeld { Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop }
+}
+
 # Provision git for this host from the pinned pm/lock.json artifact, into
 # the same store slot (<store>\git-<version>-<target>\) pm uses. Returns the
 # git.exe path, or $null when no pinned artifact exists for this target.
@@ -564,14 +611,23 @@ function Get-PinnedGit {
     if (-not $pin) { return $null }
     $entry = Join-Path (Get-PmStoreRoot) "git-$($script:GitPinVersion)-$target"
     $gitExe = Join-Path $entry "cmd\git.exe"
-    if (Test-Path $gitExe) { return $gitExe }
+    if ((Test-Path -LiteralPath $gitExe) -and (Test-PinnedGitHttpsReady $gitExe)) { return $gitExe }
+    if (Test-Path -LiteralPath $entry) {
+        Log "pinned git is incomplete; reinstalling"
+        try { Remove-PinnedGitTree $entry } catch {
+            Fail "cannot replace the incomplete git at ${entry}: $($_.Exception.Message) Close programs using files there, then retry." git_extract_failed
+        }
+    }
     Log "installing git $($script:GitPinVersion) ($target)"
     $tmpDir = Join-Path ([IO.Path]::GetTempPath()) "hermes-git-bootstrap-$PID"
+    # Extract beside the entry, not in %TEMP%: the final step must be a
+    # rename on one volume. Created only after the download verifies, so
+    # rejected bytes never touch the store.
+    $extractDir = Join-Path (Split-Path -Parent $entry) ".staging-git-bootstrap-$PID"
     try {
         New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
         $sfxPath = Join-Path $tmpDir "portable-git.7z.exe"
         Invoke-VerifiedDownload -Url $pin.Url -MirrorUrl $pin.MirrorUrl -Sha256 $pin.Sha256 -OutFile $sfxPath
-        $extractDir = Join-Path $tmpDir "unpacked"
         New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
         # PortableGit's self-extracting 7z carries its own extractor: stock
         # Windows 10 tar.exe has no bzip2 ("unable to run program bzip2 -d").
@@ -590,13 +646,15 @@ function Get-PinnedGit {
             Fail "pinned git self-extractor exited $($sfx.ExitCode) (it reports nothing under -y; usual causes: disk full, path-length limit, antivirus lock)" git_extract_failed
         }
         if (-not (Test-Path (Join-Path $extractDir "cmd\git.exe"))) { Fail "git.exe not found in the downloaded archive" git_extract_failed }
-        if (Test-Path $entry) { Remove-Item -Recurse -Force $entry }
-        # Prerequisites run first, so on a fresh host the store root does not
-        # exist yet; Move-Item never creates the destination's parent.
-        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $entry) | Out-Null
-        Move-Item $extractDir $entry
+        if (Test-Path -LiteralPath $entry) { Remove-PinnedGitTree $entry }
+        Invoke-WhileHeld { [IO.Directory]::Move($extractDir, $entry) }
+        if (-not (Test-PinnedGitHttpsReady $gitExe)) {
+            Remove-PinnedGitTree $entry
+            Fail "pinned git extracted without git-remote-https" git_extract_failed
+        }
     } finally {
         Remove-Item -Path $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue
     }
     return $gitExe
 }
@@ -1287,6 +1345,8 @@ function Invoke-BootstrapPm {
         # Bare $SkipBrowser, like $InstallDir: under iex/scriptblock entry the
         # param() binding is not in $script: scope (see Initialize-ResolvedPaths).
         $pmArgs = @('install')
+        # Legacy spelling on purpose: the stable PM this script installs by
+        # default rejects 'chromium', and newer PMs read 'agent-browser' as 'chromium'.
         if ($SkipBrowser) { $pmArgs += @('--without', 'agent-browser') }
         if ($SkipComputerUse) { $pmArgs += @('--without', 'cua-driver') }
         Invoke-Logged "Installing dependencies (hash-verified via uv.lock)" { & $bootPy -m pm.cli @pmArgs }
@@ -1540,7 +1600,9 @@ function New-DesktopShortcuts {
         }
                 $sc = $shell.CreateShortcut($lnkPath)
                 $sc.TargetPath = $TargetExe
-                $sc.WorkingDirectory = $workDir
+                # Not the exe's folder: the Desktop's children inherit it, and a helper
+                # that outlives the app then blocks the next update's swap (#101789).
+                $sc.WorkingDirectory = $env:USERPROFILE
                 $sc.IconLocation = $iconLocation
                 $sc.Description = 'Hermes Agent'
                 $sc.Save()

@@ -75,7 +75,7 @@ import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-c
 import { $defaultReasoningEffort } from '@/store/session'
 import type { LocalModelLoadProgress, LocalRuntimeJob } from '@/types/hermes'
 
-import { type FastControl, ModelEditSubmenu, resolveFastControl } from './model-edit-submenu'
+import { type DaybreakControl, type FastControl, ModelEditSubmenu, resolveFastControl } from './model-edit-submenu'
 import { ModelMenuRowIcon, useModelMenuRowDecoration } from './model-menu-row-decorations'
 
 // Lets the host dropdown (model-pill, a kanban field trigger, …) hand the panel
@@ -156,6 +156,9 @@ export interface ModelChoice {
 export interface ModelMenuController {
   /** Detached task pickers can edit effort but have no speed write path. */
   allowSpeed?: boolean
+  /** OpenAI Daybreak, one profile-wide switch. Absent on surfaces that can't write it; shown only on
+   *  rows whose `capabilities.daybreak` says this account's catalog lists the model. */
+  daybreak?: DaybreakControl
   /** Restore a model's remembered settings after it is selected. Separate from
    *  `setOptions` because it is one atomic "apply this model's preset" write,
    *  not a user editing one control — surfaces that write through to a session
@@ -802,7 +805,7 @@ export function ModelCatalogMenu({
                 <DropdownMenuItem
                   className={cn(
                     catalogGroupLabel,
-                    'group/label flex w-full cursor-pointer items-center gap-1 !bg-transparent focus:!bg-transparent'
+                    'group/label flex w-full cursor-pointer items-center gap-1 !bg-transparent focus:!bg-transparent focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-ring focus-visible:-outline-offset-2'
                   )}
                   onSelect={event => {
                     event.preventDefault()
@@ -1073,6 +1076,8 @@ function ModelFamilyRow({
       ? { kind: 'none' }
       : resolveFastControl(activeId ?? family.id, provider.models ?? [], caps?.fast ?? false, effFast)
 
+  const daybreak = caps?.daybreak ? controller.daybreak : undefined
+
   // Identity on the left, settings on the right. The name and its variant tag
   // (`…-flash`, `…-preview`: WHICH model) lead; fast and effort are how this
   // row is SET, so they sit by the caret that edits them instead of queueing
@@ -1086,6 +1091,7 @@ function ModelFamilyRow({
         ? t.shell.modelOptions.ultrafast
         : copy.fast
       : null,
+    daybreak?.on ? t.shell.modelOptions.daybreak : null,
     (caps?.reasoning ?? true) && (isCurrent ? !current.effortPending : Boolean(effEffort))
       ? reasoningEffortLabel(effEffort || defaultEffort, isCurrent ? current.effortWire : undefined)
       : null
@@ -1195,6 +1201,7 @@ function ModelFamilyRow({
       </DropdownMenuSubTrigger>
       <ModelEditSubmenu
         canDisableReasoning={caps?.can_disable_reasoning ?? undefined}
+        daybreak={daybreak}
         defaultEffort={defaultEffort}
         effort={effEffort}
         effortWire={isCurrent ? current.effortWire : undefined}

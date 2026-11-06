@@ -7,7 +7,7 @@ import type { ProfileScope } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { isMissingRpcMethod, isOutOfSyncRpcParams } from '@/lib/gateway-rpc'
 import { queryClient } from '@/lib/query-client'
-import { $freeTierTurnCompleted } from '@/store/free-tier-sign-in'
+import { $freeTierTurnCompleted, noteFreeTierAppConnected } from '@/store/free-tier-sign-in'
 import { notifyError } from '@/store/notifications'
 
 import { hostedPhase } from '../derive'
@@ -116,6 +116,18 @@ export function useHostedConnectors(scope: ProfileScope): HostedConnectorsView {
         : $freeTierTurnCompleted.listen(() => invalidateConnectors(scope, 'list', 'catalog', 'accounts')),
     [listed, scope]
   )
+
+  // A list read is where the backend first sees an app this page never watched connect (an
+  // authorization past the watch, a connect by link) and arms the sign-in offer; re-read when it is due.
+  // Only after a read from the backend: saved or cached rows arrive before the read that arms it.
+  const anyConnected = list.data?.connectors.some(connector => connector.connected) ?? false
+  const readFromBackend = list.isFetchedAfterMount && !list.isFetching
+
+  useEffect(() => {
+    if (anyConnected && readFromBackend) {
+      noteFreeTierAppConnected()
+    }
+  }, [anyConnected, readFromBackend, list.dataUpdatedAt])
 
   const policy = useQuery({
     ...read('policy'),

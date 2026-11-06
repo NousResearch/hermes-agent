@@ -258,7 +258,7 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared, profile }: EnvVarField
 
 interface PostSetupRunnerProps {
   toolset: string
-  /** The provider's post_setup hook key (e.g. "camofox", "ddgs"). */
+  /** The provider's post_setup hook key (e.g. "lightpanda", "ddgs"). */
   postSetupKey: string
   /** True when the server reports the install side-effect already satisfied
    *  (provider status === 'ready') — renders the resting "Installed" state

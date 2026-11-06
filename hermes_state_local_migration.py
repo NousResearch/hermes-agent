@@ -50,8 +50,11 @@ def client_history_row(row):
     The pre-authority ``hermes serve`` stored whatever ``source`` a client sent, so phone apps signed
     in through the dashboard login left routeless rows labelled ``mobile``, ``ios`` and the like. They
     are the owner's Desktop-style chats: adopted as ``gui``. A routed row is never one, which keeps a
-    plugin platform sharing the label (hermes-mobile registers ``mobile``) on its messaging route."""
-    return client_label(row.get('source')) and not any(row.get(k) for k in ('session_key', 'chat_id', 'origin_json'))
+    plugin platform sharing the label (hermes-mobile registers ``mobile``) on its messaging route.
+    A row with a ``parent_session_id`` is a subagent transcript: evidence inside a turn, never a chat
+    of its own, so it stays read-only however it is labelled."""
+    return (client_label(row.get('source'))
+            and not any(row.get(k) for k in ('session_key', 'chat_id', 'origin_json', 'parent_session_id')))
 
 
 def legacy_history_row(row):

@@ -254,6 +254,37 @@ def adopts_client_history(authority, actor, row):
     return True
 
 
+# Failures that mean another writer holds the row: never fall back to a read-only mount for these.
+_ADOPTION_HELD = frozenset({'runtime_coordination_required'})
+
+
+def adopt_client_history(authority, actor, sid):
+    """Adopt *sid*, a routeless client-app row, on a **capability call** rather than a resume.
+
+    ``session.resume`` adopts such a row before authorizing (``resolve_local_target``), but a client
+    that only calls a capability first (``session.info``, ``prompt.submit``, ``file.attach``) used to
+    reach the read-only history mount instead, so the same row was writable after a resume and
+    ``session_read_only`` before one. This gives that path the same adoption, before the mount claims
+    it (``session_authority.authorize``).
+
+    False when the row is not one this actor adopts (another loader's, a non-native actor, a row
+    ``validate_legacy_row`` refuses, a compression segment): the caller falls through to the mount and
+    keeps today's answer. A row another writer holds keeps its own refusal: a live turn lease raises
+    ``runtime_coordination_required`` rather than degrading to a read-only mount, which would hide the
+    second writer behind ``session_read_only``.
+    """
+    row = authority.db.get_session(sid)
+    if row is None or not adopts_client_history(authority, actor, row):
+        return False
+    try:
+        resolve_local_target(authority, actor, sid)
+    except RuntimeStoreError as exc:
+        if exc.reason in _ADOPTION_HELD:
+            raise
+        return False
+    return True
+
+
 def adopt_legacy_session(authority, actor, row):
     if actor.profile_id != authority.profile_id:
         raise RuntimeStoreError('profile_mismatch')

@@ -4,7 +4,7 @@
 // the picked row instead of the newest one — the owner's form of the legacy `prompt.submit
 // truncate_before_row_id` that Desktop's edit-and-resend sends. Nothing is cut until the edit is sent.
 
-import type { SessionInfo } from '@hermes/shared/gateway-types'
+import { accessSync, constants } from 'node:fs'
 
 import { introMsg, toTranscriptMessages } from '../../domain/messages.js'
 import { t } from '../../i18n/runtime.js'
@@ -48,10 +48,28 @@ export function rewindTargets(snapshot: Pick<MutationSnapshot, 'messages' | 'sto
   return targets
 }
 
+const readable = (path: string) => {
+  try {
+    accessSync(path, constants.R_OK)
+
+    return true
+  } catch {
+    return false
+  }
+}
+
 /** Put a picked prompt back in the composer as the user typed it: the image notes the model got are
- *  dropped and each image they name is attached again as a composer image. */
+ *  dropped and each image they name is attached again as a composer image. The paths are the owner's
+ *  files and re-attaching reads them here, so a gateway on another machine (HERMES_TUI_GATEWAY_URL)
+ *  whose files this machine cannot read keeps the notes in the text instead, and says so. */
 function prefillPrompt(ctx: SlashRunCtx, stored: string) {
   const { images, text } = splitImageNotes(stored)
+
+  if (images.length && process.env.HERMES_TUI_GATEWAY_URL?.trim() && !images.every(readable)) {
+    ctx.composer.setInput(stored)
+
+    return ctx.transcript.sys(t('slashCmd.core.rewind.imagesKeptAsNotes', images.length))
+  }
 
   ctx.composer.setInput(text)
 

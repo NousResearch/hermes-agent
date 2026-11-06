@@ -457,6 +457,9 @@ def _run_job_script(
     instead of the scripts-dir parent. See #69396. interpreter: the job's optional Python for
     ``.py`` scripts (#8714).
     """
+    from tools.hosted_tool_policy import host_refusal
+    if refusal := host_refusal("A cron script", "it runs on this host"):
+        return False, refusal
     path, err = _resolve_script_path(script_path)
     if path is None:
         return False, err

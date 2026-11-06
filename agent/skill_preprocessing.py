@@ -50,6 +50,9 @@ def run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
     of raising, so one bad snippet can't wreck the whole skill message."""
     _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
     from agent.delegation_context import delegated_child_subprocess_env
+    from tools.hosted_tool_policy import host_refusal
+    if refusal := host_refusal("Inline skill shell", "it runs on this host"):
+        return f"[inline-shell refused: {refusal}]"
     try:
         bash = "bash"
         if IS_WINDOWS:

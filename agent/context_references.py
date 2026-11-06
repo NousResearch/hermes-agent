@@ -227,6 +227,10 @@ async def preprocess_context_references_async(
     refs = parse_context_references(message, plugins=plugins)
     if not refs:
         return ContextReferenceResult(message=message, original_message=message)
+    from tools.hosted_tool_policy import host_refusal
+    if refusal := host_refusal("@-references", "they read files and git state on this host"):
+        return ContextReferenceResult(message=message, original_message=message, references=refs,
+                                      warnings=[refusal], blocked=True)
     cwd_path = Path(cwd).expanduser().resolve()
     # Default root = cwd so @ references cannot escape the workspace unless a caller widens it.
     allowed_root_path = Path(allowed_root).expanduser().resolve() if allowed_root is not None else cwd_path

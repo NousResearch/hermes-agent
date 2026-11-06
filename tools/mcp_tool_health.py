@@ -9,6 +9,7 @@ import time
 from typing import Iterable, Optional
 from tools.mcp_tool_errors import _is_method_not_found_error, _unwrap_exception_group
 from tools.mcp_tool_schema import mcp_prefixed_tool_name
+from registry_freeze import registries_frozen
 from tools.mcp_tool_common import _core
 from tools import mcp_tool_registration as _registration
 
@@ -136,6 +137,9 @@ class MCPServerHealthMixin:
             return  # Editor tool policy changes apply only to a new canonical session.
         if not self._advertises_tools():
             return  # tools/list would raise MCPError(-32601)
+        if registries_frozen():
+            logger.info("MCP server '%s': ignoring tools/list_changed; the registries are frozen", self.name)
+            return
         async with self._refresh_lock:
             old_tool_names = set(self._registered_tool_names)
             async with self._rpc_lock:

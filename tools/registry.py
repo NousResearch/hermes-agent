@@ -6,6 +6,7 @@ tools/*.py import it at module level; model_tools.py imports both; run_agent/cli
 model_tools."""
 
 import ast
+import copy
 import functools
 import importlib
 import inspect
@@ -21,6 +22,8 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set
 
 from hermes_constants import hermes_home_key, normalize_scope
+from registry_freeze import refuse_if_frozen, seal_at_freeze
+from registry_sealed import STORAGE, seal
 
 logger = logging.getLogger(__name__)
 
@@ -230,6 +233,30 @@ class ToolEntry:
     # — for fields tracking runtime config (delegate_task's description reflects limits).
     dynamic_schema_overrides: Optional[Callable] = None
     execution_timeout: float | None = None
+
+
+class _SealedToolEntry(ToolEntry):
+    """A :class:`ToolEntry` after the freeze: same slots and identity, attributes fixed."""
+
+    __slots__ = ()
+
+    def __setattr__(self, name: str, value) -> None:
+        refuse_if_frozen(STORAGE)
+        object.__setattr__(self, name, value)
+
+    def __delattr__(self, name: str) -> None:
+        refuse_if_frozen(STORAGE)
+        object.__delattr__(self, name)
+
+
+def _seal_entry(entry: ToolEntry) -> ToolEntry:
+    """Seal *entry* in place (identity-keyed restore/CAS paths keep working): its schema and
+    ``requires_env`` become detached read-only copies, and its attributes refuse rebinding."""
+    if not isinstance(entry, _SealedToolEntry):
+        object.__setattr__(entry, "schema", seal(entry.schema))
+        object.__setattr__(entry, "requires_env", seal(entry.requires_env))
+        entry.__class__ = _SealedToolEntry
+    return entry
 
 
 class _PluginOverridePolicy:
@@ -503,6 +530,20 @@ class ToolRegistry:
         self._lock = threading.RLock()
         # Bumped on every mutation; get_tool_definitions memoizes against it.
         self._generation: int = 0
+        seal_at_freeze(self._seal_storage)
+
+    def _seal_storage(self) -> None:
+        """At the hosted freeze: every map, entry and schema a caller can reach becomes read-only
+        (``registry_sealed``), so a retained reference cannot change what other tenants see."""
+        with self._lock:
+            for entry in [*self._tools.values(), *(e for m in self._scoped_tools.values() for e in m.values())]:
+                _seal_entry(entry)
+            self._tools = seal(self._tools)
+            self._scoped_tools = seal(self._scoped_tools)
+            self._toolset_checks = seal(self._toolset_checks)
+            self._toolset_aliases = seal(self._toolset_aliases)
+            self._plugin_override_policy = seal(self._plugin_override_policy)
+            self._plugin_module_scopes = seal(self._plugin_module_scopes)
 
     @staticmethod
     def current_scope_key() -> str:
@@ -594,6 +635,7 @@ class ToolRegistry:
 
     def register_toolset_alias(self, alias: str, toolset: str) -> None:
         """Register an explicit alias for a canonical toolset name."""
+        refuse_if_frozen("tool registry")
         with self._lock:
             existing = self._toolset_aliases.get(alias)
             if existing and existing != toolset:
@@ -618,6 +660,7 @@ class ToolRegistry:
     ) -> _PluginOverridePolicy:
         """Bind a plugin module namespace to its current operator opt-in. The identity-bearing
         result lets unload/reload revoke a stale authorization without losing attribution."""
+        refuse_if_frozen("tool registry")
         scope = normalize_scope(scope)
         with self._lock:
             policy = _PluginOverridePolicy(allowed)
@@ -637,6 +680,7 @@ class ToolRegistry:
         self, module_namespace: str, current: _PluginOverridePolicy,
         previous: Optional[_PluginOverridePolicy], *, scope: Optional[str] = None) -> bool:
         """CAS-restore policy state while retaining durable scope attribution."""
+        refuse_if_frozen("tool registry")
         scope = normalize_scope(scope)
         with self._lock:
             key = (scope, module_namespace)
@@ -741,6 +785,7 @@ class ToolRegistry:
         """Register a tool (called at import time by each tool file). ``override=True`` is an
         explicit opt-in for plugins replacing a built-in implementation (e.g. a headed-Chrome
         browser backend); without it, cross-toolset shadowing is rejected."""
+        refuse_if_frozen("tool registry")
         # Reject malformed schemas at registration, not at request time: a non-dict
         # ``parameters`` (e.g. a list) serializes into every provider request and 400s the
         # whole turn far from the offending plugin. Failing here names the culprit instead.
@@ -820,6 +865,7 @@ class ToolRegistry:
         ``register(override=True)``, else a plugin could deregister a tool it doesn't own
         and re-register over the empty slot (the override check only runs when an entry
         exists). ``mcp-*`` toolsets are exempt — discovery repaves its own tools per refresh."""
+        refuse_if_frozen("tool registry")
         scope = normalize_scope(scope)
         with self._lock:
             caller_mod = self._caller_module()
@@ -872,6 +918,7 @@ class ToolRegistry:
     def move_to_scope(self, names, scope: str) -> None:
         """Move process-global registrations into *scope*'s overlay (a single-profile process that
         starts multiplexing hands its launch profile's MCP tools to that profile's own scope)."""
+        refuse_if_frozen("tool registry")
         scope = normalize_scope(scope)
         with self._lock:
             moved = {name: self._tools.pop(name) for name in names if name in self._tools}
@@ -886,6 +933,7 @@ class ToolRegistry:
         The identity check is deliberate: another plugin (or ``PluginManager`` in a
         multi-profile process) may have registered a newer entry under the same name, and
         unloading this entry must leave that newer one untouched."""
+        refuse_if_frozen("tool registry")
         with self._lock:
             target = self._slot(scope, create=True)
             if target.get(name) is not current:
@@ -933,7 +981,10 @@ class ToolRegistry:
                 if not quiet:
                     logger.debug("Tool %s unavailable (check failed)", name)
                 continue
-            schema_with_name = {**entry.schema, "name": entry.name}
+            # A sealed (frozen) schema is handed out as a detached writable copy: the caller owns
+            # the definitions it gets, and request shaping may rewrite them in place.
+            base = copy.deepcopy(entry.schema) if isinstance(entry, _SealedToolEntry) else entry.schema
+            schema_with_name = {**base, "name": entry.name}
             # Runtime-dynamic overrides (e.g. delegate_task limits); the caller's memo is
             # keyed on config.yaml mtime+size, so config changes invalidate it automatically.
             if entry.dynamic_schema_overrides is not None:

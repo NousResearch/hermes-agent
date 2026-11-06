@@ -56,7 +56,111 @@ class Rule:
     blocking: bool = True
     include: tuple[str, ...] = ()  # when set, the rule applies only to these paths
     pattern_id: str = ""  # regex rules: id in scripts/ci/profile_scope_patterns.json
+    hosted: bool = False  # applies only to modules the hosted entry point imports (hosted_graph)
 
+
+# The hosted entry point: the modules a shared (multi-tenant) process starts from. HX015 judges
+# every module these import at import time (``hosted_graph``). There is no hosted boot module
+# yet, so the roots are what it will load whatever its shape: the inbound turn path, the turn
+# loop, the scope modules and the four registries ``registry_freeze`` freezes. The hosted boot,
+# when it lands, is added here (and any root it makes redundant dropped) in the same PR. A test
+# fails when a root no longer names a module, so a rename cannot silently empty the graph.
+# Modules a root loads lazily on the hosted path are roots too: the built-in platform adapters
+# ``gateway.run`` loads through ``importlib`` and the agent constructor ``AIAgent.__init__`` imports.
+HOSTED_ENTRY: tuple[str, ...] = (
+    "gateway.run",
+    "gateway.platforms.api_server",
+    "gateway.platforms.webhook",
+    "gateway.platforms.msgraph_webhook",
+    "run_agent",
+    "agent.agent_init",
+    "model_tools",
+    "hermes_scope",
+    "hermes_scope_cache",
+    "agent.runtime_scope",
+    "registry_freeze",
+    "tools.registry",
+    "tools.mcp_tool",
+    "providers",
+    "hermes_cli.plugins",
+    # Imported inside functions of the audited roots below and run while the process serves
+    # (the turn path, GatewayRunner methods, housekeeping ticks, agent construction): the graph
+    # does not follow function-body imports, so each is a root. tests/scripts/
+    # test_code_health_lazy_roots.py fails on a new lazy import until it is placed here or in
+    # OFF_HOSTED_PATH.
+    "agent.anthropic_adapter",
+    "agent.bedrock_adapter",
+    "agent.context_pin",
+    "agent.credential_source",
+    "agent.credits_tracker",
+    "agent.curator",
+    "agent.delegation_backends",
+    "agent.memory_manager",
+    "agent.memory_manager_tools",
+    "agent.moa_loop",
+    "agent.native_compaction",
+    "agent.oneshot_footprint",
+    "agent.provider_route_hooks",
+    "agent.reasoning_timeouts",
+    "agent.review_idle_queue",
+    "agent.safe_worker_policy",
+    "cron.scheduler_provider",
+    "gateway.channel_directory",
+    "gateway.host_attach",
+    "gateway.host_rendezvous",
+    "gateway.media_policy",
+    "gateway.message_timestamps",
+    "gateway.profile_routing",
+    "gateway.relay.egress",
+    "gateway.restart_notice",
+    "gateway.run_delivery_queue_watch",
+    "gateway.run_housekeeping_disk",
+    "gateway.session_api_turn",
+    "gateway.session_db_recovery",
+    "gateway.status",
+    "hermes_cli.commands_platforms",
+    "hermes_cli.config_effective",
+    "hermes_cli.debug",
+    "hermes_cli.gateway_multiplex_mode",
+    "hermes_cli.mem_trim",
+    "hermes_cli.model_normalize",
+    "hermes_cli.model_switch",
+    "hermes_cli.nous_auth_keepalive",
+    "hermes_cli.observability.shared_metrics_process",
+    "hermes_cli.plugins_cadence",
+    "hermes_cli.profiles",
+    "hermes_cli.tools_config",
+    "hermes_state",
+    "hermes_state_registry",
+    "plugins.context_engine",
+    "plugins.teams_pipeline.runtime",
+    "tools.approval_yolo",
+    "tools.checkpoint_maintenance",
+    "tools.checkpoint_manager",
+    "tools.env_probe",
+    "tools.mcp_oauth",
+    "tools.mcp_tool_discovery",
+    "tools.terminal_scope",
+    "tui_gateway.launch_profile_policy",
+)
+
+# Roots whose function-body imports are audited (tests/scripts/test_code_health_lazy_roots.py): each
+# in-repo module they import inside a function is a root above or listed in OFF_HOSTED_PATH.
+LAZY_IMPORTS_AUDITED: tuple[str, ...] = ("gateway.run", "run_agent", "agent.agent_init")
+
+# Lazily imported by an audited root but never while the process serves tenants: process boot
+# before the first turn, process exit, or a CLI-only entry. Each needs its reason; a module that
+# starts running during serving moves to HOSTED_ENTRY.
+OFF_HOSTED_PATH: dict[str, str] = {
+    "agent/ssl_verify.py": "run_agent.main only: the one-shot CLI entry, not the hosted path",
+    "gateway/config_loader.py": "gateway.run.main: reads the host's gateway config once at boot",
+    "gateway/lifecycle_ledger.py": "process exit: records how the process ended",
+    "hermes_cli/boot_bootstrap.py": "gateway.run.main: install bootstrap before serving starts",
+    "hermes_cli/cpu_profile.py": "process exit: writes the --cpu-profile output",
+    "hermes_cli/gateway_migrate.py": "a string constant for a log line; no state",
+    "hermes_cli/resource_limits.py": "gateway.run.main: malloc arena limit before any thread",
+    "hermes_cli/stdio.py": "gateway.run.main: Windows stdio encoding at boot",
+}
 
 # Heuristic rules print as warnings until a frozen replay (`python -m scripts.code_health.replay`)
 # shows most of their hits on merged PRs are real problems; flip a rule to blocking with that
@@ -127,6 +231,23 @@ RULES: tuple[Rule, ...] = (
     Rule("PS-P06", "raw platform credential getenv", "read it through the profile's secret"
          " scope (`get_secret`)", "regex", exclude=SINGLE_PROFILE,
          blocking=WARN_UNTIL_REPLAYED, pattern_id="P06"),
+    Rule("HX014", "legacy profile setter", "bind a scope:"
+         " `agent.runtime_scope.bind_profile_scope(home)` moves home, secrets and terminal policy"
+         " together (`bind_turn(session_id, turn_id, fence)` inside it for a turn); `bind_state(scope, ...)` for a host"
+         " that binds less on purpose. A raw `set_hermes_home_override` / `set_secret_scope` /"
+         " `set_terminal_scope` / `install_profile_terminal_scope` call is migrated when its function"
+         " is next edited", "ast",
+         exclude=SINGLE_PROFILE + ("agent/runtime_scope.py", "hermes_constants.py",
+                                   "agent/secret_scope.py", "tools/terminal_scope.py")),
+    Rule("HX015", "process-wide mutable state on the hosted path", "one hosted process serves"
+         " every tenant, so this state is shared by all of them: key it per agent with"
+         " `hermes_scope_cache.ScopedCache(name)` (raises with no scope bound), or, when it is"
+         " identical for every tenant (a catalog, tool schemas), declare it with"
+         " `tenant_neutral(value, reason=\"...\")` / `@tenant_neutral(reason=\"...\")`."
+         " Registries are frozen after hosted boot (`registry_freeze`); a per-agent toggle is a"
+         " filter applied from the bound scope, never a registration", "ast", hosted=True,
+         # The freeze flag is process-wide by definition: one boot freezes every tenant's view.
+         exclude=TESTS + ("registry_freeze.py",)),
     # Process identity.
     Rule("HX003", "process identity from argv substrings", "use"
          " `gateway.status.looks_like_gateway_command_line` /"

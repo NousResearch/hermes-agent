@@ -8,6 +8,7 @@ import logging
 import time
 from dataclasses import dataclass
 from typing import Optional
+from registry_freeze import registries_frozen
 from tools.mcp_tool_common import _core, _get_lifecycle_seconds, _jittered, _resolve_tool_timeout
 from tools import mcp_tool_errors as _errors
 from tools import mcp_tool_registration as _registration
@@ -577,7 +578,14 @@ class MCPServerRunMixin:
 
     def _deregister_tools(self) -> None:
         """Drop this server's tools from the registry (idempotent); on shutdown AND budget
-        exhaustion, so a dead server never leaves phantom tools in the prompt."""
+        exhaustion, so a dead server never leaves phantom tools in the prompt.
+
+        After the hosted boot froze the registries the tools stay registered: the connection
+        closes, a call fails with the usual not-connected error, and a revival serves them again."""
+        if registries_frozen():
+            logger.debug("MCP server '%s': registries are frozen; keeping its %d registered tool(s)",
+                         self.name, len(getattr(self, "_registered_tool_names", []) or ()))
+            return
         for tool_name in list(getattr(self, "_registered_tool_names", [])):
             _registration._deregister_mcp_tool_all_scopes(self, tool_name)
         self._registered_tool_names = []

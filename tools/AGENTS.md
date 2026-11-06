@@ -20,6 +20,15 @@ string**, except a tool that hands the model pixels: it may return the multimoda
 accepts exactly that shape). Its image path goes through `vision_tools._native_tool_result_images` — never a
 private vision check.
 
+**Hosted:** the hosted boot calls `registry_freeze.freeze_registries()`; registering after it raises.
+MCP removal paths (reconcile, restart, scoped/named shutdown, `_forget_lazy_server`,
+`_remove_server_scope`, `_deregister_mcp_tool_all_scopes`, `register_connected_into_current_scope`)
+raise too (`shareable_connection` is the read-only adoption lookup); reconnecting keeps the boot's
+registrations and publishes nothing new.
+A per-agent toggle filters from the scope at read time (`developer-guide/multiplexing-gateway.md`).
+Freeze refuses while a deferred platform is pending; per-agent memory providers must not
+register global hooks after it (follow-up).
+
 ## Adding a core tool (2 files) — only when the user is explicitly contributing a core tool
 
 For custom/local-only tools do NOT edit core: create `~/.hermes/plugins/<name>/plugin.yaml` +

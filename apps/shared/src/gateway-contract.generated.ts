@@ -4522,6 +4522,10 @@ export interface PluginsManageResult {
   scan_findings?: PluginScanFinding[] | null
   error?: string | null
   written?: string[] | null
+  saved?: boolean | null
+  activated?: boolean | null
+  restart_required_servers?: string[] | null
+  message?: string | null
   onboarding?: OnboardingCatalogPlugin[] | null
   presence?: CatalogPluginPresence[] | null
   agent?: boolean | null

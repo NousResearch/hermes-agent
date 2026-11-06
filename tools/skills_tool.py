@@ -14,6 +14,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home
+from registry_freeze import registries_frozen
 from tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get
 from agent.skill_utils import (
@@ -367,6 +368,8 @@ def _resolve_plugin_skill(name, file_path, task_id, preprocess):
         except Exception as exc:
             logger.debug("Failed lazy memory-provider skill load for %s: %s", namespace, exc)
     if plugin_skill_md is not None and not plugin_skill_md.exists():
+        if registries_frozen():  # the frozen registry keeps the entry; the read reports it missing
+            return _fail(f"Skill '{name}' file no longer exists at {plugin_skill_md}."), None
         pm.remove_plugin_skill(name)  # stale registry entry — file deleted out of band
         return _fail(
             f"Skill '{name}' file no longer exists at {plugin_skill_md}. The registry entry "

@@ -1880,14 +1880,26 @@ def _plugins_settings(rid, params):
         events.broadcast_plugin_event(canonical, "settings.changed", {"written": written})
     # A secret the form just stored may feed the plugin's MCP server env (``${MESHY_API_KEY}``): bounce
     # only servers whose resolved launch inputs changed, off the RPC thread (an npx start takes seconds).
+    # After the hosted boot froze the registries a reconnect is refused, so none is launched: the save
+    # stands (``saved``) but is not live (``activated`` false) until the process restarts.
+    restart_required: list[str] = []
     if plugin_dir and pc._is_portable_plugin_dir(plugin_dir):
         servers = _portable_server_names(Path(str(plugin_dir)), canonical)
         if servers:
-            from agent.memory_provider import spawn_context_thread  # keeps this request's profile scope
             discovery = _tools_mod("tools.mcp_tool_discovery")
-            spawn_context_thread(discovery.restart_mcp_servers_with_new_inputs, args=(servers,),
-                                 name=f"plugin-settings-mcp-{canonical}").start()
-    return _ok(rid, {"ok": True, "name": canonical, "written": written, "plugin": row})
+            if _tools_mod("registry_freeze").registries_frozen():
+                restart_required = discovery.mcp_servers_with_new_inputs(servers)
+            else:
+                from agent.memory_provider import spawn_context_thread  # keeps this request's profile scope
+                spawn_context_thread(discovery.restart_mcp_servers_with_new_inputs, args=(servers,),
+                                     name=f"plugin-settings-mcp-{canonical}").start()
+    payload = {"ok": True, "name": canonical, "written": written, "plugin": row, "saved": True,
+               "activated": not restart_required, "restart_required": bool(restart_required),
+               "restart_required_servers": restart_required}
+    if restart_required:
+        payload["message"] = ("settings saved; restart required: registries are frozen, so MCP server(s) "
+                              f"{', '.join(restart_required)} use the new settings after the process restarts")
+    return _ok(rid, payload)
 
 
 def _portable_server_names(plugin_dir: Path, key: str) -> set[str]:

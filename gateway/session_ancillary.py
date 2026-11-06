@@ -311,7 +311,8 @@ async def reload_mcp(connection, ref, params):
     unchanged or busy); other sessions take theirs when next attached. A configured server that did not
     connect is named: a refusal when nothing took effect (no server registered or removed, no session
     generation), else ``unavailable`` beside the success. A call naming ``rev``, the revision the session
-    already holds, is that same nothing-left-to-load, answered as success with ``loaded_rev``."""
+    already holds, is that same nothing-left-to-load, answered as success with ``loaded_rev``. After the
+    hosted boot froze the registries a reload that would change them answers ``restart_required``."""
     if set(params) - {'session_id', 'confirm', 'rev', 'profile'}:
         raise RuntimeStoreError('invalid_params')
     if 'session:control' not in connection.actor.capabilities:
@@ -321,11 +322,20 @@ async def reload_mcp(connection, ref, params):
     from tools.mcp_oauth import suppress_interactive_oauth
     from tools import mcp_tool_discovery as discovery
 
+    from registry_freeze import RegistryFrozen
+
     def reconcile():
         with suppress_interactive_oauth():
             return (discovery.reconcile_mcp_servers_with_config(), discovery.mcp_servers_not_connected(),
                     discovery.mcp_servers_ready())
-    result, failed, ready = await asyncio.to_thread(reconcile)
+    try:
+        result, failed, ready = await asyncio.to_thread(reconcile)
+    except RegistryFrozen:
+        # The hosted boot froze the registries: reconcile refused before changing anything. An expected
+        # outcome of this deployment, answered as one (never an internal error), and nothing to refresh.
+        return {'status': 'restart_required',
+                'message': 'restart required: registries are frozen, so MCP server changes in config '
+                           'take effect when the process restarts'}
     # ``added`` is what reconcile attempted: only those now registered (live or lazy) changed anything.
     result = {**result, 'added': [name for name in result.get('added', []) if name not in failed]}
     from gateway.session_authorities import served_profile_name

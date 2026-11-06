@@ -22,12 +22,13 @@ import threading
 import types
 from contextlib import suppress
 from dataclasses import dataclass, field
-from functools import cached_property, wraps
+from functools import cached_property
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple, Union
 
 from hermes_constants import get_hermes_home, get_process_hermes_home, hermes_home_key
 from registration_lifecycle import replacement_coordinator
+from registry_freeze import refuse_if_frozen
 from utils import env_var_enabled
 from hermes_cli.config import load_config_readonly
 from hermes_cli.middleware import VALID_MIDDLEWARE
@@ -58,6 +59,9 @@ from hermes_cli.plugins_dispatch import (
     is_valid_system_prompt_section_id, resolve_plugin_command_result,
 )
 from hermes_cli.plugins_capability_ctx import PluginCapabilityCtxMixin
+from hermes_cli.plugins_ctx_guards import (
+    ABANDONED_LOAD_GUARDED, FREEZE_GUARDED, ignore_after_abandoned_load, refuse_after_freeze,
+)
 from hermes_cli.plugins_ledger import PluginLedgerMixin, PluginRegistration
 from hermes_cli.plugins_registrars import _SCOPED_PROVIDER_REGISTRARS, make_scoped_provider_registrar
 from hermes_cli.plugins_state import (
@@ -948,6 +952,7 @@ class PluginContext(PluginCapabilityCtxMixin):
         valid: set[str],
     ) -> PluginRegistration:
         """Append ``callback`` under ``key`` (warning on unknown ``key``) and lease its removal."""
+        refuse_if_frozen("plugin registry")  # the mapping is written before the ledger would refuse
         if key not in valid:
             logger.warning("Plugin '%s' registered unknown %s '%s' (valid: %s)", self.manifest.name, kind,
                            key, ", ".join(sorted(valid)))
@@ -1021,28 +1026,13 @@ for _row in _SCOPED_PROVIDER_REGISTRARS:
 del _row
 
 
-def _ignore_after_abandoned_load(method):
-    """Turn a registrar into a no-op once the context's load timed out: the abandoned worker thread may
-    still be executing register(), and a late registration would land in registries that the failure
-    path already swept (#108139)."""
-    @wraps(method)
-    def wrapped(self, *args, **kwargs):
-        if getattr(self, "_load_abandoned", False):
-            logger.warning(
-                "Plugin '%s' called %s() after its load timed out; ignored", self.manifest.name,
-                method.__name__,
-            )
-            return None
-        return method(self, *args, **kwargs)
-
-    return wrapped
-
-
-# Every mutating entry point plugins reach through ``ctx`` during register(); applied by name so the
-# guard cannot drift from the surface as registrars are added.
+# Every mutating entry point plugins reach through ``ctx``, wrapped by name so the guards cannot drift
+# from the surface as registrars are added: a load that timed out is ignored, a frozen registry refuses.
 for _name, _method in list(vars(PluginContext).items()):
-    if callable(_method) and (_name.startswith("register_") or _name in {"subscribe", "on_unload"}):
-        setattr(PluginContext, _name, _ignore_after_abandoned_load(_method))
+    if callable(_method) and (_name.startswith("register_") or _name in FREEZE_GUARDED):
+        if _name.startswith("register_") or _name in ABANDONED_LOAD_GUARDED:
+            _method = ignore_after_abandoned_load(_method)
+        setattr(PluginContext, _name, refuse_after_freeze(_method))
 del _name, _method
 
 
@@ -1379,6 +1369,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
     def register_approval_transport(self, name: str, present_fn: Callable, *, plugin_id: str) -> None:
         """Manager-level registration (public API kept for out-of-tree plugins); the PluginContext
         method is the tracked path plugins normally use. Same validation, no unload tracking."""
+        refuse_if_frozen("plugin registry")
         from hermes_cli.approval_transport import RegisteredApprovalTransport
         clean = str(name).strip().lower()
         if clean == "builtin":
@@ -1504,7 +1495,9 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         return dict(self._portable_mcp_server_plugins)
 
     def remove_plugin_skill(self, qualified_name: str) -> None:
-        """Remove a stale registry entry (silently ignores missing keys)."""
+        """Remove a stale registry entry (silently ignores missing keys). Refused once the hosted boot
+        froze the registries: a reader that finds the file gone reports it missing instead."""
+        refuse_if_frozen("plugin registry")
         self._plugin_skills.pop(qualified_name, None)
 
 

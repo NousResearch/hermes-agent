@@ -51,9 +51,9 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
             agent.reasoning_config = snapshot["reasoning_config"]
 
 
-def _profile_runtime_scope_tokens(profile_home, *, hydrate_secrets: bool = True) -> _TurnScopes:
-    """Bind HERMES_HOME + secret + terminal scope for ``profile_home`` (None = launch profile) and
-    return the reset tokens. The launch profile's SECRET scope is always bound — its ``.env`` over
+def _profile_runtime_scope_tokens(profile_home, *, hydrate_secrets: bool = True):
+    """Bind HERMES_HOME + secret + terminal scope for ``profile_home`` (None = launch profile) as one
+    change and return its token (``hermes_scope.StateToken``). The launch profile's SECRET scope is always bound — its ``.env`` over
     the launch env (live while single-profile, frozen at activation afterwards; never live
     ``os.environ`` once a secondary context may have written to it, #107422) — so the credential
     source is fixed at entry and an in-flight launch body survives a concurrent first-secondary
@@ -66,68 +66,36 @@ def _profile_runtime_scope_tokens(profile_home, *, hydrate_secrets: bool = True)
     from any body that persists state rather than calls a provider: the exit-flush worker has a 5s
     TOTAL budget, and one slow source there costs the transcript the flush exists to save.
     """
+    from agent.runtime_scope import bind_state, scope_for_profile
     from agent.secret_scope import is_multiplex_active
-    scopes = _TurnScopes()
-    try:
-        if profile_home:
-            home = Path(profile_home)
-            # External sources first: the requested profile may never have been served in this process.
-            if hydrate_secrets:
-                from hermes_cli.env_loader import hydrate_profile_secret_sources
-                hydrate_profile_secret_sources(home)
-            secrets = build_profile_secret_scope(home)
-            overlay = None
-            scopes.home = set_hermes_home_override(str(home))
-        else:
-            # The launch home IS get_hermes_home() (``_profile_home`` answers None for "already the
-            # launch profile"); single-profile, only its secrets need binding. Once multiplexing is
-            # active the override is bound too: an unset override is the "unbound context" signal
-            # plugin runtime bindings and per-home slots fail closed on (#118538).
-            # Resolve at call time like the launch state.db handle: a harness that
-            # re-homes the process after import must not read the old home's .env.
-            from tui_gateway.launch_profile_policy import launch_secret_scope, launch_terminal_env
-            home = _launch_home()
-            secrets = launch_secret_scope(home)
-            # No home stamp: this IS the process's own profile, and the stamp exists only to
-            # mark a FOREIGN home for serves_routed_profile().
-            scopes.secret = set_secret_scope(secrets)
-            if not is_multiplex_active():
-                return scopes
-            scopes.home = set_hermes_home_override(str(home))
-            overlay = launch_terminal_env()
-        if scopes.secret is None:
-            scopes.secret = set_secret_scope(secrets, profile_home=str(home) if profile_home else None)
-        # Same terminal policy the gateway binds per turn: a docker-configured profile
-        # must never resolve the launch process's pinned env. Failure → refusal scope.
-        from tools.terminal_scope import install_profile_terminal_scope
-        scopes.terminal = install_profile_terminal_scope(home, env_overlay=overlay)
-        return scopes
-    except Exception:
-        # A raise mid-bind leaves no return value for the caller to release —
-        # undo whatever was bound before propagating.
-        _release_profile_runtime_scope_tokens(scopes)
-        raise
+    if profile_home:
+        # External sources first (unless skipped): the profile may never have been served here.
+        # The same terminal policy the gateway binds per turn: a docker-configured profile must
+        # never resolve the launch process's pinned env. Failure -> refusal scope.
+        bound = bind_state(scope_for_profile(profile_home), hydrate_secrets=hydrate_secrets)
+    else:
+        # The launch home IS get_hermes_home() (``_profile_home`` answers None for "already the
+        # launch profile"); single-profile, only its secrets need binding. Once multiplexing is
+        # active the override and terminal policy are bound too: an unset override is the
+        # "unbound context" signal plugin runtime bindings and per-home slots fail closed on
+        # (#118538). Resolved at call time like the launch state.db handle: a harness that
+        # re-homes the process after import must not read the old home's .env. Secrets are
+        # unstamped: this IS the process's own profile, and the stamp marks a FOREIGN home.
+        from tui_gateway.launch_profile_policy import launch_secret_scope, launch_terminal_env
+        home = _launch_home()
+        multiplex = is_multiplex_active()
+        bound = bind_state(scope_for_profile(home), secrets=launch_secret_scope(home), stamp_home=False,
+                           env_overlay=launch_terminal_env() if multiplex else None,
+                           home_override=multiplex, terminal=multiplex)
+    # bind_state computes every piece before installing any, so a raise here leaves nothing bound.
+    return bound
 
 
-def _release_profile_runtime_scope_tokens(scopes: _TurnScopes | None) -> None:
-    """Release terminal → secret → home. Each reset is independent: a failing terminal reset must
-    not leave the previous profile's secrets / HERMES_HOME installed for the next body in this
-    context (a fail-open scope leak on the teardown path). The first failure is re-raised after
-    every scope has been released."""
-    if scopes is None:
-        return
-    from tools.terminal_scope import reset_terminal_scope
-    first_error: BaseException | None = None
-    for token, reset in ((scopes.terminal, reset_terminal_scope), (scopes.secret, reset_secret_scope),
-                         (scopes.home, reset_hermes_home_override)):
-        if token is None:
-            continue
-        try:
-            reset(token)
-        except Exception as exc:
-            first_error = first_error or exc
-    if first_error is not None:
-        raise first_error
+def _release_profile_runtime_scope_tokens(token) -> None:
+    """Undo ``_profile_runtime_scope_tokens``: home, secrets, terminal policy and runtime scope go
+    back together (one change), so no piece of the previous profile outlives the others."""
+    if token is not None:
+        token.reset()
 
 
 @contextlib.contextmanager

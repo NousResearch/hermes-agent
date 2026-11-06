@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Union
 
 from registration_lifecycle import replacement_coordinator
+from registry_freeze import refuse_if_frozen
 from hermes_cli.plugins_loader import _plugin_home_scope
 from hermes_cli.plugins_manifest import PluginManifest, manifest_key
 
@@ -26,14 +27,23 @@ def _hook_source_of(name: str, module: Any) -> Optional[tuple]:
     return (name, str(Path(source).resolve())) if source else None
 
 
+# Registrations whose release changes no registry: a supervised task's lease only cancels the plugin's
+# own task (and runs from that task's done-callback), so it may release after the freeze.
+_RELEASE_AFTER_FREEZE = frozenset({"background_task"})
+# Set once at construction: ``kind`` decides the freeze exemption and ``_release`` is the raw inverse, so
+# neither may be rebound on a handle a plugin holds.
+_FIXED_FIELDS = frozenset({"kind", "key", "plugin_key", "persistent", "_release"})
+
+
 @dataclass
 class PluginRegistration:
     """One host-owned registration plus its inverse, so force reload unwinds registries in reverse order
-    (including restoring the entry an override replaced)."""
+    (including restoring the entry an override replaced). :meth:`dispose` is the only public release
+    path; the inverse itself is private."""
 
     kind: str
     key: str
-    release: Callable[[], None]
+    _release: Callable[[], None] = field(repr=False)
     plugin_key: str = ""
     # Process-global host infrastructure (e.g. dashboard-auth providers): kept out of ``_registration_order``
     # so unload-all cannot dispose it, but still disposed by a *targeted* unload and evicted on force
@@ -49,21 +59,32 @@ class PluginRegistration:
     _disposed: bool = field(default=False, init=False, repr=False)
     _on_dispose: Optional[Callable[[PluginRegistration], None]] = field(default=None, init=False, repr=False)
 
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in _FIXED_FIELDS and name in self.__dict__:
+            raise AttributeError(f"PluginRegistration.{name} is fixed once the registration is made")
+        object.__setattr__(self, name, value)
+
     @property
     def active(self) -> bool:
         """Whether this handle still owns an active registration."""
         return not self._disposed
 
     def dispose(self) -> None:
-        """Release this registration once; repeated disposal is harmless."""
+        """Release this registration once; repeated disposal is harmless. After the hosted boot froze the
+        registries a retained handle cannot unregister, except a supervised task's lease (see
+        ``_RELEASE_AFTER_FREEZE``)."""
         if self._disposed:
             return
+        if self.kind not in _RELEASE_AFTER_FREEZE:
+            refuse_if_frozen("plugin registry")
         self._disposed = True
         try:
-            self.release()
+            self._release()
         finally:
             if self._on_dispose is not None:
                 self._on_dispose(self)
+
+    release = dispose  # the public name a plugin may call; the raw inverse stays ``_release``
 
 
 class PluginLedgerMixin:
@@ -77,8 +98,9 @@ class PluginLedgerMixin:
 
         See #91701.
         """
+        refuse_if_frozen("plugin registry")  # backstop for every registrar, ledger-owned ones included
         registration = PluginRegistration(
-            kind=kind, key=key, release=release, plugin_key=manifest_key(manifest), persistent=persistent)
+            kind=kind, key=key, _release=release, plugin_key=manifest_key(manifest), persistent=persistent)
         registration._on_dispose = lambda disposed: self._forget_registrations([disposed])
         self._ownership_ledger.setdefault(registration.plugin_key, []).append(registration)
         if not persistent:
@@ -216,9 +238,12 @@ class PluginLedgerMixin:
     # one register() may deliberately create several closures for one hook.
 
     def _drop_fallback_hooks(self, hook_source: Optional[tuple]) -> None:
-        if hook_source is not None:
-            for handle in self._memory_hook_registrations.pop(hook_source, []):
-                handle.dispose()
+        if hook_source is None:
+            return
+        if self._memory_hook_registrations.get(hook_source):
+            refuse_if_frozen("plugin registry")  # before the pop, so a refused drop keeps the group owned
+        for handle in self._memory_hook_registrations.pop(hook_source, []):
+            handle.dispose()
 
     def _register_fallback_hook(self, context: Any, hook_source: Optional[tuple], hook_name: str,
                                 callback: Callable, *, hold_stream: bool = False) -> PluginRegistration:
@@ -261,6 +286,7 @@ class PluginLedgerMixin:
         """Unload one plugin (or all when ``plugin=None``, as force rediscovery does). Every ledger registration
         — including on_unload callbacks and supervised tasks — is disposed in reverse acquisition order with
         identity-conditional inverses. Returns ``True`` when anything was found."""
+        refuse_if_frozen("plugin registry")
         unload_all = plugin is None
         if unload_all:
             target_keys = set(self._ownership_ledger) | set(self._plugins)

@@ -225,6 +225,11 @@ class PortForward:
         except OSError:
             pass
         finally:
+            # close() alone leaves the upload thread's blocking recv alive, hiding EOF from the client.
+            try:
+                conn.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
             try:
                 conn.close()
             finally:

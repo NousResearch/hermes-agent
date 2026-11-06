@@ -154,6 +154,9 @@ def test_public_lifecycle_runs_host_aggregation(monkeypatch):
         parent_turn_id="turn-1",
         child_session_id="child-session",
         child_role="leaf",
+        child_subagent_id="sa-aggregate",
+        parent_tool_call_id=None,
+        task_index=0,
         child_summary="aggregated",
         child_status="completed",
         # Redacted tool history rides the shared finalization pipeline
@@ -161,6 +164,13 @@ def test_public_lifecycle_runs_host_aggregation(monkeypatch):
         # no tool_trace.
         tool_call_history=[],
         duration_ms=250,
+        # Spend fields are read from the result entry; the fabricated one
+        # carries api_calls only (cost rides the hidden _child_cost_usd).
+        model=None,
+        api_calls=1,
+        tokens=None,
+        cost_usd=None,
+        cost_status=None,
     )
     assert parent.session_estimated_cost_usd == 3.5
     assert parent.session_cost_source == "subagent"

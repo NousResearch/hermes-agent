@@ -67,3 +67,27 @@ def test_a_failed_verdict_stays_failed(monkeypatch):
 def test_without_a_runner_name_no_unfinished_job_counts(monkeypatch):
     names = [job["name"] for job in _collect(monkeypatch, "")["jobs"]]
     assert names == ["Detect affected areas"]
+
+
+def test_the_running_job_is_not_asked_for_its_log(monkeypatch):
+    """The jobs API has no log for a job that is still running: fetching it marks the gate
+    "unavailable" in every report's cache section."""
+    fetched = []
+
+    def fake_job_log(job_id, repo, token):
+        fetched.append(job_id)
+        if job_id == 2:
+            raise OSError("job log HTTP 404")
+        return ""
+
+    def fake_api_get(path, token, params=None, list_key=None):
+        if path.endswith("/runs/9"):
+            return {"created_at": "2026-01-01T00:00:00Z"}
+        return _jobs() if path.endswith("/runs/9/jobs") else []
+
+    monkeypatch.setattr(timings_report, "api_get", fake_api_get)
+    monkeypatch.setattr(timings_report, "_job_log", fake_job_log)
+    data = timings_report.collect_timings("t", "o/r", "9", "sha", current_runner="runner-gate")
+    assert GATE in {job["name"] for job in data["jobs"]}
+    assert data["cache_data"]["unavailable_jobs"] == []
+    assert fetched == [1]

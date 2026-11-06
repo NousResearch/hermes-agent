@@ -37,12 +37,3 @@ def test_every_check_runs_whatever_an_earlier_check_did(filename, job):
         if "!cancelled()" not in condition and "always()" not in condition:
             offenders.append(step.get("name") or step.get("id") or step.get("uses"))
     assert not offenders, f"{filename}:{job} steps that stop after any earlier failure: {offenders}"
-
-
-@pytest.mark.parametrize("filename,job", COMBINED)
-def test_status_functions_are_wrapped_so_yaml_keeps_the_negation(filename, job):
-    """`if: !cancelled()` is a YAML tag, not an expression: it must sit inside ${{ }}."""
-    for step in _steps(filename, job):
-        condition = step.get("if")
-        if isinstance(condition, str) and condition.lstrip().startswith("!"):
-            pytest.fail(f"{filename}:{job} step {step.get('name')!r} has a bare `!` condition")

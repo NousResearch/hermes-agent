@@ -309,6 +309,7 @@ def collect_timings(token: str, repo: str, run_id: str, head_sha: str,
                         token, list_key="jobs")
 
     direct = []
+    running_ids = set()  # this report's own job: no log until it finishes
     for job in orch_jobs:
         steps = job.get("steps") or []
         if any(s.get("name", "").startswith("Run ./.github/workflows/") for s in steps):
@@ -319,6 +320,7 @@ def collect_timings(token: str, repo: str, run_id: str, head_sha: str,
                       if current_runner and job.get("runner_name") == current_runner else None)
             if closed is not None:
                 direct.append(closed)
+                running_ids.add(closed.get("id"))
             continue
         direct.append(job)
 
@@ -355,7 +357,8 @@ def collect_timings(token: str, repo: str, run_id: str, head_sha: str,
                     and bool(run_info.get("event"))
                     and run_info["event"] not in ("pull_request", "pull_request_target")),
         "jobs": all_jobs,
-        "cache_data": _collect_cache_data(all_jobs, repo, token),
+        "cache_data": _collect_cache_data([j for j in all_jobs if j["job_id"] not in running_ids],
+                                          repo, token),
     }
 
 

@@ -233,7 +233,7 @@ def _plugin_lists(home: Path, plugin: str, *, also: tuple[str, ...] = ()) -> tup
     """Whether *plugin*'s key or name (or a name in *also*) is in *home*'s ``plugins.enabled`` /
     ``plugins.disabled`` (:func:`_plugins_listed`)."""
     feature = next(f for f in LEFT_CORE if f.plugin == plugin)
-    return _plugins_listed(home, (feature.plugin_key, feature.plugin, *also))
+    return _plugins_listed(home, (feature.plugin_key, *feature.plugin_names, feature.plugin, *also))
 
 
 def _bundled_plugin_selected(home: Path, plugin: str) -> bool:
@@ -507,6 +507,9 @@ class LeftCoreFeature:
     # catalog plugin in ``plugins.enabled`` / ``plugins.disabled`` (the loader's gate, an
     # administrator's pinned list) and for every `hermes plugins <verb>` (:func:`legacy_plugin_alias`).
     plugin_key: str = ""
+    # Other names that bundled plugin was listed under (its manifest ``name:``, ``yuanbao-platform``): the
+    # same alias as *plugin_key*, so core's old disable keeps holding for the catalog plugin.
+    plugin_names: tuple[str, ...] = ()
     # ``terminal.backend`` value the plugin registers: unknown-backend errors name the install command.
     terminal_backend: str = ""
     # Config schema version that shipped without the feature, for a row whose conversion changes what a
@@ -605,6 +608,7 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
     LeftCoreFeature(
         # YUANBAO_APP_KEY (the legacy App ID name) stays on local_env_policy's own short list, as core had it.
         plugin="yuanbao", label="Yuanbao", in_use=yuanbao_in_use, plugin_key="platforms/yuanbao",
+        plugin_names=("yuanbao-platform",),
         unchanged="YUANBAO_* settings, platforms.yuanbao, YUANBAO_HOME_CHANNEL and the yb_* tool names are unchanged",
         secret_env=("YUANBAO_APP_SECRET",),
         private_env=("YUANBAO_APP_ID", "YUANBAO_BOT_ID", "YUANBAO_WS_URL", "YUANBAO_API_DOMAIN", "YUANBAO_ROUTE_ENV",
@@ -752,12 +756,12 @@ def launch_env_names() -> frozenset[str]:
 def legacy_plugin_alias(name: str) -> str:
     """The catalog plugin a bundled key that left core now names (``observability/langfuse`` ->
     ``langfuse``), else ``""``."""
-    return next((f.plugin for f in LEFT_CORE if f.plugin_key and f.plugin_key == name), "")
+    return next((f.plugin for f in LEFT_CORE if f.plugin_key and name in (f.plugin_key, *f.plugin_names)), "")
 
 
 def legacy_plugin_keys(plugin: str) -> set[str]:
     """Bundled keys that now name catalog *plugin* (inverse of :func:`legacy_plugin_alias`)."""
-    return {f.plugin_key for f in LEFT_CORE if f.plugin_key and f.plugin == plugin}
+    return {key for f in LEFT_CORE if f.plugin_key and f.plugin == plugin for key in (f.plugin_key, *f.plugin_names)}
 
 
 def moved_command_hint(prog: str, value: str, action: str = "") -> str:
@@ -895,8 +899,10 @@ def _core_carried(feature: LeftCoreFeature, selection: list) -> bool:
     """Whether core resolved *feature*'s toolsets on for a platform selecting *selection*: named
     directly, or through a ``hermes`` / ``hermes-<platform>`` composite that included them."""
     def carries(name: str) -> bool:
-        if name in feature.toolsets or name in feature.replaces_toolsets or name == "hermes":
+        if name in feature.toolsets or name in feature.replaces_toolsets:
             return True
+        if name == "hermes":  # the legacy composite: tools_config resolves it as hermes-cli + hermes-api-server
+            return carries("hermes-cli") or carries("hermes-api-server")
         return name.startswith("hermes-") and name[len("hermes-"):].replace("-", "_") not in feature.off_platforms
     return any(carries(str(name)) for name in selection)
 

@@ -334,7 +334,6 @@ including top-level one-shot launches. It does not become a process-wide option.
 | `gateway/hooks.py` | Hook discovery, loading, and lifecycle event dispatch |
 | `gateway/mirror.py` | Cross-session message mirroring for `send_message` |
 | `gateway/status.py` | Token lock management for profile-scoped gateway instances |
-| `gateway/builtin_hooks/` | Extension point for always-registered hooks (none shipped) |
 | `gateway/platform_registry.py` | Adapter registry, factories, and deferred (lazy) loaders for bundled platform plugins |
 | `plugins/platforms/<name>/` | Bundled messaging adapters (most platforms: `adapter.py` + `plugin.yaml`) |
 | `gateway/platforms/` | Shared `base.py` plus legacy/direct adapters (Signal, API server, webhooks, …) |
@@ -435,6 +434,58 @@ from a parent job is reported instead of retried with weaker process isolation.
 Service persistence is separately opt-in during setup. Imports and noninteractive
 setup do not install a missing service based on an imported preference. See
 [optional service installation](#optional-service-installation).
+
+## `hermes gateway attach`
+
+`hermes gateway attach --json` is the public attach step for a local client that has its own UI
+and dials the gateway itself. It runs `hermes_cli/gateway_runtime_attach.py::attach_gateway`, the
+same function behind the Ink TUI's `ui-tui/scripts/gateway_bootstrap.py`, so both clients get the
+same discovery, start, recovery and verdicts.
+
+| Flag | Meaning |
+|------|---------|
+| (none) | Discover the owner that serves the active profile. Never start one. |
+| `--start` | Ensure the owner, as `ensure` does (a client's first launch). |
+| `--recover` | Discover; when the owner is not ready (it crashed, ended by its idle exit, was stopped, or an older Hermes's gateway answers), ensure it. Bound how often a client uses this, as Ink does with `OWNER_RECOVERY_LIMIT`, so a crash-looping owner is not restarted without pause. |
+| `--timeout S` | Start deadline for `--start`/`--recover` (default `60`). Discovery and the ticket mint each add at most 5 seconds. `--start` and `--recover` are mutually exclusive. |
+
+When no service is installed, `attach` starts an unmanaged gateway with the idle exit: it stops
+itself once no client, adapter or job needs it, and the next `attach --start` starts a new one. An
+installed service that `attach` starts keeps running, as with `ensure`. A restart's after-turn
+wait (`draining`/`restart_wait`) is attachable, so a client can still answer a parked prompt.
+Launch policy (model, provider, toolsets, cwd, Kanban board) belongs in `session.create`; the
+command removes those variables from its own environment before it can start a daemon.
+
+Success (exit `0`) prints one JSON line: `ensure`'s fields (`state`, `reason_code`, `detail`,
+`endpoint`, `client_code_sha`) plus:
+
+```json
+{"url": "ws://127.0.0.1:<port>/api/ws", "protocol": "hermes-gateway-v1",
+ "protocols": ["hermes-gateway-v1", "hermes-gateway-ticket.<ticket>"], "ticket": "<ticket>"}
+```
+
+`endpoint` holds `profile_id`, `instance_id`, `capabilities`, `code_sha` and the other discovery
+fields. Dial `url` with `protocols` as the WebSocket subprotocols, from loopback, with **no
+`Origin` header**, and check that the server selected `protocol`. Then speak `hermes-gateway-v1`:
+`runtime.describe` for the owner's `session.create` contract, then `session.create` or
+`session.resume`. When `client_code_sha` and `endpoint.code_sha` differ, the gateway outlived
+`hermes update`: restart it (`hermes gateway restart`) rather than keep attaching to old code.
+
+The ticket is the WebSocket's only credential. It is minted by the control socket's
+`session-ticket` verb (purpose `interactive`, scope `profile`) over the same-user socket, or the
+SID-checked named pipe on Windows; a profile served by the default multiplexer gets its ticket
+from the multiplexer's control socket. It is single-use, bound to the caller's profile and that
+owner's `instance_id`, and expires after 30 seconds. `attach` prints it to stdout for the calling
+process only; it never logs it. Run `attach` again for each new connection and each reconnect.
+
+With no owner to attach, the JSON adds `message` and has no `url` or `ticket`. `message` is
+the verdict Ink shows: `gateway <state>: <reason_code>` (`not ready` when there is no code),
+then one `gateway <state>: …` line per line of the refusal's remedy, or a failed start's
+redacted output. The same text goes to stderr. The exit code is `ensure`'s for that verdict. When
+the owner was attachable but no ticket could be minted (it went away, or refused the grant), the
+verdict is `inaccessible`/`ticket_unavailable` (exit `7`) with the bounded cause, or the local
+repair command, in `detail`; run `attach` again. Invalid arguments exit `2` with `ensure`'s
+`invalid_invocation` line.
 
 ## Architecture Overview
 
@@ -640,7 +691,7 @@ Gateway hooks are Python modules that respond to lifecycle events:
 | `agent:end` | Agent finishes and returns response |
 | `command:*` | Any slash command is executed |
 
-Hooks are discovered from `gateway/builtin_hooks/` (an extension point — currently empty in the shipped distribution; `_register_builtin_hooks()` is a no-op stub) and `<profile home>/hooks/` (user-installed; `~/.hermes/hooks/` for the default profile, one directory per served profile under multiplexing — paths resolve at call time, never at import). Each hook is a directory with a `HOOK.yaml` manifest and `handler.py`.
+Hooks are discovered from `<profile home>/hooks/` (user-installed; `~/.hermes/hooks/` for the default profile, one directory per served profile under multiplexing — paths resolve at call time, never at import). Each hook is a directory with a `HOOK.yaml` manifest and `handler.py`.
 
 ## Memory Provider Integration
 
@@ -709,6 +760,13 @@ acceptance. Refused admission refunds every claimed batch sibling without spendi
 actual delivery errors keep their bounded retry policy. Recognized raw API routes resolve after
 persisted messaging origins and defer quietly when unavailable; malformed routes still warn.
 
+Completions that land while the session is busy fold into ONE queued turn
+(`session_automation.py::_admit_folded_completion`): a completion whose route already has a
+completion waiting at the very end of the FIFO replaces it with a combined admission (both texts,
+every producer identity, a "N background process results" header), cancelling the waiting row in
+the same transaction. Only the tail folds, so a prompt queued after a completion keeps its place
+between them; a waiting row claimed first leaves the new completion to queue alone.
+
 Cron execution has its own session. Eligible continuable deliveries may mirror or seed the
 reply-facing conversation: origin, origin-less home fallback, user-written bare-platform home,
 or opted-in explicit targets. `all` expansions do not gain home mirror eligibility. Mirrored
@@ -722,7 +780,7 @@ briefs are labelled user turns appended at a turn boundary, preserving role alte
 `GatewayLoginCommandsMixin` (`gateway/slash_commands_login.py`). It refuses outside a paired DM:
 `chat_type in {"dm","private"}`, a truthy `chat_id`, and a platform whose `"dm"` really is a paired
 conversation — ntfy, raft and a2a all report `chat_type="dm"` for a broadcast topic, a channel and
-an agent peer, so posting a consent link there would publish it.
+an agent peer, so posting a sign-in link and code there would publish them.
 
 **It binds the whole install.** The sign-in writes the singleton `providers.nous`, so whoever
 approves the code owns this gateway's inference and connectors for every chat it serves. Slash
@@ -730,15 +788,15 @@ gating is opt-in (`gateway/slash_access.py`): with no `allow_admin_from` set, ev
 DM the bot can run it. Operators of shared gateways must set it.
 
 The handler returns its ack at once and drains `anon_auth.run_sign_in` on a **private single-worker
-executor** (`_login_executor`), never the shared 10-thread gateway pool — a promotion wait can last
+executor** (`_login_executor`), never the shared 10-thread gateway pool — the token poll can last
 the code's full expiry, and a live worker in the shared pool makes shutdown skip the SessionDB
 close/checkpoint. One attempt per process, stamped with the identity that started it: the same
-identity's second `/login` supersedes (the loser ends with the superseded copy pushed into its own
-chat); a different identity is refused. `task.cancel()` cannot interrupt a blocking poll inside a
-worker thread, so shutdown and supersede both work through `attempt.cancelled`, which
-`wait_for_promotion` now polls on a ≤1 s tick. A shutdown-cancelled attempt pushes nothing — the
-task is dying and its adapters may already be gone — but if the server had already completed the
-transfer it still persists, because that transfer is irreversible.
+identity's second `/login` cancels the first (the loser ends with the cancelled copy pushed into its
+own chat); a different identity is refused. `task.cancel()` cannot interrupt a blocking poll inside
+a worker thread, so shutdown and the replacement both work through `attempt.cancelled`, which the
+token poll checks on a ≤1 s tick and once more before the save. A cancelled attempt saves nothing.
+A shutdown-cancelled attempt pushes nothing — the task is dying and its adapters may already be
+gone. The completion copy carries what the free tier's handoff moved.
 
 On completion the handler **evicts** every cached agent still on `nous/welcome` and clears any
 session model override pinned to it. It does not switch agents in place and does not write a model

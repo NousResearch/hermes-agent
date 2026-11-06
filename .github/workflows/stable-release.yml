@@ -172,29 +172,6 @@ jobs:
       jobs: darwin-arm64
       skip-tests: ${{ !fromJSON(needs.admit.outputs.lanes).smoke }}
 
-  candidates-darwin-x64:
-    name: Build signed release candidates (darwin-x64)
-    needs: admit
-    # Starts with the gates; the acceptance join is what requires CI.
-    # macOS Intel is off by default: unsupported on main, and its macos-15-intel
-    # runner adds over an hour to the release.
-    if: >-
-      !cancelled() && needs.admit.result == 'success' && fromJSON(needs.admit.outputs.jobs)['candidates-darwin-x64']
-    permissions:
-      contents: write
-      actions: read
-      packages: write
-      id-token: write
-    uses: ./.github/workflows/desktop-bundled-release.yml
-    secrets: inherit
-    with:
-      tag: ${{ needs.admit.outputs.tag }}
-      claim-tag: ${{ needs.admit.outputs.claim-tag }}
-      claim-object: ${{ needs.admit.outputs.claim-object }}
-      release-phase: candidate
-      jobs: darwin-x64
-      skip-tests: ${{ !fromJSON(needs.admit.outputs.lanes).smoke }}
-
   candidates-win32-arm64:
     name: Build signed release candidates (win32-arm64)
     needs: admit
@@ -327,42 +304,6 @@ jobs:
           CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
           CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
 
-  transitions-darwin-x64:
-    name: Pin actual OLD and NEW signed packages (darwin-x64)
-    needs: [admit, candidates-darwin-x64]
-    if: fromJSON(needs.admit.outputs.jobs)['transitions-darwin-x64']
-    runs-on: blacksmith-2vcpu-ubuntu-2404
-    environment: release-signing
-    outputs:
-      windows: ${{ steps.plan.outputs.windows }}
-      macos: ${{ steps.plan.outputs.macos }}
-      baseline: ${{ steps.plan.outputs.baseline }}
-    steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 0
-          filter: blob:none
-      - uses: ./.github/actions/setup-pm
-        with:
-          cache-python: false
-      - id: plan
-        run: python -m scripts.releases.stable transitions
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RECEIPT: darwin-x64
-          RECEIPT_URL: ${{ needs.candidates-darwin-x64.outputs.darwin-x64-receipt-url }}
-          RECEIPT_SHA256: ${{ needs.candidates-darwin-x64.outputs.darwin-x64-receipt-sha256 }}
-          RELEASE_TAG: ${{ needs.admit.outputs.tag }}
-          RELEASE_CLAIM_TAG: ${{ needs.admit.outputs.claim-tag }}
-          RELEASE_CLAIM_OBJECT: ${{ needs.admit.outputs.claim-object }}
-          BASELINE_MANIFEST_URL: ${{ inputs.baseline-manifest }}
-          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
-          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
-          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
-          CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
-          CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
-
   transitions-win32:
     name: Pin actual OLD and NEW signed packages (win32)
     needs: [admit, candidates-win32-bundle]
@@ -406,7 +347,7 @@ jobs:
     # call's stable-phase-result fails when its smokes fail, so a failed
     # smoke fails this job's RELEASE_NEEDS check and stages no manifest.
     if: always() && fromJSON(needs.admit.outputs.jobs)['candidate-manifest']
-    needs: [admit, candidates-darwin-arm64, candidates-darwin-x64, candidates-win32-arm64,
+    needs: [admit, candidates-darwin-arm64, candidates-win32-arm64,
             candidates-win32-x64, candidates-win32-bundle, candidates-termux]
     runs-on: blacksmith-4vcpu-ubuntu-2404
     environment: release-signing
@@ -475,25 +416,6 @@ jobs:
       bundle-manifest-sha256: ${{ matrix.manifest_sha256 }}
       bundle-arch: ${{ matrix.arch }}
 
-  macos-packaged-x64:
-    name: macOS x64 signed-package acceptance
-    needs: [admit, transitions-darwin-x64]
-    # Without a published stable baseline there is no OLD package to upgrade from.
-    if: fromJSON(needs.admit.outputs.jobs)['macos-packaged-x64'] && needs.transitions-darwin-x64.outputs.baseline != 'none'
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.transitions-darwin-x64.outputs.macos) }}
-    uses: ./.github/workflows/install-e2e-macos-run.yml
-    with:
-      commit: ${{ needs.admit.outputs.commit }}
-      install-method: packaged-app
-      update-method: open-app-update
-      install-ref: ${{ matrix.old }}
-      leg-id: stable-${{ matrix.id }}
-      bundle-manifest-url: ${{ matrix.manifest }}
-      bundle-manifest-sha256: ${{ matrix.manifest_sha256 }}
-      bundle-arch: ${{ matrix.arch }}
-
   bootstrap-version:
     name: Bootstrap installer release identity
     needs: admit
@@ -532,10 +454,10 @@ jobs:
     name: All release acceptance checks pass
     if: always()
     needs: [admit, ci, docker, nix, pm-bundle, termux-checks, windows-live, install-e2e,
-            candidates-darwin-arm64, candidates-darwin-x64, candidates-win32-arm64,
+            candidates-darwin-arm64, candidates-win32-arm64,
             candidates-win32-x64, candidates-win32-bundle, candidates-termux,
-            candidate-manifest, transitions-darwin-arm64, transitions-darwin-x64,
-            transitions-win32, windows-packaged, macos-packaged-arm64, macos-packaged-x64,
+            candidate-manifest, transitions-darwin-arm64,
+            transitions-win32, windows-packaged, macos-packaged-arm64,
             bootstrap-version]
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
@@ -545,7 +467,7 @@ jobs:
       - uses: ./.github/actions/setup-pm
         with:
           cache-python: false
-      - run: python -m scripts.releases.stable gate admit ci docker nix pm-bundle termux-checks windows-live install-e2e candidates-darwin-arm64 candidates-darwin-x64 candidates-win32-arm64 candidates-win32-x64 candidates-win32-bundle candidates-termux candidate-manifest transitions-darwin-arm64 transitions-darwin-x64 transitions-win32 windows-packaged macos-packaged-arm64 macos-packaged-x64 bootstrap-version
+      - run: python -m scripts.releases.stable gate admit ci docker nix pm-bundle termux-checks windows-live install-e2e candidates-darwin-arm64 candidates-win32-arm64 candidates-win32-x64 candidates-win32-bundle candidates-termux candidate-manifest transitions-darwin-arm64 transitions-win32 windows-packaged macos-packaged-arm64 bootstrap-version
         env:
           RELEASE_NEEDS: ${{ toJSON(needs) }}
           LANES: ${{ needs.admit.outputs.lanes }}
@@ -609,14 +531,17 @@ jobs:
     name: Stable release is green
     if: always()
     needs: [admit, ci, docker, acceptance, candidate-manifest, publication, publish-docker,
-            windows-packaged, macos-packaged-arm64, macos-packaged-x64]
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+            windows-packaged, macos-packaged-arm64]
+    # GitHub-hosted with docker/setup-buildx-action, as before the runner migration: on
+    # Blacksmith `imagetools create` cannot commit a manifest list to Docker Hub (404 on the
+    # index commit, any buildx version): v0.22.3 rc.1-rc.4 died on it in the versioned manifest.
+    runs-on: ubuntu-latest
     environment: release-signing
     permissions:
       contents: write
       actions: read
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -674,7 +599,7 @@ jobs:
             --candidate-manifest-sha256 "$CANDIDATE_MANIFEST_SHA256" --candidate-commit "$RELEASE_COMMIT" \
             "${args[@]}"
       - name: Set up Docker Buildx for ordered alias promotion
-        uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - name: Log in to Docker Hub for ordered alias promotion
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
@@ -696,3 +621,5 @@ jobs:
           MS_STORE_CLIENT_ID: ${{ secrets.MS_STORE_CLIENT_ID }}
           MS_STORE_CLIENT_SECRET: ${{ secrets.MS_STORE_CLIENT_SECRET }}
           MS_STORE_PRODUCT_ID: ${{ vars.MS_STORE_PRODUCT_ID }}
+          # Repository variable; 'true' commits the draft held for Publish now.
+          MS_STORE_HOLD: ${{ vars.MS_STORE_HOLD }}

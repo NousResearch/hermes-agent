@@ -12,12 +12,13 @@ import time
 import urllib.parse
 from fastapi import APIRouter
 from hermes_cli.web_routers._common import (
-    REDACTED_CREDENTIAL_WRITE_DETAIL, http_failure, is_redacted_credential_preview,
-    redacted_credential_preview, scoped_to_thread,
+    REDACTED_CREDENTIAL_WRITE_DETAIL, config_scoped_to_thread, http_failure,
+    is_redacted_credential_preview, redacted_credential_preview, scoped_to_thread,
 )
+from hermes_cli.config_backend import refusing_locked_omissions
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_config import (
-    _apply_main_model_assignment, _denormalize_config_from_web, _normalize_config_for_web, _schema_with_dynamic_provider_options,
+    _apply_main_model_assignment, _denormalize_config_from_web, drop_model_key, _normalize_config_for_web, _schema_with_dynamic_provider_options,
     _validated_main_model_selection,
 )
 from hermes_cli.web_server_profiles import (
@@ -100,9 +101,12 @@ async def get_defaults():
 async def get_schema(profile: Optional[str] = None):
     # Discovery-driven provider options (voice command providers + memory
     # provider plugins) are merged per-request so providers added after server
-    # start still show up, scoped to the requested profile's config.
-    with _config_profile_scope(profile):
-        fields = _schema_with_dynamic_provider_options()
+    # start still show up, scoped to the requested profile's config. That merge
+    # walks the schema and scans plugin dirs on disk, so it runs on a worker
+    # thread: on the event loop it froze every other request — including
+    # /api/ws — for as long as the scan took. asyncio.to_thread copies the
+    # contextvar context, so the profile override stays scoped to the worker.
+    fields = await config_scoped_to_thread(profile, _schema_with_dynamic_provider_options)
     return {"fields": fields, "category_order": _CATEGORY_ORDER}
 
 
@@ -110,8 +114,9 @@ async def get_schema(profile: Optional[str] = None):
 async def get_egress_status(profile: Optional[str] = None):
     """Dashboard/Desktop-readable egress proxy status and remediation text."""
     from hermes_cli.proxy_cli import format_status_text
-    with _config_profile_scope(profile):  # reads the profile's ``proxy:`` config block
-        return {"text": format_status_text()}
+    # Reads the profile's ``proxy:`` config block from disk; on the event loop
+    # that read stalled every other dashboard request for its duration.
+    return {"text": await config_scoped_to_thread(profile, format_status_text)}
 
 
 @router.put("/api/config")
@@ -190,7 +195,7 @@ def _catalog_provider_env_metadata() -> dict:
 
     # Env vars declared with a NON-provider category (e.g. the shared
     # GITHUB_TOKEN, a Skills-Hub "tool" credential) must not be promoted into a
-    # provider card even when a provider (Copilot) lists them as auth aliases.
+    # provider card even when a provider lists them as auth aliases.
     _non_provider_keys = {
         k for k, v in OPTIONAL_ENV_VARS.items()
         if (v or {}).get("category") and (v or {}).get("category") != "provider"
@@ -726,9 +731,13 @@ def _write_custom_endpoint(cfg: dict[str, Any], body: CustomEndpointUpdate) -> t
         key_env = entry.get("key_env") or entry.get("api_key_env")
         if key_env and isinstance(cfg["model"], dict):
             cfg["model"]["key_env"] = key_env
-            cfg["model"].pop("api_key", None)
+            drop_model_key(cfg["model"], "api_key")
 
     return endpoint_id, entry
+
+
+# Sections a custom-endpoint default assignment writes together: the route and its provider entry.
+_ROUTE_SECTIONS = ("model", "providers", "custom_providers")
 
 
 @router.get("/api/providers/custom-endpoints")
@@ -757,7 +766,10 @@ def upsert_custom_endpoint(body: CustomEndpointUpdate, profile: Optional[str] = 
             created = _resolve_custom_endpoint_entry(
                 providers if isinstance(providers, dict) else {}, body.id or body.name)[1] is None
             endpoint_id, _entry = _write_custom_endpoint(cfg, body)
-            save_config(cfg)
+            # make_default: the model route and the provider definition it names are one change,
+            # so a lock on either refuses both (never a model.provider naming an omitted entry).
+            with refusing_locked_omissions(*_ROUTE_SECTIONS) if body.make_default else contextlib.nullcontext():
+                save_config(cfg)
             response = _custom_endpoint_response(cfg)
             from hermes_constants import get_hermes_home
             home = get_hermes_home()
@@ -811,7 +823,7 @@ def activate_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
             key_env = entry.get("key_env") or entry.get("api_key_env")
             if key_env:
                 model_cfg["key_env"] = key_env
-                model_cfg.pop("api_key", None)
+                drop_model_key(model_cfg, "api_key")
             elif entry.get("api_key"):
                 # `cfg` is env-expanded, so a raw `${VAR}` api_key would land as
                 # plaintext; copy the raw template when that's what's on disk.
@@ -824,7 +836,8 @@ def activate_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
                 else:
                     model_cfg["api_key"] = entry["api_key"]
             cfg["model"] = model_cfg
-            save_config(cfg)
+            with refusing_locked_omissions(*_ROUTE_SECTIONS):
+                save_config(cfg)
         return {"ok": True, "provider": provider_key, "model": model}
 
 

@@ -352,6 +352,7 @@ class _MatrixApprovalPrompt:
     resolved: bool = False
     requester_user_id: str | None = None
     expires_at: float | None = None
+    request_id: str | None = None  # the tools.approval request this prompt answers
     bot_reaction_events: dict[str, str] = field(default_factory=dict, init=False)  # emoji -> event_id
 
 
@@ -1697,7 +1698,7 @@ class MatrixAdapter(BasePlatformAdapter):
             self._approval_prompt_by_session[session_key] = message_id
             return _MatrixApprovalPrompt(
                 session_key=session_key, chat_id=chat_id, message_id=message_id, requester_user_id=requester,
-                expires_at=expires_at)
+                expires_at=expires_at, request_id=prompt.request_id)
         return await self._send_reaction_prompt(
             chat_id, text, prompt.metadata, _make, self._approval_prompts_by_event, reactions, "approval")
 
@@ -1717,15 +1718,19 @@ class MatrixAdapter(BasePlatformAdapter):
             provider_label = get_label(current_provider)
         except Exception:
             provider_label = current_provider
+        from hermes_cli.model_picker_usage import picker_row_suffix
+        rows_by_slug = {str(p.get("slug") or ""): p for p in providers or []}
+        plan_lines = [f"⚠️ {p['plan_line']}" for p in providers or [] if p.get("plan_line")]
         unknown = t("platform.shared.unknown")
         lines = [
             t("platform.matrix.picker.title"), t("platform.matrix.picker.current_model", model=current_model or unknown),
-            t("platform.matrix.picker.provider", provider=provider_label or unknown), "",
+            t("platform.matrix.picker.provider", provider=provider_label or unknown), *plan_lines, "",
             t("platform.matrix.picker.react_model")]
         choices: dict[str, tuple[str, str]] = {}
         for emoji, (model_id, provider_slug, provider_name) in zip(_MATRIX_MODEL_PICKER_REACTIONS, flat_choices):
             choices[emoji] = (model_id, provider_slug)
-            lines.append(f"{emoji} `{model_id}` — {provider_name}")
+            suffix = picker_row_suffix(rows_by_slug.get(provider_slug), model_id)
+            lines.append(f"{emoji} `{model_id}` — {provider_name}" + (f" · {suffix}" if suffix else ""))
         return await self._send_picker(
             chat_id, lines, choices, session_key, on_model_selected, metadata, self._model_picker_prompts_by_event,
             "model picker")
@@ -2541,8 +2546,8 @@ class MatrixAdapter(BasePlatformAdapter):
         if choice is None:
             return handled
         try:
-            from tools.approval import resolve_gateway_approval
-            count = resolve_gateway_approval(prompt.session_key, choice)
+            from tools.approval import resolve_gateway_approval_card
+            count = resolve_gateway_approval_card(prompt.session_key, choice, prompt.request_id)
             if count:
                 prompt.resolved = True
                 self._approval_prompts_by_event.pop(reacts_to, None)
@@ -2551,6 +2556,8 @@ class MatrixAdapter(BasePlatformAdapter):
                     "Matrix reaction resolved %d approval(s) for session %s (choice=%s, user=%s)",
                     count, prompt.session_key, choice, sender)
                 await self._redact_bot_approval_reactions(room_id, prompt)
+            else:  # this card's request already timed out or was answered elsewhere
+                await self._expire_matrix_approval_prompt(room_id, reacts_to, prompt)
         except Exception as exc:
             logger.error("Failed to resolve gateway approval from Matrix reaction: %s", exc)
         return True

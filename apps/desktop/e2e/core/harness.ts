@@ -18,8 +18,9 @@ import { DatabaseSync } from 'node:sqlite'
 import { _electron, type ElectronApplication, expect, type Page } from '@playwright/test'
 
 import { resolveElectronBinary } from '../electron-binary'
+import { stopSandboxGatewayDaemons } from '../run-tmp-reaper'
 
-import { isSandboxProcess, procfsCensus, type ProcInfo, readProc, sandboxProcessesOf } from './process-census'
+import { type ProcInfo, sandboxProcessesOf } from './process-census'
 
 export type { ProcInfo } from './process-census'
 
@@ -84,73 +85,6 @@ export function createCoreSandbox(label: string): CoreSandbox {
       }
     }
   }
-}
-
-function sleepSync(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
-}
-
-function processHomeUnder(pid: number, root: string, hermesHome: string): boolean {
-  if (!procfsCensus) {
-    return isSandboxProcess(pid, hermesHome)
-  }
-
-  const info = readProc(pid)
-
-  return Boolean(info?.cmdline) && info!.environ.split('\0').some(entry => entry.startsWith(`HERMES_HOME=${root}`))
-}
-
-/**
- * SIGTERM (then SIGKILL after 15 s) every daemon recorded in a sandbox
- * `gateway.lock` (launch home and each profile home). The pid is only
- * signalled while its environment still names this sandbox, so a recycled pid
- * is never touched.
- */
-function stopSandboxGatewayDaemons(root: string, hermesHome: string): void {
-  const profilesDir = path.join(hermesHome, 'profiles')
-
-  const homes = [
-    hermesHome,
-    ...(fs.existsSync(profilesDir) ? fs.readdirSync(profilesDir).map(name => path.join(profilesDir, name)) : [])
-  ]
-
-  const pids = new Set<number>()
-
-  for (const home of homes) {
-    try {
-      const pid = Number(JSON.parse(fs.readFileSync(path.join(home, 'gateway.lock'), 'utf8'))?.pid)
-
-      if (Number.isInteger(pid) && pid > 0 && processHomeUnder(pid, root, hermesHome)) {
-        pids.add(pid)
-      }
-    } catch {
-      // No lock (remote-only spec, never booted) or an empty one: nothing to stop.
-    }
-  }
-
-  const signal = (sig: NodeJS.Signals) => {
-    for (const pid of pids) {
-      try {
-        process.kill(pid, sig)
-      } catch {
-        pids.delete(pid)
-      }
-    }
-  }
-
-  signal('SIGTERM')
-
-  for (const deadline = Date.now() + 15_000; pids.size && Date.now() < deadline; ) {
-    sleepSync(100)
-
-    for (const pid of [...pids]) {
-      if (!processHomeUnder(pid, root, hermesHome)) {
-        pids.delete(pid)
-      }
-    }
-  }
-
-  signal('SIGKILL')
 }
 
 /**
@@ -232,9 +166,45 @@ export function coreAppEnv(sandbox: CoreSandbox, extra: Record<string, string> =
   }
 }
 
+/** A loopback port the OS just handed out and released, for a sandboxed listener to bind. */
+export function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer()
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address()
+      server.close(() => resolve(typeof address === 'object' && address ? address.port : 0))
+    })
+  })
+}
+
+/** `hermes <args>` in the sandbox, as an operator runs it. */
+export function hermesCli(sandbox: CoreSandbox, args: string[]): { code: number | null; output: string } {
+  const result = spawnSync(process.env.HERMES_E2E_PYTHON || 'python3', ['-m', 'hermes_cli.main', ...args], {
+    cwd: REPO_ROOT,
+    env: coreAppEnv(sandbox),
+    encoding: 'utf8',
+    timeout: 180_000
+  })
+
+  return { code: result.status, output: `${result.stdout ?? ''}${result.stderr ?? ''}` }
+}
+
+/** Starts the gateway if needed and returns a one-use launch link for its Webapp (`hermes -p <profile> webapp`
+ * when a profile is named). */
+export function webappLaunchLink(sandbox: CoreSandbox, profile?: string): string {
+  const profileArgs = profile ? ['-p', profile] : []
+  const { code, output } = hermesCli(sandbox, [...profileArgs, 'webapp', '--no-open', '--skip-build'])
+  const link = /^\s+(http:\/\/127\.0\.0\.1:\d+\/webapp\/launch#\S+)$/m.exec(output)?.[1]
+  expect(code, `hermes webapp --no-open\n${output.replace(/ticket=\S+/g, 'ticket=<redacted>')}`).toBe(0)
+  expect(link, 'hermes webapp printed a one-use launch link').toBeTruthy()
+
+  return link!
+}
+
 export async function launchCoreApp(env: Record<string, string>): Promise<{ app: ElectronApplication; page: Page }> {
   if (!fs.existsSync(path.join(DESKTOP_ROOT, 'dist', 'electron-main.mjs'))) {
-    throw new Error("Desktop dist not built: run 'npm run build' in apps/desktop first")
+    throw new Error("Desktop dist not built: run 'pnpm run build' in apps/desktop first")
   }
 
   const app = await _electron.launch({
@@ -346,6 +316,35 @@ export interface WsRecorder {
 
 export function recordWebSockets(page: Page): WsRecorder {
   const rec: WsRecorder = { sockets: [], events: [], sent: [] }
+
+  // A new main-frame document (reload, goto) tears down every socket the old
+  // one held, but Playwright forgets its sockets at that commit without
+  // emitting their 'close', so a pre-reload socket would read as live forever.
+  // Retire them at the commit. A same-document (hash) navigation has no
+  // navigation request, so it never retires a live socket.
+  let documentPending = false
+
+  page.on('request', request => {
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
+      documentPending = true
+    }
+  })
+  page.on('requestfailed', request => {
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
+      documentPending = false
+    }
+  })
+  page.on('framenavigated', frame => {
+    if (frame !== page.mainFrame() || !documentPending) {
+      return
+    }
+
+    documentPending = false
+
+    for (const entry of rec.sockets) {
+      entry.closed = true
+    }
+  })
 
   page.on('websocket', ws => {
     if (!ws.url().includes('/api/ws')) {

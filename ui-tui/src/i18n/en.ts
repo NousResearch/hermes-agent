@@ -7,7 +7,7 @@
 // the disjointness). Leaves are strings or `(...args) => string`; packs express
 // function leaves as strings with positional `{0}`, `{1}` placeholders.
 //
-// `locales/_keys.tui.json` is generated from this object by `npm run i18n:keys`.
+// `locales/_keys.tui.json` is generated from this object by `pnpm run i18n:keys`.
 
 import { appEn } from './en/app.js'
 import { billingEn } from './en/billing.js'

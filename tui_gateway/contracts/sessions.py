@@ -9,7 +9,7 @@ from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
 from .common import (OpenModel, PendingApproval, ProfileParams, SessionLiveInfo, SessionParams, TranscriptMessage,
-                     Usage)
+                     UndoRollbackHint, Usage)
 from .connectors_operation import ConnectionRequestPayload
 from .registry import method
 
@@ -454,6 +454,8 @@ class SessionUndoParams(SessionParams):
 
 class SessionUndoResult(Result):
     removed: int
+    # Present only when checkpoints are on and the undone turns changed files (``rollback.list``'s field).
+    undo_hint: UndoRollbackHint | None = None
 
 
 method("session.undo", params=SessionUndoParams, result=SessionUndoResult,
@@ -506,6 +508,7 @@ class SessionUsageParams(SessionParams):
 
 class SessionUsageResult(Usage):
     credits_lines: list[str] | None = None
+    credits_usage_window: bool | None = None
 
 
 method("session.usage", params=SessionUsageParams, result=SessionUsageResult,
@@ -764,7 +767,9 @@ method("session.events.stats", params=SessionEventsStatsParams, result=SessionEv
 
 
 class LlmOneshotParams(ProfileParams):
-    """Needs a ``template`` or ``instructions`` / ``input``; a live ``session_id`` lends its model."""
+    """Needs a ``template`` or ``instructions`` / ``input``; a live ``session_id`` lends its model.
+    ``task`` is a built-in auxiliary slot or a plugin-registered one (unknown keys are refused);
+    ``schema`` (a JSON Schema) makes the reply carry ``parsed``; ``redact`` masks secrets in ``input``."""
 
     template: str | None = None
     instructions: str | None = None
@@ -774,10 +779,13 @@ class LlmOneshotParams(ProfileParams):
     temperature: float | None = None
     max_tokens: int | None = None
     session_id: str | None = None
+    schema_: dict[str, JsonValue] | None = Field(default=None, alias="schema")
+    redact: bool | None = None
 
 
 class LlmOneshotResult(Result):
     text: str
+    parsed: JsonValue | None = None
 
 
 method("llm.oneshot", params=LlmOneshotParams, result=LlmOneshotResult,

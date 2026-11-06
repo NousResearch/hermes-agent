@@ -143,8 +143,45 @@ class TestRefusalOutsideScope:
 
 
 class TestSkips:
+    @pytest.mark.parametrize("next_opener_recreates", [False, True], ids=["vanished", "recreated"])
+    def test_sidecars_unlinked_by_sibling_close_mid_preflight_are_not_readonly(
+        self, hermes_home, tmp_path, monkeypatch, next_opener_recreates
+    ):
+        """A sibling connection's last close() unlinks -wal/-shm after the preflight
+        listed them (and the next opener may recreate them before the re-check); a
+        vanished sidecar is not read-only (CI flake in
+        test_concurrent_openers_zero_byte_startup_serialization). Outside the home
+        tree, so the chmod repair cannot mask a false verdict."""
+        outside = tmp_path / "elsewhere"
+        outside.mkdir()
+        db = outside / "state.db"
+        sibling = sqlite3.connect(str(db))
+        sibling.execute("PRAGMA journal_mode=WAL")
+        sibling.execute("CREATE TABLE t (x)")
+        sibling.commit()
+        wal = db.with_name(db.name + "-wal")
+        assert wal.is_file(), "fixture precondition: the live sibling holds a -wal"
+        real_access = os.access
+        open_sibling, next_opener = [sibling], []
 
+        def access_racing_sibling_close(path, mode, *args, **kwargs):
+            if Path(path) != wal or not open_sibling:
+                return real_access(path, mode, *args, **kwargs)
+            open_sibling.pop().close()  # last connection: SQLite unlinks -wal/-shm
+            verdict = real_access(path, mode, *args, **kwargs)
+            if next_opener_recreates:
+                next_opener.append(conn := sqlite3.connect(str(db)))
+                conn.execute("INSERT INTO t VALUES (1)")
+                conn.commit()  # a fresh -wal generation appears before the re-check
+            return verdict
 
+        monkeypatch.setattr(os, "access", access_racing_sibling_close)
+        try:
+            preflight_db_writability(db, db_label="state.db")
+        finally:
+            for conn in next_opener:
+                conn.close()
+        assert not open_sibling and len(next_opener) == int(next_opener_recreates)
 
     def test_healthy_db_untouched(self, hermes_home):
         db = hermes_home / "state.db"

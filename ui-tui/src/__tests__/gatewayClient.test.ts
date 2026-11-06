@@ -98,12 +98,13 @@ const { FakeWebSocket } = vi.hoisted(() => {
 vi.mock('undici', () => ({ WebSocket: FakeWebSocket }))
 
 import {
-  GatewayClient,
   RECONNECT_BASE_MS,
   RECONNECT_MAX_MS,
   WS_HEARTBEAT_DEAD_MS,
   WS_HEARTBEAT_INTERVAL_MS
-} from '../gatewayClient.js'
+} from '@hermes/shared/gateway-client'
+
+import { GatewayClient } from '../gatewayClient.js'
 import { t } from '../i18n/runtime.js'
 
 describe('GatewayClient websocket attach mode', () => {
@@ -182,6 +183,7 @@ describe('GatewayClient websocket attach mode', () => {
     vi.useFakeTimers()
     delete process.env.HERMES_TUI_GATEWAY_URL
     delete process.env.HERMES_TUI_SIDECAR_URL
+
     const gw = new GatewayClient(async () => ({
       url: 'ws://127.0.0.1:9/api/ws?token=secret', protocols: [], instance_id: 'owner-1', profile_id: '/home/u/.hermes/profiles/work'
     }))
@@ -214,6 +216,7 @@ describe('GatewayClient websocket attach mode', () => {
       const socket = FakeWebSocket.instances[0]!
       socket.open()
       await vi.advanceTimersByTimeAsync(0)
+
       const request = socket.sent.map(text => JSON.parse(text) as { id: number; method: string })
         .find(frame => frame.method === 'runtime.describe')!
 
@@ -225,6 +228,48 @@ describe('GatewayClient websocket attach mode', () => {
       const ready = events.filter(event => event.type === 'gateway.ready')
       expect(ready).toHaveLength(1)
       expect(ready[0].payload.skin).toEqual(skin)
+    } finally { gw.kill(); vi.useRealTimers() }
+  })
+
+  it('remembers clarify-batch-v1 from runtime.describe and forgets it on reconnect to an owner without it', async () => {
+    vi.useFakeTimers()
+    delete process.env.HERMES_TUI_GATEWAY_URL
+    delete process.env.HERMES_TUI_SIDECAR_URL
+    const gw = new GatewayClient(async () => ({ url: 'ws://gateway.test/api/ws', protocols: [], instance_id: 'owner', profile_id: 'fixture' }))
+
+    const open = async () => {
+      const socket = FakeWebSocket.instances.at(-1)!
+      socket.open()
+      await vi.advanceTimersByTimeAsync(0)
+
+      return socket
+    }
+
+    const describe = async (socket: FakeWebSocket, capabilities?: string[]) => {
+      const request = socket.sent.map(text => JSON.parse(text) as { id: number; method: string })
+        .find(frame => frame.method === 'runtime.describe')!
+
+      socket.message(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {
+        session_create: { sources: ['tui'], parameters: ['source', 'request_id'] }, capabilities } }))
+      await vi.advanceTimersByTimeAsync(0)
+
+      return socket
+    }
+
+    try {
+      gw.start(); gw.drain()
+      await vi.advanceTimersByTimeAsync(0)
+      const first = await describe(await open(), ['clarify-batch-v1'])
+      expect(gw.clarifyBatch).toBe(true)
+
+      first.close()
+      await vi.advanceTimersByTimeAsync(RECONNECT_MAX_MS)
+      expect(FakeWebSocket.instances.at(-1)).not.toBe(first)
+      const second = await open()
+      // The previous owner's list must not outlive it while the new owner is still describing.
+      expect(gw.clarifyBatch).toBe(false)
+      await describe(second)
+      expect(gw.clarifyBatch).toBe(false)
     } finally { gw.kill(); vi.useRealTimers() }
   })
 

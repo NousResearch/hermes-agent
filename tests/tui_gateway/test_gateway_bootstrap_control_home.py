@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -40,6 +41,17 @@ def test_served_secondary_uses_multiplexer_control_home(monkeypatch, tmp_path):
     monkeypatch.setattr(gateway_runtime, "discover_gateway_endpoint", lambda home, timeout=5: receipt)
 
     seen = {}
+    reply = json.dumps({
+        "ok": True,
+        "protocol": 1,
+        "id": 1,
+        "result": {
+            "instance_id": endpoint.instance_id,
+            "profile_id": endpoint.profile_id,
+            "ticket": "served-grant",
+            "runtime_protocol": 1,
+        },
+    }).encode() + b"\n"
 
     if module.os.name == "nt":
         import gateway.runtime_bootstrap_windows as windows_bootstrap
@@ -47,37 +59,13 @@ def test_served_secondary_uses_multiplexer_control_home(monkeypatch, tmp_path):
         def query_runtime_control(home, request, timeout):
             seen["control_home"] = Path(home).resolve()
             seen["request"] = json.loads(request)
-            return json.dumps({
-                "ok": True,
-                "id": 1,
-                "result": {
-                    "instance_id": endpoint.instance_id,
-                    "profile_id": endpoint.profile_id,
-                    "ticket": "served-grant",
-                },
-            }).encode()
+            return reply
 
         monkeypatch.setattr(windows_bootstrap, "query_runtime_control", query_runtime_control)
     else:
         import hermes_cli.gateway_runtime_discovery as discovery
 
-        class FakeStream:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *args):
-                return False
-
-            def readline(self, _limit):
-                return json.dumps({
-                    "ok": True,
-                    "id": 1,
-                    "result": {
-                        "instance_id": endpoint.instance_id,
-                        "profile_id": endpoint.profile_id,
-                        "ticket": "served-grant",
-                    },
-                }).encode()
+        stream = io.BytesIO(reply)
 
         class FakeSocket:
             def __enter__(self):
@@ -89,8 +77,11 @@ def test_served_secondary_uses_multiplexer_control_home(monkeypatch, tmp_path):
             def sendall(self, request):
                 seen["request"] = json.loads(request)
 
-            def makefile(self, _mode):
-                return FakeStream()
+            def settimeout(self, _timeout):
+                pass
+
+            def recv(self, size):
+                return stream.read(size)
 
         def connect_private(home, timeout):
             seen["control_home"] = Path(home).resolve()

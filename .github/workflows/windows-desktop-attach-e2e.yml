@@ -38,23 +38,28 @@ jobs:
           extras: '[]'
           test-environment: 'true'
 
-      # Full npm ci (not --ignore-scripts): electron's postinstall downloads the binary we launch.
+      # Full install (not --ignore-scripts): native addons need their lifecycle scripts.
       - uses: ./.github/actions/retry
         with:
-          command: npm ci
+          command: pnpm install --frozen-lockfile
+
+      # Electron 42+ has no postinstall; unpack the binary the attach spec launches.
+      - name: Prepare locked Electron runtime
+        shell: bash
+        run: node scripts/build/electron-runtime.mjs --source .
 
       - name: Build the desktop app
         working-directory: apps/desktop
         shell: bash
         timeout-minutes: 15
-        run: npm run build
+        run: pnpm run build
 
       - name: Attach spec on the dev tree
         id: dev
         working-directory: apps/desktop
         shell: bash
         timeout-minutes: 15
-        run: npx playwright test -c e2e/core/playwright.config.ts local-gateway-attach.spec.ts
+        run: pnpm exec playwright test -c e2e/core/playwright.config.ts local-gateway-attach.spec.ts
         env:
           CI: 'true'
           HERMES_E2E_PYTHON: ${{ steps.pm.outputs.python-path }}
@@ -70,7 +75,7 @@ jobs:
         working-directory: apps/desktop
         shell: bash
         timeout-minutes: 15
-        run: npm run builder -- --dir --publish never --win --x64
+        run: pnpm run builder --dir --publish never --win --x64
 
       - name: Attach spec on the packaged build
         if: always() && steps.dev.outcome != 'skipped'
@@ -84,7 +89,7 @@ jobs:
           if (-not $exe) { Get-ChildItem -Recurse release | Select-Object -First 50 FullName; throw 'no packaged exe under release/win*-unpacked' }
           "packaged exe: $($exe.FullName)"
           $env:HERMES_E2E_PACKAGED_EXE = $exe.FullName
-          npx playwright test -c e2e/core/playwright.config.ts local-gateway-attach.spec.ts
+          pnpm exec playwright test -c e2e/core/playwright.config.ts local-gateway-attach.spec.ts
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         env:
           CI: 'true'

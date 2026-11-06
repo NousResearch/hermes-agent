@@ -116,6 +116,41 @@ def homeassistant_in_use(home: Path, *, process_env: bool = False) -> bool:
         _read_config(home), frozenset({"homeassistant", "hermes-homeassistant"}), own_platform="homeassistant")
 
 
+# Yuanbao's env enablement (its ``gateway_env.ENV_OVERRIDES`` row): an App ID (or the legacy App Key) and
+# the App Secret, both set.
+_YUANBAO_ENV_GATE = (("YUANBAO_APP_ID", "YUANBAO_APP_KEY"), ("YUANBAO_APP_SECRET",))
+
+
+def yuanbao_in_use(home: Path, *, process_env: bool = False) -> bool:
+    """What made core run Yuanbao for *home*: its env enablement complete in the home's dotenv layers
+    (:func:`_home_env`; the process env too for the launch home with *process_env*), the platform on in its
+    gateway config (:func:`platform_configured_on`), or the ``yuanbao`` / ``hermes-yuanbao`` toolset selected
+    for another platform or in the top-level ``toolsets`` list. The shipped ``yuanbao: [hermes-yuanbao]``
+    platform_toolsets row is not use: it scoped Yuanbao's own sessions, which need the platform on."""
+    if all(any(_home_env(home, name, process_env=process_env) for name in group) for group in _YUANBAO_ENV_GATE):
+        return True
+    if platform_configured_on(home, "yuanbao"):
+        return True
+    return _toolset_listed(_read_config(home), frozenset({"yuanbao", "hermes-yuanbao"}), own_platform="yuanbao")
+
+
+# Every platform whose core default composite never carried the yb_* tools: core put them in
+# ``hermes-yuanbao`` only (toolsets.py before Yuanbao left core).
+_YUANBAO_OFF_PLATFORMS = (
+    "cli", "telegram", "discord", "slack", "whatsapp", "whatsapp_cloud", "signal", "bluebubbles", "email",
+    "mattermost", "matrix", "dingtalk", "feishu", "wecom", "wecom_callback", "weixin", "qqbot", "webhook",
+    "api_server", "cron", "acp", "sms", "a2a", "buzz", "google_chat", "irc", "line", "ntfy", "photon", "raft",
+    "simplex", "teams",
+)
+
+_YUANBAO_NOTICE = ("Yuanbao is now a Hermes Labs plugin: built by Nous Research, not supported, and likely not "
+                   "maintained going forward. Fixes from the community are welcome.")
+
+
+def _yuanbao_notice(home: Path, *, process_env: bool = False) -> str:
+    return _YUANBAO_NOTICE
+
+
 def _auth_store(home: Path) -> dict:
     """*home*'s ``auth.json``; ``{}`` when missing, unreadable or invalid (no login we can see)."""
     import json
@@ -516,6 +551,18 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
                      "COPILOT_ACP_BASE_URL"),
         launch_env=("HERMES_COPILOT_ACP_COMMAND", "HERMES_COPILOT_ACP_ARGS", "COPILOT_CLI_PATH"),
         notice=copilot_relogin_notice,
+    ),
+    LeftCoreFeature(
+        # YUANBAO_APP_KEY (the legacy App ID name) stays on local_env_policy's own short list, as core had it.
+        plugin="yuanbao", label="Yuanbao", in_use=yuanbao_in_use,
+        unchanged="YUANBAO_* settings, platforms.yuanbao, YUANBAO_HOME_CHANNEL and the yb_* tool names are unchanged",
+        secret_env=("YUANBAO_APP_SECRET",),
+        private_env=("YUANBAO_APP_ID", "YUANBAO_BOT_ID", "YUANBAO_WS_URL", "YUANBAO_API_DOMAIN", "YUANBAO_ROUTE_ENV",
+                     "YUANBAO_DM_POLICY", "YUANBAO_DM_ALLOW_FROM", "YUANBAO_GROUP_POLICY", "YUANBAO_GROUP_ALLOW_FROM",
+                     "YUANBAO_ALLOWED_USERS", "YUANBAO_ALLOW_ALL_USERS", "YUANBAO_HOME_CHANNEL",
+                     "YUANBAO_HOME_CHANNEL_NAME"),
+        toolsets=("yuanbao",), off_platforms=_YUANBAO_OFF_PLATFORMS,
+        platform="yuanbao", enable_env=("YUANBAO_APP_ID", "YUANBAO_APP_SECRET"), notice=_yuanbao_notice,
     ),
 )
 

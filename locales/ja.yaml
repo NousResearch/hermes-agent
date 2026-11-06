@@ -974,9 +974,6 @@ platform:
     approved: "✅ 承認しました。"
     denied: "❌ 拒否しました。"
     approval_expired: "⌛ 承認の有効期限が切れました — コマンドは実行されませんでした（すでにタイムアウトしたか、別の場所で処理済みです）。"
-  yuanbao:
-    slow_response_notice: "このタスクは少し手間がかかります — 処理を続けていますので、しばらくお待ちください..."
-    owner_command_denied: "⚠️ {command} はプライベートチャットモードで作成者のみが使用できます"
   shared:
     truncated_suffix: "\n...(省略)"
     unknown: "不明"

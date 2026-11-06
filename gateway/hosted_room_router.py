@@ -117,8 +117,8 @@ def validate_continued_event(kind: str, payload: Mapping[str, Any], actor: Mappi
 
 def paused_discussion(events: Sequence[Mapping[str, Any]], discussion_event_id: str) -> dict[str, Any] | None:
     """``{"thread_id", "grant"}`` when the discussion's latest outcome is the cap (``room.activity``
-    ``bounded`` after its last Continue), no Stop followed its message and no newer message in its thread
-    followed the cap;
+    ``bounded`` after its last Continue) and no Stop and no newer message in its thread followed its
+    message;
     else None. ``grant`` is the number the next Continue takes (1-based)."""
     bounded = None
     grants = 0

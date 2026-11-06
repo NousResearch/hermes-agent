@@ -42,3 +42,23 @@ def test_a_cap_notice_landing_after_a_newer_message_cannot_be_continued(tmp_path
         "discussion_event_id": "first"}, "gateway")
     events = rooms.read_events(db, room_id="room")["events"]
     assert paused_discussion(events, "first") is None
+
+
+def test_a_continue_an_older_build_wrote_after_a_newer_message_does_not_strand_it(tmp_path):
+    """Logs from before the router fence can hold that Continue; replaying it must not re-point the thread."""
+    db = tmp_path / "shared-state.db"
+    rooms.create_room(db, room_id="room", name="Room", authority_gateway_id="home",
+                      members=[{"member_id": "reviewer", "profile": "reviewer", "handle": "reviewer"}])
+    _append(db, "first", "message.user", {"text": "@reviewer one", "thread_id": "thread"})
+    _append(db, "second", "message.user", {"text": "@reviewer two", "thread_id": "thread"})
+    _append(db, "dactivity:first:max_messages", "room.activity", {
+        "status": "bounded", "reason_code": "max_messages", "thread_id": "thread",
+        "discussion_event_id": "first"}, "gateway")
+    _append(db, "dcontinue:first:1", "room.continued",
+            {"discussion_event_id": "first", "thread_id": "thread", "grant": 1}, "gateway")
+    _append(db, "dactivity:second:silent_round", "room.activity", {
+        "status": "settled", "reason_code": "silent_round", "thread_id": "thread",
+        "discussion_event_id": "second"}, "gateway")
+    other = _append(db, "third", "message.user", {"text": "@reviewer other", "thread_id": "other"})
+    snapshot = HostedRoomPolicyCheckpoint(db).snapshot(room_id="room", latest_seq=int(other["seq"]))
+    assert {(e.get("payload") or {}).get("thread_id") for e in snapshot.events} == {"other"}

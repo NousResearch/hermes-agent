@@ -1,0 +1,26 @@
+name: patsnap
+title: Patsnap
+repo: https://github.com/NousResearch/hermes-labs-plugins
+sha: a6c7854f6fbd8ec8109199d5ded0c9c871c069d6
+subdir: patsnap
+version: "0.1.0"
+description: >-
+  Patent and scientific-literature search through Patsnap's own hosted MCP server: prior-art and
+  landscape searches across WIPO/EPO/USPTO/CNIPA/JPO/KIPO and more, paper search (PubMed, Nature,
+  arXiv and others), assignee resolution, corporate trees and a patent's legal lifecycle, with a
+  bundled patsnap-search workflow skill. Needs PATSNAP_API_KEY from the Patsnap Open Platform. A Hermes
+  Labs plugin: built by Nous Research, not supported. Disclosure — connects to connect.patsnap.com over
+  HTTPS and sends your queries and record ids there under your key (every call spends Patsnap credits);
+  gets only PATSNAP_API_KEY from your profile and sends it in a request header, never in the URL; no
+  local processes, files or telemetry.
+maintainer: NousResearch
+tier: community
+category: tools
+docs_url: https://github.com/NousResearch/hermes-labs-plugins/tree/main/patsnap
+platforms: [windows, macos, linux]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - PATSNAP_API_KEY

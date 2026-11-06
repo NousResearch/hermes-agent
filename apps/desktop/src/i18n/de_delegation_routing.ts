@@ -75,6 +75,14 @@ export const deDelegationRouting: DelegationRoutingTranslations = {
   tierFast: 'Schnell',
   tierUltrafast: 'Ultraschnell',
   tierHint: 'Nur bei Modellen, die das anbieten.',
+  daybreakLabel: 'Daybreak',
+  daybreakOff: 'Aus',
+  daybreakOn: 'An',
+  daybreakHint: 'OpenAI-Trusted-Access mit weniger Schutzvorgaben, nur für diese Route.',
+  daybreakUnlisted:
+    'Dieses Modell ist für Daybreak in deinem Konto nicht freigegeben. Schalte es aus oder wähle ein anderes Modell.',
+  daybreakNeedsPlugin:
+    'Dein Advanced-Delegation-Plugin unterstützt noch keine Daybreak-Routen. Aktualisiere es oder schalte das aus.',
   optional: 'optional',
   errors: {
     required: 'Erforderlich',

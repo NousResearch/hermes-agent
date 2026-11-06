@@ -2,6 +2,7 @@
 from copy import deepcopy
 import logging
 import threading
+import time
 import uuid
 import weakref
 
@@ -29,6 +30,32 @@ class SessionEvents:
         # Set by the authority that attaches transports: retires the subscription of a
         # peer whose bounded backlog overflowed, so it cannot linger looking subscribed.
         self.on_overflow = None
+        # The running execution's open tool calls and its last frame time; a hosted room's info
+        # poll reports them so the room shows which tool a member is in (``progress_for``).
+        self._progress = None
+
+    def note_progress(self, generation, event_type, payload):
+        """Record one execution frame (the caller holds ``lock`` and passed the generation fence)."""
+        progress = self._progress
+        if progress is None or progress['generation'] != generation:
+            progress = self._progress = {'generation': generation, 'tools': {}}
+        payload = payload if isinstance(payload, dict) else {}
+        tool_id = str(payload.get('tool_id') or '')
+        if event_type == 'tool.start':
+            progress['tools'][tool_id] = str(payload.get('name') or '') or 'tool'
+        elif event_type == 'tool.complete':
+            progress['tools'].pop(tool_id, None)
+        progress['at'] = time.time()
+
+    def progress_for(self, generation):
+        """``{"tool", "progress_at"}`` for *generation*'s execution: the newest open tool call
+        (absent between tools) and its last frame time; ``{}`` before its first frame."""
+        with self.lock:
+            progress = self._progress
+            if progress is None or progress['generation'] != generation:
+                return {}
+            tools = list(progress['tools'].values())
+            return {'progress_at': progress['at'], **({'tool': tools[-1]} if tools else {})}
 
     def release(self):
         """The session ended with no viewer left (it may stay resumable): free its replay frames

@@ -163,6 +163,9 @@ class WSTransport:
         # Socket writes need an async boundary: several batches can queue on the loop during a stall.
         self._send_lock = asyncio.Lock()
         self._abort_requested = False
+        # One socket close per transport: the send-deadline path and abort() both reach for a 1011,
+        # and under load both fire — latched on the loop thread so the peer gets a single close frame.
+        self._close_scheduled = False
 
     def _on_loop(self) -> bool:
         try:
@@ -323,7 +326,12 @@ class WSTransport:
 
     async def _close_socket(self, code: int, reason: str) -> None:
         """Close the peer socket so ``handle_ws``'s ``receive_text`` unblocks and its disconnect teardown
-        runs. The server library bounds this (websockets ``close_timeout`` → abort)."""
+        runs. The server library bounds this (websockets ``close_timeout`` → abort). One-shot: the
+        send-deadline path and ``abort()`` can both schedule this; the first to run on the loop closes,
+        the rest return, so the peer never gets a second 1011."""
+        if self._close_scheduled:
+            return
+        self._close_scheduled = True
         try:
             await self._ws.close(code=code)
         except Exception as exc:

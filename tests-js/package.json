@@ -12,16 +12,19 @@
   },
   "devDependencies": {
     "@types/js-yaml": "4.0.9",
+    "@types/node": "22.20.5",
     "@types/plist": "3.0.5",
+    "esbuild": "0.28.2",
     "get-windows": "9.3.0",
     "jsdom": "29.1.1",
     "node-pty": "1.1.0",
     "plist": "3.1.1",
     "typescript": "6.0.3",
+    "vite": "8.3.4",
     "vitest": "4.1.12"
   },
   "dependencies": {
     "@playwright/test": "1.64.0",
-    "zod": "4.6.5"
+    "zod": "4.6.7"
   }
 }

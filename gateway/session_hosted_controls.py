@@ -70,17 +70,12 @@ class HostedControls:
             lease = self.runtime._ensure_lease(binding)
             return self.runtime._requeue(tasks.requeue_deferred_task, task, lease, room_id)
 
-    def status(self, room_id=None):
-        result = super().status(room_id)
-        if room_id is None:
-            return result
-        actions = [a for a in result['pending_actions']
-                   if a['kind'] != 'retry' or str(a.get('task_id', '')).startswith(RETRY_TASK_PREFIX)]
-        for task in tasks.list_tasks(self.db_path, room_id=room_id):
-            if task['status'] not in {'indeterminate', 'deferred'}:
-                continue
-            if self._member_is_peer(room_id, task_member_id(task)):
-                continue
-            actions.append(attempt_action(
-                'discard' if task['status'] == 'indeterminate' else 'retry', task))
-        return {**result, 'pending_actions': actions}
+    _ATTEMPT_ACTIONS_FIRST = False
+
+    def _attempt_actions(self, room_id, tasks_shown):
+        """Exact controls on this gateway: Discard an unknown attempt, Retry a deferred one; a peer
+        member's attempt is the peer's to control. Reads only the rows ``status`` already selected;
+        listed after the stall and approval cards."""
+        return [attempt_action('discard' if task['status'] == 'indeterminate' else 'retry', task)
+                for task in tasks_shown if task['status'] in {'indeterminate', 'deferred'}
+                and not self._member_is_peer(room_id, task_member_id(task))]

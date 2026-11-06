@@ -389,7 +389,7 @@ def _(rid, params: dict, db_path) -> dict:
         db_path, room_id=params.get("room_id"),
         include_disbanded=params.get("include_disbanded") is True)
     service = get_hosted_room_service()
-    result = {"room": room}
+    result = {"room": room, "change_events": True}
     if room.get("disbanded_at") is None:
         from gateway.hosted_room_context import room_context
         result["context"] = room_context(db_path, room_id=room["room_id"])

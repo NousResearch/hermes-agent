@@ -16,6 +16,7 @@ import { selectableCardClass } from '@/lib/selectable-card'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $backdrop, setBackdrop } from '@/store/backdrop'
+import { $chatMaxWidth, CHAT_MAX_WIDTHS, setChatMaxWidth } from '@/store/chat-max-width'
 import { $chatTextScale, CHAT_TEXT_SCALE_PRESETS, setChatTextScale } from '@/store/chat-text-scale'
 import { $composerPopoutGesturesEnabled, setComposerPopoutGesturesEnabled } from '@/store/composer-popout'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
@@ -426,6 +427,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
   const titlebarAppActionsSide = useStore($titlebarAppActionsSide)
   const zoomPercent = useStore($zoomPercent)
   const chatTextScale = useStore($chatTextScale)
+  const chatMaxWidth = useStore($chatMaxWidth)
   const embedMode = useStore($embedMode)
   const embedAllowed = useStore($embedAllowed)
   const composerPopoutGesturesEnabled = useStore($composerPopoutGesturesEnabled)
@@ -545,6 +547,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
   ] as const satisfies readonly { id: EmbedMode; label: string }[]
 
   const uiScaleOptions = UI_SCALE_PRESETS.map(preset => ({ id: preset, label: `${preset}%` }))
+  const chatMaxWidthOptions = CHAT_MAX_WIDTHS.map(id => ({ id, label: id === 'off' ? a.chatMaxWidthOff : id }))
 
   const matchedScalePreset = matchUiScalePreset(zoomPercent)
 
@@ -700,6 +703,22 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
                 description={a.chatTextScaleDesc}
                 id={settingElementId(ids.chatTextScale)}
                 title={a.chatTextScaleTitle}
+              />
+
+              <ListRow
+                action={
+                  <SegmentedControl
+                    onChange={value => {
+                      triggerHaptic('selection')
+                      setChatMaxWidth(value)
+                    }}
+                    options={chatMaxWidthOptions}
+                    value={chatMaxWidth}
+                  />
+                }
+                description={a.chatMaxWidthDesc}
+                id={settingElementId(ids.chatMaxWidth)}
+                title={a.chatMaxWidthTitle}
               />
 
               <div id={settingElementId(ids.chatFont)}>

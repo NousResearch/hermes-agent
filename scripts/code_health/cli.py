@@ -11,7 +11,7 @@ import time
 from dataclasses import asdict
 from pathlib import Path
 
-from scripts.code_health import gitio
+from scripts.code_health import config, gitio
 from scripts.code_health.compare import compare
 from scripts.code_health.config import in_scope
 from scripts.code_health.hosted_graph import reachable
@@ -87,13 +87,51 @@ def _skipped(why: str, as_json: bool) -> None:
     print(why, file=sys.stderr if as_json else sys.stdout)
 
 
+def _literal_names(node: ast.expr) -> tuple[str, ...] | None:
+    try:
+        value = ast.literal_eval(node)
+    except ValueError:
+        return None
+    ok = isinstance(value, (tuple, list)) and all(isinstance(v, str) for v in value)
+    return tuple(value) if ok else None
+
+
+def parse_hosted_entry(text: str) -> tuple[str, ...] | None:
+    """The module-level ``HOSTED_ENTRY`` (the last assignment wins, as at runtime), or None when the
+    file declares none or it is not a literal tuple/list of module names."""
+    try:
+        body = ast.parse(text).body
+    except SyntaxError:
+        return None
+    found = None
+    for node in body:
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets = [node.target]
+        else:
+            continue
+        if any(isinstance(t, ast.Name) and t.id == "HOSTED_ENTRY" for t in targets):
+            found = _literal_names(node.value)
+    return found
+
+
+def base_hosted_entry(repo: Path, base: str) -> tuple[str, ...]:
+    """The hosted roots as committed on ``base``. A root the change adds is not on the base's hosted
+    path, so its state gets no base credit. A base that declares no roots predates the hosted
+    graph: the head's roots are used, so the check's introduction baselines the state already
+    there (a ratchet over current rules, not a reviewed declaration that the state is neutral)."""
+    declared = parse_hosted_entry(gitio.read_file(repo, base, _SWITCH_FILE) or "")
+    return config.HOSTED_ENTRY if declared is None else declared
+
+
 def _hosted_graphs(repo: Path, base: str, head: str | None,
                    head_paths: list[str]) -> tuple[frozenset[str], frozenset[str]]:
-    """The hosted graph of each side, both walked from the head's roots: only a Python change
-    can move a module onto the hosted path."""
+    """The hosted graph of each side, each walked from its own revision's roots (the head's are
+    the running checker's): only a Python change can move a module onto the hosted path."""
     if not any(p.endswith(".py") for p in head_paths):
         return frozenset(), frozenset()
-    return reachable(repo, base), reachable(repo, head)
+    return reachable(repo, base, base_hosted_entry(repo, base)), reachable(repo, head)
 
 
 def run(repo: Path, base: str, head: str | None, as_json: bool = False,

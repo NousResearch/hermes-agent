@@ -15,6 +15,7 @@ import pytest
 
 from scripts.code_health import config
 from scripts.code_health.hosted_graph import reachable
+from scripts.code_health.cli import run
 from scripts.code_health.py_rules import CHECKERS, Ctx, canonical_tree
 from tests.scripts.test_code_health import REPO, _commit, _repo, _verdict
 
@@ -347,3 +348,39 @@ def test_base_credit_covers_only_state_already_hosted(tmp_path, monkeypatch, cap
     assert _verdict(repo, base, {"pkg/on.py": edit}, capsys)[0] == 0
     code, out = _verdict(repo, base, {"pkg/entry.py": "import pkg.on\nimport pkg.off\n", "pkg/off.py": edit}, capsys)
     assert code != 0 and "pkg/off.py" in out, out
+
+
+def test_new_root_has_no_base_credit(tmp_path, monkeypatch, capsys):
+    """The base graph walks the BASE revision's roots: adding an existing module with state as a
+    hosted root brings that state onto the hosted path, so none of it is baseline."""
+    repo, _ = _repo(tmp_path)
+    base = _commit(repo, {"entry.py": "", "state.py": "X = {}\n",
+                          "scripts/code_health/config.py": 'HOSTED_ENTRY = ("entry",)\n'})
+    head = _commit(repo, {"scripts/code_health/config.py": 'HOSTED_ENTRY = ("entry", "state")\n',
+                          "entry.py": "VALUE = 1\n"})
+    monkeypatch.setattr(config, "HOSTED_ENTRY", ("entry", "state"))
+    result = run(repo, base, head)
+    output = capsys.readouterr().out
+    assert result != 0 and "state.py" in output and "HX015" in output, output
+
+
+def test_base_without_declared_roots_uses_the_head_roots(tmp_path, monkeypatch, capsys):
+    """A base from before the hosted graph existed declares no roots: the check's introduction
+    baselines the state already on the hosted path instead of failing on all of it."""
+    repo, _ = _repo(tmp_path)
+    base = _commit(repo, {"entry.py": "import state\n", "state.py": "X = {}\n"})
+    head = _commit(repo, {"entry.py": "import state\nVALUE = 1\n"})
+    monkeypatch.setattr(config, "HOSTED_ENTRY", ("entry",))
+    assert run(repo, base, head) == 0, capsys.readouterr().out
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ('HOSTED_ENTRY = ("a", "b")\n', ("a", "b")),
+    ('HOSTED_ENTRY: tuple[str, ...] = ["a"]\nHOSTED_ENTRY = ("c",)\n', ("c",)),
+    ("X = 1\n", None),
+    ("HOSTED_ENTRY = tuple(ROOTS)\n", None),
+    ("HOSTED_ENTRY = (\n", None),
+])
+def test_parse_hosted_entry(text, expected):
+    from scripts.code_health.cli import parse_hosted_entry
+    assert parse_hosted_entry(text) == expected

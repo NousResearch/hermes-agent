@@ -2,6 +2,7 @@ import { gatewayActivationEpoch, host, useGatewayActivationEpoch, useValue } fro
 import { useEffect, useState } from 'react'
 
 import { canonicalGroupRequest } from './canonical-groups'
+import type { GroupEngine } from './group-engine'
 import { resolveBotConnectionRoute } from './routing'
 import type { RosterRow } from './types'
 
@@ -216,8 +217,8 @@ export function groupNeedsDesktopCourier(members: RosterRow[], connectionId: nul
 
 /** True when this Desktop drives the room recorded as `room`: the engine it
  *  was created with, else (older records) whether `members` span connections. */
-export function groupDrivenByDesktop(room: { engine?: 'desktop' } | undefined, members: RosterRow[], connectionId: null | string): boolean {
-  return room?.engine === 'desktop' || groupNeedsDesktopCourier(members, connectionId)
+export function groupDrivenByDesktop(room: { engine?: GroupEngine } | undefined, members: RosterRow[], connectionId: null | string): boolean {
+  return room?.engine ? room.engine === 'desktop' : groupNeedsDesktopCourier(members, connectionId)
 }
 
 /** True when every bot in `selection` lives on ONE connection other than

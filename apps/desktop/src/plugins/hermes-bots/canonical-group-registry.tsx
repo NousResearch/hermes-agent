@@ -3,6 +3,8 @@ import { useEffect, useMemo } from 'react'
 
 import { canonicalGroupRequest, discoverCanonicalGroups, listCanonicalRooms } from './canonical-groups'
 import type { CanonicalGroupBinding, CanonicalGroupRoute, CanonicalRoom, CanonicalRoomMember } from './canonical-groups'
+import { $groupChats, uniqueGroupChatName, updateGroupChat } from './group-chat'
+import { liveGroupChatNames } from './group-membership'
 import { closeGroupChatMainTab } from './group-panes'
 import { rpcMethodMissing } from './rpc-errors'
 import { ID } from './shared'
@@ -20,6 +22,16 @@ export function refreshGatewayGroupRooms(): void {
 
 /** Drop a disbanded room's key and every alias to it, then re-read the sidebar list. */
 export function forgetCanonicalGroup({ connectionId, profile, roomId }: CanonicalGroupBinding): void {
+  for (const [name, record] of Object.entries($groupChats.get())) {
+    const owner = record.engine
+
+    if (typeof owner !== 'object' || owner.connectionId !== connectionId || owner.profile !== profile || owner.roomId !== roomId) {continue}
+    updateGroupChat(name, room => ({ ...room, tombstone: true }), { sync: false })
+    const remaining = { ...$groupChats.get() }
+    delete remaining[name]
+    $groupChats.set(remaining)
+  }
+
   $disbandedGatewayRooms.set(new Set($disbandedGatewayRooms.get()).add(canonicalGroupKey({ connectionId, profile }, roomId)))
   $canonicalGroupBindings.set(Object.fromEntries(Object.entries($canonicalGroupBindings.get()).filter(([, binding]) =>
     binding.connectionId !== connectionId || binding.profile !== profile || binding.roomId !== roomId)))
@@ -30,7 +42,30 @@ function canonicalGroupKey(route: CanonicalGroupRoute, roomId: string): string {
   return `canonical:${encodeURIComponent(route.connectionId)}:${encodeURIComponent(route.profile)}:${roomId}`
 }
 
-export function registerCanonicalGroup(route: CanonicalGroupRoute, room: CanonicalRoom): string {
+export function registerCanonicalGroup(route: CanonicalGroupRoute, room: CanonicalRoom, { created = false } = {}): string {
+  // A native Rename (or a rename seen on refresh) moves our durable owner record too.
+  const records = $groupChats.get()
+  const previous = Object.entries(records).find(([, record]) => {
+    const owner = record.engine
+
+    return typeof owner === 'object' && owner.kind === 'gateway' && owner.connectionId === route.connectionId &&
+      owner.profile === route.profile && owner.roomId === room.room_id
+  })
+
+  // A create never adopts a different room by name, including one added while its reply was lost.
+  if (created && !previous) {
+    const name = uniqueGroupChatName(room.name, new Set(liveGroupChatNames()))
+    updateGroupChat(name, record => ({ ...record, roomId: room.room_id,
+      engine: { kind: 'gateway', connectionId: route.connectionId, profile: route.profile, roomId: room.room_id } }), { sync: false })
+  }
+
+  if (previous && previous[0] !== room.name && !records[room.name]) {
+    const renamed = { ...records, [room.name]: previous[1] }
+    delete renamed[previous[0]]
+    $groupChats.set(renamed)
+    updateGroupChat(room.name, record => record, { sync: false })
+  }
+
   const key = canonicalGroupKey(route, room.room_id)
   const current = $canonicalGroupBindings.get()[key]
 

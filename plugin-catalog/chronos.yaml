@@ -1,0 +1,30 @@
+name: chronos
+repo: https://github.com/Shikhyy/hermes-agent
+sha: "ce40354a741d828dfc6f65b76334d90b6c0c535a"
+subdir: plugins/chronos
+title: Chronos
+description: >-
+  AlphaZero for Code: Speculative Tree-Search Reasoning, Ephemeral Worktree
+  Rollouts & Rewind Engine. Explores multiple solution trajectories in
+  isolated Git worktrees, verifies against test suites, and visualizes
+  the decision DAG in Hermes Desktop.
+maintainer: Shikhyy
+tier: community
+category: tools
+requires_hermes: ">=0.4.0"
+docs_url: https://github.com/Shikhyy/hermes-agent/blob/ce40354a741d828dfc6f65b76334d90b6c0c535a/plugins/chronos/README.md
+version: "1.0.0"
+capabilities:
+  provides_tools:
+    - chronos_branch
+    - chronos_evaluate
+    - chronos_merge
+    - chronos_rewind
+    - chronos_status
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - on_session_start
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

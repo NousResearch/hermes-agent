@@ -572,6 +572,44 @@ describe('actOnActivePreview (drive_preview tool)', () => {
     expect(result.error).toContain('never reached the page')
   })
 
+  it.each([false, true])('distinguishes a lost click from a replaced document (navigated=%s)', async navigated => {
+    const frames = [document.createElement('iframe'), document.createElement('iframe')]
+    frames.forEach(frame => document.body.append(frame))
+    let page = frames[0].contentWindow!
+    page.document.body.innerHTML = '<button id="go">Continue</button>'
+    page.document.getElementById('go')!.getBoundingClientRect = () => new DOMRect(20, 20, 80, 24)
+    const tabId = openBrowserTab()
+
+    cleanups.push(
+      registerPreviewScriptRunner(tabId, async code =>
+        new Function('window', 'document', 'return ' + code)(page, page.document)
+      ),
+      registerPreviewInput(tabId, {
+        focus: vi.fn(),
+        send: event => {
+          // A completed navigation replaces the whole document even on a same-URL reload.
+          if (navigated && event.type === 'mouseUp') {
+            page = frames[1].contentWindow!
+          }
+        }
+      })
+    )
+
+    try {
+      const result = await actOnActivePreview({ kind: 'click', selector: '#go' })
+
+      expect(result.success).toBe(navigated)
+      if (navigated) {
+        expect(result.error).toBeUndefined()
+        expect(result.note).toContain('navigated')
+      } else {
+        expect(result.error).toContain('never reached the page')
+      }
+    } finally {
+      frames.forEach(frame => frame.remove())
+    }
+  })
+
   it('fails without sending input when locating the target times out', async () => {
     vi.useFakeTimers()
     const send = vi.fn()

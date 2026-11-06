@@ -37,7 +37,7 @@ import { $chatOnboardingSolo } from '@/store/onboarding-intro'
 import { sessionBlockingPrompt } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
 import { $gatewayState } from '@/store/session'
-import { $botChatSessionIds, $sessionStates, $sessionTiles, isBotChatSession } from '@/store/session-states'
+import { $botChatSessionIds, $sessionStates, $sessionTiles, isBotChatSession, knownOwnerForSession } from '@/store/session-states'
 import { useForcedTextDirection } from '@/store/text-direction'
 import { $threadScrolledUpBySession } from '@/store/thread-scroll'
 import { $autoSpeakReplies } from '@/store/voice-prefs'
@@ -56,7 +56,7 @@ import {
   shouldDisableComposerInput,
   slashArgStage
 } from './composer-utils'
-import { ContextMenu } from './context-menu'
+import { capabilityScopeForChat, ContextMenu } from './context-menu'
 import { COMPOSER_AREAS } from './contrib'
 import { ComposerControls } from './controls'
 import { ComposerDirectiveActions } from './directive-actions'
@@ -298,6 +298,7 @@ export function ChatBar({
     focusInput,
     hasText,
     insertInlineRefs,
+    insertSkill,
     insertText,
     isHelpHint,
     isSteerableText,
@@ -1114,12 +1115,16 @@ export function ChatBar({
 
   const contextMenu = (
     <ContextMenu
+      gateway={gateway}
+      onInsertSkill={insertSkill}
       onInsertText={insertText}
       onOpenUrlDialog={openUrlDialog}
       onPasteClipboardImage={onPasteClipboardImage}
       onPickFiles={onPickFiles}
       onPickFolders={onPickFolders}
       onPickImages={onPickImages}
+      profile={capabilityScopeForChat(knownOwnerForSession(sessionId), profile)}
+      sessionId={sessionId ?? null}
       state={state}
     />
   )

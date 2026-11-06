@@ -764,3 +764,18 @@ class TestDisabledToolsetsFilterToolSurface:
         assert "execute_code" in listed()
         state.agent.disabled_toolsets = ["code_execution"]
         assert "execute_code" not in listed()
+
+
+def test_history_replay_emits_plan_for_bridged_todo_list():
+    """A replayed todo_list call reached through tool_search is stored under the bridge name."""
+    from acp_adapter.server import _history_replay_updates
+
+    todo_result = '{"todos":[{"id":"a","content":"Step A","status":"completed"}]}'
+    history = [
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "call_1", "function": {"name": "tool_call", "arguments": '{"name": "todo_list"}'}},
+        ]},
+        {"role": "tool", "tool_call_id": "call_1", "tool_name": "todo_list", "content": todo_result},
+    ]
+    plans = [u for u in _history_replay_updates(history) if getattr(u, "session_update", None) == "plan"]
+    assert [(e.content, e.status) for e in plans[0].entries] == [("Step A", "completed")] and len(plans) == 1

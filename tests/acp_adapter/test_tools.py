@@ -43,6 +43,20 @@ class TestToolKindMap:
     def test_unknown_tool_returns_other_kind(self):
         assert get_tool_kind("nonexistent_tool_xyz") == "other"
 
+    @pytest.mark.parametrize("current, legacy, args, result", [
+        ("todo_list", "todo", {"todos": [{"id": "a", "content": "A", "status": "pending"}]},
+         '{"todos": [{"id": "a", "content": "A", "status": "pending"}]}'),
+        ("process_manage", "process", {"action": "poll", "session_id": "proc_1"},
+         '{"status": "running", "output": "tick"}'),
+    ])
+    def test_renamed_tools_render_like_their_legacy_names(self, current, legacy, args, result):
+        """The todo/process renames must keep the kind and the curated start/result rendering."""
+        assert get_tool_kind(current) == get_tool_kind(legacy)
+        assert build_tool_start("tc", current, args).content == build_tool_start("tc", legacy, args).content
+        new = build_tool_complete("tc", current, result=result, function_args=args)
+        old = build_tool_complete("tc", legacy, result=result, function_args=args)
+        assert (new.content, new.raw_output) == (old.content, old.raw_output)
+
 
 # ---------------------------------------------------------------------------
 # make_tool_call_id

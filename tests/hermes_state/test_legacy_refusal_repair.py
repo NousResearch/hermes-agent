@@ -116,7 +116,8 @@ def test_subagent_and_cron_runs_keep_their_record(tmp_path):
     """A delegated run's one "turn" is the whole run: retaining it would hollow out the record and
     unlock nothing. Delegated and cron runs keep it by source even after an answered exchange; a chat
     never answered before a refused run that used tools (an ACP task run) keeps it by shape. A Bot Chat
-    refused at its very first plain message is still unlocked: there /new becomes /compact."""
+    refused at its very first plain message is still unlocked: there /new becomes /compact, and so is
+    an answered chat whose refused turn ran tools (only a never-answered tool run is a task run)."""
     db = SessionDB(tmp_path / "state.db")
     db.create_session("parent", "cli")
     db.append_message("parent", "user", "go")
@@ -139,6 +140,14 @@ def test_subagent_and_cron_runs_keep_their_record(tmp_path):
     db.create_session("first_ask", "local")
     _refused_turn(db, "first_ask", "the blocked ask")
     _refused_turn(db, "first_ask", "an innocent follow-up")
+    db.create_session("tool_chat", "local")
+    db.append_message("tool_chat", "user", "hello")
+    db.append_message("tool_chat", "assistant", "hi")
+    db.append_message("tool_chat", "user", "the blocked ask")
+    db.append_message("tool_chat", "assistant", "", tool_calls=[
+        {"id": "t0", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}])
+    db.append_message("tool_chat", "tool", "out", tool_call_id="t0")
+    db.append_message("tool_chat", "assistant", _BOUNDARY, display_kind="failed_turn", display_metadata=_REFUSAL_CARD)
     _as_legacy_store(db)
 
     db = SessionDB(tmp_path / "state.db")
@@ -147,6 +156,9 @@ def test_subagent_and_cron_runs_keep_their_record(tmp_path):
         assert _model(db, "first_ask") == []
         assert _display(db, "first_ask") == [("user", "the blocked ask", "content_refused"),
                                              ("user", "an innocent follow-up", "content_refused")]
+        assert _model(db, "tool_chat") == [("user", "hello"), ("assistant", "hi")]
+        assert [m for m in _display(db, "tool_chat") if m[2] == CONTENT_REFUSED_DISPLAY_KIND] == [
+            ("user", "the blocked ask", CONTENT_REFUSED_DISPLAY_KIND)]
         assert db.get_meta(LEGACY_REFUSAL_REPAIR_DONE) == "1"
     finally:
         db.close()

@@ -1,10 +1,10 @@
 name: visor
 repo: https://github.com/samundra0/visor
-sha: e6b8c24a83b656c4e80edd2e0085bf378da64af3
+sha: 2bd1da0e8148e6391261f3b79e59ba37b1b3b881
 subdir: hermes/plugin
-version: "1.8.0"
+version: "1.9.0"
 title: Visor
-description: "Live holographic canvas for AI agents: the visor_push tool pushes visual blocks — sections, markdown findings, clickable todos, tables, KPI stats, charts, code, images, audio and video — to an infinite-canvas webpage that updates in place over SSE (the page is never rewritten), so agents SHOW work instead of dumping it in chat. Turnkey: the plugin ships its own server, no separate install. Disclosure — on first use, if nothing is listening on localhost:8900, the plugin auto-starts the server: bare-python subprocess of the bundled server.py by default (state in ~/.local/share/visor, override VISOR_DATA), or `docker compose up -d` when VISOR_DOCKER=1. Listens on 127.0.0.1:8900 only (VISOR_PORT to change); VISOR_TOKEN optionally gates /api/* and /media/; no env reads beyond VISOR_*/HOLO_PORT, no credentials, no reads outside the plugin tree except its own state dir; long-running background process (the server), re-started if unreachable. The bundled server boots with the live and chat modules enabled by default (VISOR_MODULES to override): live polls user-pushed URLs on a bounded 2s tick (http(s) only, 10s timeout, 1MB cap, optional VISOR_LIVE_LOCAL_HOSTS host allowlist); chat bridges card sends to a configured Hermes webhook (VISOR_CHAT_URL + VISOR_CHAT_SECRET) and is inert — a hint line — until those are set. VISOR_HOME points the plugin at a visor repo dev checkout (legacy layout; not needed for catalog installs)."
+description: "Live holographic canvas for AI agents: the visor_push tool pushes visual blocks — sections, markdown findings, clickable todos, tables, KPI stats, charts, code, images, audio and video — to an infinite-canvas webpage that updates in place over SSE (the page is never rewritten), so agents SHOW work instead of dumping it in chat. Turnkey: the plugin ships its own server, no separate install. Disclosure — on first use, if nothing is listening on localhost:8900, the plugin auto-starts the server: bare-python subprocess of the bundled server.py by default (state in ~/.local/share/visor, override VISOR_DATA), or `docker compose up -d` when VISOR_DOCKER=1. v1.9 security defaults: listens on 127.0.0.1:8900 by default (VISOR_PORT to change; VISOR_HOST opts in to a non-loopback bind, refused at startup unless an explicit VISOR_TOKEN is set); a per-install token is auto-generated on first start (0600, <state>/visor-token) and /api/* and /media/ are always token-gated — the web UI gets the token injected by the server, so opening the page is all the user does; no env reads beyond VISOR_*/HOLO_PORT, no credentials, no reads outside the plugin tree except its own state dir; long-running background process (the server), re-started if unreachable. The bundled server boots with the live and chat modules enabled by default (VISOR_MODULES to override): live polls user-pushed URLs on a bounded 2s tick (http(s) only, 10s timeout, 1MB cap, optional VISOR_LIVE_LOCAL_HOSTS host allowlist); chat bridges card sends to a configured Hermes webhook (VISOR_CHAT_URL + VISOR_CHAT_SECRET) and is inert — a hint line — until those are set. Raw-html blocks render in a sandboxed iframe with a small postMessage bridge. VISOR_HOME points the plugin at a visor repo dev checkout (legacy layout; not needed for catalog installs)."
 maintainer: samundra0
 tier: community
 category: tools
@@ -12,10 +12,10 @@ docs_url: https://github.com/samundra0/visor
 requires_hermes: ">=0.21.5"
 readme: true
 platforms: []
-image: https://raw.githubusercontent.com/samundra0/visor/e6b8c24a83b656c4e80edd2e0085bf378da64af3/docs/screenshots/visor-demo-board.png
+image: https://raw.githubusercontent.com/samundra0/visor/2bd1da0e8148e6391261f3b79e59ba37b1b3b881/docs/screenshots/visor-demo-board.png
 screenshots:
-  - https://raw.githubusercontent.com/samundra0/visor/e6b8c24a83b656c4e80edd2e0085bf378da64af3/docs/screenshots/visor-demo-board.png
-  - https://raw.githubusercontent.com/samundra0/visor/e6b8c24a83b656c4e80edd2e0085bf378da64af3/docs/screenshots/visor-canvas-ui.png
+  - https://raw.githubusercontent.com/samundra0/visor/2bd1da0e8148e6391261f3b79e59ba37b1b3b881/docs/screenshots/visor-demo-board.png
+  - https://raw.githubusercontent.com/samundra0/visor/2bd1da0e8148e6391261f3b79e59ba37b1b3b881/docs/screenshots/visor-canvas-ui.png
 capabilities:
   provides_tools:
     - visor_push

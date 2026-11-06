@@ -166,6 +166,14 @@ native `api:` match, or version literals on unrelated payloads. Documented surfa
 - Compat tests load **frozen plugins through the real discovery path** and assert outcomes — never
   exact registry/catalog counts, source-reading tests, or "a global version literal changed".
 
+## Boundary lint (`scripts/boundary_lint.py`)
+
+CI fails when a bundled plugin imports a core name that is not in `hermes_cli/data/plugin_api.json`,
+or core imports a specific bundled plugin, more often than the committed baseline records. Fix it
+with a listed name, a `ctx` method or discovery. `--update` rewrites the baseline from the tree: run
+it for an intended crossing (say why in the PR body) or after removing crossings, so the lower
+count sticks. Never run it just to turn CI green.
+
 ## Internal import paths are not API
 
 PR #102117 moved internals into `<stem>_<topic>` siblings. The temporary compat layer that kept the

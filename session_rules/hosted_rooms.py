@@ -17,7 +17,37 @@ from typing import Any
 from persistence.gateway.hosted_rooms import AuthorityHistoryError, HostedRoomError, ReplicaError, ReplicaGapError
 
 
+MAX_THREAD_TRANSCRIPT_EVENTS = 24
+
 IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
+
+
+def active_policy_within_budget(events: list[dict[str, Any]], *, capacity: int, retry_limit: int) -> bool:
+    """Keep ordinary turns bounded while allowing completed batches of pre-Send inputs."""
+    retries = sum(event["kind"] == "turn.deferred" for event in events)
+    if retries > retry_limit:
+        return False
+    ordinary = len(events) - retries
+    if ordinary <= capacity:
+        return True
+
+    source_seq = events[0]["seq"]
+    batch_replies = {}
+    for event in events:
+        if event["kind"] not in {"turn.settled", "turn.failed", "turn.cancelled"}:
+            continue
+        payload = event["payload"]
+        seen = payload.get("seen_through_seq")
+        if type(seen) is int and 0 < seen < source_seq:
+            ordinary -= 1
+            message_id = payload.get("message_event_id")
+            if isinstance(message_id, str):
+                batch_replies[message_id] = payload.get("task_id")
+    for event in events:
+        if (event["kind"] == "message.member" and event["event_id"] in batch_replies
+                and batch_replies[event["event_id"]] == event["payload"].get("task_id")):
+            ordinary -= 1
+    return ordinary <= capacity
 
 
 def identifier(

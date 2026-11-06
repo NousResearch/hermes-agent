@@ -12,7 +12,7 @@ import hashlib
 import json
 import re
 import time
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from typing import Any, Literal, Protocol, get_args, runtime_checkable
@@ -447,6 +447,8 @@ class PolicySnapshot:
     stopped_through_seq: int
     events: tuple[Mapping[str, JsonValue], ...]
     watermarks: Mapping[tuple[str, str], int]
+    read_messages: Callable[..., Iterable[Mapping[str, JsonValue]]] | None = dataclass_field(
+        default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -824,7 +826,7 @@ class HostedRoomDriverRepository(Protocol):
 class HostedRoomPolicyRepository(Protocol):
     """The room policy checkpoint: cursors, active policy events, threads, watermarks and terminal publication receipts.
 
-    Every verb takes the caller's configured active-event budget ``max_active_events`` (default 64), a positive int, else ``ValueError('max_active_events must be a positive integer')`` before any read or write. The placement's store records the largest budget a verb gave it, never below 64, and every verb bounds a discussion's active events by that recorded capacity; the thread transcript bound follows it.
+    Every verb takes the caller's configured active-event budget ``max_active_events`` (default 64), a positive int, else ``ValueError('max_active_events must be a positive integer')`` before any read or write. The placement's store records the largest budget a verb gave it, never below 64, and the thread transcript bound follows that capacity. A file backlog can need more settled turns than fit in the active projection; its receipts come from the log. Retry receipts retain their separate bound.
     """
 
     def snapshot(self, *, placement: HostedPlacement, room_id: str, latest_seq: int, max_active_events: int = 64) -> PolicySnapshot:

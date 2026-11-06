@@ -407,3 +407,28 @@ def test_refresh_rebuilds_a_current_selection_its_fallback_unselected(install, m
     broken[0] = False
     assert refresh_dependencies(root) == "rebuilt"
     assert rebuilt
+
+
+@pytest.mark.parametrize("free, outcome", [(-1, "fallback"), (0, "rebuilt")])
+def test_refresh_keeps_its_headroom_once_the_uv_cache_is_merged(install, monkeypatch, free, outcome):
+    """A merged cache copies nothing, but the build and the first boot still need the headroom."""
+    import shutil
+
+    import pm.client
+    import pm.install
+    import pm.packages
+    from pm.environments import runtime_facts_path
+    from pm.lock import Facts
+    from pm.recovery import REBUILD_HEADROOM_BYTES, refresh_dependencies
+
+    root, store = install
+    Facts(store / "facts.json").record_state("venv", "stamp:all,messaging", ["all", "messaging"])
+    Facts(runtime_facts_path(root)).record_state("venv", "previous-image", ["all", "fal", "messaging"])
+    monkeypatch.setattr(pm.packages, "uv_cache_seed_bytes", lambda: 0)
+    monkeypatch.setattr(shutil, "disk_usage", _disk(REBUILD_HEADROOM_BYTES + free))
+    rebuilt = []
+    monkeypatch.setattr(pm.client, "sync_venv", lambda *a, **k: rebuilt.append(a))
+    monkeypatch.setattr(pm.install, "venv_is_current", lambda **kwargs: False)
+
+    assert refresh_dependencies(root) == outcome
+    assert bool(rebuilt) == (outcome == "rebuilt")

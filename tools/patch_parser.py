@@ -470,7 +470,7 @@ def _plan_hunks(content: str, hunks: list[Hunk]) -> _Plan:
             # Context-only anchor hunks (models emit these between changes) are inert; identical
             # -/+ lines are a no-op. An anchor that selects exactly one site moves the cursor.
             changes += any(line.prefix in '-+' for line in hunk.lines)
-            if search_lines:
+            if search_lines and '\n'.join(search_lines):
                 span, _n, _conflict = _select_span(content, '\n'.join(search_lines), hunk, cursor,
                                                    ordered=False, written=tuple(written))
                 cursor = span[1] if span else cursor

@@ -20,11 +20,15 @@ def github(tmp_path, monkeypatch):
             state["requests"].append(self.path)
             sha = state["head"]
             if self.path == "/graphql":
+                required = [] if state.get("no_required") else [
+                    {"context": "required", "app": {"databaseId": 1}}]
                 value = {"data": {"repository": {"pullRequest": {
                     "headRefOid": sha, "baseRefName": "main", "state": "OPEN",
-                    "baseRef": {"branchProtectionRule": {"requiredStatusChecks": [
-                        {"context": "required", "app": {"databaseId": 1}}]}}}}}}
+                    "baseRef": {"branchProtectionRule": {"requiredStatusChecks": required}}}}}}
             elif "/rules/branches/" in self.path:
+                if state.get("rules_unavailable"):
+                    self.send_error(403, "Upgrade to GitHub Pro or make this repository public to enable this feature.")
+                    return
                 value = [[]]
             elif "/check-runs" in self.path:
                 run = {"id": 42, "name": "required", "head_sha": sha,
@@ -60,9 +64,13 @@ def github(tmp_path, monkeypatch):
     shim = tmp_path / "bin"
     shim.mkdir()
     gh = shim / "gh"
-    gh.write_text(f"#!{sys.executable}\nimport sys,urllib.request\n"
+    gh.write_text(f"#!{sys.executable}\nimport sys,urllib.error,urllib.request\n"
                   f"u='http://127.0.0.1:{server.server_port}/'+sys.argv[2]\n"
-                  "print(urllib.request.urlopen(u).read().decode())\n")
+                  "try:\n"
+                  "    print(urllib.request.urlopen(u).read().decode())\n"
+                  "except urllib.error.HTTPError as exc:\n"
+                  "    print(exc.read().decode(), f'(HTTP {exc.code})', file=sys.stderr)\n"
+                  "    raise SystemExit(1)\n")
     gh.chmod(0o755)
     monkeypatch.setenv("PATH", str(shim) + os.pathsep + os.environ["PATH"])
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
@@ -107,6 +115,25 @@ def test_pr_completion_requires_current_required_evidence(github):
         local = kb.create_task(conn, title="local", completion_contract="local-only")
         assert kb.complete_task(conn, local, summary="https://github.com/acme/repo/pull/7 is background context")
         assert len(github["requests"]) == before
+
+
+@pytest.mark.platforms("linux")
+def test_unavailable_rules_feature_keeps_exact_head_evidence_without_bypassing_gate(github):
+    github.update(no_required=True, rules_unavailable=True)
+    with connect() as conn:
+        tid = kb.create_task(conn, title="Publish", completion_contract="acme/repo")
+        assert not kb.complete_task(conn, tid, result="done",
+                                    metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
+        receipt = json.loads(conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0])
+    assert receipt["classification"] == "missing"
+    assert receipt["required"] == []
+    assert {
+        "name": "required", "id": 42,
+        "url": "https://github.com/acme/repo/actions/runs/42",
+        "head_sha": "a" * 40, "classification": "success", "conclusion": "success",
+    } in receipt["checks"]
+    assert all(check["head_sha"] == "a" * 40 for check in receipt["checks"])
 
 
 @pytest.mark.platforms("linux")

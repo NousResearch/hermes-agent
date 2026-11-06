@@ -20,7 +20,7 @@ export function LocalAdvanced({ controller, name, onRemove }: LocalAdvancedProps
 
   return (
     <div className="grid min-h-0 gap-2">
-      <div className="h-56 overflow-hidden rounded-md border border-(--ui-stroke-tertiary)">
+      <div className="flex h-56 overflow-hidden rounded-md border border-(--ui-stroke-tertiary)">
         <McpJsonEditor controller={controller} highlightServer={name} />
       </div>
 

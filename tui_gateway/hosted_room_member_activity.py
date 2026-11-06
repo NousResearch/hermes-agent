@@ -85,6 +85,12 @@ def forget_task_progress(room_id: str, task_id: str, execution_generation: int) 
         _store((room_id, task_id), int(execution_generation) + 1, {})
 
 
+def current_tools() -> list[tuple[str, str, str]]:
+    """``(room_id, task_id, tool)`` for every task this process sees inside a tool right now."""
+    with _progress_lock:
+        return [(room_id, task_id, entry["tool"]) for (room_id, task_id), entry in _progress.items() if entry["tool"]]
+
+
 def task_progress(room_id: str, task_id: str, execution_generation: int) -> dict[str, Any]:
     """``{"tool", "progress_at"}`` this process has seen for that attempt of the task, else ``{}``."""
     with _progress_lock:

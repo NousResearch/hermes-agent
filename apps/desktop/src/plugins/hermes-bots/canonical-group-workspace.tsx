@@ -13,7 +13,7 @@ import { forgetCanonicalGroup } from './canonical-group-registry'
 import { CanonicalGroupRoomSettings } from './canonical-group-room-settings'
 import { attemptCanonicalGroupSend, prepareCanonicalGroupSend, readCanonicalGroupSend, replaceCanonicalGroupSend, retireCanonicalGroupSend, withdrawCanonicalGroupSend } from './canonical-group-send'
 import type { PreparedCanonicalGroupSend } from './canonical-group-send'
-import { actCanonicalGroup, canonicalGroupRequest } from './canonical-groups'
+import { actCanonicalGroup, canonicalGroupProfileRoute, canonicalGroupRequest } from './canonical-groups'
 import type { CanonicalGroupBinding, CanonicalPendingAction, CanonicalRoom, CanonicalRoomContext, CanonicalRoomMember } from './canonical-groups'
 import { GroupMentionInput } from './group-chat-parts'
 import { RoomBotAvatar } from './group-room-avatar'
@@ -33,6 +33,7 @@ interface RoomState {
   room: CanonicalRoom & { authority_epoch?: number; latest_seq?: number }
   context?: CanonicalRoomContext | null
   driver_status?: RoomDriverStatus
+  change_events?: boolean
 }
 
 const sameGroupPayload = (payload: Record<string, unknown>, text: string, attachments: Attachment[], thread?: string) =>
@@ -40,10 +41,19 @@ const sameGroupPayload = (payload: Record<string, unknown>, text: string, attach
   // Preparing mints a thread for a new conversation, so only a reply's thread must match.
   (thread === undefined || payload.thread_id === thread)
 
-/** The durable log only grows: an unchanged length and last seq is the same log, so keep its identity
- *  and the derived history (handoffs, outcomes) is not recomputed on every poll. */
-const sameLog = (current: readonly { seq: number }[], next: readonly { seq: number }[]) =>
-  current.length === next.length && current.at(-1)?.seq === next.at(-1)?.seq
+// A backend that broadcasts groups.changed (groups.state says change_events) moves the view on push; the
+// poll is then only a backstop for a lost signal. Older backends keep the 2 s poll.
+const ROOM_POLL_MS = 2000
+const ROOM_BACKSTOP_MS = 15_000
+
+/** The events of one groups.log page read after `cursor`, or null when the page would leave a hole. The log
+ *  is append-only with one seq per event, so a page applies only from cursor+1 on: an event the view already
+ *  holds is skipped, and a gap is refused, so the view is always a prefix of the room log. */
+export function roomLogPageAfter<T extends { seq: number }>(cursor: number, page: readonly T[]): null | T[] {
+  const fresh = page.filter(event => event.seq > cursor)
+
+  return fresh.every((event, index) => event.seq === cursor + index + 1) ? fresh : null
+}
 
 const canSendNow = (gate: { restored: boolean; busy: boolean; stopping: boolean; uploading: boolean; pending: boolean; draft: string; attachments: number; driver: boolean }) =>
   gate.restored && !gate.busy && !gate.stopping && !gate.uploading && gate.driver && (gate.pending || !!gate.draft.trim() || gate.attachments > 0)
@@ -130,8 +140,6 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   const delivered = useRef<string | null>(null)
   // The Send in progress, which a Stop pressed now must cover; `settled` says whether it may have posted.
   const sending = useRef<SendRun | null>(null)
-  // The log is append-only within one authority epoch: each poll reads only what is new.
-  const seen = useRef<{ epoch?: number; seq: number }>({ seq: 0 })
 
   // eslint-disable-next-line no-restricted-syntax -- mounted lifetime, not a reactive store mirror
   useEffect(() => {
@@ -168,35 +176,69 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     return () => { cancelled = true }
   }, [binding, journalAttempt])
 
-  const refresh = async () => {
-    const version = ++revision.current
-    const snapshot = await canonicalGroupRequest<RoomState>(binding, 'groups.state', { room_id: binding.roomId })
-    const { authority_epoch: epoch, latest_seq: latest } = snapshot.room ?? {}
-    // A new authority epoch (or a log behind what was read) starts the log again.
-    const fresh = epoch !== seen.current.epoch || (typeof latest === 'number' && latest < seen.current.seq)
-    const since = fresh ? 0 : seen.current.seq
-    const log: RoomEvent[] = []
-    let cursor = since
+  // The applied log and its authority epoch, read only after its last seq (the cursor): a refresh asks for what
+  // is new, not the whole room.
+  const applied = useRef<{ epoch?: number; log: RoomEvent[] }>({ log: [] })
+  const changeEvents = useRef(false)
 
-    for (;;) {
-      const page = await canonicalGroupRequest<{ events: RoomEvent[]; has_more?: boolean; next_seq?: number }>(binding, 'groups.log', { room_id: binding.roomId, since_seq: cursor, limit: 100 })
-      log.push(...page.events)
+  // One room read at a time for every caller (poll, push, a mutation's settle, Refresh, settings saved). A call
+  // during a read queues ONE read after it (shared by every caller that lands meanwhile) and resolves when that
+  // read ends, so a caller never waits for a busy room to fall quiet and no two reads overlap.
+  const reading = useRef<{ current: Promise<void>; next?: Promise<void> } | null>(null)
 
-      if (!page.has_more) {break}
-      const next = page.events.at(-1)?.seq
+  const refresh = (): Promise<void> => {
+    const flight = reading.current
 
-      if (!next || next <= cursor) {throw new Error(labels.invalidLogCursor)}
-      cursor = next
+    if (flight) {
+      flight.next ??= flight.current.catch(() => undefined).then(() => refresh())
+
+      return flight.next
     }
 
-    if (alive.current && version === revision.current) {
-      seen.current = { epoch, seq: log.at(-1)?.seq ?? cursor }
-      setState(snapshot)
-      setEvents(current => {
-        const next = fresh ? log : [...current, ...log.filter(event => event.seq > since)]
+    const read: { current: Promise<void>; next?: Promise<void> } = { current: Promise.resolve() }
+    read.current = readRoom().finally(() => { if (reading.current === read) {reading.current = null} })
+    reading.current = read
 
-        return !fresh && sameLog(current, next) ? current : next
-      })
+    return read.current
+  }
+
+  const readRoom = async () => {
+    const version = ++revision.current
+    const snapshot = await canonicalGroupRequest<RoomState>(binding, 'groups.state', { room_id: binding.roomId })
+    const { authority_epoch: epoch, latest_seq: latest } = snapshot.room
+    const base = applied.current
+    // The log only grows within one authority epoch. A new epoch (the room re-hosted) or a log behind the view
+    // starts it again, even when the new log is as long as the old.
+    let log = epoch !== base.epoch || (latest ?? Infinity) < (base.log.at(-1)?.seq ?? 0) ? [] : base.log
+
+    // Validated pages are collected and joined onto the prefix once, not recopied per page.
+    const pages: RoomEvent[][] = []
+    let cursor = log.at(-1)?.seq ?? 0
+
+    for (;;) {
+      const page = await canonicalGroupRequest<{ events: RoomEvent[]; has_more?: boolean }>(binding, 'groups.log', { room_id: binding.roomId, since_seq: cursor, limit: 100 })
+      const fresh = roomLogPageAfter(cursor, page.events)
+
+      // A hole, or a page that says there is more but brings nothing: the cursor cannot move.
+      if (!fresh || (page.has_more && !fresh.length)) {throw new Error(labels.invalidLogCursor)}
+
+      if (fresh.length) {
+        pages.push(fresh)
+        cursor = fresh[fresh.length - 1].seq
+      }
+
+      if (!page.has_more) {break}
+    }
+
+    // Nothing new keeps the same array: status-only pushes and backstop polls allocate nothing per event.
+    log = pages.length ? log.concat(...pages) : log
+
+    if (alive.current && version === revision.current) {
+      // An unchanged log keeps its identity, so the derived history (handoffs, outcomes) is not recomputed.
+      applied.current = { epoch, log }
+      changeEvents.current = snapshot.change_events === true
+      setState(snapshot)
+      setEvents(log)
       setReadError('')
     }
   }
@@ -204,17 +246,55 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   useEffect(() => {
     if (!visible) {return}
     let cancelled = false
-    let timer: ReturnType<typeof setTimeout>
+    let timer: ReturnType<typeof setTimeout> | undefined
 
+    // refresh() owns the one-read-at-a-time rule; the poll only reschedules itself after each read.
     const poll = async () => {
-      try { await refresh() } catch (e) { if (!cancelled) {setReadError(String(e instanceof Error ? e.message : e))} }
+      let failed = false
 
-      if (!cancelled) {timer = setTimeout(() => void poll(), 2000)}
+      try { await refresh() } catch (e) { failed = true;
+
+ if (!cancelled) {setReadError(String(e instanceof Error ? e.message : e))} }
+
+      // Every read ends by (re)arming the one timer; a push mid-wait restarts the wait. A failed read (the route
+      // is down, so its pushes are lost too) retries on the fast poll, as main did, not the backstop.
+      if (!cancelled) {
+        clearTimeout(timer)
+        timer = setTimeout(() => void poll(), changeEvents.current && !failed ? ROOM_BACKSTOP_MS : ROOM_POLL_MS)
+      }
     }
+
+    // groups.changed only reaches this window over an open socket to the room's backend; a secondary
+    // route's socket (a local room under a remote primary, too) otherwise closes between reads, and the
+    // slow backstop would then be the only update. A lease that lands after the view closed is let go.
+    let release: (() => void) | undefined
+    void (typeof host.retainProfile === 'function' ? host.retainProfile(canonicalGroupProfileRoute(binding)) : Promise.resolve(undefined))
+      .then(lease => { if (cancelled) {lease?.()} else {release = lease} }, () => undefined)
+
+    // An untagged event may come from any route (the local/legacy primary), so it refreshes too; one
+    // naming rooms refreshes only their views (no list: something process-wide moved).
+    const unsubscribe = typeof host.onEvent === 'function'
+      ? host.onEvent('groups.changed', event => {
+        const { connectionId, payload } = event as { connectionId?: string; payload?: { room_ids?: unknown } }
+        const source = String(connectionId || '')
+        const rooms = Array.isArray(payload?.room_ids) ? payload.room_ids : null
+
+        if (!cancelled && (!source || source === binding.connectionId) && (!rooms || rooms.includes(binding.roomId))) {void poll()}
+      })
+      : undefined
+
+    // A reconnect loses every push sent while the route's socket was down: re-read now, not at the backstop.
+    const unsubscribeReady = typeof host.onEvent === 'function'
+      ? host.onEvent('gateway.ready', event => {
+        const source = String((event as { connectionId?: string }).connectionId || '')
+
+        if (!cancelled && (!source || source === binding.connectionId)) {void poll()}
+      })
+      : undefined
 
     void poll()
 
-    return () => { cancelled = true; revision.current++; clearTimeout(timer) }
+    return () => { cancelled = true; revision.current++; clearTimeout(timer); unsubscribe?.(); unsubscribeReady?.(); release?.() }
     // The keyed parent freezes the authority binding for this lifetime.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible])

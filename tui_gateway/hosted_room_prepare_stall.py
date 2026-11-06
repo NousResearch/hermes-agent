@@ -56,6 +56,10 @@ class PrepareStallTracker:
             streak = self._rooms.get(room_id)
             return bool(streak and streak.stalled)
 
+    def stalled_rooms(self) -> list[str]:
+        with self._lock:
+            return [room_id for room_id, streak in self._rooms.items() if streak.stalled]
+
     def last_error(self, room_id: str) -> str | None:
         with self._lock:
             streak = self._rooms.get(room_id)

@@ -230,7 +230,8 @@ def _group(authority, actor, method, params, *, host_scope=False):
 
     def state():
         room = rooms.room_state(db_path, **params)
-        result = {'room': room}
+        # tui_gateway's change watcher broadcasts groups.changed on this socket (change_watcher._groups_sig).
+        result = {'room': room, 'change_events': True}
         if room.get('disbanded_at') is None:
             result['context'] = room_context(db_path, room_id=room['room_id'])
             if service is not None:

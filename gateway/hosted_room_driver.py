@@ -13,7 +13,7 @@ import json
 import math
 import sqlite3
 from contextlib import closing
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from functools import partial
 from typing import Any, Callable, Literal, get_args
@@ -864,6 +864,27 @@ def list_tasks(db_path: DbPath, *, room_id: Any, status: TaskStatus | None = Non
         raise DriverValidationError("invalid task status")
     with closing(_connect(db_path)) as conn:
         return [_task_from_row(row) for row in _tasks_in_order(conn, room_id, status)]
+
+
+def room_task_summary(
+        db_path: DbPath, *, room_id: Any, statuses: Iterable[str]) -> tuple[dict[str, int], list[dict[str, Any]]]:
+    """``({status: count}, tasks in those statuses, in admission order)`` for one room from one read
+    snapshot: retained terminal tasks are only counted (status index), never decoded."""
+    room_id = _identifier(room_id, label="room_id")
+    statuses = tuple(statuses)
+    if any(status not in TASK_STATUSES for status in statuses):
+        raise DriverValidationError("invalid task status")
+    marks = ",".join("?" for _ in statuses)
+    with closing(_connect(db_path)) as conn, conn:
+        # Python's sqlite3 runs SELECTs in autocommit; the explicit BEGIN makes both reads one WAL snapshot,
+        # so a task moving between them is neither doubled nor lost. ``with conn`` ends it.
+        conn.execute("BEGIN")
+        counts = {str(status): int(count) for status, count in conn.execute(
+            "SELECT status, COUNT(*) FROM hosted_room_driver_tasks WHERE room_id=? GROUP BY status", (room_id,))}
+        rows = conn.execute(
+            f"SELECT * FROM hosted_room_driver_tasks WHERE room_id=? AND status IN ({marks}) {_TASK_ORDER}",
+            (room_id, *statuses)).fetchall() if statuses else []
+    return counts, [_task_from_row(row) for row in rows]
 
 
 def prune_published_terminal_tasks(

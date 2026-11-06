@@ -404,7 +404,7 @@ Verify the interpreter and source before doing work:
 python -c "import sys, pm; print(sys.executable); print(pm.__file__)"
 python -c "import httpx; print(httpx.__file__)"
 node --version
-npm --version
+pnpm --version
 hermes --version
 ```
 
@@ -430,15 +430,20 @@ These commands use the selected development home. A source-file edit is visible
 to the next process. Restart the affected CLI, gateway, or backend after edits.
 Reinstalling every dependency is unnecessary for a Python-only source change.
 
-For the JavaScript workspaces, run `npm ci` once at the repository root, then
-run the relevant workspace command. For example:
+For the JavaScript workspaces, run `pnpm install --frozen-lockfile` once at the
+repository root, then run the relevant workspace command. For example:
 
 ```bash
-npm run build --workspace ui-tui
-npm run dev --workspace apps/desktop
+pnpm --dir ui-tui run build
+pnpm --dir apps/desktop run dev
 ```
 
-The website is separate: `npm ci --prefix website`, then
+Activation provides the pnpm version root `package.json` pins in `devEngines`.
+Hermes's builds and `hermes update` refuse any other pnpm version (a direct
+`pnpm install` does not check it), and the root `preinstall` script refuses
+`npm install` (npx and other npm commands only warn).
+
+The website is a separate npm project: `npm ci --prefix website`, then
 `npm run build:fast --prefix website`. PM activation supplies tools, not these
 `node_modules` directories or built assets. Native desktop builds have additional
 requirements in the [desktop build guide](https://github.com/NousResearch/hermes-agent/blob/main/apps/desktop/BUILDING.md).
@@ -605,7 +610,7 @@ not substitutes for an installed application's update mechanism.
 | `pm update --check` | Query without writing. Exit 1 can mean updates exist; inspect output to distinguish an error. |
 | `pm update --target TARGET` | Resolve versions for the specified target. |
 | `pm update --skip-target TARGET` | Leave TARGET's pins unchanged (repeatable), for example `linux-arm64-bionic` while the termux pool lags upstream. Later runs still report the package as current. `pm lock --bump NAME VERSION` re-pins every target at a version, and `pm update --termux` repins a retired `linux-arm64-bionic` row. |
-| `pm update --uv` / `--npm` | Also refresh the Python or npm dependency resolution. |
+| `pm update --uv` / `--pnpm` | Also refresh the Python dependency resolution (`uv.lock`) or the JavaScript one (`pnpm-lock.yaml`). |
 | `pm update --termux [--check]` | Repin the termux pool archives the rolling pool has retired (the runtime-lib pin table and the bionic lock rows). `--check` reports without writing and exits 1 when a pin is retired. |
 | `pm install --target TARGET NAME...` | Stage explicit cross-target packages without recording them as the host's installed runtime. The win32 `git` target pins a self-extracting PortableGit archive: staging it runs the vendor extractor and therefore requires a Windows host. |
 | `pm bundle --out DIR [--ref REF]` | Stage a source snapshot, native tools, facts, and Python dependencies. It does not produce a signed desktop installer. |
@@ -635,8 +640,8 @@ and preserves the partial download.
 PM does not retry bad hashes, certificate failures, local filesystem errors or
 other permanent failures. A successful probe followed by a range GET 403 or 404
 retains the CDN fallback: one serial attempt at the missing ranges. Extraction,
-verification and publication are not repeated. Python and npm package requests
-remain under uv and npm's own retry policies.
+verification and publication are not repeated. Python and JavaScript package
+requests remain under uv and pnpm's own retry policies.
 
 ## Release age and package mirrors
 
@@ -652,6 +657,12 @@ which Hermes passes to uv, or with `UV_INDEX_URL`.
 `hermes pm lock` is the one step that applies the check. Run against a mirror
 without upload times, it stops with `has no publish time`; use
 `https://pypi.org/simple` for that step.
+
+JavaScript workspace dependencies follow the same rule through
+`minimumReleaseAge` in `pnpm-workspace.yaml` (in minutes: `20160` is 14 days),
+with exemptions listed in `minimumReleaseAgeExclude`. CI enforces it when it
+installs `pnpm-lock.yaml`; source, bundle and Docker installs trust the
+committed lock.
 
 ## Diagnostics
 

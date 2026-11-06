@@ -19,8 +19,11 @@ cannot drift apart.
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 import os
+import sys
+from types import ModuleType
 from typing import Any, Dict, FrozenSet, List, Mapping, Optional
 
 logger = logging.getLogger("hermes_cli.plugins")
@@ -129,6 +132,28 @@ def in_process_import_refusal(what: str, *, source: str = "user",
         return None
     return (f"{what} runs only in-process, and plugins.isolation is 'host' (third-party plugin code "
             f"never runs inside the Hermes process); set plugins.isolation: in_process to load it")
+
+
+def import_user_code(path: Any, module_name: str) -> Optional[ModuleType]:
+    """Import the Python file *path* as *module_name* into this process: shared import steps for
+    loaders that execute a single file of plugin code in-process. ``None`` when *path* has no module
+    spec.
+
+    The module sits in ``sys.modules`` while its body runs (forward references under ``from
+    __future__ import annotations`` resolve by module name) and is removed again if the body raises.
+    It applies no ``plugins.isolation`` check; callers keep their own.
+    """
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop(module_name, None)
+        raise
+    return module
 
 
 def user_plugin_host() -> Any:

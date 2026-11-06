@@ -264,15 +264,49 @@ contract is opt-in and exists for third-party archiving providers. Enabling
 (manual and automatic): agent init logs a warning naming the active provider,
 and each refusal names `compression.checkpoint_required` as the key to disable.
 
-The gate binds to every compaction authority, not just the Hermes
-summarizer: server-side native compaction (`compression.codex_responses_native`)
+The gate binds to every compaction authority the host runs, not just the
+Hermes summarizer: server-side native compaction (`compression.codex_responses_native`)
 is suppressed while the gate is armed, post-turn micro-compaction
 (`compression.micro_compact`) is forced off at agent init (it absorbs old
-exchanges into a rolling summary with no checkpoint hook in its path), and
-the `codex_app_server` API mode is refused at agent init — the codex agent
-compacts its own thread with no truthful pre-compaction boundary, so a
-required checkpoint cannot be guaranteed there. The checkpoint-aware Hermes
-compressor stays the only lossy authority.
+exchanges into a rolling summary with no checkpoint hook in its path), the
+proactive tool-result prune (`compression.proactive_prune_tokens`) is
+suppressed at its call site (off by default, so a default install has nothing
+to suppress there), and the `codex_app_server` API mode is refused at agent
+init — the codex agent compacts its own thread with no truthful
+pre-compaction boundary, so a required checkpoint cannot be guaranteed there.
+A plugin context engine's `compress()` is covered too: the host calls
+`on_pre_compress()` before it. Not covered: a plugin context engine that
+removes or rewrites host-transcript messages outside `compress()` (from
+`on_turn_complete()`, say). The host cannot checkpoint that path and does not
+refuse such an engine yet.
+
+### Forks under an armed gate
+
+Hermes runs a second agent without a provider in four places (delegated
+subagents, the curator pass, the batch runner, the Feishu comment responder). With the gate off they stay provider-less. With
+`checkpoint_required` armed such a fork arms the same gate and would fail its
+first compaction with `BLOCKED_MISSING_PREREQUISITE`, so it loads the
+configured provider, initialized with `agent_context="subagent"` (`platform`,
+plus `parent_session_id` where the fork has a parent session, tells the shapes
+apart). The detached review and `/btw` forks are different:
+they persist nothing, so the gate does not apply to them. Two consequences:
+
+- **One `initialize()` per fork** — a round trip per spawn for a
+  network-backed store.
+- **Fork transcripts reach the archive** through `on_pre_compress()`.
+
+The fork's prompt stays as it was with `skip_memory=True`: the built-in
+MEMORY.md/USER.md store is not loaded for `agent_context="subagent"`, unless
+the fork requests the `memory` toolset (then it gets the store, gate or no
+gate).
+
+The host keeps everything else off for `agent_context="subagent"`, whether or
+not your provider reads the label: no `prefetch()`/`queue_prefetch()`, no
+`sync_turn()`, `on_turn_start()`, `on_session_end()` or `on_delegation()`.
+`initialize()`, `on_session_switch()` and `on_pre_compress()` still run, so a
+checkpoint provider must save on `on_pre_compress()` regardless of how it
+scopes non-primary writes — skipping it there either breaks the checkpoint
+contract (success without a save) or kills the fork at its first compaction.
 
 What your provider receives depends on its declared API version. Version 1
 providers (the implicit default — every pre-existing provider) keep the

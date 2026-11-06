@@ -118,8 +118,8 @@ python scripts/bundles/desktop.py --tag=vX.Y.Z
 Replace `vX.Y.Z` with an actual immutable tag. Stable tags must match the
 version in `pyproject.toml`. Canary tags use the release script's tag grammar.
 Start with host Python 3.11+ and Git. Use `python3` if that is your host's command.
-Preparation asks PM for the pinned Python, Node, npm and private installer;
-preinstalling a separate Node/npm/uv toolchain is not required. Native dependency
+Preparation asks PM for the pinned Python, Node, pnpm and private installer;
+preinstalling a separate Node/pnpm/uv toolchain is not required. Native dependency
 builds still need the platform's compiler, SDK and libraries. Windows ARM64 uses
 the shared Visual Studio/Clang/Rust/static OpenSSL preparation provider, which
 can require Administrator permissions for missing system components. macOS
@@ -378,8 +378,8 @@ separate development home. Activation supplies the toolchain, not `node_modules`
 From the repository root:
 
 ```sh
-npm ci
-npm run dev --workspace apps/desktop
+pnpm install --frozen-lockfile
+pnpm --dir apps/desktop run dev
 ```
 
 For an ordinary package of that desktop build, use the workspace's

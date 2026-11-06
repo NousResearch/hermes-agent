@@ -3,6 +3,7 @@ stopped compatible sibling, recovery must keep the tracked cwd, and snap label
 staging must not leak dirs across SIGKILL (#84969 review)."""
 
 import gc
+import json
 import os
 import subprocess
 import time
@@ -29,11 +30,14 @@ def _stateful_docker(monkeypatch):
     calls: list[list[str]] = []
 
     def _ps(cmd):
-        filters = [cmd[i + 1][6:] for i, arg in enumerate(cmd[:-1]) if arg == "--filter"]
+        filters = [cmd[i + 1] for i, arg in enumerate(cmd[:-1]) if arg == "--filter"]
+        labels = [pair[6:].split("=", 1) for pair in filters if pair.startswith("label=")]
+        states = [pair[7:] for pair in filters if pair.startswith("status=")]
         return "".join(
-            f"{cid}\t{rec['state']}\n" for cid, rec in containers.items()
-            if all(rec["labels"].get(k) == v for k, v in
-                   (pair.split("=", 1) for pair in filters))
+            (f"{cid}\t{rec['state']}\n" if "{{.State}}" in cmd[-1] else f"{cid}\n")
+            for cid, rec in containers.items()
+            if all(rec["labels"].get(k) == v for k, v in labels)
+            and (not states or rec["state"] in states)
         ), 0
 
     def _create(cmd):
@@ -43,6 +47,7 @@ def _stateful_docker(monkeypatch):
             "network": "none" if "--network=none" in cmd else "bridge",
             "state": "running",
             "labels": dict(pair.split("=", 1) for pair in _labels_in_run_args(cmd)),
+            "name": cmd[cmd.index("--name") + 1],
         }
         label_file = Path(cmd[cmd.index("--label-file") + 1])
         containers[cid]["labels"].update(
@@ -51,7 +56,17 @@ def _stateful_docker(monkeypatch):
 
     def _inspect(cmd):
         rec = containers[cmd[-1]]
+        record = {"Id": cmd[-1], "Name": "/" + rec["name"],
+                  "Config": {"Labels": rec["labels"], "User": ""}, "Mounts": [],
+                  "State": {"Running": rec["state"] == "running"}}
+        if "--format" not in cmd:
+            return json.dumps([record]), 0
         fmt = cmd[cmd.index("--format") + 1]
+        if fmt == "{{json .}}":
+            return json.dumps(record), 0
+        if fmt.startswith('{{index .Config.Labels "'):
+            key = fmt.split('"')[1]
+            return rec["labels"].get(key, ""), 0
         if fmt == "{{.Config.Image}}":
             return rec["image"], 0
         if fmt == "{{.HostConfig.NetworkMode}}":
@@ -139,6 +154,41 @@ def test_stopped_airgapped_candidate_is_not_masked_by_running_bridge_sibling(mon
     containers[second._container_id]["state"] = "exited"
     third = _make_dummy_env(network=False, **shared)
     assert third._container_id == second._container_id
+
+
+def test_unpinned_default_image_preserves_the_running_shared_sandbox(monkeypatch):
+    """A compatible new-image sibling must not bypass the default-image approval guard."""
+    containers, _calls = _stateful_docker(monkeypatch)
+    shared = {"shared_container_key": "trusted-team", "persistent_filesystem": True}
+    first = _make_dummy_env(image="python:3.11", **shared)
+    second = _make_dummy_env(image="python:3.12", image_pinned=True, **shared)
+    containers[second._container_id]["state"] = "exited"
+
+    third = _make_dummy_env(image="python:3.12", **shared)
+
+    assert third._container_id == first._container_id
+    assert third._image == "python:3.11"
+    assert containers[second._container_id]["state"] == "exited"
+
+
+def test_superseded_running_container_is_reaped_only_after_last_owner_releases(monkeypatch):
+    """Config drift must not leak an abandoned running container or kill an active sibling."""
+    containers, _calls = _stateful_docker(monkeypatch)
+    first = _make_dummy_env(persistent_filesystem=True, memory=1024)
+    sibling = _make_dummy_env(persistent_filesystem=True, memory=1024)
+    stale_id = first._container_id
+    replacement = _make_dummy_env(persistent_filesystem=True, memory=2048)
+    assert sibling._container_id == stale_id != replacement._container_id
+    assert docker_env.reap_orphan_containers(max_age_seconds=0) == 0
+    first.cleanup()
+    assert first.wait_for_cleanup()
+    assert docker_env.reap_orphan_containers(max_age_seconds=0) == 0
+    sibling.cleanup()
+    assert sibling.wait_for_cleanup()
+
+    assert docker_env.reap_orphan_containers(max_age_seconds=0) == 1
+    assert stale_id not in containers
+    assert containers[replacement._container_id]["state"] == "running"
 
 
 def test_recreate_container_starts_in_the_tracked_cwd(monkeypatch):

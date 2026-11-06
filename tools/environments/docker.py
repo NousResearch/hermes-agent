@@ -37,6 +37,7 @@ from tools.environments.docker_egress import (
 )
 from tools.environments.docker_ownership import (
     hand_back_sandbox_files, reclaim_sandbox_files, strip_sandbox_privileges)
+from tools.environments.docker_reuse_owners import OWNER_LABEL, ReuseLease, ReuseOwners, reap_owned_containers
 from tools.environments.path_utils import sanitize_task_id_for_path
 from tools.environments.remote_common import (
     bash_argv, client_env_with, load_hermes_env_vars, prepend_unset, resolve_passthrough_env, run_capture)
@@ -185,9 +186,9 @@ def reap_orphan_containers(
     *, max_age_seconds: int = 600, profile_filter: str | None = None, docker_exe: str | None = None,
 ) -> int:
     """Remove stale hermes-tagged containers left behind by prior processes (SIGKILL/OOM
-    exits that bypass atexit). Only ``status=exited`` containers (running ones may belong
-    to a sibling process), only the caller's profile, and only if ``FinishedAt`` is older
-    than *max_age_seconds* (a just-exited sibling may be about to reuse its container).
+    exits that bypass atexit). Legacy cleanup uses ``status=exited`` and FinishedAt.
+    Ownership-managed containers require a superseded configuration older than
+    *max_age_seconds* and proof that every owner is gone, even when still running.
     Best-effort and idempotent: failures log at debug and the count removed so far is returned.
     """
     docker = docker_exe or find_docker() or "docker"
@@ -203,7 +204,7 @@ def reap_orphan_containers(
 
     # Per-container inspect keeps the failure blast radius to one container.
     now = datetime.datetime.now(datetime.UTC)
-    removed = 0
+    removed = reap_owned_containers(get_hermes_home(), docker, max_age_seconds, profile_filter)
     for cid in (ln.strip() for ln in listing.stdout.splitlines() if ln.strip()):
         finished_at = _container_finished_at(docker, cid)
         if finished_at is None:  # unknown age — be conservative
@@ -211,6 +212,13 @@ def reap_orphan_containers(
         age = (now - finished_at).total_seconds()
         if age < max_age_seconds:
             continue
+        owner = _docker_query(
+            [docker, "inspect", "--format", f'{{{{index .Config.Labels "{OWNER_LABEL}"}}}}', cid],
+            timeout=10, fail="orphan reaper owner probe failed: %s")
+        if owner is None or owner.returncode != 0:
+            continue
+        if owner.stdout.strip() not in ("", "<no value>"):
+            continue  # Managed containers require the serialized ownership proof above.
         strip_sandbox_privileges(docker, cid)  # its teardown never ran; owners stay (it may restart)
         if _is_idle_workspace_container(docker, cid):
             continue
@@ -443,6 +451,7 @@ _NO_NEW_PRIVILEGES_ARGS = ["--security-opt", "no-new-privileges"]
 def _runtime_reuse_fingerprint(
     image: str, all_run_args: list[str], *, workdir: str = "/root",
     client_env: dict[str, str] | None = None, init: bool = True,
+    owner_namespace: str = "",
 ) -> str:
     """Stable label for the final immutable ``docker run`` configuration.
 
@@ -485,9 +494,12 @@ def _runtime_reuse_fingerprint(
         if index and all_run_args[index - 1] in ("-v", "--volume")
         and _is_volatile_mount_spec(arg) else arg
         for index, arg in enumerate(all_run_args)]
+    posture = {"version": 2, "image": image, "run_args": canonical_args, "workdir": workdir,
+               "init": init, "inherited": inherited, "env_files": env_files}
+    if owner_namespace:
+        posture.update(version=3, owner_namespace=owner_namespace)
     payload = json.dumps(
-        {"version": 2, "image": image, "run_args": canonical_args, "workdir": workdir,
-         "init": init, "inherited": inherited, "env_files": env_files},
+        posture,
         sort_keys=True,
         separators=(",", ":"),
     )
@@ -783,6 +795,8 @@ class DockerEnvironment(BaseEnvironment):
         self._env = _normalize_env_dict(env)
         self._init_unset_passthrough_names: tuple[str, ...] = ()
         self._container_id: Optional[str] = None
+        self._reuse_owners = ReuseOwners(get_hermes_home()) if persist_across_processes and not shared_container_key else None
+        self._reuse_lease: ReuseLease | None = None
         self._init_env_values: dict[str, str] = {}
         self._workspace_dir: Optional[str] = None
         self._home_dir: Optional[str] = None
@@ -852,6 +866,8 @@ class DockerEnvironment(BaseEnvironment):
             _EGRESS_LABEL_KEY: egress_label}
         if workspace := _WORKSPACE_TASK_RE.search(task_id or ""):
             self._labels[_WORKSPACE_LABEL_KEY] = workspace.group(1)
+        if self._reuse_owners is not None:
+            self._labels[OWNER_LABEL] = self._reuse_owners.namespace
         # Explicit sharing opts into the first creator's settings. Otherwise,
         # changed image/mount/home configuration must start a fresh container.
         if not shared_container_key:
@@ -876,6 +892,8 @@ class DockerEnvironment(BaseEnvironment):
         else:  # it never stopped, so no teardown stripped what it left
             strip_sandbox_privileges(self._docker_exe, self._container_id)
         reclaim_sandbox_files(self._docker_exe, self._container_id, self._sandbox_mounts)
+        if self._reuse_owners is not None:
+            self._reuse_owners.supersede(self._labels, self._runtime_fp)
 
         # Init-time env forwarding args seed the snapshot.
         self._init_env_args = self._build_init_env_args()
@@ -1041,6 +1059,11 @@ class DockerEnvironment(BaseEnvironment):
         candidates = self._find_reusable_candidates(task_label, profile_name, egress_label)
         if not candidates:
             return False
+        # A default-image change still requires approval even if a later sibling
+        # already runs that image. Apply the preservation policy before selection.
+        head_image = self._container_image(candidates[0][0])
+        if head_image is not None and head_image != self._image and not self._image_pinned:
+            return self._attach_legacy_candidate(candidates, task_label, profile_name, egress_label, network)
         saw_compatible = False
         for container_id, state, actual_fp in candidates:
             if actual_fp != self._runtime_fp:
@@ -1051,15 +1074,8 @@ class DockerEnvironment(BaseEnvironment):
             if not network and self._container_network_mode(container_id) != "none":
                 continue
             saw_compatible = True
-            if state != "running":
-                err = self._start_container(container_id)
-                if err is not None:
-                    logger.warning(
-                        "Failed to start existing container %s (state=%s): "
-                        "%s — trying the next candidate.",
-                        container_id[:12], state, err)
-                    continue
-            self._container_id = container_id
+            if not self._claim_reuse_candidate(container_id, state):
+                continue
             logger.info(
                 "Reusing container %s (task=%s, profile=%s, prior state=%s)",
                 container_id[:12], task_label, profile_name, state)
@@ -1146,18 +1162,29 @@ class DockerEnvironment(BaseEnvironment):
                 container_id[:12], task_label, profile_name)
             return False
 
-        if state != "running":
-            err = self._start_container(container_id)
-            if err is not None:
-                logger.warning(
-                    "Failed to start existing container %s (state=%s): "
-                    "%s — falling back to a fresh container.",
-                    container_id[:12], state, err)
-                return False
-        self._container_id = container_id
+        if not self._claim_reuse_candidate(container_id, state):
+            return False
         logger.info(
             "Reusing container %s (task=%s, profile=%s, prior state=%s)",
             container_id[:12], task_label, profile_name, state)
+        return True
+
+    def _claim_reuse_candidate(self, container_id: str, state: str) -> bool:
+        def start() -> bool:
+            error = self._start_container(container_id) if state != "running" else None
+            if error is not None:
+                logger.warning("Cannot restart reusable container %s: %s", container_id[:12], error)
+            return error is None
+
+        owners = getattr(self, "_reuse_owners", None)
+        if owners is not None:
+            lease = owners.claim(container_id, start)
+            if lease is None:
+                return False
+            self._reuse_lease = lease
+        elif not start():
+            return False
+        self._container_id = container_id
         return True
 
     def _refresh_runtime_fingerprint(self) -> None:
@@ -1168,7 +1195,8 @@ class DockerEnvironment(BaseEnvironment):
         self._runtime_fp = _runtime_reuse_fingerprint(
             self._image, self._all_run_args, workdir=self._create_cwd,
             client_env=self._run_client_env,
-            init=not (self._image_uses_s6_init or self._snap_compat))
+            init=not (self._image_uses_s6_init or self._snap_compat),
+            owner_namespace=self._labels.get(OWNER_LABEL, ""))
         self._labels[_RUNTIME_LABEL_KEY] = self._runtime_fp
 
     def _adopt_reuse_image(self, image: str) -> None:
@@ -1225,7 +1253,9 @@ class DockerEnvironment(BaseEnvironment):
         """Start a fresh container and return its id. A failed ``docker run`` (exit 125, timeout
         mid-pull) can leave a "Created" orphan the exited-only reaper never catches, so it is
         removed by name before re-raising."""
-        container_name = f"hermes-{uuid.uuid4().hex[:8]}"
+        container_name = f"hermes-{uuid.uuid4().hex}"
+        owners = getattr(self, "_reuse_owners", None)
+        lease = owners.reserve(container_name, self._labels, self._runtime_fp) if owners is not None else None
         # A hash of a weak secret is still an offline guessing oracle.
         # The private directory keeps this label out of both argv and logs.
         # Snap-packaged Docker runs confined and cannot read host /tmp, so snap
@@ -1248,8 +1278,13 @@ class DockerEnvironment(BaseEnvironment):
             subprocess.run(
                 [self._docker_exe, "rm", "-f", container_name],
                 capture_output=True, timeout=10, stdin=subprocess.DEVNULL, check=False)
+            if owners is not None and lease is not None:
+                owners.release(lease)
             raise
         container_id = result.stdout.strip()
+        if owners is not None:
+            owners.finish(container_name, container_id)
+            self._reuse_lease = lease
         logger.info("Started container %s (%s)", container_name, container_id[:12])
         return container_id
 
@@ -1333,6 +1368,9 @@ class DockerEnvironment(BaseEnvironment):
         may have recreated it), else a fresh one from the saved image/run-args. False when
         recovery fails so the caller surfaces the original error."""
         logger.warning("Container %s appears to be gone — attempting recovery", (self._container_id or "")[:12])
+        lease = getattr(self, "_reuse_lease", None)
+        self._reuse_lease = None
+        self._release_runtime_owner(lease)
         self._container_id = None
 
         try:
@@ -1365,6 +1403,11 @@ class DockerEnvironment(BaseEnvironment):
         logger.info("Recovery successful — new container %s", (self._container_id or "")[:12])
         self._mark_recreated()
         return True
+
+    def _release_runtime_owner(self, lease: ReuseLease | None) -> None:
+        owners = getattr(self, "_reuse_owners", None)
+        if owners is not None and lease is not None:
+            owners.release(lease)
 
     def execute(self, command: str, cwd: str = "", **kwargs) -> dict:
         """Execute a command; if the container was removed out-of-band (idle reaper,
@@ -1512,13 +1555,21 @@ class DockerEnvironment(BaseEnvironment):
         docker_exe = self._docker_exe
         log_id = container_id[:12]
         sandbox_mounts = list(getattr(self, "_sandbox_mounts", []))
+        lease = getattr(self, "_reuse_lease", None)
+        self._reuse_lease = None  # a delayed worker must not release a later recovery's lease
 
         if not force_remove and self._persist_across_processes:
             # Drop the in-process handle so a fresh __init__ re-probes via
             # labels instead of reusing a stale Python reference.
             self._container_id = None
             # The host user may run what the container left before it is reattached.
-            self._start_teardown(lambda: strip_sandbox_privileges(docker_exe, container_id), log_id)
+            def release() -> None:
+                try:
+                    strip_sandbox_privileges(docker_exe, container_id)
+                finally:
+                    self._release_runtime_owner(lease)
+
+            self._start_teardown(release, log_id)
             return
 
         def _do_cleanup() -> None:
@@ -1532,6 +1583,7 @@ class DockerEnvironment(BaseEnvironment):
                         capture_output=True, timeout=30, stdin=subprocess.DEVNULL, check=False)
                 except (subprocess.TimeoutExpired, OSError) as e:
                     logger.warning(fail_msg, log_id, e)
+            self._release_runtime_owner(lease)
 
         self._start_teardown(_do_cleanup, log_id)
         self._container_id = None
@@ -1553,6 +1605,8 @@ class DockerEnvironment(BaseEnvironment):
         if not container_id:
             return
         docker_exe, log_id = self._docker_exe, container_id[:12]
+        lease = getattr(self, "_reuse_lease", None)
+        self._reuse_lease = None
 
         def _do_stop() -> None:
             try:
@@ -1561,6 +1615,7 @@ class DockerEnvironment(BaseEnvironment):
             except (subprocess.TimeoutExpired, OSError) as e:
                 logger.warning("docker stop %s (idle workspace) failed: %s", log_id, e)
             strip_sandbox_privileges(docker_exe, container_id)
+            self._release_runtime_owner(lease)
 
         self._start_teardown(_do_stop, log_id)
         self._container_id = None

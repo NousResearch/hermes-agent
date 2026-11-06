@@ -188,8 +188,8 @@ def _resolve_reviewer(cfg: dict, *, default_assignee: str) -> str:
         try:
             if profiles_mod.profile_exists(explicit):
                 return explicit
-        except Exception:
-            pass
+        except Exception:  # health: allow BLE001 -- a profile lookup must not break decomposition
+            logger.debug("decompose: profile_exists(%r) failed", explicit, exc_info=True)
         logger.info(
             "decompose: kanban.reviewer_profile %r is not an installed profile — "
             "routing the review child to default_assignee %r",

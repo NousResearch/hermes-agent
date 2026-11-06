@@ -96,7 +96,12 @@ async def test_a_reply_a_later_compaction_wraps_in_a_summary_carrier_is_not_show
 
 
 @pytest.mark.asyncio
-async def test_sql_paged_rows_get_the_resumes_normalization_across_a_page_edge(tmp_path, monkeypatch):
+@pytest.mark.parametrize('order', ['oldest', 'latest'])
+async def test_sql_paged_rows_get_the_resumes_normalization_across_a_page_edge(tmp_path, monkeypatch, order):
+    import gateway.session_stored_reads as stored
+    # No tool-run slack: the SQL window is exactly ``limit`` rows, so the harness prompt and its reply land
+    # in two windows (with the default 64 extra rows this whole fixture is one window).
+    monkeypatch.setattr(stored, '_TOOL_RUN', 0)
     with _session(tmp_path, monkeypatch) as (db, _authority, owner, ref, target):
         db.append_message(target, 'user', 'question 1')
         db.append_message(target, 'assistant', 'answer 1')
@@ -109,8 +114,9 @@ async def test_sql_paged_rows_get_the_resumes_normalization_across_a_page_edge(t
         db.append_message(target, 'tool', 'saved', tool_call_id='m1')
         db.append_message(target, 'assistant', 'answer 2')
         # Three rows a page: the harness prompt ends the first page, its reply opens the second.
-        texts = [text for text in _flat(await _pages(owner, ref.session_id, 3)) if text is not None]
-        assert texts == ['question 1', 'answer 1', 'question 2', 'answer 2'], texts
+        pages = await _pages(owner, ref.session_id, 3, order=order)
+        texts = [text for text in _flat(pages if order == 'oldest' else pages[::-1]) if text is not None]
+        assert texts == ['question 1', 'answer 1', 'question 2', 'answer 2'], pages
         await owner.close()
 
 

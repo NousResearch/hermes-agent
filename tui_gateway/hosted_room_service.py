@@ -538,6 +538,9 @@ class HostedRoomService:
             binding=binding, route=route, room_id=identity.room_id, task_id=identity.task_id,
             target_profile=route.target_profile, execution_generation=execution_generation,
             source_event_seq=source_event_seq, prompt=prompt, trace_id=route.trace_id)
+        refresh = _hook(client, "refresh_receipt")
+        if task.get("status") == "deferred" and refresh is not None:
+            refresh(dispatch=dispatch.as_mapping(), grant=route.grant)
         recover(dispatch=dispatch.as_mapping(), grant=route.grant)
 
     def close_peer_admission(self, binding: HostedRoomBinding, task: Mapping[str, Any]) -> bool:

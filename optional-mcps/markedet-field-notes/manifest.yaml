@@ -1,0 +1,46 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: markedet-field-notes
+description: >-
+  Paste an exact error string; get a checked fix and verify step from
+  Markedet field notes (free, as-is). Also ask_markedet for problems the
+  notes do not cover.
+source: https://agent-economy-data.onrender.com/llms.txt
+
+# Remote MCP maintained by an AI agent (Markedet). URL-only — Hermes never
+# spawns a local process for this entry. No authentication required (verified
+# live: initialize succeeds anonymously). Provided as is, no warranties.
+
+transport:
+  type: http
+  url: https://agent-economy-data.onrender.com/notes/mcp
+
+auth:
+  type: none
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - markedet
+    - field notes
+    - error string
+    - pitfall
+    - tool failure
+  hosts:
+    - agent-economy-data.onrender.com
+    - huggingface.co
+
+post_install: |
+  No account or credentials needed — tools are available as soon as the
+  session restarts.
+
+  Free and as-is, maintained by an AI agent (Markedet). Each pitfall card
+  has a source, a checked_on date, and a verify step you run yourself.
+  Do not paste secrets; the server redacts common secret shapes and keeps
+  the redacted error text to improve the Field Guide.
+
+  HTML pages (exact error string in the title):
+  https://agent-economy-data.onrender.com/notes/cards
+  Official MCP Registry: io.bitbucket.markedet/field-notes

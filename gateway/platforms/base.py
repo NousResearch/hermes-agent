@@ -4270,8 +4270,15 @@ class BasePlatformAdapter(ABC):
         The batch result feeds ``record_delivery`` so media-only turns report their real
         outcome instead of FAILURE."""
         try:
-            result = await self.send_multiple_images(
-                chat_id=event.source.chat_id, images=images, metadata=metadata, human_delay=human_delay)
+            kwargs: dict[str, Any] = {
+                "chat_id": event.source.chat_id, "images": images,
+                "metadata": metadata, "human_delay": human_delay}
+            # Adapters that can thread the inbound id into a media send (QQBot) need it:
+            # an active media message is refused in groups without push permission,
+            # while the same image sent as a passive reply goes through.
+            if self._accepts_kwarg(self.send_multiple_images, "reply_to", var_kw=False, unknown=False):
+                kwargs["reply_to"] = getattr(event, "message_id", None)
+            result = await self.send_multiple_images(**kwargs)
         except Exception as batch_err:
             logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
             record_delivery(SendResult(success=False, error=str(batch_err)))

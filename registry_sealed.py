@@ -86,8 +86,9 @@ def _build(sealed: type, contents: Any) -> Any:
 
 
 def seal(value: Any) -> Any:
-    """A detached deep copy of *value* whose dicts, lists and sets refuse changes while frozen.
-    Anything else (strings, numbers, callables, entries) is kept as is.
+    """A detached deep copy of *value* whose dicts, lists and sets refuse changes while frozen;
+    tuples keep their shape with their contents sealed. Anything else (strings, numbers,
+    callables, entries) is kept as is.
 
     The containers' own methods refuse; calling a base type's method unbound on one
     (``dict.update(sealed, ...)``) is a deliberate bypass of the type, like ``object.__setattr__``
@@ -98,7 +99,24 @@ def seal(value: Any) -> Any:
         return _build(SealedList, [seal(v) for v in value])
     if isinstance(value, set):
         return _build(SealedSet, value)
+    if isinstance(value, tuple):
+        return _seal_tuple(value)
     return value
+
+
+def _seal_tuple(value: tuple) -> tuple:
+    """*value* rebuilt with its contents sealed, same type (a named tuple stays one); kept as is
+    when nothing inside it is a container. A tuple subclass that cannot be rebuilt from its
+    items is refused rather than left holding writable state."""
+    items = [seal(v) for v in value]
+    if all(new is old for new, old in zip(items, value)):
+        return value
+    if type(value) is tuple:
+        return tuple(items)
+    make = getattr(type(value), "_make", None)
+    if make is not None:
+        return make(items)
+    raise TypeError(f"cannot seal the contents of a {type(value).__name__}")
 
 
 _SEALED_CLASSES: dict[type, type] = tenant_neutral(
@@ -131,12 +149,13 @@ def _sealed_class(cls: type) -> type:
 def seal_instance(obj: Any) -> Any:
     """Seal a registered record (a provider profile) in place at the freeze: identity is kept
     (lookups and identity-keyed caches still match), every dict/list/set attribute becomes a detached
-    sealed copy (the containers the registering module passed stay the module's), and the
+    sealed copy (the containers the registering module passed stay the module's; a tuple keeps
+    its shape with its contents sealed), and the
     instance's attributes refuse rebinding. Idempotent."""
     if getattr(type(obj), "_registry_sealed", False):
         return obj
     for name, value in list(getattr(obj, "__dict__", {}).items()):
-        if isinstance(value, (dict, list, set)):
+        if isinstance(value, (dict, list, set, tuple)):
             object.__setattr__(obj, name, seal(value))
     obj.__class__ = _sealed_class(type(obj))
     return obj

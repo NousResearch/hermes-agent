@@ -18,7 +18,7 @@ from agent.error_classifier import FailoverReason
 from agent.agent_runtime_helpers_placeholders import hidden_interrupt_placeholder_row
 from agent.message_metadata import append_message
 from agent.repetition_guard import REPETITION_LOOP_INTERRUPTED, is_runaway_repetition
-from agent.turn_failure_copy import site_copy, stamp_failure
+from agent.turn_failure_copy import nous_rate_limit_copy, stamp_failure
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -280,7 +280,7 @@ def nous_rate_limit_guard(
                 # fallback-provider advice is for an install that runs its own providers.
                 return _verdict("return", stamp_failure({
                     "final_response": (f"⏳ {_nous_msg}" if _anonymous
-                                       else f"⏳ {_nous_msg}\n\n{site_copy('nous_rate_limit')}"),
+                                       else f"⏳ {_nous_msg}\n\n{nous_rate_limit_copy(agent)}"),
                     "messages": messages,
                     "api_calls": api_call_count,
                     "completed": False,

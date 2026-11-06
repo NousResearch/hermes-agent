@@ -26,6 +26,7 @@ from xml.etree import ElementTree
 from xml.sax.saxutils import escape
 
 from agent.deadline import poll_until
+from hermes_cli import gateway_vbs_template as _vbs_template
 from hermes_cli._subprocess_compat import (
     _WINDOWS_GATEWAY_BREAKAWAY_ENV,
     windows_detach_flags,
@@ -58,7 +59,7 @@ _TASK_NAME_DEFAULT = "Hermes_Gateway"
 _TASK_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
 _TASK_LOGON_DELAY = "PT30S"
 _TASK_RESTART_INTERVAL = "PT1M"
-_TASK_RESTART_COUNT = 999
+_TASK_RESTART_COUNT = 3
 
 _GATEWAY_ENV = (("PYTHONIOENCODING", "utf-8"), ("HERMES_GATEWAY_DETACHED", "1"), ("HERMES_SUPERVISED_CHILD", "1"))
 
@@ -425,28 +426,30 @@ def _build_gateway_vbs_script(python_path: str, working_dir: str, hermes_home: s
     # list2cmdline gives CreateProcess-correct quoting for WScript.Shell.Run.
     command_line = subprocess.list2cmdline(_gateway_run_argv(python_exe_path, profile_arg))
     static_pythonpath = os.pathsep.join(_launcher_pythonpath_entries(extra_pythonpath))
-    q = _quote_vbs_string
-    lines = [
-        f"' {_TASK_DESCRIPTION}",
-        "Option Explicit",
-        "Dim sh, env, existing_pp",
-        'Set sh = CreateObject("WScript.Shell")',
-        'Set env = sh.Environment("PROCESS")',
-        f"env.Item({q('HERMES_HOME')}) = {q(hermes_home)}",
-        *[f"env.Item({q(k)}) = {q(v)}" for k, v in _GATEWAY_ENV],
-        f"env.Item({q('VIRTUAL_ENV')}) = {q(_preserve_hermes_home_path(venv_dir))}",
-        # Mirror the cmd wrapper's ``PYTHONPATH=<static>;%PYTHONPATH%`` at runtime.
-        f"existing_pp = env.Item({q('PYTHONPATH')})",
-        "If Len(existing_pp) > 0 Then",
-        f"  env.Item({q('PYTHONPATH')}) = {q(static_pythonpath + os.pathsep)} & existing_pp",
-        "Else",
-        f"  env.Item({q('PYTHONPATH')}) = {q(static_pythonpath)}",
-        "End If",
-        f"sh.CurrentDirectory = {q(working_dir)}",
-        # Window style 0 = hidden; bWaitOnReturn False = detached/async.
-        f"sh.Run {q(command_line)}, 0, False",
-    ]
-    return "\r\n".join(lines) + "\r\n"
+    # The shape lives in gateway_vbs_template, which the runtime-service
+    # verifier reads too: one definition, so the launcher this build writes and
+    # the launcher it accepts can never drift apart (a generator-only change
+    # once shipped a launcher the verifier rejected, and the Windows native-task
+    # service stopped verifying entirely).
+    return _vbs_template.render(
+        _vbs_template.SUPERVISED,
+        description=_TASK_DESCRIPTION,
+        env_items=[
+            ("HERMES_HOME", hermes_home),
+            *_GATEWAY_ENV,
+            ("VIRTUAL_ENV", _preserve_hermes_home_path(venv_dir)),
+        ],
+        values={
+            # Mirror the cmd wrapper's ``PYTHONPATH=<static>;%PYTHONPATH%`` at runtime.
+            "pythonpath_with_existing": static_pythonpath + os.pathsep,
+            "pythonpath": static_pythonpath,
+            "cwd": working_dir,
+            "command": command_line,
+            "delay_ms": _vbs_template.BASE_DELAY_MS,
+            "retry_code": _vbs_template.RETRY_EXIT_CODE,
+            "max_attempts": _vbs_template.MAX_ATTEMPTS,
+        },
+    )
 
 
 def _build_startup_launcher(script_path: Path) -> str:
@@ -1444,13 +1447,24 @@ def _task_xml_leaf_values(xml: str) -> dict[str, str] | None:
     return values
 
 
-# Allowlist of template leaves whose absence/mismatch on the live task means it predates the current
+# Watched template leaves whose absence/mismatch on the live task means it predates the current
 # template (#113670). Never a full-leaf compare: schtasks exports <UserId> as a SID while the template
 # writes DOMAIN\user, so equality would flag every healthy registration.
+#
+# Each leaf maps to (absent label, stale label): the ABSENT label names the setting BLOCK (so a
+# wholly-absent <RestartOnFailure> is reported once, not once per leaf), while the STALE label names
+# the leaf (so the operator sees which bound is wrong).
+#
+# ``RestartOnFailure/Count`` is watched for the respawn-storm brake: ``Count`` is the UNBOUNDED
+# relaunch count (999) that makes the Scheduled Task re-launch the gateway forever. A registration
+# written before the brake keeps that count, and ``Count`` is the ONLY leaf the hardened template
+# changed -- watching only ``Interval`` (unchanged) left an existing install's unbounded loop
+# invisible to the drift check, so ``reconcile_scheduled_task`` never re-registered it.
 _TASK_DRIFT_LEAVES = {
-    "Task/Settings/RestartOnFailure/Interval": "RestartOnFailure",
-    "Task/Triggers/LogonTrigger/Delay": "LogonTrigger Delay",
-    "Task/Actions/Exec/Arguments": "launcher arguments",
+    "Task/Settings/RestartOnFailure/Interval": ("RestartOnFailure", "RestartOnFailure"),
+    "Task/Settings/RestartOnFailure/Count": ("RestartOnFailure", "RestartOnFailure count"),
+    "Task/Triggers/LogonTrigger/Delay": ("LogonTrigger Delay", "LogonTrigger Delay"),
+    "Task/Actions/Exec/Arguments": ("launcher arguments", "launcher arguments"),
 }
 
 
@@ -1462,8 +1476,16 @@ def compare_scheduled_task_drift(registered_xml: str, template_xml: str) -> list
     want = _task_xml_leaf_values(template_xml)
     if live is None or want is None:
         return []
-    missing = [label for path, label in _TASK_DRIFT_LEAVES.items() if path in want and path not in live]
-    differs = [label for path, label in _TASK_DRIFT_LEAVES.items() if path in want and path in live and live[path] != want[path]]
+    missing: list[str] = []
+    differs: list[str] = []
+    for path, (absent_label, stale_label) in _TASK_DRIFT_LEAVES.items():
+        if path not in want:
+            continue
+        if path not in live:
+            if absent_label not in missing:
+                missing.append(absent_label)
+        elif live[path] != want[path]:
+            differs.append(stale_label)
     drift = []
     if missing:
         drift.append(f"missing: {', '.join(missing)}")

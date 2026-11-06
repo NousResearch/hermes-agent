@@ -538,6 +538,10 @@ class UpdateTaskBody(BaseModel):
     body: Optional[str] = None
     result: Optional[str] = None
     block_reason: Optional[str] = None
+    # Optional human-entered note for status="archived" (core archive_task() requires a
+    # non-empty reason; _archive_via_dashboard supplies a default when this is omitted so
+    # existing callers that never sent one keep working unchanged).
+    archive_reason: Optional[str] = None
     # Handoff fields forwarded to complete_task on -> 'done' (parity with ``hermes kanban complete``).
     summary: Optional[str] = None
     metadata: Optional[dict] = None
@@ -557,6 +561,7 @@ class BulkTaskBody(BaseModel):
     assignee: Optional[str] = None  # "" or None = unassign
     priority: Optional[int] = None
     archive: bool = False
+    archive_reason: Optional[str] = None  # same semantics as UpdateTaskBody.archive_reason
     result: Optional[str] = None
     summary: Optional[str] = None
     metadata: Optional[dict] = None
@@ -574,6 +579,28 @@ class _StatusRejected(Exception):
 
 
 _RUNNING_DIRECT_MSG = "Cannot set status to 'running' directly; use the dispatcher/claim path"
+
+# Fallback note when a dashboard caller sets status="archived"/archive=True without an
+# explicit archive_reason: core archive_task()/unarchive_task() (hermes_cli.kanban_db_archive)
+# require a non-empty ``reason`` and ``actor``, which the legacy positional archive_task(conn,
+# task_id) call never had to supply.
+_DASHBOARD_ARCHIVE_REASON = "archived via dashboard"
+_DASHBOARD_ARCHIVE_ACTOR = "dashboard"
+
+
+def _archive_via_dashboard(conn, task_id: str, reason: Optional[str]) -> bool:
+    """Bridge the dashboard's boolean archive request to the core ``archive_task`` contract.
+
+    Preserves the pre-keyword-only behavior this endpoint had (``True``/``False``, no error
+    detail leaked to the caller beyond the existing refusal paths) while satisfying the new
+    required ``reason``/``actor`` — a blank/whitespace-only ``archive_reason`` falls back to
+    :data:`_DASHBOARD_ARCHIVE_REASON` so every existing caller that never sent one keeps working.
+    """
+    result = kanban_db.archive_task(
+        conn, task_id, reason=(reason or "").strip() or _DASHBOARD_ARCHIVE_REASON,
+        actor=_DASHBOARD_ARCHIVE_ACTOR,
+    )
+    return result.ok
 
 
 def _drag_to(conn, task_id: str, s: str) -> bool:
@@ -640,7 +667,7 @@ def _patch_status(conn, task_id: str, payload: UpdateTaskBody, review_assignee_d
     (naming the blocking parent(s) for ``ready``/``done``/``review`` so the UI renders an actionable toast)."""
     s = payload.status
     if s == "archived":
-        ok = kanban_db.archive_task(conn, task_id)
+        ok = _archive_via_dashboard(conn, task_id, payload.archive_reason)
     else:
         with _map_errors(400, _StatusRejected, ValueError):
             ok = _apply_status(conn, task_id, s, payload, f"unknown status: {s}")
@@ -830,7 +857,7 @@ def delete_link(parent_id: str = Query(...), child_id: str = Query(...), board: 
 def _bulk_apply_one(conn, tid: str, payload: BulkTaskBody, board: Optional[str], entry: dict) -> None:
     """Apply the bulk patch to one task, recording refusals in ``entry`` without aborting the
     remaining ops — except a rejected status verb (``_StatusRejected`` propagates)."""
-    if payload.archive and not kanban_db.archive_task(conn, tid):
+    if payload.archive and not _archive_via_dashboard(conn, tid, payload.archive_reason):
         entry.update(ok=False, error="archive refused")
     if payload.status is not None and not payload.archive:
         s = payload.status

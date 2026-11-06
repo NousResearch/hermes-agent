@@ -717,12 +717,18 @@ def test_dashboard_confirm_dispatches_expected_patch_body(client):
     assert body.get("result") == "shipped"
 
 def test_bulk_archive(client):
+    # Core archive_task() only accepts a 'done'/'blocked' source status (the
+    # fresh-created default is 'ready', refused as invalid_source_status) —
+    # complete both first so this exercises the archive path itself.
     a = client.post("/api/plugins/kanban/tasks", json={"title": "a"}).json()["task"]
     b = client.post("/api/plugins/kanban/tasks", json={"title": "b"}).json()["task"]
+    for t in (a, b):
+        r = client.patch(f"/api/plugins/kanban/tasks/{t['id']}", json={"status": "done", "summary": "s"})
+        assert r.status_code == 200, r.text
     r = client.post("/api/plugins/kanban/tasks/bulk",
                     json={"ids": [a["id"], b["id"]], "archive": True})
     assert r.status_code == 200
-    assert all(r["ok"] for r in r.json()["results"])
+    assert all(r["ok"] for r in r.json()["results"]), r.json()["results"]
     # Default board (archived hidden) — both gone.
     board = client.get("/api/plugins/kanban/board").json()
     ids = {t["id"] for col in board["columns"] for t in col["tasks"]}

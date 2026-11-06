@@ -440,7 +440,7 @@ def test_notifier_subscription_survives_done_reopen_until_archive(
         subs = kbn.list_notify_subs(conn, tid)
         assert len(subs) == 1
         assert subs[0]["last_event_id"] > first_cursor
-        assert kb.archive_task(conn, tid)
+        assert kb.archive_task(conn, tid, reason="cleanup", actor="tester").ok
     finally:
         conn.close()
 

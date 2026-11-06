@@ -687,11 +687,12 @@ def test_recompute_ready_honours_dispatcher_failure_limit(kanban_home):
 def test_delete_archived_task_removes_related_rows(kanban_home):
     with kbc.connect() as conn:
         parent = kb.create_task(conn, title="parent")
+        kb.complete_task(conn, parent, summary="parent done")
         tid = kb.create_task(conn, title="child", parents=[parent], assignee="worker")
         kb.add_comment(conn, tid, "user", "cleanup me")
         kb.claim_task(conn, tid)
-        kb.complete_task(conn, tid, result="done")
-        assert kb.archive_task(conn, tid)
+        assert kb.complete_task(conn, tid, result="done")
+        assert kb.archive_task(conn, tid, reason="cleanup", actor="tester").ok
         conn.execute(
             "INSERT INTO kanban_notify_subs(task_id, platform, chat_id, thread_id, user_id, created_at, last_event_id) "
             "VALUES (?, 'telegram', '123', '', 'u', 0, 0)",
@@ -1430,7 +1431,8 @@ def test_link_tasks_archived_parent_is_terminal_no_gate(kanban_home):
     parent must not demote a ready child (it would only flap back to ready)."""
     with kbc.connect() as conn:
         parent = kb.create_task(conn, title="archived parent")
-        kb.archive_task(conn, parent)
+        kb.complete_task(conn, parent, summary="done")
+        kb.archive_task(conn, parent, reason="cleanup", actor="tester")
         child = kb.create_task(conn, title="child")
         assert kb.get_task(conn, child).status == "ready"
 
@@ -2028,53 +2030,48 @@ def test_write_txn_check_reads_correct_header_fields(tmp_path):
 
 
 
-def test_archive_running_task_terminates_worker(kanban_home, monkeypatch):
-    """``archive_task`` on a *running* task must actually signal its host-local
-    worker process, not just null ``worker_pid`` in the DB (#76196: a worker
-    kept running past its own archive and could still push/complete work
-    against a task nothing tracks anymore). The termination outcome is
-    auditable via the ``archive_worker_termination`` event."""
-    import json
-
+def test_archive_running_task_is_refused_not_terminated(kanban_home, monkeypatch):
+    """Policy change: archive no longer accepts ``running`` at all, and must
+    never become a channel that signals a live worker (#76196's original fix
+    was to terminate it; the new design refuses the transition outright
+    instead — see company/kanban-archive-design-2026-10-13.md). The claim,
+    worker PID, and current run must survive the refusal untouched."""
     with kbc.connect() as conn:
         t = kb.create_task(conn, title="x", assignee="a")
         host = kb._claimer_id().split(":", 1)[0]
         kb.claim_task(conn, t, claimer=f"{host}:worker")
-        # A verified spawn: an uncaptured fingerprint would (correctly) refuse the signal.
         monkeypatch.setattr(kbd, "_process_fingerprint", lambda _pid: "boot:1|777")
         kbd._set_worker_pid(conn, t, 54321)
+        before = kb.get_task(conn, t)
 
-        monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
         signalled = []
-        assert kb.archive_task(
-            conn, t, signal_fn=lambda pid, sig: signalled.append((pid, sig)),
-        ) is True
+        result = kb.archive_task(conn, t, reason="x", actor="tester")
 
-        assert signalled and signalled[0][0] == 54321
-
+        assert result.ok is False
+        assert result.error_code == "invalid_source_status"
+        assert signalled == []
+        after = kb.get_task(conn, t)
+        assert after.status == "running"
+        assert after.worker_pid == before.worker_pid == 54321
+        assert after.claim_lock == before.claim_lock
+        assert after.current_run_id == before.current_run_id
         row = conn.execute(
-            "SELECT payload FROM task_events "
+            "SELECT 1 FROM task_events "
             "WHERE task_id = ? AND kind = 'archive_worker_termination'",
             (t,),
         ).fetchone()
-        payload = json.loads(row["payload"])
-        assert payload["prev_pid"] == 54321
-        assert payload["host_local"] is True
-        assert payload["termination_attempted"] is True
-        assert payload["terminated"] is True
-        assert kb.get_task(conn, t).status == "archived"
+        assert row is None
 
 
 def test_archive_non_running_task_does_not_attempt_termination(kanban_home):
-    """A never-claimed (``triage``/``ready``/``done``) task has no live worker:
-    ``archive_task`` must not signal anything, and no termination event is
-    recorded — only for tasks that were actually ``running`` at archive time."""
+    """A never-claimed (``ready``) task refuses too — archive only accepts
+    ``done``/``blocked``; nothing is ever signalled."""
     with kbc.connect() as conn:
         t = kb.create_task(conn, title="x", assignee="a")
         signalled = []
-        assert kb.archive_task(
-            conn, t, signal_fn=lambda pid, sig: signalled.append((pid, sig)),
-        ) is True
+        result = kb.archive_task(conn, t, reason="x", actor="tester")
+        assert result.ok is False
+        assert result.error_code == "invalid_source_status"
         assert signalled == []
         row = conn.execute(
             "SELECT 1 FROM task_events "

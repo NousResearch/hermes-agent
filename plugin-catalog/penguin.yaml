@@ -1,0 +1,23 @@
+name: penguin
+title: Penguin
+repo: https://github.com/Crystal32378/hermes-penguin
+sha: 8f9a2edcc16b4cad88cc8e631e1c56a9167b3f1c
+version: "0.1.0"
+requires_hermes: ">=0.23.0"
+maintainer: Crystal32378
+tier: community
+category: tools
+description: >-
+  A penguin in Antarctica keeping an eye on everyone's time: deterministic IANA conversions,
+  whole-meeting overlap windows, profile-local teams, and an optional Desktop planner with
+  side-by-side clocks. Reads bundled non-executable IANA 2026f data and its own plugin state.
+  No external runtime requests, shell commands, credentials, telemetry or calendar writes.
+screenshots:
+  - https://raw.githubusercontent.com/Crystal32378/hermes-penguin/8f9a2edcc16b4cad88cc8e631e1c56a9167b3f1c/docs/native-planner.png
+  - https://raw.githubusercontent.com/Crystal32378/hermes-penguin/8f9a2edcc16b4cad88cc8e631e1c56a9167b3f1c/docs/native-arrival.png
+platforms: []
+capabilities:
+  provides_tools: [penguin_convert, penguin_overlap, penguin_save_team, penguin_get_team]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

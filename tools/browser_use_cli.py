@@ -773,7 +773,8 @@ def _take_real_profile_note(route_key: str) -> dict:
 
 def _no_code_error(code: str) -> Optional[str]:
     if not code or not code.strip():
-        return ("No code provided. Pass Python that uses the pre-imported helpers, e.g. new_tab(\"https://example.com\") then print(page_info()).")
+        return ("No code provided. Pass Python that uses the pre-imported helpers, e.g. "
+                "new_tab(\"https://example.com\") then print(page_info()).")
     return None
 
 
@@ -781,10 +782,11 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
                  task_id: Optional[str] = None, local: bool = False):
     """Run Python code through the browser-use CLI, and return its output"""
     from agent.redact import redact_sensitive_text
-    from tools.hosted_tool_policy import host_refusal
+    from tools.hosted_tool_policy import hosted_tool_refusal
     from tools.registry import tool_error, tool_result
-    if refusal := host_refusal("browser_exec", "its Python runs on this host") or _no_code_error(code):
-        return tool_error(refusal)  # the hosted refusal comes before any browser setup
+    # A direct (non-dispatch) entry meets the same allowlist, before any setup.
+    if refusal := hosted_tool_refusal("browser_exec") or _no_code_error(code):
+        return tool_error(refusal)
 
     # The verdict is carried into the route, never re-derived: the predicate resolves DNS, so a second
     # evaluation could relax the floor and still pick the cloud for a rebinding host.

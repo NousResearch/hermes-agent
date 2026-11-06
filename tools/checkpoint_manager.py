@@ -1056,8 +1056,8 @@ class CheckpointManager:
         Never raises — all errors are silently logged. Never in a hosted scope: the working
         directory is the agent's sandbox's, not this host's.
         """
-        from tools.environments.sandbox_scope import hosted_scope
-        if not self.enabled or hosted_scope() is not None:
+        from tools.hosted_tool_policy import host_feature_enabled
+        if not self.enabled or not host_feature_enabled("checkpoints"):
             return False
 
         abs_dir = str(_normalize_path(working_dir))
@@ -1270,8 +1270,8 @@ class CheckpointManager:
         ``failed_deletes`` listing paths that could not be removed.
         """
         from tools.checkpoint_pruning import PruneError, store_lock
-        from tools.hosted_tool_policy import host_refusal
-        if refusal := host_refusal("Checkpoint restore", "it rewrites files on this host"):
+        from tools.hosted_tool_policy import host_feature_refusal
+        if refusal := host_feature_refusal("checkpoints", "Checkpoint restore"):
             return {"success": False, "error": refusal}
 
         try:

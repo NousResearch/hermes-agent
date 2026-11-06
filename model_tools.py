@@ -918,6 +918,11 @@ def handle_function_call(
     function_name = _LEGACY_TOOL_ALIASES.get(function_name, function_name)
     ids = _CallIds(task_id, session_id, tool_call_id, turn_id, api_request_id, conversation_id)
     start = time.monotonic()
+    from tools.hosted_tool_policy import hosted_tool_refusal
+    if refusal := hosted_tool_refusal(function_name):
+        # Callers outside the agent loop (execute_code RPC, the session kernel, the MCP bridge,
+        # connector batches) meet the same allowlist before bridges, connectors or the registry.
+        return tool_error(refusal)
 
     def _emit(result: Any, **extra: Any) -> Any:
         """Emit post_tool_call with this call's identity fields; returns *result*."""

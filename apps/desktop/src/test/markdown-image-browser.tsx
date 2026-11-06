@@ -1,7 +1,8 @@
+import '../styles.css'
+
 import { createRoot } from 'react-dom/client'
 
 import { MessageTextContent } from '@/components/assistant-ui/markdown-text'
-import '../styles.css'
 
 const root = createRoot(document.getElementById('root')!)
 let mount = 0

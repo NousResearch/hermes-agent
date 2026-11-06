@@ -471,8 +471,10 @@ function MarkdownImageContent({
 
   // The image keeps its natural size (never upscaled) inside the fixed frame;
   // the w-fit container hugs it so the download button and shadow sit on the
-  // image, not on the letterbox. Without a frame (a source that failed last
-  // time) it lays out as a plain capped image, like before frames existed.
+  // image, not on the letterbox. Flex stretches the zoom button to the frame's
+  // height so the image's percentage max-height resolves; keep short images
+  // top-aligned inside that button rather than vertically centered.
+  // Without a frame (a source that failed last time), use a plain capped image.
   const framed = Boolean(image.frameStyle)
 
   return (
@@ -488,7 +490,7 @@ function MarkdownImageContent({
           )}
           containerClassName={
             framed
-              ? 'absolute left-0 top-0 block h-full w-fit'
+              ? 'absolute left-0 top-0 flex h-full w-fit [&>button:first-child]:flex [&>button:first-child]:items-start'
               : 'block w-fit max-w-[min(100%,var(--image-preview-max-width))]'
           }
           onError={event => {

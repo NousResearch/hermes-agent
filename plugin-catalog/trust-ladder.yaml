@@ -1,6 +1,6 @@
 name: trust-ladder
 repo: https://github.com/merdoks/trust-ladder
-sha: e18eaea922fdb612cc4b7fb92248537599fcb58a
+sha: fae4e9df58767e5e3832c8f65936b97868bc98fc
 description: >-
   Correct your agent once and it stays corrected. trust-ladder compiles each user
   correction to the highest rung it can prove: a pre_tool_call guard that blocks the
@@ -19,7 +19,7 @@ tier: community
 category: tools
 requires_hermes: ">=0.22.7"
 docs_url: https://github.com/merdoks/trust-ladder#readme
-version: "0.1.1"
+version: "0.1.2"
 platforms: []
 capabilities:
   provides_tools:

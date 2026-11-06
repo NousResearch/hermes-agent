@@ -581,3 +581,22 @@ def test_routed_fork_does_not_inherit_cache_scope():
         "Routed fork must not inherit the parent's cache scope — its prefix "
         "is cache-cold on the different model regardless."
     )
+
+
+def test_review_fork_inherits_learned_reasoning_rejections():
+    """A DB-detached review fork reuses the parent's learned reasoning-field rejections
+    instead of re-learning each one with a fresh provider 400 on every review."""
+    import run_agent
+    from agent.background_review import build_cache_parity_fork
+    from agent.message_sanitization import reasoning_route_key, rejected_reasoning_carriers
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+    agent.base_url = "https://dbc.cloud.databricks.com/serving-endpoints"
+    key = reasoning_route_key(agent)
+    agent._reasoning_rejecting_routes = {key: {"reasoning_content"}}
+    with patch.object(run_agent, "AIAgent", _make_recorder_class()):
+        fork, _rt, _routed = build_cache_parity_fork(agent, max_iterations=5)
+    fork.provider, fork.base_url, fork.model = agent.provider, agent.base_url, agent.model
+    assert rejected_reasoning_carriers(fork) == {"reasoning_content"}
+    fork._reasoning_rejecting_routes[key].add("reasoning")  # copied, not shared with the parent
+    assert agent._reasoning_rejecting_routes[key] == {"reasoning_content"}

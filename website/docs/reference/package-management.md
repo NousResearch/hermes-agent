@@ -671,7 +671,8 @@ Each retry logs its cause, delay and consecutive failures without progress.
 
 Required dashboard model downloads remain active during transient outages, including
 the initial connection. They retry with jittered backoff capped at 30 seconds,
-respect the server's `Retry-After`, and remain interruptible with Pause.
+honor `Retry-After` up to five minutes per wait, and remain interruptible with Pause.
+Longer requested waits are capped at five minutes; retries still have no attempt limit.
 Initial connections retry before resumability is known. Optional drafts and
 non-resumable response bodies retain the bounded policy.
 

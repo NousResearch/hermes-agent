@@ -8,7 +8,6 @@ import logging
 import random
 import socket
 import ssl
-import sys
 import time
 import urllib.error
 import urllib.parse
@@ -90,23 +89,24 @@ def _delay(exc: Exception, attempt: int, *, jitter: bool = False) -> float:
                 except (TypeError, ValueError, OverflowError):
                     retry_after = 0.0
             delay = max(delay, retry_after)
-    return min(delay, sys.float_info.max)
+    return delay
 
 
 def retry_network(
     operation: Callable[[], _T], *, wait: Callable[[float], None] | None = None,
     progress: Callable[[], int] | None = None, fallback_available: bool = False,
-    attempts: int | None = _ATTEMPTS,
+    keep_retrying: bool = False,
 ) -> _T:
     """Retry the complete request and body read, never an install or publish.
 
     The caller resets attempt-local buffers and keeps any resumable bytes.
     A download supplies an interruptible wait so pause does not wait for backoff.
     Downloads supply ``progress``: durable forward progress renews their
-    budget. Metadata and non-resumable requests still get four attempts.
+    budget. By default, metadata and non-resumable requests get four attempts.
     A resumable request yields to an available fallback before a long wait.
-    ``attempts=None`` keeps retrying transient failures until the caller stops.
+    ``keep_retrying`` removes the attempt limit on the last source and caps each wait at five minutes.
     """
+    keep_retrying = keep_retrying and not fallback_available
     failures_since_progress = 0
     backoff = 0
     saved = progress() if progress is not None else 0
@@ -125,17 +125,18 @@ def retry_network(
                 saved = current
             else:
                 failures_since_progress += 1
-            if attempts is not None and failures_since_progress >= attempts:
+            if not keep_retrying and failures_since_progress >= _ATTEMPTS:
                 raise
-            delay = _delay(exc, min(backoff, 5), jitter=attempts is None)
-            if attempts is not None:
-                if progress is None:
-                    delay = min(delay, _MAX_DELAY)
-                elif delay > (_MAX_DELAY if fallback_available else _MAX_RECOVERY_DELAY):
-                    raise
+            delay = _delay(exc, min(backoff, 5), jitter=keep_retrying)
+            if keep_retrying:
+                delay = min(delay, _MAX_RECOVERY_DELAY)
+            elif progress is None:
+                delay = min(delay, _MAX_DELAY)
+            elif delay > (_MAX_DELAY if fallback_available else _MAX_RECOVERY_DELAY):
+                raise
             backoff += 1
             logging.getLogger(__name__).warning(
                 "network request failed (%s); retrying in %gs (%d/%s failures without progress)",
-                exc, delay, failures_since_progress, attempts if attempts is not None else "unlimited",
+                exc, delay, failures_since_progress, "unlimited" if keep_retrying else _ATTEMPTS,
             )
             (wait or time.sleep)(delay)

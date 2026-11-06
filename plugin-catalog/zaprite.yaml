@@ -2,7 +2,7 @@ name: zaprite
 repo: https://github.com/welliv/zaprite-hermes
 # Full SHA of the commit that landed this plugin tree on main.
 # Not the commit that writes this pin. Branches, tags, and short SHAs are rejected.
-sha: "04dd6325b9921aa5e4b7b1d0eebe36c2b470758d"
+sha: "910784c926aa5e29f0263fcea621ec5ddd55c459"
 description: Get paid from a Hermes chat. One checkoutUrl for card, bank, Lightning, on-chain bitcoin, and stablecoins, then re-fetch until Paid.
 maintainer: welliv
 tier: community

@@ -14,7 +14,7 @@ import time
 from agent.i18n import t
 from agent.session_activity import format_iteration_progress
 from contextlib import nullcontext, suppress
-from contextvars import copy_context
+from contextvars import ContextVar, copy_context
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
@@ -39,6 +39,22 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 logger = logging.getLogger("gateway.run")
 # ``_resolve_turn_agent_config``'s default tier: the runner's per-turn ``_service_tier``.
 _TIER_FROM_RUNNER = object()
+
+# Set by ``gateway.run._resolve_runtime_agent_kwargs`` when "auto" swallowed the free tier's pending browser
+# check into a keyless stand-in: ``(check, provider, base_url)`` of that stand-in. Cleared at the top of every
+# ``_resolve_session_agent_runtime``; see ``free_tier_check_behind`` for when a turn may report it.
+_FREE_TIER_CHECK: ContextVar[Optional[tuple]] = ContextVar("gateway_free_tier_check", default=None)
+
+
+def free_tier_check_behind(runtime_kwargs: dict) -> Optional[BaseException]:
+    """The pending free-tier check, when the route about to run is still the keyless stand-in for it.
+    A channel override, ``/model`` or API route that replaced the stand-in (or gave it a key) owes
+    nothing to the check."""
+    pending = _FREE_TIER_CHECK.get()
+    route = (runtime_kwargs.get("provider"), runtime_kwargs.get("base_url"))
+    if pending and pending[1:] == route and not runtime_kwargs.get("api_key"):
+        return pending[0]
+    return None
 
 
 def _resolve_policy_agent_runtime(runner, policy, *, fallback=True) -> tuple[str, dict]:
@@ -110,6 +126,7 @@ class GatewayTurnPrepareMixin:
         # Every exit path starts clean: a stale notice must never attach to another session's next
         # turn (#74349). Set again below only when THIS resolution fell back.
         self._pre_agent_fallback_notice = None
+        _FREE_TIER_CHECK.set(None)
         policy = policy_for_source(self, source) if source is not None else None
         if policy is not None:
             return _resolve_policy_agent_runtime(self, policy, fallback=fallback)

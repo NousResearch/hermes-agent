@@ -79,7 +79,8 @@ Every install starts from empty trees, which also clears a `node_modules` tree t
 npm installed. The previous trees are moved to `.cache/node-deps-previous` and deleted
 only once the install and the Electron preparation succeed; a failed install puts them
 back, and the run after a killed one recovers them. Both generations are on disk while
-pnpm runs. Runs in one checkout
+pnpm runs. A tree that cannot be moved (a mount point, or a `.cache` on another
+filesystem) is deleted in place as before and cannot be restored. Runs in one checkout
 are serialised by `.cache/node-deps.lock`, which names its owner's pid; a dead owner's
 lock is taken over.
 `--pnpm ARGS...` instead runs the same resolved pnpm with `ARGS`.

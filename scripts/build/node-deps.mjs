@@ -248,7 +248,7 @@ function previousTrees(source) {
     try {
       for (const project of moved) {
         mkdirSync(join(aside, project), { recursive: true })
-        renameSync(tree(project), join(aside, project, 'node_modules'))
+        moveTree(tree(project), join(aside, project, 'node_modules'))
       }
       writeFileSync(complete, '')
     } catch (error) {
@@ -257,6 +257,20 @@ function previousTrees(source) {
     }
   }
   return { recover, restore, discard, moveAside }
+}
+
+// A node_modules that is a mount point (a container volume) cannot be renamed (EBUSY),
+// nor one whose .cache is another filesystem (EXDEV): it is emptied in place, as before
+// #150031, and only that tree cannot come back. On Windows EBUSY is an open file; deleting
+// around it would gut the tree, so the move fails and the set is restored.
+function moveTree(from, to) {
+  try {
+    renameSync(from, to)
+  } catch (error) {
+    if (error.code !== 'EXDEV' && !(error.code === 'EBUSY' && process.platform !== 'win32')) throw error
+    console.warn(`node-deps: cannot move ${from} aside (${error.code}); deleting it, so a failed install cannot restore it`)
+    for (const entry of readdirSync(from)) rmSync(join(from, entry), { recursive: true, force: true, maxRetries: 3 })
+  }
 }
 
 // pnpm's record of the trees it just wrote (node_modules/.pnpm/lock.yaml) must be the source

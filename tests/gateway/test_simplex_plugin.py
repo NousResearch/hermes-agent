@@ -11,6 +11,8 @@ import asyncio
 import base64
 import io
 import json
+import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -410,6 +412,171 @@ def _make_file_chat_item(file_path: str, file_name: str) -> dict:
             },
         },
     }
+
+
+def _make_image_chat_item(msg_content: dict, file_info: dict | None = None) -> dict:
+    """Minimal direct-chat rcvMsgContent item whose msgContent is an image.
+
+    Mirrors what SimpleX mobile sends: ``msgContent.type == "image"`` with an
+    inline base64 thumbnail on ``image``, plus an optional sibling XFTP ``file``
+    carrying the full-resolution original.
+    """
+    chat_item = {
+        "chatInfo": {
+            "type": "direct",
+            "contact": {"contactId": 42, "localDisplayName": "tester"},
+        },
+        "chatItem": {
+            "chatDir": {"type": "directRcv"},
+            "meta": {"itemTs": "2026-01-01T00:00:00Z"},
+            "content": {"type": "rcvMsgContent", "msgContent": msg_content},
+        },
+    }
+    if file_info is not None:
+        chat_item["chatItem"]["file"] = file_info
+    return chat_item
+
+
+@pytest.mark.asyncio
+async def test_inline_image_without_file_becomes_photo_media(tmp_path):
+    """An image message with no XFTP file sibling delivers its inline base64
+    payload as PHOTO media (previously the pixels were dropped entirely)."""
+    from gateway.config import PlatformConfig
+    from gateway.platforms.event import MessageType
+
+    adapter = SimplexAdapter(PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"}))
+    payload = base64.b64encode(b"fake-jpeg-bytes").decode()
+    chat_item = _make_image_chat_item(
+        {"type": "image", "text": "look at this", "image": f"data:image/jpg;base64,{payload}"}
+    )
+    delivered: list = []
+    adapter.handle_message = AsyncMock(side_effect=lambda ev: delivered.append(ev) or asyncio.sleep(0))
+
+    await adapter._safe_handle_chat_item(chat_item, "test")
+
+    assert len(delivered) == 1
+    event = delivered[0]
+    assert event.message_type == MessageType.PHOTO
+    assert event.text == "look at this"
+    assert len(event.media_urls) == 1
+    assert Path(event.media_urls[0]).read_bytes() == b"fake-jpeg-bytes"
+    assert event.media_types == ["image/jpeg"]
+
+
+@pytest.mark.asyncio
+async def test_image_with_pending_xftp_file_defers_until_complete(tmp_path):
+    """An image message whose XFTP file has not downloaded yet is deferred and
+    only delivered on rcvFileComplete, with the full-resolution file path (the
+    inline data URI is a low-res thumbnail, so delivering it immediately loses
+    the original's resolution)."""
+    from gateway.config import PlatformConfig
+    from gateway.platforms.event import MessageType
+
+    adapter = SimplexAdapter(PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"}))
+    adapter._ws = AsyncMock()
+    thumb = base64.b64encode(b"low-res-thumb").decode()
+    chat_item = _make_image_chat_item(
+        {"type": "image", "text": "sharp version", "image": f"data:image/jpg;base64,{thumb}"},
+        file_info={"fileId": 9, "fileName": "IMG_0001.jpg", "fileSource": {}},
+    )
+    delivered: list = []
+    adapter.handle_message = AsyncMock(side_effect=lambda ev: delivered.append(ev) or asyncio.sleep(0))
+
+    await adapter._safe_handle_chat_item(chat_item, "test")
+
+    # Deferred: nothing delivered yet, /freceive sent for the file.
+    assert delivered == []
+    sends = [json.loads(c.args[0]) for c in adapter._ws.send.call_args_list]
+    assert any("/freceive 9" in s.get("cmd", "") for s in sends)
+    assert 9 in adapter._pending_file_transfers
+
+    # File completes: the pending item is delivered with the downloaded path.
+    full_path = str(tmp_path / "IMG_0001.jpg")
+    Path(full_path).write_bytes(b"full-res-original")
+    completion = {
+        "chatItem": _make_image_chat_item(
+            {"type": "image", "text": "sharp version"},
+            file_info={"fileId": 9, "fileName": "IMG_0001.jpg", "fileSource": {"filePath": full_path}},
+        )
+    }
+    await adapter._on_rcv_file_complete(completion)
+
+    assert len(delivered) == 1
+    event = delivered[0]
+    assert event.message_type == MessageType.PHOTO
+    assert event.media_urls == [full_path]
+    assert event.media_types == ["image/jpg"]  # derived from the .jpg extension
+
+
+@pytest.mark.asyncio
+async def test_image_transfer_rejected_falls_back_to_inline_thumbnail(tmp_path):
+    """When the daemon rejects /freceive (e.g. fileNotApproved — the sender's XFTP
+    server is unknown), the transfer can never complete, so the pending image is
+    delivered immediately from its inline base64 thumbnail instead of being lost."""
+    from gateway.config import PlatformConfig
+    from gateway.platforms.event import MessageType
+
+    adapter = SimplexAdapter(PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"}))
+    adapter._ws = AsyncMock()
+    thumb = base64.b64encode(b"low-res-thumb").decode()
+    chat_item = _make_image_chat_item(
+        {"type": "image", "text": "caption survives", "image": f"data:image/jpg;base64,{thumb}"},
+        file_info={"fileId": 13, "fileName": "IMG_0002.jpg", "fileSource": {}},
+    )
+    delivered: list = []
+    adapter.handle_message = AsyncMock(side_effect=lambda ev: delivered.append(ev) or asyncio.sleep(0))
+
+    async def reject_command(command: str, timeout: float = 30.0):
+        return {"type": "chatCmdError", "chatError": {"type": "error", "errorType": {"type": "fileNotApproved", "fileId": 13}}}
+    adapter._send_command = reject_command
+
+    await adapter._safe_handle_chat_item(chat_item, "test")
+    await asyncio.sleep(0)  # let the scheduled fallback task run
+
+    assert len(delivered) == 1
+    event = delivered[0]
+    assert event.message_type == MessageType.PHOTO
+    assert event.text == "caption survives"
+    assert Path(event.media_urls[0]).read_bytes() == b"low-res-thumb"
+    assert 13 not in adapter._pending_file_transfers  # not left dangling
+
+
+@pytest.mark.asyncio
+async def test_image_transfer_stall_delivers_inline_thumbnail_after_watchdog(monkeypatch):
+    """If no rcvFileComplete ever fires (transfer stalls), the watchdog delivers the
+    pending image from its inline thumbnail after the grace period."""
+    from gateway.config import PlatformConfig
+    from gateway.platforms.event import MessageType
+
+    adapter = SimplexAdapter(PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"}))
+    adapter._ws = AsyncMock()
+    thumb = base64.b64encode(b"stalled-thumb").decode()
+    chat_item = _make_image_chat_item(
+        {"type": "image", "text": "stalled transfer", "image": f"data:image/jpg;base64,{thumb}"},
+        file_info={"fileId": 21, "fileName": "IMG_0003.jpg", "fileSource": {}},
+    )
+    delivered: list = []
+    adapter.handle_message = AsyncMock(side_effect=lambda ev: delivered.append(ev) or asyncio.sleep(0))
+
+    async def accept_command(command: str, timeout: float = 30.0):
+        return {"type": "cmdOk"}
+    adapter._send_command = accept_command
+    # The adapter is loaded under a unique module name by the test loader — patch
+    # the grace period on the loaded module, not via a re-import of the path.
+    adapter_module = sys.modules[type(adapter).__module__]
+    monkeypatch.setattr(adapter_module, "_TRANSFER_FALLBACK_SECONDS", 0.05)
+
+    await adapter._safe_handle_chat_item(chat_item, "test")
+    assert delivered == []  # deferred while the watchdog waits
+
+    await asyncio.sleep(0.3)  # let the watchdog fire
+
+    assert len(delivered) == 1
+    event = delivered[0]
+    assert event.message_type == MessageType.PHOTO
+    assert event.text == "stalled transfer"
+    assert Path(event.media_urls[0]).read_bytes() == b"stalled-thumb"
+    assert 21 not in adapter._pending_file_transfers
 
 
 

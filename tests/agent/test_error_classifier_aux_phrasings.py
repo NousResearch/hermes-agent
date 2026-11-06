@@ -60,3 +60,18 @@ def test_auxiliary_phrasings_and_shapes(error, status, reason, rotates, facts):
     assert (verdict.reason, verdict.status_code, verdict.should_rotate_credential) == (reason, status, rotates)
     assert facts.items() <= verdict.error_context.items()
     assert verdict.should_fallback or reason not in (_R.billing, _R.rate_limit, _R.model_not_found, _R.model_entitlement, _R.incomplete_response)
+
+
+@pytest.mark.parametrize("message,reason", [
+    ("RemoteProtocolError: response ended prematurely", _R.timeout),
+    ("RemoteProtocolError: stream reset", _R.timeout),
+    ("LocalProtocolError: can't handle event type ConnectionClosed when role=SERVER", _R.timeout),
+    ("upstream: connection reset", _R.timeout),
+    ("peer closed connection without sending complete message body (incomplete chunked read)", _R.context_overflow),
+])
+def test_aux_premature_close_wording_is_never_a_large_sessions_overflow(message, reason):
+    """Main's disconnect + large-session overflow guess keeps main's phrasings; these stay a transport retry."""
+    verdict = classify_api_error(Exception(message), model="gpt-4o", approx_tokens=150_000, context_length=200_000,
+                                 num_messages=250)
+    assert (verdict.reason, verdict.should_compress) == (reason, reason is _R.context_overflow)
+    assert verdict.error_context.get("transport") == "connection"

@@ -492,10 +492,11 @@ _TRANSPORT_TYPE_MARKERS = ("Connection", "Timeout", "DNS", "SSL")
 # Ambiguous disconnects (no status): transient hiccup OR a gateway dropping an
 # oversized request. A large session + one of these → context-overflow path.
 _SERVER_DISCONNECT_PATTERNS = (
-    "server disconnected", "peer closed connection", "connection reset", "connection was closed",
+    "server disconnected", "peer closed connection", "connection reset by peer", "connection was closed",
     "network connection lost", "unexpected eof", "incomplete chunked read",
-    "response ended prematurely", "remoteprotocolerror", "localprotocolerror",
 )
+# Other premature-close wording (aux-ladder phrasings): a transport retry, never an overflow guess.
+_PREMATURE_CLOSE_PATTERNS = ("connection reset", "response ended prematurely", "remoteprotocolerror", "localprotocolerror")
 
 # Deterministic cert failures (proxy, missing CA, expired/self-signed) — fail
 # fast. Checked BEFORE _SSL_TRANSIENT_PATTERNS: these also contain "[SSL:".
@@ -1078,6 +1079,8 @@ def _by_transport(c: _Ctx) -> Optional[Verdict]:
         if get_reasoning_stale_timeout_floor(c.model) is not None:
             return _V_TIMEOUT
         return _V_CONTEXT_OVERFLOW if c.large_session(0.6, 120000, 200) else _V_TIMEOUT
+    if any(p in msg for p in _PREMATURE_CLOSE_PATTERNS) and not c.status_code:
+        return _V_TIMEOUT
     # Stale-call circuit breaker (_check_stale_giveup RuntimeError before any
     # network call): as ``unknown`` it would burn every retry instantly.
     if c.error_type == "RuntimeError" and "consecutive stale attempts" in msg and "aborting this call" in msg:
@@ -1154,7 +1157,7 @@ def _shape_context(c: _Ctx, verdict: Verdict, *, hooked: bool) -> dict[str, Any]
     if isinstance(c.error, TimeoutError) or "Timeout" in c.error_type or "timed out" in c.msg:
         extra["transport"] = "timeout"
     elif (reason is _R.timeout and not c.status_code
-          or any(p in c.msg for p in _SERVER_DISCONNECT_PATTERNS + _CONNECTION_MESSAGE_PATTERNS)):
+          or any(p in c.msg for p in _SERVER_DISCONNECT_PATTERNS + _PREMATURE_CLOSE_PATTERNS + _CONNECTION_MESSAGE_PATTERNS)):
         extra["transport"] = "connection"
     # The SDK's raw error body, when the exception itself carries no HTTP status (a body ``code`` may)
     body = getattr(c.error, "body", None) if _from_cause_chain(c.error, _status_of, None) is None else None

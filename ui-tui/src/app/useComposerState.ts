@@ -128,6 +128,9 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
   const [input, setInputState] = useState('')
   const [inputBuf, setInputBufState] = useState<string[]>([])
   const composerRevision = useRef(0)
+  // Bumped whenever the draft is not just added to at the end (cleared, submitted, replaced, edited
+  // mid-text): an edit's image restore follows the user's typing only within the draft it began on.
+  const draftLife = useRef(0)
 
   const setInputBuf = useCallback<StateSetter<string[]>>(next => {
     composerRevision.current++
@@ -155,6 +158,10 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
     composerRevision.current++
     const prev = inputRef.current
     inputRef.current = typeof next === 'function' ? next(prev) : next
+
+    if (!inputRef.current.startsWith(prev) || !inputRef.current) {
+      draftLife.current++
+    }
 
     if (pasteSpanRef.current) {
       setPasteSpan(shiftSpan(prev, inputRef.current, pasteSpanRef.current))
@@ -190,6 +197,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
   const { completions, compIdx, setCompIdx, compReplace } = useCompletion(input, isBlocked, gw)
 
   const clearIn = useCallback(() => {
+    draftLife.current++
     setPasteSpan(null)
     setInput('')
     setInputBuf([])
@@ -575,16 +583,13 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
   const attachImagePaths = useCallback(
     async (paths: readonly string[], { followTyping = false } = {}) => {
       const destination = captureDestination()
+      const life = draftLife.current
       let revision = composerRevision.current
-      let written = inputRef.current
 
-      // Unchanged since our last write or, following typing, only added to at the end.
-      const current = () => {
-        const now = inputRef.current
-        const typedOn = followTyping && now.length > written.length && now.startsWith(written)
-
-        return isCurrentDestination(destination) && (revision === composerRevision.current || typedOn)
-      }
+      // Unchanged since our last write or, following typing, the same draft only added to at the end.
+      const current = () =>
+        isCurrentDestination(destination) &&
+        (revision === composerRevision.current || (followTyping && life === draftLife.current))
 
       const dropped = (count: number) => followTyping && isCurrentDestination(destination) && sys(t('canonical.queue.imagesNotRestored', count))
 
@@ -623,24 +628,55 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
 
         setInput(next.value)
         revision = composerRevision.current
-        written = next.value
       }
     },
     [attachImageToken, gw, resolveAttachment, setInput, sys]
   )
 
-  /** Text pasted somewhere other than the composer (backtrack browse), handled as a composer paste:
-   * collapse, dropped-path and image detection included. It lands at the end of the draft. */
-  const appendPaste = useCallback(
-    async (text: string) => {
-      const value = inputRef.current
-      const revision = composerRevision.current
-      const result = await handleTextPaste({ bracketed: true, cursor: value.length, text, value })
+  // Text from outside the composer (backtrack browse) lands in arrival order: keys typed behind a
+  // paste in the same terminal read wait for the paste to resolve.
+  const pendingAppend = useRef<null | Promise<void>>(null)
 
-      if (result && revision === composerRevision.current) {
-        placeInputCursor(result.value, result.cursor)
-        setInput(result.value)
+  /** A key typed outside the composer (backtrack browse), appended after any paste still resolving. */
+  const appendText = useCallback(
+    (text: string) => {
+      if (!pendingAppend.current) {
+        return setInput(prev => prev + text)
       }
+
+      pendingAppend.current = pendingAppend.current.then(() => setInput(prev => prev + text))
+    },
+    [setInput]
+  )
+
+  /** Text pasted outside the composer (backtrack browse), handled as a composer paste: collapse,
+   * dropped-path and image detection included, at the end of the draft. If the draft changed while
+   * it resolved, the raw text is appended instead, as the composer's own paste does: never lost. */
+  const appendPaste = useCallback(
+    (text: string) => {
+      const run = async () => {
+        const value = inputRef.current
+        const revision = composerRevision.current
+        const result = await handleTextPaste({ bracketed: true, cursor: value.length, text, value })
+        const next = result && revision === composerRevision.current ? result.value : inputRef.current + text
+
+        if (result || text.trim()) {
+          placeInputCursor(next, next.length)
+          setInput(next)
+        }
+      }
+
+      const done = (pendingAppend.current ?? Promise.resolve()).then(run)
+
+      const tail = done.finally(() => {
+        if (pendingAppend.current === tail) {
+          pendingAppend.current = null
+        }
+      })
+
+      pendingAppend.current = tail
+
+      return done
     },
     [handleTextPaste, setInput]
   )
@@ -692,6 +728,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       attachClipboardImage,
       attachImagePath,
       appendPaste,
+      appendText,
       attachImagePaths,
       clearIn,
       collapsePaste,
@@ -718,6 +755,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       attachClipboardImage,
       attachImagePath,
       appendPaste,
+      appendText,
       attachImagePaths,
       clearIn,
       stage,

@@ -668,12 +668,23 @@ class EmailAdapter(BasePlatformAdapter):
             await self._notify_fatal_error()
 
     def _mark_uid_consumed(self, imap: imaplib.IMAP4, uid: Any) -> None:
-        """Remember a rejected UID and mark it seen without fetching its MIME body."""
+        """Remember a rejected UID so it is never fetched again.
+
+        The UID is remembered in memory rather than written to the server:
+        ``_fetch_new_messages`` skips it through ``if uid in self._seen_uids``, and
+        ``_seen_uids_snapshot`` carries that set across a reconnect, so the
+        ``STORE +FLAGS.SILENT (\\Seen)`` that used to live here bought nothing —
+        and cleared the user's unread state for every message from a sender the
+        allow-list rejects, which is most of a real inbox.
+
+        One boundary this leaves open, deliberately: a full process restart
+        forgets the in-memory set and re-reads those headers once per rejected
+        message (``BODY.PEEK[HEADER.FIELDS ...]``, non-mutating), so it costs a
+        fetch and nothing else. Persisting that boundary is the subject of
+        #135626 / #42738, not of this change.
+        """
         self._seen_uids.add(uid)
         self._trim_seen_uids()
-        status, _ = imap.uid("store", uid, "+FLAGS.SILENT", r"(\Seen)")
-        if status != "OK":
-            logger.warning("[Email] Could not mark rejected UID %s seen", uid)
 
     def _fetch_new_messages(self, preauthorize: Callable[[dict[str, Any]], bool]) -> list[dict[str, Any]]:
         """Fetch unseen messages; bounded headers pass *preauthorize* before RFC822 is requested."""

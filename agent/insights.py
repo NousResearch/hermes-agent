@@ -65,8 +65,14 @@ def _parse_json(raw: Any, kind: type) -> Any:
 def _iter_functions(raw_calls: Any):
     """Yield the ``function`` dict of every well-formed entry in a tool_calls column."""
     for call in _parse_json(raw_calls, list) or []:
-        if isinstance(call, dict):
-            yield call.get("function", {})
+        if not isinstance(call, dict):
+            continue
+        function = call.get("function")
+        if not isinstance(function, dict):
+            continue
+        if not isinstance(function.get("name"), str):
+            continue
+        yield function
 
 
 def _hour12(hr: int) -> str:

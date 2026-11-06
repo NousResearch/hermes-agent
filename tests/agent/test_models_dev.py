@@ -17,6 +17,7 @@ from agent.models_dev import (
     fetch_models_dev,
     get_model_capabilities,
     get_model_info,
+    list_agentic_models,
     lookup_models_dev_context,
 )
 
@@ -1420,3 +1421,13 @@ class TestOpencodeRelayVisionMarker:
         with patch("agent.models_dev.fetch_models_dev", return_value=registry):
             caps = get_model_capabilities("opencode-go", "deepseek-v4-flash-vision-exp")
         assert caps.supports_vision is False and caps.context_window == 500000
+
+
+def test_list_agentic_models_hides_deprecated_rows():
+    """opencode hides ``status: deprecated`` from its picker; the relay may stop serving them (grok-4.5 on Go)."""
+    registry = {"opencode-go": {"id": "opencode-go", "models": {
+        "grok-4.7": {"id": "grok-4.7", "tool_call": True},
+        "grok-4.5": {"id": "grok-4.5", "tool_call": True, "status": "deprecated"},
+        "space-bunny": {"id": "space-bunny", "tool_call": True, "status": "beta"}}}}
+    with patch("agent.models_dev.fetch_models_dev", return_value=registry):
+        assert list_agentic_models("opencode-go") == ["grok-4.7", "space-bunny"]

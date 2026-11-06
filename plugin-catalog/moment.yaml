@@ -1,15 +1,15 @@
 name: moment
 repo: https://github.com/noprijbi99-dotcom/moment
-sha: 143fae0d8c731d290d8b7e021d725374a41a69a7
+sha: 22e02d55b2e98861f6d4870c6d97e5d0612a6c60
 title: Moment
 description: "Keeps a Hermes agent honest about its own memory. Hermes injects SOUL.md, memories/MEMORY.md and memories/USER.md into the system prompt as a frozen snapshot at session start; anything that changes those files while the session lives stays invisible to it, and the agent keeps answering from stale memory. Moment fingerprints the three house files at a session's first turn and re-checks them on every later turn (pre_llm_call); when one changed, it injects a short drift receipt — which file, its absolute path, baseline and detection timestamps, the changed lines, and the full current content for small files — so the agent answers from the present and says plainly that its memory drifted. It also provides a moment_check tool for on-demand freshness reports against the session's starting state. Disclosure — reads only the active profile's SOUL.md, memories/MEMORY.md and memories/USER.md (the agent's own house files; never credential stores); writes only its own baseline and receipt-journal state in its plugin data directory (plugin-data/moment); the hook only adds context and never blocks or modifies a turn; no network, no shell, no subprocess, no telemetry; Python standard library only, zero dependencies."
 maintainer: noprijbi99-dotcom
 tier: community
 category: memory
-version: "0.1.2"
+version: "0.1.3"
 requires_hermes: ">=0.21.6"
 docs_url: https://github.com/noprijbi99-dotcom/moment#readme
-image: https://raw.githubusercontent.com/noprijbi99-dotcom/moment/143fae0d8c731d290d8b7e021d725374a41a69a7/assets/banner.png
+image: https://raw.githubusercontent.com/noprijbi99-dotcom/moment/22e02d55b2e98861f6d4870c6d97e5d0612a6c60/assets/banner.png
 capabilities:
   provides_tools:
   - moment_check

@@ -564,15 +564,7 @@ export function stageGetWindowsInto(
     // the target platform; the classify gate below still catches a dir that
     // claims win32 but holds a foreign binary.
     const bindingRoot = join(srcRoot, 'lib', 'binding')
-    const scanBindingDirs = () =>
-      existsSync(bindingRoot)
-        ? readdirSync(bindingRoot).filter(
-            (dir) =>
-              dir.includes(`-${platform}-`) &&
-              dir.endsWith(`-${arch}`) &&
-              existsSync(join(bindingRoot, dir, 'node-get-windows.node'))
-          )
-        : []
+    const scanBindingDirs = () => getWindowsBindingDirs(srcRoot, platform, arch)
     let bindingDirs = scanBindingDirs()
     let installAttempted = false
     if (bindingDirs.length === 0 && arch !== 'arm64' && typeof install === 'function') {
@@ -623,6 +615,47 @@ export function stageGetWindowsInto(
 
   console.log(`[stage-native-deps] staged get-windows (${platform}) -> ${destRoot}`)
   return destRoot
+}
+
+/** The lib/binding dirs of an installed get-windows that hold a binding named for platform-arch. */
+function getWindowsBindingDirs(srcRoot, platform, arch) {
+  const bindingRoot = join(srcRoot, 'lib', 'binding')
+  if (!existsSync(bindingRoot)) return []
+  return readdirSync(bindingRoot).filter(
+    (dir) =>
+      dir.includes(`-${platform}-`) &&
+      dir.endsWith(`-${arch}`) &&
+      existsSync(join(bindingRoot, dir, 'node-get-windows.node'))
+  )
+}
+
+/**
+ * `pnpm run dev` loads get-windows from node_modules, and the install never runs its script
+ * (pnpm-workspace.yaml allowBuilds), so a fresh Windows checkout has no binding there and
+ * upstream's lib/windows.js hands back stubs. Fetch it once into the installed package, the way
+ * stageGetWindows does for builds. Fail soft: dev runs without window enumeration rather than
+ * not at all.
+ */
+export function ensureDevGetWindowsBinding(
+  {
+    platform = process.platform,
+    arch = process.arch,
+    resolveRoot = () => resolveGetWindowsRoot(),
+    install = installGetWindowsNativeBinding
+  } = {}
+) {
+  if (platform !== 'win32' || arch === 'arm64') return
+  const srcRoot = resolveRoot()
+  if (!srcRoot || getWindowsBindingDirs(srcRoot, platform, arch).length > 0) return
+  console.log('[dev] get-windows has no win32 binding; running its native installer...')
+  try {
+    install(srcRoot)
+  } catch (error) {
+    console.warn(
+      `[dev] ${error instanceof Error ? error.message : String(error)}; ` +
+        'read_window_below will be unavailable in this dev run'
+    )
+  }
 }
 
 export function installGetWindowsNativeBinding(

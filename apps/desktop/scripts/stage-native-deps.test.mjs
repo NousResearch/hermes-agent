@@ -7,6 +7,7 @@ import { test } from 'vitest'
 
 import { buildHudModifierMonitor } from '../scripts/build-hud-modifier-monitor.mjs'
 import {
+  ensureDevGetWindowsBinding,
   findHalfInstalledGetWindowsDir,
   installGetWindowsNativeBinding,
   stageGetWindows,
@@ -539,6 +540,45 @@ test('win32 staging self-heals through the native installer when the binding is 
       existsSync(join(destRoot, 'lib', 'binding', 'napi-9-win32-unknown-x64', 'node-get-windows.node'))
     )
   } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+// `pnpm run dev` loads get-windows from node_modules, where the install left no win32 binding.
+test('a Windows dev run fetches the missing binding into the installed package once', () => {
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
+  try {
+    const srcRoot = join(tmp, 'get-windows')
+    makeFakeGetWindows(srcRoot, { bindings: [{ dir: 'napi-9-darwin-unknown-arm64', platform: 'darwin' }] })
+    const installed = []
+    const install = root => {
+      installed.push(root)
+      makeFakeNode(join(root, 'lib', 'binding', 'napi-9-win32-unknown-x64', 'node-get-windows.node'), 'win32')
+    }
+    const run = () => ensureDevGetWindowsBinding({ platform: 'win32', arch: 'x64', resolveRoot: () => srcRoot, install })
+    run()
+    run()
+    assert.deepEqual(installed, [srcRoot])
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('a dev run starts without window enumeration when the binding cannot be fetched', () => {
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
+  const warnings = []
+  const origWarn = console.warn
+  console.warn = (msg) => warnings.push(String(msg))
+  try {
+    const srcRoot = join(tmp, 'get-windows')
+    makeFakeGetWindows(srcRoot)
+    const install = () => { throw new Error('get-windows native installer exited with 1') }
+    ensureDevGetWindowsBinding({ platform: 'win32', arch: 'x64', resolveRoot: () => srcRoot, install })
+    ensureDevGetWindowsBinding({ platform: 'win32', arch: 'x64', resolveRoot: () => null, install })
+    assert.equal(warnings.length, 1)
+    assert.match(warnings[0], /exited with 1.*read_window_below will be unavailable/)
+  } finally {
+    console.warn = origWarn
     fs.rmSync(tmp, { recursive: true, force: true })
   }
 })

@@ -58,6 +58,100 @@ def test_detects_process_wide_state(src, flagged):
     assert bool(_hits(src)) is flagged
 
 
+# Shared state a function writes without a recognised container initializer.
+_RUNTIME_WRITES = {
+    "thread_local": "import threading\nX = threading.local()\ndef put(v):\n    X.value = v\n",
+    "thread_local_unused": "import threading\nX = threading.local()\n",
+    "singleton": "class State:\n    pass\nX = State()\ndef put(v):\n    X.value = v\n",
+    "global_rebind": "X = None\ndef put(v):\n    global X\n    X = v\n",
+    "global_counter": "N = 0\ndef bump():\n    global N\n    N += 1\n",
+    "global_created_at_runtime": "def put(v):\n    global X\n    X = v\n",
+    "module_setattr": "import sys\nX = None\ndef put(v):\n    setattr(sys.modules[__name__], 'X', v)\n",
+    "module_globals_item": "X = None\ndef put(v):\n    globals()['X'] = v\n",
+    "populated_defaultdict": "from collections import defaultdict\nX = defaultdict(list, {'seed': []})\n"
+                             "def put(v):\n    X['seed'].append(v)\n",
+    "nested_constant": "X = {'seed': []}\ndef put(v):\n    X['seed'].append(v)\n",
+    "nested_attribute": "X = {'seed': []}\ndef put(v):\n    X['seed'][0].value = v\n",
+    "class_other_self": "class A:\n    values = {}\n    def put(this, v):\n        this.values['v'] = v\n",
+    "class_type_self": "class A:\n    current = None\n    def put(self, v):\n        type(self).current = v\n",
+    "class_dunder_class": "class A:\n    values = []\n    def put(self, v):\n        self.__class__.values.append(v)\n",
+    "class_conditional_copy": "class A:\n    values = {}\n    def put(self, v, copy=False):\n        if copy:\n"
+                              "            self.values = {}\n        self.values['v'] = v\n",
+    "class_conditional_init_copy": "class A:\n    values = {}\n    def __init__(self, copy=False):\n"
+                                   "        if copy:\n            self.values = {}\n"
+                                   "    def put(self, v):\n        self.values['v'] = v\n",
+    "class_copy_outside_init": "class A:\n    values = {}\n    def reset(self):\n        self.values = {}\n"
+                               "    def put(self, v):\n        self.values['v'] = v\n",
+    "nested_class": "class A:\n    class B:\n        values = []\n        @classmethod\n"
+                    "        def put(cls, v):\n            cls.values.append(v)\n",
+    "fake_declaration": "def tenant_neutral(v, **kw):\n    return v\nX = tenant_neutral({}, reason='not actually neutral')\n",
+    "loop": "for i in range(1):\n    X = {}\n",
+    "while_body": "while True:\n    X = []\n    break\n",
+    "match_body": "match 1:\n    case 1:\n        X = set()\n",
+}
+
+
+@pytest.mark.parametrize("name", sorted(_RUNTIME_WRITES))
+def test_detects_state_whatever_its_initializer(name):
+    assert _hits(_RUNTIME_WRITES[name]), name
+
+
+# A mutation is the module's only through its lexical binding.
+_TABLE = "TABLE = {'a': 1}\n"
+
+
+@pytest.mark.parametrize("body, flagged", [
+    ("def f(TABLE):\n    TABLE.clear()\n", False),                              # parameter
+    ("def f():\n    TABLE = []\n    TABLE.append(1)\n", False),                # local, no global
+    ("def f():\n    def g(TABLE):\n        TABLE['x'] = 1\n    return g\n", False),  # nested param
+    ("def f():\n    def g():\n        TABLE = {}\n        TABLE['x'] = 1\n    return g\n", False),
+    ("def f(rows):\n    return [TABLE.update(r) for TABLE in rows]\n", False),  # comprehension var
+    ("class C:\n    TABLE = {}\n    TABLE['x'] = 1\n", False),                 # class-body name
+    ("def f():\n    for TABLE in ({},):\n        TABLE['x'] = 1\n", False),    # loop target
+    ("def f():\n    with open('p') as TABLE:\n        TABLE.write('x')\n", False),
+    ("def f():\n    global TABLE\n    TABLE['x'] = 1\n", True),                # global: the module's
+    ("def f():\n    TABLE['x'] = 1\n", True),                                    # free name: the module's
+    ("def f():\n    def g():\n        TABLE['x'] = 1\n    return g\n", True),
+    ("class C:\n    def m(self):\n        TABLE['x'] = 1\n", True),             # class scope skipped
+    ("def f(TABLE=TABLE):\n    TABLE['x'] = 1\n", False),                       # default is a param
+])
+def test_resolves_each_mutation_to_its_binding(body, flagged):
+    assert bool(_hits(_TABLE + body)) is flagged
+
+
+@pytest.mark.parametrize("src", [
+    # a local function of the same name
+    "def tenant_neutral(v, **kw):\n    return v\n_X = tenant_neutral({}, reason='r')\n",
+    "class ScopedCache(dict):\n    pass\n_X = ScopedCache()\n",
+    # the same name imported from another module
+    "from elsewhere import tenant_neutral\n_X = tenant_neutral({}, reason='r')\n",
+    "from elsewhere import ScopedCache\n_X = ScopedCache('c')\n",
+    "import elsewhere\n_X = elsewhere.tenant_neutral({}, reason='r')\n",
+    # the real import, shadowed where the declaration is made
+    "from hermes_scope_cache import tenant_neutral\ntenant_neutral = lambda v, **kw: v\n"
+    "_X = tenant_neutral({}, reason='r')\n",
+    "from hermes_scope_cache import tenant_neutral\nclass C:\n    tenant_neutral = staticmethod(lambda v, **kw: v)\n"
+    "    values = tenant_neutral({}, reason='r')\n    def add(self, k):\n        self.values[k] = 1\n",
+    "import functools\ndef tenant_neutral(**kw):\n    return lambda f: f\n"
+    "@tenant_neutral(reason='r')\n@functools.cache\ndef f(x):\n    return x\n",
+])
+def test_declarations_are_recognised_by_api_identity(src):
+    assert _hits(src)
+
+
+@pytest.mark.parametrize("src", [
+    "import hermes_scope_cache\n_X = hermes_scope_cache.tenant_neutral({}, reason='same for all')\n",
+    "from hermes_scope_cache import ScopedCache as Per\n_X = Per('c')\n",
+    "import hermes_scope_cache as hsc\n_X = hsc.ScopedCache('c')\ndef f():\n    _X.slot()['k'] = 1\n",
+    # a module-level table filled while the module imports is the same for every tenant
+    "_T = {'a': 1}\nfor k in ('b',):\n    _T[k] = 2\n",
+    # an imported module's state is judged in that module
+    "import os\ndef f(v):\n    os.environ['X'] = v\n",
+])
+def test_declared_and_import_time_state_passes(src):
+    assert not _hits(src)
+
+
 def _graph_repo(tmp_path, files):
     root = tmp_path / "g"
     for rel, text in files.items():

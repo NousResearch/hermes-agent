@@ -308,6 +308,136 @@ class TestRelevanceFloor:
         assert hits and hits[0].name == "github_create_issue"
 
 
+class TestRecallShapes:
+    """Two query shapes the model actually emits that the ASCII tokenizer and gate-only
+    admission refused. Live payload (group bot, 2026-11-06, session 20261105_002253_b37a42c4):
+
+        queries ["terminal run shell command python", "create image chart plot file"]
+          -> ``matches: []`` for both
+
+    That catalog is described in Ukrainian, and the second query's rarest token ("plot") is a
+    synonym no document carries while ``render_chart`` carries ``chart``.
+    """
+
+    @staticmethod
+    def _defs():
+        return [
+            _td("render_chart",
+                "Побудувати графік або діаграму з даних і надіслати як зображення (PNG)."),
+            _td("mcp__files__read_file", "Read a file from disk."),
+            _td("mcp__files__write_file", "Write a file to disk, creating it if missing."),
+            _td("mcp__github__create_issue", "Open a new issue in a GitHub repository."),
+            _td("mcp__github__rerun_failed_workflow_run_jobs",
+                "Re-run failed jobs in a workflow run."),
+        ]
+
+    def test_unicode_query_reaches_a_ukrainian_description(self):
+        from tools.tool_search import build_catalog, search_catalog
+        catalog = build_catalog(self._defs())
+        assert [h.name for h in search_catalog(catalog, "графік")] == ["render_chart"]
+
+    def test_non_ascii_tokens_are_indexed_and_left_unstemmed(self):
+        from tools.tool_search_catalog import _stem, _tokenize
+        # The old ``[A-Za-z0-9]+`` class tokenized this to nothing on both sides.
+        assert _tokenize("Побудувати графік") == ["побудувати", "графік"]
+        # English keeps Snowball on the index and the query alike…
+        assert _stem("issues") == _stem("issue")
+        # …and nothing else is stemmed (the English stemmer mangles Cyrillic).
+        assert _stem("графік") == "графік"
+
+    def test_long_query_synonym_reaches_the_name_match_first(self):
+        from tools.tool_search import build_catalog
+        from tools.tool_search_catalog import search_catalog_with_confidence
+        hits, low_confidence = search_catalog_with_confidence(
+            build_catalog(self._defs()), "create image chart plot file")
+        # "plot" is in no document, so the strict pass admits nothing; the second chance
+        # admits the tool whose NAME carries "chart" and ranks name evidence first.
+        assert hits and hits[0].name == "render_chart"
+        assert low_confidence is True
+
+    def test_strict_hits_are_not_second_chance_hits(self):
+        from tools.tool_search import build_catalog
+        from tools.tool_search_catalog import search_catalog_with_confidence
+        hits, low_confidence = search_catalog_with_confidence(
+            build_catalog(self._defs()), "графік")
+        assert [h.name for h in hits] == ["render_chart"]
+        assert low_confidence is False
+
+    def test_short_query_with_an_unknown_intent_word_stays_strict(self):
+        """The second chance is for long queries: with one or two content words the unknown
+        word IS the intent, so the empty group plus retry hint is still the right answer."""
+        from tools.tool_search import build_catalog, search_catalog
+        catalog = build_catalog(self._defs())
+        assert search_catalog(catalog, "create zzzz issue") == []
+        assert search_catalog(catalog, "plot chart") == []
+
+    def test_second_chance_still_applies_the_coverage_floor(self):
+        """A name word is not enough on its own: on a long hunt whose every word exists
+        somewhere but no single tool carries several, the rerun tool carries "run" in its
+        NAME and is still refused (the pinned TestRelevanceFloor case)."""
+        from tools.tool_search import build_catalog, search_catalog
+        catalog = build_catalog([
+            _td("github_rerun_failed_workflow_run_jobs",
+                "Re-run failed jobs in a workflow run", {"run_id": {"type": "string"}}),
+            _td("github_create_issue", "Open a new issue in a GitHub repository",
+                {"title": {"type": "string"}}),
+            _td("github_list_issues", "List issues in a repository", {"repo": {"type": "string"}}),
+            _td("slack_send_message", "Post a message into a Slack channel",
+                {"channel": {"type": "string"}}),
+            _td("gist_save_snippet", "Save a shell command snippet as a gist",
+                {"content": {"type": "string"}}),
+            _td("codeql_scan", "Scan code for vulnerabilities and execute analysis",
+                {"repo": {"type": "string"}}),
+        ])
+        assert search_catalog(catalog, "run shell command execute code") == []
+
+    # --- the payload the model reads -------------------------------------------------
+
+    @staticmethod
+    def _register(defs):
+        from tools.registry import registry
+        names = []
+        for td in defs:
+            fn = td["function"]
+            registry.register(name=fn["name"], toolset="mcp-recall-probe", schema=fn,
+                              handler=lambda args, **kw: json.dumps({"ok": True}))
+            names.append(fn["name"])
+        return names
+
+    def _dispatch(self, queries):
+        from tools.registry import registry
+        from tools.tool_search import dispatch_tool_search
+        defs = self._defs()
+        names = self._register(defs)
+        try:
+            return json.loads(dispatch_tool_search(
+                {"queries": queries}, current_tool_defs=defs))
+        finally:
+            for name in names:
+                registry.deregister(name)
+
+    def test_payload_marks_second_chance_hits_low_confidence(self):
+        payload = self._dispatch(["create image chart plot file"])
+        [group] = payload["results"]
+        assert group["matches"][0] == "render_chart"
+        assert group["confidence"] == "low"
+        assert "tool_describe" in group["hint"]
+        # Still discoverable/invokable: the flag is a warning, not a filter.
+        assert payload["tools"]["render_chart"]
+
+    def test_payload_leaves_strict_hits_unmarked(self):
+        payload = self._dispatch(["графік"])
+        [group] = payload["results"]
+        assert group["matches"] == ["render_chart"]
+        assert "confidence" not in group
+
+    def test_payload_keeps_the_empty_group_hint_for_short_queries(self):
+        payload = self._dispatch(["create zzzz issue"])
+        [group] = payload["results"]
+        assert group["matches"] == [] and "confidence" not in group
+        assert group["available_sources"] and group["hint"]
+
+
 # ---------------------------------------------------------------------------
 # Assembly — the full passthrough/activate decision.
 # ---------------------------------------------------------------------------

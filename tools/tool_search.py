@@ -24,7 +24,8 @@ from toolsets import CLIENT_SURFACE_TOOLSETS, TOOLSET_SESSION_PLATFORMS
 from tools.tool_search_catalog import (
     BRIDGE_TOOL_NAMES, CHARS_PER_TOKEN, TOOL_CALL_NAME, TOOL_DESCRIBE_NAME, TOOL_SEARCH_NAME,
     CatalogEntry, _fn, _listing_group_label, _registry_entry, _registry_toolset,
-    build_catalog, build_catalog_listing_with_form, search_catalog)
+    build_catalog, build_catalog_listing_with_form, search_catalog,
+    search_catalog_with_confidence)
 from tools.tool_search_validation import (
     local_batch_error, normalize_tool_call_entries, not_deferrable_error, session_unavailable_error,
     unavailable_in_session_reason, validate_deferred_call_args)
@@ -469,14 +470,24 @@ def dispatch_tool_search(args: dict[str, Any], *, current_tool_defs: list[dict[s
     results: list[dict[str, Any]] = []
     tools_map: dict[str, dict[str, Any]] = {}
     available_sources = _available_source_summary(catalog)
+    low_confidence_groups = 0
     for position, query in enumerate(queries):
         corpus = catalog + remote_entries[position]
-        hits = search_catalog(corpus, query, limit=limit)
+        hits, low_confidence = search_catalog_with_confidence(corpus, query, limit=limit)
         for h in hits:
             tools_map.setdefault(h.name, _shared_tool_record(h))
         matches = [h.name for h in hits]
         group: dict[str, Any] = {"query": query, "matches": matches}
-        if not matches and available_sources:
+        if low_confidence:
+            # Second-chance hits: a NAME word matched, the capability did not. Flagged so the
+            # model describes the tool before treating it as what it asked for.
+            low_confidence_groups += 1
+            group["confidence"] = "low"
+            group["hint"] = (
+                "No exact lexical match: these tools only share a NAME word with the "
+                "query. Confirm with `tool_describe` before relying on one, and do not "
+                "read them as the exact capability you asked for.")
+        elif not matches and available_sources:
             group["available_sources"] = available_sources
             group["hint"] = (
                 "This query returned no lexical matches, but the sources above "
@@ -490,7 +501,9 @@ def dispatch_tool_search(args: dict[str, Any], *, current_tool_defs: list[dict[s
     if hosted_failure:
         payload["connectors"] = connectors_unavailable(hosted_failure, verb="searched")
     _record_search_metric(current_tool_defs, catalog=catalog, hits=len(tools_map),
-                          outcome="connector_unavailable" if hosted_failure else "hits" if tools_map else "no_hits")
+                          outcome=("connector_unavailable" if hosted_failure
+                                   else "low_confidence" if low_confidence_groups
+                                   else "hits" if tools_map else "no_hits"))
     return json.dumps(payload, ensure_ascii=False)
 
 
@@ -656,6 +669,7 @@ __all__ = [
     "scope_block_reason",
     "scoped_deferrable_names",
     "search_catalog",
+    "search_catalog_with_confidence",
     "should_activate",
     "validate_deferred_call_args",
 ]

@@ -94,3 +94,57 @@ def test_provider_that_still_fails_after_recovery_is_reported(monkeypatch):
     assert agent_init.resolve_memory_provider("brokenmem", say=said.append) is None
     assert len(said) == 2 and "failed to load" in said[1]
 
+
+
+class _ExitingProvider:
+    """A provider whose checks call sys.exit(), as a misconfigured plugin can (#123042)."""
+
+    name = "exiting"
+
+    def __init__(self, *, exit_on_available=True, interrupt=False):
+        self.exit_on_available = exit_on_available
+        self.interrupt = interrupt
+
+    def is_available(self):
+        if self.interrupt:
+            raise KeyboardInterrupt
+        if self.exit_on_available:
+            raise SystemExit(1)
+        return False
+
+    def unavailable_reason(self):
+        raise SystemExit(2)
+
+
+def _init_memory_with(monkeypatch, provider):
+    from types import SimpleNamespace
+
+    import plugins.memory as memory_plugins
+    from tools import memory_tool
+    from agent import agent_init as real_init
+
+    monkeypatch.setattr(memory_tool, "get_builtin_memory_config", lambda _cfg: {"provider": "exiting"})
+    monkeypatch.setattr(memory_tool, "get_builtin_memory_store_flags", lambda _cfg: (False, False))
+    monkeypatch.setattr(memory_plugins, "load_memory_provider", lambda _name: provider)
+    monkeypatch.setattr(real_init, "is_core_memory_provider", lambda _name: False)
+    agent = SimpleNamespace(enabled_toolsets=[], disabled_toolsets=[], _emit_startup_warning=lambda *a, **k: None)
+    real_init._init_memory(agent, {}, False, "cli")
+    return agent
+
+
+def test_systemexit_from_is_available_does_not_kill_agent_startup(monkeypatch):
+    agent = _init_memory_with(monkeypatch, _ExitingProvider())
+    assert agent._memory_manager is None
+
+
+def test_systemexit_from_unavailable_reason_still_warns_once(monkeypatch, caplog):
+    agent_init._warned_unavailable_providers.clear()
+    monkeypatch.setattr("plugins.memory.load_memory_provider", lambda _name: _ExitingProvider(exit_on_available=False))
+    with caplog.at_level(logging.WARNING, logger="run_agent"):
+        assert agent_init.resolve_memory_provider("exiting") is None
+    assert [r for r in caplog.records if "unavailable" in r.getMessage()]
+
+
+def test_keyboard_interrupt_from_a_provider_still_escapes(monkeypatch):
+    with pytest.raises(KeyboardInterrupt):
+        _init_memory_with(monkeypatch, _ExitingProvider(interrupt=True))

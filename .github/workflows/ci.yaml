@@ -425,6 +425,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           python3 scripts/ci/timings_report.py \
+            --own-job-last-step "Evaluate job results" \
             --baseline ci-timings-baseline.json \
             --output ci-timings-report.html \
             --json-out ci-timings.json \

@@ -270,7 +270,7 @@ def _annotate_wait_times(jobs: list[dict]) -> None:
         j["wait_s"] = (started - latest_dep_end).total_seconds() if latest_dep_end else 0.0
 
 
-def close_running_job(raw: dict) -> dict | None:
+def close_running_job(raw: dict, last_step: str = "") -> dict | None:
     """The job this report runs in, as completed at its last finished step.
 
     The report runs as trailing steps of the gate job, which the API still
@@ -278,8 +278,15 @@ def close_running_job(raw: dict) -> dict | None:
     leave the gate out of every report and baseline. Its finished steps (the
     verdict) are the work it did before the report started; the report's own
     steps are excluded, as they were when the report was a job of its own.
+
+    ``last_step`` names the job's final own step. Report steps that finish
+    before collection (the PR-only baseline restore) come after it and are
+    cut, so a PR's gate time compares like for like with main's baseline.
     """
     done = [s for s in (raw.get("steps") or []) if s.get("status") == "completed" and s.get("completed_at")]
+    names = [s.get("name") for s in done]
+    if last_step in names:
+        done = done[:names.index(last_step) + 1]
     if not raw.get("started_at") or not done:
         return None
     failed = any(s.get("conclusion") == "failure" for s in done)
@@ -289,7 +296,7 @@ def close_running_job(raw: dict) -> dict | None:
 
 
 def collect_timings(token: str, repo: str, run_id: str, head_sha: str,
-                    current_runner: str = "") -> dict:
+                    current_runner: str = "", last_step: str = "") -> dict:
     """Collect job/step timings from the GitHub API.
 
     1. Get orchestrator run's direct jobs (detect, all-checks-pass, etc.).
@@ -315,8 +322,8 @@ def collect_timings(token: str, repo: str, run_id: str, head_sha: str,
         if any(s.get("name", "").startswith("Run ./.github/workflows/") for s in steps):
             continue  # workflow-call placeholder
         if job.get("status") in ("in_progress", "queued"):
-            # This job (matched by runner) counts up to its last finished step.
-            closed = (close_running_job(job)
+            # This job (matched by runner) counts up to its last own step.
+            closed = (close_running_job(job, last_step)
                       if current_runner and job.get("runner_name") == current_runner else None)
             if closed is not None:
                 direct.append(closed)
@@ -1069,6 +1076,9 @@ def main():
                         help="Markdown summary output path (default: ci-timings-summary.md)")
     parser.add_argument("--review-status-out", default="",
                         help="If set, write a review-status JSON for the unified PR comment.")
+    parser.add_argument("--own-job-last-step", default="",
+                        help="Name of the last step of the job this report runs in that is not report work; "
+                             "the job's timing ends there.")
     parser.add_argument("--review-status-only", action="store_true",
                         help="Write review status from existing timings without regenerating the report.")
     args = parser.parse_args()
@@ -1090,7 +1100,8 @@ def main():
             if not token:
                 raise TimingsUnavailable("GITHUB_TOKEN is empty")
             timings = collect_timings(token, repo, run_id, head_sha,
-                                      current_runner=os.environ.get("RUNNER_NAME", ""))
+                                      current_runner=os.environ.get("RUNNER_NAME", ""),
+                                      last_step=args.own_job_last_step)
         except TimingsUnavailable as e:
             # Observability job: a missing report must never redden the PR.
             # Emit a degraded summary + placeholder artifact and exit 0.

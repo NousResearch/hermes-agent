@@ -91,3 +91,26 @@ def test_the_running_job_is_not_asked_for_its_log(monkeypatch):
     assert GATE in {job["name"] for job in data["jobs"]}
     assert data["cache_data"]["unavailable_jobs"] == []
     assert fetched == [1]
+
+
+def test_report_steps_that_finish_before_collection_are_not_gate_time(monkeypatch):
+    """On a PR the baseline restore runs (and finishes) before the report collects; on main it
+    does not. Ending the gate at its last own step keeps a slow download out of the PR-vs-main
+    comparison."""
+    jobs = _jobs()
+    gate = jobs[1]
+    gate["steps"].insert(2, _step("Restore timing baseline cache (PR only)",
+                                  "2026-01-01T00:05:04Z", "2026-01-01T00:05:40Z"))
+
+    def fake_api_get(path, token, params=None, list_key=None):
+        if path.endswith("/runs/9"):
+            return {"created_at": "2026-01-01T00:00:00Z"}
+        return jobs if path.endswith("/runs/9/jobs") else []
+
+    monkeypatch.setattr(timings_report, "api_get", fake_api_get)
+    monkeypatch.setattr(timings_report, "_collect_cache_data", lambda jobs, repo, token: {})
+    closed = {job["name"]: job for job in timings_report.collect_timings(
+        "t", "o/r", "9", "sha", current_runner="runner-gate", last_step="Evaluate job results")["jobs"]}[GATE]
+    assert closed["completed_at"] == "2026-01-01T00:05:04Z"
+    assert closed["duration_s"] == 4
+    assert [step["name"] for step in closed["steps"]] == ["Set up job", "Evaluate job results"]

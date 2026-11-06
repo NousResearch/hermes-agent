@@ -124,7 +124,7 @@ def _complete_locked(
     if before_build is not None:
         before_build()  # never raises: a failed restart stays owed and is retried after the build
     step("build", lambda: build_update_products(root, desktop=desktop))
-    if announce:
+    if announce and not owed:
         print(announce)
     verdict: list[bool] = []
     step("maintenance", lambda: verdict.append(_run_post_update_maintenance(

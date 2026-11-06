@@ -179,3 +179,14 @@ def test_bundled_catalog_reads_unchanged_after_freeze(monkeypatch):
     freeze_registries()
     after = providers.bundled_profiles()
     assert [p.name for p in after] == [p.name for p in before]
+
+
+def test_schema_constructor_cannot_rewrite_frozen_schema(frozen_tool_registry):
+    """Re-running ``dict.__init__`` on a schema a getter returned is a write like any other."""
+    reg, _schema_arg, _policy = frozen_tool_registry
+    with pytest.raises(RegistryFrozen):
+        reg.get_schema("t").__init__({"description": "after"})
+    with pytest.raises(RegistryFrozen):
+        reg.get_entry("t").requires_env.__init__(["OTHER"])
+    assert reg.get_schema("t")["description"] == "d"
+    assert reg.get_entry("t").requires_env == ["T_KEY"]

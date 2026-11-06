@@ -436,6 +436,10 @@ def _consent_error(server_name: str, args: dict) -> Optional[str]:
         return tool_error("The event subscription was blocked: the approval system was unavailable.")
     if answer == "accept":
         return None
+    if answer == "cancel":
+        return tool_error("The event subscription was NOT created: no approval answer was received. The prompt "
+                          "could not be delivered or ended unanswered; this is not a user refusal. Ask the user "
+                          "to use an interactive approval surface. Do not retry without explicit user direction.")
     return tool_error("The user did not approve this event subscription. Do not retry without explicit user direction.")
 
 

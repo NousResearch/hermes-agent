@@ -238,3 +238,16 @@ class TestAdapterWireShape:
         v1 = decl("https://generativelanguage.googleapis.com/v1")
         assert "parametersJsonSchema" not in v1
         assert v1["parameters"]["properties"]["g"]["anyOf"]  # legacy translator still applied
+
+        # Vertex AI Express mirrors the v1beta parametersJsonSchema surface on its
+        # v1beta1 publishers/google path, but NOT on its v1 sibling.
+        vertex_v1beta1 = decl(
+            "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/publishers/google"
+        )
+        assert "parameters" not in vertex_v1beta1
+        assert vertex_v1beta1["parametersJsonSchema"]["properties"]["g"]["anyOf"][1]["items"] == {"type": "string"}
+        vertex_v1 = decl(
+            "https://aiplatform.googleapis.com/v1/projects/p/locations/global/publishers/google"
+        )
+        assert "parametersJsonSchema" not in vertex_v1
+        assert vertex_v1["parameters"]["properties"]["g"]["anyOf"]  # legacy translator still applied

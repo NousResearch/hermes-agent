@@ -25,7 +25,7 @@ class SolsticeClient(GeminiNativeClient):
         super().__init__(base_url=base_url or INFERENCE_BASE_URL, **kwargs)
 
     def _auth_headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self.api_key}"}
+        return {"Authorization": f"Bearer {self._api_key_value()}"}
 
     def _http_error(self, response: Any, body_text: Any = None) -> GeminiAPIError:
         # The API-key remedies (free tier, Standard key, wrong key surface) do not apply to a bearer.

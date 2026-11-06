@@ -7,7 +7,7 @@ import subprocess
 
 import pytest
 from hermes_cli import main_tui_launch
-from tests.hermes_cli.test_source_build import source_checkout, source_products, _events  # noqa: F401
+from tests.hermes_cli.test_source_build import source_checkout, source_products, _events
 
 
 def _touch_tui_entry(root: Path) -> None:
@@ -54,10 +54,10 @@ def test_source_launch_prepares_base_union_but_compiles_only_tui(tui_source):
     assert argv[-1] == str(cwd / "dist/entry.js")
     assert (cwd / "dist/entry.js").read_text() == "tui"
     assert [event["step"] for event in _events(root)] == ["deps", "tui"]
-    assert acquired == ["npm"]
-    assert (root / "node_modules/ui-tui").exists()
-    assert (root / "node_modules/web").exists()
-    assert not (root / "node_modules/apps-desktop").exists()
+    assert acquired == ["pnpm"]
+    assert (root / "ui-tui/node_modules").exists()
+    assert (root / "web/node_modules").exists()
+    assert not (root / "apps/desktop/node_modules").exists()
 
 
 @pytest.mark.platforms("posix")
@@ -67,7 +67,7 @@ def test_source_compile_failure_stops_launch_without_reinstall(tui_source):
     with pytest.raises(subprocess.CalledProcessError):
         main_tui_launch._make_tui_argv(root / "ui-tui", tui_dev=False)
     assert [event["step"] for event in _events(root)] == ["deps", "tui"]
-    assert acquired == ["npm"]
+    assert acquired == ["pnpm"]
 
 
 @pytest.mark.platforms("posix")
@@ -109,10 +109,11 @@ def test_dev_launch_builds_ink_before_running_source(tui_source, local_tsx):
         "name": "fixture-ink", "version": "1.0.0", "scripts": {"build": "node build.mjs"},
     }))
     (ink / "build.mjs").write_text("import { writeFileSync } from 'node:fs'; writeFileSync('built', 'ink');")
-    manifest = json.loads((root / "package.json").read_text())
-    manifest["workspaces"].append("ui-tui/packages/hermes-ink")
-    (root / "package.json").write_text(json.dumps(manifest))
-    subprocess.run([shutil.which("npm"), "install", "--package-lock-only", "--ignore-scripts", "--offline"], cwd=root, check=True)
+    workspace = root / "pnpm-workspace.yaml"
+    workspace.write_text(workspace.read_text() + "  - ui-tui/packages/hermes-ink\n")
+    subprocess.run([shutil.which("pnpm"), "install", "--lockfile-only", "--ignore-scripts", "--offline"], cwd=root, check=True,
+                   env={**os.environ, **{f"pnpm_config_{name}_dir": str(root.parent / "pnpm" / name)
+                                         for name in ("store", "cache", "state")}})
     tsx = root / "ui-tui/node_modules/.bin/tsx"
     if local_tsx:
         hook = root / "log.mjs"
@@ -121,9 +122,9 @@ def test_dev_launch_builds_ink_before_running_source(tui_source, local_tsx):
                         "writeFileSync('ui-tui/node_modules/.bin/tsx', 'fixture tsx');\n")
     argv, cwd = main_tui_launch._make_tui_argv(root / "ui-tui", tui_dev=True)
     assert (ink / "built").read_text() == "ink"
-    assert argv == ([str(tsx), "src/entry.tsx"] if local_tsx else [shutil.which("npm"), "start"])
+    assert argv == ([str(tsx), "src/entry.tsx"] if local_tsx else [shutil.which("pnpm"), "start"])
     assert cwd == root / "ui-tui"
-    assert acquired == ["npm"]
+    assert acquired == ["pnpm"]
     assert [event["step"] for event in _events(root)] == ["deps"]
 
 
@@ -163,6 +164,6 @@ def test_tui_rebuild_preserves_the_prepared_desktop_and_web_union(tui_source):
     os.utime(root / "ui-tui/dist/entry.js", (1, 1))
     main_tui_launch._make_tui_argv(root / "ui-tui", tui_dev=False)
     assert _events(root) == [*before, {"step": "tui"}]
-    assert acquired == ["npm", "npm"]
-    assert (root / "node_modules/web").exists()
-    assert (root / "node_modules/apps-desktop").exists()
+    assert acquired == ["pnpm", "pnpm"]
+    assert (root / "web/node_modules").exists()
+    assert (root / "apps/desktop/node_modules").exists()

@@ -44,29 +44,29 @@ From the repo root, the normal path is:
 hermes --tui
 ```
 
-The CLI expects `ui-tui/dist/entry.js` to exist, or the whole source code available in which to run `npm install` and `npm run dev`.
+The CLI expects `ui-tui/dist/entry.js` to exist, or the whole source code available in which to run `pnpm install` and `pnpm run dev`.
 
 ```bash
 cd ui-tui
-npm install
+pnpm install
 ```
 
 Local package commands:
 
 ```bash
-npm run dev
-npm start
-npm run build
-npm run lint
-npm run fmt
-npm run fix
+pnpm run dev
+pnpm start
+pnpm run build
+pnpm run lint
+pnpm run fmt
+pnpm run fix
 ```
 
 Tests use vitest:
 
 ```bash
-npm test         # single run
-npm run test:watch
+pnpm test         # single run
+pnpm run test:watch
 ```
 
 ## Live agents
@@ -190,10 +190,12 @@ Notes:
 | approval prompt             | `Up/Down`, `Enter`  | Move and confirm the selected approval choice     |
 | approval prompt             | `o`, `s`, `a`, `d`  | Quick-pick `once`, `session`, `always`, `deny`    |
 | approval prompt             | `Esc`, `Ctrl+C`     | Deny                                              |
-| clarify prompt with choices | `Up/Down`, `Enter`  | Move and confirm the selected choice              |
+| clarify prompt with choices | `Up/Down`, `Enter`  | Move and lock the selected choice                 |
 | clarify prompt with choices | single-digit number | Quick-pick the matching numbered choice           |
 | clarify prompt with choices | `Enter` on "Other"  | Switch into free-text entry                       |
-| clarify free-text mode      | `Enter`             | Submit typed answer                               |
+| clarify free-text mode      | `Enter`             | Lock typed answer (empty skips the question)      |
+| clarify prompt              | `Tab`, `Shift+Tab`  | Switch question                                   |
+| clarify prompt              | `Esc`, `Ctrl+C`     | Cancel the remaining questions                    |
 | sudo / secret prompt        | `Enter`             | Submit typed value                                |
 | sudo / secret prompt        | `Ctrl+C`            | Cancel by sending an empty response               |
 | resume picker               | `Up/Down`, `Enter`  | Move and resume the selected session              |
@@ -204,7 +206,7 @@ Notes:
 
 - Clarify free-text mode and masked prompts use `ink-text-input`, so text editing there follows the library's default bindings rather than `components/textInput.tsx`.
 - When a blocking prompt is open, the main chat input hotkeys are suspended.
-- Clarify mode has no dedicated cancel shortcut in the current client. Sudo and secret prompts only expose `Ctrl+C` cancellation from the app-level blocked handler.
+- Sudo and secret prompts only expose `Ctrl+C` cancellation from the app-level blocked handler.
 
 ### Interaction rules
 
@@ -237,7 +239,7 @@ The Python gateway can pause the main loop and ask the client a question. These 
 `createServerRequestHandler.ts`), not events:
 
 - `approval`: allow once, allow for session, allow always, or deny → `{ choice }`
-- `clarify`: pick from choices or type a custom answer → `{ answer }` (batch: `{ answers }`)
+- `clarify`: one or more questions; each answer is locked with the `clarify.lock` RPC, cancel → `{}`
 - `sudo`: masked password entry → `{ value }`
 - `secret`: masked value entry for a named env var → `{ value }`
 - `session.list`: used by `SessionPicker` for `/resume`

@@ -218,9 +218,10 @@ def _usage_agent_stats_lines(agent) -> list[str]:
     if ctx.last_prompt_tokens > 0:
         pct = _pct(ctx.last_prompt_tokens, ctx.context_length)
         from agent.context_breakdown import context_display_source
+        from agent.context_pin import agent_context_suffix
         mark = "~" if context_display_source(ctx) != "provider_usage" else ""
         lines.append(t("gateway.usage.label_context", used=mark + _fmt(ctx.last_prompt_tokens),
-                       total=_fmt(ctx.context_length), pct=f"{mark}{pct:.0f}"))
+                       total=_fmt(ctx.context_length), pct=f"{mark}{pct:.0f}") + agent_context_suffix(agent))
     if ctx.compression_count:
         lines.append(t("gateway.usage.label_compressions", count=ctx.compression_count))
     return lines
@@ -287,23 +288,15 @@ class GatewayStatusCommandsMixin:
             lines.append(t("gateway.status.model_provider", model=fields["model"], provider=fields["provider"]))
         elif fields["model"]:
             lines.append(t("gateway.status.model", model=fields["model"]))
-        try:
-            from hermes_cli.auth import resolve_provider
-            from hermes_cli.anon_auth import guest_carries_inference
-
-            free_tier_active = await self._run_in_executor_with_context(
-                lambda: resolve_provider("auto") == "nous" and guest_carries_inference()
-            )
-            if free_tier_active:
-                lines.append(t("gateway.status.free_tier"))
-        except Exception:
-            pass
         from agent.context_breakdown import context_display_source
         mark = "~" if context_display_source(getattr(status_agent, "context_compressor", None)) != "provider_usage" else ""
         if context_total:
             pct = min(100, round((context_used / context_total) * 100))
+            from agent.context_pin import agent_context_suffix  # (pinned) / (fallback) for the agent's own window
+            compressor_total = _n(getattr(status_agent, "context_compressor", None), "context_length")
+            suffix = agent_context_suffix(status_agent) if compressor_total and compressor_total == context_total else ""
             lines.append(t("gateway.status.context", used=mark + _fmt(context_used), total=_fmt(context_total),
-                           pct=f"{mark}{pct}"))
+                           pct=f"{mark}{pct}") + suffix)
         elif context_used:
             lines.append(t("gateway.status.context_used", used=mark + _fmt(context_used)))
         state = t("gateway.status.state_yes") if fields["agent_running"] else t("gateway.status.state_no")
@@ -365,7 +358,7 @@ class GatewayStatusCommandsMixin:
         # Running agent first (mid-turn), then cached agent (between turns).
         agent = self._resident_agent_for(self._session_key_for_source(source)) or None
         ctx = getattr(agent, "context_compressor", None) if agent else None
-        used, context_length, model_name = await self._resolve_context_figures(
+        used, context_length, model_name, window_suffix = await self._resolve_context_figures(
             agent, ctx, session_entry, source
         )
         from agent.context_breakdown import context_display_source
@@ -373,11 +366,11 @@ class GatewayStatusCommandsMixin:
         # Gauge path: preserve the provenance of the selected occupancy figure.
         if used > 0 and context_length > 0:
             pct = _pct(used, context_length)
-            filled = int(round(pct / 100 * 24))
+            filled = round(pct / 100 * 24)
             lines = [
                 t("gateway.context.header"), "",
                 t("gateway.context.model", model=model_name or "?"),
-                t("gateway.context.window", total=_fmt(context_length)),
+                t("gateway.context.window", total=_fmt(context_length)) + window_suffix,
                 t("gateway.context.in_use", used=mark + _fmt(used), total=_fmt(context_length), pct=f"{mark}{pct:.0f}"),
                 t("gateway.context.bar", bar="█" * max(0, filled) + "░" * max(0, 24 - filled)),
                 t("gateway.context.headroom", headroom=mark + _fmt(max(0, context_length - used))),
@@ -406,10 +399,13 @@ class GatewayStatusCommandsMixin:
         ])
 
     async def _resolve_context_figures(self, agent, ctx, session_entry, source):
-        """``(used, context_length, model_name)`` for /context: used = compressor -> SessionStore;
-        model = agent -> SessionDB row; window = compressor -> gateway model route -> model metadata."""
+        """``(used, context_length, model_name, window_suffix)`` for /context: used = compressor -> SessionStore;
+        model = agent -> SessionDB row; window = compressor -> gateway model route -> model metadata. The suffix
+        is `` (pinned)`` / `` (fallback)`` from whichever source supplied the window."""
+        from agent.context_pin import agent_context_suffix, context_window_suffix
         used = max(0, _n(ctx, "last_prompt_tokens")) or max(0, _int_value(getattr(session_entry, "last_prompt_tokens", 0)))
         context_length = _n(ctx, "context_length")
+        suffix = agent_context_suffix(agent) if context_length else ""
         model_name = _clean_str(getattr(agent, "model", "")) if agent is not None else ""
         if not model_name and self._session_db:
             row = await _quiet(lambda: self._session_db.get_session(session_entry.session_id))
@@ -419,12 +415,14 @@ class GatewayStatusCommandsMixin:
             if resolved is not None:
                 model_name = model_name or resolved.model
                 context_length = _int_value(resolved.context_length)
+                suffix = {"config": " (pinned)", "default": " (fallback)"}.get(resolved.context_source, "")
         if not context_length and model_name:
             from agent.model_metadata import get_model_context_length
             context_length = _int_value(
                 await _quiet(lambda: asyncio.to_thread(get_model_context_length, model_name))
             )
-        return used, context_length, model_name
+            suffix = context_window_suffix(context_length, None, model=model_name)
+        return used, context_length, model_name, suffix
 
     async def _resolve_route_context(self, source, model_name: str, route: dict | None = None):
         """``_resolve_gateway_model_context`` for a non-resident session, run off the event loop inside
@@ -613,7 +611,14 @@ class GatewayStatusCommandsMixin:
         # logged in" — NOT the inference provider — so a Nous user inferring elsewhere still sees
         # a balance. Fail-open: never break /usage.
         from agent.account_usage import nous_credits_lines
-        credits_lines = await _quiet(lambda: asyncio.to_thread(nous_credits_lines, markdown=True), [])
+        credits_state = getattr(agent, "_credits_state", None) if agent else None
+        credits_lines = await _quiet(
+            lambda: asyncio.to_thread(nous_credits_lines, markdown=True, credits_state=credits_state),
+            [],
+        )
+        # Window plans: a chat's /topup has no Keep going control, so point the setting at the Portal.
+        from agent.plan_limits import portal_wording
+        credits_lines = [portal_wording(line) for line in credits_lines]
 
         def _with_account_blocks(lines: list[str]) -> str:
             # Each block is preceded by a blank divider only when something precedes it.

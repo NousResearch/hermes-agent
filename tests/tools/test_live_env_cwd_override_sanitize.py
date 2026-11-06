@@ -43,7 +43,6 @@ WIN_WS = r"C:\Users\rashi\ai_workspace"
         ("docker", WIN_WS, WIN_WS, "/workspace"),
         # Host path that is not mounted anywhere: leave the live env untouched.
         ("docker", None, WIN_WS, "/root"),
-        ("singularity", None, "/Users/me/workspace", "/root"),
         # In-sandbox override (ACP project switch) still applies on a container.
         ("docker", None, "/workspace/task42", "/workspace/task42"),
         # Non-container backends apply the override verbatim.

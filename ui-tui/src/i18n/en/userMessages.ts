@@ -12,8 +12,7 @@ export const userMessagesEn = {
     details: (text: string) => `Details: ${text}`,
 
     backend: {
-      restarting:
-        'Hermes stopped unexpectedly — restarting and reopening your chat (the reply in progress was lost).',
+      restarting: 'Hermes stopped unexpectedly — restarting and reopening your chat (the reply in progress was lost).',
       restartingActivity: 'Hermes stopped unexpectedly · restarting…',
       connectionLost: 'Connection to Hermes lost — reconnecting and reopening your chat…',
       connectionLostActivity: 'connection lost · reconnecting…',
@@ -38,10 +37,25 @@ export const userMessagesEn = {
     },
 
     rpc: {
+      /** `{0}` = the session's terminal backend (docker, ssh, ...). shell.exec runs on the gateway host. */
+      shellBackendRefused: (backend: string) =>
+        `!commands run on the gateway host, but this session's terminal backend is ${backend}, so the command was not run. Ask the agent to run it instead; the agent's terminal runs inside ${backend}.`,
+      /** shellBackendRefused when the gateway did not name the backend (older gateways). */
+      shellBackendRefusedUnnamed:
+        "!commands run on the gateway host, but this session's terminal backend isn't local, so the command was not run. Ask the agent to run it instead.",
+      /** `{0}` = the JSON-RPC method name the backend does not serve. Not a version claim. */
+      methodUnavailable: (method: string) => `This Hermes backend does not provide ${method}, so that was not done.`,
       versionSkew:
         'The terminal UI and the Hermes backend are out of sync (different versions). Run /update, or exit and run `hermes update`, then start the TUI again.',
       sessionNotFound:
         'This chat is no longer attached to the backend (it was idle or the backend restarted). Your history is saved: type /resume to reopen it.',
+      /** The owner refused a control on a chat whose launch API key changed or was removed. */
+      launchCredentialsChanged:
+        "This chat can't use the API key it was started with any more (it changed or was removed), so that was not done. A chat never switches to a different key on its own. Type /new to start a new chat on your current key.",
+      sessionReadOnly:
+        'This chat is stored history Hermes can show but not continue, so your message was not run. Use /new to start a new chat.',
+      sessionHasChildren:
+        'This chat has child sessions (such as subagent runs) that deleting it would remove too, so it was not deleted.',
       notConnected:
         'Hermes is not connected right now, so that was not sent. It reconnects automatically; wait a moment and try again, or type /logs if this persists.',
       /** `{0}` = timeout in seconds. */
@@ -86,7 +100,15 @@ export const userMessagesEn = {
           hint: 'Try /retry; if it persists, switch with /model.',
           hintNoRetry: 'Pick another model with /model; if it persists, switch with /model.'
         },
-        modelNotFound: { title: 'The model provider does not know this model', hint: 'Pick another model with /model.' },
+        localRuntimeUnavailable: {
+          title: 'The local model server is not running',
+          hint: 'Try /retry once it is up, or switch with /model.',
+          hintNoRetry: 'Start the local model server (Hermes desktop app, or `hermes model` → Local models), or switch with /model.'
+        },
+        modelNotFound: {
+          title: 'The model provider does not know this model',
+          hint: 'Pick another model with /model.'
+        },
         overloaded: { title: 'The model provider is overloaded', hint: 'Wait a moment, then /retry.' },
         payloadTooLarge: { title: 'The request was too large for this model', hint: 'Run /compress, then /retry.' },
         providerPolicyBlocked: {

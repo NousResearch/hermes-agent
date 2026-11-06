@@ -161,6 +161,9 @@ test('baseSshOptions carries the house ControlMaster/BatchMode/accept-new policy
   assert.match(joined, /StrictHostKeyChecking=accept-new/)
   assert.match(joined, /ExitOnForwardFailure=yes/)
   assert.match(joined, /ConnectTimeout=15/)
+  assert.match(joined, /ServerAliveInterval=15/)
+  assert.match(joined, /ServerAliveCountMax=3/)
+  assert.match(joined, /TCPKeepAlive=yes/)
   assert.ok(!joined.includes('StrictHostKeyChecking=no'), 'never disables host-key checking')
 })
 
@@ -559,10 +562,7 @@ test('mux forward keeps the ControlPersist master alive until the final forward 
   try {
     const spawnFn = scriptedSpawn({ code: 0 })
 
-    const conn = new SshConnection(
-      { host: 'box', user: 'me' },
-      { spawnFn, controlDir: '/tmp/d' }
-    )
+    const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d' })
 
     await conn.forward(5000, 6000)
     await conn.forward(5001, 6001)
@@ -1459,6 +1459,28 @@ test('withRemoteTimeout kills a hung probe remotely instead of orphaning it (#11
   }
 })
 
+test('exec wraps POSIX payloads in sh -c so a fish login shell never parses them', async () => {
+  const spawnFn = scriptedSpawn((args: any) =>
+    args.at(-1) === 'uname -s' ? { code: 0, stdout: 'Linux\n' } : { code: 0, stdout: 'OK\n' }
+  )
+
+  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d' })
+  await conn.exec('help="$(true)"; echo "${X:-y}"')
+  const cmd = spawnFn.calls[1].at(-1)
+  assert.match(cmd, /^sh -c '/)
+  assert.match(cmd, /help="\$\(true\)"/)
+})
+
+test('exec leaves Windows PowerShell payloads unwrapped', async () => {
+  const spawnFn = scriptedSpawn((args: any) =>
+    args.at(-1) === 'uname -s' ? { code: 1, stderr: 'uname: command not found' } : { code: 0 }
+  )
+
+  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d' })
+  await conn.exec('powershell.exe -NoProfile -Command "echo hi"')
+  assert.equal(spawnFn.calls[1].at(-1), 'powershell.exe -NoProfile -Command "echo hi"')
+})
+
 // #97264: every attempt for one scope/host/identity hashes to the same
 // ControlPath, so a stale attempt's `-O exit` used to kill the master its
 // successor had attached to (the live backend's forward died ~40s after
@@ -1599,4 +1621,29 @@ test('a failed open releases its claim so the remaining holder can still close t
   await assert.rejects(() => broken.open())
   await live.close()
   assert.equal(state.exits, 1, 'the failed opener left no phantom claim behind')
+})
+
+test('#103288: every spawn uses the injected sshBinary; the default stays bare ssh', async () => {
+  const commands: string[] = []
+
+  const spawnFn: any = (cmd: string) => {
+    commands.push(cmd)
+
+    return fakeChild({ code: 0 })
+  }
+
+  const custom = createSshProbeConnection(
+    { host: 'box', user: 'me' },
+    { spawnFn, sshBinary: 'C:\\Program Files\\Git\\usr\\bin\\ssh.exe' }
+  )
+
+  await custom.open()
+  await custom.exec('true')
+  assert.ok(commands.length >= 2, 'open + exec both spawned')
+  assert.deepEqual([...new Set(commands)], ['C:\\Program Files\\Git\\usr\\bin\\ssh.exe'])
+
+  commands.length = 0
+  const plain = createSshProbeConnection({ host: 'box', user: 'me' }, { spawnFn })
+  await plain.open()
+  assert.deepEqual([...new Set(commands)], ['ssh'])
 })

@@ -4,6 +4,8 @@ import { sessionCommands } from '../app/slash/commands/session.js'
 import type { SessionUsageResponse } from '../gatewayTypes.js'
 import { applyLocale, resetLocale, t } from '../i18n/runtime.js'
 
+const USAGE_CTA = 'Run /subscription to change plan · /topup to add to your balance'
+
 const usageCommand = sessionCommands.find(cmd => cmd.name === 'usage')!
 
 const guarded =
@@ -82,6 +84,35 @@ describe('/usage slash command', () => {
     const withBalance = buildCtx({ 'session.usage': baseUsage({ calls: 0, credits_lines: ['$50.00 remaining'] }) })
     await withBalance.run('')
     expect(printed(withBalance.sys)).not.toContain(t('slashCmd.session.usage.noCalls'))
+  })
+
+  it('prints window usage one stripped line at a time', async () => {
+    const { panel, run, sys } = buildCtx({
+      'session.usage': baseUsage({
+        calls: 0,
+        credits_usage_window: true,
+        credits_lines: [
+          'Window Plan',
+          '\u001b[32mToday      [          ]  0% used  ·  resets in 23h\u001b[0m',
+          'This week  [          ]  0% used  ·  resets in 6d 23h'
+        ]
+      })
+    })
+    await run('')
+    expect(panel).not.toHaveBeenCalled()
+    expect(sys.mock.calls.map(c => c[0])).toEqual([
+      'Window Plan',
+      'Today      [          ]  0% used  ·  resets in 23h',
+      'This week  [          ]  0% used  ·  resets in 6d 23h',
+      USAGE_CTA
+    ])
+  })
+
+  it('keeps the non-window balance panel text verbatim (blank lines included)', async () => {
+    const lines = ['Nous balance: $50.00', '', 'Top up: https://portal.example/billing?topup=open']
+    const { panel, run } = buildCtx({ 'session.usage': baseUsage({ calls: 0, credits_lines: lines }) })
+    await run('')
+    expect(panel).toHaveBeenCalledWith('Nous balance', [{ text: lines.join('\n') }])
   })
 
   it('renders the dollar two-bar model (no "credits" wording) when available', async () => {

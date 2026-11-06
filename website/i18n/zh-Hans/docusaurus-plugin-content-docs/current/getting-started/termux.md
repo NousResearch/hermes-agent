@@ -92,7 +92,8 @@ APT 移除软件包和命令链接，但保留用户配置、会话、技能和�
 Android 可能挂起或终止后台进程；唤醒锁不保证持续运行。
 
 该包不包含 `nemo-relay` 导出器，也不包含 Electron 桌面应用。
-本地 Chromium、桌面控制、Docker daemon 和音频设备集成不能因核心 CLI 可运行就视为可用。
+该包不捆绑 Chromium：浏览器工具会启动 `PATH` 上的系统 `chromium`（软件源提供时可运行 `pkg install chromium`）；没有时无法使用浏览功能，浏览器工具会给出提示。
+桌面控制、Docker daemon 和音频设备集成不能因核心 CLI 可运行就视为可用。
 第三方插件仍可能需要 Android 不支持的依赖。
 
 故障排查时运行 `hermes doctor`，并提供 `hermes --version` 和完整错误。

@@ -1,11 +1,11 @@
 import { execFileSync } from 'node:child_process'
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, symlinkSync } from 'node:fs'
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, expect, test } from 'vitest'
-import { npmCommand } from '../scripts/build/node-deps.mjs'
+import { pnpmCommand, prepareNodeDependencies } from '../scripts/build/node-deps.mjs'
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const roots = []
@@ -16,129 +16,182 @@ function json(path, value) {
   writeFileSync(path, JSON.stringify(value))
 }
 
-function fixture() {
-  const root = mkdtempSync(join(tmpdir(), 'node union with spaces-'))
-  roots.push(root)
-  json(join(root, 'package.json'), { name: 'fixture', private: true, dependencies: { 'root-only': 'file:vendor/root-only' }, workspaces: ['ui-tui', 'web', 'apps/desktop'], engines: { node: '>=22', npm: '>=10' } })
-  for (const name of ['tui-only', 'web-only', 'root-only']) {
-    json(join(root, 'vendor', name, 'package.json'), { name, version: '1.0.0', main: 'index.cjs' })
-    writeFileSync(join(root, 'vendor', name, 'index.cjs'), `module.exports = '${name}'`)
-  }
-  json(join(root, 'ui-tui/package.json'), { name: 'tui', version: '1.0.0', dependencies: { 'tui-only': 'file:../vendor/tui-only' } })
-  json(join(root, 'web/package.json'), { name: 'web', version: '1.0.0', dependencies: { 'web-only': 'file:../vendor/web-only' } })
-  json(join(root, 'apps/desktop/package.json'), { name: 'desktop', version: '1.0.0', scripts: { postinstall: 'node -e "require(\'fs\').writeFileSync(\'electron-provisioned\',\'yes\')"' } })
-  const [node, npm] = npmCommand()
-  execFileSync(node, [npm, 'install', '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund', '--offline'], { cwd: root, env: { ...process.env, npm_config_cache: join(root, '.npm-cache') }, stdio: 'pipe' })
-  return root
+function vendor(source, name, scripts) {
+  json(join(source, 'vendor', name, 'package.json'), { name, version: '1.0.0', main: 'index.cjs', scripts })
+  writeFileSync(join(source, 'vendor', name, 'index.cjs'), `module.exports = '${name}'`)
 }
 
-test.each(['npm', 'npm-fixture'])('prepared npm discovers lib/%s without npm_execpath', (directory) => {
-  const [node, installedCli] = npmCommand()
-  const root = mkdtempSync(join(tmpdir(), 'npm layout with spaces-'))
-  roots.push(root)
-  mkdirSync(join(root, 'bin'))
-  mkdirSync(join(root, 'lib'))
-  // Real npm code in a version-suffixed package directory. The launcher name
-  // has no .js suffix, as with native npm.cmd and Nix's shell wrappers.
-  cpSync(installedCli, join(root, 'bin', process.platform === 'win32' ? 'npm.cmd' : 'npm'))
-  symlinkSync(dirname(dirname(installedCli)), join(root, 'lib', directory), 'junction')
-  const env = { ...process.env, PATH: join(root, 'bin') }
-  delete env.npm_execpath
-  const [selectedNode, cli] = npmCommand({ env })
-  expect(selectedNode).toBe(node)
-  expect(cli).toBe(join(root, 'lib', directory, 'bin/npm-cli.js'))
-  const version = execFileSync(selectedNode, [cli, '--version'], { cwd: tmpdir(), env, encoding: 'utf8' }).trim()
-  expect(version).toMatch(/^\d+\.\d+\.\d+/)
+// A real pnpm workspace and lockfile. tui-only and web-only are tarballs, which pnpm
+// stores and links like registry packages; web-only carries a dependency build. The
+// root postinstall counts pnpm installs. Build outputs stay out of the store, as
+// the repository's pnpm-workspace.yaml configures.
+function fixture() {
+  const base = mkdtempSync(join(tmpdir(), 'node union with spaces-'))
+  roots.push(base)
+  const source = join(base, 'source')
+  // The store, metadata cache and state stay in the fixture, never in the user's home.
+  const env = { ...process.env, pnpm_config_offline: 'true', pnpm_config_store_dir: join(base, 'store'),
+    pnpm_config_cache_dir: join(base, 'cache'), pnpm_config_state_dir: join(base, 'state') }
+  vendor(source, 'root-only')
+  vendor(source, 'tui-only')
+  vendor(source, 'web-only', { install: `node -e "require('node:fs').writeFileSync('built', require('node:crypto').randomUUID())"` })
+  for (const name of ['tui-only', 'web-only']) {
+    execFileSync(pnpmCommand(), ['pack', '--pack-destination', join(source, 'vendor')], { cwd: join(source, 'vendor', name), env, stdio: 'pipe' })
+  }
+  json(join(source, 'package.json'), { name: 'fixture', private: true, dependencies: { 'root-only': 'file:vendor/root-only' },
+    scripts: { postinstall: `node -e "require('node:fs').appendFileSync('installs', 'x')"` } })
+  writeFileSync(join(source, 'pnpm-workspace.yaml'), [
+    'packages:', '  - ui-tui', '  - web', '  - apps/desktop', 'sideEffectsCache: false',
+    'allowBuilds:', "  'web-only@file:vendor/web-only-1.0.0.tgz': true", '',
+  ].join('\n'))
+  json(join(source, 'ui-tui/package.json'), { name: 'tui', version: '1.0.0', dependencies: { 'tui-only': 'file:../vendor/tui-only-1.0.0.tgz' } })
+  json(join(source, 'web/package.json'), { name: 'web', version: '1.0.0', dependencies: { 'web-only': 'file:../vendor/web-only-1.0.0.tgz' } })
+  json(join(source, 'apps/desktop/package.json'), { name: 'desktop', version: '1.0.0', scripts: { postinstall: 'node -e "require(\'fs\').writeFileSync(\'electron-provisioned\',\'yes\')"' } })
+  execFileSync(pnpmCommand(), ['install', '--lockfile-only'], { cwd: source, env, stdio: 'pipe' })
+  return { source, env }
+}
+
+function installs(source) {
+  return existsSync(join(source, 'installs')) ? readFileSync(join(source, 'installs'), 'utf8').length : 0
+}
+
+function webOnly(source) {
+  return dirname(createRequire(join(source, 'web/package.json')).resolve('web-only/package.json'))
+}
+
+function cli(source, ...args) {
+  return [join(repo, 'scripts/build/node-deps.mjs'), '--source', source, ...args]
+}
+
+test('without a pnpm on PATH, the pnpm running the script is used', () => {
+  const base = mkdtempSync(join(tmpdir(), 'pnpm-execpath-'))
+  roots.push(base)
+  const running = join(base, process.platform === 'win32' ? 'pnpm.exe' : 'pnpm')
+  writeFileSync(running, '')
+
+  expect(pnpmCommand({ env: { npm_execpath: running, PATH: '' } })).toBe(running)
+  // npm's own execpath (npm-cli.js) is not a pnpm: PATH decides, and here it has none.
+  expect(() => pnpmCommand({ env: { npm_execpath: join(base, 'npm-cli.js'), PATH: '' } })).toThrow('pnpm is required on PATH')
 })
 
-test('read-only dependency preparation reuses complete receipts but refuses missing inputs', async () => {
-  const { prepareNodeDependencies } = await import('../scripts/build/node-deps.mjs')
-  const source = fixture()
-  const options = { source, workspaces: ['web'], reuse: true,
-    env: { ...process.env, npm_config_offline: 'true', npm_config_cache: join(source, '.npm-cache') } }
+test('selection fails closed on implicit, unknown or missing workspaces', () => {
+  const { source, env } = fixture()
+  expect(() => prepareNodeDependencies({ source, workspaces: [], env })).toThrow(/workspace/)
+  // pnpm itself would ignore a filter that matches nothing.
+  expect(() => prepareNodeDependencies({ source, workspaces: ['missing'], env })).toThrow(/workspace/)
+  expect(() => prepareNodeDependencies({ source, workspaces: ['.'], env })).toThrow(/workspace/)
+  rmSync(join(source, 'apps/desktop'), { recursive: true })
+  expect(() => prepareNodeDependencies({ source, workspaces: ['apps/desktop'], env })).toThrow(/workspace/)
+  expect(existsSync(join(source, 'node_modules'))).toBe(false)
+}, 30000)
+
+test('read-only dependency preparation reuses complete receipts but refuses missing inputs', () => {
+  const { source, env } = fixture()
+  const options = { source, workspaces: ['web'], reuse: true, env }
   expect(() => prepareNodeDependencies({ ...options, install: false })).toThrow(/disabled/)
   expect(existsSync(join(source, 'node_modules'))).toBe(false)
   prepareNodeDependencies(options)
   const receipt = readFileSync(join(source, 'node_modules/.hermes-node-deps'))
   prepareNodeDependencies({ ...options, install: false })
-  rmSync(join(source, 'node_modules/web-only'), { recursive: true })
+  prepareNodeDependencies(options)
+  expect(installs(source)).toBe(1)
+  // A removed store slot leaves a dangling workspace link.
+  rmSync(webOnly(source), { recursive: true })
   expect(() => prepareNodeDependencies({ ...options, install: false })).toThrow(/disabled/)
   expect(readFileSync(join(source, 'node_modules/.hermes-node-deps'))).toEqual(receipt)
+  prepareNodeDependencies(options)
+  rmSync(join(source, 'web/node_modules/web-only'))
+  expect(() => prepareNodeDependencies({ ...options, install: false })).toThrow(/disabled/)
 }, 30000)
 
-test('native toolchain admission rejects a changed compiler without breaking ordinary builders', async () => {
-  const { prepareNodeDependencies } = await import('../scripts/build/node-deps.mjs')
-  const source = fixture()
-  const options = { source, workspaces: ['web'], reuse: true,
-    env: { ...process.env, npm_config_offline: 'true', npm_config_cache: join(source, '.npm-cache') } }
+test('reuse refuses a gutted package directory and repairs it', () => {
+  const { source, env } = fixture()
+  const options = { source, workspaces: ['web'], reuse: true, env }
+  prepareNodeDependencies(options)
+  // #128935: an external cleanup or snapshot restore can leave the directory
+  // while stripping its contents. pnpm trusts its record that the package is
+  // installed and would not restore it, so the receipt must reject first.
+  const gutted = webOnly(source)
+  rmSync(gutted, { recursive: true })
+  mkdirSync(gutted)
+  expect(() => prepareNodeDependencies({ ...options, install: false })).toThrow(/disabled/)
+  prepareNodeDependencies(options)
+  expect(createRequire(join(source, 'web/package.json'))('web-only')).toBe('web-only')
+}, 30000)
+
+test('native toolchain admission rejects a changed compiler without breaking ordinary builders', () => {
+  const { source, env } = fixture()
+  const options = { source, workspaces: ['web'], reuse: true, env }
   prepareNodeDependencies({ ...options, nativeToolchain: 'native-first' })
-  const artifact = join(source, 'node_modules/compiled-output')
-  writeFileSync(artifact, 'old compiler')
+  const built = readFileSync(join(webOnly(source), 'built'), 'utf8')
   prepareNodeDependencies({ ...options, install: false })
   prepareNodeDependencies({ ...options, nativeToolchain: 'native-first', install: false })
   expect(() => prepareNodeDependencies({ ...options, nativeToolchain: 'native-second', install: false })).toThrow(/disabled/)
-  expect(readFileSync(artifact, 'utf8')).toBe('old compiler')
-  const cli = [join(repo, 'scripts/build/node-deps.mjs'), '--source', source, '--workspace', 'web', '--reuse', '--native-toolchain', 'native-second']
-  execFileSync(process.execPath, cli, { env: options.env, stdio: 'pipe' })
-  expect(existsSync(artifact)).toBe(false)
+  expect(readFileSync(join(webOnly(source), 'built'), 'utf8')).toBe(built)
+  execFileSync(process.execPath, cli(source, '--workspace', 'web', '--reuse', '--native-toolchain', 'native-second'), { env, stdio: 'pipe' })
+  // The dependency build ran again under the new toolchain.
+  expect(readFileSync(join(webOnly(source), 'built'), 'utf8')).not.toBe(built)
   prepareNodeDependencies({ ...options, nativeToolchain: 'native-second', install: false })
   prepareNodeDependencies({ ...options, install: false })
 }, 30000)
 
-test('one locked preparation retains the requested union without provisioning desktop', async () => {
-  const { prepareNodeDependencies } = await import('../scripts/build/node-deps.mjs')
-  const source = fixture()
-  const lock = readFileSync(join(source, 'package-lock.json'))
-  await prepareNodeDependencies({ source, workspaces: ['ui-tui', 'web', 'ui-tui'], env: { ...process.env, npm_config_offline: 'true', npm_config_cache: join(source, '.npm-cache') } })
+test('one locked preparation retains the requested union without provisioning desktop', () => {
+  const { source, env } = fixture()
+  const lock = readFileSync(join(source, 'pnpm-lock.yaml'))
+  prepareNodeDependencies({ source, workspaces: ['ui-tui', 'web', 'ui-tui'], env })
   for (const [workspace, name] of [['ui-tui', 'tui-only'], ['web', 'web-only']]) {
     expect(createRequire(join(source, workspace, 'package.json'))(name)).toBe(name)
   }
   expect(createRequire(join(source, 'package.json'))('root-only')).toBe('root-only')
-  expect(existsSync(join(source, 'node_modules/desktop'))).toBe(false)
+  expect(existsSync(join(source, 'apps/desktop/node_modules'))).toBe(false)
   expect(existsSync(join(source, 'apps/desktop/electron-provisioned'))).toBe(false)
-  expect(readFileSync(join(source, 'package-lock.json'))).toEqual(lock)
-  execFileSync(process.execPath, [join(repo, 'scripts/build/node-deps.mjs'), '--source', source, '--workspace', 'ui-tui', '--workspace', 'web'], { cwd: tmpdir(), env: { ...process.env, npm_config_offline: 'true', npm_config_cache: join(source, '.npm-cache') }, stdio: 'pipe' })
+  expect(readFileSync(join(source, 'pnpm-lock.yaml'))).toEqual(lock)
+  execFileSync(process.execPath, cli(source, '--workspace', 'ui-tui', '--workspace', 'web'), { cwd: tmpdir(), env, stdio: 'pipe' })
   expect(createRequire(join(source, 'web/package.json'))('web-only')).toBe('web-only')
 }, 30000)
 
-test('web-only selection excludes siblings and rejects stale locks without rewriting them', async () => {
-  const { prepareNodeDependencies } = await import('../scripts/build/node-deps.mjs')
-  const source = fixture()
-  const env = { ...process.env, npm_config_offline: 'true', npm_config_cache: join(source, '.npm-cache') }
-  rmSync(join(source, 'apps/desktop'), { recursive: true })
-  prepareNodeDependencies({ source, workspaces: ['web'], env })
-  expect(existsSync(join(source, 'node_modules/tui-only'))).toBe(false)
-  expect(existsSync(join(source, 'apps/desktop/electron-provisioned'))).toBe(false)
-  const lock = readFileSync(join(source, 'package-lock.json'))
-  json(join(source, 'web/package.json'), { name: 'web', version: '1.0.0', dependencies: { 'web-only': '9.0.0' } })
-  expect(() => prepareNodeDependencies({ source, workspaces: ['web'], env })).toThrow()
-  expect(readFileSync(join(source, 'package-lock.json'))).toEqual(lock)
-  expect(() => prepareNodeDependencies({ source, workspaces: [], env })).toThrow(/workspace/)
-  expect(() => prepareNodeDependencies({ source, workspaces: ['missing'], env })).toThrow(/workspace/)
+test('electron: false installs Desktop without preparing its Electron binary', () => {
+  const { source, env } = fixture()
+  json(join(source, 'vendor/electron/package.json'), { name: 'electron', version: '1.0.0' })
+  json(join(source, 'apps/desktop/package.json'), { name: 'desktop', version: '1.0.0', devDependencies: { electron: 'file:../../vendor/electron' } })
+  execFileSync(pnpmCommand(), ['install', '--lockfile-only'], { cwd: source, env, stdio: 'pipe' })
+  // Electron preparation runs after the install: this fake is not the version Desktop pins.
+  expect(() => prepareNodeDependencies({ source, workspaces: ['apps/desktop'], env })).toThrow(/lock-pinned/)
+  prepareNodeDependencies({ source, workspaces: ['apps/desktop'], env, electron: false })
+  expect(existsSync(join(source, 'apps/desktop/node_modules/electron/package.json'))).toBe(true)
 }, 30000)
 
-test('a restored completed install retains postinstall outputs only for matching inputs', async () => {
-  const { prepareNodeDependencies } = await import('../scripts/build/node-deps.mjs')
-  const source = fixture()
-  const env = { ...process.env, npm_config_offline: 'true', npm_config_cache: join(source, '.npm-cache') }
+test('web-only selection excludes siblings and rejects stale locks without rewriting them', () => {
+  const { source, env } = fixture()
+  rmSync(join(source, 'apps/desktop'), { recursive: true })
+  prepareNodeDependencies({ source, workspaces: ['web'], env })
+  expect(existsSync(join(source, 'ui-tui/node_modules'))).toBe(false)
+  expect(existsSync(join(source, 'apps/desktop/electron-provisioned'))).toBe(false)
+  const lock = readFileSync(join(source, 'pnpm-lock.yaml'))
+  json(join(source, 'web/package.json'), { name: 'web', version: '1.0.0', dependencies: { 'web-only': '9.0.0' } })
+  expect(() => prepareNodeDependencies({ source, workspaces: ['web'], env })).toThrow()
+  expect(readFileSync(join(source, 'pnpm-lock.yaml'))).toEqual(lock)
+}, 30000)
+
+test('a restored completed install retains postinstall outputs only for matching inputs', () => {
+  const { source, env } = fixture()
   prepareNodeDependencies({ source, workspaces: ['ui-tui', 'web'], env, reuse: true })
   const artifact = 'node_modules/postinstall-output'
   writeFileSync(join(source, artifact), 'built')
-  const restored = mkdtempSync(join(tmpdir(), 'restored node union-'))
-  roots.push(restored)
+  const restored = join(mkdtempSync(join(tmpdir(), 'restored node union-')), 'source')
+  roots.push(dirname(restored))
   cpSync(source, restored, { recursive: true, verbatimSymlinks: true })
   prepareNodeDependencies({ source: restored, workspaces: ['web', 'ui-tui'], env, reuse: true })
   expect(readFileSync(join(restored, artifact), 'utf8')).toBe('built')
-  const cli = [join(repo, 'scripts/build/node-deps.mjs'), '--source', restored, '--workspace', 'web', '--workspace', 'ui-tui', '--reuse']
-  execFileSync(process.execPath, cli, { cwd: tmpdir(), env, stdio: 'pipe' })
+  execFileSync(process.execPath, cli(restored, '--workspace', 'web', '--workspace', 'ui-tui', '--reuse'), { cwd: tmpdir(), env, stdio: 'pipe' })
   expect(readFileSync(join(restored, artifact), 'utf8')).toBe('built')
   expect(createRequire(join(restored, 'web/package.json'))('web-only')).toBe('web-only')
 
   prepareNodeDependencies({ source: restored, workspaces: ['web'], env, reuse: true })
   expect(existsSync(join(restored, artifact))).toBe(false)
-  expect(existsSync(join(restored, 'node_modules/tui-only'))).toBe(false)
+  expect(existsSync(join(restored, 'ui-tui/node_modules'))).toBe(false)
   writeFileSync(join(restored, artifact), 'built again')
-  // Even an invalid manifest must reach npm, not hide behind a warm lockfile cache.
+  // Even an invalid manifest must reach pnpm, not hide behind a warm receipt.
   json(join(restored, 'web/package.json'), { name: 'web', version: '1.0.0', dependencies: { 'web-only': '9.0.0' } })
   expect(() => prepareNodeDependencies({ source: restored, workspaces: ['web'], env, reuse: true })).toThrow()
   cpSync(join(source, 'web/package.json'), join(restored, 'web/package.json'))
@@ -146,165 +199,141 @@ test('a restored completed install retains postinstall outputs only for matching
   expect(existsSync(join(restored, artifact))).toBe(false)
 }, 30000)
 
-test('reuse respects lifecycle configuration and repairs missing installed packages', async () => {
-  const { prepareNodeDependencies } = await import('../scripts/build/node-deps.mjs')
-  const source = fixture()
-  const manifest = JSON.parse(readFileSync(join(source, 'package.json'), 'utf8'))
-  manifest.scripts = { postinstall: `node -e "require('node:fs').writeFileSync('node_modules/postinstall-output', require('node:crypto').randomUUID())"` }
-  json(join(source, 'package.json'), manifest)
-  const env = { ...process.env, npm_config_offline: 'true', npm_config_cache: join(source, '.npm-cache') }
+test('reuse respects lifecycle configuration and repairs missing installed packages', () => {
+  const { source, env } = fixture()
   const options = { source, workspaces: ['web'], env, reuse: true }
-  const artifact = join(source, 'node_modules/postinstall-output')
-  prepareNodeDependencies({ ...options, env: { ...env, npm_config_ignore_scripts: 'true' } })
-  expect(existsSync(artifact)).toBe(false)
+  const marker = () => readFileSync(join(webOnly(source), 'built'), 'utf8')
+  prepareNodeDependencies({ ...options, env: { ...env, pnpm_config_ignore_scripts: 'true' } })
+  expect(existsSync(join(webOnly(source), 'built'))).toBe(false)
+  expect(installs(source)).toBe(0)
   prepareNodeDependencies(options)
-  const first = readFileSync(artifact, 'utf8')
+  const first = marker()
   prepareNodeDependencies(options)
-  expect(readFileSync(artifact, 'utf8')).toBe(first)
-  rmSync(join(source, 'node_modules/web-only'), { recursive: true, force: true })
+  expect(marker()).toBe(first)
+  rmSync(webOnly(source), { recursive: true })
   prepareNodeDependencies(options)
-  const repaired = readFileSync(artifact, 'utf8')
+  const repaired = marker()
   expect(repaired).not.toBe(first)
   expect(createRequire(join(source, 'web/package.json'))('web-only')).toBe('web-only')
   prepareNodeDependencies({ ...options, reuse: false })
-  expect(readFileSync(artifact, 'utf8')).not.toBe(repaired)
+  expect(marker()).not.toBe(repaired)
 }, 30000)
 
-test('npm configuration name casing does not invalidate a completed install', async () => {
-  const { prepareNodeDependencies } = await import('../scripts/build/node-deps.mjs')
-  const source = fixture()
-  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'npm_config_prefix'))
-  Object.assign(env, { npm_config_offline: 'true', npm_config_cache: join(source, '.npm-cache') })
-  const prefix = join(source, 'npm-prefix')
+test('pnpm configuration name casing does not invalidate a completed install', () => {
+  const fixtureEnv = fixture()
+  const { source } = fixtureEnv
+  const env = Object.fromEntries(Object.entries(fixtureEnv.env).filter(([key]) => key.toLowerCase() !== 'pnpm_config_child_concurrency'))
   const options = { source, workspaces: ['web'], reuse: true }
-  prepareNodeDependencies({ ...options, env: { ...env, npm_config_prefix: prefix } })
-  const artifact = join(source, 'node_modules/postinstall-output')
-  writeFileSync(artifact, 'built')
+  prepareNodeDependencies({ ...options, env: { ...env, pnpm_config_child_concurrency: '2' } })
   // The Windows runner sets lowercase; Python's os.environ returns uppercase.
-  prepareNodeDependencies({ ...options, env: { ...env, NPM_CONFIG_PREFIX: prefix } })
-  expect(readFileSync(artifact, 'utf8')).toBe('built')
+  prepareNodeDependencies({ ...options, env: { ...env, PNPM_CONFIG_CHILD_CONCURRENCY: '2' } })
+  expect(installs(source)).toBe(1)
   // Normalize names, not values: a genuinely changed setting still reinstalls.
-  prepareNodeDependencies({ ...options, env: { ...env, NPM_CONFIG_PREFIX: join(source, 'other-prefix') } })
-  expect(existsSync(artifact)).toBe(false)
+  prepareNodeDependencies({ ...options, env: { ...env, PNPM_CONFIG_CHILD_CONCURRENCY: '3' } })
+  expect(installs(source)).toBe(2)
 }, 30000)
 
-// A stand-in npm: `ci` fails with ENOTEMPTY (or `failure`) while a stuck
-// node_modules/.bin entry survives, and records every ci run.
-function fakeNpm(root, failure) {
-  const [, realCli] = npmCommand()
-  const dir = join(root, 'fake-npm')
-  mkdirSync(join(dir, 'node_modules'), { recursive: true })
-  symlinkSync(dirname(createRequire(realCli).resolve('semver/package.json')), join(dir, 'node_modules/semver'), 'junction')
-  const cli = join(dir, 'npm-cli.js')
-  writeFileSync(cli, `const fs = require('fs'), path = require('path')
-const args = process.argv.slice(2)
-if (args[0] === '--version') { console.log('10.9.0'); process.exit(0) }
-fs.appendFileSync(path.join(${JSON.stringify(root)}, 'ci-runs'), 'ci\\n')
-if (fs.existsSync('node_modules/.bin/stuck')) {
-  const logs = args.find(arg => arg.startsWith('--logs-dir=')).slice('--logs-dir='.length)
-  fs.writeFileSync(path.join(logs, 'debug-0.log'), 'error code ${failure}\\n')
-  process.exit(1)
-}
-`)
-  return { ...process.env, npm_execpath: cli }
-}
-
-function stuckNodeModules(root) {
-  mkdirSync(join(root, 'node_modules/.bin'), { recursive: true })
-  writeFileSync(join(root, 'node_modules/.bin/stuck'), '')
-}
-
-test('npm ci ENOTEMPTY clears node_modules and retries once', async () => {
-  const { prepareNodeDependencies } = await import('../scripts/build/node-deps.mjs')
-  const source = fixture()
-  stuckNodeModules(source)
-  prepareNodeDependencies({ source, workspaces: ['web'], env: fakeNpm(source, 'ENOTEMPTY') })
-  expect(readFileSync(join(source, 'ci-runs'), 'utf8')).toBe('ci\nci\n')
-  expect(existsSync(join(source, 'node_modules/.bin/stuck'))).toBe(false)
-}, 30000)
-
-test('any other npm ci failure keeps node_modules and does not retry', async () => {
-  const { prepareNodeDependencies } = await import('../scripts/build/node-deps.mjs')
-  const source = fixture()
-  stuckNodeModules(source)
-  expect(() => prepareNodeDependencies({ source, workspaces: ['web'], env: fakeNpm(source, 'EINTEGRITY') })).toThrow()
-  expect(readFileSync(join(source, 'ci-runs'), 'utf8')).toBe('ci\n')
-  expect(existsSync(join(source, 'node_modules/.bin/stuck'))).toBe(true)
-}, 30000)
-
-// A fake npm whose version probes die but whose ci succeeds: the Job-Object
-// failure lane from #123933. The version must come from the manifest without
-// a single child spawn, and npm_execpath resolving through a symlink (whose
-// parent holds no manifest) must still find it beside the resolved CLI.
-function fakeNpmTree(source, { manifest }) {
-  const fake = mkdtempSync(join(tmpdir(), 'npm layout with spaces-fake-'))
-  roots.push(fake)
-  const npmRoot = join(fake, 'real/node_modules/npm')
-  mkdirSync(join(npmRoot, 'bin'), { recursive: true })
-  if (manifest) json(join(npmRoot, 'package.json'), { name: 'npm', version: manifest })
-  json(join(fake, 'real/node_modules/semver/package.json'), { name: 'semver', version: '1.0.0', main: 'index.js' })
-  writeFileSync(join(fake, 'real/node_modules/semver/index.js'), 'module.exports = { satisfies: () => true }\n')
-  const spawned = join(source, 'spawned.jsonl')
-  const armProbe = ({ exit }) => writeFileSync(join(npmRoot, 'bin/npm-cli.js'), [
-    `const { appendFileSync } = require('node:fs')`,
-    `appendFileSync(${JSON.stringify(spawned)}, process.argv[2] + '\\n')`,
-    `if (process.argv[2] === '--version') { console.log('10.8.2'); process.exit(${exit}) }`,
-  ].join('\n'))
-  armProbe({ exit: manifest ? 3 : 0 })
-  return { fake, npmRoot, spawned, armProbe }
-}
-
-test.skipIf(process.platform === 'win32')('the npm version reads from the manifest without a child spawn, through a symlinked npm_execpath', async () => {
-  const { prepareNodeDependencies } = await import('../scripts/build/node-deps.mjs')
-  const source = fixture()
-  const { fake, npmRoot, spawned } = fakeNpmTree(source, { manifest: '10.8.2' })
-  // The symlink sits outside npm's package directory: its parent holds no
-  // manifest, while the resolved CLI's parent does. semver stays resolvable
-  // from the link, as with a real prefix bin symlink.
-  mkdirSync(join(fake, 'real/bin'), { recursive: true })
-  symlinkSync(join(npmRoot, 'bin/npm-cli.js'), join(fake, 'real/bin/npm-cli.js'))
-  mkdirSync(join(source, 'node_modules'))
-  writeFileSync(join(source, 'node_modules/.package-lock.json'), '{"packages": {}}')
-  const options = { source, workspaces: ['web'], reuse: true,
-    env: { ...process.env, npm_config_cache: join(source, '.npm-cache'), npm_execpath: join(fake, 'real/bin/npm-cli.js') } }
+test('the receipt is keyed on the lockfile and the workspace settings', () => {
+  const { source, env } = fixture()
+  const options = { source, workspaces: ['web'], reuse: true, env }
   prepareNodeDependencies(options)
-  prepareNodeDependencies(options)
-  // Both runs reached ci or the reuse short-circuit; no version probe spawned.
-  expect(readFileSync(spawned, 'utf8')).toBe('ci\n')
-}, 30000)
-
-test('an npm layout without a readable manifest falls back to the child version probe', async () => {
-  const { prepareNodeDependencies } = await import('../scripts/build/node-deps.mjs')
-  const source = fixture()
-  const { fake, spawned } = fakeNpmTree(source, { manifest: null })
-  mkdirSync(join(source, 'node_modules'))
-  writeFileSync(join(source, 'node_modules/.package-lock.json'), '{"packages": {}}')
-  const options = { source, workspaces: ['web'], reuse: true,
-    env: { ...process.env, npm_config_cache: join(source, '.npm-cache'), npm_execpath: join(fake, 'real/node_modules/npm/bin/npm-cli.js') } }
-  prepareNodeDependencies(options)
-  // The unresolvable manifest kept the pre-fix behavior: probe first, then ci.
-  expect(readFileSync(spawned, 'utf8')).toBe('--version\nci\n')
-}, 30000)
-
-// The receipt key hashes the npm version. An install completed by the probe
-// lane must still count as complete once the manifest supplies the version,
-// or every user re-runs npm ci after this change — and, as in #123933, that
-// reuse must not depend on a version probe that can no longer spawn.
-test('a receipt keyed by the probed version reuses under the manifest version, even when the probe fails', async () => {
-  const { prepareNodeDependencies } = await import('../scripts/build/node-deps.mjs')
-  const source = fixture()
-  const { npmRoot, spawned, armProbe } = fakeNpmTree(source, { manifest: null })
-  mkdirSync(join(source, 'node_modules'))
-  writeFileSync(join(source, 'node_modules/.package-lock.json'), '{"packages": {}}')
-  const options = { source, workspaces: ['web'], reuse: true,
-    env: { ...process.env, npm_config_cache: join(source, '.npm-cache'), npm_execpath: join(npmRoot, 'bin/npm-cli.js') } }
-  prepareNodeDependencies(options)
-  expect(readFileSync(spawned, 'utf8')).toBe('--version\nci\n')
-  json(join(npmRoot, 'package.json'), { name: 'npm', version: '10.8.2' })
-  armProbe({ exit: 1 })
-  prepareNodeDependencies({ ...options, install: false })
-  expect(readFileSync(spawned, 'utf8')).toBe('--version\nci\n')
-  // A genuinely different npm still invalidates the receipt.
-  json(join(npmRoot, 'package.json'), { name: 'npm', version: '10.8.3' })
+  writeFileSync(join(source, 'pnpm-workspace.yaml'), `${readFileSync(join(source, 'pnpm-workspace.yaml'), 'utf8')}childConcurrency: 2\n`)
   expect(() => prepareNodeDependencies({ ...options, install: false })).toThrow(/disabled/)
+  prepareNodeDependencies(options)
+  prepareNodeDependencies({ ...options, install: false })
+  writeFileSync(join(source, 'pnpm-lock.yaml'), `${readFileSync(join(source, 'pnpm-lock.yaml'), 'utf8')}\n`)
+  expect(() => prepareNodeDependencies({ ...options, install: false })).toThrow(/disabled/)
+  prepareNodeDependencies(options)
+  expect(installs(source)).toBe(3)
+}, 30000)
+
+test('an npm-installed tree is removed before the first pnpm install', () => {
+  const { source, env } = fixture()
+  // npm's hoisted layout: its hidden lockfile, root-level packages, nested workspace trees.
+  json(join(source, 'node_modules/.package-lock.json'), { packages: {} })
+  json(join(source, 'node_modules/web-only/package.json'), { name: 'web-only', version: '0.9.0' })
+  json(join(source, 'web/node_modules/npm-only/package.json'), { name: 'npm-only', version: '1.0.0' })
+  prepareNodeDependencies({ source, workspaces: ['web'], env })
+  expect(readdirSync(join(source, 'node_modules')).filter(name => name.startsWith('.ignored'))).toEqual([])
+  expect(readdirSync(join(source, 'web/node_modules')).filter(name => name.startsWith('.ignored'))).toEqual([])
+  expect(existsSync(join(source, 'node_modules/.package-lock.json'))).toBe(false)
+  expect(existsSync(join(source, 'web/node_modules/npm-only'))).toBe(false)
+  expect(createRequire(join(source, 'web/package.json'))('web-only')).toBe('web-only')
+}, 30000)
+
+// A stand-in pnpm on PATH that records each command and delegates to the real one.
+// `--version` probes exit with `probeExit`: the Job-Object failure lane from #123933,
+// where the version must come from the manifest beside the resolved executable.
+function fakePnpm({ manifest }) {
+  const fake = mkdtempSync(join(tmpdir(), 'pnpm layout with spaces-'))
+  roots.push(fake)
+  const spawned = join(fake, 'spawned')
+  mkdirSync(join(fake, 'real'))
+  mkdirSync(join(fake, 'bin'))
+  const executable = join(fake, 'real/pnpm')
+  const arm = ({ probeExit }) => {
+    writeFileSync(executable, [
+      '#!/bin/sh',
+      `printf '%s\\n' "$1" >> '${spawned}'`,
+      `if [ "$1" = --version ]; then echo 12.0.0; exit ${probeExit}; fi`,
+      `exec '${pnpmCommand()}' "$@"`, '',
+    ].join('\n'))
+    chmodSync(executable, 0o755)
+  }
+  const writeManifest = version => json(join(fake, 'real/package.json'), { name: 'pnpm', version })
+  if (manifest) writeManifest(manifest)
+  arm({ probeExit: manifest ? 3 : 0 })
+  // The link's directory holds no manifest; the resolved executable's does.
+  symlinkSync(executable, join(fake, 'bin/pnpm'))
+  return { path: join(fake, 'bin'), spawned, arm, writeManifest }
+}
+
+test.skipIf(process.platform === 'win32')('the pnpm version reads from the manifest beside the resolved executable without a child spawn', () => {
+  const { source, env } = fixture()
+  const pnpm = fakePnpm({ manifest: '12.0.0' })
+  const options = { source, workspaces: ['web'], reuse: true, env: { ...env, PATH: `${pnpm.path}${delimiter}${env.PATH}` } }
+  prepareNodeDependencies(options)
+  prepareNodeDependencies(options)
+  // Both runs reached the install or the reuse short-circuit; no version probe spawned.
+  expect(readFileSync(pnpm.spawned, 'utf8')).toBe('install\n')
+}, 30000)
+
+test.skipIf(process.platform === 'win32')('a pnpm layout without a readable manifest falls back to the child version probe', () => {
+  const { source, env } = fixture()
+  const pnpm = fakePnpm({ manifest: null })
+  prepareNodeDependencies({ source, workspaces: ['web'], reuse: true, env: { ...env, PATH: `${pnpm.path}${delimiter}${env.PATH}` } })
+  expect(readFileSync(pnpm.spawned, 'utf8')).toBe('--version\ninstall\n')
+}, 30000)
+
+// The receipt key hashes the pnpm version. An install completed by the probe lane
+// must still count as complete once a manifest supplies the same version, without
+// depending on a probe that can no longer spawn.
+test.skipIf(process.platform === 'win32')('a receipt keyed by the probed version reuses under the manifest version, even when the probe fails', () => {
+  const { source, env } = fixture()
+  const pnpm = fakePnpm({ manifest: null })
+  const options = { source, workspaces: ['web'], reuse: true, env: { ...env, PATH: `${pnpm.path}${delimiter}${env.PATH}` } }
+  prepareNodeDependencies(options)
+  expect(readFileSync(pnpm.spawned, 'utf8')).toBe('--version\ninstall\n')
+  pnpm.writeManifest('12.0.0')
+  pnpm.arm({ probeExit: 1 })
+  prepareNodeDependencies({ ...options, install: false })
+  expect(readFileSync(pnpm.spawned, 'utf8')).toBe('--version\ninstall\n')
+  // A genuinely different pnpm still invalidates the receipt.
+  pnpm.writeManifest('12.0.1')
+  expect(() => prepareNodeDependencies({ ...options, install: false })).toThrow(/disabled/)
+}, 30000)
+
+// pmOnFail: ignore keeps the pin out of the lockfile, so pnpm itself never compares it.
+test.skipIf(process.platform === 'win32')('a pnpm other than the root devEngines pin is refused before anything is installed', () => {
+  const { source, env } = fixture()
+  const manifest = JSON.parse(readFileSync(join(source, 'package.json'), 'utf8'))
+  json(join(source, 'package.json'), { ...manifest, devEngines: { packageManager: { name: 'pnpm', version: '12.0.1', onFail: 'error' } } })
+  writeFileSync(join(source, 'pnpm-workspace.yaml'), `${readFileSync(join(source, 'pnpm-workspace.yaml'), 'utf8')}pmOnFail: ignore\n`)
+  const pnpm = fakePnpm({ manifest: '12.0.0' })
+  const options = { source, workspaces: ['web'], env: { ...env, PATH: `${pnpm.path}${delimiter}${env.PATH}` } }
+  expect(() => prepareNodeDependencies(options)).toThrow(/pnpm 12\.0\.1 is required .*found 12\.0\.0/)
+  expect(existsSync(pnpm.spawned)).toBe(false)
+  pnpm.writeManifest('12.0.1')
+  prepareNodeDependencies(options)
+  expect(readFileSync(pnpm.spawned, 'utf8')).toBe('install\n')
 }, 30000)

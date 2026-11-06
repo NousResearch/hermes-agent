@@ -79,14 +79,16 @@ describe('libText catalog swap', () => {
       pack({
         'libText.attachments.imageToken': '[[ XX-Bild {0} ]]',
         'libText.text.showingLiveTail': 'XX-tail',
-        'libText.text.clarifyHead': 'XX-frage {0}',
+        'libText.text.clarifyHead': 'XX-frage ({0})',
         'libText.messages.longMessage': '{0} XX-lang'
       })
     )
 
     expect(imageToken(2)).toBe('[[ XX-Bild 2 ]]')
     expect(boundedLiveRenderText('abcdefghij', { maxChars: 4, maxLines: 10 })).toContain('[XX-tail; omitted')
-    expect(formatAbandonedClarify('Why?', null, 'timed out').split('\n')[0]).toBe('XX-frage Why?')
+    expect(formatAbandonedClarify([{ qid: 'q0', question: 'Why?' }], {}, 'timed out').split('\n')[0]).toBe(
+      'XX-frage (1)'
+    )
     expect(userDisplay('word '.repeat(2000))).toContain('XX-lang')
     expect(t('libText.text.argsLabel')).toBe('Args')
   })

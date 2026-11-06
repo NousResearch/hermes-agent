@@ -2,6 +2,8 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { refreshProjectTree } from '@/store/projects'
+
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 
 afterEach(cleanup)
@@ -80,7 +82,8 @@ vi.mock('@/store/projects', () => ({
   $projectTree: atom<unknown[]>([]),
   moveSessionToProject: vi.fn(),
   projectIdForCwd: vi.fn(() => null),
-  projectRootCwd: vi.fn(() => '')
+  projectRootCwd: vi.fn(() => ''),
+  refreshProjectTree: vi.fn(() => Promise.resolve())
 }))
 vi.mock('@/store/session', () => ({
   $activeSessionId: atom<null | string>(null),
@@ -100,6 +103,7 @@ vi.mock('@/store/session-color', () => ({
   setSessionColorOverride: vi.fn()
 }))
 vi.mock('@/store/session-states', () => ({
+  $sessionStates: atom<Record<string, unknown>>({}),
   $sessionTiles: atom<unknown[]>([]),
   closeAllOpenSessionTiles: vi.fn(),
   openSessionTile: vi.fn()
@@ -163,6 +167,38 @@ describe('SessionActionsMenu', () => {
     await waitFor(() => expect(document.activeElement).toBe(input))
     // eslint-disable-next-line no-restricted-globals -- asserting real focus requires the live document
     expect(document.activeElement).not.toBe(trigger)
+  })
+
+  it('passes profile to renameSession when submitting from RenameSessionDialog', async () => {
+    const { renameSession } = await import('@/hermes')
+    vi.mocked(renameSession).mockResolvedValue({ ok: true, title: 'Prep Butler' })
+
+    render(
+      <SessionActionsMenu profile="personal" sessionId="s1" title="My session">
+        <button aria-label="Session actions" type="button">
+          ⋮
+        </button>
+      </SessionActionsMenu>
+    )
+
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+
+    const rename = await screen.findByRole('menuitem', { name: /rename/i })
+    fireEvent.click(rename)
+
+    const dialog = await screen.findByRole('dialog')
+    const input = within(dialog).getByRole('textbox')
+    fireEvent.change(input, { target: { value: 'Prep Butler' } })
+
+    const save = within(dialog).getByRole('button', { name: /save/i })
+    fireEvent.click(save)
+
+    await waitFor(() => {
+      expect(renameSession).toHaveBeenCalledWith('s1', 'Prep Butler', 'personal')
+    })
   })
 
   it('confirms before deleting — cancel keeps the session, confirm deletes it', async () => {
@@ -339,5 +375,25 @@ describe('SessionActionsMenu', () => {
     // unreachable even programmatically, not just hidden from pointer users.
     expect(screen.queryByRole('dialog')).toBeNull()
     unmount()
+  })
+
+  // $projectTree is only populated by a grouped-view visit or the flat view's
+  // background warm timer (PROJECT_TREE_WARM_MS). Opening this submenu before
+  // either fires must not silently show "No other projects" forever — it must
+  // pull the authoritative tree itself.
+  it('refreshes the project tree when the "Move to project" submenu opens', async () => {
+    renderMenu()
+
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+
+    await screen.findByRole('menu')
+    expect(refreshProjectTree).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Move to project' }))
+
+    await waitFor(() => expect(refreshProjectTree).toHaveBeenCalledTimes(1))
   })
 })

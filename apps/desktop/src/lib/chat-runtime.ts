@@ -1,5 +1,6 @@
 import type { ThreadMessage } from '@assistant-ui/react'
 import type { ModelOptionsResult } from '@hermes/shared'
+import { SLASH_COMMAND_RE } from '@hermes/shared'
 
 import type { QuickModelOption } from '@/app/chat/composer/types'
 import type { ClientSessionState } from '@/app/types'
@@ -316,6 +317,33 @@ export function normalizePersonalityValue(value: string): string {
   return foldPersonalityName(value)
 }
 
+// Desktop prepends attachment ref tags (@image:, @file:, @url:, @folder:,
+// @terminal:, @line:, @session:, @tool:, ...) to the submitted wire text. A
+// slash command typed after those refs must still be detected — strip leading
+// ref lines before testing the text for a command. Mirrors the gateway's
+// _ATTACHMENT_REF_RE, but covers every ref kind the composer can emit.
+const ATTACHMENT_REF_LINE_RE = /^@[a-z][a-z0-9-]*:[^\n]*\n?/i
+
+export function stripAttachmentRefs(text: string): string {
+  let current = text ?? ''
+
+  while (true) {
+    const next = current.replace(ATTACHMENT_REF_LINE_RE, '')
+
+    if (next === current) {
+      break
+    }
+
+    current = next
+  }
+
+  return current
+}
+
+export function isSlashCommandText(text: string): boolean {
+  return SLASH_COMMAND_RE.test(stripAttachmentRefs(text).trimStart())
+}
+
 export function quickModelOptions(
   data: ModelOptionsResult | undefined,
   currentProvider: string,
@@ -397,6 +425,14 @@ export function messageCreatedAt(message: Pick<ChatMessage, 'timestamp'>, nowMs 
     : new Date(nowMs)
 }
 
+// The safety-refused notice rides metadata.custom on the system row, like
+// asyncResult — extracted so toRuntimeMessage keeps its complexity in budget.
+function contentRefusedMeta(
+  message: ChatMessage
+): { contentRefused: NonNullable<ChatMessage['contentRefused']> } | Record<string, never> {
+  return message.contentRefused ? { contentRefused: message.contentRefused } : {}
+}
+
 export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
   const role =
     message.role === 'user' || message.role === 'assistant' || message.role === 'system' ? message.role : 'assistant'
@@ -438,7 +474,8 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
         custom: {
           ...timelineMeta,
           ...(message.asyncResult ? { asyncResult: message.asyncResult } : {}),
-          ...(message.asyncResultKind ? { asyncResultKind: message.asyncResultKind } : {})
+          ...(message.asyncResultKind ? { asyncResultKind: message.asyncResultKind } : {}),
+          ...contentRefusedMeta(message)
         }
       }
     } as ThreadMessage
@@ -462,6 +499,7 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
       // Carries ChatMessage.interim to AssistantMessage's footer gate.
       custom: {
         ...(message.interim ? { interim: true } : {}),
+        ...(message.interrupted ? { interrupted: true } : {}),
         ...timelineMeta,
         ...(message.completedAt !== undefined ? { timelineCompletedAt: message.completedAt } : {}),
         ...(message.durationS !== undefined ? { durationS: message.durationS } : {}),

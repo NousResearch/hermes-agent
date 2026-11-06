@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { afterEach, expect, it, vi } from 'vitest'
 
+import { refreshActiveProfile } from '@/store/profile'
 import { $profileRailVisible } from '@/store/profile-rail-prefs'
 
 import { ProfileSwitcher } from './profile-dropdown-switcher'
@@ -44,6 +45,7 @@ vi.mock('@/store/profile', () => ({
   $showAllProfiles: atom(false),
   ALL_PROFILES: '__all__',
   normalizeProfileKey: (name: string) => name,
+  prewarmProfilePick: vi.fn(),
   profileLabel: (profile: { name: string }) => profile.name,
   refreshActiveProfile: vi.fn().mockResolvedValue(undefined),
   selectProfile: (name: string) => selectProfile(name),
@@ -69,6 +71,44 @@ afterEach(() => {
   cleanup()
   $profileRailVisible.set(true)
   vi.clearAllMocks()
+  vi.unstubAllGlobals()
+  delete window.document.documentElement.dataset.hermesDesktopHost
+})
+
+async function openDropdown() {
+  render(<ProfileSwitcher compact />)
+
+  const trigger = screen.getByRole('button', { name: 'Profiles: default' })
+  await act(async () => {
+    fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false, pointerType: 'mouse' })
+    await Promise.resolve()
+  })
+  await screen.findByRole('menuitemradio', { name: /clippy/ })
+}
+
+const launchMenuTriggers = () => window.document.querySelectorAll('[data-hermes-context-menu-trigger]')
+
+// Native Desktop's statusbar picker is main's: its rows carry no right-click
+// launch menu, and it leaves refreshing the profile list to the rail and
+// Manage Profiles.
+it('adds no right-click launch menu and no focus refresh in native Desktop', async () => {
+  vi.stubGlobal('hermesDesktop', {})
+  act(() => $profileRailVisible.set(false))
+  await openDropdown()
+
+  expect(launchMenuTriggers()).toHaveLength(0)
+  expect(refreshActiveProfile).not.toHaveBeenCalled()
+})
+
+// The Webapp always shows this dropdown instead of the rail's squares, so it
+// carries the rail's right-click launch menu and refreshes the list on focus.
+it('carries the rail\'s launch menu and focus refresh in browser-hosted Desktop', async () => {
+  window.document.documentElement.dataset.hermesDesktopHost = 'browser'
+  act(() => $profileRailVisible.set(false))
+  await openDropdown()
+
+  expect(launchMenuTriggers().length).toBeGreaterThan(0)
+  expect(refreshActiveProfile).toHaveBeenCalled()
 })
 
 it('switches profiles from the statusbar dropdown while the rail is hidden', async () => {

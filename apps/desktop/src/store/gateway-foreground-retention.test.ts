@@ -46,9 +46,9 @@ const {
   SECONDARY_MIN_LIFETIME_MS
 } = await import('./gateway')
 
-const { $sessionTiles, foregroundSessionScopes, liveSessionScopes, recordSessionEventScope } = await import(
-  './session-states'
-)
+const { $sessionTiles, foregroundSessionScopes, liveSessionScopes, recordSessionEventScope } =
+  await import('./session-states')
+
 const { stampSecondaryProfileOwner } = await import('./session-event-provenance')
 const { $selectedStoredSessionId, $sessions, setActiveSessionId } = await import('@/store/session')
 
@@ -70,8 +70,7 @@ function installDesktop(): void {
     getGatewayWsUrlFor: vi.fn(
       async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
         `wss://${connectionId}.invalid/api/ws?profile=${profile}`
-    ),
-    touchBackend: vi.fn(async () => undefined)
+    )
   }
 }
 

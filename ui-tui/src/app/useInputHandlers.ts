@@ -2,10 +2,11 @@ import { forceRedraw, useInput } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
+import { sharedControlParams } from '../canonicalGateway.js'
 import { DASHBOARD_TUI_MODE } from '../config/env.js'
 import { DOUBLE_ESC_MS, TYPING_IDLE_MS } from '../config/timing.js'
 import { applyCompletion } from '../domain/slash.js'
-import type { ConfigSetResponse, VoiceRecordResponse } from '../gatewayTypes.js'
+import type { ConfigSetResponse, SharedControlRespondResponse, VoiceRecordResponse } from '../gatewayTypes.js'
 import { t } from '../i18n/runtime.js'
 import { isAction, isCopyShortcut, isMac, isMacActionFallback, isVoiceToggleKey } from '../lib/platform.js'
 import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionWheel.js'
@@ -15,13 +16,25 @@ import { closeWidget, dispatchWidgetInput } from '../sdk/host.js'
 import { $agentDockCollapsed } from './agentRoster.js'
 import { getInputSelection } from './inputSelectionStore.js'
 import {
+  type ComposerActions,
+  type ComposerState,
   type GatewayRpc,
+  type GatewayServices,
   type InputHandlerActions,
   type InputHandlerContext,
   type InputHandlerResult,
-  type OverlayState
+  type OverlayState,
+  type UiState
 } from './interfaces.js'
-import { $isBlocked, $overlayState, patchOverlayState } from './overlayStore.js'
+import {
+  $isBlocked,
+  $overlayState,
+  capturePromptResponseGuard,
+  hasSensitivePrompt,
+  patchOverlayState,
+  SENSITIVE_PROMPTS
+} from './overlayStore.js'
+import { togglePasteSections } from './pasteStore.js'
 import { respondToServerRequest } from './serverRequestStore.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
@@ -109,6 +122,67 @@ export function resolveDoubleEscAction(opts: {
   return 'none'
 }
 
+/** Idle double-Esc on an empty composer opens the rewind picker (`/rewind`); never over an overlay,
+ * mid-turn (that Esc Esc interrupts) or with a draft (that one discards it). */
+export function shouldOpenRewindOnDoubleEsc(opts: {
+  blocked: boolean
+  busy: boolean
+  canonical: boolean
+  hasDraft: boolean
+  hasSession: boolean
+}): boolean {
+  return opts.canonical && opts.hasSession && !opts.busy && !opts.hasDraft && !opts.blocked
+}
+
+/** The second Esc of a double-Esc: interrupt a busy turn, discard a draft, or open the rewind picker.
+ * True when it acted. */
+function runDoubleEsc(o: {
+  actions: InputHandlerContext['actions']
+  cActions: ComposerActions
+  cState: ComposerState
+  gw: GatewayServices['gw']
+  isBlocked: boolean
+  live: UiState
+  startedBlocked: boolean
+}): boolean {
+  const { actions, cActions, cState, gw, isBlocked, live } = o
+  const hasDraft = Boolean(cState.input || cState.inputBuf.length)
+  const escAction = resolveDoubleEscAction({ busy: live.busy, hasDraft, hasSession: Boolean(live.sid) })
+
+  // Draft discard keeps its above-isBlocked placement (#116443): the prompt overlays must not
+  // swallow discarding an unsent draft. The interrupt does NOT — an approval/clarify overlay owns
+  // Esc/Ctrl+C until answered, so it only fires with no overlay up.
+  if (escAction === 'interrupt' && live.sid && !isBlocked) {
+    void turnController.interruptTurn({ appendMessage: actions.appendMessage, gw, sid: live.sid, sys: actions.sys })
+
+    return true
+  }
+
+  if (escAction === 'clear') {
+    if (cState.input.trim()) {
+      cActions.pushHistory(cState.input)
+    }
+
+    cActions.clearIn()
+
+    return true
+  }
+
+  const rewind = shouldOpenRewindOnDoubleEsc({
+    blocked: isBlocked || o.startedBlocked,
+    busy: live.busy,
+    canonical: gw.isCanonical,
+    hasDraft,
+    hasSession: Boolean(live.sid)
+  })
+
+  if (rewind) {
+    actions.dispatchSubmission('/rewind')
+  }
+
+  return rewind
+}
+
 /**
  * Approval / clarify / confirm overlays mount their own `useInput` handlers
  * for the in-prompt keys (arrows, numbers, Enter, sometimes Esc).  The global
@@ -165,40 +239,35 @@ export function applyVoiceRecordResponse(
   }
 }
 
+type SensitivePrompt = (typeof SENSITIVE_PROMPTS)[number]
+
+const DISMISSED_PROMPT_NOTICE: { [K in SensitivePrompt]: (req: NonNullable<OverlayState[K]>) => string } = {
+  sudo: () => t('session.input.sudoCancelled'),
+  secret: () => t('session.input.secretCancelled'),
+  vaultUnlock: req => t('session.input.vaultStaysLocked', req.displayName),
+  vaultSaveLogin: req => t('session.input.loginNotSaved', req.site),
+  vaultCode: req => t('session.input.codeSkipped', req.site)
+}
+
+const dismissedNotice = <K extends SensitivePrompt>(key: K, req: NonNullable<OverlayState[K]>) =>
+  DISMISSED_PROMPT_NOTICE[key](req)
+
+/** Decline the open credential prompt with an empty value so the blocked tool resolves now. */
 export function dismissSensitivePrompt(
-  overlay: Pick<OverlayState, 'secret' | 'sudo' | 'vaultUnlock'>,
+  overlay: Pick<OverlayState, SensitivePrompt>,
   rpc: GatewayRpc,
   sys: (text: string) => void
 ) {
-  if (overlay.sudo) {
-    const requestId = overlay.sudo.requestId
+  for (const key of SENSITIVE_PROMPTS) {
+    const req = overlay[key]
 
-    patchOverlayState({ sudo: null })
-    sys(t('session.input.sudoCancelled'))
+    if (req) {
+      patchOverlayState({ [key]: null })
+      sys(dismissedNotice(key, req))
+      respondToServerRequest(req.requestId, { value: '' })
 
-    respondToServerRequest(requestId, { value: '' })
-
-    return
-  }
-
-  if (overlay.secret) {
-    const requestId = overlay.secret.requestId
-
-    patchOverlayState({ secret: null })
-    sys(t('session.input.secretCancelled'))
-
-    respondToServerRequest(requestId, { value: '' })
-
-    return
-  }
-
-  if (overlay.vaultUnlock) {
-    const requestId = overlay.vaultUnlock.requestId
-
-    patchOverlayState({ vaultUnlock: null })
-    sys(t('session.input.vaultStaysLocked', overlay.vaultUnlock.displayName))
-
-    respondToServerRequest(requestId, { value: '' })
+      return
+    }
   }
 }
 
@@ -206,6 +275,21 @@ const clamp = (value: number, min: number, max: number) => Math.max(min, Math.mi
 
 export function shouldDetachEditedHistoryInput(historyIdx: null | number, history: readonly string[], value: string) {
   return historyIdx !== null && value !== history[historyIdx]
+}
+
+/** Ctrl+<letter> chords that act without disturbing a typed draft. */
+const CTRL_CHORDS: Record<string, (composer: InputHandlerContext['composer']) => void> = {
+  // Ctrl+O opens the model picker — the same overlay `/model` opens, but
+  // reachable without clearing what you've typed to run the command. Works
+  // mid-stream: picking a model writes the session model (config.set), which
+  // the next turn reads while the in-flight turn keeps streaming.
+  o: () => patchOverlayState({ modelPicker: true }),
+  // Ctrl+P expands the paste chip at the cursor into editable text, or folds
+  // it back. With no chip in the composer it opens/closes the paste sections
+  // of messages already sent.
+  p: ({ actions, state }) =>
+    void (actions.togglePaste(getInputSelection()?.cursor ?? state.input.length) || togglePasteSections()),
+  t: () => patchOverlayState({ agents: true, agentsInitialHistoryIndex: 0 })
 }
 
 export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
@@ -251,13 +335,35 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
   const cancelOverlayFromCtrlC = () => {
     if (overlay.clarify) {
-      return actions.answerClarify('')
+      return actions.cancelClarify()
+    }
+
+    if (overlay.rewind) {
+      return patchOverlayState({ rewind: null })
     }
 
     if (overlay.approval) {
+      const fresh = capturePromptResponseGuard('approval', overlay.approval)
+
+      if (!fresh()) {
+        return
+      }
+
+      const settle = () => {
+        patchOverlayState({ approval: null })
+        patchTurnState({ outcome: t('session.approval.denied') })
+      }
+
+      // Canonical shared controls deny through the generation-bound RPC; a
+      // legacy server→client request resolves its response frame locally.
+      if (overlay.approval.sharedControl) {
+        return gateway
+          .rpc<SharedControlRespondResponse>('approval.respond', { choice: 'deny', ...sharedControlParams(overlay.approval) })
+          .then(r => r && fresh() && settle())
+      }
+
       respondToServerRequest(overlay.approval.requestId, { choice: 'deny' })
-      patchOverlayState({ approval: null })
-      patchTurnState({ outcome: t('session.approval.denied') })
+      settle()
 
       return
     }
@@ -279,7 +385,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       })
     }
 
-    if (overlay.sudo || overlay.secret || overlay.vaultUnlock) {
+    if (hasSensitivePrompt(overlay)) {
       return dismissSensitivePrompt(overlay, gateway.rpc, actions.sys)
     }
 
@@ -307,6 +413,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return patchOverlayState({ pluginsHub: false })
     }
 
+    if (overlay.connectors) {
+      return patchOverlayState({ connectors: false })
+    }
+
     if (overlay.sessions) {
       return patchOverlayState({ sessions: false })
     }
@@ -325,7 +435,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   }
 
   const cycleQueue = (dir: 1 | -1) => {
-    const len = cRefs.queueRef.current.length
+    const len = cState.queuedDisplay.length
 
     if (!len) {
       return false
@@ -335,7 +445,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     cActions.setQueueEdit(index)
     cActions.setHistoryIdx(null)
-    cActions.setInput(cRefs.queueRef.current[index]?.display ?? '')
+    cActions.setInput(cActions.queueDraft(index))
 
     return true
   }
@@ -421,6 +531,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   // it. Ctrl+C now clears a non-empty composer even mid-stream; Esc Esc is
   // still the dedicated discard (pushes the draft to history so Up recalls it).
   const lastEscRef = useRef(0)
+  const escBlockedRef = useRef(false)
 
   useInput((ch, key, event) => {
     const live = getUiState()
@@ -437,34 +548,12 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         const isDouble = now - lastEscRef.current <= DOUBLE_ESC_MS
 
         lastEscRef.current = isDouble ? 0 : now
+        // The Esc that closes an overlay must not be the first half of a rewind double-Esc.
+        const startedBlocked = escBlockedRef.current
+        escBlockedRef.current = isBlocked
 
-        if (isDouble) {
-          const escAction = resolveDoubleEscAction({
-            busy: live.busy,
-            hasDraft: Boolean(cState.input || cState.inputBuf.length),
-            hasSession: Boolean(live.sid)
-          })
-
-          // Draft discard keeps its above-isBlocked placement (#116443): the
-          // prompt overlays must not swallow discarding an unsent draft. The
-          // interrupt does NOT — an approval/clarify overlay owns Esc/Ctrl+C
-          // until answered, so it only fires with no overlay up.
-          if (escAction === 'interrupt' && live.sid && !isBlocked) {
-            return turnController.interruptTurn({
-              appendMessage: actions.appendMessage,
-              gw: gateway.gw,
-              sid: live.sid,
-              sys: actions.sys
-            })
-          }
-
-          if (escAction === 'clear') {
-            if (cState.input.trim()) {
-              cActions.pushHistory(cState.input)
-            }
-
-            return cActions.clearIn()
-          }
+        if (isDouble && runDoubleEsc({ actions, cActions, cState, gw: gateway.gw, isBlocked, live, startedBlocked })) {
+          return
         }
       }
     }
@@ -488,6 +577,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         overlay.clarify ||
         overlay.confirm ||
         overlay.connection ||
+        overlay.rewind ||
         overlay.subscription
 
       const fallThroughForScroll = promptOverlay && shouldFallThroughForScroll(key)
@@ -568,7 +658,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         return
       }
 
-      if (isCtrl(key, ch, 'c') || (key.escape && (overlay.secret || overlay.sudo || overlay.vaultUnlock))) {
+      if (isCtrl(key, ch, 'c') || (key.escape && hasSensitivePrompt(overlay))) {
         cancelOverlayFromCtrlC()
       } else if (key.escape && overlay.sessions) {
         patchOverlayState({ sessions: false })
@@ -728,17 +818,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return
     }
 
-    // Ctrl+O opens the model picker without disturbing a typed draft — the
-    // same overlay `/model` opens, but reachable without clearing what you've
-    // typed to run the command. Works mid-stream: picking a model writes the
-    // session model (config.set), which the next turn reads while the in-flight
-    // turn keeps streaming.
-    if (isCtrl(key, ch, 't')) {
-      return patchOverlayState({ agents: true, agentsInitialHistoryIndex: 0 })
-    }
+    const chord = key.ctrl ? CTRL_CHORDS[ch.toLowerCase()] : undefined
 
-    if (isCtrl(key, ch, 'o')) {
-      return patchOverlayState({ modelPicker: true })
+    if (chord) {
+      return chord(composer)
     }
 
     if (key.ctrl && ch.toLowerCase() === 'c') {
@@ -840,7 +923,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
 
     if (isAction(key, ch, 'k') && cRefs.queueRef.current.length && live.sid) {
-      const next = cActions.dequeue()
+      const next = cActions.dequeue(true)
 
       if (next) {
         cActions.setQueueEdit(null)

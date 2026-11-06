@@ -1,7 +1,7 @@
 """Checks merged into one job keep reporting independently.
 
 Cheap checks that shared a runner, a trigger and a checkout were merged into single jobs
-(repo-guards.yml) so each stops paying a full billed minute for seconds of work. What the
+(repo-guards.yml, lint.yml) so each stops paying a full billed minute for seconds of work. What the
 separate jobs gave for free is that one red check never stopped another from running. In one job
 the default step condition is `success()`, so a step added without a status function silently
 stops running after any earlier failure and hides its own result.
@@ -14,7 +14,7 @@ import pytest
 from ruamel.yaml import YAML
 
 ROOT = Path(__file__).resolve().parents[2]
-COMBINED = (("repo-guards.yml", "guards"),)
+COMBINED = (("repo-guards.yml", "guards"), ("lint.yml", "lint"))
 # Steps that must keep the default success(): the clean-worktree check skips after a failed step
 # on purpose (that step may have left its own temp files; tests/ci/test_clean_worktree_check.py).
 SUCCESS_ONLY = "./.github/actions/check-clean-worktree"

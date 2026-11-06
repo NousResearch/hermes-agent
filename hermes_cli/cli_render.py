@@ -991,38 +991,27 @@ def _clip_cells(text: str, limit: int) -> str:
     return "".join(out) + "…"
 
 
-def _cell_prefix(text: str, width: int) -> str:
-    """The longest prefix of ``text`` within ``width`` cells (at least one character), never
-    splitting a base character from the combining marks after it."""
-    clusters: list[str] = []
-    for ch in text:
-        if clusters and _cells(ch) == 0:
-            clusters[-1] += ch
-        else:
-            clusters.append(ch)
-    used, out = 0, []
-    for cluster in clusters:
-        if out and used + _cells(cluster) > width:
-            break
-        out.append(cluster)
-        used += _cells(cluster)
-    return "".join(out)
-
-
 def _wrap_cells(part: str, width: int, indent: str, keep_ws: bool) -> list[str]:
     """Greedy wrap by terminal cells, for text holding wide characters: CJK text has no spaces to
-    break at, so a word wider than the row is split wherever the row ends."""
-    rows, row = [], ""
+    break at, so a word wider than the row is split wherever the row ends, never between a base
+    character and the combining marks after it. One pass that reads each character's width once,
+    so a long prompt wraps in linear time."""
+    indent_cells = _cells(indent)
+    rows, row, used = [], "", 0
     for token in re.findall(r"\s+|\S+", part):
-        if _cells(row + token) > width and row.strip():
+        sizes = [_cells(ch) for ch in token]
+        if used + sum(sizes) > width and row.strip():
             rows.append(row if keep_ws else row.rstrip())
-            row = indent + (token if keep_ws else token.lstrip())
-        else:
-            row += token
-        while _cells(row) > width:
-            head = _cell_prefix(row, width)
-            rows.append(head)
-            row = indent + row[len(head):]
+            if not keep_ws:
+                kept = token.lstrip()
+                token, sizes = kept, sizes[len(sizes) - len(kept):]
+            row, used = indent, indent_cells
+        for ch, size in zip(token, sizes):
+            if size and row and used + size > width:
+                rows.append(row)
+                row, used = indent, indent_cells
+            row += ch
+            used += size
     return [*rows, row] if row.strip() or not rows else rows
 
 

@@ -8,6 +8,7 @@ view. Pure helpers: the mixin in ``cli_backtrack`` owns the state and the keys.
 
 from __future__ import annotations
 
+import functools
 import shutil
 
 from hermes_cli.cli_panel import _Panel
@@ -42,12 +43,15 @@ def transcript_turns(cli) -> list[tuple[str, str]]:
     return turns
 
 
-def _block(marker: str, text: str, width: int) -> list[str]:
+@functools.lru_cache(maxsize=1024)
+def _block(marker: str, text: str, width: int) -> tuple[str, ...]:
     """``marker text`` wrapped to ``width`` cells, continuation rows indented under the text. A word
-    wider than the row (a URL, a hash) is split: the pager's rows are padded, never clipped."""
+    wider than the row (a URL, a hash) is split: the pager's rows are padded, never clipped.
+    Cached by (marker, text, width): every scroll or ←/→ repaints the pager, and only the
+    selection's style changes, so unchanged history is never wrapped again."""
     rows = [row for line in (text or "").splitlines() or [""]
             for row in (_wrap_panel_text(line, width - 2, break_long_words=True) if line.strip() else [""])]
-    return [(marker if i == 0 else " ") + " " + row for i, row in enumerate(rows)]
+    return tuple((marker if i == 0 else " ") + " " + row for i, row in enumerate(rows))
 
 
 def transcript_rows(turns, selected_ordinal: int, width: int):

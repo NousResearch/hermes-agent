@@ -40,3 +40,15 @@ def test_other_panels_keep_long_words_whole():
     """Only the backtrack pager hard-splits: approval/clarify panels keep main's textwrap output."""
     url = "https://example.com/" + "a" * 120
     assert _wrap_panel_text("see " + url, 40) == ["see", url]
+
+
+def test_a_long_cjk_prompt_wraps_in_one_pass(monkeypatch):
+    """Each character's width is read a bounded number of times, not once per wrapped row."""
+    from hermes_cli import cli_render
+    calls = []
+    real = cli_render._cells
+    monkeypatch.setattr(cli_render, "_cells", lambda text: calls.append(len(text)) or real(text))
+    text = "请帮我把这个函数重构成更小的部分" * 375  # 6,000 characters, ~130 rows at 92 cells
+    rows = cli_render._wrap_panel_text(text, 92, break_long_words=True)
+    assert len(rows) > 100 and all(get_cwidth(row) <= 92 for row in rows)
+    assert sum(calls) <= 3 * len(text)

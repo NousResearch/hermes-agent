@@ -236,3 +236,23 @@ def test_an_image_prompt_edits_as_typed_without_the_vision_note(cli):
             "[If you need a closer look, use vision_analyze with image_url: /cache/a.png]")
     cli.conversation_history.append({"role": "user", "content": f"{note}\n\nWhat two colors?"})
     assert cli._backtrack_prompts()[-1] == "What two colors?"
+
+
+def test_scrolling_the_pager_never_rewraps_unchanged_history(cli, monkeypatch):
+    """Repaints after a scroll or a ←/→ step reuse the wrapped rows of every unchanged turn."""
+    from hermes_cli import cli_backtrack_browse
+    cli_backtrack_browse._block.cache_clear()
+    calls = []
+    real = cli_backtrack_browse._wrap_panel_text
+    monkeypatch.setattr(cli_backtrack_browse, "_wrap_panel_text", lambda *a, **k: calls.append(a) or real(*a, **k))
+    cli.conversation_history = [row for n in range(4) for row in (
+        {"role": "user", "content": f"P{n} " + "请帮我把这个函数重构成更小的部分" * 200},
+        {"role": "assistant", "content": f"answer {n}"})]
+    assert cli._open_backtrack_picker()
+    _rows(cli)
+    first = len(calls)
+    cli._backtrack_scroll(1)
+    _rows(cli)
+    cli._backtrack_step(1)
+    _rows(cli)
+    assert first > 0 and len(calls) - first <= 2  # only the footer row may be wrapped again per paint

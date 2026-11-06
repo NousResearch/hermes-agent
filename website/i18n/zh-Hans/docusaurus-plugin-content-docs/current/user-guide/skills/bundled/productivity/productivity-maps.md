@@ -51,12 +51,12 @@ description: "通过 OpenStreetMap/OSRM 进行地理编码、POI、路线、时�
 
 Python 3.8+（仅标准库，无需 pip 安装）。
 
-脚本路径：`~/.hermes/skills/maps/scripts/maps_client.py`
+脚本路径：`${HERMES_HOME:-$HOME/.hermes}/skills/productivity/maps/scripts/maps_client.py`
 
 ## 命令
 
 ```bash
-MAPS=~/.hermes/skills/maps/scripts/maps_client.py
+MAPS=${HERMES_HOME:-$HOME/.hermes}/skills/productivity/maps/scripts/maps_client.py
 ```
 
 ### search — 地理编码地名
@@ -188,9 +188,9 @@ python3 $MAPS nearby 36.17 -115.14 cafe --radius 1500
 ## 验证
 
 ```bash
-python3 ~/.hermes/skills/maps/scripts/maps_client.py search "Statue of Liberty"
+python3 ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/maps/scripts/maps_client.py search "Statue of Liberty"
 # 应返回纬度约 40.689，经度约 -74.044
 
-python3 ~/.hermes/skills/maps/scripts/maps_client.py nearby --near "Times Square" --category restaurant --limit 3
+python3 ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/maps/scripts/maps_client.py nearby --near "Times Square" --category restaurant --limit 3
 # 应返回 Times Square 约 500 米范围内的餐厅列表
 ```

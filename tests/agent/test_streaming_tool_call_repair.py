@@ -13,6 +13,8 @@ unclosed brackets, Python None) don't kill the session.
 
 import json
 
+import pytest
+
 from agent.chat_completion_helpers import _StreamingCall
 from agent.message_sanitization import _repair_tool_call_arguments
 
@@ -39,6 +41,25 @@ def test_streamed_mid_string_cut_stays_unrepairable():
     calls, truncated = _StreamingCall._assemble_tool_calls(_accumulated('{"q": "unterminated string'), None)
     assert truncated is True
     assert calls[0].function.arguments == '{"q": "unterminated string'
+
+
+@pytest.mark.parametrize("finish_reason", [None, "length"])
+@pytest.mark.parametrize("raw", ['{"amount": 123', '{"content": "partial'])
+def test_truncated_stream_arguments_are_preserved_without_repair(finish_reason, raw):
+    calls, truncated = _StreamingCall._assemble_tool_calls(_accumulated(raw), finish_reason)
+
+    assert truncated is True
+    assert calls[0].function.arguments == raw
+    assert calls[0].function.args_repaired is False
+
+
+@pytest.mark.parametrize("raw", ['{"amount": 123}', '{"content": "complete"}', "{}"])
+def test_length_finish_keeps_complete_tool_arguments(raw):
+    calls, truncated = _StreamingCall._assemble_tool_calls(_accumulated(raw), "length")
+
+    assert truncated is False
+    assert calls[0].function.arguments == raw
+    assert calls[0].function.args_repaired is False
 
 
 class TestStreamingAssemblyRepair:

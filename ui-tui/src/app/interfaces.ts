@@ -413,6 +413,8 @@ export interface ComposerActions {
   attachClipboardImage: () => void
   /** Attach an image by path in as a token. */
   attachImagePath: (path: string) => Promise<void> | void
+  /** Attach several images in order to the destination current at the call; stops on any change. */
+  attachImagePaths: (paths: readonly string[]) => Promise<void>
   clearIn: () => void
   stage?: (text: string, display?: string, destination?: SubmissionDestination, attachments?: QueueItem['attachments']) => QueueItem
   dequeue: (retry?: boolean) => QueueItem | undefined
@@ -580,6 +582,7 @@ export interface SlashHandlerContext {
   composer: {
     attachClipboardImage: () => void
     attachImagePath: (path: string) => Promise<void> | void
+    attachImagePaths: ComposerActions['attachImagePaths']
     enqueue: ComposerActions['enqueue']
     hasSelection: boolean
     openEditor: () => Promise<void>

@@ -54,14 +54,9 @@ function prefillPrompt(ctx: SlashRunCtx, stored: string) {
   const { images, text } = splitImageNotes(stored)
 
   ctx.composer.setInput(text)
-  // One at a time: a second attach started before the first lands would be dropped as stale.
-  const [first, ...rest] = images
 
-  if (first) {
-    void rest.reduce<Promise<void>>(
-      (previous, path) => previous.then(() => ctx.composer.attachImagePath(path)),
-      Promise.resolve(ctx.composer.attachImagePath(first))
-    )
+  if (images.length) {
+    void ctx.composer.attachImagePaths(images)
   }
 }
 

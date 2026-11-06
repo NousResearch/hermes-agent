@@ -224,6 +224,61 @@ def test_complete_retry_with_empty_created_cards_succeeds(worker_env):
         conn.close()
 
 
+def test_builder_completion_requires_review(worker_env, monkeypatch):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    monkeypatch.setenv("HERMES_PROFILE", "builder")
+    with kbc.connect() as conn:
+        conn.execute("UPDATE tasks SET assignee = 'builder' WHERE id = ?", (worker_env,))
+    out = json.loads(kt._handle_complete({"summary": "premature"}))
+    assert "kanban_request_review" in out["error"]
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, worker_env).status == "running"
+
+
+def test_reviewer_can_approve_builder_work_after_review_handoff(worker_env, monkeypatch, tmp_path):
+    """The reviewer owns the approval transition; builder review handoff must
+    not block the independent reviewer from completing the approved task."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    (tmp_path / ".hermes" / "profiles" / "verifier").mkdir(parents=True)
+    (tmp_path / ".hermes" / "profiles" / "verifier" / "config.yaml").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_PROFILE", "builder")
+    with kbc.connect() as conn:
+        conn.execute("UPDATE tasks SET assignee = 'builder' WHERE id = ?", (worker_env,))
+        run_id = kb.get_task(conn, worker_env).current_run_id
+        assert kb.request_review(
+            conn, worker_env, summary="Ready for review", reviewer="verifier",
+            expected_run_id=run_id,
+        )
+    monkeypatch.setenv("HERMES_PROFILE", "verifier")
+    # The reviewer approval is the lifecycle's completion verdict; there is no
+    # separate approved-but-open state for the builder to complete afterward.
+    with kbc.connect() as conn:
+        assert kb.complete_task(conn, worker_env, summary="Review approved", expected_run_id=None)
+        assert kb.get_task(conn, worker_env).status == "done"
+
+
+def test_builder_creation_requires_explicit_workspace(worker_env):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+
+    with kbc.connect() as conn:
+        with pytest.raises(ValueError, match="explicit workspace_kind"):
+            kb.create_task(conn, title="missing workspace", assignee="builder")
+        scratch = kb.create_task(
+            conn, title="explicit scratch", assignee="builder", workspace_kind="scratch")
+        assert kb.get_task(conn, scratch).workspace_kind == "scratch"
+        directory = kb.create_task(
+            conn, title="explicit directory", assignee="builder",
+            workspace_kind="dir", workspace_path="/tmp/builder-work")
+        assert kb.get_task(conn, directory).workspace_path == "/tmp/builder-work"
+
+
 def test_complete_reports_registered_attachments(worker_env):
     """#117360: artifact staging is atomic with the completion write, so the
     worker's pre-completion `kanban_attachments` readback is always empty and

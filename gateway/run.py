@@ -3014,6 +3014,7 @@ def _format_gateway_process_notification(evt: dict) -> str | None:
 def _drain_gateway_watch_events(completion_queue) -> list[dict]:
     """Drain gateway-owned watch events without spinning on requeued events.
     Foreign events requeued inside ``while not queue.empty()`` never terminate: detach, then requeue."""
+    from tools.environments.sandbox_scope import event_visible
     watch_events: list[dict] = []
     requeue: list[dict] = []
     while not completion_queue.empty():
@@ -3022,7 +3023,9 @@ def _drain_gateway_watch_events(completion_queue) -> list[dict]:
         except Exception:
             break
         evt_type = evt.get("type", "completion")
-        if evt_type in {
+        if not event_visible(evt):
+            requeue.append(evt)  # a hosted agent's: only its own scope may deliver it
+        elif evt_type in {
             "watch_match", "watch_disabled", "watch_overflow_tripped", "watch_overflow_released",
             "heartbeat"}:
             watch_events.append(evt)

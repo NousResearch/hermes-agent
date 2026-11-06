@@ -25,7 +25,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 BERLIN = ZoneInfo("Europe/Berlin")
-VPS_HOST = "gk@72.60.32.82"
+VPS_HOST = "gk@100.78.142.49"  # Tailscale address; the public IP is unreachable from WSL.
 VPS_9R_DB = "file:/home/gk/.9router/db/data.sqlite?mode=ro"
 LOCAL_9R_DB = "/home/gk/.9router/db/data.sqlite"
 VPS_HOSTNAME = "srv979961"
@@ -119,6 +119,8 @@ def compute_turn_footer_line(config=None, session_id=None) -> str:
     tol_s = int(os.environ.get("FOOTER_CLOCK_TOL_S", "30"))
 
     # 1. Real model from 9r usageHistory (newest request with promptTokens > 1000).
+    #    Note: usageHistory has no session/profile filter, so this reports the newest
+    #    request globally (a cron/auxiliary request can surface as the turn's model).
     model = None
     auth_epoch = None
     if socket.gethostname() == VPS_HOSTNAME:
@@ -130,8 +132,9 @@ def compute_turn_footer_line(config=None, session_id=None) -> str:
             ).fetchone()
             if r and r[0]:
                 model = r[0]
-        except Exception:
-            pass
+            c.close()
+        except Exception as e:  # pragma: no cover - environment dependent
+            sys.stderr.write(f"turn_footer: 9r lookup failed (local): {e}\n")
     else:
         try:
             r = subprocess.run(
@@ -156,27 +159,38 @@ def compute_turn_footer_line(config=None, session_id=None) -> str:
                             auth_epoch = int(val)
                         except ValueError:
                             pass
-        except Exception:
-            pass
+            else:
+                sys.stderr.write(
+                    f"turn_footer: 9r ssh failed (rc={r.returncode}): "
+                    f"{(r.stderr or '').strip()[:200]}\n"
+                )
+        except Exception as e:  # pragma: no cover - environment dependent
+            sys.stderr.write(f"turn_footer: 9r lookup failed (ssh): {e}\n")
 
     _, clock, drift_note = _resolve_clock(sys_now, auth_epoch, tol_s, BERLIN)
 
-    # Fallback: combo name from session DB.
+    # Fallback: combo name from session DB. Pick the row with the greatest token
+    # volume (tie-break newest last_seen) so the choice is deterministic rather
+    # than depending on row order.
     if not model:
         try:
             c = sqlite3.connect(f"file:{SESSION_DB}?mode=ro", uri=True)
             sid = _resolve_session_id(c, session_id)
             if sid:
                 r = c.execute(
-                    "SELECT model FROM session_model_usage WHERE session_id=?", (sid,)
+                    "SELECT model FROM session_model_usage WHERE session_id=? "
+                    "ORDER BY (input_tokens + output_tokens) DESC, last_seen DESC LIMIT 1",
+                    (sid,),
                 ).fetchone()
                 if r and r[0]:
                     model = r[0]
-        except Exception:
-            pass
+            c.close()
+        except Exception as e:
+            sys.stderr.write(f"turn_footer: session model fallback failed: {e}\n")
     model = model or "?"
 
-    # Cumulative session token counts.
+    # Cumulative session token counts: SUM across all rows for the session (the
+    # per-model/task rows are not individual sessions).
     in_tok = out_tok = 0
     sess_id = None
     try:
@@ -184,14 +198,16 @@ def compute_turn_footer_line(config=None, session_id=None) -> str:
         sess_id = _resolve_session_id(c, session_id)
         if sess_id:
             r = c.execute(
-                "SELECT input_tokens, output_tokens FROM session_model_usage WHERE session_id=?",
+                "SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0) "
+                "FROM session_model_usage WHERE session_id=?",
                 (sess_id,),
             ).fetchone()
             if r:
-                in_tok = r[0] or 0
-                out_tok = r[1] or 0
-    except Exception:
-        pass
+                in_tok = int(r[0] or 0)
+                out_tok = int(r[1] or 0)
+        c.close()
+    except Exception as e:
+        sys.stderr.write(f"turn_footer: session token aggregation failed: {e}\n")
 
     # Per-turn delta via state file.
     prev_in = prev_out = 0
@@ -230,7 +246,8 @@ def compute_turn_footer_line(config=None, session_id=None) -> str:
             ).fetchone()
             if u and u[0]:
                 turn_secs = int(sys_now.timestamp() - u[0])
-    except Exception:
+    except Exception as e:
+        sys.stderr.write(f"turn_footer: turn duration lookup failed: {e}\n")
         turn_secs = None
 
     # Assemble.

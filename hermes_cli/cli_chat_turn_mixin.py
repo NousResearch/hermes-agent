@@ -634,8 +634,9 @@ class CLIChatTurnMixin:
             _footer_line = compute_turn_footer_line(config=getattr(self, "config", None), session_id=getattr(self, "session_id", None))
             if _footer_line:
                 _cprint(_footer_line)
-        except Exception:
-            pass
+        except Exception as e:
+            import sys as _sys
+            _sys.stderr.write(f"turn_footer: render failed: {e}\n")
 
         return response
 

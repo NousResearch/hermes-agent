@@ -87,6 +87,15 @@ def _skipped(why: str, as_json: bool) -> None:
     print(why, file=sys.stderr if as_json else sys.stdout)
 
 
+def _hosted_graphs(repo: Path, base: str, head: str | None,
+                   head_paths: list[str]) -> tuple[frozenset[str], frozenset[str]]:
+    """The hosted graph of each side, both walked from the head's roots: only a Python change
+    can move a module onto the hosted path."""
+    if not any(p.endswith(".py") for p in head_paths):
+        return frozenset(), frozenset()
+    return reachable(repo, base), reachable(repo, head)
+
+
 def run(repo: Path, base: str, head: str | None, as_json: bool = False,
         switch_rev: str | None = None) -> int:
     """Judge ``head`` against ``base``; the ENFORCEMENT switch is read from ``switch_rev``
@@ -107,9 +116,12 @@ def run(repo: Path, base: str, head: str | None, as_json: bool = False,
     needs_ruff = any(p.endswith(".py") for p in (*head_paths, *base_paths))
     ruff = resolve_ruff(repo) if needs_ruff else []
     measurer = Measurer(repo, ruff, known_env=gitio.known_env_names(repo, base))
-    base_m = measurer.measure(base, base_paths)
-    hosted = reachable(repo, head) if any(p.endswith(".py") for p in head_paths) else frozenset()
-    head_m = measurer.measure(head, head_paths, hosted=hosted)
+    base_graph, head_graph = _hosted_graphs(repo, base, head, head_paths)
+    # A module this change pulls onto the hosted path is judged for its state even when the
+    # file itself is unchanged, and none of that state is baseline: it was never hosted before.
+    newly = frozenset(p for p in head_graph - base_graph if in_scope(p) and p not in head_paths)
+    base_m = measurer.measure(base, base_paths, hosted=base_graph)
+    head_m = measurer.measure(head, sorted({*head_paths, *newly}), hosted=head_graph, hosted_only=newly)
     findings = compare(base_m, head_m, changes)
     apply_allows(findings, head_m)
     blocking, advisory = verdict(findings)
@@ -121,7 +133,8 @@ def run(repo: Path, base: str, head: str | None, as_json: bool = False,
     if body:
         print(body)
     elapsed = time.monotonic() - started
-    print(f"\ncode health: {len(head_paths)} files vs {base[:12]}: {blocking} blocking, "
+    reached = f" (+{len(newly)} newly on the hosted path, judged for HX015)" if newly else ""
+    print(f"\ncode health: {len(head_paths)} files{reached} vs {base[:12]}: {blocking} blocking, "
           f"{advisory} advisory ({elapsed:.1f}s)")
     if blocking:
         print(_FOOTER)

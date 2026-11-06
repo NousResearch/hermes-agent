@@ -287,9 +287,13 @@ def hosted_repo(tmp_path, monkeypatch):
     ({"pkg/state.py": _OLD_STATE + "_PLANTED = {}\n"}, True),       # reachable: blocks
     ({"pkg/island.py": _OLD_STATE + "_PLANTED = {}\n"}, False),     # nothing hosted imports it
     ({"pkg/state.py": _OLD_STATE + "\n\ndef f():\n    return 1\n"}, False),  # old state baselined
-    # a new import pulls an old module onto the hosted path while editing it: its debt is kept
+    # a new import pulls an old module onto the hosted path: its state was never hosted, so it
+    # is new there, whether or not the module is edited in the same change
+    ({"pkg/entry.py": _ENTRY + "import pkg.island\n"}, True),
     ({"pkg/entry.py": _ENTRY + "import pkg.island\n",
-      "pkg/island.py": _OLD_STATE + "\n\ndef f():\n    return 1\n"}, False),
+      "pkg/island.py": _OLD_STATE + "\n\ndef f():\n    return 1\n"}, True),
+    # dropping an import and re-adding nothing: no module is newly reached
+    ({"pkg/entry.py": ""}, False),
     ({"pkg/state.py": _OLD_STATE + "from hermes_scope_cache import ScopedCache\n"
                                    "_NEW = ScopedCache('new')\n"}, False),
 ])
@@ -299,3 +303,38 @@ def test_ratchet(hosted_repo, capsys, head, blocks):
     assert (code != 0) is blocks, out
     if blocks:
         assert "HX015" in out
+
+
+def test_new_reachability_cannot_import_unchecked_state(tmp_path, monkeypatch, capsys):
+    """State added off the hosted path in one change cannot be brought onto it by another change
+    that only adds an import: the newly reached module is judged though it is unchanged."""
+    monkeypatch.setattr(config, "HOSTED_ENTRY", ("pkg.entry",))
+    repo, _ = _repo(tmp_path)
+    base = _commit(repo, {"pkg/__init__.py": "", "pkg/entry.py": "", "pkg/state.py": "X = {}\n"})
+    code, out = _verdict(repo, base, {"pkg/entry.py": "import pkg.state\n"}, capsys)
+    assert code != 0 and "pkg/state.py" in out and "HX015" in out, out
+    assert "1 newly on the hosted path" in out
+
+
+def test_newly_reached_module_is_judged_only_for_hosted_state(tmp_path, monkeypatch, capsys):
+    """An unchanged module pulled onto the hosted path brings its other debt (a swallowed
+    exception, an over-long function) with it as before: only its shared state is new."""
+    monkeypatch.setattr(config, "HOSTED_ENTRY", ("pkg.entry",))
+    repo, _ = _repo(tmp_path)
+    legacy = "def f():\n    try:\n        return 1\n    except Exception:\n        pass\n"
+    base = _commit(repo, {"pkg/__init__.py": "", "pkg/entry.py": "", "pkg/legacy.py": legacy})
+    code, out = _verdict(repo, base, {"pkg/entry.py": "import pkg.legacy\n"}, capsys)
+    assert code == 0, out
+
+
+def test_base_credit_covers_only_state_already_hosted(tmp_path, monkeypatch, capsys):
+    """A module edited while it is pulled onto the hosted path gets no credit for the state it
+    had off the path; a module already on the path keeps its baseline."""
+    monkeypatch.setattr(config, "HOSTED_ENTRY", ("pkg.entry",))
+    repo, _ = _repo(tmp_path)
+    base = _commit(repo, {"pkg/__init__.py": "", "pkg/entry.py": "import pkg.on\n",
+                          "pkg/on.py": "X = {}\n", "pkg/off.py": "X = {}\n"})
+    edit = "X = {}\n\n\ndef g():\n    return 2\n"
+    assert _verdict(repo, base, {"pkg/on.py": edit}, capsys)[0] == 0
+    code, out = _verdict(repo, base, {"pkg/entry.py": "import pkg.on\nimport pkg.off\n", "pkg/off.py": edit}, capsys)
+    assert code != 0 and "pkg/off.py" in out, out

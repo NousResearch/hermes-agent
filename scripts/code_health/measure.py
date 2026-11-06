@@ -113,11 +113,15 @@ class Measurer:
         self.ctx = py_rules.Ctx(known_env=known_env)
         self.regex_rules = _regex_rules(repo)
 
-    def measure(self, tree: str | None, paths: list[str],
-                hosted: frozenset[str] | None = None) -> dict[str, FileMeasure]:
-        """``hosted``: the paths hosted-only rules apply to (``hosted_graph.reachable``); None
-        applies them everywhere. The ratchet restricts the head and not the base, so a module a
-        new import pulls onto the hosted path keeps the debt it already had as baseline."""
+    def measure(self, tree: str | None, paths: list[str], hosted: frozenset[str] | None = None,
+                hosted_only: frozenset[str] = frozenset()) -> dict[str, FileMeasure]:
+        """``hosted``: the paths hosted-only rules (HX015) apply to, ``hosted_graph.reachable``
+        of this same tree; None applies them everywhere. The ratchet passes each side its own
+        graph, so base credit covers only state that was already on the hosted path.
+
+        ``hosted_only``: paths judged by the hosted-only rules alone (no metrics, units or other
+        rules). The ratchet measures an unchanged module a change newly pulls onto the hosted
+        path this way: its state is new to the hosted process, its other debt is not new."""
         contents = {}
         for path in paths:
             if in_scope(path):
@@ -125,25 +129,29 @@ class Measurer:
                 if text is not None:
                     contents[path] = text
         if tree is None:
-            return self._measure_in(self.repo, contents, hosted)
+            return self._measure_in(self.repo, contents, hosted, hosted_only)
         with tempfile.TemporaryDirectory(prefix="code-health-") as tmp:
             root = Path(tmp)
             for path, text in contents.items():
+                if path in hosted_only:
+                    continue  # never handed to ruff
                 dest = root / path
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 # newline="": the blob's own line endings, so ruff's line numbers match the
                 # AST's (Windows text mode would turn a CRLF blob into CR CR LF).
                 dest.write_text(text, encoding="utf-8", newline="")
-            return self._measure_in(root, contents, hosted)
+            return self._measure_in(root, contents, hosted, hosted_only)
 
-    def _measure_in(self, root: Path, contents: dict[str, str],
-                    hosted: frozenset[str] | None) -> dict[str, FileMeasure]:
+    def _measure_in(self, root: Path, contents: dict[str, str], hosted: frozenset[str] | None,
+                    hosted_only: frozenset[str]) -> dict[str, FileMeasure]:
         result = {path: FileMeasure(path, lines=text.splitlines()) for path, text in contents.items()}
-        py = sorted(p for p in contents if in_scope(p) == "py")
-        ts = sorted(p for p in contents if in_scope(p) == "ts")
+        py = sorted(p for p in contents if in_scope(p) == "py" and p not in hosted_only)
+        ts = sorted(p for p in contents if in_scope(p) == "ts" and p not in hosted_only)
         ruff_out = run_ruff(self.ruff, root, py) if py else {}
         for path in py:
             self._python(result[path], contents[path], ruff_out.get(path), hosted)
+        for path in sorted(p for p in contents if in_scope(p) == "py" and p in hosted_only):
+            self._hosted_rules(result[path], contents[path])
         ts_out = measure_ts(self.repo, root, ts) if ts else {}
         for path in ts:
             self._typescript(result[path], ts_out.get(path))
@@ -174,6 +182,25 @@ class Measurer:
                 for row in sorted(set(checker(rules_tree, self.ctx))):
                     fm.add_hit(rule_id, scopes.scope(row), row)
         self._regex(fm, scopes, text, tree)
+
+    def _hosted_rules(self, fm: FileMeasure, text: str) -> None:
+        """Only the hosted-only rules' hits: no metrics, units or other rules, so nothing but
+        the module's shared state is judged."""
+        fm.comments = _python_comments(text)
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", SyntaxWarning)
+                tree = ast.parse(text)
+                rules_tree = py_rules.canonical_tree(ast.parse(text))
+        except SyntaxError as exc:
+            fm.error = f"does not parse: {exc.msg} (line {exc.lineno})"
+            return
+        scopes = py_structure.measure_structure(FileMeasure(fm.path, lines=fm.lines), tree)
+        for rule_id, checker in py_rules.CHECKERS.items():
+            rule = RULES_BY_ID[rule_id]
+            if rule.hosted and rule_applies(rule, fm.path):
+                for row in sorted(set(checker(rules_tree, self.ctx))):
+                    fm.add_hit(rule_id, scopes.scope(row), row)
 
     def _regex(self, fm: FileMeasure, scopes, text: str, tree: ast.Module) -> None:
         code_lines: list[str] | None = None

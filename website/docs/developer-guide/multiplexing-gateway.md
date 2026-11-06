@@ -181,14 +181,31 @@ module the hosted entry point imports. Two forms pass (`hermes_scope_cache`):
   cached function): state that is the same for every tenant, such as a model
   catalog or tool schemas. The reason must be a non-empty literal.
 
+The rule counts any module-level name a function rebinds (through `global`,
+`setattr(sys.modules[__name__], ...)` or `globals()`) or changes in place,
+including through a nested item or attribute, whatever its initial value, plus
+`threading.local()` and class attributes changed through the class or an
+instance without its own copy from `__init__`. A parameter or local that shares
+a module name is not the module's state. The two declarations count only when
+they resolve to the `hermes_scope_cache` API, not by name.
+
 The entry point is the list `HOSTED_ENTRY` in `scripts/code_health/config.py`.
 There is no hosted boot module yet, so the list names what it will load: the
-inbound turn path, the turn loop, the scope modules and the registries. The
-graph (`scripts/code_health/hosted_graph.py`) follows imports that run at import
-time; imports inside functions are not followed, so a module the hosted process
-loads lazily is listed as a root. When the hosted boot lands, it is added to
-the list. State that already existed when the rule landed is baselined by the
-ratchet and is migrated when it is next touched.
+inbound turn path, the turn loop, the agent constructor, the built-in platform
+adapters, the scope modules and the registries. The graph
+(`scripts/code_health/hosted_graph.py`) follows every import that runs at import
+time, in class bodies, loops and other blocks too, and each root's package
+`__init__`. Imports inside functions are not followed, so a module the hosted
+process loads lazily is listed as a root. Two dynamic loads are modelled: the
+built-in tool modules `model_tools` discovers at import, and
+`agent.lazy_forward` forwarders declared in a class body. When the hosted boot
+lands, it is added to the list.
+
+The ratchet walks the graph on both sides of a change. State already on the
+hosted path in the base is baselined and is migrated when it is next touched.
+A module that a change newly brings onto the hosted path is checked for state
+even if the file is unchanged, and none of its state is baselined. Its other
+debt is not judged by this check.
 
 The tool, MCP, provider and plugin registries are frozen once the hosted boot
 finishes: it calls `registry_freeze.freeze_registries()`, after which every

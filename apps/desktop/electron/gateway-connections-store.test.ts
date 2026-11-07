@@ -12,7 +12,8 @@ import {
   createGatewayConnectionsStore,
   GATEWAY_CONNECTION_TOKENS_FILE,
   GATEWAY_CONNECTIONS_FILE,
-  readLegacyUserDataRegistry
+  readLegacyUserDataRegistry,
+  registryChanges
 } from './gateway-connections-store'
 import { loadNativeTokenSet, persistNativeTokenSet } from './native-token-store'
 
@@ -20,9 +21,11 @@ import { loadNativeTokenSet, persistNativeTokenSet } from './native-token-store'
 // keep ONE saved-gateways list. Existing Desktop users must keep everything on the move.
 const repo = path.resolve(import.meta.dirname, '../../..')
 const python = process.env.HERMES_PYTHON || 'python3'
+
 const fixture = JSON.parse(
   fs.readFileSync(path.join(repo, 'tests/fixtures/gateway_connections/normalize_cases.json'), 'utf8')
 )
+
 const dirs: string[] = []
 
 afterEach(() => {
@@ -186,7 +189,7 @@ test('a v2 user keeps every connection, field, secret, quarantined entry and sig
         token: sealed('ssh-tok')
       }
     ],
-    quarantined: [{ reason: 'entry-missing-url', entry: { kind: 'remote', label: 'Broken' } }]
+    quarantined: [{ reason: 'entry-missing-url', entry: { kind: 'remote', label: 'Broken', token: sealed('q-tok') } }]
   }
 
   writeJson(path.join(userData, 'connections.json'), legacy)
@@ -335,4 +338,30 @@ test('the Python writer and this module share one file, one lock and each otherâ
     store.read().connections.map(c => c.id),
     ['local', 'desk', 'from-web']
   )
+})
+
+test('another writerâ€™s save replays as the same per-connection pushes a local save sends', () => {
+  const before = normalizeRegistry({
+    connections: [
+      { id: 'a', kind: 'remote', label: 'A', url: 'http://a' },
+      { id: 'b', kind: 'remote', label: 'B', url: 'http://b' },
+      { id: 'c', kind: 'remote', label: 'C', url: 'http://c' }
+    ]
+  })
+
+  const after = normalizeRegistry({
+    connections: [
+      { id: 'a', kind: 'remote', label: 'A renamed', url: 'http://a' },
+      { id: 'b', kind: 'remote', label: 'B', url: 'http://b2' },
+      { id: 'd', kind: 'ssh', label: 'D', host: 'd' }
+    ]
+  })
+
+  assert.deepEqual(registryChanges(before, after), [
+    { connectionId: 'a', reason: 'saved' },
+    { connectionId: 'b', reason: 'updated' },
+    { connectionId: 'c', reason: 'removed' },
+    { connectionId: 'd', reason: 'saved' }
+  ])
+  assert.deepEqual(registryChanges(after, { ...after, primary: 'd' }), [{ connectionId: 'd', reason: 'saved' }])
 })

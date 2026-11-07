@@ -88,6 +88,7 @@ def _pressured_compressor() -> MagicMock:
     compressor.last_prompt_tokens = 150_000
     compressor.awaiting_real_usage_after_compression = False
     compressor.should_compress.return_value = True
+    compressor.should_compress_info.return_value = (True, None)
     compressor.should_defer_preflight_to_real_usage.return_value = True
     compressor.get_active_compression_failure_cooldown.return_value = None
     return compressor
@@ -154,11 +155,20 @@ def _run_tool_loop(agent, n_tool_iterations: int):
 class TestPostToolCompressionAttemptCap:
     def test_post_tool_gate_waits_for_usage_after_native_checkpoint(self, agent):
         agent.context_compressor.awaiting_real_usage_after_compression = True
+        warnings = []
 
-        result, compress_calls = _run_tool_loop(agent, n_tool_iterations=1)
+        with patch.object(
+            agent,
+            "_warn_context_overflow_blocked",
+            side_effect=lambda reason, *_args: warnings.append(reason),
+        ):
+            result, compress_calls = _run_tool_loop(agent, n_tool_iterations=1)
 
         assert result["completed"] is True
         assert compress_calls == []
+        assert warnings == [], (
+            "waiting for real post-compaction usage is not attempt exhaustion"
+        )
 
     def test_post_tool_compression_capped_at_default_three(self, agent):
         """7 tool iterations under constant pressure → exactly 3 compactions.

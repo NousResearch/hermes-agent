@@ -45,6 +45,7 @@ def _migrate_sibling_profile_configs(notes: dict[str, list[str]] | None = None) 
     ``hermes update`` still migrates it.
     """
     from hermes_cli.config import check_config_version, get_missing_config_fields, migrate_config
+    from hermes_cli.config_migrations import stamp_independent_pending
     migrated: list[tuple[str, int, int]] = []
     with _best_effort('Sibling profile enumeration failed: %s'):
         from hermes_constants import (
@@ -57,11 +58,14 @@ def _migrate_sibling_profile_configs(notes: dict[str, list[str]] | None = None) 
             token = set_hermes_home_override(profile_home)
             try:
                 current_ver, latest_ver = check_config_version(raise_on_parse_error=True)
-                if current_ver >= latest_ver:
+                # A current stamp does not prove the stamp-independent steps ran on this profile
+                # either (see STAMP_INDEPENDENT_STEPS), so probe before skipping it.
+                stamp_pending = stamp_independent_pending()
+                if current_ver >= latest_ver and not stamp_pending:
                     continue
                 results = migrate_config(interactive=False, quiet=True)
                 after_ver, _ = check_config_version(raise_on_parse_error=True)
-                if after_ver > current_ver:
+                if after_ver > current_ver or stamp_pending:
                     migrated.append((name, current_ver, after_ver))
                     if notes is not None:
                         # config_added also lists the new default keys; those are not changes.
@@ -173,6 +177,7 @@ def _check_and_apply_config_migration(
     """
     from hermes_cli.update_cmd import _migrate_sibling_profile_configs
     from hermes_cli.config import check_config_version, migrate_config
+    from hermes_cli.config_migrations import stamp_independent_pending
     print()
     print("→ Checking configuration for new options...")
     from hermes_cli.config import get_missing_env_vars, get_missing_config_fields
@@ -192,13 +197,20 @@ def _check_and_apply_config_migration(
     owed_error = None
     has_new_options = bool(missing_env or missing_config)
     version_bump_only = not has_new_options and current_ver < latest_ver
-    needs_migration = has_new_options or current_ver < latest_ver
+    # A step that ignores the stamp (STAMP_INDEPENDENT_STEPS) may still have work on a home stamped
+    # at the latest version — by a build that put its own step at that number. Silent repair, like
+    # a version bump: there is nothing to configure.
+    stamp_repair = not has_new_options and not version_bump_only and stamp_independent_pending()
+    needs_migration = has_new_options or current_ver < latest_ver or stamp_repair
 
-    if version_bump_only:
+    if version_bump_only or stamp_repair:
         # Only the format version changed (defaults merge transparently); prompting
         # would look like a no-op on yes — apply silently and say what happened.
         print()
-        print(f"  ℹ Updating config format (v{current_ver} → v{latest_ver})…")
+        if version_bump_only:
+            print(f"  ℹ Updating config format (v{current_ver} → v{latest_ver})…")
+        else:
+            print("  ℹ Re-running a config migration step this home never received…")
         try:
             _mig_results = migrate_config(interactive=False, quiet=True)
             print("  ✓ Config format updated (no new settings to configure)")

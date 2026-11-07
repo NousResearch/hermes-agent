@@ -626,22 +626,35 @@ def _migrate_to_45(results: dict[str, Any], quiet: bool) -> None:
         "Uncheck Connections in `hermes tools` to turn it off.")
 
 
+def _mcp_servers_marked_disabled(servers: Any) -> dict[str, dict[str, Any]]:
+    """``mcp_servers`` entries a legacy ``disabled: true`` still holds off.
+
+    The trigger of v46 (which carries the choice to ``enabled: false``) and of
+    :func:`stamp_independent_pending`: a falsy ``disabled`` is inert — no runtime ever read it — so
+    it is not listed. Returned values alias *servers*' entries, so a caller may edit them in place.
+    """
+    if not isinstance(servers, dict):
+        return {}
+    from hermes_cli.tools_config import _parse_enabled_flag
+
+    return {
+        name: entry
+        for name, entry in servers.items()
+        if isinstance(entry, dict) and "disabled" in entry and _parse_enabled_flag(entry["disabled"], default=False)
+    }
+
+
 def _migrate_to_46(results: dict[str, Any], quiet: bool) -> None:
     # 45 → 46: the profile editor used to switch an MCP server off with `disabled: true`, a key no
     # runtime reader consults, so the server kept running. Carry that choice over to `enabled:
     # false` (the key every reader uses) and drop `disabled`, so the editor and runtime agree.
     # `disabled: true` wins over an explicit `enabled: true`: `hermes mcp add` writes that, and the
     # old editor only added `disabled`, so letting `enabled` win would skip nearly every server.
-    from hermes_cli.tools_config import _parse_enabled_flag
-
     config = read_raw_config()
-    servers = config.get("mcp_servers")
-    if not isinstance(servers, dict):
+    legacy = _mcp_servers_marked_disabled(config.get("mcp_servers"))
+    if not legacy:
         return
-    legacy = {n: e for n, e in servers.items() if isinstance(e, dict) and "disabled" in e}
-    turned_off = sorted((n for n, e in legacy.items() if _parse_enabled_flag(e["disabled"], default=False)), key=str)
-    if not turned_off:
-        return  # a falsy `disabled` is inert; the runtime never read it
+    turned_off = sorted(legacy, key=str)
     for name in turned_off:
         del legacy[name]["disabled"]
         legacy[name]["enabled"] = False
@@ -709,16 +722,22 @@ def _migrate_to_49(results: dict[str, Any], quiet: bool) -> None:
 _RETIRED_TIRITH_KEYS = ("tirith_enabled", "tirith_path", "tirith_timeout", "tirith_fail_open")
 
 
+def _security_retired_tirith_keys(config: dict[str, Any]) -> list[str]:
+    """``security`` keys v50 removes — its trigger, and one of :func:`stamp_independent_pending`'s."""
+    security = config.get("security")
+    if not isinstance(security, dict):
+        return []
+    return [key for key in _RETIRED_TIRITH_KEYS if key in security]
+
+
 def _migrate_to_50(results: dict[str, Any], quiet: bool) -> None:
     # 49 → 50: the bundled tirith scanner left Hermes. Nothing reads its keys now, so they are
     # dropped; nothing replaces them.
     config = read_raw_config()
-    security = config.get("security")
-    if not isinstance(security, dict):
-        return
-    present = [key for key in _RETIRED_TIRITH_KEYS if key in security]
+    present = _security_retired_tirith_keys(config)
     if not present:
         return
+    security = config["security"]
     for key in present:
         del security[key]
     _commit(config, results, quiet, "removed security.tirith_* (scanner no longer bundled)",
@@ -895,6 +914,31 @@ LEGACY_KEY_STEPS = frozenset({12, 14, 16, 17, 29, 33, 38, 39, 42, 43, 46, 50, 51
 #: connections, 47 threshold_tokens) are NOT re-run: past the stamp, their trigger value may be
 #: the user's own choice.
 STAMP_INDEPENDENT_STEPS = frozenset({46, 50})
+
+#: One cheap trigger probe per :data:`STAMP_INDEPENDENT_STEPS` member: given the raw config, does
+#: that step still have work? ``run_migrations`` only decides that such a step runs INSIDE a pass —
+#: every caller that skips the pass on a current stamp (boot maintenance, ``hermes update``, the
+#: sibling sweep, ``hermes config migrate``) never reaches it, so a home stamped past its own
+#: numbers kept the retired key for good. :func:`stamp_independent_pending` is how those callers ask
+#: before short-circuiting. A probe must read the same key its step acts on and write nothing; its
+#: key set stays equal to STAMP_INDEPENDENT_STEPS (a test pins that, so a new member cannot ship
+#: without one).
+STAMP_INDEPENDENT_TRIGGERS: dict[int, Callable[[dict[str, Any]], bool]] = {
+    46: lambda config: bool(_mcp_servers_marked_disabled(config.get("mcp_servers"))),
+    50: lambda config: bool(_security_retired_tirith_keys(config)),
+}
+
+
+def stamp_independent_pending() -> bool:
+    """True when a migration that ignores the version stamp still has work on the on-disk config.
+
+    Reads the config once and writes nothing. The caller's ``HERMES_HOME`` override applies, so a
+    sibling profile is probed in its own scope. Call it BEFORE short-circuiting a current-stamped
+    config — ``current_ver >= latest_ver`` says nothing about :data:`STAMP_INDEPENDENT_STEPS`
+    having run on this home.
+    """
+    config = read_raw_config()
+    return any(trigger(config) for trigger in STAMP_INDEPENDENT_TRIGGERS.values())
 
 
 def run_migrations(

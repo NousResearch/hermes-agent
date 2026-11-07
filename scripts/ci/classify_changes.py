@@ -94,8 +94,9 @@ import subprocess
 import sys
 
 _FRONTEND = ("ui-tui/", "web/", "apps/")  # TS typecheck-matrix packages
-# Shipped page outside those packages, exercised by the desktop Electron suite.
-_FRONTEND_FILES = {"scripts/desktop-update/ui.html"}
+# Shipped page outside those packages, exercised by the desktop Electron suite. The desktop cache
+# key owner is checked by tests-js/desktop-build-cache-inputs.test.mjs against the Node graph.
+_FRONTEND_FILES = {"scripts/desktop-update/ui.html", "scripts/ci/desktop_build_cache.py"}
 # The WhatsApp bridge's ``node --test`` suites run in the JS & TS job, so a
 # change to the bridge or to the Python adapter that speaks its protocol
 # selects ``frontend``.

@@ -215,6 +215,10 @@ CASES = {
         ["scripts/desktop-update/ui.html"],
         _lanes(python=True, frontend=True, desktop_updater=True, e2e_upgrade=True, e2e_desktop_update=True),
     ),
+    # tests-js/desktop-build-cache-inputs.test.mjs checks the key owner against the Node graph.
+    "desktop cache key owner → python + frontend": (
+        ["scripts/ci/desktop_build_cache.py"], _lanes(python=True, frontend=True, scan=True),
+    ),
     "desktop-update test → desktop_updater": (
         ["tests/scripts/desktop_update/test_desktop_update_windows_progress.py"],
         _lanes(python=True, python_prod=False, scan=True, desktop_updater=True),

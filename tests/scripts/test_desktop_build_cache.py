@@ -130,40 +130,22 @@ def test_keys_follow_dependency_inputs_not_checkout_or_release_identity(tmp_path
     assert describe_cache(source, cache, "payload-only")["restore_keys"][1] != rerun["restore_keys"][1]
 
 
-# The Node programs desktop preparation runs (scripts/bundles/desktop_prepare.py). The probes see
-# static imports and resolved module graphs only: a dynamic import() inside a function that does not
-# run at import time, or a PowerShell dot-source (windows-deps.ps1 -> windows-build-deps.ps1), stays
-# invisible and is listed in _INPUT_FILES by hand. Importing a program must not run it (isMain guards).
-_PREPARATION_PROGRAMS = (
-    "scripts/build/node-deps.mjs", "apps/desktop/scripts/stage-native-deps.mjs",
-    "apps/desktop/scripts/prepare-packaging-tools.mjs", "apps/desktop/scripts/probe-prepared-native.mjs",
-)
-_NODE_GRAPH = """
-import { registerHooks } from 'node:module'
-import { fileURLToPath, pathToFileURL } from 'node:url'
-import path from 'node:path'
-const loaded = new Set()
-registerHooks({ resolve(specifier, context, next) {
-  const result = next(specifier, context)
-  if (result.url.startsWith('file:')) loaded.add(fileURLToPath(result.url))
-  return result
-} })
-// Programs arrive by env: argv[1] would make the first one run as main.
-for (const program of JSON.parse(process.env.PROGRAMS)) await import(pathToFileURL(path.resolve(program)).href)
-console.log(JSON.stringify([...loaded]))
+# The Python entry points of desktop preparation. Importing them shows their module-level imports
+# at runtime; the late imports inside functions are covered by keying the preparation packages whole
+# (_INPUT_GLOBS), and shared modules a function imports late are listed by hand.
+_PYTHON_ENTRIES = ("scripts.bundles.desktop_prepare", "scripts.bundles.desktop", "scripts.bundles.native",
+                   "scripts.ci.desktop_build_cache")
+_LOADED_MODULES = """
+import importlib, json, sys
+from pathlib import Path
+root = Path.cwd().resolve()
+sys.path.insert(0, str(root))
+for entry in sys.argv[1:]:
+    importlib.import_module(entry)
+files = (Path(getattr(module, "__file__", None) or "").resolve() for module in list(sys.modules.values()))
+print(json.dumps(sorted(path.relative_to(root).as_posix() for path in files
+                        if path.is_file() and path.is_relative_to(root) and "site-packages" not in path.parts)))
 """
-# The Python entry points. Preparation imports most of its helpers inside functions, so the probe
-# also follows the late imports of the functions that can run (desktop_import_graph.py), within the
-# preparation packages only; pm/ is keyed whole by its *.py glob.
-_PYTHON_ENTRIES = ("scripts.bundles.desktop_prepare", "scripts.ci.desktop_build_cache")
-_PYTHON_FOLLOW = ("scripts/bundles/", "scripts/build/", "scripts/ci/", "apps/desktop/scripts/")
-
-
-def _module_graph(argv, env=None):
-    graph = subprocess.run(argv, cwd=ROOT, env={**os.environ, **(env or {})}, capture_output=True,
-                           text=True, encoding="utf-8", timeout=60, check=False)
-    assert graph.returncode == 0, graph.stdout + graph.stderr
-    return json.loads(graph.stdout)
 
 
 def _stale_modules(tmp_path, modules):
@@ -185,28 +167,30 @@ def _stale_modules(tmp_path, modules):
     return stale
 
 
-def test_keys_follow_every_node_module_desktop_preparation_loads(tmp_path):
-    """Editing a module a preparation Node program imports must miss the input cache."""
-    import shutil
-
-    node = shutil.which("node")
-    assert node, "the module graph test requires the build's Node"
-    loaded = _module_graph([node, "--input-type=module", "-e", _NODE_GRAPH],
-                           {"PROGRAMS": json.dumps(_PREPARATION_PROGRAMS)})
-    modules = sorted({Path(path).resolve().relative_to(ROOT).as_posix() for path in loaded})
-    modules = [module for module in modules if not module.startswith("node_modules/")]
-    assert set(_PREPARATION_PROGRAMS) < set(modules)
-    stale = _stale_modules(tmp_path, modules)
-    assert not stale, f"desktop cache key ignores imported modules: {stale}"
-
-
 def test_keys_follow_every_python_module_desktop_preparation_imports(tmp_path):
-    """Editing a repo module preparation's Python imports must miss the input cache."""
-    modules = _module_graph([sys.executable, str(Path(__file__).with_name("desktop_import_graph.py")),
-                             json.dumps(_PYTHON_ENTRIES), json.dumps(_PYTHON_FOLLOW)])
+    """Editing a repo module that preparation's Python loads must miss the input cache."""
+    graph = subprocess.run([sys.executable, "-c", _LOADED_MODULES, *_PYTHON_ENTRIES], cwd=ROOT,
+                           capture_output=True, text=True, encoding="utf-8", timeout=60, check=False)
+    assert graph.returncode == 0, graph.stdout + graph.stderr
+    modules = json.loads(graph.stdout)
     assert {"scripts/bundles/desktop_prepare.py", "scripts/bundles/desktop.py"} < set(modules)
     stale = _stale_modules(tmp_path, modules)
     assert not stale, f"desktop cache key ignores imported modules: {stale}"
+
+
+@pytest.mark.parametrize("package", ["scripts/bundles", "scripts/build", "pm"])
+def test_a_new_module_in_a_preparation_package_misses_the_input_cache(tmp_path, package):
+    """A late import of a module added to a preparation package needs no key-list edit."""
+    from scripts.ci.desktop_build_cache import describe_cache
+
+    source = source_tree(tmp_path / "source")
+    (source / package).mkdir(parents=True, exist_ok=True)
+    first = describe_cache(source, tmp_path / "cache", "desktop-production")["restore_keys"][0]
+    (source / package / "new_helper.py").write_text("VALUE = 1\n", encoding="utf-8")
+    added = describe_cache(source, tmp_path / "cache", "desktop-production")["restore_keys"][0]
+    assert added != first
+    (source / package / "new_helper.py").write_text("VALUE = 2\n", encoding="utf-8")
+    assert describe_cache(source, tmp_path / "cache", "desktop-production")["restore_keys"][0] != added
 
 
 def test_cache_roots_cannot_select_private_state_or_follow_workspace_symlinks(tmp_path, monkeypatch):

@@ -136,3 +136,70 @@ def test_diagnostics_reports_resolved_allowlist(kanban_home, capsys, config, exp
     payload = json.loads(capsys.readouterr().out)
     assert payload == [{"task_id": None, "dispatch_profiles": payload[-1]["dispatch_profiles"], "diagnostics": []}]
     assert payload[-1]["dispatch_profiles"].startswith(expected)
+
+
+@pytest.mark.parametrize("body", [
+    "kanban: null", "kanban: []", "kanban: invalid", "kanban: [unterminated", "- kanban",
+])
+@pytest.mark.parametrize("warm", [False, True])
+def test_malformed_managed_section_never_widens_claim_scope(
+    kanban_home, all_assignees_spawnable, monkeypatch, body, warm
+):
+    from hermes_cli.config_effective import load_user_config_effective
+
+    (kanban_home / "config.yaml").write_text(
+        "kanban: {dispatch_profiles: [default]}", encoding="utf-8"
+    )
+    managed = kanban_home / "managed"
+    managed.mkdir()
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    (managed / "config.yaml").write_text(body, encoding="utf-8")
+    if warm:
+        load_user_config_effective()
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="synthetic foreign card", assignee="default")
+        result = kbd.dispatch_once(conn, dry_run=True)
+    assert result.spawned == [] and result.skipped_nonspawnable == [tid]
+    assert kbd.dispatch_profile_allowlist_summary().startswith("none (fail-closed: managed")
+
+
+@pytest.mark.parametrize("body", ["kanban:", "kanban: null", "kanban: []", "kanban: off"])
+def test_user_only_non_mapping_section_keeps_profiles_claimable(
+    kanban_home, all_assignees_spawnable, monkeypatch, body
+):
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(kanban_home / "absent-managed"))
+    (kanban_home / "config.yaml").write_text(body, encoding="utf-8")
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="local card", assignee="default")
+        assert kbd.has_spawnable_ready(conn) is True
+        result = kbd.dispatch_once(conn, dry_run=True)
+    assert [t for t, _a, _w in result.spawned] == [tid]
+    assert kbd.dispatch_profile_allowlist_summary() == "any"
+
+
+def test_managed_null_allowlist_denies_and_null_section_diagnostic_explains_why(
+    kanban_home, all_assignees_spawnable, monkeypatch, caplog
+):
+    managed = kanban_home / "managed"
+    managed.mkdir()
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    (kanban_home / "config.yaml").write_text("kanban: {dispatch_profiles: [default]}\n")
+    policy = managed / "config.yaml"
+    policy.write_text("kanban: {dispatch_profiles: null}\n")
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="foreign card", assignee="default")
+        result = kbd.dispatch_once(conn, dry_run=True)
+    assert result.spawned == [] and result.skipped_nonspawnable == [tid]
+    policy.write_text("kanban: null\n")
+    with caplog.at_level("WARNING", logger="hermes_cli.kanban_db"):
+        summary = kbd.dispatch_profile_allowlist_summary()
+    assert "managed kanban section is null or not a mapping" in summary
+    assert any("managed kanban section" in r.getMessage() for r in caplog.records)
+
+
+def test_claim_policy_read_does_not_create_good_backup(kanban_home, monkeypatch):
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(kanban_home / "absent-managed"))
+    (kanban_home / "config.yaml").write_text("kanban: {dispatch_profiles: [default]}\n")
+    assert kbd.dispatch_profile_allowlist_summary() == "default"
+    assert not (kanban_home / "backups").exists()

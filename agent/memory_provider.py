@@ -193,7 +193,10 @@ class MemoryProvider(ABC):
         return {}
 
     def on_session_end(self, messages: list[dict[str, Any]]) -> None:
-        """End-of-session extraction; fires only at real session boundaries, never per-turn."""
+        """End-of-session extraction; fires only at real session boundaries, never per-turn, and at most
+        once per boundary (a boundary commit and the teardown that follows it are one boundary). It fires
+        again after a new turn or a session-id rotation: a resumed session legitimately ends more than once,
+        so do not dedupe by session id on your side."""
 
     def on_session_switch(
         self, new_session_id: str, *, parent_session_id: str = "", reset: bool = False, rewound: bool = False, **kwargs,

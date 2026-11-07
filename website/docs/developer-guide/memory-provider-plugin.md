@@ -202,6 +202,12 @@ workspace; absent or empty cwd remains unpinned.
 | `on_profile_created(profile_name, hermes_home)` | A profile selecting your provider was created (a clone carries `memory.provider`), from the CLI, dashboard or Desktop | Per-profile state: a peer, a host entry |
 | `on_profile_renamed(old_name, new_name, hermes_home)` | That profile was renamed (`hermes_home` is the new directory) | Re-key state stored under the old name |
 
+`on_session_end` fires **at most once per session boundary**: a boundary commit (session-id rotation,
+a boundary cache evict, the Desktop/TUI finalize) and the teardown that follows it are one boundary,
+and the manager suppresses the repeat before it reaches you. It fires again after a new turn or a
+session-id rotation, so a resumed session legitimately ends more than once. Do not dedupe on your
+side by session id — that would swallow the real end of a resumed session.
+
 The two profile hooks run on an uninitialized instance with that profile's home and its own
 secrets bound: its `.env` plus its configured secret sources (1Password and the like). A key it
 lacks reads as unset: the caller's environment is never used. An exception (`SystemExit` included) is logged and never fails the create or rename. They run inside the

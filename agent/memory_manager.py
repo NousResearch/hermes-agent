@@ -230,6 +230,10 @@ class MemoryManager:
         self._background_futures: dict[Future, str] = {}
         self._shutting_down = False
         self._teardown_claim: Optional[str] = None  # see claim_teardown()
+        # One end-of-session extraction per boundary (see on_session_end). Two host routes reach a single
+        # boundary — a boundary commit and the teardown — and providers have no idempotency contract.
+        self._session_end_delivered = False
+        self._session_end_lock = threading.Lock()
         self._shutdown_drain_state: dict[str, Any] = {
             "status": "not_started", "abandoned_writes": 0, "abandoned_prefetches": 0, "active_tasks": 0,
         }
@@ -264,6 +268,11 @@ class MemoryManager:
         checkpoint gate armed them, forks ran with no provider at all. ``initialize``, ``on_session_switch``
         and ``on_pre_compress`` (the checkpoint) are not gated."""
         return self._agent_context == "subagent"
+
+    def _arm_session_end(self) -> None:
+        """Re-arm the once-per-boundary end-of-session extraction claim: the conversation is live again."""
+        with self._session_end_lock:
+            self._session_end_delivered = False
 
     def _tool_call_keywords(self, provider: MemoryProvider) -> Optional[frozenset[str]]:
         """The keywords ``provider.handle_tool_call`` declares; None when it takes any (``**kwargs``, or
@@ -633,6 +642,7 @@ class MemoryManager:
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         if self._fork_turn_hooks_suppressed() or not self._owner_allows("on_turn_start"):
             return
+        self._arm_session_end()  # a new turn is live activity: the next end is a new boundary
         # previous_message is earlier user text, so it is scrubbed with the message (one learned-token set). The rest
         # are identity/runtime values, raw as in sync_all: masking a phone-number author_id merges two senders.
         if "previous_message" in kwargs:
@@ -650,8 +660,25 @@ class MemoryManager:
         self._each_provider("on_turn_start failed", _tick)
 
     def on_session_end(self, messages: list[dict[str, Any]]) -> None:
+        """End-of-session extraction: once per session boundary.
+
+        Two host routes fire for one boundary — a boundary commit (``commit_memory_session``: rotation,
+        cache evict, ``tui_gateway`` finalize) and the teardown (``shutdown_memory_provider``: gateway
+        cleanup, ``close()``) — and the TUI's close runs the first milliseconds before the second. Providers
+        have no idempotency contract (see ``claim_teardown``), so a provider that opens a session record on
+        this hook writes one for each route. The claim lives here, not in the provider: a provider cannot
+        tell a boundary commit from a teardown, and deduping on its side by session id would also swallow
+        the real end of a session the user resumed. ``on_turn_start``, ``on_session_switch`` and
+        ``initialize_all`` re-arm it — new activity or a rotated id is a new boundary to extract, and
+        in-place compression commits a boundary without rotating the id.
+        """
         if self._fork_turn_hooks_suppressed() or not self._owner_allows("on_session_end"):
             return
+        with self._session_end_lock:
+            if self._session_end_delivered:
+                logger.debug("Skipping a repeat on_session_end for the current session boundary")
+                return
+            self._session_end_delivered = True
         messages = _redact_messages_for_egress(messages or [])
         self._each_provider("on_session_end failed", lambda p: p.on_session_end(messages), level=logging.WARNING,
                             exc_info=True)
@@ -702,6 +729,7 @@ class MemoryManager:
             "on_session_switch failed",
             lambda p: p.on_session_switch(new_session_id, parent_session_id=parent_session_id, reset=reset, **kwargs),
         )
+        self._arm_session_end()  # the rotated id writes into a new record: its end is a new boundary
 
     @staticmethod
     def _checkpoint_api_version(provider: MemoryProvider) -> Optional[int]:
@@ -954,6 +982,7 @@ class MemoryManager:
         self._bound_scope = bound_scope(kwargs["hermes_home"], kwargs.get("agent_identity"))
         _context = kwargs.get("agent_context")
         self._agent_context = _context if isinstance(_context, str) and _context.strip() else "primary"
+        self._arm_session_end()  # this manager is initialized for a session that has not ended yet
         # One instance, one profile: never rebind an instance another profile's manager bound (#140058).
         for provider in [p for p in self._providers if p.name != "builtin"]:
             if not claim_instance(provider, kwargs["hermes_home"]):

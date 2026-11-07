@@ -423,6 +423,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     _DEFAULT_BRIDGE_DIR = None  # resolved in __init__
     splits_long_messages = True  # send() chunks via truncate_message()
     serial_receive_loop = True  # the bridge poll loop awaits each media message before the next
+    SUPPORTS_REACTIONS = True  # via the bridge's /react endpoint; see _bridge_react
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WHATSAPP)
@@ -943,6 +944,36 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             mime = mimetypes.guess_type(file_path)[0] or _MEDIA_INFO.get(_MEDIA_TYPE_BY_BRIDGE_KIND.get(media_type), ("", ""))[1]
             await rich_sent_store.record_media_async(jid, result.message_id, [(file_path, mime or "application/octet-stream")])
         return result
+
+    # ------------------------------------------------------------------
+    # Reactions (unified cross-platform contract — see BasePlatformAdapter)
+    # ------------------------------------------------------------------
+    # Baileys reacts with ``sock.sendMessage(jid, { react: { text, key } })``. The bridge's
+    # ``/react`` endpoint resolves the ORIGINAL message from its bounded, TTL'd message store
+    # (populated as inbound and sent messages flow through, so the group ``participant`` on the
+    # key survives) and forwards the call; an empty emoji retracts.
+    async def _bridge_react(self, chat_id: str, message_id: Optional[str], emoji: str) -> dict[str, Any]:
+        """POST /react (``emoji=''`` clears). The bridge needs the original message key, so an
+        explicit ``message_id`` is mandatory — there is no "react to the latest" shortcut."""
+        if unavailable := await self._bridge_unavailable():
+            return {"success": False, "error": unavailable}
+        if not message_id:
+            return {"success": False, "error": "WhatsApp reactions need an explicit message_id"}
+        import aiohttp
+        try:
+            async with self._bridge_req("post", "react", 15, json={
+                    "chatId": to_whatsapp_jid(chat_id), "messageId": message_id, "emoji": emoji}) as resp:
+                return {"success": True} if resp.status == 200 else {"success": False, "error": await resp.text()}
+        except (aiohttp.ClientError, TimeoutError) as e:
+            return {"success": False, "error": str(e)}
+
+    async def add_reaction(self, chat_id: str, emoji: str, message_id: Optional[str] = None) -> dict[str, Any]:
+        """Attach an emoji reaction to a message via the Baileys bridge."""
+        return await self._bridge_react(chat_id, message_id, emoji)
+
+    async def remove_reaction(self, chat_id: str, message_id: Optional[str] = None) -> dict[str, Any]:
+        """Retract a reaction (Baileys clears with an empty reaction text)."""
+        return await self._bridge_react(chat_id, message_id, "")
 
     @_needs_bridge
     async def send_poll(self, chat_id: str, question: str, options: list[str], *, selectable_count: int = 1) -> SendResult:

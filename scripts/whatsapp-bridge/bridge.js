@@ -36,6 +36,7 @@ import { classifyOwnerMessageGate } from './owner_message_gate.js';
 import {
   addMentions,
   buildPollPayload,
+  buildReactionSend,
   createReconnectScheduler,
   createVersionResolver,
   installConsoleStamps,
@@ -925,6 +926,25 @@ app.post('/edit', async (req, res) => {
     }
 
     res.json({ success: true, messageIds });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// React to a normal WhatsApp message cached by the bridge.
+// Pass an empty `emoji` ("") to retract a previously-sent reaction.
+app.post('/react', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+  }
+  const { chatId, messageId, emoji } = req.body;
+  const { content, status, error } = buildReactionSend({ chatId, messageId, emoji, messageStore });
+  if (error) return res.status(status).json({ error });
+  try {
+    // Through the send queue like every other send: overlapping sendMessage calls misroute (#33360).
+    const sent = await sendWithTimeout(chatId, content);
+    trackSentMessageId(sent);
+    res.json({ success: true, messageId: sent?.key?.id });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

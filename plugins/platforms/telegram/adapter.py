@@ -122,13 +122,17 @@ try:
         Application, CommandHandler, CallbackQueryHandler, InlineQueryHandler, MessageHandler as TelegramMessageHandler,
         ContextTypes, TypeHandler, filters)
     from telegram.constants import ParseMode, ChatType
+    try:
+        from telegram.constants import ReactionEmoji
+    except ImportError:  # PTB < 20.8: no allowlist to validate against
+        ReactionEmoji = None
     from telegram.request import HTTPXRequest
     TELEGRAM_AVAILABLE = True
 except ImportError:
     TELEGRAM_AVAILABLE = False
     Update = Bot = Message = InlineKeyboardButton = InlineKeyboardMarkup = Application = Any
     CommandHandler = CallbackQueryHandler = InlineQueryHandler = TypeHandler = TelegramMessageHandler = HTTPXRequest = Any
-    LinkPreviewOptions = filters = ParseMode = ChatType = None
+    LinkPreviewOptions = filters = ParseMode = ChatType = ReactionEmoji = None
 
     # Mock so ContextTypes.DEFAULT_TYPE annotations don't crash class definition without the lib.
     class _MockContextTypes:
@@ -151,6 +155,26 @@ from gateway.platforms.base import (
 # Telegram truncates ``answerCallbackQuery`` text at 200 chars; ``BotCommand`` descriptions at 256.
 _TOAST_LIMIT = 200
 _BOT_COMMAND_DESCRIPTION_LIMIT = 256
+
+# PTB ships every reaction string outside ``telegram.constants.ReactionEmoji`` as a custom emoji id
+# (``ReactionTypeCustomEmoji``) instead of refusing it, so the allowlist check has to happen here.
+# Keyed by the VS16-free form: members are unique without U+FE0F, and the key maps back to the
+# allowlist's own spelling (which keeps the VS16 inside ``❤️‍🔥`` but has none on ``❤``).
+_STANDARD_REACTIONS = {str(m).replace("\ufe0f", ""): str(m) for m in (ReactionEmoji or ())}
+_UNSUPPORTED_REACTION_ERROR = (
+    "telegram accepts only its supported standard emoji reactions "
+    "(telegram.constants.ReactionEmoji); custom emoji IDs are not supported")
+
+
+def _normalize_standard_reaction(emoji: Optional[str]) -> Optional[str]:
+    """``emoji`` as Telegram accepts it, or ``None`` when it is not a standard reaction.
+
+    U+FE0F is presentation-only, so fully-, minimally- and over-qualified spellings of one emoji
+    (``❤️``/``❤``, ``❤️‍🔥``/``❤‍🔥``) all resolve to the allowlist member's exact string.
+    """
+    if not isinstance(emoji, str) or not emoji:
+        return None
+    return _STANDARD_REACTIONS.get(emoji.replace("\ufe0f", ""))
 
 
 def _unauthorized() -> str:
@@ -527,6 +551,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
     RICH_MESSAGE_MAX_CHARS = 32768  # Bot API 10.1 rich cap; above it use legacy chunking
     _SPLIT_THRESHOLD = 4000  # chunk near this length ⇒ a client-side split continuation is almost certain
+    # set_message_reaction exists here, but the automatic lifecycle 👀/👍 indicators are gated
+    # separately by TELEGRAM_REACTIONS; add_reaction is the unified agent-facing contract.
+    SUPPORTS_REACTIONS = True
     MEDIA_GROUP_WAIT_SECONDS = 0.8
     HELD_INBOUND_MAX = 64  # inbound events held across a disconnect window; oldest dropped first
     _GENERAL_TOPIC_THREAD_ID = "1"
@@ -7177,10 +7204,38 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             return False
         return str(configured).lower() not in {"false", "0", "no"}
 
+    # -- Message reactions (unified agent-facing contract) --
+
+    async def add_reaction(self, chat_id: str, emoji: str, message_id: Optional[str] = None) -> dict[str, Any]:
+        """Set the bot's reaction on a message. Telegram replaces all bot reactions in one call and
+        has no "react to the latest" affordance, so an explicit ``message_id`` is required."""
+        if not message_id:
+            return {"success": False, "error": "telegram requires an explicit message_id to react"}
+        reaction = _normalize_standard_reaction(emoji)
+        if reaction is None:  # not ``_set_reaction(None)``: that one means "clear"
+            return {"success": False, "error": _UNSUPPORTED_REACTION_ERROR}
+        if await self._set_reaction(chat_id, message_id, reaction):
+            return {"success": True, "message_id": message_id}
+        return {"success": False, "error": "telegram set_message_reaction failed"}
+
+    async def remove_reaction(self, chat_id: str, message_id: Optional[str] = None) -> dict[str, Any]:
+        """Clear the bot's reactions from a message (explicit ``message_id`` required)."""
+        if not message_id:
+            return {"success": False, "error": "telegram requires an explicit message_id to unreact"}
+        if await self._clear_reactions(chat_id, message_id):
+            return {"success": True, "message_id": message_id}
+        return {"success": False, "error": "telegram clear reactions failed"}
+
     async def _set_reaction(self, chat_id: str, message_id: str, emoji: Optional[str]) -> bool:
         """Set a single emoji reaction (``None`` clears all bot-set reactions, the documented Bot API way)."""
         if not self._bot:
             return False
+        if emoji is not None:
+            reaction = _normalize_standard_reaction(emoji)
+            if reaction is None:
+                logger.debug("[%s] refused unsupported reaction %r (standard emoji only)", self.name, emoji)
+                return False
+            emoji = reaction
         try:
             await self._bot.set_message_reaction(chat_id=normalize_telegram_chat_id(chat_id), message_id=int(message_id), reaction=emoji)
             return True

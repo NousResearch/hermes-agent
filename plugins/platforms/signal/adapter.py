@@ -183,6 +183,9 @@ class SignalAdapter(BasePlatformAdapter):
     serial_receive_loop = True  # _sse_listener awaits each envelope before reading the next
     # No real edit API; declaring it lets streaming suppress the cursor instead of a stale tofu square.
     SUPPORTS_MESSAGE_EDITING = False
+    # Native sendReaction, also driving the 👀/✅ lifecycle hooks (gated by SIGNAL_REACTIONS);
+    # add_reaction/remove_reaction below are the unified agent-facing contract.
+    SUPPORTS_REACTIONS = True
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SIGNAL)
@@ -466,17 +469,20 @@ class SignalAdapter(BasePlatformAdapter):
             logger.debug("Signal: skipping contentless envelope from %s (%d attachments)", redact_phone(sender),
                          len(media_urls) if media_urls else 0)
             return
+        ts_ms = envelope_data.get("timestamp", 0)  # milliseconds since epoch
+        # Signal addresses a message by (author, ms timestamp), not one opaque id, so the composite
+        # below is the token add_reaction/remove_reaction round-trip.
+        reaction_message_id = f"{sender}:{ts_ms}" if isinstance(ts_ms, int) and ts_ms > 0 else None
         source = self.build_source(
             chat_id=chat_id, chat_name=group_info.get("groupName") if group_info else sender_name,
             chat_type="group" if is_group else "dm", user_id=sender,
             user_name=sender_name or sender, user_id_alt=sender_uuid if sender_uuid else None,
-            chat_id_alt=group_id if is_group else None)
+            chat_id_alt=group_id if is_group else None, message_id=reaction_message_id)
         # First matching MIME prefix wins; everything else (application/*, text/*, unknown) is a DOCUMENT
         # so run.py's document-context injection surfaces the cached path.
         msg_type = MessageType.TEXT if not media_types else next(
             (mt for prefix, mt in _MEDIA_TYPE_BY_MIME_PREFIX if any(m.startswith(prefix) for m in media_types)),
             MessageType.DOCUMENT)
-        ts_ms = envelope_data.get("timestamp", 0)  # milliseconds since epoch
         timestamp = datetime.now(tz=UTC)
         if ts_ms:
             with suppress(ValueError, OSError):
@@ -484,7 +490,7 @@ class SignalAdapter(BasePlatformAdapter):
         # raw_message keeps sender + timestamp_ms so processing hooks can build sendReaction targets.
         event = MessageEvent(
             source=source, text=text or "", message_type=msg_type, media_urls=media_urls,
-            media_types=media_types, timestamp=timestamp,
+            media_types=media_types, timestamp=timestamp, message_id=reaction_message_id,
             raw_message={"sender": sender, "timestamp_ms": ts_ms, "quote": quote_data if quote_data else None},
             reply_to_message_id=reply_to_id, reply_to_text=quote_data.get("text"),
             reply_to_author_id=reply_to_author,
@@ -931,8 +937,12 @@ class SignalAdapter(BasePlatformAdapter):
         await self._with_target(params, chat_id, resolve=False)
         return await self._rpc("sendReaction", params) is not None
 
-    async def send_reaction(self, chat_id: str, emoji: str, target_author: str, target_timestamp: int) -> bool:
-        """React to the message (author number/UUID, Signal ms timestamp) via signal-cli RPC."""
+    async def send_reaction(self, chat_id: str, emoji: str,
+                            target_author: str, target_timestamp: int) -> bool:
+        """React to the message (author number/UUID, Signal ms timestamp) via signal-cli RPC.
+
+        Signal's native shape: one target is (author, timestamp), so ``add_reaction``/
+        ``remove_reaction`` take the composite ``"<author>:<timestamp_ms>"`` token and split it here."""
         ok = await self._send_reaction_rpc(chat_id, {
             "account": self.account, "emoji": emoji, "targetAuthor": target_author,
             "targetTimestamp": target_timestamp})
@@ -940,11 +950,46 @@ class SignalAdapter(BasePlatformAdapter):
             logger.debug("Signal: sendReaction failed (chat=%s, emoji=%s)", chat_id[:20], emoji)
         return ok
 
-    async def remove_reaction(self, chat_id: str, target_author: str, target_timestamp: int) -> bool:
+    async def _remove_reaction_raw(self, chat_id: str, target_author: str, target_timestamp: int) -> bool:
         """Remove a reaction by sending an empty-string emoji."""
         return await self._send_reaction_rpc(chat_id, {
             "account": self.account, "emoji": "", "targetAuthor": target_author, "targetTimestamp": target_timestamp,
             "remove": True})
+
+    @staticmethod
+    def _parse_signal_message_id(message_id: Optional[str]) -> tuple[Optional[str], Optional[int]]:
+        """Split a composite ``"<author>:<timestamp_ms>"`` reaction target; ``(None, None)`` when
+        malformed or the timestamp is not a positive ms value (Signal would accept neither).
+        ``rpartition`` because an author UUID/ACI may itself contain ``:``."""
+        if not message_id or ":" not in message_id:
+            return (None, None)
+        author, _, ts_raw = message_id.rpartition(":")
+        try:
+            ts = int(ts_raw)
+        except (TypeError, ValueError):
+            return (None, None)
+        return (author or None, ts) if ts > 0 else (None, None)
+
+    async def add_reaction(self, chat_id: str, emoji: str, message_id: Optional[str] = None) -> dict[str, Any]:
+        """Unified reaction contract: ``message_id`` is the composite ``"<author>:<timestamp_ms>"``
+        token Signal surfaces on inbound MessageEvents (it has no single opaque message id)."""
+        author, ts = self._parse_signal_message_id(message_id)
+        if not author or ts is None:
+            return {"success": False,
+                    "error": "signal requires message_id as '<author>:<timestamp_ms>'"}
+        if await self.send_reaction(chat_id, emoji, author, ts):
+            return {"success": True, "message_id": message_id}
+        return {"success": False, "error": "signal sendReaction failed"}
+
+    async def remove_reaction(self, chat_id: str, message_id: Optional[str] = None) -> dict[str, Any]:
+        """Unified reaction contract — retract a Signal reaction (same composite id shape)."""
+        author, ts = self._parse_signal_message_id(message_id)
+        if not author or ts is None:
+            return {"success": False,
+                    "error": "signal requires message_id as '<author>:<timestamp_ms>'"}
+        if await self._remove_reaction_raw(chat_id, author, ts):
+            return {"success": True, "message_id": message_id}
+        return {"success": False, "error": "signal remove reaction failed"}
 
     def _extract_reaction_target(self, event: MessageEvent) -> Optional[tuple]:
         """Extract (target_author, target_timestamp) from a MessageEvent, or None."""
@@ -971,7 +1016,7 @@ class SignalAdapter(BasePlatformAdapter):
             return
         if not (target := self._extract_reaction_target(event)):
             return
-        await self.remove_reaction(event.source.chat_id, *target)
+        await self._remove_reaction_raw(event.source.chat_id, *target)
         if emoji := _OUTCOME_REACTION.get(outcome):
             await self.send_reaction(event.source.chat_id, emoji, *target)
 

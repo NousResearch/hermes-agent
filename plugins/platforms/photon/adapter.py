@@ -580,6 +580,10 @@ class PhotonAdapter(BasePlatformAdapter):
     SUPPORTS_MESSAGE_EDITING = False  # no edit API: streaming must not leave a stale cursor (▉)
     serial_receive_loop = True  # the /inbound NDJSON loop awaits each line before reading the next
 
+    # iMessage tapbacks via the sidecar's /react endpoint; add_reaction /
+    # remove_reaction already implement the unified base contract below.
+    SUPPORTS_REACTIONS = True
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform("photon"))
         extra = config.extra or {}

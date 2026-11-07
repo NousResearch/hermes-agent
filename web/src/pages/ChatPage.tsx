@@ -797,29 +797,22 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     });
     term.open(host);
 
-    // IME composition guard (fixes #52111).
-    //
-    // React 18's root-level event delegation intercepts keydown events with
-    // keyCode 229 (the "composition in progress" signal sent by the browser
-    // during non-Latin IME input) and synthesises an onCompositionStart
-    // event.  That synthetic path sets internal composing state that
-    // interferes with xterm.js's own IME handling on its hidden textarea,
-    // causing the first keystroke of each composition chunk to be silently
-    // dropped — most visible with Cyrillic (Ukrainian/Russian) on
-    // Firefox-based browsers, but affects any locale that uses composition
-    // events (CJK, Arabic, Hebrew).
-    //
-    // xterm.js relies on native compositionstart/compositionend on its
-    // internal textarea, not on keydown, so blocking the keyCode-229
-    // keydown from reaching React's delegation layer is safe.  The listener
-    // sits in the *capture* phase on the terminal host so it fires before
-    // the event bubbles up to the React root.
+    // IME composition guard (#52111): keep keyCode-229 keydowns away from
+    // React's root-level composition handling, which runs in the bubble
+    // phase. The guard must sit in the *bubble* phase on the host, not the
+    // capture phase: xterm.js handles these keys from its own keydown
+    // listener on the hidden textarea (Android IMEs such as Gboard and
+    // SwiftKey report every key as keyCode 229, and CompositionHelper diffs
+    // the textarea for them; there is no keypress, and the `input` path is
+    // off in screenReaderMode). A capture-phase guard stopped the event
+    // before it reached the textarea, so non-composed typing and IME
+    // backspaces never produced onData (#136179).
     const _imeCompositionGuard = (e: KeyboardEvent) => {
       if (e.keyCode === 229 || e.key === "Process") {
         e.stopPropagation();
       }
     };
-    host.addEventListener("keydown", _imeCompositionGuard, true);
+    host.addEventListener("keydown", _imeCompositionGuard, false);
 
     const textarea = term.textarea;
     if (textarea) {
@@ -1583,7 +1576,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // the ticket fetch resolves and ``wsRef.current`` was never assigned.
       wsRef.current?.close();
       wsRef.current = null;
-      host.removeEventListener("keydown", _imeCompositionGuard, true);
+      host.removeEventListener("keydown", _imeCompositionGuard, false);
       // Every reconnect rebuilds this terminal; the WebGL addon leaves its GL
       // context alive on dispose, so a reconnect storm hits the browser's
       // context cap and blanks the live terminal (#111909).

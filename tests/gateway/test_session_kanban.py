@@ -146,3 +146,31 @@ def test_claim_reclaimed_before_admission_marker_is_refused(tmp_path, monkeypatc
     assert calls == []
     with closing(connect(board='owned')) as conn:
         assert conn.execute("SELECT count(*) FROM task_events WHERE task_id=? AND kind='owner_admitted'", (task_id,)).fetchone()[0] == 0
+
+
+def test_real_dispatcher_names_missing_skills_in_the_run_error(tmp_path):
+    """A card whose profile cannot load its skills books the skill and the profile on its run.
+
+    End-to-end through the real dispatcher, owner, managed worker and submitter: the boot
+    refusal must reach ``task_runs.error``. The 2026-11-02 incident booked four crashes whose
+    only explanation was "Kanban execution unknown".
+    """
+    import json
+    import os
+    import subprocess
+    import sys
+    repo = Path(__file__).resolve().parents[2]
+    from tests.gateway.fixtures.local_recovery_probe import child_env
+    env = child_env()
+    env.update(HOME=str(tmp_path / 'home'), USERPROFILE=str(tmp_path / 'home'),
+               HERMES_HOME=str(tmp_path / 'state'), PYTHONPATH=str(repo),
+               KANBAN_PROBE_MODE='skills_unavailable')
+    result = subprocess.run(
+        [sys.executable, str(Path(__file__).parent / 'fixtures' / 'kanban_owner_probe.py')],
+        env=env, cwd=repo, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+        timeout=180, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    receipt = json.loads((tmp_path / 'state' / 'receipt.json').read_text())
+    assert 'missing-skill-sentinel' in receipt['run_error'], receipt
+    assert "'default'" in receipt['run_error'], receipt
+    assert 'execution unknown' not in receipt['run_error'].lower(), receipt

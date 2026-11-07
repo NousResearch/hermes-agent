@@ -126,6 +126,23 @@ def _check(cond: Any, message: str) -> None:
         raise _Reject(message)
 
 
+def _check_skills_loadable(assignee: str, skills) -> None:
+    """Reject a card whose assignee profile cannot load a requested skill.
+
+    A card is a cross-profile handoff: the worker resolves ``skills`` from ITS own profile's
+    tree, so a skill only the creator's profile (or trusted project dir) carries makes every
+    dispatch die at boot. Checked here, at create time, so an unrunnable card is never queued.
+    A resolver failure stays out of the way (logged) — the boot check still reports it.
+    """
+    try:
+        from hermes_cli.kanban_skills import skills_refusal
+        refusal = skills_refusal(assignee, skills)
+    except Exception:
+        logger.exception("kanban_create: could not validate skills against %r", assignee)
+        return
+    _check(refusal is None, refusal or "")
+
+
 # Keys a handler reads that its LLM-facing schema deliberately does not declare:
 # ``session_id`` is provenance stamped by internal callers (31fe2290393), ``project_id``
 # the pre-``project`` alias still honoured by ``_handle_create`` (e7811345c17).
@@ -1110,6 +1127,7 @@ def _handle_create(args: dict, **kw) -> str:
     triage, skills, goal_mode = (
         _parse_bool_arg(args, "triage"), _coerce_str_list(args.get("skills"), "skills", "skill names"),
         _parse_bool_arg(args, "goal_mode"))
+    _check_skills_loadable(str(assignee), skills)
     model_override, provider_override = args.get("model"), args.get("provider")
     _check(model_override or not provider_override, "'provider' requires 'model' to be set as well")
     parents = _coerce_str_list(args.get("parents") or [], "parents", "task ids")

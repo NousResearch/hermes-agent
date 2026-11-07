@@ -146,13 +146,21 @@ async def _await_receipt(client, params, board_db, claim):
 
 def _exit_code(receipt, params, board_db):
     from hermes_cli.gateway_client import GatewayClientError
-    if receipt['status'] == 'unknown':
-        raise GatewayClientError('Kanban execution unknown; retained by owner')
     from gateway.session_kanban import worker_result
     result = worker_result(board_db, params)
+    # The run's own record outranks the receipt: an owner that lost the worker labels the
+    # admission ``unknown``, and the failure it recorded (a boot refusal, say) is the reason a
+    # human needs. "Execution unknown" stays for the case nothing was recorded.
+    recorded = result.get('error')
+    if receipt['status'] == 'unknown':
+        if recorded:
+            raise GatewayClientError(f'Kanban execution failed: {recorded}')
+        raise GatewayClientError('Kanban execution unknown; retained by owner')
     # The attempt's reply ends the log, as a one-shot worker's did: crash diagnostics quote it.
     if result.get('last_output'):
         print(result['last_output'])
+    elif recorded:
+        print(recorded, file=sys.stderr)
     return result.get('exit_code', 1)
 
 
@@ -186,7 +194,9 @@ def _submit():
             os.environ.pop(key, None)
         return asyncio.run(run(params, board_db))
     except (KeyError, ValueError, OSError) as exc:
-        print(f'Kanban owner refused: {exc}', file=sys.stderr)
+        # Never "owner refused" for a run the owner admitted and the engine failed: the message
+        # names what actually went wrong (e.g. a boot-time skills refusal).
+        print(f'Kanban dispatch failed: {exc}', file=sys.stderr)
         return 1
 
 

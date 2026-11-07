@@ -1847,14 +1847,10 @@ def read_raw_config() -> dict[str, Any]:
 def read_user_config_raw(config_path: Optional[Path] = None) -> dict[str, Any]:
     """Read a user ``config.yaml`` EXACTLY as written (no defaults/overlay/expansion, no cache).
     ONLY legal for write-back round-trips and raw-file diagnostics — behavioral reads must use
-    load_config()/load_config_readonly()."""
+    load_config()/load_config_readonly(). An existing document must contain a mapping."""
     if config_path is None:
         config_path = get_config_path()
-    try:
-        data = read_config_doc(config_path) or {}
-    except FileNotFoundError:
-        return {}
-    return data if isinstance(data, dict) else {}
+    return require_readable_config_before_write(config_path)
 
 
 def read_raw_config_readonly() -> dict[str, Any]:
@@ -1868,7 +1864,7 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
     """Refuse to replace an existing config.yaml that cannot be read or parsed; return the mapping.
     Guards two collapse-to-empty failure modes that would let a read-then-write caller silently
     wipe user overrides: an unreadable file (permissions / broken mount) and an unparseable or
-    non-mapping root — bare-``except`` loaders treat both as ``{}``, so a subsequent write would
+    empty/non-mapping root — bare-``except`` loaders treat both as ``{}``, so a subsequent write would
     replace the recoverable file with only the caller's partial dict. Fails closed."""
     if config_path is None:
         snapshot = _worker_config_snapshot()
@@ -1891,8 +1887,6 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
         _warn_config_parse_failure(config_path, exc, fallback="refuse-write")
         raise _refuse_overwrite(
             config_path, "has a formatting error", exc, _FIX_YAML.format(backups=_backups_dir_display())) from exc
-    if loaded is None:
-        return {}
     if not isinstance(loaded, dict):
         exc = TypeError(f"top-level YAML must be a mapping, got {type(loaded).__name__}")
         _warn_config_parse_failure(config_path, exc, fallback="refuse-write")

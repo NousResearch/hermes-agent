@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 LIVE_RETENTION_DAYS = 7
+_MANIFEST_UPDATE_LOCK = threading.Lock()
 
 # Per-line truncation budgets (chars): the .log is a compact operational view;
 # the child's SessionDB transcript and summary spill files carry full text.
@@ -291,7 +292,8 @@ def update_manifest_statuses(delegation_id: Optional[str],
     before the batch ran, e.g. ones their backend refused, while the rest still run)."""
     if not delegation_id:
         return
-    with _best_effort("manifest update"):
+    # Groups from one fan-out finish on separate threads and update the same manifest.
+    with _best_effort("manifest update"), _MANIFEST_UPDATE_LOCK:
         mp = _manifest_path(delegation_id, home)
         manifest = json.loads(mp.read_text(encoding="utf-8-sig"))
         by_index = {r.get("task_index"): r for r in results if isinstance(r, dict)}
@@ -306,7 +308,7 @@ def update_manifest_statuses(delegation_id: Optional[str],
         # The dispatch-time model is only the delegation.model override (None when children inherit the parent's).
         if not manifest.get("model"):
             manifest["model"] = next((t["model"] for t in manifest.get("tasks", []) if t.get("model")), None)
-        if completed:
+        if completed and all(t.get("status") != "running" for t in manifest.get("tasks", [])):
             manifest["completed"] = time.strftime(_TIME_FMT)
         _dump_json(mp, manifest)
 

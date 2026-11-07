@@ -93,6 +93,15 @@ _SCHEMA_OVERRIDES: dict[str, dict[str, Any]] = {
         "Legacy Vercel Sandbox runtime (deprecated by Vercel; a pinned runtime overrides the image; clear to use the image)",
         "node24", "node22", "python3.13", clearable=True),
     "terminal.modal_mode": _select("Modal sandbox mode", "sandbox", "function"),
+    # Free text, not a select: "auto" or any whole MiB value (parsed per worker spawn).
+    "terminal.worker_memory_max_mb": {
+        "type": "string",
+        "description": (
+            "Worker memory limit in MiB (systemd MemoryMax per worker). "
+            "'auto' = smaller of 4 GiB and half of RAM; a number such as 8192 or 16384 "
+            "raises it, still capped by physical RAM. Applies to the next worker, no restart."
+        ),
+    },
     "proxy.enabled": {
         "type": "boolean",
         "description": (

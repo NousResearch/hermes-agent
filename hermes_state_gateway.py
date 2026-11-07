@@ -171,6 +171,60 @@ def _optional_table_columns(conn) -> dict[str, set[str]]:
     }
 
 
+def _rekey_state_meta_policies(
+    conn, old: str, new: str, old_ns: str, new_ns: str, ns_len: int,
+) -> int:
+    """Rewrite local session receipts and record legacy roots for a renamed profile."""
+    from hermes_state_local import POLICY_PREFIX
+    from hermes_state_local_migration import LEGACY_PREFIX
+    from hermes_cli.profiles import get_profile_dir
+
+    old_dir_str = str(get_profile_dir(old))
+    new_dir_str = str(get_profile_dir(new))
+    meta_policies = conn.execute(
+        "SELECT key, value FROM state_meta WHERE key LIKE ?",
+        (POLICY_PREFIX + "%",)).fetchall()
+    meta_count = 0
+    for m_key, m_val in meta_policies:
+        try:
+            payload = json.loads(m_val)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        prof_id = payload.get("profile_id")
+        if not (prof_id and (prof_id == old_dir_str
+                             or prof_id.endswith(f"/profiles/{old}")
+                             or prof_id.endswith(f"\\profiles\\{old}"))):
+            continue
+        payload["profile_id"] = new_dir_str
+        sid = payload.get("session_id") or m_key[len(POLICY_PREFIX):]
+        payload["legacy_session_id"] = sid
+        if isinstance(payload.get("route"), str) and payload["route"].startswith(old_ns):
+            payload["route"] = new_ns + payload["route"][ns_len:]
+        entry = payload.get("entry")
+        if isinstance(entry, dict):
+            if isinstance(entry.get("session_key"), str) and entry["session_key"].startswith(old_ns):
+                entry["session_key"] = new_ns + entry["session_key"][ns_len:]
+            origin = entry.get("origin")
+            if isinstance(origin, dict) and origin.get("profile") == old:
+                origin["profile"] = new
+        if "lineage" not in payload or not payload["lineage"]:
+            payload["lineage"] = [sid]
+        conn.execute("UPDATE state_meta SET value = ? WHERE key = ?",
+                     (json.dumps(payload, ensure_ascii=False), m_key))
+        legacy_payload = {
+            "session_id": sid,
+            "profile_id": new_dir_str,
+            "principal_id": payload.get("principal_id"),
+            "legacy_session_id": sid,
+        }
+        conn.execute("INSERT OR REPLACE INTO state_meta (key, value) VALUES (?, ?)",
+                     (LEGACY_PREFIX + sid, json.dumps(legacy_payload, ensure_ascii=False)))
+        meta_count += 1
+    return meta_count
+
+
 _HANDOFF_FAIL_SQL = "UPDATE sessions SET handoff_state = 'failed', handoff_error = ? WHERE "
 
 
@@ -775,6 +829,10 @@ class SessionGatewayMixin:
                     "UPDATE gateway_routing SET session_key = ?, entry_json = ? WHERE rowid = ?",
                     (new_session_key, new_json, rowid))
             counts["gateway_routing"] = len(routing)
+
+            if "state_meta" in existing:
+                counts["state_meta_policies"] = _rekey_state_meta_policies(
+                    conn, old, new, old_ns, new_ns, ns_len)
 
         self._execute_write(_do)
         return counts

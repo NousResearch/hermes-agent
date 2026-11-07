@@ -316,7 +316,12 @@ def bridge_tool_schemas(deferred_count: int, listing: Optional[str] = None,
                         "type": "object",
                         "properties": {
                             "name": {"type": "string", "description": "Exact tool name to invoke."},
-                            "arguments": {"type": "object", "description": "Arguments matching the tool schema."},
+                            # additionalProperties: true is load-bearing: strict
+                            # tool-call decoders (Moonshot grammar mode) treat an
+                            # object with no declared properties as closed and emit {}
+                            # otherwise. Same pattern as mcp_tool_schema / browser_cdp.
+                            "arguments": {"type": "object", "additionalProperties": True,
+                                          "description": "Arguments matching the tool schema."},
                         },
                         "required": ["name", "arguments"],
                     },

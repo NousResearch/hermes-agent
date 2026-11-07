@@ -342,6 +342,31 @@ def _is_hermes_profiles_root(profiles_dir: Path) -> bool:
         return False
 
 
+def assert_not_profiles_container(home: str | Path) -> None:
+    """Reject the profiles container before first-run initialization can seed it.
+
+    Resolve existing paths so a symlink cannot disguise the container.  A path whose
+    resolution fails or does not exist is rejected when it is a link: initializing
+    through an uncertain link target could otherwise create the container in the
+    wrong place.
+    """
+    path = Path(home)
+    try:
+        resolved = path.resolve(strict=False)
+    except (OSError, RuntimeError) as exc:
+        raise ValueError(f"HERMES_HOME cannot be resolved safely: {path}") from exc
+
+    if path.is_symlink() and not path.exists():
+        raise ValueError(f"HERMES_HOME cannot be resolved safely: {path}")
+
+    # Keep the first-run protection for a not-yet-created custom ``.../profiles``
+    # path, while allowing a symlink named ``profiles`` that resolves to a named
+    # profile.  A resolved, identified profiles root is rejected regardless of its
+    # spelling (including an arbitrary-name symlink alias).
+    if resolved.name == "profiles" or _is_hermes_profiles_root(resolved):
+        raise ValueError(f"HERMES_HOME cannot be the profiles container: {path}")
+
+
 def named_profile_home(path: str | Path) -> Path | None:
     """Return ``<root>/profiles/<name>`` when *path* is that home or under it.
 

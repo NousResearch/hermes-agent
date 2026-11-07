@@ -1766,6 +1766,7 @@ def _sibling_profile_homes(invoking_home: Path) -> list[tuple[str, Path]]:
             _get_profiles_root,
             _PROFILE_ID_RE,
         )
+        from hermes_constants import named_profile_has_identity
 
         invoking = invoking_home.resolve()
         default_home = _get_default_hermes_home()
@@ -1778,6 +1779,7 @@ def _sibling_profile_homes(invoking_home: Path) -> list[tuple[str, Path]]:
                     entry.is_dir()
                     and entry.name != "default"
                     and _PROFILE_ID_RE.match(entry.name)
+                    and named_profile_has_identity(entry)
                     and entry.resolve() != invoking
                 ):
                     homes.append((entry.name, entry))

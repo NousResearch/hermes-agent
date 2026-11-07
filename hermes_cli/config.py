@@ -575,7 +575,8 @@ def ensure_hermes_home():
 
     # Named profiles must be created explicitly. Check tombstones BEFORE the memo so a stale
     # empty shell cannot skip the deleted-profile guard.
-    from hermes_constants import assert_named_profile_home_live
+    from hermes_constants import assert_named_profile_home_live, assert_not_profiles_container
+    assert_not_profiles_container(home)
     assert_named_profile_home_live(home)
     if key in _HERMES_HOME_ENSURED and home.is_dir():
         return

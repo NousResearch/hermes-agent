@@ -103,6 +103,26 @@ def _proposal_for_patch_replace(arguments: dict[str, Any]) -> EditProposal:
     return EditProposal("patch", path, old_text, new_text, dict(arguments))
 
 
+def _proposal_for_patch_multi(arguments: dict[str, Any]) -> EditProposal:
+    from tools.file_patch_edits import validate_patch_edits
+    from tools.fuzzy_match import fuzzy_find_and_replace
+    path = _required_path(arguments)
+    edits = arguments["edits"]
+    validate_patch_edits(edits)
+    if arguments.get("old_string") or arguments.get("new_string"):
+        raise ValueError("Use edits or old_string/new_string, one or the other")
+    old_text = _read_text_if_exists(path)
+    if old_text is None:
+        raise ValueError(f"Failed to read file: {path}")
+    new_text = old_text
+    for i, edit in enumerate(edits, 1):
+        new_text, count, _strategy, error = fuzzy_find_and_replace(
+            new_text, edit["old_string"], edit["new_string"], edit.get("replace_all", False))
+        if error or count == 0:
+            raise ValueError(f"edit {i} of {len(edits)}: {error or 'Could not find match for old_string'}")
+    return EditProposal("patch", path, old_text, new_text, dict(arguments))
+
+
 def _extract_v4a_patch_paths(patch_body: str) -> list[str]:
     paths = [m.group(1).strip() for m in _V4A_FILE_RE.finditer(patch_body)]
     for match in _V4A_MOVE_RE.finditer(patch_body):
@@ -138,6 +158,8 @@ def build_edit_proposal(tool_name: str, arguments: dict[str, Any]) -> EditPropos
     """Return an edit proposal for supported file mutation calls."""
     mode = arguments.get("mode", "replace") if tool_name == "patch" else None
     builder = _PROPOSAL_BUILDERS.get((tool_name, mode))
+    if (tool_name, mode) == ("patch", "replace") and arguments.get("edits") is not None:
+        builder = _proposal_for_patch_multi
     return builder(arguments) if builder else None
 
 

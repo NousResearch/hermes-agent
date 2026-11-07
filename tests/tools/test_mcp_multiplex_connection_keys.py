@@ -246,6 +246,100 @@ def test_owner_reload_reregisters_profiles_that_adopted_its_connection(two_profi
     assert disc.get_mcp_status({"x": cfg})[0]["status"] == "connected"
 
 
+def test_park_revive_reregisters_profiles_that_adopted_its_connection(two_profiles, monkeypatch):
+    """The park half of the owner-reload record above (#141223): parking drops EVERY scope's
+    overlay and the revival re-registers only the owner's, so the revive must hand adopters
+    their tools back off the same record."""
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    import tools.mcp_tool as core
+    from tools import mcp_tool_discovery as disc
+    from tools import mcp_tool_registration as reg
+    from tools.mcp_tool import MCPServerTask
+    from tools.registry import registry
+
+    monkeypatch.setattr(core, "_mcp_thread", None)  # the drain must run inline off the MCP loop thread
+
+    cfg = {"url": "https://mcp.example/x", "headers": {"Authorization": "Bearer shared"}}
+    two_profiles("a")
+    srv_a = MCPServerTask("x")
+    srv_a._config = cfg
+    srv_a._tools = [_tool()]
+    srv_a.session = object()  # a live session; adoption shares only live connections
+    srv_a._resolved_identity = reg._adopter_identity_digest("x", cfg)
+    disc._adopt_server("x", srv_a)
+    srv_a._registered_tool_names = reg._register_server_tools("x", srv_a, cfg)
+
+    scope_b = two_profiles("b")
+    assert reg.register_connected_into_current_scope({"x": cfg}) == 1
+    assert registry.get_tool_names_for_toolset("mcp-x") == ["mcp__x__t"]
+
+    # Owner A parks: the run loop's real path (remember adopters, then drop every scope). The
+    # wait arm is not under test — a pre-set shutdown event returns from the park at once.
+    two_profiles("a")
+    srv_a._shutdown_event.set()
+    assert asyncio.run(srv_a._park("test")) is True
+    assert core._orphaned_adopters == {scope_b: {"x"}}
+    assert registry.get_tool_names_for_toolset("mcp-x") == []
+    two_profiles("b")
+    assert registry.get_tool_names_for_toolset("mcp-x") == []
+
+    # Revival: the owner's re-registration (what a real ``_discover_tools`` drives) re-publishes
+    # A's tools and drains the record — B never reloaded, yet gets its tools back.
+    two_profiles("a")
+    srv_a.session = SimpleNamespace(list_tools=AsyncMock(return_value=SimpleNamespace(tools=[_tool()])))
+    with patch.object(disc._loop, "_ensure_mcp_loop", lambda: None), \
+            patch("tools.mcp_tool_config._load_mcp_config", lambda: {"x": cfg}):
+        asyncio.run(srv_a._discover_tools())
+    assert registry.get_tool_names_for_toolset("mcp-x") == ["mcp__x__t"]
+    assert core._orphaned_adopters == {}
+    two_profiles("b")
+    assert registry.get_tool_names_for_toolset("mcp-x") == ["mcp__x__t"]
+
+
+def test_drain_defers_off_the_mcp_loop_thread(two_profiles, monkeypatch):
+    """The drain may CONNECT servers (``_run_on_mcp_loop`` blocks its calling thread), and a
+    revival's re-registration calls it from the MCP loop thread: the work must be handed to a
+    context thread - with the record still undrained at spawn - never run inline (#141223)."""
+    import threading
+
+    import tools.mcp_tool as core
+    from tools import mcp_tool_lifecycle as lifecycle
+    from agent import memory_provider
+
+    scope_a = two_profiles("a")
+    with core._lock:
+        core._orphaned_adopters.setdefault(scope_a, set()).add("x")
+
+    started = []
+
+    class _FakeThread:
+        """Records the spawn; ``start`` runs the deferred target the way the real context
+        thread would - off the MCP loop thread."""
+
+        def __init__(self, target, **kwargs):
+            self.target, self.kwargs = target, kwargs
+            self.undrained_at_spawn = bool(core._orphaned_adopters)  # an inline drain would have consumed it
+            started.append(self)
+
+        def start(self):
+            previous, core._mcp_thread = core._mcp_thread, None
+            try:
+                self.target()
+            finally:
+                core._mcp_thread = previous
+
+    monkeypatch.setattr(memory_provider, "spawn_context_thread",
+                        lambda target, **kwargs: _FakeThread(target, **kwargs))
+    monkeypatch.setattr(core, "_mcp_thread", threading.current_thread())
+    lifecycle._reregister_orphaned_adopters()
+    assert started and started[0].target is lifecycle._reregister_orphaned_adopters
+    assert started[0].kwargs["name"] == "mcp-adopter-rereg"
+    assert started[0].undrained_at_spawn  # deferred, not drained inline
+    assert not core._orphaned_adopters  # the deferred worker ran and consumed the record
+
+
 def test_untrusted_adopter_of_a_full_profiles_connection_keeps_its_own_trust_gate(two_profiles, monkeypatch):
     """Trust is the consuming profile's policy: adopting A's ``trust: full`` connection must not let
     B's ``trust: untrusted`` write-capable call skip approval."""

@@ -708,3 +708,8 @@ class MCPServerTransportMixin:
             for key in owned:
                 if _core._servers.get(key) is self:
                     _core._server_connect_errors.pop(key, None)
+        # A revival re-publishes the OWNER's tools only; profiles that had ADOPTED this connection
+        # lost theirs when it parked and nothing re-runs their discovery until they reload
+        # themselves (#141223) — drain that record now that the connection is live again. The
+        # drain is loop-thread-aware (it may connect servers; see mcp_tool_lifecycle).
+        _lifecycle._reregister_orphaned_adopters()

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Optional
 from tools.mcp_tool_common import _core, _get_lifecycle_seconds, _jittered, _resolve_tool_timeout
 from tools import mcp_tool_errors as _errors
+from tools import mcp_tool_lifecycle as _lifecycle
 from tools import mcp_tool_registration as _registration
 from tools import mcp_tool_sampling as _sampling
 
@@ -200,6 +201,13 @@ class MCPServerRunMixin:
         # immediately.
         self._was_parked = True
         self._park_reason = revival_reason
+        # Profiles that ADOPTED this connection lose their tool overlays with the owner's
+        # (``_deregister_tools`` drops every scope, and the revival re-registers only the
+        # owner's): remember them so the revival's drain re-runs their discovery under their
+        # own scope — the owner-reload half lives in ``shutdown_mcp_servers`` (#141223).
+        key = _registration._server_key_for_task(self)
+        with _core._lock:
+            _lifecycle._remember_orphaned_adopters([key], _core._server_registry_scope(key))
         self._deregister_tools()
         self._reconnect_event.clear()
         paused = False

@@ -1438,6 +1438,23 @@ def backfill_compression_created_sources(db):
     return stamped
 
 
+def backfill_null_minted_session_keys(db):
+    """Give minted-id rows whose session_key never persisted (#149905) their key back: the
+    authoritative lookup resolves by session_key, so such a row answers not_found forever and
+    no lane can remount it. The minted id IS the server's key, so the stamp restores a record
+    rather than guessing one. Idempotent and fills NULL/blank only, so every start runs it,
+    like the owner backfill above."""
+    import logging
+    try:
+        stamped = db.stamp_null_minted_session_keys()
+    except Exception:
+        logging.getLogger(__name__).warning('Minted session_key backfill failed for %s', db.db_path, exc_info=True)
+        return 0
+    if stamped:
+        logging.getLogger(__name__).info('Stamped session_key on %d minted session row(s)', stamped)
+    return stamped
+
+
 async def initialize_session_authority(runner, *, profile_id, instance_id, db=None, register=True):
     """Call after exclusive profile ownership, before connecting adapters/API.
 
@@ -1458,6 +1475,7 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, db=No
     await asyncio.to_thread(settle_recovered_unattended, db, epoch)
     await asyncio.to_thread(backfill_legacy_session_owners, db)
     await asyncio.to_thread(backfill_compression_created_sources, db)
+    await asyncio.to_thread(backfill_null_minted_session_keys, db)
     from gateway.session_local_recovery import release_handed_off_receipts
     await asyncio.to_thread(release_handed_off_receipts, db, epoch=epoch)
     from gateway.session_bot import release_superseded_bot_chat_at_boot

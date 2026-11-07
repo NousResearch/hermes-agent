@@ -782,18 +782,21 @@ def _retired_cjk_snapshot_health(db_path: Path, conn: sqlite3.Connection) -> Opt
     try:
         with tempfile.TemporaryDirectory(prefix="hermes-cjk-probe-") as tmp:
             snapshot = Path(tmp) / "state.db"
-            _copy_database_snapshot(db_path, snapshot, source_connection=conn)
-            with _repair_conn(snapshot) as probe:
-                drop_retired_cjk_index(probe.cursor())
+            try:
+                _copy_database_snapshot(db_path, snapshot, source_connection=conn)
+                with _repair_conn(snapshot) as probe:
+                    drop_retired_cjk_index(probe.cursor())
+            except sqlite3.Error as exc:
+                # Making the copy touches the source only to read it: corruption there is the store's, every
+                # other failure (cannot open, read-only, I/O, full) is the temporary copy's.
+                if getattr(exc, "sqlite_errorname", None) in ("SQLITE_CORRUPT", "SQLITE_NOTADB"):
+                    raise
+                return HealthCheckUnavailable(f"could not make the probe copy ({exc})")
             reason = _db_opens_cleanly(snapshot)
     except OSError as exc:  # the temporary directory or the copy, not the store (includes the copy timeout)
         return HealthCheckUnavailable(f"could not make the probe copy ({exc})")
-    except sqlite3.Error as exc:
-        if not is_disk_full_error(exc):
-            raise
-        reason = str(exc)
     if reason is not None and is_disk_full_error(reason):
-        return HealthCheckUnavailable(f"no room in {tempfile.gettempdir()} for the probe copy ({reason})")
+        return HealthCheckUnavailable(f"no room for the probe copy ({reason})")
     return reason
 
 

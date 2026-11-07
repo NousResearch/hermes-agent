@@ -22,6 +22,8 @@ from hermes_cli.dashboard_auth import (
     DashboardAuthProvider, InvalidCodeError, LoginStart, ProviderError, RefreshExpiredError, Session,
     classify_jwks_lookup_error)
 
+_log = logging.getLogger(__name__)
+
 # JWKS Cache-Control max-age (nous contract C7); self-hosted mirrors it.
 JWKS_CACHE_SECONDS = 300
 TOKEN_ENDPOINT_TIMEOUT_SEC = 10.0
@@ -229,24 +231,19 @@ def verify_jwt(
     ``leeway`` is seconds of clock-skew tolerance on the time claims (default
     60 — the previous zero-leeway made any issuer-ahead skew fail login, #47815).
 
-    Unreachable JWKS → ``ProviderError`` (503); a bearer that is not one of our JWTs
-    (opaque peer key, foreign kid) → ``InvalidCodeError`` (None / next provider); folding
-    both into 503 broke peer-key bearers. Expiry and not-yet-valid (``iat``/``nbf`` in
-    the future beyond the leeway) raise ``InvalidCodeError`` (verify_session maps it to
-    None). Every other decode-time rejection (wrong audience/issuer, bad signature, missing
-    claims) raises ``InvalidCodeError`` too: the IdP answered and the token is simply *not
-    ours*, a confirmed denial that must drive re-login (verify_session -> None, refresh ->
-    ``RefreshExpiredError`` via the caller's ``bad_request_exc`` mapping), not the misleading
-    503 "provider unreachable". The unverified iss/aud are appended so operators can still
-    spot config drift.
+    Only an unreachable JWKS is ``ProviderError`` (503). Every other failure (not a JWT,
+    unknown kid, expired, not yet valid, bad signature, wrong aud/iss, missing claim) is
+    ``InvalidCodeError``: the token is not ours (verify_session -> None -> 401 / next
+    provider). Folding "not ours" into 503 produced #94558 (opaque bearers) and #47815
+    (clock skew), and answered a Portal token minted for another client with "unreachable".
+    A wrong aud/iss is logged with the token's and the configured values, because it is also
+    what config drift (wrong client_id / portal URL) looks like.
     """
     import jwt  # lazy — keeps startup fast for the ungated path
 
     try:
         signing_key = jwks_client.get_signing_key_from_jwt(token)
     except Exception as exc:
-        # Unreachable JWKS -> ProviderError (503); a bearer that is not one of our JWTs (opaque peer key,
-        # foreign kid) -> InvalidCodeError (None / next provider). Folding both into 503 produced #94558.
         raise classify_jwks_lookup_error(exc) from exc
     try:
         return jwt.decode(
@@ -255,18 +252,11 @@ def verify_jwt(
     except jwt.ExpiredSignatureError as exc:
         raise InvalidCodeError(f"{label} expired: {exc}") from exc
     except jwt.InvalidSignatureError as exc:
-        # A forged/tampered bearer is "not my token", never an IDP outage: a 503 here would let a
-        # remote caller with garbage credentials look like a provider incident (and keep cookies).
         raise InvalidCodeError(f"{label} signature invalid: {exc}") from exc
     except jwt.ImmatureSignatureError as exc:
-        # iat/nbf ahead of now beyond the leeway = clock skew or a bad token — the
-        # provider is *reachable*, so this must NOT surface as ProviderError/503
-        # (which discarded rotated refresh tokens and forced re-login, #47815).
         raise InvalidCodeError(f"{label} not yet valid: {exc}") from exc
     except jwt.InvalidTokenError as exc:
-        # A claim-level denial, not an outage: the IdP answered (JWKS fetched, token parsed)
-        # but the token isn't ours. Decoding without verification is safe here: verification
-        # already failed and these values are surfaced for diagnostics only, never trusted.
+        # Unverified decode for diagnostics only: verification already failed, nothing is trusted.
         details = ""
         try:
             unverified = jwt.decode(token, options={"verify_signature": False, "verify_exp": False})
@@ -275,7 +265,9 @@ def verify_jwt(
                 f"expected iss={issuer!r} aud={audience!r}]")
         except Exception:
             pass
-        raise InvalidCodeError(f"{label} verification failed: {exc}{details}") from exc
+        message = f"{label} verification failed: {exc}{details}"
+        _log.warning("dashboard-auth: %s", message)
+        raise InvalidCodeError(message) from exc
 
 
 # ---- Shared provider skeletons ----
@@ -299,8 +291,8 @@ class JwtOAuthProvider(DashboardAuthProvider):
     """Authorization-code + PKCE provider whose session token is a JWT we verify ourselves
     (nous: Portal access token; self-hosted: OIDC ID token). Subclasses set ``_client_id`` and
     implement: ``_jwks_uri() -> str``; ``_claims_for(token) -> claims`` (raises
-    ``InvalidCodeError`` for any verified-not-ours token — expiry, foreign aud/iss, opaque
-    bearer — and ``ProviderError`` only for genuine IDP outages);
+    ``InvalidCodeError`` for a token that is not ours, ``ProviderError`` when the IDP cannot
+    be reached);
     ``_grant(data, *, bad_request_exc, headers=None, previous_refresh_token="") -> Session``;
     ``_refresh_request(refresh_token) -> (form_data, extra_headers)``;
     ``_session(token, refresh_token, claims) -> Session``."""
@@ -324,8 +316,13 @@ class JwtOAuthProvider(DashboardAuthProvider):
         if not refresh_token:
             raise RefreshExpiredError("no refresh token present in session")
         data, headers = self._refresh_request(refresh_token)
-        return self._grant(
-            data, headers=headers, bad_request_exc=RefreshExpiredError, previous_refresh_token=refresh_token)
+        try:
+            return self._grant(
+                data, headers=headers, bad_request_exc=RefreshExpiredError, previous_refresh_token=refresh_token)
+        except InvalidCodeError as exc:
+            # The grant succeeded but the minted token is not ours (foreign aud, unknown kid):
+            # this provider rejects the RT, so the refresh scan moves on instead of raising.
+            raise RefreshExpiredError(str(exc)) from exc
 
     def verify_session(self, *, access_token: str) -> Optional[Session]:
         # None on expiry/invalidity (middleware then tries refresh); a ProviderError

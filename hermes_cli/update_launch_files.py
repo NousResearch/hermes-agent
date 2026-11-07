@@ -22,6 +22,7 @@ _RETRY = "the next `hermes update` or `hermes gateway restart` rewrites it"
 
 def refresh_launch_files() -> None:
     """Regenerate every profile's launch file that differs from what this checkout generates."""
+    from hermes_cli.config_backend import ConfigBackendUnavailable
     from hermes_cli.update_receipt import _profile_homes, record_followup
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
@@ -36,14 +37,14 @@ def refresh_launch_files() -> None:
             token = set_hermes_home_override(home)
             try:
                 refresh()
-            except Exception as exc:  # health: allow BLE001 -- one file never blocks the others
+            except (Exception, ConfigBackendUnavailable) as exc:  # health: allow BLE001 -- one file never blocks the others
                 record_followup(FOLLOWUP_STEP, f"{kind} for profile {profile}: {exc}", retry=_RETRY)
             finally:
                 reset_hermes_home_override(token)
     if any(kind == "systemd user unit" for kind, _ in refreshers) and os.geteuid() == 0:  # windows-footgun: ok — systemd hosts only
         try:
             _refresh_systemd_system_unit()
-        except Exception as exc:  # health: allow BLE001 -- reported as a follow-up, never fails the update
+        except (Exception, ConfigBackendUnavailable) as exc:  # health: allow BLE001 -- reported as a follow-up, never fails the update
             record_followup(FOLLOWUP_STEP, f"systemd system unit: {exc}", retry=_RETRY)
 
 

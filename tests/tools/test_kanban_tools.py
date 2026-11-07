@@ -438,7 +438,7 @@ def test_schedule_parks_current_worker_with_reason(worker_env):
     from tools import kanban_tools
     from tools.registry import registry
 
-    reason = "SCHEDULED_UNTIL=2026-09-13T00:00:00Z waiting for reconnect"
+    reason = "waiting for upstream reconnect"
     entry = registry.get_entry("kanban_schedule")
     assert entry is not None and entry.toolset == "kanban"
     out = json.loads(entry.handler({"reason": reason}))

@@ -792,6 +792,7 @@ def _interrupt_session_turn(
         run_thread_alive = (rt := session.get("_run_thread")) is not None and rt.is_alive()
     with session["history_lock"]:
         session["_turn_cancel_requested"] = True
+        discarded = [session.get("queued_prompt"), *(session.get("queued_prompts") or ())]
         session["queued_prompt"] = None
         session.pop("queued_prompts", None)
         session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1
@@ -842,6 +843,9 @@ def _interrupt_session_turn(
         _announce_cancelled_gateway_approvals(session, reason, session_id=sid)
         from tools.approval import resolve_gateway_approval
         resolve_gateway_approval(session["session_key"], "deny", resolve_all=True)
+    # Last and outside history_lock, so a busy state.db cannot hold up the interrupt or the approval deny. The
+    # envelopes are already off the queue, so no drain can claim them meanwhile (#146968).
+    _retire_discarded_queued_rows(session, discarded)
     return use_compute_host
 
 

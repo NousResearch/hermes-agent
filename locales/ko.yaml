@@ -632,6 +632,7 @@ gateway:
     text_choice_joiner: ", "
     text_choice_last: ", 또는 {choice}으로 답해 주세요.\n"
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}: {reason}\n\n"
+    native_stream_placeholder: "⏸ 승인을 기다리고 있어요..."
   notify:
     media_kind:
       audio: "오디오"

@@ -632,6 +632,7 @@ gateway:
     text_choice_joiner: ", "
     text_choice_last: ", veya {choice}.\n"
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}: {reason}\n\n"
+    native_stream_placeholder: "⏸ Onay bekleniyor..."
   notify:
     media_kind:
       audio: "ses"

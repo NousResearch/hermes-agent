@@ -289,3 +289,24 @@ def test_onepassword_service_account_refusals_name_the_real_cause(fake_op_servic
     assert all(json.loads(a)[:2] != ["item", "get"] for a in log.read_text(encoding="utf-8-sig").splitlines())
     with pytest.raises(RuntimeError, match="DecodeSACredentials"):
         new_backend().resolve_password("op:item-c")
+
+
+def test_session_file_onepassword_rejection_invalidates_without_user_fence(tmp_path):
+    from agent.vault_backends.base import UnlockRequired
+    from agent.vault_backends.onepassword import OnePasswordLoginBackend
+
+    exe = tmp_path / "op"
+    exe.write_text(_FAKE_OP, encoding="utf-8")
+    exe.chmod(0o700)
+    with patch("agent.secret_scope.get_secret", return_value=""):
+        backend = OnePasswordLoginBackend({"binary_path": str(exe)})
+        assert unlock_mod.store_session_token("onepassword", "dummy-interactive-op")
+        generation = unlock_mod.begin_unlock("onepassword")
+        try:
+            with pytest.raises(UnlockRequired):
+                backend._run("item", "get", "item-c")
+            assert unlock_mod.get_session_token("onepassword") is None
+            assert unlock_mod.begin_unlock("onepassword") == generation
+            assert not unlock_mod.is_fenced("onepassword")
+        finally:
+            unlock_mod.lock("onepassword")

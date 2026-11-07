@@ -275,8 +275,11 @@ def browser_vault_list() -> str:
     items, locked, errors = [], [], []
     for backend in enabled_backends():
         if backend.needs_unlock and not backend.is_unlocked():
-            locked.append({"backend": backend.name, "display_name": backend.display_name,
-                           "unlock": "browser_vault action=unlock" if can_prompt_here() else "unavailable_in_this_session"})
+            entry = {"backend": backend.name, "display_name": backend.display_name,
+                     "unlock": "browser_vault action=unlock" if can_prompt_here() else "unavailable_in_this_session"}
+            if backend.lock_reason:
+                entry["reason"] = backend.lock_reason
+            locked.append(entry)
             continue
         try:
             metas = backend.list_items()
@@ -316,10 +319,13 @@ def browser_vault_unlock(backend_name: str) -> str:
     if backend.is_unlocked():
         return json.dumps({"success": True, "backend": backend.name, "already_unlocked": True})
     if not can_prompt_here():
-        return json.dumps({"success": False, "error_type": "unlock_unavailable",
-                           "error": (f"{backend.display_name} is locked and this session cannot prompt for the "
-                                     "master password (headless/cron/API). Unlock it from an interactive Hermes "
-                                     "session or the Desktop app first.")})
+        out = {"success": False, "error_type": "unlock_unavailable",
+               "error": (f"{backend.display_name} is locked and this session cannot prompt for the "
+                         "master password (headless/cron/API). Unlock it from an interactive Hermes "
+                         "session or the Desktop app first.")}
+        if backend.lock_reason:
+            out["reason"] = backend.lock_reason
+        return json.dumps(out)
     prompt = get_unlock_prompt_callback()
     master = prompt(backend.name, backend.display_name) if prompt else ""
     if not master:
@@ -376,6 +382,14 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
 
 _TAB_PROBES["otp"] = _deep_probe("input[autocomplete=one-time-code], input[name*=otp i], input[name*=code i], "
                                   "input[id*=otp i], input[id*=code i], input[name*=totp i], input[aria-label*=code i]")
+
+
+def _unlock_required_response(exc: Any) -> str:
+    out = {"success": False, "error_type": "unlock_required",
+           "error": f"{exc.backend.display_name} locked again; call browser_vault action=unlock."}
+    if exc.reason:
+        out["reason"] = exc.reason
+    return json.dumps(out)
 
 
 def _saved_login(handle: str) -> tuple[Any, Any]:
@@ -482,9 +496,8 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
 
     try:
         meta = backend.get_meta(handle) if backend is not None else None
-    except UnlockRequired:
-        return json.dumps({"success": False, "error_type": "unlock_required",
-                           "error": f"{backend.display_name} locked again; call browser_vault action=unlock."})
+    except UnlockRequired as exc:
+        return _unlock_required_response(exc)
     if meta is None:
         return json.dumps(
             {
@@ -561,9 +574,8 @@ def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, eff
         else:
             secret = backend.resolve_secret(handle)
             fills = select_checkout_fills(classified, secret, PAYMENT_FIELDS if meta.kind == "payment" else ADDRESS_FIELDS)
-    except UnlockRequired:
-        return json.dumps({"success": False, "error_type": "unlock_required",
-                           "error": f"{backend.display_name} locked again; call browser_vault action=unlock."})
+    except UnlockRequired as exc:
+        return _unlock_required_response(exc)
     if not fills:
         return json.dumps(
             {"success": False, "error": f"No fillable {meta.kind} field matched the saved item on this page."}

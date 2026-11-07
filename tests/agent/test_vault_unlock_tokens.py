@@ -146,3 +146,76 @@ def test_session_token_reaches_only_the_manager_call_that_uses_it(tmp_path):
     # unscrubbed factory variant must not carry it.
     assert token not in build_subprocess_env(scrub_secrets=False).values()
     assert token not in build_subprocess_env().values()
+
+
+def test_session_file_invalidation_discards_only_matching_token_without_generation_or_fence():
+    assert unlock.store_session_token("bitwarden", "dummy-old-session")
+    generation = unlock.begin_unlock("bitwarden")
+    assert unlock.store_session_token("bitwarden", "dummy-new-session", generation)
+    unlock.invalidate_session_token("bitwarden", "dummy-old-session")
+    assert unlock.get_session_token("bitwarden") == "dummy-new-session"
+    assert unlock.begin_unlock("bitwarden") == generation
+    assert not unlock.is_fenced("bitwarden")
+    unlock.invalidate_session_token("bitwarden", "dummy-new-session")
+    assert unlock.get_session_token("bitwarden") is None
+    assert unlock.begin_unlock("bitwarden") == generation
+    assert not unlock.is_fenced("bitwarden")
+    # Automatic invalidation must not reject an unlock already in flight.
+    assert unlock.store_session_token("bitwarden", "dummy-replacement", generation)
+
+
+def test_session_file_lock_without_backend_fences_even_backends_without_tokens():
+    unlock.lock()
+    assert unlock.is_fenced("bitwarden")
+    assert unlock.is_fenced("onepassword")
+    assert unlock.store_session_token("bitwarden", "dummy-bitwarden-session")
+    assert not unlock.is_fenced("bitwarden")
+    assert unlock.is_fenced("onepassword")
+    assert unlock.store_session_token("onepassword", "dummy-onepassword-session")
+    assert not unlock.is_fenced("onepassword")
+
+
+def test_session_file_backend_specific_lock_does_not_fence_sibling_backend():
+    assert unlock.store_session_token("bitwarden", "dummy-bw")
+    assert unlock.store_session_token("onepassword", "dummy-op")
+    unlock.lock("bitwarden")
+    assert unlock.is_fenced("bitwarden")
+    assert not unlock.is_fenced("onepassword")
+    assert unlock.get_session_token("onepassword") == "dummy-op"
+    # Stale commits and automatic invalidation cannot lift a user fence.
+    generation = unlock.begin_unlock("bitwarden")
+    unlock.lock("bitwarden")
+    assert not unlock.store_session_token("bitwarden", "dummy-stale", generation)
+    unlock.invalidate_session_token("bitwarden", "dummy-stale")
+    assert unlock.is_fenced("bitwarden")
+
+
+def test_session_file_shutdown_drops_tokens_without_creating_fences():
+    assert unlock.store_session_token("bitwarden", "dummy-bw")
+    assert unlock.store_session_token("onepassword", "dummy-op")
+    unlock.lock_all_profiles()
+    assert unlock.get_session_token("bitwarden") is None
+    assert unlock.get_session_token("onepassword") is None
+    assert not unlock.is_fenced("bitwarden")
+    assert not unlock.is_fenced("onepassword")
+
+
+def test_session_file_clearing_a_fence_keeps_the_lock_generation_and_sibling_fences():
+    generation = unlock.begin_unlock("bitwarden")
+    unlock.lock()
+    assert unlock.clear_user_fence("bitwarden", unlock.begin_unlock("bitwarden"))
+    assert not unlock.is_fenced("bitwarden")
+    assert unlock.is_fenced("onepassword")
+    # An unlock that started before the Lock still cannot commit after the fence is cleared.
+    assert not unlock.store_session_token("bitwarden", "dummy-stale", generation)
+    assert not unlock.is_unlocked("bitwarden")
+
+
+@pytest.mark.parametrize("backend", [None, "bitwarden"])
+def test_session_file_a_lock_after_the_clear_snapshot_keeps_the_fence(backend):
+    unlock.lock("bitwarden")
+    generation = unlock.begin_unlock("bitwarden")
+    unlock.lock(backend)  # lands between the re-enable's snapshot and its clear
+    assert not unlock.clear_user_fence("bitwarden", generation)
+    assert unlock.is_fenced("bitwarden")
+    assert not unlock.store_session_token("bitwarden", "dummy-stale", generation)

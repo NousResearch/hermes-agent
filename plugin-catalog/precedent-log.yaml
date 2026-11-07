@@ -1,14 +1,14 @@
 name: precedent-log
 repo: https://github.com/quotumorg/precedent-log
-sha: 65613203ce0801bcf08a90710c59c71481b26312
-description: "Saved board rulings in worker prompts, a syntactic block check, and a Desktop Rulings page with confirmed human retirement. Disclosure: local profile/board state and core board/task reads; enforce mode defaults on, advisory is configurable. Store writers supply trusted prompt text; write restrictions are cooperative. Python runtime has no network, shell, background processes, secret reads or stored credentials. Desktop polls bounded read-only RPC and sends explicitly confirmed retire commands over the host-managed gateway connection, possibly remote; no independent connection or model call. Opt-in demo harness only: subprocesses, loopback in fake mode, network to the user-selected provider in real mode; not plugin runtime."
+sha: e23d1bd836ff8690ab9b73ac70bec4e3feba5b5e
+description: "Saves a human's answer to a blocked Kanban question as a ruling for later workers. Shows rulings and vetoes in Desktop with confirmed retirement. Disclosure: reads core board/task data and writes local profile/board state; enforce is the default, advisory is configurable. Store writers supply trusted prompt text; write guards are cooperative. Python runtime has no network, shell, background processes, secret reads or stored credentials. Desktop uses host-routed gateway RPC, possibly remote, for bounded reads and confirmed retirement; no independent connection or model calls. Opt-in demo harness only: subprocesses, loopback in fake mode and provider network in real mode."
 maintainer: quotumorg
 tier: community
 category: memory
 requires_hermes: ">=0.23.0"
-version: "0.4.0"
-docs_url: https://github.com/quotumorg/precedent-log/blob/65613203ce0801bcf08a90710c59c71481b26312/README.md
-image: https://raw.githubusercontent.com/quotumorg/precedent-log/65613203ce0801bcf08a90710c59c71481b26312/docs/catalog-1200x600.png
+version: "0.4.1"
+docs_url: https://github.com/quotumorg/precedent-log/blob/e23d1bd836ff8690ab9b73ac70bec4e3feba5b5e/README.md
+image: https://raw.githubusercontent.com/quotumorg/precedent-log/e23d1bd836ff8690ab9b73ac70bec4e3feba5b5e/docs/catalog-1200x600.png
 readme: true
 platforms: [linux, macos]
 known_issues:
@@ -16,7 +16,7 @@ known_issues:
   - "In-process mode only; the host does not supply the tested execution context or CLI path."
   - "Default enforce mode can leave a no-edit worker's card running after veto (B2). Core recovery/retry settings apply; no deadline. Advisory avoids this veto path."
   - "Tested only on Hermes v0.23.0 at 2bd378ed1b8d6bf2192cb26e0a55ff3091e6bd19; the floor does not establish later compatibility."
-  - "Desktop status and Rulings page tested against the SDK facade only, not a live Desktop run; requires host React, route/nav, focusedSessionOwner, profileRoutes, requestProfile and status-bar SDK APIs."
+  - "Desktop catalog description, navigation, no-session guidance, status, page badges and confirmed retirement live-run verified with v0.4.1 in an isolated home with a fake model on Hermes source 2bd378ed, Desktop built from source; v0.4.0 also verified status click-through. Packaged Desktop app untested. Requires host UI/React, route/nav, focusedSessionOwner, profileRoutes, requestProfile and status-bar APIs."
 capabilities:
   provides_tools: []
   provides_hooks: [pre_tool_call, kanban_task_blocked, pre_verify, post_tool_call, on_session_end]

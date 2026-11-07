@@ -160,6 +160,7 @@ def _resolve_openrouter_runtime(
     # the entry's key replaces the implicit env keys (on its built-in's host those are another account's).
     from hermes_cli.runtime_provider_custom import _model_cfg_key_env_for, _owning_entry_credential
     declared, entry_key = _owning_entry_credential(rp, base_url) if requested_norm == "custom" else (False, "")
+    custom_explicit_key = rp._custom_explicit_api_key_candidate(explicit_api_key, base_url)
     if is_openrouter_context:
         # Same read order as the credential pool and _resolve_api_key_provider_secret
         # (.env, then scope-aware os.environ, raw op:// references yielding to the resolved
@@ -183,7 +184,7 @@ def _resolve_openrouter_runtime(
     else:
         # ``model.api_key`` and ``model.key_env`` back a trusted config base_url only; the key_env
         # rung is what a bare ``provider: custom`` block relies on (#67453).
-        candidates = [explicit_api_key, (cfg_api_key if use_config_base_url else ""),
+        candidates = [custom_explicit_key, (cfg_api_key if use_config_base_url else ""),
                       (_model_cfg_key_env_for(model_cfg, base_url) if use_config_base_url else ""),
                       *([] if declared else rp._host_gated_env_key_candidates(base_url, ollama=True))]
     api_key = next((str(c or "").strip() for c in candidates if rp.has_usable_secret(c)), "") or entry_key
@@ -194,7 +195,7 @@ def _resolve_openrouter_runtime(
         return rp._runtime("openrouter", cfg_api_mode or rp._detect_api_mode_for_url(base_url) or "chat_completions", base_url,
                            api_key, source=source)
     # An explicit launch key is the operator's credential for this route and wins over the pool (R2-M1).
-    if base_url and not rp.has_usable_secret(explicit_api_key):
+    if base_url and not rp.has_usable_secret(custom_explicit_key):
         pool_result = rp._try_resolve_from_custom_pool(base_url, "custom", cfg_api_mode, provider_name=None)
         if pool_result:
             return pool_result

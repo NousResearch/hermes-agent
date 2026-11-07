@@ -663,7 +663,7 @@ def _resolve_direct_alias_runtime(requested_provider: str, explicit_api_key: Opt
     # Pool first — mirrors the named-custom path so bare `provider: custom` with a configured
     # custom_providers entry gets its api_key from the pool instead of env fallbacks. An explicit
     # launch key still wins over the pool (R2-M1).
-    explicit_key = (explicit_api_key or "").strip()
+    explicit_key = rp._custom_explicit_api_key_candidate(explicit_api_key, base_url)
     pool_result = None if rp.has_usable_secret(explicit_key) else rp._try_resolve_from_custom_pool(base_url, "custom", None)
     if pool_result:
         pool_result["source"] = "direct-alias"
@@ -674,7 +674,7 @@ def _resolve_direct_alias_runtime(requested_provider: str, explicit_api_key: Opt
     # A ``providers:`` entry that owns the URL and declares a credential supplies it instead of
     # the host-gated env keys (on the entry's built-in's host those are another account's).
     declared, entry_key = _owning_entry_credential(rp, base_url)
-    candidates = [(explicit_api_key or "").strip(), _model_cfg_key_env_for(rp._get_model_config(), base_url),
+    candidates = [explicit_key, _model_cfg_key_env_for(rp._get_model_config(), base_url),
                   *([] if declared else rp._host_gated_env_key_candidates(base_url, ollama=True))]
     api_key = next((c for c in candidates if rp.has_usable_secret(c)), "") or entry_key
     return _custom_runtime(rp, base_url, api_key, None, source="direct-alias", requested_provider=requested_provider)
@@ -729,7 +729,7 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     base_url = ((explicit_base_url or "").strip() or custom_provider.get("base_url", "")).rstrip("/")
     if not base_url:
         return None
-    explicit_key = (explicit_api_key or "").strip()
+    explicit_key = rp._custom_explicit_api_key_candidate(explicit_api_key, base_url)
     # The credential pool is the profile's auth store (``hermes auth add``), not config: a frozen
     # config snapshot still owes a pooled ``providers:`` entry its keys, or the turn ships the
     # ``no-key-required`` placeholder to a host that wants one (C11 pool rows). An explicit launch

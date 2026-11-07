@@ -6,6 +6,8 @@ The interactive_setup wizard lazy-imports its CLI helpers from
 source modules. Covers the home-channel clear-on-blank behavior added in
 PR #58421 and extended in the follow-up.
 """
+import pytest
+
 import hermes_cli.config as config_mod
 import hermes_cli.cli_output as cli_output_mod
 from plugins.platforms.mattermost.adapter import interactive_setup
@@ -62,3 +64,35 @@ def test_security_hint_names_a_documented_user_id_lookup(monkeypatch):
     assert "User Management" in out
     assert "/api/v4/users/username/" in out
     assert "click your avatar" not in out
+
+
+@pytest.mark.parametrize("invalid", ["town-square", "a" * 25, "a" * 27, "!" * 26])
+def test_home_channel_name_is_rejected_before_saving(monkeypatch, tmp_path, invalid):
+    """The real setup writer only persists the corrected channel ID."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    channel_id = "a1" * 13
+    answers = iter(["https://mm.example.com", "test-only-token", "", invalid, f" {channel_id} "])
+    monkeypatch.setattr(cli_output_mod, "prompt", lambda *_a, **_kw: next(answers))
+    warnings = []
+    monkeypatch.setattr(cli_output_mod, "print_warning", warnings.append)
+
+    interactive_setup()
+
+    assert config_mod.get_env_value("MATTERMOST_HOME_CHANNEL") == channel_id
+    assert config_mod.get_env_path().parent == tmp_path
+    assert f"MATTERMOST_HOME_CHANNEL={channel_id}" in config_mod.get_env_path().read_text()
+    assert len(warnings) == 1
+    assert "/set-home" in warnings[0]
+
+
+def test_invalid_home_channel_can_be_cleared_without_saving_it(monkeypatch, tmp_path):
+    """Blank after a correction prompt retains setup's existing clear behavior."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config_mod.save_env_value("MATTERMOST_HOME_CHANNEL", "b" * 26)
+    answers = iter(["https://mm.example.com", "test-only-token", "", "town-square", ""])
+    monkeypatch.setattr(cli_output_mod, "prompt", lambda *_a, **_kw: next(answers))
+
+    interactive_setup()
+
+    assert not config_mod.get_env_value("MATTERMOST_HOME_CHANNEL")
+    assert "MATTERMOST_HOME_CHANNEL=" not in config_mod.get_env_path().read_text()

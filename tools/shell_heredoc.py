@@ -1,21 +1,23 @@
 """Conservative heredoc masking for shell-command scanners ('&' guard, blocked-command checks,
 cron lifecycle_guard) that false-positive on heredoc *bodies*. Stripping every body is unsafe the
 other way (a fake ``<<`` in quotes can swallow an operator; unquoted bodies expand; ``bash <<'EOF'``
-executes), so a body is masked ONLY when every delimiter is quoted, every heredoc has an exact
-terminator line, the owning simple command is an allowlisted non-shell interpreter, and no list
-operator follows the heredoc. Otherwise the command is returned untouched: a false positive is
-acceptable, hiding shell syntax from a guard is not.
+executes), so a body is masked ONLY when every heredoc has an exact terminator line, the owning
+simple command is an allowlisted non-shell interpreter or a data-only copier (``cat``/``tee``), the
+body carries no executable substitution when its delimiter is unquoted, and no list operator follows
+the heredoc. Otherwise the command is returned untouched: a false positive is acceptable, hiding
+shell syntax from a guard is not.
 Masked bodies keep their newline count (re.MULTILINE)."""
 
 from __future__ import annotations
 
 import re
 
-# Non-shell interpreters whose quoted heredoc bodies are data for THAT interpreter; optional
-# VAR=... assignments, ``env`` and a path prefix allowed. Narrow on purpose: unmatched = visible.
+# Non-shell interpreters whose heredoc bodies are data for THAT interpreter, plus the data-only
+# copiers ``cat``/``tee`` (they write stdin, they never execute it); optional VAR=... assignments,
+# ``env`` and a path prefix allowed. Narrow on purpose: unmatched = visible.
 _INERT_HEREDOC_CONSUMER_RE = re.compile(
     r"^\s*(?:[A-Z_][A-Z0-9_]*=\S+\s+)*(?:env\s+)?(?:[A-Za-z0-9_./-]+/)?"
-    r"(?:python(?:3(?:\.\d+)*)?|osascript|cat)(?=\s|$)",
+    r"(?:python(?:3(?:\.\d+)*)?|osascript|cat|tee)(?=\s|$)",
     re.IGNORECASE)
 
 
@@ -177,8 +179,32 @@ def _find_heredoc_close(
         cursor = after
 
 
-def strip_inert_heredoc_bodies(command: str) -> str:
-    """Mask heredoc bodies that are provably inert data (see module docstring)."""
+def _bodies_are_literal_data(
+        command: str, specs: list, bodies: list, require_quoted_delimiter: bool) -> bool:
+    """Whether every heredoc body is data the consuming command will not execute.
+
+    A quoted delimiter makes the body literal. An unquoted one is still expanded, so its body is
+    only data when the caller says expansion cannot act on it and the body carries no
+    ``$(...)`` / backtick: those run in the shell before the consumer ever sees the text.
+    """
+    for (_delimiter, _strip_tabs, quoted), (start, end) in zip(specs, bodies):
+        if quoted:
+            continue
+        if require_quoted_delimiter:
+            return False
+        body = command[start:end]
+        if "$(" in body or "`" in body:
+            return False
+    return True
+
+
+def strip_inert_heredoc_bodies(command: str, *, require_quoted_delimiter: bool = True) -> str:
+    """Mask heredoc bodies that are provably inert data (see module docstring).
+
+    ``require_quoted_delimiter=False`` also masks an unquoted body (variable/arith expansion only)
+    when it carries no executable substitution. Callers scanning for *executed* code pass it; the
+    guards that must follow a body's expanded text into a later read keep the default.
+    """
     # Runs on every terminal call: skip the state machine when no '<<' exists; stop past the last.
     if "<<" not in command:
         return command
@@ -210,10 +236,8 @@ def strip_inert_heredoc_bodies(command: str) -> str:
                 return command  # unterminated
             body_ranges.append((body_cursor, close_end))
             body_cursor = close_end
-        if (
-            all(quoted for _delimiter, _strip_tabs, quoted in specs)
-            and not post_heredoc_list_operator
-        ):
+        if not post_heredoc_list_operator and _bodies_are_literal_data(
+                command, specs, body_ranges, require_quoted_delimiter):
             masked_opener = _mask_simple_quotes(command[command_start:command_end])
             masked_owner = _mask_simple_quotes(command[owner_start:command_end])
             if not any(

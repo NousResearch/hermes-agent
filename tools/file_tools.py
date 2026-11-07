@@ -26,7 +26,6 @@ from tools.file_operations import (
     ShellFileOperations, normalize_read_pagination, normalize_search_pagination)
 from tools.file_operations_common import DEFAULT_READ_LIMIT, count_conflict_blocks
 from tools import file_state
-from hermes_platform.host import facts
 from agent.redact import _is_secret_file_arg, redact_sensitive_text
 from tools.file_tools_paths import (
     _expand_tilde, _path_resolution_warning, _resolve_base_dir, _resolve_entry_for_task,
@@ -139,9 +138,11 @@ def _file_ops_uses_host_paths(file_ops) -> bool:
     env = getattr(file_ops, "env", None)
     if env is None:
         return True
-    from tools.environments.base import env_uses_host_filesystem
-
-    return env_uses_host_filesystem(env)
+    try:
+        from tools.environments.local import LocalEnvironment
+    except ImportError:
+        return True
+    return isinstance(env, LocalEnvironment)
 
 
 # V4A file headers: group 1 = header prefix, 2 = op, 3 = path. ``\s*`` after
@@ -531,10 +532,41 @@ def _dedup_stub_or_block(task_data: dict, dedup_key: tuple, path: str) -> str:
     }, ensure_ascii=False)
 
 
+def _display_content_to_raw_copy_candidate(content: str, offset: int, ends_with_newline) -> str | None:
+    """Reconstruct raw text from read_file's ``LINE_NUM|CONTENT`` display.
+
+    Used only for a complete, unredacted read so write_file can preserve a
+    single final LF when a model copies the file but drops that last byte.
+    """
+    if not isinstance(content, str):
+        return None
+    pos = 0
+    line_no = offset
+    raw: list[str] = []
+    while pos < len(content):
+        prefix = f"{line_no}|"
+        if not content.startswith(prefix, pos):
+            return None
+        pos += len(prefix)
+        nl = content.find("\n", pos)
+        if nl < 0:
+            raw.append(content[pos:])
+            pos = len(content)
+            break
+        raw.append(content[pos:nl + 1])
+        pos = nl + 1
+        line_no += 1
+    reconstructed = "".join(raw)
+    if ends_with_newline is True and reconstructed and not reconstructed.endswith("\n"):
+        reconstructed += "\n"
+    return reconstructed
+
+
 def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_str: str,
                             offset: int, limit: int, dedup_key: tuple, *, partial: bool,
                             redacted: bool = False, end_line: int | None = None,
-                            total_lines=None, version_before=None, snapshot=None) -> int:
+                            total_lines=None, version_before=None, snapshot=None,
+                            copy_candidate: str | None = None) -> int:
     """Bookkeeping after a real (non-stub) read; returns the consecutive-read count.
 
     Per-task tracker under the lock (stub counter, history, consecutive count,
@@ -577,6 +609,10 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
                 task_data.setdefault("blind_patches", {}).pop(resolved_str, None)
         if not complete:
             baselines.pop(resolved_str, None)
+        if complete and copy_candidate is not None:
+            task_data["last_full_read_copy"] = (resolved_str, copy_candidate)
+        else:
+            task_data["last_full_read_copy"] = None
         if not stable or count >= 4:
             task_data["dedup"].pop(dedup_key, None)
             task_data["dedup_generation_reads"].discard(dedup_key)
@@ -704,8 +740,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 result_dict, result.content or "", offset,
                 result_dict.get("total_lines", "unknown"), max_chars)
         redacted = False
+        unredacted = result.content or ""
         if result.content:
-            unredacted = result.content
             result.content = redact_sensitive_text(
                 unredacted, file_read=True, secret_file=_is_secret_file_arg(resolved_str))
             redacted = result.content != unredacted
@@ -733,12 +769,17 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
             end_line = offset + limit - 1
             if isinstance(total_lines, int) and total_lines > 0:
                 end_line = min(end_line, total_lines)
+        copy_candidate = None
+        if not redacted and not result_dict.get("truncated") and not result_dict.get("truncated_lines"):
+            copy_candidate = _display_content_to_raw_copy_candidate(
+                unredacted, offset, result_dict.get("ends_with_newline"))
         count = _record_successful_read(task_data, task_id, path, resolved_str, offset, limit,
                                         dedup_key, partial=(offset > 1) or bool(result_dict.get("truncated")),
                                         redacted=redacted or bool(result_dict.get("truncated_lines")),
                                         end_line=end_line, total_lines=total_lines,
                                         version_before=version_before,
-                                        snapshot=getattr(result, "_snapshot", None))
+                                        snapshot=getattr(result, "_snapshot", None),
+                                        copy_candidate=copy_candidate)
         if count >= 4:
             return tool_error(
                 f"BLOCKED: You have read this exact file region {count} times in a row. "
@@ -860,6 +901,30 @@ def _whole_file_rewrite_hint(task_id: str, resolved: str | None, new_content: st
     )
 
 
+def _preserve_cross_file_copy_final_lf(content: str, resolved_target: str | None,
+                                       task_id: str) -> tuple[str, str | None]:
+    """Restore one final LF dropped while copying the last full read to another file.
+
+    The correction is deliberately narrow: the target must differ from the last
+    fully-read source and the proposed content must match that source exactly
+    except for one missing final LF. Same-file rewrites and all other edits are
+    left untouched.
+    """
+    if not resolved_target or not isinstance(content, str) or content.endswith("\n"):
+        return content, None
+    with _read_tracker_lock:
+        task_data = _read_tracker.get(task_id) or {}
+        candidate = task_data.get("last_full_read_copy")
+    if not candidate:
+        return content, None
+    source_path, source_content = candidate
+    if source_path == resolved_target or not isinstance(source_content, str):
+        return content, None
+    if source_content.endswith("\n") and content == source_content[:-1]:
+        return content + "\n", source_path
+    return content, None
+
+
 def write_file_tool(path: str, content: str, task_id: str = "default",
                     cross_profile: bool = False,
                     session_id: str | None = None) -> str:
@@ -885,6 +950,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
         # Resolution failure falls back to the legacy unlocked path (the write
         # still proceeds; the per-task staleness check still runs).
         _resolved = _resolve_or_none(path, task_id)
+        content, preserved_from = _preserve_cross_file_copy_final_lf(content, _resolved, task_id)
         path_to_resolved = {path: _resolved}
         with ExitStack() as _lock:
             if _resolved:
@@ -905,6 +971,8 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
                 result_dict["_warning"] = warnings[0]
             if rewrite_hint and not result_dict.get("error"):
                 result_dict["hint"] = rewrite_hint
+            if preserved_from and not result_dict.get("error"):
+                result_dict["final_newline_preserved_from"] = preserved_from
             if _resolved:
                 # Always report the ABSOLUTE path written so a wrong-cwd mismatch
                 # is visible in the response instead of silently landing elsewhere.
@@ -1159,7 +1227,7 @@ READ_FILE_SCHEMA = {
     # route we trust (_read_file_schema_overrides). Scanned-page coverage
     # teaching lives in the response-time NEEDS-OCR warning
     # (read_extract.py); the schema doesn't pre-teach it.
-    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are truncated on a line boundary and return a next_offset; continue with offset to read the rest. Documents auto-extract to readable text: .ipynb, Office (.docx/.xlsx/.pptx and legacy .doc/.ppt/.xls), PDF (text layer), OpenDocument, RTF, EPUB, SQLite (.db/.sqlite: schema, row counts, first rows). Cannot read images/binary — use vision_analyze for images.",
+    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. When known, ends_with_newline reports whether the file ends with a final newline; preserve that newline state when copying or fully rewriting text. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are truncated on a line boundary and return a next_offset; continue with offset to read the rest. Documents auto-extract to readable text: .ipynb, Office (.docx/.xlsx/.pptx and legacy .doc/.ppt/.xls), PDF (text layer), OpenDocument, RTF, EPUB, SQLite (.db/.sqlite: schema, row counts, first rows). Cannot read images/binary — use vision_analyze for images.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -1286,15 +1354,9 @@ def _is_openai_family_main() -> bool:
     return "openai/" in model
 
 
-# Pruning happens only on a macOS host (``_macos_protected_search_exclusions``), so only that
-# host's schema mentions it; other hosts would pay for a sentence about an OS they are not on.
-_MACOS_SEARCH_NOTE = (" On macOS, broad searches above the user home automatically skip TCC-protected folders (Desktop, "
-                      "Documents, Downloads, Library, Movies, Music, Pictures); target one directly when access is intentional."
-                      if facts.os_family() == "darwin" else "")
-
 SEARCH_FILES_SCHEMA = {
     "name": "search_files",
-    "description": "Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster than shell equivalents." + _MACOS_SEARCH_NOTE + "\n\nContent search (target='content'): Regex search inside files. Output modes: full matches with line numbers, file paths only, or match counts.\n\nFile search (target='files'): Find files by glob pattern (e.g., '*.py', '*config*'). Also use this instead of ls. Discovery order is the fast bounded default; exact global newest-first order is an explicit opt-in and may scan the full tree.",
+    "description": "Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster than shell equivalents. On macOS, broad searches above the user home automatically skip TCC-protected folders (Desktop, Documents, Downloads, Library, Movies, Music, Pictures); target one directly when access is intentional.\n\nContent search (target='content'): Regex search inside files. Output modes: full matches with line numbers, file paths only, or match counts.\n\nFile search (target='files'): Find files by glob pattern (e.g., '*.py', '*config*'). Also use this instead of ls. Discovery order is the fast bounded default; exact global newest-first order is an explicit opt-in and may scan the full tree.",
     "parameters": {
         "type": "object",
         "properties": {

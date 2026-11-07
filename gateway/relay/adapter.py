@@ -21,9 +21,7 @@ from functools import partial
 from typing import Any, Awaitable, Callable, Dict, NamedTuple, Optional, Tuple, Union
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import (
-    BasePlatformAdapter, ExecApprovalPrompt, SendResult,
-)
+from gateway.platforms.base import BasePlatformAdapter, ExecApprovalPrompt, SendResult
 from gateway.platforms.event import ProcessingOutcome
 from agent.i18n import t
 from gateway.relay.adapter_discord_interaction import RelayDiscordInteractionMixin
@@ -1930,6 +1928,7 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
     _PROMPT_UNAVAILABLE = SendResult(success=False, error="relay prompt op unavailable")
 
     _EA_CMD_BUDGET = 1500
+    _EA_CHAT_LIMIT_ESTABLISHED = False  # nor a card budget; caps may be stand-ins: gateway.run_turn_runner_approval_delivery
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Native-button exec approval over the relay (the press resolves via

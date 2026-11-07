@@ -1,6 +1,6 @@
 name: no-cap
 repo: https://github.com/jedbrnth-eng/no-cap
-sha: dfcbe3412ba6a5e8e4b216140e2096c3305b8b71
+sha: d5869327e6279c6486f00b68f02734e92592519f
 version: "0.2.0"
 title: "No Cap"
 description: >-
@@ -47,7 +47,8 @@ description: >-
   sends: /cap injects one user message where Hermes allows it (gateway-backed sessions need
   plugins.entries.no-cap.allow_gateway_injection: true), otherwise prints it to paste. Cap Coach injects approved rules
   as labelled context through pre_llm_call, only in scope, never before /cap coach approve, and /cap coach revert stops
-  it; it never edits skills, memory or config (--apply asks the agent to, with its own tools). /nocap doctor reads other
+  it. When the history already holds a No Cap footer, pre_llm_call also adds one fixed, labelled line asking the model
+  not to write receipt lines itself (built-in text only, never stored; footer_hint: off stops it). It never edits skills, memory or config (--apply asks the agent to, with its own tools). /nocap doctor reads other
   plugins' plugin.yaml files and the Hermes config. No tools, credentials, telemetry or self-update. Accuracy: blind
   samples of public SWE-rebench runs (two raters, adjudicated): round 3 at 01a1fab, 🧾 precision 0.92 (92/100, 95% CI
   0.85–0.96; no 🧢 on unseen runs, so not measured); round 2 at 7c6cbc0, 🧢 8 of 11 correct. Local Arena (30 synthetic bug-fix tasks, Qwen3-4B and a partial Qwen3-30B-A3B, No Cap at aa69dcb, one
@@ -57,14 +58,14 @@ tier: community
 category: tools
 requires_hermes: ">=0.22.5"
 docs_url: https://github.com/jedbrnth-eng/no-cap#readme
-image: https://raw.githubusercontent.com/jedbrnth-eng/no-cap/dfcbe3412ba6a5e8e4b216140e2096c3305b8b71/docs/brand/social-preview-1280x640.png
+image: https://raw.githubusercontent.com/jedbrnth-eng/no-cap/d5869327e6279c6486f00b68f02734e92592519f/docs/brand/social-preview-1280x640.png
 screenshots:
-  - https://raw.githubusercontent.com/jedbrnth-eng/no-cap/dfcbe3412ba6a5e8e4b216140e2096c3305b8b71/docs/media/demo-run/01-turnA-lies.png
-  - https://raw.githubusercontent.com/jedbrnth-eng/no-cap/dfcbe3412ba6a5e8e4b216140e2096c3305b8b71/docs/media/demo-run/02-cap-rescore.png
-  - https://raw.githubusercontent.com/jedbrnth-eng/no-cap/dfcbe3412ba6a5e8e4b216140e2096c3305b8b71/docs/media/board-run/01-board.png
-  - https://raw.githubusercontent.com/jedbrnth-eng/no-cap/dfcbe3412ba6a5e8e4b216140e2096c3305b8b71/docs/media/install-run/04-chip-open.png
-  - https://raw.githubusercontent.com/jedbrnth-eng/no-cap/dfcbe3412ba6a5e8e4b216140e2096c3305b8b71/docs/media/demo-run/03-strict.png
-  - https://raw.githubusercontent.com/jedbrnth-eng/no-cap/dfcbe3412ba6a5e8e4b216140e2096c3305b8b71/docs/media/real-model-run/04-real-after-cap.png
+  - https://raw.githubusercontent.com/jedbrnth-eng/no-cap/d5869327e6279c6486f00b68f02734e92592519f/docs/media/demo-run/01-turnA-lies.png
+  - https://raw.githubusercontent.com/jedbrnth-eng/no-cap/d5869327e6279c6486f00b68f02734e92592519f/docs/media/demo-run/02-cap-rescore.png
+  - https://raw.githubusercontent.com/jedbrnth-eng/no-cap/d5869327e6279c6486f00b68f02734e92592519f/docs/media/board-run/01-board.png
+  - https://raw.githubusercontent.com/jedbrnth-eng/no-cap/d5869327e6279c6486f00b68f02734e92592519f/docs/media/install-run/04-chip-open.png
+  - https://raw.githubusercontent.com/jedbrnth-eng/no-cap/d5869327e6279c6486f00b68f02734e92592519f/docs/media/demo-run/03-strict.png
+  - https://raw.githubusercontent.com/jedbrnth-eng/no-cap/d5869327e6279c6486f00b68f02734e92592519f/docs/media/real-model-run/04-real-after-cap.png
 readme: true
 platforms: []
 known_issues:

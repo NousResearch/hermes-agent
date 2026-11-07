@@ -191,7 +191,6 @@ import {
   parseBackendScopeKey,
   profileMetadataFromApiProfiles,
   reconcileAppliedGlobalConnection,
-  reconcileRegistryDrift,
   registryDialConnectionId,
   registrySourceOwnsPrimaryBackend,
   rememberSshEnumeration,
@@ -211,7 +210,7 @@ import {
 } from './connection-registry'
 import type { RegistryConnection } from './connection-registry'
 import type { RosterProfileMetadata } from './connection-registry'
-import { forgetRemovedGlobalRoute, removeSavedConnection } from './connection-registry-remove'
+import { forgetRemovedGlobalRoute, registerGlobalRoute, removeSavedConnection } from './connection-registry-remove'
 import { buildRemoteBlock } from './connection-remote-block'
 import { liveWindowState, overlayWindowState } from './connection-window-state'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
@@ -7083,6 +7082,8 @@ async function hasLiveOauthSession(baseUrl) {
 
 async function clearOauthSession(baseUrl) {
   const sess = getOauthSessionForUrl(baseUrl)
+  // The in-memory mirror is sent as an explicit Cookie header: it goes with the jar.
+  remoteSessionCookies.clear(resolveOauthPartitionForUrl(baseUrl), baseUrl)
 
   if (!sess) {
     return
@@ -8444,7 +8445,8 @@ function readDesktopConnectionsRegistry(): any {
 // behind) must leave connection.json too, or Desktop keeps dialing it.
 function forgetDesktopGlobalRouteIfRemoved() {
   try {
-    forgetRemovedGlobalRoute(readDesktopConnectionsRegistry(), {
+    // Strict: an unreadable store must not read as "every gateway was removed".
+    forgetRemovedGlobalRoute(gatewayConnectionsStore.readStrict(), {
       readConfig: readDesktopConnectionConfig,
       writeConfig: writeDesktopConnectionConfig,
       log: rememberLog
@@ -14405,8 +14407,7 @@ ipcMain.handle('hermes:connections:save', async (_event, payload) => {
 ipcMain.handle('hermes:connections:remove', async (_event, id) => {
   const key = String(id || '')
   managedConnectionUpdateGate.assertCanMutate(key)
-  const before = readDesktopConnectionsRegistry()
-  const cookieUrlToClear = cookieJarToClearOnRemoval(key, before)
+  const cookieUrlToClear = cookieJarToClearOnRemoval(key, readDesktopConnectionsRegistry())
 
   // Clear the removed connection's cookie jar before its registry entry is
   // gone: clearOauthSession() resolves the partition from the stored registry,
@@ -14417,7 +14418,9 @@ ipcMain.handle('hermes:connections:remove', async (_event, id) => {
     await clearOauthSession(cookieUrlToClear)
   }
 
-  const registry = await removeSavedConnection(key, before, readDesktopConnectionConfig(), {
+  // A fresh read after that await, written without yielding: a save or removal
+  // another window made meanwhile must not be overwritten by an older snapshot.
+  const registry = await removeSavedConnection(key, readDesktopConnectionsRegistry(), readDesktopConnectionConfig(), {
     writeConfig: writeDesktopConnectionConfig,
     writeRegistry: writeDesktopConnectionsRegistry
   })
@@ -15207,18 +15210,21 @@ ipcMain.handle('hermes:cloud:agent-sign-in', async (_event, dashboardUrl) => {
 })
 ipcMain.handle('hermes:connection-config:save', async (_event, payload) => {
   assertCanMutateManagedPrimaryRouting()
-  const config = coerceDesktopConnectionConfig(payload)
-  writeDesktopConnectionConfig(config)
+  const previousConfig = readDesktopConnectionConfig()
+  const previousRegistry = readDesktopConnectionsRegistry()
+  const config = coerceDesktopConnectionConfig(payload, previousConfig)
 
   // The saved list learns an app-global route when the user picks it, never on a
   // later read: a read-time repair re-adds a gateway removed since (#142906).
-  if (!connectionScopeKey(payload?.profile)) {
-    const drift = reconcileRegistryDrift(readDesktopConnectionsRegistry(), config)
-
-    if (drift.changed) {
-      writeDesktopConnectionsRegistry(drift.registry)
-    }
-  }
+  await applyConnectionConfigAtomically({
+    previousConfig,
+    previousRegistry,
+    nextConfig: config,
+    nextRegistry: connectionScopeKey(payload?.profile) ? previousRegistry : registerGlobalRoute(previousRegistry, config),
+    writeConfig: writeDesktopConnectionConfig,
+    writeRegistry: writeDesktopConnectionsRegistry,
+    apply: async () => undefined
+  })
 
   return sanitizeDesktopConnectionConfig(config, payload?.profile)
 })
@@ -15230,7 +15236,10 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
 
   const key = connectionScopeKey(payload?.profile)
   const scope = key || ''
-  const nextRegistry = key ? previousRegistry : reconcileAppliedGlobalConnection(previousRegistry, config)
+  // registerGlobalRoute: an applied SSH route joins the list (reconcileApplied… leaves SSH alone).
+  const nextRegistry = key
+    ? previousRegistry
+    : registerGlobalRoute(reconcileAppliedGlobalConnection(previousRegistry, config), config)
 
   // Primary apply: the applied window's recorded route still names the source
   // it just LEFT, and a profile-less re-dial is answered from that record

@@ -1,3 +1,4 @@
+import { modeIsRemoteLike, normalizeRemoteBaseUrl, normalizeSshConfig } from './connection-config'
 import { applyConnectionConfigAtomically } from './connection-config-apply'
 import { type ConnectionRegistry, reconcileRegistryDrift, removeConnection } from './connection-registry'
 
@@ -9,15 +10,49 @@ interface ConnectionRemovalWriters {
 /** connection.json with its app-global route reset to local (per-profile overrides kept). */
 export const withoutGlobalRoute = (config: Record<string, any>) => ({ ...config, mode: 'local', remote: {} })
 
+/** user@host:port::remoteProfile of an SSH route, or null when it names no host. */
+function sshRouteKey(route: Record<string, any>): null | string {
+  const ssh = normalizeSshConfig({ ...route, mode: 'ssh' })
+
+  return ssh
+    ? `${(ssh.user || '').trim().toLowerCase()}@${ssh.host.trim().toLowerCase()}:${ssh.port || 22}::${ssh.remoteProfile || ''}`
+    : null
+}
+
+const urlKey = (url: unknown): string => {
+  try {
+    return normalizeRemoteBaseUrl(url)
+  } catch {
+    return ''
+  }
+}
+
 /**
  * True when connection.json's app-global route names a gateway the saved list no
- * longer holds. The list is the authority once it exists: such a route was removed
- * (here or by the Webapp), so it must be dropped, never re-added. A Settings save
- * registers its route at save time, so a live route is never in this state.
+ * longer holds (same URL; same SSH user, host, port and remote profile). The list
+ * is the authority once it exists: such a route was removed (here or by the
+ * Webapp), so it must be dropped, never re-added.
  */
 export function globalRouteRemoved(registry: ConnectionRegistry, config: Record<string, any>): boolean {
-  return reconcileRegistryDrift(registry, config).registry.connections.length > registry.connections.length
+  const remote = config?.remote && typeof config.remote === 'object' ? config.remote : {}
+
+  if (config?.mode === 'ssh') {
+    const key = sshRouteKey(remote)
+
+    return Boolean(key) && !registry.connections.some(c => c.kind === 'ssh' && sshRouteKey(c) === key)
+  }
+
+  const url = modeIsRemoteLike(config?.mode) ? urlKey(remote.url) : ''
+
+  return (
+    Boolean(url) &&
+    !registry.connections.some(c => (c.kind === 'remote' || c.kind === 'cloud') && urlKey(c.url) === url)
+  )
 }
+
+/** The list with connection.json's app-global route registered (Settings save / apply). */
+export const registerGlobalRoute = (registry: ConnectionRegistry, config: Record<string, any>) =>
+  reconcileRegistryDrift(registry, config).registry
 
 interface GlobalRouteIo {
   readConfig: () => Record<string, any>

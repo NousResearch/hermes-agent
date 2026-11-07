@@ -742,6 +742,8 @@ The Microsoft Teams platform adapter (Bot Framework / Azure AD), distinct from t
 | `TEAMS_CLIENT_ID` | Azure AD application (Bot Framework) client ID. |
 | `TEAMS_CLIENT_SECRET` | Azure AD application client secret. |
 | `TEAMS_TENANT_ID` | Azure AD tenant ID hosting the bot application. |
+| `TEAMS_TOKEN_URL` | Optional external token broker used instead of `TEAMS_CLIENT_SECRET`: Hermes POSTs `client_id`, `tenant_id` and `scope` (form-encoded) and expects Entra's JSON (`access_token`, `expires_in`). The secret can then stay out of the agent's process. |
+| `TEAMS_TOKEN_BEARER` | Optional bearer token sent to `TEAMS_TOKEN_URL` in the `Authorization` header. |
 | `TEAMS_HOST` | Webhook bind host (default: unset → dual-stack, all interfaces IPv4+IPv6). |
 | `TEAMS_PORT` | Webhook listen port (Bot Framework default: `3978`). |
 | `TEAMS_ALLOWED_USERS` | Comma-separated Teams user IDs / UPNs allowed to talk to the bot. |

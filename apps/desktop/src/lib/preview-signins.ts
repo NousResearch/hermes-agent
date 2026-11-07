@@ -25,9 +25,17 @@ export async function syncPreviewSignins(
     return null
   }
 
-  lastSynced.set(previewSigninsScopeKey(scope), enabled)
+  const result = await bridge({ connectionId: scope?.connectionId ?? null, enabled, profile: scope?.profile ?? null })
 
-  return bridge({ connectionId: scope?.connectionId ?? null, enabled, profile: scope?.profile ?? null })
+  // P2-8 (renderer): only mark the scope synced AFTER a successful reply. Stamping before the bridge
+  // resolves (or on a `status: 'error'` reply) marked a failed import/clear as done, so the boot hook
+  // skipped the real retry. A failure leaves `lastSynced` untouched so the next `syncPreviewSigninsIfChanged`
+  // tries again.
+  if (result && result.status !== 'error') {
+    lastSynced.set(previewSigninsScopeKey(scope), enabled)
+  }
+
+  return result
 }
 
 /** A Settings toggle / consent prompt is about to write `enabled` optimistically into the config cache: claim

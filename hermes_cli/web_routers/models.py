@@ -282,7 +282,7 @@ def get_moa_models(profile: Optional[str] = None):
 
 _MOA_PRESET_FIELDS = (
     "reference_temperature", "aggregator_temperature", "reference_timeout",
-    "degraded_reference_policy", "fanout", "enabled",
+    "reference_tool_result_budget", "degraded_reference_policy", "fanout", "enabled",
 )
 
 
@@ -369,7 +369,17 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
                 updated["moa"]["presets"] = {
                     name: merged_presets[name] for name in normalized["presets"]
                 }
-            save_config(updated)
+            # A slot is an atomic {provider, model} pair: the default-stripping save pass would
+            # otherwise drop a provider that happens to equal DEFAULT_CONFIG's (e.g. on the first
+            # legacy-flat -> ``presets.default`` write), and the reader then discards the
+            # half-slot and silently swaps in the default preset.
+            preserve = {
+                ("moa", "presets", name, "aggregator", key)
+                for name, preset in normalized["presets"].items()
+                if isinstance(preset.get("aggregator"), dict)
+                for key in preset["aggregator"]
+            }
+            save_config(updated, preserve_keys=preserve)
             return {"ok": True, **normalized}
 
 

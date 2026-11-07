@@ -1,0 +1,34 @@
+name: underwriting
+repo: https://github.com/johnnyminer/hermes-underwriting
+sha: e376ab64e1b72f78bfd00f4779129352e42fa005
+description: >-
+  Commercial real estate underwriting that shows its work: rebuilds net operating income from the
+  rent roll and T-12 instead of trusting the broker's claim, runs buy-box tests against a
+  DSCR-sized loan, returns the counter-price at which a rejected deal actually clears, sweeps price
+  to find where a deal flips, models a hold period, and returns null rather than inventing a number
+  the document never stated. Seven deterministic tools plus an /underwrite command and a skill.
+  Extraction reads a document the user names (local path or URL) and is audited back against the
+  document text: every figure is matched to the line it came from and marked verified, and a
+  citation the document cannot support is reported. The arithmetic is pure Python standard library
+  with no network calls and no third-party packages; only extraction calls the host model, and only
+  a URL passthrough fetches anything over the network. The deal book is written as JSON under
+  Hermes's plugin state directory. Not investment advice.
+maintainer: johnnyminer
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/johnnyminer/hermes-underwriting#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - uw_screen
+    - uw_triage
+    - uw_returns
+    - uw_extract
+    - uw_memo
+    - uw_save
+    - uw_deals
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

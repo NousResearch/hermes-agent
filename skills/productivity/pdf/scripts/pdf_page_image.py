@@ -62,7 +62,7 @@ def main() -> int:
     try:
         from pypdf import PdfReader
     except ImportError:
-        print("Missing dependency: install with 'python3 -m pip install pypdf'", file=sys.stderr)
+        print("Missing dependency: 'pypdf' is not importable here; rerun with the documents interpreter $PY from the pdf skill's Prerequisites setup block", file=sys.stderr)
         return 2
     reader = PdfReader(args.pdf)
     if reader.is_encrypted:

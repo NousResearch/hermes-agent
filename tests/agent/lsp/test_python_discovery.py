@@ -46,7 +46,7 @@ def test_pyright_uses_the_project_interpreter_before_hermes(tmp_path, monkeypatc
     pm_python = _seed_pm_python(tmp_path, monkeypatch)
     context = servers.ServerContext(
         workspace_root=str(project), install_strategy="off",
-        binary_overrides={"pyright": [sys.executable]},
+        binary_overrides={"pyright": [sys.executable]}, trusted=True,
     )
     server = servers.find_server_for_file(str(project / "app.py"))
     assert server is not None

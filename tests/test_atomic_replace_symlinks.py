@@ -109,6 +109,52 @@ def test_atomic_json_write_preserves_symlink(tmp_path: Path) -> None:
 
 
 @pytest.mark.require_symlinks
+@pytest.mark.platforms("posix")  # read-only dir via chmod
+@pytest.mark.parametrize("target_dir_writable", [True, False], ids=["rename", "readonly-dir-copy"])
+def test_mkstemp_beside_symlink_into_other_fs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target_dir_writable: bool
+) -> None:
+    """mkstemp_beside contract (shared by every atomic writer): for a link into another dir
+    (treated as another filesystem) the temp is staged beside the real file so the publish is a
+    rename, never the tearable copy fallback; if that dir is read-only the save still succeeds
+    by staging beside the link and copying."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    real = elsewhere / "real.json"
+    real.write_text("{}", encoding="utf-8")
+    link = tmp_path / "link.json"
+    link.symlink_to(real)
+    real_replace = os.replace
+    copies = []
+
+    def replace_same_dir_only(src, dst):
+        if os.path.dirname(os.path.realpath(src)) != os.path.dirname(os.path.realpath(dst)):
+            raise OSError(errno.EXDEV, os.strerror(errno.EXDEV))
+        return real_replace(src, dst)
+
+    def record_copy(src, dst):
+        copies.append(dst)
+        return real_copy(src, dst)
+
+    import utils
+    real_copy = utils._copy_fallback
+    monkeypatch.setattr("utils.os.replace", replace_same_dir_only)
+    monkeypatch.setattr("utils._copy_fallback", record_copy)
+    if not target_dir_writable:
+        if os.geteuid() == 0:
+            pytest.skip("root ignores directory write permissions")
+        elsewhere.chmod(0o555)
+    try:
+        atomic_json_write(link, {"hello": "world"})
+    finally:
+        elsewhere.chmod(0o755)
+
+    assert link.is_symlink()
+    assert json.loads(real.read_text(encoding="utf-8")) == {"hello": "world"}
+    assert copies == ([] if target_dir_writable else [str(real)])
+
+
+@pytest.mark.require_symlinks
 def test_atomic_yaml_write_preserves_symlink(tmp_path: Path) -> None:
     real = tmp_path / "real.yaml"
     link = tmp_path / "link.yaml"
@@ -591,10 +637,10 @@ def test_windows_readonly_target_still_raises(tmp_path: Path) -> None:
     target = tmp_path / "readonly.json"
     target.write_text("old", encoding="utf-8")
     tmp = _write_tmp(tmp_path, "new")
-    subprocess.run(["attrib", "+R", str(target)], capture_output=True)
+    subprocess.run(["attrib", "+R", str(target)], capture_output=True, check=False)
     try:
         with pytest.raises(OSError):
             atomic_replace(tmp, target)
         assert target.read_text(encoding="utf-8") == "old"
     finally:
-        subprocess.run(["attrib", "-R", str(target)], capture_output=True)
+        subprocess.run(["attrib", "-R", str(target)], capture_output=True, check=False)

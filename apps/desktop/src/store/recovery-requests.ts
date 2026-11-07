@@ -5,8 +5,8 @@ import { atom } from 'nanostores'
  * no knowledge of the active profile — chiefly notification action buttons
  * fired from stores. The shell controller (`app/contrib/wiring.tsx`) owns
  * `navigate` and the active profile, so it consumes these and performs the
- * navigation / restart. Same shape as `$poolLimitsSettingsRequest` and
- * `$billingSettingsRequest`, generalised to any in-app route.
+ * navigation / restart. Same shape as `$billingSettingsRequest`, generalised
+ * to any in-app route.
  *
  * Both atoms carry a `seq` so an identical request twice in a row (the user
  * clicks the same toast button again) still fires.

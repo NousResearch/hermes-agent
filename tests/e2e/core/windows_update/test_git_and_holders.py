@@ -58,7 +58,7 @@ def _spawn_holders(machine: Machine) -> list[int]:
 
 def _stop_holders(pids: list[int]) -> None:
     for pid in pids:
-        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=60)
+        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=60, check=False)
     wait_until(lambda: not any(psutil.pid_exists(p) for p in pids), 60, "venv holders to exit")
 
 
@@ -103,13 +103,9 @@ def test_update_fetches_into_the_installers_partial_clone(journey: Journey) -> N
                              "serve.git should allow filters")
     fetch_bug = next((ln.strip() for ln in run.stdout.splitlines() if "BUG:" in ln or "fatal:" in ln),
                      failure_line(run))
-    with known_failure(r"^hermes update over the installer's partial clone failed: rc=1, "
-                       r".*✗ Update failed: \[WinError 2\]",
-                       "gated on #124634: the pinned Git install.ps1 staged never reaches "
-                       "`hermes update`'s PATH"):
-        assert run.returncode == 0 and m.installed_head() == m.next, fail_with(
-            m, f"hermes update over the installer's partial clone failed: rc={run.returncode}, checkout at "
-               f"{m.installed_head()} (NEXT {m.next}); {fetch_bug or 'no git error printed'}", run)
+    assert run.returncode == 0 and m.installed_head() == m.next, fail_with(
+        m, f"hermes update over the installer's partial clone failed: rc={run.returncode}, checkout at "
+           f"{m.installed_head()} (NEXT {m.next}); {fetch_bug or 'no git error printed'}", run)
 
 
 def test_list_venv_holders_reports_live_holders(journey: Journey) -> None:

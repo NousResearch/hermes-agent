@@ -1,4 +1,4 @@
-import type { GatewayEventPayload } from '@/lib/chat-messages'
+import { type ChatMessage, type GatewayEventPayload, QUESTION_CARD_TOOLS } from '@/lib/chat-messages'
 import { $clarifyRequests, type ClarifyRequest, clearClarifyRequest } from '@/store/clarify'
 import type { SessionResumeResult } from '@/types/hermes'
 
@@ -26,7 +26,7 @@ export function restorePendingClarifyFromSnapshot(
   resumeStartedAt: number,
   requestIdAtStart?: string
 ): PendingClarifyResumeState {
-  const pending = (response.open_requests ?? []).find(entry => entry.method === 'clarify')
+  const pending = (response.open_requests ?? []).find(entry => QUESTION_CARD_TOOLS.has(entry.method))
 
   if (!pending) {
     const current = $clarifyRequests.get()[sessionId]
@@ -54,19 +54,46 @@ export function restorePendingClarifyFromSnapshot(
 
 export function pendingClarifyToolPayload(request: ClarifyRequest): GatewayEventPayload {
   return {
-    args: request.questions?.length
-      ? {
-          questions: request.questions.map(question => ({
-            choices: question.choices ?? undefined,
-            multi_select: question.multiSelect || undefined,
-            question: question.question
-          }))
-        }
-      : {
-          choices: request.choices ?? [],
-          ...(request.multiSelect ? { multi_select: true } : {}),
-          question: request.question
-        },
+    args: {
+      questions: request.questions.map(question => ({
+        choices: question.choices ?? undefined,
+        multi_select: question.multiSelect || undefined,
+        question: question.question
+      }))
+    },
     tool_id: request.requestId
   }
+}
+
+/** Drop the pre-hydration request-id row without copying the other messages.
+ *  A copied clarify row looks like a concurrent edit and hydration keeps both. */
+export function withoutEarlyClarifyProjection(messages: ChatMessage[], requestId: string): ChatMessage[] {
+  let changed = false
+  const next: ChatMessage[] = []
+
+  for (const message of messages) {
+    const parts = message.parts.filter(
+      part =>
+        !(
+          part.type === 'tool-call' &&
+          QUESTION_CARD_TOOLS.has(part.toolName) &&
+          part.result === undefined &&
+          part.toolCallId === requestId
+        )
+    )
+
+    if (parts.length === message.parts.length) {
+      next.push(message)
+
+      continue
+    }
+
+    changed = true
+
+    if (parts.length > 0) {
+      next.push({ ...message, parts })
+    }
+  }
+
+  return changed ? next : messages
 }

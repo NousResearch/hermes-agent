@@ -226,7 +226,7 @@ def in_process_runtime(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime, "_X_LOCK_DIR", tmp_path / "xlocks")
     monkeypatch.setattr(runtime, "_X_UNIX_TABLE", tmp_path / "unix")  # the host's real X servers stay out of the band
     monkeypatch.setattr(runtime, "_ALLOC_LOCK", tmp_path / "alloc.lock")
-    monkeypatch.setattr(runtime, "missing_binaries", lambda: [])
+    monkeypatch.setattr(runtime, "missing_binaries", list)
     monkeypatch.setattr(runtime, "geometry", lambda: "800x600")
     monkeypatch.setenv("HERMES_BD_XLOCK_DIR", str(tmp_path / "xlocks"))
     yield tmp_path
@@ -397,7 +397,7 @@ def _startable_host(monkeypatch, tmp_path, *, running=False):
     """A Linux host with the packages present, so only the check under test can block a start."""
     from tools.bot_desktop import resources
     monkeypatch.setattr(runtime, "is_supported_host", lambda: True)
-    monkeypatch.setattr(runtime, "missing_binaries", lambda: [])
+    monkeypatch.setattr(runtime, "missing_binaries", list)
     monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path / "bd")
     monkeypatch.setattr(runtime, "_launcher_pid", lambda: 4242 if running else None)
     monkeypatch.setattr(runtime, "published_env", lambda: {"DISPLAY": ":7"} if running else {})

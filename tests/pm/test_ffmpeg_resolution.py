@@ -10,7 +10,7 @@ from pm.packages import Ffmpeg
 
 @pytest.fixture
 def indexes(monkeypatch):
-    tag = "autobuild-2026-09-01-12-00"
+    tag = "autobuild-2026-09-30-12-00"  # last September build: the only retained tag
     version = "9.1.2"
     assets = [
         f"ffmpeg-n{version}-1-gabcdef-linux64-gpl-9.1.tar.xz",
@@ -22,8 +22,17 @@ def indexes(monkeypatch):
         f"ffmpeg-n{version}-1-gabcdef-win64-gpl-9.1.zip",
         f"ffmpeg-n{version}-1-gabcdef-winarm64-gpl-9.1.zip",
     ]
+
+    def release(release_version, tag_date):
+        name = f"ffmpeg-n{release_version}-1-gabcdef-win64-gpl-9.1.zip"
+        return {"tag_name": f"autobuild-{tag_date}", "assets": [{"name": name}]}
+
     monkeypatch.setattr(update, "_get_json", lambda url: [
+        # The current month's newest tag and an older daily in a finished
+        # month are both deleted by BtbN within two weeks.
+        release("9.1.3", "2026-10-02-12-00"),
         {"tag_name": tag, "assets": [{"name": name} for name in assets]},
+        release("9.1.1", "2026-09-10-12-00"),
     ])
     paths = {
         f"{osname}-{arch}": f"{source_os}/{source_arch}/1788300000_{version}/ffmpeg.zip"
@@ -60,3 +69,10 @@ def test_resolved_version_fetches_its_exact_target_asset(indexes, target):
 def test_unadvertised_version_refuses_instead_of_relabelling_old_bytes(indexes, target):
     with pytest.raises(InstallError, match="9.9.9"):
         Ffmpeg().fetch_url("9.9.9", target)
+
+
+def test_only_retained_month_end_builds_are_pinned(indexes):
+    versions = Ffmpeg().latest_versions("win32-x64")
+    assert "9.1.2" in versions
+    assert "9.1.3" not in versions  # current month: still a daily
+    assert "9.1.1" not in versions  # older daily in a finished month

@@ -104,3 +104,97 @@ ab0e060bd77c73bd944dea4aea4c5e1aebfdeb01	2026-09-25T18:08:03-05:00	fix(desktop):
 f8dddd71510f72eabe1732506dac53a78fdee3fd	2026-09-25T18:16:52-05:00	test(desktop): match the leaf name span now that badge chips wrap the row label
 f84db42a32b28a00a2ef1e11e5471a27d22cc37f	2026-09-25T11:06:00-05:00	fix(cron): deduplicate cross-profile jobs in GET /api/cron/jobs
 40347fd40d732bfad9b403cc224b2054becd22d5	2026-09-25T11:37:53-05:00	fix(mcp): resolve bare uv/uvx under GUI-style PATHs (#37589)
+678a4762b887f3eabe5cad11254b2ab1ae859485	2026-09-25T13:26:28-05:00	fix(mcp): move uv/uvx known-dir table into hermes_platform resolver
+67c6fdc092331ab6c51a7d00612031614ccd3570	2026-09-25T11:36:29-05:00	fix(desktop): stop home-directory repo scans when no roots are configured
+d10afb5a8851be2b0f6fe5d3b04022c3a8877d6c	2026-09-25T18:52:11-05:00	fix(tests): import CONFIG_SCHEMA from its defining module
+3521034ed6b282ba6126b73bb04e3c958570432d	2026-09-24T18:51:45-05:00	fix(desktop): isolate Inbox session actions from the row resume (#85163)
+1ec4957d4c31b719fb4d8caf546fc44c43edfb81	2026-09-24T18:55:04-05:00	fix(desktop): drop ghost sidebar rows absorbed by a reorganized compression chain (#85331)
+7c80df7120781f55749b8843d6ef8016f8672eba	2026-09-24T22:18:52-05:00	fix(test): use hermes_yaml instead of bare pyyaml in onboarding test
+8507948c04714622327a61371cb0f06a0073a3af	2026-09-25T17:49:50-05:00	fix(desktop): qualify lineage absorption members by profile (#92454)
+b07d307bae64313e4aecaeb1c73dc95e03be204f	2026-09-25T10:08:28-05:00	fix(tui): bind side-agent UI owner; skip secret prompts with no owner
+283de37b6b4edfce7429f63ff9b0eee6b4882311	2026-09-25T18:13:06-05:00	fix(tui): refuse secret requests after the owning runtime closes
+3ddf82fe249723a181674e4f52aee2dc75fa1d68	2026-09-25T11:39:42-05:00	fix(desktop): detach the Windows packaged launch and swallow launcher Ctrl-C
+701a7559d398b72852772f36eaee0526ae69e008	2026-09-25T11:39:42-05:00	test(desktop): pin the detached Windows launch and clean Ctrl-C exit
+3f2c24d41face1613ca697a188389f8f62de0a95	2026-09-25T17:26:18-05:00	test(desktop): neutralize the Linux desktop-entry install in the Ctrl-C exit test
+6c32a31d30ab61685f405448748c417e2b1e1018	2026-09-25T18:08:28-05:00	test(desktop): neutralize the unshare sandbox probe in the Ctrl-C exit test
+e2b1c6679192263e863dc19bd8e4b95f94eadc36	2026-09-25T18:56:53-05:00	test(desktop): neutralize the Linux password-store D-Bus probe in the Ctrl-C exit test
+02f57212a4cbd305e02d7b0832a585d4a5205692	2026-09-25T18:54:00-05:00	test: check guarded paths with strings, not pathlib
+1f20117b3359f4f7d587f8518dc8dbbcb2def6a3	2026-09-25T11:26:50-05:00	fix(desktop): keep /bg's local action spec canonical over the catalog
+2658607d540c0250e76385a51968d9bcdbc20b38	2026-09-25T11:36:05-05:00	fix(desktop): import GatewayEvent type in the background.complete test
+a5e949bcefdcb60052d6071a085222c5a0a52001	2026-09-25T17:19:20-05:00	fix(desktop): sort imports in background-complete-event test
+2bc6cc421a6a4d2af9b4d3a9b456362aa2d7e0fe	2026-09-25T12:05:56-05:00	fix(desktop): trust macOS keychain CAs for remote gateways like Windows
+05426e04f8112f67b4352b82386c051ce4076505	2026-09-25T17:28:31-05:00	fix(desktop): sort the system-ca import in main
+a9972dc3f9156df789f82a9835c4fb2063203b23	2026-09-25T11:37:28-05:00	fix: profile terminal.cwd beats the desktop's inherited workspace cwd
+02b282a5d4efbe0484d5ef3f9e026e0b0228a58b	2026-09-25T11:37:36-05:00	fix(desktop): stop approval.respond timing out behind stalled WS writes
+66bc2597121a7c8cc406ee99bf1273651fdcd0d9	2026-09-25T19:30:24-05:00	fix(gateway): declare cwd_explicit on the session.create contract
+ecaa1f001aa5f3793d4ed781686621c023773fac	2026-09-25T14:10:31-05:00	test: disentangle the cherry-picked customCSS suites
+179124cdff5da31c4b300ba3c28ac211f5fb36be	2026-09-25T14:10:35-05:00	fix(gateway): carry customCSS in the change-watcher's resolve_skin
+c15ebb143574ce8f6136b2519ca57cd684aeb3c5	2026-09-25T17:31:42-05:00	fix(desktop): drop stray blank lines inside theme import groups
+3e11956c1521781ee6b0bc44cec5e20e682be2f3	2026-09-25T10:03:17-05:00	fix(desktop): mark the File Browser setting session-only in Simple mode
+7be5d400337f438d39201ba457f8d5506e25fa11	2026-09-25T11:37:04-05:00	fix(desktop): retry the initial gateway WS connect across backend cold-start
+b5b344ca5825298e19c3e133ff54a34cbf27a75b	2026-09-25T13:22:45-05:00	fix(desktop): narrow the initial-connect retry to local gateways
+6e901fca7891f062a1cc876ea0925647aefe8d2b	2026-09-25T17:09:48-05:00	fix(desktop): sort imports in use-gateway-boot-initial-connect test
+5838f1372599530688b4f44aba8f419fb81bae64	2026-09-25T16:09:23-05:00	test(pm): route build-deps PowerShell checks through the cold-runner helper
+7ca2f5665fe34fd0439203cdd93800590574d61b	2026-09-25T10:07:18-05:00	fix(desktop): keep the Kanban panel and toolset in agreement on a failed write
+2497c3c539c37f0cf2140b856d36d45485fb3426	2026-09-25T18:54:12-05:00	fix(desktop): pass provider_primary through /api/env so a card keeps its own key
+c2af461706ae0dbab7271caf45bb9eefde4cdc53	2026-09-25T18:54:13-05:00	test(desktop): fixture where a shared credential arrives with primary: false
+a052836559683da8f98b538b3aee795aede42fde	2026-09-24T23:51:37-05:00	fix(mcp): connect servers added to config on the next agent build
+b148d976023afc6972fc77cce6b9595b86e022e6	2026-09-24T23:51:37-05:00	fix(mcp): point `hermes mcp add` and `configure` at /reload-mcp
+4503c2458beec8aacd0516c7d9496dec4fec122a	2026-09-24T23:10:29-05:00	fix(tui_gateway): honor prefill_messages_file on the Desktop agent path
+a79311ba9581886e3fe58243018099a0694e5740	2026-09-25T00:10:48-05:00	test(tui_gateway): drop PyYAML import from prefill regression test
+15e26c76f35d28afc77bf924088cbb6b5c2781e9	2026-09-24T23:10:15-05:00	fix(dashboard): list --port 0 serve backends in --status
+cc9b8eb3ab191863357ed0cad439df4ba3ef5ec0	2026-09-24T21:15:57-05:00	fix(desktop): satisfy backend resolution import ordering
+1753fe16128a9f4bd8d3bccc7f16407436d87f4f	2026-09-24T21:16:24-05:00	fix(desktop): order backend resolution imports
+ed9a63bda414b21770a751bfa85380bc636bf88d	2026-09-24T23:44:26-05:00	fix(desktop): skip the installed runtime when ignore-existing is set
+9d096629930536eb612f8b29ae0548295175f8bb	2026-09-24T23:44:27-05:00	docs(desktop): describe what --ignore-existing skips
+890db533961dd0d2d228f127dc5fb246aec97a76	2026-09-24T23:12:46-05:00	fix(agent): clamp displayed context usage to the model window
+c2182f60c1f1fe35dd956dcaff517fb7bdc9e8de	2026-09-25T11:35:45-05:00	fix(cron): show run history for script-only jobs via per-fire output docs
+4f11ac246c966aeb03081a24d1067185272d6bda	2026-09-25T11:35:50-05:00	fix(desktop): render script-only cron jobs in the detail view and sidebar
+17c6a566f53f24597899b44492d4916b43b7b7ba	2026-09-25T18:27:06-05:00	fix(cron): reconcile run history per execution and read it in the owner's scope
+627bf49baae142093c7b61aa9ff4d1749fce667b	2026-09-24T23:46:48-05:00	fix(process): kill a re-adopted PID whose start time is unreadable
+aac12dfda54d5298b02cb97a6a186989a21e39fa	2026-09-24T19:01:08-05:00	fix(desktop): stop the queue-drain exhaustion banner from replaying after restart (#98015)
+3d9040c188522810a4f92e4989874793b04eb515	2026-09-24T19:59:05-05:00	fix(desktop): fold i18n queueDropped keys + dedupe isSessionOwnerRoute into their fixes
+80f9c698b985846648d8ae9338137002195cca60	2026-09-24T21:52:55-05:00	chore: map contributor emails
+f0288f2272fae4f2cf2d1f64a8d87924229685d8	2026-09-25T18:53:20-05:00	fix(desktop): require proof of absence before dropping a drained queue entry (#122083 review)
+26780d55ae5023817dc20e074e07127d5234d59e	2026-09-26T16:54:21-05:00	fix(desktop): evict the whole subtree on a scoped clearProjectDirCache (#122083 review)
+9d2eca0560b6456d3d2ebaa9a25445d0f0010c0b	2026-09-24T20:50:02-05:00	chore(contributors): map BorgWrightpcalac@outlook.com to DevEverything01
+3836710cfa0beef1a11adff5603443c829da0231	2026-09-25T19:08:13-05:00	fix(desktop): give a pre-save sign-in the same jar its saved connection reads
+b42474b0d1a5822c11e1015be0db6110f5f63acd	2026-09-25T19:11:12-05:00	style(desktop): blank lines around statements this PR adds (eslint warnings)
+625f1d8926a1f0fdfe7fd80d0934845b3dff2179	2026-09-24T19:43:13-05:00	fix(update): retry node dependency preparation after ENOTEMPTY
+b85406d5f3a355ab3d0afe303e49eed82ce98a8b	2026-09-24T23:27:29-05:00	fix(update): remove the npm logs dir even when the retry fails
+a6dadb83ba0f2c8dff82daff01f8f1732b381524	2026-09-24T19:08:56-05:00	fix(desktop): strip citeturn web-citation transport markers from prose (#120587)
+6d94896c78a0de6aa24967e0127fbe26b90057de	2026-09-24T21:52:45-05:00	chore: map contributor emails
+2f86fae3bea1a54f72ae1706e2db8beec05b1c2f	2026-09-24T23:23:01-05:00	fix(desktop): forward --profile on the bundled-install launch too
+f4795c922c2ef9eef244ea0fb886ad863dc452be	2026-09-25T01:19:44-05:00	fix(desktop): tell the user when a clarify request never reached the app
+c8094dc399def08266d3bee5be1c27ef6dd50345	2026-09-24T21:15:22-05:00	fix(icons): put the dev Dock icon on the mac grid and enlarge the mac art
+b24b8149ddfacf19e68f4cbdc733e00a59d758b3	2026-09-24T22:03:31-05:00	fix(icons): give the dev Dock its own mac-grid png
+41cd3117ae62a689c2b37a137e78eee21bc7650c	2026-09-25T12:33:22-05:00	fix(desktop): keep the sidebar alive for messaging-only and cron-only profiles
+980318e68954777b08333e7044beeee4518344cf	2026-09-24T23:47:46-05:00	fix(install): detect arch-suffixed desktop builds on repair/upgrade reruns (#94703)
+5ef8d96554993c98bd3358de2d6eb0a3419c81ce	2026-09-24T23:47:46-05:00	fix(bootstrap-installer): resolve linux-arm64-unpacked desktop builds (#94703)
+ce750ff151835ffb66b353b668f6385f576f45f5	2026-09-25T18:05:09-05:00	fix(title): strip a quoted path's line-range suffix in the attachment-only guard
+41de397af68033a3ec692af49bee4146460bcba8	2026-09-25T11:46:05-05:00	fix(serve): announce both ready tokens so a stale packaged parser still boots
+496367f011a7851de66fdd759568ce294dc37d7d	2026-09-25T11:46:05-05:00	test(desktop): fail the pack when the bundled readiness parser goes stale
+7bc6de5032e9bc4d11279106a6d3fab2c7eee65b	2026-09-25T17:03:41-05:00	test(serve): expect the dual ready-token announcement in the discovery-after-bind suite
+70c588404bebb53c038c8d9a09739a64ec2d6b70	2026-09-25T17:03:41-05:00	test(desktop): seed the readiness parser fixture in the Linux after-pack toolchain suite
+e0a5c07109a9d53c141b4298e9090266938ae66e	2026-09-24T19:55:51-05:00	fix(tui): preserve failures in answer-only mode
+66447b4e9f84e967c1b1ac8ddaf50a46e1cdaf51	2026-09-25T10:07:18-05:00	fix(desktop): share the failed-call predicate for answer-only rows
+e9e93b5f575e8b3c5aedc5f07890f676d68b3fba	2026-09-25T10:07:18-05:00	fix(tui): keep moa.aggregating in answer-only mode
+c0f1ed114cf250e2b89feac2b56f806e3c9529e8	2026-09-25T18:09:07-05:00	fix(tui): keep card-tool lifecycle under the answer-only chrome gate
+f41c6517ea1e9a74a5e3a7ae37f4f5a04295051c	2026-09-26T16:59:12-05:00	fix(tui): pair file-edit tool.start with its tool.complete under answer-only
+2e43498413f5b5e4ea24b42505c9d5d754ef282e	2026-09-24T23:48:13-05:00	fix(sessions): add sessions.show_subagents to list delegate runs
+b90b7ae7ed19223cd647ea175d4f4207d25e0f82	2026-09-24T23:48:13-05:00	fix(delegate): title subagent sessions after their goal without a model call
+a30bd337e5fb3c411649088c954e37061297b85b	2026-09-24T23:48:13-05:00	fix(tui-gateway): report recently failed async delegations in subagent.list
+4153869e6ed28715a265d995fce9516cb85ac768	2026-09-25T00:10:54-05:00	fix(tui-gateway): tolerate stores without db_path in session.list subagent scope
+c488b42a82bcb9e8c920e5b7fc2df21c6b47516a	2026-09-25T01:21:15-05:00	fix(desktop): show recently failed delegations in the Agents panel and status bar
+9fb2dd4c3961005d99b34aae22343e73423ec5f0	2026-09-24T18:38:38-05:00	fix(acp): stamp ended_at on ACP sessions at adapter shutdown (#118216)
+c42c90552ecb0f0062e91c8bc0a048c1b4d44ea5	2026-09-24T18:44:51-05:00	fix(agent): re-gate later terminal approvals after an earlier batch failure (#113158)
+3d9adc08462c363e053138abb1225c453be0495f	2026-09-24T18:59:17-05:00	fix(desktop): list base branches once and keep the caller-chosen worktree base (#119745)
+188261f4bc42dc4e324e91cf1cfd9858da2e5606	2026-09-24T19:15:10-05:00	fix(desktop): regex-literal state in runtime-loader codeRanges (#120208)
+e3841b1a0e5b0231d6f0bf257b221336e341fc35	2026-09-24T18:36:24-05:00	fix(desktop): refuse backtick in URL artifact capture (#118415)
+fc91608d853b979e9549a5754c3e74e9beb86720	2026-09-24T19:03:12-05:00	fix(desktop): dedupe acknowledged prompt against all newly committed user rows (#121088)
+4c1f111de3ade8677bfb8c862eb1e43098499402	2026-09-24T19:58:07-05:00	fix(desktop): attachment-tolerant transcript reconciliation (#120978)
+da4a1ffd0827e1a8b56c6cf062d6dbe95fdc9acc	2026-09-24T19:58:13-05:00	fix(desktop+gateway): surface continuation kind on compression-chain tips (#121148)
+4da922446725662656b1b9ce70d75bd7184f9472	2026-09-24T21:52:47-05:00	chore: map contributor emails
+056a9608700592a686880ec24023f89595ef9618	2026-09-25T18:25:51-05:00	fix(desktop): never tolerance-match a captionless attachment turn (#122079 review)
+820bb0b1af2849c92f6779b51989829c819ced90	2026-09-26T16:59:20-05:00	fix(desktop): keep the attachment-tolerance dedupe inside the identity gate (#122079)
+0f4a98f87c17007b81500239d0bd5b9574027b73	2026-09-26T16:59:21-05:00	fix(desktop): pair repeated-caption attachment folds by paste ordinal (#122079)

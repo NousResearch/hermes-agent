@@ -39,7 +39,7 @@ def _run_helper(
         f'chown() {{ printf "%s\\n" "$*" >> "{log_path}"; }}\n'
         f'chown_hermes_tree "{target}"\n'
     )
-    return subprocess.run([shell, "-c", script], capture_output=True, text=True)
+    return subprocess.run([shell, "-c", script], capture_output=True, text=True, check=False)
 
 def test_chown_helper_repairs_real_directories(stage2_text: str, tmp_path: Path) -> None:
     target = tmp_path / "home"

@@ -44,6 +44,10 @@ test('level 0 is exactly 100 percent (Chromium actual-size baseline)', () => {
   assert.equal(percentToZoomLevel(100), 0)
 })
 
+test('the shipped default zoom level is 100 percent', () => {
+  assert.equal(zoomLevelToPercent(DEFAULT_ZOOM_LEVEL), 100)
+})
+
 test('percentToZoomLevel rejects garbage by falling back to the shipped default', () => {
   assert.equal(percentToZoomLevel(NaN), DEFAULT_ZOOM_LEVEL)
   assert.equal(percentToZoomLevel(0), DEFAULT_ZOOM_LEVEL)
@@ -70,7 +74,7 @@ test('extreme percentages clamp to the level bounds', () => {
   assert.equal(percentToZoomLevel(1_000_000), 9)
 })
 
-test('installZoomReassertOnWindowEvents wires show, restore, focus, resize, and cross-display moves on macOS and Windows', () => {
+test('installZoomReassertOnWindowEvents wires Windows maximize transitions in addition to normal lifecycle events', () => {
   const handlers = new Map()
 
   const win = {
@@ -93,9 +97,15 @@ test('installZoomReassertOnWindowEvents wires show, restore, focus, resize, and 
   handlers.get('show')()
   handlers.get('restore')()
   handlers.get('focus')()
+  handlers.get('maximize')()
+  handlers.get('unmaximize')()
   handlers.get('resized')()
   handlers.get('moved')()
-  assert.equal(calls, 5)
+  assert.equal(calls, 7)
+})
+
+test('zoomReassertWindowEvents does not add Windows-only maximize events on macOS', () => {
+  assert.deepEqual(zoomReassertWindowEvents('darwin'), ['show', 'restore', 'focus', 'resized', 'moved'])
 })
 
 test('isDebouncedReassertEvent debounces focus only on Linux, not Windows/macOS', () => {

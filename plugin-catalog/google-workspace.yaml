@@ -1,12 +1,12 @@
 name: google-workspace
 repo: https://github.com/francoleff/google-workspace-hermes
-sha: 936a3e744ae2297c245b5df6a94fc89f353f9198
-description: Gmail, Calendar, Drive, Docs, Sheets and Contacts in one Hermes workspace, with cross-app briefs and approval on every write.
+sha: d7a37477382d2952033896f7d8664d3f0427e1c2
+description: Gmail, Calendar, Drive, Docs, Sheets and Contacts in one Hermes workspace, with a drag-and-drop widget grid, a real month calendar, cross-app briefs and approval on every write.
 maintainer: francoleff
 tier: community
 category: desktop
 requires_hermes: ">=0.22.3"
-version: "0.2.0"
+version: "0.3.0"
 title: Google Workspace
 readme: true
 platforms: []
@@ -52,8 +52,10 @@ capabilities:
     - google_sheets_update_range
     - google_sheets_create_tab
     - google_contacts_update
+    - google_contacts_delete
     - google_drive_get
     - google_drive_rename
+    - google_drive_trash
     - google_drive_share
   provides_hooks:
     - pre_tool_call

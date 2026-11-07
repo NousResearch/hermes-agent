@@ -73,6 +73,7 @@ def step_migrate_config() -> dict:
     )
     from hermes_cli.config_migrations import (
         SUPPORT_FLOOR_VERSION,
+        stamp_independent_pending,
         support_floor_message,
     )
     from hermes_cli.config_migrations_browser import agent_browser_env_pending
@@ -81,8 +82,13 @@ def step_migrate_config() -> dict:
     stamp_missing_config()  # a missing config.yaml reads as current below
     stamp, latest_ver = read_config_version_stamp()
     current_ver = 0 if stamp is None else stamp
+    repaired_stamp_independent = False
     if current_ver >= latest_ver:
-        return {"ok": True, "skipped": "up-to-date"}
+        # A current stamp does not prove STAMP_INDEPENDENT_STEPS ran on this home (a build can stamp
+        # past its own numbers), so only a clean probe makes this the 99% no-op.
+        if not stamp_independent_pending():
+            return {"ok": True, "skipped": "up-to-date"}
+        repaired_stamp_independent = True
     if current_ver < SUPPORT_FLOOR_VERSION and not (stamp is None and agent_browser_env_pending()):
         # migrate_config() refuses sub-floor configs and leaves the file
         # untouched; warn instead of failing the boot. An unstamped config is
@@ -110,6 +116,9 @@ def step_migrate_config() -> dict:
     from hermes_cli.left_core_migration import defer_startup_notice
     for notice in results.get("notices") or ():
         defer_startup_notice(notice)
+    if repaired_stamp_independent:
+        # The version did not move: name what was actually done.
+        return {"ok": True, "repaired": "stamp-independent", "changed": list(results.get("config_added") or [])}
     return {"ok": True, "migrated": f"{current_ver}->{latest_ver}"}
 
 

@@ -3629,8 +3629,8 @@ def _cmd_config_migrate(args):
     missing_env = get_missing_env_vars(required_only=False)
     missing_config = get_missing_config_fields()
     current_ver, latest_ver = check_config_version(raise_on_parse_error=True)
-
-    if not missing_env and not missing_config and current_ver >= latest_ver:
+    from hermes_cli.config_migrations import stamp_independent_pending
+    if not missing_env and not missing_config and current_ver >= latest_ver and not stamp_independent_pending():
         print(color("✓ Configuration is up to date!", Colors.GREEN))
         print()
         return

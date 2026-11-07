@@ -17,6 +17,7 @@ from hermes_cli.config_version_stamp import check_config_version, read_config_ve
 from hermes_cli.config_backups import backup_config, list_config_backups
 from hermes_cli.config_migrations import (
     SUPPORT_FLOOR_VERSION,
+    stamp_independent_pending,
     support_floor_message,
 )
 from utils import env_var_enabled
@@ -59,8 +60,13 @@ def main() -> int:
         print(f"[config-migrate] WARNING: {exc}; leaving config.yaml untouched", file=sys.stderr)
         return 0
     current_ver = 0 if stamp is None else stamp
+    stamp_repair = False
     if current_ver >= latest_ver:
-        return 0
+        # A current stamp does not prove STAMP_INDEPENDENT_STEPS ran on this volume (an unreleased
+        # build can stamp past its own numbers), so only a clean probe makes this a boot no-op.
+        if not stamp_independent_pending():
+            return 0
+        stamp_repair = True
 
     # Below the auto-migration support floor: migrate_config() refuses (and
     # leaves the file untouched), so don't run the backup/verify dance that
@@ -77,10 +83,16 @@ def main() -> int:
 
     backups = _backup_existing((get_config_path(), get_env_path()))
     backup_text = ", ".join(str(path) for path in backups.values()) if backups else "none"
-    print(
-        f"[config-migrate] Migrating config schema {current_ver} -> {latest_ver}; "
-        f"backups: {backup_text}"
-    )
+    if stamp_repair:
+        print(
+            f"[config-migrate] Re-running stamp-independent config steps at v{current_ver}; "
+            f"backups: {backup_text}"
+        )
+    else:
+        print(
+            f"[config-migrate] Migrating config schema {current_ver} -> {latest_ver}; "
+            f"backups: {backup_text}"
+        )
     try:
         migrate_config(interactive=False, quiet=False)
     except Exception:

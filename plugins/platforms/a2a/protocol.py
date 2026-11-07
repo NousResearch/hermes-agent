@@ -7,11 +7,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import threading
 import time
 import uuid
 from collections import OrderedDict, defaultdict, deque
+from collections.abc import Callable
 from concurrent.futures import Future
 from datetime import datetime, timezone, UTC
 from pathlib import Path
@@ -27,6 +29,8 @@ STATE_SUBMITTED, STATE_WORKING, STATE_INPUT_REQUIRED = "TASK_STATE_SUBMITTED", "
 STATE_COMPLETED, STATE_FAILED = "TASK_STATE_COMPLETED", "TASK_STATE_FAILED"
 STATE_CANCELED, STATE_REJECTED = "TASK_STATE_CANCELED", "TASK_STATE_REJECTED"
 TERMINAL_STATES = frozenset({STATE_COMPLETED, STATE_FAILED, STATE_CANCELED, STATE_REJECTED})
+INTERRUPTED_STATES = frozenset({STATE_INPUT_REQUIRED, "TASK_STATE_AUTH_REQUIRED"})
+OBSERVABLE_OUTCOMES = TERMINAL_STATES | INTERRUPTED_STATES
 ROLE_USER, ROLE_AGENT = "ROLE_USER", "ROLE_AGENT"
 
 # A reply starting with this marker is a clarification request -> TASK_STATE_INPUT_REQUIRED (marker stripped).
@@ -36,6 +40,7 @@ INPUT_REQUIRED_MARKER = "[INPUT_REQUIRED]"
 # live at -32050..-32059 (implementation-defined space, clear of the A2A block).
 ERR_PARSE, ERR_INVALID_PARAMS, ERR_METHOD_NOT_FOUND = -32700, -32602, -32601
 ERR_TASK_NOT_FOUND, ERR_TASK_NOT_CANCELABLE = -32001, -32002  # A2A spec: TaskNotFoundError / TaskNotCancelableError
+ERR_UNSUPPORTED_OPERATION = -32004
 ERR_UNAUTHORIZED, ERR_RATE_LIMITED, ERR_UNTRUSTED_PEER = -32050, -32051, -32052
 
 # Anti-loop: max inbound turns per context. A2A_MAX_PINGPONG_TURNS env, capped at 20.
@@ -254,6 +259,16 @@ class TurnTracker:
         with self._lock:
             self._turns.pop(context_id, None)
 
+    def admit(self, context_id: str, limit: int) -> bool:
+        with self._lock:
+            now = time.time()
+            count, last_seen = self._turns.get(context_id, (0, now))
+            count = count if now - last_seen <= self._TTL else 0
+            if count >= limit:
+                return False
+            self._turns[context_id] = (count + 1, now)
+            return True
+
 
 class RateLimiter:
     """Sliding-window request limiter, one bucket per authenticated identity."""
@@ -308,21 +323,36 @@ class TaskStore:
 
     _MAX_TERMINAL = 500
 
-    def __init__(self) -> None:
+    def __init__(self, *, input_wait_timeout_seconds=86400, task_retention_seconds=86400) -> None:
+        for name, value in (("input_wait_timeout_seconds", input_wait_timeout_seconds),
+                            ("task_retention_seconds", task_retention_seconds)):
+            try:
+                seconds = float(value)
+            except (ValueError, TypeError):
+                raise ValueError(f"A2A {name} must be positive finite seconds") from None
+            if isinstance(value, bool) or not math.isfinite(seconds) or seconds <= 0:
+                raise ValueError(f"A2A {name} must be positive finite seconds")
+            setattr(self, name, seconds)
         self._tasks: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._watchers: dict[str, list[Future]] = {}
+        self._continuations: dict[str, dict[str, tuple[dict[str, Any], Future[tuple[str, str]]]]] = {}
         self._lock = threading.Lock()
 
     @staticmethod
-    def _in_scope(rec: dict, agent_slug: str = "", tenant: str = "") -> bool:
-        return not ((agent_slug and rec.get("agent_slug", "") != agent_slug) or (tenant and rec.get("tenant", "") != tenant))
+    def _in_scope(rec: dict, agent_slug=None, tenant=None) -> bool:
+        return ((agent_slug is None or rec.get("agent_slug", "") == agent_slug)
+                and (tenant is None or rec.get("tenant", "") == tenant))
 
-    def _scoped(self, task_id: str, agent_slug: str = "", tenant: str = "") -> Optional[dict]:
+    def _scoped(self, task_id: str, agent_slug=None, tenant=None) -> Optional[dict]:
         """Live record if visible in scope. Caller holds the lock."""
         rec = self._tasks.get(task_id)
+        if rec and rec["state"] in TERMINAL_STATES and time.time() - rec["completed_at"] >= self.task_retention_seconds:
+            self._tasks.pop(task_id)
+            self._continuations.pop(task_id, None)
+            return None
         return rec if rec and self._in_scope(rec, agent_slug, tenant) else None
 
-    def _push_rec(self, task_id: str, config_id: str = "", agent_slug: str = "", tenant: str = "") -> Optional[dict]:
+    def _push_rec(self, task_id: str, config_id: str = "", agent_slug=None, tenant=None) -> Optional[dict]:
         """Scoped record that has a push config (matching ``config_id`` if given). Caller holds the lock."""
         rec = self._scoped(task_id, agent_slug, tenant)
         if rec and rec.get("push_url") and (not config_id or rec.get("push_config_id") == config_id):
@@ -338,7 +368,7 @@ class TaskStore:
                input_id: str = "") -> dict:
         """``input_id``: the owner admission a forwarded task was sent as (empty for local tasks)."""
         rec = {"task_id": task_id, "context_id": context_id, "peer": peer, "agent_slug": agent_slug or "", "tenant": tenant or "",
-               "input_id": input_id, "state": STATE_SUBMITTED, "reply": "", "created_at": time.time(), "created_iso": now_iso(), "push_url": "", "push_config_id": ""}
+               "input_id": input_id, "attempt_id": task_id, "state": STATE_SUBMITTED, "reply": "", "created_at": time.time(), "created_iso": now_iso(), "status_iso": now_iso(), "push_url": "", "push_config_id": ""}
         with self._lock:
             self._tasks[task_id] = rec
         return dict(rec)
@@ -347,8 +377,46 @@ class TaskStore:
         with self._lock:
             if (rec := self._tasks.get(task_id)) and rec["state"] not in TERMINAL_STATES:
                 rec["state"] = state
+                rec["status_iso"] = now_iso()
 
-    def set_push_config(self, task_id: str, url: str, agent_slug: str = "", tenant: str = "") -> Optional[dict]:
+    def resume(self, task_id: str, context_id: str | None, agent_slug: str, tenant: str,
+               reserve: Callable[[str, str], int | None], message_id: str = ""):
+        with self._lock:
+            rec = self._scoped(task_id, agent_slug, tenant)
+            if rec is None:
+                return None, None, ERR_TASK_NOT_FOUND, False
+            if context_id is not None and context_id != rec["context_id"]:
+                return None, None, ERR_INVALID_PARAMS, False
+            if rec["state"] in TERMINAL_STATES:
+                return None, None, ERR_UNSUPPORTED_OPERATION, False
+            previous = self._continuations.get(task_id, {}).get(message_id) if message_id else None
+            if previous:
+                return dict(previous[0]), previous[1], None, True
+            if (rec["state"] not in INTERRUPTED_STATES or
+                    time.time() - rec["interrupted_at"] >= self.input_wait_timeout_seconds):
+                return None, None, ERR_UNSUPPORTED_OPERATION, False
+            attempt_id = "attempt-" + uuid.uuid4().hex
+            error = reserve(attempt_id, rec["context_id"])
+            if error is not None:
+                return None, None, error, False
+            history = rec.get("history", []) + [text_message(ROLE_AGENT, rec["reply"], rec["context_id"])]
+            rec.update(attempt_id=attempt_id, state=STATE_WORKING, reply="", status_iso=now_iso(),
+                       attempt_started_at=time.time(), history=history)
+            future: Future[tuple[str, str]] = Future()
+            snapshot = dict(rec)
+            self._watchers.setdefault(task_id, []).append(future)
+            if message_id:
+                self._continuations.setdefault(task_id, {})[message_id] = (snapshot, future)
+            return snapshot, future, None, False
+
+    def expired_waits(self):
+        with self._lock:
+            now = time.time()
+            return [(tid, rec["attempt_id"], rec["state"]) for tid, rec in self._tasks.items()
+                    if rec["state"] in INTERRUPTED_STATES
+                    and now - rec["interrupted_at"] >= self.input_wait_timeout_seconds]
+
+    def set_push_config(self, task_id: str, url: str, agent_slug=None, tenant=None) -> Optional[dict]:
         """Attach a push notification config; returns the stored config or None."""
         with self._lock:
             if not (rec := self._scoped(task_id, agent_slug, tenant)):
@@ -356,15 +424,15 @@ class TaskStore:
             rec["push_url"], rec["push_config_id"] = url, "cfg-" + uuid.uuid4().hex[:12]
             return self._push_config_view(rec)
 
-    def get_push_config(self, task_id: str, config_id: str = "", agent_slug: str = "", tenant: str = "") -> Optional[dict]:
+    def get_push_config(self, task_id: str, config_id: str = "", agent_slug=None, tenant=None) -> Optional[dict]:
         with self._lock:
             return self._push_config_view(rec) if (rec := self._push_rec(task_id, config_id, agent_slug, tenant)) else None
 
-    def list_push_configs(self, task_id: str, agent_slug: str = "", tenant: str = "") -> list[dict]:
+    def list_push_configs(self, task_id: str, agent_slug=None, tenant=None) -> list[dict]:
         cfg = self.get_push_config(task_id, "", agent_slug, tenant)
         return [cfg] if cfg else []
 
-    def delete_push_config(self, task_id: str, config_id: str = "", agent_slug: str = "", tenant: str = "") -> bool:
+    def delete_push_config(self, task_id: str, config_id: str = "", agent_slug=None, tenant=None) -> bool:
         with self._lock:
             rec = self._push_rec(task_id, config_id, agent_slug, tenant)
             if rec:
@@ -378,42 +446,74 @@ class TaskStore:
                 url, rec["push_url"] = rec["push_url"], ""
             return url if rec else ""
 
-    def get(self, task_id: str, agent_slug: str = "", tenant: str = "") -> Optional[dict]:
+    def get(self, task_id: str, agent_slug=None, tenant=None) -> Optional[dict]:
         with self._lock:
             return dict(rec) if (rec := self._scoped(task_id, agent_slug, tenant)) else None
 
-    def complete(self, task_id: str, state: str, reply: str = "") -> Optional[dict]:
-        """Transition a task to a terminal state. Idempotent."""
+    def complete(self, task_id: str, state: str, reply: str = "", *, consume_push: bool = False,
+                 record_outcome=None, attempt_id=None, expired_only=False) -> Optional[dict]:
+        """Store a terminal/interrupted outcome once; cancellation can end an interrupted task."""
         with self._lock:
             rec = self._tasks.get(task_id)
             if not rec or rec["state"] in TERMINAL_STATES:
                 return None
-            rec.update(state=state, reply=reply, completed_at=time.time())
+            if attempt_id is not None and rec["attempt_id"] != attempt_id:
+                return None
+            if expired_only and (rec["state"] not in INTERRUPTED_STATES or
+                                 time.time() - rec["interrupted_at"] < self.input_wait_timeout_seconds):
+                return None
+            if rec["state"] in INTERRUPTED_STATES and state != STATE_CANCELED:
+                return None
+            out = dict(rec, state=state, reply=reply, status_iso=now_iso())
+            out["recording_id"] = ("outcome-" + uuid.uuid4().hex if rec["state"] in INTERRUPTED_STATES
+                                   else rec["attempt_id"])
+            out["interrupted_at" if state in INTERRUPTED_STATES else "completed_at"] = time.time()
+            queued = record_outcome(out) if record_outcome is not None else None
+            if queued is False:
+                return None
+            rec.update(out)
             watchers = self._watchers.pop(task_id, [])
             self._trim_locked()
-            out = dict(rec)
+            if consume_push and state in TERMINAL_STATES:
+                rec["push_url"] = ""
+        if queued is not None:
+            queued()
         for fut in watchers:
             if not fut.done():
                 fut.set_result((state, reply))
         return out
 
-    def watch(self, task_id: str, agent_slug: str = "", tenant: str = "") -> Optional[Future]:
+    def watch(self, task_id: str, agent_slug=None, tenant=None) -> Optional[Future]:
+        observation = self.watch_snapshot(task_id, agent_slug, tenant)
+        return observation[1] if observation else None
+
+    def watch_snapshot(self, task_id: str, agent_slug=None, tenant=None) -> Optional[tuple[dict, Future]]:
         with self._lock:
             if not (rec := self._scoped(task_id, agent_slug, tenant)):
                 return None
             fut: Future = Future()
-            if rec["state"] in TERMINAL_STATES:
-                fut.set_result((rec["state"], rec.get("reply", "")))
-            else:
+            snapshot = dict(rec)
+            if rec["state"] not in OBSERVABLE_OUTCOMES:
                 self._watchers.setdefault(task_id, []).append(fut)
-            return fut
+        if snapshot["state"] in OBSERVABLE_OUTCOMES:
+            fut.set_result((snapshot["state"], snapshot.get("reply", "")))
+        return snapshot, fut
+
+    def unwatch(self, task_id: str, future: Future) -> None:
+        with self._lock:
+            watchers = self._watchers.get(task_id, [])
+            if future in watchers:
+                watchers.remove(future)
+            if not watchers:
+                self._watchers.pop(task_id, None)
 
     def list(self, context_id: str = "", state: str = "", page_size: int = 50, offset: int = 0,
-             agent_slug: str = "", tenant: str = "", with_total: bool = False):
+             agent_slug=None, tenant=None, with_total: bool = False):
         """Filtered task page (newest first) as ``(records, next_offset)``, or
         ``(records, next_offset, total)`` with ``with_total`` (v1.0 ListTasks totalSize)."""
         page_size = max(1, min(int(page_size or 50), 100))
         with self._lock:
+            self._trim_locked()
             recs = [dict(r) for r in reversed(self._tasks.values())
                     if self._in_scope(r, agent_slug, tenant)
                     and (not context_id or r["context_id"] == context_id) and (not state or r["state"] == state)]
@@ -423,23 +523,34 @@ class TaskStore:
         return (page, next_offset, total) if with_total else (page, next_offset)
 
     def fail_orphans(self, timeout_seconds: float = 300, *, exclude: set[str] | None = None) -> list[str]:
+        return [tid for tid in self.stale_ids(timeout_seconds, exclude=exclude)
+                if self.complete(tid, STATE_FAILED, "[task orphaned — no reply produced]")]
+
+    def stale_ids(self, timeout_seconds: float, *, exclude: set[str] | None = None, with_attempts=False):
         excluded = exclude or set()
         with self._lock:
-            stale = [tid for tid, rec in self._tasks.items()
-                     if tid not in excluded and rec["state"] not in TERMINAL_STATES
-                     and time.time() - rec["created_at"] > timeout_seconds]
-        return [tid for tid in stale if self.complete(tid, STATE_FAILED, "[task orphaned — no reply produced]")]
+            stale = [(tid, rec["attempt_id"]) if with_attempts else tid for tid, rec in self._tasks.items()
+                     if tid not in excluded and rec["state"] not in OBSERVABLE_OUTCOMES
+                     and time.time() - rec.get("attempt_started_at", rec["created_at"]) > timeout_seconds]
+        return stale
 
     def _trim_locked(self) -> None:
-        terminal = [tid for tid, rec in self._tasks.items() if rec["state"] in TERMINAL_STATES]
+        for tid, rec in list(self._tasks.items()):
+            if rec["state"] in TERMINAL_STATES and time.time() - rec["completed_at"] >= self.task_retention_seconds:
+                self._tasks.pop(tid)
+                self._continuations.pop(tid, None)
+        terminal = sorted((tid for tid, rec in self._tasks.items() if rec["state"] in TERMINAL_STATES),
+                          key=lambda tid: self._tasks[tid]["completed_at"])
         for tid in terminal[:max(0, len(terminal) - self._MAX_TERMINAL)]:
             self._tasks.pop(tid, None)
+            self._continuations.pop(tid, None)
 
     @staticmethod
     def to_task(rec: dict, include_artifacts: bool = True) -> dict:
         """Render a stored record as an A2A v1.0 Task."""
         task = build_task(rec["task_id"], rec["context_id"], rec["state"], rec.get("reply", ""),
                           created_at=rec.get("created_iso", ""))
+        task["status"]["timestamp"] = rec.get("status_iso", task["status"]["timestamp"])
         if not include_artifacts:
             task.pop("artifacts", None)
         return task

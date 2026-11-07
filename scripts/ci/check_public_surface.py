@@ -42,9 +42,17 @@ def _git(*args: str) -> str:
 def _changed_py(base: str, head: str) -> list[tuple[str, str]]:
     """``(path at base, path at head)`` for every modified or renamed ``.py`` file; a moved file is
     compared with its old self (``-l0``: no rename-detection limit, so a large move is still seen)."""
-    out = _git("diff", "--name-status", "-M", "-l0", "--diff-filter=MR", base, head)
-    pairs = [line.split("\t") for line in out.splitlines() if "\t" in line]
-    return [(paths[1], paths[-1]) for paths in pairs if paths[-1].endswith(".py")]
+    fields = _git("diff", "--name-status", "-z", "-M", "-l0", "--diff-filter=MR", base, head).split("\0")
+    pairs: list[tuple[str, str]] = []
+    i = 0
+    while i < len(fields) and fields[i]:
+        if fields[i].startswith("R"):
+            pairs.append((fields[i + 1], fields[i + 2]))
+            i += 3
+        else:
+            pairs.append((fields[i + 1], fields[i + 1]))
+            i += 2
+    return [(old, new) for old, new in pairs if new.endswith(".py")]
 
 
 def _show(rev: str, path: str) -> str | None:
@@ -121,7 +129,7 @@ def diff_surface(base: str, head: str) -> dict:
             if na < nb:
                 test_drops[path] = (nb, na)
             continue
-        if not _is_source(path) or path.startswith("tests"):
+        if not (_is_source(old) or _is_source(path)) or path.startswith("tests"):
             continue
         pb, pa = public_toplevel(before), public_toplevel(after)
         if pb is not None and pa is not None and (gone := sorted(pb - pa)):

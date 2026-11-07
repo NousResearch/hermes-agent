@@ -100,6 +100,8 @@ def test_a_moved_file_is_compared_with_its_old_self(tmp_path, monkeypatch):
     (repo / "agent" / "mod.py").write_text("def keep(): ...\ndef gone(): ...\n" + "X = 1\n" * 20, encoding="utf-8")
     (repo / "tools" / "util.py").write_text("def stays(): ...\ndef lost(): ...\n" + "Y = 1\n" * 20, encoding="utf-8")
     (repo / "tests" / "test_mod.py").write_text("def test_a(): ...\ndef test_b(): ...\n" + "Z = 1\n" * 20, encoding="utf-8")
+    (repo / "agent" / "out.py").write_text("def kept(): ...\ndef dropped(): ...\n" + "W = 1\n" * 20, encoding="utf-8")
+    (repo / "agent" / "plain.py").write_text("def kept(): ...\ndef gone_too(): ...\n" + "V = 1\n" * 20, encoding="utf-8")
     _git(repo, "init", "-q", "-b", "main"); _git(repo, "add", "."); _git(repo, "commit", "-qm", "base")
 
     (repo / "src" / "hermes_agent" / "agent").mkdir(parents=True); (repo / "gateway").mkdir()
@@ -107,11 +109,17 @@ def test_a_moved_file_is_compared_with_its_old_self(tmp_path, monkeypatch):
     (repo / "src" / "hermes_agent" / "agent" / "mod.py").write_text("def keep(): ...\n" + "X = 1\n" * 20, encoding="utf-8")
     (repo / "tools" / "util.py").rename(repo / "gateway" / "util.py")
     (repo / "gateway" / "util.py").write_text("def stays(): ...\n" + "Y = 1\n" * 20, encoding="utf-8")
+    (repo / "providers").mkdir()
+    (repo / "agent" / "out.py").rename(repo / "providers" / "out.py")
+    (repo / "providers" / "out.py").write_text("def kept(): ...\n" + "W = 1\n" * 20, encoding="utf-8")
+    (repo / "agent" / "plain.py").rename(repo / "agent" / "caf\u00e9.py")
+    (repo / "agent" / "caf\u00e9.py").write_text("def kept(): ...\n" + "V = 1\n" * 20, encoding="utf-8")
     (repo / "tests" / "test_mod.py").rename(repo / "tests" / "test_moved.py")
     (repo / "tests" / "test_moved.py").write_text("def test_a(): ...\n" + "Z = 1\n" * 20, encoding="utf-8")
     _git(repo, "add", "-A"); _git(repo, "commit", "-qm", "move")
 
     monkeypatch.chdir(repo)
     report = _load().diff_surface("HEAD~1", "HEAD")
-    assert report["dropped_names"] == {"src/hermes_agent/agent/mod.py": ["gone"], "gateway/util.py": ["lost"]}
+    assert report["dropped_names"] == {"src/hermes_agent/agent/mod.py": ["gone"], "gateway/util.py": ["lost"],
+                                       "providers/out.py": ["dropped"], "agent/caf\u00e9.py": ["gone_too"]}
     assert report["test_drops"] == {"tests/test_moved.py": (2, 1)}

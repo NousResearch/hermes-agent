@@ -86,15 +86,43 @@ def _strip_quotes(command: str) -> str:
     return re.sub(r"`[^`]*`", "``", result)
 
 
+# A bare binary name (``vite``, ``uvicorn``, and friends) only means "this starts
+# a server" when it sits in COMMAND POSITION: at the start of a command segment,
+# optionally behind sudo/a package-manager runner and a path prefix. Anywhere
+# else the token is an argument or a path component: ``ls node_modules/vite``,
+# ``pip show uvicorn``, ``grep -rn nodemon package.json``. Those must not trip
+# the guard. An unanchored ``\bvite(?:\s|$)`` blocked all of them.
+_COMMAND_POSITION = (
+    r"(?:^|[;&|\n]\s*)"                                    # segment start
+    r"(?:sudo\s+(?:-[ug]\s+\S+\s+|-\S+\s+)*)?"             # sudo, incl. -u USER / -g GROUP
+    r"(?:"                                                 # optional launcher prefix:
+    r"(?:npx|pnpm|yarn|bunx|npm)\s+(?:exec\s+|dlx\s+)?"    #   runners
+    r"|exec\s+"                                            #   exec
+    r")?"
+    r"(?:python(?:3)?\s+-m\s+)?"                           # python -m <module>
+    r"(?:\S*[/\\])?"                                       # ./node_modules/.bin/ or C:\...\Scripts\
+)
+
+# Windows launcher suffixes name the same command: ``uvicorn.exe``, ``vite.cmd``,
+# ``npm.cmd``. Strip them before matching so one set of patterns covers every
+# platform instead of doubling each token with an optional ``.exe``.
+_WIN_LAUNCHER_SUFFIX = re.compile(r"\b(\w+)\.(?:exe|cmd|bat|ps1)\b", re.IGNORECASE)
+
+
+def _command_position(*binaries: str) -> str:
+    """Anchor a bare binary name to command position (see ``_COMMAND_POSITION``)."""
+    return _COMMAND_POSITION + r"(?:" + "|".join(binaries) + r")(?:\s|$)"
+
+
 _LONG_LIVED_FOREGROUND_PATTERNS = tuple(re.compile(p, re.IGNORECASE) for p in (
-    r"\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:dev|start|serve|watch)\b",
-    r"\bdocker\s+compose\s+up\b",
-    r"\bnext\s+dev\b",
-    r"\bvite(?:\s|$)",
-    r"\bnodemon\b",
-    r"\buvicorn\b",
-    r"\bgunicorn\b",
-    r"\bpython(?:3)?\s+-m\s+http\.server\b",
+    _command_position(r"(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:dev|start|serve|watch)"),
+    _command_position(r"docker\s+compose\s+up"),
+    _command_position(r"next\s+dev"),
+    _command_position(r"vite"),
+    _command_position(r"nodemon"),
+    _command_position(r"uvicorn"),
+    _command_position(r"gunicorn"),
+    _command_position(r"python(?:3)?\s+-m\s+http\.server"),
 ))
 
 # Ordered (predicate on the unquoted command, guidance) — first hit wins.
@@ -137,7 +165,8 @@ def _foreground_background_guidance(command: str) -> str | None:
     backgrounding (it should be a managed background session), else None."""
     if _looks_like_help_or_version_command(command):
         return None
-    unquoted = _strip_quotes(command)
+    # Windows launchers are the same command: `npx.cmd vite` == `npx vite`.
+    unquoted = _WIN_LAUNCHER_SUFFIX.sub(r"\1", _strip_quotes(command))
     return next((msg for hit, msg in _FOREGROUND_GUIDANCE if hit(unquoted)), None)
 
 

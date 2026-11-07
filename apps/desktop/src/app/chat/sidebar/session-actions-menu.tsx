@@ -128,8 +128,9 @@ export async function renameSessionPreferringRpc(
 
   const runtimeId = resolveRuntimeIdForStored(storedSessionId)
   const gateway = activeGateway()
+  const hasPersistedRow = $sessions.get().some(session => sessionMatchesStoredId(session, storedSessionId))
 
-  if (title && runtimeId && gateway) {
+  if (title && runtimeId && gateway && !hasPersistedRow) {
     try {
       // The runtime lives on its owner's backend; the ambient socket would
       // refuse a secondary profile's session and drop us to REST.

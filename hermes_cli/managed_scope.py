@@ -1,10 +1,14 @@
-"""Managed scope — IT-pushed, user-immutable config & env layer.
+"""Managed scope — IT-pushed, user-immutable config, env, and persona layer.
 
 DISTINCT from ``hermes_cli.config.is_managed()`` / ``HERMES_MANAGED`` (a coarse package-manager
 write-lock that blocks all mutation); this layer injects specific immutable values. The two are
 independent and may coexist. v1 enforcement is filesystem permissions only (see
 ``docs/design/managed-scope.md`` §7); ``get_managed_dir()`` is the single seam for adding
 macOS / Windows native locations later.
+
+A non-empty ``SOUL.md`` in this directory is the agent identity and wins over
+``HERMES_HOME/SOUL.md`` (see ``agent.prompt_builder.load_soul_md``). Missing, empty, or
+unreadable falls through to the profile persona.
 """
 from __future__ import annotations
 

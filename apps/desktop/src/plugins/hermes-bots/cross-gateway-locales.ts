@@ -102,5 +102,15 @@ export const CROSS_GATEWAY_GROUP_LOCALES = {
     memberRollbackFailed: (connection, bot) =>
       `Miembros no guardados, y el cambio ya hecho para ${bot} en ${connection} no se pudo deshacer: puede que ${connection} todavía lo tenga. La sala muestra lo último que informó ${connection}; vuelve a conectarlo y revisa los miembros.`,
     selectionElsewhere: connection => `Todos estos bots están en ${connection}. Añade un bot de esta conexión o cambia a ${connection} para crear un grupo con sus bots.`
+  },
+  it: {
+    desktopDriven:
+      'Funziona mentre questo Desktop è aperto: i bot sulle altre macchine rispondono dal proprio gateway e questo Desktop trasporta i messaggi tra loro.',
+    groupsOffline: (connection, bot) => `${connection} è offline — riconnettiti per modificare i gruppi di ${bot}.`,
+    memberOffline: (connection, bot) => `${connection} è offline — riconnettiti per rimuovere ${bot}.`,
+    memberSaveFailed: (connection, bot) => `Membri non salvati: ${connection} non ha accettato la modifica per ${bot}. Nulla è stato cambiato; riprova quando è di nuovo raggiungibile.`,
+    memberRollbackFailed: (connection, bot) =>
+      `Membri non salvati, e la modifica già apportata a ${bot} su ${connection} non ha potuto essere annullata: ${connection} potrebbe averla ancora. La stanza mostra ciò che ${connection} ha riportato per ultimo; riconnettila e controlla i membri.`,
+    selectionElsewhere: connection => `Questi bot si trovano tutti su ${connection}. Aggiungi un bot da questa connessione oppure passa a ${connection} per creare un gruppo con i suoi bot.`
   }
 } satisfies Record<string, CrossGatewayGroupMessages>

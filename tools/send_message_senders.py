@@ -105,21 +105,32 @@ def _is_telegram_thread_not_found(error: Exception) -> bool:
     return "thread not found" in str(error).lower()
 
 
-def _telegram_bot(token):
+def _telegram_bot(token, extra=None):
     """Bot honouring TELEGRAM_PROXY (standalone sends time out where api.telegram.org is
-    blocked); falls back to a direct connection."""
+    blocked); falls back to a direct connection. ``extra`` (the platform block) carries
+    ``base_url`` / ``base_file_url`` / ``local_mode`` for a self-hosted telegram-bot-api: this
+    path builds its own Bot instead of reusing the adapter, so without them it silently sends
+    via api.telegram.org: a different server, 50MB-capped, and after the ``logOut`` that binds
+    the bot to the local server not even the one serving it."""
     from telegram import Bot
+    extra = extra or {}
+    bot_kwargs = {}
+    if base_url := (extra.get("base_url") or "").strip():
+        bot_kwargs["base_url"] = base_url
+        bot_kwargs["base_file_url"] = extra.get("base_file_url") or base_url
+    if extra.get("local_mode"):
+        bot_kwargs["local_mode"] = True
     try:
         from gateway.platforms.base import resolve_proxy_url
         proxy = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=["api.telegram.org"])
         if not proxy:
-            return Bot(token=token)
+            return Bot(token=token, **bot_kwargs)
         from telegram.request import HTTPXRequest
         logger.info("send_message: standalone Telegram send routed through proxy %s", proxy)
-        return Bot(token=token, request=HTTPXRequest(proxy=proxy), get_updates_request=HTTPXRequest(proxy=proxy))
+        return Bot(token=token, request=HTTPXRequest(proxy=proxy), get_updates_request=HTTPXRequest(proxy=proxy), **bot_kwargs)
     except Exception as proxy_err:
         logger.warning("send_message: failed to attach Telegram proxy (%s), falling back to direct connection", proxy_err)
-    return Bot(token=token)
+    return Bot(token=token, **bot_kwargs)
 
 
 def _telegram_thread_kwargs(thread_id):
@@ -189,15 +200,17 @@ async def _telegram_send_text_chunk(bot, chat_id, chunk, parse_mode, has_html, t
 
 
 async def _telegram_send_one_media(bot, chat_id, media_path, is_voice, *, caption, parse_mode, has_html,
-                                   thread_kwargs, force_document):
+                                   thread_kwargs, force_document, local_mode=False):
     """Upload one file with adapter-matching fallbacks (thread-not-found -> no
-    ``message_thread_id``; caption parse failure -> plain caption); retries re-seek the file."""
+    ``message_thread_id``; caption parse failure -> plain caption); retries re-seek the file.
+    Local Bot API mode passes the path (never read here) and waits for the server's own upload."""
+    from plugins.platforms.telegram.adapter import media_read_timeout, media_upload_source
     ext = os.path.splitext(media_path)[1].lower()
     voice_note = ext in _VOICE_EXTS and is_voice
     # ``caption`` is only set for a single captionable file, so this never double-captions
     # a multi-file send or a voice note.
-    media_kwargs = {**thread_kwargs, **({"caption": caption, "parse_mode": parse_mode}
-                                        if caption is not None and not voice_note else {})}
+    media_kwargs = {**thread_kwargs, "read_timeout": media_read_timeout(local_mode),
+                    **({"caption": caption, "parse_mode": parse_mode} if caption is not None and not voice_note else {})}
     if voice_note or ext in _TELEGRAM_SEND_AUDIO_EXTS:
         with contextlib.suppress(Exception):
             from plugins.platforms.telegram.adapter import _probe_voice_duration_seconds
@@ -219,7 +232,7 @@ async def _telegram_send_one_media(bot, chat_id, media_path, is_voice, *, captio
                 if thumb_path:
                     media_kwargs["thumbnail"] = thumb_path
     try:
-        with open(media_path, "rb") as f:  # noqa: ASYNC230 -- file handle is streamed to the upload; a local open() is non-blocking in practice
+        with media_upload_source(media_path, local_mode=local_mode) as (f, rewind):
             try:
                 return await _telegram_send_media(bot, chat_id, f, ext, is_voice, force_document, **media_kwargs)
             except Exception as media_err:
@@ -235,7 +248,8 @@ async def _telegram_send_one_media(bot, chat_id, media_path, is_voice, *, captio
                         media_kwargs["caption"] = _strip_mdv2_safe(media_kwargs["caption"])
                 else:
                     raise
-                f.seek(0)
+                if rewind is not None:
+                    rewind()
                 return await _telegram_send_media(bot, chat_id, f, ext, is_voice, force_document, **media_kwargs)
     finally:
         if thumb_path:
@@ -256,11 +270,13 @@ def _telegram_format(message):
         return message, ParseMode.MARKDOWN_V2, False  # formatting unavailable: send as-is
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
-    """One-shot Telegram Bot API send; parse failures fall back to plain text."""
+async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False,
+                         extra=None):
+    """One-shot Telegram Bot API send; parse failures fall back to plain text. ``extra`` is the
+    platform's extra block (self-hosted Bot API settings, see ``_telegram_bot``)."""
     try:
         formatted, send_parse_mode, _has_html = _telegram_format(message)
-        bot = _telegram_bot(token)
+        bot = _telegram_bot(token, extra)
         from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
         from gateway.platforms.base import BasePlatformAdapter, utf16_len
         # Telegram accepts a numeric chat_id OR an @username string; never force-int.
@@ -296,7 +312,8 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             try:
                 last_msg = await _telegram_send_one_media(
                     bot, int_chat_id, media_path, is_voice, caption=_tg_caption, parse_mode=send_parse_mode,
-                    has_html=_has_html, thread_kwargs=thread_kwargs, force_document=force_document)
+                    has_html=_has_html, thread_kwargs=thread_kwargs, force_document=force_document,
+                    local_mode=bool((extra or {}).get("local_mode")))
             except Exception as e:
                 warnings.append(_sanitize_error_text(f"Failed to send media {media_path}: {e}"))
                 logger.error(warnings[-1])

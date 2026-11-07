@@ -144,7 +144,7 @@ from agent.i18n import get_language, t
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult, classify_send_error, unauthorized_action_notice,
-    cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_video_from_bytes_async, resolve_proxy_url, SUPPORTED_VIDEO_TYPES,
+    cache_image_from_bytes_async, resolve_proxy_url, SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES, SUPPORTED_IMAGE_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS, utf16_len,
 )
 
@@ -501,6 +501,36 @@ _TEXT_SEND_DEADLINE = 30.0
 # period would re-hang the lock on exactly the wedged socket this bounds, so the rare late landing is
 # accepted; httpx's own timeouts free the pool slot.
 _MEDIA_SEND_DEADLINE = 300.0
+# Local telegram-bot-api (--local) inverts both budgets above. Against the cloud API this process does the
+# uploading, so a slow send shows up as write progress and 60s is only ever the post-upload transcode wait.
+# In local mode the request hands the server a path and then blocks for the WHOLE of the server's own
+# upload to Telegram (2000MB ceiling; 1.3GB measured at ~131s on a domestic link), so 60s read / 300s
+# wall clock fail every large send while the server keeps uploading in the background, unreported. Sized
+# for the ceiling rather than the median: these only decide how long a dead request goes unnoticed. The
+# deadline keeps the same role as above: past the per-phase sum (pool 8 + connect 10 + read 1800 s).
+_LOCAL_MEDIA_SEND_READ_TIMEOUT = 1800.0
+_LOCAL_MEDIA_SEND_DEADLINE = 1900.0
+
+
+def media_read_timeout(local_mode: bool) -> float:
+    """Read timeout for a media send, widened for local Bot API mode (see ``_LOCAL_MEDIA_SEND_READ_TIMEOUT``)."""
+    return _LOCAL_MEDIA_SEND_READ_TIMEOUT if local_mode else _MEDIA_SEND_READ_TIMEOUT
+
+
+@contextlib.contextmanager
+def media_upload_source(path: str, *, local_mode: bool):
+    """Yield ``(value to hand PTB, rewind callback)`` for ``path``. Cloud: an open handle and its
+    ``seek(0)``. Local mode: the path STRING and ``None``: PTB only applies its ``file://``
+    optimization to str/Path, a handle goes to ``InputFile.load_file()`` which ``read()``s the whole
+    file into memory (multi-GB at the 2000MB local cap). Module-level so the standalone
+    ``send_message`` path, which builds its own ``Bot``, cannot drift from the adapter."""
+    if local_mode:
+        yield os.path.abspath(path), None
+        return
+    with open(path, "rb") as handle:  # noqa: ASYNC230 -- file handle is streamed to the upload; a local open() is non-blocking in practice
+        yield handle, lambda: handle.seek(0)
+
+
 _POLLING_GENERATION_CONTEXT: ContextVar[Optional[int]] = ContextVar("telegram_polling_generation", default=None)
 
 
@@ -706,8 +736,17 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         self._dm_topics_config: list[dict[str, Any]] = extra.get("dm_topics", [])
         # chat_ids with DM topics configured (O(1) root-DM ignore check)
         self._dm_topic_chat_ids: set[str] = {str(e["chat_id"]) for e in self._dm_topics_config if "chat_id" in e}
-        # getFile cap: 20MB on the public Bot API, 2GB on a local telegram-bot-api (base_url).
+        # Local telegram-bot-api (--local): getFile returns server-side paths and sends can pass a path.
+        # Same truthiness as connect(), which turns on PTB's local_mode from this key.
+        self._local_mode: bool = bool(extra.get("local_mode"))
+        # getFile cap: 20MB on the public Bot API, 2GB on a local telegram-bot-api (base_url). Safe at 2GB
+        # only because local mode streams inbound files to disk; extra.max_file_mb bounds it on small hosts.
         self._max_doc_bytes: int = 2 * 1024 * 1024 * 1024 if extra.get("base_url") else 20 * 1024 * 1024
+        if max_file_mb := extra.get("max_file_mb"):
+            try:
+                self._max_doc_bytes = int(max_file_mb) * 1024 * 1024
+            except (TypeError, ValueError):
+                logger.warning("[%s] Ignoring non-numeric extra.max_file_mb: %r", self.name, max_file_mb)
         self._model_picker_state: dict[str, dict] = {}  # per-chat interactive picker state
         self._choice_picker_state: dict[str, dict] = {}
         self._approval_state: dict[int, str] = {}  # message_id → session_key
@@ -1185,7 +1224,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         async with self._chat_send_lock(send_kwargs.get("chat_id")):
             try:
                 return await _await_with_thread_deadline(
-                    send_fn(**send_kwargs), timeout=_MEDIA_SEND_DEADLINE, label="telegram-media-send", dump_on_blocked_loop=False)
+                    send_fn(**send_kwargs), timeout=self._media_send_deadline(), label="telegram-media-send", dump_on_blocked_loop=False)
             except Exception as send_err:
                 if not self._should_retry_without_dm_topic_reply_anchor(send_err, metadata, reply_to_message_id):
                     raise
@@ -1199,7 +1238,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                 retry_kwargs.pop("message_thread_id", None)
                 retry_kwargs.pop("direct_messages_topic_id", None)
                 return await _await_with_thread_deadline(
-                    send_fn(**retry_kwargs), timeout=_MEDIA_SEND_DEADLINE, label="telegram-media-send", dump_on_blocked_loop=False)
+                    send_fn(**retry_kwargs), timeout=self._media_send_deadline(), label="telegram-media-send", dump_on_blocked_loop=False)
 
     def _fallback_ips(self) -> list[str]:
         """Return validated fallback IPs from config (populated by _apply_env_overrides)."""
@@ -5153,7 +5192,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             chat_id, self._metadata_thread_id(metadata), metadata, reply_to_message_id=reply_to_id, reply_to_mode=self._reply_to_mode)
         return reply_to_id, {
             "chat_id": normalize_telegram_chat_id(chat_id), "reply_to_message_id": reply_to_id,
-            "read_timeout": _MEDIA_SEND_READ_TIMEOUT, **thread_kwargs, **self._notification_kwargs(metadata)}
+            "read_timeout": self._media_read_timeout(), **thread_kwargs, **self._notification_kwargs(metadata)}
 
     async def _send_media(
         self, send_fn: Any, chat_id: str, reply_to: Optional[str], metadata: Optional[dict[str, Any]], media_label: str,
@@ -5163,11 +5202,24 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         return await self._send_with_dm_topic_reply_anchor_retry(
             send_fn, {**kwargs, **media_kwargs}, metadata, reply_to_id, media_label, reset_media=reset_media)
 
+    @contextlib.contextmanager
+    def _media_upload_source(self, path: str):
+        """:func:`media_upload_source` for this adapter's mode. ``getattr``: adapters built via
+        ``__new__`` never run ``__init__``; absent attribute == cloud mode."""
+        with media_upload_source(path, local_mode=getattr(self, "_local_mode", False)) as pair:
+            yield pair
+
+    def _media_read_timeout(self) -> float:
+        return media_read_timeout(getattr(self, "_local_mode", False))
+
+    def _media_send_deadline(self) -> float:
+        return _LOCAL_MEDIA_SEND_DEADLINE if getattr(self, "_local_mode", False) else _MEDIA_SEND_DEADLINE
+
     @staticmethod
     def _caption_1024(caption: Optional[str]) -> Optional[str]:
         return caption[:1024] if caption else None
 
-    async def _send_voice_bubble(self, audio_file, chat_id, reply_to, metadata, caption, duration_secs):
+    async def _send_voice_bubble(self, audio_file, rewind, chat_id, reply_to, metadata, caption, duration_secs):
         """sendVoice with caption variants: MarkdownV2 when it fits 1024 chars, plain fallback when the
         Bot API rejects the entities; anything else is a real error."""
         # Render caption markdown (#32029): auto-TTS captions carry the agent's markdown reply, which showed
@@ -5189,7 +5241,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         for _cap_text, _cap_parse_mode in _caption_variants:
             try:
                 return await self._send_media(
-                    self._bot.send_voice, chat_id, reply_to, metadata, "voice", reset_media=lambda: audio_file.seek(0),
+                    self._bot.send_voice, chat_id, reply_to, metadata, "voice", reset_media=rewind,
                     voice=audio_file, caption=_cap_text, parse_mode=_cap_parse_mode, duration=duration_secs)
             except Exception as _cap_error:
                 err = str(_cap_error).lower()
@@ -5197,7 +5249,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                     logger.warning(
                         "[%s] voice caption MarkdownV2 rejected, retrying plain: %s", self.name, _redact_telegram_error_text(_cap_error))
                     _last_parse_error = _cap_error
-                    audio_file.seek(0)
+                    if rewind is not None:
+                        rewind()
                     continue
                 raise
         raise _last_parse_error or RuntimeError("Telegram send_voice failed for all caption variants")
@@ -5225,13 +5278,13 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                         self.name, os.path.basename(audio_path))
             # Telegram drops duration for long clips (~5 min+, shows 0:00).
             _duration_secs = await asyncio.to_thread(_probe_voice_duration_seconds, audio_path)
-            with open(audio_path, "rb") as audio_file:  # noqa: ASYNC230 -- file handle is streamed to the upload; a local open() is non-blocking in practice
+            with self._media_upload_source(audio_path) as (audio_file, rewind):
                 ext = os.path.splitext(audio_path)[1].lower()
                 if ext in {".ogg", ".opus"}:  # round playable voice bubble
-                    msg = await self._send_voice_bubble(audio_file, chat_id, reply_to, metadata, caption, _duration_secs)
+                    msg = await self._send_voice_bubble(audio_file, rewind, chat_id, reply_to, metadata, caption, _duration_secs)
                 elif ext in {".mp3", ".m4a"}:  # Bot API sendAudio only accepts MP3 / M4A
                     msg = await self._send_media(
-                        self._bot.send_audio, chat_id, reply_to, metadata, "audio", reset_media=lambda: audio_file.seek(0),
+                        self._bot.send_audio, chat_id, reply_to, metadata, "audio", reset_media=rewind,
                         audio=audio_file, caption=self._caption_1024(caption), duration=_duration_secs)
                 else:  # formats Telegram can't play natively (.wav, .flac, ...)
                     return await self.send_document(
@@ -5373,10 +5426,10 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         try:
             if not os.path.exists(path):
                 return SendResult(success=False, error=self._missing_media_path_error(label, path))
-            with open(path, "rb") as f:  # noqa: ASYNC230 -- file handle is streamed to the upload; a local open() is non-blocking in practice
+            with self._media_upload_source(path) as (f, rewind):
                 msg = await self._send_media(
                     getattr(self._bot, f"send_{media_key}"), chat_id, reply_to, metadata, media_key,
-                    reset_media=lambda: f.seek(0), **build_kwargs(f))
+                    reset_media=rewind, **build_kwargs(f))
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
             return await on_error(e)
@@ -6250,10 +6303,29 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
 
     _CACHED_KIND_TO_MESSAGE_TYPE = {"image": MessageType.PHOTO, "video": MessageType.VIDEO, "audio": MessageType.AUDIO}
 
+    async def _cache_inbound_file(
+        self, file_obj: Any, *, filename: str = "", mime_type: str = "", default_kind: Optional[str] = None):
+        """Cache a fetched Telegram file -> CachedMedia. Local mode answers ``getFile`` with an absolute
+        server-side path; when it is readable here (same host or a mount at the identical path) the file
+        is copied into the cache without entering memory, essential at the 2000MB local cap. Otherwise
+        (cloud, or a path not visible here) it is downloaded into memory as before, so a mount mismatch
+        degrades instead of dropping the attachment."""
+        from gateway.platforms.base import cache_media_bytes_async, cache_media_path_async
+        server_path = getattr(file_obj, "file_path", "") or ""
+        if getattr(self, "_local_mode", False) and server_path:
+            if os.path.isfile(server_path):
+                return await cache_media_path_async(
+                    server_path, filename=filename, mime_type=mime_type, default_kind=default_kind)
+            logger.warning(
+                "[Telegram] local_mode is on but the Bot API path %r is not readable here; downloading into "
+                "memory instead. Mount the telegram-bot-api data dir at the SAME absolute path to avoid "
+                "buffering large files in RAM.", server_path)
+        data = bytes(await file_obj.download_as_bytearray())
+        return await cache_media_bytes_async(data, filename=filename, mime_type=mime_type, default_kind=default_kind)
+
     async def _download_observed_media(self, msg: Any, what: str):
         """Download ``msg``'s attachment into the media cache (bounded by ``_max_doc_bytes``). Returns ``(status, cached)``:
         ``"none"``, ``"oversized"`` (cached = raw file_size), ``"failed"``, ``"unreadable"`` or ``"ok"``."""
-        from gateway.platforms.base import cache_media_bytes_async
         source, filename, mime, kind = self._observed_media_source(msg)
         if source is None:
             return "none", None
@@ -6262,10 +6334,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             return "oversized", file_size
         try:
             file_obj = await source.get_file()
-            data = bytes(await file_obj.download_as_bytearray())
             if not filename:
                 filename = os.path.basename(getattr(file_obj, "file_path", "") or "")
-            cached = await cache_media_bytes_async(data, filename=filename, mime_type=mime, default_kind=kind)
+            cached = await self._cache_inbound_file(file_obj, filename=filename, mime_type=mime, default_kind=kind)
         except Exception as exc:
             logger.warning("[Telegram] Failed to cache %s: %s", what, _redact_telegram_error_text(exc), exc_info=True)
             return "failed", None
@@ -6707,16 +6778,14 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                 await self.handle_message(event)
                 return True
             file_obj = await source.get_file()
-            data = await file_obj.download_as_bytearray()
             if kind == "video":
                 ext = self._ext_from_path(getattr(file_obj, "file_path", None), SUPPORTED_VIDEO_TYPES, ext)
-                cached_path = await cache_video_from_bytes_async(bytes(data), ext=ext)
                 mime = SUPPORTED_VIDEO_TYPES.get(ext, "video/mp4")
-            else:
-                cached_path = await cache_audio_from_bytes_async(bytes(data), ext=ext)
-            event.media_urls = [cached_path]
-            event.media_types = [mime]
-            logger.info("[Telegram] Cached user %s at %s", kind, cached_path)
+            cached = await self._cache_inbound_file(
+                file_obj, filename=f"{kind}{ext}", mime_type=mime, default_kind="video" if kind == "video" else "audio")
+            event.media_urls = [cached.path]
+            event.media_types = [cached.media_type]
+            logger.info("[Telegram] Cached user %s at %s", kind, cached.path)
         except Exception as e:
             logger.warning("[Telegram] Failed to cache %s: %s", kind, _redact_telegram_error_text(e), exc_info=True)
             await self._surface_media_cache_failure(msg, event, label, e)
@@ -6779,19 +6848,16 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                     image_mime_to_ext.setdefault(_mime, _ext)
                 ext = image_mime_to_ext.get(doc.mime_type, "")
             if ext in SUPPORTED_VIDEO_TYPES:
-                file_obj = await doc.get_file()
-                video_bytes = await file_obj.download_as_bytearray()
+                cached = await self._cache_inbound_file(
+                    await doc.get_file(), filename=f"video{ext}", mime_type=SUPPORTED_VIDEO_TYPES[ext], default_kind="video")
                 self._set_cached_media(
-                    event, await cache_video_from_bytes_async(bytes(video_bytes), ext=ext), SUPPORTED_VIDEO_TYPES[ext], MessageType.VIDEO,
-                    "[Telegram] Cached user video document at %s")
+                    event, cached.path, SUPPORTED_VIDEO_TYPES[ext], MessageType.VIDEO, "[Telegram] Cached user video document at %s")
                 await self.handle_message(event)
                 return True
             # Any file type is accepted (authorization is the gate, not the extension); unknown types get
             # application/octet-stream. Image documents already returned above.
-            file_obj = await doc.get_file()
-            raw_bytes = bytes(await file_obj.download_as_bytearray())
-            from gateway.platforms.base import cache_media_bytes_async
-            cached = await cache_media_bytes_async(raw_bytes, filename=original_filename or f"document{ext or '.bin'}", mime_type=doc_mime)
+            cached = await self._cache_inbound_file(
+                await doc.get_file(), filename=original_filename or f"document{ext or '.bin'}", mime_type=doc_mime)
             if cached is None:
                 return await self._dispatch_with_text(event, f"Document '{display}' could not be cached.")
             event.media_urls = [cached.path]
@@ -6802,11 +6868,13 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             logger.info("[Telegram] Cached user %s at %s (%s)", cached.kind, cached.path, cached.media_type)
             # Inject text-readable content (≤100 KB). Gate on extension/MIME, NOT a blind UTF-8 decode:
             # PDF/zip/docx have decodable ASCII headers. Binary files are surfaced as a cached path only.
+            # Read back from the cache: the payload is not held in memory on the streamed (local-mode) path.
             MAX_TEXT_INJECT_BYTES = 100 * 1024
             _is_text = ext in _TEXT_INJECT_EXTENSIONS or (doc_mime or "").startswith("text/")
-            if _is_text and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
+            if _is_text and os.path.getsize(cached.path) <= MAX_TEXT_INJECT_BYTES:
                 try:
-                    text_content = raw_bytes.decode("utf-8")
+                    with open(cached.path, "rb") as cached_file:  # noqa: ASYNC230 -- bounded 100 KB local read
+                        text_content = cached_file.read(MAX_TEXT_INJECT_BYTES).decode("utf-8")
                     display_name = re.sub(r'[^\w.\- ]', '_', original_filename or f"document{ext or '.txt'}")
                     injection = f"[Content of {display_name}]:\n{text_content}"
                     event.text = f"{injection}\n\n{event.text}" if event.text else injection
@@ -7275,11 +7343,11 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     if not token:
         from agent.secret_scope import get_secret  # profile-scoped: never borrow another profile's token
         token = get_secret("TELEGRAM_BOT_TOKEN", "") or ""
-    disable_link_previews = bool(getattr(pconfig, "extra", {}) and pconfig.extra.get("disable_link_previews"))
+    extra = getattr(pconfig, "extra", None) or {}
     from tools.send_message_tool import _send_telegram
     return await _send_telegram(
         token, chat_id, message, media_files=media_files, thread_id=thread_id,
-        disable_link_previews=disable_link_previews, force_document=force_document)
+        disable_link_previews=bool(extra.get("disable_link_previews")), force_document=force_document, extra=extra)
 
 
 def interactive_setup() -> None:

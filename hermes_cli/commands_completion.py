@@ -210,8 +210,13 @@ def _dir_completions(
         if count >= limit:
             break
         suffix = "/" if is_dir else ""
+        try:
+            display = text_for(full_path) + suffix
+        except ValueError:
+            # Windows: os.path.relpath raises across mounts/drive letters (#31915).
+            continue
         yield _completion(
-            text_for(full_path) + suffix, word, entry + suffix,
+            display, word, entry + suffix,
             "dir" if is_dir else _file_size_label(full_path))
         count += 1
 

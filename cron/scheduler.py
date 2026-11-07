@@ -2515,6 +2515,21 @@ def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup
     )
 
 
+def _stamp_cron_session_runtime(session_db, session_id, setup: _CronAgentSetup) -> None:
+    """Persist the run's reasoning config on the cron session row, so a chat that continues the
+    session resumes at the job's effort instead of re-resolving it from global config.
+
+    The owner reserves the cron row before the agent runs, so the turn lease finds it and skips
+    the agent's lazy create, the write that used to carry ``reasoning_config``. Without a reserved
+    row the patch is a no-op and that lazy create still writes it."""
+    if session_db is None or not session_id or setup.reasoning_config is None:
+        return
+    try:
+        session_db.patch_session_model_config(session_id, {"reasoning_config": setup.reasoning_config})
+    except Exception:
+        logger.debug("cron session %s: could not persist runtime config", session_id, exc_info=True)
+
+
 class _FireAudit:
     """One usage_audit.jsonl line per fire (created once the agent exists; fire id + start clock)."""
 
@@ -2604,6 +2619,7 @@ def run_job(
         agent = _construct_cron_agent(
             AIAgent, job, _cfg, setup, workdir=scope.workdir, session_id=_cron_session_id,
             session_db=_session_db)
+        _stamp_cron_session_runtime(_session_db, _cron_session_id, setup)
         _audit = _FireAudit(job, job_id, model)
 
         result = _run_agent_with_watchdog(

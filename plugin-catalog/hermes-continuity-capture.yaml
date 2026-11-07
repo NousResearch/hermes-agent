@@ -1,0 +1,23 @@
+name: hermes-continuity-capture
+repo: https://github.com/Goitonthefloor/hermes-continuity-capture
+sha: 326833f5c8857053bafe606892e7fb65e83de4fe
+description: 'Records Hermes lifecycle events (session, subagent, and kanban task) as Continuity schema-v2 events in a local SQLite spool and forwards validated events to a Continuity bridge (NATS JetStream or core) that you run yourself. Disclosure - binds nine lifecycle hooks and writes SQLite (spool_path, default data/spool.db, 90-day retention; the spool file grows with event volume and is pruned on retention); free-text fields (prompts, tool results) are dropped before the INSERT and only their length is kept, unless record_full_prompts is explicitly enabled; a background thread delivers to the bridge, so network traffic to your own NATS endpoint occurs once a bridge is wired in and publish_mode is jetstream or core, and nothing is delivered in the default local spool-only mode. Requires a separately deployed NATS/JetStream bridge - not included. Inactive until an operator enables it.'
+maintainer: Goitonthefloor
+tier: community
+category: automation
+requires_hermes: ">=0.21.5"
+version: "0.1.0"
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - on_session_start
+    - on_session_end
+    - on_session_finalize
+    - post_tool_call
+    - subagent_start
+    - subagent_stop
+    - kanban_task_claimed
+    - kanban_task_completed
+    - kanban_task_blocked
+  provides_middleware: []
+  requires_env: []

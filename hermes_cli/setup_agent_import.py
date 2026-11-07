@@ -144,11 +144,12 @@ def _run_import(source: ImportSource, hermes_home: Path, from_setup: bool = True
 
 
 def _import_child(source: ImportSource, hermes_home: Path, extra_args: tuple[str, ...] = (),
-                  from_setup: bool = True) -> int:
+                  from_setup: bool = True, allow_update: bool = True) -> int:
     """``hermes import-agent <source>`` in a child process, so the freshly installed plugin's command
     is wired; it previews and asks before changing anything (and exits 0 on a no too). Returns its
     exit code. ``hermes migrate`` passes the user's flags as ``extra_args`` and runs it as a command
-    of its own (``from_setup`` False)."""
+    of its own (``from_setup`` False). *allow_update* False (a ``--dry-run``) leaves the exit-2 retry
+    to the user: updating the plugin is a write."""
     from hermes_cli.setup import print_header, print_warning
     from tools.environments.local import served_profile_child_env
     print_header(f"Importing from {source.label}", gap=True)
@@ -168,7 +169,7 @@ def _import_child(source: ImportSource, hermes_home: Path, extra_args: tuple[str
     returncode = subprocess.run(argv, env=env, check=False).returncode
     # An install from before the plugin gained this importer (or --from-setup) refuses it in argparse
     # (exit 2) before asking anything: update the plugin once and try again.
-    if returncode == 2 and _update_plugin(source):
+    if returncode == 2 and allow_update and _update_plugin(source):
         returncode = subprocess.run(argv, env=env, check=False).returncode  # health: allow HX006 -- same child
     if returncode == 2:
         print_warning(f"The {source.label} import did not run. If the error names an invalid choice or "
@@ -190,10 +191,37 @@ def _update_plugin(source: ImportSource) -> bool:
     return True
 
 
-def migrate_from_agents(hermes_home: Path, source_name: str = "", extra_args: tuple[str, ...] = ()) -> int:
+def _plugin_enabled(hermes_home: Path) -> bool:
+    """Read-only: *hermes_home*'s selection has the plugin enabled — listed in ``plugins.enabled``
+    and not in ``plugins.disabled``, which wins."""
+    from pm.plugins_state import read_home_selection
+    plugins = (read_home_selection(hermes_home) or {}).get("plugins") or {}
+    return PLUGIN in set(plugins.get("enabled") or ()) and PLUGIN not in set(plugins.get("disabled") or ())
+
+
+def _dry_run_import(source: ImportSource, hermes_home: Path, extra_args: tuple[str, ...]) -> int:
+    """``--dry-run``'s preview, with no write of our own: the plugin has to be installed and enabled
+    already, because installing, enabling and the exit-2 update are all writes. When one of them would
+    be needed, name the command that does it and leave the home as it was — a preview that could not
+    run is not a success, hence 1."""
+    from hermes_cli.left_core_migration import plugin_present
+    from hermes_cli.setup import print_warning
+    if not plugin_present(PLUGIN, hermes_home):
+        print_warning(f"--dry-run writes nothing, so it cannot install the '{PLUGIN}' plugin it needs. "
+                      f"Install it with: hermes plugins install {PLUGIN}, then re-run with --dry-run.")
+        return 1
+    if not _plugin_enabled(hermes_home):
+        print_warning(f"--dry-run writes nothing, so it cannot enable the '{PLUGIN}' plugin it needs. "
+                      f"Enable it with: hermes plugins enable {PLUGIN}, then re-run with --dry-run.")
+        return 1
+    return 1 if _import_child(source, hermes_home, extra_args, from_setup=False, allow_update=False) else 0
+
+
+def migrate_from_agents(hermes_home: Path, source_name: str = "", extra_args: tuple[str, ...] = (),
+                        dry_run: bool = False) -> int:
     """``hermes migrate [<agent>]``: the same import as setup's step, on demand. Named: install the
     plugin when missing and run that agent's import with ``extra_args``. Bare: offer the agents found
-    on this computer, as setup does."""
+    on this computer, as setup does. *dry_run* (``--dry-run``) is a preview that touches nothing."""
     from hermes_cli.setup import is_noninteractive, print_info
     if not source_name:
         found = detect_import_sources()
@@ -205,6 +233,8 @@ def migrate_from_agents(hermes_home: Path, source_name: str = "", extra_args: tu
                    + "Import one with: " + ", ".join(f"hermes migrate {s.name}" for s in IMPORT_SOURCES))
         return 0
     source = next(s for s in IMPORT_SOURCES if s.name == source_name)
+    if dry_run:
+        return _dry_run_import(source, hermes_home, extra_args)
     if not _ensure_plugin(hermes_home):
         return 1
     return 1 if _import_child(source, hermes_home, extra_args, from_setup=False) else 0

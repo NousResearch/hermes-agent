@@ -162,6 +162,99 @@ def test_grok_bot_export_in_downloads_is_offered_like_the_other_agents(homes):
                          str(hermes_home))
 
 
+def _migrate_args(*argv):
+    """``hermes migrate ...`` through the real parser: the flags and the dispatch under test."""
+    import argparse
+
+    from hermes_cli.subcommands.migrate import build_migrate_parser
+
+    parser = argparse.ArgumentParser()
+    build_migrate_parser(parser.add_subparsers(dest="command"))
+    return parser.parse_args(["migrate", *argv])
+
+
+def _tree(root):
+    """Every path under *root* with its bytes (or None for a directory): a home left byte-identical."""
+    return {str(p.relative_to(root)): (p.read_bytes() if p.is_file() else None)
+            for p in sorted(root.rglob("*"))}
+
+
+def _installed_but_disabled(hermes_home, *, enabled: bool = False):
+    """The plugin's directory in place, with config.yaml naming it enabled only when asked."""
+    (hermes_home / "plugins" / "agent-importers").mkdir(parents=True)
+    (hermes_home / "config.yaml").write_text(
+        "plugins:\n  " + ("enabled" if enabled else "disabled") + ":\n    - agent-importers\n",
+        encoding="utf-8")
+
+
+def test_dry_run_without_the_plugin_installs_nothing_and_names_the_install_command(homes, capsys):
+    """``--dry-run`` promises to leave the home unchanged, so the plugin it needs has to be there:
+    a preview that cannot run writes nothing and says how to make it possible."""
+    _user_home, hermes_home, calls, _answers = homes
+    before = _tree(hermes_home)
+
+    args = _migrate_args("openbot", "--dry-run")
+
+    assert args.func(args) == 1  # nothing was previewed, so this is not a success
+    assert calls == []  # no catalog install, no child import
+    assert _tree(hermes_home) == before
+    assert "hermes plugins install agent-importers" in capsys.readouterr().out
+
+
+def test_dry_run_leaves_a_disabled_plugin_disabled(homes, monkeypatch, capsys):
+    """Enabling is a write too: an installed-but-disabled plugin stays that way, and the run says
+    so instead of previewing through a command the loader would not have registered."""
+    _user_home, hermes_home, calls, _answers = homes
+    _installed_but_disabled(hermes_home)
+    enabled: list = []
+    monkeypatch.setattr("hermes_cli.plugins_cmd.cmd_enable", lambda name, **_: enabled.append(name))
+    before = _tree(hermes_home)
+
+    args = _migrate_args("openbot", "--dry-run")
+
+    assert args.func(args) == 1
+    assert enabled == [] and calls == []
+    assert _tree(hermes_home) == before
+    assert "hermes plugins enable agent-importers" in capsys.readouterr().out
+
+
+def test_dry_run_previews_through_the_child_when_the_plugin_is_ready(homes):
+    """Present and enabled: the preview runs exactly as the plain command would, --dry-run included."""
+    _user_home, _hermes_home, calls, _answers = homes
+    _installed_but_disabled(_hermes_home, enabled=True)
+
+    args = _migrate_args("openbot", "--dry-run")
+
+    assert args.func(args) == 0
+    assert calls == [("import", ["--profile", "default", "import-agent", "openbot", "--dry-run"],
+                      str(_hermes_home))]
+
+
+def test_dry_run_does_not_update_an_outdated_plugin(homes, monkeypatch, capsys):
+    """The exit-2 retry exists because an old plugin refuses the flag; updating it is a write, so a
+    dry run hands the user the command instead."""
+    _user_home, hermes_home, calls, _answers = homes
+    _installed_but_disabled(hermes_home, enabled=True)
+    updates: list = []
+    monkeypatch.setattr("hermes_cli.plugins_cmd_update.cmd_update",
+                        lambda name, **_: updates.append(name))
+
+    def refuse(argv, env, check=False):
+        calls.append(("import", argv[argv.index("hermes_cli.main") + 1:], env["HERMES_HOME"]))
+        return subprocess.CompletedProcess(argv, 2)
+
+    monkeypatch.setattr(step.subprocess, "run", refuse)
+    before = _tree(hermes_home)
+
+    args = _migrate_args("openbot", "--dry-run")
+
+    assert args.func(args) == 1
+    assert updates == []
+    assert [c[0] for c in calls] == ["import"]  # one attempt, no second one after an update
+    assert _tree(hermes_home) == before
+    assert "hermes plugins update agent-importers" in capsys.readouterr().out
+
+
 def test_hermes_migrate_names_an_agent_installs_the_plugin_and_forwards_its_flags(homes, monkeypatch):
     """`hermes migrate grok-bot ...` through the real parser: the plugin is installed from the catalog
     when missing, and the import runs as its own command (no --from-setup) with the user's flags."""

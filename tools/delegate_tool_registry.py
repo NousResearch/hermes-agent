@@ -195,7 +195,7 @@ def _is_descendant_of(child_agent: Any, parent_agent: Any, max_hops: int = 8) ->
 
 # Model-facing control actions accepted by delegate_task(action=...).
 # "spawn" (or omitted) keeps the historical spawn semantics.
-_CONTROL_ACTIONS = frozenset({"list", "steer", "stop"})
+_CONTROL_ACTIONS = frozenset({"list", "steer", "stop", "result"})
 
 def _resolve_session_lineage(session_id: Optional[str], parent_agent: Any) -> str:
     """Tip of a session id's compression lineage via the parent's live SessionDB (best-effort; input unchanged when
@@ -225,7 +225,11 @@ def _owns_subagent_record(record: dict[str, Any], parent_agent: Any) -> bool:
     """
     if _is_descendant_of(record.get("agent"), parent_agent):
         return True
-    owner_sid = str(record.get("owner_agent_session_id") or "")
+    return _session_owned_by(str(record.get("owner_agent_session_id") or ""), parent_agent)
+
+def _session_owned_by(owner_sid: str, parent_agent: Any) -> bool:
+    """True when durable *owner_sid* is the caller's session, or the two share a compression-lineage tip. Fails
+    closed on a blank id on either side."""
     parent_sid = str(getattr(parent_agent, "session_id", "") or "")
     if not owner_sid or not parent_sid:
         return False
@@ -261,11 +265,40 @@ def _list_payload(parent_agent: Any) -> dict[str, Any]:
         )
     return payload
 
-def _handle_control_action(action: str, subagent_id: Optional[str], message: Optional[str], parent_agent: Any) -> str:
-    """Synchronous control plane for delegate_task: list/steer/stop. Runs in-turn (never backgrounded) over the same
-    registry the TUI overlay drives, scoped so a conversation can only control its own spawn tree."""
+def _result_payload(delegation_id: Optional[str], parent_agent: Any) -> str:
+    """``action='result'``: the durable ledger row of a finished (or still-running, partial) delegation owned by the
+    caller. Fails closed with ONE identical error for an unknown id, an id owned by another session, an unreadable
+    ledger and a row without an owner, so the answer is no existence oracle for foreign ids."""
+    did = (delegation_id or "").strip()
+    if not did:
+        return tool_error("action='result' requires delegation_id (from the spawn dispatch response).")
+    not_found = tool_error(f"No delegation '{did}' found in this conversation.")
+    from tools.async_delegation import get_durable_delegation
+    try:
+        row = get_durable_delegation(did)
+    except Exception:
+        logger.debug("delegate_task result: ledger read failed for %s", did, exc_info=True)
+        return not_found
+    if not isinstance(row, dict):
+        return not_found
+    # Local ledger rows carry parent_session_id: it must belong to the caller (lineage-aware). The session-worker
+    # ledger omits it because its store already refused any row the worker's session does not own (exact id).
+    if "parent_session_id" in row and not _session_owned_by(str(row.get("parent_session_id") or ""), parent_agent):
+        return not_found
+    keys = ("state", "delivery_state", "delivery_attempts", "dispatched_at", "completed_at", "delivered_at",
+            "parent_session_id", "origin_session_id", "model", "result")
+    return json.dumps({"action": "result", "delegation_id": did, **{k: row.get(k) for k in keys}}, ensure_ascii=False)
+
+def _handle_control_action(
+    action: str, subagent_id: Optional[str], message: Optional[str], parent_agent: Any, delegation_id: Optional[str] = None,
+) -> str:
+    """Synchronous control plane for delegate_task: list/steer/stop/result. Runs in-turn (never backgrounded) over the
+    same registry the TUI overlay drives, scoped so a conversation can only control its own spawn tree (``result``
+    reads the durable ledger, scoped to the caller's session lineage)."""
     if action == "list":
         return json.dumps(_list_payload(parent_agent), ensure_ascii=False)
+    if action == "result":
+        return _result_payload(delegation_id, parent_agent)
 
     # steer / stop need a resolvable, owned target.
     sid = (subagent_id or "").strip()

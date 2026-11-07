@@ -92,9 +92,9 @@ def _landed(result, store, path, expected):
     return (
         result.success is True
         and result.error is None
-        and store.files.get(path) == expected
-        and (path, expected) in store.writes
-        and path in result.files_modified
+        and store.files == {path: expected}
+        and store.writes == [(path, expected)]
+        and result.files_modified == [path]
     )
 
 
@@ -205,9 +205,22 @@ def test_refusal_atomicity_partial_write_false_noop():
     if _clean_refusal(result, store, source):
         return
     kept = "value=9\nkeep = hostish_d\n"
-    if result.success is True and store.files.get("f.py") == kept and store.writes:
+    if result.success is True and store.files == {"f.py": kept} and store.writes == [("f.py", kept)]:
         raise _KnownPlannerDefect("earlier hunk kept after a swallowed refusal")
     pytest.fail("unrelated disagreement for partial-write-false-noop")
+
+
+def test_extra_write_is_not_classified_as_known_false_noop(monkeypatch):
+    from tools.file_operations_common import PatchResult
+
+    def extra_write(_ops, store):
+        store.write_file("f.py", "value=9\nkeep = hostish_d\n")
+        store.write_file("other.py", "unexpected\n")
+        return PatchResult(success=True, files_modified=["f.py", "other.py"])
+
+    monkeypatch.setattr(f"{__name__}.apply_v4a_operations", extra_write)
+    with pytest.raises(pytest.fail.Exception, match="unrelated disagreement"):
+        test_refusal_atomicity_partial_write_false_noop()
 
 
 @_xfail("cross-file-false-noop")
@@ -230,7 +243,8 @@ def test_refusal_atomicity_cross_file_false_noop():
         result.success is True
         and store.files.get("a.py") == "value=9\nkeep = hostish_d\n"
         and store.files.get("b.py") == "new\n"
-        and len(store.writes) == 2
+        and store.files == {"a.py": "value=9\nkeep = hostish_d\n", "b.py": "new\n"}
+        and store.writes == [("a.py", "value=9\nkeep = hostish_d\n"), ("b.py", "new\n")]
     ):
         raise _KnownPlannerDefect("swallowed hunk still wrote both files")
     pytest.fail("unrelated disagreement for cross-file-false-noop")
@@ -339,7 +353,7 @@ def test_eol_preserved_when_hunk_has_context():
     result, store = _apply(source, _update("f.py", body))
     if _landed(result, store, "f.py", expected):
         return
-    if result.success is True and store.files.get("f.py") == observed:
+    if result.success is True and store.files == {"f.py": observed} and store.writes == [("f.py", observed)]:
         raise _KnownPlannerDefect("context hunk stripped CR inside its window")
     pytest.fail("unrelated disagreement for crlf-context-window")
 
@@ -352,7 +366,7 @@ def test_eol_preserved_inside_multiline_replacement():
     result, store = _apply(source, _update("f.py", "@@\n-foo\n-bar\n+FOO\n+BAR"))
     if _landed(result, store, "f.py", expected):
         return
-    if result.success is True and store.files.get("f.py") == "FOO\nBAR\n":
+    if result.success is True and store.files == {"f.py": "FOO\nBAR\n"} and store.writes == [("f.py", "FOO\nBAR\n")]:
         raise _KnownPlannerDefect("multiline replacement dropped CR")
     pytest.fail("unrelated disagreement for crlf-multiline-replacement")
 
@@ -365,7 +379,7 @@ def test_eol_preserved_on_addition_only():
     result, store = _apply(source, _update("f.py", "@@\n+last"))
     if _landed(result, store, "f.py", expected):
         return
-    if result.success is True and store.files.get("f.py") == "first\r\nlast\n":
+    if result.success is True and store.files == {"f.py": "first\r\nlast\n"} and store.writes == [("f.py", "first\r\nlast\n")]:
         raise _KnownPlannerDefect("added line used LF in a CRLF file")
     pytest.fail("unrelated disagreement for crlf-addition-only")
 

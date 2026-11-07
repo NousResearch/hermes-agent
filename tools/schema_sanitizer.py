@@ -437,3 +437,33 @@ def strip_slash_enum(tools: list[dict]) -> tuple[list[dict], int]:
         tools, _strip,
         "schema_sanitizer: stripped %d enum keyword(s) containing '/' "
         "from tool schemas (xAI Responses grammar-compile recovery)")
+
+
+def flatten_unions(tools: list[dict]) -> tuple[list[dict], int]:
+    """Collapse every ``anyOf``/``oneOf`` union and multi-type ``type`` array to its first non-null
+    branch, in place — reactive, only after a backend that accepts neither shape (Apple's
+    ``fm serve``) rejected the request. Lossy: the model stops seeing the other branches, which the
+    handlers still accept. The outer node's keys (``description``, ``default``) win over the
+    branch's; a dropped ``null`` branch leaves ``nullable: true`` for runtime coercion."""
+    def _strip(node: dict) -> int:
+        hits = 0
+        while (key := next((k for k in _UNION_KEYS if isinstance(node.get(k), list)), None)):
+            branches = node.pop(key)
+            if any(_is_null_branch(b) for b in branches):
+                node.setdefault("nullable", True)
+            keep = next((b for b in branches if isinstance(b, dict) and not _is_null_branch(b)), {})
+            for k, v in keep.items():
+                node.setdefault(k, v)
+            hits += 1
+        if isinstance(node.get("type"), list):
+            types = [t for t in node["type"] if isinstance(t, str)]
+            non_null = [t for t in types if t != "null"]
+            node["type"] = (non_null or types or ["object"])[0]
+            if "null" in types:
+                node.setdefault("nullable", True)
+            hits += 1
+        return hits
+    return _reactive_strip(
+        tools, _strip,
+        "schema_sanitizer: flattened %d union(s) in tool schemas "
+        "(strict-decoder recovery, e.g. Apple fm serve)")

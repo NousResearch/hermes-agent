@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 
 from tools.schema_sanitizer import (
+    flatten_unions,
     sanitize_tool_schemas,
     strip_pattern_and_format,
 )
@@ -629,4 +630,57 @@ def test_registered_tool_schemas_stay_inside_llama_cpp_repetition_limit():
                 val = node.get(key)
                 if isinstance(val, int) and val >= 2000:
                     offenders.append((name, key, val))
+    assert not offenders, offenders
+
+
+# ---------------------------------------------------------------------------
+# flatten_unions — reactive recovery when a strict decoder (Apple's fm serve)
+# rejects every anyOf/oneOf and type array in tool schemas
+# ---------------------------------------------------------------------------
+
+
+def _unions(node):
+    return [n for n in _walk_schema(node)
+            if any(isinstance(n.get(k), list) for k in ("anyOf", "oneOf")) or isinstance(n.get("type"), list)]
+
+
+def test_flatten_unions_keeps_first_branch_and_outer_description():
+    tools = [_tool("terminal", {"type": "object", "properties": {"notify": {
+        "description": "true, or a list of patterns",
+        "anyOf": [{"type": "boolean"}, {"type": "array", "items": {"type": "string"}}]}}})]
+    _, flattened = flatten_unions(tools)
+    assert flattened == 1
+    assert tools[0]["function"]["parameters"]["properties"]["notify"] == {
+        "description": "true, or a list of patterns", "type": "boolean"}
+
+
+def test_flatten_unions_reaches_nested_items_and_keeps_null_as_nullable():
+    tools = [_tool("t", {"type": "object", "properties": {
+        "ops": {"type": "array", "items": {"anyOf": [
+            {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]},
+            {"type": "string"}]}},
+        "when": {"oneOf": [{"type": "null"}, {"type": "string"}, {"type": "integer"}]},
+        "n": {"type": ["null", "integer", "string"]}}})]
+    _, flattened = flatten_unions(tools)
+    props = tools[0]["function"]["parameters"]["properties"]
+    assert flattened == 3 and not _unions(tools)
+    assert props["ops"]["items"]["required"] == ["name"]
+    assert props["when"] == {"type": "string", "nullable": True}
+    assert props["n"] == {"type": "integer", "nullable": True}
+
+
+def test_flatten_unions_leaves_union_free_schemas_alone():
+    tools = [_tool("t", {"type": "object", "properties": {"x": {"type": "string"}}, "required": []})]
+    before = copy.deepcopy(tools)
+    assert flatten_unions(tools) == (before, 0)
+
+
+def test_every_builtin_tool_is_union_free_after_flatten():
+    """fm serve rejects any union anywhere, so recovery must leave none in a built-in schema."""
+    import model_tools  # triggers built-in tool discovery
+    from tools.registry import registry
+    tools = [{"type": "function", "function": copy.deepcopy(registry.get_entry(n).schema)}
+             for n in registry.get_all_tool_names() if getattr(registry.get_entry(n), "schema", None)]
+    tools, _ = flatten_unions(sanitize_tool_schemas(tools))
+    offenders = [t["function"]["name"] for t in tools if _unions(t["function"]["parameters"])]
     assert not offenders, offenders

@@ -64,6 +64,7 @@ class FailoverReason(enum.Enum):
     long_context_tier = "long_context_tier"    # Anthropic "extra usage" tier gate
     oauth_long_context_beta_forbidden = "oauth_long_context_beta_forbidden"  # Anthropic OAuth rejects 1M beta — disable beta and retry
     llama_cpp_grammar_pattern = "llama_cpp_grammar_pattern"  # llama.cpp grammar rejects regex `pattern`/`format` — strip from tools and retry
+    tool_schema_union = "tool_schema_union"  # Strict decoder (Apple fm serve) rejects anyOf/oneOf in tool schemas — flatten and retry
     unknown = "unknown"                  # Unclassifiable — retry with backoff
 
 
@@ -988,6 +989,20 @@ def _moa_special_cases(c: _Ctx) -> Optional[Verdict]:
     return _v(_R.model_not_found, retryable=False) if isinstance(c.error, MoAPresetNotFoundError) else None
 
 
+# Apple's ``fm serve`` (Foundation Models CLI, on-device and Private Cloud Compute) decodes the
+# request with Swift's JSONDecoder, which has no shape for ``anyOf``/``oneOf`` or ``type`` arrays in
+# tool schemas, and answers with Foundation's generic decode failure (curly apostrophes on the wire).
+_SWIFT_DECODE_FAILURE = "be read because it isn't in the correct format"
+
+
+def _tool_schema_union_rejection(c: _Ctx) -> Optional[Verdict]:
+    # Keeps format_error's abort-and-fallback hints: turn_recovery flattens the tool-schema unions
+    # and retries once, and a request with no union to flatten behaves exactly as before.
+    if c.status_code == 400 and _SWIFT_DECODE_FAILURE in c.msg.replace("\u2019", "'"):
+        return _v(_R.tool_schema_union, **_ABORT_FALLBACK)
+    return None
+
+
 def _by_error_code(c: _Ctx) -> Optional[Verdict]:
     """Structured error codes from the response body."""
     # Request-validation failure as plain-text ``event: error`` SSE data behind
@@ -1057,11 +1072,11 @@ def _by_status(c: _Ctx) -> Optional[Verdict]:
 
 
 # Stage order: plugin hooks → the provider's own profile hook → provider-specific special cases →
-# HTTP status → MoA shapes → structured error code → message patterns → SSL → disconnect +
-# large session → transport types → unknown (retryable with backoff).
+# tool-schema union decode failure → HTTP status → MoA shapes → structured error code → message
+# patterns → SSL → disconnect + large session → transport types → unknown (retryable with backoff).
 _STAGES: Sequence[Callable[[_Ctx], Optional[Verdict]]] = (
-    _plugin_verdict, _profile_verdict, _provider_special_cases, _by_status, _moa_special_cases,
-    _by_error_code, _by_message, _by_transport,
+    _plugin_verdict, _profile_verdict, _provider_special_cases, _tool_schema_union_rejection,
+    _by_status, _moa_special_cases, _by_error_code, _by_message, _by_transport,
 )
 
 

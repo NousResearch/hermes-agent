@@ -250,6 +250,19 @@ async def issue_socket_ticket(request: Request, socket: str = "", profile: str |
     return _socket_ticket_response(request, identity, socket, session_token, profile_home=profile_home)
 
 
+@router.get("/api/webapp/bundle")
+def served_bundle(request: Request):
+    """The bundle a page load gets now (:func:`hermes_cli.webapp.served_webapp_bundle`), whose id
+    ``_serve_index`` gives the page as ``__HERMES_WEBAPP_BUNDLE__``. A tab that booted with another
+    id reloads onto it while it is current."""
+    from hermes_cli.web_server_surface import surface
+    from hermes_cli.webapp import served_webapp_bundle
+
+    if surface(request.app.state) != "webapp":
+        raise HTTPException(404, "Only the Webapp serves a bundle")
+    return JSONResponse(served_webapp_bundle(request.app.state.web_dist), headers={"Cache-Control": "no-store"})
+
+
 @router.post("/webapp/window-session")
 async def redeem_window_ticket(request: Request):
     from hermes_cli import browser_credential

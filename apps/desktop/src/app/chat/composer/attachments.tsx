@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useState } from 'react'
 
+import { ATTACHMENTS_SLOT } from '@/app/chat/composer/rich-editor'
 import { useSessionView } from '@/app/chat/session-view'
 import { ImageLightbox } from '@/components/chat/zoomable-image'
 import { Codicon } from '@/components/ui/codicon'
@@ -25,7 +26,7 @@ export function AttachmentList({
   return (
     <div
       className="flex max-w-full flex-shrink-0 flex-wrap gap-1.5 px-1 pt-1 overflow-hidden"
-      data-slot="composer-attachments"
+      data-slot={ATTACHMENTS_SLOT}
     >
       {attachments.filter(Boolean).map(attachment => (
         <AttachmentPill

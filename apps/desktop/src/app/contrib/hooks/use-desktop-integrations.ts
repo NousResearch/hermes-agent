@@ -43,6 +43,7 @@ import { $botChatScopes, $sessionTiles, storedSessionIdForRuntimeId } from '@/st
 import { onSessionsChanged } from '@/store/session-sync'
 import { requestSkillInstallFromDeepLink } from '@/store/skill-deeplink-install'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '@/store/updates'
+import { startServedBundleWatch } from '@/store/webapp-bundle'
 import { isBrowserWindow, isHudWindow, isPeerInstanceWindow, isSecondaryWindow } from '@/store/windows'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -99,6 +100,8 @@ export function useDesktopIntegrations({
     // Background MCP health: HTTP/SSE servers only (never spawns stdio),
     // notifies on transitions into needs-auth/error with a Sign in action.
     startMcpHealthChecker()
+    // A Webapp tab moves onto the bundle its gateway rebuilt (`hermes update`).
+    const stopBundleWatch = startServedBundleWatch()
     // The native "Check for Updates…" menu item lives in the app menu next to
     // "About Hermes" — it is the OS-standard affordance for updating THIS app,
     // so it always opens the client overlay. Inheriting the connection-mode
@@ -110,6 +113,7 @@ export function useDesktopIntegrations({
       unsubscribe?.()
       stopUpdatePoller()
       stopMcpHealthChecker()
+      stopBundleWatch()
     }
   }, [])
 

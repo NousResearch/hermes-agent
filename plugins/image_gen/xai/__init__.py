@@ -48,6 +48,7 @@ _LIVE_CACHE: Optional[tuple[dict[str, dict[str, Any]], float]] = None
 # failure) to profile B. The unscoped slot above stays for the single-profile path and its tests.
 _LIVE_CACHE_BY_CREDENTIAL: dict[tuple[str, Optional[str]], tuple[dict[str, dict[str, Any]], float]] = {}
 _LIVE_CACHE_TTL = 300.0
+_LIVE_CACHE_MAX_ENTRIES = 32
 _LIVE_TIMEOUT = 10.0
 
 _XAI_ASPECT_RATIOS = {
@@ -109,9 +110,16 @@ def _live_models() -> dict[str, dict[str, Any]]:
         logger.debug("xAI live image model catalog unavailable: %s", exc)
         creds = {}
     key = (_base_url(creds), fingerprint_secret_value(creds.get("api_key")))
+    now = time.monotonic()
+    for cached_key, (_, fetched_at) in list(_LIVE_CACHE_BY_CREDENTIAL.items()):
+        if now - fetched_at >= _LIVE_CACHE_TTL:
+            del _LIVE_CACHE_BY_CREDENTIAL[cached_key]
     cached = _LIVE_CACHE_BY_CREDENTIAL.get(key)
-    if cached is not None and time.monotonic() - cached[1] < _LIVE_CACHE_TTL:
+    if cached is not None:
         return cached[0]
+    if len(_LIVE_CACHE_BY_CREDENTIAL) >= _LIVE_CACHE_MAX_ENTRIES:
+        oldest_key = min(_LIVE_CACHE_BY_CREDENTIAL, key=lambda item: _LIVE_CACHE_BY_CREDENTIAL[item][1])
+        del _LIVE_CACHE_BY_CREDENTIAL[oldest_key]
     live = _fetch_live_models_or_empty(creds)
     _LIVE_CACHE_BY_CREDENTIAL[key] = (live, time.monotonic())
     return live

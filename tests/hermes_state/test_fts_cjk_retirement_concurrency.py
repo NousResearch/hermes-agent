@@ -146,3 +146,15 @@ def test_a_full_temporary_volume_is_neither_healthy_nor_damage(cjk_db, monkeypat
     assert not report["repaired"] and report["strategy"] is None
     assert "could not check state.db before repair" in report["error"]
     assert _store_snapshot(cjk_db) == before
+
+
+def test_no_usable_temporary_directory_is_not_reported_as_damage(cjk_db, monkeypatch):
+    import tempfile
+
+    def no_tempdir(*args, **kwargs):
+        raise FileNotFoundError("No usable temporary directory found")
+
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", no_tempdir)
+    monkeypatch.setattr(tempfile, "gettempdir", no_tempdir)
+    reason = repair._db_opens_cleanly(cjk_db)
+    assert isinstance(reason, repair.HealthCheckUnavailable) and "No usable temporary directory" in reason

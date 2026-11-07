@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 # choices (#52492). If OpenAI re-enables any, live discovery (_fetch_models_from_api) picks them
 # up automatically.
 DEFAULT_CODEX_MODELS: list[str] = [
+    "gpt-6.1-sol",
     "gpt-6-sol",
     "gpt-6-luna",
     "gpt-5.6-sol",
@@ -43,6 +44,7 @@ DEFAULT_CODEX_MODELS: list[str] = [
 # unsupported — that was wrong; restored here. Keep it in the curated fallback so Pro users still see Spark
 # in `/model` when live discovery is unavailable (offline first run, transient API failure).
 _FORWARD_COMPAT_TEMPLATE_MODELS: list[tuple[str, tuple[str, ...]]] = [
+    ("gpt-6.1-sol", ("gpt-6-sol", "gpt-5.6-sol")),
     ("gpt-6-sol", ("gpt-5.6-sol", "gpt-5.5")),
     ("gpt-6-luna", ("gpt-5.6-luna", "gpt-5.5")),
     ("gpt-5.6-sol", ("gpt-5.5", "gpt-5.4")),
@@ -74,7 +76,8 @@ def _add_forward_compat_models(model_ids: list[str]) -> list[str]:
 def _add_context_variants(model_ids: list[str]) -> list[str]:
     """Insert ``<slug>-900k`` large-context picker variants after eligible base slugs.
 
-    Base slugs keep the cheaper advertised 272K limit; the variant opts into the large window.
+    Base slugs keep the provider's advertised default (500K for Sol 6.1);
+    the variant opts into the larger window, capped by the account catalog.
     The suffix is Hermes-side only — stripped before the id hits the wire (agent/transports/codex.py,
     agent/auxiliary_client.py).
     """

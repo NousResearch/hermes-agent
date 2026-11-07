@@ -350,6 +350,7 @@ def run(column: str, root: Path) -> SimpleNamespace:
             time.sleep(2)  # let the pid-file watch see what the status probes did
         o.pid_history = watch.history
         o.relaunch = X.relaunch_verdict(inst, o.old_pid, o.boots, o.ident, o.up)
+        o.restart_wait = X.restart_wait_verdict(inst)
         o.pid_file = X.pid_file_verdict(inst, o.ident["pid"], watch.history) if o.ident else "no gateway"
         o.dash_listener = listener_pid(inst, o.dash_port)
         o.dash_roots = dashboards(inst)
@@ -406,6 +407,11 @@ class HandoffProperties:
 
     def test_update_moves_the_checkout(self, fleet):
         assert fleet.sha_after == fleet.target, f"the update did not move the checkout\n{fleet.diag}"
+
+    def test_restart_wait_ends_within_its_cap(self, fleet):
+        """A gateway that will not drain is stopped at ``agent.restart_after_turn_timeout``: the update
+        moves on in minutes and the report names what held it, instead of the job timing out."""
+        assert not fleet.restart_wait, f"{fleet.restart_wait}\n{fleet.diag}"
 
     def test_gateway_is_relaunched_once_on_the_new_commit(self, fleet):
         o = fleet

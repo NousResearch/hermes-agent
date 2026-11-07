@@ -17,6 +17,7 @@ Every process (gateway, dashboard, cron ticker, kanban dispatcher, the updater) 
 from __future__ import annotations
 
 import contextlib
+import datetime as dt
 import functools
 import json
 import os
@@ -41,6 +42,9 @@ from tests.e2e.core.upgrade.handoff._nshost import NamespaceHost
 
 TRACEBACK = I.TRACEBACK
 UPDATE_TIMEOUT = 1500
+# ``agent.restart_after_turn_timeout`` in every cell: a gateway that will not drain is forced to stop
+# after this instead of holding the update for the 30-minute default.
+RESTART_WAIT_CAP_S = 120
 API_KEY = "e2e-handoff-api-server-key"
 NEXT_MARKER = "docs/e2e-handoff-next-marker.txt"
 
@@ -235,7 +239,7 @@ def write_config(home: Path, provider_url: str, *, port: int | None = None, extr
     home.mkdir(parents=True, exist_ok=True)
     cfg: dict = {
         "model": {"provider": "custom", "base_url": provider_url, "default": "fake-model", "context_length": 128000},
-        "agent": {"api_max_retries": 1},
+        "agent": {"api_max_retries": 1, "restart_after_turn_timeout": RESTART_WAIT_CAP_S},
         "compression": {"enabled": False},
     }
     if port is not None:
@@ -406,6 +410,33 @@ def pid_file_pid(inst: Install) -> int | None:
 
 def receipt(inst: Install) -> dict:
     return read_json(inst.hermes_home / "logs" / "update_receipts" / "latest.json") or {}
+
+
+_LOG_TIME = r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d{3}) "
+_WAIT_OPENED = re.compile(_LOG_TIME + r".*Restart requested with \d+ active work unit\(s\); deferring stop\(\)", re.MULTILINE)
+_WAIT_CLOSED = re.compile(_LOG_TIME + r".*(Restart deferred wait complete|Restart after-turn wait timed out)", re.MULTILINE)
+_WAIT_HOLDERS = re.compile(r"Restart deferred: waiting on .*?: (\[.*\])$", re.MULTILINE)
+
+
+def _log_time(stamp: str) -> dt.datetime:
+    return dt.datetime.strptime(stamp, "%Y-%m-%d %H:%M:%S,%f")
+
+
+def restart_wait_verdict(inst: Install, slack_s: float = 15.0) -> str:
+    """'' when every restart wait the gateway logged closed within ``RESTART_WAIT_CAP_S``; otherwise
+    how long it held and the work units the gateway last named as holding it."""
+    log = inst.hermes_home / "logs" / "gateway.log"
+    text = log.read_text(errors="replace") if log.exists() else ""
+    closes = [_log_time(m.group(1)) for m in _WAIT_CLOSED.finditer(text)]
+    for opened in (_log_time(m.group(1)) for m in _WAIT_OPENED.finditer(text)):
+        closed = next((c for c in closes if c >= opened), None)
+        held = ((closed or dt.datetime.now()) - opened).total_seconds()
+        if closed is None or held > RESTART_WAIT_CAP_S + slack_s:
+            holders = _WAIT_HOLDERS.findall(text)
+            return (f"the gateway's restart wait held {held:.0f}s against its {RESTART_WAIT_CAP_S}s cap "
+                    f"({'never closed' if closed is None else 'closed late'}); last named holders: "
+                    f"{holders[-1] if holders else 'none'}")
+    return ""
 
 
 def settle_gateway(inst: Install, old_pid: int, *, timeout: float = 180) -> dict | None:

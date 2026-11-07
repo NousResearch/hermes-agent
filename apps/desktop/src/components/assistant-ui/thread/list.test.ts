@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   buildGroups,
+  FIRST_PAINT_BUDGET,
   firstVisibleGroupIndex,
   hasTranscriptTextSelection,
   HIDDEN_TRANSCRIPT_RENDER_BUDGET,
@@ -9,14 +10,17 @@ import {
   LIVE_TAIL_PARTS,
   liveTailStart,
   type MessageGroup,
+  mountedTranscriptPaneCount,
   resolveThreadScrollTarget,
+  retainedHiddenTranscriptIds,
   RUN_START_SNAP_THRESHOLD_PX,
   shouldAnchorBeforePrepend,
   shouldClampTranscriptBudget,
   shouldRePinOnTranscriptReload,
   shouldSnapOnRunStart,
   subscribeToThreadForeground,
-  transcriptPaneBudget
+  transcriptPaneBudget,
+  withGroupWeights
 } from './list'
 
 afterEach(() => {
@@ -119,6 +123,29 @@ describe('shouldClampTranscriptBudget', () => {
   it('snaps only a hot-hidden pane that outgrew the retention budget', () => {
     expect(shouldClampTranscriptBudget(true, 10, 5)).toBe(true)
     expect(shouldClampTranscriptBudget(true, 5, 5)).toBe(false)
+  })
+
+  it('leaves an evicted hot-hidden pane unsnapped while a retained one clamps', () => {
+    // Five hidden panes under a cap of four: 'old' evicts, the rest retain.
+    const retention = {
+      old: { hidden: true, hiddenAt: 1 },
+      a: { hidden: true, hiddenAt: 2 },
+      b: { hidden: true, hiddenAt: 3 },
+      c: { hidden: true, hiddenAt: 4 },
+      d: { hidden: true, hiddenAt: 5 }
+    }
+    const retained = retainedHiddenTranscriptIds(retention, 4)
+    expect(retained.has('old')).toBe(false)
+    const mounted = mountedTranscriptPaneCount(retention, retained)
+    expect(mounted).toBe(4)
+    expect(shouldClampTranscriptBudget(true, FIRST_PAINT_BUDGET, transcriptPaneBudget(mounted, true))).toBe(false)
+    expect(
+      shouldClampTranscriptBudget(
+        true,
+        FIRST_PAINT_BUDGET + HIDDEN_TRANSCRIPT_RENDER_BUDGET,
+        HIDDEN_TRANSCRIPT_RENDER_BUDGET
+      )
+    ).toBe(true)
   })
 })
 
@@ -536,5 +563,97 @@ describe('first user message is never swallowed (Show-earlier paging)', () => {
     expect(hidden).toBe(0)
     // The first user message survives as a distinct visible group.
     expect(groups.some(g => g.id === 'u1')).toBe(true)
+  })
+})
+
+describe('withGroupWeights', () => {
+  it('re-prices turns in a new currency without changing their shape', () => {
+    const groups = buildGroups(
+      signature([
+        ['u1', 'user', 1],
+        ['a1', 'assistant', 4],
+        ['u2', 'user', 1],
+        ['a2', 'assistant', 2]
+      ])
+    )
+
+    expect(withGroupWeights(groups, [5, 50, 7, 70])).toEqual([
+      { id: 'u1', indices: [0, 1], kind: 'turn', weight: 55 },
+      { id: 'u2', indices: [2, 3], kind: 'turn', weight: 77 }
+    ])
+  })
+
+  it('falls back to 1 for a missing weight entry', () => {
+    const groups = buildGroups(signature([['a', 'assistant', 9]]))
+
+    expect(withGroupWeights(groups, [])).toEqual([{ id: 'a', index: 0, kind: 'standalone', weight: 1 }])
+  })
+})
+
+describe('first-paint expanded pricing', () => {
+  it('fits only the newest turn of a tool-heavy page into FIRST_PAINT_BUDGET', () => {
+    // Three turns that paint as ~6 collapsed units but carry ~60 payload units
+    // each: first paint mounts them expanded, so the budget must cut in the
+    // expanded currency (#127684).
+    const groups = buildGroups(
+      signature([
+        ['u1', 'user', 1],
+        ['a1', 'assistant', 1],
+        ['u2', 'user', 1],
+        ['a2', 'assistant', 1],
+        ['u3', 'user', 1],
+        ['a3', 'assistant', 1]
+      ])
+    )
+
+    const paint = withGroupWeights(groups, [1, 1, 1, 1, 1, 1])
+    const expanded = withGroupWeights(groups, [2, 58, 2, 58, 2, 58])
+
+    expect(firstVisibleGroupIndex(paint, FIRST_PAINT_BUDGET)).toBe(0)
+    expect(firstVisibleGroupIndex(expanded, FIRST_PAINT_BUDGET)).toBe(groups.length - 1)
+  })
+})
+
+describe('retainedHiddenTranscriptIds', () => {
+  const entry = (hidden: boolean, hiddenAt: number) => ({ hidden, hiddenAt })
+
+  it('keeps every hidden pane while under the cap', () => {
+    expect([...retainedHiddenTranscriptIds({ a: entry(true, 3), b: entry(true, 1) }, 4)].sort()).toEqual(['a', 'b'])
+  })
+
+  it('evicts the least recently hidden panes beyond the cap', () => {
+    const retention = {
+      old: entry(true, 1),
+      mid: entry(true, 2),
+      fresh: entry(true, 3),
+      seen: entry(false, 4)
+    }
+
+    expect(retainedHiddenTranscriptIds(retention, 2)).toEqual(new Set(['fresh', 'mid']))
+  })
+
+  it('never retains a visible pane', () => {
+    expect(retainedHiddenTranscriptIds({ v: entry(false, 9) }, 4)).toEqual(new Set())
+  })
+})
+
+describe('mountedTranscriptPaneCount', () => {
+  it('excludes evicted hidden panes from the shared budget count', () => {
+    const retention = {
+      vis: { hidden: false, hiddenAt: 0 },
+      kept: { hidden: true, hiddenAt: 5 },
+      stale: { hidden: true, hiddenAt: 1 }
+    }
+
+    expect(mountedTranscriptPaneCount(retention, new Set(['kept']))).toBe(2)
+  })
+
+  it('counts every visible pane however many are mounted', () => {
+    const retention = {
+      a: { hidden: false, hiddenAt: 0 },
+      b: { hidden: false, hiddenAt: 0 }
+    }
+
+    expect(mountedTranscriptPaneCount(retention, new Set())).toBe(2)
   })
 })

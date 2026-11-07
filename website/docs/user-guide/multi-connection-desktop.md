@@ -246,8 +246,11 @@ that live on one gateway.
   confirmation names the machine. Picking **This device** asks for
   confirmation only when Hermes is not installed on this computer yet.
 - A gateway the last enumeration could not reach keeps its squares, marked
-  with an amber dot on its glyph — a sleeping box is still yours. Two
-  registrations of one backend collapse to a single group. Past thirteen
+  with an amber dot on its glyph — a sleeping box is still yours. A gateway
+  Desktop simply has not dialed yet (an SSH box, or **This device** while the
+  primary is a remote gateway) is not "unreachable": its squares come from the
+  profile directory listing and sit at rest without the dot; the first click
+  dials it. Two registrations of one backend collapse to a single group. Past thirteen
   squares across the fleet, the strip condenses into one menu sectioned by
   gateway.
 - The selected gateway survives a quit and relaunch only when **Settings →

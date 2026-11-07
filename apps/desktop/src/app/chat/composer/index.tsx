@@ -36,7 +36,7 @@ import { $showsAdvancedChrome } from '@/store/interface-mode'
 import { $chatOnboardingSolo } from '@/store/onboarding-intro'
 import { sessionBlockingPrompt } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
-import { $gatewayState } from '@/store/session'
+import { $gatewayState, $sessions, sessionMatchesStoredId } from '@/store/session'
 import { $botChatSessionIds, $sessionStates, $sessionTiles, isBotChatSession } from '@/store/session-states'
 import { useForcedTextDirection } from '@/store/text-direction'
 import { $threadScrolledUpBySession } from '@/store/thread-scroll'
@@ -89,6 +89,8 @@ import { shouldConvertPasteToAttachment } from './large-paste'
 import { ActionBadges } from './micro-actions'
 import { chipTypedPathOnSpace, pathifyRefs } from './path-refs'
 import { PreparedImageRecovery } from './prepared-image-recovery'
+import { PromptSuggestionChips } from './prompt-suggestion-chips'
+import { promptSuggestions } from './prompt-suggestions'
 import { renderComposerQueueSlot, useComposerQueueScopeKey } from './queue-slot'
 import { RestoredDraftNotice } from './restored-draft-notice'
 import {
@@ -116,6 +118,11 @@ import {
   selectionLinkLabel
 } from './url-refs'
 import { VoiceActivity, VoicePlaybackActivity } from './voice-activity'
+
+/** Chip row over an empty composer: three fit beside the input at usual widths
+ *  without wrapping, and the pool keeps one spare for the placeholder. */
+const STARTER_PROMPT_CHIPS = 3
+const STARTER_PROMPT_POOL = STARTER_PROMPT_CHIPS + 1
 
 /** Grid areas for the menu / input / controls row: one row when roomy, input
  *  above menu + controls when stacked, and one area per row once two touch-size
@@ -458,9 +465,42 @@ export function ChatBar({
     takeDraftRetry
   })
 
+  // Starter prompts from the user's own recent conversations. Only on an empty
+  // chat: a chip says "start like this", not "say this next", and once there is
+  // a transcript the sidebar is already the place you find old work. The pool is
+  // one longer than the chip row so the placeholder can offer a DIFFERENT line
+  // instead of repeating the first chip.
+  //
+  // "Empty" is the transcript's own answer, not "no session id": a fresh chat
+  // already carries a runtime id, so keying off that hid the row everywhere. The
+  // stored row is consulted too, because a resumed session renders an empty
+  // message list for a frame while it loads and must not flash the chips.
+  const sessions = useStore($sessions)
+  const threadEmpty = useStoreSelector(scope.$messages, messages => messages.length === 0)
+
+  const resumedHasTranscript = useMemo(
+    () =>
+      Boolean(sessionId) &&
+      sessions.some(row => sessionMatchesStoredId(row, sessionId!) && (row.message_count ?? 0) > 0),
+    [sessionId, sessions]
+  )
+
+  const starterPrompts = useMemo(
+    () =>
+      threadEmpty && !resumedHasTranscript
+        ? promptSuggestions(sessions, { excludeSessionId: sessionId, limit: STARTER_PROMPT_POOL })
+        : [],
+    [resumedHasTranscript, sessionId, sessions, threadEmpty]
+  )
+
   // Resting / reconnecting / starting placeholder text, re-rolled only on a real
   // conversation change.
-  const placeholder = useComposerPlaceholder({ disabled, reconnecting, sessionId })
+  const placeholder = useComposerPlaceholder({
+    disabled,
+    preferred: starterPrompts[STARTER_PROMPT_CHIPS]?.text ?? null,
+    reconnecting,
+    sessionId
+  })
 
   // Trigger / completion engine: @// detection, the adapter-driven item list,
   // popover selection, and chip insertion. The keydown nav block below consumes
@@ -1300,6 +1340,20 @@ export function ChatBar({
               : undefined
           }
         >
+          {/* Starters from the user's own recent conversations, above
+              everything else in the dock so they read as a way IN rather than
+              as chrome attached to a draft already in progress. They leave the
+              moment there is anything to send. */}
+          {starterPrompts.length > 0 && !hasText && !busy && !disabled && attachments.length === 0 && (
+            <PromptSuggestionChips
+              items={starterPrompts.slice(0, STARTER_PROMPT_CHIPS)}
+              label={t.composer.promptSuggestionsLabel}
+              onPick={text => {
+                loadIntoComposer(text, scope.attachments.$attachments.get())
+                focusInput()
+              }}
+            />
+          )}
           {/* Aligned to the composer SURFACE, which sits inside the composer's
               5px transparent grab margin — so both strips carry the same inset
               and share one left edge with it. */}

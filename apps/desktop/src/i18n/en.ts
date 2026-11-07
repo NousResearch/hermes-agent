@@ -3311,6 +3311,7 @@ export const en: Translations = {
 
   composer: {
     message: 'Message',
+    promptSuggestionsLabel: 'Recent asks',
     wakingProfile: profile => `Waking up ${profile}…`,
     placeholderStarting: 'Starting Hermes...',
     placeholderReconnecting: 'Reconnecting to Hermes…',

@@ -187,29 +187,57 @@ def _pet_changed_payload() -> dict:
     return {"enabled": False}
 
 
-# last_activity_at / _description are left out on purpose: the session activity heartbeat restamps
-# them mid-turn and on idle ticks, so hashing them re-fired sessions.changed every heartbeat window
-# (#98005). Liveness comes from session.active_list, and a real turn still moves message_count.
-_SESSION_SIGNATURE_FIELDS = (
-    "id", "source", "session_key", "display_name", "model", "parent_session_id",
-    "started_at", "ended_at", "end_reason", "message_count", "tool_call_count",
-    "cwd", "git_branch", "git_repo_root", "title", "title_source", "profile_name",
-    "archived", "pinned", "hidden", "last_read_at", "handoff_state",
-)
-# path -> (database/WAL mtime, session-table digest). The mtime guard keeps the
+# path -> (database/WAL mtime, session-table signature). The mtime guard keeps the
 # normal 0.5 s watch pass stat-only; SQLite is read only after another process
 # actually commits (and for ``utils.RACY_MTIME_WINDOW_NS`` after it, see _settled_mtime).
 _sessions_db_sig_cache: dict[str, tuple[object, tuple | None]] = {}
 
 
+def _session_list_revision(conn):
+    """The trigger-kept list revision (``hermes_state_common.SESSIONS_LIST_REVISION_SQL``), or None on a
+    store no build with those triggers has opened yet. One row, whatever the history size (#146643)."""
+    from hermes_state_common import SESSIONS_LIST_REVISION_KEY, SESSIONS_LIST_REVISION_TRIGGERS
+
+    names = SESSIONS_LIST_REVISION_TRIGGERS
+    installed = conn.execute(
+        f"SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name IN ({', '.join('?' * len(names))})",
+        names).fetchone()[0]
+    if installed != len(names):
+        return None
+    # The triggers write state_meta, so it exists; no row yet means no session write since they landed.
+    row = conn.execute("SELECT value FROM state_meta WHERE key = ?", (SESSIONS_LIST_REVISION_KEY,)).fetchone()
+    return ("revision", row[0] if row else None)
+
+
+def _session_rows_digest(conn, mtime):
+    """Hash every list column of every session: the signature of a store without the revision triggers."""
+    import hashlib
+    from hermes_state_common import SESSION_LIST_FIELDS
+
+    available = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
+    fields = tuple(field for field in SESSION_LIST_FIELDS if field in available)
+    if not fields:
+        # A state.db without a readable sessions table (foreign schema, legacy
+        # or transient file): keep the old mtime contract so any move still
+        # wakes the sidebar instead of silently never broadcasting.
+        return ("mtime-fallback", mtime)
+    order = " ORDER BY id" if "id" in available else ""
+    rows = conn.execute(f"SELECT {', '.join(fields)} FROM sessions{order}")
+    digest = hashlib.blake2b(digest_size=16)
+    for row in rows:
+        digest.update(repr(tuple(row)).encode("utf-8", "backslashreplace"))
+        digest.update(b"\0")
+    return (fields, digest.digest())
+
+
 def _session_db_content_sig(db_path: Path):
-    """Digest list/transcript-relevant session rows, excluding unrelated tables.
+    """Signature of the list-relevant session rows, excluding unrelated tables.
 
     ``gateway_heartbeats`` shares state.db and writes every minute. Using the
     database mtime directly therefore emits sessions.changed while no session
-    changed (#98005). Cache behind the DB/WAL mtime, then inspect only the
-    sessions columns that drive Desktop projections. Legacy stores safely use
-    the subset of columns they have.
+    changed (#98005). Cache behind the DB/WAL mtime, then read the revision the
+    sessions triggers keep; a store without them is digested over the sessions
+    columns that drive Desktop projections (legacy stores use the subset they have).
     """
     mtime = _newest_mtime_ns((db_path, db_path.with_name(f"{db_path.name}-wal")))
     cache_key = str(db_path)
@@ -224,27 +252,12 @@ def _session_db_content_sig(db_path: Path):
 
     conn = None
     try:
-        import hashlib
         from hermes_state import _connect_tracked_db
         from hermes_state_holders import read_only_db_uri
 
         conn = _connect_tracked_db(read_only_db_uri(db_path), tracking_path=db_path,
                                    uri=True, timeout=0.05)
-        available = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
-        fields = tuple(field for field in _SESSION_SIGNATURE_FIELDS if field in available)
-        if not fields:
-            # A state.db without a readable sessions table (foreign schema, legacy
-            # or transient file): keep the old mtime contract so any move still
-            # wakes the sidebar instead of silently never broadcasting.
-            signature = ("mtime-fallback", mtime)
-        else:
-            order = " ORDER BY id" if "id" in available else ""
-            rows = conn.execute(f"SELECT {', '.join(fields)} FROM sessions{order}")
-            digest = hashlib.blake2b(digest_size=16)
-            for row in rows:
-                digest.update(repr(tuple(row)).encode("utf-8", "backslashreplace"))
-                digest.update(b"\0")
-            signature = (fields, digest.digest())
+        signature = _session_list_revision(conn) or _session_rows_digest(conn, mtime)
     except Exception:
         # A busy/locked read after a good one keeps the last digest and leaves the cached mtime
         # stale so the next pass re-reads: digest -> mtime -> digest would broadcast twice.

@@ -34,6 +34,10 @@ _efforts_lock = threading.Lock()
 _warm_started = False
 _disk_checked = False
 
+# A stale verdict beats no verdict: a past-TTL mirror is still served while a
+# background refresh runs.
+_DISK_TTL_SECONDS = 24 * 60 * 60
+
 
 class _CacheState:
     """Efforts cache + once-only flags for one Hermes home (same names as the module slots)."""

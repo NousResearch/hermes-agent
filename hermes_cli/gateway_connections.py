@@ -76,7 +76,9 @@ __all__ = [
 STORE_NAME = "gateway-connections.json"
 TOKENS_NAME = "gateway-connection-tokens.json"
 _REGISTRY_KEYS = ("version", "primary", "launchMode", "lastUsed", "connections", "quarantined")
-_CARRIED_KEYS = ("importedFrom", "importNotices")
+#: ``quarantinedOverflow``: quarantined entries past the normalizer's cap that Desktop's import merged
+#: in; carried verbatim so no quarantined user data is lost (``importNotices`` names it).
+_CARRIED_KEYS = ("importedFrom", "importNotices", "quarantinedOverflow")
 
 
 def _root(root: Optional[Path]) -> Path:

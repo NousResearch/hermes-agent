@@ -1,8 +1,10 @@
+import type { GatewayEvent } from '@hermes/shared'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, render } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $voiceConversationStartRequest } from '@/store/composer'
 import {
   $parkedQueueSessions,
   $queuedPromptsBySession,
@@ -10,6 +12,11 @@ import {
   getQueuedPrompts
 } from '@/store/composer-queue'
 import { $activeConnectionId } from '@/store/connections'
+import {
+  $profileNavigationRequest,
+  cancelProfileNavigationRestore,
+  requestProfileNavigationRestore
+} from '@/store/profile-navigation'
 import {
   $activeSessionId,
   $connection,
@@ -30,6 +37,8 @@ import type { AmbientGatewayRequest } from './session-rpc-dispatcher'
 // dispatcher. Stub unrelated chrome/boot and the prompt/network boundaries;
 // this proves scheduling/routing, not a WebSocket or an LLM's execution.
 const fixture = vi.hoisted(() => ({
+  gatewayEvent: null as ((event: GatewayEvent) => void) | null,
+  freshDraft: vi.fn(),
   ambientRequest: vi.fn(async () => {
     throw new Error('foreground must not receive background RPCs')
   }),
@@ -106,7 +115,13 @@ vi.mock('./surfaces', () => ({
   StatusbarSurface: () => null,
   TerminalSurface: () => null
 }))
-vi.mock('../gateway/hooks/use-gateway-boot', () => ({ useGatewayBoot: () => ({}) }))
+vi.mock('../gateway/hooks/use-gateway-boot', () => ({
+  useGatewayBoot: ({ handleGatewayEvent }: { handleGatewayEvent: (event: GatewayEvent) => void }) => {
+    fixture.gatewayEvent = handleGatewayEvent
+
+    return {}
+  }
+}))
 vi.mock('../session/hooks/use-context-suggestions', () => ({ useContextSuggestions: () => ({}) }))
 vi.mock('../session/hooks/use-cwd-actions', () => ({ useCwdActions: () => ({}) }))
 vi.mock('../session/hooks/use-hermes-config', () => ({ useHermesConfig: () => ({}) }))
@@ -114,7 +129,9 @@ vi.mock('../session/hooks/use-message-stream', () => ({ useMessageStream: () => 
 vi.mock('../session/hooks/use-model-controls', () => ({ useModelControls: () => ({}) }))
 vi.mock('../session/hooks/use-preview-routing', () => ({ usePreviewRouting: () => ({}) }))
 vi.mock('../session/hooks/use-route-resume', () => ({ useRouteResume: () => ({}) }))
-vi.mock('../session/hooks/use-session-actions', () => ({ useSessionActions: () => ({}) }))
+vi.mock('../session/hooks/use-session-actions', () => ({
+  useSessionActions: () => ({ startFreshSessionDraft: fixture.freshDraft })
+}))
 vi.mock('../session/hooks/use-session-list-actions', () => ({ useSessionListActions: () => ({}) }))
 vi.mock('../chat/hooks/use-composer-actions', () => ({ useComposerActions: () => ({}) }))
 vi.mock('../hooks/use-keybinds', () => ({ useKeybinds: () => ({}) }))
@@ -174,6 +191,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  cancelProfileNavigationRestore()
   cleanup()
   queryClient.clear()
   $queuedPromptsBySession.set({})
@@ -234,4 +252,23 @@ describe('ContribWiring background queue: independent remote owner', () => {
     })
     expect(getQueuedPrompts('stored-remote')).toHaveLength(0)
   })
+})
+
+it('a profile-less wake word starts a fresh chat and cancels pending restore', () => {
+  render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <ContribWiring>{null}</ContribWiring>
+      </QueryClientProvider>
+    </MemoryRouter>
+  )
+  const voice = $voiceConversationStartRequest.get()
+  fixture.freshDraft.mockImplementationOnce(() => expect($profileNavigationRequest.get()).toBeNull())
+  act(() => {
+    requestProfileNavigationRestore('coder')
+    fixture.gatewayEvent!({ type: 'wake.detected', payload: { start_new_session: true } } as GatewayEvent)
+  })
+  expect(fixture.freshDraft).toHaveBeenCalled()
+  expect($voiceConversationStartRequest.get()).toBeGreaterThan(voice)
+  expect($profileNavigationRequest.get()).toBeNull()
 })

@@ -3,6 +3,7 @@ import { atom, batch, computed } from 'nanostores'
 
 import type { HermesConnection } from '@/global'
 import { getProfiles, hermesApi, setApiRequestProfile, STARTUP_REQUEST_TIMEOUT_MS } from '@/hermes'
+import { activeConnectionScopeSuffix } from '@/lib/connection-scoped'
 import { hostHas } from '@/lib/host-capabilities'
 import { persistStore } from '@/lib/persist-store'
 import { initialGatewayProfile } from '@/lib/platform'
@@ -35,6 +36,13 @@ import { $connection, clearComposerSelectionOwner, setComposerSelectionOwner, se
 import type { SessionOwnerRoute } from '@/store/session-request-router'
 import { reloadOpenStarmapGraph, resetStarmapGraph } from '@/store/starmap'
 import type { ProfileInfo } from '@/types/hermes'
+
+import {
+  $profileNavigationRequest,
+  cancelProfileNavigationRestore,
+  dropProfileNavigationRestore,
+  requestProfileNavigationRestore
+} from './profile-navigation'
 
 // Canonical key for a profile: trimmed, empty → "default". Used everywhere we
 // compare a session's owning profile against the live gateway's profile.
@@ -446,12 +454,32 @@ export function resolveActiveSourceOwnerRoute(profile: string): AgentProfileRout
 }
 
 // Bumped whenever the open session should be dropped for a fresh new-session
-// draft: a profile switch/create (below), or deleting the project that owns the
+// draft: a profile switch/create or deleting the project that owns the
 // currently-open session (store/projects). The chat controller subscribes and
 // resets to the intro draft, so we never strand the user in an orphaned view.
 export const $freshSessionRequest = atom(0)
 
+function finishProfileNavigationActivation(sequence: number, succeeded: boolean): void {
+  const request = $profileNavigationRequest.get()
+
+  if (request?.sequence !== sequence) {
+    return
+  }
+
+  const landed =
+    succeeded &&
+    normalizeProfileKey($activeGatewayProfile.get()) === request.profile &&
+    (!$connection.get() || normalizeProfileKey($connection.get()?.profile) === request.profile)
+
+  $profileNavigationRequest.set({
+    ...request,
+    activation: landed ? 'ready' : 'failed',
+    scope: activeConnectionScopeSuffix()
+  })
+}
+
 export function requestFreshSession(): void {
+  cancelProfileNavigationRestore()
   $freshSessionRequest.set($freshSessionRequest.get() + 1)
 }
 
@@ -976,8 +1004,16 @@ export const $profileScope = computed([$showAllProfiles, $activeGatewayProfile],
 // $activeGatewayProfile → name, so $profileScope follows).
 export function selectProfile(name: string): void {
   const target = normalizeProfileKey(name)
-  // Switching profiles (or coming back from the all-profiles browse view) starts
-  // fresh; re-tapping the profile you're already in leaves your session be.
+  // Restore the target's main pane when switching or leaving All profiles;
+  // re-tapping the profile you're already in leaves your session be.
+  const pending = $profileNavigationRequest.get()
+
+  // A -> B -> A can be a re-tap while B is still activating. It must still
+  // cancel B's navigation and deliberately issue no new restore or draft for A.
+  if (pending && pending.profile !== target) {
+    dropProfileNavigationRestore(pending.sequence)
+  }
+
   const switching = $showAllProfiles.get() || target !== normalizeProfileKey($activeGatewayProfile.get())
   $showAllProfiles.set(false)
   $newChatProfile.set(target)
@@ -993,6 +1029,8 @@ export function selectProfile(name: string): void {
     requestFreshSession()
   }
 
+  const navigationRequest = switching ? requestProfileNavigationRestore(target) : null
+
   // A profile with a remote override can fail to activate because the remote
   // host rejected its saved token (rotated/revoked). That must surface as a
   // "re-enter token" affordance, never a silently dead profile (#91349).
@@ -1006,7 +1044,16 @@ export function selectProfile(name: string): void {
   // call instead (#79886). Decided now: the source is the one picked from.
   const shouldRememberStartupProfile = remembersProfilePick(target)
 
-  void Promise.all([activateOnCurrentSource(target), shouldRememberStartupProfile])
+  const activation = activateOnCurrentSource(target)
+
+  if (navigationRequest) {
+    void activation.then(
+      () => finishProfileNavigationActivation(navigationRequest.sequence, true),
+      () => finishProfileNavigationActivation(navigationRequest.sequence, false)
+    )
+  }
+
+  void Promise.all([activation, shouldRememberStartupProfile])
     .then(([, shouldRemember]) => {
       if (shouldRemember) {
         return window.hermesDesktop?.profile?.remember(target)

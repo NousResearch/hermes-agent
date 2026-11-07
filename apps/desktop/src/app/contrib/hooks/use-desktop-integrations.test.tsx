@@ -11,6 +11,12 @@ import { $hubInstalledOverride } from '@/store/hub-actions'
 import { requestMcpInstallFromDeepLink } from '@/store/mcp-deeplink-install'
 import { requestPluginCatalogInstallFromDeepLink } from '@/store/plugin-catalog-install'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
+import { requestFreshSession } from '@/store/profile'
+import {
+  $profileNavigationRequest,
+  PROFILE_NAVIGATION_RESTORE_TIMEOUT_MS,
+  requestProfileNavigationRestore
+} from '@/store/profile-navigation'
 import {
   _resetLegacyDiscardForTests,
   _resetSessionOwnerHintsForTests,
@@ -77,6 +83,8 @@ describe('useDesktopIntegrations', () => {
 
   beforeEach(() => {
     window.localStorage.clear()
+    window.history.replaceState(null, '', '#/capabilities')
+    $profileNavigationRequest.set(null)
     _resetLegacyDiscardForTests()
     vi.mocked(requestMcpInstallFromDeepLink).mockClear()
     vi.mocked(requestPluginCatalogInstallFromDeepLink).mockClear()
@@ -115,6 +123,7 @@ describe('useDesktopIntegrations', () => {
       desktopWindow.hermesDesktop = initialHermesDesktop
     }
 
+    vi.useRealTimers()
     vi.restoreAllMocks()
     document.body.replaceChildren()
   })
@@ -174,6 +183,100 @@ describe('useDesktopIntegrations', () => {
       }
     )
   }
+
+  it('the switch draft cannot overwrite either profile history, even after timeout until genuine navigation', () => {
+    vi.useFakeTimers()
+    window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/capabilities')
+    window.localStorage.setItem('hermes.desktop.lastRoute.profile.coder', '/saved')
+    const hook = render({ locationPathname: '/capabilities', profileReady: true })
+    act(() => {
+      requestFreshSession()
+      requestProfileNavigationRestore('coder')
+    })
+
+    const props = {
+      activeProfile: 'default',
+      locationPathname: '/',
+      profileReady: true,
+      resumeExhaustedSessionId: null,
+      resumeLastSession: true,
+      routedSessionId: null,
+      sessions: []
+    }
+
+    hook.rerender(props)
+    expect(window.localStorage.getItem('hermes.desktop.lastRoute.profile.default')).toBe('/capabilities')
+    hook.rerender({ ...props, activeProfile: 'coder' })
+    expect(window.localStorage.getItem('hermes.desktop.lastRoute.profile.coder')).toBe('/saved')
+    act(() => vi.advanceTimersByTime(PROFILE_NAVIGATION_RESTORE_TIMEOUT_MS))
+    expect(window.localStorage.getItem('hermes.desktop.lastRoute.profile.coder')).toBe('/saved')
+    hook.rerender({ ...props, activeProfile: 'coder', locationPathname: '/capabilities/skills' })
+    expect(window.localStorage.getItem('hermes.desktop.lastRoute.profile.coder')).toBe('/capabilities/skills')
+    vi.useRealTimers()
+  })
+
+  it('does not write the outgoing page on the render that applies the switch draft', () => {
+    window.localStorage.setItem('hermes.desktop.lastRoute.profile.coder', '/saved')
+    requestProfileNavigationRestore('coder')
+    window.history.replaceState(null, '', '#/')
+    render({ activeProfile: 'coder', locationPathname: '/capabilities', profileReady: true })
+    expect(window.localStorage.getItem('hermes.desktop.lastRoute.profile.coder')).toBe('/saved')
+  })
+
+  it('does not pause genuine page navigation while a switch request is pending', () => {
+    const hook = render({ locationPathname: '/capabilities', profileReady: true })
+    act(() => requestProfileNavigationRestore('coder'))
+    hook.rerender({
+      activeProfile: 'default',
+      locationPathname: '/capabilities/skills',
+      profileReady: true,
+      resumeExhaustedSessionId: null,
+      resumeLastSession: true,
+      routedSessionId: null,
+      sessions: []
+    })
+    expect(window.localStorage.getItem('hermes.desktop.lastRoute.profile.default')).toBe('/capabilities/skills')
+    hook.unmount()
+  })
+
+  describe('base cold-start characterization', () => {
+    it('boot fresh-session resets do not abandon cold restore', () => {
+      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/saved')
+      const sessions = [session({ id: 'saved' })]
+      const hook = render({ profileReady: false, sessions })
+      act(() => requestFreshSession())
+      hook.rerender({
+        activeProfile: 'default',
+        locationPathname: '/',
+        profileReady: true,
+        resumeExhaustedSessionId: null,
+        resumeLastSession: true,
+        routedSessionId: null,
+        sessions
+      })
+      expect(navigate).toHaveBeenCalledWith('/saved', { replace: true })
+    })
+
+    it('writes the empty route in the same effect when nothing is remembered', () => {
+      render({ profileReady: true })
+      expect(window.localStorage.getItem('hermes.desktop.lastRoute.profile.default')).toBe('/')
+    })
+
+    it('keeps the remembered id and does not navigate after a failed by-id read', async () => {
+      window.localStorage.setItem('hermes.desktop.lastSessionId.profile.default', 'missing')
+      render({ profileReady: true, sessions: [session()] })
+      await act(async () => {})
+      expect(navigate).not.toHaveBeenCalled()
+      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBe('missing')
+    })
+
+    it('restores before the separate exhausted-id cleanup runs', () => {
+      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/exhausted')
+      render({ profileReady: true, sessions: [session({ id: 'exhausted' })], resumeExhaustedSessionId: 'exhausted' })
+      expect(navigate).toHaveBeenCalledWith('/exhausted', { replace: true })
+      expect(window.localStorage.getItem('hermes.desktop.lastRoute.profile.default')).toBeNull()
+    })
+  })
 
   describe('profile-ready gate', () => {
     it('does NOT restore before profileReady is true', () => {

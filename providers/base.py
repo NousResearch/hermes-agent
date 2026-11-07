@@ -588,7 +588,18 @@ class ProviderProfile:
 
         try:
             with open_credentialed_url(req, timeout=timeout) as resp:
-                data = json.loads(resp.read().decode())
+                raw = resp.read()
+                # A profile's default_headers may request gzip (e.g. the
+                # kimi-coding plugin sends "Accept-Encoding: gzip" to sidestep
+                # the httpx/brotlicffi SSE decode bug), but urllib does not
+                # decompress responses. Decode the gzip body here or the probe
+                # dies on '.decode()' and the whole provider silently falls
+                # back to its stale static catalog.
+                if raw[:2] == b"\x1f\x8b":
+                    import gzip
+
+                    raw = gzip.decompress(raw)
+                data = json.loads(raw.decode())
             items = data if isinstance(data, list) else data.get("data", [])
             from hermes_cli.chat_catalog import chat_catalog_ids
 

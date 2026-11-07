@@ -1,5 +1,6 @@
 """Tests for ProviderProfile.fetch_models base_url override (issue #47009)."""
 
+import gzip
 import json
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from threading import Thread
@@ -223,3 +224,57 @@ def test_profiles_without_model_listing_never_hit_the_network():
         for profile in flagged:
             assert profile.fetch_models(api_key="k", base_url=profile.base_url) is None, profile.name
     opener.assert_not_called()
+
+
+class _GzipModelHandler(BaseHTTPRequestHandler):
+    """Serves /models gzip-encoded, like Moonshot's API does when a profile
+    sends ``Accept-Encoding: gzip`` (the kimi-coding plugin always does)."""
+
+    models = [{"id": "kimi-k3.1-pro"}, {"id": "kimi-k3"}]
+
+    def do_GET(self):
+        if self.path.rstrip("/") == "/models":
+            body = gzip.compress(json.dumps({"data": self.models}).encode())
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Encoding", "gzip")
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def log_message(self, format, *args):
+        pass  # suppress noise
+
+
+class TestFetchModelsGzipResponse:
+    """fetch_models() must decompress gzip bodies (Moonshot/kimi picker bug:
+    the profile requests gzip, urllib never decompresses, '.decode()' raises
+    UnicodeDecodeError, and the provider silently falls back to its stale
+    static catalog — kimi-k3.1-pro never reached the picker)."""
+
+    def test_gzip_response_is_decompressed(self):
+        _GzipModelHandler.models = [{"id": "kimi-k3.1-pro"}, {"id": "kimi-k3"}]
+        server = HTTPServer(("127.0.0.1", 0), _GzipModelHandler)
+        port = server.server_address[1]
+        Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            profile = ProviderProfile(
+                name="test-gzip",
+                base_url=f"http://127.0.0.1:{port}",
+                default_headers={"Accept-Encoding": "gzip"},
+            )
+            result = profile.fetch_models(api_key="test-key")
+            assert result == ["kimi-k3.1-pro", "kimi-k3"]
+        finally:
+            server.shutdown()
+
+    def test_plain_response_still_works(self):
+        """Uncompressed responses keep parsing exactly as before."""
+        server, port = _start_server([{"id": "plain-model"}])
+        try:
+            profile = ProviderProfile(name="test-plain", base_url=f"http://127.0.0.1:{port}")
+            assert profile.fetch_models(api_key="test-key") == ["plain-model"]
+        finally:
+            server.shutdown()

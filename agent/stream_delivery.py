@@ -89,6 +89,11 @@ class StreamDeliveryMixin:
         self._native_reasoning_streamed = False
         # Next stream re-reads plugins.stream_reasoning_deltas (config edits land per request).
         self._stream_reasoning_hooks_enabled = None
+        # A plugin's interrupt request belongs to one model response, so both the latch and the
+        # config read are dropped here and re-created by the next stream that asks for them.
+        self._stream_interrupt_request = None
+        self._stream_interrupts_enabled = None
+        self._plugin_cut_reason = ""
 
         def deliver(tail: str) -> None:
             # Recorded only once shown (as ``_fire_stream_delta``): a held tail must not become an
@@ -313,6 +318,79 @@ class StreamDeliveryMixin:
                 where, _n,
             )
 
+    def _plugin_stream_interrupt(self):
+        """The request object handed to plugin stream hooks for the CURRENT model response.
+
+        One object per model response, shared by every hook event in it, so a stream of deltas
+        allocates nothing extra after the first. The object only carries an ask; honouring it is
+        the core's decision (see ``_plugin_interrupt_pending``).
+        """
+        interrupt = getattr(self, "_stream_interrupt_request", None)
+        if interrupt is None:
+            from agent.plugin_stream_hooks import StreamInterruptRequest
+
+            interrupt = self._stream_interrupt_request = StreamInterruptRequest()
+        return interrupt
+
+    def _plugin_stream_interrupts_enabled(self) -> bool:
+        """Whether this response honours plugin interrupt requests (config, read once per response).
+
+        ``plugins.stream_interrupt_requests`` defaults to False: honouring an ask is a policy the
+        user opts into, not something a plugin can grant itself.
+        """
+        cached = getattr(self, "_stream_interrupts_enabled", None)
+        if cached is None:
+            from agent.plugin_stream_hooks import stream_interrupt_requests_enabled
+
+            cached = self._stream_interrupts_enabled = stream_interrupt_requests_enabled()
+        return cached
+
+    def _plugin_interrupt_pending(self) -> bool:
+        """Token-path read: True when a plugin asked for a cut AND the user allows honouring it."""
+        if not self._plugin_stream_interrupts_enabled():
+            return False
+        interrupt = getattr(self, "_stream_interrupt_request", None)
+        return bool(interrupt is not None and interrupt.requested())
+
+    def _take_plugin_interrupt_reason(self) -> str:
+        """Reason string for a cut already decided by :meth:`_plugin_interrupt_pending`."""
+        interrupt = getattr(self, "_stream_interrupt_request", None)
+        reason = interrupt.reason() if interrupt is not None else ""
+        return reason or "a plugin asked the core to stop this stream"
+
+    def _stream_halted(self) -> bool:
+        """True when this response must stop: the user interrupted, or a plugin asked and was allowed."""
+        return bool(getattr(self, "_interrupt_requested", False)) or self._plugin_interrupt_pending()
+
+    def _stream_stop_field(self) -> str:
+        """Close-field name for the wire's stream loop, or "" while the response continues.
+
+        The loop asks one question per chunk, and the answer names what to record when the response
+        is closed: a user interrupt stays the user's, and a plugin's ask is logged with its reason.
+        """
+        if getattr(self, "_interrupt_requested", False):
+            return "interrupt_stream_close_failed"
+        if not self._plugin_interrupt_pending():
+            return ""
+        reason = self._take_plugin_interrupt_reason()
+        self._plugin_cut_reason = reason
+        logger.warning(
+            "%sStream cut at a plugin's request: %s (model=%s, provider=%s).",
+            getattr(self, "log_prefix", ""), reason, getattr(self, "model", "") or "unknown",
+            getattr(self, "provider", "") or "unknown")
+        return "plugin_interrupt_stream_close_failed"
+
+    def _stream_stopped(self, runaway: Any = None) -> bool:
+        """True when this response is being cut: the repetition watch fired, or a plugin's ask won."""
+        return bool(runaway) or bool(getattr(self, "_plugin_cut_reason", ""))
+
+    def _stamp_cut(self, response, *, runaway: Any = None) -> None:
+        """Mark a cut response so the turn ends here instead of continuing the rejected text."""
+        if runaway:
+            response._runaway_repetition = True
+        if getattr(self, "_plugin_cut_reason", ""):
+            response._plugin_interrupt_reason = self._plugin_cut_reason
+
     def _stream_hook_base_payload(self) -> dict[str, Any]:
         return {
             "turn_id": getattr(self, "_current_turn_id", "") or "",
@@ -321,6 +399,8 @@ class StreamDeliveryMixin:
             "model": self.model or "",
             "provider": self.provider or "",
             "surface": self.platform or "cli",
+            # The only way a plugin can ask the core to stop a stream: set a flag, never block.
+            "interrupt": self._plugin_stream_interrupt(),
         }
 
     def _emit_stream_start(self) -> None:

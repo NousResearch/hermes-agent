@@ -78,7 +78,9 @@ def _(rid, params: dict) -> dict:
         if expected := _str_param(params, "expected_hosted_task_id"):
             with session["history_lock"]:
                 task = session.get("_hosted_room_task")
-                if not (session.get("running") and isinstance(task, dict) and task.get("task_id") == expected):
+                generation = params.get("expected_hosted_execution_generation")
+                if not (session.get("running") and isinstance(task, dict) and task.get("task_id") == expected
+                        and generation in (None, task.get("execution_generation"))):
                     resume_wake = False
                     return _ok(rid, {"status": "not_interrupted", "interrupted": False})
         sid = str(params.get("session_id") or "")

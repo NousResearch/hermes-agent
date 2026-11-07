@@ -72,7 +72,8 @@ def _generation_update(set_clause: str, status: str) -> str:
 
 
 _SETTLE_RUNNING_SQL = _generation_update(_SETTLE_SET, "running") + f" AND {_RUN_FENCE}"
-_SETTLE_STOPPING_SQL = _generation_update(_SETTLE_SET, "stopping")
+_SETTLE_STOPPING_SQL = _task_update(
+    _SETTLE_SET, f"status IN ('stopping', 'deferred') AND {_GENERATION_FENCE}")
 _REQUEUE_RUNNING_SQL = _task_update(
     f"{_REQUEUE_SET}, started_at=NULL, updated_at=?", f"status='running' AND {_GENERATION_FENCE} AND {_RUN_FENCE}")
 _CANCEL_QUEUED_SQL = _task_update(_CANCEL_SET, "status IN ('queued', 'deferred') AND cancel_generation=?")
@@ -80,7 +81,8 @@ _BEGIN_STOP_SQL = _task_update(
     "status='stopping', cancel_generation=?, cancel_id=?, updated_at=?",
     "status IN ('running', 'indeterminate') AND cancel_generation=?")
 _COMPLETE_STOP_SQL = _task_update(
-    "status='cancelled', terminal_at=?, updated_at=?", "status='stopping' AND cancel_id=? AND cancel_generation=?")
+    "status='cancelled', terminal_at=?, updated_at=?",
+    "status IN ('stopping', 'deferred') AND cancel_id=? AND cancel_generation=?")
 
 # Lease-first recovery transitions: name -> (fenced status, SET clause, generation-guard stale message,
 # row stale message); the UPDATE is _generation_update(set_clause, status).
@@ -494,7 +496,8 @@ def _transition(
     stale: str, now: float, lease: DriverLease | None = None, lease_first: bool = True,
     replay: Callable[[sqlite3.Row], dict[str, Any] | None] | None = None,
     guard: Callable[[sqlite3.Row], None] | None = None,
-    allow_expired_lease: bool = False) -> dict[str, Any]:
+    allow_expired_lease: bool = False,
+    expected_execution_generation: int | None = None) -> dict[str, Any]:
     """Run one fenced task transition: load -> idempotent replay -> lease/fence guard -> UPDATE.
 
     ``sql`` binds ``(*set_params, room_id, task_id, *fence_params)`` and must hit exactly one row or ``stale``
@@ -507,6 +510,8 @@ def _transition(
         if lease is not None and lease_first:
             _require_active_lease(conn, lease, now=now)
         row = _load_task(conn, identity)
+        if expected_execution_generation is not None and row['execution_generation'] != expected_execution_generation:
+            raise StaleTaskError("task execution changed during control")
         if replay is not None and (replayed := replay(row)) is not None:
             return replayed
         if lease is not None and not lease_first:
@@ -717,7 +722,7 @@ def settle_stopping_task(
 ) -> dict[str, Any]:
     """Commit a completion that won the race with an unacknowledged Stop."""
     _terminal_settlement_id(settlement_id, status)  # settlement errors take precedence over generation errors
-    if expected_execution_generation < 1 or expected_cancel_generation < 1:
+    if expected_execution_generation < 1 or expected_cancel_generation < 0:
         raise DriverValidationError("stopping settlement generations are invalid")
     now, replay, set_params = _settlement(settlement_id, status, result, clock)
     return _transition(
@@ -830,7 +835,8 @@ def requeue_not_admitted_task(db_path: DbPath, attempt: TaskAttempt, *, clock: C
 
 
 def cancel_task(
-    db_path: DbPath, identity: TaskIdentity, *, cancel_id: Any, expected_cancel_generation: int, clock: Clock
+    db_path: DbPath, identity: TaskIdentity, *, cancel_id: Any, expected_cancel_generation: int, clock: Clock,
+    expected_execution_generation: int | None = None,
 ) -> dict[str, Any]:
     """Cancel a queued task before any external work was admitted."""
     cancel_id = _identifier(cancel_id, label="cancel_id")
@@ -844,12 +850,14 @@ def cancel_task(
         _require_cancel_generation(row, expected_cancel_generation)
     return _transition(
         db_path, identity, now=now, replay=_cancel_replay(cancel_id), guard=guard, sql=_CANCEL_QUEUED_SQL,
+        expected_execution_generation=expected_execution_generation,
         set_params=(expected_cancel_generation + 1, cancel_id, now, now), fence_params=(expected_cancel_generation,),
         stale="task changed during cancellation")
 
 
 def begin_task_cancel(
-    db_path: DbPath, identity: TaskIdentity, *, cancel_id: Any, expected_cancel_generation: int, clock: Clock
+    db_path: DbPath, identity: TaskIdentity, *, cancel_id: Any, expected_cancel_generation: int, clock: Clock,
+    expected_execution_generation: int | None = None,
 ) -> dict[str, Any]:
     """Persist a stop intent without claiming the remote run has stopped."""
     cancel_id = _identifier(cancel_id, label="cancel_id")
@@ -861,22 +869,25 @@ def begin_task_cancel(
         _require_cancel_generation(row, expected_cancel_generation)
     return _transition(
         db_path, identity, now=now, replay=_cancel_replay(cancel_id, "stopping"), guard=guard, sql=_BEGIN_STOP_SQL,
+        expected_execution_generation=expected_execution_generation,
         set_params=(expected_cancel_generation + 1, cancel_id, now), fence_params=(expected_cancel_generation,),
         stale="task changed during stop request")
 
 
 def complete_task_cancel(
-    db_path: DbPath, identity: TaskIdentity, *, cancel_id: Any, expected_cancel_generation: int, clock: Clock
+    db_path: DbPath, identity: TaskIdentity, *, cancel_id: Any, expected_cancel_generation: int, clock: Clock,
+    expected_execution_generation: int | None = None,
 ) -> dict[str, Any]:
     """Commit cancellation only after the transport acknowledges exact Stop."""
     cancel_id = _identifier(cancel_id, label="cancel_id")
     now = _timestamp(clock)
     def guard(row: sqlite3.Row) -> None:
-        if (row["status"], row["cancel_id"], int(row["cancel_generation"])) != (
-            "stopping", cancel_id, expected_cancel_generation):
+        if row["status"] not in {"stopping", "deferred"} or (row["cancel_id"], int(row["cancel_generation"])) != (
+                cancel_id, expected_cancel_generation):
             raise StaleTaskError("task stop acknowledgement is stale")
     return _transition(
         db_path, identity, now=now, replay=_cancel_replay(cancel_id), guard=guard, sql=_COMPLETE_STOP_SQL,
+        expected_execution_generation=expected_execution_generation,
         set_params=(now, now), fence_params=(cancel_id, expected_cancel_generation),
         stale="task changed during stop acknowledgement")
 

@@ -9,6 +9,7 @@ anchored on concrete command identifiers — so they cannot fire on prose. Defen
 
 from __future__ import annotations
 
+import itertools
 import logging
 import os
 import re
@@ -71,8 +72,8 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
 # `taskkill /F /IM python.exe`, `pkill -9 python3` or `killall python` carry no hermes/gateway token
 # yet terminate it (#113667). Token-aware rather than a line regex: option VALUES are never read as
 # targets (`pkill -u <user> chrome`), `-f` cmdline patterns are judged as patterns, and other image
-# names (`taskkill /F /IM chrome.exe`) stay available. Numeric-PID kills are out of scope:
-# the explicit PID / `proc_*` id IS the ownership-scoped route the rejection points to.
+# names (`taskkill /F /IM chrome.exe`) stay available. Explicit PIDs are checked separately
+# only when the caller can establish the gateway's identity in the same PID namespace.
 _INTERPRETER_IMAGE_RE = re.compile(r"^pythonw?(?:\d+(?:\.\d+)*)?(?:\.exe)?$")
 _HOST_INTERPRETER_NAME = Path(sys.executable).name.lower() if sys.executable else ""
 _KILLER_VALUE_OPTIONS = {
@@ -657,15 +658,23 @@ def _executable_name(token: str) -> str:
     return Path(token).name or token
 
 
-def _peel_transparent_prefixes(segment: list[str], index: int) -> int:
+def _peel_transparent_prefixes(segment: list[str], index: int, *, stop_at_command_query: bool = False,
+                               max_layers: int = _MAX_PREFIX_PEELS) -> int:
     """Index of the command a wrapper chain actually executes. Unchanged if not a wrapper; may be
-    ``len(segment)`` when a wrapper has no operand — callers must bounds-check."""
-    for _ in range(_MAX_PREFIX_PEELS):
+    ``len(segment)`` when a wrapper has no operand — callers must bounds-check. ``max_layers=1``
+    peels exactly one wrapper so callers can inspect each layer of a chain (``sudo env -S '…'``)."""
+    for _ in range(max_layers):
         if index >= len(segment):
             return index
         name = _executable_name(segment[index])
         if name not in _TRANSPARENT_COMMAND_PREFIXES:
             return index
+        if stop_at_command_query and name == "command":
+            for option in segment[index + 1:]:
+                if option == "--" or not option.startswith("-"):
+                    break
+                if "v" in option[1:] or "V" in option[1:]:
+                    return len(segment)
         value_options = _TRANSPARENT_PREFIX_VALUE_OPTIONS.get(name, frozenset())
         index += 1
         while index < len(segment):
@@ -765,6 +774,215 @@ def _lifecycle_command_scan_with_data_exemption(text: str) -> bool:
         return False
     normalized = _SHELL_LINE_CONTINUATION.sub(" ", text)
     return contains_gateway_lifecycle_command(_mask_data_sink_arguments(normalized))
+
+
+# Reserved words _pid_scan_segments peels: quoting ANY of them makes the word a command name
+# instead of syntax (`'time' kill 12345` runs a program literally named time, sending nothing).
+_PID_RESERVED_PREFIX_WORDS = ("then", "do", "else", "elif", "if", "while", "until", "time")
+_QUOTED_RESERVED_WORD_RE = re.compile(
+    r"(?<!\\)(['\"])(" + "|".join(map(re.escape, _PID_RESERVED_PREFIX_WORDS)) + r")\1"
+)
+
+
+def _mask_quoted_shell_prefixes(command: str) -> str:
+    """Keep quoted/escaped reserved words distinct after POSIX shlex removes quotes."""
+    def _mask_word(match: re.Match) -> str:
+        return f"{match.group(1)}_{match.group(2)[1:]}{match.group(1)}"
+
+    command = _QUOTED_RESERVED_WORD_RE.sub(_mask_word, command)
+    result = []
+    quote = None
+    escaped = False
+    for char in command:
+        if escaped:
+            result.append("_" if char in "!{" else char)
+            escaped = False
+        elif char == "\\" and quote != "'":
+            result.append(char)
+            escaped = True
+        elif quote:
+            if char == quote:
+                quote = None
+                result.append(char)
+            else:
+                result.append("_" if char in "!{" else char)
+        elif char in "'\"":
+            quote = char
+            result.append(char)
+        else:
+            result.append(char)
+    return "".join(result)
+
+
+def _extract_substitution_span(command: str, open_paren_index: int) -> Optional[tuple[str, int]]:
+    """``(inner, end_index)`` for a ``$(...)`` whose ``(`` sits at *open_paren_index*, honoring
+    nesting. ``None`` when no matching close exists."""
+    depth = 0
+    index = open_paren_index
+    while index < len(command):
+        char = command[index]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return command[open_paren_index + 1:index], index + 1
+        index += 1
+    return None
+
+
+def _backtick_payload(command: str, tick_index: int) -> Optional[tuple[str, int]]:
+    """``(inner, end_index)`` for the backtick substitution opening at *tick_index*; backticks do
+    not nest, so the next unescaped backtick closes. ``None`` when none follows."""
+    end = command.find("`", tick_index + 1)
+    if end == -1:
+        return None
+    return command[tick_index + 1:end], end + 1
+
+
+def _iter_command_substitution_payloads(command: str) -> Iterator[str]:
+    """Yield command text inside ``$(...)`` and backtick substitutions. Both EXECUTE their
+    payload, unquoted or inside double quotes; inside single quotes the same characters are
+    literal data and yield nothing."""
+    quote: Optional[str] = None
+    index = 0
+    while index < len(command):
+        char = command[index]
+        if quote == "'":
+            if char == "'":
+                quote = None
+            index += 1
+        elif quote == '"':
+            if char == '"':
+                quote = None
+                index += 1
+            elif char == "\\":
+                index += 2
+            elif char == "$" and command[index + 1:index + 2] == "(":
+                span = _extract_substitution_span(command, index + 1)
+                if span is None:
+                    index += 1
+                else:
+                    yield span[0]
+                    index = span[1]
+            elif char == "`":
+                span = _backtick_payload(command, index)
+                if span is None:
+                    index += 1
+                else:
+                    yield span[0]
+                    index = span[1]
+            else:
+                index += 1
+        elif char in "'\"":
+            quote = char
+            index += 1
+        elif char == "\\":
+            index += 2
+        elif char == "$" and command[index + 1:index + 2] == "(":
+            span = _extract_substitution_span(command, index + 1)
+            if span is None:
+                index += 1
+            else:
+                yield span[0]
+                index = span[1]
+        elif char == "`":
+            span = _backtick_payload(command, index)
+            if span is None:
+                index += 1
+            else:
+                yield span[0]
+                index = span[1]
+        else:
+            index += 1
+
+
+def _pid_scan_segments(command: str) -> Iterator[list[str]]:
+    """Peel recognized shell syntax while retaining quoted command payloads."""
+    original = _iter_command_segments(command)
+    masked = _iter_command_segments(_mask_quoted_shell_prefixes(command))
+    for segment, syntax in zip(original, masked):
+        offset = 0
+        while offset < len(syntax) and syntax[offset] in (
+            "then", "do", "else", "elif", "if", "while", "until", "!", "{", "time"
+        ):
+            is_time = syntax[offset] == "time"
+            offset += 1
+            if is_time and offset < len(syntax) and syntax[offset] == "-p":
+                offset += 1
+        yield segment[offset:]
+
+
+def _pid_executable_index(segment: list[str]) -> Optional[int]:
+    """Resolve wrappers except command's -v/-V lookup modes."""
+    index = _command_token_index(segment)
+    while index is not None and index < len(segment):
+        if _executable_name(segment[index]) == "command":
+            options = segment[index + 1:]
+            for option in options:
+                if option == "--" or not option.startswith("-"):
+                    break
+                if "v" in option[1:] or "V" in option[1:]:
+                    return None
+        next_index = _peel_transparent_prefixes(segment, index, stop_at_command_query=True)
+        if next_index == index:
+            return index
+        index = next_index
+    return None
+
+
+def _targets_gateway_pid(command: str, gateway_pid: int) -> bool:
+    """Recognize literal PID operands of executed kill and taskkill commands."""
+    from tools.shell_heredoc import strip_inert_heredoc_bodies
+
+    return _pid_targets_text(strip_inert_heredoc_bodies(command), gateway_pid)
+
+
+def _pid_targets_text(text: str, gateway_pid: int) -> bool:
+    """``_targets_gateway_pid`` on already-heredoc-stripped *text* (substitution payloads arrive
+    pre-stripped from their parent)."""
+    for segment in _pid_scan_segments(text):
+        index = _pid_executable_index(segment)
+        if index is None:
+            continue
+        name = _executable_name(segment[index]).lower().removesuffix(".exe")
+        args = segment[index + 1:]
+        if name == "taskkill":
+            if any(arg.lower() == "/s" for arg in args):
+                continue
+            if any(arg.lower() == "/pid" and value.isascii() and value.isdecimal()
+                   and int(value) == gateway_pid for arg, value in itertools.pairwise(args)):
+                return True
+        elif name == "kill":
+            operands_only = False
+            skip_value = False
+            for position, arg in enumerate(args):
+                if skip_value:
+                    skip_value = False
+                    continue
+                if not operands_only:
+                    if arg == "--":
+                        # POSIX end-of-options: every later token is a PID operand, so `-0`
+                        # after it is a target spec, not the signal-0 probe.
+                        operands_only = True
+                        continue
+                    if arg in ("-l", "-L", "--list", "--table"):
+                        break  # signal-name listing sends nothing
+                    if arg in ("-0", "-s0", "-n0", "--signal=0"):
+                        break  # signal-0 probe sends nothing
+                    if arg.startswith("--signal="):
+                        continue
+                    if arg in ("-s", "--signal", "-n"):
+                        if position + 1 < len(args) and args[position + 1] == "0":
+                            break  # explicit signal 0 sends nothing
+                        skip_value = True
+                        continue
+                if arg.isascii() and arg.isdecimal() and int(arg) == gateway_pid:
+                    return True
+    for payload in _iter_command_substitution_payloads(text):
+        if _pid_targets_text(payload, gateway_pid):
+            return True
+    return False
 
 
 def _direct_lifecycle_scan(command: str) -> bool:
@@ -918,32 +1136,48 @@ def _references_at(segment: list[str], index: int, cwd: Optional[str]) -> Iterat
         yield from _resolved_or_nothing(executable, cwd)
 
 
-def _iter_referenced_shell_scripts(command: str, *, cwd: Optional[str] = None) -> Iterator[Path]:
+def _iter_referenced_shell_scripts(command: str, *, cwd: Optional[str] = None,
+                                   pid_scan: bool = False) -> Iterator[Path]:
     """Yield scripts executed directly or through a POSIX shell. Each segment is read at the
     original token AND at the peeled wrapper target — additive on purpose: peeling must never REMOVE
     a reference (a local ``./timeout`` is a script, not the coreutils wrapper)."""
-    for segment in _iter_command_segments(command):
+    segments = _pid_scan_segments(command) if pid_scan else _iter_command_segments(command)
+    for segment in segments:
         index = _command_token_index(segment)
         if index is None:
             continue
         yield from _references_at(segment, index, cwd)
-        peeled = _peel_transparent_prefixes(segment, index)
+        peeled = (_pid_executable_index(segment) if pid_scan
+                  else _peel_transparent_prefixes(segment, index))
+        if peeled is None:
+            continue
         if peeled != index:
             yield from _references_at(segment, peeled, cwd)
 
 
-def _iter_shell_command_payloads(command: str) -> Iterator[str]:
+def _iter_shell_command_payloads(command: str, *, pid_scan: bool = False) -> Iterator[str]:
     """Yield code passed through ``sh|bash|... -c`` (and ``su -c`` / ``env -S``) for recursive
     scanning."""
-    for segment in _iter_command_segments(command):
+    segments = _pid_scan_segments(command) if pid_scan else _iter_command_segments(command)
+    for segment in segments:
         index = _command_token_index(segment)
         if index is None:
             continue
-        # Read at the ORIGINAL token: peeling past `su`/`env` would discard the command option.
-        for option in _STRING_COMMAND_OPTIONS.get(_executable_name(segment[index]), ()):
-            yield from _iter_option_values(segment, index, option)
-        index = _executed_command_index(segment)
-        if index is None or _executable_name(segment[index]) not in _SHELL_EXECUTABLES:
+        # String command options at EVERY wrapper layer: peeling past `sudo` must not hide the
+        # `su -c` / `env -S` behind it, so each layer's options are read before peeling past it.
+        seen: set[int] = set()
+        while index is not None and index < len(segment) and index not in seen:
+            seen.add(index)
+            for option in _STRING_COMMAND_OPTIONS.get(_executable_name(segment[index]), ()):
+                yield from _iter_option_values(segment, index, option)
+            peeled = _peel_transparent_prefixes(
+                segment, index, stop_at_command_query=pid_scan, max_layers=1)
+            if peeled == index:
+                break
+            index = peeled
+        if index is None or index >= len(segment):
+            continue
+        if _executable_name(segment[index]) not in _SHELL_EXECUTABLES:
             continue
         arguments = segment[index + 1 :]
         for arg_index, argument in enumerate(arguments[:-1]):
@@ -1093,6 +1327,7 @@ def _read_script_for_scanning(script_path: str) -> tuple[str, Optional[str]]:
 def _contains_unsafe_gateway_action(
     command: str, *, cwd: Optional[str], depth: int, visited: set[Path], budget: _LifecycleScanBudget,
     read_remote_script: Optional[_ReadRemoteScriptFn] = None, executed: bool = True,
+    gateway_pid: Optional[int] = None,
 ) -> bool:
     """``executed=False`` means *command* is the content of a file that is only MENTIONED in inert
     (masked) text: it is still scanned for a literal lifecycle command, but "could not scan" (budget,
@@ -1100,7 +1335,9 @@ def _contains_unsafe_gateway_action(
     # Charge BEFORE _direct_lifecycle_scan: every scan in it tokenizes with shlex.
     if not budget.charge_text(command):
         return _budget_exhausted(budget, "text", depth) if executed else False
-    if _direct_lifecycle_scan(command):
+    if _direct_lifecycle_scan(command) or (
+        executed and gateway_pid is not None and _targets_gateway_pid(command, gateway_pid)
+    ):
         return True
     if depth >= _MAX_REFERENCED_SCRIPT_DEPTH:
         return executed
@@ -1108,7 +1345,7 @@ def _contains_unsafe_gateway_action(
     def recurse(text: str, cwd: Optional[str], executed: bool) -> bool:
         return _contains_unsafe_gateway_action(
             text, cwd=cwd, depth=depth + 1, visited=visited, budget=budget,
-            read_remote_script=read_remote_script, executed=executed,
+            read_remote_script=read_remote_script, executed=executed, gateway_pid=gateway_pid,
         )
 
     # The walks below must see the same masked view `_direct_lifecycle_scan` sees (#110422): a
@@ -1118,7 +1355,7 @@ def _contains_unsafe_gateway_action(
 
     walk_command = strip_inert_heredoc_bodies(command)
 
-    for payload in _iter_shell_command_payloads(walk_command):
+    for payload in _iter_shell_command_payloads(walk_command, pid_scan=gateway_pid is not None):
         if recurse(payload, cwd, executed):
             return True
 
@@ -1126,7 +1363,9 @@ def _contains_unsafe_gateway_action(
     # `/x/restart.sh` to os.system() executes it. Only the fail-closed verdicts (cloud placeholder,
     # oversized/binary, budget) stay restricted to the executed view — a mere data mention must not
     # trip them. Executed candidates come first so a mention never starves a real script's budget.
-    candidates = [(path, executed) for path in _iter_referenced_shell_scripts(walk_command, cwd=cwd)]
+    candidates = [(path, executed) for path in _iter_referenced_shell_scripts(
+        walk_command, cwd=cwd, pid_scan=gateway_pid is not None
+    )]
     if walk_command != command:
         candidates += [(path, False) for path in _iter_referenced_shell_scripts(command, cwd=cwd)]
 
@@ -1184,6 +1423,7 @@ def _contains_unsafe_gateway_action(
 def scan_gateway_lifecycle(
     command: str, *, cwd: Optional[str] = None,
     read_remote_script: Optional[_ReadRemoteScriptFn] = None,
+    gateway_pid: Optional[int] = None,
 ) -> tuple[bool, Optional[str]]:
     """``(unsafe, refusal)``: *refusal* names a non-lifecycle reason the walk failed closed (budget,
     size, device, live SQLite, cloud) so callers can tell the model; ``None`` when the verdict is a
@@ -1202,17 +1442,22 @@ def scan_gateway_lifecycle(
     try:
         unsafe = _contains_unsafe_gateway_action(
             command, cwd=cwd, depth=0, visited=set(), budget=budget,
-            read_remote_script=read_remote_script,
+            read_remote_script=read_remote_script, gateway_pid=gateway_pid,
         )
         return unsafe, budget.refusal if unsafe else None
     except Exception:
+        if gateway_pid is not None:
+            logger.warning("local gateway lifecycle scan failed", exc_info=True)
+            return True, "the local gateway lifecycle scan failed unexpectedly"
         logger.warning(
             "lifecycle guard referenced-script walk failed; "
             "falling back to direct-scan verdict",
             exc_info=True,
         )
         try:
-            return _direct_lifecycle_scan(command), None
+            return (_direct_lifecycle_scan(command) or (
+                gateway_pid is not None and _targets_gateway_pid(command, gateway_pid)
+            )), None
         except Exception:
             # If even the data-argument masker fails, fall to raw regex + submit scan: stay total.
             return (contains_gateway_lifecycle_command(command)

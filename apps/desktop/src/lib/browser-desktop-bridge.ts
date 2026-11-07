@@ -7,7 +7,11 @@ import { createBrowserConnectionBridge } from '@/lib/browser-connection'
 import { createBrowserDesktopPluginsBridge } from '@/lib/browser-desktop-plugins'
 import { createBrowserFilesBridge } from '@/lib/browser-files'
 import { WEBAPP_LAUNCH_REQUIRED } from '@/lib/browser-launch-session'
-import { onBrowserFocusSession, showBrowserNotification } from '@/lib/browser-notifications'
+import {
+  installBrowserNotifications,
+  onBrowserFocusSession,
+  showBrowserNotification
+} from '@/lib/browser-notifications'
 import { createBrowserProfileBridge } from '@/lib/browser-profile'
 import { createBrowserSettings } from '@/lib/browser-settings'
 import { createBrowserTerminal } from '@/lib/browser-terminal'
@@ -167,6 +171,7 @@ export function installBrowserDesktopBridge(): boolean {
 
   window.hermesDesktop = bridge
   document.documentElement.dataset.hermesDesktopHost = 'browser'
+  installBrowserNotifications(bootstrap.basePath)
 
   return true
 }

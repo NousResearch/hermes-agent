@@ -517,10 +517,11 @@ class HermesTokenStorage:
             return
         self.loaded_issuer = str(issuer)
 
-    def strip_refresh_token(self) -> None:
+    def strip_refresh_token(self, reason: str = "issuer-mismatched") -> None:
         """Drop the refresh token (and its issuer record) from disk, keeping the access token: the
         unexpired access token may still be used, but a refresh token must never go to a different
-        issuer than the one that granted it."""
+        issuer than the one that granted it — nor be re-sent after the issuer says the grant is dead
+        (``reason="revoked-grant"``, #150367)."""
         data = _read_json(self._tokens_path())
         if data is None or not data.get("refresh_token"):
             return
@@ -532,8 +533,8 @@ class HermesTokenStorage:
         except OSError as exc:
             logger.warning("Could not strip refresh token for %s: %s", self._server_name, exc)
             return
-        logger.info("Removed issuer-mismatched refresh token for %s (re-authorization will be required "
-                    "when the access token expires)", self._server_name)
+        logger.info("Removed %s refresh token for %s (re-authorization will be required "
+                    "when the access token expires)", reason, self._server_name)
 
     @staticmethod
     def _coerce_secret_auth_method(data: dict) -> bool:

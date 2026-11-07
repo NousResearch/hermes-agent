@@ -56,7 +56,10 @@ def _configure(runner, tmp_path, *, setting=True, other_profile=False):
     ("parent", False, True, False, True),
     (True, True, True, False, False),
     (False, False, False, False, True),
-    (False, False, True, True, True),
+    (False, False, None, True, True),
+    # A machinery turn that answers an addressed follow-up delivers the recovery reply: the fold
+    # marks it reply_expected=True and no room opted into silence (#149679).
+    (False, False, True, True, False),
 ])
 async def test_room_config_controls_delivery(monkeypatch, tmp_path, lane, setting,
                                             other_profile, reply_expected, internal, silent):

@@ -223,6 +223,22 @@ def is_machinery_display_kind(display_kind: Any) -> bool:
     return display_kind in MACHINERY_DISPLAY_KINDS
 
 
+def follow_up_is_addressed(event: Any) -> bool:
+    """True when a message folded into a running turn obliges that turn to answer it.
+
+    A flag the adapter already knew wins. A DM is addressed by construction, and there adapters
+    leave ``reply_expected`` unset — without that derivation a steered DM message inherits the
+    machinery turn's silence permission and goes unanswered (#149679). Bot peers and internal
+    events never create the obligation: their turns must still end the exchange in silence.
+    """
+    if getattr(event, "internal", False) or getattr(getattr(event, "source", None), "is_bot", False):
+        return False
+    expected = getattr(event, "reply_expected", None)
+    if expected is not None:
+        return expected is True
+    return getattr(getattr(event, "source", None), "chat_type", None) in {"dm", "private"}
+
+
 def silence_allowed(
     display_kind: Any, reply_expected: Optional[bool] = None, *,
     allow_silence: Optional[bool] = None, agent_result: Optional[dict] = None,
@@ -230,9 +246,13 @@ def silence_allowed(
     """Keep existing exemptions; room opt-in additionally requires a healthy completed result.
 
     Marker recognition stays with the caller. Extra health restrictions apply only to the new
-    room permission, preserving the established internal/unaddressed semantics.
+    room permission, preserving the established internal/unaddressed semantics. A machinery turn
+    that answers an addressed follow-up is no exception: the fold marks it ``reply_expected``, and
+    that human message must not vanish on a bare marker (#149679).
     """
-    if is_machinery_display_kind(display_kind) or reply_expected is False:
+    if reply_expected is False:
+        return True
+    if is_machinery_display_kind(display_kind) and reply_expected is not True:
         return True
     return (allow_silence is True and isinstance(agent_result, dict)
             and not any(agent_result.get(k) for k in ("failed", "partial", "interrupted", "error"))

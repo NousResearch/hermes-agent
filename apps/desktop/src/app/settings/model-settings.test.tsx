@@ -246,6 +246,33 @@ describe('ModelSettings', () => {
     expect(screen.queryByRole('button', { name: 'Set up provider' })).toBeNull()
   })
 
+  it.each([
+    { aliases: ['custom:a-relay', 'custom:minimax-cn', 'minimax-cn'], expected: 'custom:minimax-cn' },
+    { aliases: [], expected: 'minimax-cn' }
+  ])('selects the main catalog row as $expected without using display aliases', async ({ aliases, expected }) => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        { name: 'Nous', slug: 'nous', models: ['hermes-4'], authenticated: true },
+        { name: 'A relay', slug: 'minimax-cn', aliases, models: ['relay-model'], authenticated: true }
+      ]
+    })
+    renderModelSettings()
+
+    fireEvent.click(await screen.findByRole('combobox', { name: 'Provider' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'A relay' }))
+    fireEvent.click(screen.getByRole('combobox', { name: 'Model' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'relay-model' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
+
+    await waitFor(() =>
+      expect(setModelAssignment).toHaveBeenCalledWith({
+        scope: 'main',
+        provider: expected,
+        model: 'relay-model'
+      })
+    )
+  })
+
   it('preserves a user-defined provider endpoint when applying the main model', async () => {
     getGlobalModelOptions.mockResolvedValueOnce({
       providers: [

@@ -9,6 +9,7 @@
 import {
   Button,
   catalogProviderMatches,
+  catalogProviderSelectionId,
   GlyphSpinner,
   Input,
   Select,
@@ -250,7 +251,10 @@ export function ModelPicker({ bot = null, value, onChange, placeholderModel }: M
               const provModels = (prov?.models || []).map(m => (typeof m === 'string' ? m : m.id || m.name || ''))
               const first = provModels[0] || ''
               onChange({
-                provider: v,
+                // A user-defined row is cataloged under its bare key; the
+                // canonical `custom:<key>` identity is what routes to that
+                // endpoint instead of a built-in of the same name.
+                provider: prov ? catalogProviderSelectionId(prov) : v,
                 model: prov && provModels.includes(value.model) ? value.model : first
               })
             }

@@ -1,0 +1,191 @@
+{
+ "family": "gateway",
+ "legacy_modules": [
+  "hermes_state_gateway.py::SessionGatewayMixin.record_gateway_session_peer",
+  "hermes_state_gateway.py::SessionGatewayMixin.save_gateway_routing_entry",
+  "hermes_state_gateway.py::SessionGatewayMixin.replace_gateway_routing_entries",
+  "hermes_state_gateway.py::SessionGatewayMixin.load_gateway_routing_entries",
+  "hermes_state_gateway.py::SessionGatewayMixin.list_never_active_keyed_sessions",
+  "hermes_state_gateway.py::SessionGatewayMixin.gateway_routing_entry_for_session",
+  "hermes_state_gateway.py::SessionGatewayMixin._routing_entries_for_sessions",
+  "hermes_state_gateway.py::SessionGatewayMixin._delete_routing_entries_for_sessions",
+  "hermes_state_gateway.py::SessionGatewayMixin.find_latest_gateway_session_for_peer",
+  "hermes_state_gateway.py::SessionGatewayMixin.find_orphaned_gateway_sessions",
+  "hermes_state_gateway.py::SessionGatewayMixin.adopt_orphaned_gateway_session",
+  "hermes_state_telegram.py::SessionTelegramTopicsMixin._topic_read_one",
+  "hermes_state_telegram.py::SessionTelegramTopicsMixin._topic_read_all",
+  "hermes_state_telegram.py::SessionTelegramTopicsMixin.apply_telegram_topic_migration",
+  "hermes_state_telegram.py::SessionTelegramTopicsMixin.enable_telegram_topic_mode",
+  "hermes_state_telegram.py::SessionTelegramTopicsMixin.disable_telegram_topic_mode",
+  "hermes_state_telegram.py::SessionTelegramTopicsMixin.is_telegram_topic_mode_enabled",
+  "hermes_state_telegram.py::SessionTelegramTopicsMixin.get_telegram_topic_binding",
+  "hermes_state_telegram.py::SessionTelegramTopicsMixin.list_telegram_topic_bindings_for_chat",
+  "hermes_state_telegram.py::SessionTelegramTopicsMixin.get_telegram_topic_binding_by_session",
+  "hermes_state_telegram.py::SessionTelegramTopicsMixin.delete_telegram_topic_binding",
+  "hermes_state_telegram.py::SessionTelegramTopicsMixin.bind_telegram_topic",
+  "hermes_state_telegram.py::SessionTelegramTopicsMixin.is_telegram_session_linked_to_topic",
+  "hermes_state_mutation_retirement.py::route_retired",
+  "hermes_state_mutation_retirement.py::fence_shared_routes",
+  "hermes_state_mutation_retirement.py::_reclaim_expired",
+  "hermes_state_sessions.py::SessionSessionsMixin.find_session_by_origin",
+  "hermes_state_local.py::moved_receipts",
+  "hermes_state_local.py::release_receipts",
+  "hermes_state_local.py::hand_off_conversations",
+  "hermes_state_local.py::_segment_root",
+  "hermes_state_local.py::_title_follows_head"
+ ],
+ "units": [
+  {
+   "backend": "persistence/sqlite/gateway/routing.py::SQLiteRoutingRepository._delete_routing_entries_for_sessions",
+   "legacy": "hermes_state_gateway.py::SessionGatewayMixin._delete_routing_entries_for_sessions#0"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/_routes.py::_reclaim_expired",
+   "legacy": "hermes_state_mutation_retirement.py::_reclaim_expired#0"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/routing.py::SQLiteRoutingRepository._routing_entries_for_sessions",
+   "legacy": "hermes_state_gateway.py::SessionGatewayMixin._routing_entries_for_sessions#0"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/routing.py::SQLiteRoutingRepository._topic_read_all",
+   "legacy": "hermes_state_telegram.py::SessionTelegramTopicsMixin._topic_read_all#0"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/routing.py::SQLiteRoutingRepository._topic_read_one",
+   "legacy": "hermes_state_telegram.py::SessionTelegramTopicsMixin._topic_read_one#0"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/_routes.py::apply_telegram_topic_migration",
+   "legacy": "hermes_state_telegram.py::SessionTelegramTopicsMixin.apply_telegram_topic_migration#0,1,2,3,4,5,6,7"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/_routes.py::fence_shared_routes",
+   "legacy": "hermes_state_mutation_retirement.py::fence_shared_routes#0,1,2"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/routing.py::SQLiteRoutingRepository.adopt_orphan",
+   "legacy": "hermes_state_gateway.py::SessionGatewayMixin.adopt_orphaned_gateway_session#0,1,2,3"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/routing.py::SQLiteRoutingRepository.bind_topic",
+   "legacy": "hermes_state_telegram.py::SessionTelegramTopicsMixin.bind_telegram_topic#0,1"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/routing.py::SQLiteRoutingRepository.delete_topic_binding",
+   "legacy": "hermes_state_telegram.py::SessionTelegramTopicsMixin.delete_telegram_topic_binding#0,1,2"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/routing.py::SQLiteRoutingRepository.disable_topic_mode",
+   "legacy": "hermes_state_telegram.py::SessionTelegramTopicsMixin.disable_telegram_topic_mode#0,1"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/routing.py::SQLiteRoutingRepository.enable_topic_mode",
+   "legacy": "hermes_state_telegram.py::SessionTelegramTopicsMixin.enable_telegram_topic_mode#0"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/routing.py::SQLiteRoutingRepository.get_topic_binding",
+   "legacy": "hermes_state_telegram.py::SessionTelegramTopicsMixin.get_telegram_topic_binding#0"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/routing.py::SQLiteRoutingRepository.get_topic_binding_for_session",
+   "legacy": "hermes_state_telegram.py::SessionTelegramTopicsMixin.get_telegram_topic_binding_by_session#0"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/routing.py::SQLiteRoutingRepository.is_session_linked_to_topic",
+   "legacy": "hermes_state_telegram.py::SessionTelegramTopicsMixin.is_telegram_session_linked_to_topic#0"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/routing.py::SQLiteRoutingRepository.is_topic_mode_enabled",
+   "legacy": "hermes_state_telegram.py::SessionTelegramTopicsMixin.is_telegram_topic_mode_enabled#0"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/routing.py::SQLiteRoutingRepository.latest_session_for_peer",
+   "legacy": "hermes_state_gateway.py::SessionGatewayMixin.find_latest_gateway_session_for_peer#0,1"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/routing.py::SQLiteRoutingRepository.list_topic_bindings_for_chat",
+   "legacy": "hermes_state_telegram.py::SessionTelegramTopicsMixin.list_telegram_topic_bindings_for_chat#0"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/routing.py::SQLiteRoutingRepository.load_routing_entries",
+   "legacy": "hermes_state_gateway.py::SessionGatewayMixin.load_gateway_routing_entries#0",
+   "names": {
+    "scope": "routing_scope"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/routing.py::SQLiteRoutingRepository.never_active_keyed_sessions",
+   "legacy": "hermes_state_gateway.py::SessionGatewayMixin.list_never_active_keyed_sessions#0"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/routing.py::SQLiteRoutingRepository.orphaned_sessions",
+   "legacy": "hermes_state_gateway.py::SessionGatewayMixin.find_orphaned_gateway_sessions#0,1,2"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/routing.py::SQLiteRoutingRepository.record_session_peer",
+   "legacy": "hermes_state_gateway.py::SessionGatewayMixin.record_gateway_session_peer#0,1,2,3"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/routing.py::SQLiteRoutingRepository.replace_routing_entries",
+   "legacy": "hermes_state_gateway.py::SessionGatewayMixin.replace_gateway_routing_entries#0,1,2",
+   "names": {
+    "scope": "routing_scope"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/routing.py::SQLiteRoutingRepository.route_retired",
+   "legacy": "hermes_state_mutation_retirement.py::route_retired#0"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/routing.py::SQLiteRoutingRepository.routing_entry_for_session",
+   "legacy": "hermes_state_gateway.py::SessionGatewayMixin.gateway_routing_entry_for_session#0"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/routing.py::SQLiteRoutingRepository.session_for_origin",
+   "legacy": "hermes_state_sessions.py::SessionSessionsMixin.find_session_by_origin#0"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/routing.py::SQLiteRoutingRepository.upsert_routing_entry",
+   "legacy": "hermes_state_gateway.py::SessionGatewayMixin.save_gateway_routing_entry#0",
+   "names": {
+    "scope": "routing_scope"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/_local_lineage.py::moved_receipts",
+   "legacy": "hermes_state_local.py::moved_receipts"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/_local_lineage.py::release_receipts",
+   "legacy": "hermes_state_local.py::release_receipts"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/_local_lineage.py::hand_off_conversations",
+   "legacy": "hermes_state_local.py::hand_off_conversations"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/_local_lineage.py::_segment_root",
+   "legacy": "hermes_state_local.py::_segment_root"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/_local_lineage.py::_title_follows_head",
+   "legacy": "hermes_state_local.py::_title_follows_head"
+  }
+ ],
+ "builders": [
+  {
+   "backend": "persistence/sqlite/gateway/_routes.py::_sql_freshest_of",
+   "legacy": "hermes_state_common.py::_sql_freshest_of"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/_routes.py::_sql_in_window",
+   "legacy": "hermes_state_common.py::_sql_in_window"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/_routes.py::_sql_session_last_active",
+   "legacy": "hermes_state_common.py::_sql_session_last_active"
+  }
+ ],
+ "not_moved": []
+}

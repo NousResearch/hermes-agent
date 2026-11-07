@@ -1,0 +1,150 @@
+{
+  "family": "bindings",
+  "callers": ["gateway/session_listing.py", "gateway/session_mutations.py"],
+  "legacy_modules": [
+    "hermes_state_local.py::commit_local_session",
+    "hermes_state_local.py::local_receipt",
+    "hermes_state_local.py::end_idle_local_session",
+    "hermes_state_local_lineage.py::local_physical_target",
+    "hermes_state_local_lineage.py::_untracked_steps",
+    "hermes_state_local_lineage.py::adoptable_compression",
+    "hermes_state_local_lineage.py::adopt_untracked_compression",
+    "hermes_state_local_lineage.py::reset_local_target",
+    "hermes_state_local_migration.py::bind_legacy_target",
+    "hermes_state_mutation_binding.py::authorize_history",
+    "gateway/session_local_migration.py::require_history_claim",
+    "gateway/session_api.py::bind_api_steps",
+    "gateway/session_api.py::_heal_replacement",
+    "gateway/session_api.py::api_storage_source",
+    "gateway/session_api.py::declared_api_session",
+    "gateway/session_local_recovery.py::unused_session",
+    "gateway/session_acp_lifecycle.py::end_idle_acp_sessions",
+    "acp_adapter/catalog.py::_local_owners"
+  ],
+  "units": [
+    {
+      "backend": "persistence/sqlite/authority/_binding_api.py::declared_session",
+      "legacy": "gateway/session_api.py::declared_api_session#0",
+      "names": {"db": "holder"}
+    },
+    {
+      "backend": "persistence/sqlite/authority/_binding_api.py::bind_api",
+      "legacy": "gateway/session_api.py::bind_api_steps#0-12",
+      "names": {"authority.db": "holder"},
+      "exception": {
+        "ruling": "boundary translation",
+        "aspects": ["binding"],
+        "reason": "The typed NewApiBinding carries the routing origin and entry as the dicts main encoded (source.to_dict() and entry.to_dict() in gateway/session_api.py::bind_api_steps) and the start time as the epoch seconds main bound (now.timestamp()), so source.user_id, _json(source.to_dict()), _json(entry.to_dict()) and now.timestamp() bind as source['user_id'], _json(source), _json(entry) and now: the same values in the same order."
+      }
+    },
+    {
+      "backend": "persistence/sqlite/authority/_binding_api.py::_heal_replacement",
+      "legacy": "gateway/session_api.py::_heal_replacement#0",
+      "exception": {
+        "ruling": "fewer callers",
+        "aspects": ["transaction"],
+        "reason": "Main calls gateway/session_api.py::_heal_replacement inside the binding write of bind_api_steps and inside the read of restore_api_session, so it carries both labels; the backend copy runs only inside bind_api's write, and the restore path's heal runs in the gateway through the storage interface (gateway/session_api.py::_heal_replacement at the head)."
+      }
+    },
+    {
+      "backend": "persistence/sqlite/authority/_binding_api.py::api_binding_receipt",
+      "legacy": "gateway/session_api.py::api_storage_source#0",
+      "names": {"db": "holder"}
+    },
+    {
+      "backend": "persistence/sqlite/authority/_binding_history.py::authorize_history",
+      "legacy": "hermes_state_mutation_binding.py::authorize_history#0-2"
+    },
+    {
+      "backend": "persistence/sqlite/authority/_binding_history.py::require_history_claim",
+      "legacy": "gateway/session_local_migration.py::require_history_claim#0,1"
+    },
+    {
+      "backend": "persistence/sqlite/authority/_local.py::commit_local_session",
+      "legacy": "hermes_state_local.py::commit_local_session#0-6",
+      "names": {"db": "holder"}
+    },
+    {
+      "backend": "persistence/sqlite/authority/_local.py::local_receipt",
+      "legacy": "hermes_state_local.py::local_receipt#0",
+      "names": {"db": "holder"}
+    },
+    {
+      "backend": "persistence/sqlite/authority/_local.py::end_idle_local_session",
+      "legacy": "hermes_state_local.py::end_idle_local_session#0-2",
+      "names": {"db": "holder"}
+    },
+    {
+      "backend": "persistence/sqlite/authority/_local.py::local_physical_target",
+      "legacy": "hermes_state_local_lineage.py::local_physical_target#0"
+    },
+    {
+      "backend": "persistence/sqlite/authority/_local.py::_untracked_steps",
+      "legacy": "hermes_state_local_lineage.py::_untracked_steps#0"
+    },
+    {
+      "backend": "persistence/sqlite/authority/_local.py::adoptable_compression",
+      "legacy": "hermes_state_local_lineage.py::adoptable_compression#0"
+    },
+    {
+      "backend": "persistence/sqlite/authority/_local.py::adopt_untracked_compression",
+      "legacy": "hermes_state_local_lineage.py::adopt_untracked_compression#0",
+      "names": {"db": "holder"}
+    },
+    {
+      "backend": "persistence/sqlite/authority/_local.py::reset_local_target",
+      "legacy": "hermes_state_local_lineage.py::reset_local_target#0-3",
+      "names": {"db": "holder"}
+    },
+    {
+      "backend": "persistence/sqlite/authority/_local.py::unused_session",
+      "legacy": "gateway/session_local_recovery.py::unused_session#0"
+    },
+    {
+      "backend": "persistence/sqlite/authority/_local.py::local_session_ids",
+      "legacy": "gateway/session_acp_lifecycle.py::end_idle_acp_sessions#0",
+      "names": {"authority.db": "holder"}
+    },
+    {
+      "backend": "persistence/sqlite/authority/_local.py::local_lineages",
+      "legacy": "acp_adapter/catalog.py::_local_owners#0",
+      "names": {"db": "holder"}
+    },
+    {
+      "backend": "persistence/sqlite/authority/_local.py::binding_marks",
+      "legacy": ["gateway/session_bot.py::recover_bot_deliveries#0", "gateway/session_a2a.py::storage_source#0"],
+      "names": {"authority.db": "holder", "db": "holder"},
+      "exception": {
+        "ruling": "boundary translation",
+        "aspects": ["binding", "transaction"],
+        "reason": "The verb answers both of main's tests for one id the caller passes: the creation-receipt probe of gateway/session_bot.py::recover_bot_deliveries (POLICY_PREFIX + the target's chat_id or id) and the legacy-binding probe of gateway/session_a2a.py::storage_source (LEGACY_PREFIX + str(source.chat_id)), each of which ran in its own read context. Those callers now pass the same id (target.chat_id or target.session_id, str(source.chat_id)) and read the mark they need, so each runs one extra read-only SELECT in the same read context."
+      }
+    },
+    {
+      "backend": "persistence/sqlite/authority/_local.py::legacy_adoption_scan",
+      "legacy": "hermes_cli/sessions_adopt.py::adoptable_sessions#0,1",
+      "names": {"db": "holder"},
+      "exception": {
+        "ruling": "boundary translation",
+        "aspects": ["builder"],
+        "reason": "Main's hermes_cli/sessions_adopt.py::adoptable_sessions computed the refused labels with not_client_labels(), which reads the shipped messaging platforms from the gateway (hermes_state_local_migration.py::not_client_labels); the backend may not import the gateway, so the caller passes that host data as an OwnerRule and session_rules.legacy_local.not_client_labels(owner) yields the same labels for the statement to bind."
+      }
+    },
+    {
+      "backend": "persistence/sqlite/authority/_local.py::handoff_head",
+      "legacy": "hermes_state_local.py::handoff_head#0",
+      "names": {"db": "holder"}
+    },
+    {
+      "backend": "persistence/sqlite/authority/_local.py::local_receipt_ids",
+      "legacy": "gateway/session_local_recovery.py::local_receipt_ids#0",
+      "names": {"authority.db": "holder"}
+    },
+    {
+      "backend": "persistence/sqlite/authority/_local_migration.py::bind_legacy_target",
+      "legacy": "hermes_state_local_migration.py::bind_legacy_target#0-6"
+    }
+  ],
+  "builders": [],
+  "not_moved": []
+}

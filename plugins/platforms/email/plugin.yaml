@@ -25,6 +25,10 @@ optional_env:
     description: "SMTP port (default 587)"
     prompt: "SMTP port"
     password: false
+  - name: EMAIL_IMAP_FOLDER
+    description: "IMAP mailbox to poll (default INBOX; use Inbox.Alert for a dedicated alert folder)"
+    prompt: "IMAP mailbox"
+    password: false
   - name: EMAIL_IMAP_HOST
     description: "IMAP host for inbound polling (e.g. imap.gmail.com)"
     prompt: "IMAP host"

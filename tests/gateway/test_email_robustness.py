@@ -97,6 +97,18 @@ class TestTransportSecurity(unittest.TestCase):
         imap_ssl_cls.assert_not_called()
         imap.starttls.assert_called_once()
 
+    def test_default_mailbox_stays_inbox(self):
+        self.assertEqual(self._adapter()._imap_folder, "INBOX")
+
+    def test_configured_mailbox_is_selected(self):
+        adapter = self._adapter(imap_folder="Inbox.Alert")
+        imap = MagicMock()
+        imap.select.return_value = ("OK", [b"1"])
+        with patch.object(adapter, "_connect_imap", return_value=imap):
+            with adapter._inbox() as selected:
+                self.assertIs(selected, imap)
+        imap.select.assert_called_once_with("Inbox.Alert")
+
     def test_unknown_mode_falls_back_to_secure_default(self):
         adapter = self._adapter(imap_security="bogus", smtp_security="bogus")
         self.assertEqual(adapter._imap_security, "tls")

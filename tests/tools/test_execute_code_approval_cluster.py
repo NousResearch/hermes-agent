@@ -515,3 +515,23 @@ def test_env_scrub_passthrough_overrides_secret_block():
 # ---------------------------------------------------------------------------
 # 6. Env-scrub diagnosability mitigation (#27303 follow-up)
 # ---------------------------------------------------------------------------
+
+
+def test_execute_code_guard_passes_the_script_to_the_guardian(gw_session, monkeypatch):
+    """The gate must hand the raw script to the guardian: the whole point of the
+    ``smart_code`` wiring is that the program is assessed as code, not re-lexed as a
+    shell string. A stub that swallows ``**kwargs`` would hide a regression here."""
+    monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "smart")
+    seen = {}
+
+    def fake_approve(command, description, *, code=None):
+        seen["command"], seen["description"], seen["code"] = command, description, code
+        return "approve"
+
+    monkeypatch.setattr(approval_smart, "_smart_approve", fake_approve)
+    script = "print('the-real-program')"
+    result = A.check_execute_code_guard(script, "local")
+
+    assert result["approved"] is True and result.get("smart_approved") is True
+    assert seen["code"] == script
+    assert "the-real-program" in seen["command"]

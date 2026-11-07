@@ -3,7 +3,9 @@ import { useEffect, useState } from 'react'
 
 import type { CanonicalGroupMessages } from './canonical-group-locales'
 import { registerCanonicalGroup } from './canonical-group-registry'
-import { canonicalGroupRequest, canonicalGroupRoster, createRoomWithIntent, disbandCanonicalGroup, groupCreationKey } from './canonical-groups'
+import {
+  canonicalGroupRequest, canonicalGroupRoster, createRoomWithIntent, disbandCanonicalGroup, groupCreationKey, requireGroupName
+} from './canonical-groups'
 import type {
   CanonicalGroupBinding, CanonicalGroupRoute, CanonicalRoom, CanonicalRoomMember, GroupCreationIntent
 } from './canonical-groups'
@@ -235,10 +237,10 @@ async function joinAll(members: CanonicalRoomMember[], join: (member: CanonicalR
 }
 
 /** One creation attempt keeps its wire payload while the reply is uncertain. */
-function createGroupWithIntent(route: CanonicalGroupRoute, name: string, members: CanonicalRoomMember[],
+function createGroupWithIntent(route: CanonicalGroupRoute, name: () => string, members: CanonicalRoomMember[],
   intent: GroupCreationIntent, key: string): Promise<CanonicalRoom> {
   return createRoomWithIntent(route, intent, key, () => ({
-    room_id: randomUuid(), name: uniqueGroupChatName(name, new Set(liveGroupChatNames())), members
+    room_id: randomUuid(), name: uniqueGroupChatName(requireGroupName(name()), new Set(liveGroupChatNames())), members
   }))
 }
 
@@ -250,7 +252,9 @@ export async function createGroupAcrossConnections(
   name: string,
   members: GroupMember[],
   targets: ReadonlyMap<string, PeerTargetState>,
-  intent: GroupCreationIntent
+  intent: GroupCreationIntent,
+  /** The room name, from the entered one, once per request (a blank one is filled from the Bots'). */
+  sentName: (name: string) => string = entered => entered
 ) {
   const seats: (Omit<PeerSeat, 'member'> & { gateway: string })[] = []
 
@@ -264,12 +268,12 @@ export async function createGroupAcrossConnections(
     return target
   })
 
-  if (!name.trim() || 'problem' in checked) {
+  if ('problem' in checked) {
     throw Object.assign(new Error('A gateway group needs two to six unique members its gateway can seat'),
-      { canonicalGroupProblem: 'problem' in checked ? checked.problem : 'groupSize' })
+      { canonicalGroupProblem: checked.problem })
   }
 
-  const room = await createGroupWithIntent(route, name, checked.roster, intent, groupCreationKey(route, name, members))
+  const room = await createGroupWithIntent(route, () => sentName(name), checked.roster, intent, groupCreationKey(route, name, members))
 
   const binding: CanonicalGroupBinding = { ...route, roomId: room.room_id }
 
@@ -395,8 +399,8 @@ export async function startAgainWithout(binding: CanonicalGroupBinding, room: Ca
   const members = room.members.filter(member => member.member_id !== memberId)
     .map(({ member_id, profile, handle, display_name, target }) => ({ member_id, profile, handle, target, ...(display_name ? { display_name } : {}) }))
 
-  const name = intent.payload?.name ?? uniqueGroupChatName(room.name, new Set([room.name, ...liveGroupChatNames()]))
-  const next = await createGroupWithIntent(binding, name, members, intent, peerJoinKey(binding, memberId))
+  const next = await createGroupWithIntent(binding, () => intent.payload?.name ?? uniqueGroupChatName(room.name, new Set([room.name, ...liveGroupChatNames()])),
+    members, intent, peerJoinKey(binding, memberId))
 
   registerCanonicalGroup(binding, next, { created: true })
   const replacement: CanonicalGroupBinding = { connectionId: binding.connectionId, profile: binding.profile, roomId: next.room_id }

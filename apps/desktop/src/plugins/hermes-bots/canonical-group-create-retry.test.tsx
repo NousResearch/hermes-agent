@@ -61,13 +61,14 @@ const box = (face: Element | null | undefined) => face?.closest('label')?.queryS
 const submit = () => act(async () => { fireEvent.click(screen.getByRole('button', { name: /^Create group/ })) })
 const creates = () => request.mock.calls.filter(call => call[1] === 'groups.create').map(call => call[2])
 
-async function draft(roster: RosterRow[], faces: (base: HTMLElement) => Element[]) {
+async function draft(roster: RosterRow[], faces: (base: HTMLElement) => Element[], name = 'Team') {
   const onCreated = vi.fn()
   const view = render(<CreateGroupChatDialog onClose={vi.fn()} onCreated={onCreated} open roster={roster} />)
   await waitFor(() => expect(request.mock.calls.some(call => call[1] === 'groups.capabilities')).toBe(true))
   await act(async () => {})
   faces(view.baseElement).forEach(face => fireEvent.click(box(face)))
-  fireEvent.change(screen.getByRole('textbox', { name: 'Group name' }), { target: { value: 'Team' } })
+
+  if (name) {fireEvent.change(screen.getByRole('textbox', { name: 'Group name' }), { target: { value: name } })}
   await waitFor(() => expect((screen.getByRole('button', { name: /^Create group/ }) as HTMLButtonElement).disabled).toBe(false))
   await submit()
   expect(screen.getByText(words.createUncertain)).toBeTruthy()
@@ -85,6 +86,26 @@ it('a retry after a lost reply reuses the room when a peer Bot\'s title changed 
   await submit()
   await waitFor(() => expect(onCreated).toHaveBeenCalledOnce())
   expect(creates()[1]).toEqual(creates()[0])
+  expect(rooms.size).toBe(1)
+})
+
+// A blank name is filled from the Bots' names, which the roster refresh changes: the retry still
+// resends the first request's name and room.
+it.each([
+  ['a peer Bot on another computer', [here, mini], { ...mini, title: 'Reviewer' }],
+  ['a Bot on this computer', [here, beta], { ...beta, title: 'Reviewer' }]
+] as const)('a retry after a lost reply reuses the room of an unnamed draft when %s is renamed', async (_, roster, renamed) => {
+  const rooms = loseFirstReply()
+
+  const { onCreated, rerender } = await draft([...roster], base => [...base.querySelectorAll('[data-bot-face]')]
+    .filter(face => ['default', roster[1].name].includes(face.getAttribute('data-bot-face')!)), '')
+
+  rerender(<CreateGroupChatDialog onClose={vi.fn()} onCreated={onCreated} open roster={[here, renamed]} />)
+  await act(async () => {})
+  await submit()
+  await waitFor(() => expect(onCreated).toHaveBeenCalledOnce())
+  expect(creates()[1]).toEqual(creates()[0])
+  expect(creates()[0].name).not.toContain('Reviewer')
   expect(rooms.size).toBe(1)
 })
 

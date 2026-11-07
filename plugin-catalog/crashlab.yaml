@@ -1,0 +1,45 @@
+name: crashlab
+title: CrashLab
+repo: https://github.com/dolepee/crashlab
+sha: 7d41ae03226f7bfaa6a46852c56d643d55ee7f1d
+description: Guide Hermes through a local app repair, replay one frozen retry case, and keep verification current after edits.
+maintainer: dolepee
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "0.4.0"
+docs_url: https://github.com/dolepee/crashlab/blob/7d41ae03226f7bfaa6a46852c56d643d55ee7f1d/README.md
+platforms:
+  - linux
+  - macos
+screenshots:
+  - https://raw.githubusercontent.com/dolepee/crashlab/7d41ae03226f7bfaa6a46852c56d643d55ee7f1d/docs/dashboard-desktop.png
+  - https://raw.githubusercontent.com/dolepee/crashlab/7d41ae03226f7bfaa6a46852c56d643d55ee7f1d/docs/dashboard-mobile.png
+known_issues:
+  - "Kist and Flaskr are externally sourced repair examples, not adoption or general autonomous-repair evidence."
+  - "Flaskr repair covers fresh databases; existing databases need migration and legacy tokenless POSTs are unprotected."
+  - "Project freshness covers tracked and nonignored untracked files, not ignored files, dependencies or runtime configuration."
+  - "Completion reminders are opt-in, project-scoped and bounded by Hermes continuation limits; they are not an execution barrier."
+  - "The web dashboard is exercised in Hermes; the current native Desktop pane is SDK-validated but not visually verified in an installed Desktop app."
+  - "External application templates require their own checkout, dependencies and case configuration."
+  - "HTTP state observers trust application responses; SQLite observers read directly but are not an operating-system isolation boundary."
+  - "Browser campaigns are validation-only; the inventory campaign runs HTTP concurrency against a loopback fixture with a deliberate test-only scheduling gate."
+  - "Requires Node.js 20+, playwright-core and local Chromium; uses --no-sandbox, so run only trusted fixtures in isolation."
+  - "Only the first matching request is interrupted; other fault.occurrence values are unsupported."
+capabilities:
+  provides_tools:
+    - crashlab_validate
+    - crashlab_run
+    - crashlab_compare
+    - crashlab_list
+    - crashlab_campaign_list
+    - crashlab_campaign_validate
+    - crashlab_campaign_run
+    - crashlab_prepare
+    - crashlab_experiment_run
+    - crashlab_experiment_status
+    - crashlab_experiment_watch
+  provides_hooks:
+    - pre_verify
+  provides_middleware: []
+  requires_env: []

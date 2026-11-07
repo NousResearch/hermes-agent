@@ -1,0 +1,17 @@
+name: bankbridge
+title: BankBridge
+repo: https://github.com/bankbridge-money/bankbridge-plugin
+sha: c7fcda435eeaeee94cf4479983d646027befb467
+description: "Read-only answers about your own US bank, credit card and investment accounts, with any model Hermes runs, local or hosted. Portable Agent Plugins v1 package with a skill and hosted Streamable HTTP MCP; no local executable code. Disclosure: tool calls go to bankbridge.money and its bank-data provider, which return balances and transactions to your model. BankBridge keeps no copy. Paid service, $5/mo per connected bank. Tools are read-only."
+maintainer: bankbridge-money
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/bankbridge-money/bankbridge-plugin/blob/c7fcda435eeaeee94cf4479983d646027befb467/README.md
+version: "0.5.2"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

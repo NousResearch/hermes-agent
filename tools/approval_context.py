@@ -169,6 +169,14 @@ def _is_cron_approval_context() -> bool:
     return is_truthy_value(_session_env("HERMES_CRON_SESSION"))
 
 
+def _is_batch_approval_context() -> bool:
+    """True when the current approval decision is running inside a batch run:
+    ``batch_runner.py`` exports ``HERMES_BATCH_SESSION`` before constructing the
+    agent, so the gates resolve dangerous commands from ``approvals.batch_mode``
+    instead of falling through to the legacy auto-approve path."""
+    return is_truthy_value(_session_env("HERMES_BATCH_SESSION"))
+
+
 # Programmatic/unattended platforms: no human can answer a prompt and the adapter has no ``send_exec_approval`` /
 # ``/approve`` surface. Governed by ``approvals.unattended_mode`` (default deny), mirroring ``cron_mode`` — never an
 # interactive round-trip that blocks for the full timeout with nobody to answer.
@@ -357,6 +365,11 @@ def _binary_approval_mode(key: str) -> str:
 def _get_cron_approval_mode() -> str:
     """Read the cron approval mode from config. Returns 'deny' or 'approve'."""
     return _binary_approval_mode("cron_mode")
+
+
+def _get_batch_approval_mode() -> str:
+    """Read the batch-run approval mode from config. Returns 'deny' or 'approve'."""
+    return _binary_approval_mode("batch_mode")
 
 
 def _get_single_query_approval_mode() -> str:

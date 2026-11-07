@@ -231,6 +231,13 @@ def _prepare_container_image(
     return None
 
 
+def _export_batch_approval_context() -> None:
+    """Mark this process as a batch run (HERMES_BATCH_SESSION): the approval gates
+    then resolve dangerous commands from ``approvals.batch_mode`` (default deny)
+    instead of falling through to the legacy auto-approve path (#144553)."""
+    os.environ["HERMES_BATCH_SESSION"] = "1"
+
+
 def _process_single_prompt(
     prompt_index: int,
     prompt_data: dict[str, Any],
@@ -238,6 +245,7 @@ def _process_single_prompt(
     config: dict[str, Any]
 ) -> dict[str, Any]:
     """Run the agent on one prompt; returns trajectory, stats and metadata (or a failure result)."""
+    _export_batch_approval_context()
     prompt = prompt_data["prompt"]
     task_id = f"task_{prompt_index}"
     failure = _prepare_container_image(prompt_index, prompt_data, batch_num, task_id, config)

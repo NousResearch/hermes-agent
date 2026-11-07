@@ -57,6 +57,7 @@ metadata:
   hermes:
     tags: [Category, Subcategory, Keywords]
     related_skills: [other-skill-name]
+    triggers: ["my workflow"]           # Optional — classic CLI auto-load phrases
     requires_toolsets: [web]            # Optional — only show when these toolsets are active
     requires_tools: [web_search]        # Optional — only show when these tools are available
     fallback_for_toolsets: [browser]    # Optional — hide when these toolsets are active
@@ -97,6 +98,18 @@ Known failure modes and how to handle them.
 ## Verification
 How the agent confirms it worked.
 ```
+
+### Trigger phrases
+
+`metadata.hermes.triggers` is opt-in phrase activation for the **classic CLI**.
+A plain turn that matches one of the phrases is expanded through the same
+`build_skill_invocation_message()` path as `/skill-name`, with a runtime note
+naming the trigger; the original message stays the durable transcript value.
+Matching, selection, refresh, and the `skills.auto_triggers` opt-out are
+described in the [user guide](../user-guide/features/skills.md#automatic-triggers-classic-cli).
+
+Pick specific, multi-word phrases — one broad word like `code` would load the
+skill on most turns. Top-level `triggers:` is not read; use the nested key.
 
 ### Platform-Specific Skills
 

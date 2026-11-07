@@ -1321,6 +1321,13 @@ def _get_usage(agent) -> dict:
             for _key, _val in (("avg_latency_s", _total_lat / _n), ("avg_tps", _avg_vel)):
                 if _val is not None and _val == _val and 0 < _val < 1e6:  # guard NaN/negative/absurd provider timings
                     usage[_key] = round(float(_val), 1)
+    with contextlib.suppress(Exception):
+        # Decode-only rate of the LATEST call (first streamed chunk → stream end): the status bar's
+        # "how fast is it decoding now" figure, beside the 10-call end-to-end ``avg_tps``. Absent —
+        # never 0 — when that call did not stream (agent/turn_usage.py::_decode_window_tps).
+        _dtps = getattr(agent, "_last_api_decode_tps", None)
+        if isinstance(_dtps, (int, float)) and _dtps == _dtps and 0 < _dtps < 1e6:
+            usage["decode_tps"] = round(float(_dtps), 1)
     # Window plans only: the desktop status bar's allowance (the canonical feed carries the same one).
     from gateway.session_usage import plan_gauge
     if (gauge := plan_gauge(agent)) is not None:

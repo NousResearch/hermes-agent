@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import suppress
 
 logger = logging.getLogger("gateway.run")  # log-record parity with gateway/run.py
 
@@ -30,6 +31,15 @@ class GatewayRuntimeInitMixin:
         self._launchd_exit_timeout_s = self._load_launchd_exit_timeout(self._restart_drain_timeout)
         self._restart_after_turn_timeout = self._load_restart_after_turn_timeout()
         self._cron_drain_timeout = self._load_cron_drain_timeout()
+        # These two are frozen for this incarnation's lifetime — ``stop()`` drains from them and
+        # never rereads config. Publish the resulting budget so a later ``--replace`` successor
+        # sizes its SIGKILL deadline from OUR lease instead of from config it re-reads in its own
+        # process (which may have been lowered since). #113355, caught by @andrexibiza.
+        with suppress(Exception):
+            from gateway.restart import resolve_gateway_stop_budget_s
+            from gateway.status import publish_stop_budget
+            publish_stop_budget(resolve_gateway_stop_budget_s(
+                self._restart_drain_timeout, self._cron_drain_timeout))
         self._signal_interrupt_grace_timeout = self._load_signal_interrupt_grace_timeout()
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()

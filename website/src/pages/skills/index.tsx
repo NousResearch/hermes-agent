@@ -252,6 +252,13 @@ const SOURCE_CONFIG: Record<
     border: "rgba(149, 191, 71, 0.2)",
     icon: "\u{25B2}",
   },
+  Cloudflare: {
+    label: "Cloudflare",
+    color: "#f6821f",
+    bg: "rgba(246, 130, 31, 0.08)",
+    border: "rgba(246, 130, 31, 0.2)",
+    icon: "\u{2601}",
+  },
 };
 
 const SOURCE_ORDER = [
@@ -277,6 +284,7 @@ const SOURCE_ORDER = [
   "Notion",
   "Airtable",
   "Shopify",
+  "Cloudflare",
 ];
 
 function highlightMatch(text: string, query: string): React.ReactNode {

@@ -109,6 +109,7 @@ GITHUB_TAP_LABELS = {
     "makenotion/skills": "Notion",
     "Airtable/skills": "Airtable",
     "Shopify/Shopify-AI-Toolkit": "Shopify",
+    "cloudflare/skills": "Cloudflare",
 }
 
 # Legacy filename -> label mapping for the deprecated skills/index-cache/

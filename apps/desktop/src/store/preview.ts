@@ -503,6 +503,24 @@ export function rekeyPreviewTabsSession(previousId: string, nextId: string): voi
   }
 }
 
+/** The owning profile of a tab for partition resolution (#150283 F2): the profile
+ *  bucket the tab is stored under, or — for a tab not yet in any bucket (a draft
+ *  just being created) — the workspace on screen (`viewKey`). A session-less draft
+ *  tab in a named profile's workspace must ride that profile's jar, never default
+ *  the shared `persist:hermes-preview` jar and expose the default profile's
+ *  sign-ins to that workspace. */
+export function previewTabOwnerProfile(tabId: string | null | undefined): string {
+  if (tabId) {
+    for (const [key, tabs] of Object.entries(tabsByProfile)) {
+      if (tabs.some(tab => tab.id === tabId)) {
+        return key
+      }
+    }
+  }
+
+  return viewKey
+}
+
 $rightRailActiveTabId.listen(tabId => {
   const sessionId = $focusedStoredSessionId.get()
 

@@ -51,6 +51,24 @@ def _voice_mixer_module():
         return voice_mixer
 
 
+def _numpy_available() -> bool:
+    """True when numpy — the optional ``audio-io``/``voice`` extra — is importable.
+
+    ``voice_mixer`` imports numpy lazily so this module loads without it, but the mixer's
+    ``read()`` runs on discord.py's sender thread: a missing numpy only surfaces there,
+    *after* ``vc.play()`` already succeeded.  The mixer then never advances, so every reply
+    waited the full ``voice_playback_timeout_seconds`` for speech that could never drain.
+    Probing here lets the adapter pick the one-shot path up front instead.
+    """
+    try:
+        import importlib
+
+        importlib.import_module("numpy")
+    except Exception:
+        return False
+    return True
+
+
 def _image_ext_from_content_type(content_type: str) -> str:
     """Attachment extension for a downloaded image (png unless jpeg/gif/webp is evident)."""
     if "jpeg" in content_type or "jpg" in content_type:
@@ -3571,6 +3589,16 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                         defaults[k] = v
         except Exception as e:
             logger.debug("Could not load discord.voice_fx config: %s", e)
+        if defaults.get("enabled") and not _numpy_available():
+            # Opt-in switch whose dependency the ``discord`` extra does not install.  Say so
+            # once, at adapter construction, and degrade to one-shot playback instead of
+            # installing a mixer whose stream is guaranteed to die on its first read.
+            logger.error(
+                "discord.voice_fx.enabled is set but numpy is missing (the mixer needs the "
+                "optional audio-io extra); voice replies fall back to one-shot playback. "
+                "Install it with: hermes pm install --extra audio-io"
+            )
+            defaults["enabled"] = False
         return defaults
 
     def _load_discord_int_config(self, key: str, default: int, *, minimum: int = 0) -> int:
@@ -3663,6 +3691,15 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
 
     async def _install_voice_mixer(self, guild_id: int, vc) -> None:
         """Install a VoiceMixer on the VC; one ``vc.play(mixer)`` runs for the whole connection."""
+        if not _numpy_available():
+            # Belt and braces: _load_voice_fx_config already refuses to enable voice_fx without
+            # numpy, but a stale config dict or a mid-flight uninstall must not install a mixer
+            # whose read() will raise on discord.py's sender thread.
+            logger.warning(
+                "Voice mixer not installed (guild=%d): numpy missing; using one-shot playback",
+                guild_id,
+            )
+            return
         VoiceMixer = _voice_mixer_module().VoiceMixer
         mixer = VoiceMixer(
             ambient_gain=float(self._voice_fx_cfg.get("ambient_gain", 0.18)),
@@ -3675,11 +3712,20 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
 
         def _after(error):
             if error:
-                logger.error("Voice mixer stream error (guild=%d): %s", guild_id, error)
+                logger.error(
+                    "Voice mixer stream error (guild=%d): %s; falling back to one-shot playback",
+                    guild_id, error,
+                )
+                # The stream is gone: drop it so later replies take the one-shot path instead of
+                # waiting voice_playback_timeout_seconds for speech that can never drain.
+                if self._voice_mixers.get(guild_id) is mixer:
+                    self._voice_mixers.pop(guild_id, None)
         if vc.is_playing():
             vc.stop()
-        vc.play(mixer, after=_after)
         self._voice_mixers[guild_id] = mixer
+        vc.play(mixer, after=_after)
+        if self._voice_mixers.get(guild_id) is not mixer:
+            return  # _after already retired it; play_in_voice_channel will use one-shot playback
         logger.info("Voice mixer installed (guild=%d, ambient=%s)", guild_id, bool(ambient))
 
     def _lead_silence_bytes(self) -> bytes:
@@ -3832,14 +3878,24 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                     speech_gain = float(self._voice_fx_cfg.get("speech_gain", 1.0))
                     mixer.play_speech(self._lead_silence_bytes() + pcm, gain=speech_gain)
                     # Block until speech drains so callers serialise replies; ambient keeps playing.
+                    # A mixer whose stream errored is unregistered by its ``after`` callback —
+                    # stop waiting on it and let the one-shot path below deliver the reply.
                     wait_start = time.monotonic()
+                    mixer_died = False
                     while mixer.speech_active:
+                        if self._voice_mixers.get(guild_id) is not mixer:
+                            mixer_died = True
+                            break
                         if time.monotonic() - wait_start > playback_timeout:
                             logger.warning("Mixer speech playback timed out after %.1fs", playback_timeout)
                             mixer.stop_speech()
                             break
                         await asyncio.sleep(0.05)
-                    return True
+                    if not mixer_died:
+                        return True
+                    logger.warning(
+                        "Voice mixer died mid-playback (guild=%d); using one-shot playback", guild_id,
+                    )
                 logger.warning("Mixer decode failed for %s; falling back to legacy playback", audio_path)
             # Legacy one-shot path: pause receiver while playing (echo prevention).
             receiver = self._voice_receivers.get(guild_id)

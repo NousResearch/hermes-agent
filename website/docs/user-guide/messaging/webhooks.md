@@ -532,6 +532,7 @@ hermes webhook test github-issues --payload '{"issue": {"number": 42, "title": "
 - Subscriptions are stored in `~/.hermes/webhook_subscriptions.json`
 - The webhook adapter hot-reloads a coherent snapshot of this file on each incoming request (stat-gated (mtime/size/inode), lock-free)
 - Static routes from `config.yaml` always take precedence over dynamic ones with the same name
+- An entry that is not a JSON object (a leftover string from a hand edit, `null`) is skipped with a warning that names it. The other subscriptions keep working, and the next `hermes webhook` or dashboard save drops the entry
 - Dynamic subscriptions use the same route format and capabilities as static routes (events, prompt templates, skills, delivery)
 - Create, update, enable/disable, and remove operations are serialized and atomically replace the store; a stale concurrent update is rejected rather than restoring a route another operation removed or disabled
 - Rebinding an existing route with `--route-profile` rotates its HMAC secret automatically. A caller with the old profile's secret cannot authenticate the rebound route; pass a different `--secret` only when the receiving service requires an operator-chosen value

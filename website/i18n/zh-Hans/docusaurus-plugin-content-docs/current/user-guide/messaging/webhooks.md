@@ -485,6 +485,7 @@ hermes webhook test github-issues --payload '{"issue": {"number": 42, "title": "
 - 订阅存储在 `~/.hermes/webhook_subscriptions.json`
 - webhook 适配器在每次收到请求时热重载该文件（基于 mtime 检测，开销可忽略不计）
 - `config.yaml` 中的静态路由始终优先于同名的动态订阅
+- 不是 JSON 对象的条目（手动编辑遗留的字符串、`null`）会被跳过，并记录一条写明其名称的警告；其他订阅照常可用，下一次通过 `hermes webhook` 或仪表盘保存时该条目会被删除
 - 动态订阅与静态路由使用相同的格式和功能（events、prompt 模板、skills、delivery）
 - 无需重启 gateway——订阅后立即生效
 

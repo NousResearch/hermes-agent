@@ -671,6 +671,26 @@ class GatewayAgent:
         return accepted
 
     # -- the turn ------------------------------------------------------------------------------
+    def _turn_env(self):
+        """This shell's values for the names the profile declares per-turn
+        (``terminal.client_env_turn_passthrough``), sent only to a gateway that advertises
+        ``turn-env-v1``: an older owner refuses the unknown field, and a value that changes per turn
+        cannot ride the session's ``client_env`` (frozen at create, so a resumed session would carry
+        the previous turn's)."""
+        supported = getattr(self, "_turn_env_supported", None)
+        if supported is None:
+            try:
+                described = self.connection.call("runtime.describe", timeout=5) or {}
+            except Exception:  # health: a derived detail -- always allow BLE001 -- never blocks a turn
+                described = {}
+            capabilities = described.get("capabilities") if isinstance(described, dict) else None
+            supported = self._turn_env_supported = (
+                isinstance(capabilities, list) and "turn-env-v1" in capabilities)
+        if not supported:
+            return {}
+        from hermes_cli.gateway_chat import shell_turn_env
+        return shell_turn_env()
+
     def _submit_params(self, user_message, persist_user_message, turn_author):
         attachments = None
         if isinstance(user_message, list):
@@ -685,6 +705,9 @@ class GatewayAgent:
             params["attachments"] = attachments
         if isinstance(user_message, str) and user_message != text:
             params["api_text"] = user_message
+        turn_env = self._turn_env()
+        if turn_env:
+            params["turn_env"] = turn_env
         if turn_author:
             params["turn_author"] = turn_author
         if self._voice_turn_pending:

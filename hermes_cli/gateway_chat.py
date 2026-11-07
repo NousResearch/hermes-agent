@@ -66,6 +66,18 @@ def client_env_policy(parameters) -> dict:
     return {"client_env": shell_client_env()} if "client_env" in parameters else {}
 
 
+def shell_turn_env() -> dict:
+    """This shell's values for the names the profile declares per-turn
+    (``terminal.client_env_turn_passthrough``): they ride each ``prompt.submit`` because the session's
+    ``client_env`` is frozen at create. Empty for a bypass launch (no profile to declare them)."""
+    from agent.session_client_env import collect_turn_env
+    if {'safe_mode', 'ignore_user_config'} & set(env_launch_flags()):
+        return collect_turn_env()
+    from hermes_cli.config import get_config_path
+    from hermes_cli.config_effective import load_user_config_effective
+    return collect_turn_env(config=load_user_config_effective(get_config_path()))
+
+
 def bypass_launch(args) -> bool:
     """--safe-mode / --ignore-user-config (or their env opt-ins): the owner freezes code defaults,
     the client reads no profile."""

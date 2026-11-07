@@ -111,6 +111,80 @@ def _pread_db_range(db_path: Path, offset: int, length: int) -> Optional[bytes]:
     return None
 
 
+def _probe_key_is_under(key: str, root: Path) -> bool:
+    """``_path_is_under`` for a cached probe key (normcase, resolved). Local copy: the registry
+    imports this module lazily, so the shared helper cannot be imported here without a cycle."""
+    try:
+        path_key = os.path.normcase(str(Path(key).resolve()))
+        root_key = os.path.normcase(str(root.resolve()))
+    except OSError:
+        path_key = os.path.normcase(key)
+        root_key = os.path.normcase(str(root))
+    return path_key == root_key or path_key.startswith(root_key + os.sep)
+
+
+def _self_open_inodes(exclude_fds) -> Optional[set]:
+    """(st_dev, st_ino) of every file THIS process has open, minus *exclude_fds*, from a
+    ``/proc/self/fd`` scan. None where the inventory is unavailable (non-Linux, no /proc):
+    callers must treat that as "unknown", never as "clear".
+    """
+    try:
+        names = os.listdir("/proc/self/fd")
+    except OSError:
+        return None
+    seen = set()
+    for name in names:
+        with contextlib.suppress(ValueError):
+            fd = int(name)
+            if fd in exclude_fds:
+                continue
+            with contextlib.suppress(OSError):
+                st = os.fstat(fd)
+                if st.st_dev and st.st_ino:
+                    seen.add((st.st_dev, st.st_ino))
+    return seen
+
+
+def release_header_probes_under(directory, *, protected_inodes=()) -> int:
+    """Close and forget cached header-probe fds whose state.db lives under *directory*; returns the count.
+
+    Safe only once every connection under *directory* is gone (the
+    ``hermes_state_registry.close_all_under`` contract). POSIX fcntl locks are per-(process, inode):
+    closing ANY fd this process holds on an inode releases ALL of the process's locks on it — the
+    hazard the never-close policy exists to avoid (#100519). So a candidate fd is closed only when
+    an inventory of this process's open fds shows no OTHER open file on the same inode (tracked
+    connection, raw sqlite3 handle, log — anything). Where that inventory is unavailable
+    (non-Linux), nothing is closed: the bounded leak stays, never an unsafe close. Two more
+    classes are deliberately left cached: entries in *protected_inodes* (a live registry
+    generation at another path — belt-and-suspenders alongside the fd inventory), and retired fds
+    (no path identity, cannot be scoped to *directory* safely). The raw read-only opens of
+    state.db in this codebase (``mode=ro`` WAL readers) never take POSIX locks on the main db
+    inode — their read marks live on the -shm file — so the inventory plus the
+    close_all_under ordering make the close safe (#149274).
+    """
+    try:
+        root = Path(directory).expanduser().resolve()
+    except OSError:
+        root = Path(directory).expanduser()
+    protected = set(protected_inodes)
+    closed = 0
+    with _HEADER_PROBE_LOCK:
+        candidates = {key: entry for key, entry in _HEADER_PROBE_FDS.items()
+                      if _probe_key_is_under(key, root)}
+        if not candidates:
+            return 0
+        open_inodes = _self_open_inodes({entry[0] for entry in candidates.values()})
+        if open_inodes is None:
+            return 0  # no open-fd inventory on this platform: keep the bounded leak
+        for key, (_fd, dev, ino) in candidates.items():
+            if (dev, ino) in protected or (dev, ino) in open_inodes:
+                continue
+            with contextlib.suppress(OSError):
+                os.close(_HEADER_PROBE_FDS.pop(key)[0])
+            closed += 1
+    return closed
+
+
 def _pread_db_header(db_path: Path, length: int) -> Optional[bytes]:
     """Lock-safe raw header read of a possibly-live SQLite database (see :func:`_pread_db_range`)."""
     return _pread_db_range(db_path, 0, length)

@@ -42,6 +42,22 @@ def is_forward(att: Any) -> bool:
     return isinstance(att, dict) and bool(att.get("is_share"))
 
 
+def is_linked_message(att: Any, bot_uid: str = "") -> bool:
+    """A pasted permalink's unfurl of someone else's message. Slack ships the linked message's
+    content even when the bot cannot read the source conversation, so it is the only copy the
+    agent gets. An unfurl of this bot's own message, or one Slack does not attribute, is treated
+    as an echo and stays skipped."""
+    if not isinstance(att, dict) or att.get("is_share") or not att.get("is_msg_unfurl"):
+        return False
+    author = str(att.get("author_id") or "")
+    return bool(author) and author != bot_uid
+
+
+def is_shared_message(att: Any, bot_uid: str = "") -> bool:
+    """A forward or a linked message: content the user is pointing the agent at."""
+    return is_forward(att) or is_linked_message(att, bot_uid)
+
+
 def files_with_forwarded(files: Any, attachments: Any) -> list[dict]:
     """``files`` plus the files of forwarded messages, deduped by file id (first copy wins)."""
     merged = [f for f in (files or []) if isinstance(f, dict)]
@@ -107,7 +123,8 @@ def forward_section(att: dict, render_blocks: RenderBlocks, limit: int = SLACK_F
     readable content, so a forward never disappears without a trace."""
     who = _inline(att.get("author_name") or att.get("author_subname") or att.get("author_id"))
     where = f" in #{_inline(att['channel_name'])}" if att.get("channel_name") else ""
-    header = f"Forwarded Slack message{' from ' + who if who else ''}{where}"
+    kind = "Forwarded" if is_forward(att) else "Linked"
+    header = f"{kind} Slack message{' from ' + who if who else ''}{where}"
     link = _inline(att.get("from_url"))
     body = forward_body(att, render_blocks) if body is None else body
     files = _file_line(att)
@@ -118,13 +135,14 @@ def forward_section(att: dict, render_blocks: RenderBlocks, limit: int = SLACK_F
     return "\n".join(line for line in lines if line)
 
 
-def append_forwards(text: str, attachments: Any, render_blocks: RenderBlocks) -> str:
-    """Append every forward in ``attachments`` to ``text`` (the user's own words stay first)."""
+def append_forwards(text: str, attachments: Any, render_blocks: RenderBlocks, bot_uid: str = "") -> str:
+    """Append every forward and linked message in ``attachments`` to ``text`` (the user's own
+    words stay first)."""
     budget = SLACK_FORWARDS_MAX_CHARS
     flat_text = " ".join((text or "").split())
     sections: list[str] = []
     for att in attachments or []:
-        if not is_forward(att):
+        if not is_shared_message(att, bot_uid):
             continue
         body = forward_body(att, render_blocks)
         if len(body) >= _DEDUPE_MIN_CHARS and " ".join(body.split()) in flat_text:

@@ -390,7 +390,10 @@ class _CuaDriverSession:
         name, module = exc.__class__.__name__, getattr(exc.__class__, "__module__", "")
         return (name in {"ClosedResourceError", "BrokenResourceError", "EndOfStream"}
                 or (module.startswith("anyio") and "Resource" in name)
-                or isinstance(exc, (BrokenPipeError, EOFError)))
+                or isinstance(exc, (BrokenPipeError, EOFError))
+                # The stdio child exited (driver upgraded / daemon restarted): the mcp client surfaces it as
+                # McpError("Connection closed"), and without a reconnect every later call fails the same way.
+                or (name == "McpError" and "connection closed" in str(exc).lower()))
 
     @staticmethod
     def _is_transient_daemon_error(exc: Exception) -> bool:
@@ -509,12 +512,21 @@ class _CuaDriverSession:
         if name == "start_session" and ok and isinstance(declared_id, str) and declared_id:
             self._declared_session_id = declared_id
         if _is_ended_session_result(result):
+            # The driver retired the ended session's snapshots with it: drop every cached token, whichever call
+            # (token-free or not) noticed the end, so no later element action can send one.
+            self._notify_transport_reset()
             # Revive the stable session and replay the rejected call once; a 2nd rejection surfaces as-is.
             # Never re-runs lifecycle calls -> an end_session result is final.
             session_id = self._declared_session_id
             if session_id and name not in self._LIFECYCLE_CALLS:
                 logger.warning("cua-driver session %s ended during %s; reviving and retrying once", session_id, name)
                 if self._redeclare_session(timeout, "cua-driver session %s could not be revived: %s"):
+                    if "element_token" in args:  # never replay a token from the ended session
+                        message = (f"cua-driver session ended before {name} ran; its element tokens were retired "
+                                   "with it and the call was not replayed. Capture again and use an element index "
+                                   "from that capture.")
+                        return _tool_envelope(message, [], {"ok": False, "code": "element_token_session_ended",
+                                                            "message": message, "operation": name}, True, [])
                     result = self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
         elif name == "end_session" and ok and declared_id == self._declared_session_id:
             self._declared_session_id = None

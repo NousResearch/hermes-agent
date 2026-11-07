@@ -1,0 +1,492 @@
+{
+  "cua_driver_0_21_0": {
+    "click": {
+      "additionalProperties": false,
+      "properties": {
+        "button": {
+          "type": "string"
+        },
+        "count": {
+          "type": "integer"
+        },
+        "cursor_id": {
+          "type": "string"
+        },
+        "delivery_mode": {
+          "type": "string"
+        },
+        "element_index": {
+          "type": "integer"
+        },
+        "element_token": {
+          "type": "string"
+        },
+        "from_zoom": {
+          "type": "boolean"
+        },
+        "modifier": {
+          "type": "array"
+        },
+        "pid": {
+          "type": "integer"
+        },
+        "scope": {
+          "type": "string"
+        },
+        "session": {
+          "type": "string"
+        },
+        "snapshot_id": {
+          "pattern": "^s[0-9a-f]{8}$",
+          "type": "string"
+        },
+        "target": {
+          "type": null
+        },
+        "window_id": {
+          "type": "integer"
+        },
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "double_click": {
+      "additionalProperties": false,
+      "properties": {
+        "cursor_id": {
+          "type": "string"
+        },
+        "delivery_mode": {
+          "type": "string"
+        },
+        "element_index": {
+          "type": "integer"
+        },
+        "element_token": {
+          "type": "string"
+        },
+        "from_zoom": {
+          "type": "boolean"
+        },
+        "pid": {
+          "type": "integer"
+        },
+        "session": {
+          "type": "string"
+        },
+        "snapshot_id": {
+          "pattern": "^s[0-9a-f]{8}$",
+          "type": "string"
+        },
+        "window_id": {
+          "type": "integer"
+        },
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "pid"
+      ],
+      "type": "object"
+    },
+    "drag": {
+      "additionalProperties": false,
+      "properties": {
+        "button": {
+          "type": "string"
+        },
+        "cursor_id": {
+          "type": "string"
+        },
+        "delivery_mode": {
+          "type": "string"
+        },
+        "duration_ms": {
+          "type": "integer"
+        },
+        "from_x": {
+          "type": "number"
+        },
+        "from_y": {
+          "type": "number"
+        },
+        "from_zoom": {
+          "type": "boolean"
+        },
+        "modifier": {
+          "type": "array"
+        },
+        "pid": {
+          "type": "integer"
+        },
+        "scope": {
+          "type": "string"
+        },
+        "session": {
+          "type": "string"
+        },
+        "steps": {
+          "type": "integer"
+        },
+        "target": {
+          "type": null
+        },
+        "to_x": {
+          "type": "number"
+        },
+        "to_y": {
+          "type": "number"
+        },
+        "window_id": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "from_x",
+        "from_y",
+        "to_x",
+        "to_y"
+      ],
+      "type": "object"
+    },
+    "scroll": {
+      "additionalProperties": false,
+      "properties": {
+        "amount": {
+          "type": "integer"
+        },
+        "by": {
+          "type": "string"
+        },
+        "cursor_id": {
+          "type": "string"
+        },
+        "delivery_mode": {
+          "type": "string"
+        },
+        "direction": {
+          "type": "string"
+        },
+        "element_index": {
+          "type": "integer"
+        },
+        "element_token": {
+          "type": "string"
+        },
+        "pid": {
+          "type": "integer"
+        },
+        "scope": {
+          "type": "string"
+        },
+        "session": {
+          "type": "string"
+        },
+        "snapshot_id": {
+          "pattern": "^s[0-9a-f]{8}$",
+          "type": "string"
+        },
+        "target": {
+          "type": null
+        },
+        "window_id": {
+          "type": "integer"
+        },
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "direction"
+      ],
+      "type": "object"
+    },
+    "set_value": {
+      "additionalProperties": false,
+      "properties": {
+        "element_index": {
+          "type": "integer"
+        },
+        "element_token": {
+          "type": "string"
+        },
+        "pid": {
+          "type": "integer"
+        },
+        "session": {
+          "type": "string"
+        },
+        "snapshot_id": {
+          "pattern": "^s[0-9a-f]{8}$",
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        },
+        "window_id": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "pid",
+        "value"
+      ],
+      "type": "object"
+    }
+  },
+  "cua_driver_0_32_0": {
+    "click": {
+      "additionalProperties": false,
+      "properties": {
+        "button": {
+          "type": "string"
+        },
+        "capture_id": {
+          "type": "string"
+        },
+        "coordinate_frame": {
+          "type": "string"
+        },
+        "count": {
+          "type": "integer"
+        },
+        "cursor_id": {
+          "type": "string"
+        },
+        "delivery_mode": {
+          "type": "string"
+        },
+        "element_token": {
+          "type": "string"
+        },
+        "from_zoom": {
+          "type": "boolean"
+        },
+        "modifier": {
+          "type": "array"
+        },
+        "pid": {
+          "type": "integer"
+        },
+        "scope": {
+          "type": "string"
+        },
+        "session": {
+          "type": "string"
+        },
+        "target": {
+          "type": null
+        },
+        "window_id": {
+          "type": "integer"
+        },
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "double_click": {
+      "additionalProperties": false,
+      "properties": {
+        "coordinate_frame": {
+          "type": "string"
+        },
+        "cursor_id": {
+          "type": "string"
+        },
+        "delivery_mode": {
+          "type": "string"
+        },
+        "element_token": {
+          "type": "string"
+        },
+        "from_zoom": {
+          "type": "boolean"
+        },
+        "pid": {
+          "type": "integer"
+        },
+        "session": {
+          "type": "string"
+        },
+        "window_id": {
+          "type": "integer"
+        },
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "pid"
+      ],
+      "type": "object"
+    },
+    "drag": {
+      "additionalProperties": false,
+      "properties": {
+        "button": {
+          "type": "string"
+        },
+        "coordinate_frame": {
+          "type": "string"
+        },
+        "cursor_id": {
+          "type": "string"
+        },
+        "delivery_mode": {
+          "type": "string"
+        },
+        "duration_ms": {
+          "type": "integer"
+        },
+        "from_x": {
+          "type": "number"
+        },
+        "from_y": {
+          "type": "number"
+        },
+        "from_zoom": {
+          "type": "boolean"
+        },
+        "modifier": {
+          "type": "array"
+        },
+        "pid": {
+          "type": "integer"
+        },
+        "scope": {
+          "type": "string"
+        },
+        "session": {
+          "type": "string"
+        },
+        "steps": {
+          "type": "integer"
+        },
+        "target": {
+          "type": null
+        },
+        "to_x": {
+          "type": "number"
+        },
+        "to_y": {
+          "type": "number"
+        },
+        "window_id": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "from_x",
+        "from_y",
+        "to_x",
+        "to_y"
+      ],
+      "type": "object"
+    },
+    "scroll": {
+      "additionalProperties": false,
+      "properties": {
+        "amount": {
+          "type": "integer"
+        },
+        "by": {
+          "type": "string"
+        },
+        "coordinate_frame": {
+          "type": "string"
+        },
+        "cursor_id": {
+          "type": "string"
+        },
+        "delivery_mode": {
+          "type": "string"
+        },
+        "direction": {
+          "type": "string"
+        },
+        "element_token": {
+          "type": "string"
+        },
+        "pid": {
+          "type": "integer"
+        },
+        "scope": {
+          "type": "string"
+        },
+        "session": {
+          "type": "string"
+        },
+        "target": {
+          "type": null
+        },
+        "window_id": {
+          "type": "integer"
+        },
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "direction"
+      ],
+      "type": "object"
+    },
+    "set_value": {
+      "additionalProperties": false,
+      "properties": {
+        "delivery_mode": {
+          "type": "string"
+        },
+        "element_token": {
+          "type": "string"
+        },
+        "pid": {
+          "type": "integer"
+        },
+        "session": {
+          "type": "string"
+        },
+        "value": {
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "window_id": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "pid",
+        "value"
+      ],
+      "type": "object"
+    }
+  },
+  "source": "live MCP tools/list of the official cua-driver-rs v0.32.0 build (trycua/cua 229b65b28, binary sha256 8b037961...) and v0.21.0 release (binary sha256 43d926a1...), Linux; input schemas of the element-addressable action tools only; descriptions stripped"
+}

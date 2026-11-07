@@ -41,7 +41,7 @@ interface Call {
   params: Record<string, unknown>
 }
 
-async function submitWithImage(attachReply: Record<string, unknown>) {
+async function submitWithImage(attachReply: Record<string, unknown>, image: ComposerAttachment = composerImage()) {
   $connection.set({ connectionId: 'remote', mode: 'remote', wsUrl: 'ws://gateway.test:9119/api/ws' } as never)
   $currentCwd.set('/root')
 
@@ -62,7 +62,7 @@ async function submitWithImage(attachReply: Record<string, unknown>) {
     return {} as never
   })
 
-  $composerAttachments.set([composerImage()])
+  $composerAttachments.set([image])
 
   let handle: null | HarnessHandle = null
   await actRender(
@@ -98,6 +98,19 @@ test('a canonically staged image reaches prompt.submit with the reply mime', asy
 
 test('a legacy attach reply without mime keeps attachments off submit', async () => {
   const submit = await submitWithImage({ attached: true, path: '/root/.hermes/images/upload_cd34.png' })
+
+  expect(submit.params).not.toHaveProperty('attachments')
+})
+
+// A chip keeps the `mime` its previous canonical stage returned, and a re-stage happens whenever the
+// chip's `attachedSessionId` is not the live session — so the new reply, not the chip, must decide
+// whether submit declares the image. A legacy reply carries no mime, and sending the stale one puts
+// `attachments` back on the legacy contract that refuses it (#144186).
+test('a legacy re-stage clears MIME left by a previous canonical attach', async () => {
+  const submit = await submitWithImage(
+    { attached: true, path: '/root/.hermes/images/upload_cd34.png' },
+    { ...composerImage(), attachedSessionId: 'previous-canonical-session', mime: 'image/png' }
+  )
 
   expect(submit.params).not.toHaveProperty('attachments')
 })

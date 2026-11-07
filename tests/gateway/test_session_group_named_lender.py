@@ -19,6 +19,7 @@ from gateway.platforms.api_server import APIServerAdapter
 from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 from gateway.session_group_peers import dispatch_target, room_link
 from hermes_state import SessionDB
+from tests.waiting import async_wait_until
 
 ROOM = dict(room_id='lent', home_install_id='install:home', authority_gateway_id='install:home',
             authority_epoch=1, member_id='reviewer')
@@ -173,12 +174,9 @@ async def test_a_granted_run_executes_in_the_lent_profile_and_its_grant_answers_
         accepted = await client.post('/p/helper/v1/runs', json=payload, headers=headers)
         assert accepted.status == 202, await accepted.text()
         run_id = (await accepted.json())['run_id']
-        run = {}
-        for _ in range(200):
-            status, run = await get(f'/p/helper/v1/runs/{run_id}')
-            if run.get('status') == 'completed':
-                break
-            await asyncio.sleep(0.05)
+        await async_wait_until(lambda: lender.adapter._run_statuses.get(run_id, {}).get('status') == 'completed',
+                               what='lent run completes')
+        run = (await get(f'/p/helper/v1/runs/{run_id}'))[1]
         assert run['status'] == 'completed' and run['output'] == 'helper reply', run
         assert (await get(f'/v1/runs/{run_id}'))[0] == 401
 

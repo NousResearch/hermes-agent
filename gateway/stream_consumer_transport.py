@@ -12,6 +12,7 @@ import time
 from typing import Any, Optional
 
 from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
+from gateway.platforms.base_edit_targets import next_edit_target_message_id
 from gateway.stream_consumer_fences import ensure_closed_code_fences
 from hermes_cli.observability.shared_metrics_gateway import stops_reply_clock
 
@@ -518,6 +519,11 @@ class StreamTransportMixin:
             self._last_sent_text = ""
             self._notify_new_message()
         else:
+            # Only timestamp-chained adapters retarget the next edit at this edit's fresh id; Matrix
+            # returns a replacement-event id while later edits must keep targeting the original.
+            next_message_id = next_edit_target_message_id(self.adapter, self._message_id, result)
+            if next_message_id != self._message_id:
+                self._adopt_message_id(next_message_id)
             self._last_sent_text = text
         self._flood_strikes = 0
         return True

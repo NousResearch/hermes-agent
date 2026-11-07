@@ -21,6 +21,12 @@ import uuid
 from pathlib import Path
 
 _IS_WINDOWS = platform.system() == "Windows"
+try:
+    import msvcrt
+    import _winapi
+except ImportError:
+    msvcrt = None
+    _winapi = None
 # systemd transient scopes exist only on Linux; gate every scope-path branch on this
 # (not merely "not Windows") so macOS and other POSIX platforms never touch systemd.
 # See #70716.
@@ -1308,7 +1314,11 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         end so EOF never arrives while it lives, which would park this thread and never
         fire ``notify_on_complete``; on POSIX we wait on an ``fd_wait`` selector (no FD_SETSIZE
         cap, #94928) and stop draining shortly after the direct child exits.
-        Windows pipes lack select(), so the lazy ``_reconcile_local_exit`` is the net (#68915, #8340).
+        Windows pipes lack select(), so the same loop runs on ``PeekNamedPipe``:
+        read only when bytes are available, otherwise check the direct child and stop
+        after the same short idle grace (``environments/base_output.py::_drain_fd_windows``
+        is the foreground twin). Streams without a real OS fd still use the
+        blocking fallback. See #68915, #8340.
         """
         # ``bash -lic`` without a tty writes its startup warnings one write() per line, so the
         # reader can wake between them; strip leading noise from every chunk until the
@@ -1341,14 +1351,22 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             # select() needs a real OS fd; mocked streams (tests, adapters) may lack
             # fileno() and use the blocking read instead.
             try:
-                fd = stdout.fileno() if raw_read is not None and not _IS_WINDOWS else None
+                fd = stdout.fileno() if raw_read is not None else None
             except Exception:
                 fd = None
             if not (isinstance(fd, int) and fd >= 0):
                 fd = None
+            # select() cannot poll pipe fds on Windows; PeekNamedPipe reports buffered bytes without
+            # blocking. No usable handle -> the blocking fallback below (fd None).
+            peek_handle = None
+            if fd is not None and _IS_WINDOWS:
+                if msvcrt is not None and _winapi is not None:
+                    with suppress(OSError):
+                        peek_handle = msvcrt.get_osfhandle(fd)
+                fd = None
             from tools.environments.fd_wait import open_fd_waiter
             _waiter = open_fd_waiter(fd) if fd is not None else None
-            session._reader_selectable = _waiter is not None
+            session._reader_selectable = _waiter is not None or peek_handle is not None
             idle_after_exit = 0
             drained_after_request = 0
             while True:
@@ -1365,6 +1383,23 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                         # grandchild's pipe.
                         if proc.poll() is not None:
                             # See #68915.
+                            idle_after_exit += 1
+                        if idle_after_exit >= 3:
+                            break
+                        continue
+                elif peek_handle is not None:
+                    try:
+                        n_avail = _winapi.PeekNamedPipe(peek_handle)[0]
+                        if n_avail == 0 and not session._reader_finish_requested.is_set():
+                            time.sleep(0.2)          # selector's bounded wait
+                            n_avail = _winapi.PeekNamedPipe(peek_handle)[0]
+                    except (OSError, ValueError):    # BrokenPipeError is an OSError: all writers closed, buffer drained
+                        break
+                    if n_avail == 0:
+                        if session._reader_finish_requested.is_set():
+                            break
+                        # Same idle grace as the select() branch: direct child gone and pipe idle.
+                        if proc.poll() is not None:
                             idle_after_exit += 1
                         if idle_after_exit >= 3:
                             break
@@ -1936,8 +1971,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             return  # Direct child still running — reader block is legitimate.
         reader = session._reader_thread
         if (
-            not _IS_WINDOWS
-            and session._reader_selectable
+            session._reader_selectable
             and reader is not None
             and reader.is_alive()
         ):
@@ -1945,7 +1979,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             # finish avoids a competing TextIOWrapper read here racing the
             # reader, publishing an empty owner-stamped result, then closing
             # the pipe before the buffered tail is ingested. It wakes within
-            # the reader's bounded select interval and drains what is buffered.
+            # the reader's bounded selector/PeekNamedPipe interval and drains what is buffered.
             session._reader_finish_requested.set()
             # Flipping ``exited`` before that drain lands would hand poll()/wait() a truncated
             # snapshot (and wait() marks it consumed), so give the reader a moment to publish.

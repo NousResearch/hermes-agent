@@ -84,7 +84,7 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"|auto-lowered\s+compression\s+threshold"
     # the auto-lower notice was reworded to "Auto-lowered this session's threshold..." — cover both.
     # See #69332.
-    r"|auto-lowered\s+(?:this\s+)?session'?s?\s+threshold"
+    r"|auto-lowered\s+(?:this\s+)?session'?s?\s+threshold|context\s+engine'?s\s+threshold\s+is\s+unchanged"
     r"|configured\s+auxiliary\s+compression\s+provider\s+.+\s+unavailable"
     r"|skipping\s+concurrent\s+compression"
     rf"|{re.escape(COMPACTION_STATUS)}"

@@ -1,0 +1,28 @@
+name: lazy-plugin
+repo: https://github.com/RegeneratusLabs/lazy-plugin
+sha: fb2919d34b073cfd9115f49c972fb72a209e4ba7
+version: "0.7.0"
+title: "Lazy Plugin"
+description: >-
+  Build a Hermes plugin from a sentence, from a skill the agent wrote, or from a job that runs
+  on a schedule — then prove it runs. Your own agent drafts the spec, fixed templates write
+  the code, the catalog's validator gates it, and every tool is dispatched once through the
+  real registry before anyone installs anything: works, needs a key, blocked upstream,
+  half-built or broken, with the exact failing line. Four safe handler shapes (command, http,
+  file, stub), so generated code always registers and cannot carry injected logic. Writes only
+  to $HERMES_HOME/lazy-plugin/created/ and never installs by itself; publishing is a
+  SHA-pinned catalog PR you send yourself.
+maintainer: RegeneratusLabs
+tier: community
+category: tools
+docs_url: https://github.com/RegeneratusLabs/lazy-plugin#readme
+readme: true
+requires_hermes: ">=0.21.6"
+capabilities:
+  provides_tools:
+    - lazyplugin_create
+    - lazyplugin_sources
+    - lazyplugin_built
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

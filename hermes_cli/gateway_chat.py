@@ -389,9 +389,10 @@ def launch_from_args(args) -> int:
             raise GatewayClientError("Noninteractive chat requires --query or --oneshot")
         return asyncio.run(run_gateway_chat(args, emitter=emitter))
     except (GatewayClientError, OSError, TimeoutError, WebSocketException) as exc:
+        from hermes_cli.cli_chat_error_copy import refusal_text
         # WebSocket errors can embed credential URLs/remote bodies.
-        message = str(exc) if isinstance(exc, GatewayClientError) else "Gateway connection/read failed; no local fallback"
-        return failed(message, 2 if isinstance(exc, GatewayClientError) and ("Unsupported" in message or "unsupported" in message) else 1)
+        message = refusal_text(exc) if isinstance(exc, GatewayClientError) else "Gateway connection/read failed; no local fallback"
+        return failed(message, 2 if isinstance(exc, GatewayClientError) and ("Unsupported" in str(exc) or "unsupported" in str(exc)) else 1)
     except KeyboardInterrupt:
         print("Detached; accepted work continues at the gateway.", file=sys.stderr)
         if emitter is not None:

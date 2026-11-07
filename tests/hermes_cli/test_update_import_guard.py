@@ -364,3 +364,19 @@ def test_hint_fires_for_each_first_party_root(modname):
     exc = ImportError("cannot import name 'X'")
     exc.name = modname
     assert partial_update_hint(exc), f"expected guidance for {modname}"
+
+
+def test_import_guard_disables_lazy_installs(monkeypatch, probe_root):
+    """The import probe must pass HERMES_DISABLE_LAZY_INSTALLS=1 so launch
+    preparation does not trigger background dependency rebuilds inside the probe."""
+    import subprocess
+    captured_env = {}
+
+    def fake_run(*args, **kwargs):
+        captured_env.update(kwargs.get("env") or {})
+        return subprocess.CompletedProcess(args[0], 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    update_cmd_validation._critical_module_import_failures(probe_root)
+    assert captured_env.get("HERMES_DISABLE_LAZY_INSTALLS") == "1"
+

@@ -1006,24 +1006,54 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
 
 
 def do_check(name: Optional[str] = None, console: Optional[Console] = None) -> None:
-    """Check hub-installed skills for upstream updates."""
+    """Check hub-installed skills and locally authored skills' recorded sources for changes."""
     from tools.skills_hub_install import check_for_skill_updates
     c = console or _console
     results = check_for_skill_updates(name=name)
     if not results:
         c.print("[dim]No hub-installed skills to check.[/]\n")
+    else:
+        table = _table(("Name", {"style": "bold cyan"}), "Source", "Status", title="Skill Updates")
+        for entry in results:
+            table.add_row(entry.get("name", ""), entry.get("source", ""), entry.get("status", ""))
+        c.print(table)
+        update_count = sum(1 for entry in results if entry.get("status") == "update_available")
+        c.print(f"[dim]{update_count} update(s) available across {len(results)} checked skill(s)[/]\n")
+        orphaned = [entry.get("name", "") for entry in results if entry.get("status") == "orphaned"]
+        if orphaned:
+            c.print(f"[yellow]Orphaned:[/] {', '.join(orphaned)} — lock-file entries whose local "
+                    "directory is missing or replaced by a non-directory. For missing directories, "
+                    "remove the stale entry with: hermes skills uninstall <name>\n")
+    _print_learned_source_status(c, name=name)
+
+
+def _print_learned_source_status(console: Console, name: Optional[str] = None) -> None:
+    """Append the "Learned skill sources" table for skills that declare their provenance.
+
+    Hub-installed skills are already covered by the install lock file above; this covers
+    the skills authored locally by ``/learn`` or by hand. Silent when there is nothing to
+    report, so the hub-only output is unchanged for users who have no such skills.
+    """
+    from tools.skill_sources import check_sources
+
+    try:
+        rows = check_sources(name=name)
+    except Exception:  # a provenance check must never break `hermes skills check`
+        logging.getLogger(__name__).debug("Learned-skill source check failed", exc_info=True)
         return
-    table = _table(("Name", {"style": "bold cyan"}), "Source", "Status", title="Skill Updates")
-    for entry in results:
-        table.add_row(entry.get("name", ""), entry.get("source", ""), entry.get("status", ""))
-    c.print(table)
-    update_count = sum(1 for entry in results if entry.get("status") == "update_available")
-    c.print(f"[dim]{update_count} update(s) available across {len(results)} checked skill(s)[/]\n")
-    orphaned = [entry.get("name", "") for entry in results if entry.get("status") == "orphaned"]
-    if orphaned:
-        c.print(f"[yellow]Orphaned:[/] {', '.join(orphaned)} — lock-file entries whose local "
-                "directory is missing or replaced by a non-directory. For missing directories, "
-                "remove the stale entry with: hermes skills uninstall <name>\n")
+    if not rows:
+        return
+    table = _table(("Skill", {"style": "bold cyan"}), "Source", "Status",
+                   title="Learned skill sources")
+    changed: list[str] = []
+    for row in rows:
+        table.add_row(row["skill"], row["source"], row["status"])
+        if row["status"] == "changed":
+            changed.append(row["source"])
+    console.print(table)
+    if changed:
+        console.print("[dim]Re-run /learn on the skill to refresh it from the current source — "
+                      "/learn folds into the existing skill instead of duplicating it.[/]\n")
 
 
 def _has_local_edits(installed: dict) -> bool:

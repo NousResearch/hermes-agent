@@ -113,6 +113,221 @@ def _make_plugin_dir(base: Path, name: str, *, register_body: str = "pass",
     return plugin_dir
 
 
+_TOOL_SCHEMA = (
+    "{{'name': '{name}', 'description': 'probe', "
+    "'parameters': {{'type': 'object', 'properties': {{}}}}}}"
+)
+
+
+def _tool_register_body(name: str) -> str:
+    """``register()`` body that registers one tool under the current signature."""
+    schema = _TOOL_SCHEMA.format(name=name)
+    return (
+        "ctx.register_tool(\n"
+        f"        name='{name}',\n"
+        f"        toolset='{name}_ts',\n"
+        f"        schema={schema},\n"
+        "        handler=lambda args, **kw: 'ok',\n"
+        "    )"
+    )
+
+
+# ── TestPluginMissingEnvWarnings ───────────────────────────────────────────
+
+
+class TestPluginMissingEnvWarnings:
+    """Warnings when required env vars are absent or nothing is registered (#2765)."""
+
+    def test_missing_requires_env_logs_warning(self, tmp_path, monkeypatch, caplog):
+        """A warning names the absent required env var declared in plugin.yaml."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "needs_env_plugin",
+            manifest_extra={"requires_env": ["MY_PLUGIN_API_URL"]},
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+        monkeypatch.delenv("MY_PLUGIN_API_URL", raising=False)
+
+        mgr = PluginManager()
+        with caplog.at_level(logging.WARNING):
+            mgr.discover_and_load()
+
+        assert any(
+            "needs_env_plugin" in r.getMessage()
+            and "MY_PLUGIN_API_URL" in r.getMessage()
+            for r in caplog.records
+        ), caplog.text
+
+    def test_requires_env_dict_form_logs_warning(self, tmp_path, monkeypatch, caplog):
+        """``requires_env`` dict entries (name/description) are handled too.
+
+        The description and any secret flag stay out of the log. Only the
+        variable name is reported.
+        """
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "dict_env_plugin",
+            manifest_extra={"requires_env": [{
+                "name": "HINDSIGHT_API_URL",
+                "description": "do-not-log-this-token",
+                "secret": True,
+            }]},
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+        monkeypatch.delenv("HINDSIGHT_API_URL", raising=False)
+
+        mgr = PluginManager()
+        with caplog.at_level(logging.WARNING):
+            mgr.discover_and_load()
+
+        assert any(
+            "HINDSIGHT_API_URL" in r.getMessage() for r in caplog.records
+        ), caplog.text
+        assert "do-not-log-this-token" not in caplog.text
+
+    def test_present_requires_env_no_warning(self, tmp_path, monkeypatch, caplog):
+        """No missing-env warning when the required var is set, and its value is not logged."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "has_env_plugin",
+            register_body=_tool_register_body("has_env_tool"),
+            manifest_extra={"requires_env": ["PRESENT_VAR"]},
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+        monkeypatch.setenv("PRESENT_VAR", "super-secret-value")
+
+        mgr = PluginManager()
+        with caplog.at_level(logging.WARNING):
+            mgr.discover_and_load()
+
+        assert not any(
+            "missing required environment" in r.getMessage()
+            and "has_env_plugin" in r.getMessage()
+            for r in caplog.records
+        ), caplog.text
+        assert "super-secret-value" not in caplog.text
+        loaded = mgr._plugins["has_env_plugin"]
+        assert loaded.enabled and "has_env_tool" in loaded.tools_registered
+
+    def test_zero_registration_logs_warning(self, tmp_path, monkeypatch, caplog):
+        """A plugin whose register() adds nothing triggers a zero-registration warning."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(plugins_dir, "empty_plugin", register_body="pass")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        with caplog.at_level(logging.WARNING):
+            mgr.discover_and_load()
+
+        assert any(
+            "empty_plugin" in r.getMessage() and "zero tools" in r.getMessage()
+            for r in caplog.records
+        ), caplog.text
+
+    def test_registering_plugin_no_zero_warning(self, tmp_path, monkeypatch, caplog):
+        """A plugin that registers a tool does not get the zero-registration warning."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "busy_plugin",
+            register_body=_tool_register_body("busy_tool"),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        with caplog.at_level(logging.WARNING):
+            mgr.discover_and_load()
+
+        assert not any(
+            "busy_plugin" in r.getMessage() and "zero tools" in r.getMessage()
+            for r in caplog.records
+        ), caplog.text
+
+    def test_extra_registration_no_zero_warning(self, tmp_path, monkeypatch, caplog):
+        """A skill-only plugin (stand-in for a provider-only plugin) is not zero-registration."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        skill_md = plugins_dir / "provider_plugin" / "MY_SKILL.md"
+        _make_plugin_dir(
+            plugins_dir,
+            "provider_plugin",
+            register_body=(
+                "from pathlib import Path\n"
+                "    ctx.register_skill('extra', Path(__file__).parent / 'MY_SKILL.md')"
+            ),
+        )
+        skill_md.write_text("# skill\nbody\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        with caplog.at_level(logging.WARNING):
+            mgr.discover_and_load()
+
+        assert not any(
+            "provider_plugin" in r.getMessage() and "zero tools" in r.getMessage()
+            for r in caplog.records
+        ), caplog.text
+
+    def test_cli_only_plugin_no_zero_warning(self, tmp_path, monkeypatch, caplog):
+        """CLI-only plugins must not trigger the zero-registration warning (#58692)."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "cli_only_plugin",
+            register_body=(
+                "ctx.register_cli_command(\n"
+                "        'cli_only_cmd',\n"
+                "        help='CLI-only test command',\n"
+                "        setup_fn=lambda p: None,\n"
+                "        handler_fn=lambda args: None,\n"
+                "    )"
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        with caplog.at_level(logging.WARNING):
+            mgr.discover_and_load()
+
+        assert "cli_only_cmd" in mgr._cli_commands
+        assert not any(
+            "cli_only_plugin" in r.getMessage() and "zero tools" in r.getMessage()
+            for r in caplog.records
+        ), caplog.text
+
+    def test_secret_source_only_plugin_no_zero_warning(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """Secret-source-only plugins must not trigger zero-registration (#58692)."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "secret_only_plugin",
+            register_body=(
+                "from agent.secret_sources.base import FetchResult, SecretSource\n"
+                "    class _Src(SecretSource):\n"
+                "        name = 'test_secret_src'\n"
+                "        label = 'Test Secret Source'\n"
+                "        shape = 'mapped'\n"
+                "        def fetch(self, cfg, home_path):\n"
+                "            return FetchResult()\n"
+                "    ctx.register_secret_source(_Src())"
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        with caplog.at_level(logging.WARNING):
+            mgr.discover_and_load()
+
+        assert not any(
+            "secret_only_plugin" in r.getMessage() and "zero tools" in r.getMessage()
+            for r in caplog.records
+        ), caplog.text
+
+
 # ── TestPluginDiscovery ────────────────────────────────────────────────────
 
 

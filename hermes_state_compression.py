@@ -13,8 +13,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_state_common import (
     _BOUNDARY_END_REASONS, _COMPRESSION_LOCK_ROW_SQL as _LOCK_ROW_SQL, _ENDED_ROW_SQL, _ended_by_compression,
-    _RESET_CHILD_SQL, _non_continuation_child_sql, _sql_json_extract, _sql_session_last_active,
-    is_automatic_end_reason)
+    _LIST_CONTINUATION_EDGE_SQL, _RESET_CHILD_SQL, _non_continuation_child_sql, _sql_json_extract,
+    _sql_session_last_active, is_automatic_end_reason)
 
 # Log-record parity with the origin module (caplog tests pin "hermes_state").
 logger = logging.getLogger("hermes_state")
@@ -37,6 +37,26 @@ _CHAIN_STEP_SQL = f"""
                       AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
                       AND NOT ({_RESET_CHILD_SQL.format(a='child')})
                       AND COALESCE(child.source, '') != 'tool'
+                    ORDER BY
+                      CASE
+                        WHEN child.end_reason = 'compression' THEN 0
+                        WHEN child.ended_at IS NULL THEN 1
+                        ELSE 2
+                      END,
+                      {_sql_session_last_active("child")} DESC,
+                      child.started_at DESC,
+                      child.id DESC
+                    LIMIT 1
+                    """
+
+# Listing walk: compression plus hidden reset/new_session children (#84870).
+# Resume stays on _CHAIN_STEP_SQL and must not cross a reset boundary.
+_LIST_CHAIN_STEP_SQL = f"""
+                    SELECT child.id
+                    FROM sessions parent
+                    JOIN sessions child ON child.parent_session_id = parent.id
+                    WHERE parent.id = ?
+                      AND {_LIST_CONTINUATION_EDGE_SQL}
                     ORDER BY
                       CASE
                         WHEN child.end_reason = 'compression' THEN 0
@@ -898,6 +918,21 @@ class SessionCompressionMixin:
         """Live tip of a compression chain (``get_compression_chain`` semantics); the input
         id when no continuation exists."""
         chain = self.get_compression_chain(session_id)
+        return chain[-1] if chain else session_id
+
+    def get_list_surface_chain(self, session_id: str) -> list[str]:
+        """Walk compression plus hidden reset/new_session children for the session list.
+
+        Resume stays on ``get_compression_chain`` and must not cross a reset boundary (#84870).
+        """
+        def step(current: str):
+            with self._read_ctx() as conn:
+                return conn.execute(_LIST_CHAIN_STEP_SQL, (current,)).fetchone()
+        return _walk_compression_chain(session_id, step)
+
+    def get_list_surface_tip(self, session_id: str) -> Optional[str]:
+        """Live list tip: compression plus hidden reset children. Resume stays compression-only."""
+        chain = self.get_list_surface_chain(session_id)
         return chain[-1] if chain else session_id
 
     def _compression_tip_on(self, conn, session_id: str) -> str:

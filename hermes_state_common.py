@@ -81,6 +81,11 @@ def _sql_literal(text: str) -> str:
 QUEUED_PROMPT_METADATA_KEY = "_queued_prompt"
 
 
+# ``display_metadata = <this>`` merges a JSON object parameter into the column (its keys win, a null value
+# removes a key): a row-addressed rewrite must not wipe a key another writer added meanwhile (a reaction).
+_MERGE_DISPLAY_META = "json_patch(CASE WHEN json_valid(display_metadata) THEN display_metadata ELSE '{}' END, COALESCE(?, '{}'))"
+
+
 def _sql_json_extract(expression: str, path: str) -> str:
     """Build a non-throwing JSON marker lookup for a JSON TEXT column."""
 

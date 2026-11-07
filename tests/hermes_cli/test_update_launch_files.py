@@ -7,7 +7,6 @@ recreates ``node_modules/.bin``, which the unit's ``PATH`` names) and before the
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pytest
@@ -38,7 +37,6 @@ def systemd_update(tmp_path, monkeypatch):
     unit.write_text(STALE_UNIT, encoding="utf-8")
     events: list[tuple] = []
 
-    monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
     monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit)
     monkeypatch.setattr(gateway_cli, "generate_systemd_unit", _generator_reads_node_bin(root))
@@ -84,6 +82,7 @@ def systemd_update(tmp_path, monkeypatch):
     return root, unit, events, request
 
 
+@pytest.mark.platforms("linux")
 def test_the_paused_gateway_starts_under_the_unit_generated_after_the_node_dependencies(systemd_update):
     """A stale unit is rewritten (and reloaded) once ``node_modules/.bin`` exists, before the gateway
     starts; the start sees exactly what the generator writes for the finished checkout."""
@@ -101,6 +100,7 @@ def test_the_paused_gateway_starts_under_the_unit_generated_after_the_node_depen
     assert next(event for event in events if event[0] == "systemctl")[1] == "daemon-reload"
 
 
+@pytest.mark.platforms("linux")
 def test_one_failed_launch_file_is_a_followup_and_the_other_profiles_are_still_rewritten(
         tmp_path, monkeypatch, capsys):
     from hermes_cli import update_launch_files

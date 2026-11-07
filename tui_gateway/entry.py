@@ -20,6 +20,7 @@ from tui_gateway._stdin_recovery import handle_spurious_eof
 
 from tui_gateway import server
 from tui_gateway.event_replay import replay_epoch
+from tui_gateway.methods_browser import _cleanup_browsers_before_exit
 from tui_gateway.server import _CRASH_LOG, _err, dispatch, resolve_skin, write_json
 from tui_gateway.transport import TeeTransport
 
@@ -172,6 +173,7 @@ def _log_signal(signum: int, frame) -> None:
     with suppress(Exception):
         from tui_gateway.server import _shutdown_sessions
         _shutdown_sessions()
+    _cleanup_browsers_before_exit()  # may be cut off by the grace timer above (default 1 s)
     # Unwind the main thread so atexit + finalisers run; the daemon timer is the safety net.
     sys.exit(0)
 
@@ -326,8 +328,13 @@ def main():
     try:
         _serve()
     finally:
-        from gateway.runtime_ownership import process_ownership
-        process_ownership.release(home)
+        # stdin closed or stdout broke (sys.exit in _write_or_exit): browsers go now, while asyncio can still
+        # resolve a hostname CDP endpoint (atexit cannot)
+        try:
+            _cleanup_browsers_before_exit()
+        finally:
+            from gateway.runtime_ownership import process_ownership
+            process_ownership.release(home)
 
 
 def _serve():

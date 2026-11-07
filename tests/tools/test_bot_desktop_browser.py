@@ -363,7 +363,7 @@ def test_janitor_keeps_the_shared_browser_alive_while_a_human_holds_the_lease(mo
     holder = {"human": True}
     monkeypatch.setattr(lease, "human_holds", lambda *a, **k: holder["human"])
     reaped: list = []
-    monkeypatch.setattr(lifecycle, "cleanup_single_session", lambda cache_key: reaped.append(cache_key))
+    monkeypatch.setattr(lifecycle, "_release_session", lambda cache_key: reaped.append(cache_key))
     monkeypatch.setattr(session, "BROWSER_SESSION_INACTIVITY_TIMEOUT", 1)
     monkeypatch.setattr(session, "_active_sessions", {
         "bot": {"session_name": "h_bot", "features": {"local": True}},

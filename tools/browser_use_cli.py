@@ -9,6 +9,7 @@ The harness speaks CDP to whatever ``tools.browser_session`` resolved for the ca
 import contextlib
 import contextvars
 import functools
+import hashlib
 import importlib
 import importlib.util
 import json
@@ -27,7 +28,8 @@ from hermes_cli.process_identity import (
     own_process_groups, register_child, release_process_group_once_empty, spawn_env, spawned_by_this_process)
 from hermes_constants import get_hermes_home, hermes_home_key
 from tools.browser_harness_dirs import (daemon_env, daemon_identity, fit_default_socket_dir, harness_pid_file,
-                                        namespace_harness_dirs)
+                                        namespace_harness_dirs, remove_route_daemon_log, route_daemon_tabs,
+                                        share_harness_dirs)
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -36,11 +38,13 @@ _BROWSER_USE_PROVIDER = "browser-use"
 # The one credential the harness itself reads (BU_AUTOSPAWN of a Browser Use cloud browser).
 _HARNESS_PASSTHROUGH_KEYS: tuple[str, ...] = ("BROWSER_USE_API_KEY",)
 
-# Cloud daemon names become the BU_NAME env var
-_SESSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+# Cloud daemon names become the BU_NAME env var. "default" is the harness's UNNAMED daemon, which attaches to
+# the browser's first page instead of a tab of its own, so it is not a session name.
+_SESSION_RE = re.compile(r"^(?!default$)[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
-# Set on the env dict by the CDP resolvers when the resolved browser is EXCLUSIVE to this named session
-# (per-name provider / named BU cloud / Lightpanda). Popped before the subprocess launches — never exported.
+# Set on the env dict by the CDP resolvers when the resolved browser is EXCLUSIVE to this route (a provider
+# session, named BU cloud, a per-key local browser, Lightpanda): no tab recording, the whole browser goes at
+# cleanup. Popped before the subprocess launches — never exported.
 _PRIVATE_BROWSER_SENTINEL = "_HERMES_BU_PRIVATE_BROWSER"
 # Internal route provenance: this exec resolved to a browser on the Bot Desktop display and must use
 # the same human-control lease fence as the built-in browser tools. Popped before launching the CLI.
@@ -51,45 +55,6 @@ _REAL_PROFILE_FALLBACK_SENTINEL = "_HERMES_BU_REAL_PROFILE_FALLBACK"
 _LOCAL_FALLBACK_SENTINEL = "_HERMES_BU_LOCAL_FALLBACK"
 # Where new/hidden tabs may be brought to the front: a browser_use_shot.ACTIVATE_* mode. Popped before launch.
 _CLOUD_BROWSER_SENTINEL = "_HERMES_BU_CLOUD_BROWSER"
-
-# Prepended to the model's code for named sessions on SHARED browsers (a /browser connect CDP override): the
-# harness daemon attaches to the first existing page at startup, so two fresh named daemons can land on the
-# SAME tab. Steering each onto a tab it created prevents clobbering. Runs once per daemon (marker keyed by
-# BU_NAME + daemon pid).
-_OWN_TAB_PREAMBLE = """\
-# hermes: pin this named session to its own tab (once per daemon process)
-def _hermes_ensure_own_tab():
-    import os as _os, tempfile as _tf
-    _name = _os.environ.get("BU_NAME", "default")
-    try:
-        # Key the marker by the daemon's pid so a daemon restart (which
-        # re-attaches to the first shared page) re-pins automatically,
-        # while agent-driven tab switches mid-session are left alone.
-        from browser_harness import _ipc as _bipc
-        _dpid = _bipc.pid_path(_name).read_text().strip() or "0"
-    except Exception:
-        _dpid = "0"
-    _uid = _os.getuid() if hasattr(_os, "getuid") else 0
-    _marker = _os.path.join(
-        _tf.gettempdir(), "hermes-bu-owntab-%s-%s-%s" % (_uid, _name, _dpid)
-    )
-    if _os.path.exists(_marker):
-        return
-    try:
-        # Force a fresh target: new_tab() would REUSE a blank current tab,
-        # which is exactly the tab a sibling daemon may also hold.
-        _tid = cdp("Target.createTarget", url="about:blank").get("targetId")
-        if _tid:
-            switch_tab(_tid)
-    except Exception:
-        pass  # best-effort: worst case is pre-fix behavior
-    try:
-        open(_marker, "w").close()
-    except OSError:
-        pass
-_hermes_ensure_own_tab()
-del _hermes_ensure_own_tab
-"""
 
 _DEFAULT_TIMEOUT_S = 300
 _MIN_TIMEOUT_S = 5
@@ -130,8 +95,13 @@ def _set_cdp_env(env: dict, cdp: str) -> None:
     env["BU_CDP_URL" if cdp.startswith(("http://", "https://")) else "BU_CDP_WS"] = cdp
 
 
+def _cdp_env_endpoint(env: dict) -> str:
+    """The endpoint exported under the BU_CDP_* contract, or ""."""
+    return env.get("BU_CDP_WS") or env.get("BU_CDP_URL") or ""
+
+
 def _has_cdp_env(env: dict) -> bool:
-    return bool(env.get("BU_CDP_WS") or env.get("BU_CDP_URL"))
+    return bool(_cdp_env_endpoint(env))
 
 
 def _export_session_cdp(env: dict, get_session_info: Callable[[str], Any], cache_key: str,
@@ -350,6 +320,19 @@ def _sidecar_daemon_name(name: str) -> str:
     return f"_local_{name or 'default'}"[:64]
 
 
+ROUTE_DAEMON_PREFIX = "_hermes_t_"
+_DAEMON_STEM_RE = re.compile(r"[^A-Za-z0-9-]+")
+
+
+def route_daemon_name(route_key: str) -> str:
+    """BU_NAME of an unnamed route's own harness daemon on a shared browser. The harness gives a daemon
+    with any name but ``default`` a tab of its own, and closes it when the daemon stops, instead of
+    attaching to the browser's first page. User session names cannot start with ``_``; the digest keeps
+    two routes (task ids, served profiles) apart however their ids sanitise."""
+    digest = hashlib.sha256(route_key.encode()).hexdigest()[:12]
+    return f"{ROUTE_DAEMON_PREFIX}{_DAEMON_STEM_RE.sub('-', route_key)[:16]}_{digest}"
+
+
 def _export_real_profile_note(env: dict, key: str) -> None:
     """The session layer decides real profile vs fresh browser once per key; carry its note (if it fell
     back) so the result reports the browser this call actually drives."""
@@ -361,8 +344,8 @@ def _export_real_profile_note(env: dict, key: str) -> None:
 
 def _mark_local_browser(env: dict, session: dict, key: str) -> None:
     """Flags for a LOCAL session browser: it runs on the Bot Desktop display (lease fence), and unless a
-    persistent profile / the real-profile browser is shared by every key, it is exclusive to this key (no
-    own-tab preamble: nothing to share a tab with)."""
+    persistent profile / the real-profile browser is shared by every key, it is exclusive to this key (its
+    tabs go with it, so none are recorded)."""
     features = session.get("features") or {}
     env[_BOT_DESKTOP_BROWSER_SENTINEL] = "lightpanda" if features.get("lightpanda") else "local"
     if not session.get("shared_profile") and not features.get("real_profile"):
@@ -467,12 +450,9 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
         if err is None:
             _mark_local_browser(env, session, key)
         return err
-    if err is None:
+    if err is None:  # the provider's own session, exclusive to its cache key and closed with it: no tabs to record
         from tools.browser_use_shot import ACTIVATE_ALWAYS
-        env[_CLOUD_BROWSER_SENTINEL] = ACTIVATE_ALWAYS  # the provider's own session: the harness connects only there
-    # A provider browser keyed bu-named-<name> is exclusive to this session — the
-    # own-tab preamble would just leak a blank tab into it.
-    if err is None and session_name:
+        env[_CLOUD_BROWSER_SENTINEL] = ACTIVATE_ALWAYS  # the harness connects only there
         env[_PRIVATE_BROWSER_SENTINEL] = "1"
     return err
 
@@ -507,7 +487,7 @@ def _attach_vault_supervisor(env: dict, task_id: Optional[str]) -> None:
     """Attach the per-task CDP supervisor to the browser this exec drives so ``browser_vault`` fill has
     a secret-capable WebSocket (never argv) into the SAME browser. Only CDP-routed backends expose an
     endpoint; BU direct-cloud (BU_AUTOSPAWN) does not, and the vault tools report ``supervisor_required``."""
-    cdp = env.get("BU_CDP_WS") or env.get("BU_CDP_URL")
+    cdp = _cdp_env_endpoint(env)
     if not cdp:
         return
     try:
@@ -626,15 +606,33 @@ _real_profile_fallback: dict[str, str] = {}
 _real_profile_note_delivered: set = set()
 
 
+_RELOAD_TIMEOUT_S = 15
+# A --reload under load can take well over 15 s; a route daemon that did not stop stays tracked and is retried.
+ROUTE_DAEMON_STOP_TIMEOUT_S = 30
+
+
 def stop_harness_daemons(home_key: Optional[str] = None) -> None:
     """Stop every harness daemon this process drove (only ``home_key``'s when given), through the
     harness's own identity-checked ``--reload``; the next browser_exec respawns one on the endpoint
     it resolves then."""
     with _driven_daemons_lock:
         daemons = sorted(key for key, home in _driven_daemons.items() if home_key in (None, home))
+    stop_driven_daemons(daemons)
+
+
+def route_daemon_tab_ids(daemon: tuple) -> set[str]:
+    """The dedicated tab(s) the daemon ``daemon`` (``daemon_identity``) opened, from its log in the dirs the
+    harness resolves for it (the env a call of this process launched it with, ``Call.track``)."""
+    return route_daemon_tabs(daemon_env(_base_subprocess_env(), daemon))
+
+
+def stop_driven_daemons(daemons, timeout: float = _RELOAD_TIMEOUT_S) -> set:
+    """Stop exactly ``daemons`` (``daemon_identity`` tuples), e.g. one route's own daemon at its teardown
+    (``timeout`` ``ROUTE_DAEMON_STOP_TIMEOUT_S``); returns the ones whose stop succeeded."""
+    with _driven_daemons_lock:
         for key in daemons:
             _driven_daemons.pop(key, None)
-    _reload_daemons(daemons)
+    return _reload_daemons(daemons, timeout)
 
 
 def _published_daemon_pid(env: dict) -> Optional[int]:
@@ -654,18 +652,26 @@ def _own_harness_daemon_until_owned(env: dict) -> Optional[bool]:
     return None if _own_harness_daemon(env) is None else False
 
 
-def _reload_daemons(daemons) -> None:  # each ``daemon_identity`` daemon, with its own dirs
+def _reload_daemons(daemons, timeout: float = _RELOAD_TIMEOUT_S) -> set:
+    """``--reload`` each ``daemon_identity`` daemon, with its own dirs -> the ones that stopped. A stopped
+    route daemon's log goes too: each task id makes a new one (``remove_route_daemon_log``)."""
     cmd = _find_cli() if daemons else None
     if not cmd:
-        return
-    env = _base_subprocess_env()
+        return set()
+    env, stopped = _base_subprocess_env(), set()
     for daemon in daemons:
-        with contextlib.suppress(OSError, subprocess.SubprocessError):
-            _run_cli_killing_process_group([*cmd, "--reload"], "", daemon_env(env, daemon), 15)
+        target = daemon_env(env, daemon)
+        try:
+            if _run_cli_killing_process_group([*cmd, "--reload"], "", target, timeout).returncode == 0:
+                stopped.add(daemon)
+                remove_route_daemon_log(target, ROUTE_DAEMON_PREFIX)
+        except (OSError, subprocess.SubprocessError) as exc:
+            logger.warning("browser_exec: could not stop harness daemon %s: %s", daemon[-1], exc)
         with _owned_daemon_groups_lock:
             pgid = _owned_daemon_groups.pop(daemon, None)
         if pgid is not None:
             release_process_group_once_empty(pgid)  # a daemon --reload failed to stop stays covered
+    return stopped
 
 
 # Daemon identity (``daemon_identity``: its dirs + BU_NAME) -> process group of the harness daemon this
@@ -763,6 +769,22 @@ def _reload_if_republished(env: dict, generation: int) -> None:
     _reload_daemons([daemon])
 
 
+def _name_daemon(env: dict, session: str, route_key: str, local_sidecar: bool, endpoint: str,
+                 private_browser: bool) -> bool:
+    """Set the call's final BU_NAME; True when it is the route's own daemon. The hybrid sidecar has its own
+    daemon; on a shared browser an unnamed route gets one too (``route_daemon_name``: the harness's
+    "default" daemon attaches to the user's first page), stopped when the route is cleaned up."""
+    from tools.browser_session_owned_tabs import owns_tabs_on
+    own_daemon = not session and not local_sidecar and owns_tabs_on(endpoint, private_browser)
+    if local_sidecar:
+        env["BU_NAME"] = _sidecar_daemon_name(session)
+    elif own_daemon:
+        env["BU_NAME"] = route_daemon_name(route_key)
+        share_harness_dirs(env)  # an operator BH_RUNTIME_DIR would otherwise give every route one bu.sock
+    fit_default_socket_dir(env)  # BU_NAME is final: a deep HOME's socket would overflow sun_path
+    return own_daemon
+
+
 def _take_real_profile_note(route_key: str) -> dict:
     """The fallback note for the first result this route returns after falling back, then nothing."""
     if route_key not in _real_profile_fallback or route_key in _real_profile_note_delivered:
@@ -771,52 +793,28 @@ def _take_real_profile_note(route_key: str) -> dict:
     return {"real_profile_unavailable": _real_profile_fallback[route_key]}
 
 
-def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT_S,
-                 task_id: Optional[str] = None, local: bool = False):
-    """Run Python code through the browser-use CLI, and return its output"""
-    from agent.redact import redact_sensitive_text
-    from tools.registry import tool_error, tool_result
-    if not code or not code.strip():
-        return tool_error("No code provided. Pass Python that uses the pre-imported helpers, e.g. new_tab(\"https://example.com\") then print(page_info()).")
-
-    # The verdict is carried into the route, never re-derived: the predicate resolves DNS, so a second
-    # evaluation could relax the floor and still pick the cloud for a rebinding host.
-    verdict = _code_url_verdict(code)
-    if verdict.blocked:
-        return tool_error(verdict.blocked)
-    # One endpoint per call: any private URL sends the whole call to the local sidecar. A call with no URL
-    # literal stays on the route the previous call took.
-    route_key = _backend_cache_key(task_id, session)
-    local_sidecar = verdict.local_sidecar if _URL_RE.search(code) else _exec_route_is_sidecar.get(route_key, False)
-
-    cmd = _find_cli()
-    if not cmd:
-        return tool_error("browser-harness is missing from Hermes's Python environment. "
-                          "Run `hermes update` to re-sync it.")
-
-    env = _base_subprocess_env()
-    if session:
-        if not _SESSION_RE.match(session):
-            return tool_error(f"Invalid session name {session!r}: use 1-64 letters, digits, "
-                              "dashes, or underscores (e.g. 'r7k2').")
-        env["BU_NAME"] = session
-    env, route_err, local_sidecar, generation = _route_exec_current(
-        env, session, task_id, bool(local), local_sidecar, route_key)
+def _dispatch_claimed(call, env: dict, cmd: list[str], code: str, session: str, task_id: Optional[str],
+                      local: bool, local_sidecar: bool, timeout_s: Any) -> dict[str, Any]:
+    """Resolve the backend and run one browser_exec call under its route claim (``route_call``) ->
+    ``{"proc", "workspace", "started"}`` (the call's workspace and start time), ``{"error_result"}``, or
+    the Bot Desktop fence's refusal as it goes to the model."""
+    from tools.registry import tool_error
+    route_key = call.keys[0]
+    env, route_err, local_sidecar, generation = _route_exec_current(env, session, task_id, local, local_sidecar, route_key)
     if route_err:
-        return tool_error(route_err)
-    if local_sidecar:
-        env["BU_NAME"] = _sidecar_daemon_name(session)
-    fit_default_socket_dir(env)  # BU_NAME is final: a deep HOME's socket would overflow sun_path
-    _exec_route_is_sidecar[route_key] = local_sidecar
+        return {"error_result": tool_error(route_err)}
+    endpoint = _cdp_env_endpoint(env)
+    private_browser = bool(env.pop(_PRIVATE_BROWSER_SENTINEL, None))  # never exported
+    own_daemon = _name_daemon(env, session, route_key, local_sidecar, endpoint, private_browser)
     local_engine = env.pop(_BOT_DESKTOP_BROWSER_SENTINEL, None)
     bot_desktop_browser = bool(local_engine)
+    # A SHARED browser (/browser connect, BU_CDP_*, real or persistent profile) outlives the session: record
+    # the tabs this call opens so the session's cleanup closes exactly those (#21532).
+    call.track(env, endpoint, private_browser, own_daemon, named=bool(session) and not local_sidecar,
+               bot_desktop=bot_desktop_browser)
+    _exec_route_is_sidecar[route_key] = local_sidecar
     _exec_local_engine.set(local_engine)  # only local browsers carry the sentinel
 
-    # SHARED browser (/browser connect CDP override): pin each named session to its own tab (see
-    # _OWN_TAB_PREAMBLE). Private per-name browsers skip this — nothing to collide with.
-    private_browser = env.pop(_PRIVATE_BROWSER_SENTINEL, None)  # always pop: never exported to the CLI
-    if session and not private_browser:
-        code = _OWN_TAB_PREAMBLE + code
     # Every backend: capture_screenshot() falls back to jpeg instead of hanging on a png a hidden tab never
     # renders; only on a cloud browser does it (and new_tab) bring the tab to the front (tools/browser_use_shot.py).
     from tools.browser_use_shot import ACTIVATE_NEVER, harness_command
@@ -864,9 +862,53 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     _reload_if_republished(env, generation)
     _own_harness_daemon(env)
     if "proc" not in dispatched:
+        return dispatched
+    return {**dispatched, "workspace": workspace, "started": started}
+
+
+def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT_S,
+                 task_id: Optional[str] = None, local: bool = False):
+    """Run Python code through the browser-use CLI, and return its output"""
+    from agent.redact import redact_sensitive_text
+    from tools.registry import tool_error, tool_result
+    if not code or not code.strip():
+        return tool_error("No code provided. Pass Python that uses the pre-imported helpers, e.g. new_tab(\"https://example.com\") then print(page_info()).")
+
+    # The verdict is carried into the route, never re-derived: the predicate resolves DNS, so a second
+    # evaluation could relax the floor and still pick the cloud for a rebinding host.
+    verdict = _code_url_verdict(code)
+    if verdict.blocked:
+        return tool_error(verdict.blocked)
+    # One endpoint per call: any private URL sends the whole call to the local sidecar. A call with no URL
+    # literal stays on the route the previous call took.
+    route_key = _backend_cache_key(task_id, session)
+    local_sidecar = verdict.local_sidecar if _URL_RE.search(code) else _exec_route_is_sidecar.get(route_key, False)
+
+    cmd = _find_cli()
+    if not cmd:
+        return tool_error("browser-harness is missing from Hermes's Python environment. "
+                          "Run `hermes update` to re-sync it.")
+
+    env = _base_subprocess_env()
+    if session:
+        if not _SESSION_RE.match(session):
+            return tool_error(f"Invalid session name {session!r}: use 1-64 letters, digits, "
+                              "dashes, or underscores (e.g. 'r7k2'); 'default' is reserved, omit "
+                              "session for the shared default session.")
+        env["BU_NAME"] = session
+    from tools.browser_session_owned_tabs import TeardownBusy, route_call
+    # Claimed before the backend resolves, until the call returns (#21532): turn-end and janitor cleanups skip
+    # it; a backend swap, profile switch, dead-backend replacement and exit still release it.
+    try:
+        with route_call(route_key) as call:
+            dispatched = _dispatch_claimed(call, env, cmd, code, session, task_id, bool(local), local_sidecar, timeout_s)
+    except TeardownBusy as exc:
+        return tool_error(str(exc))
+    if "proc" not in dispatched:
         if "error_result" in dispatched:
             return dispatched["error_result"]
         return tool_result(dispatched)
+    workspace, started = dispatched["workspace"], dispatched["started"]
     proc = dispatched["proc"]
 
     # browser_vault fill registers injected values with this forced model-egress

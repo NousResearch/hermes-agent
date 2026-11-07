@@ -4,6 +4,7 @@ A multiplexed gateway serves every profile from one process; a live ``/browser c
 a harness daemon's runtime and tmp dirs, and a browser session belong to ONE profile.
 """
 import contextlib
+import subprocess
 import threading
 
 import pytest
@@ -262,7 +263,8 @@ def test_an_unscoped_shutdown_reload_reaches_the_daemon_with_its_own_tmp_dir(pro
     monkeypatch.setattr(bu_cli, "_driven_daemons", {key: hermes_home_key(a)})
     monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["browser-harness"])
     seen = []
-    monkeypatch.setattr(bu_cli, "_run_cli_killing_process_group", lambda cmd, code, e, t: seen.append(e))
+    monkeypatch.setattr(bu_cli, "_run_cli_killing_process_group",
+                        lambda cmd, code, e, t: seen.append(e) or subprocess.CompletedProcess(cmd, 0))
     bu_cli.stop_harness_daemons()
     assert [(e["BH_TMP_DIR"], e["BH_TMP_DIR_SHARED"], e["BU_NAME"]) for e in seen] == [
         (env["BH_TMP_DIR"], "1", "s1")]
@@ -351,7 +353,7 @@ def test_another_profiles_connect_does_not_invalidate_this_profiles_new_session(
     monkeypatch.setattr(lifecycle, "start_cleanup_thread", lambda: None)
     monkeypatch.setattr(bs_cdp, "ensure_cdp_supervisor", lambda key: None)
     closed = []
-    monkeypatch.setattr(lifecycle, "cleanup_single_session", closed.append)
+    monkeypatch.setattr(lifecycle, "_release_session", closed.append)
     monkeypatch.setattr(lifecycle, "release_session_backend", lambda task_id, info: closed.append(task_id))
 
     def create(task_id, force_local):

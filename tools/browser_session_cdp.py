@@ -21,7 +21,7 @@ _live_overrides_lock = threading.Lock()
 _live_generations: dict[str, int] = {}
 
 
-def resolve_cdp_override(cdp_url: str) -> str:
+def resolve_cdp_override(cdp_url: str, timeout: float = 10) -> str:
     """Normalize a CDP endpoint into a concrete websocket URL.
 
     Full ``ws://.../devtools/browser/...`` endpoints pass through; HTTP discovery roots and bare
@@ -41,7 +41,7 @@ def resolve_cdp_override(cdp_url: str) -> str:
     version_url = discovery_url if discovery_url.lower().endswith("/json/version") else discovery_url.rstrip("/") + "/json/version"
     try:
         import requests  # lazy: shared module object, so test patches still apply
-        response = requests.get(version_url, timeout=10, **loopback_request_kwargs(version_url))
+        response = requests.get(version_url, timeout=timeout, **loopback_request_kwargs(version_url))
         response.raise_for_status()
         payload = response.json()
     except Exception as exc:  # health: allow BLE001 -- any discovery failure falls back to the raw endpoint

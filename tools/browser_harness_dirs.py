@@ -12,6 +12,7 @@ root; outside a served profile, so does a default runtime dir whose socket for t
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 import stat
@@ -104,17 +105,71 @@ def fit_default_socket_dir(env: dict) -> None:
     the user) is left alone."""
     if env.get("BH_RUNTIME_DIR") or env.get("BH_TMP_DIR"):
         return
-    budget = socket_dir_budget(sys.platform)
-    if budget is None:
-        return
     root = _harness_home(env)
-    stem_budget = budget + 64 - len(env.get("BU_NAME") or "default")  # budget assumes a 64-char name
-    if fits_socket_budget(str((Path(root) / "runtime").resolve()), stem_budget):
-        return
-    short = _claim_short_dir(f"{root}\0", stem_budget)
+    short = _refit_socket_dir(env, str((Path(root) / "runtime").resolve()), f"{root}\0")
     if short:
         env["BH_RUNTIME_DIR"] = short
         env["BH_RUNTIME_DIR_SHARED"] = "1"  # several BU_NAMEs share the dir: keep bu-<name> stems
+
+
+def _refit_socket_dir(env: dict, resolved: str, key: str, fallback: Optional[str] = None) -> Optional[str]:
+    """None when the socket ``env``'s BU_NAME binds under ``resolved`` fits sun_path (or nothing limits it);
+    otherwise a private short dir keyed by ``key`` (``_claim_short_dir``), or ``fallback`` when none can be
+    claimed."""
+    budget = socket_dir_budget(sys.platform)
+    if budget is None:
+        return None
+    stem_budget = budget + 64 - len(env.get("BU_NAME") or "default")  # budget assumes a 64-char name
+    if fits_socket_budget(resolved, stem_budget):
+        return None
+    return _claim_short_dir(key, stem_budget) or fallback
+
+
+def share_harness_dirs(env: dict) -> None:
+    """For a generated per-route BU_NAME: an operator-supplied ``BH_RUNTIME_DIR`` / ``BH_TMP_DIR`` without
+    the ``*_SHARED`` flags makes the harness name every daemon's files ``bu.*`` (``_ipc._runtime_stem``), so
+    all routes would meet on one ``bu.sock``. Mark the dirs shared (``bu-<BU_NAME>.*``); when that longer
+    socket name would overflow sun_path, the runtime dir moves to a private short dir keyed by it."""
+    base = env.get("BH_RUNTIME_DIR") or env.get("BH_TMP_DIR")
+    if not base:
+        return
+    env["BH_RUNTIME_DIR_SHARED"] = "1"
+    if env.get("BH_TMP_DIR"):
+        env["BH_TMP_DIR_SHARED"] = "1"
+    short = _refit_socket_dir(env, str(Path(base).expanduser().resolve()), f"{base}\0shared", base)
+    if short:
+        env["BH_RUNTIME_DIR"] = short
+
+
+def _route_daemon_log(env: dict, prefix: str) -> Optional[Path]:
+    """The log of the daemon ``env`` names (harness ``_ipc.log_path``), only when its BU_NAME starts with
+    ``prefix`` (Hermes's generated per-route names) and the log file carries the name."""
+    name = env.get("BU_NAME") or ""
+    tmp = env.get("BH_TMP_DIR")
+    if not name.startswith(prefix) or (tmp and env.get("BH_TMP_DIR_SHARED") != "1"):
+        return None
+    return (Path(tmp).expanduser() if tmp else Path(_harness_home(env)) / "tmp") / f"bu-{name}.log"
+
+
+def remove_route_daemon_log(env: dict, prefix: str) -> None:
+    """Delete a stopped route daemon's log (``_route_daemon_log``): each task id makes a new one."""
+    log = _route_daemon_log(env, prefix)
+    if log is not None:
+        with contextlib.suppress(OSError):
+            log.unlink()
+
+
+def route_daemon_tabs(env: dict) -> set[str]:
+    """The dedicated tab(s) the daemon ``env`` names logged creating, whatever its name (``daemon.py``:
+    ``named daemon <name>: created dedicated tab (<id>)``). The daemon closes its tab when it stops, but
+    ``--reload`` SIGTERMs a daemon that takes over 15 s to exit, before it gets there."""
+    log = _route_daemon_log(env, "")
+    try:
+        text = log.read_text(encoding="utf-8-sig", errors="replace") if log else ""
+    except OSError:
+        return set()
+    marker = f"named daemon {env.get('BU_NAME')}: created dedicated tab ("
+    return {line.split(marker, 1)[1].split(")", 1)[0] for line in text.splitlines() if marker in line}
 
 
 def socket_fit_runtime_dir(runtime: str, base: str, tag: str) -> str:

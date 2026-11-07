@@ -150,18 +150,24 @@ def install(helpers: Any, activate: str = ACTIVATE_NEVER) -> None:
 _HARNESS_MODULE_ARGS = ["-m", "browser_harness.run"]
 _LAUNCHER = """\
 import importlib.util, runpy
-spec = importlib.util.spec_from_file_location('hermes_browser_use_shot', {path!r})
-shot = importlib.util.module_from_spec(spec); spec.loader.exec_module(shot)
+def _load(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+    return module
 import browser_harness.helpers
-shot.install(browser_harness.helpers, activate={activate!r})
+_load('hermes_browser_use_tab_recorder', {recorder!r}).install(browser_harness.helpers)
+_load('hermes_browser_use_shot', {path!r}).install(browser_harness.helpers, activate={activate!r})
 runpy.run_module('browser_harness.run', run_name='__main__', alter_sys=True)
 """
 
 
 def harness_command(cmd: list[str], activate: str) -> list[str]:
-    """``python -m browser_harness.run`` as a launcher that installs these helpers first. The model's code
-    still arrives untouched on stdin (no preamble shifting its traceback line numbers). This file is loaded
-    by path: the harness interpreter has no Hermes checkout on sys.path."""
+    """``python -m browser_harness.run`` as a launcher that installs these helpers (and the tab recorder,
+    ``browser_use_tab_recorder``) first. The model's code still arrives untouched on stdin (no preamble
+    shifting its traceback line numbers). Both files are loaded by path: the harness interpreter has no
+    Hermes checkout on sys.path."""
     if cmd[1:] != _HARNESS_MODULE_ARGS:
         return cmd
-    return [cmd[0], "-c", _LAUNCHER.format(path=os.path.abspath(__file__), activate=activate)]
+    here = os.path.abspath(__file__)
+    recorder = os.path.join(os.path.dirname(here), "browser_use_tab_recorder.py")
+    return [cmd[0], "-c", _LAUNCHER.format(path=here, recorder=recorder, activate=activate)]

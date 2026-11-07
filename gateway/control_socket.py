@@ -252,6 +252,8 @@ class GatewayControlServer:
                            self._home, exc.strerror or exc)
             pointer_file = Path(self._home) / _POINTER_FILENAME
             bind_path = await self._bind_posix(_fallback_socket_path(self._home), pointer_file)
+        if bind_path is None:
+            return False
         self._bind_path = bind_path
         info = bind_path.lstat()
         self._file_identities[bind_path] = (info.st_dev, info.st_ino)
@@ -264,9 +266,10 @@ class GatewayControlServer:
         logger.info("Gateway control socket listening at %s", bind_path)
         return True
 
-    async def _bind_posix(self, bind_path: Path, pointer_file: Optional[Path]) -> Path:
+    async def _bind_posix(self, bind_path: Path, pointer_file: Optional[Path]) -> Optional[Path]:
         """Bind the listener at ``bind_path`` (moved to a squat-proof root when its shared-temp
-        directory is not private) and return where it actually listens."""
+        directory is not private) and return where it actually listens, or None when an existing
+        socket there has a live owner (or cannot be proven stale) and is left in place."""
         if pointer_file is not None:
             with contextlib.suppress(FileExistsError):
                 bind_path.parent.mkdir(mode=0o700)
@@ -278,12 +281,50 @@ class GatewayControlServer:
                 self._fallback_root = bind_path.parent.parent
         if bind_path.is_symlink():
             raise PermissionError("control socket cannot be a symlink")
-        # We only get here after winning the PID-file O_EXCL race, so any existing
-        # file is stale or a collision — never a live sibling.
+        # A second gateway can overlap this one; never unlink a live listener.
         if bind_path.exists():
             if bind_path.lstat().st_uid != os.getuid():  # windows-footgun: ok — POSIX listener
                 raise PermissionError("control socket belongs to another user")
-            bind_path.unlink()
+            # A crash can leave an old regular file at this dedicated socket path;
+            # remove that, but leave anything else (e.g. a directory) alone.
+            if not bind_path.is_socket():
+                if not bind_path.is_file():
+                    logger.warning("Gateway control path is not a socket: %s", bind_path)
+                    return None
+                try:
+                    bind_path.unlink()
+                except OSError:
+                    return None
+            else:
+                try:
+                    before_stat = bind_path.stat()
+                    before_identity = (before_stat.st_dev, before_stat.st_ino)
+                except OSError:
+                    return None
+                try:
+                    _, writer = await asyncio.wait_for(
+                        asyncio.open_unix_connection(str(bind_path)), timeout=0.5)
+                except (ConnectionRefusedError, FileNotFoundError):
+                    pass  # a stale socket left by a process that already exited
+                except (OSError, asyncio.TimeoutError) as exc:
+                    logger.warning("Cannot prove gateway control socket is stale at %s: %s", bind_path, exc)
+                    return None
+                else:
+                    writer.close()
+                    await writer.wait_closed()
+                    logger.warning("Gateway control socket already has a live owner at %s", bind_path)
+                    return None
+                # The path may have been replaced while we probed it.
+                if bind_path.exists():
+                    try:
+                        stale_stat = bind_path.stat()
+                        if not bind_path.is_socket():
+                            return None
+                        if (stale_stat.st_dev, stale_stat.st_ino) != before_identity:
+                            return None
+                        bind_path.unlink()
+                    except OSError:
+                        return None
         # Restrictive umask so the socket is never world-connectable, even for the instant before chmod.
         old_umask = os.umask(0o177)
         try:

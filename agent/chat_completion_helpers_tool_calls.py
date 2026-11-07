@@ -1,5 +1,6 @@
 """Streamed tool-call delta assembly for the chat-completions stream (and Relay's accumulator)."""
 
+import json
 from typing import Optional
 
 from agent.reasoning_carriers import field
@@ -22,10 +23,27 @@ class _ToolCallAccumulator:
         # slot -> (parts scanned, depth, in_string, escaped, started); see ``_arguments_closed``.
         self._arg_scan: dict[int, tuple] = {}
 
-    def materialize(self) -> dict:
-        """Join buffered argument deltas into each entry's ``arguments``; idempotent. Returns ``acc``."""
+    def materialize(self, *, allow_replay: bool = False) -> dict:
+        """Join argument deltas, accepting a replay only after provider-confirmed completion."""
         for idx, parts in self._argument_parts.items():
-            self.acc[idx]["function"]["arguments"] = "".join(parts)
+            arguments = "".join(parts)
+            # Some gateways append a complete argument object after partial deltas.
+            # Preserve a valid assembled call, and only use the replay if it starts
+            # with the same prefix and is itself a complete object. A dropped
+            # stream or a prefix expecting a nested value must stay incomplete.
+            if (allow_replay and len(parts) > 1 and parts[-1].startswith(parts[0])
+                    and not "".join(parts[:-1]).rstrip().endswith(("{", "[", ":", ","))):
+                try:
+                    json.loads(arguments)
+                except json.JSONDecodeError:
+                    try:
+                        replay = json.loads(parts[-1])
+                    except json.JSONDecodeError:
+                        pass
+                    else:
+                        if isinstance(replay, dict):
+                            arguments = parts[-1]
+            self.acc[idx]["function"]["arguments"] = arguments
         return self.acc
 
     def _starts_new_call(self, tc_delta, slot: int) -> bool:

@@ -14,6 +14,7 @@ unclosed brackets, Python None) don't kill the session.
 import json
 
 from agent.chat_completion_helpers import _StreamingCall
+from agent.chat_completion_helpers_tool_calls import _ToolCallAccumulator
 from agent.message_sanitization import _repair_tool_call_arguments
 
 
@@ -39,6 +40,20 @@ def test_streamed_mid_string_cut_stays_unrepairable():
     calls, truncated = _StreamingCall._assemble_tool_calls(_accumulated('{"q": "unterminated string'), None)
     assert truncated is True
     assert calls[0].function.arguments == '{"q": "unterminated string'
+
+
+def test_complete_replay_without_finish_reason_stays_a_dropped_tool_call():
+    from types import SimpleNamespace
+
+    acc = _ToolCallAccumulator()
+    for part in ('{"action": "', 'display', ', "connectors": [""]', 'WhatsApp',
+                 '{"action": "display", "connectors": ["WhatsApp"]}'):
+        acc.feed(SimpleNamespace(index=0, id="call_1", function=SimpleNamespace(
+            name="manage_connections", arguments=part)))
+    calls, truncated = _StreamingCall._assemble_tool_calls(
+        acc.materialize(allow_replay=False), None)
+    assert truncated is True
+    assert calls[0].function.arguments != '{"action": "display", "connectors": ["WhatsApp"]}'
 
 
 class TestStreamingAssemblyRepair:

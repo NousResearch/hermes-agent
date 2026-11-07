@@ -39,13 +39,17 @@ def _login_label(subject):
 def binding_names(saved, profile_id, subject):
     """Whether a stored ``[profile_id, subject]`` binding names *subject* in *profile_id*: same profile,
     and the same owner (a binding a Webapp login stored belongs to the machine owner,
-    gateway.owner_identity.same_owner). Every reader of a binding asks this, never a string compare."""
+    gateway.owner_identity.same_owner). Every reader of a binding asks this, never a string compare.
+
+    The binding lives in *profile_id*'s own store, so its stored profile is the home path that wrote
+    it, never another profile's: a store that moved with its profile keeps its bindings. Only the
+    owner is compared; an unreadable binding still names nobody."""
     try:
         saved_profile, saved_subject = json.loads(saved)
     except (TypeError, ValueError):
         return False
     from gateway.owner_identity import same_owner
-    return saved_profile == profile_id and same_owner(saved_subject, subject)
+    return isinstance(saved_profile, str) and bool(profile_id) and same_owner(saved_subject, subject)
 
 
 def _bound_to(saved, actor):
@@ -61,7 +65,8 @@ def _bindings_agree(first, second):
     except (TypeError, ValueError):
         return False
     from gateway.owner_identity import owners_agree
-    return first_profile == profile_id and owners_agree(first_subject, subject)
+    # Both live in one store, so the profile halves differ only across a move (``binding_names``).
+    return isinstance(first_profile, str) and isinstance(profile_id, str) and owners_agree(first_subject, subject)
 
 
 def import_history_control(conn, actor, session_ids):

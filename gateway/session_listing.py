@@ -144,7 +144,6 @@ def _stored_closed(authority, actor, owner):
         row = authority.db.get_session(receipt['entry']['session_id'])
     except (RuntimeStoreError, KeyError, TypeError):
         return False
-    return (receipt.get('profile_id') == authority.profile_id
-            and (same_owner(receipt.get('principal_id'), actor.subject) or 'session:operator' in actor.capabilities)
+    return ((same_owner(receipt.get('principal_id'), actor.subject) or 'session:operator' in actor.capabilities)
             and row is not None and row['ended_at'] is not None
             and not list_session_admissions(authority.db, session_id=owner))

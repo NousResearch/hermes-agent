@@ -145,6 +145,43 @@ async def test_retained_destination_keeps_profile_and_freezes_its_home(profile_h
     default.send.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_retained_destination_freezes_the_home_topic(profile_homes):
+    """An agent reply to a bare-platform route lands in the home channel's topic (where /sethome
+    ran, or <PLATFORM>_HOME_CHANNEL_THREAD_ID), not the chat root: the admission snapshot freezes
+    the topic with the chat, so the reply leg's explicit chat_id still carries it."""
+    from gateway.platforms.webhook_delivery import snapshot_destination
+
+    profile_homes.platforms[Platform.SLACK].home_channel = HomeChannel(
+        platform=Platform.SLACK,
+        chat_id="DEFAULT-HOME",
+        name="Home",
+        thread_id="1700000000.000100",
+    )
+    default, secondary = _target(), _target()
+    adapter = _webhook(
+        _Runner({Platform.SLACK: default}, {"sec": {Platform.SLACK: secondary}}, profile_homes)
+    )
+    delivery = snapshot_destination(
+        adapter, {"deliver": "slack", "deliver_extra": {}}
+    )
+    assert delivery == {
+        "deliver": "slack",
+        "deliver_extra": {
+            "chat_id": "DEFAULT-HOME",
+            "thread_id": "1700000000.000100",
+        },
+    }
+    adapter._delivery_info["retained"] = delivery
+    result = await adapter.send("retained", "answer")
+    assert result.success
+    assert default.send.await_args.args == ("DEFAULT-HOME", "answer")
+    assert default.send.await_args.kwargs == {
+        "metadata": {"thread_id": "1700000000.000100"}
+    }
+    secondary.send.assert_not_awaited()
+
+
 def test_destination_missing_profile_home_does_not_borrow_default(profile_homes):
     from hermes_constants import get_hermes_home
     from hermes_state_runtime import RuntimeStoreError

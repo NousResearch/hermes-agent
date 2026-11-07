@@ -191,7 +191,7 @@ App = Callable[[Request], Response]
 @dataclass
 class Hit:
     host: str
-    kind: str  # "request" | "refused" | "eof" | "auth-required" | "tls-rejected"
+    kind: str  # "request" | "refused" | "eof" | "auth-required" | "tls-rejected" | "tunnel"
     method: str = ""
     path: str = ""
     status: int = 0
@@ -373,14 +373,18 @@ class HttpSite:
 
 
 class EdgeProxy:
-    """HTTP(S) forward proxy with TLS inspection for routed hosts; refuses (and logs) the rest."""
+    """HTTP(S) forward proxy with TLS inspection for routed hosts; refuses (and logs) the rest, or
+    with ``tunnel_unrouted`` passes them through to the real host (an update from an older release
+    downloads the dependencies the newer one adds)."""
 
     def __init__(self, ca: TestCA, routes: dict[str, App] | None = None, *,
-                 eof_hosts: Iterable[str] = (), auth: tuple[str, str] | None = None) -> None:
+                 eof_hosts: Iterable[str] = (), auth: tuple[str, str] | None = None,
+                 tunnel_unrouted: bool = False) -> None:
         self.ca = ca
         self.routes: dict[str, App] = dict(routes or {})
         self.eof_hosts = set(eof_hosts)
         self.auth = auth
+        self.tunnel_unrouted = tunnel_unrouted
         self.hits: list[Hit] = []
         outer = self
 
@@ -453,6 +457,15 @@ class EdgeProxy:
                     sock.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
                 return  # drop the tunnel before any TLS bytes: UNEXPECTED_EOF at the client
             app = self.routes.get(host)
+            if app is None and self.tunnel_unrouted and method == "CONNECT":
+                port = int(target.rsplit(":", 1)[1]) if ":" in target else 443
+                upstream = socket.create_connection((host, port), timeout=30)
+                self.hits.append(Hit(host, "tunnel", method, target, 200))
+                sock.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                sock.settimeout(None)
+                upstream.settimeout(None)
+                _pipe_pair(sock, upstream)
+                return
             if app is None:
                 self.hits.append(Hit(host, "refused", method, target, 403))
                 sock.sendall(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")

@@ -630,3 +630,32 @@ def test_registered_tool_schemas_stay_inside_llama_cpp_repetition_limit():
                 if isinstance(val, int) and val >= 2000:
                     offenders.append((name, key, val))
     assert not offenders, offenders
+
+
+def test_draft07_tuple_items_become_prefix_items():
+    """Anthropic (direct or via OpenRouter) and Moonshot 400 the whole request on ``items: [...]``."""
+    params = {"type": "object", "properties": {
+        "size": {"type": "array", "items": [{"type": "integer"}, {"type": "integer"}],
+                 "additionalItems": {"type": "string"}},
+        "empty": {"type": "array", "items": []},
+        "tagged": {"type": "array", "prefixItems": [{"type": "string"}], "items": [{"type": "integer"}]},
+    }}
+    props = sanitize_tool_schemas([_tool("t", params)])[0]["function"]["parameters"]["properties"]
+    assert props["size"] == {"type": "array", "prefixItems": [{"type": "integer"}, {"type": "integer"}],
+                             "items": {"type": "string"}}
+    assert "items" not in props["empty"] and "prefixItems" not in props["empty"]
+    assert props["tagged"]["prefixItems"] == [{"type": "string"}] and "items" not in props["tagged"]
+    # Gemini's legacy ``parameters`` subset has no prefixItems: positions must not inherit only
+    # the trailing rule.
+    from agent.gemini_schema import sanitize_gemini_tool_parameters
+    legacy = sanitize_gemini_tool_parameters({"type": "object", "properties": {"size": props["size"]}})
+    assert legacy["properties"]["size"]["items"] == {"anyOf": [{"type": "integer"}, {"type": "string"}]}
+
+
+def test_tuple_conversion_leaves_literal_data_alone():
+    default = {"items": [1, 2], "additionalItems": True}
+    params = {"type": "object", "properties": {"cfg": {"type": "object", "properties": {}, "default": default,
+                                                         "examples": [{"items": ["a"]}]}}}
+    cfg = sanitize_tool_schemas([_tool("t", params)])[0]["function"]["parameters"]["properties"]["cfg"]
+    assert cfg["default"] == default
+    assert cfg["examples"] == [{"items": ["a"]}]

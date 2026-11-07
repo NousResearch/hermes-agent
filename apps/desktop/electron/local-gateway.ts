@@ -42,7 +42,9 @@ export function runGatewayEnsure(
  if (stdout.length > 65536) { stdout = stdout.slice(0, 65536); expire(`${label} output exceeded limit`) } })
     // Diagnostics only (never protocol): an older `hermes` without the subcommand, a missing
     // profile or an import crash explain themselves here while stdout stays empty.
-    child.stderr.on('data', data => { stderr = (stderr + data.toString()).slice(-4096) })
+    // setEncoding decodes across reads: a multi-byte character split between two pipe reads
+    // would otherwise reach the user-facing last line as U+FFFD.
+    child.stderr.setEncoding('utf8').on('data', (data: string) => { stderr = (stderr + data).slice(-4096) })
     child.on('error', () => { clearTimeout(timer); clearTimeout(forceTimer); reject(new Error(`Could not run ${label}`)) })
     // A client that exits on SIGTERM still resolves (callers such as restartLocalGatewayOwner log a
     // non-zero exit and re-ensure); only one that outlives the force-kill deadline rejects. An

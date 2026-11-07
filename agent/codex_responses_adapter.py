@@ -1136,11 +1136,29 @@ def _extract_responses_message_text(item: Any) -> str:
     return "".join(chunks).strip()
 
 
+def _reasoning_text_parts(content: Any) -> list[str]:
+    """Non-empty ``text`` of the ``reasoning_text`` content parts (dict- or attribute-style); [] otherwise."""
+    return [text for text in (
+        _field(part, "text") for part in _as_list(content) if _field(part, "type") == "reasoning_text"
+    ) if _nonempty_str(text)]
+
+
 def _extract_responses_reasoning_text(item: Any) -> str:
-    """Compact reasoning text from a Responses reasoning item (summary, else ``text``)."""
+    """Compact reasoning text from a Responses reasoning item: ``summary``, else ``text``, else the
+    ``content`` parts of type ``reasoning_text``.
+
+    Providers bridging onto the Responses wire (Z.AI glm via a local gateway, among others) return the
+    reasoning only as ``content[].reasoning_text`` with ``summary`` and ``text`` null, so reading those
+    two alone dropped reasoning the account was billed for (#144569).
+    """
     chunks = _text_chunks(getattr(item, "summary", None))
-    text = getattr(item, "text", None)
-    return "\n".join(chunks).strip() if chunks else (text.strip() if isinstance(text, str) else "")
+    if not chunks:
+        text = getattr(item, "text", None)
+        if isinstance(text, str) and text.strip():
+            chunks = [text]
+    if not chunks:
+        chunks = _reasoning_text_parts(_field(item, "content"))
+    return "\n".join(chunks).strip()
 
 
 def _format_responses_error(error_obj: Any, response_status: str) -> str:

@@ -645,24 +645,6 @@ def _usage_window_reset_context(agent) -> dict[str, float]:
     return {"reset_at": resets_ms / 1000} if isinstance(resets_ms, (int, float)) and resets_ms > 0 else {}
 
 
-def _rotate_credential_pool(
-    agent: Any, classified: Any, _retry: TurnRetryState, status_code: Any, error_context: Any,
-) -> bool:
-    """Let the credential pool rotate or refresh for this error. A rotation onto another endpoint
-    resets the route verdicts, so that endpoint is sent the configured request again: its rejection
-    gets the same one-shot repair the last endpoint had (still one per route visit)."""
-    endpoint_before = _route_endpoint(agent)
-    recovered, _retry.has_retried_429 = agent._recover_with_credential_pool(
-        status_code=status_code, has_retried_429=_retry.has_retried_429,
-        classified_reason=classified.reason, error_context=_pool_error_context(agent, classified, error_context),
-        billing_unverified=classified.billing_unverified,
-    )
-    if recovered and _route_endpoint(agent) != endpoint_before:
-        _retry.reasoning_mandatory_retry_attempted = False
-        _retry.invalid_encrypted_content_retry_attempted = False
-    return recovered
-
-
 def recover_after_classification(
     agent: Any, api_error: Exception, classified: Any, _retry: TurnRetryState, *,
     status_code: Optional[int], error_context: Any, messages: list[dict[str, Any]],
@@ -708,7 +690,11 @@ def recover_after_classification(
             _vlines(agent, "🔐 Nous paid access verified — refreshed runtime credentials and retrying request...")
             return True, False
 
-    recovered_with_pool = _rotate_credential_pool(agent, classified, _retry, status_code, error_context)
+    recovered_with_pool, _retry.has_retried_429 = agent._recover_with_credential_pool(
+        status_code=status_code, has_retried_429=_retry.has_retried_429,
+        classified_reason=classified.reason, error_context=_pool_error_context(agent, classified, error_context),
+        billing_unverified=classified.billing_unverified,
+    )
     if recovered_with_pool:
         return True, recovered_with_pool
 
@@ -749,9 +735,9 @@ def recover_after_classification(
     # refresh so the guard is right next time (no-op for providers without a catalog), retry.
     if (
         classified.reason == FailoverReason.reasoning_mandatory
-        and not _retry.reasoning_mandatory_retry_attempted
+        and _retry.reasoning_mandatory_retry_endpoint != _route_endpoint(agent)
     ):
-        _retry.reasoning_mandatory_retry_attempted = True
+        _retry.reasoning_mandatory_retry_endpoint = _route_endpoint(agent)
         sent = getattr(agent, "_wire_reasoning_config", None)
         if isinstance(sent, dict) and sent.get("enabled") is not False and sent.get("effort") not in (None, "none"):
             # The rejected request carried an ENABLED config: the route refuses that reasoning

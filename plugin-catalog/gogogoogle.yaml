@@ -1,6 +1,6 @@
 name: gogogoogle
 repo: https://github.com/josefacero/hermes-gogogoogle
-sha: 983932a417e1fea9e0c1f519a7487be252b210d0
+sha: fe82443a66ce043d012ea5e0f8ebe073349d6c54
 description: >-
   Hand bulk work to Google Antigravity's agy CLI as a worker agent on your
   Antigravity quota while Hermes keeps its own model, then have a fresh agy
@@ -19,7 +19,7 @@ tier: community
 category: tools
 requires_hermes: ">=0.22.0"
 docs_url: https://github.com/josefacero/hermes-gogogoogle#readme
-version: "0.3.1"
+version: "0.3.3"
 readme: true
 known_issues:
   - "Requires agy and an authenticated Antigravity account; runs use that account's quota."

@@ -5,9 +5,8 @@ the unhinted oracle or from planner internals: a refusal writes nothing
 and leaves every original byte; a unique edit lands only on the matched
 bytes, including CR line endings. Hinted cases stay outside the oracle.
 
-An xfail raises ``_KnownPlannerDefect`` only for the exact baseline write
-witnessed on this tree. A parse failure, an exception, or any other write
-is a real error.
+The known baseline write fails as ``_KnownPlannerDefect``. It is not an
+xfail. A parse failure, an exception, or any other write is a real error.
 """
 
 import pytest
@@ -17,23 +16,8 @@ from tools.patch_parser import apply_v4a_operations, parse_v4a_patch
 
 NBSP = "\u00a0"
 IDEOGRAPHIC_SPACE = "\u3000"
-_FIXED = "fixed in t_6e12e276"
-
-
 class _KnownPlannerDefect(AssertionError):
     """The pinned baseline shape, and nothing else."""
-
-
-def _known(shape):
-    return f"known V4A defect {shape}, {_FIXED}"
-
-
-def _xfail(shape):
-    return pytest.mark.xfail(
-        strict=True,
-        raises=_KnownPlannerDefect,
-        reason=_known(shape),
-    )
 
 
 _WITNESSES = (
@@ -157,7 +141,6 @@ def _land_or_known(result, store, path, expected, witnessed, modified, shape):
     _disagree(shape, result, store)
 
 
-@_xfail("ascii-normalized-partial-decoy")
 def test_ascii_normalized_partial_decoy_refuses():
     """``value  =  10`` is not a match for ``value = 1``."""
     source = {"f.py": "# CANARY_HINT_TOKEN\nvalue  =  10\n"}
@@ -180,7 +163,6 @@ def test_ascii_normalized_partial_decoy_refuses():
     )
 
 
-@_xfail("nbsp-normalized-substring")
 def test_nbsp_normalized_substring_refuses():
     """A NBSP line is not a match for an ASCII ``value = 1`` search."""
     raw = f"# CANARY_HINT_TOKEN\nvalue{NBSP}={NBSP}10\n"
@@ -204,7 +186,6 @@ def test_nbsp_normalized_substring_refuses():
     )
 
 
-@_xfail("ideographic-space-normalized-substring")
 def test_ideographic_space_normalized_substring_refuses():
     """An ideographic-space line is not an ASCII ``value = 1`` match."""
     raw = f"# CANARY_HINT_TOKEN\nvalue{IDEOGRAPHIC_SPACE}={IDEOGRAPHIC_SPACE}10\n"
@@ -228,7 +209,6 @@ def test_ideographic_space_normalized_substring_refuses():
     )
 
 
-@_xfail("partial-consumption-unicode-substring")
 def test_partial_consumption_then_unicode_substring_refuses():
     """A later unmatched hunk must discard an earlier partial edit."""
     source = {"f.py": f'ZZZname = "edge-1"\nvalue{NBSP}={NBSP}10\n'}
@@ -254,7 +234,6 @@ def test_partial_consumption_then_unicode_substring_refuses():
     )
 
 
-@_xfail("false-noop-swallows-refusal")
 def test_false_noop_swallows_normalized_substring_refusal():
     """A replacement that already exists must not hide a bad search."""
     source = {"f.py": "keep = hostish_d\nvalue  =  10\n"}
@@ -272,7 +251,6 @@ def test_false_noop_swallows_normalized_substring_refusal():
     )
 
 
-@_xfail("partial-write-false-noop")
 def test_partial_write_via_false_noop_refuses():
     """A swallowed later hunk must not keep an earlier edit."""
     source = {"f.py": "value=1\nkeep = hostish_d\n"}
@@ -298,7 +276,6 @@ def test_partial_write_via_false_noop_refuses():
     )
 
 
-@_xfail("cross-file-false-noop")
 def test_cross_file_false_noop_is_atomic():
     """A swallowed hunk in one file must not allow another file to be written."""
     source = {"a.py": "value=1\nkeep = hostish_d\n", "b.py": "old\n"}
@@ -335,7 +312,6 @@ def test_cross_file_false_noop_is_atomic():
     )
 
 
-@_xfail("crlf-non-final-changed-line")
 def test_crlf_preserved_on_non_final_changed_line():
     """A non-final replacement keeps the file's CR line endings."""
     source = {"f.py": "a = 1\r\nb = 2\r\nc = 3\r\n"}
@@ -353,7 +329,6 @@ def test_crlf_preserved_on_non_final_changed_line():
     )
 
 
-@_xfail("crlf-multiline-replacement")
 def test_crlf_preserved_inside_one_multiline_replacement():
     """Every line of a multi-line replacement keeps CR."""
     source = {"f.py": "foo\r\nbar\r\n"}
@@ -371,19 +346,15 @@ def test_crlf_preserved_inside_one_multiline_replacement():
     )
 
 
-def test_witness_xfails_expect_only_the_known_defect():
-    """The nine markers must not xfail a parse error or another exception."""
+def test_witnesses_have_no_xfail_markers():
+    """The nine cases are real failures, not expected xfails."""
     assert len(_WITNESSES) == 9
-    for name, shape in _WITNESSES:
-        marks = [
-            mark
-            for mark in globals()[name].pytestmark
-            if mark.name == "xfail"
-        ]
-        assert len(marks) == 1, name
-        assert marks[0].kwargs.get("raises") is _KnownPlannerDefect, name
-        assert marks[0].kwargs.get("strict") is True, name
-        assert marks[0].kwargs.get("reason") == _known(shape), name
+    for name, _shape in _WITNESSES:
+        marks = getattr(globals()[name], "pytestmark", [])
+        if not isinstance(marks, (list, tuple)):
+            marks = [marks]
+        xfails = [mark for mark in marks if getattr(mark, "name", None) == "xfail"]
+        assert not xfails, name
     assert not issubclass(pytest.fail.Exception, _KnownPlannerDefect)
     assert not issubclass(RuntimeError, _KnownPlannerDefect)
 

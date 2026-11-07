@@ -189,11 +189,13 @@ def test_empty_context_anchor_after_anchor_does_not_crash():
 
 
 def test_blank_anchor_preserves_hunk_order():
+    """contract v4a rule 3"""
     source = 'value = old\n\nvalue = old'
     body = '@@\n \n@@\n-value = old\n+FIRST\n@@\n-value = old\n+SECOND'
     result, files = apply(source, body)
-    assert result.success, result.error
-    assert files.source == 'SECOND\n\nFIRST'
+    assert not result.success
+    assert files.source == source and not files.writes
+    assert 'value = old' not in (result.error or '')
 
 
 def test_ordered_partial_hunks_refuse_ambiguous_substrings():
@@ -267,9 +269,10 @@ def test_consumed_line_cannot_target_other_identifier_through_fuzzy_path(suffix)
 
 
 def test_hint_preserved_by_earlier_hunk_can_still_anchor():
-    source = 'header marker\nvalue = old\nvalue = old\n'
-    body = ('@@\n-header marker\n+header marker\n+note\n@@ marker @@\n value = old\n'
-            '@@\n-value = old\n+FIRST\n@@\n-value = old\n+SECOND')
+    """contract v4a rule 3"""
+    source = 'header marker\nvalue = old1\nvalue = old2\n'
+    body = ('@@\n-header marker\n+header marker\n+note\n@@ marker @@\n value = old1\n'
+            '@@\n-value = old1\n+FIRST\n@@\n-value = old2\n+SECOND')
     result, files = apply(source, body)
     assert result.success, result.error
     assert files.source == 'header marker\nnote\nFIRST\nSECOND\n'

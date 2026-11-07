@@ -8,10 +8,9 @@ HERMES_PATCH_ORACLE_COUNT (each default 2000). For scripts/run_tests.sh,
 use -- --oracle-seed=N --oracle-count=N: its hermetic environment drops
 unlisted environment variables.
 
-Generated similar-section rows are strict xfails of that known planner
-shape only, marked at runtime so a seed or count that does not generate
-them (including 0) passes instead of XPASS. Collection xfail marks are
-grammar pins, never planner output. Site comparison unavailable is a
+Generated similar-section rows and grammar-pin classes fail on that known
+planner shape, so a seed or count that does not generate them (including 0)
+passes. They are not xfail marks. Site comparison unavailable is a
 SITE_UNAVAILABLE count, not a pass, xfail, or failure; the default fuzz
 fails if that count grows above 59.
 """
@@ -679,9 +678,9 @@ def test_comparison_never_accepts_wrong_output_or_refusal(monkeypatch):
 
 # Closed-domain differential fuzz. Expected values come from evaluate(), never
 # from the planner. site-unavailable is SITE_UNAVAILABLE, not agreement.
-# Collection xfail is a grammar pin for a defect every seed produces. A
-# different disagreement fails. Similar-section samples are not a class pin:
-# count may be zero, so they are marked strict-xfail only when observed.
+# Grammar-pin classes fail when the known defect is observed. A different
+# disagreement fails too. Similar-section samples are not a class pin:
+# count may be zero, so only an observed sample fails that class.
 _EMPTY_SEARCH = re.compile(
     r"Patch validation failed \(no files were modified\):\n"
     r"  • f: hunk 1 \(no hint\) has empty search text — "
@@ -722,9 +721,10 @@ _SIMILAR_REASON = (
     "known V4A defect similar-section diagnostic unmapped, fixed in t_6e12e276"
 )
 _DEFAULT_FUZZ = (2000, 2000)
-_SITE_UNAVAILABLE_CEILING = 59
+# The old ceiling 59 assumed broken deletion; a correctly deleted repeated-
+# context sample yields a multi-removal diff and is unavailable as well.
+_SITE_UNAVAILABLE_CEILING = 60
 _COLLECTION_XFAIL = frozenset({
-    "strict-blank-delete",
     "strict-empty-search",
     "strict-found-extra",
 })
@@ -917,7 +917,7 @@ def _is_similar_sample(row: _Row) -> bool:
 
 def _outcome_bucket(kind: str, row: _Row) -> str:
     """PASS, XFAIL, SITE_UNAVAILABLE, or FAILURE. Unavailable is none of the others."""
-    if row.sig == "site-unavailable-bytes-ok" and kind not in _COLLECTION_XFAIL:
+    if row.sig == "site-unavailable-bytes-ok":
         return "SITE_UNAVAILABLE"
     if row.sig == "agree":
         return "PASS"
@@ -926,20 +926,6 @@ def _outcome_bucket(kind: str, row: _Row) -> str:
     if kind in _COLLECTION_XFAIL and _matches_pin(kind, row):
         return "XFAIL"
     return "FAILURE"
-
-
-def _known_xfail_mark(reason: str):
-    return pytest.mark.xfail(
-        strict=True,
-        raises=_KnownPlannerDefect,
-        reason=reason,
-    )
-
-
-def _report_known(request, reason: str) -> None:
-    """Strict xfail only after this run observed the known shape."""
-    request.node.add_marker(_known_xfail_mark(reason))
-    raise _KnownPlannerDefect(reason)
 
 
 def _enforce_site_unavailable_ceiling(seed: int, count: int, observed: int) -> None:
@@ -952,6 +938,7 @@ def _enforce_site_unavailable_ceiling(seed: int, count: int, observed: int) -> N
 
 
 def _finish_strict(rows, key, kind) -> None:
+    rows = [row for row in rows if row.sig != "site-unavailable-bytes-ok"]
     if rows and all(row.sig == "agree" or _matches_pin(kind, row) for row in rows) and any(
         _matches_pin(kind, row) for row in rows
     ):
@@ -987,6 +974,15 @@ def _finish_mixed(rows, key) -> None:
     # Do not return success while known-shape samples were dropped.
     if similar:
         raise _KnownPlannerDefect(f"{_SIMILAR_REASON} ({similar} generated samples)")
+
+
+def test_shrink_replay_is_not_proof_of_prior_application():
+    source = b"a\n"
+    patch = _patch(b"-a b\n+a\n")
+    expected = evaluate(source, patch)
+    assert expected == Refuse("NOT_FOUND")
+    status, code, out, _site = _compare(source, patch, expected)
+    assert (status, code, out) == ("agree-refuse", "NOT_FOUND", source)
 
 
 def test_planner_smoke_r1_lf():
@@ -1053,7 +1049,7 @@ def test_site_unavailable_is_not_agreement():
     )
     assert _outcome_bucket("strict-site", row) == "SITE_UNAVAILABLE"
     assert _outcome_bucket("must-agree", row) == "SITE_UNAVAILABLE"
-    assert _outcome_bucket("strict-blank-delete", row) == "FAILURE"
+    assert _outcome_bucket("strict-blank-delete", row) == "SITE_UNAVAILABLE"
 
 
 def _similar_error(lines="1") -> str:
@@ -1117,17 +1113,12 @@ def test_final_unterminated_deletion_is_site_unavailable_not_pass():
     assert _outcome_bucket("strict-site", row) == "SITE_UNAVAILABLE"
 
 
-def test_collection_xfails_are_grammar_pins_not_parser_output():
+def test_class_parameters_have_no_xfail_markers():
+    """Grammar pins are real failures, not collection xfail marks."""
     for key in _sorted_classes():
         param = _class_parameter(key)
         xfails = [mark for mark in param.marks if mark.name == "xfail"]
-        kind = _pin_kind(key)
-        if kind in _COLLECTION_XFAIL:
-            assert len(xfails) == 1
-            assert xfails[0].kwargs["strict"] is True
-            assert xfails[0].kwargs["raises"] is _KnownPlannerDefect
-        else:
-            assert not xfails
+        assert not xfails, _class_id(key)
 
 
 def test_mixed_absence_is_not_an_expected_failure():
@@ -1187,11 +1178,13 @@ def test_site_unavailable_ceiling_applies_only_to_the_default_fuzz():
         _enforce_site_unavailable_ceiling(*_DEFAULT_FUZZ, _SITE_UNAVAILABLE_CEILING + 1)
 
 
-def test_known_xfail_mark_is_strict():
-    mark = _known_xfail_mark(_SIMILAR_REASON)
-    assert mark.kwargs["strict"] is True
-    assert mark.kwargs["raises"] is _KnownPlannerDefect
-    assert "@@" not in mark.kwargs["reason"]
+def test_similar_section_case_has_no_xfail_marker():
+    marks = getattr(
+        test_not_found_with_similar_section_has_mapped_refusal, "pytestmark", []
+    )
+    if not isinstance(marks, (list, tuple)):
+        marks = [marks]
+    assert not any(getattr(mark, "name", None) == "xfail" for mark in marks)
 
 
 def test_known_defect_pin_never_swallows_an_unrelated_mismatch():
@@ -1283,11 +1276,6 @@ def test_mixed_not_found_witnesses_agree():
         assert status == "agree-refuse" and code == "NOT_FOUND" and out == src, key
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=_KnownPlannerDefect,
-    reason=_SIMILAR_REASON,
-)
 def test_not_found_with_similar_section_has_mapped_refusal():
     src = b"a\n"
     patch = _patch(b"-tail\n+new\n")
@@ -1302,18 +1290,11 @@ def test_not_found_with_similar_section_has_mapped_refusal():
 
 
 def _class_parameter(key):
-    kind = _pin_kind(key)
-    if kind in _COLLECTION_XFAIL:
-        return pytest.param(
-            key,
-            marks=_known_xfail_mark(f"known V4A defect {kind}, fixed in t_6e12e276"),
-            id=_class_id(key),
-        )
     return pytest.param(key, id=_class_id(key))
 
 
 @pytest.mark.parametrize("key", [_class_parameter(key) for key in _sorted_classes()])
-def test_closed_domain_differential(key, request):
+def test_closed_domain_differential(key):
     rows = _class_rows(key)
     assert rows
     assert all(row.expected is not OOD for row in rows)
@@ -1329,9 +1310,6 @@ def test_closed_domain_differential(key, request):
         )
         return
     if kind == "mixed-not-found":
-        try:
-            _finish_mixed(rows, key)
-        except _KnownPlannerDefect as exc:
-            _report_known(request, str(exc))
+        _finish_mixed(rows, key)
         return
     _finish_strict(rows, key, kind)

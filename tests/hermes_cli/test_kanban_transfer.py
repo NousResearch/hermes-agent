@@ -17,6 +17,7 @@ with it":
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import tarfile
 import time
@@ -61,6 +62,12 @@ def kanban_root(tmp_path, monkeypatch):
 
 def _seed_board(slug: str = "alpha") -> dict[str, str]:
     """Create a board with one task of each interesting shape."""
+    # A worktree task is refused at creation unless its explicit path can host
+    # a worktree, so the fixture points at a real repo on the "exporting
+    # machine" (``git init`` alone is what the anchor check needs).
+    exporter_repo = Path(kb.kanban_home()) / "exporter-repo"
+    exporter_repo.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q", str(exporter_repo)], check=True)
     kb.create_board(slug, name="Alpha Board")
     ids = {}
     with kbc.connect_closing(board=slug) as conn:
@@ -69,7 +76,8 @@ def _seed_board(slug: str = "alpha") -> dict[str, str]:
         )
         ids["worktree"] = kb.create_task(
             conn, title="worktree task", assignee="coder",
-            workspace_kind="worktree", workspace_path="/exporter/repo",
+            workspace_kind="worktree",
+            workspace_path=str(exporter_repo / "wt" / "worktree-task"),
         )
         kb.add_comment(conn, ids["scratch"], "brooklyn", "a comment")
         kb.link_tasks(conn, ids["scratch"], ids["worktree"])

@@ -9,6 +9,7 @@ Verifies:
 from __future__ import annotations
 
 import json
+import subprocess
 
 import pytest
 
@@ -756,6 +757,9 @@ def test_create_explicit_scratch_ignores_ambient_board_project(
 
     repo = tmp_path / "repo"
     repo.mkdir()
+    # A real git work tree: the inherited kind is only a worktree when the
+    # project's folder can host one (creation-time validation).
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
     with pdb.connect_closing() as pconn:
         project_id = pdb.create_project(pconn, name="Ambient", primary_path=str(repo))
     kb.write_board_metadata("default", project_id=project_id)

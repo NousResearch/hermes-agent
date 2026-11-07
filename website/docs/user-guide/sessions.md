@@ -370,6 +370,18 @@ hermes sessions list --limit 50
 
 When more sessions exist than `--limit` allows, the listing ends with a `… more not shown (use --limit N to see more)` footer, so a capped page is never mistaken for the full list.
 
+### Show One Session
+
+```bash
+# Metadata, compression lineage, delegate subagents and token/cost totals
+hermes sessions show 20250305_091523_a1b2c3d4
+
+# The same as one JSON object for scripts (accepts a unique id prefix)
+hermes sessions show 20250305 --json | jq '.usage'
+```
+
+`--json` prints one object, `{"schema_version": 1, "session", "lineage", "subagents", "usage"}`, built from the same read-only projection plugins read through [`ctx.sessions`](../developer-guide/plugins/index.md#read-session-history). It never includes the system prompt, model config or chat/user ids. When no session matches the id or unique prefix, `--json` prints nothing on stdout, reports the error on stderr and exits 2.
+
 When sessions have titles, the output shows titles, previews, and relative timestamps:
 
 ```

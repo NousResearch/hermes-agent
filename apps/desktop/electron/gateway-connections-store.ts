@@ -96,6 +96,13 @@ export interface GatewayConnectionsStoreDeps {
 interface StoreDoc extends Record<string, unknown> {
   revision?: number
   importedFrom?: Record<string, { at: number }>
+  /** Quarantined entries past REGISTRY_QUARANTINE_CAP from a merge, carried verbatim (never dropped). */
+  quarantinedOverflow?: unknown[]
+}
+
+/** The quarantined entries a merge of `store` and `incoming` keeps past the normalizer's cap. */
+export function quarantineOverflow(store: ConnectionRegistry, incoming: ConnectionRegistry): unknown[] {
+  return [...(store.quarantined || []), ...(incoming.quarantined || [])].slice(REGISTRY_QUARANTINE_CAP)
 }
 
 /** A connection's sign-in, bound to the gateway URL that issued it. */
@@ -670,6 +677,11 @@ export function createGatewayConnectionsStore(deps: GatewayConnectionsStoreDeps)
     // Every write retries the envelopes still not plain, so `notices` is the whole current set.
     const { notices, registry: plain } = plainSecrets(registry, deps.decrypt)
     const revision = revisionOf(doc) + 1
+    const overflow = [...(doc?.quarantinedOverflow || []), ...(extra.quarantinedOverflow || [])]
+
+    if (overflow.length) {
+      notices.push({ connectionId: '', field: 'quarantinedOverflow', reason: 'quarantine-cap' })
+    }
 
     replaceDoc(
       file,
@@ -677,6 +689,7 @@ export function createGatewayConnectionsStore(deps: GatewayConnectionsStoreDeps)
         ...plain,
         revision,
         importedFrom: { ...(doc?.importedFrom || {}), ...(extra.importedFrom || {}) },
+        ...(overflow.length ? { quarantinedOverflow: overflow } : {}),
         ...(notices.length ? { importNotices: notices } : {})
       },
       corrupt,
@@ -700,7 +713,9 @@ export function createGatewayConnectionsStore(deps: GatewayConnectionsStoreDeps)
         return remember(normalizeRegistry(doc), revisionOf(doc))
       }
 
-      const merged = doc ? mergeRegistries(normalizeRegistry(doc), legacy) : normalizeRegistry(legacy)
+      const current = doc ? normalizeRegistry(doc) : null
+      const merged = current ? mergeRegistries(current, legacy) : normalizeRegistry(legacy)
+      const quarantinedOverflow = current ? quarantineOverflow(current, legacy) : []
 
       const tokens = withStoreLockSync(tokensFile, tokensOurs => {
         const read = readDoc<TokensDoc>(tokensFile)
@@ -720,7 +735,10 @@ export function createGatewayConnectionsStore(deps: GatewayConnectionsStoreDeps)
         } sign-in(s) from ${userDataKey} into ${file}`
       )
 
-      return land(doc, corrupt, stillOurs, merged, { importedFrom: { [userDataKey]: { at: Date.now() } } })
+      return land(doc, corrupt, stillOurs, merged, {
+        importedFrom: { [userDataKey]: { at: Date.now() } },
+        quarantinedOverflow
+      })
     })
   }
 

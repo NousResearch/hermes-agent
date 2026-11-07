@@ -1508,6 +1508,7 @@ Subcommands:
 | `doctor [--include CHECK] [--skip CHECK] [--json]` | Run cua-driver's health report and show its platform checks. |
 | `permissions status [--json]` | Report macOS Accessibility and Screen Recording grants. |
 | `permissions grant` | Ask macOS to grant Accessibility and Screen Recording to Cua Driver. |
+| `bridge` | Run an authenticated local HTTP bridge so a remote backend can use this machine's `cua-driver`. |
 
 `hermes computer-use install` is the stable entry point for installing the
 [cua-driver](https://github.com/trycua/cua) binary used by the

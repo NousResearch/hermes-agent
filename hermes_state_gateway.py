@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_state_common import (
     _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS_SQL, _sql_json_extract,
-    _sql_session_last_active)
+    _sql_session_last_active, _tool_fork_sql)
 
 # Log-record parity with the origin module (caplog tests pin "hermes_state").
 logger = logging.getLogger("hermes_state")
@@ -34,7 +34,7 @@ _COMPRESSION_LINEAGE_CTE = f"""
                           AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL
                           AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
                           AND NOT ({_RESET_CHILD_SQL.format(a='child')})
-                          AND COALESCE(child.source, '') != 'tool'
+                          AND NOT {_tool_fork_sql('child.')}
                     )
                 """
 

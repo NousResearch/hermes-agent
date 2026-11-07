@@ -48,10 +48,10 @@ def stamp_failure(result: dict[str, Any], reason: str, retryable: bool) -> dict[
 
 # ---- failed-turn transcript boundary ----------------------------------------------------------
 # The Hermes-authored assistant row that closes a durable turn which ended without one. A
-# transcript boundary, NOT the model's answer: no provider/model error or refusal detail is
-# ever interpolated (that rides ``final_response``). Owned here so the core closer
-# (``agent/conversation_loop.py::run_conversation``) and the gateway's own writer
-# (``gateway/run_turn.py::_hmwa_close_failed_turn``) say the same thing.
+# transcript boundary, NOT the model's answer. Classified cause (timeout / interrupt / site code)
+# may ride a trailing "Why:" clause; raw provider dumps stay on ``final_response`` /
+# ``display_metadata``. Owned here so the core closer (``agent/conversation_loop.py``) and the
+# gateway writer (``gateway/run_turn_persistence.py``) say the same thing.
 
 FAILED_TURN_NOTICE = (
     "Your request was not processed. Send it again if you still want me to carry it out."
@@ -66,6 +66,9 @@ PARTIAL_FAILED_TURN_NOTICE = (
 AUTOMATION_INTERRUPTED_NOTICE = (
     "An automated delivery was interrupted and was not run again. Some "
     "actions may already have run; verify their effects."
+)
+_FAILED_TURN_BASE_NOTICES = (
+    FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE, AUTOMATION_INTERRUPTED_NOTICE,
 )
 # Durable tail roles a failed turn leaves open: its accepted ``user`` row, or the ``tool`` row of a
 # call that ran before the failure. An ``assistant`` tail is already closed (a reply or a boundary).
@@ -92,22 +95,140 @@ CONTENT_REFUSED_METADATA_KEY = "content_refused"
 
 def untyped_failed_turn_display_kind(role: Any, content: Any) -> Optional[str]:
     """``FAILED_TURN_DISPLAY_KIND`` for a boundary row persisted before the closers typed it
-    (exact notice text, so a real reply quoting it stays a reply); read-side only."""
-    if role == "assistant" and isinstance(content, str) and content.strip() in (
-        FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE, AUTOMATION_INTERRUPTED_NOTICE,
-    ):
+    (base notice, or base + ``Why:`` suffix; a real reply that only quotes the notice stays a reply)."""
+    if role != "assistant" or not isinstance(content, str):
+        return None
+    stripped = content.strip()
+    if stripped in _FAILED_TURN_BASE_NOTICES:
         return FAILED_TURN_DISPLAY_KIND
+    for base in _FAILED_TURN_BASE_NOTICES:
+        # Reasoned form: exact base, then optional whitespace + "Why: …"
+        if stripped == base or stripped.startswith(base + "\n") or stripped.startswith(base + " Why:"):
+            rest = stripped[len(base):].lstrip()
+            if not rest or rest.startswith("Why:"):
+                return FAILED_TURN_DISPLAY_KIND
     return None
 
 
-def failed_turn_notice(turn_messages: Any) -> str:
-    """Boundary copy for a failed turn: never claim "not processed" when a tool may have run."""
+# Site codes are classified but not provider-shaped, so they stay out of
+# FAILURE_CAUSE_GLOSS (cron treats every gloss key as a provider failure).
+# The Why clause still names them; anything else present is humanized below
+# so a classified reason is never dropped.
+_SITE_FAILURE_WHY: dict[str, str] = {
+    "loop_error": "Hermes hit repeated errors and stopped",
+    "truncated": "the model's reply was cut off before it finished",
+    "invalid_response": "the AI model service sent back an empty or broken reply",
+    "interpreter_shutdown": "Hermes was shutting down",
+    "empty_response": "the AI model service sent back an empty reply",
+    "session_busy": "this session was already busy with another turn",
+    "gateway_connection": "the connection to the gateway was lost",
+    "host_error": "the host stopped the turn",
+}
+
+
+def _why_for_unglossed_failure_reason(reason: str) -> str:
+    """Plain clause for a classified reason with no shared gloss.
+
+    Known site codes get a short clause. Any other present code is humanized
+    the same way ``humanize_turn_exit_reason`` humanizes snake_case, so the
+    Why line never drops a reason the caller already classified.
+    """
+    gloss = _SITE_FAILURE_WHY.get(reason)
+    if gloss:
+        return gloss
+    if reason.isidentifier() or "_" in reason:
+        return reason.replace("_", " ")
+    return reason
+
+
+def _failed_turn_why_clause(
+    *,
+    failure_reason: Any = None,
+    turn_exit_reason: Any = None,
+    tool_reason: Any = None,
+) -> Optional[str]:
+    """One short classified cause for the boundary notice; never a raw provider dump."""
+    parts: list[str] = []
+
+    gloss = failure_cause_gloss(failure_reason, subject="the turn", possessive="the turn's")
+    if gloss:
+        parts.append(gloss)
+    elif failure_reason:
+        raw = str(failure_reason).strip()
+        if raw:
+            parts.append(_why_for_unglossed_failure_reason(raw))
+
+    # Interrupt / system stop reasons (reuse interrupt humanizer when available).
+    try:
+        from agent.interrupt_control import humanize_turn_exit_reason, USER_INTERRUPT_REASONS
+    except Exception:  # pragma: no cover - interrupt module always present in-tree
+        humanize_turn_exit_reason = None  # type: ignore[assignment]
+        USER_INTERRUPT_REASONS = frozenset()  # type: ignore[assignment]
+
+    if tool_reason:
+        tr = str(tool_reason).strip()
+        if tr:
+            if humanize_turn_exit_reason is not None and tr in USER_INTERRUPT_REASONS:
+                parts.append(tr)
+            else:
+                parts.append(f"system stop ({tr.replace('_', ' ')})" if tr not in USER_INTERRUPT_REASONS else tr)
+
+    if humanize_turn_exit_reason is not None:
+        human_exit = humanize_turn_exit_reason(turn_exit_reason)
+        if human_exit and human_exit not in parts:
+            # Skip exit phrases already covered by the failure gloss (e.g. timeout).
+            if not (gloss and human_exit.replace(" ", "_") in str(failure_reason or "")):
+                if human_exit.casefold() not in " ".join(parts).casefold():
+                    parts.append(human_exit)
+    elif turn_exit_reason:
+        raw = str(turn_exit_reason).strip().replace("_", " ")
+        if raw and raw.casefold() not in " ".join(parts).casefold():
+            parts.append(raw)
+
+    if not parts:
+        return None
+    # De-dupe while preserving order
+    seen: set[str] = set()
+    unique: list[str] = []
+    for p in parts:
+        key = p.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(p)
+    body = "; ".join(unique)
+    if not body.endswith("."):
+        body = body + "."
+    return body
+
+
+def failed_turn_notice(
+    turn_messages: Any,
+    *,
+    failure_reason: Any = None,
+    turn_exit_reason: Any = None,
+    tool_reason: Any = None,
+) -> str:
+    """Boundary copy for a failed turn: never claim "not processed" when a tool may have run.
+
+    When a classified cause is known, append ``Why: …`` so the user-visible stop is not bare.
+    Callers that omit reason kwargs keep the legacy static strings (stable for exact-match tests).
+    """
+    base = FAILED_TURN_NOTICE
     for row in turn_messages or ():
         if isinstance(row, dict) and (
             row.get("role") == "tool" or (row.get("role") == "assistant" and row.get("tool_calls"))
         ):
-            return PARTIAL_FAILED_TURN_NOTICE
-    return FAILED_TURN_NOTICE
+            base = PARTIAL_FAILED_TURN_NOTICE
+            break
+    why = _failed_turn_why_clause(
+        failure_reason=failure_reason,
+        turn_exit_reason=turn_exit_reason,
+        tool_reason=tool_reason,
+    )
+    if not why:
+        return base
+    return f"{base} Why: {why}"
 
 
 def provider_label_for(provider: Any) -> str:

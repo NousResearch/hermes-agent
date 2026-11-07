@@ -1377,6 +1377,17 @@ class TestIsPaymentError:
             exc.status_code = status
         assert _is_payment_error(exc) is True
 
+    def test_429_zai_subscription_plan_is_payment(self):
+        """z.ai 429 code 1311 plan entitlement is billing, not a transient rate limit."""
+        exc = Exception(
+            "Error code: 429 - {'error': {'code': '1311', 'message': "
+            "'Your current subscription plan does not yet include access to "
+            "GLM-5V-Turbo'}}"
+        )
+        exc.status_code = 429
+        assert _is_payment_error(exc) is True
+        assert _is_rate_limit_error(exc) is False
+
     def test_403_subscription_required_is_payment(self):
         exc = Exception(
             "this model requires a subscription, upgrade for access: "
@@ -1516,6 +1527,16 @@ class TestIsRateLimitError:
         exc = RateLimitError("rate limit exceeded")
         # No status_code set, but class name matches
         assert _is_rate_limit_error(exc) is True
+
+    def test_zai_plan_ratelimiterror_is_not_rate_limit(self):
+        class RateLimitError(Exception):
+            pass
+        exc = RateLimitError(
+            "Your current subscription plan does not yet include access to GLM-5V-Turbo"
+        )
+        exc.status_code = 429
+        assert _is_rate_limit_error(exc) is False
+        assert _is_payment_error(exc) is True
 
 
 class TestTryPaymentFallback:

@@ -36,11 +36,11 @@ _HOMEBREW_CI_POLLER_HINT = (
     '(PRs #31329, #31448, #31695, #31709, #31745, #32264, #33131) — stdout buffering kills '
     'output capture, jq null-key edge cases silently exit the loop, conclusion-vs-status field '
     'confusion exits early with bogus all-green verdicts, TTY-only summary banners never '
-    'appear when piped. Use the canonical snippets in the green-ci-policy skill instead: the '
+    'appear when piped. Use the '
     'exit-code-driven `gh pr checks $PR >/dev/null` (rc 0 = green, 8 = pending, else fail) for '
     'exit-on-first-fail behavior, or the column-2 awk-on-tabs poller (`awk -F"\\t" '
     '"$2==\\"pending\\""`) for sharded matrices. Load '
-    "skill_view(name='github/hermes-agent-dev', file_path='references/green-ci-policy.md') for "
+    "the repository's documented CI workflow for "
     'the verbatim snippets. If you must roll a custom loop with rich structured output, write '
     "each tick to a known file (`tee -a $TMPDIR/ci.log`) and rely on `process(action='log')` to "
     'read THAT file — do not rely on background-process stdout capture for line-buffered shell '

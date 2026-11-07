@@ -26,9 +26,10 @@
  * (agent-browser, once listed here, is no longer used by Hermes in any form:
  * browser_exec launches the pm-pinned Chromium itself.)
  *
- * If a future PR re-adds any of these to root ``dependencies``, this test
- * fails — read the lazy-install guidance in the ``hermes-agent-dev`` skill
- * before changing the expectations.
+ * If a future PR re-adds Camofox (or any other binary-postinstall package)
+ * to root ``dependencies``, this test fails. Keep Camofox and any similar
+ * heavy/region-restricted binary dependency lazy-installed on demand rather
+ * than in root ``dependencies``.
  */
 
 import assert from 'node:assert/strict'

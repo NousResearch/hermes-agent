@@ -48,6 +48,11 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
         agent.switch_model(
             new_model=model, new_provider=provider, api_key=api_key, base_url=base_url,
             api_mode=api_mode, capabilities=snapshot.get("capabilities"))
+        # Endpoint-stamped, so this applies only when the switch landed on the primary's URL; the model
+        # check keeps a fallback that shares that URL from inheriting the primary's verdicts.
+        if isinstance(primary, dict) and primary.get("model") == model:
+            from agent.route_verdicts import restore_primary_route_verdicts
+            restore_primary_route_verdicts(agent, copy.deepcopy(primary))
         if "reasoning_config" in snapshot:
             agent.reasoning_config = snapshot["reasoning_config"]
 

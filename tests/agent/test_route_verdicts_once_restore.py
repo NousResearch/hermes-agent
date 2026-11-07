@@ -88,3 +88,21 @@ def test_primary_verdicts_come_back_only_on_the_endpoint_that_earned_them():
         assert agent._restore_primary_runtime() is True
     assert agent.base_url.rstrip("/") == primary_url.rstrip("/")
     assert not any(_verdicts(agent).values())
+
+
+def test_once_restore_through_switch_model_keeps_the_primarys_verdicts():
+    """The pool reset gate blocks ``_restore_primary_runtime``, so the one-turn restore falls back to
+    ``switch_model``; the primary still gets back the verdicts it earned, not a clean slate."""
+    from tui_gateway import server
+    agent = _make_agent(fallback_model=_FALLBACK)
+    agent._reasoning_effort_rejected = True
+    primary = _verdicts(agent)
+    snapshot = server._snapshot_agent_model_runtime(agent)
+    _switch(agent, "x-model", "https://x.example/v1")
+    agent._stream_options_unsupported = True  # X's own
+
+    with patch("agent.agent_runtime_helpers._primary_reset_gate_blocks", return_value=(True, None, False)), \
+            patch("agent.model_metadata.get_model_context_length", return_value=131_072):
+        _once_restore(agent, snapshot)
+    assert agent.base_url.rstrip("/") == snapshot["base_url"].rstrip("/")
+    assert _verdicts(agent) == primary

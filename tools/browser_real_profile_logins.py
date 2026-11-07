@@ -104,25 +104,24 @@ def _page_cdp_url(cdp_url: str, target_url: str) -> str:
     return f"{base}/devtools/page/{target_id}"
 
 
-# JS: dispatch a user-style click on the page's current-password/username control so Chrome's
-# PasswordAutofillAgent treats it as an interaction and fills the saved credential, then report the
-# filled password-field value. Runs entirely in the real-profile browser's page.
-_READ_PASSWORD_JS = (
+# JS that returns the viewport-centre coordinates of the sign-in form's username/password control, so
+# the resolver can land a TRUSTED CDP mouse click on it. Chrome's PasswordAutofillAgent fills saved
+# credentials only on a trusted interaction (synthetic DOM events are ignored), so the click must come
+# over Input.dispatchMouseEvent, not a scripted MouseEvent.
+_FIELD_POINT_JS = (
     "(() => {"
-    " const pw = document.querySelector('input[type=password]');"
-    " const user = document.querySelector("
-    "   'input[autocomplete=username], input[type=email], input[name*=user i], input[name*=email i]');"
-    " const target = user || pw;"
-    " if (target) {"
-    "   const r = target.getBoundingClientRect();"
-    "   const opts = {bubbles:true, cancelable:true, clientX:r.x+r.width/2, clientY:r.y+r.height/2};"
-    "   target.dispatchEvent(new MouseEvent('mousedown', opts));"
-    "   target.dispatchEvent(new MouseEvent('mouseup', opts));"
-    "   target.dispatchEvent(new MouseEvent('click', opts));"
-    "   target.focus();"
-    " }"
-    " return '';"
+    " const el = document.querySelector("
+    "   'input[autocomplete=username], input[type=email], input[name*=user i], input[name*=email i]')"
+    "   || document.querySelector('input[type=password]');"
+    " if (!el) return '';"
+    " const r = el.getBoundingClientRect();"
+    " return JSON.stringify({x: r.x + r.width / 2, y: r.y + r.height / 2});"
     "})()"
+)
+
+_READ_PASSWORD_VALUE_JS = (
+    "(() => { const p = document.querySelector('input[type=password]');"
+    " return p ? String(p.value || '') : ''; })()"
 )
 
 
@@ -140,13 +139,17 @@ def resolve_login_password(cdp_url: str, origin: str, username: str) -> Optional
         _cdp_call(ws, 1, "Page.enable")
         _cdp_call(ws, 2, "Runtime.enable")
         time.sleep(1.0)  # let the navigated page settle before touching the form
-        # Dispatch the gesture that makes Chrome offer+fill the credential.
-        _cdp_call(ws, 3, "Runtime.evaluate", {"expression": _READ_PASSWORD_JS})
-        # A chooser is shown when several usernames match; move to the matching entry.
+        point = _cdp_call(ws, 3, "Runtime.evaluate", {
+            "expression": _FIELD_POINT_JS, "returnByValue": True}).get("result", {}).get("value")
+        if not point:
+            return None
+        xy = json.loads(point)
+        # A TRUSTED click (not a scripted DOM event) is what makes Chrome offer+fill the credential.
+        for ev in ("mousePressed", "mouseReleased"):
+            _cdp_call(ws, 4, "Input.dispatchMouseEvent",
+                      {"type": ev, "x": xy["x"], "y": xy["y"], "button": "left", "clickCount": 1})
         time.sleep(_AUTOFILL_SETTLE_S)
-        read = _cdp_call(ws, 4, "Runtime.evaluate", {
-            "expression": "(() => { const p = document.querySelector('input[type=password]');"
-                          " return p ? String(p.value || '') : ''; })()",
-            "returnByValue": True})
+        read = _cdp_call(ws, 5, "Runtime.evaluate",
+                         {"expression": _READ_PASSWORD_VALUE_JS, "returnByValue": True})
     value = read.get("result", {}).get("value")
     return value if isinstance(value, str) and value else None

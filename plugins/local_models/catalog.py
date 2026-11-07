@@ -16,11 +16,11 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 
-from hermes_cli.local_runtime.context_policy import (
+from plugins.local_models.context_policy import (
     FLOOR, RUNTIME_OVERHEAD_BYTES, TARGET_WINDOW, LaunchPlan, plan_launch)
-from hermes_cli.local_runtime.estimator import (
+from plugins.local_models.estimator import (
     HardwareBudget, LayerKind, ModelProfile, PhysicsRefusal, as_loaded)
-from hermes_cli.local_runtime.gguf import model_id_from_stem
+from plugins.local_models.gguf import model_id_from_stem
 from hermes_platform.host.products import is_nvidia_n1x_pci_id
 
 logger = logging.getLogger(__name__)
@@ -360,7 +360,7 @@ def _load_catalog(doc: dict) -> tuple[CatalogEntry, ...]:
 def _packaged_catalog() -> tuple[CatalogEntry, ...]:
     from importlib.resources import files
 
-    raw = files("hermes_cli.local_runtime").joinpath("catalog.json").read_text(encoding="utf-8-sig")
+    raw = files("plugins.local_models").joinpath("catalog.json").read_text(encoding="utf-8-sig")
     return _load_catalog(json.loads(raw))
 
 

@@ -30,9 +30,9 @@ def test_stop_disables_and_tears_down(client, monkeypatch):
     class _FakeSup:
         pass
 
-    monkeypatch.setattr("hermes_cli.local_runtime.bootstrap.get_supervisor",
+    monkeypatch.setattr("plugins.local_models.bootstrap.get_supervisor",
                         lambda: _FakeSup())
-    monkeypatch.setattr("hermes_cli.local_runtime.bootstrap.shutdown_local_runtime",
+    monkeypatch.setattr("plugins.local_models.bootstrap.shutdown_local_runtime",
                         _shutdown)
 
     r = client.post("/api/local-models/server", json={"action": "stop"})
@@ -55,7 +55,7 @@ def test_start_enables_and_boots(client, monkeypatch):
         assert force is True
         return _FakeSup()
 
-    monkeypatch.setattr("hermes_cli.local_runtime.bootstrap.ensure_local_runtime",
+    monkeypatch.setattr("plugins.local_models.bootstrap.ensure_local_runtime",
                         _ensure)
 
     r = client.post("/api/local-models/server", json={"action": "start"})
@@ -118,7 +118,7 @@ def test_status_reports_loaded_models_from_live_router(client, monkeypatch):
 def test_stop_forwards_recovery_and_preserves_conflict(client, tmp_path, monkeypatch, refuse):
     from fastapi import HTTPException
     from hermes_cli.web_routers import local_models
-    from hermes_cli.local_runtime import supervisor
+    from plugins.local_models import supervisor
 
     monkeypatch.setattr(supervisor, "runtimes_root", lambda: tmp_path)
     supervisor.state_path().write_text("{}")

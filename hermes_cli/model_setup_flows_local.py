@@ -21,7 +21,7 @@ def local_models_available() -> bool:
     """Whether PM pins an engine for this machine at all. CPU is pinned on every target that has
     any build, so its absence means no backend can install; GPU detection waits for selection."""
     try:
-        from hermes_cli.local_runtime.binaries import unavailable_reason
+        from plugins.local_models.binaries import unavailable_reason
 
         return unavailable_reason("cpu") is None
     except Exception:
@@ -122,7 +122,7 @@ def _model_flow_local(config, current_model=""):
     del config, current_model
     from hermes_cli.main_provider_setup import _prompt_provider_choice
     from hermes_cli.setup import prompt_yes_no
-    from hermes_cli.web_routers import local_models as lm
+    from plugins.local_models.dashboard import plugin_api as lm
 
     hw = lm.local_models_hardware()
     status = lm.local_models_status()

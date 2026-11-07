@@ -11,11 +11,11 @@ from pathlib import Path
 
 import pytest
 
-import hermes_cli.local_runtime.hardware as hw
-from hermes_cli.local_runtime import binaries
-from hermes_cli.local_runtime.binaries import Engine
-from hermes_cli.local_runtime.catalog import CATALOG, select_variant
-from hermes_cli.local_runtime.devices import GGML_DEVICE_IGPU
+import plugins.local_models.hardware as hw
+from plugins.local_models import binaries
+from plugins.local_models.binaries import Engine
+from plugins.local_models.catalog import CATALOG, select_variant
+from plugins.local_models.devices import GGML_DEVICE_IGPU
 from hermes_platform.host import gpu_adapters
 from hermes_platform.host.gpu_adapters import Adapter
 

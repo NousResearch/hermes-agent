@@ -1,0 +1,5 @@
+name: local-models
+version: "1.0.0"
+description: "Local llama.cpp runtime — model management, binary downloads, memory-aware context planning, and server supervision"
+author: "NousResearch"
+license: MIT

@@ -146,7 +146,7 @@ async def standalone_lifespan(app: "FastAPI"):
     def _boot_local_runtime():
         try:
             from hermes_cli.config import load_config
-            from hermes_cli.local_runtime.bootstrap import ensure_local_runtime
+            from plugins.local_models.bootstrap import ensure_local_runtime
 
             ensure_local_runtime(load_config())
         except Exception as exc:
@@ -186,7 +186,7 @@ async def standalone_lifespan(app: "FastAPI"):
 
         # Stop the managed llama-server with its parent (an orphan pins VRAM).
         try:
-            from hermes_cli.local_runtime.bootstrap import shutdown_local_runtime
+            from plugins.local_models.bootstrap import shutdown_local_runtime
 
             shutdown_local_runtime()
         except Exception:

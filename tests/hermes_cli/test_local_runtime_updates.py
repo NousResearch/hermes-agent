@@ -58,7 +58,7 @@ def test_status_uses_pm_pin_and_ignores_legacy_tag(runtime_env, monkeypatch):
 
 
 def test_boot_uses_previous_pm_engine_without_installing(runtime_env, monkeypatch):
-    from hermes_cli.local_runtime import bootstrap, endpoint, supervisor
+    from plugins.local_models import bootstrap, endpoint, supervisor
 
     store, _ = runtime_env
     binary = record_engine(store, "10362")

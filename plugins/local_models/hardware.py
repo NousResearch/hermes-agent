@@ -20,8 +20,8 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from hermes_cli.local_runtime.devices import GGML_DEVICE_GPU
-from hermes_cli.local_runtime.estimator import HardwareBudget
+from plugins.local_models.devices import GGML_DEVICE_GPU
+from plugins.local_models.estimator import HardwareBudget
 from hermes_platform.host.facts import gpu_class
 
 logger = logging.getLogger(__name__)
@@ -319,8 +319,8 @@ def _configured_engine():
     """The engine the probes below run: the managed server's own when one is up or booting, else
     the installed engine for ``local_runtime.backend``."""
     from hermes_cli.config import load_config_readonly
-    from hermes_cli.local_runtime.binaries import installed_engine
-    from hermes_cli.local_runtime.bootstrap import serving_engine
+    from plugins.local_models.binaries import installed_engine
+    from plugins.local_models.bootstrap import serving_engine
 
     engine = serving_engine()
     if engine is not None:
@@ -376,7 +376,7 @@ def _accelerator_device(*, fresh: bool = False) -> dict | None:
     the cache read for a launch-time free-memory answer.
     """
     with suppress(Exception):  # a probe miss must never block budgeting
-        from hermes_cli.local_runtime.devices import probe_devices
+        from plugins.local_models.devices import probe_devices
 
         engine = _configured_engine()
         if engine is None or engine.backend not in _GPU_ENGINE_BACKENDS:
@@ -471,7 +471,7 @@ def _gpu_engine_runs_the_model() -> bool:
         if engine is not None:
             return engine.backend in _GPU_ENGINE_BACKENDS
         from hermes_cli.config import load_config_readonly
-        from hermes_cli.local_runtime.binaries import resolve_backend
+        from plugins.local_models.binaries import resolve_backend
 
         section = load_config_readonly().get("local_runtime") or {}
         return resolve_backend(section.get("backend") or "auto") in _GPU_ENGINE_BACKENDS

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_cli import runtime_provider as rp
-from hermes_cli.local_runtime import endpoint
+from plugins.local_models import endpoint
 from tui_gateway import server
 
 

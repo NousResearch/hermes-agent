@@ -782,7 +782,6 @@ def _get_dashboard_plugins(force_rescan: bool = False) -> list:
 from hermes_cli.web_routers import (
     files as _files_routes,
     git as _git_routes,
-    local_models as _local_models_routes,
     status as _status_routes,
     actions as _actions_routes,
     audio as _audio_routes,
@@ -810,6 +809,7 @@ from hermes_cli.web_routers import (
     webapp_access as _webapp_access_routes,
     ui_preferences as _ui_preferences_routes,
 )
+from plugins.local_models.dashboard import plugin_api as _local_models_routes
 
 import hermes_cli.web_routers.desktop_plugins as _desktop_plugin_routes
 import hermes_cli.web_routers.uploads as _upload_routes

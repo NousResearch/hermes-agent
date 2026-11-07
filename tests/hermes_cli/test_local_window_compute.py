@@ -10,9 +10,9 @@ context on a 128 GB DGX Spark.
 
 from __future__ import annotations
 
-from hermes_cli.local_runtime.catalog import catalog_by_id
-from hermes_cli.local_runtime.context_policy import launch_args, posture_profile
-from hermes_cli.local_runtime.estimator import HardwareBudget, footprint_bytes
+from plugins.local_models.catalog import catalog_by_id
+from plugins.local_models.context_policy import launch_args, posture_profile
+from plugins.local_models.estimator import HardwareBudget, footprint_bytes
 
 GIB = 1 << 30
 MIB = 1 << 20

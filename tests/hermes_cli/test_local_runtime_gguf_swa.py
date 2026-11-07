@@ -14,8 +14,8 @@ from __future__ import annotations
 import struct
 from pathlib import Path
 
-from hermes_cli.local_runtime.estimator import LayerKind, ctx_bytes, profile_from_gguf
-from hermes_cli.local_runtime.gguf import GGUFHeader, read_gguf_header
+from plugins.local_models.estimator import LayerKind, ctx_bytes, profile_from_gguf
+from plugins.local_models.gguf import GGUFHeader, read_gguf_header
 
 _ARCH = "gemma4"  # deliberately absent from _SWA_LAYER_FRACTION
 

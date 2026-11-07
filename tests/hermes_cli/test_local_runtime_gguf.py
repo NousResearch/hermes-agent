@@ -7,9 +7,9 @@ import struct
 
 import pytest
 
-from hermes_cli.local_runtime.context_policy import spill_overrides
-from hermes_cli.local_runtime.estimator import profile_from_gguf
-from hermes_cli.local_runtime.gguf import read_gguf_header
+from plugins.local_models.context_policy import spill_overrides
+from plugins.local_models.estimator import profile_from_gguf
+from plugins.local_models.gguf import read_gguf_header
 
 
 def _gguf_str(s: str) -> bytes:

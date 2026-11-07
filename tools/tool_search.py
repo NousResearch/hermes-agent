@@ -493,6 +493,25 @@ def _record_search_metric(current_tool_defs: list[dict[str, Any]], *, hits: int,
     record_tool_search(scope=scope, hits=hits, outcome=outcome)
 
 
+def _resolve_prefixed_describe_name(name: str, by_name: dict[str, Any]) -> Optional[str]:
+    """Canonical deferrable name for a describe request, or None.
+
+    The deferred catalog groups tools under a "<group> tools (N):" heading,
+    so the model invents "<group>.<tool>" (#147998). An exact name always
+    wins; otherwise try the suffix after each dot, longest first, against
+    the deferrable catalog. A suffix match is an exact key match, not a
+    substring search, so it cannot resolve to a different tool, and
+    describe is read-only, so a resolved name cannot invoke anything."""
+    if name in by_name:
+        return name
+    for index, char in enumerate(name):
+        if char == ".":
+            candidate = name[index + 1:]
+            if candidate and candidate in by_name:
+                return candidate
+    return None
+
+
 def dispatch_tool_describe(args: dict[str, Any], *, current_tool_defs: list[dict[str, Any]],
                            config: Optional[ToolSearchConfig] = None,
                            connector_describe: Optional[Any] = None, call: Optional[Any] = None) -> str:
@@ -512,11 +531,14 @@ def dispatch_tool_describe(args: dict[str, Any], *, current_tool_defs: list[dict
     errors: dict[str, str] = {}
     session_names = session_tool_names(current_tool_defs)
     for name in names:
-        fn = by_name.get(name)
+        canonical = _resolve_prefixed_describe_name(name, by_name)
+        fn = by_name.get(canonical) if canonical is not None else None
         remote_fn = remote_schemas.get(name)
         if fn is not None:
-            tools[name] = {"description": fn.get("description", ""),
-                           "parameters": fn.get("parameters", {})}
+            # Key by the canonical name, not the prefixed request: that is
+            # the name a later tool_call must use.
+            tools[canonical] = {"description": fn.get("description", ""),
+                                "parameters": fn.get("parameters", {})}
         elif isinstance(remote_fn, dict):
             tools[name] = {"description": str(remote_fn.get("description", "")),
                            "parameters": remote_fn.get("parameters", {})}

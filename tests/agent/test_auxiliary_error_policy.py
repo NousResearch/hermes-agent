@@ -265,7 +265,8 @@ def test_streamed_certificate_failure_is_not_resent_non_streaming(is_async):
 
     error = ssl.SSLCertVerificationError(1, "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed")
     with patch("agent.auxiliary_client._aux_progress_active", return_value=True):
-        assert run_ladder(error, is_async=is_async).attempts == 1
+        outcome = run_ladder(error, is_async=is_async)
+    assert (outcome.attempts, outcome.fell_back) == (1, True)  # one doomed connection, then the next provider
 
 
 @pytest.mark.parametrize("hook,expected", [

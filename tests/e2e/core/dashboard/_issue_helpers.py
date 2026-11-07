@@ -1,10 +1,5 @@
-"""Shared bits for the dashboard lane's open-issue cells (#120527, #120937).
+"""Shared bits for the dashboard lane's open-issue cells (#120937).
 
-* ``PtyDashboard``: the lane's ``Dashboard`` harness, but spawned with a pseudo-terminal slave as
-  stdin — the shape of ``hermes serve`` / ``hermes dashboard`` launched from an interactive
-  terminal. The master end is held open and never written to (nobody watches that console).
-  Teardown SIGKILLs the whole process group: a server wedged in a worker thread never finishes
-  a graceful shutdown (the default executor is joined on exit).
 * ``GatewayApiServer``: a real ``python -m gateway.run`` with the API-server platform enabled via
   the profile ``.env`` exactly as a user configures it (``API_SERVER_ENABLED``/``_KEY``/``_HOST``/
   ``_PORT``), retrying the pick-then-bind port race like the parity lane's driver.
@@ -18,110 +13,25 @@ from __future__ import annotations
 
 import contextlib
 import json
-import os
 import secrets
 import signal
 import subprocess
 import sys
-import threading
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
 
-import httpx
-
-from tests.e2e.core.dashboard._helpers import (
-    _READY_RE, _TOKEN_RE, Dashboard, Sandbox, group_members, kill_group, poll,
-)
-from tests.e2e.core.dashboard._reaper import kill_identified
+from tests.e2e.core.dashboard._helpers import Sandbox, kill_group
 
 
 class KnownIssue(AssertionError):
     """Base for assertions that encode an OPEN issue's user-visible signature."""
 
 
-class Issue120527(KnownIssue):
-    """#120527: a dashboard MCP catalog install wedges the serve process (interactive prompt)."""
-
-
 class Issue120937(KnownIssue):
     """#120937: /api/sessions/{id}/chat silently truncates a long message."""
-
-
-# Dashboard with a TTY stdin -----------------------------------------------------------------------
-
-
-class PtyDashboard(Dashboard):
-    """``hermes dashboard`` whose stdin is a pty slave (interactive-terminal launch); ``tty=False``
-    gives the same process with stdin=/dev/null (service / desktop-spawned launch) as a control."""
-
-    def __init__(self, sb: Sandbox, log_path: Path, extra_env: dict[str, str] | None = None,
-                 tty: bool = True) -> None:
-        self.sb = sb
-        self.log_path = log_path
-        self._log = open(log_path, "a", encoding="utf-8")
-        if tty:
-            self.pty_master, slave = os.openpty()
-        else:
-            self.pty_master, slave = -1, os.open(os.devnull, os.O_RDONLY)
-        env = sb.env({"HERMES_WEB_DIST": str(sb.root / "web_dist"), "TERM": "xterm-256color",
-                      **(extra_env or {})})
-        try:
-            self.proc = subprocess.Popen(
-                [sys.executable, "-m", "hermes_cli.main", "dashboard", "--no-open", "--skip-build",
-                 "--host", "127.0.0.1", "--port", "0"],
-                cwd=str(sb.home), env=env, stdin=slave, stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT, text=True, bufsize=1, start_new_session=True,
-            )
-        finally:
-            os.close(slave)
-        port_box: list[int] = []
-
-        def pump() -> None:
-            assert self.proc.stdout is not None
-            for line in self.proc.stdout:
-                self._log.write(line)
-                self._log.flush()
-                m = _READY_RE.search(line)
-                if m and not port_box:
-                    port_box.append(int(m.group(1)))
-        threading.Thread(target=pump, daemon=True, name="dash-pty-stdout").start()
-        try:
-            self.port = poll(lambda: port_box[0] if port_box else (self.proc.poll() is not None and -1), 120,
-                             "hermes dashboard (tty stdin) to report its port")
-            assert self.port > 0, f"hermes dashboard exited rc={self.proc.returncode}:\n{self.log_tail()}"
-            self.base = f"http://127.0.0.1:{self.port}"
-            self.http = httpx.Client(base_url=self.base, timeout=30.0, trust_env=False)
-            index = self.http.get("/")
-            m = _TOKEN_RE.search(index.text)
-            assert index.status_code == 200 and m, f"index.html carried no session token: {index.status_code}"
-            self.token = m.group(1)
-        except BaseException:
-            self.close()
-            raise
-
-    def stdin_target(self) -> str:
-        """What the child's fd 0 really is (read from the child itself): /dev/pts/N or /dev/null."""
-        try:
-            return os.readlink(f"/proc/{self.proc.pid}/fd/0")
-        except OSError as exc:
-            return f"unreadable: {exc}"
-
-    def close(self) -> None:
-        with contextlib.suppress(Exception):
-            self.http.close()
-        members = group_members(self.proc.pid)
-        kill_group(self.proc)  # SIGKILL: a wedged worker thread blocks any graceful exit
-        with contextlib.suppress(Exception):
-            self.proc.wait(timeout=15)
-        kill_identified(members)  # recorded members that left the group since (setsid'd MCP children)
-        if self.pty_master >= 0:
-            with contextlib.suppress(OSError):
-                os.close(self.pty_master)
-        with contextlib.suppress(Exception):
-            self._log.close()
 
 
 # Gateway API server ------------------------------------------------------------------------------

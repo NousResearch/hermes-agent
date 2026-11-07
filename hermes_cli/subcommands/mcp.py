@@ -59,12 +59,10 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
         "--all", action="store_true",
         help="Re-authenticate every OAuth server in config, one at a time")
 
-    # Catalog (Nous-approved MCPs shipped with the repo)
-    mcp_sub.add_parser(
-        "picker", help="Interactive catalog picker (also the default for `hermes mcp`)")
-    mcp_sub.add_parser("catalog", help="List Nous-approved MCPs available for one-click install")
-    mcp_install_p = mcp_sub.add_parser(
-        "install", help="Install a catalog MCP by name (e.g. `hermes mcp install deepwiki`)")
-    mcp_install_p.add_argument("identifier", help="Catalog entry name (or `official/<name>`)")
+    # Removed MCP catalog: kept one release so old scripts print the `hermes mcp add` equivalent.
+    mcp_sub.add_parser("picker", help="Removed; use `hermes mcp add`")
+    mcp_sub.add_parser("catalog", help="Removed; use `hermes mcp add`")
+    mcp_install_p = mcp_sub.add_parser("install", help="Removed; use `hermes mcp add`")
+    mcp_install_p.add_argument("identifier", help="Server name")
 
     mcp_parser.set_defaults(func=cmd_mcp)

@@ -52,10 +52,9 @@ async def git_status_route(path: str):
     return await _git_op(_web_git.repo_status, _git_path(path))
 
 
-# Cached `gh auth status` for the desktop composer's GitHub suggestion pill. GitHub
-# deliberately has NO MCP catalog entry (hosted MCP needs a per-host OAuth app; the
-# gh-CLI skills are the better integration), so the pill offers `/github-auth` —
-# only to users who aren't already authenticated.
+# Cached `gh auth status` for the desktop composer's GitHub suggestion pill. The gh-CLI
+# skills are the GitHub integration (a hosted MCP needs a per-host OAuth app), so the pill
+# offers `/github-auth`, only to users who aren't already authenticated.
 _GH_AUTH_TTL_S = 300.0
 _gh_auth_cache: Optional[tuple] = None  # (monotonic_ts, payload)
 _gh_auth_probe_task: Optional[asyncio.Task] = None

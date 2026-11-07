@@ -40,8 +40,7 @@ edges, conservative at the waist.
   wanted work. "Every line traces to the request" applies to *feature* PRs; a declared
   refactor's request IS the extraction.
 - **Keep the core narrow.** Prefer, in order: extend existing code → CLI command + skill →
-  service-gated tool (`check_fn`) → plugin → MCP server in the catalog → new core tool (last
-  resort). See the Footprint Ladder below.
+  service-gated tool (`check_fn`) → plugin → new core tool (last resort). See the Footprint Ladder below.
 - **Extend, don't duplicate.** Check whether existing infrastructure covers the use case
   before adding a module/manager/hook. When 3+ open PRs integrate the same *category*
   (memory backends, providers, notifiers), design an ABC + orchestrator, wrap the existing
@@ -131,9 +130,7 @@ Choose the highest (least-footprint) rung that correctly solves the problem:
    capability is a property of the SESSION".
 4. **Plugin** — third-party/niche/user-specific; lives in `~/.hermes/plugins/` or a pip
    package, discovered at runtime.
-5. **MCP server (in the catalog)** — genuinely a tool but not core-fundamental. Zero permanent
-   core-schema footprint, reusable by any MCP host, reached via the built-in MCP client.
-6. **New core tool** — only when fundamental, broadly useful to nearly every user, and
+5. **New core tool** — only when fundamental, broadly useful to nearly every user, and
    unreachable via terminal + file or an MCP server (terminal, read_file, web_search,
    browser_exec).
 

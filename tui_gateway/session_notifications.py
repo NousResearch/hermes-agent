@@ -171,23 +171,25 @@ def _notif_log_failure(what: str, exc: BaseException) -> None:
     print(f"[tui_gateway] {what}: {type(exc).__name__}: {exc}", file=sys.stderr)
 
 
-def _notif_unowned_event(sid: str, evt: dict, deferred) -> None:
+def _notif_unowned_event(sid: str, evt: dict, deferred) -> bool:
     """Dispose of an addressed event this session cannot prove it owns (never adopt an orphan): park it for its
     owner's return (``notification_park``). One the park refuses: a delegation is dropped at WARNING with its offer
     cleared (``return_completion_offer``; the row stays pending) or, during a shutdown drain, goes onto ``deferred``
-    to be requeued; anything else drops."""
+    to be requeued; anything else drops. True when the event is retained (parked or deferred), False for a drop,
+    which the caller settles."""
     evt_type, is_delegation = evt.get("type", "completion"), evt.get("type") == "async_delegation"
     origin, key = str(evt.get("origin_ui_session_id") or ""), str(evt.get("session_key") or "")
     from tui_gateway import notification_park
     if notification_park.park(evt):
         logger.debug("Parked unowned %s notification (origin=%r key=%r) until its owner returns",
                      evt_type, origin, key)
-    elif deferred is not None:
+        return True
+    if deferred is not None:
         if is_delegation:
             deferred.append(evt)
-        else:
-            logger.debug("Dropping unowned %s notification during shutdown drain (origin=%r key=%r)",
-                         evt_type, origin, key)
+            return True
+        logger.debug("Dropping unowned %s notification during shutdown drain (origin=%r key=%r)",
+                     evt_type, origin, key)
     else:
         # A durable replay stays pending: hand it back so the orphan sweep re-offers it once its owner
         # is live (#97202), and keep that retry out of WARNING.
@@ -198,6 +200,7 @@ def _notif_unowned_event(sid: str, evt: dict, deferred) -> None:
         if is_delegation:
             from tools.async_delegation import return_completion_offer
             return_completion_offer(evt)
+    return False
 
 
 # A retried notice the canonical ledger refuses (SESSION_NOT_OWNED persists while a gateway owns the
@@ -615,6 +618,9 @@ def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None
             return
     except Exception:
         release_event_delivery(evt, claim)
+        # Process notices are non-durable and this failure path drops them.
+        from tools.process_registry import process_registry
+        process_registry.settle_notification(evt)
         return
     complete_event_delivery(evt, claim)
 
@@ -636,12 +642,19 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
             time.sleep(0.1)
         return True
     if not owned and _notification_event_requires_owner(evt) and not _session_owns_notification_event(sid, session, evt):
-        _notif_unowned_event(sid, evt, deferred)
+        if not _notif_unowned_event(sid, evt, deferred):
+            registry.settle_notification(evt)  # a drop, not a requeue
+        return True
+    owner = str(evt.get("owner_task_id") or evt.get("task_id") or "")
+    if not is_delegation and owner.startswith("sa-") and not registry._surface_child_process_notifications():
+        registry.settle_notification(evt)
         return True
     if evt_type == "completion" and registry.is_completion_consumed(evt.get("session_id", "")):
+        registry.settle_notification(evt)
         return True
     text = fmt(evt)
     if not text:
+        registry.settle_notification(evt)
         return True
     # Emit once per dedup key: a re-queued completion would otherwise re-emit every 0.5s while the session is busy,
     # while distinct watch_match events from one process must stay visible.
@@ -658,6 +671,7 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
     if evt_type != "async_delegation" and _background_notifications_off(session):
         # The user opted out of process-driven agent wakes: the status row above is the whole
         # delivery. Subagent results are not process notifications and still land.
+        registry.settle_notification(evt)
         return True
     if evt_type == "completion" and completions is not None:
         completions.append((evt, text))
@@ -694,6 +708,9 @@ def _notif_dispatch_completions(sid, session, notifications, registry, deferred)
     except Exception as exc:
         _notif_log_failure("completion batch preparation failed", exc)
         _notif_release_turn(session)
+        # Nothing re-queues these completions, so the failure is a drop.
+        for event, _text in notifications:
+            registry.settle_notification(event)
         for event, _text, claim in claimed:
             release_event_delivery(event, claim)
         return
@@ -714,6 +731,7 @@ def _notif_dispatch_completions(sid, session, notifications, registry, deferred)
     except Exception:
         for event, _text, claim in claimed:
             release_event_delivery(event, claim)
+            registry.settle_notification(event)
         return
     for event, _text, claim in claimed:
         complete_event_delivery(event, claim)

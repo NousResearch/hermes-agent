@@ -28,6 +28,10 @@ export type StatusItemState = 'done' | 'failed' | 'running'
 export type StatusItemType = 'background' | 'goal' | 'subagent' | 'todo'
 
 export interface ComposerStatusItem {
+  /** background: a completion or first watch notification is still awaited. */
+  awaitingNotification?: boolean
+  /** background: a notification obligation remains unsettled, including after exit. */
+  notificationPending?: boolean
   /** background: non-zero exit shown inline when failed. */
   exitCode?: number
   /** subagent: active tool label shown on the right. */
@@ -57,7 +61,16 @@ export const $backgroundStatusBySession = atom<Record<string, ComposerStatusItem
 // the snapshot's stamp forward; they are not new backend data.
 const backgroundWrittenAt = new WeakMap<readonly ComposerStatusItem[], number>()
 
-// Stored session ids that have at least one RUNNING background process. The
+export const isAwaitedBackgroundWork = (item: ComposerStatusItem): boolean =>
+  item.type === 'background' &&
+  (item.notificationPending === true || (item.state === 'running' && item.awaitingNotification === true))
+
+/** Rows the composer's pane-gated 5s safety-net poll must keep refreshing:
+ *  running work (silent exits emit no event) and results still owed to the agent. */
+export const needsBackgroundRefresh = (item: ComposerStatusItem): boolean =>
+  item.state === 'running' || item.notificationPending === true
+
+// Stored session ids with awaited background work or an undelivered result. The
 // sidebar row reads this for a hollow dot — distinct from the filled dot of an
 // active LLM turn — so the user can tell at a glance "this session has
 // something chugging along in the background" even when the turn is idle.
@@ -87,7 +100,7 @@ export const $backgroundRunningSessionIds = computed(
       const writtenAt = backgroundWrittenAt.get(items) ?? -Infinity
       noteEventFed(eventFedAt, aliases, writtenAt)
 
-      if (items.some(i => i.state === 'running') && !rosterSaysIdle(roster, 'background', aliases, writtenAt)) {
+      if (items.some(isAwaitedBackgroundWork) && !rosterSaysIdle(roster, 'background', aliases, writtenAt)) {
         for (const alias of aliases) {
           ids.add(alias)
         }
@@ -113,6 +126,8 @@ const dismissedBySession = new Map<string, Set<string>>()
 const SUCCESS_LINGER_MS = 4_000
 const FAILURE_LINGER_MS = 12_000
 const autoClearTimers = new Map<string, Map<string, ReturnType<typeof setTimeout>>>()
+const backgroundRefreshes = new Map<string, { promise: Promise<void>; rerun: boolean }>()
+let backgroundEpoch = 0
 
 function scheduleAutoDismiss(sid: string, id: string, delayMs: number) {
   let timers = autoClearTimers.get(sid)
@@ -202,6 +217,8 @@ const goalToItem = (goal: { detail?: string; status: GoalStatus; title: string }
 // and a fully-unchanged map keeps its previous reference so `computed` skips
 // the notify entirely ("preserve reference identity on no-ops").
 const sameStatusItem = (a: ComposerStatusItem, b: ComposerStatusItem) =>
+  a.awaitingNotification === b.awaitingNotification &&
+  a.notificationPending === b.notificationPending &&
   a.id === b.id &&
   a.type === b.type &&
   a.state === b.state &&
@@ -312,9 +329,13 @@ const writeBackground = (sid: string, items: ComposerStatusItem[], snapshotAt: n
 interface GatewayProcessEntry {
   command?: string
   exit_code?: number
+  notify_on_complete?: boolean
+  notification_pending?: boolean
   output_tail?: string
   session_id?: string
   status?: string
+  watch_hit?: boolean
+  watch_patterns?: string[]
 }
 
 const toBackgroundItem = (proc: GatewayProcessEntry): ComposerStatusItem => {
@@ -322,6 +343,10 @@ const toBackgroundItem = (proc: GatewayProcessEntry): ComposerStatusItem => {
   const exitCode = typeof proc.exit_code === 'number' ? proc.exit_code : undefined
 
   return {
+    // Notification metadata is the explicit completion contract. A silent
+    // server may stay in the process panel without holding the task open.
+    awaitingNotification: proc.notify_on_complete === true || (!!proc.watch_patterns?.length && !proc.watch_hit),
+    notificationPending: proc.notification_pending === true,
     exitCode,
     id: proc.session_id ?? '',
     output: proc.output_tail || undefined,
@@ -332,7 +357,12 @@ const toBackgroundItem = (proc: GatewayProcessEntry): ComposerStatusItem => {
 }
 
 const sameItem = (a: ComposerStatusItem, b: ComposerStatusItem) =>
-  a.state === b.state && a.title === b.title && a.output === b.output && a.exitCode === b.exitCode
+  a.awaitingNotification === b.awaitingNotification &&
+  a.notificationPending === b.notificationPending &&
+  a.state === b.state &&
+  a.title === b.title &&
+  a.output === b.output &&
+  a.exitCode === b.exitCode
 
 /**
  * Layout-stable sync of the registry snapshot into the store: existing rows
@@ -341,6 +371,12 @@ const sameItem = (a: ComposerStatusItem, b: ComposerStatusItem) =>
  * object identity so memoised rows skip re-rendering.
  */
 export function reconcileBackgroundProcesses(sid: string, procs: GatewayProcessEntry[]) {
+  // A newer authoritative snapshot supersedes any read already in flight.
+  backgroundRefreshes.delete(sid)
+  applyBackgroundProcesses(sid, procs)
+}
+
+function applyBackgroundProcesses(sid: string, procs: GatewayProcessEntry[]) {
   const dismissed = dismissedBySession.get(sid)
 
   const fresh = new Map(
@@ -407,7 +443,7 @@ export function reconcileBackgroundProcesses(sid: string, procs: GatewayProcessE
   // it for anything running again or gone from the snapshot.
   const finishedDelay = new Map(
     next
-      .filter(item => item.state !== 'running')
+      .filter(item => item.state !== 'running' && !item.notificationPending)
       .map(item => [item.id, item.state === 'failed' ? FAILURE_LINGER_MS : SUCCESS_LINGER_MS])
   )
 
@@ -429,36 +465,59 @@ export function reconcileBackgroundProcesses(sid: string, procs: GatewayProcessE
 }
 
 /** Pull the session's live process snapshot from the gateway. */
-export async function refreshBackgroundProcesses(sid: string): Promise<void> {
+export function refreshBackgroundProcesses(sid: string): Promise<void> {
   const gateway = $gateway.get()
 
   if (!sid || !gateway || isSessionGone(sid)) {
-    return
+    return Promise.resolve()
   }
 
-  try {
-    const result = await requestForOwnedSession<{ processes?: GatewayProcessEntry[] }>(
-      sid,
-      ambientRequestFor(gateway),
-      'process.list',
-      { session_id: sid }
-    )
+  const pending = backgroundRefreshes.get(sid)
 
-    reconcileBackgroundProcesses(sid, result?.processes ?? [])
-    // The binding answered, so it is healthy: refund the stored session's
-    // recovery budget (a heal that stuck must not count against the next one).
-    noteRuntimeAlive(sid)
-  } catch (error) {
-    // A gone session never comes back under this runtime id: stop polling it,
-    // or the 5s timer hammers the gateway with 4001s for the window's lifetime.
-    if (isSessionGoneForBackgroundPolling(error)) {
-      markSessionGone(sid)
+  if (pending) {
+    // A tool may have spawned work after the pending snapshot was taken. Keep
+    // one trailing read, even if that older snapshot reports no running work.
+    pending.rerun = true
 
-      return
+    return pending.promise
+  }
+
+  const refresh = { promise: Promise.resolve(), rerun: false }
+  backgroundRefreshes.set(sid, refresh)
+  refresh.promise = (async () => {
+    try {
+      const result = await requestForOwnedSession<{ processes?: GatewayProcessEntry[] }>(
+        sid,
+        ambientRequestFor(gateway),
+        'process.list',
+        { session_id: sid }
+      )
+
+      if (backgroundRefreshes.get(sid) === refresh) {
+        applyBackgroundProcesses(sid, result?.processes ?? [])
+        // A healthy binding refunds the stored session's recovery budget.
+        noteRuntimeAlive(sid)
+      }
+    } catch (error) {
+      // Obsolete reads must not latch or heal a runtime rebound after a wipe,
+      // rewind or newer snapshot, just as they must not publish stale rows.
+      if (backgroundRefreshes.get(sid) === refresh && isSessionGoneForBackgroundPolling(error)) {
+        markSessionGone(sid)
+      }
+
+      // Transient socket loss — the next trigger (event or poll) retries.
+    } finally {
+      if (backgroundRefreshes.get(sid) === refresh) {
+        backgroundRefreshes.delete(sid)
+
+        if (refresh.rerun) {
+          await refreshBackgroundProcesses(sid)
+        }
+      }
     }
+  })()
 
-    // Transient socket loss — the next trigger (event or poll) retries.
-  }
+  return refresh.promise
 }
 
 /** X on a finished row: drop it now and keep it dropped across refreshes. */
@@ -484,6 +543,7 @@ export function dismissBackgroundProcess(sid: string, id: string) {
  *  stays so the user can retry / see it didn't die. */
 export async function stopBackgroundProcess(sid: string, id: string): Promise<void> {
   const gateway = $gateway.get()
+  const epoch = backgroundEpoch
 
   if (isSessionGone(sid)) {
     // The backend has already declared this runtime gone, so there is no
@@ -502,8 +562,15 @@ export async function stopBackgroundProcess(sid: string, id: string): Promise<vo
 
   try {
     await requestForOwnedSession(sid, ambientRequestFor(gateway), 'process.kill', { process_id: id, session_id: sid })
-    dismissBackgroundProcess(sid, id)
+
+    if (epoch === backgroundEpoch) {
+      dismissBackgroundProcess(sid, id)
+    }
   } catch (err) {
+    if (epoch !== backgroundEpoch) {
+      return
+    }
+
     if (isSessionGoneForBackgroundPolling(err)) {
       dismissBackgroundProcess(sid, id)
       markSessionGone(sid)
@@ -513,6 +580,19 @@ export async function stopBackgroundProcess(sid: string, id: string): Promise<vo
 
     notifyError(err, 'Could not stop the process')
   }
+}
+
+/** Connection/mode re-home: drop only the renderer cache, never kill work. */
+export function clearAllSessionBackground() {
+  backgroundEpoch++
+  backgroundRefreshes.clear()
+
+  for (const sid of autoClearTimers.keys()) {
+    cancelAllAutoDismiss(sid)
+  }
+
+  dismissedBySession.clear()
+  $backgroundStatusBySession.set({})
 }
 
 /**
@@ -527,9 +607,11 @@ export function resetSessionBackground(sid: string) {
     return
   }
 
+  backgroundRefreshes.delete(sid)
   cancelAllAutoDismiss(sid)
 
   const gateway = $gateway.get()
+  const epoch = backgroundEpoch
   const list = $backgroundStatusBySession.get()[sid] ?? []
   const dismissed = dismissedBySession.get(sid) ?? new Set<string>()
 
@@ -542,7 +624,7 @@ export function resetSessionBackground(sid: string) {
           process_id: item.id,
           session_id: sid
         }).catch(error => {
-          if (isSessionGoneForBackgroundPolling(error)) {
+          if (epoch === backgroundEpoch && isSessionGoneForBackgroundPolling(error)) {
             markSessionGone(sid)
           }
         })

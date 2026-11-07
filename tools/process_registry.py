@@ -2044,12 +2044,13 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             self._completion_consumed.add(session_id)
         return result
 
-    def wait(self, session_id: str, timeout: int | None = None) -> dict:
-        """Block until the process exits, the timeout elapses, the user interrupts, or a
-        mid-turn user message (steer/redirect → ``request_yield``) releases the wait.
+    def wait(self, session_id: str, timeout: int | None = None, until: str | None = None) -> dict:
+        """Block until the process exits, prints ``until`` (``process_registry_wait_until``), the timeout
+        elapses, the user interrupts, or a mid-turn user message (steer/redirect → ``request_yield``) releases it.
         ``timeout`` defaults to (and is clamped by) TERMINAL_TIMEOUT. Returns a dict
         with status exited|timeout|interrupted|not_found|error and an output snapshot."""
         from tools.interrupt import consume_yield as _consume_yield, is_interrupted as _is_interrupted
+        from tools import process_registry_wait_until as _wait_until
 
         try:
             max_timeout = int(os.getenv("TERMINAL_TIMEOUT", "180"))
@@ -2077,6 +2078,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             if session.exited and not self._reader_finalizing(session):
                 self._completion_consumed.add(session_id)
                 result = self._exit_snapshot(session, "exited")
+            elif until and _wait_until.until_match(session, until):
+                result = _wait_until.matched_result(session, until, _output_tail(session, 1000))
             elif _is_interrupted():
                 result = {
                     "status": "interrupted", "command": session.command, "output": _output_tail(session, 1000),
@@ -2098,22 +2101,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
-            session._completion_event.wait(timeout=min(1.0, remaining))
-        result = {
-            "status": "timeout", "command": session.command, "output": _output_tail(session, 1000),
-            # Not a failure — models re-issued identical waits after misreading this as an error.
-            "process_running": True}
-        base_note = (
-            f"Wait window of {effective_timeout}s elapsed — the process is still running. This is not an error.")
-        if session.started_at:
-            base_note += f" Uptime: {int(time.time() - session.started_at)}s."
-        base_note += (
-            " notify_on_complete is set: you will be notified on exit — do more work instead of waiting again."
-            if session.notify_on_complete else
-            " Poll again later or use terminal(background=true, "
-            "notify_on_complete=true) next time for automatic notification.")
-        result["timeout_note"] = f"{timeout_note}. {base_note}" if timeout_note else base_note
-        return result
+            session._completion_event.wait(timeout=min(0.25 if until else 1.0, remaining))
+        return _wait_until.timeout_result(session, effective_timeout, timeout_note, _output_tail(session, 1000), until)
 
     @staticmethod
     def _exit_snapshot(session: ProcessSession, status: str) -> dict:
@@ -2576,7 +2565,7 @@ PROCESS_SCHEMA = {
         "Completed results remain retrievable by session_id when resuming their owning conversation "
         "(up to 7 days, newest 64 results per profile; rolling output tail). "
         "poll: status + new output. log: full output, paged. wait: block "
-        "until exit or timeout (partial output on timeout). write vs "
+        "until exit, `until` text, or timeout (partial output on timeout). write vs "
         "submit: submit appends Enter — use it to answer prompts; write "
         "sends raw bytes, no newline. close: EOF stdin. kill: terminate. "
         "handoff (subagents only): transfer a running process you started to your parent agent, which then "
@@ -2603,6 +2592,7 @@ PROCESS_SCHEMA = {
                 "description": "Max seconds for 'wait'.",
                 "minimum": 1
             },
+            "until": {"type": "string", "description": "'wait' returns once output contains this text (e.g. 'ready')."},
             "offset": {
                 "type": "integer",
                 "description": "Log line offset (default: last 200)."
@@ -2674,7 +2664,7 @@ def _list_processes(task_id) -> dict:
 _SESSION_ACTIONS = {
     "poll": (lambda sid, a: process_registry.poll(sid), True),
     "log": (lambda sid, a: process_registry.read_log(sid, offset=a.get("offset"), limit=a.get("limit", 200)), True),
-    "wait": (lambda sid, a: process_registry.wait(sid, timeout=a.get("timeout")), True),
+    "wait": (lambda sid, a: process_registry.wait(sid, timeout=a.get("timeout"), until=str(a.get("until") or "") or None), True),
     "kill": (lambda sid, a: process_registry.kill_process(sid), True),
     "write": (lambda sid, a: process_registry.write_stdin(sid, str(a.get("data", ""))), False),
     "submit": (lambda sid, a: process_registry.submit_stdin(sid, str(a.get("data", ""))), False),

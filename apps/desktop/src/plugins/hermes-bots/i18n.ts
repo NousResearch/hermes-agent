@@ -357,6 +357,7 @@ const en: BotsMessages = {
   screen: {
     title: 'Screen',
     menu: 'Open Screen',
+    paletteNoBot: 'Open a bot\u2019s chat first — then this opens that bot\u2019s Screen.',
     unsupportedTitle: 'No bot screen on this host',
     unsupportedBody: 'Bot screens run on Linux gateway hosts. This bot uses the host\u2019s own display.',
     notInstalledTitle: 'Screen packages missing',
@@ -801,6 +802,7 @@ const ja: BotsMessages = {
   screen: {
     title: '画面',
     menu: '画面を開く',
+    paletteNoBot: '先にボットのチャットを開いてください。そこからこのコマンドで画面が開きます。',
     unsupportedTitle: 'このホストにはボット画面がありません',
     unsupportedBody:
       'ボット画面は Linux のゲートウェイホストで動作します。このボットはホスト自身のディスプレイを使います。',
@@ -1235,6 +1237,7 @@ const zh: BotsMessages = {
   screen: {
     title: '屏幕',
     menu: '打开屏幕',
+    paletteNoBot: '先在左侧打开某个机器人的聊天，这个命令会打开该机器人的屏幕。',
     unsupportedTitle: '此主机没有机器人屏幕',
     unsupportedBody: '机器人屏幕在 Linux 网关主机上运行。此机器人使用主机自身的显示器。',
     notInstalledTitle: '缺少屏幕软件包',
@@ -1665,6 +1668,7 @@ const zhHant: BotsMessages = {
   screen: {
     title: '螢幕',
     menu: '開啟螢幕',
+    paletteNoBot: '先在左側開啟某個機器人的聊天，這個指令會開啟該機器人的螢幕。',
     unsupportedTitle: '此主機沒有機器人螢幕',
     unsupportedBody: '機器人螢幕在 Linux 閘道主機上執行。此機器人使用主機自身的顯示器。',
     notInstalledTitle: '缺少螢幕套件',

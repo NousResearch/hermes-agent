@@ -599,37 +599,22 @@ def _gateway_notify_cb(session_key: str):
         return _gateway_notify_cbs.get(session_key)
 
 
-def _pending_result(spec, session_key: str, *, command: str, description: str,
-                    pattern_key: str, pattern_keys: list[str], body: str | None,
-                    smart_denied: bool) -> dict:
-    """Queue an approval nobody can answer right now (no gateway notifier, no CLI panel) for
-    ``/approve`` / ``/deny`` review. Command/code gates return the backward-compatible
-    ``pending_approval`` shape (``pattern_keys`` + STOP text); the action gate ``approval_required``."""
-    pending = {"command": command, "pattern_key": pattern_key}
-    if spec.pending_keys:
-        pending["pattern_keys"] = pattern_keys
-    pending["description"] = description
-    if smart_denied:
-        pending.update(smart_denied=True, allow_permanent=False)
-    submit_pending(session_key, pending)
-    if not spec.pending_keys:
-        return {
-            "approved": False, "pattern_key": pattern_key, "status": "approval_required",
-            "command": command, "description": description,
-            "message": (f"⚠️ This action is potentially dangerous ({description}). "
-                        f"Asking the user for approval.\n\n**Target:**\n```\n{command}\n```"),
-        }
-    body = body or f"**Command:**\n```\n{command}\n```"
-    result = {
-        "approved": False, "pattern_key": pattern_key, "status": "pending_approval",
-        "approval_pending": True, "command": command, "description": description,
-        "message": (
-            f"⚠️ {description}. Asking the user for approval.\n\n{body}\n\n"
-            f"STOP: do NOT re-run, rephrase, or re-issue this {spec.noun} — each "
-            "variant sends the user ANOTHER approval card. Wait for the "
-            "user's decision; if this turn must end, report that approval is pending."
-        ),
-    }
+def _undelivered_result(spec, *, command: str, description: str, pattern_key: str, smart_denied: bool) -> dict:
+    """Fail closed when no surface can present this request to a human.
+
+    A process-local review record is not an actionable prompt, and a finite helper
+    may disappear before anyone could inspect it. Its coordinator retains ownership.
+    """
+    result = _denied(
+        f"BLOCKED: {description}. No approval prompt was delivered: this execution has no "
+        "approval notifier or interactive panel. The operation did not run. "
+        "Return this undelivered result to the owning coordinator; do not wait for a decision "
+        "on this helper or retry/rephrase here. The coordinator must reconcile any existing "
+        "attempt before submitting one authorised operation through its ordinary guarded "
+        "owner path. Explicit denial and hard-policy refusals remain binding.",
+        pattern_key=pattern_key, description=description, outcome="notify_failed", noun=spec.noun,
+        status="approval_required", approval_pending=False, approval_delivery="unavailable", command=command,
+    )
     if smart_denied:
         result.update(smart_denied=True, allow_permanent=False)
     return result
@@ -766,8 +751,8 @@ class _GateSpec:
     transport: bool           # offer the selected plugin transport first
     user_approved: bool       # human approval resets the denial tally
     redact_cli: bool          # CLI prompt + hooks see the redacted copy
-    pending_keys: bool        # pending fallback: redacted ``pending_approval`` shape with
-                              # pattern_keys (True) vs raw ``approval_required`` (False)
+    pending_keys: bool        # command/code no-notifier results keep the redacted target;
+                              # the legacy action result keeps its original target.
     # Message templates. ``{breaker}`` = the denial circuit-breaker addendum,
     # read only where a template shows it (reading it logs when tripped).
     notify_failed: str
@@ -876,12 +861,11 @@ def _smart_gate(spec: _GateSpec, command: str, description: str, pattern_key: st
 def _human_decision(spec: _GateSpec, *, command: str, description: str,
                     pattern_key: str, pattern_keys: list[str],
                     session_key: str, approval_callback, is_cli: bool, is_gateway: bool,
-                    is_ask: bool, smart: bool = False, pending_body=None) -> dict:
+                    is_ask: bool, smart: bool = False) -> dict:
     """Ask a human (after the optional guardian-LLM step) and turn the answer into the gate result.
 
     ``pattern_keys`` are what :func:`_persist_choice` stores on session/always; a smart-DENY
-    owner override reduces every surface to once/deny and persists nothing. ``pending_body`` is a thunk, built only once a human is
-    actually asked, so a smart APPROVE never pays for redacting a large script.
+    owner override reduces every surface to once/deny and persists nothing.
     """
     from agent.redact import redact_approval_display
 
@@ -891,7 +875,6 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                                            session_key, human_present=is_cli or is_gateway or is_ask)
         if result is not None:
             return result
-    pending_body = pending_body() if pending_body else None
     allow_permanent = not smart_denied
 
     def deny(template: str, outcome: str, **fmt) -> dict:
@@ -978,9 +961,9 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
         ):
             if not spec.pending_keys:
                 display_command, display_description = command, description
-            return _pending_result(
-                spec, session_key, command=display_command, description=display_description, pattern_key=pattern_key,
-                pattern_keys=pattern_keys, body=pending_body, smart_denied=smart_denied,
+            return _undelivered_result(
+                spec, command=display_command, description=display_description, pattern_key=pattern_key,
+                smart_denied=smart_denied,
             )
 
     # CLI interactive: single combined prompt, wrapped in the pre/post plugin hooks.
@@ -1367,13 +1350,11 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     # Smart mode: an APPROVE only suppresses the redundant whole-script prompt; the per-call terminal() guards still
     # run independently. The gateway renders the pending payload to Discord/Slack, so the script body is redacted for
     # display; the raw code is what gets assessed and run.
-    from agent.redact import redact_approval_display
     return _human_decision(
         _EXECUTE_CODE_GATE, command=command, description=description, pattern_key=pattern_key,
         pattern_keys=[pattern_key], session_key=session_key,
         approval_callback=approval_callback, is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask,
         smart=approval_mode == "smart",
-        pending_body=lambda: f"**Code:**\n```python\n{redact_approval_display(code)}\n```",
     )
 
 

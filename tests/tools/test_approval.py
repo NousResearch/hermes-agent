@@ -1982,8 +1982,8 @@ class TestApprovalPromptRedaction:
         assert seen["command"] == "rm -rf /var/data"
 
     def test_execute_code_pending_fallback_redacts_script(self):
-        """check_execute_code_guard's no-notifier fallback masks an embedded
-        secret in both the pending record and the returned approval message."""
+        """check_execute_code_guard's no-notifier fallback never leaks an embedded
+        secret through the returned result or any pending record."""
         from unittest.mock import patch as _patch
 
         from tools.approval import check_execute_code_guard
@@ -1999,13 +1999,13 @@ class TestApprovalPromptRedaction:
                         return_value=True):
                 with _patch("tools.approval_context._get_approval_mode",
                             return_value="manual"):
-                    # No gateway notify callback registered -> pending fallback.
+                    # No gateway notify callback registered -> undelivered fallback.
                     result = check_execute_code_guard(code, "local")
 
-        assert result.get("status") == "pending_approval"
-        # The script's credential must not appear in the user-facing message.
-        assert "sk-proj-abc123xyz4567890abcdef" not in result["message"]
-        assert "sk-proj-abc123xyz4567890abcdef" not in result["command"]
+        assert result.get("status") == "approval_required"
+        assert result.get("approval_pending") is False
+        # The script's credential must not appear anywhere in the result.
+        assert "sk-proj-abc123xyz4567890abcdef" not in repr(result)
 
 
 class TestCliApprovalTimeoutClassifiedSeparately:

@@ -281,11 +281,12 @@ def test_guard_session_approval_short_circuits_prompt(gw_session):
             s.discard("execute_code")
 
 
-def test_guard_gateway_missing_notify_is_pending(gw_session):
-    # No notify callback registered → backward-compat pending approval.
+def test_guard_gateway_missing_notify_is_undelivered(gw_session):
+    # No notify callback registered, so nobody can see a prompt: fail closed, not pending.
     res = A.check_execute_code_guard("import os", "local")
     assert res["approved"] is False
-    assert res["status"] == "pending_approval"
+    assert res["status"] == "approval_required"
+    assert res["approval_pending"] is False
 
 
 def test_guard_smart_mode(gw_session, monkeypatch):
@@ -296,10 +297,11 @@ def test_guard_smart_mode(gw_session, monkeypatch):
     assert res["approved"] is True and res.get("smart_approved") is True
 
     # Smart DENY on an interactive surface now asks the owner. With no bound
-    # notifier it remains pending rather than being hard-denied.
+    # notifier the owner cannot be asked, so it fails closed as undelivered.
     monkeypatch.setattr(approval_smart, "_smart_approve", lambda c, d: "deny")
     res = A.check_execute_code_guard("import os", "local")
-    assert res["approved"] is False and res["status"] == "pending_approval"
+    assert res["approved"] is False and res["status"] == "approval_required"
+    assert res["approval_pending"] is False
 
     # escalate → falls through to manual gateway approval
     monkeypatch.setattr(approval_smart, "_smart_approve", lambda c, d: "escalate")
@@ -389,7 +391,7 @@ def test_smart_escalate_still_persists_session_choice(gw_session, monkeypatch):
     assert A.is_approved(gw_session, key) is True
 
 
-def test_terminal_smart_deny_pending_payload_is_one_operation(gw_session, monkeypatch):
+def test_terminal_smart_deny_undelivered_result_is_one_operation(gw_session, monkeypatch):
     monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "smart")
     monkeypatch.setattr(approval_smart, "_smart_approve", lambda _command, _description: "deny")
     monkeypatch.setattr(
@@ -403,28 +405,24 @@ def test_terminal_smart_deny_pending_payload_is_one_operation(gw_session, monkey
 
     result = A.check_all_command_guards("dangerous pending", "local")
 
-    assert result["status"] == "pending_approval"
+    assert result["status"] == "approval_required"
     assert result["smart_denied"] is True
     assert result["allow_permanent"] is False
     with A._lock:
-        pending = dict(A._pending[gw_session])
-    assert pending["smart_denied"] is True
-    assert pending["allow_permanent"] is False
+        assert gw_session not in A._pending
 
 
-def test_execute_code_smart_deny_pending_payload_is_one_operation(gw_session, monkeypatch):
+def test_execute_code_smart_deny_undelivered_result_is_one_operation(gw_session, monkeypatch):
     monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "smart")
     monkeypatch.setattr(approval_smart, "_smart_approve", lambda _command, _description: "deny")
 
     result = A.check_execute_code_guard("print('pending')", "local")
 
-    assert result["status"] == "pending_approval"
+    assert result["status"] == "approval_required"
     assert result["smart_denied"] is True
     assert result["allow_permanent"] is False
     with A._lock:
-        pending = dict(A._pending[gw_session])
-    assert pending["smart_denied"] is True
-    assert pending["allow_permanent"] is False
+        assert gw_session not in A._pending
 
 
 def test_terminal_serializes_smart_deny_pending_capabilities(monkeypatch):

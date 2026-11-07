@@ -138,16 +138,14 @@ def test_local_session_skips_whole_script_prompt(child_env, turn, source):
     assert victim.is_dir()
 
 
-# The approval-specific refusals the gate returns (tools/approval.py _EXECUTE_CODE_GATE / _pending_result).
+# The approval-specific refusals the gate returns (tools/approval.py _EXECUTE_CODE_GATE / _undelivered_result).
 _DENIED_SCRIPT = ("BLOCKED: execute_code script denied by user. The user has NOT consented to running this code. "
                   "Do NOT retry, do NOT rephrase the script, and do NOT attempt the same outcome via a different tool.")
 
 
-def _unanswered_script(code: str) -> str:
-    """No notifier: the script parks as a pending approval nobody can answer, and never starts."""
-    return (f"⚠️ {A._EXECUTE_CODE_DESCRIPTION}. Asking the user for approval.\n\n**Code:**\n```python\n{code}\n```\n\n"
-            "STOP: do NOT re-run, rephrase, or re-issue this code — each variant sends the user ANOTHER approval "
-            "card. Wait for the user's decision; if this turn must end, report that approval is pending.")
+def _is_undelivered_refusal(error: str, description: str) -> bool:
+    """No notifier: the script is refused as an undelivered approval (nothing is parked), and never starts."""
+    return error.startswith(f"BLOCKED: {description}. No approval prompt was delivered")
 
 
 def _run_unguarded_rm(victim) -> tuple[str, dict]:
@@ -219,7 +217,10 @@ def test_delegated_child_keeps_whole_script_gate(child_env, turn, notifier, sour
         A.unregister_gateway_notify(SESSION_KEY)
     with delegated_child_context("child-session"):
         code, result = _run_unguarded_rm(victim)
-    assert result.get("error") == (_DENIED_SCRIPT if notifier else _unanswered_script(code)), result
+    if notifier:
+        assert result.get("error") == _DENIED_SCRIPT, result
+    else:
+        assert _is_undelivered_refusal(result.get("error", ""), A._EXECUTE_CODE_DESCRIPTION), result
     assert "ran" not in result.get("output", "") and victim.is_dir()
     assert [p["pattern_key"] for p in prompts] == (["execute_code"] if notifier else [])
 
@@ -234,7 +235,7 @@ def test_side_task_keeps_whole_script_gate(child_env, turn, source):
     prompts = turn(source=source, execute_code="once")
     with _side_task(child_env):
         code, result = _run_unguarded_rm(victim)
-    assert result.get("error") == _unanswered_script(code), result
+    assert _is_undelivered_refusal(result.get("error", ""), A._EXECUTE_CODE_DESCRIPTION), result
     assert "ran" not in result.get("output", "") and victim.is_dir()
     assert prompts == []
 
@@ -247,17 +248,17 @@ def test_no_notifier_refuses_terminal_inside_permitted_script(child_env, turn, c
     from agent.delegation_context import delegated_child_context
     victim = child_env / "victim"
     victim.mkdir()
-    command, code = _rm_script(victim)
+    _, code = _rm_script(victim)
     prompts = turn(source=source)
     A.unregister_gateway_notify(SESSION_KEY)  # the parent turn has ended
     key = SESSION_KEY if case == "delegated-child" else SIDE_KEY
     A.approve_session(key, "execute_code")
     with delegated_child_context("child-session") if case == "delegated-child" else _side_task(child_env):
         out = run_code(code, enabled_tools=("terminal",))  # the script itself ran
-    assert out == {"output": "", "exit_code": -1, "error": "", "status": "pending_approval", "approval_pending": True,
-                   "command": command, "description": "recursive delete", "pattern_key": "recursive delete",
-                   "smart_denied": False, "allow_permanent": True}
-    assert A._pending[key]["command"] == command
+    assert out["status"] == "blocked" and out["approval_pending"] is False and out["exit_code"] == -1
+    assert _is_undelivered_refusal(out["error"], "recursive delete")
+    assert out["approval_delivery"] == "unavailable"
+    assert key not in A._pending
     assert prompts == [] and victim.is_dir()
 
 

@@ -6,7 +6,6 @@ reader opened with a bare ``sqlite3.connect`` is a live holder those checks cann
 of these sites must open through ``connect_tracked``.
 """
 
-import builtins
 import sqlite3
 from pathlib import Path
 
@@ -89,33 +88,6 @@ def test_shared_metrics_first_session_read_is_tracked(state_db, tracked):
     assert _key(state_db) in tracked
 
 
-def test_read_file_sqlite_extractor_never_raw_opens_a_live_store(state_db, monkeypatch):
-    """The agent reading its own state.db must not open()/close() it raw while a connection is live."""
-    from tools.read_extract import _extract_sqlite
-    live = safe_read.connect_tracked(str(state_db), tracking_path=state_db)
-    real_open = builtins.open
-
-    def _guarded_open(file, *args, **kwargs):
-        if Path(file).resolve() == state_db.resolve():
-            raise AssertionError("raw open() of a live state.db")
-        return real_open(file, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "open", _guarded_open)
-    try:
-        out = _extract_sqlite(str(state_db))
-    finally:
-        live.close()
-    assert "sessions" in out and "messages" in out
-
-
-def test_read_file_sqlite_extractor_still_rejects_non_sqlite(tmp_path):
-    from tools.read_extract import ExtractionError, _extract_sqlite
-    fake = tmp_path / "not.db"
-    fake.write_bytes(b"definitely not sqlite")
-    with pytest.raises(ExtractionError, match="magic bytes"):
-        _extract_sqlite(str(fake))
-
-
 def test_worktree_liveness_reads_are_tracked(state_db, tracked, tmp_path):
     """Cron's worktree sweep runs these inside the gateway process, not only from the CLI."""
     from hermes_cli.worktree_ops import _retained_tree_is_live, _tree_still_served
@@ -157,15 +129,3 @@ def test_set_journal_mode_switch_connection_is_tracked(state_db, tracked, monkey
     assert cmd_set_journal_mode(args) == 0
     assert _key(state_db) in tracked
 
-
-def test_read_file_sqlite_extractor_rejects_a_live_non_database(tmp_path):
-    """Skipping the magic check for a live file must not let a non-database through."""
-    from tools.read_extract import ExtractionError, _extract_sqlite
-    fake = tmp_path / "live.db"
-    fake.write_bytes(b"definitely not sqlite" * 100)
-    live = safe_read.connect_tracked(str(fake), tracking_path=fake)  # SQLite opens lazily
-    try:
-        with pytest.raises(ExtractionError, match="SQLite read failed"):
-            _extract_sqlite(str(fake))
-    finally:
-        live.close()

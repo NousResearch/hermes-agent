@@ -106,6 +106,10 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         self._pending_cancels = set()
         # (session, tool_call_id) -> (tool name, args, admission) of a call still open on the editor.
         self._tool_args = {}
+        # (session, admission) of automation runs open on the editor; those a lost link closed (``_teardown``).
+        self._automation_runs, self._detached_runs = set(), set()
+        # The editor asked for ``_bb.dev/state_update`` run boundaries (``_meta["bb.dev"].stateUpdate``).
+        self._state_updates = False
         # Session -> AssistantMessageIdAllocator: the ``messageId`` of the assistant message being streamed.
         self._message_ids = {}
         # Editor-held compression-tip id -> logical session id (see ``_resume``).
@@ -136,6 +140,12 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
                 and message.get("method") == "initialize":
             from acp_adapter.elicitation import client_supports_form_elicitation
             self._form_elicitation = client_supports_form_elicitation(message.get("params"))
+            params = message.get("params")
+            capabilities = params.get("clientCapabilities") if isinstance(params, dict) else None
+            meta = capabilities.get("_meta") if isinstance(capabilities, dict) else None
+            bb = meta.get("bb.dev") if isinstance(meta, dict) else None
+            version = bb.get("stateUpdate") if isinstance(bb, dict) else None
+            self._state_updates = isinstance(version, int) and not isinstance(version, bool) and version >= 1
 
     async def initialize(self, **kwargs):
         from hermes_cli import __version__
@@ -200,6 +210,13 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             for pending in snapshot.get("prompts", []):
                 self._permission(session_id, pending)
             await self._notify_unknown(session_id)
+            # A run the lost link closed as unknown that the owner is still running reopens: its events resume here.
+            for row in snapshot.get("pending", []):
+                key = (session_id, row.get("admission_id"))
+                if row.get("status") == "started" and key in self._detached_runs:
+                    self._automation_runs.add(key)
+                    await self._send_run_state(self._editor_id(session_id), key[1], "running")
+        self._detached_runs.clear()
 
     async def _adopt(self, session_id, snapshot, resumes=None, client=None):
         """Install a fresh ``session.resume`` snapshot as a session's projection: every install (create, load,
@@ -242,6 +259,13 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         reader = getattr(self._gateway, "reader", None)
         return isinstance(reader, asyncio.Future) and reader.done()
 
+    async def _detach_runs(self):
+        """End every open automation run as unknown with its lost transport (the editor would otherwise show
+        it running), remembering it so a re-attach that finds it still started reopens it."""
+        for sid, aid in list(self._automation_runs):
+            await self._close_automation(sid, self._editor_id(sid), aid, {"outcome": "unknown"})
+            self._detached_runs.add((sid, aid))
+
     async def _teardown(self):
         task, connection = self._event_task, self._connection
         self._event_task = self._connection = self._gateway = None
@@ -258,6 +282,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         self._segments.clear()
         self._message_ids.clear()
         self._cut.clear()
+        await self._detach_runs()
         async with self._changed:
             # Every waiter on the old transport wakes to its ambiguous failure, even one that had
             # not yet observed ``_failure`` before it is cleared here.
@@ -453,6 +478,10 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         if admission_id is None:
             if session_id in self._submitting:
                 self._pending_cancels.add(session_id)
+                return
+            # No prompt of ours runs: the editor's Stop is aimed at the background run it shows.
+            for _, run in [key for key in self._automation_runs if key[0] == session_id]:
+                await self._cancel_admission(session_id, run)
             return
         await self._cancel_admission(session_id, admission_id)
 
@@ -840,6 +869,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         if verdict:
             await self._settled_receipt(self._gateway, self._editor_id(session_id), session_id, receipt, receipt)
         elif verdict is None and admission_id not in self._terminals and admission_id not in self._settling:
+            await self._close_automation(session_id, self._editor_id(session_id), admission_id, {"outcome": "unknown"})
             async with self._changed:
                 self._lost[admission_id] = GatewayClientError("session_replay_gap")
                 self._changed.notify_all()
@@ -969,6 +999,8 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             async with self._changed:
                 self._failure = exc
                 self._changed.notify_all()
+            # Reconnect waits for the editor's next call; an open run must not look alive until then.
+            await self._detach_runs()
 
     async def _project(self, event):
         kind, payload = event.get("type"), event.get("payload", {})
@@ -992,6 +1024,12 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             return
         if kind in {"tool.start", "tool.complete"}:
             await self._project_tool(kind, sid, editor_id, aid, payload)
+            return
+        if kind == "message.start":
+            # Admissions run one at a time per session: a newer start ends an older run whose completion never came.
+            for _, older in [key for key in self._automation_runs if key[0] == sid and key[1] != aid]:
+                await self._close_automation(sid, editor_id, older, {"outcome": "superseded"})
+            await self._open_automation(sid, editor_id, aid, payload)
             return
         if kind == "message.delta":
             text = _text(payload)

@@ -1,0 +1,38 @@
+name: safe-swap
+repo: https://github.com/itsolaph/hermes-safe-swap
+sha: "797ab996feccf626a020958a304c23e3a8223bbe"
+description: >-
+  Never blocks, never nags: a pre_tool_call hook silently swaps destructive shell commands for
+  their reversible twins and keeps a receipt. rm -r becomes a move into a quarantine folder,
+  git push --force becomes --force-with-lease --force-if-includes, git reset --hard and
+  git checkout -- / git restore take a stash snapshot first, git branch -D records the branch
+  tip. /swaps lists receipts and /unswap <id> undoes them; the agent is told what really ran.
+  Anything the rewriter does not fully understand runs untouched.
+  Disclosure — rewrites the command of the terminal tool before it executes (modify only: never
+  blocks, never prompts, any error or doubt leaves the command unchanged); writes quarantine files
+  and receipts under the user's home on the machine where the command runs (~/.safe-swap/trash by
+  default) plus one SQLite file in the plugin data directory; the only deletion it ever performs
+  is an explicit /swaps purge (or hermes safe-swap purge) by the user, which runs rm on its own
+  quarantine directories through the terminal tool and is subject to normal approval; no network
+  calls, no telemetry, no background processes, no self-update; reads no credential files or
+  .env, only the receipts it wrote; approvals are respected: the rewritten command goes through
+  Hermes' normal approval gate, and because a swapped rm -rf is a move it no longer matches the
+  recursive-delete pattern and does not prompt (the git rewrites keep prompting as before).
+  Targets such as /, ~, $HOME, system directories and anything under /tmp, privilege-elevated
+  commands, and commands with heredocs, subshells, command substitution or eval/xargs/find -exec
+  are deliberately left alone.
+maintainer: itsolaph
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/itsolaph/hermes-safe-swap#readme
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - transform_tool_result
+  provides_middleware: []
+  requires_env: []

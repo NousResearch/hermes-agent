@@ -259,6 +259,15 @@ def test_streamed_attempt_is_judged_by_the_routes_provider_profile(monkeypatch, 
     assert (outcome.attempts, outcome.fell_back) == (1, True)  # no non-streaming resend before recovery
 
 
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+def test_streamed_certificate_failure_is_not_resent_non_streaming(is_async):
+    import ssl
+
+    error = ssl.SSLCertVerificationError(1, "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed")
+    with patch("agent.auxiliary_client._aux_progress_active", return_value=True):
+        assert run_ladder(error, is_async=is_async).attempts == 1
+
+
 @pytest.mark.parametrize("hook,expected", [
     ({"reason": FailoverReason.model_not_found, "should_fallback": False}, (1, False)),
     ({"reason": FailoverReason.rate_limit, "retryable": False, "should_rotate_credential": True}, (1, True)),

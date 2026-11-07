@@ -93,14 +93,19 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         result = {'owner': owner, 'target_home': str(target_home)}
         if operation == 'execute':
             # The exact attempt is over (deferred, finished, or retried as a newer generation): its
-            # queued input can never run, and refusing it is what lets the member's queue move on.
+            # queued input can never run. Say so with the committed input, so the target still
+            # hard-denies a changed row or owner before letting the member's queue move on.
             from gateway.hosted_room_driver import get_task, TaskIdentity
             with suppress(KeyError, TypeError, ValueError):
                 stored = get_task(self.db_path, TaskIdentity(**params.get('task')))
-                if (stored['payload'].get('target_member_id', stored['payload']['target_profile']) == member
+                if (stored['identity'].room_id == room_id
+                        and stored['payload'].get('target_member_id', stored['payload']['target_profile']) == member
                         and stored['payload']['target_profile'] == profile
                         and attempt_retired(stored, params.get('execution_generation'))):
-                    raise retired_attempt_conflict()
+                    from gateway.session_hosted_transport import source_attachment_digests
+                    manifest = stored['payload'].get('attachments', [])
+                    return {**result, 'retired': True, 'prompt': stored['payload']['prompt'], 'attachments': manifest,
+                            'attachment_digests': source_attachment_digests(self, member, room_id, manifest)}
         if operation in {'submit', 'execute', 'attachment'}:
             matches = [t for t in list_tasks(self.db_path, room_id=room_id)
                        if asdict(t['identity']) == params.get('task')
@@ -302,8 +307,8 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
                     or row['payload'] != committed_submission_payload(rpc, task['payload']['prompt'], task['payload'].get('attachments'))):
                 raise ValueError('changed hosted binding')
             retired = attempt_retired(task, generation)
-            if not retired and (task['status'] != 'running'
-                                or rpc.authorizer('execute', identity, generation) is not True):
+            # A retired attempt still needs a seated, served member: only the attempt check is skipped.
+            if rpc.authorizer('execute', None if retired else identity, None if retired else generation) is not True:
                 raise ValueError('changed hosted binding')
         except (ValueError, TypeError, KeyError, StopIteration) as exc:
             raise RuntimeStoreError('permission_denied') from exc

@@ -829,6 +829,59 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
     expect(hasOpenServerRequest('req-two')).toBe(true)
   })
 
+  it('sends prose that names no choice as a message, not as a form answer (#146775)', async () => {
+    const request = vi.fn(async () => ({ status: 'ok', remaining: [] }))
+    setGateway(request)
+    rememberServerRequest({ fail: vi.fn(), id: 'req-form', method: 'clarify', params: {}, respond })
+    $clarifyRequests.set({
+      'runtime-session': {
+        requestId: 'req-form',
+        questions: [
+          { choices: ['Staging', 'Prod'], multiSelect: false, qid: 'q0', question: 'where?' },
+          { choices: null, multiSelect: false, qid: 'q1', question: 'why?' }
+        ],
+        sessionId: 'runtime-session'
+      }
+    })
+    const { hook, onSubmit } = renderSubmitHook({ text: 'never mind, check the logs first' })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith('never mind, check the logs first', expect.anything()))
+    // The card is skipped (the Skip button's empty answer), no question is locked with the prose.
+    expect(request).not.toHaveBeenCalled()
+    expect(respond).toHaveBeenCalledWith({})
+    expect($clarifyRequests.get()['runtime-session']).toBeUndefined()
+  })
+
+  it('routes prose that names no choice like any message while the turn is busy (#146775)', async () => {
+    const request = vi.fn(async () => ({ status: 'ok', remaining: [] }))
+    setGateway(request)
+    rememberServerRequest({ fail: vi.fn(), id: 'req-busy', method: 'clarify', params: {}, respond })
+    $clarifyRequests.set({
+      'runtime-session': {
+        requestId: 'req-busy',
+        questions: [
+          { choices: ['Staging', 'Prod'], multiSelect: false, qid: 'q0', question: 'where?' },
+          { choices: null, multiSelect: false, qid: 'q1', question: 'why?' }
+        ],
+        sessionId: 'runtime-session'
+      }
+    })
+    const { hook, onSteer } = renderSubmitHook({ busy: true, text: 'never mind, check the logs first' })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() => expect(onSteer).toHaveBeenCalledWith('never mind, check the logs first', 'interrupt'))
+    expect(request).not.toHaveBeenCalled()
+    expect(respond).toHaveBeenCalledWith({})
+    expect($clarifyRequests.get()['runtime-session']).toBeUndefined()
+  })
+
   it('brings the card back when an earlier lock fails after the last answer cleared it', async () => {
     let failFirst: (error: Error) => void = () => {}
 

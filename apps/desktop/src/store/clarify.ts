@@ -277,10 +277,16 @@ registerParkedCardAnswer('clarify', {
   waiting: hasClarifyRequest
 })
 
-/** The choice typed text names (any case, as the messaging path matches labels), else the words themselves. */
-function typedAnswer(question: ClarifyQuestion, text: string): string {
+/** The choice typed text names (any case, as the messaging path matches labels), else null. */
+function namedChoice(question: ClarifyQuestion, text: string): null | string {
   const typed = text.toLowerCase()
-  const answer = question.choices?.map(bareChoice).find(choice => choice.toLowerCase() === typed) ?? text
+
+  return question.choices?.map(bareChoice).find(choice => choice.toLowerCase() === typed) ?? null
+}
+
+/** The choice typed text names, else the words themselves. */
+function typedAnswer(question: ClarifyQuestion, text: string): string {
+  const answer = namedChoice(question, text) ?? text
 
   return question.multiSelect ? JSON.stringify([answer]) : answer
 }
@@ -293,9 +299,19 @@ const lockChains = new Map<string, Promise<boolean>>()
 
 function lockTypedAnswer(request: ClarifyRequest, text: string): null | Promise<boolean> {
   const gateway = $gateway.get()
-  const question = request.questions.find(entry => request.lockedAnswers?.[entry.qid] === undefined)
+  const open = request.questions.filter(entry => request.lockedAnswers?.[entry.qid] === undefined)
+  const question = open[0]
 
   if (!gateway || !question) {
+    return null
+  }
+
+  // Prose that names no choice cannot answer a choice question while others still wait behind it: it
+  // would lock this one with the words, leave the rest open and park the turn. It is a message, so
+  // decline it and the composer skips the card and routes the words like any message: a new turn when
+  // idle, else steer, interrupt or queue per the busy-input mode (#146775). An open-ended question, or
+  // the last open one, still takes any words as its answer.
+  if (open.length > 1 && question.choices && namedChoice(question, text) === null) {
     return null
   }
 

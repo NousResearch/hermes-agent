@@ -847,6 +847,29 @@ class TestResizeImageForVision:
             )
             assert result.startswith("data:image/jpeg;base64,"), mode
 
+    def test_force_jpeg_keeps_dark_content_on_transparency_visible(self, tmp_path):
+        """A dark logo on a transparent PNG must not become black on black: transparent
+        pixels composite onto white, so the embed still shows the logo."""
+        try:
+            from PIL import Image, ImageDraw
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        import base64
+        import io
+
+        img = Image.new("RGBA", (3000, 2000), (0, 0, 0, 0))
+        ImageDraw.Draw(img).rectangle((500, 500, 2500, 1500), fill=(20, 20, 20, 255))
+        path = tmp_path / "logo.png"
+        img.save(path, "PNG")
+
+        result = _resize_image_for_vision(
+            path, mime_type="image/png", max_base64_bytes=200_000,
+            max_dimension=1568, force_jpeg=True,
+        )
+        out = Image.open(io.BytesIO(base64.b64decode(result.split(",", 1)[1])))
+        assert min(out.getpixel((5, 5))) > 240  # transparent corner → white
+        assert max(out.getpixel((out.width // 2, out.height // 2))) < 40  # logo stays dark
+
 
 # ---------------------------------------------------------------------------
 # _image_exceeds_dimension — proactive embed-time pixel-cap detector

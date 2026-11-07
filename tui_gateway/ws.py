@@ -132,8 +132,27 @@ _TOKEN_COALESCE_S = 0.033
 # starlette stays optional at import time; fall back to a generic sentinel.
 try:
     from starlette.websockets import WebSocketDisconnect as _WebSocketDisconnect
+    from starlette.websockets import WebSocketState as _WebSocketState
 except ImportError:  # pragma: no cover - starlette is a required install path
     _WebSocketDisconnect = Exception  # type: ignore[assignment]
+    _WebSocketState = None  # type: ignore[assignment]
+
+# Close reason recorded when the client left while a reply was in flight: an ordinary departure, not a fault.
+_PEER_GONE_REASON = "client_disconnect(peer_gone)"
+
+
+def ws_peer_gone(ws: Any, exc: BaseException | None = None) -> bool:
+    """True when a failed send/receive on *ws* only means the client already left.
+
+    A disconnect exception or Starlette's client-side close latch proves departure. Its application-side
+    latch is ambiguous: it is also set by a server-initiated close. The transport separately remembers
+    a failed send that raised WebSocketDisconnect for subsequent receive failures."""
+    if _WebSocketState is None:
+        return False
+    if isinstance(exc, _WebSocketDisconnect):
+        return True
+    gone = _WebSocketState.DISCONNECTED
+    return getattr(ws, "client_state", None) == gone
 
 
 class WSTransport:
@@ -166,6 +185,8 @@ class WSTransport:
         # One socket close per transport: the send-deadline path and abort() both reach for a 1011,
         # and under load both fire — latched on the loop thread so the peer gets a single close frame.
         self._close_scheduled = False
+        # Set when a send failed only because the client had already left (see ws_peer_gone).
+        self._peer_gone = False
 
     def _on_loop(self) -> bool:
         try:
@@ -239,6 +260,11 @@ class WSTransport:
         """The WebSocket this transport writes to (what sign-out tracks a browser tab by)."""
         return self._ws
 
+    @property
+    def peer_gone(self) -> bool:
+        """True once a send failed because the client had already closed the socket."""
+        return self._peer_gone
+
     async def write_async(self, obj: dict) -> bool:
         """Send from the owning loop; awaits until the frame is on the wire. Buffered tokens are flushed
         ahead of it in the SAME batch so nothing slips between."""
@@ -296,7 +322,12 @@ class WSTransport:
                 except Exception as exc:
                     # Latch while holding the writer lock so queued batches observe the failure first.
                     self._closed = True
-                    _log.warning("ws send failed peer=%s error_type=%s error=%s", self._peer, type(exc).__name__, exc)
+                    if ws_peer_gone(self._ws, exc):
+                        # The client closed with this frame in flight: a departure, logged once by handle_ws.
+                        self._peer_gone = True
+                        _log.debug("ws send to departed peer=%s", self._peer)
+                    else:
+                        _log.warning("ws send failed peer=%s", self._peer)
                     return
 
     def close(self) -> None:  # loop thread (handle_ws finally), so the TimerHandle is safe
@@ -423,6 +454,22 @@ class _SendFailed(Exception):
     """Raised by handle_ws._reply when a reply could not be written: ends the read loop."""
 
 
+def _ready_send_failure(transport: WSTransport, peer: str) -> tuple[str, int]:
+    """(close reason, send failures to count) for a gateway.ready frame that could not be sent."""
+    if transport.peer_gone:
+        return _PEER_GONE_REASON, 0
+    _log.error("ws ready frame send failed peer=%s", peer)
+    return "ready_send_failed", 1
+
+
+def _receive_failure_reason(ws: Any, current: str, peer: str, exc: Exception, *, peer_gone: bool = False) -> str:
+    """Preserve an earlier close reason for a departed peer; report real receive errors."""
+    if peer_gone or ws_peer_gone(ws, exc):
+        return _PEER_GONE_REASON if current == "connected" else current
+    _log.error("ws receive failed peer=%s", peer)
+    return "receive_failed"
+
+
 async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: str | None = None,
                     operator: bool = False) -> None:
     """Run one WebSocket session. Wire-compatible with ``tui_gateway.entry``. *auth_identity* is the server-minted
@@ -433,13 +480,20 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
     messages = parse_errors = dispatch_crashes = send_failures = 0
     disconnect_reason = "not_connected"
 
-    async def _reply(frame: dict, reason: str, msg: str, *args: Any) -> None:
-        """write_async; on failure record *reason*, log *msg* and end the read loop."""
+    async def _reply(frame: dict, reason: str) -> None:
+        """write_async; on failure record *reason* and end the read loop.
+
+        A client that left with the reply in flight is a departure: DEBUG, and its close reason is kept."""
         nonlocal disconnect_reason, send_failures
         if not await transport.write_async(frame):
+            if transport.peer_gone:
+                if disconnect_reason == "connected":
+                    disconnect_reason = _PEER_GONE_REASON
+                _log.debug("ws reply to departed client")
+                raise _SendFailed
             disconnect_reason = reason
             send_failures += 1
-            _log.warning(msg, *args)
+            _log.warning("ws reply send failed peer=%s reason=%s", peer, reason)
             raise _SendFailed
 
     def _error(code: int, message: str, req_id: Any) -> dict:
@@ -489,12 +543,10 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         except Exception:
             dispatch_crashes += 1
             _log.exception("ws dispatch crash peer=%s id=%s method=%s", peer, req_id, req_method)
-            await _reply(_error(-32603, "internal error", req_id), "send_failed_after_dispatch_crash",
-                         "ws dispatch-crash reply send failed peer=%s id=%s method=%s", peer, req_id, req_method)
+            await _reply(_error(-32603, "internal error", req_id), "send_failed_after_dispatch_crash")
             return
         if resp is not None:
-            await _reply(resp, "send_failed_after_response",
-                         "ws response send failed peer=%s id=%s method=%s", peer, req_id, req_method)
+            await _reply(resp, "send_failed_after_response")
 
     async def _dispatch_concurrent_read(req: Any) -> None:
         async with concurrent_read_slots:
@@ -669,9 +721,8 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         # desktop app and web dashboard reach the agent via this sidecar, not entry.main()).
         _start_backend_liveness()
         if not ready_ok:
-            disconnect_reason = "ready_send_failed"
-            send_failures += 1
-            _log.error("ws ready frame send failed peer=%s", peer)
+            disconnect_reason, failed = _ready_send_failure(transport, peer)
+            send_failures += failed
             return
 
         dispatcher = asyncio.create_task(_dispatch_loop())
@@ -684,9 +735,8 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             except _WebSocketDisconnect as exc:
                 disconnect_reason = f"client_disconnect(code={getattr(exc, 'code', None)},reason={getattr(exc, 'reason', None)})"
                 break
-            except Exception:
-                disconnect_reason = "receive_failed"
-                _log.exception("ws receive failed peer=%s", peer)
+            except Exception as exc:  # health: allow BLE001 -- receive boundary; exception details can contain secrets
+                disconnect_reason = _receive_failure_reason(ws, disconnect_reason, peer, exc, peer_gone=transport.peer_gone)
                 break
             line = raw.strip()
             if not line:
@@ -697,13 +747,11 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             except json.JSONDecodeError as exc:
                 parse_errors += 1
                 _log.warning("ws parse error peer=%s index=%d error=%s payload=%r", peer, messages, exc, line[:_WS_LOG_PAYLOAD_PREVIEW])
-                await _reply(_error(-32700, "parse error", None), "send_failed_after_parse_error",
-                             "ws parse-error reply send failed peer=%s", peer)
+                await _reply(_error(-32700, "parse error", None), "send_failed_after_parse_error")
                 continue
             if isinstance(req, dict) and req.get("method") == "gateway.ping":
                 req_id = req.get("id")
-                await _reply({"jsonrpc": "2.0", "result": {"ok": True}, "id": req_id}, "send_failed_after_heartbeat",
-                             "ws heartbeat reply send failed peer=%s id=%s", peer, req_id)
+                await _reply({"jsonrpc": "2.0", "result": {"ok": True}, "id": req_id}, "send_failed_after_heartbeat")
                 continue
             await _queue_request(req)
     except _SendFailed:

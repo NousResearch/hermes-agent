@@ -57,7 +57,7 @@ def binding_names(saved, subject):
     return owner is not None and same_owner(owner, subject)
 
 
-def _bindings_agree(first, second):
+def bindings_agree(first, second):
     """Two stored bindings name the same owner (both absent agrees; one absent does not)."""
     if first == second or first is None or second is None:
         return first == second
@@ -123,7 +123,7 @@ def same_history_owner(conn, anchor_id, session_id):
     if row['session_key'] or row['chat_id'] or row['origin_json']:
         return tuple(row)[1:4] == tuple(anchor)[1:4]
     binding = history_binding(conn, session_id)
-    if not _bindings_agree(binding, history_binding(conn, anchor_id)):
+    if not bindings_agree(binding, history_binding(conn, anchor_id)):
         return False
     routeless_peer = row['source'] == anchor['source'] and not any(tuple(anchor)[2:5])
     from gateway.owner_identity import owners_agree

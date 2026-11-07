@@ -1559,6 +1559,7 @@ class _CodexCompletionsAdapter:
         issuer_model = str(resp_kwargs.get("model") or model)
         total_timeout = timeout if isinstance(timeout, (int, float)) and timeout > 0 else None
         guard = _CodexStreamGuard(self._client, total_timeout, no_progress_timeout=kwargs.get("no_progress_timeout"))
+        deadline_hit = False
         try:
             guard.start()
             from agent.codex_runtime import _consume_codex_event_stream
@@ -1594,12 +1595,14 @@ class _CodexCompletionsAdapter:
                 if tc.function.name in wire_aliases:
                     tc.function.name = wire_aliases[tc.function.name]
         except Exception as exc:
-            if guard.timed_out.is_set():
-                raise TimeoutError(guard.timeout_message()) from None  # the deadline is the verdict
-            logger.debug("Codex auxiliary Responses API call failed: %s", exc)
-            raise
+            if not guard.timed_out.is_set():
+                logger.debug("Codex auxiliary Responses API call failed: %s", exc)
+                raise
+            deadline_hit = True
         finally:
             guard.finish()
+        if deadline_hit:  # raised outside the handler, with no context: the deadline is the verdict
+            raise TimeoutError(guard.timeout_message())
         # Shape the result like chat.completions.
         message = SimpleNamespace(
             role="assistant", content="".join(text_parts).strip() or None,

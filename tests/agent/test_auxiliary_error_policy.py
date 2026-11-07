@@ -496,3 +496,27 @@ def test_a_rebuilt_retrys_invalid_answer_is_classified_on_the_request_it_sent(mo
         else:
             call_llm(task="title_generation", messages=_MESSAGES)
     assert seen[-1] == "glm-5", seen
+
+
+def test_stream_watchdog_timeout_is_not_judged_by_the_error_it_cut_off():
+    """The watchdog fires, then the stream surfaces a 401: the timeout is the verdict (no refresh)."""
+    from agent import auxiliary_error_policy as policy, auxiliary_stream_watchdog as wd
+
+    watchdogs = []
+
+    class Recorder(wd.ChatStreamWatchdog):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            watchdogs.append(self)
+
+    def chunks():
+        yield "chunk"
+        watchdogs[0].fired = True
+        raise openai.APIError("Error code: 401 - invalid api key", _REQ, body={"code": 401, "message": "invalid"})
+
+    with patch.object(wd, "ChatStreamWatchdog", Recorder), pytest.raises(TimeoutError) as caught:
+        wd.consume_chat_stream(chunks(), SimpleNamespace(finish_reason=None, feed=lambda _c: True), (30.0, None))
+    assert caught.value.__context__ is None  # the classifier walks __context__
+    verdict = policy.classify_attempt(caught.value, "openrouter")
+    assert policy.fallback_label(policy.Failure(caught.value, verdict)) == "request timed out"
+    assert not policy.auth_refresh(verdict)

@@ -171,8 +171,14 @@ _clamped_names_warned: set[str] = set()
 
 def mcp_prefixed_tool_name(server_name: str, tool_name: str) -> str:
     """Registry/wire name: ``mcp__<sanitizedServer>__<sanitizedTool>``, clamped to 64 chars with a
-    stable hash suffix when the natural name is longer."""
+    stable hash suffix for non-ASCII components or names exceeding the length limit."""
     full_name = f"{MCP_TOOL_NAME_PREFIX}{sanitize_mcp_name_component(server_name)}__{sanitize_mcp_name_component(tool_name)}"
+    # Equal-length Unicode names otherwise collapse to identical underscores. Hash the
+    # original components, with an unambiguous boundary, before sanitization loses identity.
+    original = f"{server_name}\0{tool_name}"
+    if not original.isascii():
+        suffix = "_" + hashlib.sha256(original.encode("utf-8")).hexdigest()[:_MCP_TOOL_NAME_HASH_LENGTH]
+        return full_name[:_MCP_TOOL_NAME_MAX_LENGTH - len(suffix)] + suffix
     if len(full_name) <= _MCP_TOOL_NAME_MAX_LENGTH:
         return full_name
     suffix = "_" + hashlib.sha256(full_name.encode("utf-8")).hexdigest()[:_MCP_TOOL_NAME_HASH_LENGTH]

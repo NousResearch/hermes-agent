@@ -96,8 +96,8 @@ def test_hidden_external_skill_is_not_indexed(tmp_path, prompt_builder):
     assert "ext-helper" not in index
 
 
-def test_hidden_plugin_skill_is_not_indexed(tmp_path, prompt_builder, monkeypatch):
-    """Plugin skills reach ``<available_skills>`` through their own registry path, not the disk scan."""
+def test_hidden_plugin_skill_is_not_indexed_or_listed(tmp_path, prompt_builder, monkeypatch):
+    """Plugin skills reach ``<available_skills>`` and ``skills_list`` through their own registry path, not the disk scan."""
     pb = prompt_builder
     skills = tmp_path / "skills"
     skills.mkdir()
@@ -113,6 +113,11 @@ def test_hidden_plugin_skill_is_not_indexed(tmp_path, prompt_builder, monkeypatc
     index = pb._build_skills_system_prompt_inner(skills, [], None, None, None)
     assert "acme:visible" in index
     assert "acme:helper" not in index
+
+    with patch("tools.skills_tool.SKILLS_DIR", skills):
+        listed = {s["name"] for s in json.loads(skills_list())["skills"]}
+    assert "acme:visible" in listed
+    assert "acme:helper" not in listed
 
 
 def test_hidden_skill_still_owns_its_name(tmp_path, prompt_builder):

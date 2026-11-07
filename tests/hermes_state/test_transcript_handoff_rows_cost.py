@@ -1,8 +1,20 @@
 """``SessionDB.transcript_handoff_rows`` looks its rows up in a fixed number of indexed reads, so its cost
 grows with the rows asked about, not with their product with the rows stored: a whole-lineage page asks
-about every row before its window."""
+about every row before its window. It finds what the one join it replaced found."""
+import json
+
 from agent.context_compressor import SUMMARY_PREFIX
 from hermes_state import SessionDB
+
+# The join the lookup replaced: each shown row, and every earlier row of the lineage with its message_uid,
+# that can hold a handoff.
+_ONE_JOIN = (
+    "SELECT w.id AS _shown_id, g.* FROM messages w JOIN messages g"
+    " ON g.session_id IN (SELECT value FROM json_each(:segments)) AND (g.id = w.id OR ("
+    "w.message_uid IS NOT NULL AND w.message_uid <> '' AND g.message_uid = w.message_uid AND g.id < w.id))"
+    " WHERE w.id IN (SELECT value FROM json_each(:shown)) AND g.role IN ('user', 'assistant')"
+    " AND (g._compressed_summary = 1 OR instr(g.content, '[CONTEXT COMPACTION') > 0"
+    " OR instr(g.content, '[CONTEXT SUMMARY]') > 0) ORDER BY w.id, g.id")
 
 
 def _steps(db, fn):
@@ -30,5 +42,35 @@ def test_the_handoff_lookup_for_every_row_of_a_long_segment_stays_linear(tmp_pat
         assert list(found) == [carrier] and [message['id'] for message in found[carrier]] == [carrier]
         # About 0.4 thousand steps here; a lookup per shown row over the segment takes about 50 thousand.
         assert steps < 3000, steps
+    finally:
+        db.close()
+
+
+def test_the_handoff_lookup_finds_what_one_join_over_the_shown_rows_found(tmp_path):
+    """Copies of a carrier in every state: live in an earlier segment, archived and removed in the tip, and
+    a later copy, which an earlier shown row never holds."""
+    db = SessionDB(db_path=tmp_path / 'state.db')
+    try:
+        db.create_session('root', source='cli')
+        db.create_session('tip', source='cli', parent_session_id='root')
+        rows = [('root', 'user', 'question', None, 1, 0), ('root', 'user', SUMMARY_PREFIX + ' one', 'U', 1, 0),
+                ('tip', 'user', SUMMARY_PREFIX + ' one, re-wrapped', 'U', 1, 0), ('tip', 'user', 'one, unwrapped', 'U', 1, 0),
+                ('tip', 'user', SUMMARY_PREFIX + ' two', 'V', 0, 1), ('tip', 'user', SUMMARY_PREFIX + ' two, removed', 'V', 0, 0),
+                ('tip', 'user', 'two, carried', 'V', 1, 0), ('tip', 'assistant', 'answer', None, 1, 0)]
+        ids = []
+        for session_id, role, content, uid, active, compacted in rows:
+            row_id = db.append_message(session_id, role, content)
+            db._execute_write(lambda conn, row_id=row_id, uid=uid, active=active, compacted=compacted: conn.execute(
+                'UPDATE messages SET message_uid = ?, active = ?, compacted = ? WHERE id = ?', (uid, active, compacted, row_id)))
+            ids.append(row_id)
+        for shown in (ids, ids[1:4], [ids[1]], ids[3:], [ids[6]]):
+            with db._read_ctx() as conn:
+                joined = conn.execute(_ONE_JOIN, {'segments': json.dumps(['root', 'tip']), 'shown': json.dumps(sorted(shown))}).fetchall()
+            expected = {}
+            for row in joined:
+                message = db._row_to_message_dict(row, warn_context='session.transcript', summary_flag=True)
+                expected.setdefault(int(message.pop('_shown_id')), []).append(message)
+            assert db.transcript_handoff_rows(shown, ['root', 'tip']) == expected, shown
+        assert [m['id'] for m in db.transcript_handoff_rows([ids[3]], ['root', 'tip'])[ids[3]]] == [ids[1], ids[2]]
     finally:
         db.close()

@@ -28,6 +28,15 @@ DEFAULT_INDICATOR_STYLE: str = "kaomoji"
 # attached afterward.
 WEBAPP_ATTACHMENT_MAX_BYTES: int = 16 * 1024 * 1024
 
+# Prefix for speech-to-text input, on every surface (CLI, gateway platforms). It rides the
+# model-bound message only and is never persisted, so the stored transcript stays clean. The
+# wording is the instruction, not a label: a bare marker gave models nothing to act on, and a
+# verbose "The user sent a voice message..." wrapper made them answer about voice mode instead.
+VOICE_INPUT_PREFIX: str = (
+    "[Voice input — respond concisely and conversationally, "
+    "2-3 sentences max. No code blocks or markdown.] "
+)
+
 
 def set_hermes_home_override(path: str | Path | None) -> Token:
     """Set a context-local Hermes home override and return its reset token.

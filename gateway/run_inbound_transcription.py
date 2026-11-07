@@ -81,6 +81,11 @@ class GatewayInboundTranscriptionMixin:
         monitor and the pending-drain path both need it — one STT call and one echo per message.
         ``user_text`` is a deliberate override of the caption; ``None`` reads ``event.text`` live."""
         if hasattr(event, "_gateway_pending_stt_text"):
+            # A cached transcript means STT succeeded earlier: keep the voice flag in sync even if
+            # the event was rebuilt or copied in between.
+            event._gateway_stt_transcribed = bool(
+                getattr(event, "_gateway_pending_stt_transcripts", None)
+            )
             return event._gateway_pending_stt_text, list(getattr(event, "_gateway_pending_stt_transcripts", []) or [])
         audio_paths = self._pending_event_audio_paths(event)
         if not audio_paths:
@@ -103,6 +108,8 @@ class GatewayInboundTranscriptionMixin:
             )
         event._gateway_pending_stt_text = enriched_text
         event._gateway_pending_stt_transcripts = list(successful_transcripts)
+        # Lets the turn layer mark the inbound text as speech-to-text for the model only.
+        event._gateway_stt_transcribed = bool(successful_transcripts)
         return enriched_text, successful_transcripts
 
     async def _echo_pending_stt_transcripts_once(

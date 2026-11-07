@@ -117,10 +117,12 @@ delegate_task(tasks=[{
 }])
 ```
 
-Delivery follows the same routing as user-attached images (`agent.image_input_mode`):
+Delivery follows the child's own image-routing precedence — `delegation.image_input_mode` → `agent.image_input_mode` → the child model's vision capability. The one exemption from the main conversation's rules: an explicit `auxiliary.vision` backend does not force the description lane for children (it still serves as the describer when a child *is* on the text lane):
 
 - **Vision-capable child model** — the images arrive as native multimodal content on the child's first turn: local files are embedded as data URLs (subject to the same read guard as every other file read), remote and `data:` URLs pass through verbatim. The child sees the actual pixels.
 - **Non-vision child model** — the goal gains `[Image attached at: <path>]` hint lines and the child is told to inspect them with `vision_analyze`.
+
+So a text-only main model with `auxiliary.vision` pinned to a vision-capable describer can still delegate `images:` to a vision-capable child model and the child reads the pixels natively. `delegation.image_input_mode: text` forces every child onto the description lane instead; `native` forces pixels unconditionally — including onto a blind child model, whose provider will reject the image content (use it only to override wrong capability metadata). The same decision governs the child's other image sources that share this gate (`vision_analyze` results, browser screenshots, MCP image results); the Camofox browser backend is an existing exception that always uses the auxiliary describer.
 
 Forwarding is best-effort: unreadable paths are skipped with a log line, and any failure in the image plumbing falls back to the plain text goal — it can never break a spawn. Images are for things the child must *see*; put text file paths in `context` as usual.
 

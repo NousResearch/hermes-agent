@@ -30,6 +30,7 @@ class CLITuiRuntimeMixin:
 
     def _tui_process_loop(self):
         """REPL worker thread: drain ``_pending_input``, run idle housekeeping, dispatch each input."""
+        self._sync_program_status()
         held = None
         while not self._should_exit:
             try:
@@ -156,7 +157,9 @@ class CLITuiRuntimeMixin:
             from hermes_cli.cli_inline_images import print_inline_images
             print_inline_images(self, submit_images)
 
+        self._program_turn_outcome = None
         self._agent_running = self._interactive_turn = True
+        self._sync_program_status()
         self._pet_turn_error = self._pet_reasoning = False
         self._turn_summary_begin()
         self._app.invalidate()
@@ -185,6 +188,7 @@ class CLITuiRuntimeMixin:
         """Post-turn bookkeeping after chat() returns (normal, error, or interrupt)."""
         from cli import _DIM, _RST, _cprint
         self._agent_running = self._pet_reasoning = False
+        self._sync_program_status()  # setup failures and early returns land here too
         self._spinner_text = self._last_scrollback_tool = ""
         self._tool_start_time = 0.0
         self._pending_tool_info.clear()
@@ -510,6 +514,9 @@ class CLITuiRuntimeMixin:
         """Teardown after the app exits: interrupt agent, stop voice/pet, persist + close session, cleanup, exit summary."""
         from cli import _DIM, _RST, _cprint, _invoke_interrupted_session_end, _run_cleanup, set_approval_callback, set_secret_capture_callback, set_sudo_password_callback
         self._should_exit = True
+        # First, before anything that can hang or be cut short by the exit watchdog: a pane back at its
+        # shell must not keep listing Hermes as an agent (OSC 7501 idle/done outlive the process).
+        self._clear_program_status()
         self._pet_stop_anim()
         # Without this line the terminal sits silent through the whole cleanup window.
         with suppress(Exception):

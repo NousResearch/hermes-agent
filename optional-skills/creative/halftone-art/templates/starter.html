@@ -1,0 +1,331 @@
+<!--
+  HALFTONE STARTER — a complete editorial page, no build step.
+
+  How to use
+  1. Put this file next to halftone-core.js.
+  2. Create an `img/` folder with 2-3 source photos (portrait.jpg, glam.jpg,
+     color_poster.jpg). Missing files fall back to a generated subject, so the
+     page always renders.
+  3. Serve over http (python3 -m http.server) — canvas pixel reads are blocked
+     on file:// by CORS.
+  4. Change the ink/paper tokens at the top of <style>; the whole page follows.
+-->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Halftone — screen room</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Archivo:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#f2eee2;
+    --paper-deep:#e6e0cf;
+    --ink:#15140f;
+    --ink-60:rgba(21,20,15,.6);
+    --ink-30:rgba(21,20,15,.3);
+    --rule:rgba(21,20,15,.18);
+    --blue:#0f4bd8;
+    --pink:#ff5f8f;
+    --acid:#c8ff3d;
+    --pad:clamp(18px,4vw,56px);
+    --display:'Archivo Black',Impact,sans-serif;
+    --sans:'Archivo',Helvetica,sans-serif;
+    --mono:'JetBrains Mono',ui-monospace,monospace;
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    margin:0;background:var(--paper);color:var(--ink);
+    font-family:var(--sans);font-size:15px;line-height:1.45;
+    -webkit-font-smoothing:antialiased;
+    background-image:radial-gradient(circle at 50% 50%, rgba(21,20,15,.06) .8px, transparent .9px);
+    background-size:3px 3px;
+  }
+  .wrap{padding-inline:var(--pad);max-width:1560px;margin-inline:auto}
+
+  /* ---- top rule / masthead ---- */
+  .bar{
+    display:flex;justify-content:space-between;align-items:baseline;gap:20px;
+    padding-block:14px;border-bottom:1.5px solid var(--ink);
+    font-family:var(--mono);font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;
+  }
+  .bar b{font-weight:500}
+  .bar span{color:var(--ink-60)}
+
+  /* ---- hero ---- */
+  .hero{
+    display:grid;grid-template-columns:1.15fr .85fr;gap:clamp(16px,2.5vw,40px);
+    padding-block:clamp(24px,4vw,56px) 28px;align-items:end;
+    border-bottom:1.5px solid var(--ink);
+  }
+  .kicker{
+    font-family:var(--mono);font-size:11px;letter-spacing:.2em;text-transform:uppercase;
+    color:var(--ink-60);margin:0 0 18px;display:flex;gap:12px;align-items:center;
+  }
+  .kicker::before{content:"";width:26px;height:1px;background:var(--ink)}
+  h1{
+    font-family:var(--display);font-weight:400;
+    font-size:clamp(54px,10.4vw,164px);line-height:.82;letter-spacing:-.035em;
+    margin:0;text-transform:uppercase;
+  }
+  /* halftone type: the MASK eats the glyph pixels — no background fill, or
+     the inline box turns into a solid bar instead of letterforms. */
+  h1 .dot{
+    color:var(--ink);
+    -webkit-mask-image:radial-gradient(circle at 50% 50%, #000 60%, transparent 62%);
+    mask-image:radial-gradient(circle at 50% 50%, #000 60%, transparent 62%);
+    -webkit-mask-size:4.6px 4.6px;mask-size:4.6px 4.6px;
+    -webkit-mask-repeat:round;mask-repeat:round;
+    mask-repeat:round;
+  }
+  .lede{
+    max-width:44ch;margin:20px 0 0;font-size:clamp(14px,1.15vw,17px);
+    line-height:1.5;color:rgba(21,20,15,.78);
+  }
+  .lede em{font-style:normal;background:var(--acid);padding:0 .18em}
+
+  .plate{
+    position:relative;border:1.5px solid var(--ink);background:var(--paper-deep);
+    box-shadow:7px 7px 0 var(--ink);
+  }
+  .plate canvas{display:block;width:100%;height:100%;aspect-ratio:4/5;object-fit:cover}
+  .plate figcaption{
+    position:absolute;left:0;right:0;bottom:0;display:flex;justify-content:space-between;
+    padding:8px 10px;background:var(--paper);border-top:1.5px solid var(--ink);
+    font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;
+  }
+
+  /* ---- strip ---- */
+  .strip{
+    display:grid;grid-template-columns:1fr auto;gap:20px;align-items:center;
+    padding-block:14px;border-bottom:1.5px solid var(--ink);
+    font-family:var(--mono);font-size:10px;letter-spacing:.15em;text-transform:uppercase;color:var(--ink-60);
+  }
+  .chips{display:flex;gap:8px;flex-wrap:wrap}
+  .chip{padding:5px 9px;border:1px solid var(--rule);color:var(--ink);letter-spacing:.1em}
+  .chip.on{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+
+  /* ---- band ---- */
+  .band{position:relative;height:clamp(180px,26vw,320px);margin-block:clamp(22px,3vw,40px);
+    border-block:1.5px solid var(--ink);overflow:hidden}
+  .band canvas{display:block;width:100%;height:100%}
+  .band .tag{
+    position:absolute;left:0;top:0;background:var(--ink);color:var(--paper);
+    font-family:var(--mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;
+    padding:6px 10px;
+  }
+  .band .tag span{color:var(--acid)}
+
+  /* ---- card grid ---- */
+  .cards{display:grid;grid-template-columns:repeat(3,1fr);gap:clamp(14px,2vw,28px);margin-bottom:clamp(28px,4vw,56px)}
+  .card{border-top:1.5px solid var(--ink);padding-top:10px}
+  .card h2{
+    font-family:var(--mono);font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;
+    font-weight:500;margin:0 0 12px;display:flex;justify-content:space-between;gap:10px;
+  }
+  .card h2 i{font-style:normal;color:var(--ink-60)}
+  .card canvas{display:block;width:100%;aspect-ratio:1/1;background:var(--paper-deep);border:1px solid var(--rule)}
+  .card p{margin:10px 0 0;font-size:13px;color:rgba(21,20,15,.7);max-width:38ch}
+
+  /* ---- specimen ---- */
+  .specimen{padding-block:clamp(20px,3vw,40px);border-top:1.5px solid var(--ink)}
+  .specimen h3{
+    font-family:var(--mono);font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;
+    font-weight:500;margin:0 0 16px;color:var(--ink-60);
+  }
+  .cells{display:grid;grid-template-columns:repeat(6,1fr);gap:10px}
+  .cells figure{margin:0}
+  .cells canvas{display:block;width:100%;aspect-ratio:1/1;border:1px solid var(--rule)}
+  .cells figcaption{font-family:var(--mono);font-size:9px;letter-spacing:.1em;margin-top:5px;color:var(--ink-60)}
+
+  footer{
+    display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;
+    border-top:1.5px solid var(--ink);padding-block:16px 40px;
+    font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-60);
+  }
+  @media (max-width:900px){
+    .hero{grid-template-columns:1fr}
+    .cards{grid-template-columns:1fr;gap:26px}
+    .cells{grid-template-columns:repeat(3,1fr)}
+    h1{font-size:clamp(46px,15vw,110px)}
+  }
+  @media (max-width:680px){
+    .bar span:nth-child(2){display:none}     /* keep the masthead to 2 items */
+    .bar{font-size:9px;letter-spacing:.12em}
+    .strip{grid-template-columns:1fr;gap:10px}
+    .strip > div:last-child{line-height:1.6}
+    .plate{box-shadow:5px 5px 0 var(--ink)}
+    .lede{font-size:14px}
+  }
+  @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="bar">
+    <b>Screen Room — issue 01</b>
+    <span>AM screening study · two inks · one paper</span>
+    <span>HALFTONE / 45°</span>
+  </div>
+
+  <section class="hero">
+    <div>
+      <p class="kicker">Dot geometry as tone</p>
+      <h1>Half<span class="dot">tone</span><br>studio</h1>
+      <p class="lede">Every image here is dots. No gradients, no blur — just ink coverage solved per cell, screened at <em>45°</em>, overprinted in two spot colours. The paper is the light source.</p>
+    </div>
+    <figure class="plate">
+      <canvas id="hero" aria-label="Portrait rendered as a two-plate halftone"></canvas>
+      <figcaption><span>Pl. 01 — riso duotone</span><span>cell 9 · 27°/62°</span></figcaption>
+    </figure>
+  </section>
+
+  <div class="strip">
+    <div class="chips">
+      <span class="chip on">newsprint</span>
+      <span class="chip">riso duo</span>
+      <span class="chip">cmyk</span>
+      <span class="chip">pop</span>
+      <span class="chip">line screen</span>
+    </div>
+    <div>Screen ruling ≡ cell size · 45° canonical</div>
+  </div>
+
+  <section class="band">
+    <canvas id="band" aria-hidden="true"></canvas>
+    <div class="tag">Field study — <span>coverage ramp</span></div>
+  </section>
+
+  <section class="cards">
+    <article class="card">
+      <h2>Process build <i>CMYK</i></h2>
+      <canvas id="prog" aria-label="CMYK rosette halftone"></canvas>
+      <p>Four screens at 15°, 75°, 0° and 45°. The rosette is the moiré that printing wants.</p>
+    </article>
+    <article class="card">
+      <h2>Single ink <i>1 plate</i></h2>
+      <canvas id="mono" aria-label="Single ink halftone portrait"></canvas>
+      <p>Black only. Tone lives entirely in dot area — the classic newsprint constraint.</p>
+    </article>
+    <article class="card">
+      <h2>Line cut <i>engraving</i></h2>
+      <canvas id="line" aria-label="Line screen gradient"></canvas>
+      <p>Same coverage maths, different shape primitive. Reads as an engraving or a scan line.</p>
+    </article>
+  </section>
+
+  <section class="specimen">
+    <h3>Specimen — one source, six cells</h3>
+    <div class="cells" id="cells"></div>
+  </section>
+
+  <footer>
+    <span>Halftone study · rendered live on canvas</span>
+    <span>paper #f2eee2 · ink #15140f · accent #c8ff3d</span>
+    <span>Cell 3 → 12 px</span>
+  </footer>
+</div>
+
+<script type="module">
+import { renderHalftone, renderHalftoneField, PRESETS } from './halftone-core.js';
+
+/* A generated stand-in subject so the template never renders an empty plate. */
+function fallbackSubject(w = 900, h = 1100) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const g = c.getContext('2d');
+  const bg = g.createRadialGradient(w * 0.5, h * 0.34, 20, w * 0.5, h * 0.34, w * 0.85);
+  bg.addColorStop(0, '#f4f0e5'); bg.addColorStop(.5, '#8d8a80'); bg.addColorStop(1, '#15140f');
+  g.fillStyle = bg; g.fillRect(0, 0, w, h);
+  g.beginPath(); g.ellipse(w * .5, h * .78, w * .38, h * .34, 0, 0, 7);
+  g.fillStyle = '#16150f'; g.fill();
+  // bust: head, neck, shoulder line — no face, so it reads as a placeholder
+  const head = g.createRadialGradient(w * .44, h * .33, 8, w * .5, h * .38, w * .24);
+  head.addColorStop(0, '#f7f3e8'); head.addColorStop(1, '#b9b2a0');
+  g.beginPath(); g.ellipse(w * .5, h * .38, w * .19, h * .215, 0, 0, 7);
+  g.fillStyle = head; g.fill();
+  g.fillRect(w * .43, h * .52, w * .14, h * .12);
+  g.fillStyle = '#16150f';
+  g.beginPath(); g.ellipse(w * .5, h * .82, w * .38, h * .3, 0, Math.PI, Math.PI * 2); g.fill();
+  return c;
+}
+const load = (s) => new Promise((res) => {
+  const i = new Image();
+  i.onload = () => res(i);
+  i.onerror = () => res(fallbackSubject());
+  i.src = s;
+});
+const portrait = await load('img/portrait.jpg');
+const glam = await load('img/glam.jpg');
+const color = await load('img/color_poster.jpg');
+const cat = await load('img/cat-tabby.jpg');
+
+const dpr = Math.min(window.devicePixelRatio || 1, 2);
+const px = (el) => {
+  const r = el.getBoundingClientRect();
+  return { width: Math.max(1, Math.round(r.width)), height: Math.max(1, Math.round(r.height)) };
+};
+
+// hero — duotone portrait
+const hero = document.getElementById('hero');
+renderHalftone(hero, portrait, {
+  ...px(hero), pixelRatio: dpr, mode: 'duotone',
+  inks: ['#0f4bd8', '#ff5f8f'], plateAngles: [27, 62], plateCurves: ['full', 'shadows'],
+  cell: 8, misregister: 3, paper: '#f4ebd6', contrast: 1.16, grain: .45,
+  autoLevels: true, focal: [0.5, 0.2], zoom: 1.3,
+  plateCurves: ['full', 'midtone'],
+});
+
+// band — field: diagonal sweep with a soft wave
+const band = document.getElementById('band');
+const bw = px(band);
+renderHalftoneField(band, (u, v) => {
+  const wave = Math.sin(u * 5.2 + 1.1) * 0.16 + Math.cos(v * 3.4) * 0.1;
+  const ramp = 1 - Math.abs(u * 0.7 + v * 0.5 - 0.72) * 1.5;
+  return Math.max(0, Math.min(1, ramp + wave));
+}, { ...bw, pixelRatio: dpr, cell: 8, angle: 45, shape: 'round',
+     ink: '#15140f', paper: '#c8ff3d', contrast: 1.15, grain: .5 });
+
+// cmyk
+const prog = document.getElementById('prog');
+renderHalftone(prog, color, { ...px(prog), pixelRatio: dpr, mode: 'cmyk', cell: 6,
+  paper: '#f8f4ec', misregister: .5, autoLevels: true, zoom: 3.2, focal: [0.6, 0.33] });
+
+// mono
+const mono = document.getElementById('mono');
+renderHalftone(mono, cat, { ...px(mono), pixelRatio: dpr, ...PRESETS.newsprint, cell: 5,
+  focal: [0.42, .34], zoom: 1.1, contrast: 1.12, gain: .92, autoLevels: true, paper: '#f2eee2' });
+
+// line
+const line = document.getElementById('line');
+renderHalftoneField(line, (u, v) => {
+  const d = Math.hypot((u - .5) * 1.15, v - .5);
+  return Math.max(0, Math.min(1, 1 - d * 1.75));
+}, { ...px(line), pixelRatio: dpr, cell: 9, angle: 32, shape: 'line',
+     ink: '#15140f', paper: '#e6e0cf', contrast: 1.15 });
+
+// specimen strip
+const cells = document.getElementById('cells');
+[3, 4, 5, 6, 8, 12].forEach((c) => {
+  const f = document.createElement('figure');
+  const cv = document.createElement('canvas');
+  cv.width = 220; cv.height = 220;
+  f.appendChild(cv);
+  const cap = document.createElement('figcaption');
+  cap.textContent = `cell ${c}`;
+  f.appendChild(cap);
+  cells.appendChild(f);
+  renderHalftone(cv, portrait, {
+    width: 220, height: 220, pixelRatio: 1, cell: c, angle: 45, shape: 'round',
+    ink: '#15140f', paper: '#f2eee2', contrast: 1.15, gain: .95, autoLevels: true,
+    focal: [0.5, .16], zoom: 2.2,
+  });
+});
+
+window.__ready = true;
+</script>
+</body>
+</html>

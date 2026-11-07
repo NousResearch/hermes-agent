@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Subjects — one engine, six treatments</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Archivo:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  /* Same tokens as starter.html — the gallery is the same design system. */
+  :root{
+    --paper:#f2eee2; --ink:#15140f; --rule:rgba(21,20,15,.18);
+    --ink-60:rgba(21,20,15,.6); --acid:#c8ff3d;
+    --pad:clamp(18px,4vw,52px);
+    --display:'Archivo Black',Impact,sans-serif;
+    --sans:'Archivo',Helvetica,sans-serif;
+    --mono:'JetBrains Mono',ui-monospace,monospace;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);
+    font-size:15px;line-height:1.45;-webkit-font-smoothing:antialiased;
+    background-image:radial-gradient(circle at 50% 50%, rgba(21,20,15,.06) .8px, transparent .9px);
+    background-size:3px 3px;
+  }
+  .wrap{padding-inline:var(--pad);max-width:1500px;margin-inline:auto}
+  .bar{
+    display:flex;justify-content:space-between;align-items:baseline;gap:18px;
+    padding-block:14px;border-bottom:1.5px solid var(--ink);
+    font-family:var(--mono);font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;
+  }
+  .bar span{color:var(--ink-60)}
+  header{padding-block:clamp(22px,3.4vw,44px) clamp(18px,2.4vw,30px)}
+  h1{
+    font-family:var(--display);font-weight:400;margin:0;
+    font-size:clamp(34px,5.4vw,72px);line-height:.9;letter-spacing:-.03em;text-transform:uppercase;
+  }
+  header p{max-width:52ch;margin:14px 0 0;color:rgba(21,20,15,.74)}
+  header p b{font-weight:600}
+  .grid{
+    display:grid;grid-template-columns:repeat(3,1fr);gap:clamp(14px,2.2vw,30px);
+    padding-bottom:clamp(26px,4vw,52px);
+  }
+  figure{margin:0}
+  .plate{
+    position:relative;border:1.5px solid var(--ink);background:#e6e0cf;
+    box-shadow:6px 6px 0 var(--ink);
+  }
+  .plate canvas{display:block;width:100%;aspect-ratio:1/1}
+  .meta{
+    display:flex;justify-content:space-between;gap:10px;margin-top:9px;
+    font-family:var(--mono);font-size:9.5px;letter-spacing:.13em;text-transform:uppercase;
+  }
+  .meta i{font-style:normal;color:var(--ink-60)}
+  .name{font-size:12px;letter-spacing:.02em;text-transform:none;margin:0 0 3px;font-weight:500}
+  footer{
+    display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;
+    border-top:1.5px solid var(--ink);padding-block:16px 38px;
+    font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-60);
+  }
+  @media (max-width:900px){ .grid{grid-template-columns:repeat(2,1fr)} }
+  @media (max-width:560px){ .grid{grid-template-columns:1fr} .bar span:nth-child(2){display:none} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="bar">
+    <b>Subjects — screen tests</b>
+    <span>Cats, dogs, people, paint</span>
+    <span>one engine · six treatments</span>
+  </div>
+
+  <header>
+    <h1>Same engine.<br>Six inks.</h1>
+    <p>Every plate below is <b>renderHalftone()</b> with different parameters — no per-subject code.
+      A Savannah cat in riso blue and pink, a tabby in newsprint black, a studio dog from the 1870s,
+      a portrait in pop red, a 1944 litho poster in process colour, and one engraving.</p>
+  </header>
+
+  <div class="grid" id="grid"></div>
+
+  <footer>
+    <span>halftone-art · canvas engine</span>
+    <span>paper #f2eee2 · ink #15140f</span>
+    <span>cell 6 → 13 px</span>
+  </footer>
+</div>
+
+<script type="module">
+import { renderHalftone, PRESETS } from './halftone-core.js';
+
+const load = (src) => new Promise((res) => {
+  const i = new Image();
+  i.onload = () => res(i);
+  i.onerror = () => res(null);
+  i.src = src;
+});
+
+/* Subject, treatment, and the parameters that make that treatment sing. */
+const TESTS = [
+  {
+    img: 'img/cat-savannah.jpg',
+    name: 'Savannah cat',
+    preset: 'riso duotone',
+    note: '27°/62° · misreg 3',
+    opts: { ...PRESETS['riso-duo'], cell: 7, focal: [0.5, 0.12], zoom: 1.4, autoLevels: true,
+            contrast: 1.2, gain: 0.95, plateCurves: ['full', 'midtone'], misregister: 3 },
+  },
+  {
+    img: 'img/cat-tabby.jpg',
+    name: 'Tabby',
+    preset: 'newsprint',
+    note: 'cell 6 · gain .9',
+    opts: { ...PRESETS.newsprint, cell: 6, focal: [0.42, 0.32], zoom: 1.1, autoLevels: true,
+            contrast: 1.1, gain: 0.9 },
+  },
+  {
+    img: 'img/dog-hat.jpg',
+    name: 'Studio dog, 1870s',
+    preset: 'screenprint',
+    note: 'cell 5 · 22°',
+    opts: { ...PRESETS.screenprint, cell: 5, focal: [0.12, 0.5], zoom: 1, autoLevels: true,
+            contrast: 1.2, gain: 0.95, levels: 0 },
+  },
+  {
+    img: 'img/portrait.jpg',
+    name: 'Studio portrait, 1921',
+    preset: 'pop',
+    note: 'red on yellow · 4 levels',
+    opts: { ...PRESETS.pop, cell: 12, focal: [0.5, 0.22], zoom: 1.9, autoLevels: true },
+  },
+  {
+    img: 'img/color_poster.jpg',
+    name: 'Litho poster, 1944',
+    preset: 'process colour',
+    note: '15/75/0/45°',
+    opts: { mode: 'cmyk', cell: 6, paper: '#f8f4ec', misregister: 0.5, autoLevels: true, zoom: 1.0, focal: [0.5, 0.5] },
+  },
+  {
+    img: 'img/portrait.jpg',
+    name: 'Studio portrait, 1921',
+    preset: 'line cut',
+    note: 'cell 9 · 32°',
+    opts: { ...PRESETS['acid-line'], cell: 9, angle: 32, paper: '#e6e0cf', focal: [0.5, 0.24], zoom: 2.1, autoLevels: true },
+  },
+];
+
+const grid = document.getElementById('grid');
+const dpr = Math.min(window.devicePixelRatio || 1, 2);
+const loaded = new Map();
+
+for (const t of TESTS) {
+  if (!loaded.has(t.img)) loaded.set(t.img, await load(t.img));
+  const img = loaded.get(t.img);
+
+  const fig = document.createElement('figure');
+  const plate = document.createElement('div');
+  plate.className = 'plate';
+  const cv = document.createElement('canvas');
+  cv.setAttribute('role', 'img');
+  cv.setAttribute('aria-label', `${t.name} rendered as a ${t.preset} halftone`);
+  plate.appendChild(cv);
+
+  const meta = document.createElement('div');
+  meta.className = 'meta';
+  meta.innerHTML = `<span class="name">${t.name}</span><i>${t.preset} · ${t.note}</i>`;
+
+  fig.append(plate, meta);
+  grid.appendChild(fig);
+
+  // wait a frame so the grid has laid out and the canvas has a real width
+  await new Promise((r) => requestAnimationFrame(r));
+  const w = Math.round(cv.getBoundingClientRect().width);
+  if (img && w > 0) {
+    renderHalftone(cv, img, { ...t.opts, width: w, height: w, pixelRatio: dpr });
+  } else {
+    cv.style.background = t.opts.paper || '#e6e0cf';
+  }
+}
+
+window.__ready = true;
+</script>
+</body>
+</html>

@@ -224,6 +224,10 @@ def _usage_agent_stats_lines(agent) -> list[str]:
                        total=_fmt(ctx.context_length), pct=f"{mark}{pct:.0f}") + agent_context_suffix(agent))
     if ctx.compression_count:
         lines.append(t("gateway.usage.label_compressions", count=ctx.compression_count))
+    adaptive = getattr(agent, "_adaptive_context", None)
+    if adaptive is not None:
+        from agent.adaptive_context import usage_line
+        lines.append(usage_line(adaptive))
     return lines
 
 

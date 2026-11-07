@@ -780,6 +780,10 @@ class CLIInfoMixin:
         print(f"  {t('cli.usage.label_current_context'):<17} {mark}{last_prompt:,} / {ctx_len:,} ({mark}{pct:.0f}%){pin_suffix}")
         print(f"  {t('cli.usage.label_messages'):<17} {len(self.conversation_history)}")
         print(f"  {t('cli.usage.label_compressions'):<17} {compressor.compression_count}")
+        adaptive = getattr(agent, "_adaptive_context", None)
+        if adaptive is not None:
+            from agent.adaptive_context import usage_line
+            print("  " + usage_line(adaptive).replace("`", ""))
 
         self._print_account_limits()
 

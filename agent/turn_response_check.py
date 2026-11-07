@@ -17,6 +17,7 @@ from agent.error_classifier import FailoverReason
 from agent.turn_api_call import stop_thinking_spinner
 from agent.turn_failure_copy import invalid_response_failure_reason, provider_label_for, site_copy, stamp_failure
 from agent.turn_truncation import handle_content_policy_refusal, recover_from_truncation
+from agent.adaptive_context import rebudget_on_backend_change
 from agent.turn_usage import record_response_usage
 
 logger = logging.getLogger("agent.conversation_loop")
@@ -198,6 +199,8 @@ def check_api_response(
         max_compression_attempts=max_compression_attempts,
     )
     compression_attempts = _usage_outcome.compression_attempts
+    # Router model ids may resolve to a different backend per call (agent/adaptive_context.py).
+    rebudget_on_backend_change(agent, response)
     if _usage_outcome.rearmed:
         _preflight_compression_blocked = False
         _last_preflight_pressure = None

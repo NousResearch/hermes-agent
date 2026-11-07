@@ -1785,6 +1785,15 @@ def _load_profile_secret_scope(profile_home: Path) -> dict:
 
     home_token = set_hermes_home_override(str(profile_home))
     try:
+        # Plugin secret sources register per-profile via ctx.register_secret_source() and
+        # only exist after plugin discovery — a multiplexed gateway's secondary profile had
+        # not loaded its plugins yet, so hydrate saw an empty source registry and left ${VAR}
+        # placeholders unresolved (#149014). Discovery is idempotent per home (#64177) and
+        # must run under the home override so the profile's own plugins load. Kept outside
+        # _SECRET_SOURCE_CACHE_LOCK (#105405).
+        from hermes_cli.plugins import discover_plugins
+
+        discover_plugins()
         hydrate_profile_secret_sources(Path(profile_home))
         return owner_secret_scope(Path(profile_home))
     finally:

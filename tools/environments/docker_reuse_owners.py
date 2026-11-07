@@ -26,6 +26,13 @@ from tools.environments.remote_common import run_capture
 logger = logging.getLogger(__name__)
 OWNER_LABEL = "hermes-reuse-owners"
 _DATABASE = "docker-reuse-owners.sqlite3"
+# ``hermes-task-id`` truncates at 63 chars, so ``<long-base>:ws:<digest>`` tasks can
+# share its prefix; ``hermes-workspace`` carries the collision-proof digest instead.
+_SCOPE_LABELS = ("hermes-task-id", "hermes-profile", "hermes-egress", "hermes-workspace")
+
+
+def _retirement_scope(labels: dict[str, str]) -> str:
+    return json.dumps([labels.get(key) for key in _SCOPE_LABELS])
 
 
 @dataclass
@@ -71,7 +78,7 @@ class ReuseOwners:
         return ReuseLease(token, lock)
 
     def reserve(self, name: str, labels: dict[str, str], fingerprint: str) -> ReuseLease:
-        scope = json.dumps([labels[k] for k in ("hermes-task-id", "hermes-profile", "hermes-egress")])
+        scope = _retirement_scope(labels)
         lease = self._lease()
         try:
             with self.transaction() as db:
@@ -113,7 +120,7 @@ class ReuseOwners:
         lease.lock.path.unlink(missing_ok=True)
 
     def supersede(self, labels: dict[str, str], fingerprint: str) -> None:
-        scope = json.dumps([labels[k] for k in ("hermes-task-id", "hermes-profile", "hermes-egress")])
+        scope = _retirement_scope(labels)
         with self.transaction() as db:
             db.execute("UPDATE containers SET superseded=COALESCE(superseded, ?) "
                        "WHERE scope=? AND fingerprint<>? AND retired=0", (time.time(), scope, fingerprint))
@@ -161,7 +168,7 @@ class ReuseOwners:
             labels = record["Config"]["Labels"]
             if (not isinstance(labels, dict) or not isinstance(record["Id"], str)
                     or not isinstance(record["State"]["Running"], bool)
-                    or record["Name"] != "/" + name or labels.get(OWNER_LABEL) != self.namespace
+                    or record["Name"] not in (name, "/" + name) or labels.get(OWNER_LABEL) != self.namespace
                     or labels.get("hermes-runtime-fingerprint") != fingerprint):
                 return False
             container_id = record["Id"]

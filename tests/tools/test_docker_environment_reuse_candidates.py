@@ -24,7 +24,7 @@ def _teardowns_finish_under_the_fakes():
     assert docker_env.DockerEnvironment.wait_for_all_teardowns(timeout=10)
 
 
-def _stateful_docker(monkeypatch):
+def _stateful_docker(monkeypatch, fail_start: bool = False):
     """Fake docker boundary with per-container state, labels, image and network."""
     containers: dict[str, dict] = {}
     calls: list[list[str]] = []
@@ -104,7 +104,7 @@ def _stateful_docker(monkeypatch):
         "inspect": _inspect,
         "image": _image_inspect,
         "pull": lambda cmd: ("", 0),
-        "start": _set_state("running"),
+        "start": (lambda cmd: ("start refused", 1)) if fail_start else _set_state("running"),
         "stop": _set_state("exited"),
         "rm": _rm,
     }
@@ -114,6 +114,8 @@ def _stateful_docker(monkeypatch):
         sub = cmd[1] if len(cmd) > 1 else ""
         handler = handlers.get(sub)
         stdout, code = handler(cmd) if handler else ("", 0)
+        if kwargs.get("check") and code:
+            raise subprocess.CalledProcessError(code, cmd)
         return subprocess.CompletedProcess(cmd, code, stdout=stdout, stderr="")
 
     monkeypatch.setattr(docker_env.subprocess, "run", _run)
@@ -189,6 +191,22 @@ def test_superseded_running_container_is_reaped_only_after_last_owner_releases(m
     assert docker_env.reap_orphan_containers(max_age_seconds=0) == 1
     assert stale_id not in containers
     assert containers[replacement._container_id]["state"] == "running"
+
+
+def test_failed_reuse_start_restores_the_requested_image(monkeypatch):
+    """A refused attach after default-image adoption must not leak the preserved
+    sandbox's image into the fresh container: the request-side image wins."""
+    containers, _calls = _stateful_docker(monkeypatch, fail_start=True)
+    shared = {"shared_container_key": "trusted-team", "persistent_filesystem": True,
+              "task_id": "img-adopt"}
+    first = _make_dummy_env(image="python:3.11", **shared)
+    containers[first._container_id]["state"] = "exited"
+
+    second = _make_dummy_env(image="python:3.12", **shared)
+
+    assert second._image == "python:3.12"
+    assert containers[second._container_id]["image"] == "python:3.12"
+    assert containers[first._container_id]["state"] == "exited"  # preserved, never killed
 
 
 def test_recreate_container_starts_in_the_tracked_cwd(monkeypatch):

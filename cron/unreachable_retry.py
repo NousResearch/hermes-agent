@@ -129,8 +129,10 @@ def is_retry_run(job: dict[str, Any]) -> bool:
     Manual runs carry no ``_scheduled_instant`` and always count."""
     from cron.occurrences import scheduled_instant
 
-    instant = job.get("_scheduled_instant")
-    return instant is not None and scheduled_instant((job.get(STATE_KEY) or {}).get("at")) == instant
+    instant = scheduled_instant(job.get("_scheduled_instant"))
+    if instant is None:
+        return False
+    return scheduled_instant((job.get(STATE_KEY) or {}).get("at")) == instant
 
 
 def plan_retry(job: dict[str, Any]) -> bool:

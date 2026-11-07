@@ -16,6 +16,17 @@ import {
 import { handleSessionInfoEvent } from './session-info'
 import type { GatewayEventContext } from './types'
 
+// The cwd-follow gate's observable: followActiveSessionCwd yanks the sidebar
+// into the grouped Projects view (store/projects.ts). Spy on it through a
+// partial mock — the handler imports it by name, so a module-object spy set
+// AFTER import time can never intercept it.
+const { followActiveSessionCwdMock } = vi.hoisted(() => ({ followActiveSessionCwdMock: vi.fn() }))
+vi.mock('@/store/projects', async importOriginal => {
+  const actual = await importOriginal<typeof import('@/store/projects')>()
+
+  return { ...actual, followActiveSessionCwd: followActiveSessionCwdMock }
+})
+
 // `_session_info` stamps `stored_session_id: session_key or ""`, so every
 // not-yet-persisted session on the gateway emits an UNNAMED session.info that
 // still carries a real cwd.
@@ -261,5 +272,127 @@ describe('handleSessionInfoEvent rebuilt-runtime re-bind', () => {
 
     expect($activeSessionId.get()).toBe('runtime-old')
     expect(ctx.deps.activeSessionIdRef.current).toBe('runtime-old')
+  })
+})
+
+// #72491: the sidebar flipping to the grouped Projects view on restart. The
+// cwd-follow gate compares the payload against $currentCwd, which at boot
+// holds the remembered/default workspace — not the restored session's own
+// cwd. The seed-vs-session reconciliation then reads as a same-session move
+// on every heartbeat after the first, and followActiveSessionCwd force-flips
+// the sidebar. A real relocation, by contrast, changes the cwd the SAME
+// runtime last reported — that (and only that) is followed.
+describe('handleSessionInfoEvent cwd-follow gating', () => {
+  beforeEach(() => {
+    followActiveSessionCwdMock.mockClear()
+    $selectedStoredSessionId.set('stored-boot')
+    $activeSessionId.set('runtime-boot')
+  })
+
+  afterEach(() => {
+    $selectedStoredSessionId.set(null)
+    $activeSessionId.set(null)
+    setCurrentCwd('')
+    setCurrentBranch('')
+  })
+
+  // The boot-reconcile reproducer (#72491): the FIRST session.info for the
+  // restored runtime is skipped by the sameSession guard, but between the
+  // first and second info the boot cwd seeding (remembered workspace /
+  // ensureDefaultWorkspaceCwd) re-points $currentCwd at the remembered
+  // workspace — so the second, same-session heartbeat then looks like a MOVE
+  // and flipped the sidebar into Projects view on every relaunch.
+  it('does not follow the boot cwd reconciliation against the seeded workspace', () => {
+    // The restored session's first info: $currentCwd still holds the
+    // remembered workspace from the previous run.
+    setCurrentCwd('/remembered/workspace')
+    setCurrentBranch('')
+
+    const ctx = sessionInfoEvent({
+      activeSessionId: 'runtime-boot',
+      cwd: '/repo/the-restored-session',
+      explicitSid: 'runtime-boot',
+      storedSessionId: 'stored-boot'
+    })
+
+    // First info: the runtime has no cached cwd yet — learning it is not a move.
+    handleSessionInfoEvent(ctx)
+    expect(followActiveSessionCwdMock).not.toHaveBeenCalled()
+    expect($currentCwd.get()).toBe('/repo/the-restored-session')
+
+    // The boot seeding re-asserts the remembered default workspace between
+    // heartbeats (ensureDefaultWorkspaceCwd / seedDefaultCwd, gated on no
+    // active session — the restored runtime is not in $activeSessionId yet
+    // from the renderer's perspective during restore).
+    $activeSessionId.set(null)
+    setCurrentCwd('/remembered/workspace')
+    $activeSessionId.set('runtime-boot')
+
+    // Second info (the heartbeat/settle edge the old gate tripped on): the
+    // payload restates the runtime's own cwd — a reconcile, not a move.
+    ctx.deps.sessionStateByRuntimeIdRef.current.set('runtime-boot', {
+      ...createClientSessionState('stored-boot'),
+      cwd: '/repo/the-restored-session'
+    })
+
+    handleSessionInfoEvent(ctx)
+    expect(followActiveSessionCwdMock).not.toHaveBeenCalled()
+
+    expect($currentCwd.get()).toBe('/repo/the-restored-session')
+    expect($workspaceCwdOwner.get()).toBe('stored-boot')
+  })
+
+  it('does not follow a heartbeat restating a cwd the runtime already reported', () => {
+    setCurrentCwd('/repo/somewhere-else')
+
+    const ctx = sessionInfoEvent({
+      activeSessionId: 'runtime-boot',
+      cwd: '/repo/the-restored-session',
+      explicitSid: 'runtime-boot',
+      storedSessionId: 'stored-boot'
+    })
+
+    ctx.deps.sessionStateByRuntimeIdRef.current.set('runtime-boot', {
+      ...createClientSessionState('stored-boot'),
+      cwd: '/repo/the-restored-session'
+    })
+
+    handleSessionInfoEvent(ctx)
+    handleSessionInfoEvent(ctx)
+
+    expect(followActiveSessionCwdMock).not.toHaveBeenCalled()
+  })
+
+  // The feature the gate exists for (#62af32efe7c): the SAME active session's
+  // agent relocates (new repo/worktree via the terminal) — its own last
+  // reported cwd changes. The sidebar must still follow.
+  it('follows a genuine same-session cwd move away from the last reported cwd', () => {
+    setCurrentCwd('/repo/old')
+
+    // One ctx shared by both events, exactly like the real hook: the
+    // same-session gate reads lastCwdInfoSessionRef, which is per-mount.
+    const ctx = sessionInfoEvent({
+      activeSessionId: 'runtime-boot',
+      cwd: '/repo/old',
+      explicitSid: 'runtime-boot',
+      storedSessionId: 'stored-boot'
+    })
+
+    ctx.deps.sessionStateByRuntimeIdRef.current.set('runtime-boot', {
+      ...createClientSessionState('stored-boot'),
+      cwd: '/repo/old'
+    })
+
+    // Establish the same-session baseline.
+    handleSessionInfoEvent(ctx)
+    expect(followActiveSessionCwdMock).not.toHaveBeenCalled()
+
+    ctx.payload = { ...ctx.payload, cwd: '/repo/new-worktree' }
+
+    handleSessionInfoEvent(ctx)
+
+    expect(followActiveSessionCwdMock).toHaveBeenCalledTimes(1)
+    expect(followActiveSessionCwdMock).toHaveBeenCalledWith('/repo/new-worktree')
+    expect($currentCwd.get()).toBe('/repo/new-worktree')
   })
 })

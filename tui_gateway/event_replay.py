@@ -48,6 +48,9 @@ _replay_next_seq: dict[str, int] = {}
 # compute-host bridge echo) still gets a seq and a watermark but is never retained, so it cannot rebuild a
 # ring that nothing would free until FIFO eviction. One str per closed session, like _replay_next_seq.
 _replay_forgotten: set[str] = set()
+# Ephemeral liveness (``tui_gateway/turn_alive.py``): neither sequenced nor kept, so a long quiet tool call
+# cannot push real events out of the ring, and a reconnecting client never replays stale liveness.
+_UNSEQUENCED_EVENTS = frozenset({"turn.alive"})
 
 
 def replay_epoch() -> str:
@@ -77,7 +80,7 @@ def _stamp_event(obj: dict) -> None:
     if not isinstance(params, dict):
         return
     sid = params.get("session_id") or ""
-    if not sid:
+    if not sid or params.get("type") in _UNSEQUENCED_EVENTS:
         # Session-less global events (skin.changed etc.) are re-fetchable via their own RPCs.
         return
     # Freeze OUTSIDE the lock (same rule as transport.write) so one large payload cannot stall

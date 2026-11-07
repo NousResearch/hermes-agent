@@ -54,9 +54,6 @@ class SurfacePolicy:
     #: ``/api/gateway-connections`` serves: the browser's door to this machine's saved gateways list
     #: (native Desktop reaches the same file through its main process, not over HTTP).
     gateway_connections: bool = False
-    #: The gateway relay's routes serve (``hermes_cli.webapp_relay``): pairing, grants and
-    #: ``/api/relay/<gateway>/...``. Each still needs ``webapp.relay.enabled`` and the sign-in gate.
-    relay: bool = False
 
 
 POLICIES: dict[str, SurfacePolicy] = {
@@ -75,7 +72,7 @@ POLICIES: dict[str, SurfacePolicy] = {
     "webapp": SurfacePolicy(
         serves_spa=True, html_token=False, host_terminal=True, launch_link=True, gateway_ticket=True,
         own_origin_cookie_writes=True, web_access=True, browser_files=True,
-        desktop_plugins=True, ui_preferences=True, client_direct_voice=False, relay=True,
+        desktop_plugins=True, ui_preferences=True, client_direct_voice=False,
         gateway_connections=True),
 }
 

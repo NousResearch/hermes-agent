@@ -35,7 +35,7 @@ export class UnservedProfileError extends Error {
  * as served, which is how the tab treated them before the set was read.
  *
  * `ownProfile` names the profile the gateway runs as: this tab's launch profile on the serving
- * gateway, the active one a relayed gateway reports (browser-relay.ts).
+ * gateway, the active one a relayed gateway reports (browser-saved-connections.ts).
  */
 export function createServedProfiles(
   api: <T>(request: HermesApiRequest) => Promise<T>,

@@ -1,21 +1,20 @@
-"""The hub's relay: ``/api/relay/<gateway>/<path>`` carries a signed-in browser's REST calls and
-sockets to a paired gateway (``hermes_cli.webapp_relay``).
+"""The Webapp's forwarding proxy: ``/api/relay/<connection id>/<path>`` carries a signed-in browser's
+REST calls and sockets to a gateway saved in this machine's connection list
+(``hermes_cli.gateway_connections``), keyed by the same registry id native Desktop uses.
 
-HTTP. The browser's request is signed with this hub's key for the gateway's grant and sent on as
-``<gateway url>/<path>``, body and response streamed both ways. Cookies, the browser's own
-credentials and forwarding headers never cross. Only headers that describe the body come back, under
-a sandboxing content policy, and a redirect only within the gateway: what it serves never acts on
-this hub's origin. A 401 from the
-gateway means it no longer accepts the grant, so the browser gets a 409 ``relay_reconnect`` instead of
-being sent to this hub's sign-in.
+HTTP. The browser's request is sent on as ``<connection url>/<path>`` with the credential saved for
+that connection, the way Desktop sends it (``hermes_cli.webapp_relay_target``), body and response
+streamed both ways. Cookies, the browser's own credentials and forwarding headers never cross. Only
+headers that describe the body come back, under a sandboxing content policy, and a redirect only
+within the gateway: what it serves never acts on this gateway's origin. A 401 from the gateway means
+the saved credential no longer works there, so the browser gets a 409 ``relay_reconnect`` instead of
+being sent to this gateway's sign-in.
 
-Sockets. A relayed socket opens only with this hub's one-use ``relay`` ticket (``?relay_ticket=``,
+Sockets. A relayed socket opens only with this gateway's one-use ``relay`` ticket (``?relay_ticket=``,
 minted by ``POST /api/webapp/socket-ticket?socket=relay``) for the same identity, and is tracked with
-the browser's other sockets, so signing out here closes it. The socket's own credential is the
-gateway's: the ticket the browser minted there through this relay, which rides the query or the
-subprotocol unchanged. Frames pass through as they are; each side's close reaches the other.
-
-Only the signed-in identity that paired a gateway reaches it.
+the browser's other sockets, so signing out here closes it. The socket's credential at the other
+gateway is minted here per dial (its session token, or a one-use ticket). Frames pass through as they
+are; each side's close reaches the other, and removing the connection closes it.
 """
 from __future__ import annotations
 
@@ -26,15 +25,14 @@ import logging
 import threading
 import urllib.parse
 import weakref
-from typing import Any, Optional
+from typing import Optional
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request, WebSocket
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.background import BackgroundTask
 
-from hermes_cli import webapp_relay as relay
-from hermes_cli import webapp_relay_gateways as hub
+from hermes_cli import webapp_relay_target as reach
 
 _log = logging.getLogger(__name__)
 router = APIRouter()
@@ -42,18 +40,18 @@ router = APIRouter()
 _PREFIX = "/api/relay/"
 _HOP_BY_HOP = frozenset({"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te",
                          "trailer", "transfer-encoding", "upgrade"})
-#: Request headers that never cross to the gateway: this hub's credentials and the browser's
-#: provenance. The relay signature replaces them.
+#: Request headers that never cross to the other gateway: this one's credentials and the browser's
+#: provenance. The saved connection's credential replaces them.
 _DROP_REQUEST = _HOP_BY_HOP | frozenset({
     "host", "cookie", "authorization", "origin", "referer", "x-hermes-session-token", "forwarded",
-    "x-real-ip", "x-hermes-gateway-ticket", "x-hermes-window-ticket", *relay.RELAY_HEADERS})
+    "x-real-ip", "x-hermes-gateway-ticket", "x-hermes-window-ticket"})
 #: Response headers that cross back from the gateway: what describes the body. Anything else would
-#: let the gateway act on this hub's origin (cookies, CORS, HSTS, service workers, site-data
+#: let the gateway act on this one's origin (cookies, CORS, HSTS, service workers, site-data
 #: clearing, refreshes, its own content policy, or caching that outlives the grant).
 _KEEP_RESPONSE = frozenset({
     "content-type", "content-length", "content-encoding", "content-language", "content-disposition",
     "content-range", "accept-ranges", "vary", "retry-after"})
-#: Whatever the gateway sends is its content, not this hub's page: a document opened from it runs in
+#: Whatever the gateway sends is its content, not this gateway's page: a document opened from it runs in
 #: an opaque origin with no scripts, nothing is sniffed into one, and the browser keeps no copy for
 #: after a revoke or for another account signed in here later.
 _RESPONSE_POLICY = {"Content-Security-Policy": "sandbox", "X-Content-Type-Options": "nosniff",
@@ -64,6 +62,9 @@ _MAX_FRAME = 384 * 1024 * 1024
 #: What a URL parser reads as the "." and ".." path segments (WHATWG URL, any letter case).
 _DOT = frozenset({".", "%2e"})
 _DOT_DOT = frozenset({"..", ".%2e", "%2e.", "%2e%2e"})
+#: Credentials the browser may put on a relayed socket's query: this gateway's ticket, and any the
+#: page carried for a direct dial. The other gateway's credential is minted here instead.
+_CREDENTIAL_QUERY = frozenset({"relay_ticket", "ticket", "token"})
 
 
 # ---- Shared client ----------------------------------------------------------------------------
@@ -71,8 +72,8 @@ _DOT_DOT = frozenset({"..", ".%2e", "%2e.", "%2e%2e"})
 def relay_client(state):
     """This listener's HTTP client for relayed requests, one per event loop: no redirects followed,
     no proxy settings from the environment, no read deadline (streams run as long as they run), and
-    no cookies kept. A gateway refuses a relayed request that carries one, and a cookie is not scoped
-    to a port, so one set by any gateway (or a proxy in front of it) would break later requests."""
+    no cookies kept: every request carries its connection's saved credential, and a cookie is not
+    scoped to a port, so one set by any gateway (or a proxy in front of it) would reach the others."""
     loop = asyncio.get_running_loop()
     held = getattr(state, "webapp_relay_client", None)
     if held is not None and held[0] is loop:
@@ -84,20 +85,18 @@ def relay_client(state):
     return client
 
 
-async def signed_get(state, row: dict[str, Any], target: str):
-    """One signed GET of *target* on *row*'s gateway (the Settings connection test)."""
-    key = relay.hub_key(state.webapp_home)
-    headers = relay.sign_request(key, method="GET", target=target, audience=row["url"], grant_id=row["grant_id"],
-                                 subject=row["subject"])
-    return await relay_client(state).get(f"{row['url']}{target}", headers=headers, timeout=15.0)
-
-
 # ---- Routing ----------------------------------------------------------------------------------
 
-def _gateway(state, identity: dict[str, str], gateway_id: str) -> Optional[dict[str, Any]]:
-    if not relay.relay_enabled(state):
+def _available(state) -> bool:
+    """Saved connections are reached from the Webapp only (the surface that serves their list)."""
+    from hermes_cli.web_server_surface import policy
+    return policy(state).gateway_connections
+
+
+async def _resolve(state, connection_id: str) -> Optional[reach.Target]:
+    if not _available(state):
         return None
-    return hub.gateway_for(state.webapp_home, identity, gateway_id)
+    return await reach.resolve_target(relay_client(state), connection_id)
 
 
 def _target(scope, gateway_id: str, *, drop_query: frozenset[str] = frozenset()) -> Optional[str]:
@@ -119,12 +118,11 @@ def _target(scope, gateway_id: str, *, drop_query: frozenset[str] = frozenset())
     return f"{rest}?{query}" if query else rest
 
 
-def _identity(request: Request) -> dict[str, str]:
-    from hermes_cli.webapp_relay_grants import identity_of
-    session = getattr(request.state, "session", None)
-    if session is None or getattr(request.state, "relay_grant", None) is not None:
+def _signed_in(request: Request) -> None:
+    """Behind the sign-in gate, a login; on a loopback Webapp the session-token check already ran
+    (``web_server`` refuses an ``/api/`` request without it)."""
+    if getattr(request.app.state, "auth_required", False) and getattr(request.state, "session", None) is None:
         raise HTTPException(401, "Unauthorized")
-    return identity_of(session)
 
 
 def _without_dot_segments(path: str) -> str:
@@ -143,15 +141,15 @@ def _without_dot_segments(path: str) -> str:
     return "/" + "/".join(kept)
 
 
-def _relayed_location(value: str, row: dict[str, Any], base: str) -> Optional[str]:
+def _relayed_location(value: str, gateway_url: str, base: str) -> Optional[str]:
     """Where a gateway's redirect points, under this relay; None when it leaves the gateway.
 
-    The browser resolves the Location against this hub, so its dot segments are resolved here first,
-    against the gateway: ``/../api/gateway/restart`` names the gateway's route, never this hub's.
+    The browser resolves the Location against this gateway, so its dot segments are resolved here first,
+    against the other gateway: ``/../api/gateway/restart`` names its route, never this one's.
     A browser drops tabs and newlines from a URL and reads a backslash as a slash, so a Location
     with those (or any whitespace or control character) is refused rather than reparsed."""
-    if value.startswith(f"{row['url']}/") or value == row["url"]:
-        value = value[len(row["url"]):] or "/"
+    if value.startswith(f"{gateway_url}/") or value == gateway_url:
+        value = value[len(gateway_url):] or "/"
     if (not value.startswith("/") or value.startswith("//") or "\\" in value
             or any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value)):
         return None
@@ -159,45 +157,51 @@ def _relayed_location(value: str, row: dict[str, Any], base: str) -> Optional[st
     return f"{base}{_without_dot_segments(value[:end])}{value[end:]}"
 
 
-@router.api_route(_PREFIX + "{gateway_id}/{path:path}", methods=_METHODS)
-async def relay_http(request: Request, gateway_id: str, path: str):
+def _refusal(error: str, connection_id: str, detail: str, status: int) -> JSONResponse:
+    return JSONResponse({"error": error, "connection_id": connection_id, "detail": detail}, status_code=status)
+
+
+@router.api_route(_PREFIX + "{connection_id}/{path:path}", methods=_METHODS)
+async def relay_http(request: Request, connection_id: str, path: str):
     from hermes_cli.dashboard_auth.prefix import prefix_from_request
 
     state = request.app.state
-    row = _gateway(state, _identity(request), gateway_id)
+    _signed_in(request)
+    try:
+        row = await _resolve(state, connection_id)
+    except reach.Unreachable as exc:
+        return _refusal("relay_reconnect", connection_id, str(exc), 409)
+    except httpx.HTTPError as exc:  # the sign-in refresh could not reach the gateway
+        return _refusal("relay_unreachable", connection_id, f"Not reachable from this gateway: {exc}", 502)
     if row is None:
-        raise HTTPException(404, "No such gateway")
-    target = _target(request.scope, gateway_id)
+        raise HTTPException(404, "No such connection")
+    target = _target(request.scope, connection_id)
     if target is None:
         raise HTTPException(400, "Not a route this relay carries")
     method = request.method.upper()
     headers = {k: v for k, v in request.headers.items()
                if k.lower() not in _DROP_REQUEST and not k.lower().startswith("x-forwarded-")}
-    headers.update(relay.sign_request(relay.hub_key(state.webapp_home), method=method, target=target,
-                                      audience=row["url"], grant_id=row["grant_id"], subject=row["subject"]))
+    headers.update(row.headers)
     has_body = method not in {"GET", "HEAD", "OPTIONS"} or request.headers.get("content-length") not in (None, "0")
     client = relay_client(state)
-    upstream = client.build_request(method, f"{row['url']}{target}", headers=headers,
+    upstream = client.build_request(method, f"{row.base_url}{target}", headers=headers,
                                     content=request.stream() if has_body else None)
     try:
         response = await client.send(upstream, stream=True)
-    except httpx.HTTPError as exc:  # transport failure: the gateway is unreachable from this hub
-        _log.info("Gateway relay to %s failed: %s", row["url"], exc)
-        return JSONResponse({"error": "relay_unreachable", "connection_id": gateway_id,
-                             "detail": f"{row['label']} is not reachable from this gateway."}, status_code=502)
+    except httpx.HTTPError as exc:  # transport failure: the gateway is unreachable from here
+        _log.info("Gateway relay to %s failed: %s", row.base_url, exc)
+        return _refusal("relay_unreachable", connection_id, f"{row.label} is not reachable from this gateway.", 502)
     if response.status_code == 401:
         await response.aclose()
-        return JSONResponse({"error": "relay_reconnect", "connection_id": gateway_id,
-                             "detail": f"{row['label']} no longer accepts this gateway's relay. "
-                                       "Reconnect it in Settings → Gateways."}, status_code=409)
-    base = f"{prefix_from_request(request)}{_PREFIX}{gateway_id}"
+        return _refusal("relay_reconnect", connection_id, f"{row.label} no longer accepts the saved credential. "
+                        "Update it in Settings → Gateways.", 409)
+    base = f"{prefix_from_request(request)}{_PREFIX}{connection_id}"
     out = {key: value for key, value in response.headers.items() if key.lower() in _KEEP_RESPONSE}
     if "location" in response.headers:
-        location = _relayed_location(response.headers["location"], row, base)
+        location = _relayed_location(response.headers["location"], row.base_url, base)
         if location is None:
             await response.aclose()
-            return JSONResponse({"error": "relay_redirect", "connection_id": gateway_id,
-                                 "detail": f"{row['label']} redirected outside itself."}, status_code=502)
+            return _refusal("relay_redirect", connection_id, f"{row.label} redirected outside itself.", 502)
         out["Location"] = location
     out.update(_RESPONSE_POLICY)
     return StreamingResponse(response.aiter_raw(), status_code=response.status_code, headers=out,
@@ -211,7 +215,8 @@ _live: dict[int, tuple[weakref.ref, asyncio.AbstractEventLoop, str]] = {}
 
 
 def close_gateway_sockets(gateway_id: str) -> int:
-    """Close every relayed socket to *gateway_id* (it was removed); returns how many."""
+    """Close every relayed socket to connection *gateway_id* (it was removed or re-pointed); returns
+    how many. Called by the saved-connections routes on remove and on an edit that moves the dial."""
     with _live_lock:
         live = [(key, entry) for key, entry in _live.items() if entry[2] == gateway_id]
         for key, _entry in live:
@@ -238,8 +243,8 @@ def _sendable(code: Optional[int]) -> int:
     return code
 
 
-def _admit_browser(ws: WebSocket) -> Optional[tuple[dict[str, str], str]]:
-    """``(identity, credential generation)`` the browser's relay ticket admits, or None."""
+def _admit_browser(ws: WebSocket) -> Optional[str]:
+    """The browser credential generation the tab's relay ticket was minted under, or None."""
     from hermes_cli.dashboard_auth.ws_tickets import TicketInvalid, consume_ticket
     from hermes_cli.web_server_boundary import ws_host_origin_reason
     from hermes_cli.web_session_sockets import RELAY_SOCKET, admitted_with, ticket_refusal
@@ -252,10 +257,9 @@ def _admit_browser(ws: WebSocket) -> Optional[tuple[dict[str, str], str]]:
     except TicketInvalid:
         return None
     admitted = admitted_with(info)
-    if ticket_refusal(info, RELAY_SOCKET, auth_required=True) is not None or admitted is None:
+    if ticket_refusal(info, RELAY_SOCKET, auth_required=bool(getattr(state, "auth_required", False))) is not None or admitted is None:
         return None
-    return {"user_id": info.get("user_id"), "provider": info.get("provider"),
-            "issuer": info.get("issuer") or ""}, admitted
+    return admitted
 
 
 def _offered_subprotocols(ws: WebSocket) -> list[str]:
@@ -263,8 +267,8 @@ def _offered_subprotocols(ws: WebSocket) -> list[str]:
     return [value.strip() for value in raw.split(",") if value.strip()]
 
 
-@router.websocket(_PREFIX + "{gateway_id}/{path:path}")
-async def relay_ws(ws: WebSocket, gateway_id: str, path: str) -> None:
+@router.websocket(_PREFIX + "{connection_id}/{path:path}")
+async def relay_ws(ws: WebSocket, connection_id: str, path: str) -> None:
     from websockets.asyncio.client import connect
     from websockets.exceptions import WebSocketException
     from websockets.typing import Origin, Subprotocol
@@ -272,28 +276,37 @@ async def relay_ws(ws: WebSocket, gateway_id: str, path: str) -> None:
     from hermes_cli.web_session_sockets import track
 
     admitted = _admit_browser(ws)
-    row = _gateway(ws.app.state, admitted[0], gateway_id) if admitted is not None else None
-    target = _target(ws.scope, gateway_id, drop_query=frozenset({"relay_ticket"})) if row else None
-    if admitted is None or row is None or target is None:
+    try:
+        row = await _resolve(ws.app.state, connection_id) if admitted is not None else None
+        target = _target(ws.scope, connection_id, drop_query=_CREDENTIAL_QUERY) if row else None
+        credential = await reach.socket_credential(relay_client(ws.app.state), row, f"/{path}") if target else None
+    except (reach.Unreachable, httpx.HTTPError, ValueError) as exc:
+        _log.info("Gateway relay socket to %s refused before dialing: %s", connection_id, exc)
+        await ws.close(code=4403)
+        return
+    if admitted is None or row is None or target is None or credential is None:
         await ws.close(code=4401)
         return
-    track(ws, admitted[1])
-    parts = urllib.parse.urlsplit(row["url"])
-    url = f"{'wss' if parts.scheme == 'https' else 'ws'}://{parts.netloc}{parts.path}{target}"
+    track(ws, admitted)
+    parts = urllib.parse.urlsplit(row.base_url)
+    joiner = "&" if "?" in target else "?"
+    url = (f"{'wss' if parts.scheme == 'https' else 'ws'}://{parts.netloc}{parts.path}{target}"
+           f"{joiner}{credential[0]}={urllib.parse.quote(credential[1], safe='')}")
     offered = [Subprotocol(value) for value in _offered_subprotocols(ws)]
+    extra = {k: v for k, v in row.headers.items() if k.lower() not in {"x-hermes-session-token", "authorization"}}
     try:
-        upstream = await connect(url, subprotocols=offered or None,
+        upstream = await connect(url, subprotocols=offered or None, additional_headers=extra or None,
                                  origin=Origin(f"{parts.scheme}://{parts.netloc}"), max_size=_MAX_FRAME,
                                  open_timeout=15, compression=None)
-    except (OSError, TimeoutError, WebSocketException) as exc:  # refused (a bad ticket there) or unreachable
-        _log.info("Gateway relay socket to %s%s refused: %s", row["url"], path, type(exc).__name__)
+    except (OSError, TimeoutError, WebSocketException) as exc:  # refused there, or unreachable
+        _log.info("Gateway relay socket to %s%s refused: %s", row.base_url, path, type(exc).__name__)
         await ws.close(code=4403)
         return
     await ws.accept(subprotocol=upstream.subprotocol)
     with _live_lock:
-        _live[id(ws)] = (weakref.ref(ws), asyncio.get_running_loop(), gateway_id)
-    # Remove forgets the row, then closes the gateway's live sockets; one during the dial missed this socket.
-    if (_gateway(ws.app.state, admitted[0], gateway_id) or {}).get("grant_id") != row["grant_id"]:
+        _live[id(ws)] = (weakref.ref(ws), asyncio.get_running_loop(), connection_id)
+    # Remove forgets the entry, then closes its live sockets; one removed during the dial missed this one.
+    if (reach.entry_url(connection_id) or "").rstrip("/") != row.base_url:
         with _live_lock:
             _live.pop(id(ws), None)
         with contextlib.suppress(OSError):

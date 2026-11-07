@@ -38,7 +38,7 @@ HOST_TERMINAL_SOCKET = "host-terminal"
 SPEAK_STREAM_SOCKET = "speak-stream"
 TRANSCRIBE_STREAM_SOCKET = "transcribe-stream"
 AUDIO_SOCKETS = frozenset({SPEAK_STREAM_SOCKET, TRANSCRIBE_STREAM_SOCKET})
-#: A socket the gateway relay opens to another gateway (``web_routers.webapp_relay_proxy``).
+#: A socket the Webapp's proxy opens to a saved gateway connection (``web_routers.webapp_relay_proxy``).
 RELAY_SOCKET = "relay"
 #: Sockets that open only with a ticket minted for them, never with a standing credential.
 OWN_TICKET_SOCKETS = frozenset({HOST_TERMINAL_SOCKET, RELAY_SOCKET})

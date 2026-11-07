@@ -810,7 +810,6 @@ from hermes_cli.web_routers import (
     webapp_access as _webapp_access_routes,
     ui_preferences as _ui_preferences_routes,
     gateway_connections as _gateway_connections_routes,
-    webapp_relay as _webapp_relay_routes,
     webapp_relay_proxy as _webapp_relay_proxy_routes,
 )
 
@@ -854,8 +853,7 @@ app.include_router(_chat_ws_routes.router)
 app.include_router(_chat_workspaces_routes.router)
 app.include_router(_dashboard_ui_routes.router)
 app.include_router(_webapp_routes.router)
-# The gateway relay checks its own surface and config per request (WebSocket routes take no Request).
-app.include_router(_webapp_relay_routes.router)
+# The saved-connections proxy checks its surface per request (WebSocket routes take no Request).
 app.include_router(_webapp_relay_proxy_routes.router)
 app.include_router(_shared_metrics_routes.router)
 app.include_router(_delegation_routes.router)

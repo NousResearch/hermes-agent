@@ -5,6 +5,8 @@ reasoning effort, the ``stream_options`` usage extension). It is a fact about th
 about the session: a ``/model`` switch, a fallback activation, a credential rotation that moves
 the endpoint, or a primary restore starts the new route without the old route's verdicts, as the
 Codex replay verdict already did (#61552). The primary's own verdicts come back with it.
+``_disable_streaming`` is one too (a provider answered that it cannot stream), but its reset value is
+the configured ``model.streaming`` seed, not ``False``.
 """
 from __future__ import annotations
 
@@ -16,13 +18,17 @@ ROUTE_REJECTION_FIELDS = (
     "_stream_options_unsupported",
 )
 # Everything ``reset_route_verdicts`` touches, for code that saves and restores a route's verdicts.
-ROUTE_VERDICT_FIELDS = (*ROUTE_REJECTION_FIELDS, "_codex_reasoning_replay_enabled", "_codex_reasoning_replay_rejected")
+ROUTE_VERDICT_FIELDS = (
+    *ROUTE_REJECTION_FIELDS, "_disable_streaming", "_codex_reasoning_replay_enabled", "_codex_reasoning_replay_rejected",
+)
 
 
 def reset_route_verdicts(agent: Any) -> None:
     """Clear every per-route rejection verdict on ``agent`` (called whenever the route changes)."""
     for name in ROUTE_REJECTION_FIELDS:
         setattr(agent, name, False)
+    if hasattr(agent, "_disable_streaming"):  # back to the configured ``model.streaming`` seed (agent_init)
+        agent._disable_streaming = bool(getattr(agent, "_disable_streaming_seed", False))
     from agent.turn_recovery_codex import reset_codex_reasoning_replay
     reset_codex_reasoning_replay(agent)
 

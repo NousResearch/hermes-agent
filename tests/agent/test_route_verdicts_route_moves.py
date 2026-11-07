@@ -67,3 +67,38 @@ def test_transport_recovery_on_the_same_url_keeps_the_verdicts():
     with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()), patch("time.sleep"):
         assert agent._try_recover_primary_transport(_make_transport_error(), retry_count=3, max_retries=3) is True
     assert all(_verdicts(agent).values())
+
+
+def _fail_over(agent):
+    from tests.agent.test_primary_runtime_restore import _mock_resolve
+    with patch("agent.auxiliary_client.resolve_provider_client", return_value=(_mock_resolve(), None)):
+        assert agent._try_activate_fallback() is True
+
+
+_FALLBACK = {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}
+
+
+def test_a_route_that_refused_streaming_does_not_turn_streaming_off_for_the_next_route():
+    """``_disable_streaming`` learned from one provider's "streaming not supported" stays with that
+    route: the fallback streams again, and the primary gets its own verdict back on restore."""
+    agent = _make_agent(fallback_model=_FALLBACK)
+    assert agent._disable_streaming is False
+    agent._disable_streaming = True  # the primary refused a stream
+    _fail_over(agent)
+    assert agent._disable_streaming is False
+    with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+        assert agent._restore_primary_runtime() is True
+    assert agent._disable_streaming is True
+
+
+def test_a_route_change_restores_the_configured_streaming_seed_not_streaming_on():
+    """``model.streaming: false`` is configuration, not a verdict: a route change keeps it."""
+    with patch("hermes_cli.config.load_config_readonly", return_value={"model": {"streaming": False}}):
+        agent = _make_agent(fallback_model=_FALLBACK)
+    assert agent._disable_streaming is True
+    _fail_over(agent)
+    assert agent._disable_streaming is True
+    with patch("agent.model_metadata.get_model_context_length", return_value=131_072), \
+            patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+        agent.switch_model("q-model", "custom", api_key="sk-x", base_url="https://q.example/v1")
+    assert agent._disable_streaming is True

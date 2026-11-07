@@ -11,7 +11,7 @@ import time
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 from utils import atomic_write_text
 from tools.threat_patterns import first_threat_message as _first_threat_message
@@ -174,6 +174,63 @@ def _stale_entry_message(entry: str) -> str:
 # silent about the loss (#117952). Same convention as _error(**extra).
 
 
+_PLACEHOLDER_EXACT = frozenset({
+    "placeholder", "占位", "占位符", "dummy", "tmp", "temp",
+    "todo", "n/a", "x", "t", "s9", ".", "..", "...", "-", "_",
+    # 2026-10-08 z1/a0 probe tokens (<=2-char alnum tokens are covered by the length rule)
+    "z1", "a0", "z2", "a1",
+})
+_PLACEHOLDER_PROBE_RE = re.compile(r"(?:temp|tmp|placeholder|dummy)\d*")
+_PLACEHOLDER_REFUSAL = (
+    "Refused: this looks like a ritual probe write, not a durable fact or a real entry "
+    "selector. To save a fact, write a complete declarative sentence; for remove/patch/"
+    "replace, copy the entry's FULL text verbatim as old_text. If you have nothing real "
+    "to write, skip the memory call entirely."
+)
+
+
+def _looks_like_probe(text: str) -> bool:
+    """Ritual-token shape test shared by content and old_text guards. Long real facts
+    that merely MENTION placeholders (len > 12) pass -- only probe-shaped writes match."""
+    t = (text or "").strip().lower()
+    if not t:
+        return False
+    if len(t) == 1 or t in _PLACEHOLDER_EXACT:
+        return True
+    if len(t) <= 2 and t.isalnum():
+        return True  # "z1"/"a0"-class tokens: never a durable fact, never an entry selector
+    if len(t) > 12:
+        return False
+    return ("占位" in t or "placeholder" in t
+            or bool(_PLACEHOLDER_PROBE_RE.fullmatch(t)))
+
+
+def _placeholder_content_error(content: str) -> str | None:
+    """Refuse ritual placeholder writes (agent self-loop guard).
+
+    2026-11-03 incident: an agent replayed ``add("placeholder")`` / ``remove("placeholder")``
+    hundreds of times. Every add/remove pair is a REAL state change, so no progress-based
+    guard fires; the alternating signatures also defeat consecutive-identical detection.
+    An error-shaped refusal at the content layer breaks the ritual at its first stroke.
+    """
+    if _looks_like_probe(content):
+        return _PLACEHOLDER_REFUSAL
+    return None
+
+
+def _placeholder_probe_error(old_text: str) -> str | None:
+    """Refuse ritual probe SELECTORS (remove/patch/replace old_text).
+
+    2026-11-03 19:13-22:12: glm-5.3-flash replayed remove('占位5') / remove('TEMP') /
+    remove('F') against entries that never existed; each miss returned an
+    actionable-shaped error that invited another blind retry. Probe selectors are
+    refused (and counted) at the content layer; real edits pass the entry's full text,
+    which never looks like this."""
+    if _looks_like_probe(old_text):
+        return _PLACEHOLDER_REFUSAL
+    return None
+
+
 class MemoryStore:
     """Bounded curated memory with file persistence; one instance per AIAgent.
     ``_system_prompt_snapshot`` is frozen at load time (prefix-cache stable);
@@ -184,6 +241,24 @@ class MemoryStore:
     # to budget exhaustion and suppress the user's reply.
     # See #42405.
     _MAX_CONSOLIDATION_FAILURES_PER_TURN = 3
+    # Over-budget failures per target per turn, CUMULATIVE — successes do NOT reset it.
+    # The placeholder-probe loop (add the real fact -> overflow; add a tiny "z1" probe ->
+    # success resets the consecutive budget; repeat) rode those probe successes for
+    # hundreds of calls (2026-10-08 incident; recurs on local models that ignore prose
+    # rules). Four over-budget attempts in one turn means the model is not consolidating.
+    _MAX_OVERFLOW_FAILURES_PER_TURN = 3
+    # Consecutive SUCCESS responses that changed nothing (duplicate add, no-op write)
+    # before a TERMINAL stop. The 2026-11-03 incident replayed a success-shaped no-op
+    # 100+ times off the success signal alone; the runtime identical-call gate only
+    # catches byte-identical repeats, so the store keeps its own counter.
+    _MAX_NO_PROGRESS_SUCCESSES_PER_TURN = 2
+    # TOTAL failed memory ops allowed per turn, CUMULATIVE and success-immune. The
+    # 2026-11-03 22:04-22:12 incident interleaved real consolidation progress with
+    # ritual failures (remove 'TEMP'/'F'/'占位5', patch without old_text, 'recall' ops);
+    # every success reset the consecutive budget below, so the flailing ran 8+ failed
+    # calls across three minutes at 96% capacity. Seven failures in one turn means the
+    # model is not reading the error guidance.
+    _MAX_TURN_FAILURES_TOTAL = 6
 
     def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375, *,
                  memory_enabled: bool = True, user_profile_enabled: bool = True):
@@ -193,6 +268,10 @@ class MemoryStore:
         self.memory_enabled, self.user_profile_enabled = memory_enabled, user_profile_enabled
         self._system_prompt_snapshot: dict[str, str] = {"memory": "", "user": ""}
         self._consolidation_failures = 0  # per turn; reset by reset_consolidation_failures()
+        self._overflow_failures: dict[str, int] = {}  # per-target over-budget failures, cumulative
+        self._no_progress_successes = 0  # consecutive success responses that changed nothing
+        self._turn_failures_total = 0  # ALL failed ops this turn, success-immune (_MAX_TURN_FAILURES_TOTAL)
+        self._state_history: dict[str, list[int]] = {}  # post-write state hashes per target, this turn
 
     # Per-turn counter of failed at-capacity consolidation attempts; reset at each turn boundary by
     # reset_consolidation_failures() (#42405).
@@ -202,8 +281,12 @@ class MemoryStore:
     def reset_consolidation_failures(self) -> None:
         """Call at turn start."""
         self._consolidation_failures = 0
+        self._overflow_failures = {}
+        self._no_progress_successes = 0
+        self._turn_failures_total = 0
+        self._state_history = {}
 
-    def _consolidation_failure(self, response: dict[str, Any]) -> dict[str, Any]:
+    def _consolidation_failure(self, response: dict[str, Any], target: Optional[str] = None) -> dict[str, Any]:
         """Count a consolidation failure: under the per-turn cap return ``response``
         (it says how to retry); past it a TERMINAL result so the model stops looping.
 
@@ -211,6 +294,30 @@ class MemoryStore:
         looping memory calls and proceeds to answer the user — a failed memory side effect must never block
         the turn's reply (#42405).
         """
+        if target is not None and FAILURE_CLASS.get() == "over_budget":
+            # Cumulative and success-immune: interleaved tiny "probe" adds succeed and used to
+            # reset the consecutive budget below, so that cap never tripped and the loop ran
+            # for hundreds of calls. Counting over-budget failures per target regardless of
+            # interleaved successes bounds the placeholder loop at the store layer.
+            self._overflow_failures[target] = self._overflow_failures.get(target, 0) + 1
+            if self._overflow_failures[target] > self._MAX_OVERFLOW_FAILURES_PER_TURN:
+                FAILURE_CLASS.set("retry_cap")
+                return {"success": False, "done": True, "error": (
+                    f"Writes to '{target}' exceeded the char limit {self._overflow_failures[target]} times "
+                    "this turn. Stop calling memory — never add short placeholder or probe entries to test "
+                    "the limit or 'make room': they pollute memory and burn context. Save the fact in a "
+                    "later turn as ONE 'operations' batch that removes stale entries AND adds it together, "
+                    "or leave memory unchanged and continue with your reply to the user.")}
+        # Success-immune cumulative total: the 2026-11-03 22:04-22:12 incident interleaved
+        # real consolidation progress with ritual failures, and every success reset the
+        # consecutive budget below, so flailing ran 8+ failed calls across three minutes.
+        self._turn_failures_total += 1
+        if self._turn_failures_total > self._MAX_TURN_FAILURES_TOTAL:
+            FAILURE_CLASS.set("retry_cap")
+            return {"success": False, "done": True, "error": (
+                f"{self._turn_failures_total} failed memory calls this turn (successes do NOT reset "
+                "this counter). Leave memory unchanged and continue with your reply to the user; "
+                "retry consolidation in a later turn if still needed.")}
         self._consolidation_failures += 1
         if self._consolidation_failures <= self._MAX_CONSOLIDATION_FAILURES_PER_TURN:
             return response
@@ -324,7 +431,8 @@ class MemoryStore:
     def _failure_with_entries(self, target: str, message: str) -> dict[str, Any]:
         """Over-budget consolidation failure carrying the live entries so the model can consolidate."""
         return self._consolidation_failure(
-            _error(message, "over_budget", current_entries=self._entries_for(target), usage=self._usage(target)))
+            _error(message, "over_budget", current_entries=self._entries_for(target), usage=self._usage(target)),
+            target)
 
     def _add_overflow(self, target: str, content: str, limit: int) -> dict[str, Any]:
         """A lone add over budget, legacy or one-item batch: the model has not consolidated yet,
@@ -334,7 +442,8 @@ class MemoryStore:
             f"Memory at {self._char_count(target):,}/{limit:,} chars; adding this entry ({len(content)} chars) "
             f"would exceed the limit by {over:,} chars. Retry as ONE 'operations' batch that "
             f"removes or shortens (patch) stale entries from current_entries below to free at least "
-            f"{over:,} chars AND adds this entry — the limit is checked only on the batch result."))
+            f"{over:,} chars AND adds this entry — the limit is checked only on the batch result. "
+            "Never add a short placeholder or probe entry to 'make room' or to test the limit."))
 
     def _batch_failure(self, target: str, message: str, failure_class: str,
                        closest_entries: Optional[list[str]] = None) -> dict[str, Any]:
@@ -345,7 +454,7 @@ class MemoryStore:
         return self._consolidation_failure(
             _error(message + " No operations were applied (batch is all-or-nothing).", failure_class,
                    usage=self._usage(target),
-                   **({"closest_entries": closest_entries} if closest_entries else {})))
+                   **({"closest_entries": closest_entries} if closest_entries else {})), target)
 
     def _mutate(self, target: str, mutate, *, skip_drift: bool = False) -> dict[str, Any]:
         """Lock, re-read from disk, run ``mutate(entries, limit)`` -> ``(new_entries, message)``
@@ -392,19 +501,22 @@ class MemoryStore:
 
             mkdir_under_hermes_home(path.parent)
             self._write_file(path, result[0])
-            return self._success_response(target, result[1], **extra_fields)
+            return self._success_response(target, result[1], progressed=result[0] != before, **extra_fields)
 
     def add(self, target: str, content: str) -> dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
         content = content.strip()
         if not content:
             return _error("Content cannot be empty.", "missing_content")
+        if placeholder_error := _placeholder_content_error(content):
+            return self._consolidation_failure(_error(placeholder_error, "invalid_args"), target)
         if scan_error := _scan_memory_content(content):
             return _error(scan_error, "scan_blocked")
 
         def _add(entries, limit):
             if content in entries:
-                return self._success_response(target, "Entry already exists (no duplicate added).")
+                return self._success_response(target, "Entry already exists (no duplicate added).",
+                                              progressed=False)
             if len(ENTRY_DELIMITER.join(entries + [content])) > limit:
                 return self._add_overflow(target, content, limit)
             return entries + [content], "Entry added."
@@ -481,6 +593,11 @@ class MemoryStore:
                           matches=[entries[i][:80] + ("..." if len(entries[i]) > 80 else "")
                                    for i in _substring_matches(entries, old_text)])
         if idx is None:
+            if verb == "remove" and (probe := _placeholder_probe_error(old_text)):
+                # Counted, not a silent validation miss: zero-match probe selectors are the
+                # loop's fuel. Match-GATED: a selector that matches an entry is a real edit
+                # (an entry may legitimately be named "test"); only zero-match probes refuse.
+                return self._consolidation_failure(_error(probe, "invalid_args"))
             return self._consolidation_failure(_no_match_error(entries, old_text, verb, current_entries=entries))
         return idx
 
@@ -499,6 +616,10 @@ class MemoryStore:
             idx = self._locate(entries, old_text, "replace" if new_content else "remove", matched_entry)
             if isinstance(idx, dict):
                 return idx
+            if new_content is not None and (probe := _placeholder_content_error(new_content)):
+                # After match resolution: a zero-match selector reports no-match first, so
+                # matching semantics tests keep their contract.
+                return self._consolidation_failure(_error(probe, "invalid_args"), target)
             replaced = entries[:idx] + ([] if new_content is None else [new_content]) + entries[idx + 1:]
             if new_content is None:
                 return replaced, "Entry removed.", {"removed_entry": entries[idx]}
@@ -524,6 +645,8 @@ class MemoryStore:
         if act == "add":
             if not content:
                 return f"{pos}: content is required.", None, "missing_content", None
+            if probe := _placeholder_content_error(content):
+                return f"{pos}: {probe}", None, "invalid_args", None
             if content not in working:  # idempotent -- skip duplicate, don't fail the batch
                 working.append(content)
             return None, None, "none", None
@@ -544,9 +667,14 @@ class MemoryStore:
         else:
             idx, ambiguous = _find_unique_match(working, old_text)
             if ambiguous:
-                return (f"{pos}: '{old_text}' matched multiple distinct entries -- be more specific.", None,
+                cands = " | ".join(working[i][:60] + ("..." if len(working[i]) > 60 else "")
+                                   for i in _substring_matches(working, old_text)[:3])
+                return (f"{pos}: '{old_text}' matched multiple distinct entries -- be more specific "
+                        f"or copy one entry's full text as old_text. Candidates: {cands}", None,
                         "ambiguous", None)
             if idx is None:
+                if act == "remove" and (probe := _placeholder_probe_error(old_text)):
+                    return f"{pos}: {probe}", None, "invalid_args", None
                 miss = _no_match_error(working, old_text, act)
                 return f"{pos}: {miss['error']}", miss.get("closest_entries"), "no_match", None
         previous_content = working[idx]
@@ -625,7 +753,8 @@ class MemoryStore:
                     return self._add_overflow(target, (ops[0].get("content") or ops[0].get("new_text") or "").strip(), limit)
                 return self._batch_failure(target, (
                     f"Applying all {len(operations)} operations {_over_limit(new_total, limit)} more. Add "
-                    f"removes or shortening patches of other stale entries to the same batch, then retry."),
+                    f"removes or shortening patches of other stale entries to the same batch, then retry. "
+                    "Never add a short placeholder or probe entry to 'make room' or to test the limit."),
                     "over_budget")
             if not commit:
                 return {"success": True, "matched_entries": matched}
@@ -651,15 +780,53 @@ class MemoryStore:
         it, preserving the prefix cache); None if empty."""
         return self._system_prompt_snapshot.get(target, "") or None
 
-    def _success_response(self, target: str, message: str | None = None, **extra) -> dict[str, Any]:
+    def _success_response(self, target: str, message: str | None = None, *,
+                          progressed: bool = True, **extra) -> dict[str, Any]:
         """TERMINAL and WITHOUT the entries list: echoing entries invites the model to
-        "find more to fix" and re-issue the same ops. A successful write resets the
-        per-turn failure budget. ``**extra`` mirrors ``_error``'s convention — e.g. the
+        "find more to fix" and re-issue the same ops. A successful write that CHANGED the
+        entries resets the per-turn failure budget; one that changed nothing (duplicate
+        add, no-op write) does not — it counts toward a small no-progress cap instead,
+        because a success-shaped no-op is exactly what the 2026-11-03 replay loop rode.
+        ``**extra`` mirrors ``_error``'s convention — e.g. the
         full text a replace overwrote (#117952), deliberately visible despite the
         no-entries rule: silent data loss is the failure this field exists to prevent."""
-        # A successful write means the consolidation loop made progress, so the per-turn failure budget
-        # resets (the cap counts consecutive failures, not lifetime ones within a turn) (#42405).
-        self._consolidation_failures = 0
+        if progressed:
+            # A real state change means the consolidation loop made progress, so the per-turn failure budget
+            # resets (the cap counts consecutive failures, not lifetime ones within a turn) (#42405).
+            self._consolidation_failures = 0
+            self._no_progress_successes = 0
+            hist = self._state_history.setdefault(target, [])
+            state = hash(tuple(self._entries_for(target)))
+            if hist.count(state) >= 2:
+                # 2026-11-03: add(p)/remove(p) pairs are REAL state changes each, so the
+                # no-progress cap never fired while the store merely cycled A->B->A. The 3rd
+                # visit to one post-write state is circling, not progressing; the 2nd visit
+                # (a single revert) stays allowed for genuine self-correction.
+                FAILURE_CLASS.set("retry_cap")
+                # Route through the failure funnel: a refusal the model can read and route
+                # around is not a stop. The 22:44-22:52 replay took 30 of these refusals and
+                # kept going to 89 calls because the refusal bypassed the cumulative budget.
+                return self._consolidation_failure(
+                    {"success": False, "done": True, "target": target,
+                     "error": ("Memory writes are oscillating — the store returned to a state it "
+                               "already held twice this turn (add/remove or replace cycling). Stop "
+                               "calling memory and continue with your reply to the user.")},
+                    target,
+                )
+            hist.append(state)
+            if len(hist) > 16:
+                del hist[:-16]
+        else:
+            self._no_progress_successes += 1
+            if self._no_progress_successes > self._MAX_NO_PROGRESS_SUCCESSES_PER_TURN:
+                FAILURE_CLASS.set("retry_cap")
+                return {"success": False, "done": True, "target": target,
+                        "error": (
+                            f"{self._no_progress_successes} memory writes in a row changed nothing — the entry "
+                            "already exists or the write is a no-op. Stop calling memory; for a DIFFERENT update "
+                            "change the content, otherwise move on and reply to the user."),
+                        "usage": self._usage_pct(target, self._char_count(target)),
+                        "entry_count": len(self._entries_for(target))}
         return {"success": True, "done": True, "target": target,
                 "usage": self._usage_pct(target, self._char_count(target)),
                 "entry_count": len(self._entries_for(target)), **({"message": message} if message else {}),

@@ -102,3 +102,71 @@ def test_a_route_change_restores_the_configured_streaming_seed_not_streaming_on(
             patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
         agent.switch_model("q-model", "custom", api_key="sk-x", base_url="https://q.example/v1")
     assert agent._disable_streaming is True
+
+
+def _rotation_agent():
+    """A wire-level agent whose 429 recovery rotates the pool through the real ``_swap_credential``."""
+    from types import MethodType
+
+    from agent.client_lifecycle import ClientLifecycleMixin
+    from tests.agent.test_reasoning_disable_recovery import _WireAgent
+
+    agent = _WireAgent({"enabled": True, "effort": "max"})
+    agent.api_key = "key-a"
+    agent._client_kwargs = {"api_key": "key-a", "base_url": agent.base_url}
+    agent._disable_streaming = agent._disable_streaming_seed = False
+    agent._reapply_route_client_config = MethodType(ClientLifecycleMixin._reapply_route_client_config, agent)
+    agent._apply_client_headers_for_base_url = MagicMock()
+    agent._replace_primary_openai_client = MagicMock(return_value=True)
+    agent._swap_credential = MethodType(ClientLifecycleMixin._swap_credential, agent)
+    return agent
+
+
+def _recover_from(agent, retry, status_code, message):
+    from agent.error_classifier import classify_api_error
+    from agent.turn_recovery import recover_after_classification
+    from tests.agent.test_reasoning_disable_recovery import _FakeApiError
+
+    err = _FakeApiError(status_code, message)
+    classified = classify_api_error(err, provider=agent.provider, model=agent.model)
+    with patch("hermes_cli.models_reasoning_caps.refresh_reasoning_caps_async", lambda provider: None), \
+            patch("hermes_cli.config.load_config_readonly", return_value={}):
+        return recover_after_classification(
+            agent, err, classified, retry, status_code=status_code, error_context={}, messages=[], api_messages=[],
+        )
+
+
+@pytest.mark.parametrize(("rotated_url", "moved"), [("https://second.example/v1", True), (None, False)])
+def test_a_rotation_to_another_endpoint_gives_its_effort_rejection_a_recovery(rotated_url, moved):
+    """A rejects ``effort: max``, the repaired retry hits a 429 and the pool rotates. On another
+    endpoint the verdict resets and the configured effort goes out again: when that endpoint rejects
+    it too, the same call repairs it again instead of taking the fallback chain. A rotation that keeps
+    the endpoint keeps the verdict and the spent guard, so recovery stays one shot per route."""
+    from agent.turn_retry_state import TurnRetryState
+    from tests.agent.test_reasoning_disable_recovery import _STRUCTURED_LEVEL_400, _wire_reasoning_config
+
+    agent = _rotation_agent()
+    retry = TurnRetryState()
+    assert _wire_reasoning_config(agent) == {"enabled": True, "effort": "max"}  # the request A rejects
+    assert _recover_from(agent, retry, 400, _STRUCTURED_LEVEL_400)[0] is True
+    assert _wire_reasoning_config(agent) is None
+
+    entry = SimpleNamespace(runtime_api_key="key-b", runtime_base_url=rotated_url or agent.base_url, id="b")
+
+    def rotate(**kwargs):
+        assert kwargs["status_code"] == 429
+        assert agent._swap_credential(entry) is True
+        return True, True
+
+    with patch.object(agent, "_recover_with_credential_pool", side_effect=rotate):
+        assert _recover_from(agent, retry, 429, "rate limit exceeded") == (True, True)
+
+    if moved:
+        assert _wire_reasoning_config(agent) == {"enabled": True, "effort": "max"}  # the request B rejects
+        assert _recover_from(agent, retry, 400, _STRUCTURED_LEVEL_400)[0] is True
+        assert _wire_reasoning_config(agent) is None
+    else:
+        assert _wire_reasoning_config(agent) is None
+        assert retry.reasoning_mandatory_retry_attempted is True
+        assert _recover_from(agent, retry, 400, _STRUCTURED_LEVEL_400)[0] is False
+    assert agent.activated == []

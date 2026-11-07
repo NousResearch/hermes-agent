@@ -34,6 +34,7 @@ from agent.turn_failure_copy import (
     CONTENT_POLICY_NEXT_STEPS, content_policy_copy, exhausted_copy, limit_reset_copy, nonretryable_copy,
     provider_label_for, site_copy, stamp_failure,
 )
+from agent.route_verdicts import _endpoint as _route_endpoint
 from agent.turn_retry_state import TurnRetryState
 from agent.turn_recovery_codex import _is_codex_token_expired, _recover_stale_codex_reasoning
 from hermes_constants import display_hermes_home
@@ -650,6 +651,24 @@ def _usage_window_reset_context(agent) -> dict[str, float]:
     return {"reset_at": resets_ms / 1000} if isinstance(resets_ms, (int, float)) and resets_ms > 0 else {}
 
 
+def _rotate_credential_pool(
+    agent: Any, classified: Any, _retry: TurnRetryState, status_code: Any, error_context: Any,
+) -> bool:
+    """Let the credential pool rotate or refresh for this error. A rotation onto another endpoint
+    resets the route verdicts, so that endpoint is sent the configured request again: its rejection
+    gets the same one-shot repair the last endpoint had (still one per route visit)."""
+    endpoint_before = _route_endpoint(agent)
+    recovered, _retry.has_retried_429 = agent._recover_with_credential_pool(
+        status_code=status_code, has_retried_429=_retry.has_retried_429,
+        classified_reason=classified.reason, error_context=_pool_error_context(agent, classified, error_context),
+        billing_unverified=classified.billing_unverified,
+    )
+    if recovered and _route_endpoint(agent) != endpoint_before:
+        _retry.reasoning_mandatory_retry_attempted = False
+        _retry.invalid_encrypted_content_retry_attempted = False
+    return recovered
+
+
 def recover_after_classification(
     agent: Any, api_error: Exception, classified: Any, _retry: TurnRetryState, *,
     status_code: Optional[int], error_context: Any, messages: list[dict[str, Any]],
@@ -695,11 +714,7 @@ def recover_after_classification(
             _vlines(agent, "🔐 Nous paid access verified — refreshed runtime credentials and retrying request...")
             return True, False
 
-    recovered_with_pool, _retry.has_retried_429 = agent._recover_with_credential_pool(
-        status_code=status_code, has_retried_429=_retry.has_retried_429,
-        classified_reason=classified.reason, error_context=_pool_error_context(agent, classified, error_context),
-        billing_unverified=classified.billing_unverified,
-    )
+    recovered_with_pool = _rotate_credential_pool(agent, classified, _retry, status_code, error_context)
     if recovered_with_pool:
         return True, recovered_with_pool
 

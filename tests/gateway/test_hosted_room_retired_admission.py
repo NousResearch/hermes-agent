@@ -86,3 +86,55 @@ def test_a_running_turn_s_changed_input_is_still_a_hard_denial(hosted_owner, mon
     with pytest.raises(RuntimeStoreError, match='permission_denied'):
         service.check_admission(rpc.ref, {**row, 'payload': {'text': 'changed'}})
     assert service.check_admission(rpc.ref, row)['identity'] == identity
+
+
+def test_a_peer_home_moves_on_only_from_an_unchanged_retired_attempt(hosted_owner, tmp_path):
+    """Across owner sockets the source's 'retired' answer carries the committed input and owner,
+    so a changed row or owner is still a hard denial and only an unchanged one moves the queue on."""
+    import pytest
+    from types import SimpleNamespace
+    from gateway.control_socket import GatewayControlServer
+    from gateway.hosted_room_driver import TaskIdentity
+    from gateway.session_contract import SessionRef
+    from gateway.session_hosted_transport import (
+        HostedRoomOwnerRPC, check_remote_hosted_admission, install_hosted_transport)
+    authority, loop, _, _ = hosted_owner
+    source, target = tmp_path / 'source', tmp_path / 'target'
+    source.mkdir(mode=0o700)
+    target.mkdir(mode=0o700)
+    authority.profile_id = str(target)
+    answer = {'owner': 'room-owner', 'retired': False}
+
+    def attest(selector, operation, params):
+        result = {'owner': answer['owner'], 'target_home': authority.profile_id, 'prompt': 'input', 'attachments': []}
+        return {**result, 'retired': True} if operation == 'execute' and answer['retired'] else result
+
+    def server(home):
+        return GatewayControlServer(home, verb_handlers={'identify': lambda: {
+            'runtime_protocol': 1, 'state': 'ready', 'instance_id': 'test', 'authority_epoch': 1,
+            'served_profiles': [{'home': str(home), 'profile_id': str(home)}],
+            'capabilities': ['session-authority-v1'], 'api_origin': 'http://127.0.0.1:1', 'supervisor': 'none'}})
+    servers = [server(source), server(target)]
+    install_hosted_transport(servers[0], SimpleNamespace(profile_id=str(source)), loop, attest=attest)
+    install_hosted_transport(servers[1], authority, loop, attest=lambda *a: None)
+    for s in servers:
+        assert asyncio.run_coroutine_threadsafe(s.start(), loop).result()
+    try:
+        rpc = HostedRoomOwnerRPC(home=target, source_home=source, room_id='room', member_id='member', profile='default')
+        coords = dict(profile='default', source='bot_room')
+        sid = rpc.create(**coords, title='Group: room')['session_id']
+        rpc.submit(**coords, session_id=sid, prompt='input', task=TaskIdentity('room', 'task', 'thread', 'turn'),
+                   execution_generation=1, member_id='member', on_terminal=lambda r: None)
+        row, = list_session_admissions(authority.db, session_id=sid, pending_only=False)
+        ref = SessionRef(authority.profile_id, sid)
+        answer['retired'] = True
+        with pytest.raises(RuntimeStoreError, match='admission_conflict'):
+            check_remote_hosted_admission(authority, ref, row)
+        with pytest.raises(RuntimeStoreError, match='permission_denied'):
+            check_remote_hosted_admission(authority, ref, {**row, 'payload': {'text': 'changed'}})
+        answer['owner'] = 'someone-else'
+        with pytest.raises(RuntimeStoreError, match='permission_denied'):
+            check_remote_hosted_admission(authority, ref, row)
+    finally:
+        for s in servers:
+            asyncio.run_coroutine_threadsafe(s.stop(), loop).result()

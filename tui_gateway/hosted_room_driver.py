@@ -558,9 +558,11 @@ class HostedRoomRuntime:
             for status in ("running", "indeterminate") for t in self._tasks(binding, status)}
         if stale_task_id in live_ids:
             return False
-        if stale_task_id not in {t["identity"].task_id for t in self._tasks(binding, None)}:
+        stale = next((t for t in self._tasks(binding, None) if t["identity"].task_id == stale_task_id), None)
+        # A peer member's deferred attempt is kept on purpose: its Retry recovers that same run.
+        if stale is None or self._remote(stale):
             return False
-        with suppress(Exception):
+        with suppress(RuntimeError, OSError, ValueError):
             transport.interrupt(
                 **_session_kw(profile, session_id), expected_task_id=stale_task_id)
         return False

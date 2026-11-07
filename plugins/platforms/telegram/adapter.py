@@ -6284,12 +6284,19 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         if status == "ok":
             event.media_urls = []
             event.media_types = []
+            if getattr(event, "media_text_inlined", None):
+                event.media_text_inlined = []
             self._attach_cached(event, cached, cached.context_note(), "[Telegram] Cached observed group %s at %s")
 
     def _attach_cached(self, event: MessageEvent, cached, note: str, log_fmt: str) -> None:
         """Append a cached attachment to the event (message type follows the kind only for the first one)."""
         event.media_urls.append(cached.path)
         event.media_types.append(cached.media_type)
+        # Keep media_text_inlined aligned with media_urls: an event that already carries inline
+        # flags (e.g. a document with injected text) must not end up with fewer flags than urls,
+        # or native admission refuses the whole message (media_text_inlined_length).
+        if getattr(event, "media_text_inlined", None):
+            event.media_text_inlined.append(False)
         if len(event.media_urls) == 1 and cached.kind in self._CACHED_KIND_TO_MESSAGE_TYPE:
             event.message_type = self._CACHED_KIND_TO_MESSAGE_TYPE[cached.kind]
         event.text = self._append_observed_note(event.text, note)

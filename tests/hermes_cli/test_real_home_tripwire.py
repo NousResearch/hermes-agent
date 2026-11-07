@@ -231,6 +231,30 @@ def test_pm_generation_dir_around_the_running_venv_is_the_interpreter(tmp_path, 
     assert _pm_generation_dirs([tmp_path / "checkout" / ".venv", tmp_path / "other" / "venv"]) == set()
 
 
+def test_linked_worktree_git_dirs_resolves_gitdir_and_commondir(tmp_path):
+    """When pytest runs from a linked git worktree of a default ``$HERMES_HOME/hermes-agent``
+    install, the worktree's ``.git`` file points into ``<main>/.git/worktrees/<name>`` under
+    the guarded home. ``hermes_bootstrap`` stats ``<gitdir>/hermes-update-pull`` on import;
+    both the worktree gitdir and its commondir must be resolved as checkout prefixes."""
+    from tests.home_io_guard import _linked_worktree_git_dirs
+
+    common_git = tmp_path / ".hermes" / "hermes-agent" / ".git"
+    wt_gitdir = common_git / "worktrees" / "wt-feature"
+    wt_gitdir.mkdir(parents=True)
+    (wt_gitdir / "commondir").write_text("../..\n", encoding="utf-8")
+
+    wt_checkout = tmp_path / "wt-feature"
+    wt_checkout.mkdir()
+    (wt_checkout / ".git").write_text(f"gitdir: {wt_gitdir}\n", encoding="utf-8")
+
+    assert _linked_worktree_git_dirs(wt_checkout) == {wt_gitdir.resolve(), common_git.resolve()}
+    # A normal checkout with a .git directory returns an empty set (already covered by _CHECKOUT_ROOT).
+    normal = tmp_path / "normal-checkout"
+    (normal / ".git").mkdir(parents=True)
+    assert _linked_worktree_git_dirs(normal) == set()
+
+
+
 def test_hermes_exported_scratch_tmp_is_not_the_test_temp_root(tmp_path):
     """A Hermes-launched shell hands pytest TMPDIR=<home>/cache/scratch (tagged by
     HERMES_SCRATCH_DIR). With that home guarded, honoring it would put the session

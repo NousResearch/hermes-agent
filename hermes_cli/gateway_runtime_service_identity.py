@@ -328,7 +328,10 @@ def _vbs_identity(script: str) -> tuple[str, list[str]]:
     lines = script.splitlines()
     if len(lines) < 16 or not lines[0].startswith("' "):
         _unverified()
-    fixed = ["Option Explicit", "Dim sh, env, existing_pp",
+    # A launcher from an earlier release (async, no restart loop) stays this vendor's own template until
+    # the update regenerates it, so both grammars verify; each is matched whole.
+    waits = lines[2:3] == ["Dim sh, env, existing_pp, exit_code"]
+    fixed = ["Option Explicit", "Dim sh, env, existing_pp, exit_code" if waits else "Dim sh, env, existing_pp",
              'Set sh = CreateObject("WScript.Shell")', 'Set env = sh.Environment("PROCESS")']
     if lines[1:5] != fixed:
         _unverified()
@@ -343,13 +346,19 @@ def _vbs_identity(script: str) -> tuple[str, list[str]]:
         env[match[1]] = match[2][1:-1].replace('""', '"')
         index += 1
     tail = lines[index:]
-    if len(tail) != 8 or tail[:2] != ['existing_pp = env.Item("PYTHONPATH")', 'If Len(existing_pp) > 0 Then'] or tail[3] != 'Else' or tail[5] != 'End If':
+    if len(tail) != (13 if waits else 8) or tail[:2] != ['existing_pp = env.Item("PYTHONPATH")', 'If Len(existing_pp) > 0 Then'] or tail[3] != 'Else' or tail[5] != 'End If':
         _unverified()
     if not re.fullmatch(r'  env.Item\("PYTHONPATH"\) = ' + literal + r' & existing_pp', tail[2]) or not re.fullmatch(r'  env.Item\("PYTHONPATH"\) = ' + literal, tail[4]):
         _unverified()
     if not re.fullmatch(r'sh.CurrentDirectory = ' + literal, tail[6]):
         _unverified()
-    run = re.fullmatch(r'sh.Run (' + literal + r'), 0, False', tail[7])
+    if waits:
+        run = re.fullmatch(r'  exit_code = sh\.Run\((' + literal + r'), 0, True\)', tail[8])
+        if (tail[7] != "Do" or tail[9] != "  If exit_code = 0 Or exit_code = 78 Then Exit Do"
+                or not re.fullmatch(r"  WScript\.Sleep \d+", tail[10]) or tail[11:] != ["Loop", "WScript.Quit 0"]):
+            _unverified()
+    else:
+        run = re.fullmatch(r'sh.Run (' + literal + r'), 0, False', tail[7])
     if not run or not env.get("HERMES_SUPERVISED_CHILD"):
         _unverified()
     command = run[1][1:-1].replace('""', '"')

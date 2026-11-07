@@ -20,6 +20,8 @@ import subprocess
 import sys
 import time
 import uuid
+from collections.abc import Iterable
+from contextlib import suppress
 from datetime import datetime, timezone, UTC
 from pathlib import Path
 from xml.etree import ElementTree
@@ -59,6 +61,7 @@ _TASK_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
 _TASK_LOGON_DELAY = "PT30S"
 _TASK_RESTART_INTERVAL = "PT1M"
 _TASK_RESTART_COUNT = 999
+_LAUNCHER_RESTART_DELAY_MS = 60000
 
 _GATEWAY_ENV = (("PYTHONIOENCODING", "utf-8"), ("HERMES_GATEWAY_DETACHED", "1"), ("HERMES_SUPERVISED_CHILD", "1"))
 
@@ -421,6 +424,8 @@ def _build_gateway_vbs_script(python_path: str, working_dir: str, hermes_home: s
     No cmd.exe anywhere in the chain. Mirrors ``_build_gateway_cmd_script`` (same env + argv via
     ``_resolve_detached_python``).
     """
+    from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
+
     python_exe_path, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
     # list2cmdline gives CreateProcess-correct quoting for WScript.Shell.Run.
     command_line = subprocess.list2cmdline(_gateway_run_argv(python_exe_path, profile_arg))
@@ -429,7 +434,7 @@ def _build_gateway_vbs_script(python_path: str, working_dir: str, hermes_home: s
     lines = [
         f"' {_TASK_DESCRIPTION}",
         "Option Explicit",
-        "Dim sh, env, existing_pp",
+        "Dim sh, env, existing_pp, exit_code",
         'Set sh = CreateObject("WScript.Shell")',
         'Set env = sh.Environment("PROCESS")',
         f"env.Item({q('HERMES_HOME')}) = {q(hermes_home)}",
@@ -443,8 +448,16 @@ def _build_gateway_vbs_script(python_path: str, working_dir: str, hermes_home: s
         f"  env.Item({q('PYTHONPATH')}) = {q(static_pythonpath)}",
         "End If",
         f"sh.CurrentDirectory = {q(working_dir)}",
-        # Window style 0 = hidden; bWaitOnReturn False = detached/async.
-        f"sh.Run {q(command_line)}, 0, False",
+        # Window style 0 = hidden; bWaitOnReturn True so the task's action lives as long as the gateway
+        # and IgnoreNew makes a repeated /Run a no-op. Task Scheduler's RestartOnFailure does not fire on
+        # an action's nonzero exit (measured on Windows 11), so this loop is what restarts an abnormal
+        # exit. A clean exit is a planned stop or a handoff, and 78 a permanent refusal: neither retries.
+        "Do",
+        f"  exit_code = sh.Run({q(command_line)}, 0, True)",
+        f"  If exit_code = 0 Or exit_code = {GATEWAY_FATAL_CONFIG_EXIT_CODE} Then Exit Do",
+        f"  WScript.Sleep {_LAUNCHER_RESTART_DELAY_MS}",
+        "Loop",
+        "WScript.Quit 0",
     ]
     return "\r\n".join(lines) + "\r\n"
 
@@ -574,15 +587,10 @@ def _build_scheduled_task_xml(task_name: str, launcher_path: Path, user: str | N
 
 
 def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, str]:
-    """Create or replace the Scheduled Task. Returns (success, detail). Always delete+create, never
-    ``/Change``: it preserves stale repeat/restart settings that relaunch the gateway every minute."""
-    delete_code, delete_out, delete_err = _exec_schtasks(["/Delete", "/F", "/TN", task_name])
-    delete_detail = (delete_err or delete_out or "").strip()
-    if "cannot find" in delete_detail.lower():
-        delete_detail = ""
-    if delete_code != 0 and delete_detail and _is_access_denied(delete_detail):
-        return (False, f"schtasks /Delete failed (code {delete_code}): {delete_detail}")
-    # Other /Delete failures are non-fatal: /Create /F may still replace it; keep the detail.
+    """Create or replace the Scheduled Task. Returns (success, detail). ``/Create /F /XML`` replaces the
+    whole definition, never ``/Change``: it preserves stale repeat/restart settings that relaunch the
+    gateway every minute. No delete first: a logon trigger needs elevation and deleting your own task
+    does not, so a refused create from a normal shell would leave no task at all."""
     user = _resolve_task_user()
     launcher_path = script_path.with_suffix(".vbs")   # the task launches the console-less .vbs
     xml_path = launcher_path.with_suffix(".task.xml")
@@ -602,8 +610,6 @@ def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, st
             xml_path.unlink(missing_ok=True)
         except OSError:
             pass
-    if delete_detail:
-        last_err = f"{last_err.strip()} (delete detail: {delete_detail})"
     return (False, f"schtasks /Create failed (code {last_code}): {last_err.strip()}")
 
 
@@ -1337,6 +1343,7 @@ def uninstall() -> None:
     _assert_windows()
     task_name = get_task_name()
     script_path = get_task_script_path()
+    end_launchers()   # nothing is left to relaunch the gateway once this install is gone
 
     scheduled_task_removed = False
     if is_task_registered():
@@ -1726,11 +1733,41 @@ def start() -> None:
         print("ℹ Login auto-start not installed; add it later with: hermes gateway install")
     elif is_task_registered():
         reconcile_scheduled_task(get_task_name())   # like systemd's regenerate-on-stale before a start
+        # Through the task so its launcher supervises this gateway; a direct spawn would have no owner.
+        code, _out, err = _exec_schtasks(["/Run", "/TN", get_task_name()])
+        if code == 0:
+            _report_gateway_start("scheduled task")
+            return
+        print(f"⚠ schtasks /Run returned code {code}: {err.strip()} (falling back to a direct spawn)")
 
-    # Manual starts use the same console-less direct spawn as restart() and install --start-now;
-    # Scheduled Task / Startup entries are only login persistence.
+    # With no task (or a refused /Run): the same console-less direct spawn as install --start-now.
     _spawn_detached()
     _report_gateway_start("direct spawn")
+
+
+def end_launchers(homes: Iterable[str | Path] | None = None) -> int:
+    """End the ``wscript.exe`` hosting each home's generated launcher (default: this one); the count ended.
+
+    A stop or an update does this first. The launcher reads any exit but 0 and 78 as a crash, and both of
+    those end a gateway on purpose: a socket pause drains to 75 and a force-kill is nonzero, so a live
+    launcher would relaunch it a minute later, in the middle of the update it paused for. Only the host
+    dies (no ``/T``), so its gateway keeps running and drains as asked. Matched on the script it runs, not
+    through a gateway's parents: a launcher in its restart delay has no gateway to be found by."""
+    import ntpath
+
+    import psutil
+
+    dirs = {ntpath.normcase(ntpath.join(str(home), "gateway-service")) for home in (homes or [_hermes_home()])}
+    ended = 0
+    for proc in psutil.process_iter(["name", "cmdline"]):
+        if str(proc.info.get("name") or "").lower() != "wscript.exe":
+            continue
+        scripts = [arg for arg in (proc.info.get("cmdline") or [])[1:] if arg.lower().endswith(".vbs")]
+        if any(ntpath.normcase(ntpath.dirname(script)) in dirs for script in scripts):
+            with suppress(psutil.Error):
+                proc.kill()
+                ended += 1
+    return ended
 
 
 def _drain_gateway_pid(pid: int, drain_timeout: float) -> bool:
@@ -1824,6 +1861,7 @@ def stop() -> None:
 
     # A user-initiated stop is a planned death: don't later report it as a silent crash.
     _clear_start_attestation()
+    launchers_ended = end_launchers()
 
     pid = get_running_pid()
     stop_pids = _collect_gateway_stop_pids(pid)
@@ -1831,7 +1869,7 @@ def stop() -> None:
     identities = _gateway_pid_identities(stop_pids)
     drained = pid is not None and _drain_gateway_pid(pid, _windows_stop_drain_timeout())
 
-    stopped_any = drained
+    stopped_any = drained or bool(launchers_ended)
     if is_task_registered():
         code, _out, err = _exec_schtasks(["/End", "/TN", get_task_name()])
         # schtasks returns nonzero when the task isn't currently running — not an error.

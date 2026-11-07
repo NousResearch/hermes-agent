@@ -16,6 +16,34 @@ from pathlib import Path
 
 from hermes_constants import get_default_hermes_root, project_venv_dir
 
+#: The checkout this module runs from. A test process runs the suite out of this tree with an
+#: isolation ``HERMES_HOME``, so state keyed to this checkout lives in the REAL home.
+_LIVE_CHECKOUT = Path(__file__).resolve().parent.parent
+
+#: pytest itself and the suite's own isolation marker (``tests/conftest.py``): this process tree
+#: is a test run, not a product launch, and its ``HERMES_HOME`` is a sandbox.
+_TEST_PROCESS_ENV = ("PYTEST_CURRENT_TEST", "PYTEST_VERSION", "HERMES_TEST_ISOLATION")
+
+#: Opt-in for a test that genuinely needs the live checkout's borrowing contract.
+_ALLOW_LIVE_INSTALL_ENV = "HERMES_TEST_ALLOW_LIVE_INSTALL"
+
+
+def _test_process_reads_live_install(project_root: Path) -> bool:
+    """True when a test process asks about the checkout it is running from.
+
+    ``owning_home_root`` exists so a borrowing launch -- a temporary ``HERMES_HOME``, a per-task
+    home -- uses the owner's dependency generation, and reading that owner's real install is the
+    point. Under pytest the temporary home is the suite's isolation sandbox: borrowing would make
+    every store lookup live-home I/O (the real-home guard refuses it) and would hand a test the
+    operator's real toolchain. Copies of the tree under ``tmp_path`` are not this checkout and
+    keep the real contract; a test proving it against the live tree opts in.
+    """
+    if Path(project_root).resolve() != _LIVE_CHECKOUT.resolve():
+        return False
+    if not any(os.environ.get(name) for name in _TEST_PROCESS_ENV):
+        return False
+    return os.environ.get(_ALLOW_LIVE_INSTALL_ENV, "").strip().lower() not in ("1", "true", "yes")
+
 
 def install_key(project_root: Path) -> str:
     canonical = str(Path(project_root).resolve())
@@ -54,10 +82,16 @@ def owning_home_root(project_root: Path) -> Path | None:
     cannot name the owner. The checkout's ``hermes`` launcher can: only the owner publishes it,
     and it execs the owner's store Python. With no live launcher to ask, the root the checkout
     sits in outranks the platform default.
+
+    A test process asks about the checkout it runs from with an isolation ``HERMES_HOME``, so the
+    lookup keeps to that home (see :func:`_test_process_reads_live_install`): no candidate outside
+    it is probed.
     """
     from hermes_constants import _get_platform_default_hermes_home
 
     root = Path(project_root).resolve()
+    if _test_process_reads_live_install(root):
+        return None
     key = install_key(root)
     candidates = [candidate for candidate in dict.fromkeys((root.parent, _get_platform_default_hermes_home()))
                   if (candidate / "installs" / key / "facts.json").is_file()]

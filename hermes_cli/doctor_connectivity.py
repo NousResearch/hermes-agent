@@ -65,7 +65,10 @@ def _build_apikey_providers_list() -> list:
     _static = [
         ("Z.AI / GLM",      ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"), "https://api.z.ai/api/paas/v4/models", "GLM_BASE_URL", True),
         ("Kimi / Moonshot",  ("KIMI_API_KEY",),                              "https://api.moonshot.ai/v1/models",   "KIMI_BASE_URL", True),
-        ("StepFun Step Plan", ("STEPFUN_API_KEY",),                          "https://api.stepfun.ai/step_plan/v1/models", "STEPFUN_BASE_URL", True),
+        ("StepFun",          ("STEPFUN_API_KEY",),                           "https://api.stepfun.ai/v1/models", "STEPFUN_BASE_URL", True),
+        ("StepFun Step Plan", ("STEPFUN_API_KEY",),                           "https://api.stepfun.ai/step_plan/v1/models", "STEPFUN_STEP_PLAN_BASE_URL", True),
+        ("StepFun (China)",  ("STEPFUN_CN_API_KEY",),                         "https://api.stepfun.com/v1/models", "STEPFUN_CN_BASE_URL", True),
+        ("StepFun Step Plan (China)", ("STEPFUN_CN_API_KEY",),                "https://api.stepfun.com/step_plan/v1/models", "STEPFUN_CN_STEP_PLAN_BASE_URL", True),
         ("Kimi / Moonshot (China)", ("KIMI_CN_API_KEY",),                    "https://api.moonshot.cn/v1/models",   None, True),
         ("Arcee AI",         ("ARCEEAI_API_KEY",),                           "https://api.arcee.ai/api/v1/models",  "ARCEE_BASE_URL", True),
         ("GMI Cloud",        ("GMI_API_KEY",),                               "https://api.gmi-serving.com/v1/models", "GMI_BASE_URL", True),
@@ -89,7 +92,8 @@ def _build_apikey_providers_list() -> list:
     _dedicated_canonical = {"anthropic", "openrouter", "bedrock"}
     # Canonical profile names of the static rows, so profiles without a display_name don't duplicate.
     _known_canonical = {
-        "zai", "kimi-coding", "stepfun", "kimi-coding-cn", "arcee", "gmi", "deepseek", "huggingface", "nvidia",
+        "zai", "kimi-coding", "stepfun", "stepfun-cn", "stepfun-plan", "stepfun-plan-cn",
+        "kimi-coding-cn", "arcee", "gmi", "deepseek", "huggingface", "nvidia",
         "alibaba", "minimax", "minimax-cn", "ai-gateway", "kilocode", "opencode-zen", "opencode-go",
     } | _dedicated_canonical
     try:

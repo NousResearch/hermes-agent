@@ -67,3 +67,20 @@ def test_dates_and_ratios_are_not_identifiers():
     spoken = prepare_spoken_text("Due 2026/06/02; the score was 3:2.")
     assert "2026/06/02" in spoken
     assert "3:2" in spoken
+
+
+def test_day_first_dates_survive_in_the_voice():
+    """Day-first and dotted dates are prose, not paths — only ISO was recognised (#148906)."""
+    spoken = prepare_spoken_text("Offer valid until 16/11, Dell expires 17/11/2026.")
+    assert "16/11" in spoken
+    assert "17/11/2026" in spoken
+    assert prepare_spoken_text("Delivery on 16-11-2026") == "Delivery on 16-11-2026"
+    assert prepare_spoken_text("Report dated 16.11.2026.") == "Report dated 16.11.2026."
+
+
+def test_long_decimal_numbers_are_not_hex_hashes():
+    """An all-digit run is a number a voice reads out; a hash needs a hex letter (#148906)."""
+    for text in ("Invoice 978303529", "Deal ID 32721495"):
+        assert text in prepare_spoken_text(text)
+    # A real hash (hex letters) and a prefixed digest stay silenced.
+    assert "73688014f78" not in prepare_spoken_text("Commit 73688014f78 landed.")

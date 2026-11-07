@@ -38,6 +38,10 @@ class TurnRetryState:
     reasoning_mandatory_retry_attempted: bool = False
     oauth_1m_beta_retry_attempted: bool = False
     llama_cpp_grammar_retry_attempted: bool = False
+    # MCP tools dropped this API call because the provider rejected their schema
+    tool_schema_prunes: int = 0
+    # ``agent.tools`` changed, so the retry must rebuild its request copy of them
+    tools_rewritten: bool = False
 
     # Transport / rate-limit recovery
     primary_recovery_attempted: bool = False

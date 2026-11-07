@@ -63,6 +63,7 @@ class FailoverReason(enum.Enum):
     thinking_signature = "thinking_signature"  # Anthropic thinking block sig invalid
     long_context_tier = "long_context_tier"    # Anthropic "extra usage" tier gate
     oauth_long_context_beta_forbidden = "oauth_long_context_beta_forbidden"  # Anthropic OAuth rejects 1M beta — disable beta and retry
+    tool_schema_rejected = "tool_schema_rejected"  # Anthropic named one tool's input_schema as invalid; drop it and retry
     llama_cpp_grammar_pattern = "llama_cpp_grammar_pattern"  # llama.cpp grammar rejects regex `pattern`/`format` — strip from tools and retry
     unknown = "unknown"                  # Unclassifiable — retry with backoff
 
@@ -508,6 +509,8 @@ def _v(reason: FailoverReason, **hints: Any) -> Verdict:
     return {"reason": reason, **hints}
 
 
+# The whole sentence, not just the path: a 4xx body can echo the request, and a match here costs a healthy tool.
+_REJECTED_TOOL_SCHEMA_RE = re.compile(r"\btools\.(\d+)\.custom\.input_schema: json schema is invalid", re.IGNORECASE)
 _ROTATE_FALLBACK = {"should_rotate_credential": True, "should_fallback": True}
 _ABORT_FALLBACK = {"retryable": False, "should_fallback": True}
 _R = FailoverReason
@@ -971,6 +974,10 @@ def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
     ) or ("invalid json schema" in msg and "regex lookaround" in msg and "not supported" in msg)
     if status == 400 and grammar_hit and _NO_USER_QUERY_SIGNAL not in msg:
         return _v(_R.llama_cpp_grammar_pattern)
+    # Anthropic rejected one tool's schema, which fails the whole request. Resending it can't help; the
+    # recovery rung drops that tool if it can, and otherwise a fallback provider may accept it.
+    if status == 400 and _REJECTED_TOOL_SCHEMA_RE.search(msg):
+        return _v(_R.tool_schema_rejected, **_ABORT_FALLBACK)
     # xAI Grok entitlement as an SSE ``type=error`` frame: no status, matches no
     # pattern list, would otherwise burn max_retries as ``unknown``.
     if "do not have an active grok subscription" in msg or ("out of available resources" in msg and "grok" in msg):

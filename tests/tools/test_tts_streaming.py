@@ -153,6 +153,42 @@ def test_openai_streamer_forwards_consent_attestation(monkeypatch):
     assert "extra_body" not in captured["create"]
 
 
+def test_openai_streamer_requests_streamed_pcm(monkeypatch):
+    """OpenAI-compatible servers (vLLM-Omni) buffer the whole clip unless the request carries
+    ``stream_format="audio"`` (#149699); the chunked path must always ask for it."""
+    captured = {}
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def iter_bytes(self):
+            yield b"\x01\x00"
+
+    class _StreamingCreate:
+        @staticmethod
+        def create(**kwargs):
+            captured["create"] = kwargs
+            return _Response()
+
+    class _OpenAI:
+        def __init__(self, **kwargs):
+            self.audio = MagicMock()
+            self.audio.speech.with_streaming_response = _StreamingCreate()
+
+    monkeypatch.setattr(ts, "resolve_openai_audio_api_key", lambda: "env-key")
+    monkeypatch.setattr("hermes_cli.config.get_env_value", lambda key, *args: None)
+    monkeypatch.setattr("openai.OpenAI", _OpenAI)
+
+    section = {"api_key": "k", "base_url": "http://tts.local/v1"}
+    assert list(ts.OpenAIStreamer({"openai": section}, section).stream("hi")) == [b"\x01\x00"]
+    assert captured["create"]["response_format"] == "pcm"
+    assert captured["create"]["stream_format"] == "audio"
+
+
 def test_openai_streamer_prefers_configured_api_key(monkeypatch):
     captured = {}
 

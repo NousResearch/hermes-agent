@@ -699,6 +699,9 @@ def _prune_never_active_keyed(db, args):
 
     The population is dominated by escaped test fixtures (#82770), which the hermetic-isolation guard can
     only stop from being *created* — rows already written to a developer's state.db need a sweep to leave.
+
+    `--include-archived` applies here as well: ``sessions.auto_archive`` archives a never-active row after
+    ``auto_archive_days`` like any other idle row, after which the default selector no longer sees it.
     """
     from hermes_cli.session_filters import format_epoch, parse_duration_seconds
     older_than = getattr(args, "older_than", None)
@@ -710,12 +713,14 @@ def _prune_never_active_keyed(db, args):
                   "Use a bare number of days or a form like '2d' / '1w'.")
             return 1
         days = seconds / 86400.0
-    candidates = db.list_never_active_keyed_sessions(older_than_days=days)
+    include_archived = bool(getattr(args, "include_archived", False))
+    scope = " (including archived)" if include_archived else ""
+    candidates = db.list_never_active_keyed_sessions(older_than_days=days, include_archived=include_archived)
     if not candidates:
-        print(f"No never-active keyed sessions older than {days:g} day(s).")
+        print(f"No never-active keyed sessions older than {days:g} day(s){scope}.")
         return
     shown = candidates if args.dry_run else candidates[:15]
-    print(f"{len(candidates)} never-active keyed session(s) older than {days:g} day(s) "
+    print(f"{len(candidates)} never-active keyed session(s) older than {days:g} day(s){scope} "
           "— no messages, tokens, tool calls or title:")
     for s in shown:
         print(f"  {s['id']}  {format_epoch(s.get('started_at')):<17} {(s.get('source') or '-'):<10} "
@@ -733,13 +738,15 @@ def _prune_never_active_keyed(db, args):
         from hermes_cli.gateway_client import GatewayClientError
         from hermes_cli.sessions_owner import owner_prune, report_owner_failure
         try:
-            result = owner_prune(owner, never_active_days=days)
+            # Sent only when set, so the default request on the wire is unchanged.
+            params = {"never_active_days": days, **({"include_archived": True} if include_archived else {})}
+            result = owner_prune(owner, **params)
         except (GatewayClientError, OSError, TimeoutError) as exc:
             return report_owner_failure(exc)
         deleted, routing_deleted, skipped = result["deleted"], result["routing_deleted"], result["skipped"]
     else:
         deleted, routing_deleted, skipped = db.prune_never_active_keyed_sessions(
-            older_than_days=days, sessions_dir=_sessions_dir()
+            older_than_days=days, sessions_dir=_sessions_dir(), include_archived=include_archived
         )
     print(f"Deleted {deleted} never-active session(s) and {routing_deleted} stale routing entr(ies).")
     if skipped:

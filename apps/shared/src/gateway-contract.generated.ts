@@ -4780,10 +4780,11 @@ export interface SessionMutateResult {
   revision?: number | null
   [key: string]: unknown
 }
-/** Exactly one of ``filters`` (``SessionDB.prune_sessions`` keyword filters, as ``hermes sessions prune`` builds them) or ``never_active_days`` (``--never-active``). */
+/** Exactly one of ``filters`` (``SessionDB.prune_sessions`` keyword filters, as ``hermes sessions prune`` builds them) or ``never_active_days`` (``--never-active``). ``include_archived`` goes with ``never_active_days`` only (``--never-active --include-archived``): archived never-active rows are swept too; with ``filters`` the archived filter is already inside them. */
 export interface SessionPruneParams {
   filters?: Record<string, unknown> | null
   never_active_days?: number | null
+  include_archived?: boolean | null
 }
 export interface SessionPruneResult {
   deleted: number

@@ -39360,7 +39360,7 @@
       },
       "SessionPruneParams": {
         "additionalProperties": false,
-        "description": "Exactly one of ``filters`` (``SessionDB.prune_sessions`` keyword filters, as\n``hermes sessions prune`` builds them) or ``never_active_days`` (``--never-active``).",
+        "description": "Exactly one of ``filters`` (``SessionDB.prune_sessions`` keyword filters, as\n``hermes sessions prune`` builds them) or ``never_active_days`` (``--never-active``).\n``include_archived`` goes with ``never_active_days`` only (``--never-active --include-archived``):\narchived never-active rows are swept too; with ``filters`` the archived filter is already inside them.",
         "properties": {
           "filters": {
             "anyOf": [
@@ -39386,6 +39386,18 @@
             ],
             "default": null,
             "title": "Never Active Days"
+          },
+          "include_archived": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Include Archived"
           }
         },
         "title": "SessionPruneParams",

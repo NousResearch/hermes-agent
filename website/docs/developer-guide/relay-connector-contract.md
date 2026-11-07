@@ -36,6 +36,22 @@ connector owns all platform-specific socket/identity logic.
 ignores unknown descriptor fields (forward-compat) and fills missing optional
 fields from defaults.
 
+On every dial the gateway sends one `hello` frame per fronted identity
+(`{"type":"hello", "platform", "botId", ...}`). Each also carries `instance_id`:
+an opaque string minted once per gateway **process**, the same on every `hello`
+of every dial that process makes and new when the gateway restarts. A restarted
+gateway cannot resolve `prompt`s the previous process left open (their
+`prompt_id` nonce belongs to the old process, §4). So when the same
+**authenticated** gateway (the instance the connector resolves from its stored
+record at the WS upgrade, §6.1) says hello with a new `instance_id` and no live
+session remains for the old one, a connector MAY close the old one's open
+prompts. Never compare it across gateways that merely front the same
+`(platform, botId)`: sibling gateways do, each with its own `instance_id`. The
+value is gateway-asserted: it is not the per-instance `instanceId` the connector
+reads from its stored record (§3.2, §7.2) and MUST NOT key auth, tenancy or
+buffering. Additive within `contract_version` 1; a connector that does not know
+the field ignores it.
+
 ---
 
 ## 2. CapabilityDescriptor (handshake payload)

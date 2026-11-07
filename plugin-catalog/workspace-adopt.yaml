@@ -1,0 +1,35 @@
+name: workspace-adopt
+title: Workspace Adopt
+repo: https://github.com/skullvek/hermes-workspace-adopt
+sha: f3c790999370b3627c6c956fafb69949dcf98e1a
+description: >-
+  Archive supported tool artifacts into a per-task workspace on Windows.
+  Requires in-process middleware for full automatic archiving; does not change
+  isolation settings. Reads allowlisted producer caches, writes task folders
+  and profile-local path/session indexes, and may delete verified unchanged
+  structured-artifact sources after commit. Late core spills are copied with
+  originals retained. No network, shell, telemetry, background services,
+  credential-store access, or self-updater.
+maintainer: skullvek
+tier: community
+category: tools
+requires_hermes: ">=0.22.6"
+docs_url: https://github.com/skullvek/hermes-workspace-adopt#readme
+version: "1.2.1"
+readme: true
+platforms:
+  - windows
+known_issues:
+  - "Full automatic archiving requires plugins.isolation=in_process; host-isolated execution callback transport is unsupported in the tested Hermes core."
+  - "Windows local paths only; UNC paths, junction/reparse ancestors, busy files and unsupported producer paths are left untouched."
+  - "Late core spills and recognized framework text references are copied non-destructively; this plugin does not empty every cache or rewrite prompt history."
+capabilities:
+  provides_tools:
+    - task_workspace
+  provides_hooks:
+    - pre_tool_call
+    - transform_tool_result
+  provides_middleware:
+    - tool_execution
+    - llm_request
+  requires_env: []

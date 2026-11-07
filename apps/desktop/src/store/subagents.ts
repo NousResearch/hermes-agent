@@ -38,6 +38,9 @@ export interface SubagentProgress {
   summary?: string
   /** Active tool while running — cleared on terminal status. */
   currentTool?: string
+  /** Provenance of a row a plugin reported through `agents.rows`
+   *  (`plugin:<id>`); absent for Hermes's own subagents. */
+  source?: string
 }
 
 export interface SubagentNode extends SubagentProgress {

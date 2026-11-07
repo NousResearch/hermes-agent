@@ -5,6 +5,7 @@ import { Tip } from '@/components/ui/tooltip'
 import { PROFILE_SWATCHES } from '@/lib/profile-color'
 import { cn } from '@/lib/utils'
 
+import { plainText } from './plain-text'
 import { $pluginRecords } from './plugins-store'
 import { useContributions } from './react/use-contributions'
 import type { Contribution } from './types'
@@ -96,30 +97,6 @@ export interface ResolvedKanbanCardBadge {
 }
 
 const TONES = new Set<string>(['neutral', ...KANBAN_CARD_BADGE_HUES])
-
-// Controls, format characters (bidi overrides, zero-width joiners) and line
-// separators: invisible text a label could use to spoof or reflow the card.
-const UNSAFE_CHARS = /[\p{Cc}\p{Cf}\u2028\u2029]/gu
-
-function plainText(value: unknown, maxChars: number): null | string {
-  if (typeof value !== 'string') {
-    return null
-  }
-
-  const text = value.replace(UNSAFE_CHARS, '').replace(/\s+/g, ' ').trim()
-  const chars = [...text]
-
-  if (chars.length === 0) {
-    return null
-  }
-
-  return chars.length > maxChars
-    ? `${chars
-        .slice(0, maxChars - 1)
-        .join('')
-        .trimEnd()}…`
-    : text
-}
 
 function toBadge(raw: unknown): null | Omit<ResolvedKanbanCardBadge, 'key' | 'source'> {
   if (!raw || typeof raw !== 'object') {

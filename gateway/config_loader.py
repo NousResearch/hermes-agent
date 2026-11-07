@@ -94,6 +94,10 @@ _TOPLEVEL_BRIDGE: tuple = (
     *_presence("max_concurrent_sessions"),
     ("systemd_watchdog_seconds", "systemd_watchdog_seconds", "nested", None, None),
     ("streaming", "streaming", "dict", None, None),
+    # P2P federation (#76660): top-level `federation:` wins, nested
+    # `gateway.federation:` falls back — same precedence contract as the
+    # other bridged gateway keys.
+    ("federation", "federation", "dict", lambda v: isinstance(v, dict), None),
     *_presence(
         "reset_triggers", "always_log_local", "write_sessions_json", "loop_watchdog",
         "loop_watchdog_probe_interval_s", "loop_watchdog_probe_timeout_s", "loop_watchdog_max_strikes",

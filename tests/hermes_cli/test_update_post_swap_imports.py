@@ -20,8 +20,6 @@ import sys
 
 import pytest
 
-pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX supervisors are faked with sh scripts")
-
 REPO = Path(__file__).resolve().parents[2]
 
 _DRIVER = r'''
@@ -64,14 +62,31 @@ if CASE == "launchd_resume":
     gateway.get_launchd_plist_path = lambda: plist
 token = None
 if CASE == "lost_completion":
-    token = posix_token(bare=[{"pid": GONE, "home": str(Path(ROOT) / "bare-home"), "argv": [sys.executable, "-c", "pass"]}])
+    token = posix_token(bare=[{"pid": GONE, "home": str(Path(ROOT) / "bare-home"), "argv": [sys.executable, "-c", f"open({str(Path(ROOT) / 'supervisor.log')!r}, 'a').write('bare-replay\\n')"]}])
 if CASE == "systemd_resume":
     token = posix_token({"kind": "systemd", "scope": "system", "unit": unit_name, "pid": GONE})
 if CASE == "launchd_resume":
     token = posix_token({"kind": "launchd", "label": LABEL, "domain": "gui/0", "plist": str(plist), "pid": GONE})
-if CASE == "dependencies_owed_windows_resume":
-    hermes_cli.main._is_windows = lambda: True
-    token = {"platform": "windows", "resume_needed": True, "profiles": {}, "unmapped": [], "services": []}
+if CASE == "windows_resume":
+    import subprocess
+    real_popen = subprocess.Popen
+
+    class Watcher:
+        pid, returncode = GONE + 4, None
+
+        def poll(self):
+            return None
+
+    def record_watcher(args, *rest, **kwargs):
+        # The restart watcher (``python -c <watcher> <pid> <argv>``) would start a real gateway.
+        if isinstance(args, (list, tuple)) and len(args) > 2 and args[1] == "-c" and "start_gateway_job" in args[2]:
+            with open(Path(ROOT) / "supervisor.log", "a", encoding="utf-8") as log:
+                log.write("restart watcher\n")
+            return Watcher()
+        return real_popen(args, *rest, **kwargs)
+    subprocess.Popen = record_watcher
+    token = {"platform": "windows", "resume_needed": True, "profiles": {"default": GONE}, "unmapped": [],
+             "services": []}
 if CASE == "shallow_count":
     import urllib.error, urllib.request
 
@@ -115,14 +130,8 @@ try:
             raise OSError("completion process could not start")
         update_cmd.run_completion = lost
         update_cmd._complete_source_update(request(token))
-    elif CASE in ("systemd_resume", "launchd_resume"):
+    elif CASE in ("systemd_resume", "launchd_resume", "windows_resume"):
         update_cmd._resume_paused_gateways_at_exit(token, request(token))
-    elif CASE == "dependencies_owed_windows_resume":
-        data = update_receipt._current.get().data
-        update_cmd.run_completion = lambda request: {
-            "exit_code": 0, "windows_resume": None, "pm_receipt": None,
-            "receipt": {"update_id": data["update_id"], "finished_at": "now", "outcome": "success"}}
-        update_cmd._complete_source_update(request(token))
     elif CASE == "shallow_count":
         plan = update_cmd._prepare_checkout_for_update(
             ["git"], "main", "main", is_fork=False, assume_yes=True, gateway_mode=False,
@@ -134,36 +143,56 @@ print("RESULT " + json.dumps({"found": found, "outcome": outcome}))
 '''
 
 # What each driven path ends with: proof it ran to the post-move code, not into a setup error.
+# A restart path also has to reach its supervisor (the fakes append their argv to supervisor.log).
+_SUPERVISOR_CALLS = {
+    "lost_completion": "bare-replay",
+    "systemd_resume": "start hermes-gateway",
+    "launchd_resume": "bootstrap gui/0",
+    "windows_resume": "restart watcher",
+}
 _OUTCOMES = {
     "interrupt_after_commit": "SystemExit: 130",
     "lost_completion": "returned",
     "systemd_resume": "returned",
     "launchd_resume": "returned",
-    "dependencies_owed_windows_resume": "returned",
+    "windows_resume": "returned",
     "shallow_count": "commit_count=-1",
 }
 
 
-def _git(cwd, *args):
-    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+def _git(cwd, env, *args):
+    subprocess.run(["git", *args], cwd=cwd, env=env, check=True, capture_output=True, text=True)
 
 
-def _shallow_clone_behind(tmp_path: Path) -> Path:
+def _shallow_clone_behind(tmp_path: Path, env: dict) -> Path:
     origin = tmp_path / "origin"
     origin.mkdir()
-    _git(origin, "init", "-q", "-b", "main")
+    _git(origin, env, "init", "-q", "-b", "main")
     for n in range(1, 6):
         (origin / "f.txt").write_text(f"{n}\n", encoding="utf-8")
-        _git(origin, "add", "f.txt")
-        _git(origin, "commit", "-q", "-m", f"c{n}")
+        _git(origin, env, "add", "f.txt")
+        _git(origin, env, "commit", "-q", "-m", f"c{n}")
         if n == 3:
-            _git(tmp_path, "clone", "-q", "--depth", "1", origin.as_uri(), "clone")
-    _git(tmp_path / "clone", "fetch", "-q", "--depth", "1", "origin", "main")
+            _git(tmp_path, env, "clone", "-q", "--depth", "1", origin.as_uri(), "clone")
+    _git(tmp_path / "clone", env, "fetch", "-q", "--depth", "1", "origin", "main")
     return tmp_path / "clone"
 
 
-@pytest.mark.parametrize("case", sorted(_OUTCOMES))
+_POSIX_CASES = sorted(set(_OUTCOMES) - {"windows_resume"})
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("case", _POSIX_CASES)
 def test_post_move_path_imports_nothing_from_the_checkout(case, tmp_path, monkeypatch):
+    _run_case(case, tmp_path, monkeypatch)
+
+
+@pytest.mark.platforms("windows")
+def test_windows_restart_after_the_move_imports_nothing_from_the_checkout(tmp_path, monkeypatch):
+    _run_case("windows_resume", tmp_path, monkeypatch)
+
+
+def _run_case(case, tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
     (tmp_path / "hermes-home").mkdir()
@@ -171,12 +200,13 @@ def test_post_move_path_imports_nothing_from_the_checkout(case, tmp_path, monkey
     root.mkdir()
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
-    for supervisor in ("systemctl", "launchctl", "sudo"):
-        (fake_bin / supervisor).write_text("#!/bin/sh\nexit 1\n")
+    for supervisor in ("systemctl", "launchctl", "sudo") if sys.platform != "win32" else ():
+        (fake_bin / supervisor).write_text(f'#!/bin/sh\necho "{supervisor} $*" >> "{root}/supervisor.log"\nexit 1\n')
         (fake_bin / supervisor).chmod(0o755)
     # A home of its own (not the account default): the unit and job names carry its suffix.
     env = {**os.environ, "HOME": str(home), "HERMES_HOME": str(tmp_path / "hermes-home"),
-           "XDG_STATE_HOME": str(tmp_path / "state"), "XDG_CONFIG_HOME": str(tmp_path / "config"),
+           "USERPROFILE": str(home), "LOCALAPPDATA": str(home / "AppData" / "Local"),
+           "APPDATA": str(home / "AppData" / "Roaming"), "XDG_STATE_HOME": str(tmp_path / "state"), "XDG_CONFIG_HOME": str(tmp_path / "config"),
            "PATH": f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}", "GITHUB_TOKEN": "offline",
            "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
            "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid", "GIT_CONFIG_NOSYSTEM": "1"}
@@ -188,8 +218,7 @@ def test_post_move_path_imports_nothing_from_the_checkout(case, tmp_path, monkey
 
         label = get_launchd_label()
     if case == "shallow_count":
-        monkeypatch.setattr(os, "environ", env)
-        clone = str(_shallow_clone_behind(tmp_path))
+        clone = str(_shallow_clone_behind(tmp_path, env))
     driver = tmp_path / "driver.py"
     driver.write_text(_DRIVER, encoding="utf-8")
     proc = subprocess.run(
@@ -199,4 +228,8 @@ def test_post_move_path_imports_nothing_from_the_checkout(case, tmp_path, monkey
     assert lines, f"driver failed (exit {proc.returncode}):\n{proc.stdout[-3000:]}\n{proc.stderr[-3000:]}"
     result = json.loads(lines[-1][len("RESULT "):])
     assert result["outcome"] == _OUTCOMES[case], proc.stdout[-3000:]
+    if case in _SUPERVISOR_CALLS:
+        log = root / "supervisor.log"
+        calls = log.read_text(encoding="utf-8") if log.exists() else ""
+        assert _SUPERVISOR_CALLS[case] in calls, f"{case} never reached its restart: {calls!r}"
     assert result["found"] == [], f"{case} imported from the moved checkout: {sorted(set(result['found']))}"

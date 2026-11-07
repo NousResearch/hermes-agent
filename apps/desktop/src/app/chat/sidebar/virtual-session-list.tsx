@@ -20,6 +20,8 @@ import { SESSION_CARD_ROW_ESTIMATE_PX, sessionRowEstimate } from './session-row-
 interface SessionRowCommonProps {
   branchStem?: string
   card?: boolean
+  childCount?: number
+  collapsed?: boolean
   isPinned: boolean
   isSelected: boolean
   unread: boolean
@@ -27,6 +29,7 @@ interface SessionRowCommonProps {
   onBranch?: () => void
   onDelete: () => void
   onPin: () => void
+  onToggleCollapse?: () => void
   onToggleUnread: () => void
   onResume: () => void
   reorderable?: boolean
@@ -38,6 +41,8 @@ export interface VirtualSessionListProps {
   /** Render every session row as the three-line inbox card. */
   card?: boolean
   className?: string
+  /** Branch parent ids whose children are folded away. */
+  collapsedParentIds?: ReadonlySet<string>
   /** Hover-revealed control for date dividers (the group-level "+"). */
   dividerAction?: React.ReactNode
   /** Collapse/expand the sessions under a date or status divider. */
@@ -51,6 +56,7 @@ export interface VirtualSessionListProps {
   onBranchSession?: (sessionId: string, profile?: string) => void
   onDeleteSession: (sessionId: string) => void
   onResumeSession: (sessionId: string, session?: SessionInfo) => void
+  onToggleCollapse?: (sessionId: string) => void
   onTogglePin: (sessionId: string) => void
   onToggleUnread: (sessionId: string) => void
   pinned: boolean
@@ -69,6 +75,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   activeSessionId,
   card = false,
   className,
+  collapsedParentIds,
   dividerAction,
   dividerToggle,
   rows: listRows,
@@ -76,6 +83,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   onBranchSession,
   onDeleteSession,
   onResumeSession,
+  onToggleCollapse,
   onTogglePin,
   onToggleUnread,
   pinned,
@@ -156,18 +164,22 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
       )
     }
 
-    const { branchStem, session } = row.entry
+    const { branchStem, childCount, session } = row.entry
     const reorderable = sortable && !branchStem
+    const hasChildren = (childCount ?? 0) > 0
 
     const commonProps: SessionRowCommonProps = {
       branchStem,
       card,
+      childCount: hasChildren ? childCount : undefined,
+      collapsed: hasChildren ? (collapsedParentIds?.has(session.id) ?? false) : undefined,
       isPinned: pinned,
       isSelected: session.id === activeSessionId,
       onArchive: () => onArchiveSession(session.id),
       onBranch: onBranchSession ? () => onBranchSession(session.id, session.profile) : undefined,
       onDelete: () => onDeleteSession(session.id),
       onPin: () => onTogglePin(sessionPinId(session)),
+      onToggleCollapse: hasChildren ? () => onToggleCollapse?.(session.id) : undefined,
       onToggleUnread: () => onToggleUnread(session.id),
       onResume: () => onResumeSession(session.id, session),
       reorderable,

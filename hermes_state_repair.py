@@ -775,7 +775,8 @@ class HealthCheckUnavailable(str):
 
 def _retired_cjk_snapshot_health(db_path: Path, conn: sqlite3.Connection) -> Optional[str]:
     """``_db_opens_cleanly`` for a store that still holds the retired CJK index, judged on a disposable copy
-    with the index retired. A copy that does not fit the temporary volume yields ``HealthCheckUnavailable``."""
+    with the index retired. A copy that cannot be made or does not fit the temporary volume yields
+    ``HealthCheckUnavailable``; a source SQLite cannot read is still reported as damage."""
     from hermes_state_fts import drop_retired_cjk_index
 
     try:
@@ -785,7 +786,9 @@ def _retired_cjk_snapshot_health(db_path: Path, conn: sqlite3.Connection) -> Opt
             with _repair_conn(snapshot) as probe:
                 drop_retired_cjk_index(probe.cursor())
             reason = _db_opens_cleanly(snapshot)
-    except (sqlite3.Error, OSError) as exc:
+    except OSError as exc:  # the temporary directory or the copy, not the store (includes the copy timeout)
+        return HealthCheckUnavailable(f"could not make the probe copy in {tempfile.gettempdir()} ({exc})")
+    except sqlite3.Error as exc:
         if not is_disk_full_error(exc):
             raise
         reason = str(exc)

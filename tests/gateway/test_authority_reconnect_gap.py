@@ -13,6 +13,16 @@ def _drain(peer):
     return frames
 
 
+def _receive_through(peer, sequence):
+    """Frames up to *sequence*. The fanout hands frames to a subscribed peer on its own writer
+    thread, so the turn's task can finish before its last frames reach the socket; block on the
+    peer's queue (the timeout only bounds a hang) instead of reading whatever arrived so far."""
+    frames = []
+    while not frames or frames[-1]['seq'] < sequence:
+        frames.append(peer.frames.get(timeout=30)['params'])
+    return frames
+
+
 @pytest.mark.asyncio
 async def test_resume_after_replay_delivers_the_frames_published_in_between(tmp_path, monkeypatch):
     from gateway.config import GatewayConfig, Platform
@@ -52,7 +62,9 @@ async def test_resume_after_replay_delivers_the_frames_published_in_between(tmp_
 
     attached = await old.resume(ref, {})
     await turn('one')
-    seen = _drain(dropped)[-1]['seq']
+    _epoch, published = authority.sessions['chat'].event_stream.watermark()
+    seen = (await asyncio.to_thread(_receive_through, dropped, published))[-1]['seq']
+    assert seen == published
     # The reconnect: the replay is answered on the new socket before its resume rebinds it.
     replay = (await new.dispatch({'id': 1, 'method': 'session.events.since', 'params': {
         'session_id': 'chat', 'replay_epoch': attached['replay_epoch'], 'last_sequence': seen}}))['result']

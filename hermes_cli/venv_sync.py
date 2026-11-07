@@ -478,13 +478,8 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
         return _prepare_borrowed_launch(root, owner, current=current)
     pending = completion_pending_path(root)
     owed_to_cli = current and pending.is_file() and _supervised_child()
-    if not _may_retry_completion(root, command, current=current):
-        if not current:
-            # No repair ran, so this install is exactly as stale as it was: a relaunch would land
-            # back here with the same answer and exec again, forever. Boot on the previous
-            # dependency generation, as a launch whose sync failed does.
-            return None
-    elif not owed_to_cli and (not current or pending.is_file()):
+    may_retry = _may_retry_completion(root, command, current=current)
+    if may_retry and not owed_to_cli and (not current or pending.is_file()):
         # The marker alone first (a process the live update spawned runs under its claim and
         # inherits no checkout lock); install_root still names the checkout whose held lock
         # keeps a dead update's marker (R6: refused as held, never reclaimed).
@@ -522,7 +517,9 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     # venv interpreter symlinked to the same binary is still a different
     # interpreter (its own sys.prefix) and must re-exec once.
     same = os.path.normcase(os.path.abspath(python)) == os.path.normcase(os.path.abspath(sys.executable))
-    if not current or not same:
+    # a skipped retry leaves the old generation selected. restarting the same
+    # interpreter cannot make it current and would repeat this launch forever.
+    if (not current and may_retry) or not same:
         publish_launchers(root)
         return _relaunch_target(root, python, same=same)
     if owed_to_cli:

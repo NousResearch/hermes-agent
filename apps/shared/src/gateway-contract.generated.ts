@@ -1881,6 +1881,7 @@ export interface GroupsPeerInviteParams {
   member_id?: string | null
   grant_id?: string | null
   ttl_seconds?: number | null
+  status_ttl_seconds?: number | null
 }
 export interface GroupsPeerInviteResult {
   grant: string
@@ -3525,6 +3526,12 @@ export interface SessionUndoParams {
 export type UndoIntent = 'retry' | 'undo'
 export interface SessionUndoResult {
   removed: number
+  undo_hint?: UndoRollbackHint | null
+}
+/** ``/undo``'s line naming the files the undone turns changed and pointing at ``/rollback``: ``files`` are the changed paths, ``text`` is the rendered line in the backend's language. */
+export interface UndoRollbackHint {
+  files?: string[]
+  text: string
 }
 export interface SessionSaveParams {
   session_id: string
@@ -3960,10 +3967,13 @@ export interface ConfigSection {
 export interface RollbackListParams {
   session_id: string
   profile?: string | null
+  undo_since?: number | null
+  undo_message_id?: number | null
 }
 export interface RollbackListResult {
   enabled: boolean
   checkpoints?: RollbackCheckpoint[]
+  undo_hint?: UndoRollbackHint | null
 }
 export interface RollbackCheckpoint {
   hash?: string
@@ -4819,11 +4829,13 @@ export interface CanonicalSessionInfo {
   cwd?: string | null
   edit_approval_policy?: 'ask' | 'workspace_session' | 'session' | null
   launch_request?: Record<string, unknown> | null
+  client?: CanonicalClientLabel | null
   reasoning_effort?: string | null
   reasoning_effort_wire?: string | null
   service_tier?: string | null
   fast?: boolean | null
   title?: string | null
+  archived?: boolean | null
   started_at?: number | null
   last_active_at?: number | null
   yolo?: boolean | null
@@ -4832,6 +4844,11 @@ export interface CanonicalSessionInfo {
   credential_hint?: string | null
   config_warning?: string | null
   [key: string]: unknown
+}
+/** The client a session's creator declared itself as (``session.create`` ``client``). */
+export interface CanonicalClientLabel {
+  name: string
+  version?: string | null
 }
 export interface SessionStatsParams {
   session_id: string
@@ -5050,6 +5067,29 @@ export interface WorkerPersistParams {
 }
 /** The operation's durable receipt (``message_id`` for an append, delegation results, …). */
 export type WorkerPersistResult = Record<string, unknown>
+export interface CanonicalGroupsPeerInviteParams {
+  profile?: string | null
+  room_id: string
+  home_install_id: string
+  authority_gateway_id: string
+  authority_epoch: number
+  member_id: string
+  ttl_seconds?: number
+  status_ttl_seconds?: number
+}
+export interface CanonicalGroupsPeerRevokeParams {
+  profile?: string | null
+  grant: string
+}
+export interface CanonicalGroupsPeerRegisterParams {
+  profile?: string | null
+  room_id: string
+  member_id: string
+  target_url: string
+  target_profile: string
+  grant: string
+  catalog: Record<string, unknown>
+}
 export interface CanonicalCreateParams {
   profile?: string | null
   request_id?: string | null
@@ -5080,6 +5120,12 @@ export interface CanonicalCreateParams {
   run_budget?: number | null
   verbose?: boolean
   client_env?: Record<string, string> | null
+  client?: CanonicalClientIdentity | null
+}
+/** A client naming itself: ``name`` matches ``[a-z0-9][a-z0-9._-]{0,63}``, ``version`` is 1-64 printable ASCII without spaces. Attribution only (owners advertising ``session-client-v1``). */
+export interface CanonicalClientIdentity {
+  name: string
+  version?: string | null
 }
 export interface CanonicalSnapshot {
   session_id: string
@@ -5154,11 +5200,13 @@ export interface CanonicalSnapshotInfo {
   cwd?: string | null
   edit_approval_policy?: 'ask' | 'workspace_session' | 'session' | null
   launch_request?: Record<string, unknown> | null
+  client?: CanonicalClientLabel | null
   reasoning_effort?: string | null
   reasoning_effort_wire?: string | null
   service_tier?: string | null
   fast?: boolean | null
   title?: string | null
+  archived?: boolean | null
   started_at?: number | null
   last_active_at?: number | null
   yolo?: boolean | null
@@ -5447,6 +5495,11 @@ export interface CanonicalBotCancelResult {
   delivery_id: string
   status: 'cancelled' | 'stopping' | 'finished'
   receipt_status: string
+}
+/** Open: the plugin's handler owns every other key. ``session_id`` names the session the call acts in and passes that session's authorization first. */
+export interface PluginRpcParams {
+  session_id?: string | null
+  [key: string]: unknown
 }
 /** ``answers`` rides only on a reconnect replay (locks the server already accepted; null = skipped). */
 export interface ClarifyRequestParams {
@@ -6967,6 +7020,12 @@ export interface CanonicalRpcMethods {
   'groups.create': { params: CanonicalRoomCreateParams; result: GroupsCreateResult }
   /** Discard one indeterminate room task after explicit user confirmation. */
   'groups.discard': { params: GroupsDiscardParams; result: GroupsDiscardResult }
+  /** Operator only: mint one room grant for a member of another gateway's room. */
+  'groups.peer.invite': { params: CanonicalGroupsPeerInviteParams; result: GroupsPeerInviteResult }
+  /** Bind a target grant to the room's pinned peer member after a live scoped probe. */
+  'groups.peer.register': { params: CanonicalGroupsPeerRegisterParams; result: GroupsPeerRegisterResult }
+  /** Operator only: revoke one grant this gateway issued, by its exact room scope. */
+  'groups.peer.revoke': { params: CanonicalGroupsPeerRevokeParams; result: GroupsPeerRevokeResult }
   'groups.retry': { params: CanonicalRoomAttemptParams; result: GroupsRetryResult }
   'image.attach_bytes': { params: ImageAttachBytesParams; result: CanonicalAttachedImageResult }
   /** Native-owner only: admit the dispatcher's current claim on a kanban task. */
@@ -7038,6 +7097,9 @@ export const CANONICAL_RPC_METHODS = [
   'groups.attachment.upload',
   'groups.create',
   'groups.discard',
+  'groups.peer.invite',
+  'groups.peer.register',
+  'groups.peer.revoke',
   'groups.retry',
   'image.attach_bytes',
   'kanban.run',
@@ -7069,6 +7131,13 @@ export const CANONICAL_RPC_METHODS = [
   'worker.persist',
   'worker.register'
 ] as const satisfies readonly CanonicalRpcMethod[]
+
+// ── Canonical method namespaces: member names exist only at runtime (gate on `capability`) ──
+export interface CanonicalRpcNamespaces {
+  /** A method a loaded plugin registered with ctx.register_rpc; the result is its handler's JSON value. With plugin-rpc-v1 in runtime.describe, -32601 means that plugin method is not loaded; without plugin-rpc-v1, clients must not assume plugin RPC is supported. */
+  'plugin.{plugin_id}.{name}': { method: `plugin.${string}`; capability: 'plugin-rpc-v1'; params: PluginRpcParams; result: unknown }
+}
+export type CanonicalRpcNamespace = keyof CanonicalRpcNamespaces
 
 // ── Server→client requests ──
 export interface ServerRequestMap {

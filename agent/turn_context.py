@@ -321,6 +321,39 @@ def reanchor_current_turn_user_idx(messages: list[Any], user_message: Any) -> in
     return fallback
 
 
+def history_before_current_turn(
+    messages: Any, current_turn_user_idx: Any, fallback: Any = None,
+) -> list[Any]:
+    """The pre-turn boundary: the conversation history BEFORE the current turn's user row.
+
+    Hands a refused turn's caller a CLEAN in-memory history (the refused request + its tool rounds
+    dropped), robust to in-place compaction. The loop's ``conversation_history`` is the flush
+    baseline, which in-place compaction rewrites into ``list(messages)`` — the WHOLE poisoned working
+    set, including the current (refused) turn (#149708 review). ``messages`` is already the compacted
+    working set and ``current_turn_user_idx`` the re-anchored index of this turn's user row, so the
+    slice before it is the real clean prefix. Falls back to ``fallback`` only when the index is
+    unusable.
+    """
+    if (isinstance(messages, list) and isinstance(current_turn_user_idx, int)
+            and 0 <= current_turn_user_idx <= len(messages)):
+        return list(messages[:current_turn_user_idx])
+    return list(fallback) if isinstance(fallback, list) else []
+
+
+def refused_turn_boundary_row_id(messages: Any, current_turn_user_idx: Any) -> Optional[int]:
+    """The durable row id that STARTED the current (refused) turn, or ``None``.
+
+    The owner uses it to soft-delete the EXACT refused run from the transcript: the newest user turn
+    is the wrong target when a mid-turn steer appended a newer user row, or the refused input was a
+    hidden/internal row (#149708 review). Reads the committed row id of this turn's user message.
+    """
+    from agent.persisted_turn_receipt import committed_row_id
+    if (isinstance(messages, list) and isinstance(current_turn_user_idx, int)
+            and 0 <= current_turn_user_idx < len(messages)):
+        return committed_row_id(messages[current_turn_user_idx])
+    return None
+
+
 def export_current_turn_boundary(agent: Any, result: Any, user_message: Any) -> Any:
     """Stamp ``{turn_id, current_turn_user_idx}`` on a result envelope, proven against the
     exact ``result["messages"]`` projection it travels with.
@@ -977,6 +1010,7 @@ def _memory_turn_start_and_prefetch(
     with suppress(Exception):
         agent._memory_manager.on_turn_start(
             agent._user_turn_count, _query,
+            model=getattr(agent, "model", "") or "",
             author_id=_author.get("id") or None, author_name=_author.get("name") or None,
             author_is_bot=bool(_author.get("is_bot")),
         )

@@ -629,19 +629,24 @@ def env_for(*names: str, base_env: Optional[dict] = None) -> dict[str, str]:
     never raises on missing packages — they contribute nothing."""
     lockfile = _lockfile()
     target = current_target()
-    diffs: list[dict] = []
+    known = []
     for name in names:
         try:
-            chain = walk([name])
+            walk([name])
         except KeyError:
             continue
-        for package in chain:
-            if package.internal:
-                continue
-            location = _installed_location(package, lockfile, target)
-            if location:
-                facts, store = location
-                diffs.append(facts.env_for(package.name, store.root))
+        known.append(name)
+    diffs: list[dict] = []
+    # One deps-first walk over every name: walking each name alone repeats a shared
+    # dependency after an earlier dependent (node after npm, again for pnpm), and the
+    # repeat would put node's bundled npm ahead of the pinned one on PATH.
+    for package in walk(known):
+        if package.internal:
+            continue
+        location = _installed_location(package, lockfile, target)
+        if location:
+            facts, store = location
+            diffs.append(facts.env_for(package.name, store.root))
     return compose_env(diffs, base=base_env)
 
 

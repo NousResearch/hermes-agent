@@ -19,12 +19,13 @@ cannot drift apart.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import logging
 import os
 import sys
 from types import ModuleType
-from typing import Any, Dict, FrozenSet, List, Mapping, Optional
+from typing import Any, Dict, FrozenSet, Iterator, List, Mapping, Optional
 
 logger = logging.getLogger("hermes_cli.plugins")
 
@@ -166,3 +167,28 @@ def user_plugin_host() -> Any:
         return None
     from hermes_cli.plugins import get_plugin_manager
     return get_plugin_manager()._plugin_host()
+
+
+@contextlib.contextmanager
+def transient_plugin_host(before_stop: Optional[Any] = None) -> Iterator[None]:
+    """Stop the active profile's plugin host on exit when it was started inside the block: a one-shot
+    call for another profile (a profile lifecycle hook) must not leave a process behind. A host
+    that was already running is left alone; a stopped one restarts on its next use.
+    ``before_stop`` runs first, to drop registrations that would point at the stopped host.
+
+    A request that starts using the same profile's host while the block runs (the dashboard
+    serving that new profile at that moment) can lose its in-flight call; its next call restarts it."""
+    if isolation_mode() != ISOLATION_HOST:
+        yield
+        return
+    from hermes_cli.plugins import get_plugin_manager
+    manager = get_plugin_manager()
+    was_running = manager._running_plugin_host() is not None
+    try:
+        yield
+    finally:
+        host = manager._running_plugin_host()
+        if host is not None and not was_running:
+            if before_stop is not None:
+                before_stop()
+            host.shutdown()

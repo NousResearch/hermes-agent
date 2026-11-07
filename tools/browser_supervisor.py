@@ -164,6 +164,11 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             self._thread.join(timeout=timeout)
         self._set_active(False)
 
+    def is_healthy(self) -> bool:
+        """True while the supervisor thread and its event loop are running (False once it gave up or crashed)."""
+        thread, loop = self._thread, self._loop
+        return thread is not None and thread.is_alive() and loop is not None and loop.is_running()
+
     def _set_active(self, value: bool) -> None:
         with self._state_lock:
             self._active = value
@@ -531,9 +536,7 @@ class _SupervisorRegistry:
         with self._lock:
             existing = self._by_task.get(task_id)
             if existing is not None:
-                thread, loop = existing._thread, existing._loop
-                healthy = thread is not None and thread.is_alive() and loop is not None and loop.is_running()
-                if existing.cdp_url == cdp_url and healthy:
+                if existing.cdp_url == cdp_url and existing.is_healthy():
                     return existing
                 self._by_task.pop(task_id, None)
         if existing is not None:

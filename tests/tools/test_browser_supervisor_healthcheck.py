@@ -8,11 +8,14 @@ the only thing under test is the registry's cache decision.
 from __future__ import annotations
 
 import threading
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 
 import pytest
 
 from tools import browser_supervisor as bs
+
+# The real check, bound onto the stand-ins below (the stub fixture replaces CDPSupervisor).
+_is_healthy = bs.CDPSupervisor.is_healthy
 
 
 class _FakeLoop:
@@ -50,6 +53,7 @@ def _make_fake_supervisor(cdp_url: str, *, thread_alive: bool, loop_running: boo
         stop=lambda: stop_calls.append(True),
     )
     fake._stop_calls = stop_calls  # type: ignore[attr-defined]
+    fake.is_healthy = MethodType(_is_healthy, fake)
     return fake
 
 
@@ -68,6 +72,8 @@ def stub_cdp_supervisor(monkeypatch):
     created: list[SimpleNamespace] = []
 
     class _StubSupervisor:
+        is_healthy = _is_healthy
+
         def __init__(self, *, task_id, cdp_url, dialog_policy, dialog_timeout_s):
             self.task_id = task_id
             self.cdp_url = cdp_url
@@ -125,9 +131,22 @@ def test_missing_thread_and_loop_attrs_trigger_recreate(
         _loop=None,
         stop=lambda: None,
     )
+    broken.is_healthy = MethodType(_is_healthy, broken)
     isolated_registry._by_task["t4"] = broken
 
     fresh = isolated_registry.get_or_start(task_id="t4", cdp_url=cdp_url)
     assert fresh is not broken
     assert isolated_registry._by_task["t4"] is fresh
     fresh.stop()
+
+
+@pytest.mark.parametrize(
+    ("thread_alive", "loop_running", "expected"),
+    [(True, True, True), (False, True, False), (True, False, False)],
+)
+def test_is_healthy_needs_live_thread_and_running_loop(thread_alive, loop_running, expected):
+    fake = _make_fake_supervisor("http://h/5", thread_alive=thread_alive, loop_running=loop_running)
+    try:
+        assert fake.is_healthy() is expected
+    finally:
+        getattr(fake._thread, "_release", lambda: None)()

@@ -303,7 +303,8 @@ class A2AAdapter(BasePlatformAdapter):
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._watchdog_stop = threading.Event()
         # Per-adapter protocol state (not module-global).
-        self.tasks, self._turns, self._rate_limiter = protocol.TaskStore(), protocol.TurnTracker(), protocol.RateLimiter()
+        self.tasks = protocol.TaskStore.for_profile()
+        self._turns, self._rate_limiter = protocol.TurnTracker(), protocol.RateLimiter()
         # Pending reply futures: task_id -> (context_id, Future). _pending_order keeps per-context
         # FIFO so adapter.send() — which only knows the context — resolves the oldest task.
         self._pending: dict[str, tuple[str, Future]] = {}

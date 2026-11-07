@@ -18,6 +18,7 @@ import { ModelPill } from './model-pill'
 import { ReasoningPill } from './reasoning-pill'
 import { StartVoiceButton } from './start-voice-button'
 import type { ChatBarState, VoiceStatus } from './types'
+import { useVoiceEngineName } from './voice-engine-rows'
 import { VoiceFan } from './voice-fan'
 import { VoiceMenu } from './voice-menu'
 
@@ -44,6 +45,39 @@ interface ConversationProps {
   onStart: () => void
   onStopTurn: () => void
   onToggleMute: () => void
+}
+
+function SendOrStopButton({
+  disabled,
+  sendLabel,
+  showStop,
+  stopLabel
+}: {
+  disabled: boolean
+  sendLabel: string
+  showStop: boolean
+  stopLabel: string
+}) {
+  const label = showStop ? stopLabel : sendLabel
+
+  return (
+    <Tip label={<TipKeybindLabel actionId="composer.send" text={label} />} placement="control">
+      <Button
+        aria-label={label}
+        className={PRIMARY_ICON_BTN}
+        disabled={disabled}
+        onClick={() => recordAction(showStop ? 'composer.cancel' : 'composer.send', 'click')}
+        onMouseDown={keepEditorFocus}
+        type="submit"
+      >
+        {showStop ? (
+          <span className="block size-2.5 rounded-[0.1875rem] bg-current" />
+        ) : (
+          <Codicon name="arrow-up" size="0.875rem" />
+        )}
+      </Button>
+    </Tip>
+  )
 }
 
 export function ComposerControls({
@@ -89,6 +123,7 @@ export function ComposerControls({
   const { t } = useI18n()
   const c = t.composer
   const hudMode = useStore($hudMode)
+  const voiceEngine = useVoiceEngineName()
 
   if (conversation.active) {
     return <ConversationPill {...conversation} disabled={disabled} />
@@ -143,17 +178,16 @@ export function ComposerControls({
       className={cn('flex min-w-0 shrink items-center gap-(--composer-control-gap)', browserHost && 'justify-end')}
       style={{ flexWrap: browserHost && minimal ? 'wrap' : undefined }}
     >
-      {minimal ? null : (
+      {minimal || hideModelPill ? null : (
         <>
-          {hideModelPill ? null : (
-            <>
-              <ModelPill compact={compactModelPill} disabled={disabled} model={state.model} />
-              {compactModelPill ? null : <ReasoningPill disabled={disabled} model={state.model} />}
-            </>
-          )}
-          {voiceControls}
+          <ModelPill compact={compactModelPill} disabled={disabled} model={state.model} />
+          {compactModelPill ? null : <ReasoningPill disabled={disabled} model={state.model} />}
         </>
       )}
+      {/* The row packs to the right edge, so anything between the mic and that
+          edge moves the mic. Mid-turn actions come and go with the run: they sit
+          LEFT of the mic, and the mic is followed only by the fixed-width
+          primary slot below (#147426). */}
       {renderSteerButton(busy, busyAction, onSteer, disabled, c.steer)}
       {showQueueButton ? (
         <Tip label={<TipKeybindLabel actionId="composer.queue" text={c.queueMessage} />} placement="control">
@@ -171,35 +205,30 @@ export function ComposerControls({
           </Button>
         </Tip>
       ) : null}
-      {showVoicePrimary ? (
-        <StartVoiceButton disabled={disabled} label={c.startVoice} onStart={conversation.onStart} />
-      ) : (
-        <Tip
-          label={
-            showStop ? (
-              <TipKeybindLabel actionId="composer.send" text={c.stop} />
-            ) : (
-              <TipKeybindLabel actionId="composer.send" text={sendLabel} />
-            )
-          }
-          placement="control"
-        >
-          <Button
-            aria-label={showStop ? c.stop : sendLabel}
-            className={PRIMARY_ICON_BTN}
+      {minimal ? null : voiceControls}
+      {/* One slot, one width: Start voice (circle plus engine chevron) is wider than
+          Send / Stop, so the slot reserves the wider of the two and right-aligns
+          whichever is showing. */}
+      <span
+        className={cn(
+          'flex shrink-0 items-center justify-end',
+          voiceEngine &&
+            !minimal &&
+            'min-w-[calc(var(--composer-control-primary-size,var(--composer-control-size))_+_var(--composer-voice-menu-size))]'
+        )}
+        data-slot="composer-primary-slot"
+      >
+        {showVoicePrimary ? (
+          <StartVoiceButton disabled={disabled} label={c.startVoice} onStart={conversation.onStart} />
+        ) : (
+          <SendOrStopButton
             disabled={disabled || !canSubmit}
-            onClick={() => recordAction(showStop ? 'composer.cancel' : 'composer.send', 'click')}
-            onMouseDown={keepEditorFocus}
-            type="submit"
-          >
-            {showStop ? (
-              <span className="block size-2.5 rounded-[0.1875rem] bg-current" />
-            ) : (
-              <Codicon name="arrow-up" size="0.875rem" />
-            )}
-          </Button>
-        </Tip>
-      )}
+            sendLabel={sendLabel}
+            showStop={showStop}
+            stopLabel={c.stop}
+          />
+        )}
+      </span>
       {/* The way out of HUD mode, riding the controls row rather than floating
           above the bar. The old chip lived in a 26px transparent strip reserved
           over the composer (--hud-chip-strip), which under glass is bare

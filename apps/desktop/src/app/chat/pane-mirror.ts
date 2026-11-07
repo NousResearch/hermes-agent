@@ -85,6 +85,8 @@ export function paneMirror<T>(cfg: PaneMirror<T>): () => void {
   const registered = new Map<string, { dispose: () => void; dock: DockHint; title: string }>()
   // Retained tiles, oldest first (Set order = the order they were parked).
   const parked = new Set<string>()
+  // Stable per tile: ContribRender mounts `render` as a component type, so a new fn remounts the tile.
+  const renderers = new Map<string, () => ReactNode>()
 
   const paneId = (key: string) => `${cfg.prefix}:${key}`
 
@@ -109,6 +111,7 @@ export function paneMirror<T>(cfg: PaneMirror<T>): () => void {
   const dispose = (key: string) => {
     registered.get(key)?.dispose()
     registered.delete(key)
+    renderers.delete(key)
     parked.delete(key)
     setTreePaneParked(paneId(key), false)
     removeTreePane(paneId(key))
@@ -156,7 +159,7 @@ export function paneMirror<T>(cfg: PaneMirror<T>): () => void {
           placement: 'main',
           tabMenuPrefix: cfg.tabMenuPrefix?.(key)
         },
-        render: () => cfg.render(key)
+        render: renderers.get(key) ?? renderers.set(key, () => cfg.render(key)).get(key)!
       })
 
       registered.set(key, { dispose: disposeRegistration, dock, title })

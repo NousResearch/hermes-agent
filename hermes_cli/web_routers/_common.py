@@ -6,10 +6,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import logging
 import re
 import sqlite3
 import time
+from concurrent.futures import Executor
 from typing import Any, Callable, Dict, Optional
 
 from fastapi import HTTPException
@@ -48,15 +50,20 @@ async def scoped_to_thread(profile: Optional[str], fn: Callable[[], Any]) -> Any
     return await asyncio.to_thread(_run)
 
 
-async def config_scoped_to_thread(profile: Optional[str], fn: Callable[[], Any]) -> Any:
+async def config_scoped_to_thread(
+    profile: Optional[str], fn: Callable[[], Any], executor: Optional[Executor] = None,
+) -> Any:
     """Run ``fn()`` inside ``_config_profile_scope(profile)`` on a worker thread —
-    home + secret scope without the process-global skills-module swap."""
+    home + secret scope without the process-global skills-module swap. *executor* keeps a
+    pile-up of slow calls off the default pool the other handlers share."""
 
     def _run():
         with _config_profile_scope(profile):
             return fn()
 
-    return await asyncio.to_thread(_run)
+    if executor is None:
+        return await asyncio.to_thread(_run)
+    return await asyncio.get_running_loop().run_in_executor(executor, contextvars.copy_context().run, _run)
 
 
 def destructive_profile(profile: Optional[str], route: str) -> Optional[str]:

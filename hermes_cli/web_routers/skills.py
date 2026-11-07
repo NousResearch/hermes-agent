@@ -8,6 +8,8 @@ seam so ``monkeypatch.setattr(<owning module>, ...)`` keeps working.
 """
 
 import asyncio
+import threading
+import time
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
@@ -23,6 +25,15 @@ from hermes_cli.web_routers._common import (
 
 hub_router = APIRouter()
 router = APIRouter()
+
+# A dashboard page load asks for the skill list twice within the same second
+# (two components mount together). Every scan walks each skill directory, and
+# the pair — serialized by the gateway's busy thread pool — measured 2.5-4.7s
+# against 0.25s cold and 6ms warm. Serve the burst from one scan: cache per
+# profile for a few seconds and never run two scans at once.
+_SKILLS_LIST_TTL_SECONDS = 10.0
+_skills_list_cache: dict[str, tuple[float, list[dict]]] = {}
+_skills_list_lock = threading.RLock()
 
 _config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
 load_config = late("load_config", "hermes_cli.config")
@@ -92,6 +103,13 @@ def _clear_skills_prompt_cache() -> None:
         clear_skills_system_prompt_cache(clear_snapshot=True)
     except Exception:
         pass
+    _invalidate_skills_list_cache()
+
+
+def _invalidate_skills_list_cache() -> None:
+    """Drop the cached ``/api/skills`` rows so a write shows up immediately."""
+    with _skills_list_lock:
+        _skills_list_cache.clear()
 
 
 @hub_router.post("/api/skills/hub/install")
@@ -340,8 +358,19 @@ async def scan_skill_hub(identifier: str = "", profile: Optional[str] = None):
     return await _hub_lookup(_run, ident, "skills hub scan failed", "Hub scan failed")
 
 
-@router.get("/api/skills")
-async def get_skills(profile: Optional[str] = None):
+def _skills_list_cached(profile: Optional[str]) -> list[dict]:
+    """One skill scan per profile per TTL, and never two scans concurrently."""
+    key = str(profile or "")
+    with _skills_list_lock:
+        hit = _skills_list_cache.get(key)
+        if hit is not None and time.monotonic() < hit[0]:
+            return [dict(row) for row in hit[1]]
+        rows = _skills_list_build(profile)
+        _skills_list_cache[key] = (time.monotonic() + _SKILLS_LIST_TTL_SECONDS, rows)
+        return [dict(row) for row in rows]
+
+
+def _skills_list_build(profile: Optional[str]) -> list[dict]:
     from tools.skills_tool import find_all_skills
     from hermes_cli.skills_config import get_disabled_skills
     from tools.skill_usage import (
@@ -375,7 +404,12 @@ async def get_skills(profile: Optional[str] = None):
                 else "agent")
         return skills
 
-    return await asyncio.to_thread(_run)
+    return _run()
+
+
+@router.get("/api/skills")
+async def get_skills(profile: Optional[str] = None):
+    return await asyncio.to_thread(_skills_list_cached, profile)
 
 
 def _locked_index() -> tuple[set, dict]:
@@ -410,6 +444,7 @@ async def lock_skill(body: SkillLock, profile: Optional[str] = None):
                 raise HTTPException(
                     status_code=500,
                     detail=f"Could not {verb} '{key}': skills/.usage.json is not writable.")
+        _invalidate_skills_list_cache()
         return {"ok": True, "name": body.name, "locked": body.locked}
 
     return await asyncio.to_thread(_run)
@@ -428,6 +463,7 @@ async def toggle_skill(body: SkillToggle, profile: Optional[str] = None):
             else:
                 disabled.add(body.name)
             save_disabled_skills(config, disabled)
+        _invalidate_skills_list_cache()
         return {"ok": True, "name": body.name, "enabled": body.enabled}
 
     return await asyncio.to_thread(_run)

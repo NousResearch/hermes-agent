@@ -16,8 +16,8 @@ from hermes_cli.web_deps import LateState, late
 from hermes_cli.config import cfg_get
 from hermes_cli.web_routers._common import config_scoped_to_thread
 from hermes_cli.web_server_dashboard import (
-    _BUILTIN_DASHBOARD_THEMES, _discover_user_themes, _invalidate_plugins_hub_cache, _merged_plugins_hub,
-    _plugin_consent_withheld,
+    _BUILTIN_DASHBOARD_THEMES, _PLUGINS_HUB_EXECUTOR, _discover_user_themes, _invalidate_plugins_hub_cache,
+    _merged_plugins_hub, _plugin_consent_withheld,
 )
 from hermes_cli.web_server_memory import _normalize_memory_provider_name, _require_memory_provider_ready
 from hermes_cli.web_models import (
@@ -134,7 +134,7 @@ async def get_plugins_hub(request: Request, profile: Optional[str] = None):
     """Unified agent plugins + dashboard extension metadata (session protected)."""
     _require_token(request)
     try:
-        return await config_scoped_to_thread(profile, _merged_plugins_hub)
+        return await config_scoped_to_thread(profile, _merged_plugins_hub, executor=_PLUGINS_HUB_EXECUTOR)
     except HTTPException:
         raise  # an unknown ?profile= is the scope's 404, not a hub failure
     except Exception as exc:

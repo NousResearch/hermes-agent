@@ -75,18 +75,30 @@ def _read_or_none(path: Path) -> Optional[bytes]:
 
 # Everything this process still imports once the tree has moved: the receipt finalize, the
 # shallow-checkout count after a branch switch, and the resume of the gateways it paused (systemd,
-# launchd, Windows; a bare replay's environment is built by the pause). Loaded at the commit point,
+# launchd, Windows; a bare replay's environment is built by the pause, a Windows restart builds its
+# own from the modules listed here). Loaded at the commit point,
 # while the tree is still the code this process runs; ``test_update_post_swap_imports`` drives each.
 POST_MOVE_MODULES = (
+    "agent.delegation_context",
+    "agent.provider_base",
+    "agent.provider_registry",
+    "agent.terminal_env_provider",
+    "agent.terminal_env_registry",
+    "gateway.config_loader",
+    "gateway.platform_registry",
     "gateway.runtime_ownership",
+    "gateway.session_context",
+    "gateway.shutdown_forensics",
     "gateway.status",
     "hermes_cli.gateway",
     "hermes_cli.gateway_windows",
     "hermes_cli.github_api",
+    "hermes_cli.plugins_session_env",
     "hermes_cli.source_check",
     "hermes_cli.update_cmd_fleet_unit_budget",
     "hermes_cli.update_serve_obligations",
     "pm.lock",
+    "tools.environments.local",
 )
 
 

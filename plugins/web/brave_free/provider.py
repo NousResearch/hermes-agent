@@ -37,7 +37,9 @@ class BraveFreeWebSearchProvider(BaseWebSearchProvider):
         if failure is not None:
             return failure
         raw_results = (data.get("web") or {}).get("results", []) or []
-        web_results = titled_rows(raw_results[:limit], "description")
+        web_results = titled_rows(
+            raw_results[:limit], "description", date_keys={"published_date": "page_age", "crawl_date": "page_fetched"},
+        )
         logger.info("Brave Search '%s': %d results (from %d raw, limit %d)", query, len(web_results), len(raw_results), limit)
         return search_ok(web_results)
 

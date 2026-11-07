@@ -1,6 +1,6 @@
 name: folio
 repo: https://github.com/okyssta/hermes-folio
-sha: "183a3822cc8978dc87cd1373d05afd54f15602d3"
+sha: "9332dbd0207916ddc2bd89d8f4d39107972d3e1e"
 description: >-
   Hermes gets a library of the user's own documents. Folio indexes PDF, DOCX,
   PPTX, XLSX, HTML, Markdown and source files locally and answers with the file,

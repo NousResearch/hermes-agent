@@ -263,7 +263,7 @@ AUX_TASKS = _CatalogValues("aux_task_names", extra=frozenset({"none", "other"}))
 SLASH_COMMANDS = _CatalogValues("slash_command_names", extra=frozenset({"plugin", "skill", "unknown"}))
 SKILL_NAMES = _CatalogValues("bundled_skill_names", extra=frozenset({"custom"}))
 EXTENSION_NAMES = _CatalogValues(
-    "bundled_skill_names", "mcp_catalog_names", "plugin_catalog_names", extra=frozenset({"custom"})
+    "bundled_skill_names", "plugin_catalog_names", extra=frozenset({"custom"})
 )
 DISPLAY_LANGUAGES = _CatalogValues("display_languages", extra=frozenset({"other"}))
 # ---- v4 model ----
@@ -433,7 +433,7 @@ FEATURE_DISABLED_NAME_MAX_LENGTH = 64
 # ---- iuf c1 ----
 # Why an extension install failed, named at each failure exit of the three emitters
 # (hermes_cli/skills_hub.py::_install_skill, hermes_cli/plugins_cmd_install.py::recorded_install,
-# hermes_cli/mcp_catalog.py::recorded_catalog_install / record_mcp_install); ``none`` on success.
+# hermes_cli/mcp_config.py::record_mcp_install); ``none`` on success.
 # A raised exception with no class of its own is classified by its TYPE: network / permission /
 # filesystem_error, anything else ``exception:<Type>``, which keeps only the ``exception`` prefix
 # (as on compression rows). Never the error message.

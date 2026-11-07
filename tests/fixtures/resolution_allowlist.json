@@ -308,11 +308,6 @@
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/mcp_catalog.py",
-    "symbol": "_do_git_install",
-    "kind": "bare_which"
-  },
-  {
     "path": "hermes_cli/plugins_cmd.py",
     "symbol": "_resolve_git_executable",
     "kind": "bare_which"

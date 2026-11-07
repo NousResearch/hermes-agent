@@ -485,11 +485,6 @@ def get_optional_skills_dir(default: Path | None = None) -> Path:
     return _packaged_dir("HERMES_OPTIONAL_SKILLS", default, "optional-skills")
 
 
-def get_optional_mcps_dir(default: Path | None = None) -> Path:
-    """Return the optional-mcps directory, honoring package-manager wrappers (``HERMES_OPTIONAL_MCPS``)."""
-    return _packaged_dir("HERMES_OPTIONAL_MCPS", default, "optional-mcps")
-
-
 def get_bundled_skills_dir(default: Path | None = None) -> Path:
     """Return the bundled skills directory, honoring package-manager wrappers (``HERMES_BUNDLED_SKILLS``)."""
     return _packaged_dir("HERMES_BUNDLED_SKILLS", default, "skills")

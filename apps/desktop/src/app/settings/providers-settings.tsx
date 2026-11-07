@@ -174,10 +174,6 @@ function OAuthPicker({
   const [showAll, setShowAll] = useState(false)
   const ordered = useMemo(() => sortProviders(providers), [providers])
 
-  if (ordered.length === 0) {
-    return null
-  }
-
   const select = (p: OAuthProvider) => startManualProviderOAuth(p.id, profile)
 
   // The free tier holds a token but no account: it is never "connected"; the featured Nous row
@@ -416,8 +412,6 @@ export function ProvidersSettings({
     return byEnv
   }, [vars])
 
-  const apiKeysShown = view === 'keys' || (oauthProviders.length === 0 && view !== 'custom-endpoints')
-
   // Deep link from a rejected-key error card (?pview=keys&key=<ENV_KEY>):
   // clear the filter, expand that provider's card and scroll to it.
   useDeepLinkHighlight({
@@ -427,7 +421,7 @@ export function ProvidersSettings({
       setOpenProvider(keyGroupByEnv.get(key) ?? null)
     },
     param: 'key',
-    ready: key => apiKeysShown && keyGroupByEnv.has(key)
+    ready: key => view === 'keys' && keyGroupByEnv.has(key)
   })
 
   const refreshOAuthProviders = useCallback(async () => {
@@ -533,14 +527,9 @@ export function ProvidersSettings({
     return <SettingsSkeleton search sections={[{ rows: 6 }]} />
   }
 
-  const hasOauth = oauthProviders.length > 0
-  // The sidebar subnav owns the Accounts/API-keys split now; with no OAuth
-  // providers there's nothing for the "Accounts" view to show, so fall to keys.
-  const showApiKeys = view === 'keys' || (!hasOauth && view !== 'custom-endpoints')
-
   const keyGroups = buildProviderKeyGroups(vars)
 
-  if (showApiKeys) {
+  if (view === 'keys') {
     const q = normalize(keyQuery)
 
     const visibleGroups = q

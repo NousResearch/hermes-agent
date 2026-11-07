@@ -1786,6 +1786,9 @@ export type { HermesGateway } from '@/hermes'
 /** Grab-to-pan for overflow containers (boards, timelines, wide tables) —
  *  the shared scrub primitive; don't hand-roll drag-to-scroll. */
 export { type GrabScroll, useGrabScroll } from '@/hooks/use-grab-scroll'
+/** A contributed page's deep-link query (`host.navigate('/my-page?item=x')`):
+ *  the route's params while the app is on that page, taken once. */
+export { type RouteQuery, useRouteQuery } from '@/hooks/use-route-query'
 /** Localized copy. `useI18n` reuses the app's strings; `usePluginI18n(id)` +
  *  `ctx.i18n.register` let a plugin ship its OWN locale bundles, scoped like
  *  `ctx.storage` and resolved against the app's active locale — no core edit.

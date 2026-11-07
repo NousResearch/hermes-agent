@@ -366,14 +366,14 @@ describe('notification content', () => {
     expect(lastNotify().detail).toBe('t103 · ok.md')
   })
 
-  it('Open Kanban action navigates to the native /kanban page', async () => {
+  it('Open Kanban action opens the card on its board', async () => {
     const m = await loadModule()
     m.bindCompletionNotify(makeRest(() => 100) as never)
 
     await m.onKanbanEventsFrame('smoke', [ev(101, 'completed', { summary: 'Done' })])
 
     lastNotify().action?.onClick()
-    expect(hostMock.navigate).toHaveBeenCalledWith('/kanban')
+    expect(hostMock.navigate).toHaveBeenCalledWith('/kanban?board=smoke&task=t101')
   })
 })
 

@@ -89,7 +89,8 @@ export const ROUTES_AREA = 'routes'
 
 /** Payload of a `routes` contribution's `data`. */
 export interface RouteContribution {
-  /** Absolute path, e.g. `/kanban`. One segment; no params. */
+  /** Absolute path, e.g. `/kanban`. One segment; no path params — a page
+   *  that takes a deep link reads its query with the SDK's `useRouteQuery`. */
   path: string
 }
 

@@ -98,6 +98,10 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
 
     monkeypatch.setattr(update_custody, "run",
                         lambda argv, *, inherit_lock=False, **kw: run_side_effect(list(argv), **kw))
+    # Where there is no parent-death signal (macOS), run_git spawns through the owner watchdog
+    # instead of run(): fake that spawn too, or the real git meets the fake checkout's empty .git.
+    monkeypatch.setattr(update_custody, "_run_owner_watched",
+                        lambda argv, kwargs, *, watch_owner=True: run_side_effect(list(argv), **kwargs))
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(update_cmd, "_prepare_updated_checkout", lambda *a, **k: None)
     (tmp_path / ".git").mkdir()

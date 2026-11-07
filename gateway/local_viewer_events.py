@@ -50,11 +50,24 @@ def wire(turn, agent) -> dict:
     if show_reasoning(turn) or _config_default_launch():
         # A reasoning sink makes the agent ask the provider for reasoning; each delta re-checks the
         # session's display so /reasoning show|hide applies mid-turn.
-        agent.reasoning_callback = lambda text: (
-            publish("reasoning.delta", {"text": str(text or "")}) if show_reasoning(turn) else None)
+        def reasoning_callback(text):
+            text = str(text or "")
+            if show_reasoning(turn) and publish("reasoning.delta", {"text": text}) and text:
+                turn._reasoning_streamed = True
+        agent.reasoning_callback = reasoning_callback
     # The desktop window bridges (preview/terminal/window reads, preview actions, desktop_ui events).
     previous[_DESKTOP_UI_TOKEN] = local_desktop_ui.wire(turn, agent)
     return previous
+
+
+def finish_reasoning(turn, result):
+    """ACP needs a thought event when the provider returned reasoning without streaming it."""
+    from gateway.session_policy import active_policy
+    reasoning = result.get("last_reasoning")
+    if (getattr(active_policy(), "source", None) == "acp" and show_reasoning(turn)
+            and not getattr(turn, "_reasoning_streamed", False)
+            and isinstance(reasoning, str) and reasoning.strip()):
+        turn._publish_execution("reasoning.delta", {"text": reasoning})
 
 
 # Launch sources whose viewer never sets the session flag; main's TUI gateway defaulted it from config.

@@ -763,9 +763,13 @@ def _pin_ticket_file(authority: file_tickets.FileAuthority, checked):
         raise HTTPException(status_code=403, detail="File is not readable") from exc
 
 
-@router.post("/api/files/ticket", dependencies=[Depends(route_on("browser_files"))])
+@router.post("/api/files/ticket")
 async def issue_file_ticket(payload: FileTicketRequest, request: Request):
     """Ticket a browser download/media URL instead of putting the session token in it."""
+    if payload.route != "managed_download":
+        route_on("browser_files")(request)
+    elif payload.profile is not None or payload.session_id is not None:
+        raise HTTPException(status_code=400, detail="Managed download tickets use the managed-files scope")
     from hermes_cli.web_routers.sessions import _history_profile_home
     from hermes_constants import named_profile_home
 
@@ -788,7 +792,10 @@ async def issue_file_ticket(payload: FileTicketRequest, request: Request):
         owner = await asyncio.to_thread(owner_home)
         # Before the backend is chosen: an SSH profile's ticket checks its session too.
         session = await _fs_owned_session(payload.session_id, payload.profile)
-        if payload.route == "download":
+        if payload.route == "managed_download":
+            path = payload.path
+            authority = await asyncio.to_thread(capture)
+        elif payload.route == "download":
             authority = await _fs_download_authority(
                 request, payload.path, payload.profile, payload.session_id, owner, session,
             )

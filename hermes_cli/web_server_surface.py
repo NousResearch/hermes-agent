@@ -38,7 +38,8 @@ class SurfacePolicy:
     #: listener (the private one, or the Webapp's when it is on).
     web_access: bool
     #: The browser's file routes serve: ``/api/chat/file-upload`` stages a picked file,
-    #: ``/api/files/ticket`` mints the path-bound tickets for downloads and media links, and chat
+    #: ``/api/files/ticket`` mints Webapp filesystem/media tickets (managed-root download tickets
+    #: follow the existing managed-files API policy on every surface), and chat
     #: upload bodies are capped before they are parsed (``web_upload_limit``).
     browser_files: bool
     #: ``/api/desktop-plugins/*`` serves this host's desktop plugins to the browser's plugin loader;

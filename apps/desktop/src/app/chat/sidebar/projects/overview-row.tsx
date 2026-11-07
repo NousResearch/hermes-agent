@@ -11,6 +11,13 @@ import { cn } from '@/lib/utils'
 import { $sidebarShowAllSessions } from '@/store/layout'
 import type { AgentProfileRoute } from '@/store/profile'
 import { fetchProjectSessions, projectProfile } from '@/store/projects'
+import {
+  $removedSessionIds,
+  captureSessionTombstoneGenerations,
+  sessionRemovalIntersected,
+  type SessionTombstoneGenerationSnapshot,
+  tombstoneRowIds
+} from '@/store/session-removal'
 
 import {
   SIDEBAR_LEAD_ICON_SIZE,
@@ -131,17 +138,37 @@ export function ProjectOverviewRow({
   // the sidebar's content edge regardless of which side the sidebar is on.
   const rowRef = useRef<HTMLDivElement>(null)
   const showAllSessions = useStore($sidebarShowAllSessions)
+
   // The tree payload previews only the most-recent few sessions per project
   // (kept light on purpose); "Show all" hydrates THIS project's lanes on demand
   // rather than widening every project's preview window.
-  const [expanded, setExpanded] = useState<SidebarProjectTree | null>(null)
+  const [expansion, setExpansion] = useState<{
+    tree: SidebarProjectTree
+    removalSnapshot: SessionTombstoneGenerationSnapshot
+  } | null>(null)
+
+  const expanded = expansion?.tree ?? null
+  const removed = useStore($removedSessionIds)
   const [expanding, setExpanding] = useState(false)
   const limit = showAllSessions || expanded ? Infinity : PROJECT_PREVIEW_COUNT
   const fetched = (previewSessions ?? []).slice(0, limit)
   const recent = fetched.length ? fetched : latestProjectSessions(project, limit)
+
   // The hydrated lanes come straight from the backend, so — like the drill-in
   // (index.tsx) — they haven't been through the tree's exclusion filter yet.
-  const visible = expanded && isSessionHidden ? excludeProjectSessions(expanded, isSessionHidden) : expanded
+  // A successful tree refresh prunes optimistic tombstones. The hydrated
+  // cache still predates that archive, so retain its removal generation too.
+  const visible = expansion
+    ? excludeProjectSessions(
+        expansion.tree,
+        session =>
+          Boolean(isSessionHidden?.(session)) ||
+          tombstoneRowIds(session).some(
+            id => removed.has(id) || sessionRemovalIntersected(expansion.removalSnapshot, id)
+          )
+      )
+    : null
+
   const preview = renderRows ? (visible ? expandedProjectSessions(recent, visible) : recent) : []
   // Once hydrated, the whole project is reachable but mounts a page at a time
   // (a project can hold thousands of chats; the collapsed preview stays 3).
@@ -170,9 +197,10 @@ export function ProjectOverviewRow({
       return
     }
 
+    const removalSnapshot = captureSessionTombstoneGenerations()
     setExpanding(true)
     fetchProjectSessions(project.id, { supersedable: false })
-      .then(tree => void (tree && setExpanded(tree)))
+      .then(tree => void (tree && setExpansion({ tree, removalSnapshot })))
       .catch(() => onEnter?.(project.id))
       .finally(() => setExpanding(false))
   }

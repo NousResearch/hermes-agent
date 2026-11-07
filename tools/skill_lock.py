@@ -55,20 +55,21 @@ def _skill_usage():
 
 def locked_skill_dirs() -> list[tuple[str, str]]:
     """``(name, realpath)`` of every locked skill in the active profile, from ONE walk of the
-    skills dirs (locks are keyed by directory name, so no frontmatter is read)."""
+    skills dirs (locks are keyed by directory name, so no frontmatter is read). Every directory
+    with a locked name is listed: a second one with the same name must not take the lock over."""
     names = set(_skill_usage().locked_skill_names())
     if not names:
         return []
     from agent.skill_utils import get_all_skills_dirs, is_excluded_skill_path
-    found: dict[str, str] = {}
+    found: set[tuple[str, str]] = set()
     for base in get_all_skills_dirs():
         if not base.is_dir():
             continue
         for skill_md in base.rglob("SKILL.md"):
             name = skill_md.parent.name
-            if name in names and name not in found and not is_excluded_skill_path(skill_md, root=base):
-                found[name] = os.path.realpath(skill_md.parent)
-    return sorted(found.items())
+            if name in names and not is_excluded_skill_path(skill_md, root=base):
+                found.add((name, os.path.realpath(skill_md.parent)))
+    return sorted(found)
 
 
 def is_locked_skill(name: str, locked_names: Iterable[str] | None = None) -> bool:

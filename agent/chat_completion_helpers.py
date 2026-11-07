@@ -1295,15 +1295,15 @@ def _reasoning_config_for_wire(agent):
 
     Once the route has answered a disable with "reasoning is mandatory"
     (``agent._reasoning_disable_rejected``), every disable — configured or
-    the one-shot continuation override — is dropped for the rest of the
-    session: the request goes out without a reasoning config and the route
+    the one-shot continuation override — is dropped until the route
+    changes: the request goes out without a reasoning config and the route
     applies its own default.
     """
     cfg = agent.reasoning_config
     ephemeral_off = _consume_ephemeral_reasoning_off(agent)
     if getattr(agent, "_reasoning_effort_rejected", False):
         # The route rejected the configured reasoning LEVEL itself (#100536: ``reasoning.effort:
-        # max`` on an enabled config). Omit the reasoning fields for the rest of the session —
+        # max`` on an enabled config). Omit the reasoning fields until the route changes —
         # the route default — as the auxiliary ladder does; resending would 400 identically.
         agent._wire_reasoning_config = None
         return None

@@ -1,12 +1,14 @@
 """What a route taught this session about itself, and the reset when the session changes route.
 
-Each flag below is set after one endpoint/model rejected something (a reasoning disable, a
-reasoning effort, the ``stream_options`` usage extension). It is a fact about that route, not
-about the session: a ``/model`` switch, a fallback activation, a credential rotation that moves
-the endpoint, or a primary restore starts the new route without the old route's verdicts, as the
-Codex replay verdict already did (#61552). The primary's own verdicts come back with it.
-``_disable_streaming`` is one too (a provider answered that it cannot stream), but its reset value is
-the configured ``model.streaming`` seed, not ``False``.
+A route verdict is set after one endpoint/model rejected something: a reasoning disable, a
+reasoning effort, the ``stream_options`` usage extension, a stream (``_disable_streaming``), or its
+own Codex encrypted-reasoning replay (``_codex_reasoning_replay_enabled`` and
+``_codex_reasoning_replay_rejected``, #61552). It is a fact about that route, not about the
+session. These start the new route without the old route's verdicts: a ``/model`` switch, a
+fallback activation, a credential rotation that moves the endpoint, a credential refresh that
+returns another base URL, transport recovery back to the primary's URL, and a primary restore.
+The primary's own verdicts come back with it. ``_disable_streaming`` resets to the configured
+``model.streaming`` seed, not ``False``.
 """
 from __future__ import annotations
 

@@ -209,15 +209,20 @@ def test_pool_bench(case, error, provider, keys, bench):
     assert benched == bench, case
 
 
-@pytest.mark.parametrize("retry_error,fell_back", [  # a terminal verdict (no retry, no fallback) holds after a rung
-    pytest.param(sdk(400, "Bad Request"), True, id="format-error"),
-    pytest.param(sdk(403, "No endpoint qualifies.", code="data_policy_denied"), False, id="data-policy-denied"),
-    pytest.param(sdk(400, "invalid tool call arguments"), False, id="malformed-tool-args"),
+_MTA = "invalid tool call arguments: max_tokens must be an integer"
+
+
+@pytest.mark.parametrize("retry_errors,attempts,fell_back", [  # a terminal verdict (no retry, no fallback) holds after a rung
+    pytest.param([sdk(400, "Bad Request")], 2, True, id="format-error"),
+    pytest.param([sdk(403, "No endpoint qualifies.", code="data_policy_denied")], 2, False, id="data-policy-denied"),
+    pytest.param([sdk(400, "invalid tool call arguments")], 2, False, id="malformed-tool-args"),
+    # A message naming another parameter still takes that rung (format_error, as on main), then stops.
+    pytest.param([sdk(400, _MTA), sdk(400, _MTA)], 3, False, id="malformed-tool-args-naming-max-tokens"),
 ])
-def test_spent_parameter_rung(retry_error, fell_back):
+def test_spent_parameter_rung(retry_errors, attempts, fell_back):
     first = sdk(400, "Unsupported parameter: 'temperature' is not supported with this model.")
-    outcome = run_ladder([first, retry_error], provider="nous", temperature=0.3)
-    assert (outcome.attempts, outcome.fell_back, outcome.rotated) == (2, fell_back, False)
+    outcome = run_ladder([first, *retry_errors], provider="nous", temperature=0.3, max_tokens=16)
+    assert (outcome.attempts, outcome.fell_back, outcome.rotated) == (attempts, fell_back, False)
 
 
 @pytest.mark.parametrize("stream", [False, True], ids=["plain", "streamed"])

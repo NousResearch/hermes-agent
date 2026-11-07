@@ -256,9 +256,10 @@ def ensure_tools_for_sync() -> None:
     Publishing tools first also lets native builds resolve compilers and git
     from the pinned store instead of the host (as `hermes pm install` does).
     An update is an explicit user action, so the lazy-install policy does not
-    gate it; a failed download fails the update.
+    gate it; a failed download fails the update. It also carries ``stage``
+    fixes to entries published before them, optional tools included.
     """
-    from pm.install import activate
+    from pm.install import activate, restage_recorded
     from pm.libatomic import install_before_lock
     from pm.lock import Lockfile
     from pm.registry import tool_roots
@@ -266,6 +267,7 @@ def ensure_tools_for_sync() -> None:
     install_before_lock()
     for name in tool_roots(Lockfile(paths.lockfile_path()).names()):
         ensure(name, explicit=True)
+    restage_recorded()
     problems = activate(allow_incomplete=True)
     if problems:
         raise RuntimeError(f"tools not on PATH before venv sync: {'; '.join(problems)}")

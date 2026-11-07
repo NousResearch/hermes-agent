@@ -283,9 +283,9 @@ class TestStop:
 
 
 class TestReapOrphans:
-    def _record(self, _isolate, name, *, pid=999, owner_pid=1, port=43111, start_time=111):
+    def _record(self, _isolate, name, *, pid=999, owner_pid=1, port=43111, start_time=111, owner_start_time=None):
         (_isolate / f"{name}.json").write_text(
-            json.dumps({"pid": pid, "port": port, "owner_pid": owner_pid,
+            json.dumps({"pid": pid, "port": port, "owner_pid": owner_pid, "owner_start_time": owner_start_time,
                         "start_time": start_time, "started_at": 0}),
             encoding="utf-8",
         )
@@ -311,16 +311,59 @@ class TestReapOrphans:
     def test_dead_owner_verified_process_is_killed(self, _isolate):
         rec = self._record(_isolate, "lp_x", owner_pid=12345, pid=999)
         with patch("gateway.status._pid_exists", return_value=False), \
-             patch.object(lp, "_is_lightpanda_process", return_value=True), \
+             patch.object(lp, "_is_lightpanda_process", side_effect=[True, False]), \
              patch("tools.process_registry.ProcessRegistry._terminate_host_pid") as kill:
             assert lp.reap_orphaned_lightpanda() == 1
         kill.assert_called_once_with(999, expected_start=111)
         assert not rec.exists()
 
+    def test_server_that_survives_the_kill_keeps_its_record(self, _isolate, monkeypatch):
+        """The record is the only handle on the server: it goes once the server is gone, not once a kill was tried."""
+        from tools.process_registry import ProcessRegistry
+        monkeypatch.setattr(ProcessRegistry, "_KILL_SETTLE_SECONDS", 0)
+        rec = self._record(_isolate, "lp_x", owner_pid=12345, pid=999)
+        with patch("gateway.status._pid_exists", return_value=False), \
+             patch.object(lp, "_is_lightpanda_process", return_value=True), \
+             patch("tools.process_registry.ProcessRegistry._terminate_host_pid") as kill:
+            assert lp.reap_orphaned_lightpanda() == 0
+        kill.assert_called_once()
+        assert rec.exists()
+
+    def test_recycled_owner_pid_does_not_protect_an_orphan(self, _isolate):
+        """A stranger now holds the dead owner's pid (alive, another start time): the server is still an orphan."""
+        rec = self._record(_isolate, "lp_x", owner_pid=12345, owner_start_time=555, pid=999)
+        with patch("gateway.status._pid_exists", return_value=True), \
+             patch("gateway.status.get_process_start_time", return_value=666), \
+             patch.object(lp, "_is_lightpanda_process", side_effect=[True, False]), \
+             patch("tools.process_registry.ProcessRegistry._terminate_host_pid") as kill:
+            assert lp.reap_orphaned_lightpanda() == 1
+        kill.assert_called_once()
+        assert not rec.exists()
+
+    def test_owner_with_its_recorded_start_time_keeps_its_server(self, _isolate):
+        rec = self._record(_isolate, "lp_x", owner_pid=12345, owner_start_time=555, pid=999)
+        with patch("gateway.status._pid_exists", return_value=True), \
+             patch("gateway.status.get_process_start_time", return_value=555), \
+             patch("tools.process_registry.ProcessRegistry._terminate_host_pid") as kill:
+            assert lp.reap_orphaned_lightpanda() == 0
+        kill.assert_not_called()
+        assert rec.exists()
+
+    def test_malformed_pid_field_is_swept_and_never_stops_the_chromium_reap(self, _isolate):
+        """A record that parses but names no pid is corrupt: an exception here would skip the Chromium reap on
+        every pass for as long as the file exists."""
+        from tools import browser_session_lifecycle as lifecycle
+        rec = _isolate / "lp_bad.json"
+        rec.write_text(json.dumps({"owner_pid": "not-a-pid", "pid": 999}), encoding="utf-8")
+        with patch("tools.browser_launcher.reap_orphaned_browsers", return_value=0) as chromium:
+            assert lifecycle.reap_orphaned_browser_sessions() == 0
+        chromium.assert_called_once()
+        assert not rec.exists()
+
     def test_own_untracked_session_is_reaped(self, _isolate):
         """Owner alive but lost its in-memory tracking: reap, don't leak."""
         self._record(_isolate, "lp_x", owner_pid=os.getpid(), pid=999)
-        with patch.object(lp, "_is_lightpanda_process", return_value=True), \
+        with patch.object(lp, "_is_lightpanda_process", side_effect=[True, False]), \
              patch("tools.process_registry.ProcessRegistry._terminate_host_pid") as kill:
             assert lp.reap_orphaned_lightpanda() == 1
         kill.assert_called_once()

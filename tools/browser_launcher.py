@@ -991,6 +991,32 @@ def _is_recorded_browser(record: dict, home: Optional[str]) -> bool:
     return True
 
 
+def _outlived_signals(record: dict) -> bool:
+    """The signalled browser still runs (paused with escalation off, stuck in uninterruptible I/O)."""
+    from tools.browser_launcher_holders import process_alive
+    from tools.process_registry import ProcessRegistry
+    return ProcessRegistry._outlived_kill(lambda: process_alive(record["pid"], record["start_time"]))
+
+
+def _identity_unreadable(record: dict) -> bool:
+    """The recorded pid is alive but its start time or argv cannot be read: it may still be the browser. Another
+    start time, or an argv that names something else, is a proof and does not count."""
+    pid, expected = record.get("pid"), record.get("start_time")
+    if not isinstance(pid, int) or expected is None or not _pid_alive(pid):
+        return False
+    started = _start_time(pid)
+    if started != expected:
+        return started is None
+    import psutil
+    try:
+        psutil.Process(pid).cmdline()
+    except psutil.NoSuchProcess:
+        return False
+    except (psutil.Error, OSError):
+        return True
+    return False
+
+
 def _tracked_browser(record: dict) -> Optional[LaunchedBrowser]:
     with _lock:  # a browser another environment holds has a pid of THAT namespace: it tracks no record here
         return next((b for b in (*_browsers.values(), *_launching.values())
@@ -1044,6 +1070,12 @@ def _reap_record(path: Path, home: Optional[str]) -> bool:
     reaped = _is_recorded_browser(record, home)
     if reaped:
         _terminate(record["pid"], record.get("start_time"), None)
+    # The record is the only handle a later reaper has on this browser: keep it, and the profile, until it is proven gone.
+    if (_outlived_signals(record) if reaped else _identity_unreadable(record)):
+        logger.warning("browser: keeping the launch record of Chromium pid %s: it %s; the next reap retries", record["pid"],
+                       "outlived its signals" if reaped else "cannot be identified right now")
+        return False
+    if reaped:
         logger.info("browser: reaped orphaned Chromium pid %s (%s)", record["pid"], record["user_data_dir"])
     udd = record.get("user_data_dir")
     if (record.get("ephemeral") and isinstance(udd, str) and _inside_ephemeral_root(udd, home)

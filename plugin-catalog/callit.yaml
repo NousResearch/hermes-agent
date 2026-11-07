@@ -1,15 +1,15 @@
 name: callit
 repo: https://github.com/k58v2hbzkk-del/callit
-sha: e1c8ac1eb1b2270c60cd8182cc8aba7ff39187ae
-version: "1.0.0"
+sha: 990f2e80f64984c05fc1b1106d589508790c6ca0
+version: "1.2.0"
 title: CALLIT
-description: "Turn any group chat into a prediction league: friends make calls on crypto prices, football or anything, back or fade them, and Hermes referees — it locks sides, settles from live data (or a named judge / weighted group vote), keeps season leaderboards and nets optional peer-to-peer stakes, verifying Solana receipts on-chain. Disclosure — read-only HTTPS calls to api.coingecko.com (prices) and site.api.espn.com (fixtures/scores), and to the configured Solana RPC only when a user posts a payment receipt; never holds funds or keys; stores calls, sides, votes, points, debts, public Solana addresses and an audit log in plugin-data/callit/data.db; '/callit referee on' creates one visible Hermes cron job via cronjob_manage (removed by '/callit referee off'); no shell commands, no telemetry."
+description: "Turn any group chat into a prediction league: friends make calls on crypto prices, football or anything, challenge each other to 1v1 duels, run closest-guess pools, and Hermes referees — it settles from live data (or a named judge / weighted group vote) and keeps season leaderboards. Duels staked in SOL/USDC/USDT lock both stakes in an on-chain Solana escrow program (immutable, devnet by default) that can only pay the two players; Hermes signs the result with a per-install referee key and both players are refunded if it never does. Disclosure — read-only HTTPS calls to api.coingecko.com and site.api.espn.com; Solana RPC calls (configured RPC, devnet by default) to read bets and send settle transactions signed by the referee key in CALLIT_RESOLVER_KEY (a secret, never a player's key; holds only fee SOL); stores calls, sides, votes, points, debts, public Solana addresses and an audit log in plugin-data/callit/data.db; '/callit referee on' creates one visible Hermes cron job via cronjob_manage; no shell commands, no telemetry. Unaudited — devnet/testing use."
 maintainer: k58v2hbzkk-del
 tier: community
 category: tools
 requires_hermes: ">=0.22.5"
 capabilities:
-  provides_tools: [callit_make_call, callit_join, callit_vote, callit_board, callit_referee]
+  provides_tools: [callit_make_call, callit_duel, callit_pool, callit_play, callit_join, callit_vote, callit_board, callit_referee]
   provides_hooks: []
   provides_middleware: []
-  requires_env: []
+  requires_env: [CALLIT_RESOLVER_KEY]

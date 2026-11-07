@@ -574,7 +574,16 @@ def _register_connected_into_current_scope(servers: dict) -> int:
 
     with _core._lock:
         stale = []
-        for key, scopes in _core._server_tool_scopes.items():
+        replaced = []  # own connections this profile must close; discovery reconnects them below
+        # Every key this scope has an overlay for, PLUS every live connection it OWNS: a connection
+        # whose overlay was already dropped (the state this card clears out, and the one a close that
+        # could not land leaves behind) is absent from ``_server_tool_scopes`` and used to escape
+        # judgement for the life of the process, so no later pass could ever repair it.
+        judged_connections = list(_core._server_tool_scopes.items())
+        judged_connections += [
+            (key, {scope}) for key, owner in _core._server_scope_keys.items()
+            if owner == scope and key in _core._servers and key not in _core._server_tool_scopes]
+        for key, scopes in judged_connections:
             if scope not in scopes:
                 continue
             name = _key_name(key)
@@ -582,14 +591,28 @@ def _register_connected_into_current_scope(servers: dict) -> int:
                 continue  # attached after the config read; the next pass judges it
             server = _core._servers.get(key)
             config = judged[name]
-            cross_profile = _key_scope(key) != scope
-            if (config is None or not mcp_server_enabled(config) or server is None
-                    or getattr(server, "session", None) is None
-                    or not _same_server_route(server, config, cross_profile=cross_profile,
+            owned = _key_scope(key) == scope
+            live = server is not None and getattr(server, "session", None) is not None
+            if (config is None or not mcp_server_enabled(config) or not live
+                    or not _same_server_route(server, config, cross_profile=not owned,
                                               resolved_identity=resolved_ids.get(name))):
                 stale.append(key)
+                # This profile's OWN connection, still live, whose configured route or credentials
+                # changed: it is a different connection now, and detaching the overlay alone left
+                # the old session serving the old endpoint with no tools registered anywhere (a
+                # connected key is never a connect candidate, so nothing rebuilt it).
+                # Close it, and the connect pass below dials the new route. Only when THIS pass
+                # carries the name: a subset pass that cannot reconnect must not leave it down.
+                if (owned and name in servers and config is not None and mcp_server_enabled(config)
+                        and live):
+                    replaced.append(name)
     for key in stale:
         _remove_server_scope(key, scope)
+    if replaced:
+        from tools import mcp_tool_lifecycle as _lifecycle  # local: lifecycle imports discovery
+        logger.info("MCP server(s) %s: the configured url/headers/credentials changed; "
+                    "replacing the live connection", ", ".join(sorted(set(replaced))))
+        _lifecycle.shutdown_mcp_servers(scope=scope, names=set(replaced))
 
     registered_servers = 0
     for name, config in servers.items():

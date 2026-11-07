@@ -685,10 +685,56 @@ def reconcile_mcp_servers_with_config() -> dict[str, list[str]]:
     for key in lazy:
         _forget_lazy_server(key)
     added = _awaiting_connect(wanted, scope)
+    pending = set(connecting - wanted)
+    # A url / headers / auth edit keeps the NAME, so nothing above moves: the server is live, not
+    # stale and not missing. Its connection is open on the OLD route though, and the next discovery
+    # pass closes and redials it (``register_connected_into_current_scope``) instead of detaching
+    # the overlay and leaving a dead session up. This tick is the only thing that
+    # notices such an edit while the session stays up.
+    replacing = _connections_to_replace(servers) & wanted
+    if replacing:
+        added = sorted(set(added) | replacing)
     if added:
         discover_mcp_tools()
+    # ``added`` says what the pass GOT. A replacement whose close did not reach the task is still the
+    # old connection on the old route, so it is a retry for the caller (``pending``), never a
+    # reconnect: claiming it would report a server as back while sessions here still have no tools.
+    stuck = _connections_to_replace(servers) & replacing
+    if stuck:
+        added = [name for name in added if name not in stuck]
+        pending |= stuck
     return {"removed": stale + sorted(_key_name(k) for k in lazy), "added": added,
-            "pending": sorted(connecting - wanted)}
+            "pending": sorted(pending)}
+
+
+def _connections_to_replace(servers: dict[str, dict]) -> set[str]:
+    """Names whose OWN live connection was opened with a route or credentials the config no longer
+    holds: a url, headers, auth or TLS edit, not a ``tools`` filter one (that changes no identity).
+
+    Such a connection is up but is a DIFFERENT connection now, so it must not read as connected: the
+    next pass closes it and dials the configured route (``mcp_tool_registration``). Without this the
+    reconcile saw a live name, a wanted name, and nothing to do — so an edit waited for a restart
+    while the session answered keepalives on the endpoint the user had replaced.
+
+    Only connections this scope OWNS: another profile's connection is not this config's to judge,
+    and this profile detaches its overlay of one instead (it may still adopt the replacement if the
+    route matches). Snapshot under the lock, compare outside it: the comparison fingerprints configs.
+    """
+    scope = _core._mcp_registry_scope()
+    if scope is None:
+        # A single-profile process keys its connections by bare name and keeps no overlay: the
+        # replacement path (``register_connected_into_current_scope``) only heals overlays under a
+        # scope, so nothing here could reconnect it. Reporting one would promise a reconnect this
+        # path cannot make, every tick; that process still needs ``/reload-mcp`` after a url edit,
+        # which is unchanged and outside this card.
+        return set()
+    with _core._lock:
+        owned = [(_key_name(key), server) for key, owner in _core._server_scope_keys.items()
+                 if owner == scope and (server := _core._servers.get(key)) is not None]
+    return {name for name, server in owned
+            if (config := servers.get(name)) is not None and mcp_server_enabled(config)
+            and getattr(server, "session", None) is not None
+            and not _registration._same_server_route(server, config)}
 
 
 def _unregistered(wanted: set[str], scope) -> set[str]:

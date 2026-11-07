@@ -450,7 +450,15 @@ _FAST_TIERS = {"fast": "priority", "on": "priority", "normal": None, "off": None
 def _mirror_fast(sid, session, agent, arg) -> None:
     if agent:
         if arg.lower() in _FAST_TIERS:
-            agent.service_tier = _FAST_TIERS[arg.lower()]
+            # Label and wire params move together, as in config.set fast (_set_fast): relabelling alone
+            # leaves a build-time pin on the wire after `/fast off`, or none after `/fast on`.
+            from agent.fast_mode import static_tier_request_overrides
+            tier = agent.service_tier = _FAST_TIERS[arg.lower()]
+            kept = {k: v for k, v in (getattr(agent, "request_overrides", None) or {}).items()
+                    if k not in ("service_tier", "speed")}
+            agent.request_overrides = {**kept, **static_tier_request_overrides(
+                tier, getattr(agent, "model", None), provider=getattr(agent, "provider", None),
+                base_url=getattr(agent, "base_url", None))}
         _emit("session.info", sid, _session_info(agent, session))
 
 

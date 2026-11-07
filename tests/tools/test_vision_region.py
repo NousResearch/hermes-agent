@@ -94,9 +94,11 @@ class TestNativePathRegion:
     def test_region_crops_before_embed(self, tmp_path):
         from tools.vision_tools import _vision_analyze_native
 
+        # Crop chosen with both sides above the min-dimension floor (32) so this test
+        # isolates crop-before-embed, independent of the undersized-image clamp.
         src = _make_png(tmp_path / "img.png", 100, 50)
         result = asyncio.get_event_loop().run_until_complete(
-            _vision_analyze_native(str(src), "zoom", region=[10, 10, 60, 40])
+            _vision_analyze_native(str(src), "zoom", region=[10, 10, 70, 50])
         )
         assert isinstance(result, dict) and result.get("_multimodal") is True
         url = next(
@@ -104,7 +106,7 @@ class TestNativePathRegion:
             for p in result["content"]
             if p.get("type") == "image_url"
         )
-        assert _decoded_size(url) == (50, 30)
+        assert _decoded_size(url) == (60, 40)
 
     def test_no_region_behavior_unchanged(self, tmp_path):
         from tools.vision_tools import _vision_analyze_native
@@ -186,3 +188,54 @@ class TestSchemaAndHandler:
             )
         )
         assert seen["region"] == [1, 2, 30, 40]
+
+
+# ─── min-dimension rejection (thin crops / undersized inputs) ─────────────
+
+
+class TestMinDimensionRejection:
+    def test_thin_region_crop_rejected_with_actionable_error(self, tmp_path):
+        """Repro: a thin region crop (the 8x40 failure) must come back as a clean,
+        recoverable tool error naming the crop size + the fix — NOT a clamped upscale
+        the model would 'read' as real detail, and NOT a hard turn-abort."""
+        import json
+
+        from tools.vision_tools import _MIN_EMBED_DIMENSION, _vision_analyze_native
+
+        src = _make_png(tmp_path / "img.png", 200, 200)
+        result = asyncio.get_event_loop().run_until_complete(
+            _vision_analyze_native(str(src), "tab bar", region=[0, 0, 40, 8])
+        )
+        assert isinstance(result, str)
+        payload = json.loads(result)
+        assert payload.get("success") is False
+        blob = json.dumps(payload)
+        assert "40" in blob and "8" in blob          # names the crop size
+        assert "widen" in blob.lower()               # recovery guidance
+        assert str(_MIN_EMBED_DIMENSION) in blob     # names the floor
+
+    def test_crop_at_floor_passes_through(self, tmp_path):
+        from tools.vision_tools import _vision_analyze_native
+
+        src = _make_png(tmp_path / "img.png", 100, 50)
+        result = asyncio.get_event_loop().run_until_complete(
+            _vision_analyze_native(str(src), "zoom", region=[0, 0, 40, 32])  # both sides >= 32
+        )
+        assert isinstance(result, dict) and result.get("_multimodal") is True
+        url = next(
+            p["image_url"]["url"]
+            for p in result["content"]
+            if p.get("type") == "image_url"
+        )
+        assert _decoded_size(url) == (40, 32)
+
+    def test_crop_helper_rejects_below_floor_only_when_asked(self, tmp_path):
+        from tools.vision_tools import _crop_image_region
+
+        src = _make_png(tmp_path / "src.png", 100, 50)
+        path, _mime, err = _crop_image_region(src, [0, 0, 40, 8], min_dimension=32)
+        assert path is None and err is not None
+        assert "40" in err and "8" in err
+        # min_dimension defaults to 0 -> unchanged pass-through behavior
+        path2, _mime2, err2 = _crop_image_region(src, [0, 0, 40, 8])
+        assert err2 is None and path2 is not None

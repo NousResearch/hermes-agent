@@ -364,6 +364,13 @@ _MAX_BASE64_BYTES = 20 * 1024 * 1024
 # byte-budget ladder), well under every provider's per-image limit.
 _EMBED_MAX_DIMENSION = 1568
 
+# Some vision backends hard-reject any image whose short side is below their patch-merge factor
+# (Qwen2/3-VL's smart_resize raises "height/width must be larger than factor"), which aborts the
+# whole turn. Reject below this floor with an instructive tool error instead, so the model widens
+# its region (or drops it) rather than the turn dying. 32 covers Qwen2.5-VL (28) and Qwen3-VL (32);
+# backends with lower floors are satisfied automatically. Images at/above the floor pass through.
+_MIN_EMBED_DIMENSION = 32
+
 # Target when auto-resizing after a provider size rejection (retry once).
 _RESIZE_TARGET_BYTES = 5 * 1024 * 1024
 
@@ -666,8 +673,11 @@ async def _prepare_image(
             if decode_error:
                 raise _ImagePrepError(decode_error)
         if region is not None:
+            # min_dimension rejects a crop below the backend floor with an instructive error
+            # (see _MIN_EMBED_DIMENSION) rather than embed an unresolvable sliver.
             cropped_path, cropped_mime, crop_err = await asyncio.to_thread(
-                _crop_image_region, path, region, offset_out=crop_offset)
+                _crop_image_region, path, region, offset_out=crop_offset,
+                min_dimension=_MIN_EMBED_DIMENSION)
             if crop_err or cropped_path is None:
                 raise _ImagePrepError(crop_err or "Region crop failed.")
             _unlink_quietly(path)

@@ -47,8 +47,10 @@ def _prune_dropped_directories(root: Path, recorded_fingerprint: str) -> int:
     Git deletes a dropped file but keeps its directory while ``__pycache__`` is in it, and the
     bytecode sweep then leaves it empty. An empty directory at an old package path imports as an
     empty namespace package and hides the package's new location. Run after the bytecode sweep.
-    Only empty directories are removed (``rmdir``), so one holding any other file stays. Returns the
-    number removed; nothing is removed when the recorded commit is unknown. Never raises.
+    Only empty directories are removed (``rmdir``), never one reached through a symlink, so one
+    holding any other file stays. Returns the number removed; nothing is removed when the recorded
+    commit is unknown or no longer in the repository. Raises ``OSError`` when git cannot list the
+    dropped files, so the caller keeps the old fingerprint and the next sweep retries.
     """
     from hermes_cli._early_recovery import is_object_id
     from hermes_cli._subprocess_compat import windows_hide_flags
@@ -56,21 +58,27 @@ def _prune_dropped_directories(root: Path, recorded_fingerprint: str) -> int:
     since = recorded_fingerprint.rpartition(":")[2]
     if not is_object_id(since):
         return 0
+    git = ["git", "-C", str(root)]
     try:
+        known = subprocess.run([*git, "cat-file", "-e", f"{since}^{{commit}}"], capture_output=True,
+                               stdin=subprocess.DEVNULL, timeout=60, creationflags=windows_hide_flags(), check=False)
+        if known.returncode != 0:
+            return 0  # the recorded commit is gone (gc, re-clone): nothing to diff against, ever
         listed = subprocess.run(
-            ["git", "diff", "--name-only", "--no-renames", "--diff-filter=D", "-z", since, "HEAD"],
-            cwd=root, capture_output=True, stdin=subprocess.DEVNULL, timeout=60,
+            [*git, "diff", "--name-only", "--no-renames", "--diff-filter=D", "-z", since, "HEAD"],
+            capture_output=True, stdin=subprocess.DEVNULL, timeout=60,
             creationflags=windows_hide_flags(), check=False)
-    except (OSError, subprocess.SubprocessError):
-        return 0
+    except subprocess.SubprocessError as exc:
+        raise OSError(f"could not list the files dropped since {since[:10]}: {exc}") from exc
     if listed.returncode != 0:
-        return 0
+        raise OSError(f"could not list the files dropped since {since[:10]}: git exited {listed.returncode}")
+    real_root = root.resolve()
     directories = {parent for name in listed.stdout.decode("utf-8", "replace").split("\0") if name
                    for parent in (root / name).parents if parent != root and parent.is_relative_to(root)}
     removed = 0
     for directory in sorted(directories, key=lambda path: len(path.parts), reverse=True):
         try:
-            if not directory.is_symlink():
+            if directory.resolve() == real_root / directory.relative_to(root):
                 directory.rmdir()
                 removed += 1
         except OSError:

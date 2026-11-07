@@ -1886,6 +1886,13 @@ export { resolveSiblingWsUrl, type SiblingWsRoute } from '@/lib/sibling-ws-url'
  *  suffix. `relativeTime` is the bidirectional Intl form ("in 14 hr") — use it
  *  for a scheduled next-run, not for an age. */
 export { type AgoLabels, coarseElapsed, fmtDateTime, fmtDayTime, formatAgo, relativeTime } from '@/lib/time'
+/** Passive inline annotations on ordinary tool headers; native rows stay host-owned. */
+export {
+  TOOL_ACTIVITY_HEADER_API_VERSION,
+  TOOL_ACTIVITY_HEADER_AREA,
+  type ToolActivityHeaderContext,
+  type ToolActivityHeaderContribution
+} from '@/lib/tool-activity-header'
 /** The transcript as a contribution area: register a named `::directive{...}`
  *  and the model can render your component inline in assistant messages. */
 export {

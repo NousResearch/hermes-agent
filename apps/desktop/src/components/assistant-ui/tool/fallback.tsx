@@ -61,6 +61,7 @@ import {
   setToolDisclosureOpen
 } from '@/store/tool-view'
 
+import { ToolActivityHeader } from './activity-header'
 import { isApprovalActivity, isCurrentTurnMessage } from './approval-activity'
 import {
   buildToolView,
@@ -671,6 +672,22 @@ function ToolEntry({ part }: ToolEntryProps) {
             )}
             {!isFileEdit && !isPending && view.durationLabel && (
               <span className={cn(SCAFFOLD_META_CLASS, memoryMetaClass)}>{view.durationLabel}</span>
+            )}
+            {!isCardTool(toolGroupKey(toolName, args as ToolCallMessagePartProps['args'])) && (
+              <ToolActivityHeader
+                context={{
+                  toolName,
+                  innerToolName,
+                  status: view.status,
+                  hasResult: result !== undefined,
+                  interrupted,
+                  startedAt: timestamp,
+                  completedAt,
+                  exitCode: view.terminalExitCode,
+                  hasDetails: hasExpandableContent,
+                  expanded: open
+                }}
+              />
             )}
           </span>
         </DisclosureRow>

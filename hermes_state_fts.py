@@ -178,8 +178,26 @@ def retired_cjk_index_present(cursor: sqlite3.Cursor) -> bool:
 def drop_retired_cjk_index(cursor: sqlite3.Cursor) -> bool:
     """Remove the ``messages_fts_cjk`` index an earlier release built with the loadable cjk_unicode61
     tokenizer, and its markers. The shadow tables are renamed into the FTS trash, which
-    ``optimize_fts_storage`` empties in chunks. Idempotent; True when anything was removed. Logs nothing:
-    the repair probe runs it inside a transaction it rolls back."""
+    ``optimize_fts_storage`` empties in chunks. Idempotent; True when anything was removed.
+    Reuse a caller's transaction without committing it; otherwise own the atomic retirement."""
+    if not retired_cjk_index_present(cursor):
+        return False
+    owns_transaction = not cursor.connection.in_transaction
+    if owns_transaction:
+        cursor.execute("BEGIN IMMEDIATE")
+    try:
+        removed = _stage_retired_cjk_index(cursor)
+        if owns_transaction:
+            cursor.connection.commit()
+        return removed
+    except BaseException:
+        if owns_transaction:
+            cursor.connection.rollback()
+        raise
+
+
+def _stage_retired_cjk_index(cursor: sqlite3.Cursor) -> bool:
+    """Recheck after acquiring the write lock: another opener may have finished retirement."""
     if not retired_cjk_index_present(cursor):
         return False
     # Triggers first: they call the tokenizer, so while they exist every outside write to messages fails.

@@ -745,7 +745,7 @@ def recover_after_classification(
     # 400s on the ``reasoning_effort: none`` the title/continuation disable projects (#114460).
     # The catalog guard in the provider profile normally swallows the first, but a process that
     # warmed its caps cache before the route flipped keeps sending it. One-shot: never send a
-    # disable again this session (the wire builder omits it → route default), queue a catalog
+    # disable again on this route (the wire builder omits it → route default), queue a catalog
     # refresh so the guard is right next time (no-op for providers without a catalog), retry.
     if (
         classified.reason == FailoverReason.reasoning_mandatory
@@ -758,7 +758,7 @@ def recover_after_classification(
             # level (#100536: ``reasoning.effort: max`` on a Responses relay). Dropping a disable
             # would resend the identical request; omit the reasoning fields instead (route default).
             agent._reasoning_effort_rejected = True
-            _vlines(agent, f"⚠️  {agent.model} rejects reasoning effort {sent['effort']} — using the route's default for this session, retrying...")
+            _vlines(agent, f"⚠️  {agent.model} rejects reasoning effort {sent['effort']} — using the route's default until the route changes, retrying...")
             logger.warning("%sReasoning-effort recovery: dropping reasoning config for %s", agent.log_prefix, agent.model)
             return True, recovered_with_pool
         agent._reasoning_disable_rejected = True
@@ -775,11 +775,11 @@ def recover_after_classification(
             pass
         if agent._reasoning_floor_required:
             from agent.auxiliary_reasoning_floor import REASONING_FLOOR_EFFORT
-            _vlines(agent, f"⚠️  {agent.model} cannot disable reasoning — using effort={REASONING_FLOOR_EFFORT} for this session, retrying...")
+            _vlines(agent, f"⚠️  {agent.model} cannot disable reasoning — using effort={REASONING_FLOOR_EFFORT} until the route changes, retrying...")
             logger.warning("%sReasoning-disable recovery: stepping reasoning up to %s for %s",
                            agent.log_prefix, REASONING_FLOOR_EFFORT, agent.model)
         else:
-            _vlines(agent, f"⚠️  {agent.model} rejects disabling reasoning — using the route's default for this session, retrying...")
+            _vlines(agent, f"⚠️  {agent.model} rejects disabling reasoning — using the route's default until the route changes, retrying...")
             logger.warning("%sReasoning-disable recovery: dropping reasoning disable for %s", agent.log_prefix, agent.model)
         return True, recovered_with_pool
 

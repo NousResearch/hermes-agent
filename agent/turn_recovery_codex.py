@@ -35,7 +35,7 @@ def _recover_stale_codex_reasoning(
     exactly this endpoint+model (it consumes its own precondition, so it cannot loop); a repeat goes on
     to strip every item. The first full strip keeps replay on, since blobs the
     route mints from now on are sealed with its current key; a repeat rejection means the route
-    cannot round-trip its own blobs, so replay is disabled for the session."""
+    cannot round-trip its own blobs, so replay is disabled until the route changes."""
     if (
         _retry.invalid_encrypted_content_retry_attempted
         or agent.api_mode != "codex_responses"
@@ -63,7 +63,7 @@ def _recover_stale_codex_reasoning(
     for _m in api_messages if isinstance(api_messages, list) else []:
         if isinstance(_m, dict):
             _m.pop("codex_reasoning_items", None)
-    action = "stripped stale" if keep_replay else "disabled replay for this session and stripped"
+    action = "stripped stale" if keep_replay else "disabled replay on this route and stripped"
     _vlines(
         agent,
         f"⚠️  Encrypted reasoning replay was rejected by the provider — "

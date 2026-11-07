@@ -983,8 +983,9 @@ class ClientLifecycleMixin:
     def _reapply_route_client_config(self, *, route_changed: bool) -> None:
         """Recompute route-derived client kwargs (TLS material, default headers) for ``self.base_url``.
 
-        Any rebuild that may have moved ``base_url`` must call this or the new endpoint inherits the old config
-        (including the old endpoint's rejection verdicts).
+        Any rebuild that may have moved ``base_url`` must call this, or (for code that assigns a
+        refreshed ``base_url`` directly) ``route_verdicts.reset_route_verdicts_if_moved``; otherwise the
+        new endpoint inherits the old config (including the old endpoint's rejection verdicts).
         """
         if route_changed:
             from agent.route_verdicts import reset_route_verdicts

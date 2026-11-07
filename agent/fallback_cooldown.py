@@ -2,6 +2,7 @@
 fallback walk (chat_completion_helpers) and restore_primary_runtime (agent_runtime_helpers)."""
 import logging
 import math
+import re
 import time
 
 from agent.error_classifier import FailoverReason
@@ -89,11 +90,19 @@ def _mark_entitlement_rejected_model(agent, api_error) -> bool:
     if getattr(api_error, "status_code", None) != 400:
         return False
     from agent.error_classifier import CODEX_ACCOUNT_MODEL_ENTITLEMENT_MARKER
-    haystack = str(getattr(api_error, "message", "") or api_error).lower()
+    message = str(getattr(api_error, "message", "") or api_error)
+    haystack = message.lower()
     if CODEX_ACCOUNT_MODEL_ENTITLEMENT_MARKER not in haystack:
         return False
     provider = str(getattr(agent, "provider", "") or "").strip().lower()
-    model = str(getattr(agent, "model", "") or "").strip()
+    # The 400 names the rejected model directly (e.g. "The 'gpt-5.5' model is not
+    # supported..."). A routing plugin (hermes-jev-routing in auto mode) can rewrite
+    # the outgoing request's model without updating agent.model, so the error's own
+    # named model is authoritative; agent.model is only a fallback for an unexpected
+    # message shape. Otherwise this blacklists the session's real, possibly still-
+    # valid, model instead of the one that was actually rejected.
+    named = re.search(r"'([^']+)'\s+model\s+is\s+not\s+supported", message, re.IGNORECASE)
+    model = named.group(1).strip() if named else str(getattr(agent, "model", "") or "").strip()
     if not provider or not model:
         return False
     pool = getattr(agent, "_credential_pool", None)

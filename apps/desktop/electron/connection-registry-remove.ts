@@ -1,6 +1,13 @@
 import { modeIsRemoteLike, normalizeRemoteBaseUrl, normalizeSshConfig } from './connection-config'
 import { applyConnectionConfigAtomically } from './connection-config-apply'
-import { type ConnectionRegistry, reconcileRegistryDrift, removeConnection } from './connection-registry'
+import {
+  type ConnectionRegistry,
+  normalizeConnectionInput,
+  reconcileRegistryDrift,
+  removeConnection,
+  uniqueLabel,
+  upsertConnection
+} from './connection-registry'
 
 interface ConnectionRemovalWriters {
   writeConfig: (config: Record<string, any>) => void
@@ -50,9 +57,43 @@ export function globalRouteRemoved(registry: ConnectionRegistry, config: Record<
   )
 }
 
-/** The list with connection.json's app-global route registered (Settings save / apply). */
-export const registerGlobalRoute = (registry: ConnectionRegistry, config: Record<string, any>) =>
-  reconcileRegistryDrift(registry, config).registry
+/**
+ * The list with connection.json's app-global route registered (Settings save / apply).
+ *
+ * An explicit save/apply is the user naming a route, so an SSH route joins the list
+ * unless an entry with the same user, host, port AND remote profile exists. The
+ * migration repair (reconcileRegistryDrift) instead realigns a same-host entry, which
+ * here would overwrite another saved profile on that host.
+ */
+export function registerGlobalRoute(registry: ConnectionRegistry, config: Record<string, any>): ConnectionRegistry {
+  if (config?.mode !== 'ssh') {
+    return reconcileRegistryDrift(registry, config).registry
+  }
+
+  const route = config.remote && typeof config.remote === 'object' ? config.remote : {}
+  const key = sshRouteKey(route)
+  const existing = key ? registry.connections.find(c => c.kind === 'ssh' && sshRouteKey(c) === key) : undefined
+
+  if (!key || existing) {
+    return registry
+  }
+
+  const ssh = normalizeSshConfig({ ...route, mode: 'ssh' })!
+  const { mode: _mode, ...sshFields } = ssh
+  const label = uniqueLabel(
+    ssh.remoteProfile ? `${ssh.host} (${ssh.remoteProfile})` : ssh.host,
+    registry.connections.map(c => c.label)
+  )
+
+  try {
+    const entry = normalizeConnectionInput({ kind: 'ssh', label, ...sshFields }, registry)
+
+    return { ...upsertConnection(registry, entry), primary: entry.id, lastUsed: entry.id }
+  } catch {
+    // Not a route we can register; the apply keeps failing the way it already does.
+    return registry
+  }
+}
 
 interface GlobalRouteIo {
   readConfig: () => Record<string, any>

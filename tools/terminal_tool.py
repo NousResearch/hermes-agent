@@ -1482,6 +1482,7 @@ def terminal_tool(
     watch_patterns: Optional[list[str]] = None,
     _host_local: bool = False,
     _completion_output_chars: int = 0,
+    _bot_reply_receipt: Optional[dict[str, str]] = None,
     heartbeat: int = 0,
     persist_on_release: bool = False,
 ) -> str:
@@ -1577,7 +1578,7 @@ def terminal_tool(
                     effective_pty=pty and not pty_disabled, notify_on_complete=notify_on_complete,
                     watch_patterns=watch_patterns, approval_note=verdict.note,
                     pty_disabled_reason=_PTY_DISABLED_REASON if pty_disabled else None,
-                    completion_output_chars=_completion_output_chars,
+                    completion_output_chars=_completion_output_chars, bot_reply_receipt=_bot_reply_receipt if _host_local else None,
                     heartbeat_seconds=heartbeat,
                     persist_on_release=persist_on_release,
                     auto_backgrounded=auto_bg is not None and plan.promoted_from_foreground_timeout is None,

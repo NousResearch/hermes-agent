@@ -26,6 +26,22 @@ def _accepts_keyword_argument(callable_obj: Any, name: str) -> bool:
     )
 
 
+def _is_revocable_oauth_token(value: Any) -> bool:
+    """True for OAuth-shaped keys (Anthropic ``sk-ant-`` non-Console, JWTs, ``cc-`` setup tokens).
+
+    Only the shape matters — JWT-bearing providers (Codex, xAI) share the ``eyJ`` prefix. Console
+    ``sk-ant-api*`` keys and static custom-endpoint keys have no rotate-and-revoke lifecycle, so
+    callers keep pinning them. A callable token source (Entra) is left to the caller's pin logic.
+    """
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        from agent.anthropic_credentials import _is_oauth_token
+    except ImportError:
+        return False
+    return _is_oauth_token(value)
+
+
 class SummaryDispatchMixin:
     def _apply_summary_route(self, call_kwargs: dict, pinned: Optional[dict[str, Any]] = None) -> None:
         """Pin the summary route onto ``call_kwargs`` for both compression entry points.
@@ -59,6 +75,12 @@ class SummaryDispatchMixin:
             ("api_key", self.api_key),
             ("api_mode", getattr(self, "api_mode", "")),
         ):
+            if key == "api_key" and _is_revocable_oauth_token(value):
+                # An OAuth-shaped key is revoked in place when rotated elsewhere (another process
+                # refreshes, Claude Code CLI re-auths); pinning the stored copy wedges every later
+                # compaction on 401 for the rest of the session (#138469). Leave it unset so the
+                # provider branch resolves the pool's current credential at call time.
+                continue
             if value:
                 call_kwargs[key] = value
 

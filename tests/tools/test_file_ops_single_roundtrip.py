@@ -203,6 +203,21 @@ class TestReadFileNonTextPaths:
         assert "not a regular file" in box["r"].error
         assert len(calls) == 1
 
+    @pytest.mark.parametrize("fixture", ["shell", "native"])
+    def test_patch_on_fifo_fails_fast_with_reason(self, fixture, request, tmp_path):
+        # patch's byte-exact read went straight to ``base64 < fifo`` and sat out the exec timeout.
+        if not hasattr(os, "mkfifo"):
+            pytest.skip("no mkfifo")
+        ops, _calls = request.getfixturevalue(fixture)
+        fifo = tmp_path / "pipe"
+        os.mkfifo(fifo)
+        box = {}
+        t = threading.Thread(target=lambda: box.update(r=ops.patch_replace(str(fifo), "a", "b")), daemon=True)
+        t.start()
+        t.join(20)
+        assert not t.is_alive(), "patch_replace blocked on a writer-less FIFO"
+        assert "not a regular file" in box["r"].error
+
 class TestWriteFileRoundTrips:
     """write_file: one probe, one atomic write, one hash check (three calls)."""
 

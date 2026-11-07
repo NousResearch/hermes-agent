@@ -35,7 +35,8 @@ it('enforces unprivileged guest preferences and rejects preload or partition esc
   const { attach, fromPartition } = harness()
   const partition = 'hermes-viewer-8e195494-8de3-4e84-8241-92d0301ef34c'
 
-  for (const selected of [partition, 'persist:hermes-preview', 'persist:hermes-embed']) {
+  // A named profile's Browser tab rides its own sibling jar (`previewPartitionForProfile`).
+  for (const selected of [partition, 'persist:hermes-preview', 'persist:hermes-preview-work', 'persist:hermes-embed']) {
     const { event, preferences } = attach(selected, {
       nodeIntegration: true,
       nodeIntegrationInWorker: true,
@@ -66,6 +67,7 @@ it('enforces unprivileged guest preferences and rejects preload or partition esc
   for (const selected of [
     '',
     'persist:hermes-viewer-test',
+    'persist:hermes-previewX',
     'hermes-viewer-',
     'hermes-viewer-invalid',
     'persist:hermes-remote-oauth',
@@ -109,7 +111,7 @@ it('denies all isolated guest permission paths synchronously before attachment w
   guestSession.setPermissionCheckHandler.mockClear()
   guestSession.setPermissionRequestHandler.mockClear()
 
-  for (const partition of ['persist:hermes-preview', 'persist:hermes-embed']) {
+  for (const partition of ['persist:hermes-preview', 'persist:hermes-preview-work', 'persist:hermes-embed']) {
     expect(attach(partition).event.preventDefault).not.toHaveBeenCalled()
   }
 

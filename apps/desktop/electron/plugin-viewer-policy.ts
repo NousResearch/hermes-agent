@@ -1,12 +1,15 @@
 import type { App, session } from 'electron'
 
+import { isPreviewPartition } from './preview-guest-throttle'
+
 /** Install before creating app windows: attachment precedes the guest's first navigation. */
 export function installViewerGuestPolicy(app: Pick<App, 'on'>, sessions: Pick<typeof session, 'fromPartition'>) {
   app.on('web-contents-created', (_event, contents) => {
     contents.on('will-attach-webview', (event, preferences, params) => {
       const partition = params.partition
       const isolatedViewer = /^hermes-viewer-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(partition ?? '')
-      const browserPartition = partition === 'persist:hermes-preview' || partition === 'persist:hermes-embed'
+      // Every per-profile Browser jar (`persist:hermes-preview[-<profile>]`) or the embed jar.
+      const browserPartition = isPreviewPartition(partition) || partition === 'persist:hermes-embed'
 
       // The renderer may choose a Browser jar or a fresh viewer, not OAuth/app
       // storage. Electron's session preference takes precedence over partition.

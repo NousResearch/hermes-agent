@@ -162,6 +162,11 @@ def _warm_memory_provider_import(logger: logging.Logger) -> None:
 
 def main(argv: list[str] | None = None) -> None:
     """Entry point: load env, configure logging, run the ACP agent."""
+    if argv is None and "hermes_cli.main" not in sys.modules:
+        sys.argv = [sys.argv[0] if sys.argv else "hermes-acp", "acp", *sys.argv[1:]]
+        from hermes_cli.main import main as hermes_main
+
+        return hermes_main()
     args = _parse_args(argv)
     for flag, action in (("version", _print_version), ("check", _run_check), ("setup", _run_setup)):
         if getattr(args, flag):

@@ -141,7 +141,10 @@ Safety guarantees (all modes, any age):
   [ignored files](./git-worktrees.md#stale-worktree-sweep-and-restore).
 - Branch deletion is content-gated, not name-gated: any local branch whose
   commits are all on upstream is safe to delete; branches with unique work,
-  checked-out branches, and `main`/`master`/`develop` are always kept.
+  checked-out branches, and `main`/`master`/`develop` are always kept. So is
+  any branch git cannot vouch for: when a probe fails or times out (for example
+  a missing object or a slow disk), the branch is kept rather than read as merged,
+  and `prune` prints `kept branch <name>: could not verify (...)` with git's error.
 
 The same sweep also runs from the cron scheduler (at most once every 6 hours
 per profile, in the background) over every repository the profile created a

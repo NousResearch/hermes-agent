@@ -150,10 +150,11 @@ async def test_restart_wait_serves_only_the_reads_that_open_the_parked_session()
 
     reads = ['/api/profiles/sessions/sidebar', '/api/profiles/sessions', '/api/sessions/s1',
              '/api/sessions/s1/messages', '/api/sessions/s1/messages/around', '/api/sessions/s1/timeline',
-             '/api/health', '/api/status']
+             '/api/health', '/api/status', '/api/actions/hermes-update/status']
     assert [await status('GET', path) for path in reads] == [200] * len(reads)
     refused = [('PATCH', '/api/sessions/s1'), ('DELETE', '/api/sessions/s1'), ('POST', '/api/sessions'),
-               ('GET', '/api/config'), ('GET', '/api/sessions/s1/export/x'), ('POST', '/api/model/set')]
+               ('GET', '/api/config'), ('GET', '/api/sessions/s1/export/x'), ('POST', '/api/model/set'),
+               ('GET', '/api/actions/gateway-restart/status'), ('POST', '/api/hermes/update')]
     assert [await status(m, path) for m, path in refused] == [503] * len(refused)
     del runner.session_runtime_descriptor['drain_reason']  # stop() began: nothing is served anymore
     assert await status('GET', '/api/profiles/sessions/sidebar') == 503

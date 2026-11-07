@@ -5,8 +5,8 @@ files. On POSIX nothing is locked, but a gateway that keeps running while git re
 loads new-tree modules into an old process on its next lazy import. So every gateway running
 from this install is stopped at the commit point, immediately before the first checkout move
 (``update_cmd_commit.arm_commit_point``), and the same set is restarted once the dependencies
-are synced and the launchers published, before the product builds
-(``source_completion.complete_source_checkout``'s ``before_build``).
+are prepared and the launch files rewritten, before the product builds
+(``source_build.build_update_products``'s ``after_dependencies``).
 
 The set rides the Windows pause contract: one token in ``update_pause_record`` (identity = pid
 + start time; supervisor unit, or argv + home for bare processes), written before the first stop,

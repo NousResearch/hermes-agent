@@ -232,6 +232,8 @@ class InterruptControlMixin:
             _fence_cancel_before_commit(
                 _fence(), when_in_flight=False, failure_log="Compression hard-cancel fence admission failed"
             )
+            from agent.correction_tickets import clear_redirect_parts
+            clear_redirect_parts(self, consumed=False)
             self._pending_redirect = None
 
         # Codex watches a private interrupt event rather than Hermes' per-thread flag.
@@ -291,6 +293,8 @@ class InterruptControlMixin:
             self._interrupt_message = self._tool_interrupt_reason = None
             getattr(self, "_hard_interrupt_requested", threading.Event()).clear()
             if not preserve_redirect:
+                from agent.correction_tickets import keep_redirect_parts
+                keep_redirect_parts(self, hard_cancel=hard_cancel)
                 self._pending_redirect = None
         self._interrupt_thread_signal_pending = False
         if self._execution_thread_id is not None:
@@ -320,7 +324,7 @@ class InterruptControlMixin:
         self._turn_user_intervened = True
         return True
 
-    def redirect(self, text: str) -> bool:
+    def redirect(self, text: str, *, ticket=None) -> bool:
         """Redirect the active turn without converting it into a new task: during a model request only that
         request is cancelled (completed messages kept, partial reasoning becomes assistant context, the
         correction is appended as a real user message, the loop retries); during tool execution it degrades
@@ -348,7 +352,7 @@ class InterruptControlMixin:
         # `sleep` poller, a build), so ask the tool workers to YIELD: terminal hands the live
         # process to the background registry and returns; tools that don't yield are unaffected.
         if getattr(self, "_executing_tools", False):
-            accepted = self.steer(cleaned)
+            accepted = self.steer(cleaned, ticket=ticket)
             if accepted:
                 tracker = getattr(self, "_tool_worker_threads", None)
                 tracker_lock = getattr(self, "_tool_worker_threads_lock", None)
@@ -361,17 +365,26 @@ class InterruptControlMixin:
 
         _model_active = getattr(self, "_model_request_active", None)
         with _ic_lock(self, "_pending_redirect_lock"):
-            if _model_active is None or not _model_active.is_set():
-                return False  # response completed before we got the lock: surface queues a new turn
             existing = _ic_slot(self, "_pending_redirect_lock", "_pending_redirect")
+            # The aborted request has unwound but its buffer is still collecting: a second
+            # correction belongs to the same rebuild, not to a new turn.
+            rebuilding = bool(existing and (_model_active is None or not _model_active.is_set()))
+            if (_model_active is None or not _model_active.is_set()) and not existing:
+                return False  # response completed before we got the lock: surface queues a new turn
             if self._interrupt_requested and not existing:
                 return False
+            from agent.correction_tickets import redirect_part
+            redirect_part(self, ticket, cleaned)
             self._pending_redirect = (
                 f"{existing}\n\n[Additional user correction]\n{cleaned}" if existing else cleaned
             )
-            self._interrupt_requested = True
+            if not rebuilding:
+                self._interrupt_requested = True
             self._interrupt_message = None
             self._turn_user_intervened = True
+
+        if rebuilding:
+            return True  # the cancelled request already unwound; never re-arm the turn stop flag
 
         # Interrupt only the model request — no fan-out to tool workers / child agents as interrupt() does.
         _execution_thread_id = getattr(self, "_execution_thread_id", None)
@@ -392,6 +405,8 @@ class InterruptControlMixin:
         """Return and clear pending active-turn correction text."""
         with _ic_lock(self, "_pending_redirect_lock"):
             text = _ic_slot(self, "_pending_redirect_lock", "_pending_redirect")
+            from agent.correction_tickets import clear_redirect_parts
+            clear_redirect_parts(self, consumed=True)
             self._pending_redirect = None
         return text
 
@@ -422,6 +437,10 @@ class InterruptControlMixin:
         stays, whatever its text) or dropped unread; False once a drain consumed it, or for an unknown one."""
         if ticket is None:
             return False
+        from agent.correction_tickets import withdraw_redirect
+        redirect_unread = withdraw_redirect(self, ticket)
+        if redirect_unread is not None:
+            return redirect_unread
         with _ic_lock(self, "_pending_steer_lock"):
             parts = _steer_parts(self)
             kept = [part for part in parts if part[0] != ticket]

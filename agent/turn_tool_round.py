@@ -68,6 +68,10 @@ def run_tool_round(
             current_turn_user_idx=current_turn_user_idx, result=result,
         )
 
+    from agent.correction_tickets import checkpoint_input
+    if checkpoint_input(agent, messages, stage="before_tools"):
+        return _verdict("continue")
+
     if not agent.quiet_mode:
         agent._vprint(f"{agent.log_prefix}🔧 Processing {len(assistant_message.tool_calls)} tool call(s)...")
 

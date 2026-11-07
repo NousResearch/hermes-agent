@@ -89,6 +89,22 @@ def test_a_yuanbao_home_gets_the_plugin_once_with_the_labs_notice(tmp_path):
     assert known["telegram"] == ["yuanbao"] and known["cli"] == ["yuanbao"] and "yuanbao" not in known
 
 
+@pytest.mark.parametrize("yuanbao", [
+    "    enabled: true\n",  # /sethome saves enabled: true with the channel; credentials in .env
+    "    extra: {app_id: a, app_secret: s}\n",  # no enabled key, credentials in the block
+])
+def test_a_saved_home_channel_does_not_stop_the_migration(tmp_path, yuanbao):
+    """``/sethome`` saved ``platforms.yuanbao.home_channel: {platform: yuanbao, ...}``, and
+    ``Platform("yuanbao")`` exists only once the plugin loads. Parsing that channel raised, and the
+    home's migration installed nothing, Home Assistant included."""
+    home = _home(tmp_path, env="YUANBAO_APP_ID=a\nYUANBAO_APP_SECRET=s\n" if "enabled" in yuanbao else "",
+                 config="platforms:\n  homeassistant: {enabled: true}\n  yuanbao:\n" + yuanbao
+                 + "    home_channel: {platform: yuanbao, chat_id: c1, name: Home}\n")
+    installed = lcm.migrate_home(home, install=lambda name: (home / "plugins" / name).mkdir(parents=True)
+                                 or {"ok": True}, say=lambda message: None)
+    assert sorted(installed) == ["homeassistant", "yuanbao"]
+
+
 def test_a_fresh_or_shipped_default_home_installs_nothing(tmp_path):
     for config in ("", _SHIPPED_PLATFORM_TOOLSETS):
         home = tmp_path / ("shipped" if config else "fresh")

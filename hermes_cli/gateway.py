@@ -4001,6 +4001,12 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float | None = 5.
     return True
 
 
+# Windows answers a connect to a closed loopback port only after its SYN retransmit (~2 s), so a
+# shorter attempt reads every closed port as a live listener with a slow accept queue and the
+# restart waits out its whole budget.
+_CLOSED_PORT_ATTEMPT_TIMEOUT = 2.6 if sys.platform == "win32" else 0.2
+
+
 def _wait_for_tcp_port_free(host: str, port: int, *, timeout: float = 10.0) -> bool:
     """Wait until nothing accepts TCP connections on host:port.
 
@@ -4010,7 +4016,7 @@ def _wait_for_tcp_port_free(host: str, port: int, *, timeout: float = 10.0) -> b
     """
     def _port_free() -> bool:
         try:
-            with socket.create_connection((host, port), timeout=0.2):
+            with socket.create_connection((host, port), timeout=_CLOSED_PORT_ATTEMPT_TIMEOUT):
                 return False
         except ConnectionRefusedError:
             return True

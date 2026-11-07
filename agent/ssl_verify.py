@@ -51,6 +51,10 @@ def install_truststore() -> bool:
 
         truststore.inject_into_ssl()
         _installed = True
+        try:
+            _repair_stdlib_context_setters()
+        except Exception:  # noqa: BLE001 — private ssl internals; never break startup over it
+            logger.debug("stdlib SSLContext setter repair skipped", exc_info=True)
         logger.debug("TLS trust: platform store (truststore)")
     except Exception as exc:
         _installed = False
@@ -91,6 +95,57 @@ def _stdlib_ssl_context_class() -> type[ssl.SSLContext]:
     from truststore._ssl_constants import _original_SSLContext
 
     return _original_SSLContext
+
+
+# CPython 3.14 implements these ``SSLContext`` property setters as
+# ``super(SSLContext, SSLContext).<prop>.__set__`` — the name resolves through the ``ssl``
+# module global, which ``inject_into_ssl()`` repoints at truststore's subclass.
+_STDLIB_CONTEXT_SETTERS = (
+    "minimum_version", "maximum_version", "options", "verify_flags", "verify_mode", "_msg_callback",
+)
+
+
+def _rebind_sslcontext_global(func: Any, cls: type) -> Any:
+    """Copy *func* with its ``ssl``-module ``SSLContext`` global bound to *cls*."""
+    import types
+
+    rebound = types.FunctionType(
+        func.__code__, {**func.__globals__, "SSLContext": cls}, func.__name__,
+        func.__defaults__, func.__closure__,
+    )
+    rebound.__kwdefaults__ = func.__kwdefaults__
+    rebound.__qualname__ = getattr(func, "__qualname__", func.__name__)
+    rebound.__doc__ = func.__doc__
+    return rebound
+
+
+def _repair_stdlib_context_setters() -> None:
+    """Keep the pre-injection stdlib ``SSLContext`` usable after ``inject_into_ssl()``.
+
+    Every setter in ``_STDLIB_CONTEXT_SETTERS`` resolves ``SSLContext`` through the module
+    global, which the injection repoints at truststore's subclass. On the pre-injection
+    class — still referenced by anything that captured it first, as botocore does when it
+    binds urllib3's alias into ``botocore.httpsession`` at its import time — ``super()``
+    then walks back to the very same property and recurses until ``RecursionError``:
+    botocore's vendored ``create_urllib3_context`` dies on ``context.options |= options``
+    (#126808).
+
+    Rebind that global to the pre-injection class inside a copy of each setter, so
+    ``super(SSLContext, SSLContext)`` starts the MRO walk *after* this class and lands on
+    the C descriptor it was reaching for. The setter's own body still runs, which is the
+    point: rebinding the raw C descriptor instead would drop the Python-level side effects
+    ``minimum_version`` (clearing ``OP_NO_SSLv3`` for SSLv3) and ``_msg_callback``
+    (wrapping the callback so the getter can unwrap it) carry. The getters are untouched —
+    their ``super()`` is zero-arg and resolves through the ``__class__`` cell, so it never
+    saw the repointed global. No-op on ≤3.13, where ``SSLContext`` is the C type itself.
+    """
+    original = _stdlib_ssl_context_class()
+    if original is ssl.SSLContext:
+        return  # nothing was injected — the stdlib class is already in force
+    for name in _STDLIB_CONTEXT_SETTERS:
+        prop = original.__dict__.get(name)
+        if isinstance(prop, property) and prop.fset is not None:
+            setattr(original, name, property(prop.fget, _rebind_sslcontext_global(prop.fset, original)))
 
 
 def _shared_context(ca_path: str | None, union: bool = False) -> ssl.SSLContext:

@@ -20,6 +20,7 @@ import {
 } from '@/store/layout'
 import { messagingTotalsKey, normalizeProfileKey, sidebarProfileForScope } from '@/store/profile'
 import {
+  $connection,
   $messagingSessions,
   $selectedStoredSessionId,
   $sessions,
@@ -50,7 +51,12 @@ import {
   type SessionTombstoneGenerationSnapshot,
   tombstoneRowIds
 } from '@/store/session-removal'
-import { $sessionTiles, $workingSessionIds, getRecentlySettledSessionIds } from '@/store/session-states'
+import {
+  $sessionTiles,
+  $workingSessionIds,
+  getRecentlySettledSessionIds,
+  liveSessionIdsOutsideSource
+} from '@/store/session-states'
 
 import { refreshCronJobs as refreshCronJobsStore } from '../../cron/cron-actions'
 
@@ -134,8 +140,16 @@ function publishMessagingRows(rows: SessionInfo[], scopeProfile: string): Sessio
 // for a chat the user has already navigated away from). Pass `scope` to only
 // keep the active row when it belongs to the profile being paged.
 function sessionsToKeep(scope?: string): Set<string> {
+  // A gateway PICK is a live activation: the outgoing backend keeps its socket
+  // and its turns stay busy in the mirror (the fleet rail reports them there).
+  // This page belongs to the ACTIVE backend, so a row that is busy on another
+  // one is not "live, not listed yet" — it is that backend's conversation.
+  // Keeping it paints it into this sidebar as if it lived here; the turn
+  // itself is untouched either way, only the row is dropped.
+  const foreignLive = new Set(liveSessionIdsOutsideSource($connection.get()?.connectionId))
+
   const keep = new Set<string>([
-    ...$workingSessionIds.get(),
+    ...$workingSessionIds.get().filter(id => !foreignLive.has(id)),
     ...$pinnedSessionIds.get(),
     ...getRecentlySettledSessionIds()
   ])

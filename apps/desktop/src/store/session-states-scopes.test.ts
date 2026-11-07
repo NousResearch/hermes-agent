@@ -6,6 +6,7 @@ import {
   $sessionTiles,
   clearAllSessionStates,
   dropSessionState,
+  liveSessionIdsOutsideSource,
   liveSessionScopes,
   openTileGatewayScopes,
   publishSessionState,
@@ -79,6 +80,52 @@ describe('liveSessionScopes', () => {
     publishSessionState('rt-1', state({ busy: true }))
 
     expect(liveSessionScopes()).toEqual(new Set())
+  })
+})
+
+describe('liveSessionIdsOutsideSource', () => {
+  it('names a local primary turn as outside a registry source', () => {
+    // Local primary events arrive untagged, so the runtime has no recorded
+    // scope. Once the window shows a registry gateway, that turn belongs to
+    // another backend.
+    publishSessionState('rt-local', { ...createClientSessionState('stored-local'), busy: true })
+
+    expect(liveSessionIdsOutsideSource('homelab')).toEqual(['stored-local'])
+  })
+
+  it('keeps a local primary turn on the list when this device is the source', () => {
+    publishSessionState('rt-local', { ...createClientSessionState('stored-local'), busy: true })
+
+    expect(liveSessionIdsOutsideSource('local')).toEqual([])
+  })
+
+  it("does not name a turn the active connection's own socket delivered", () => {
+    recordSessionEventScope({ connectionId: 'homelab', profile: 'default', session_id: 'rt-a' })
+    publishSessionState('rt-a', { ...createClientSessionState('stored-a'), busy: true })
+
+    expect(liveSessionIdsOutsideSource('homelab')).toEqual([])
+    expect(liveSessionIdsOutsideSource('spark')).toEqual(['stored-a'])
+  })
+
+  it("treats this device's own registry-tagged route as local", () => {
+    recordSessionEventScope({ connectionId: 'local', profile: 'default', session_id: 'rt-pool' })
+    publishSessionState('rt-pool', { ...createClientSessionState('stored-pool'), busy: true })
+
+    expect(liveSessionIdsOutsideSource('local')).toEqual([])
+    expect(liveSessionIdsOutsideSource('homelab')).toEqual(['stored-pool'])
+  })
+
+  it('ignores settled turns — only a live claim can carry a row', () => {
+    publishSessionState('rt-idle', { ...createClientSessionState('stored-idle'), busy: false })
+
+    expect(liveSessionIdsOutsideSource('homelab')).toEqual([])
+  })
+
+  it('has no opinion before a route is published', () => {
+    publishSessionState('rt-local', { ...createClientSessionState('stored-local'), busy: true })
+
+    expect(liveSessionIdsOutsideSource(null)).toEqual([])
+    expect(liveSessionIdsOutsideSource('')).toEqual([])
   })
 })
 

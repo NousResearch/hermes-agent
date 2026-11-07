@@ -212,6 +212,7 @@ def reap_orphan_containers(
         age = (now - finished_at).total_seconds()
         if age < max_age_seconds:
             continue
+        strip_sandbox_privileges(docker, cid)  # its teardown never ran; owners stay (it may restart)
         owner = _docker_query(
             [docker, "inspect", "--format", f'{{{{index .Config.Labels "{OWNER_LABEL}"}}}}', cid],
             timeout=10, fail="orphan reaper owner probe failed: %s")
@@ -219,7 +220,6 @@ def reap_orphan_containers(
             continue
         if owner.stdout.strip() not in ("", "<no value>"):
             continue  # Managed containers require the serialized ownership proof above.
-        strip_sandbox_privileges(docker, cid)  # its teardown never ran; owners stay (it may restart)
         if _is_idle_workspace_container(docker, cid):
             continue
         # No -f: a sibling may have restarted the container between the ps snapshot
@@ -883,11 +883,17 @@ class DockerEnvironment(BaseEnvironment):
         self._run_args_after_security = all_run_args[len(security_args):]
         self._create_cwd = cwd
         self._network = network
+        # The requested image/args are restored whenever reuse is refused, so a
+        # preserved sandbox's adopted image never leaks into a fresh creation.
+        self._requested_image = image
+        self._requested_s6_init = image_uses_s6_init
+        self._requested_all_run_args = all_run_args
         self._refresh_runtime_fingerprint()
 
         reused = persist_across_processes and self._attach_existing_container(
             task_label, profile_name, egress_label, network)
         if not reused:
+            self._restore_requested_image()
             self._container_id = self._docker_run(cwd)
         else:  # it never stopped, so no teardown stripped what it left
             strip_sandbox_privileges(self._docker_exe, self._container_id)
@@ -1208,6 +1214,15 @@ class DockerEnvironment(BaseEnvironment):
             snap_compat=self._snap_compat) + self._run_args_after_security
         self._refresh_runtime_fingerprint()
 
+    def _restore_requested_image(self) -> None:
+        """Undo :meth:`_adopt_reuse_image` after a refused attach: every path that
+        falls through to a fresh ``docker run`` must create the requested image,
+        not the preserved sandbox's adopted one."""
+        self._image = self._requested_image
+        self._image_uses_s6_init = self._requested_s6_init
+        self._all_run_args = self._requested_all_run_args
+        self._refresh_runtime_fingerprint()
+
     def _image_available_locally(self) -> bool:
         """True once ``self._image`` is in the local image store, pulling it when it is not. Called BEFORE a
         container replacement removes anything: a pull that fails must leave the old sandbox intact."""
@@ -1387,6 +1402,7 @@ class DockerEnvironment(BaseEnvironment):
             if not self._image:
                 logger.error("Recovery: no saved image name, cannot recreate container")
                 return False
+            self._restore_requested_image()
             try:
                 self._container_id = self._docker_run(self.cwd)
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:

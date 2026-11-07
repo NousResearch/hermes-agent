@@ -1,5 +1,6 @@
 """A replaced sandbox is reclaimable only after every kernel-held owner lease ends (#84969)."""
 
+import json
 import os
 import shutil
 import subprocess
@@ -168,6 +169,45 @@ def test_protocol_upgrade_preserves_old_container_and_rejects_downgrade_match(mo
     assert containers[stale_id]["state"] == "running"  # unknown legacy state is never reclaimed
     changed.cleanup()
     assert changed.wait_for_cleanup()
+
+
+def test_retirement_scope_separates_workspaces_sharing_a_truncated_task_id(tmp_path):
+    """``hermes-task-id`` truncates at 63 chars; ``hermes-workspace`` keeps two
+    ``<long-base>:ws:<digest>`` workspaces from retiring each other's containers."""
+    store = ReuseOwners(tmp_path)
+    shared = {"hermes-task-id": "t" * 63, "hermes-profile": "default", "hermes-egress": "off"}
+    lease = store.reserve("box-a", {**shared, "hermes-workspace": "digest-a"}, "fp-old")
+    store.finish("box-a", "cid-a")
+    store.release(lease)
+
+    store.supersede({**shared, "hermes-workspace": "digest-b"}, "fp-new")
+    with store.transaction() as db:
+        assert db.execute("SELECT superseded FROM containers WHERE name='box-a'").fetchone()[0] is None
+
+    store.supersede({**shared, "hermes-workspace": "digest-a"}, "fp-new")
+    with store.transaction() as db:
+        assert db.execute("SELECT superseded FROM containers WHERE name='box-a'").fetchone()[0] is not None
+
+
+def test_reap_accepts_the_unprefixed_name_podman_inspect_returns(tmp_path, monkeypatch):
+    """Podman inspect reports ``Name`` without Docker's leading slash (#84969 review)."""
+    store = ReuseOwners(tmp_path)
+    labels = {"hermes-task-id": "t", "hermes-profile": "p", "hermes-egress": "off"}
+    lease = store.reserve("hermes-box", labels, "fp")
+    store.finish("hermes-box", "cid-1")
+    store.release(lease)
+    store.supersede(labels, "fp-new")
+
+    record = {"Id": "cid-1", "Name": "hermes-box",
+              "Config": {"Labels": {OWNER_LABEL: store.namespace, "hermes-runtime-fingerprint": "fp"}},
+              "State": {"Running": False}}
+
+    def fake_run_capture(argv, **kwargs):
+        return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(record), stderr="")
+
+    monkeypatch.setattr("tools.environments.docker_reuse_owners.run_capture", fake_run_capture)
+    monkeypatch.setattr("tools.environments.docker_reuse_owners.strip_sandbox_privileges", lambda *a, **k: None)
+    assert store.reap("/usr/bin/docker", 0, None) == 1
 
 
 def test_delayed_cleanup_cannot_release_a_later_recoverys_owner(monkeypatch):

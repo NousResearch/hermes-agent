@@ -371,3 +371,19 @@ def test_a_packaging_change_without_a_lock_change_needs_a_new_environment(tmp_pa
     pyproject.write_text('[project]\nname="core"\n[tool.setuptools.packages.find]\nwhere=[".", "src"]\n'
                          'include=["agent", "hermes_agent*"]\n', encoding="utf-8")
     assert Venv(root).expected_stamp([], plugin_dirs=[]) != before
+
+
+@pytest.mark.parametrize("name", ["pyproject.toml", "setup.py", "setup.cfg"])
+def test_each_packaging_file_is_part_of_the_environment_stamp(tmp_path, monkeypatch, name):
+    from pm import paths
+    from pm.packages import Venv
+
+    root = tmp_path / "hermes"
+    root.mkdir()
+    (root / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    (root / "pyproject.toml").write_text('[project]\nname="core"\n', encoding="utf-8")
+    monkeypatch.setattr(paths, "repo_root", lambda: root)
+    before = Venv(root).expected_stamp([], plugin_dirs=[])
+    with (root / name).open("a", encoding="utf-8") as handle:
+        handle.write("# packaging edit\n")
+    assert Venv(root).expected_stamp([], plugin_dirs=[]) != before

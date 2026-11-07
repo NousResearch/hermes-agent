@@ -47,10 +47,10 @@ _TEARDOWN_AWAIT_TIMEOUT_S = 1.0
 # teardown mid-drain and leaves callers blocked on _OUTBOUND_TIMEOUT_S.
 _DISCONNECT_DRAIN_GRACE_S = 5.0
 # Ops whose reader-exit settlement is "possibly delivered" rather than failed:
-# the connector may have posted the attachment before the socket died, and its
+# the connector may have posted the attachment or draft before the socket died, and its
 # consumers (send_message, cron) re-send or notify on a definite failure, which
 # would post it twice. Every other op keeps the definite connection-lost result.
-_AMBIGUOUS_ON_READER_EXIT_OPS = frozenset({"send_media"})
+_AMBIGUOUS_ON_READER_EXIT_OPS = frozenset({"send_media", "draft"})
 
 
 class _PendingRequest(asyncio.Future):
@@ -808,7 +808,7 @@ class WebSocketRelayTransport:
             # The reader is the ONLY thing that resolves pending futures; once it
             # exits every waiter would block the full outbound timeout. Fail them
             # NOW with the dict shape callers expect (never an exception); a
-            # send_media one is marked ambiguous (_AMBIGUOUS_ON_READER_EXIT_OPS).
+            # send_media or draft one is marked ambiguous (_AMBIGUOUS_ON_READER_EXIT_OPS).
             self._fail_pending(self._settle_connection_lost)
 
     def _dialer_running(self) -> bool:

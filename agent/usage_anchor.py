@@ -36,6 +36,14 @@ def message_fingerprint(msg: Any) -> Optional[str]:
     if not isinstance(msg, dict):
         return None
     payload = {k: msg.get(k) for k in _FINGERPRINT_KEYS if msg.get(k) is not None}
+    if isinstance(payload.get("content"), str):
+        # Hash content through the same lens the session store reloads it with (sanitized and
+        # stripped for user/assistant), so an anchor captured on live messages still matches
+        # after a fresh agent reloads the transcript (#143603). Imported lazily: the session
+        # store imports modules that import this one, so a top-level import would be circular.
+        from hermes_state_messages import SessionMessagesMixin
+
+        payload["content"] = SessionMessagesMixin._loaded_view_content(str(payload.get("role") or ""), payload["content"])
     try:
         raw = json.dumps(payload, sort_keys=True, default=str, ensure_ascii=True, separators=(",", ":"))
     except (TypeError, ValueError):

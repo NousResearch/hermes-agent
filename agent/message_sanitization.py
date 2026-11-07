@@ -307,6 +307,10 @@ def close_interrupted_tool_sequence(messages: list, final_response: Any = None, 
     if not isinstance(last, dict) or last.get("role") != "tool":
         return False
     text = final_response if isinstance(final_response, str) else ""
+    # The wait-for-model sentinel is cancellation metadata, never the durable reply.
+    from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+    if text.strip().startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX):
+        text = ""
     from agent.message_metadata import append_message
 
     stripped = text.strip()

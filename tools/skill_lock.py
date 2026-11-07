@@ -53,11 +53,11 @@ def _skill_usage():
     return skill_usage
 
 
-def locked_skill_dirs() -> list[tuple[str, str]]:
-    """``(name, realpath)`` of every locked skill in the active profile, from ONE walk of the
-    skills dirs (locks are keyed by directory name, so no frontmatter is read)."""
-    names = set(_skill_usage().locked_skill_names())
-    if not names:
+def _skill_dirs(names: set[str] | None) -> list[tuple[str, str]]:
+    """``(name, realpath)`` of skills in the active profile from ONE walk of the skills dirs; *names*
+    limits the result to them (None = every skill). Locks are keyed by directory name, so no
+    frontmatter is read."""
+    if names is not None and not names:
         return []
     from agent.skill_utils import get_all_skills_dirs, is_excluded_skill_path
     found: dict[str, str] = {}
@@ -66,9 +66,28 @@ def locked_skill_dirs() -> list[tuple[str, str]]:
             continue
         for skill_md in base.rglob("SKILL.md"):
             name = skill_md.parent.name
-            if name in names and name not in found and not is_excluded_skill_path(skill_md, root=base):
-                found[name] = os.path.realpath(skill_md.parent)
+            if names is not None and name not in names:
+                continue
+            if name in found or is_excluded_skill_path(skill_md, root=base):
+                continue
+            found[name] = os.path.realpath(skill_md.parent)
     return sorted(found.items())
+
+
+def locked_skill_dirs() -> list[tuple[str, str]]:
+    """``(name, realpath)`` of every locked skill in the active profile."""
+    return _skill_dirs(set(_skill_usage().locked_skill_names()))
+
+
+def _guard_state() -> tuple[list[tuple[str, str]], str | None]:
+    """The locked skills, plus the read error when the sidecar exists but cannot be read or parsed.
+    The guards then fail CLOSED over every skill in the profile: an unknown lock set is not "nothing is
+    locked", and ``locked_skill_names`` keeps its best-effort answer for the listings (#147986)."""
+    try:
+        names = set(_skill_usage().locked_skill_names(strict=True))
+    except (OSError, ValueError) as e:  # json.JSONDecodeError subclasses ValueError
+        return [], str(e) or type(e).__name__
+    return _skill_dirs(names), None
 
 
 def is_locked_skill(name: str, locked_names: Iterable[str] | None = None) -> bool:
@@ -101,6 +120,11 @@ def skill_refusal(name: str) -> str:
 
 RECORD_REFUSAL = ("skills/.usage.json holds the user's skill locks, so the agent cannot change it "
                   "while any skill is locked.")
+UNREADABLE_RECORD_REFUSAL = (
+    "skills/.usage.json holds the user's skill locks but cannot be read right now ({detail}), so the "
+    "agent cannot tell which skills are locked and refuses to change any of them. Don't retry or work "
+    "around it (no copying a skill under another name); tell the user their lock record is damaged — "
+    "repairing or deleting that file restores the guards.")
 UNLOCK_REFUSAL = ("Only the user can unlock a skill. Ask them to run `hermes curator unlock <skill>` "
                   "themselves or use the lock switch in Desktop.")
 
@@ -127,14 +151,15 @@ def _hit(path: str, locked: list[tuple[str, str]], record: str, *, ancestor: str
 
 
 def path_refusal(paths: Iterable[str]) -> str | None:
-    """write_file/patch guard: refusal text when any path lands in a locked skill or the lock record."""
-    locked = locked_skill_dirs()
-    if not locked:
-        return None
+    """write_file/patch guard: refusal text when any path lands in a locked skill or the lock record.
+    An unreadable lock record is unknown ground: every skill is judged locked, and the refusal says so."""
+    locked, unreadable = _guard_state()
+    if unreadable:
+        locked = _skill_dirs(None)  # the lock set is unknown: judge every skill in the profile as locked
     record = _record_path()
     for path in paths:
         if path and (reason := _hit(path, locked, record)):
-            return reason
+            return UNREADABLE_RECORD_REFUSAL.format(detail=unreadable) if unreadable else reason
     return None
 
 
@@ -434,8 +459,12 @@ def _command_refusal(command: str, cwd: str, locked, record, depth: int = 0) -> 
 
 def command_refusal(command: str, cwd: str) -> str | None:
     """terminal guard: refusal text when *command* writes into a locked skill, the lock record, or
-    runs ``hermes curator unlock``. None when nothing is locked."""
-    locked = locked_skill_dirs()
+    runs ``hermes curator unlock``. None when nothing is locked. An unreadable lock record is unknown
+    ground: a command that would write into any skill in the profile is refused, and the text says why."""
+    locked, unreadable = _guard_state()
+    if unreadable:
+        locked = _skill_dirs(None)  # the lock set is unknown: judge every skill in the profile as locked
     if not locked:
         return None
-    return _command_refusal(command, cwd or os.getcwd(), locked, _record_path())
+    reason = _command_refusal(command, cwd or os.getcwd(), locked, _record_path())
+    return UNREADABLE_RECORD_REFUSAL.format(detail=unreadable) if unreadable and reason else reason

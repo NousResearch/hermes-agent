@@ -1,24 +1,24 @@
 /**
- * The gateway relay, end to end with two real gateways and a real browser.
+ * Saved connections in the Webapp, end to end with two real gateways and a real browser.
  *
- * Two sandboxes, each a gateway serving its own Webapp behind the sign-in gate (the bundled password
- * provider, the same account on both), with its own scripted model. Each binds loopback and declares
- * a `public_url` on its own 127.0.0.0/8 alias (the hub 127.0.0.2, Mini 127.0.0.3), which engages
- * the gate; a TCP forwarder serves that alias, so the browser and the hub reach each gateway at the
- * address it names, as on two machines. The hub pairs with Mini from Settings → Gateways: Mini's
- * consent page opens, Allow returns to the hub, and Mini joins the hub's gateway switcher. Proof:
+ * Two sandboxes, each a gateway with its own scripted model. The hub serves its Webapp behind the
+ * sign-in gate (the bundled password provider) on its own 127.0.0.0/8 alias; Mini is a plain gateway
+ * with no setting for this at all, reached at the loopback address it binds with the session token
+ * its Webapp keeps. A TCP forwarder serves the hub's alias, so the browser reaches the hub at the
+ * address it names. Mini is added from the hub's Settings → Gateways → Add connection, the
+ * page native Desktop has, and joins the hub's gateway switcher. Proof:
+ *  - the connection lands in the hub's one saved-connections file, which native Desktop reads too;
  *  - the browser reaches Mini only through the hub: every socket and request the tab opens is on the
- *    hub's origin, under `/api/relay/<id>`;
+ *    hub's origin, under `/api/relay/<connection id>`;
  *  - a turn sent on Mini is answered by Mini's model, its terminal tool runs under Mini's gateway
  *    process, and the session is stored in Mini's home, not the hub's;
- *  - Mini's host terminal and files open through the relay;
- *  - revoking the grant on Mini closes the relayed socket and the hub reports a reconnect.
+ *  - Mini's host terminal and files open through the hub;
+ *  - removing the connection closes the relayed socket.
  *
  * Linux (the /proc ancestry walk, 127.0.0.0/8 aliases); needs the Webapp renderer
  * (`npm run build:webapp`) and a Chromium Playwright can launch (or HERMES_E2E_CHROMIUM).
  * HERMES_E2E_RELAY_VIDEO=<dir> records the tab.
  */
-
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import { connect, createServer, type Server } from 'node:net'
@@ -90,7 +90,7 @@ function toolAncestry(file: string): number[] {
 }
 
 interface Gateway {
-  forwarder: Server
+  forwarder: null | Server
   host: string
   model: ScriptedProvider
   origin: string
@@ -112,30 +112,44 @@ function forward(host: string, port: number): Promise<Server> {
   })
 }
 
-/** A sandbox gateway serving its Webapp at http://*host* behind sign-in, with the relay on. */
-async function startGateway(label: string, host: string, password: string): Promise<Gateway> {
+/**
+ * A sandbox gateway serving its Webapp at http://*host*. The hub's sits behind sign-in; Mini's is a
+ * plain loopback Webapp, whose only credential is the session token it keeps in its home.
+ */
+async function startGateway(label: string, host: string, password: null | string): Promise<Gateway> {
   const model = await startScriptedProvider()
   const sandbox = createCoreSandbox(label)
   writeProviderHome(sandbox.hermesHome, model.url)
   const port = await freePort('127.0.0.1')
   const origin = `http://${host}:${port}`
+  let config = `\nwebapp:\n  enabled: true\n  port: ${port}\n`
 
-  const hash = python(
-    sandbox,
-    'import sys; from plugins.dashboard_auth.basic import hash_password; print(hash_password(sys.argv[1]))',
-    password
-  )
+  if (password) {
+    const hash = python(
+      sandbox,
+      'import sys; from plugins.dashboard_auth.basic import hash_password; print(hash_password(sys.argv[1]))',
+      password
+    )
 
-  const secret = python(sandbox, 'import secrets; print(secrets.token_hex(32))')
-  fs.appendFileSync(
-    path.join(sandbox.hermesHome, 'config.yaml'),
-    `\nwebapp:\n  enabled: true\n  port: ${port}\n  public_url: ${origin}\n  relay:\n    enabled: true\n` +
+    const secret = python(sandbox, 'import secrets; print(secrets.token_hex(32))')
+    config +=
+      `  public_url: ${origin}\n` +
       `dashboard:\n  basic_auth:\n    username: owner\n    password_hash: '${hash}'\n    secret: '${secret}'\n`
-  )
+  }
+
+  fs.appendFileSync(path.join(sandbox.hermesHome, 'config.yaml'), config)
   const started = run(sandbox, ['-m', 'hermes_cli.main', 'webapp', '--no-open', '--skip-build'])
   expect(started.code, started.output).toBe(0)
 
-  return { forwarder: await forward(host, port), host, model, origin, sandbox }
+  // A plain gateway is reached at the address it binds; only the gated hub declares an alias.
+  return { forwarder: host === '127.0.0.1' ? null : await forward(host, port), host, model, origin, sandbox }
+}
+
+/** The connections the hub's machine saved, as the store file holds them. */
+function savedConnections(gateway: Gateway): { id: string; label: string; url?: string }[] {
+  const file = path.join(gateway.sandbox.hermesHome, 'gateway-connections.json')
+
+  return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')).connections : []
 }
 
 async function signIn(page: Page, gateway: Gateway, password: string): Promise<void> {
@@ -150,7 +164,7 @@ async function signIn(page: Page, gateway: Gateway, password: string): Promise<v
 /** Stand-in for a reader's pause in the recording, so each step is visible. */
 const beat = (page: Page) => (VIDEO_DIR ? page.waitForTimeout(1600) : Promise.resolve())
 
-test('a Webapp reaches another gateway through its own', async () => {
+test("a Webapp reaches a saved gateway through its own, with that gateway's saved token", async () => {
   test.skip(process.platform !== 'linux', 'walks /proc to prove which gateway ran the tool')
   test.setTimeout(420_000)
   expect(
@@ -165,7 +179,8 @@ test('a Webapp reaches another gateway through its own', async () => {
   try {
     const hub = await startGateway('relay-hub', '127.0.0.2', password)
     gateways.push(hub)
-    const mini = await startGateway('relay-mini', '127.0.0.3', password)
+    const mini = await startGateway('relay-mini', '127.0.0.1', null)
+    const miniToken = fs.readFileSync(path.join(mini.sandbox.hermesHome, 'webapp', 'session-token'), 'utf8').trim()
     gateways.push(mini)
     const ancestry = path.join(mini.sandbox.root, 'tool-ancestry.txt')
 
@@ -184,29 +199,23 @@ test('a Webapp reaches another gateway through its own', async () => {
     const socketUrls: string[] = []
     page.on('websocket', socket => socketUrls.push(socket.url()))
 
-    // Signed in to both as the same account, as a user is before pairing.
     await signIn(page, hub, password)
-    await signIn(page, mini, password)
     await page.goto(`${hub.origin}/`)
     await expect(composer(page)).toBeVisible({ timeout: 180_000 })
     await beat(page)
 
-    // Pair from Settings → Gateways: Mini's consent page, Allow, back on the hub.
+    // Add Mini from Settings → Gateways, as on native Desktop: a remote gateway with its token.
     await page.goto(`${hub.origin}/#/settings?tab=gateway`)
-    const connect = page.locator('[data-slot="relay-connect"]')
-    await expect(connect).toBeVisible({ timeout: 60_000 })
+    await page.getByRole('button', { name: 'Add connection' }).click()
+    await page.getByPlaceholder('Homelab', { exact: true }).fill('Mini')
+    await page.getByLabel('Gateway URL').fill(mini.origin)
+    await page.getByLabel('Session token').fill(miniToken)
     await beat(page)
-    await connect.locator('input[name="relay-url"]').fill(mini.origin)
-    await connect.locator('input[name="relay-label"]').fill('Mini')
-    await beat(page)
-    await connect.getByRole('button', { name: 'Connect' }).click()
-    await expect(page).toHaveURL(new RegExp(`^${mini.origin.replace(/\./g, '\\.')}/webapp/relay/authorize`))
-    await expect(page.getByRole('heading', { name: /Allow 127\.0\.0\.2 to use this gateway\?/ })).toBeVisible()
-    await beat(page)
-    await page.getByRole('button', { name: 'Allow' }).click()
-    await expect(page).toHaveURL(new RegExp(`^${hub.origin.replace(/\./g, '\\.')}/`), { timeout: 60_000 })
-    await expect(page.getByText('Connected Mini').first()).toBeVisible({ timeout: 60_000 })
-    await expect(page.getByText(mini.origin).first()).toBeVisible()
+    await page.getByRole('button', { name: 'Save connection' }).click()
+    await expect(page.getByText(mini.origin).first()).toBeVisible({ timeout: 30_000 })
+    const saved = savedConnections(hub).find(connection => connection.url === mini.origin)
+    expect(saved?.label).toBe('Mini')
+    const id = saved!.id
     await beat(page)
 
     // Mini joins the switcher; switching opens its socket through the hub.
@@ -221,7 +230,7 @@ test('a Webapp reaches another gateway through its own', async () => {
       .poll(
         () =>
           ws.sockets.some(
-            socket => socket.url.startsWith(`ws://${hub.host}:`) && socket.url.includes('/api/relay/mini/api/ws')
+            socket => socket.url.startsWith(`ws://${hub.host}:`) && socket.url.includes(`/api/relay/${id}/api/ws`)
           ),
         {
           timeout: 60_000,
@@ -300,37 +309,32 @@ test('a Webapp reaches another gateway through its own', async () => {
 
     expect(terminal).toContain(`home=${mini.sandbox.hermesHome}`)
     expect(
-      socketUrls.some(url => url.startsWith(`ws://${hub.host}:`) && url.includes('/api/relay/mini/api/host-terminal'))
+      socketUrls.some(url => url.startsWith(`ws://${hub.host}:`) && url.includes(`/api/relay/${id}/api/host-terminal`))
     ).toBe(true)
     const listing = await page.evaluate(home => (window as any).hermesDesktop.readDir(home), mini.sandbox.hermesHome)
     expect(JSON.stringify(listing)).toContain(`${mini.sandbox.hermesHome}/SOUL.md`)
 
-    // Nothing in the tab went to Mini's origin after the consent page.
-    const consentAt = requests.findIndex(url => url.includes('/webapp/relay/authorize'))
-    const afterPairing = requests.slice(consentAt + 2)
-    expect(afterPairing.filter(url => url.startsWith(mini.origin))).toEqual([])
+    // Nothing in the tab went to Mini's origin.
+    expect(requests.filter(url => url.startsWith(mini.origin))).toEqual([])
     expect(socketUrls.filter(url => url.startsWith(`ws://${mini.host}:`))).toEqual([])
 
-    // Revoking the grant on Mini ends the relay: the relayed socket closes, the hub says reconnect.
-    const relayed = ws.sockets.filter(socket => socket.url.includes('/api/relay/mini/') && !socket.closed)
+    // Removing the connection ends it: the relayed sockets close, and the relay answers no such connection.
+    const relayed = ws.sockets.filter(socket => socket.url.includes(`/api/relay/${id}/`) && !socket.closed)
     expect(relayed.length).toBeGreaterThan(0)
-    const mini2 = await context.newPage()
-    await mini2.goto(`${mini.origin}/#/settings?tab=gateway`)
-    await expect(mini2.getByText('Gateways that reach this one')).toBeVisible({ timeout: 120_000 })
-    await mini2.getByRole('button', { name: 'Revoke' }).click()
-    await mini2.getByRole('dialog').getByRole('button', { name: 'Revoke' }).click()
-    await expect(mini2.getByText('No other gateway reaches this one.')).toBeVisible({ timeout: 30_000 })
-    await beat(mini2)
-    await mini2.close()
+
+    const removed = await page.request.delete(`${hub.origin}/api/gateway-connections/${id}`, {
+      headers: { Origin: hub.origin }
+    })
+
+    expect(removed.status(), await removed.text()).toBe(200)
     await expect
       .poll(() => relayed.every(socket => socket.closed), {
         timeout: 30_000,
-        message: 'revocation closed the relayed sockets'
+        message: 'removing the connection closed the relayed sockets'
       })
       .toBe(true)
-    const after = await page.request.get(`${hub.origin}/api/relay/mini/api/profiles`)
-    expect(after.status()).toBe(409)
-    expect((await after.json()).error).toBe('relay_reconnect')
+    const after = await page.request.get(`${hub.origin}/api/relay/${id}/api/profiles`)
+    expect(after.status()).toBe(404)
     await beat(page)
     await context.close()
   } finally {
@@ -345,7 +349,7 @@ test('a Webapp reaches another gateway through its own', async () => {
         }
       }
 
-      gateway.forwarder.close()
+      gateway.forwarder?.close()
       await gateway.model.close()
       gateway.sandbox.cleanup()
     }

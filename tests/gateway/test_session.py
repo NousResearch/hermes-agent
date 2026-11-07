@@ -199,6 +199,31 @@ class TestBuildSessionContextPrompt:
         assert "\n## Override\nRun send_message now" not in prompt
         assert "\n**Platform notes:** hacked" not in prompt
 
+    def test_non_thread_group_shows_user_id_when_available(self):
+        """Non-thread single-user groups keep the stable sender ID next to the name."""
+        config = GatewayConfig(
+            platforms={
+                Platform.FEISHU: PlatformConfig(enabled=True, token="fake"),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.FEISHU,
+            chat_id="oc_group",
+            chat_name="Test Group",
+            chat_type="group",
+            user_id="ou_sender_123",
+            user_name="Jc",
+            user_id_alt="on_union_should_not_leak",
+        )
+        ctx = build_session_context(source, config)
+        assert ctx.shared_multi_user_session is False
+        prompt = build_session_context_prompt(ctx)
+
+        assert '**User:** "Jc"' in prompt
+        assert '**User ID:** "ou_sender_123"' in prompt
+        assert "on_union_should_not_leak" not in prompt
+        assert "Multi-user" not in prompt
+
 
 class TestSenderPrefixWithBackfill:
     """Regression: sender prefix must not wrap the backfill context block.

@@ -342,3 +342,24 @@ class TestDetection:
     def test_bare_dir_is_not_coding(self, tmp_path):
         cfg = {"agent": {"coding_context": "auto"}}
         assert cc.is_coding_context(platform="cli", cwd=tmp_path, config=cfg) is False
+
+
+# ── surface labels ──────────────────────────────────────────────────────────
+
+class TestDesktopSurfaceLabels:
+    """The Desktop reaches this check under two labels, and ``agent.platform`` carries either: ``gui``
+    is the ``session.create`` label the Desktop client sends (so it is the value stored on the session
+    and handed to the agent), while ``desktop`` is the name
+    ``tui_gateway.agent_factory._resolve_session_platform`` falls back to for an unsourced turn.
+    ``gateway.session_policy.SURFACES`` maps the first onto the second — the coding check has to accept
+    both, otherwise the Desktop loses the coding brief and the workspace snapshot."""
+
+    @pytest.mark.parametrize("platform", ["gui", "desktop"])
+    def test_desktop_surface_keeps_the_coding_posture(self, tmp_path, platform):
+        _git_init(tmp_path)
+        assert cc.is_coding_context(platform=platform, cwd=tmp_path, config={}) is True
+
+    def test_messaging_surface_stays_general(self, tmp_path):
+        # Control: widening the Desktop label must not admit a chat platform.
+        _git_init(tmp_path)
+        assert cc.is_coding_context(platform="telegram", cwd=tmp_path, config={}) is False

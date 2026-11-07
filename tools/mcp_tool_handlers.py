@@ -759,6 +759,10 @@ def _make_utility_handler(op: str, log_label: str, rpc, render, required: Option
                 return tool_error(f"MCP server '{server_name}' is not connected")
             if required and not args.get(required):
                 return tool_error(f"Missing required parameter '{required}'")
+            if op == "resources/read":
+                from tools.mcp_tool_skill_loading import resource_read_gate
+                if error := resource_read_gate(server_name, args["uri"]):
+                    return error
 
             async def _call():
                 async with server._rpc_lock:

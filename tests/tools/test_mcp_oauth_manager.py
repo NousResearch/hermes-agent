@@ -547,6 +547,31 @@ async def test_refresh_400_rejects_disk_token_without_refresh_token(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("status", [408, 429, 500, 502, 503, 504, 530])
+async def test_refresh_transient_failure_keeps_grant(tmp_path, monkeypatch, status):
+    """A 5xx/429/408 from the token endpoint says nothing about the grant: keep it.
+
+    Clearing on an authorization-server outage strands a background gateway that
+    cannot reauthorize interactively, even after the outage ends.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    provider = _provider_with_token_endpoint(
+        tmp_path, {}, "https://idp.example.com/oauth/token", monkeypatch
+    )
+    provider.context.current_tokens = _token("A1", "R1", expires_in=0)
+    await provider.context.storage.set_tokens(_token("A1", "R1", expires_in=0))
+
+    resp = _fake_response(status, "https://idp.example.com/oauth/token", b"<html>Bad Gateway</html>")
+    result = await provider._handle_refresh_response(resp)
+
+    assert result is False, "the refresh did not succeed"
+    assert provider.context.current_tokens is not None
+    assert provider.context.current_tokens.refresh_token == "R1", "the next request must retry the refresh"
+    on_disk = await provider.context.storage.get_tokens()
+    assert on_disk is not None and on_disk.refresh_token == "R1"
+
+
+@pytest.mark.asyncio
 async def test_refresh_400_still_clears_when_disk_is_same_token(tmp_path, monkeypatch):
 
     """No peer wrote anything: the credential really is dead — clear it."""

@@ -7602,11 +7602,16 @@ def _ladder_nous_rungs(
     return None, first_err
 
 
+def _failure_sender(route: _LadderRoute, failure: aux_errors.Failure) -> Any:
+    """The client that sent the failed request: a rebuilt retry's, else the route's."""
+    return route.client if failure.client is None else failure.client
+
+
 def _failure_pool(route: _LadderRoute, failure: aux_errors.Failure) -> tuple[Optional[str], str]:
     """The credential pool a failure's verdict is about, and the key that sent the request. A rebuilt retry an
     auto route resolved to another backend belongs to no pool of this route, so its verdict benches nothing here."""
     pool_provider = _recoverable_pool_provider(route.resolved_provider, route.client, main_runtime=route.main_runtime)
-    sender = route.client if failure.client is None else failure.client
+    sender = _failure_sender(route, failure)
     if sender is not route.client and _recoverable_pool_provider(
             route.resolved_provider, sender, main_runtime=route.main_runtime) != pool_provider:
         return None, ""
@@ -7719,11 +7724,14 @@ def _ladder_provider_fallback(failure: aux_errors.Failure, route: _LadderRoute, 
     if reason is None or not (is_auto or is_capacity_error or explicit_auth_with_task_chain):
         return None
     if reason == "payment error":
-        # Mark the concrete backend (not the "auto" label) unhealthy so later aux calls skip
-        # it instead of paying another doomed RTT.
+        # Mark the concrete backend (not the "auto" label) that sent the failed request unhealthy, so later aux
+        # calls skip it instead of paying another doomed RTT: a rebuilt retry may have reached another backend.
+        sender = _failure_sender(route, failure)
+        failed_provider = _recoverable_pool_provider(resolved_provider, sender, main_runtime=route.main_runtime)
+        sender_url = "" if sender is route.client else str(getattr(sender, "base_url", "") or "")
         _mark_provider_unhealthy(
-            _recoverable_pool_provider(resolved_provider, route.client, main_runtime=route.main_runtime)
-            or resolved_provider, base_url=route.base_info)
+            failed_provider or _classification_provider(sender, resolved_provider, route.main_runtime),
+            base_url=sender_url or route.base_info)
     if reason == "request timed out":
         # WARNING, naming the endpoint, the budget and the knob: the only other trace of a slow
         # local model is the fallback provider's complaint about a model it never had (#89445).

@@ -679,15 +679,18 @@ def test_a_refusal_no_resend_can_change_is_sent_once(refusal, is_async, stream):
     assert (len(sent), outcome.fell_back) == (1, False), outcome.result
 
 
-def _routed_call(clients, *, provider, is_async, pool=None, **call_kw):
+def _routed_call(clients, *, provider, is_async, pool=None, health=None, **call_kw):
     """``call_llm`` on ``provider`` whose client builds return ``clients`` in turn (an auto route re-resolving
-    its retry); the configured chains are empty and the last-resort fallback answers."""
+    its retry); the configured chains are empty and the last-resort fallback answers. ``health``: a fresh dict the
+    real provider-health marks land in (else marking is a no-op)."""
     builds, fallback = iter(clients), MagicMock(base_url="https://api.example.com/v1")
     fallback.chat.completions.create = (AsyncMock if is_async else MagicMock)(return_value=_ok())
+    marks = {"_mark_provider_unhealthy": lambda *_a, **_k: None} if health is None else {
+        "_aux_unhealthy_until": health, "_aux_unhealthy_reason": {}, "_aux_unhealthy_logged_at": {}}
     with patch.multiple(
         "agent.auxiliary_client", _resolve_task_provider_model=lambda *_a: (provider, "fast-1", None, None, None),
         _get_cached_client=lambda *_a, **_k: (next(builds), "fast-1"), _transient_retry_count=lambda *_a: 0,
-        _refresh_provider_credentials=lambda *_a, **_k: True, _mark_provider_unhealthy=lambda *_a, **_k: None,
+        _refresh_provider_credentials=lambda *_a, **_k: True, **marks,
         _try_configured_fallback_chain=lambda *_a, **_k: (None, None, ""),
         _try_main_fallback_chain=lambda *_a, **_k: (None, None, ""),
         _try_payment_fallback=lambda *_a, **_k: (fallback, "fb", "fallback"),
@@ -705,18 +708,25 @@ def _routed_call(clients, *, provider, is_async, pool=None, **call_kw):
                          ids=["retry-on-another-backend", "retry-on-the-same-pool"])
 def test_a_rebuilt_retry_benches_only_the_key_that_sent_it(is_async, retry_url, benched):
     """The pool rotates off k0 (model not served to this account); the rebuilt retry's 402 benches k1 only when
-    k1 sent it: an auto route that re-resolved to another backend leaves this pool's unused key alone."""
-    sent = []
+    k1 sent it: an auto route that re-resolved to another backend leaves this pool's unused key alone, and the
+    provider-health mark lands on the backend that answered 402, not on OpenRouter."""
+    from agent import auxiliary_client as aux
+
+    sent, health = [], {}
     def handle(status, message):
         return lambda r: sent.append(r.url.host) or httpx.Response(status, json={"error": {"message": message}}, request=r)
     pool = CredentialPool("openrouter", [Key("openrouter", f"k{i}", f"k{i}", "api_key", i, "manual", f"sk-{i}")
                                          for i in range(2)])
     clients = [_wire(handle(400, "model fast-1 is not supported for this account"), key="sk-0", is_async=is_async),
                _wire(handle(402, "Insufficient Balance"), key="sk-1", url=retry_url, is_async=is_async)]
-    assert _routed_call(clients, provider="auto", is_async=is_async, pool=pool) == "fallback"
+    if benched is None:  # api-key discovery tags the client with the provider it was built for
+        clients[1]._hermes_aux_backend_provider = "deepseek"
+    assert _routed_call(clients, provider="auto", is_async=is_async, pool=pool, health=health) == "fallback"
     k0, k1 = pool.entries()
     assert sent == ["openrouter.ai", httpx.URL(retry_url).host]
     assert (sorted(k0.model_cooldowns or {}), k1.last_error_code) == (["fast-1"], benched)
+    with patch.object(aux, "_aux_unhealthy_until", health):
+        assert [aux._is_provider_unhealthy(p) for p in ("openrouter", "deepseek")] == [bool(benched), not benched]
 
 
 _TEMPERATURE_400 = "Unsupported parameter: 'temperature' is not supported with this model."

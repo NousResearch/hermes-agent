@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $freeTierStatus, type FreeTierRequester } from '@/store/free-tier'
-import { $freeTierSignIn, closeFreeTierSignIn, stopFreeTierOffer, syncFreeTierOffer } from '@/store/free-tier-sign-in'
+import {
+  $freeTierSignIn,
+  $openAppWindows,
+  closeFreeTierSignIn,
+  stopFreeTierOffer,
+  syncFreeTierOffer
+} from '@/store/free-tier-sign-in'
 import { activeGatewayProfileKey, ensureGatewayForProfile } from '@/store/gateway'
 import { $localModelOfferPending } from '@/store/local-model-offer'
 import { $onboardingDecided, markOnboardingDecided, setOnboardingSurfaceActive } from '@/store/onboarding-presence'
@@ -80,6 +86,20 @@ describe('sign-in offer after a finished task', () => {
     syncFreeTierOffer(status(0), requestGateway)
     await vi.advanceTimersByTimeAsync(0)
     expect(claims(requestGateway)).toBe(1)
+    expect($freeTierSignIn.get().status).toBe('offer')
+  })
+
+  it('waits while an app window is open, so it never covers it', async () => {
+    const requestGateway = gateway({ statuses: [status(null)] })
+    $openAppWindows.set(1)
+
+    syncFreeTierOffer(status(0), requestGateway)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(claims(requestGateway)).toBe(0)
+
+    $openAppWindows.set(0)
+    syncFreeTierOffer(status(0), requestGateway)
+    await vi.advanceTimersByTimeAsync(0)
     expect($freeTierSignIn.get().status).toBe('offer')
   })
 

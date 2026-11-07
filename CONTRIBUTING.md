@@ -118,7 +118,8 @@ The rules that most often send a submission back: the plugin must extend Hermes 
 |-------------|-------|
 | **Git** | With the `git-lfs` extension installed |
 | **Python 3.14** | The project requires `>=3.14,<3.15`; PM provides the pinned interpreter |
-| **Node.js** | Use the PM pin, or a version accepted by root `package.json`: `^22.22.0`, `^24.11.0`, or `>=26.0.0` |
+| **Node.js** | Use the PM pin, or a version accepted by root `package.json`: `>=26` |
+| **pnpm** | Exactly the `pm/lock.json` pin; `source ./activate` provides it |
 
 ### PM developer environment
 
@@ -201,15 +202,23 @@ than copying production credentials into the checkout.
 
 ### JavaScript workspaces and website
 
-From the repository root, run `npm ci` for the desktop, TUI, dashboard, and
-shared JS workspaces. The website is separate:
+From the repository root, run `pnpm install --frozen-lockfile` for the desktop,
+TUI, dashboard, and shared JS workspaces. `pm/lock.json` pins pnpm
+(`source ./activate`, or `. .\activate.ps1` in PowerShell, provides that exact
+version). An install that runs lifecycle scripts refuses any other pnpm, a direct or
+filtered `pnpm install` included: the root `preinstall` script requires the
+`pm/lock.json` pnpm (and refuses `npm install`), and pnpm 10 and 11 also refuse the
+root `engines.pnpm` range. pnpm 12 skips the root `preinstall` under
+`--ignore-scripts`, `--lockfile-only` (which writes `pnpm-lock.yaml`) and `pnpm fetch`,
+so another pnpm 12 is not refused there; CI installs every changed lockfile with the
+pinned pnpm under `--frozen-lockfile`. The website is a separate npm project:
 
 ```bash
 npm ci --prefix website
 npm run build:fast --prefix website
 ```
 
-Use a Node/npm version accepted by the corresponding `package.json` engines.
+Use a Node version accepted by the corresponding `package.json` engines.
 Native desktop dependencies can also require the platform build toolchain.
 
 Logos and icons are generated from `assets/nous-girl-*.svg` and
@@ -286,7 +295,7 @@ hermes-agent/
 │   ├── delegate_tool.py          # Subagent spawning and parallel task execution
 │   ├── code_execution_tool.py    # Sandboxed Python with RPC tool access (env allowlists in code_execution_env.py)
 │   ├── mcp_tool.py               # MCP client (facade + mcp_tool_*.py siblings: config, discovery, transport, ...)
-│   ├── browser_tool.py           # Browser automation (facade + browser_tool_*.py siblings)
+│   ├── browser_use_cli.py        # browser_exec (Python over CDP); sessions in browser_session*.py, launcher in browser_launcher.py
 │   ├── session_search_tool.py    # Search past conversations with FTS5 + anchored windows
 │   ├── cronjob_tools.py          # Scheduled task management
 │   ├── skill_tools.py            # Skill search, load, manage
@@ -601,7 +610,7 @@ Gateway and messaging sessions never collect secrets in-band; they instruct the 
 - The skill relies on a CLI tool that may not be installed (e.g., `himalaya`, `openhue`, `ddgs`)
 - Treat command checks as guidance, not discovery-time hiding
 
-See `skills/gifs/gif-search/` and `skills/email/himalaya/` for examples.
+See `optional-skills/media/gif-search/` and `skills/email/himalaya/` for examples.
 
 ### Skill authoring standards (HARDLINE)
 
@@ -619,7 +628,7 @@ Every new or modernized skill — bundled, optional, or contributed — must mee
    Good: `Search arXiv papers by keyword, author, category, or ID.`
    Bad: `A powerful and comprehensive skill that allows the agent to search arXiv for relevant academic papers using various criteria including keywords, authors, and categories.`
 
-2. **Tools referenced in SKILL.md prose must be native Hermes tools or MCP servers the skill explicitly expects.** When the skill needs a capability, point at the proper tool by name in backticks: `` `terminal` ``, `` `web_extract` ``, `` `web_search` ``, `` `read_file` ``, `` `write_file` ``, `` `patch` ``, `` `search_files` ``, `` `vision_analyze` ``, `` `browser_navigate` ``, `` `delegate_task` ``, `` `image_generate` ``, `` `text_to_speech` ``, `` `cronjob` ``, `` `memory` ``, `` `skill_view` ``, `` `todo` ``, `` `execute_code` ``.
+2. **Tools referenced in SKILL.md prose must be native Hermes tools or MCP servers the skill explicitly expects.** When the skill needs a capability, point at the proper tool by name in backticks: `` `terminal` ``, `` `web_extract` ``, `` `web_search` ``, `` `read_file` ``, `` `write_file` ``, `` `patch` ``, `` `search_files` ``, `` `vision_analyze` ``, `` `browser_exec` ``, `` `delegate_task` ``, `` `image_generate` ``, `` `text_to_speech` ``, `` `cronjob` ``, `` `memory` ``, `` `skill_view` ``, `` `todo` ``, `` `execute_code` ``.
 
    Do NOT name shell utilities the agent already has wrapped:
 
@@ -834,10 +843,10 @@ that touches the OS, assume *any* platform can hit your code path.
     implementation.
 
 10. **`subprocess.Popen` with `.cmd` or `.bat` shims needs `shutil.which`
-    to resolve.** Passing `"agent-browser"` to `Popen` on Windows finds
-    the extensionless POSIX shebang shim in `node_modules/.bin/`, which
+    to resolve.** Passing `"npm"` to `Popen` on Windows finds the
+    extensionless POSIX shebang shim next to `npm.cmd`, which
     `CreateProcessW` can't execute — you'll get `WinError 193 "not a valid
-    Win32 application"`. Use `shutil.which("agent-browser", path=local_bin)`
+    Win32 application"`. Use `shutil.which("npm", path=node_bin)`
     which honors PATHEXT and picks the `.CMD` variant on Windows.
 
 11. **Don't use shell shebangs as a way to run Python.** `#!/usr/bin/env
@@ -927,7 +936,7 @@ After the [litellm supply chain compromise](https://github.com/BerriAI/litellm/i
 | **GitHub Actions** | Full commit SHA + version comment | Action tags are mutable refs (e.g. tj-actions/changed-files March 2025). Pin as `uses: owner/action@<sha>  # vX.Y.Z` |
 | **CI-only pip installs** | `==exact` | Hermetic CI builds; churn is acceptable. |
 
-**Every new PyPI dependency in a PR must have a `<next_major` upper bound.** PRs adding unbounded `>=X.Y.Z` specs will be rejected by reviewers. The `supply-chain-audit.yml` CI workflow also flags dependency manifest changes for manual review.
+**Every new PyPI dependency in a PR must have a `<next_major` upper bound.** PRs adding unbounded `>=X.Y.Z` specs will be rejected by reviewers. The supply-chain steps of the `repo-guards.yml` CI workflow also flag dependency manifest changes for manual review.
 
 **How to determine the ceiling:**
 - If the package is at version `1.x.y`, use `<2`.
@@ -955,7 +964,7 @@ After the [litellm supply chain compromise](https://github.com/BerriAI/litellm/i
 "some-package>=0.20,<1"
 ```
 
-**Reference PRs:** #2796 (litellm removal), #2810 (upper bounds pass), #9801 (SHA pinning + supply-chain-audit CI).
+**Reference PRs:** #2796 (litellm removal), #2810 (upper bounds pass), #9801 (SHA pinning + supply-chain audit CI, now steps of `repo-guards.yml`).
 
 ---
 

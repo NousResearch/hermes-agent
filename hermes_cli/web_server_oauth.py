@@ -1,5 +1,5 @@
 """Dashboard OAuth/login-status helpers: provider catalog, per-provider device pollers,
-Anthropic/Copilot/Claude-Code status probes.
+Anthropic/Claude-Code status probes, and the poller for provider-profile device logins.
 """
 
 import contextlib
@@ -92,33 +92,9 @@ def _claude_code_only_status() -> dict[str, Any]:
     return dict(_LOGGED_OUT)
 
 
-def _copilot_acp_status() -> dict[str, Any]:
-    """Status for copilot-acp. ``logged_in`` only on positive evidence (env token or known on-disk
-    store); the CLI may hold its session in an OS keychain Hermes can't read, so the unverified
-    state reads "managed by the Copilot CLI" — never signed out."""
-    try:
-        from hermes_cli.auth import get_external_process_provider_status
-        status = get_external_process_provider_status("copilot-acp") or {}
-    except Exception:
-        status = {}
-    verified = bool(status.get("auth_verified"))
-    configured = bool(status.get("configured"))
-    if verified:
-        source_label = status.get("auth_source") or "Copilot credentials detected"
-    elif configured:
-        found = status.get("resolved_command") or status.get("command") or "copilot"
-        source_label = f"Managed by the GitHub Copilot CLI ({found})"
-    else:
-        source_label = "GitHub Copilot CLI not found on PATH"
-    return {
-        "logged_in": verified, "source": "copilot_cli", "source_label": source_label, "token_preview": None,
-        "expires_at": None, "has_refresh_token": False, "configured": configured,
-    }
-
-
 def _external_process_cli_command(provider_id: str, default: str) -> str:
     """Render an external-process provider's sign-in command with the CLI actually configured
-    (``HERMES_COPILOT_ACP_COMMAND`` / ``COPILOT_CLI_PATH``); others get ``default`` untouched."""
+    (its profile's ``process_command_env_vars`` override); others get ``default`` untouched."""
     try:
         from hermes_cli.auth import PROVIDER_REGISTRY, get_external_process_provider_status
         pconfig = PROVIDER_REGISTRY.get(provider_id)
@@ -138,7 +114,8 @@ def _external_process_cli_command(provider_id: str, default: str) -> str:
 # Hand-tuned OAuth/account cards: the bits not derivable from the unified provider catalog
 # (``flow``, ``status_fn``, ``cli_command``, display order). OVERRIDE BASE for
 # ``_build_oauth_catalog()``, which unions them with every accounts-tab provider so new
-# providers appear automatically. Also carries two non-catalog rows the Accounts tab needs:
+# providers appear automatically (a provider profile customises its own card through
+# ``account_card`` / ``account_status`` / ``start_device_login``). Also carries two non-catalog rows:
 # the Anthropic credential-status card and the synthetic ``claude-code`` row.
 # ``flow``: ``device_code`` = show code + URL + poll; ``external`` = delegated to a terminal/CLI.
 _OAUTH_PROVIDER_CATALOG: tuple[dict[str, Any], ...] = (
@@ -159,10 +136,6 @@ _OAUTH_PROVIDER_CATALOG: tuple[dict[str, Any], ...] = (
     {"id": "xai-oauth", "name": "xAI Grok OAuth (SuperGrok / Premium+)", "flow": "device_code",
      "cli_command": "hermes auth add xai-oauth",
      "docs_url": "https://hermes-agent.nousresearch.com/docs/guides/xai-grok-oauth", "status_fn": None},
-    # `copilot login` is the non-interactive subcommand; `copilot /login` is not valid
-    # (slash-commands only exist inside an interactive session).
-    {"id": "copilot-acp", "name": "GitHub Copilot (ACP)", "flow": "external", "cli_command": "copilot login",
-     "docs_url": "https://docs.github.com/en/copilot", "status_fn": _copilot_acp_status},
     # Anthropic / Claude entries sit at the bottom. Deliberately flow == "external": an
     # in-dashboard Connect button would let a scriptable HTTP endpoint mint Claude Pro/Max
     # subscription tokens outside Anthropic's own client, against its OAuth usage policies.
@@ -363,3 +336,50 @@ def _xai_device_poller(session_id: str, sess: dict[str, Any]) -> None:
         # duplicates the single-use refresh token and triggers ``refresh_token_reused`` churn.
         # An interactive login is an explicit re-enable, so clear any prior suppression.
         unsuppress_credential_source("xai-oauth", "device_code")
+
+
+def _sleep_unless_cancelled(sess: dict[str, Any], seconds: float) -> bool:
+    """Sleep *seconds* in short ticks; True as soon as the session is cancelled."""
+    deadline = time.monotonic() + seconds
+    while True:
+        with _oauth_sessions_lock:
+            if sess.get("cancelled"):
+                return True
+        left = deadline - time.monotonic()
+        if left <= 0:
+            return False
+        time.sleep(min(0.25, left))
+
+
+_DEVICE_LOGIN_ENDINGS = {"denied": "Authorization was denied.", "expired": "Device code expired before approval"}
+
+
+@_oauth_poller("provider-profile")
+def _profile_device_poller(session_id: str, sess: dict[str, Any]) -> None:
+    """Drive a device-code login a provider profile owns (``ProviderProfile.start_device_login``):
+    one ``poll_device_login`` per interval (each bound to the session's profile) until approved, then
+    ``save_device_login`` under the session's profile scope, in one critical section with the cancel check like the built-in savers."""
+    from hermes_cli.web_server_profiles import _config_profile_scope, _profile_scope
+    profile, state, interval = sess["_provider_profile"], sess["_device_state"], int(sess["interval"])
+    result: dict[str, Any] = {}
+    while time.time() < sess["expires_at"]:
+        if _sleep_unless_cancelled(sess, interval):
+            break
+        with _config_profile_scope(sess.get("profile")):  # await-safe: no skills lock across the wait
+            result = dict(profile.poll_device_login(state) or {})
+        state = result.get("state", state)
+        if result.get("status") != "pending":
+            break
+        interval = int(result.get("interval") or interval)
+    with _profile_scope(sess.get("profile")), _oauth_sessions_lock:
+        if sess.get("cancelled"):
+            sess["status"] = "cancelled"
+            return
+        status = result.get("status")
+        if status in (None, "pending"):     # the code's lifetime ran out
+            status = "expired"
+        if status != "approved":
+            sess["status"] = status if status in _DEVICE_LOGIN_ENDINGS else "error"
+            sess["error_message"] = result.get("message") or _DEVICE_LOGIN_ENDINGS.get(status) or "Sign-in failed"
+            return
+        profile.save_device_login(result.get("credential"))

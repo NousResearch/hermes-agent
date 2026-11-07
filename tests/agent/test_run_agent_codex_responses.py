@@ -57,15 +57,28 @@ def _build_agent(monkeypatch):
     return agent
 
 
-def _build_copilot_agent(monkeypatch, *, model="gpt-5.4"):
+RELAY_BASE_URL = "https://api.acme-relay.test"
+
+
+def _build_relay_agent(monkeypatch, *, model="gpt-5.4"):
+    """A third-party Responses relay whose profile binds replayed message-item ids to a connection."""
+    import providers
+    from providers.base import ProviderProfile
+
     _patch_agent_bootstrap(monkeypatch)
+    relay = ProviderProfile(name="acme-relay", base_url=RELAY_BASE_URL, api_mode="codex_responses",
+                            responses_replay_item_ids=False)
+    real_profile_for_host = providers.profile_for_host
+    monkeypatch.setattr(providers, "profile_for_host",
+                        lambda url, *args, **kwargs: relay if str(url or "").startswith(RELAY_BASE_URL)
+                        else real_profile_for_host(url, *args, **kwargs))
 
     agent = run_agent.AIAgent(
         model=model,
-        provider="copilot",
+        provider="acme-relay",
         api_mode="codex_responses",
-        base_url="https://api.githubcopilot.com",
-        api_key="gh-token",
+        base_url=RELAY_BASE_URL,
+        api_key="relay-token",
         quiet_mode=True,
         max_iterations=4,
         skip_context_files=True,
@@ -1209,9 +1222,9 @@ def test_codex_preflight_defangs_harmony_tokens_before_and_after_middleware(monk
     assert "<｜start｜>" in captured["instructions"]
 
 
-def test_copilot_responses_preflight_preserves_harmony_tokens(monkeypatch):
+def test_relay_responses_preflight_preserves_harmony_tokens(monkeypatch):
     """Other Responses-compatible providers remain byte-identical."""
-    agent = _build_copilot_agent(monkeypatch)
+    agent = _build_relay_agent(monkeypatch)
     agent._disable_streaming = True
     token = "<\x7cstart\x7c>"
     captured = {}
@@ -1230,10 +1243,10 @@ def test_copilot_responses_preflight_preserves_harmony_tokens(monkeypatch):
 
 def test_codex_backend_detection_is_narrow(monkeypatch):
     codex = _build_agent(monkeypatch)
-    copilot = _build_copilot_agent(monkeypatch)
+    relay = _build_relay_agent(monkeypatch)
 
     assert codex._is_codex_backend() is True
-    assert copilot._is_codex_backend() is False
+    assert relay._is_codex_backend() is False
 
     # Exact backend URL detection still works for an explicitly custom route.
     codex.provider = "custom"
@@ -1242,9 +1255,9 @@ def test_codex_backend_detection_is_narrow(monkeypatch):
     assert codex._is_codex_backend() is False
 
 
-def test_copilot_final_preflight_sanitizes_both_middleware_layers(monkeypatch):
+def test_id_binding_relay_final_preflight_sanitizes_both_middleware_layers(monkeypatch):
     """The dispatch chokepoint must sanitize after every mutable layer."""
-    agent = _build_copilot_agent(monkeypatch)
+    agent = _build_relay_agent(monkeypatch)
     agent._disable_streaming = True
     captured = {}
 
@@ -1531,85 +1544,6 @@ def test_try_refresh_codex_client_credentials_skips_xai_oauth_when_singleton_dif
         "agent that wasn't even using the singleton."
     )
     assert agent.api_key == pre_refresh_key
-
-
-def test_try_refresh_copilot_client_credentials_rebuilds_client(monkeypatch):
-    agent = _build_copilot_agent(monkeypatch)
-    rebuilt = {"kwargs": None}
-
-    class _ExistingClient:
-        pass
-
-    class _RebuiltClient:
-        pass
-
-    def _fake_openai(**kwargs):
-        rebuilt["kwargs"] = kwargs
-        return _RebuiltClient()
-
-    monkeypatch.setattr(
-        "hermes_cli.copilot_auth.resolve_copilot_token",
-        lambda: ("gho_new_token", "GH_TOKEN"),
-    )
-    # The 401 refresh forces a fresh IDE-token exchange; mock it to a valid
-    # exchanged token so the test is deterministic and network-free.
-    monkeypatch.setattr(
-        "hermes_cli.copilot_auth.evict_cached_exchanged_token",
-        lambda _raw: None,
-    )
-    monkeypatch.setattr(
-        "hermes_cli.copilot_auth.get_copilot_api_token",
-        lambda _raw: ("tid=exchanged-ide-token", None),
-    )
-    monkeypatch.setattr("agent.process_bootstrap.OpenAI", _fake_openai)
-
-    agent.client = _ExistingClient()
-    ok = agent._try_refresh_copilot_client_credentials()
-
-    assert ok is True
-    # The old client is retired by _replace_primary_openai_client (release is
-    # deferred to GC on current main — no synchronous .close() contract).
-    # The freshly EXCHANGED IDE token — not the raw ghu_/gho_ token — goes on
-    # the wire, which is what fixes the "401 IDE token expired" recurrence.
-    assert rebuilt["kwargs"]["api_key"] == "tid=exchanged-ide-token"
-    assert rebuilt["kwargs"]["base_url"] == "https://api.githubcopilot.com"
-    assert rebuilt["kwargs"]["default_headers"]["Copilot-Integration-Id"] == "vscode-chat"
-    assert isinstance(agent.client, _RebuiltClient)
-
-
-def test_try_refresh_copilot_client_credentials_falls_back_when_exchange_unavailable(monkeypatch):
-    """If the IDE-token re-exchange itself fails (network blip), the refresh
-    still rebuilds the client on the resolved raw token rather than throwing —
-    clears stale client state and degrades gracefully."""
-    agent = _build_copilot_agent(monkeypatch)
-    rebuilt = {"kwargs": None}
-
-    class _RebuiltClient:
-        pass
-
-    def _fake_openai(**kwargs):
-        rebuilt["kwargs"] = kwargs
-        return _RebuiltClient()
-
-    def _boom(_raw):
-        raise RuntimeError("exchange endpoint unreachable")
-
-    monkeypatch.setattr(
-        "hermes_cli.copilot_auth.resolve_copilot_token",
-        lambda: ("gho_raw_token", "GH_TOKEN"),
-    )
-    monkeypatch.setattr(
-        "hermes_cli.copilot_auth.evict_cached_exchanged_token",
-        lambda _raw: None,
-    )
-    monkeypatch.setattr("hermes_cli.copilot_auth.get_copilot_api_token", _boom)
-    monkeypatch.setattr("agent.process_bootstrap.OpenAI", _fake_openai)
-
-    ok = agent._try_refresh_copilot_client_credentials()
-
-    assert ok is True
-    # Exchange failed → falls back to the resolved raw token, client still rebuilt.
-    assert rebuilt["kwargs"]["api_key"] == "gho_raw_token"
 
 
 def test_preflight_codex_api_kwargs_strips_optional_function_call_id(monkeypatch):
@@ -2697,7 +2631,7 @@ def _codex_truncated_tool_call_response():
 def test_codex_truncated_tool_call_is_retried_with_boosted_output_budget(monkeypatch):
     """A tool call cut off by max_output_tokens on the Responses wire gets the same
     budget-boost retry as chat modes instead of a refused partial turn (#91770)."""
-    agent = _build_copilot_agent(monkeypatch)
+    agent = _build_relay_agent(monkeypatch)
     agent.max_tokens = 1000
     responses = [_codex_truncated_tool_call_response(), _codex_message_response("Done.")]
     seen_caps: list = []
@@ -2720,7 +2654,7 @@ def test_codex_truncated_tool_call_is_retried_with_boosted_output_budget(monkeyp
 def test_codex_text_only_max_output_incomplete_keeps_codex_continuation(monkeypatch):
     """Text truncation is not rerouted: it stays on the Codex incomplete continuation and
     never takes the length path's nudge (no double continuation, #91770)."""
-    agent = _build_copilot_agent(monkeypatch)
+    agent = _build_relay_agent(monkeypatch)
     responses = [_codex_max_output_incomplete_response("Partial"), _codex_message_response("rest.")]
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
 

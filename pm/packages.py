@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -220,6 +221,10 @@ class Uv(_BionicDebArm, BinaryPackage, DebPackage):
         return github_release_tags("astral-sh/uv")
 
 
+# The POSIX interpreter name the pinned Windows Python also answers to (see Python.stage).
+WINDOWS_PYTHON3 = "python3.exe"
+
+
 @register
 class Python(_BionicDebArm, BinaryPackage, DebPackage):
     """The pinned interpreter for launchers and every PM-managed uv command.
@@ -261,6 +266,28 @@ class Python(_BionicDebArm, BinaryPackage, DebPackage):
         # old bundle-time drop did) makes doctor's re-hash mismatch.
         if target == "win32-arm64":
             (staged / "vcruntime140_1.dll").unlink(missing_ok=True)
+        # python-build-standalone's Windows build ships python.exe only, so `python3` (npm and
+        # vitest helpers, POSIX-minded scripts) resolves past the activated PATH to the Microsoft
+        # Store's App Execution Alias stub, which installs nothing and fails. python.exe is a
+        # small launcher of pythonXY.dll that finds its home from its own directory, so a copy
+        # under the POSIX name is the same interpreter. Staged before publish, so the recorded
+        # tree digest covers it.
+        if target.startswith("win32"):
+            shutil.copy2(staged / "python.exe", staged / WINDOWS_PYTHON3)
+
+    def verify(self, entry: Path, target: str) -> str:
+        reason = super().verify(entry, target)
+        if reason or not target.startswith("win32"):
+            return reason
+        # An entry staged before python3.exe existed fails here, so an explicit install
+        # (activation's setup) restages it once; startup's facts check never calls verify.
+        alias = entry / WINDOWS_PYTHON3
+        try:
+            if alias.read_bytes() == (entry / "python.exe").read_bytes():
+                return ""
+        except OSError:
+            return f"{WINDOWS_PYTHON3} is missing beside python.exe"
+        return f"{WINDOWS_PYTHON3} differs from python.exe"
 
     def fetch_url(self, version: str, target: str) -> str:
         if target == "linux-arm64-bionic":
@@ -303,6 +330,19 @@ def _uv_lock_digest(path: Path) -> bytes:
 _uv_lock_digest_cache: dict[Path, tuple] = {}
 
 
+def _layout_digest(root: Path) -> bytes:
+    """sha256 of the packaging files, which decide how the core project installs beyond its lock
+    (uv's default ``cache-keys``). A change that moves packages (a new ``packages.find`` ``where``)
+    and leaves uv.lock alone still gets a new environment."""
+    import hashlib
+
+    h = hashlib.sha256()
+    for name in ("pyproject.toml", "setup.py", "setup.cfg"):
+        path = root / name
+        h.update(name.encode() + b"\0" + (path.read_bytes() if path.is_file() else b"") + b"\0")
+    return h.digest()
+
+
 def _copy_seed_file(src: str | os.PathLike, dst: str | os.PathLike) -> str | os.PathLike:
     """Copy one payload cache file unless an earlier seed already copied it whole.
 
@@ -326,6 +366,51 @@ def _copy_seed_file(src: str | os.PathLike, dst: str | os.PathLike) -> str | os.
     return dst
 
 
+def _copy_seed_link(src: str | os.PathLike, dst: str | os.PathLike) -> None:
+    """Recreate one payload cache symlink, healing a directory left by an older seed.
+
+    uv caches a wheel as a symlink into ``archive-v0/``; following it (the
+    ``copytree`` default) leaves a directory where uv later renames its own
+    entry into place, which fails with EISDIR. The payload's targets are
+    relative, so the target is copied verbatim, never resolved.
+    """
+    linkto = os.readlink(src)
+    dst = Path(dst)
+    staging = dst.parent / f".seed-link-{uuid.uuid4().hex}"
+    os.symlink(linkto, staging)
+    try:
+        if dst.is_dir() and not dst.is_symlink():
+            # A pre-fix seed copied the link target's contents here; uv cannot replace it.
+            shutil.rmtree(dst)
+        os.replace(staging, dst)  # atomic: replaces a file or an existing symlink
+    finally:
+        staging.unlink(missing_ok=True)
+
+
+def _seed_tree(src: Path, dst: Path) -> None:
+    """Merge one payload bucket, preserving uv's link entries.
+
+    ``is_symlink()`` must be tested before ``is_dir()``: ``is_dir()`` follows
+    links, and following them is exactly the bug this walker replaced.
+    """
+    dst.mkdir(parents=True, exist_ok=True)
+    for child in src.iterdir():
+        target = dst / child.name
+        if child.is_symlink():
+            _copy_seed_link(child, target)
+        elif child.is_dir():
+            _seed_tree(child, target)
+        else:
+            _copy_seed_file(child, target)
+
+
+def uv_cache_path() -> Path:
+    """Where the hermes-owned uv cache lives; unlike uv_cache_dir(), never seeds or writes."""
+    from hermes_constants import get_default_hermes_root
+
+    return get_default_hermes_root() / "cache" / "uv"
+
+
 def uv_cache_dir() -> Path:
     """The hermes-owned uv cache: machine-scoped and shared (keyed by
     content — two profiles reuse one cache), anchored to the DEFAULT
@@ -336,11 +421,9 @@ def uv_cache_dir() -> Path:
     from it is near-free (probed: 0.4s vs 1.2s cold) — the blow-away-
     on-update contract depends on it. uv's default cache location is
     per-user/platform-opinionated and never used by pm."""
-    from hermes_constants import get_default_hermes_root
-
     from pm.paths import repo_root, store_root
 
-    machine_cache = get_default_hermes_root() / "cache" / "uv"
+    machine_cache = uv_cache_path()
     marker = machine_cache / ".seeded"
     # The marker names the lock whose payload was merged. An update ships a new payload cache for
     # a new lock; a bare "done" marker skipped it forever, so plugin rebuilds fetched the new pins
@@ -352,7 +435,10 @@ def uv_cache_dir() -> Path:
     # seed. Do not drop the suffix: the lock alone cannot tell those two images apart.
     payload_cache = long_root(store_root().parent / "uv-cache")
     if payload_cache.is_dir():
-        seed += "+payload"
+        # The suffix names the seed's copy semantics, not just "a payload exists": it moved to
+        # ``payload2`` when the seed stopped following links, so an existing volume re-runs the
+        # merge once and the directory-shaped entries the old copy left are healed in place.
+        seed += "+payload2"
     try:
         current = marker.read_text(encoding="utf-8-sig").strip() == seed
     except OSError:
@@ -368,14 +454,18 @@ def uv_cache_dir() -> Path:
             if payload_cache.is_dir():
                 seeded = long_root(machine_cache)
                 seeded.mkdir(parents=True, exist_ok=True)
-                for entry in payload_cache.iterdir():
+                # archive-v0 first: a wheel link published before its bucket points at nothing,
+                # for another profile's uv and, if the seed dies there, until the retry.
+                for entry in sorted(payload_cache.iterdir(), key=lambda entry: entry.name != "archive-v0"):
                     if entry.name == ".seeded":
                         continue
                     dest = seeded / entry.name
                     # Merge into whatever an earlier failed or killed seed left: skipping
                     # an existing directory would record that partial copy as complete.
-                    if entry.is_dir():
-                        shutil.copytree(entry, dest, dirs_exist_ok=True, copy_function=_copy_seed_file)
+                    if entry.is_symlink():
+                        _copy_seed_link(entry, dest)
+                    elif entry.is_dir():
+                        _seed_tree(entry, dest)
                     else:
                         _copy_seed_file(entry, dest)
         except OSError as exc:
@@ -391,7 +481,7 @@ def uv_cache_dir() -> Path:
 
 @register
 class Venv(StatePackage):
-    """The project venv: pyproject.toml + uv.lock + enabled extras.
+    """The project venv: pyproject.toml + setup.py + uv.lock + enabled extras.
     Made true by `uv sync --frozen`; uv is its internal dependency."""
 
     name = "venv"
@@ -423,13 +513,14 @@ class Venv(StatePackage):
                   [artifact["sha256"] for artifact in lock.artifacts("python", target)])
         h = hashlib.sha256()
         h.update(_uv_lock_digest(self.project_root() / "uv.lock"))
+        h.update(_layout_digest(self.project_root()))
         h.update(",".join(sorted(extras)).encode())
         h.update(json.dumps(python).encode())
         # Plugin members union into the venv — a changed member set must
         # re-sync even when extras and core lock are unchanged.
-        from pm.workspace import enabled_member_dirs, members_stamp
+        from pm.workspace import build_member_dirs, members_stamp
 
-        h.update(members_stamp(enabled_member_dirs() if plugin_dirs is None else plugin_dirs).encode())
+        h.update(members_stamp(build_member_dirs(extras) if plugin_dirs is None else plugin_dirs).encode())
         return h.hexdigest()
 
     def apply(self, extras: list[str], *, plugin_dirs=None, repair: bool = False, explicit: bool = False,
@@ -444,7 +535,7 @@ class Venv(StatePackage):
         from pm.environment import managed_environment
         from pm.lock import Facts
         from pm.native_build import source_build_environment
-        from pm.workspace import enabled_member_dirs, lock_and_sync
+        from pm.workspace import build_member_dirs, lock_and_sync
 
         project = self.project_root()
         generation = install_state_dir(project) / "environments" / uuid.uuid4().hex
@@ -457,7 +548,8 @@ class Venv(StatePackage):
             # An update does evict them, loudly: it must not fail on another profile's config.
             from pm.plugins_state import enabled_plugins_ordered
             enabled_plugins_ordered(skip_invalid_secondary=skip_invalid_secondary)
-        members = [] if repair else (enabled_member_dirs() if plugin_dirs is None else plugin_dirs)
+        members = [] if repair else (build_member_dirs(extras, environment.python) if plugin_dirs is None
+                                     else plugin_dirs)
         try:
             generation.mkdir(parents=True)
             (generation / ".lease-managed").touch()
@@ -589,6 +681,23 @@ def npm_env(cache_dir: Path, base_env: Optional[dict] = None) -> dict[str, str]:
     return env
 
 
+def pnpm_env(base_env: Optional[dict] = None) -> dict[str, str]:
+    """pnpm's store, metadata cache and state default to the user's XDG dirs. Keep them
+    Hermes-owned beside the uv cache: shared by every profile, gone with the Hermes root."""
+    from hermes_constants import get_default_hermes_root
+
+    env = dict(os.environ if base_env is None else base_env)
+    root = get_default_hermes_root() / "cache" / "pnpm"
+    for name in ("store", "cache", "state"):
+        key = f"pnpm_config_{name}_dir"
+        # Windows env names are case-insensitive and Python upper-cases inherited ones:
+        # a surviving PNPM_CONFIG_* twin would leave the child's pick between the two undefined.
+        for twin in [k for k in env if k.upper() == key.upper() and k != key]:
+            del env[twin]
+        env[key] = str(root / name)
+    return env
+
+
 @register
 class Npm(BinaryPackage):
     name = "npm"
@@ -675,6 +784,46 @@ class Npm(BinaryPackage):
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
         latest = npm_dist_tags("npm").get("latest")
+        return [latest] if latest else []
+
+
+@register
+class Pnpm(BinaryPackage):
+    """pnpm installs the repo's JS workspaces. pnpm 12 is a native executable
+    (@pnpm/exe.<target>); the `pnpm` package of the same version is only the
+    launcher that downloads it, so pm pins both and keeps the launcher's dist/:
+    the bundled node-gyp the executable looks for beside itself to build
+    dependencies that ship a binding.gyp. Without it a host node-gyp on PATH
+    (or none) would build them."""
+
+    name = "pnpm"
+    # Lifecycle scripts and node-gyp run on the node pm installs.
+    deps = ("node",)
+    binary_rel = {"win32": "pnpm.exe", "posix": "pnpm"}
+    flatten = False
+    gaps = {"linux-arm64-bionic": "Termux ships a prebuilt TUI; nothing installs JS workspaces on device"}
+
+    def fetch_urls(self, version: str, target: str) -> list[str]:
+        return [
+            f"https://registry.npmjs.org/@pnpm/exe.{target}/-/exe.{target}-{version}.tgz",
+            f"https://registry.npmjs.org/pnpm/-/pnpm-{version}.tgz",
+        ]
+
+    def unpack(self, archive: Path, staged: Path, target: str) -> None:
+        from pm.store import extract
+
+        extract(archive, staged)
+        package = staged / "package"
+        dist = package / "dist"
+        if dist.is_dir():
+            dist.rename(staged / "dist")
+        else:
+            for item in package.iterdir():
+                item.rename(staged / item.name)
+        shutil.rmtree(package)
+
+    def latest_versions(self, target: str, locked=None) -> list[str]:
+        latest = npm_dist_tags("pnpm").get("latest")
         return [latest] if latest else []
 
 
@@ -963,65 +1112,6 @@ class CuaDriver(BinaryPackage):
 
 
 @register
-class AgentBrowser(BinaryPackage):
-    name = "agent-browser"
-    optional = True
-    # Browser tools find agent-browser only in PM's store or on PATH (no npx
-    # fallback), and their readiness check never installs it, so an install
-    # without it silently loses every browser_* tool.
-    # Default-install it; `install.sh --skip-browser` declines it.
-    default = True
-    deps = ("chromium",)
-    # Termux owns its browser stack (`npm install -g agent-browser`; see
-    # tools/browser_tool_install.py), and PM has no bionic Chromium to drive.
-    gaps = {
-        "linux-arm64-bionic": "Termux installs agent-browser through npm",
-        **{target: "agent-browser has no musl Chromium runtime" for target in MUSL_TARGETS},
-    }
-    flatten = True
-    probe_version = False
-    url = "https://registry.npmjs.org/agent-browser/-/agent-browser-{version}.tgz"
-    # No win32-arm64 gap: agent-browser ships only win32-x64, and Windows
-    # ARM64 runs it via built-in emulation (its own postinstall falls back
-    # to x64 on arm64). chromium is likewise the x64 build on win32-arm64.
-    emulated_arch_targets = frozenset({"win32-arm64"})
-
-    def latest_versions(self, target: str, locked=None) -> list[str]:
-        latest = npm_dist_tags("agent-browser").get("latest")
-        return [latest] if latest else []
-
-    def _rel(self, target: str) -> Optional[str]:
-        ext = ".exe" if target.startswith("win32") else ""
-        # Windows ARM64 runs the x64 binary under built-in emulation:
-        # agent-browser ships no native arm64 build (its own postinstall
-        # falls back to x64 on arm64), so the staged name is win32-x64.
-        if target == "win32-arm64":
-            target = "win32-x64"
-        return f"bin/agent-browser-{target}{ext}"
-
-    def binary(self, entry: Path, target: str) -> Optional[Path]:
-        # The win32-arm64 payload carries the x64 binary (emulated), so
-        # resolve it under the win32-x64 name.
-        return super().binary(entry, "win32-x64" if target == "win32-arm64" else target)
-
-    def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
-        flatten_single_dir(staged)
-        bin_dir = staged / "bin"
-        if not bin_dir.is_dir():
-            raise InstallError(self.name, "staged without a bin/ directory")
-        keep = Path(self._rel(target)).name
-        if not (bin_dir / keep).is_file():
-            raise InstallError(self.name, f"{keep} missing from the staged tarball")
-        for item in bin_dir.iterdir():
-            if item.is_file() and item.name.startswith("agent-browser-") and item.name != keep:
-                item.unlink()
-        # The npm tarball ships every native binary as 0644; agent-browser's
-        # own postinstall sets the exec bit, and pm runs no postinstall.
-        kept = bin_dir / keep
-        kept.chmod(kept.stat().st_mode | 0o111)
-
-
-@register
 class Chromium(Package):
     """Playwright resolves browsers by DIRECTORY NAME under one root:
     `<name with '-'→'_'>-<revision>`, no target suffix. The env points
@@ -1036,6 +1126,10 @@ class Chromium(Package):
 
     name = "chromium"
     optional = True
+    # browser_exec's launcher drives this build, and its readiness check
+    # installs it only once per process, so default-install it like the
+    # other OS tools; `install.sh --skip-browser` declines it.
+    default = True
     on_path = False
     # Neither Chrome-for-Testing nor Playwright's mirror builds for Android.
     gaps = {
@@ -1049,7 +1143,7 @@ class Chromium(Package):
     # playwright's dbazure mirror with its own platform names.
     # win32-arm64 uses the win64 (x64) build: CfT publishes no native
     # win-arm64 chromium, and Windows ARM64 runs x64 binaries via built-in
-    # emulation — the same choice agent-browser's own postinstall makes.
+    # emulation.
     _CFT = {
         "linux-x64": "linux64",
         "darwin-x64": "mac-x64",
@@ -1096,10 +1190,11 @@ class Chromium(Package):
         binary = self.binary(entry, target)
         if binary is None:
             raise InstallError(self.name, f"Chromium executable missing under {native(entry)}")
-        return {
-            "PLAYWRIGHT_BROWSERS_PATH": str(entry.parent),
-            "AGENT_BROWSER_EXECUTABLE_PATH": str(binary),
-        }
+        # Playwright launches without an executable_path (e.g. the
+        # har-derived-api-client skill's `chromium.launch(channel="chromium")`)
+        # find this build through the root; Hermes's own launcher asks
+        # hermes_cli.browser_runtime.chromium_executable() instead.
+        return {"PLAYWRIGHT_BROWSERS_PATH": str(entry.parent)}
 
 
 class LlamaCpp(BinaryPackage):

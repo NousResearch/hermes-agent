@@ -29,6 +29,7 @@ from gateway.restart import (
 )
 from gateway.run_common import _UNSET
 from gateway.run_runtime import interrupt_side_agents, managed_turn_count, stop_managed_turns
+from gateway.session_runtime_workers import uncounted_runtime_work_units
 from gateway.run_shutdown_session_end import GatewaySessionEndMixin
 from gateway.shutdown_watchdog import arm_shutdown_watchdog, resolve_shutdown_watchdog_delay
 
@@ -1434,7 +1435,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         # Break away from the parent CLI's job object or be reaped when the CLI exits; a job without
         # BREAKAWAY_OK rejects CREATE_BREAKAWAY_FROM_JOB (OSError) — retry once without the bit.
         try:
-            subprocess.Popen(watcher_argv, **popen_kwargs, **windows_detach_popen_kwargs())
+            subprocess.Popen(watcher_argv, **popen_kwargs, **windows_detach_popen_kwargs())  # detached-spawn: ok — restart watcher, must outlive the gateway it restarts
         except OSError:
             try:
                 subprocess.Popen(
@@ -1478,7 +1479,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         argv = [setsid_bin, "bash", "-lc", shell_cmd] if setsid_bin else ["bash", "-lc", shell_cmd]
         subprocess.Popen(  # noqa: ASYNC220 -- fire-and-forget spawn; Popen returns immediately and callers need the Popen object
             argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            env=GatewayShutdownMixin._restart_watcher_env(), start_new_session=True,
+            env=GatewayShutdownMixin._restart_watcher_env(), start_new_session=True,  # detached-spawn: ok — restart watcher, must outlive the gateway it restarts
         )
 
     def _wedged_agent_count(self) -> int:
@@ -1569,10 +1570,9 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         """One dict per in-flight work unit the restart wait is holding for, so an observer
         (``hermes update``, ``hermes gateway status``) can name it instead of printing a bare count.
 
-        ``kind`` ∈ ``chat`` (session turn), ``cron`` (job id + external worker pid when the run was
-        handed to a restart-safe scope), ``managed`` / ``api`` / ``deferred`` (count only — those sources expose
-        no identity). Best-effort: a source that can't be read is omitted, never raises.
-        """
+        ``kind`` ∈ ``chat`` (session turn), ``cron`` (job id + external worker pid when the run was handed to a
+        restart-safe scope), ``managed`` (session + worker pid when a worker holds it), ``api`` / ``deferred``
+        (count only). Best-effort: a source that can't be read is omitted, never raises."""
         from gateway.run import _AGENT_PENDING_SENTINEL
         now = time.time()
         units: list = []
@@ -1600,8 +1600,8 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                               "pid": job["worker_pid"] or os.getpid(), "external": bool(job["worker_pid"]),
                               "wedged": job["job_id"] in wedged,
                               "restart_safe": bool(job.get("restart_safe"))})
-        for kind, count in (("managed", managed_turn_count(self)), ("api", self._active_api_run_count()),
-                            ("deferred", self._active_deferred_agent_worker_count())):
+        units.extend(uncounted_runtime_work_units(self, os.getpid()))
+        for kind, count in (("api", self._active_api_run_count()), ("deferred", self._active_deferred_agent_worker_count())):
             units.extend({"kind": kind, "pid": os.getpid()} for _ in range(count))
         return units
 
@@ -1794,7 +1794,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             cleanup_all_environments()
 
         def _cleanup_browsers() -> None:
-            from tools.browser_tool_lifecycle import cleanup_all_browsers
+            from tools.browser_session_lifecycle import cleanup_all_browsers
             cleanup_all_browsers()
 
         _step("cleanup_all_environments", _cleanup_environments)
@@ -2007,9 +2007,9 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         self._running_agents_ts.clear()
         self._pending_messages.clear()
         self._pending_approvals.clear()
-        for _attr in ("_active_session_leases", "_busy_ack_ts"):  # absent on bare shutdown-path doubles
-            if hasattr(self, _attr):
-                getattr(self, _attr).clear()
+        for _state in list((self.__dict__.get("_sessions") or {}).values()):
+            _state.turn.lease = None
+        getattr(self, "_busy_ack_ts", {}).clear()  # absent on bare shutdown-path doubles
         self._shutdown_event.set()
         # Global catch-all subprocess kill (safe to repeat) for the graceful path and late respawns.
         # Off-loop: same blocking sweep as the post-interrupt kill (#116327).
@@ -2059,10 +2059,10 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             )
             return
         logger.info("Shutdown phase: executor quiesced at +%.2fs", ctx.elapsed())
-        # Cron jobs (scheduler pool), API-server runs and deferred hygiene workers (both on the loop's
-        # default executor) never touch self._executor, so the join above cannot see them. A writer that
-        # outlived the drain is mid-write for the same #101093 reasons; the drain already spent its
-        # budget, so no second wait — leave the handles open (#102198). The API count is the snapshot
+        # Cron jobs (scheduler pool), API-server runs (their own unbounded executor, never joined at disconnect)
+        # and deferred hygiene workers (the loop's default executor) never touch self._executor, so the join above
+        # cannot see them. A writer that outlived the drain is mid-write for the same #101093 reasons; the drain
+        # spent its budget, so no second wait — leave the handles open (#102198). The API count is the snapshot
         # taken before the adapters were released; a run whose handler task was cancelled at disconnect
         # has already left it, so that term under-counts — the live worker-scoped count below covers
         # the cancelled-handler case (#116535).
@@ -2109,8 +2109,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
     async def _stop_persist_exit_state(self, ctx: GatewayShutdownMixin._StopContext) -> None:
         """Clean-shutdown marker, restart markers, terminal runtime status; process bootstrap
         releases PID/lock ownership after the writer drain."""
-        from gateway.run import _hermes_home, _planned_restart_notification_path, _shutdown_gateway_health_export
-        from utils import atomic_json_write
+        from gateway.run import _hermes_home, _shutdown_gateway_health_export
         if getattr(self, "_startup_cleanup_only", False):  # start never ran: keep startup_failed + crash markers
             return _shutdown_gateway_health_export(self)
         # Clean-shutdown marker skips crash-turn recovery next boot; a timed-out drain left
@@ -2125,15 +2124,13 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         if ctx.active_agents:
             self._increment_restart_failure_counts(set(ctx.active_agents.keys()))
         if self._restart_requested and self._restart_command_source is None:
+            # One writer for the marker (gateway/restart_notice.py): the CLI restart stamps the same
+            # file, and a rename on either side must not strand the other's write.
+            from gateway.restart_notice import write_planned_restart_marker
             with _log_suppressed(logging.DEBUG, "Failed to write planned restart notification marker: %s"):
-                atomic_json_write(
-                    _planned_restart_notification_path(),
-                    {
-                        "requested_at": time.time(),
-                        "via_service": bool(self._restart_via_service),
-                        "detached": bool(self._restart_detached),
-                    },
-                    indent=None,
+                write_planned_restart_marker(
+                    via_service=bool(self._restart_via_service),
+                    detached=bool(self._restart_detached),
                 )
         if self._restart_requested and self._restart_via_service:
             # Exit 75 + ``RestartForceExitStatus=75``: systemd replaces us without a racing helper.

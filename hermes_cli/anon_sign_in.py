@@ -238,8 +238,8 @@ def _handoff_lines(results: list[dict[str, Any]]) -> tuple[str, ...]:
 
 def _handoff_status(results: list[dict[str, Any]], replaced: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
     """The handoff a completed sign-in reports (``guest_handoff.wire_status`` form): the latest record its
-    own run attempted, else the replaced free tier's saved record (another process held the claim, or
-    the run's budget ran out first), else None when it replaced no free tier. Read under the scope."""
+    own run attempted, else the replaced free tier's saved record (another process held it), else
+    None when it replaced no free tier. Read under the scope."""
     from hermes_cli import anon_auth as _core
     from hermes_cli.guest_handoff import record_status, wire_status
     if results:
@@ -283,7 +283,7 @@ def run_sign_in(
     from hermes_cli.auth_device_flow import DeviceFlowCancelled, _request_device_code
     from hermes_cli.auth_error_copy import is_device_code_expired
     from hermes_cli.auth_nous import _nous_http_client, _nous_portal_base_url
-    from hermes_cli.guest_handoff import deferred
+    from hermes_cli.guest_handoff import drain
 
     is_cancelled = cancelled or (lambda: False)
     open_scope = scope or contextlib.nullcontext
@@ -344,14 +344,14 @@ def run_sign_in(
     guard = persist_guard or _default_persist_guard(is_cancelled)
     try:
         with open_scope():
-            # The handoff runs once the surface's lock is released, never inside it.
-            with deferred() as handoff:
-                with guard() as may_persist:
-                    if may_persist:
-                        _core.persist_nous_credentials(account_state)
+            with guard() as may_persist:
+                if may_persist:
+                    _core.persist_nous_credentials(account_state)
             if may_persist:
+                # The handoff runs once the surface's lock is released, never inside it.
+                handoff = drain()
                 settled = _core.settle_after_upgrade(account_state)
-                handoff_status = _handoff_status(handoff.results, state)
+                handoff_status = _handoff_status(handoff, state)
     except Exception as exc:
         # persist_nous_credentials takes the auth-store lock, writes auth.json, takes the shared
         # store's file lock and reseeds the credential pool: a lock timeout or a read-only home
@@ -363,8 +363,8 @@ def run_sign_in(
         return
 
     yield Completed(
-        email=_account_email(account_state, handoff.account_email),
+        email=_account_email(account_state, next((v["account_email"] for v in handoff if v["account_email"]), None)),
         model=str(settled.get("model") or ""),
         model_changed=bool(settled.get("changed")),
-        handoff=_handoff_lines(handoff.results),
+        handoff=_handoff_lines(handoff),
         handoff_status=handoff_status)

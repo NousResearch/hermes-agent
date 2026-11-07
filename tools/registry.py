@@ -259,6 +259,11 @@ _CHECK_FN_TTL_SECONDS = 30.0
 # Grace window after a success in which a failure counts as a flake; kept short
 # so a genuinely-down backend is reflected within a couple of turns.
 _CHECK_FN_FAILURE_GRACE_SECONDS = 60.0
+# How long a list built on a grace-served True may be reused (``check_fn_verdict_window``). Inside the
+# grace window the tool is advertised whatever the re-probe returns, so reuse changes no result and only
+# bounds how often a failing probe re-runs: at most 12 per 60 s grace per memo key instead of one per
+# catalog read or tool_call, which a probe that fails by timing out would block for its full duration.
+_CHECK_FN_GRACE_REUSE_SECONDS = 5.0
 _CHECK_FN_CACHE_MAX = 512
 _check_fn_cache: dict[tuple[Callable, Optional[str]], tuple[float, bool]] = {}
 _check_fn_last_good: dict[tuple[Callable, Optional[str]], float] = {}
@@ -267,16 +272,42 @@ _check_fn_core_drop_warned: set[tuple[Callable, Optional[str]]] = set()  # once-
 _check_fn_cache_lock = threading.Lock()
 CHECK_FN_CACHE_BYPASS = ""
 _NO_CACHE_CHECK_FNS: set[Callable] = set()
-_BROWSER_IDENTITY_KEYS = (
-    "HERMES_SESSION_ID",
-    "HERMES_BROWSER_CONTROL_PRINCIPAL",
-    "HERMES_BROWSER_CONTROL_TRANSPORT_FAMILY")
+# Bumped by invalidate_check_fn_cache(): anything derived from the dropped verdicts is void.
+_check_fn_epoch = 0
+# Earliest expiry of the verdicts consulted inside check_fn_verdict_window() (None outside one).
+_verdict_expiry: ContextVar[Optional[list]] = ContextVar("check_fn_verdict_expiry", default=None)
 
 
 def no_cache_check_fn(fn: Callable) -> Callable:
     """Mark a local, config-backed availability check as uncached."""
     _NO_CACHE_CHECK_FNS.add(fn)
     return fn
+
+
+def check_fn_cache_epoch() -> int:
+    """Changes whenever ``invalidate_check_fn_cache()`` drops the cached verdicts."""
+    return _check_fn_epoch
+
+
+@contextmanager
+def check_fn_verdict_window():
+    """Yield a one-item list holding the earliest expiry (``time.monotonic``) of the cached
+    ``check_fn`` verdicts consulted inside the block, ``inf`` when none was. A result filtered on
+    those verdicts must not be reused past it: reusing it would replay a verdict this cache has
+    already expired. A grace-served True expires after ``_CHECK_FN_GRACE_REUSE_SECONDS``, never past
+    the end of its grace window. ``no_cache_check_fn`` probes are config-backed and set no expiry."""
+    sink = [float("inf")]
+    token = _verdict_expiry.set(sink)
+    try:
+        yield sink
+    finally:
+        _verdict_expiry.reset(token)
+
+
+def _note_verdict_expiry(deadline: float) -> None:
+    sink = _verdict_expiry.get()
+    if sink is not None and deadline < sink[0]:
+        sink[0] = deadline
 
 
 def _fn_label(fn: Callable) -> object:
@@ -296,23 +327,9 @@ def _prune_check_fn_caches(now: float) -> None:
 
 
 def check_fn_cache_scope() -> Optional[str]:
-    """Return the active profile key when availability is profile-scoped. Browser-controller
-    availability is request-bound (changes on every attach/detach), so a fully bound
-    browser-control request bypasses this cache AND model_tools' outer definition cache (same
-    sentinel) — one Browser session's live tools must not leak into another. Single-profile
+    """Return the active profile key when availability is profile-scoped. Single-profile
     processes keep the process-wide cache; a multiplex gateway installs a Hermes-home override
     per profile turn, so the canonical profile key is the boundary."""
-    try:
-        from gateway.session_context import get_session_env
-        if all(str(get_session_env(k, "") or "").strip() for k in _BROWSER_IDENTITY_KEYS):
-            # api_server binds a server-derived principal + transport family on EVERY request, so
-            # identity-present != controller-attached; only bypass when the extension-control
-            # feature is actually on (#79047).
-            from gateway.browser_control_broker import browser_control_enabled
-            if browser_control_enabled():
-                return CHECK_FN_CACHE_BYPASS
-    except Exception:
-        pass
     try:
         from agent.secret_scope import serves_routed_profile
         from hermes_constants import get_hermes_home_override
@@ -370,6 +387,7 @@ def _check_fn_cached(fn: Callable) -> bool:
         _prune_check_fn_caches(now)  # leaves only entries within TTL
         cached = _check_fn_cache.get(cache_key)
         if cached is not None:
+            _note_verdict_expiry(cached[0] + _CHECK_FN_TTL_SECONDS)
             return cached[1]
     exc_info = None
     try:
@@ -381,16 +399,21 @@ def _check_fn_cached(fn: Callable) -> bool:
         value, outcome, exc_info = False, "raised", exc
     # Resolved outside the cache lock: the registry snapshot takes its own lock.
     core_dropped = sorted(_core_tools_gated_by(fn)) if not value else []
+    # Stamped at completion: a probe that fails by timing out has spent its timeout, and a window
+    # measured from its start would already be over when it returns, so every read would re-probe.
+    now = time.monotonic()
     with _check_fn_cache_lock:
         _prune_check_fn_caches(now)
         if value:
             _check_fn_last_good[cache_key] = now
             _check_fn_ever_good.add(cache_key)
             _check_fn_cache[cache_key] = (now, True)
+            _note_verdict_expiry(now + _CHECK_FN_TTL_SECONDS)
             return True
         last_good = _check_fn_last_good.get(cache_key)
         if last_good is not None and now - last_good < _CHECK_FN_FAILURE_GRACE_SECONDS:
-            # Recent success → flake: serve last-good True, do NOT cache (next call re-probes).
+            # Recent success → flake: serve last-good True, do NOT cache (next direct check re-probes).
+            _note_verdict_expiry(min(now + _CHECK_FN_GRACE_REUSE_SECONDS, last_good + _CHECK_FN_FAILURE_GRACE_SECONDS))
             logger.warning(
                 "check_fn %s failed (%s) within %.0fs of last success; "
                 "treating as transient and keeping tool(s) available",
@@ -417,6 +440,7 @@ def _check_fn_cached(fn: Callable) -> bool:
                 "check_fn %s %s; dependent tools will be unavailable this turn", _fn_label(fn), outcome,
                 exc_info=exc_info)
         _check_fn_cache[cache_key] = (now, False)
+        _note_verdict_expiry(now + _CHECK_FN_TTL_SECONDS)
         return False
 
 
@@ -439,7 +463,9 @@ def _memo_check(fn: Callable, memo: dict[Callable, bool]) -> bool:
 
 def invalidate_check_fn_cache() -> None:
     """Drop all cached ``check_fn`` results (after config changes like ``hermes tools enable``)."""
+    global _check_fn_epoch
     with _check_fn_cache_lock:
+        _check_fn_epoch += 1
         _check_fn_cache.clear()
         _check_fn_last_good.clear()
         _check_fn_ever_good.clear()

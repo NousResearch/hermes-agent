@@ -295,8 +295,13 @@ function SearchResultsList({ hits }: { hits: SearchResultRow[] }) {
   )
 }
 
+// Error text is full of filename-shaped tokens (`README.md`, `agent.log`)
+// that the bare-domain branch of the shared linkifier mistakes for hosts, and
+// pretty links replace the displayed text with a fetched page title — either
+// way the painted headline stops matching the raw error string. Match the
+// system-message precedent: explicit URLs only, rendered verbatim.
 function LinkifiedText({ className, text }: { className?: string; text: string }) {
-  return <SharedLinkifiedText className={className} pretty text={cleanVisibleText(text)} />
+  return <SharedLinkifiedText className={className} explicitOnly pretty={false} text={cleanVisibleText(text)} />
 }
 
 function ToolTitle({

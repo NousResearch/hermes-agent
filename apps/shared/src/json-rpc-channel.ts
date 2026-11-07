@@ -133,6 +133,8 @@ export interface JsonRpcRequestChannelOptions {
    * against a crashed client (clarify blocks 3600s).
    */
   onRequestHandlerError?: (error: Error, request: { id: string; method: string; params: ServerRequestParams }) => void
+  /** An error frame with no request id (the backend's `-32700` parse-error reply): the owner logs it. */
+  onUncorrelatedError?: (error: JsonRpcGatewayError) => void
   requestIdPrefix?: string
   requestTimeoutMs?: number
   /**
@@ -170,6 +172,10 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 120_000
 export const DEFAULT_HEARTBEAT_INTERVAL_MS = 15_000
 export const DEFAULT_HEARTBEAT_DEADLINE_MS = 45_000
 const MAX_OUTSTANDING_PINGS = 8
+// A tick that lands this many intervals late ran behind a local stall (frozen
+// renderer, intensive throttling, OS suspend): the gap says nothing about the
+// peer, so the deadline is not judged on it alone.
+const LATE_TICK_INTERVALS = 1.5
 
 // Hoisted decoder: attach mode can drive high-frequency binary frames (tool
 // deltas, reasoning streams) and a fresh TextDecoder per message is avoidable
@@ -211,11 +217,13 @@ export class JsonRpcRequestChannel {
   private lastLivenessAt = 0
   /** The bound generation's backend counts `decline` as one client abstaining (see `ServerRequest.decline`). */
   private backendCountsDeclines = false
+  /** The bound generation's canonical owner admits `clarify_batch` on `prompt.submit` (`client.capabilities`). */
+  private backendClarifyBatch = false
   private readonly requestHandlers: ServerRequestHandler[] = []
   private readonly options: Required<
-    Omit<JsonRpcRequestChannelOptions, 'onEvent' | 'onHeartbeatFailure' | 'onRequestHandlerError' | 'onUnhandledRequest'>
+    Omit<JsonRpcRequestChannelOptions, 'onEvent' | 'onHeartbeatFailure' | 'onRequestHandlerError' | 'onUncorrelatedError' | 'onUnhandledRequest'>
   > &
-    Pick<JsonRpcRequestChannelOptions, 'onEvent' | 'onHeartbeatFailure' | 'onRequestHandlerError' | 'onUnhandledRequest'>
+    Pick<JsonRpcRequestChannelOptions, 'onEvent' | 'onHeartbeatFailure' | 'onRequestHandlerError' | 'onUncorrelatedError' | 'onUnhandledRequest'>
 
   constructor(options: JsonRpcRequestChannelOptions = {}) {
     this.options = {
@@ -227,6 +235,7 @@ export class JsonRpcRequestChannel {
       onEvent: options.onEvent,
       onHeartbeatFailure: options.onHeartbeatFailure,
       onRequestHandlerError: options.onRequestHandlerError,
+      onUncorrelatedError: options.onUncorrelatedError,
       onUnhandledRequest: options.onUnhandledRequest,
       requestIdPrefix: options.requestIdPrefix ?? 'r',
       requestTimeoutMs: options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
@@ -236,6 +245,11 @@ export class JsonRpcRequestChannel {
 
   get defaultRequestTimeoutMs(): number {
     return this.options.requestTimeoutMs
+  }
+
+  /** Whether the bound generation's canonical owner admits `clarify_batch` on `prompt.submit`. */
+  get clarifyBatch(): boolean {
+    return this.backendClarifyBatch
   }
 
   get connected(): boolean {
@@ -248,6 +262,7 @@ export class JsonRpcRequestChannel {
     this.transport = transport
     this.lastLivenessAt = Date.now()
     this.backendCountsDeclines = false
+    this.backendClarifyBatch = false
 
     // First on the socket, before the owner's own requests: the backend reads frames in order, and its
     // answer to the boot's first onboarding.state already depends on this. A call of its own, so a
@@ -449,10 +464,41 @@ export class JsonRpcRequestChannel {
     }
   }
 
+  /** Settle the ping or pending call this response answers; an unknown id is ignored. */
+  private settleResponse(id: GatewayRequestId, frame: JsonRpcFrame): void {
+    if (typeof id === 'string' && this.outstandingPings.delete(id)) {
+      this.lastLivenessAt = Date.now()
+
+      return
+    }
+
+    const call = this.pending.get(id)
+
+    if (!call) { return }
+    this.lastLivenessAt = Date.now()
+    this.clearPending(id)
+
+    if (frame.error) {
+      call.reject(jsonRpcErrorFromFrame(frame.error))
+
+      return
+    }
+
+    // Reconnect contract: `session.resume` / `session.activate` /
+    // `session.events.since` answer with `open_requests` — the server→
+    // client requests still waiting on this session. They cannot ride
+    // the event replay ring (they are not events), so they are re-
+    // delivered here, before the caller sees the result, over the very
+    // socket that owns them.
+    this.deliverOpenRequests(frame.result)
+    call.resolve(frame.result)
+  }
+
   /**
-   * Route one inbound frame: a response settles its pending call, an
-   * `event` notification reaches `onEvent`, a server→client request reaches
-   * the `onRequest` handlers. Returns the decoded frame so the owner can act
+   * Route one inbound frame: a response settles its pending call, an error
+   * frame with no request id reaches `onUncorrelatedError`, an `event`
+   * notification reaches `onEvent`, a server→client request reaches the
+   * `onRequest` handlers. Returns the decoded frame so the owner can act
    * on it too (mirror it, record seq, …) or `null` when the text was not
    * JSON or not a JSON object (`null`, a scalar).
    */
@@ -481,31 +527,13 @@ export class JsonRpcRequestChannel {
     }
 
     if (frame.id !== undefined && frame.id !== null) {
-      if (typeof frame.id === 'string' && this.outstandingPings.delete(frame.id)) {
-        this.lastLivenessAt = Date.now()
+      this.settleResponse(frame.id, frame)
 
-        return frame
-      }
+      return frame
+    }
 
-      const call = this.pending.get(frame.id)
-
-      if (call) {
-        this.lastLivenessAt = Date.now()
-        this.clearPending(frame.id)
-
-        if (frame.error) {
-          call.reject(jsonRpcErrorFromFrame(frame.error))
-        } else {
-          // Reconnect contract: `session.resume` / `session.activate` /
-          // `session.events.since` answer with `open_requests` — the server→
-          // client requests still waiting on this session. They cannot ride
-          // the event replay ring (they are not events), so they are re-
-          // delivered here, before the caller sees the result, over the very
-          // socket that owns them.
-          this.deliverOpenRequests(frame.result)
-          call.resolve(frame.result)
-        }
-      }
+    if (frame.error) {
+      this.options.onUncorrelatedError?.(jsonRpcErrorFromFrame(frame.error))
 
       return frame
     }
@@ -536,6 +564,7 @@ export class JsonRpcRequestChannel {
       .then(result => {
         if (this.transport === transport) {
           this.backendCountsDeclines = result?.declines_not_shown === true
+          this.backendClarifyBatch = result?.canonical_clarify_batch === true
         }
       })
       .catch(() => undefined)
@@ -562,6 +591,14 @@ export class JsonRpcRequestChannel {
     // throttling), so the previous ping's pong is ~60 s old at every tick;
     // a deadline on its age alone dropped every idle hidden socket.
     let lastPingAt = 0
+    let lastTickAt = Date.now()
+    let previousTickLate = false
+    // One probe per silence episode: a one-off late tick (an on-time tick, then
+    // a stall) cannot tell local suspension from a dead peer, so it re-probes
+    // once instead of dropping a socket whose pong is still queued behind the
+    // stall. Steady throttling makes every tick late; that is not a stall, and
+    // its dead-socket detection stays two throttled ticks.
+    let graceProbeSent = false
 
     this.heartbeatTimer = setInterval(() => {
       if (this.transport !== transport) {
@@ -569,11 +606,26 @@ export class JsonRpcRequestChannel {
       }
 
       const now = Date.now()
+      const late = now - lastTickAt >= this.options.heartbeatIntervalMs * LATE_TICK_INTERVALS
+      const stalled = late && !previousTickLate
 
-      if (lastPingAt > this.lastLivenessAt && now - this.lastLivenessAt >= this.options.heartbeatDeadlineMs) {
-        this.failHeartbeat(new Error('WebSocket heartbeat acknowledgement timed out'))
+      lastTickAt = now
+      previousTickLate = late
 
-        return
+      const unanswered = lastPingAt > this.lastLivenessAt
+
+      if (!unanswered) {
+        graceProbeSent = false
+      }
+
+      if (unanswered && now - this.lastLivenessAt >= this.options.heartbeatDeadlineMs) {
+        if (!stalled || graceProbeSent) {
+          this.failHeartbeat(new Error('WebSocket heartbeat acknowledgement timed out'))
+
+          return
+        }
+
+        graceProbeSent = true
       }
 
       const id = `heartbeat-${++this.heartbeatSequence}`

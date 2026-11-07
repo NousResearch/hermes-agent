@@ -37,7 +37,6 @@ def _make_runner():
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner._session_model_overrides = {}
-    runner._session_reasoning_overrides = {}
     runner._pending_model_notes = {}
     runner._background_tasks = set()
 
@@ -87,8 +86,8 @@ async def test_new_command_only_clears_own_session():
         "base_url": "",
         "api_mode": "anthropic",
     }
-    runner._session_reasoning_overrides[session_key] = {"enabled": True, "effort": "high"}
-    runner._session_reasoning_overrides[other_key] = {"enabled": True, "effort": "low"}
+    runner._session_state(session_key).conversation.reasoning_override = {"enabled": True, "effort": "high"}
+    runner._session_state(other_key).conversation.reasoning_override = {"enabled": True, "effort": "low"}
     runner._pending_model_notes[session_key] = "[Note: switched to gpt-4o.]"
     runner._pending_model_notes[other_key] = "[Note: switched to claude-sonnet-4-6.]"
 
@@ -96,26 +95,7 @@ async def test_new_command_only_clears_own_session():
 
     assert session_key not in runner._session_model_overrides
     assert other_key in runner._session_model_overrides
-    assert session_key not in runner._session_reasoning_overrides
-    assert other_key in runner._session_reasoning_overrides
+    assert runner._session_state(session_key).conversation.reasoning_override is None
+    assert runner._session_state(other_key).conversation.reasoning_override is not None
     assert session_key not in runner._pending_model_notes
     assert other_key in runner._pending_model_notes
-
-
-@pytest.mark.asyncio
-async def test_new_command_drops_the_sessions_delegation_backend_override():
-    """A ``/delegation <mode>`` pick is session-scoped like ``/model``: /new starts the chat on config.yaml's backend
-    (the route key survives /new), and other chats keep theirs."""
-    from agent.delegation_backends import get_session_backend, set_session_backend
-
-    runner = _make_runner()
-    session_key = build_session_key(_make_source())
-    set_session_backend(session_key, "default")
-    set_session_backend("other_session_key", "default")
-    try:
-        await runner._handle_reset_command(_make_event("/new"))
-        assert get_session_backend(session_key) is None
-        assert get_session_backend("other_session_key") == "default"
-    finally:
-        set_session_backend(session_key, None)
-        set_session_backend("other_session_key", None)

@@ -333,6 +333,7 @@ def test_download_short_of_server_length_errors_and_cleans_up(client, monkeypatc
             requests.append(req.headers.get('Range'))
             return super().open(req, timeout)
     monkeypatch.setattr("pm.downloader._OPENER", Truncated(b"not the real body", content_length=32))
+    monkeypatch.setattr("pm.downloader.Download._wait_retry", lambda self, seconds: None)
     destination = models_dir() / 'truncated.gguf'
     monkeypatch.setattr(lm, '_download_plan', lambda *_: [('https://fixture.invalid/model', destination, 32)])
     monkeypatch.setattr('pm.paths.partials_root', lambda: tmp_path / 'partials')

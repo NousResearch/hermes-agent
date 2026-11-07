@@ -1,4 +1,4 @@
-"""External-tool checks for hermes doctor: terminal backends, git/rg, Node + agent-browser, npm audit, tool availability.
+"""External-tool checks for hermes doctor: terminal backends, git/rg, Node + Chromium, pnpm/npm audit, tool availability.
 Split out of ``hermes_cli/doctor.py``, which re-exports every name so ``hermes_cli.doctor.<name>`` keeps resolving (and monkeypatching)."""
 
 from __future__ import annotations
@@ -80,12 +80,6 @@ def _run_ok(cmd: list[str], timeout: int, **kw) -> bool:
         return subprocess.run(cmd, capture_output=True, timeout=timeout, **kw).returncode == 0  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **kwargs (check may arrive through it); an explicit check=False would raise TypeError
     except subprocess.TimeoutExpired:
         return False
-
-
-def _termux_browser_setup_steps(node_installed: bool) -> list[str]:
-    steps = [] if node_installed else ["pkg install nodejs"]
-    steps += ["npm install -g agent-browser", "agent-browser install"]
-    return [f"{i}) {step}" for i, step in enumerate(steps, 1)]
 
 
 _TERMUX_INSTALL_ALL_FALLBACK_NOTES = (
@@ -317,70 +311,51 @@ def _check_terminal_backend(should_fix: bool, f: Finding) -> None:
         _check_plugin_backend(terminal_env, f.issues)
 
 
-def _check_agent_browser(should_fix: bool) -> bool:
-    """Read the runtime's installed selection; only --fix may acquire through PM."""
-    try:
-        from tools.browser_tool_install import _find_agent_browser
-        resolved = _find_agent_browser(validate=False)
-    except Exception:
-        resolved = None
-    if not resolved and should_fix and not _is_termux():
+def _chromium_not_needed_reason() -> str:
+    """Why this profile's config needs no local Chromium (``""`` when it does). Config-only, no I/O: a CDP
+    override attaches to the user's browser, Lightpanda is its own engine, and a cloud provider hosts one."""
+    from hermes_cli.config import cfg_get, load_config_readonly
+
+    config = load_config_readonly()
+    if os.environ.get("BROWSER_CDP_URL") or cfg_get(config, "browser", "cdp_url"):
+        return "a CDP override is set"
+    if str(cfg_get(config, "browser", "engine") or "").strip().lower() == "lightpanda":
+        return "browser.engine is lightpanda"
+    provider = str(cfg_get(config, "browser", "cloud_provider") or "").strip().lower()
+    return f"cloud provider {provider} is selected" if provider not in ("", "local") else ""
+
+
+def _check_chromium(should_fix: bool) -> None:
+    """The Chromium browser_exec launches for a local session (``chromium_executable()``: browser.executable_path,
+    pm, the Docker image's baked build, a Termux system build). Only --fix may acquire it through PM."""
+    import pm
+    from hermes_cli.browser_runtime import chromium_executable, chromium_missing_hint
+
+    found = chromium_executable()
+    if not found and should_fix and not _is_termux():
         try:
-            import pm
-            from tools.browser_tool_install import _find_agent_browser
-            pm.ensure("agent-browser", explicit=True)
-            resolved = _find_agent_browser(validate=False)
-        except Exception as exc:
-            check_warn("agent-browser install failed", f"({exc})")
-    if resolved:
-        check_ok("agent-browser", f"({resolved})")
-        return True
-    if _is_termux():
-        _termux_browser_hints("agent-browser is not installed (expected in the tested Termux path)",
-                              "Install it manually later with: npm install -g agent-browser && agent-browser install", node_installed=True)
+            pm.ensure("chromium", explicit=True)
+        except (RuntimeError, OSError) as exc:  # pm.InstallError, a download or worker failure
+            check_warn("Chromium install failed", f"({exc})")
+        found = chromium_executable()
+    if found:
+        check_ok("Chromium", f"({found})")
+    elif reason := _chromium_not_needed_reason():
+        check_info(f"Chromium not installed (not needed: {reason})")
     else:
-        check_warn("agent-browser not installed", "(run: hermes pm install agent-browser)")
-    return False
-
-
-def _termux_browser_hints(*lines: str, node_installed: bool) -> None:
-    for line in lines:
-        check_info(line)
-    check_info("Termux browser setup:")
-    for step in _termux_browser_setup_steps(node_installed=node_installed):
-        check_info(step)
-
-
-def _check_chromium() -> None:
-    """Playwright Chromium presence, using the exact predicate browser_tool uses to hide browser_* tools.
-
-    Lazy import: browser_tool is ~150KB; an import failure is a separate bug surfaced elsewhere. Camofox, a
-    CDP override, a cloud provider, or Lightpanda all bypass the local Chromium requirement (no warning).
-    """
-    try:
-        from tools.browser_tool import _is_camofox_mode
-        from tools.browser_tool_cloud import _get_cloud_provider
-        from tools.browser_tool_cdp import _get_cdp_override_raw
-        from tools.browser_tool_install import _chromium_installed
-        from tools.browser_tool_lightpanda_fallback import _using_lightpanda_engine
-    except Exception:
-        return
-    if _is_camofox_mode() or bool(_get_cdp_override_raw()) or _get_cloud_provider() is not None or _using_lightpanda_engine():
-        return
-    if not check_bool(_chromium_installed(), ("Playwright Chromium", "(browser engine)"),
-                      ("Playwright Chromium not installed", "(browser_* tools will be hidden from the agent)")):
-        check_info("Install with: hermes pm install chromium")
+        check_warn("Chromium not installed", "(browser_exec cannot start a local browser)")
+        check_info(chromium_missing_hint())
 
 
 def _check_lightpanda() -> None:
-    """Lightpanda engine (browser.engine / AGENT_BROWSER_ENGINE); independent of Node since Browser Use mode spawns ``lightpanda serve`` itself."""
+    """Lightpanda engine (browser.engine); browser_exec spawns ``lightpanda serve`` itself."""
     try:
-        from tools.browser_tool_lightpanda_fallback import _using_lightpanda_engine, lightpanda_engine_status
-        from tools.browser_lightpanda import LIGHTPANDA_INSTALL_HINT, find_lightpanda_binary
-    except Exception:
+        from tools.browser_lightpanda import (
+            LIGHTPANDA_INSTALL_HINT, find_lightpanda_binary, lightpanda_engine_status, using_lightpanda_engine)
+    except ImportError:  # a broken browser module is surfaced by the tool-availability rows
         return
-    # _using_lightpanda_engine() is a cached config read — a failure there is exceptional, not hidden.
-    if not _using_lightpanda_engine():
+    # using_lightpanda_engine() is a cached config read — a failure there is exceptional, not hidden.
+    if not using_lightpanda_engine():
         return
     try:
         used, reason = lightpanda_engine_status()
@@ -396,17 +371,15 @@ def _check_lightpanda() -> None:
 
 @doctor_check()
 def _check_node_and_browser(should_fix: bool, f: Finding) -> None:
-    """Node.js, agent-browser resolution, Playwright Chromium, Lightpanda engine."""
+    """Node.js, the Chromium browser_exec launches, Lightpanda engine."""
     # Only PM's Node counts; Termux's APT distribution is the one that relies on `pkg install nodejs`.
     if _pm_tool_path("node") or (_is_termux() and _safe_which("node")):
         check_ok("Node.js")
     elif _is_termux():
-        _termux_browser_hints("Node.js not found (browser tools are optional in the tested Termux path)",
-                              "Install Node.js on Termux with: pkg install nodejs", node_installed=False)
+        check_info("Node.js not found (optional; install on Termux with: pkg install nodejs)")
     else:
-        check_warn("Node.js not found", "(optional; PM agent-browser is a native executable)")
-    if _check_agent_browser(should_fix) and not _is_termux():
-        _check_chromium()
+        check_warn("Node.js not found", "(optional; run: hermes pm install node)")
+    _check_chromium(should_fix)
     _check_lightpanda()
 
 
@@ -414,29 +387,34 @@ def _plural(n: int) -> str:
     return "vulnerability" if n == 1 else "vulnerabilities"
 
 
-def _audit_one(npm_bin: str, npm_dir, label: str, audit_extra: list[str], manual_issues: list[str]) -> None:
-    """Run one `npm audit --json` and report; any failure is silently skipped.
+def _audit_one(tool: str, cwd, label: str, audit_extra: list[str], manual_issues: list[str]) -> None:
+    """Run one `pnpm audit --json` / `npm audit --json` and report; any failure is silently skipped.
 
     Every row here audits a tree whose versions come from a COMMITTED lockfile
-    (`npm ci` in `_run_npm_install_deterministic` reifies exactly that state on
-    every `hermes update`), so a local `npm audit fix` never persists — the next
-    update's deterministic install restores the pinned (vulnerable) versions and
-    the finding reappears. The durable remedy in every case is a lockfile bump
-    on main (update `package-lock.json` and ship it); the doctor therefore never
-    prescribes a local mutating fix command. See #116774.
+    (the frozen install every `hermes update` runs reifies exactly that state),
+    so a local `audit --fix` never persists — the next update's deterministic
+    install restores the pinned (vulnerable) versions and the finding reappears.
+    The durable remedy in every case is a lockfile bump on main (update
+    `pnpm-lock.yaml` / `package-lock.json` and ship it); the doctor therefore
+    never prescribes a local mutating fix command. See #116774.
     """
     import json
     from hermes_constants import with_hermes_node_path
+    from pm.packages import pnpm_env
+    env = with_hermes_node_path()
+    if audit_extra:  # pnpm rows: its state and metadata cache stay Hermes-owned, not in the user's XDG dirs
+        env = pnpm_env(env)
     try:
         # Resolved absolute path so Windows can execute npm.cmd (CreateProcessW can't run bare .cmd names).
-        audit_result = subprocess.run([npm_bin, "audit", "--json", *audit_extra], cwd=str(npm_dir),
+        audit_result = subprocess.run([tool, "audit", "--json", *audit_extra], cwd=str(cwd),
                                       capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30,
-                                      env=with_hermes_node_path(), check=False)
-        audit_data = json.loads(audit_result.stdout) if audit_result.stdout.strip() else {}
-        counts = audit_data.get("metadata", {}).get("vulnerabilities", {})
+                                      env=env, check=False)
+        # A failed audit (no lockfile, registry without the audit endpoint) prints its error to stderr
+        # or as JSON without counts: never report that as "no known vulnerabilities".
+        counts = json.loads(audit_result.stdout)["metadata"]["vulnerabilities"]
         critical, high, moderate = (counts.get(k, 0) for k in ("critical", "high", "moderate"))
         total = critical + high + moderate
-        workspace_scoped = bool(audit_extra) and audit_extra[0] == "--workspace"
+        workspace_scoped = bool(audit_extra) and audit_extra[-1] != "."
         if total == 0:
             check_ok(f"{label} deps", "(no known vulnerabilities)")
         elif critical > 0 or high > 0:
@@ -444,10 +422,10 @@ def _audit_one(npm_bin: str, npm_dir, label: str, audit_extra: list[str], manual
                       " (the next `hermes update` reinstalls from the committed lockfile)")
             check_warn(f"{label} deps", f"({critical} critical, {high} high, {moderate} moderate — {remedy})")
             if workspace_scoped:
-                check_info("  ^ workspace audit includes runtime and build dependencies; if manual npm remediation "
-                           "errors with an arborist crash it's a known npm bug — clears via a lockfile bump")
+                check_info("  ^ workspace audit includes runtime and build dependencies")
             else:
-                check_info("  ^ runtime dependency tree; report/pin the fix in package-lock.json — see #116774")
+                lockfile = "pnpm-lock.yaml" if audit_extra else "package-lock.json"
+                check_info(f"  ^ runtime dependency tree; report/pin the fix in {lockfile} — see #116774")
             manual_issues.append(
                 f"{label} has {total} npm {_plural(total)}; wait for an upstream lockfile fix, then update "
                 "your installation (Docker: pull a rebuilt image; recreating the same image restores the same dependencies)"
@@ -460,40 +438,36 @@ def _audit_one(npm_bin: str, npm_dir, label: str, audit_extra: list[str], manual
 
 @doctor_check()
 def _check_npm_audit(should_fix: bool, f: Finding) -> None:
-    """npm audit per Node package tree (root, web/ui-tui workspaces, WhatsApp bridge).
+    """pnpm audit per installed workspace (root, web, ui-tui); npm audit for the WhatsApp bridge.
 
-    PROJECT_ROOT is audited with --workspaces=false so the apps/* glob (Electron, node-pty, ...) is never
-    resolved for a routine check; web and ui-tui via --workspace. The WhatsApp bridge may live under a writable
-    HERMES_HOME mirror rather than the (possibly read-only) Docker install tree, hence the shared resolver.
+    The workspaces are audited one --filter each, so the desktop app's tree (Electron, node-pty, ...) is
+    never part of a routine check (#38772). The WhatsApp bridge may live under a writable HERMES_HOME
+    mirror rather than the (possibly read-only) Docker install tree, hence the shared resolver.
     """
     from hermes_cli.doctor import PROJECT_ROOT
     staged = _pm_tool_path("npm")
     npm_bin = str(staged) if staged else (_safe_which("npm") if _is_termux() else None)
-    if npm_bin:
-        try:
-            # Each entry: (cwd, label, extra_audit_args) PROJECT_ROOT is audited with --workspaces=false so
-            # that the apps/* glob (which pulls in Electron, node-pty, etc.) is never resolved for a routine
-            # security check. The web and ui-tui workspaces are audited separately via --workspace flags.
-            # See #38772. The WhatsApp bridge may live under a writable HERMES_HOME mirror instead of the
-            # (possibly read-only) install tree in Docker — resolve it through the shared helper so we audit
-            # the dir that actually holds node_modules. See #49561.
-            from gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
-            whatsapp_bridge_dir = resolve_whatsapp_bridge_dir()
-        except Exception:
-            whatsapp_bridge_dir = PROJECT_ROOT / "scripts" / "whatsapp-bridge"
-        for npm_dir, label, audit_extra in (
-            # NOT agent-browser: it is now a pm-managed precompiled binary
-            # (see AgentBrowser in pm/packages.py) with no node_modules/lockfile
-            # of its own to audit. This row is the root package.json itself
-            # (js-yaml, semver, eslint tooling). See #122223.
-            (PROJECT_ROOT, "Root npm package", ["--workspaces=false"]),
-            (PROJECT_ROOT, "web workspace", ["--workspace", "web"]),
-            (PROJECT_ROOT, "ui-tui workspace", ["--workspace", "ui-tui"]),
-            (whatsapp_bridge_dir, "WhatsApp bridge", []),
-        ):
-            # Workspace-scoped audits check the root node_modules; standalone dirs check their own.
-            if ((PROJECT_ROOT if audit_extra else npm_dir) / "node_modules").exists():
-                _audit_one(npm_bin, npm_dir, label, audit_extra, f.manual_issues)
+    # Termux has no pnpm: nothing installs the JS workspaces on device.
+    pnpm_bin = _pm_tool_path("pnpm")
+    try:
+        # The WhatsApp bridge may live under a writable HERMES_HOME mirror instead of the (possibly
+        # read-only) install tree in Docker — resolve it through the shared helper so we audit the dir
+        # that actually holds node_modules. See #49561.
+        from gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
+        whatsapp_bridge_dir = resolve_whatsapp_bridge_dir()
+    except Exception:
+        whatsapp_bridge_dir = PROJECT_ROOT / "scripts" / "whatsapp-bridge"
+    for tool, tree, label, audit_extra in (
+        # The root package.json itself (js-yaml, semver, eslint tooling). See #122223.
+        (pnpm_bin, PROJECT_ROOT, "Root npm package", ["--filter", "."]),
+        # `{./X}...`: the workspace and the sibling workspaces it depends on (apps/shared, hermes-ink).
+        (pnpm_bin, PROJECT_ROOT / "web", "web workspace", ["--filter", "{./web}..."]),
+        (pnpm_bin, PROJECT_ROOT / "ui-tui", "ui-tui workspace", ["--filter", "{./ui-tui}..."]),
+        (npm_bin, whatsapp_bridge_dir, "WhatsApp bridge", []),
+    ):
+        # Only installed trees: pnpm links each installed workspace's own node_modules.
+        if tool and (tree / "node_modules").exists():
+            _audit_one(str(tool), PROJECT_ROOT if audit_extra else tree, label, audit_extra, f.manual_issues)
     if _is_termux():
         check_info("Termux compatibility fallbacks:")
         for note in _TERMUX_INSTALL_ALL_FALLBACK_NOTES:
@@ -528,3 +502,15 @@ def _check_tool_availability(should_fix: bool, f: Finding) -> None:
     api_disabled = _missing_api_key_toolsets_for_summary(unavailable)
     if api_disabled or any(status != "ok" for status, _, _ in web_rows):
         f.issues.append("Run 'hermes setup' to configure missing API keys for full tool access")
+    _warn_partially_stripped_toolsets(f)
+
+
+def _warn_partially_stripped_toolsets(f: Finding) -> None:
+    """An enabled CLI toolset that agent.disabled_toolsets cuts down still reads as available above;
+    name the missing tools and the entry removing them (#134593)."""
+    from hermes_cli.config import load_config
+    from hermes_cli.tools_config import _get_platform_tools, toolsets_partially_stripped
+    config = load_config() or {}
+    for ts, (tools, by, hint) in toolsets_partially_stripped(config, _get_platform_tools(config, "cli")).items():
+        check_warn(f"{ts} (partly disabled)", f"({', '.join(tools)} removed by agent.disabled_toolsets: {', '.join(by)})")
+        f.issues.append(f"{ts}: {hint[0].upper()}{hint[1:]} {', '.join(tools)}")

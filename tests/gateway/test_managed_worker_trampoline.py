@@ -18,6 +18,7 @@ from types import SimpleNamespace
 import psutil
 import pytest
 
+from hermes_cli.process_identity import worker_birth
 from hermes_state import SessionDB
 from hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input
 from tests.gateway.fixtures.local_recovery_probe import child_env, daemon, rpc, websocket
@@ -31,7 +32,7 @@ LAUNCHER = ('import subprocess, sys\n'
 
 def _hello(pid):
     proc = psutil.Process(pid)
-    return {'type': 'hello', 'pid': pid, 'birth': proc.create_time(),
+    return {'type': 'hello', 'pid': pid, 'birth': worker_birth(proc),
             'ancestors': [p.pid for p in proc.parents()[:4]]}
 
 
@@ -63,7 +64,7 @@ def test_owner_binds_reservation_to_verified_descendant_of_the_handle_only(tmp_p
                 reserve_admission_worker(authority, hello=_hello(os.getpid()), **kwargs)
             assert db._read_one('SELECT COUNT(*) FROM worker_executions')[0] == 0
             scope = reserve_admission_worker(authority, hello=_hello(real), **kwargs)
-            assert (scope['pid'], scope['birth']) == (real, psutil.Process(real).create_time())
+            assert (scope['pid'], scope['birth']) == (real, worker_birth(psutil.Process(real)))
             assert scope['pid'] != launcher.pid
     finally:
         # The real interpreter first, while it is still the launcher's child: killing the launcher

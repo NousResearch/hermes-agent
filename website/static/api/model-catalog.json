@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-10-17T11:22:42Z",
+  "updated_at": "2026-10-26T19:00:43Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -86,6 +86,10 @@
         },
         {
           "id": "openai/gpt-6.1-sol-pro",
+          "description": ""
+        },
+        {
+          "id": "openai/gpt-6.1-terra",
           "description": ""
         },
         {
@@ -178,7 +182,8 @@
         },
         {
           "id": "z-ai/glm-5.3",
-          "description": ""
+          "description": "default",
+          "default": true
         },
         {
           "id": "z-ai/glm-5.3-flash",
@@ -190,8 +195,7 @@
         },
         {
           "id": "z-ai/glm-5.2",
-          "description": "default",
-          "default": true
+          "description": ""
         },
         {
           "id": "xiaomi/mimo-v2.6-pro",
@@ -365,6 +369,9 @@
           "id": "openai/gpt-6.1-sol-pro"
         },
         {
+          "id": "openai/gpt-6.1-terra"
+        },
+        {
           "id": "openai/gpt-6-sol"
         },
         {
@@ -431,7 +438,8 @@
           "id": "minimax/minimax-m3"
         },
         {
-          "id": "z-ai/glm-5.3"
+          "id": "z-ai/glm-5.3",
+          "default": true
         },
         {
           "id": "z-ai/glm-5.3-flash"
@@ -440,8 +448,7 @@
           "id": "z-ai/glm-5.3-flashx"
         },
         {
-          "id": "z-ai/glm-5.2",
-          "default": true
+          "id": "z-ai/glm-5.2"
         },
         {
           "id": "xiaomi/mimo-v2.6-pro"

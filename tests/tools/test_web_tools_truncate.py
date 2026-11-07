@@ -128,3 +128,13 @@ def test_binary_payload_is_refused_but_prose_with_short_signature_prefix_passes(
     assert results[2]["content"] == "BMW reviews are fine"
     assert results[3]["content"] == "# hi"
 
+
+
+def test_origin_error_page_keeps_its_error_and_stays_inside_the_budget():
+    body = "\n".join(f"error page line {i}" for i in range(4000))
+    results = [{"url": "https://example.com/forbidden", "content": body, "raw_content": body,
+                "error": "HTTP 403 from origin: Forbidden"}]
+    web_tools_truncate._truncate_results(results, 2000, {"pages_truncated": 0, "truncation_metrics": []})
+    assert results[0]["error"] == "HTTP 403 from origin: Forbidden"
+    assert "error page line 0" in results[0]["content"]
+    assert len(results[0]["content"]) < len(body) // 4

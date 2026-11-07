@@ -43,6 +43,7 @@ import {
   buildTextSendPayload,
   createBoundedMessageStore,
   createQuotedMediaCache,
+  deliveryStatusEvent,
   extractBridgeEvent,
   getMessageContent,
   inboundReadReceiptKeys,
@@ -375,6 +376,19 @@ function rememberSentId(id) {
   recentlySentIds.remember(id);
 }
 
+// Receipts get their own bound: one reply to a large group brings a receipt per member, and in the
+// shared queue that burst evicted inbound messages still waiting for the next poll.
+const deliveryQueue = [];
+
+function enqueueDeliveryStatus(args) {
+  const event = deliveryStatusEvent({ ...args, isOwnSend: id => recentlySentIds.has(id) });
+  if (!event) return;
+  deliveryQueue.push(event);
+  if (deliveryQueue.length > MAX_QUEUE_SIZE) {
+    deliveryQueue.shift();
+  }
+}
+
 let sock = null;
 let connectionState = 'disconnected';
 
@@ -469,8 +483,13 @@ async function startSocket() {
     }
   });
 
+  sock.ev.on('message-receipt.update', (receipts) => {
+    for (const { key, receipt } of receipts || []) enqueueDeliveryStatus({ key, receipt });
+  });
+
   sock.ev.on('messages.update', async (updates) => {
     for (const { key, update } of updates || []) {
+      if (update?.status !== undefined) enqueueDeliveryStatus({ key, update });
       if (!update?.pollUpdates) continue;
       const pollCreationId = key?.id || update.pollUpdates?.[0]?.pollCreationMessageKey?.id;
       const pollCreation = messageStore.get(pollCreationId);
@@ -833,7 +852,7 @@ app.use((req, res, next) => {
 
 // Poll for new messages (long-poll style)
 app.get('/messages', (req, res) => {
-  const msgs = messageQueue.splice(0, messageQueue.length);
+  const msgs = messageQueue.splice(0, messageQueue.length).concat(deliveryQueue.splice(0, deliveryQueue.length));
   res.json(msgs);
 });
 
@@ -1156,7 +1175,7 @@ if (PAIR_ONLY) {
     process.exit(1);
   });
 } else {
-  app.listen(PORT, '127.0.0.1', () => {
+  const server = app.listen(PORT, '127.0.0.1', () => {
     console.log(`🌉 WhatsApp bridge listening on port ${PORT} (mode: ${WHATSAPP_MODE})`);
     console.log(`📁 Session stored in: ${SESSION_DIR}`);
     if (ALLOWED_USERS.size > 0) {
@@ -1175,5 +1194,15 @@ if (PAIR_ONLY) {
     }
     console.log();
     scheduleReconnect(0);
+  });
+  // Without this handler an EADDRINUSE (an old bridge that has not released the port yet) crashes
+  // with a bare stack trace; the adapter's reconnect loop retried blind. Fail loudly and fast.
+  server.on('error', (err) => {
+    if (err && err.code === 'EADDRINUSE') {
+      console.error(`FATAL: port ${PORT} already in use on 127.0.0.1 — another bridge or process is listening there.`);
+    } else {
+      console.error(`FATAL: bridge HTTP server error: ${err && err.message ? err.message : err}`);
+    }
+    process.exit(1);
   });
 }

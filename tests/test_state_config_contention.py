@@ -18,37 +18,21 @@ from utils import atomic_yaml_write
 import hermes_state_wal as wal
 
 
-def test_partial_config_import_cannot_invert_config_and_module_locks(tmp_path):
+def test_config_import_and_provider_env_catalog_never_read_config(tmp_path):
+    """Importing hermes_cli.config and building the provider part of OPTIONAL_ENV_VARS list no
+    providers through discovery (which reads config), so neither can take part in a config/WAL
+    lock-order cycle with a thread opening a database."""
     script = textwrap.dedent(
         """
         from pathlib import Path
-        from threading import Event, Thread
-        import os, sqlite3, sys
+        from threading import Thread
+        import os, sqlite3
 
         import providers
         import hermes_state_wal as wal
 
-        partial_ready = Event()
-        opener_inside_resolve = Event()
-        importer_load_returned = Event()
-        original_resolve = wal.resolve_journal_mode
-
-        def controlled_list_providers():
-            module = sys.modules["hermes_cli.config"]
-            assert module.__spec__._initializing
-            assert hasattr(module, "_CONFIG_LOCK") and hasattr(module, "load_config")
-            partial_ready.set()
-            assert opener_inside_resolve.wait(5)
-            module.load_config()
-            importer_load_returned.set()
-            return []
-
-        def controlled_resolve():
-            opener_inside_resolve.set()
-            return original_resolve()
-
-        providers.list_providers = controlled_list_providers
-        wal.resolve_journal_mode = controlled_resolve
+        listed = []
+        providers.list_providers = lambda: listed.append(1) or []
         root = Path(os.environ["STATE_CONFIG_TEST_ROOT"]) / "cold-import"
         root.mkdir()
         os.environ["HOME"] = str(root)
@@ -61,22 +45,22 @@ def test_partial_config_import_cannot_invert_config_and_module_locks(tmp_path):
         def importer():
             import hermes_cli.config
             outcomes.append("import-returned")
+            assert "ANTHROPIC_API_KEY" in hermes_cli.config.OPTIONAL_ENV_VARS
+            outcomes.append("fill-returned")
 
         def opener():
             with sqlite3.connect(database) as connection:
                 outcomes.append(f"open:{wal.apply_wal_with_fallback(connection)}")
 
-        importing = Thread(target=importer)
-        opening = Thread(target=opener)
-        importing.start()
-        assert partial_ready.wait(5)
-        opening.start()
-        importing.join(5)
-        opening.join(5)
-        assert importer_load_returned.is_set()
-        assert not importing.is_alive() and not opening.is_alive(), outcomes
-        assert "import-returned" in outcomes
+        threads = [Thread(target=importer), Thread(target=opener)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(10)
+        assert not any(t.is_alive() for t in threads), outcomes
+        assert "import-returned" in outcomes and "fill-returned" in outcomes, outcomes
         assert any(value.startswith("open:") for value in outcomes)
+        assert listed == [], "the config import or the env catalog ran provider discovery"
         """
     )
     completed = subprocess.run(

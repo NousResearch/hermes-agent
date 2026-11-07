@@ -10090,7 +10090,7 @@
      "role": "user"
     }
    ],
-   "model": "gemini-3.1-pro",
+   "model": "gemini-3.1-pro-preview",
    "timeout": 1800.0,
    "tools": [
     {
@@ -10113,7 +10113,7 @@
     }
    ]
   },
-  "model": "gemini-3.1-pro",
+  "model": "gemini-3.1-pro-preview",
   "off": {
    "messages": [
     {
@@ -10148,7 +10148,7 @@
      "role": "user"
     }
    ],
-   "model": "gemini-3.1-pro",
+   "model": "gemini-3.1-pro-preview",
    "timeout": 1800.0,
    "tools": [
     {
@@ -10205,7 +10205,7 @@
      "role": "user"
     }
    ],
-   "model": "gemini-3.1-pro",
+   "model": "gemini-3.1-pro-preview",
    "timeout": 1800.0,
    "tools": [
     {

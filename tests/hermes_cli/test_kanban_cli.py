@@ -293,3 +293,18 @@ def test_run_slash_reclaim_running_task(kanban_home):
 # ---------------------------------------------------------------------------
 
 
+
+
+def test_kanban_list_not_status_filters_json(kanban_home):
+    """``--not-status`` is the CLI half of the negative filter; without it a board
+    review in a terminal still needs ``grep -v done``."""
+    live = None
+    with kbc.connect() as conn:
+        live = kb.create_task(conn, title="live card")
+        finished = kb.create_task(conn, title="finished card")
+        kb.complete_task(conn, finished, summary="done")
+
+    payload = json.loads(kc.run_slash("list --json --not-status done"))
+    ids = {row["id"] for row in payload}
+    assert live in ids
+    assert finished not in ids

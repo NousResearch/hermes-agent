@@ -131,4 +131,23 @@ describe('resolveDeepLinkAction', () => {
       params: { time: '08:00' }
     })
   })
+
+  it('opens a saved session only for a well-formed stored id, carrying the profile hint', () => {
+    expect(
+      resolveDeepLinkAction({ kind: 'session', name: '20260804_184317_5b179b', params: { profile: 'work' } })
+    ).toEqual({ type: 'open-session', sessionId: '20260804_184317_5b179b', profile: 'work' })
+    expect(resolveDeepLinkAction({ kind: 'session', name: '20260804_184317_5b179b', params: {} })).toEqual({
+      type: 'open-session',
+      sessionId: '20260804_184317_5b179b',
+      profile: null
+    })
+  })
+
+  it('drops a session link whose id is not the stored-session shape', () => {
+    expect(resolveDeepLinkAction({ kind: 'session', name: '../settings', params: {} })).toEqual({ type: 'ignore' })
+    expect(resolveDeepLinkAction({ kind: 'session', name: '', params: {} })).toEqual({ type: 'ignore' })
+    // The kind is external input: prototype keys never reach a resolver.
+    expect(resolveDeepLinkAction({ kind: 'toString', name: 'x', params: {} })).toEqual({ type: 'ignore' })
+    expect(resolveDeepLinkAction({ kind: '__proto__', name: 'x', params: {} })).toEqual({ type: 'ignore' })
+  })
 })

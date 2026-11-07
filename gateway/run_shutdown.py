@@ -198,6 +198,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             + self._active_cron_job_count()
             + self._active_api_run_count()
             + self._active_deferred_agent_worker_count()
+            + self._active_delegation_count()
         )
 
     @staticmethod
@@ -225,6 +226,23 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         """
         try:
             return self._running_cron_job_count()
+        except Exception:
+            return 0
+
+    def _active_delegation_count(self) -> int:
+        """In-flight background subagents (``delegate_task(background=true)``): daemon threads in this
+        process, tracked by ``tools.async_delegation`` and therefore outside ``_running_agents``; 0 if the
+        registry can't be read.
+
+        A killed background delegation permanently loses that task's real result — the next boot's
+        ``recover_abandoned_delegations`` can only deliver ``outcome unknown``. So, like cron, it must be
+        counted in the graceful-shutdown drain: without it the drain reports idle and the process exits,
+        killing a near-finished subagent mid-write. Best-effort: 0 when the module can't be imported
+        (a minimal test double for this class).
+        """
+        try:
+            from tools.async_delegation import active_count
+            return max(0, int(active_count()))
         except Exception:
             return 0
 
@@ -802,10 +820,11 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
 
     # Drain / interrupt
     def _drain_work_counts(self) -> tuple:
-        """``(agents, cron, api, deferred)`` the drain waits on; a managed-worker turn is a chat turn."""
+        """``(agents, cron, api, deferred, delegations)`` the drain waits on; a managed-worker turn is a chat turn."""
         return (
             self._running_agent_count() + managed_turn_count(self), self._active_cron_job_count(),
             self._active_api_run_count(), self._active_deferred_agent_worker_count(),
+            self._active_delegation_count(),
         )
 
     async def _drain_active_agents(
@@ -837,8 +856,11 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
 
         def _still_draining() -> bool:
             now = loop.time()
-            agents, cron, api, deferred = self._drain_work_counts()
-            return bool(((agents or deferred) and now < deadline) or ((cron or api) and now < cron_deadline))
+            agents, cron, api, deferred, delegations = self._drain_work_counts()
+            # A killed background delegation is a permanent loss of its result (recovered next boot only as
+            # ``outcome unknown``), so it rides the cron floor like cron/api, not the interactive deadline.
+            return bool(((agents or deferred) and now < deadline)
+                        or ((cron or api or delegations) and now < cron_deadline))
 
         # Both budgets at 0 = an expired deadline (loop unentered), so timed_out still comes from real state.
         while _still_draining():
@@ -1860,6 +1882,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         _cron_at_start = self._active_cron_job_count()
         _api_at_start = self._active_api_run_count()
         _deferred_at_start = ctx.deferred_count()
+        _deleg_at_start = self._active_delegation_count()
         # Cron floor clamped to the watchdog leash; getattr-guard for bare shutdown-path doubles.
         _cron_drain_cfg = getattr(self, "_cron_drain_timeout", DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT)
         # Under launchd the real leash is launchd's own exit timeout, not our watchdog
@@ -1871,11 +1894,11 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         _cron_timeout = resolve_cron_drain_budget(
             timeout, _cron_drain_cfg, watchdog_delay=_cron_leash, elapsed=ctx.elapsed(),
         )
-        if (_cron_at_start or _api_at_start) and _cron_timeout > timeout:
+        if (_cron_at_start or _api_at_start or _deleg_at_start) and _cron_timeout > timeout:
             logger.info(
-                "Shutdown drain: %d in-flight cron job(s), %d api_server run(s) — waiting up to "
-                "%.0fs for them (cron_drain_timeout=%.0fs, restart_drain_timeout=%.0fs)",
-                _cron_at_start, _api_at_start, _cron_timeout, _cron_drain_cfg, timeout,
+                "Shutdown drain: %d in-flight cron job(s), %d api_server run(s), %d background delegation(s) "
+                "— waiting up to %.0fs for them (cron_drain_timeout=%.0fs, restart_drain_timeout=%.0fs)",
+                _cron_at_start, _api_at_start, _deleg_at_start, _cron_timeout, _cron_drain_cfg, timeout,
             )
         _drain_started_at = time.monotonic()
         ctx.active_agents, ctx.timed_out = await self._drain_active_agents(timeout, _cron_timeout)
@@ -1883,10 +1906,10 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         logger.info(
             "Shutdown phase: drain done at +%.2fs (drain took %.2fs, timed_out=%s, active_at_start=%d, "
             "active_now=%d, cron_at_start=%d, cron_now=%d, api_at_start=%d, api_now=%d, "
-            "deferred_at_start=%d, deferred_now=%d)", ctx.elapsed(), ctx.drain_elapsed,
-            ctx.timed_out, len(ctx.active_agents), self._running_agent_count(), _cron_at_start,
-            self._active_cron_job_count(), _api_at_start, self._active_api_run_count(),
-            _deferred_at_start, ctx.deferred_count(),
+            "deferred_at_start=%d, deferred_now=%d, deleg_at_start=%d, deleg_now=%d)", ctx.elapsed(),
+            ctx.drain_elapsed, ctx.timed_out, len(ctx.active_agents), self._running_agent_count(),
+            _cron_at_start, self._active_cron_job_count(), _api_at_start, self._active_api_run_count(),
+            _deferred_at_start, ctx.deferred_count(), _deleg_at_start, self._active_delegation_count(),
         )
         if ctx.timed_out:
             return

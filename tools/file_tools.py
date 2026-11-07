@@ -33,8 +33,8 @@ from tools.file_tools_paths import (
     _resolve_path_for_task)
 from tools.file_tools_write_guards import (
     _READ_DEDUP_STATUS_MESSAGE, _check_approval_required_write, _check_binary_document_write,
-    _check_cross_profile_path, _check_protected_instruction_write, _check_sensitive_path,
-    _is_internal_file_tool_content, _stale_overwrite_blocker, _stale_write_refusal)
+    _check_cross_profile_path, _check_persistence_path_write, _check_protected_instruction_write,
+    _check_sensitive_path, _is_internal_file_tool_content, _stale_overwrite_blocker, _stale_write_refusal)
 from tools.file_tools_read_tracking import (
     _bump_consecutive, _cap_read_tracker_data, _carry_full_write_baselines, _check_file_staleness,
     _check_not_found_cache, _known_full_content_sha256,
@@ -786,6 +786,7 @@ def _write_precheck_error(paths: list[str], content_paths: list[str], task_id: s
         if err:
             return err
     return (_check_protected_instruction_write(paths, task_id)
+            or _check_persistence_path_write(paths, task_id)
             or _check_approval_required_write(paths, task_id))
 
 
@@ -873,6 +874,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
     err = (_check_sensitive_path(path, task_id)
            or _check_binary_document_write(path, task_id)
            or _check_protected_instruction_write([path], task_id)
+           or _check_persistence_path_write([path], task_id)
            or _check_approval_required_write([path], task_id)
            or (None if cross_profile else _check_cross_profile_path(path, task_id)))
     if not err and _is_internal_file_tool_content(content):

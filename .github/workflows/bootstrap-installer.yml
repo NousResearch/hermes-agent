@@ -32,7 +32,7 @@ jobs:
     # env — a job-env `${{ runner.temp }}` makes GitHub reject the workflow
     # graph at dispatch (0 jobs). Each step that needs these exports them.
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: useblacksmith/checkout@2b9fe87d796feea153b455ec2f3125b471a7b0e7  # v1
         with:
           ref: ${{ inputs.commit }}
           # The mirror step pushes HEAD to a fresh bare repo — a shallow
@@ -138,7 +138,7 @@ jobs:
     runs-on: blacksmith-2vcpu-windows-2025
     timeout-minutes: 10
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: useblacksmith/checkout@2b9fe87d796feea153b455ec2f3125b471a7b0e7  # v1
         with:
           ref: ${{ inputs.commit }}
       # Windows PowerShell 5.1 is what ships with Windows and what `irm | iex`

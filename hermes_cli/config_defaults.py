@@ -585,6 +585,11 @@ DEFAULT_CONFIG = {
         # (~3x fewer retained tokens; a few extra summarizer calls at the boundary). "legacy" =
         # 0.20×threshold verbatim tail (100-240K tokens on big windows).
         "tail_mode": "lean",
+        # offload_evicted_history: before each summarizer call, append the compacted
+        # region verbatim to a per-session JSONL under <home>/offloads/ that the summary
+        # names beside session_search — an independent, greppable second copy. The
+        # state.db archive stays the primary store; set false to disable the file.
+        "offload_evicted_history": True,
         # protect_last_n: minimum recent messages kept uncompressed, honoured up to a small count
         # floor; the verbatim tail is otherwise token-bounded and never above 20% of the window.
         "protect_last_n": 20,

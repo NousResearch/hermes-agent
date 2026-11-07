@@ -228,13 +228,31 @@ class SharedRouteAdapters:
         for route in self._routes:
             if str(route.platform).lower() != platform_key:
                 continue
-            if not (route.chat_id or route.thread_id):
+            dm_user = _dm_user_for_target(platform_key, route, chat_id)
+            if not (route.chat_id or route.thread_id or dm_user):
                 continue  # guild-only routes are not target-exact
             if route.matches(
                 str(route.platform), guild_id=route.guild_id, chat_id=chat_id, thread_id=thread_id,
+                user_id=dm_user,
             ):
                 return adapter
         return default
+
+
+def _dm_user_for_target(platform_key: str, route, chat_id: Optional[str]) -> Optional[str]:
+    """The user a cron target chat stands for under a ``user_id`` route, or ``None`` (#146336).
+
+    A cron target carries no sender, so ``matches()`` rejected every route declaring ``user_id``.
+    The target chat is that user only when it is the user's DM: a route declaring
+    ``user_id == chat_id`` (any platform whose DM chat id is the user id) or a Telegram
+    ``user_id``-only route (a Telegram DM's chat id is the user id for every bot, see
+    ``gateway.profile_routing``). Any other route keeps failing closed.
+    """
+    if not route.user_id or not chat_id:
+        return None
+    if route.chat_id:
+        return chat_id if route.chat_id == route.user_id else None
+    return chat_id if platform_key == "telegram" else None
 
 
 def has_credential_platform(adapters, owned=None) -> bool:

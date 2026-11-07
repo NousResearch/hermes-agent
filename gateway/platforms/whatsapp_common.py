@@ -28,6 +28,9 @@ from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 logger = logging.getLogger(__name__)
 
 _TRUTHY = {"true", "1", "yes", "on"}
+# A typed ``@<digits>`` / ``@+<digits>`` mention standing on its own: not inside a word or an email
+# (``order@1555…``), not followed by more word characters, a combining mark, or a domain (``.example``).
+_MENTION_TOKEN_RE = re.compile(r"(?<![\w@.+])@\+?(\d+)(?![\w\u0300-\u036f]|\.\w)")
 
 
 def _stash(pattern: str, text: str, tag: str) -> tuple[str, list[str]]:
@@ -224,11 +227,11 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
         mentioned = {nid for c in (data.get("mentionedIds") or []) if (nid := self._normalize_whatsapp_id(c))}
         if mentioned & bot_ids:
             return True
-        lower_body = str(data.get("body") or "").lower()
-        return any(
-            bare and (f"@{bare}" in lower_body or bare in lower_body)
-            for bare in (bot_id.split("@", 1)[0].lower() for bot_id in bot_ids)
-        )
+        # Text fallback: only a delimited ``@<number>`` / ``@+<number>`` token naming the bot's full
+        # id. A bare substring match woke the bot on order numbers, invoices and emails that happen
+        # to contain its phone digits.
+        tokens = {m.group(1) for m in _MENTION_TOKEN_RE.finditer(str(data.get("body") or ""))}
+        return any(bot_id.split("@", 1)[0] in tokens for bot_id in bot_ids)
 
     def _message_matches_mention_patterns(self, data: dict[str, Any]) -> bool:
         body = str(data.get("body") or "")

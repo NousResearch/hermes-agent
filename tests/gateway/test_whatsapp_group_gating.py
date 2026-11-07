@@ -259,3 +259,13 @@ def test_device_qualified_bot_ids_match_bare_mention_and_quote_ids():
         _group_message("and this?", botIds=device_qualified, quotedParticipant="447999674698@s.whatsapp.net")
     ) is True
     assert adapter._should_process_message(_group_message("hello everyone", botIds=device_qualified)) is False
+
+
+def test_bot_phone_digits_wake_only_as_a_typed_mention_token():
+    """Numbers that merely contain the bot's digits (orders, invoices, emails) are not mentions."""
+    adapter = _make_adapter(require_mention=True, group_policy="open")
+    for body in ("Order 15551230000 is ready", "Invoice 9915551230000001", "order@15551230000.example",
+                 "@15551230000abc"):
+        assert adapter._should_process_message(_group_message(body)) is False, body
+    for body in ("@15551230000 status", "Please (@+15551230000), help", "hi @15551230000."):
+        assert adapter._should_process_message(_group_message(body)) is True, body

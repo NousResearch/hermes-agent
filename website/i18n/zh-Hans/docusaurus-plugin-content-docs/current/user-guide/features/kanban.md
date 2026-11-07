@@ -61,7 +61,7 @@ Hermes Kanban 是一个持久化任务看板，在所有 Hermes 配置文件之�
 - **Workspace（工作区）** —— worker 操作的目录。三种类型：
   - `scratch`（默认）—— 在 `~/.hermes/kanban/workspaces/<id>/` 下（非默认看板为 `~/.hermes/kanban/boards/<slug>/workspaces/<id>/`）创建的临时目录。**任务完成时删除** —— scratch 按设计是临时性的。通过 `kanban_complete(artifacts=[...])` 明确声明的文件会在清理前复制到持久的任务附件存储；旧版完成摘要中已存在的交付文件路径也会得到同样处理。其他 scratch 文件仍会被删除。如果声明的 scratch 交付文件不存在，任务会保持进行中，worker 可修正路径后重试。需要保留整个工作区时，请使用 `worktree:` 或 `dir:<path>`。在某次安装中首次创建 scratch 工作区时，调度器会记录警告并在任务上发出 `tip_scratch_workspace` 事件（可通过 `hermes kanban show <id>` 查看）。
   - `dir:<path>` —— 现有的共享目录（Obsidian vault、邮件运维目录、每账号文件夹）。**必须是绝对路径。** 像 `dir:../tenants/foo/` 这样的相对路径在调度时会被拒绝，因为它们会相对于调度器碰巧所在的 CWD 解析，这是模糊的，也是混淆代理（confused-deputy）逃逸向量。路径本身是受信任的 —— 这是你的机器、你的文件系统，worker 以你的 uid 运行。这是受信任本地用户的威胁模型；kanban 设计为单主机。**完成时保留。**
-  - `worktree` —— 用于编码任务的 git worktree，位于 `.worktrees/<id>/` 下。使用 `worktree:<path>` 固定确切的目标路径。Worker 端的 `git worktree add` 创建它，提供 `--branch` 时使用该分支。**完成时保留。**
+  - `worktree` —— 用于编码任务的 git worktree，位于 `.worktrees/<id>/` 下。使用 `worktree:<path>` 固定确切的目标路径（新目录或空目录）；仓库根目录或检出中已存在的文件夹（例如设为 monorepo 子文件夹的看板项目目录）则改用该任务自己的 `<repo>/.worktrees/<id>/`，任务绝不会在你的检出中运行。Worker 端的 `git worktree add` 创建它，提供 `--branch` 时使用该分支。**完成时保留。**
 - **Dispatcher（调度器）** —— 一个长期运行的循环，每 N 秒（默认 60 秒）执行一次：回收过期的认领、回收崩溃的 worker（PID 消失但 TTL 尚未过期）、推进就绪任务、原子性认领、启动已分配的配置文件。默认**在 gateway 内部运行**（`kanban.dispatch_in_gateway: true`）。每次 tick 一个调度器扫描所有看板；worker 启动时固定了 `HERMES_KANBAN_BOARD`，因此无法看到其他看板。在同一任务上连续启动失败 `kanban.failure_limit` 次（默认：2）后，调度器会以最后一个错误为原因自动阻塞该任务 —— 防止因配置文件不存在、工作区无法挂载等原因导致的反复抖动。
 - **Tenant（租户）** —— 看板*内*的可选字符串命名空间。一个专家团队可以通过工作区路径和内存键前缀为多个业务提供数据隔离服务（`--tenant business-a`）。租户是软过滤器；看板是硬隔离边界。
 

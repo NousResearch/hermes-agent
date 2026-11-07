@@ -84,21 +84,23 @@ class TestBoundedDirectorySupplement:
         (root / "vault").mkdir(parents=True)
 
         ops = ShellFileOperations(LocalEnvironment("/"))
-        seen = {}
+        find_cmds = []
 
         real_exec = ops._exec
 
         def wrap(cmd, **kwargs):
-            seen["cmd"] = cmd
+            if isinstance(cmd, str) and cmd.lstrip().startswith("find "):
+                find_cmds.append(cmd)
             return real_exec(cmd, **kwargs)
 
         monkeypatch.setattr(ops, "_exec", wrap)
         dirs, _reason = ops._search_directories_with_find("*vault", str(root), fetch_limit=5)
 
         assert str(root / "vault") in dirs
-        assert "sort -rn" not in seen["cmd"]
-        assert "| head -n" in seen["cmd"]
-        assert "-print" in seen["cmd"]
+        assert find_cmds, "expected a find invocation"
+        assert all("sort -rn" not in cmd for cmd in find_cmds)
+        assert all("| head -n" in cmd for cmd in find_cmds)
+        assert all("-print" in cmd for cmd in find_cmds)
 
     def test_hidden_directories_still_excluded(self, tmp_path):
         root = tmp_path / "repo"
@@ -127,19 +129,24 @@ class TestBoundedDirectorySupplement:
         assert result.error is None
         assert str(hit) in result.files
 
-    def test_unknown_filename_fast_empty(self, tmp_path):
+    def test_unknown_filename_skips_directory_find(self, tmp_path, monkeypatch):
         root = tmp_path / "repo"
         root.mkdir()
         (root / "a.txt").write_text("x")
 
         ops = ShellFileOperations(LocalEnvironment("/"))
-        t0 = time.perf_counter()
+        calls = []
+
+        def boom(*args, **kwargs):
+            calls.append(1)
+            raise AssertionError("directory supplement must not run for unknown concrete names")
+
+        monkeypatch.setattr(ops, "_search_directories_with_find", boom)
         result = ops.search("zz_missing_9f3a2b.qxyz", path=str(root), target="files")
-        elapsed = time.perf_counter() - t0
 
         assert result.error is None
         assert result.files == []
-        assert elapsed < 2.0
+        assert calls == []
 
     def test_content_search_unchanged(self, tmp_path):
         root = tmp_path / "repo"
@@ -158,11 +165,10 @@ class TestBoundedDirectorySupplement:
             for m in (result.matches or [])
         )
 
-    def test_large_root_exact_filename_under_two_seconds(self, tmp_path):
-        """Synthetic large tree: concrete filename must not pay directory walk."""
+    def test_large_root_exact_filename_skips_directory_find(self, tmp_path, monkeypatch):
+        """Synthetic large tree: concrete filename must not invoke directory walk."""
         root = tmp_path / "big"
         root.mkdir()
-        # Many sibling dirs so a naive find|* would be costly if invoked.
         for i in range(400):
             d = root / f"pkg_{i:04d}"
             d.mkdir()
@@ -171,13 +177,22 @@ class TestBoundedDirectorySupplement:
         target.write_text("ok\n")
 
         ops = ShellFileOperations(LocalEnvironment("/"))
+        calls = []
+
+        def boom(*args, **kwargs):
+            calls.append(1)
+            raise AssertionError("directory supplement must be skipped")
+
+        monkeypatch.setattr(ops, "_search_directories_with_find", boom)
         t0 = time.perf_counter()
         result = ops.search("config.yaml", path=str(root), target="files", limit=20)
         elapsed = time.perf_counter() - t0
 
         assert result.error is None
         assert str(target) in result.files
-        assert elapsed < 2.0
+        assert calls == []
+        # Soft latency guard for cold LocalEnvironment startup on large trees.
+        assert elapsed < 10.0
 
     def test_no_repeated_unbounded_traversal(self, tmp_path, monkeypatch):
         root = tmp_path / "repo"

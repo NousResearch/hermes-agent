@@ -111,21 +111,6 @@ def test_a_credential_the_gateway_refuses_asks_for_an_update_instead_of_this_gat
     assert refused.status_code == 409 and refused.json()["error"] == "relay_reconnect"
 
 
-def test_an_oauth_connection_sends_its_bearer_and_refreshes_it_near_expiry(webapp):
-    from hermes_cli import gateway_connections
-
-    saved, _registry = gateway_connections.save_connection(
-        {"kind": "remote", "label": "Signed", "url": "http://signed.lan:8000", "authMode": "oauth"})
-    gateway_connections.write_tokens(saved["id"], {"accessToken": "old-access", "refreshToken": "old-refresh",
-                                                   "expiresAt": int(time.time()) + 5, "provider": "nous", "userId": "u1"})
-    webapp.seen["bearer"] = "fresh-access"
-    reached = webapp.browser.get(f"/api/relay/{saved['id']}/api/profiles")
-    assert webapp.seen["refreshed_with"] == {"refresh_token": "old-refresh", "provider": "nous"}
-    assert reached.status_code == 200, reached.text
-    assert webapp.seen["requests"][-1]["authorization"] == "Bearer fresh-access"
-    assert gateway_connections.read_tokens(saved["id"])["accessToken"] == "fresh-access"
-
-
 def test_a_saved_gateway_cannot_run_content_or_leave_a_copy_on_this_origin(webapp):
     base = f"/api/relay/{webapp.id}"
     page = webapp.browser.get(f"{base}/page")
@@ -205,7 +190,19 @@ def live_other(webapp, monkeypatch):
         await asyncio.to_thread(stop.wait, 30)
         await ws.close(code=4401, reason="Signed out there")
 
-    app = Starlette(routes=[Route("/set", set_cookie), Route("/echo", set_cookie),
+    async def profiles(request: Request):
+        seen.setdefault("bearers", []).append(request.headers.get("authorization"))
+        if request.headers.get("authorization") != "Bearer fresh-access":
+            return JSONResponse({"error": "unauthenticated", "reason": "invalid_or_expired_session"}, status_code=401)
+        return JSONResponse({"profiles": [{"name": "default"}]})
+
+    async def refresh(request: Request):
+        seen["refreshed_with"] = await request.json()
+        return JSONResponse({"access_token": "fresh-access", "refresh_token": "fresh-refresh",
+                             "expires_at": int(time.time()) + 900, "provider": "nous", "user_id": "u1"})
+
+    app = Starlette(routes=[Route("/set", set_cookie), Route("/echo", set_cookie), Route("/api/profiles", profiles),
+                            Route("/auth/native/refresh", refresh, methods=["POST"]),
                             WebSocketRoute("/api/audio/speak-stream", speak)])
     port = _free_port()
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, lifespan="off", log_level="warning",
@@ -216,6 +213,7 @@ def live_other(webapp, monkeypatch):
     monkeypatch.setattr(webapp_relay_proxy, "relay_client", _REAL_RELAY_CLIENT)
     saved, _registry = gateway_connections.save_connection(
         {"kind": "remote", "label": "Live", "url": f"http://127.0.0.1:{port}", "authMode": "token", "token": TOKEN})
+    webapp.live_url = f"http://127.0.0.1:{port}"
     try:
         yield webapp, saved["id"], seen, stop
     finally:
@@ -228,6 +226,31 @@ def _relay_ticket(browser) -> str:
     minted = browser.post("/api/webapp/socket-ticket?socket=relay")
     assert minted.status_code == 200, minted.text
     return minted.json()["ticket"]
+
+
+def test_an_oauth_connection_sends_its_bearer_and_a_refused_one_earns_one_forced_refresh(live_other):
+    from hermes_cli import gateway_connections
+
+    webapp, _connection_id, seen, _stop = live_other
+    saved, _registry = gateway_connections.save_connection(
+        {"kind": "remote", "label": "Signed", "url": webapp.live_url.replace("127.0.0.1", "localhost"), "authMode": "oauth"})
+    # Not near expiry: only the remote's 401 can say it is no longer good.
+    gateway_connections.write_tokens(saved["id"], {"accessToken": "revoked-access", "refreshToken": "old-refresh",
+                                                   "expiresAt": int(time.time()) + 900, "provider": "nous", "userId": "u1"})
+    reached = webapp.browser.get(f"/api/relay/{saved['id']}/api/profiles")
+    assert reached.status_code == 200, reached.text
+    assert seen["bearers"] == ["Bearer revoked-access", "Bearer fresh-access"]
+    assert seen["refreshed_with"] == {"refresh_token": "old-refresh", "provider": "nous"}
+    assert gateway_connections.read_tokens(saved["id"])["accessToken"] == "fresh-access"
+
+
+def test_an_oauth_connection_with_no_sign_in_asks_for_one(webapp):
+    from hermes_cli import gateway_connections
+
+    saved, _registry = gateway_connections.save_connection(
+        {"kind": "remote", "label": "Unsigned", "url": "http://unsigned.lan:8000", "authMode": "oauth"})
+    refused = webapp.browser.get(f"/api/relay/{saved['id']}/api/profiles")
+    assert refused.status_code == 409 and refused.json()["error"] == "relay_reconnect", refused.text
 
 
 def test_the_proxy_carries_no_cookie_from_one_relayed_request_to_the_next(live_other):

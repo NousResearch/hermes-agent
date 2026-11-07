@@ -97,6 +97,17 @@ describe('local runtime jobs store — pause/settle contract', () => {
     expect(notify).not.toHaveBeenCalled()
   })
 
+  it('running→cancelled settles silently — the user chose it, it is not a failure (#146469)', async () => {
+    backend.jobs = [job({ done_bytes: 10, job_id: 'j-cancel' })]
+    await pollTick()
+
+    backend.jobs = [job({ detail: 'Download cancelled', done_bytes: 10, job_id: 'j-cancel', status: 'cancelled' })]
+    await pollTick()
+
+    expect(notifyError).not.toHaveBeenCalled()
+    expect(notify).not.toHaveBeenCalled()
+  })
+
   it('a settle landing after the primary connection moved is bookkept silently, not thrown', async () => {
     const owner: LocalModelsOwner = localModelsOwner()
     const key: QueryKey = localModelsKey(owner, 'jobs')

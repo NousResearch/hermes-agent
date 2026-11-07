@@ -27,6 +27,13 @@ Hugging Face downloads, and quickstart. Paused jobs remain visible when you
 leave and reopen Local Models. Pause stops the transfer at a chunk boundary;
 unpacking, verification, and server activation are separate phases.
 
+**Cancel** abandons a catalog model, Hugging Face, or quickstart download,
+whether it is running or paused. After you confirm, Hermes deletes the partial
+bytes and any file that download already finished (such as the first part of
+a split model); files that were on disk before it started stay. The row goes
+back to **Download**, and a cancelled quickstart frees setup for another run.
+Engine installs and updates cannot be cancelled — pause them instead.
+
 PM downloads every engine component, including CUDA runtime DLLs, from the
 URLs and SHA-256 pins in `pm/lock.json`. Model weights, split GGUF parts,
 vision projectors, and draft models use the same downloader. Byte progress

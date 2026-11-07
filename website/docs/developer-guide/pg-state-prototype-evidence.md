@@ -760,12 +760,13 @@ fix on branch B before merge, or carry as a follow-up issue.
   section 7); DEFECT-4 open (non-blocking).
 - Branch/PR state (fork `shrinedogg/hermes-agent`): the initial PRs
   #150332 (A) and #150421 (B) were CONFLICTING with main and were closed;
-  replacements were opened from the rebased heads — A
-  `hermes/775-storage-interface-r2` @ `79fbeab556`, B
-  `hermes/775-pg-backend-r2` @ `c88d033f4a` (B stacked on A,
-  must-merge-first). (GitHub cannot retarget a PR's head branch;
-  force-with-lease is blocked by single-query approvals, hence the `-r2`
-  branches.)
+  replacements were opened from the rebased heads — #150649 (A,
+  `hermes/775-storage-interface-r2` @ `79fbeab556`), #150650 (B,
+  `hermes/775-pg-backend-r2` @ `c88d033f4a`; B stacked on A,
+  must-merge-first), and this doc published as #150652
+  (`docs/pg-state-run-evidence-r2`). (GitHub cannot retarget a PR's head
+  branch; force-with-lease is blocked by single-query approvals, hence the
+  `-r2` branches.)
 - Cluster data (left in place, never mutated by this wave beyond
   hermes's own writes): `proto_hermes` = 10 sessions / 24 messages
   (migrated oneshot session with its 8 message rows incl. the two resume

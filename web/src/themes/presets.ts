@@ -149,6 +149,34 @@ export const monoTheme: DashboardTheme = {
   },
 };
 
+export const hadesTheme: DashboardTheme = {
+  name: "hades",
+  label: "Hades",
+  description: "Deep underworld blue-violet with cool accents",
+  palette: {
+    ...webPresetFromShared(THEME_PRESET_PALETTES.hades),
+    noiseOpacity: 0.9,
+  },
+  typography: {
+    ...DEFAULT_TYPOGRAPHY,
+    fontSans: `"Inter", ${SYSTEM_SANS}`,
+    fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`,
+    fontUrl:
+      "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap",
+  },
+  layout: {
+    ...DEFAULT_LAYOUT,
+    radius: "0.5rem",
+  },
+  colorOverrides: {
+    primary: "#7EB8F6",
+    accent: "#60A5FA",
+    ring: "#60A5FA",
+  },
+  terminalBackground: "#0F172A",
+  swatchColors: ["#0F172A", "#7EB8F6", "#60A5FA", "#1E3A8A"],
+};
+
 export const cyberpunkTheme: DashboardTheme = {
   name: "cyberpunk",
   label: "Cyberpunk",
@@ -250,6 +278,7 @@ export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   midnight: midnightTheme,
   ember: emberTheme,
   mono: monoTheme,
+  hades: hadesTheme,
   cyberpunk: cyberpunkTheme,
   rose: roseTheme,
 };

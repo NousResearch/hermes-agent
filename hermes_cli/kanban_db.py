@@ -314,6 +314,13 @@ KANBAN_RATE_LIMIT_EXIT_CODE = 75
 # the FIRST occurrence instead of spending ``failure_limit`` identical spawns. 78 == BSD EX_CONFIG.
 KANBAN_TERMINAL_PROVIDER_EXIT_CODE = 78
 
+# Worker exit "the card never ran — its profile owner was fenced": the worker kept waiting while
+# discovery kept answering the owner's update wave (``draining``/``update_paused``) past the
+# card's fence budget and exited instead of dying, so the dead-worker sweep requeues it the way
+# a spawn refusal is booked — infrastructure of the host, never a card failure. 74 is otherwise
+# unused in this codebase (an unassigned BSD EX_RESERVE-style slot for a host-level outage).
+KANBAN_OWNER_DRAIN_EXIT_CODE = 74
+
 
 def _resolve_crash_grace_seconds() -> int:
     """``HERMES_KANBAN_CRASH_GRACE_SECONDS`` (0 = immediate, for tests) else default."""

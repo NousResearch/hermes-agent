@@ -108,8 +108,10 @@ jobs:
       - name: Force all lanes on release; E2E only on release or dispatch
         # Overwrite the classifier outputs with 'true' when inputs.release. The E2E
         # lanes are forced off unless this is a release run or a manual dispatch
-        # (whose empty diff already turns every lane on): never on a pull request
-        # or a push to main, whatever the diff or labels say.
+        # (whose empty diff already turns every lane on), with one exception: a pull
+        # request whose diff the classifier routes to the update path keeps
+        # e2e_upgrade, so an update or layout change is tested before it merges. The
+        # Windows install + update journey on that lane stays release-only (tests-os below).
         id: gate-lanes
         env:
           RELEASE: ${{ inputs.release }}
@@ -121,9 +123,10 @@ jobs:
           values = json.loads(os.environ['CLASSIFIED'])
           release = os.environ['RELEASE'] == 'true'
           e2e_allowed = release or os.environ['EVENT_NAME'] == 'workflow_dispatch'
+          pull_request = os.environ['EVENT_NAME'] == 'pull_request'
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               for lane, value in values.items():
-                  if lane.startswith('e2e') and not e2e_allowed:
+                  if lane.startswith('e2e') and not e2e_allowed and not (pull_request and lane == 'e2e_upgrade'):
                       value = 'false'
                   elif release and value in ('true', 'false'):
                       value = 'true'
@@ -137,9 +140,10 @@ jobs:
   # Skipped workflows (if condition is false) don't spin up runners.
   #
   # The E2E suites (e2e, e2e-upgrade, both Desktop suites, and the two
-  # Windows journeys in tests-os) run ONLY on a release run (inputs.release)
-  # or a manual dispatch; the detect gate forces their lanes off for pull
-  # requests and pushes to main.
+  # Windows journeys in tests-os) run on a release run (inputs.release) or a
+  # manual dispatch. The Linux e2e-upgrade shards also run on a pull request
+  # that touches the update path; every other suite is off for pull requests
+  # and pushes to main.
   # ─────────────────────────────────────────────────────────────────────
   tests:
     name: Python tests
@@ -172,7 +176,8 @@ jobs:
       # changed; unit-level platforms("windows") tests always run.
       desktop_updater: ${{ needs.detect.outputs.desktop_updater == 'true' }}
       e2e: ${{ needs.detect.outputs.e2e == 'true' }}
-      e2e_upgrade: ${{ needs.detect.outputs.e2e_upgrade == 'true' }}
+      # The Windows install + update journey costs ~40 runner-minutes: not on pull requests.
+      e2e_upgrade: ${{ needs.detect.outputs.e2e_upgrade == 'true' && github.event_name != 'pull_request' }}
       strict_acceptance: ${{ inputs.strict_acceptance || '' }}
 
   lint:

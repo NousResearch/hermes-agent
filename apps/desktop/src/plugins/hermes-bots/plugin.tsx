@@ -206,7 +206,9 @@ export default {
             })
           }
 
-          return items.slice(0, 8)
+          // Every match, uncapped: the drawer scrolls, and a cap here cut the
+          // same bots out of every chat on a bare `@` (#144086).
+          return items
         }
       }
     })

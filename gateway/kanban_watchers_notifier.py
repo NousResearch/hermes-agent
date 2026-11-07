@@ -154,6 +154,20 @@ def _warn_unroutable_sub_once(sub: dict, platform: Any, message: str, *extra_arg
                    sub.get("chat_id"), *extra_args)
 
 
+_UNACCEPTED_LOGGED: set[tuple] = set()
+
+
+def _log_unaccepted_wake_once(sub: dict, platform: str, exc: Exception) -> None:
+    """``WakeNotAccepted`` rewinds the claim and retries every tick (startup or a full queue clears
+    by itself), but one that never clears left only the passive ping behind. Say so ONCE per row."""
+    key = (sub.get("task_id"), platform, sub.get("chat_id"), sub.get("thread_id") or "")
+    if key in _UNACCEPTED_LOGGED:
+        return
+    _UNACCEPTED_LOGGED.add(key)
+    logger.info("kanban notifier: wake for %s on %s chat %s not accepted (%s); retrying every tick",
+                sub.get("task_id"), platform, sub.get("chat_id"), exc)
+
+
 def _platform_names(mapping: Any) -> set[str]:
     """Lower-cased platform names of an adapters mapping (Platform enums or strings)."""
     return {getattr(platform, "value", str(platform)).lower() for platform in mapping}
@@ -799,9 +813,10 @@ class _KanbanNotification:
                 for self.synth, self.wake_diagnostic, self.wake_kinds in wake_payloads:
                     await self.wake()
                 self.clear_failures()
-            except WakeNotAccepted:
+            except WakeNotAccepted as exc:
                 # Startup / full queue is not a dead destination. Keep the durable
                 # subscription alive regardless of how long admission takes.
+                _log_unaccepted_wake_once(self.sub, self.platform_str, exc)
                 await self.rewind()
                 return
             except Exception as _wk_err:

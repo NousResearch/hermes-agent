@@ -106,10 +106,25 @@ def spill_if_oversized(
         f"[{source} output truncated — {total:,} chars; full content "
         + (f"saved to {saved_path}]" if saved_path else "unavailable — spill write failed]"),
     ]
+
+    # Slice at line boundaries so no entry is cut mid-string (a char-boundary
+    # cut leaks dangling fragments like `It'` / `Verified:` into the prompt).
+    def _head_upto_newline(s: str) -> str:
+        # keep up to (not including) the first '\n' at/after the cut; if the
+        # slice ends mid-line, that trailing partial line is dropped.
+        idx = s.rfind("\n")
+        return s if idx == -1 else s[:idx + 1]
+
+    def _tail_from_newline(s: str) -> str:
+        # the tail slice may START mid-line; drop everything before its '\n'.
+        idx = s.find("\n")
+        return s if idx == -1 else s[idx + 1:]
+
     if head > 0 and text[:head]:
-        parts.extend(["--- head ---", text[:head]])
+        parts.extend(["--- head ---", _head_upto_newline(text[:head]).rstrip("\n")])
     if tail > 0 and total > head:
-        parts.extend(["--- tail ---", text[-tail:]])
+        tail_part = text[-tail:] if tail < total else text
+        parts.extend(["--- tail ---", _tail_from_newline(tail_part).rstrip("\n")])
     return "\n".join(parts)
 
 

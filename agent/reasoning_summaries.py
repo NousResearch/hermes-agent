@@ -73,3 +73,16 @@ def append_streamed_reasoning_detail(details_acc: list, detail: Any) -> None:
                 last[k] = detail[k]
         return
     details_acc.append(dict(detail))
+
+
+def reasoning_field_text(message: Any) -> Any:
+    """The reasoning a chat message or delta carries, from its typed fields or ``model_extra``.
+
+    The ``model_extra`` fallback matters: a reasoning-only stream whose deltas carry only that
+    field otherwise trips the empty-stream guard (#56516).
+    """
+    text = getattr(message, "reasoning_content", None) or getattr(message, "reasoning", None)
+    extra = getattr(message, "model_extra", None)
+    if text is None and isinstance(extra, dict):
+        text = extra.get("reasoning_content") or extra.get("reasoning")
+    return text

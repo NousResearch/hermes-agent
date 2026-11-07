@@ -49,9 +49,10 @@ from agent.message_sanitization import (
     normalize_finish_reason as _normalize_finish_reason, sanitize_outbound_kwargs, strip_images_for_rejecting_model,
 )
 from agent.reasoning_summaries import (
-    append_streamed_reasoning_detail, separate_glued_reasoning_blocks, streamed_reasoning_detail_text)
+    append_streamed_reasoning_detail, reasoning_field_text, separate_glued_reasoning_blocks,
+    streamed_reasoning_detail_text)
 from agent.local_prompt_progress import prompt_progress, with_prompt_progress
-from agent.repetition_guard import RunawayStreamWatch, is_repetition_dominated
+from agent.repetition_guard import RunawayStreamWatch, is_repetition_dominated, log_runaway_cut
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from tools.terminal_tool_lifecycle import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
@@ -3051,6 +3052,8 @@ class _StreamingCall(StreamingWaitMonitor):
         # Own watch: the display takes one reasoning representation per chunk, but the plain
         # field is persisted either way and need not mirror the details.
         detail_watch = RunawayStreamWatch()
+        from agent.draft_acceptance_watch import DraftAcceptanceWatch
+        accept_watch = DraftAcceptanceWatch.for_base_url(getattr(self.agent, "base_url", None))
         runaway = None
 
         llamacpp = _streams_llamacpp(self.agent)
@@ -3106,6 +3109,9 @@ class _StreamingCall(StreamingWaitMonitor):
                 self._mark_finish_seen(_diag, finish_reason)
                 continue
 
+            if accept_watch is not None and accept_watch.poll():
+                runaway = f"output (every speculative draft accepted for {accept_watch.full_accept_seconds():.0f} s)"
+                break
             choice = chunk.choices[0]
             delta = choice.delta
             # Read finish_reason/usage BEFORE any content-shape `continue`: the SSE-echo
@@ -3115,11 +3121,7 @@ class _StreamingCall(StreamingWaitMonitor):
             if hasattr(chunk, "usage") and chunk.usage:
                 usage_obj = chunk.usage
 
-            reasoning_text = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
-            # Same ``model_extra`` fallback as the non-streaming path: a reasoning-only stream
-            # whose deltas carry only this field otherwise trips the empty-stream guard (#56516).
-            if reasoning_text is None and isinstance(getattr(delta, "model_extra", None), dict):
-                reasoning_text = delta.model_extra.get("reasoning_content") or delta.model_extra.get("reasoning")
+            reasoning_text = reasoning_field_text(delta)
             # A profile-declared text carrier doubles as the readable reasoning.
             reasoning_text = carriers.feed(delta, reasoning_text)
             if reasoning_text:
@@ -3200,7 +3202,7 @@ class _StreamingCall(StreamingWaitMonitor):
 
         if runaway:
             _close_half_read_stream("runaway_stream_close_failed")
-            self._log_runaway_cut(runaway)
+            log_runaway_cut(self.agent, self.api_kwargs, runaway)
         tool_calls.materialize()
         self._close_managed_stream()
         if self._stream_attempt_was_cancelled(stream_attempt_id):
@@ -3217,12 +3219,6 @@ class _StreamingCall(StreamingWaitMonitor):
             response._runaway_repetition = True
         return response
 
-    def _log_runaway_cut(self, channel: str) -> None:
-        logger.warning(
-            "%sStream cut: the %s turned into a runaway repetition loop (model=%s, provider=%s).",
-            getattr(self.agent, "log_prefix", ""), channel, self.api_kwargs.get("model", "unknown"),
-            getattr(self.agent, "provider", "") or "unknown")
-
     def _adopt_final_response(self, final_response):
         """Adapter returned a completed response for ``stream=True``: switch the
         session to non-streaming and replay its content as deltas."""
@@ -3237,9 +3233,7 @@ class _StreamingCall(StreamingWaitMonitor):
         choices = final_response.choices
         message = getattr(choices[0] if isinstance(choices, (list, tuple)) and choices else None, "message", None)
         if message is not None:
-            reasoning_text = getattr(message, "reasoning_content", None) or getattr(message, "reasoning", None)
-            if reasoning_text is None and isinstance(getattr(message, "model_extra", None), dict):
-                reasoning_text = message.model_extra.get("reasoning_content") or message.model_extra.get("reasoning")
+            reasoning_text = reasoning_field_text(message)
             if isinstance(reasoning_text, str) and reasoning_text:
                 self._emit_reasoning(reasoning_text)
             content = getattr(message, "content", None)
@@ -3477,7 +3471,7 @@ class _StreamingCall(StreamingWaitMonitor):
         if self.agent._interrupt_requested:
             return None
         if runaway:
-            self._log_runaway_cut(runaway)
+            log_runaway_cut(self.agent, self.api_kwargs, runaway)
             # No message_stop, so no final message: the SDK's snapshot is what streamed so far.
             message = accumulator.response(_stream_context["stream"].current_message_snapshot)
             message.stop_reason = "max_tokens"

@@ -431,7 +431,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import fence_state_after, typing_metadata_for_turn
+from gateway.platforms.helpers import fence_state_after, typing_metadata_for_turn, typing_refresh_wanted
 from gateway.platforms.base_post_delivery import run_post_delivery_callback
 from gateway.platforms.base_exec_approval import (
     approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text,
@@ -4367,10 +4367,10 @@ class BasePlatformAdapter(ABC):
 
     def _start_typing_refresh(self, event: MessageEvent, interrupt_event: asyncio.Event,
                               metadata: Optional[dict]) -> Optional[asyncio.Task]:
-        """Spawn the typing-refresh task, or None when ``typing_indicator=False``.
+        """Spawn the typing-refresh task, or None when this turn should show no indicator.
         ``stop_event`` is passed only when the (possibly overridden) ``_keep_typing`` accepts it."""
-        # A scheduled heartbeat is proactive work: no typing indicator until it has something to say.
-        if not getattr(self.config, "typing_indicator", True) or getattr(event, "_heartbeat_session_id", None):
+        # Heartbeats and senders the admission gate will drop: the loop starts before that gate (#149024).
+        if not typing_refresh_wanted(self, event):
             return None
         kwargs: dict[str, Any] = {"metadata": metadata}
         if self._accepts_kwarg(self._keep_typing, "stop_event", var_kw=False, unknown=True):

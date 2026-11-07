@@ -31,10 +31,13 @@ a2a_agents:
 
 ## Outbound — call other agents
 
-The agent gets five tools:
+The agent gets these tools:
 
 - `a2a_discover(url)` — what can this agent do?
-- `a2a_call(agent, message, context_id?)` — send it a task, get the reply.
+- `a2a_call(agent, message, context_id?, return_immediately?)` — send it a
+  task. For long work, return an accepted/working task ID immediately.
+- `a2a_get_task(agent, task_id, wait_seconds?)` — read the current state,
+  latest progress snapshot, or final reply. A bounded wait avoids busy polling.
 - `a2a_list()` — configured peers, saved conversations, metrics.
 - `a2a_history(context_id)` — recall a saved A2A conversation.
 - `a2a_orchestrate(capability, message, mode?)` — fan-out a task to every
@@ -50,8 +53,11 @@ accepts JSON-RPC
 and push notification configs (inline or via
 `tasks/pushNotificationConfig/create`). Incoming tasks are injected into your
 **live** agent session — the same agent that's talking to you, with full
-memory — and the reply is returned over A2A. Completed tasks stay queryable
-via `tasks/get`.
+memory — and the reply is returned over A2A. `configuration.returnImmediately`
+returns a working task ID while Hermes finishes in the background. Completed
+tasks stay queryable via `tasks/get`; non-final user-visible updates are exposed
+as the task's latest working-status message. Immediate work is bounded to 32
+active tasks per adapter and one active task per context.
 
 ## Security
 

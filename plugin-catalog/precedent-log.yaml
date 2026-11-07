@@ -1,14 +1,14 @@
 name: precedent-log
 repo: https://github.com/quotumorg/precedent-log
-sha: 1eb5c1bd85fbe8bc2ff22528c36fab66ec34330c
+sha: 42a13a64c7b062fc79b8c80fdaa00dcee25d390b
 description: "Saved board rulings in worker prompts, with a syntactic block check. Disclosure: local profile/board state and core board/task reads; enforce mode defaults on, advisory is configurable. Store writers supply trusted prompt text; write restrictions are cooperative. No plugin runtime network, shell, background processes, secret reads or stored credentials. Opt-in demo harness only: subprocesses, loopback in fake mode, network to the user-selected provider in real mode; not plugin runtime."
 maintainer: quotumorg
 tier: community
 category: memory
 requires_hermes: ">=0.23.0"
-version: "0.2.1"
-docs_url: https://github.com/quotumorg/precedent-log/blob/1eb5c1bd85fbe8bc2ff22528c36fab66ec34330c/README.md
-image: https://raw.githubusercontent.com/quotumorg/precedent-log/1eb5c1bd85fbe8bc2ff22528c36fab66ec34330c/docs/catalog-1200x600.png
+version: "0.2.2"
+docs_url: https://github.com/quotumorg/precedent-log/blob/42a13a64c7b062fc79b8c80fdaa00dcee25d390b/README.md
+image: https://raw.githubusercontent.com/quotumorg/precedent-log/42a13a64c7b062fc79b8c80fdaa00dcee25d390b/docs/catalog-1200x600.png
 readme: true
 platforms: [linux, macos]
 known_issues:

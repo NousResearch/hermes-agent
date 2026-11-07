@@ -1,0 +1,47 @@
+# STAGED catalog entry — the PR adds this file to NousResearch/hermes-agent/plugin-catalog/.
+# DO NOT submit as-is; two TODOs remain:
+#   1. `repo:` — public GitHub URL; repo publication is a Beau-gated step. Draft assumes
+#      OWN-GITHUB (BeauBoorman) per fleet provenance ruling.
+#   2. `sha:` — repin to the final release commit once demo edits land
+#      (currently pinned to 86890d5, the manifest-fix commit; NOT final).
+# Verified 2026-11-05: parses clean through hermes_cli.plugin_catalog.entry_from_mapping
+# (the real loader), pinned capabilities match plugin.yaml register() exactly, and
+# `hermes plugins validate` is green on the plugin directory.
+# Capabilities match receipts/__init__.py register() exactly (rule 6):
+# 1 hook + 1 tool. NOTE: /receipts is registered at runtime via ctx.register_command but
+# `provides_commands` is NOT a schema field (silently dropped by the loader, unknown
+# manifest field in plugin.yaml) — deliberately omitted so declared == registered.
+name: receipts
+title: Receipts
+repo: https://github.com/BeauBoorman/hermes-receipts   # published 261107 (Beau GO, fresh-init c973857 — fleet history not pushed)
+subdir: receipts/
+sha: c9738573c15e15c0c03d71b47d9fdb770ba5ec0e         # pinned to the public release commit (fresh-init of fleet tree cc45b4d; 19ae157 ancestor-asserted)
+version: "0.2.0"
+description: >-
+  Honesty layer for agent replies: mechanically probes every checkable claim in the
+  agent's outgoing message — cited paths exist under owned roots, cited URLs resolve,
+  quoted stats name a checkable dataset (sidecar-bound CSV) — and appends a RECEIPTS
+  block with five verdict states: PASS (content-verified), LOCATABLE (reachable,
+  content unchecked), UNVERIFIED (cannot check here), MISS (refuted on local
+  evidence), SKIPPED (visible skip marker; silence is a failure). Zero model calls;
+  stdlib filesystem + HTTP HEAD/GET probes only, run in a thread pool under a 3s
+  global wall budget; fabricated self-stamped RECEIPTS blocks are stripped and
+  re-probed, never passed through. Disclosure — probes make outbound HTTP HEAD/GET
+  requests to URLs the reply cites (claim-capped at 25 per reply under a 3s
+  global wall budget) and stat()
+  calls on paths under the user's owned roots ($HOME, ./, /tmp, /Users, /home);
+  no result caching; no telemetry, no credentials, no model calls.
+maintainer: BeauBoorman
+tier: community
+category: tools
+docs_url: https://github.com/BeauBoorman/hermes-receipts#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - receipts_check
+  provides_hooks:
+    - transform_llm_output
+  provides_middleware: []
+  requires_env: []
+requires_hermes: ">=0.22.0"

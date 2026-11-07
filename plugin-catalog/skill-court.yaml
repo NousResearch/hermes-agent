@@ -1,0 +1,29 @@
+name: skill-court
+title: Skill Court
+repo: https://github.com/saatvik333/hermes-skill-court
+sha: f593e838019bdd3c77404a7649c0081c45b66ff2
+subdir: skill-court
+version: "1.0.0"
+requires_hermes: ">=0.23.0"
+description: "Tests whether the skills your agent wrote actually help: replays real tasks with and without each skill in paired Docker sandboxes, scores the difference per model with a check run inside each sandbox, and quarantines skills that make results worse for that model by hiding them from the skill index, skills_list and skill_view, without editing their files. CLI (hermes court trial/report/tasks/quarantine/release) plus a Desktop page. Disclosure — only when you run `hermes court trial`: runs hermes and docker/podman commands, creates and deletes two replay profiles cloned from yours (config, API keys, SOUL, memory, skills; never messaging channels), and spends model tokens with your provider (budget cap, default $3). Replays are single-query sessions with approvals denied, never auto-approved; launch flags such as HERMES_YOLO_MODE are not passed on. Replay profiles run Docker with no host mounts, extra docker args, container env or forwarded env, and no egress proxy, MCP servers, external memory provider, other plugins or shell hooks; host-side and stateful toolsets are off and skill edits are staged. Reads session history (read-only SessionDB), the skill catalog and .usage.json; writes only its own plugin-data. No network calls of its own, no telemetry."
+maintainer: saatvik333
+tier: community
+category: tools
+docs_url: https://github.com/saatvik333/hermes-skill-court/tree/f593e838019bdd3c77404a7649c0081c45b66ff2/skill-court
+image: https://raw.githubusercontent.com/saatvik333/hermes-skill-court/f593e838019bdd3c77404a7649c0081c45b66ff2/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/saatvik333/hermes-skill-court/f593e838019bdd3c77404a7649c0081c45b66ff2/docs/report.png
+  - https://raw.githubusercontent.com/saatvik333/hermes-skill-court/f593e838019bdd3c77404a7649c0081c45b66ff2/docs/desktop.png
+readme: true
+platforms: [linux, macos]
+known_issues:
+  - "Needs Docker or Podman reachable by the Hermes gateway (a docker CLI on PATH with a working default context, or HERMES_DOCKER_BINARY)."
+  - "In codex_app_server mode only quarantines set for every model apply."
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+    - transform_tool_result
+  provides_middleware:
+    - llm_request
+  requires_env: []

@@ -400,7 +400,7 @@ function PackageRow({
               <div
                 className={cn(
                   'mt-0.5 text-[length:var(--conversation-caption-font-size)] break-words',
-                  desktop?.status === 'error' ? 'text-(--ui-danger,#f87171)' : 'text-(--ui-text-tertiary)'
+                  desktop?.status === 'error' ? 'text-destructive' : 'text-(--ui-text-tertiary)'
                 )}
               >
                 {desktop?.status === 'error' ? desktop.error : pkg.description}

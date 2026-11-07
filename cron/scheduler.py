@@ -1599,17 +1599,54 @@ class _CronJobConfig:
     model: str
     model_cfg: Any
     cron_default_provider: str
+    # True when ``model_cfg`` came from the HOST root config because this profile carried no
+    # ``model:`` block of its own (``host_default_model``). The resolver only sees the ACTIVE
+    # home's block, so this is the condition that says "hand it the block" (see
+    # ``_cron_route_request``).
+    model_cfg_inherited: bool = False
+
+
+def _cron_route_request(job: dict, jc: Optional["_CronJobConfig"], cfg: dict) -> dict:
+    """The ONE computation of the route a cron run resolves through.
+
+    Returns exactly the kwargs for ``resolve_runtime_provider`` — ``requested``, ``target_model``,
+    plus ``explicit_base_url`` (per-job base_url) and ``model_cfg_override`` (an INHERITED host
+    model block). Both readers call this and nothing else computes those values: preflight used to
+    re-derive them from the raw job + config and therefore judged a DIFFERENT route than the run —
+    an unpinned job in a profile with no model of its own probed ``auto``/``""`` while the run
+    resolved the host default, so a fully configured home was refused as "credential missing".
+
+    ``jc=None`` keeps the cfg-only computation (preflight callers that never loaded a job config).
+    Provider precedence: per-job pin > the run's resolved provider (``jc.cron_default_provider``:
+    ``cron.model_provider`` or the inherited host provider) > ``cron.model_provider`` from *cfg*.
+    """
+    requested = job.get("provider") or (
+        jc.cron_default_provider if jc is not None else cron_default_provider(cfg)) or None
+    # The run's own model (jc.model) already folds in job.model > cron.model > main model > host
+    # default > trial; without a jc, fall back to the raw job/env value as preflight always has.
+    model = job.get("model") or (
+        jc.model if jc is not None else cron_env_setting("HERMES_MODEL")) or ""
+    kwargs: dict = {"requested": requested, "target_model": model}
+    if job.get("base_url"):
+        kwargs["explicit_base_url"] = job.get("base_url")
+    if jc is not None and jc.model_cfg_inherited and isinstance(jc.model_cfg, dict) and jc.model_cfg:
+        # Inheritance carries the FULL route: base_url, api_mode and api_key travel together, so a
+        # bare ``custom`` host default stops being credentialless.
+        kwargs["model_cfg_override"] = jc.model_cfg
+    return kwargs
 
 
 def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConfig:
     """Load config.yaml and resolve the run's model: per-job pin > cron.model (fleet default) >
-    the main agent model (config ``model:``, then HERMES_MODEL) > the claimed welcome trial's. Re-read
+    the main agent model (config ``model:``, then HERMES_MODEL) > a NAMED profile's host root
+    default > the claimed welcome trial's. Re-read
     every tick (no cache) so ``hermes cron edit --model`` and ``hermes model`` both apply next tick."""
     from hermes_cli.anon_auth import trial_model
     model = job.get("model") or cron_env_setting("HERMES_MODEL") or ""
     _cron_default_provider = ""
     _cfg: dict = {}
     _model_cfg: Any = {}
+    _model_cfg_inherited = False
     try:
         from hermes_cli.config_backend import config_exists
         from hermes_cli.config_effective import load_user_config_effective
@@ -1634,14 +1671,41 @@ def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConf
                     model = str(_main or "").strip() or model
     except Exception as e:  # ConfigBackendUnavailable is not one: run_job fails this fire, never defaults
         logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
+
+    # Host fallback (card t_92b4a684): a NAMED profile with no ``model:`` of its own still runs
+    # unpinned jobs on the HOST root config's default model + provider, as the root profile does,
+    # instead of dying at the raise below.
+    if not (isinstance(model, str) and model.strip()):
+        try:
+            from cron.jobs_model_pin import host_default_model
+            _host_model, _host_provider, _host_model_cfg = host_default_model(_get_hermes_home())
+        except Exception as e:
+            logger.debug("Job '%s': host model fallback failed: %s", job_id, e)
+            _host_model = _host_provider = ""
+            _host_model_cfg = {}
+        if _host_model:
+            model = _host_model
+            if not _cron_default_provider and _host_provider:
+                _cron_default_provider = _host_provider
+            if not _model_cfg:
+                _model_cfg = _host_model_cfg
+                # The block is the HOST's, not this profile's: the resolver cannot see it, so the
+                # route must carry it (``_cron_route_request`` -> ``model_cfg_override``).
+                _model_cfg_inherited = True
+
+    # The host root default outranks the welcome trial: it is a real configured model + provider,
+    # so ``trial_model()`` stays the last rung (the order in the docstring above).
     model = (model if isinstance(model, str) else "").strip() or trial_model()
     # Fail fast: an empty model otherwise reaches the provider as an opaque 400 (#23979).
     if not model:
+        _active_home = _get_hermes_home()
+        _store = _active_home.name if _active_home.parent.name == "profiles" else "default"
         raise RuntimeError(
-            f"Cron job '{job_name}' has no model configured "
+            f"Cron job '{job_name}' has no model configured in the '{_store}' profile's store "
             f"(job.model={job.get('model')!r}, "
             f"HERMES_MODEL={cron_env_setting('HERMES_MODEL')!r}, "
-            "config.yaml model.default missing or empty). "
+            "that profile's config.yaml model.default missing or empty, and the host config carries "
+            "no model.default either). "
             f"Set a per-job model via "
             f"`hermes cron edit {job_id} --model <name>` or set a "
             "default with `hermes model <name>`."
@@ -1652,7 +1716,8 @@ def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConf
         _net_cfg = _cfg.get("network", {})
         if isinstance(_net_cfg, dict) and _net_cfg.get("force_ipv4"):
             apply_ipv4_preference(force=True)
-    return _CronJobConfig(_cfg, model, _model_cfg, _cron_default_provider)
+    return _CronJobConfig(_cfg, model, _model_cfg, _cron_default_provider,
+                          model_cfg_inherited=_model_cfg_inherited)
 
 
 def _load_prefill_messages(cfg: dict, job_id: str) -> Optional[list]:
@@ -1679,11 +1744,16 @@ def _load_prefill_messages(cfg: dict, job_id: str) -> Optional[list]:
         return None
 
 
-def _preflight_or_block(job: dict, job_id: str, job_name: str, cfg: dict) -> Optional[tuple]:
+def _preflight_or_block(job: dict, job_id: str, job_name: str, cfg: dict,
+                        jc: Optional["_CronJobConfig"] = None) -> Optional[tuple]:
     """Pre-dispatch config validation: refuse unrunnable jobs (missing key, unready skill,
     unconfigured delivery) BEFORE AIAgent is built. run_one_job keys off BLOCKED_CONFIG_MARKER to
     record blocked_config and alert once (`preflight_alerted` bit). Must run after the wake gate so
     silent ticks stay silent. Opt-out: `cron.preflight: false`. Returns failure tuple or None.
+
+    *jc* is the run's already-resolved job config, so preflight judges the SAME route the run will
+    resolve (``_cron_route_request``) instead of re-deriving one from the raw job; ``None`` keeps
+    the cfg-only computation for callers that never loaded it.
     """
     # --------------------------------------------------------------- Pre-dispatch configuration validation
     # (T1-26). A job whose configuration cannot possibly produce a successful run — missing provider API key
@@ -1695,7 +1765,7 @@ def _preflight_or_block(job: dict, job_id: str, job_name: str, cfg: dict) -> Opt
     _pf_reason = None
     try:
         if _cron_preflight_enabled(cfg):
-            _pf_reason = _preflight_job_config(job, cfg)
+            _pf_reason = _preflight_job_config(job, cfg, jc)
             if not _pf_reason and job.get("preflight_alerted"):
                 # Config healthy again: clear alert-once marker so a future break re-alerts.
                 with contextlib.suppress(Exception):
@@ -1748,17 +1818,14 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
     from hermes_cli.auth import AuthError
 
     model = jc.model
-    requested = job.get("provider") or jc.cron_default_provider or None
+    runtime_kwargs = _cron_route_request(job, jc, jc.cfg)
+    requested = runtime_kwargs.get("requested")
     try:
+        # request/target/base_url/override come from the ONE route computation, shared with
+        # preflight: a job that inherited the host model block resolves against THAT block.
         # Do NOT pass HERMES_INFERENCE_PROVIDER as `requested`: it would override persisted config
-        # and resurrect stale providers for unpinned jobs.
-        runtime_kwargs = {
-            "requested": requested,
-            # api_mode must derive from the model actually run, not the stale persisted default.
-            "target_model": model,
-        }
-        if job.get("base_url"):
-            runtime_kwargs["explicit_base_url"] = job.get("base_url")
+        # and resurrect stale providers for unpinned jobs. api_mode must derive from the model
+        # actually run, not the stale persisted default.
         return resolve_runtime_provider(**runtime_kwargs), model
     except Exception as resolve_exc:
         # Walk the fallback chain on AuthError AND transient network/DNS failures (e.g. during
@@ -2454,7 +2521,7 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
     # that would ship a stored credential off-host; hand-written jobs bypass create-time checks.
     _guard_job_credential_exfil(job)
 
-    setup.blocked = _preflight_or_block(job, job_id, job_name, _cfg)
+    setup.blocked = _preflight_or_block(job, job_id, job_name, _cfg, jc)
     if setup.blocked is not None:
         return setup
 
@@ -4386,6 +4453,7 @@ from cron.scheduler_prompt import (
 from cron.scheduler_preflight import (
     BLOCKED_CONFIG_MARKER, BLOCKED_CONFIG_SILENT_MARKER, _cron_preflight_enabled,
     _empty_requested_mcp_toolsets, _is_transient_provider_resolve_error, _preflight_job_config,
+    cron_default_provider,
 )
 
 

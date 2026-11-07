@@ -22,11 +22,16 @@ export function groupExecutionMode(value: unknown): GroupExecutionMode {
     return 'unavailable'
   }
 
-  if (driver === true) {return 'canonical'}
+  if (driver === true) {
+    return 'canonical'
+  }
 
   // App-managed hosted owners can be nonpersistent, even when their driver stops.
-  const ownsRooms = Object.hasOwn(capability, 'protocol_version') || Object.hasOwn(capability, 'authority_gateway_id')
-    || methods?.includes('groups.create') || features?.includes('canonical_session_owner')
+  const ownsRooms =
+    Object.hasOwn(capability, 'protocol_version') ||
+    Object.hasOwn(capability, 'authority_gateway_id') ||
+    methods?.includes('groups.create') ||
+    features?.includes('canonical_session_owner')
 
   if (driver === false && persistent_process === false && !ownsRooms) {
     return 'legacy'
@@ -74,18 +79,39 @@ export function useGroupMethods(route: { connectionId: string; profile: string }
 
   const { connectionId } = route
 
-  useEffect(() => host.state?.gateway?.listen(() => { if (onForeground(connectionId)) {setOpening(value => value + 1)} }), [connectionId])
+  useEffect(
+    () =>
+      host.state?.gateway?.listen(() => {
+        if (onForeground(connectionId)) {
+          setOpening(value => value + 1)
+        }
+      }),
+    [connectionId]
+  )
 
   useEffect(() => {
-    if (answered || !visible || (onForeground(connectionId) && (host.state?.gateway?.get() ?? 'open') !== 'open')) {return}
+    if (answered || !visible || (onForeground(connectionId) && (host.state?.gateway?.get() ?? 'open') !== 'open')) {
+      return
+    }
     let cancelled = false
     let timer: ReturnType<typeof setTimeout> | undefined
     void canonicalGroupRequest<unknown>(route, 'groups.capabilities').then(
-      value => { if (!cancelled) {setAnswer({ opening, methods: groupAdvertisedMethods(value) })} },
-      () => { if (!cancelled) {timer = setTimeout(() => setAttempt(value => value + 1), 2000)} }
+      value => {
+        if (!cancelled) {
+          setAnswer({ opening, methods: groupAdvertisedMethods(value) })
+        }
+      },
+      () => {
+        if (!cancelled) {
+          timer = setTimeout(() => setAttempt(value => value + 1), 2000)
+        }
+      }
     )
 
-    return () => { cancelled = true; clearTimeout(timer) }
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
   }, [route, connectionId, visible, answered, attempt, opening])
 
   return answered ? answer.methods : undefined
@@ -109,11 +135,15 @@ export function groupSeatableProfiles(value: unknown): null | Set<string> {
  *  capability was read under (default: now); the predicate turns false once the
  *  connection, profile, socket or activation epoch moves, so a late result is
  *  neither acted on nor published. */
-export function groupCreationSource(route: { connectionId: string; profile: string },
-  activationEpoch = gatewayActivationEpoch()) {
-  return () => gatewayActivationEpoch() === activationEpoch &&
+export function groupCreationSource(
+  route: { connectionId: string; profile: string },
+  activationEpoch = gatewayActivationEpoch()
+) {
+  return () =>
+    gatewayActivationEpoch() === activationEpoch &&
     route.connectionId === host.state.connectionId.get() &&
-    route.profile === host.state.profile.get() && host.state.gateway.get() === 'open'
+    route.profile === host.state.profile.get() &&
+    host.state.gateway.get() === 'open'
 }
 
 export interface GroupCapabilityState {
@@ -160,7 +190,9 @@ export function useGroupCapability(active: boolean) {
       () => settle(null, true)
     )
 
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+    }
   }, [activationEpoch, active, connectionId, gateway, profile, source])
 
   const current = capability?.source === source ? capability : null
@@ -216,7 +248,11 @@ export function groupNeedsDesktopCourier(members: RosterRow[], connectionId: nul
 
 /** True when this Desktop drives the room recorded as `room`: the engine it
  *  was created with, else (older records) whether `members` span connections. */
-export function groupDrivenByDesktop(room: { engine?: 'desktop' } | undefined, members: RosterRow[], connectionId: null | string): boolean {
+export function groupDrivenByDesktop(
+  room: { engine?: 'desktop' } | undefined,
+  members: RosterRow[],
+  connectionId: null | string
+): boolean {
   return room?.engine === 'desktop' || groupNeedsDesktopCourier(members, connectionId)
 }
 
@@ -225,8 +261,11 @@ export function groupDrivenByDesktop(room: { engine?: 'desktop' } | undefined, m
  *  is needed between machines, so creation from here is refused: the user adds a
  *  bot from this connection or switches to that one. */
 export function groupSelectionElsewhere(selection: RosterRow[], connectionId: null | string): boolean {
-  return selection.length > 0 && !groupNeedsDesktopCourier(selection, connectionId) &&
+  return (
+    selection.length > 0 &&
+    !groupNeedsDesktopCourier(selection, connectionId) &&
     !botOnConnection(selection[0], connectionId)
+  )
 }
 
 export type GroupCreationEngine = 'desktop' | 'elsewhere' | 'gateway'
@@ -236,7 +275,11 @@ export type GroupCreationEngine = 'desktop' | 'elsewhere' | 'gateway'
  *  connection), this Desktop (a legacy gateway, or bots on two or more
  *  connections), or nobody reachable from here (every bot on ONE other
  *  connection, see groupSelectionElsewhere). */
-export function groupCreationEngine(mode: GroupExecutionMode, selection: RosterRow[], connectionId: null | string): GroupCreationEngine {
+export function groupCreationEngine(
+  mode: GroupExecutionMode,
+  selection: RosterRow[],
+  connectionId: null | string
+): GroupCreationEngine {
   if (mode !== 'canonical' || groupNeedsDesktopCourier(selection, connectionId)) {
     return 'desktop'
   }
@@ -256,7 +299,11 @@ export function connectionName(bot: RosterRow | undefined): string {
  *  ONE predicate behind both the dialog's picker and the menu item that opens it. */
 export function seatableGroupBots(
   roster: RosterRow[],
-  { connectionId, mode, seatable }: { connectionId: null | string; mode: GroupExecutionMode | 'checking'; seatable: null | Set<string> }
+  {
+    connectionId,
+    mode,
+    seatable
+  }: { connectionId: null | string; mode: GroupExecutionMode | 'checking'; seatable: null | Set<string> }
 ): RosterRow[] {
   return roster.filter(bot => {
     if (bot?.ghost) {

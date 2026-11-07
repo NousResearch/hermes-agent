@@ -14,7 +14,6 @@ import { zhHantFirstRun } from './zh-hant_first_run'
 import { zhHantSettings } from './zh-hant_settings'
 
 export const zhHantOverrides = {
-
   catalog: {
     add: '新增',
     added: '已新增',

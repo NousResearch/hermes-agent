@@ -11,7 +11,9 @@ export function capturePromptResponseGuard<K extends 'approval' | 'clarify' | 's
   const destination = captureDestination()
   const info = $uiState.get().info
 
-  return () => Boolean(prompt) && isCurrentDestination(destination) &&
+  return () =>
+    Boolean(prompt) &&
+    isCurrentDestination(destination) &&
     $uiState.get().info?.execution_epoch === info?.execution_epoch &&
     $uiState.get().info?.execution_generation === info?.execution_generation &&
     $overlayState.get()[key] === prompt

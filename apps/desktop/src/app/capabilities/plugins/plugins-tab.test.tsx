@@ -438,7 +438,9 @@ describe('PluginsTab', () => {
       { id: 'meter-ui', name: 'Meter', kind: 'disk', status: 'disabled', packageName: 'meter' },
       { activate: () => patchPlugin('meter-ui', { status: 'loaded' }), deactivate: () => undefined }
     )
-    $agentPlugins.set([{ description: '', key: 'meter', name: 'meter', source: 'git', status: 'enabled', version: '1' }])
+    $agentPlugins.set([
+      { description: '', key: 'meter', name: 'meter', source: 'git', status: 'enabled', version: '1' }
+    ])
     requestGateway.mockImplementation((async (_method: string, params?: { action?: string }) =>
       params?.action === 'toggle'
         ? { ok: true, plugin: { key: 'meter', name: 'meter', status: 'enabled' } }

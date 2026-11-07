@@ -8,12 +8,22 @@ vi.mock('@hermes/plugin-sdk', async () => {
   const { relativeTime } = await import('@/lib/time')
 
   // The shell's shared message renderer; media marks whether MEDIA: paths would resolve locally.
-  const MessageTextContent = ({ media = true, text }: { media?: boolean; text: string }) =>
-    <div data-media={String(media)} data-testid="message-text"><Streamdown>{text}</Streamdown></div>
+  const MessageTextContent = ({ media = true, text }: { media?: boolean; text: string }) => (
+    <div data-media={String(media)} data-testid="message-text">
+      <Streamdown>{text}</Streamdown>
+    </div>
+  )
 
-  return { ...await (await import('./group-test-utils')).pluginSdkMock({}), MessageTextContent, Streamdown, relativeTime, useI18n: () => ({ locale: 'en', t: en }),
+  return {
+    ...(await (await import('./group-test-utils')).pluginSdkMock({})),
+    MessageTextContent,
+    Streamdown,
+    relativeTime,
+    useI18n: () => ({ locale: 'en', t: en }),
     Button: (props: ComponentProps<'button'>) => <button {...props} />,
-    Codicon: () => <span />, Tip: ({ children }: { children: ReactNode }) => <>{children}</> }
+    Codicon: () => <span />,
+    Tip: ({ children }: { children: ReactNode }) => <>{children}</>
+  }
 })
 vi.mock('./canonical-group-labels', async () => {
   const { CANONICAL_GROUP_LOCALES } = await import('./canonical-group-locales')
@@ -31,7 +41,12 @@ it('labels this Desktop’s own messages You and keeps every other user’s name
   const events = [
     { seq: 1, kind: 'message.user', actor: { kind: 'user', id: 'desktop' }, payload: { text: 'Mine' } },
     { seq: 2, kind: 'message.user', actor: { kind: 'user', id: 'uid:42' }, payload: { text: 'Theirs' } },
-    { seq: 3, kind: 'message.user', actor: { kind: 'user', id: 'desktop', display_name: 'Morgan' }, payload: { text: 'Named' } }
+    {
+      seq: 3,
+      kind: 'message.user',
+      actor: { kind: 'user', id: 'desktop', display_name: 'Morgan' },
+      payload: { text: 'Named' }
+    }
   ]
 
   render(<CanonicalGroupHistory binding={binding} events={events} members={[]} />)

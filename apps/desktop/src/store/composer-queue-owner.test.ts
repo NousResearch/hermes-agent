@@ -36,7 +36,11 @@ describe('composer queue ownership follows the negotiated wire', () => {
     _resetSessionOwnerHintsForTests({ storage: true })
   })
 
-  const remote = { connectionId: 'vps', mode: 'remote', wsUrl: 'wss://vps.example/api/ws?ticket=public' } as HermesConnection
+  const remote = {
+    connectionId: 'vps',
+    mode: 'remote',
+    wsUrl: 'wss://vps.example/api/ws?ticket=public'
+  } as HermesConnection
 
   it('belongs to the owner of a public connection that negotiated the canonical wire', () => {
     $connection.set(remote)
@@ -45,7 +49,7 @@ describe('composer queue ownership follows the negotiated wire', () => {
     expect(serverOwnsComposerQueue('chat')).toBe(true)
   })
 
-  it('reads a remote owner route\'s own connection, not the early mode', () => {
+  it("reads a remote owner route's own connection, not the early mode", () => {
     $connection.set(remote)
     setSessionOwnerHint('chat', { connectionId: 'vps', mode: 'remote', profile: 'default' })
     recordConnectionWire('vps', 'canonical')
@@ -54,7 +58,7 @@ describe('composer queue ownership follows the negotiated wire', () => {
     expect(serverOwnsComposerQueue('chat')).toBe(false)
   })
 
-  it('keeps a background connection\'s wire apart from the foreground one', () => {
+  it("keeps a background connection's wire apart from the foreground one", () => {
     $connection.set(remote)
     setSessionOwnerHint('chat', { connectionId: 'other', mode: 'remote', profile: 'default' })
     recordConnectionWire('vps', 'canonical')
@@ -65,7 +69,11 @@ describe('composer queue ownership follows the negotiated wire', () => {
 
   // Pre-existing on main: the webapp stamps Bot Chat owners `mode: 'remote'` on its own native dial.
   it('follows a native dial for a remote-stamped owner of the same connection before ready', () => {
-    $connection.set({ connectionId: 'served', mode: 'remote', wsUrl: 'wss://host.example/api/ws?native_dial=browser' } as HermesConnection)
+    $connection.set({
+      connectionId: 'served',
+      mode: 'remote',
+      wsUrl: 'wss://host.example/api/ws?native_dial=browser'
+    } as HermesConnection)
     setSessionOwnerHint('chat', { connectionId: 'served', mode: 'remote', profile: 'bot' })
     expect(serverOwnsComposerQueue('chat')).toBe(true)
   })

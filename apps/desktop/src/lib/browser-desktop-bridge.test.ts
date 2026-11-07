@@ -55,16 +55,23 @@ describe('browser-hosted Desktop bridge', () => {
     const logout = vi.spyOn(desktop, 'oauthLogoutConnectionConfig')
     const signIn = vi.spyOn(desktop.cloud, 'agentSignIn')
 
-    await expect(reconnectMovedCloudAgent(desktop, {
-      id: 'cloud-agent',
-      kind: 'cloud',
-      label: 'Cloud agent',
-      url: 'https://agent.example.com',
-      authMode: 'oauth',
-      org: 'old-team',
-      tokenSet: false,
-      tokenPreview: null
-    }, 'new-team', () => true)).resolves.toBe(false)
+    await expect(
+      reconnectMovedCloudAgent(
+        desktop,
+        {
+          id: 'cloud-agent',
+          kind: 'cloud',
+          label: 'Cloud agent',
+          url: 'https://agent.example.com',
+          authMode: 'oauth',
+          org: 'old-team',
+          tokenSet: false,
+          tokenPreview: null
+        },
+        'new-team',
+        () => true
+      )
+    ).resolves.toBe(false)
     expect(logout).not.toHaveBeenCalled()
     expect(signIn).not.toHaveBeenCalled()
     expect(fetchMock).not.toHaveBeenCalled()
@@ -158,8 +165,7 @@ describe('browser-hosted Desktop bridge', () => {
     const first = await win.hermesDesktop!.getGatewayWsUrl('worker-a')
     const second = await win.hermesDesktop!.getGatewayWsUrlFor!({ connectionId: 'local', profile: 'worker-a' })
 
-    const wsUrl = (result: typeof first) =>
-      typeof result === 'string' ? result : result.ok ? result.wsUrl : ''
+    const wsUrl = (result: typeof first) => (typeof result === 'string' ? result : result.ok ? result.wsUrl : '')
 
     const firstUrl = new URL(wsUrl(first))
     const secondUrl = new URL(wsUrl(second))
@@ -367,13 +373,17 @@ describe('browser-hosted Desktop bridge', () => {
       'file:///etc/passwd',
       'not a url'
     ]) {
-      for (const opener of openers) {await opener(url)}
+      for (const opener of openers) {
+        await opener(url)
+      }
     }
 
     expect(open).not.toHaveBeenCalled()
 
     for (const url of ['https://example.com/a b', 'http://127.0.0.1:3000/', 'mailto:someone@example.com']) {
-      for (const opener of openers) {await opener(url)}
+      for (const opener of openers) {
+        await opener(url)
+      }
     }
 
     expect(open.mock.calls).toEqual(
@@ -411,16 +421,19 @@ describe('browser-hosted Desktop bridge', () => {
     seedWebappSession('served-token')
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockImplementation(async (url: URL) =>
-        new Response(
-          JSON.stringify(
-            url.pathname.endsWith('/api/webapp/socket-ticket')
-              ? { ticket: 'research-ticket' }
-              : { profiles: [{ name: 'default' }, { name: 'research' }] }
-          ),
-          { status: 200 }
+      vi
+        .fn()
+        .mockImplementation(
+          async (url: URL) =>
+            new Response(
+              JSON.stringify(
+                url.pathname.endsWith('/api/webapp/socket-ticket')
+                  ? { ticket: 'research-ticket' }
+                  : { profiles: [{ name: 'default' }, { name: 'research' }] }
+              ),
+              { status: 200 }
+            )
         )
-      )
     )
 
     expect(installBrowserDesktopBridge()).toBe(true)
@@ -509,9 +522,7 @@ describe('browser-hosted Desktop bridge', () => {
     expect(new Headers(listInit.headers).get('X-Hermes-Session-Token')).toBe('served-token')
 
     $connection.set({ profile: 'active-profile' } as never)
-    await expect(git.review.diff('/srv/my repo', 'a b.txt', 'uncommitted', null, false)).resolves.toBe(
-      'working diff'
-    )
+    await expect(git.review.diff('/srv/my repo', 'a b.txt', 'uncommitted', null, false)).resolves.toBe('working diff')
     const [diffUrl] = fetchMock.mock.calls[1] as [URL, RequestInit]
     expect(diffUrl.searchParams.get('profile')).toBe('active-profile')
     expect(diffUrl.searchParams.get('file')).toBe('a b.txt')
@@ -535,9 +546,9 @@ describe('browser-hosted Desktop bridge', () => {
     seedWebappSession('served-token')
     $connection.set({ profile: 'active-files' } as never)
 
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ path: '/tmp/example.txt', text: 'hello' }), { status: 200 })
-    )
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ path: '/tmp/example.txt', text: 'hello' }), { status: 200 }))
 
     vi.stubGlobal('fetch', fetchMock)
 
@@ -604,7 +615,8 @@ describe('browser-hosted Desktop bridge', () => {
     $connection.set(await win.hermesDesktop!.getConnectionFor!({ connectionId: 'local', profile: 'research' }))
 
     const pending = downloadGatewayMediaFile('file:///srv/reports/a%20b.pdf', {
-      sessionId: 'origin-session', profile: 'research'
+      sessionId: 'origin-session',
+      profile: 'research'
     })
 
     $connection.set({ mode: 'remote', profile: 'switched-profile' } as never)
@@ -634,9 +646,12 @@ describe('browser-hosted Desktop bridge', () => {
 
     fetchMock.mockImplementation(async () => new Response(null, { status: 404 }))
     await expect(downloadGatewayMediaFile('/srv/missing.pdf')).rejects.toThrow('404')
-    await expect(win.hermesDesktop!.saveGatewayFile!({
-      connectionId: 'another-host', path: '/srv/reports/a b.pdf'
-    })).rejects.toThrow('No connection with id "another-host"')
+    await expect(
+      win.hermesDesktop!.saveGatewayFile!({
+        connectionId: 'another-host',
+        path: '/srv/reports/a b.pdf'
+      })
+    ).rejects.toThrow('No connection with id "another-host"')
     expect(downloads).toHaveLength(1)
   })
 
@@ -700,10 +715,7 @@ describe('browser-hosted Desktop bridge', () => {
 
     expect(installBrowserDesktopBridge()).toBe(true)
 
-    const path = await win.hermesDesktop!.saveImageBuffer(
-      new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
-      '.png'
-    )
+    const path = await win.hermesDesktop!.saveImageBuffer(new Uint8Array([0x89, 0x50, 0x4e, 0x47]), '.png')
 
     expect(path).toBe('/srv/hermes/images/upload.png')
     const [requestUrl, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
@@ -759,9 +771,9 @@ describe('browser-hosted Desktop bridge', () => {
     seedWebappSession('served-token')
     $connection.set({ profile: 'drop-profile' } as never)
 
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ path: '/srv/hermes/uploads/drop.txt' }), { status: 200 })
-    )
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ path: '/srv/hermes/uploads/drop.txt' }), { status: 200 }))
 
     vi.stubGlobal('fetch', fetchMock)
 
@@ -844,7 +856,7 @@ describe('browser-hosted Desktop bridge', () => {
     expect(await srcdocOf(based)).toBe(based)
   })
 
-  it('puts the about:srcdoc base inside the page\'s own <head>, so the head keeps its attributes', async () => {
+  it("puts the about:srcdoc base inside the page's own <head>, so the head keeps its attributes", async () => {
     const win = mutableWindow()
     seedWebappSession('served-token')
     const blobs: Blob[] = []
@@ -866,7 +878,8 @@ describe('browser-hosted Desktop bridge', () => {
     }
 
     // A base before <head> would open an implicit head, and the authored tag's attributes would be lost.
-    const report = '<!DOCTYPE html><HTML lang="en"><Head id="report-assets" data-x="1"><title>r</title></Head><body><a href="#sec">x</a></body></HTML>'
+    const report =
+      '<!DOCTYPE html><HTML lang="en"><Head id="report-assets" data-x="1"><title>r</title></Head><body><a href="#sec">x</a></body></HTML>'
     const withHead = await parsedSrcdocOf(report)
     expect(withHead.srcdoc).toBe(report.replace('data-x="1">', 'data-x="1"><base href="about:srcdoc">'))
     expect(withHead.doc.compatMode).toBe('CSS1Compat')
@@ -903,10 +916,7 @@ describe('browser-hosted Desktop bridge', () => {
 
     expect(installBrowserDesktopBridge()).toBe(true)
 
-    const staged = await win.hermesDesktop!.saveImageBuffer(
-      new TextEncoder().encode('<h1>preview</h1>'),
-      '.html'
-    )
+    const staged = await win.hermesDesktop!.saveImageBuffer(new TextEncoder().encode('<h1>preview</h1>'), '.html')
 
     expect(staged).toBe('blob:http://127.0.0.1:9119/preview')
     expect(createObjectURL).toHaveBeenCalledTimes(1)
@@ -917,7 +927,9 @@ describe('browser-hosted Desktop bridge', () => {
     expect(wrapper).toContain('sandbox="allow-scripts"')
     expect(wrapper).not.toContain('allow-same-origin')
     expect(wrapper).not.toContain('<h1>preview</h1>')
-    expect(wrapper).toContain('data-preview-html="&lt;base href=&quot;about:srcdoc&quot;&gt;&lt;h1&gt;preview&lt;/h1&gt;"')
+    expect(wrapper).toContain(
+      'data-preview-html="&lt;base href=&quot;about:srcdoc&quot;&gt;&lt;h1&gt;preview&lt;/h1&gt;"'
+    )
     expect(wrapper).not.toMatch(/\ssrc="data:/)
 
     await win.hermesDesktop!.openPreviewInBrowser!(staged)
@@ -1104,7 +1116,10 @@ describe('browser-hosted Desktop bridge', () => {
   it('buffers early host-shell output until Desktop registers its terminal data listener', async () => {
     const win = mutableWindow()
     seedWebappSession('served-token')
-    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response(JSON.stringify({ ticket: 'shell-ticket' }))))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async () => new Response(JSON.stringify({ ticket: 'shell-ticket' })))
+    )
 
     class PromptWebSocket {
       static readonly OPEN = 1
@@ -1198,10 +1213,7 @@ describe('browser-hosted Desktop bridge', () => {
   it("reports a failed mint as the route's own answer", async () => {
     const win = mutableWindow()
     seedWebappSession('served-token')
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue(new Response('{"detail":"gateway unavailable"}', { status: 503 }))
-    )
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{"detail":"gateway unavailable"}', { status: 503 })))
 
     expect(installBrowserDesktopBridge()).toBe(true)
 
@@ -1213,10 +1225,7 @@ describe('browser-hosted Desktop bridge', () => {
   it("rejects a dial whose ticket mint fails instead of dialing the Webapp's credential-free socket URL", async () => {
     const win = mutableWindow()
     seedWebappSession('served-token')
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue(new Response('{"detail":"gateway unavailable"}', { status: 503 }))
-    )
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{"detail":"gateway unavailable"}', { status: 503 })))
     expect(installBrowserDesktopBridge()).toBe(true)
     const desktop = win.hermesDesktop!
     const connection = await desktop.getConnection('worker-a')
@@ -1232,12 +1241,14 @@ describe('browser-hosted Desktop bridge', () => {
       seedWebappSession('served-token')
       vi.stubGlobal(
         'fetch',
-        vi.fn().mockImplementation(
-          (_url: URL, init: RequestInit) =>
-            new Promise((_resolve, reject) =>
-              init.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
-            )
-        )
+        vi
+          .fn()
+          .mockImplementation(
+            (_url: URL, init: RequestInit) =>
+              new Promise((_resolve, reject) =>
+                init.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+              )
+          )
       )
 
       expect(installBrowserDesktopBridge()).toBe(true)

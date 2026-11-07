@@ -80,26 +80,20 @@ export function applySessionInfoStatePatch(
   state: ClientSessionState,
   patch: SessionRuntimeStatePatch
 ): ClientSessionState {
-  if (
-    (patch.branch === undefined || patch.branch === state.branch) &&
-    (patch.cwd === undefined || patch.cwd === state.cwd) &&
-    (patch.fast === undefined || patch.fast === state.fast) &&
-    (patch.model === undefined || patch.model === state.model) &&
-    (patch.personality === undefined || patch.personality === state.personality) &&
-    (patch.provider === undefined || patch.provider === state.provider) &&
-    (patch.reasoningEffort === undefined || patch.reasoningEffort === state.reasoningEffort) &&
-    // The wire level can change alone: an optimistic paint already holds the new
-    // model/effort, so skipping here kept the previous route's clamp ("Medium→Max") forever.
-    (patch.reasoningEffortWire === undefined || patch.reasoningEffortWire === state.reasoningEffortWire) &&
-    (patch.reasoningEffortPending === undefined ||
-      patch.reasoningEffortPending === Boolean(state.reasoningEffortPending)) &&
-    (patch.serviceTier === undefined || patch.serviceTier === state.serviceTier) &&
-    (patch.yolo === undefined || patch.yolo === state.yolo)
-  ) {
+  const pending = state.pendingModelSelection
+  const selectionConfirmed = Boolean(pending && patch.model === pending.model && patch.provider === pending.provider)
+
+  const unchanged = Object.entries(patch).every(([field, value]) => {
+    const current = state[field as keyof ClientSessionState]
+
+    return value === undefined || value === (field === 'reasoningEffortPending' ? Boolean(current) : current)
+  })
+
+  if (!selectionConfirmed && unchanged) {
     return state
   }
 
-  return { ...state, ...patch }
+  return { ...state, ...patch, ...(selectionConfirmed ? { pendingModelSelection: undefined } : {}) }
 }
 
 // Minimum gap between two assistant-text flushes during a stream. Was 16ms

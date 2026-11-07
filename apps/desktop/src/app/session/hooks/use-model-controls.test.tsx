@@ -2,7 +2,9 @@ import { QueryClient } from '@tanstack/react-query'
 import { act, cleanup, render, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import { getGlobalModelInfo } from '@/hermes'
+import { createClientSessionState } from '@/lib/chat-runtime'
 import { modelOptionsQueryKey } from '@/lib/model-options'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
@@ -20,6 +22,7 @@ import * as SessionStates from '@/store/session-states'
 
 import { deferred } from '../../../test/deferred'
 
+import { applySessionInfoStatePatch } from './use-message-stream/utils'
 import { useModelControls } from './use-model-controls'
 
 const setGlobalModel = vi.fn()
@@ -311,12 +314,69 @@ describe('useModelControls', () => {
     expect(notify).toHaveBeenCalledWith(expect.objectContaining({ message: 'grok-4.5 applies from your next message' }))
   })
 
+  it('shows a queued pick in the real chat view despite running-model heartbeats', async () => {
+    $activeSessionId.set('session-1')
+    setCurrentModel('old')
+    setCurrentProvider('custom')
+    SessionStates.publishSessionState('session-1', {
+      ...createClientSessionState('stored-1'),
+      model: 'old',
+      provider: 'custom'
+    })
+    tile.delegate = {
+      updateSession: (
+        id: string,
+        update: (state: ReturnType<typeof createClientSessionState>) => ReturnType<typeof createClientSessionState>
+      ) => {
+        SessionStates.publishSessionState(id, update(SessionStates.$sessionStates.get()[id]))
+      }
+    }
+    const requestGateway = vi.fn(async () => ({ deferred: true }) as never)
+    let controls!: Controls
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+    await controls.selectModel({ model: 'picked', provider: 'sferical-lan-proxy' })
+    expect(PRIMARY_SESSION_VIEW.$model.get()).toBe('picked')
+    expect(PRIMARY_SESSION_VIEW.$provider.get()).toBe('sferical-lan-proxy')
+    SessionStates.publishSessionState(
+      'session-1',
+      applySessionInfoStatePatch(SessionStates.$sessionStates.get()['session-1'], { model: 'old', provider: 'custom' })
+    )
+    expect(PRIMARY_SESSION_VIEW.$model.get()).toBe('picked')
+    SessionStates.publishSessionState(
+      'session-1',
+      applySessionInfoStatePatch(SessionStates.$sessionStates.get()['session-1'], {
+        model: 'picked',
+        provider: 'sferical-lan-proxy'
+      })
+    )
+    SessionStates.publishSessionState(
+      'session-1',
+      applySessionInfoStatePatch(SessionStates.$sessionStates.get()['session-1'], {
+        model: 'later-settings-change',
+        provider: 'custom'
+      })
+    )
+    expect(PRIMARY_SESSION_VIEW.$model.get()).toBe('later-settings-change')
+    SessionStates.publishSessionState('other-session', {
+      ...createClientSessionState('other-stored'),
+      model: 'other-model',
+      provider: 'custom'
+    })
+    $activeSessionId.set('other-session')
+    expect(PRIMARY_SESSION_VIEW.$model.get()).toBe('other-model')
+    tile.delegate = null
+  })
+
   it('names the owner refusal of a pick in the failure toast', async () => {
     $activeSessionId.set('session-1')
     setCurrentModel('old')
     setCurrentProvider('xai')
     const refusal = Object.assign(new Error('model_resolution_failed'), { data: { reason: 'model_resolution_failed' } })
-    const requestGateway = vi.fn(async () => { throw refusal })
+
+    const requestGateway = vi.fn(async () => {
+      throw refusal
+    })
+
     let controls!: Controls
 
     render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)

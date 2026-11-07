@@ -260,11 +260,12 @@ export function useModelControls({
       const touchesPrimary = !liveSessionId || liveSessionId === primaryRuntimeId
 
       const readSnapshot = (): ModelPickSnapshot => {
-        const tileState = touchesPrimary ? undefined : $sessionStates.get()[liveSessionId!]
+        const tileState = liveSessionId ? $sessionStates.get()[liveSessionId] : undefined
+        const pending = tileState?.pendingModelSelection
 
         return {
-          model: touchesPrimary ? $currentModel.get() : (tileState?.model ?? ''),
-          provider: touchesPrimary ? $currentProvider.get() : (tileState?.provider ?? ''),
+          model: pending?.model ?? (touchesPrimary ? $currentModel.get() : (tileState?.model ?? '')),
+          provider: pending?.provider ?? (touchesPrimary ? $currentProvider.get() : (tileState?.provider ?? '')),
           reasoningEffortWire: touchesPrimary
             ? $currentReasoningEffortWire.get()
             : (tileState?.reasoningEffortWire ?? ''),
@@ -280,13 +281,16 @@ export function useModelControls({
           setCurrentModel(selection.model)
           setCurrentProvider(selection.provider)
           markComposerSelectionManual()
-        } else if (liveSessionId) {
-          // Optimistic tile paint — session.info will confirm; rollback on error. The wire stamp
+        }
+
+        if (liveSessionId) {
+          // Optimistic session paint — session.info will confirm; rollback on error. The wire stamp
           // belongs to the old route, so it is withdrawn until session.info re-stamps it.
           sessionTileDelegate()?.updateSession(liveSessionId, state => ({
             ...state,
             model: selection.model,
             provider: selection.provider,
+            pendingModelSelection: { model: selection.model, provider: selection.provider },
             reasoningEffortWire: ''
           }))
         }
@@ -303,11 +307,14 @@ export function useModelControls({
           // The setters withdraw the wire stamp on a change; the old route's stamp is still true.
           setCurrentReasoningEffortWire(snapshot.reasoningEffortWire)
           setCurrentModelSource(snapshot.source)
-        } else if (liveSessionId) {
+        }
+
+        if (liveSessionId) {
           sessionTileDelegate()?.updateSession(liveSessionId, state => ({
             ...state,
             model: snapshot.model,
             provider: snapshot.provider,
+            pendingModelSelection: { model: snapshot.model, provider: snapshot.provider },
             reasoningEffortWire: snapshot.reasoningEffortWire
           }))
         }

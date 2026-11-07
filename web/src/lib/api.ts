@@ -1758,7 +1758,7 @@ export interface WebhookRoute {
   created_at: string | null;
   url: string;
   secret_set: boolean;
-  enabled: boolean;
+  enabled: boolean; read_only?: boolean; source?: "config" | "subscriptions";
 }
 
 export interface WebhooksResponse {

@@ -137,7 +137,9 @@ async def clear_pending_pairing(profile: Optional[str] = None):
 # hot-reloads it. Per-route HMAC secrets are redacted on read, surfaced once on create.
 
 
-def _webhook_route_summary(name: str, route: dict[str, Any], base_url: str) -> dict[str, Any]:
+def _webhook_route_summary(
+    name: str, route: dict[str, Any], base_url: str, *, read_only: bool = False
+) -> dict[str, Any]:
     return {
         "name": name,
         "description": route.get("description", ""),
@@ -152,6 +154,10 @@ def _webhook_route_summary(name: str, route: dict[str, Any], base_url: str) -> d
         "secret_set": bool(route.get("secret")),
         # Default-enabled; only an explicit enabled:false turns a route off.
         "enabled": route.get("enabled", True) is not False,
+        # A config.yaml route has no store record: the page shows it without enable/delete actions,
+        # which only ever mutate webhook_subscriptions.json.
+        "read_only": read_only,
+        "source": "config" if read_only else "subscriptions",
     }
 
 
@@ -161,12 +167,22 @@ async def list_webhooks(profile: Optional[str] = None):
         import hermes_cli.webhook as wh
 
         base_url = wh._get_webhook_base_url()
+        static_routes = wh._static_config_routes()
         return {
             "enabled": wh._is_webhook_enabled(),
             "base_url": base_url,
             "subscriptions": [
-                _webhook_route_summary(name, route, base_url)
-                for name, route in wh._load_subscriptions().items()
+                *(
+                    _webhook_route_summary(name, route, base_url, read_only=True)
+                    for name, route in static_routes.items()
+                ),
+                # The listener merges the store UNDER the static routes, so a shadowed subscription
+                # is not a route the gateway serves and must not be listed twice (#149804).
+                *(
+                    _webhook_route_summary(name, route, base_url)
+                    for name, route in wh._load_subscriptions().items()
+                    if name not in static_routes
+                ),
             ],
         }
 

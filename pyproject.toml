@@ -275,7 +275,12 @@ messaging = [
   "slack-sdk==3.45.0",
   "qrcode==7.4.2",
 ] # aiohttp 3.14.5: prior CVEs + GHSA-9xw5-w5jj-pvcg/GHSA-2g87-pp6c-29x5/GHSA-5wr8-gcqf-gqf3 family
-cron = [] # croniter is now a core dependency; this extra kept for back-compat
+cron = [
+  # Cron .py script jobs (no_agent) exec on the app dependency venv via
+  # project_python; that venv carries only Hermes's own ruamel.yaml, so user
+  # scripts doing the ecosystem-standard `import yaml` fail at import time.
+  "pyyaml==6.0.3; python_version >= '3.14'",
+] # croniter is now a core dependency; this extra kept that back-compat role
 slack = ["slack-bolt==1.30.0", "slack-sdk==3.45.0", "aiohttp==3.14.5"]
 # Matrix gateway deps. `mautrix[encryption]` pulls `python-olm`, whose
 # vendored libolm (archived 2023) cannot build on Windows or modern macOS:

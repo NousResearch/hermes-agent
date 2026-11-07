@@ -189,3 +189,39 @@ it('applying another remote profile on a saved SSH host adds it and leaves the s
   expect(ssh.map(c => c.remoteProfile).sort()).toEqual(['coder', 'writer'])
   expect(next.connections.find(c => c.id === next.primary)?.remoteProfile).toBe('writer')
 })
+
+it('saving a corrected key or Hermes path updates the matching SSH entry in place, set or cleared', () => {
+  const registry = normalizeRegistry({
+    version: 2,
+    primary: 'coder',
+    launchMode: 'last-used',
+    lastUsed: 'coder',
+    connections: [
+      { id: 'local', kind: 'local', label: 'This device' },
+      {
+        id: 'coder',
+        kind: 'ssh',
+        label: 'Box (coder)',
+        host: 'box.example.invalid',
+        user: 'hermes',
+        remoteProfile: 'coder',
+        keyPath: '/old/key',
+        remoteHermesPath: '/old/hermes'
+      }
+    ]
+  })
+
+  const route = { host: 'box.example.invalid', user: 'hermes', remoteProfile: 'coder' }
+
+  const fixed = registerGlobalRoute(registry, {
+    mode: 'ssh',
+    remote: { ...route, keyPath: '/new/key', remoteHermesPath: '/new/hermes' }
+  })
+
+  const entry = fixed.connections.find(c => c.id === 'coder')
+  expect(fixed.connections.filter(c => c.kind === 'ssh')).toHaveLength(1)
+  expect([entry?.label, entry?.keyPath, entry?.remoteHermesPath]).toEqual(['Box (coder)', '/new/key', '/new/hermes'])
+
+  const cleared = registerGlobalRoute(fixed, { mode: 'ssh', remote: route }).connections.find(c => c.id === 'coder')
+  expect([cleared?.keyPath, cleared?.remoteHermesPath]).toEqual([undefined, undefined])
+})

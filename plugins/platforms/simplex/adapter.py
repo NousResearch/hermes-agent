@@ -268,7 +268,8 @@ class SimplexAdapter(BasePlatformAdapter):
         contact_req_id = (resp.get("contactRequest", {}) or {}).get("contactRequestId")
         if contact_req_id is not None:
             logger.info("SimpleX: auto-accepting contact request %s", _redact_id(str(contact_req_id)))
-            await self._send_command(f"/accept {contact_req_id}")
+            # This handler runs on the reader: waiting for its own response would block that reader.
+            await self._send_fire_and_forget(f"/_accept {contact_req_id}")
 
     async def _on_rcv_file_descr_ready(self, resp: dict) -> None:
         """XFTP files fire this before newChatItems; start the download now, the chat item arrives later."""
@@ -302,7 +303,8 @@ class SimplexAdapter(BasePlatformAdapter):
             await self._safe_handle_chat_item(pending, "SimpleX: error processing deferred file message")
 
     _EVENT_HANDLERS = {
-        "contactRequest": _on_contact_request, "rcvFileDescrReady": _on_rcv_file_descr_ready,
+        "receivedContactRequest": _on_contact_request, "contactRequest": _on_contact_request,
+        "rcvFileDescrReady": _on_rcv_file_descr_ready,
         "newChatItems": _on_new_chat_items, "newChatItem": _on_new_chat_item, "rcvFileComplete": _on_rcv_file_complete,
     }
 
@@ -443,7 +445,7 @@ class SimplexAdapter(BasePlatformAdapter):
         return None
 
     async def _send_fire_and_forget(self, command: str) -> None:
-        """Send a command the daemon never replies to with a corrId (e.g. ``/freceive``)."""
+        """Send without awaiting a reply, including commands issued by the WebSocket reader."""
         await self._send_ws({"corrId": self._make_corr_id(), "cmd": command})
 
     async def _send_items(self, chat_id: str, items: list, error: str) -> SendResult:

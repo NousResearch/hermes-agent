@@ -100,6 +100,70 @@ def _mime_for_ext(ext: str) -> str:
     return "application/octet-stream"
 
 
+_INLINE_IMAGE_MAX_BYTES = 12 * 1024 * 1024   # 12 MB decoded; screenshots are far smaller
+_INLINE_IMAGE_MAX_B64 = (_INLINE_IMAGE_MAX_BYTES // 3 + 1) * 4 + 16  # b64 chars that could encode it
+
+
+def _decode_inline_image(data_uri, file_id=None):
+    """Decode a SimpleX inline image (base64 in ``msgContent.image``) into a temp file.
+
+    Inline images carry their bytes inside the message content and have NO ``chatItem.file``
+    transfer object, so the file-path block in ``_handle_chat_item`` never sees them and the
+    agent receives an empty message. Upstream: NousResearch/hermes-agent#76362.
+    Returns ``(path, mime)`` or ``None`` when the payload is unusable.
+    """
+    if not isinstance(data_uri, str) or not data_uri.strip():
+        return None
+    payload = data_uri.strip()
+    mime = ""
+    if payload.startswith("data:"):
+        header, _, payload = payload.partition(",")
+        mime = header[5:].split(";")[0].strip()
+    payload = "".join(payload.split()).replace("-", "+").replace("_", "/")
+    # Bound the work before decoding: base64 is 4 chars per 3 bytes, so a payload larger than
+    # this can only exceed the cap. Untrusted input must not be allowed to size our memory.
+    if len(payload) > _INLINE_IMAGE_MAX_B64:
+        logger.warning("SimpleX: inline image payload too large (%d b64 chars), dropping", len(payload))
+        return None
+    try:
+        raw = base64.b64decode(payload + "=" * (-len(payload) % 4), validate=False)
+    except Exception:
+        return None
+    if len(raw) < 32:
+        return None
+    if len(raw) > _INLINE_IMAGE_MAX_BYTES:
+        logger.warning("SimpleX: inline image too large (%d bytes), dropping", len(raw))
+        return None
+    # Extension comes from the magic bytes ONLY. A data URI can claim any mime
+    # ("data:image/x.exe"), so the declared type must never reach the filename.
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        ext, mime = ".png", "image/png"
+    elif raw.startswith(b"\xff\xd8\xff"):
+        ext, mime = ".jpg", "image/jpeg"
+    elif raw[:6] in (b"GIF87a", b"GIF89a"):
+        ext, mime = ".gif", "image/gif"
+    elif raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        ext, mime = ".webp", "image/webp"
+    else:
+        logger.warning("SimpleX: inline image is not PNG/JPEG/GIF/WEBP, dropping (declared mime=%s)", mime or "none")
+        return None
+    try:
+        base = os.environ.get("HERMES_HOME") or str(Path.home() / "AppData" / "Local" / "hermes")
+        out_dir = Path(base) / "cache" / "simplex-inline"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        # Filename component is digits only: itemId comes from the daemon, but sanitise anyway.
+        if file_id is None:
+            stamp = str(int(time.time() * 1000))
+        else:
+            stamp = "".join(ch for ch in str(file_id) if ch.isdigit()) or "x"
+        path = out_dir / f"inline-{stamp}{ext}"
+        path.write_bytes(raw)
+        return str(path), mime
+    except Exception:
+        logger.warning("SimpleX: could not persist inline image", exc_info=True)
+        return None
+
+
 def _display_name(obj: dict, profile_key: str, default: str = "") -> str:
     """``localDisplayName`` falling back to the nested profile's ``displayName``."""
     return obj.get("localDisplayName", "") or (obj.get(profile_key, {}) or {}).get("displayName", default)
@@ -376,6 +440,19 @@ class SimplexAdapter(BasePlatformAdapter):
             if file_path:
                 media_urls.append(file_path)
                 media_types.append(_mime_for_ext(ext))
+        # Inline images: the bytes live in msgContent.image with NO chatItem.file transfer,
+        # so the block above finds nothing and the agent would receive an empty message.
+        # Upstream: NousResearch/hermes-agent#76362.
+        if not media_urls and msg_type_str == "image":
+            decoded = _decode_inline_image(
+                msg_content.get("image") if isinstance(msg_content, dict) else None,
+                meta.get("itemId"))
+            if decoded:
+                media_urls.append(decoded[0])
+                media_types.append(decoded[1])
+                logger.info("SimpleX: decoded inline image item=%s mime=%s", meta.get("itemId"), decoded[1])
+            else:
+                logger.warning("SimpleX: inline image present but undecodable on item=%s", meta.get("itemId"))
         source = self.build_source(
             chat_id=chat_id, chat_name=chat_name, chat_type="group" if is_group else "dm",
             user_id=sender_id, user_name=sender_name or sender_id)

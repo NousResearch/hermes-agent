@@ -72,9 +72,11 @@ def test_watchdog_sets_should_exit_and_only_arms_for_ssh_isolated_backends(monke
     monkeypatch.setattr(ws_mod.app.state, "auth_required", False, raising=False)
     plain, _ = ws_mod._build_uvicorn_server("127.0.0.1", 0)
     assert plain.ws_ping_interval is None and getattr(ws_mod.app.state, "ssh_isolated_clients", None) is None
+    assert plain.ws_per_message_deflate is False  # loopback: no per-frame zlib on the loop
     try:
         isolated, _ = ws_mod._build_uvicorn_server("127.0.0.1", 0, ssh_isolated=True)
         assert isolated.ws_ping_interval and isolated.ws_ping_timeout > isolated.ws_ping_interval
+        assert isolated.ws_per_message_deflate is True  # the tunnelled client is remote
         assert isinstance(ws_mod.app.state.ssh_isolated_clients, IdleClientTracker)
     finally:
         ws_mod.app.state._state.pop("ssh_isolated_clients", None)  # process-global app: never leak the tracker

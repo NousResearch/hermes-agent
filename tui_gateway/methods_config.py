@@ -268,6 +268,7 @@ _CONFIG_GETTERS = {
     "personality": _cfg_get_personality,
     "reasoning": _cfg_get_reasoning,
     "fast": _cfg_get_fast,
+    "daybreak": lambda params: {"value": (_load_cfg().get("agent") or {}).get("daybreak") is True},
     "busy": lambda params: {"value": _load_busy_input_mode()},
     "approval_mode": lambda params: {"value": _load_approval_mode()},
     "approvals.mode": lambda params: {"value": _load_approval_mode()},
@@ -480,7 +481,8 @@ def _(rid, params: dict) -> dict:
         return _readiness_check(rid, params, probe, probe_key=f"runtime:{requested or ''}",
                                 wait_seconds=_READINESS_SHARE_WAIT_SECONDS)
     except Exception as e:
-        return _ok(rid, {"ok": False, "error": str(e)})
+        from hermes_cli.runtime_readiness import readiness_failure
+        return _ok(rid, readiness_failure(e))
 
 
 def _redact_client_text(text: str, cap: int) -> str:

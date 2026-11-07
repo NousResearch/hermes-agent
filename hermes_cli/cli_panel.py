@@ -1,6 +1,6 @@
 """Bordered overlay panels (approval, clarify, sudo, pickers) for the classic CLI's live region."""
 
-from hermes_cli.cli_render import _append_blank_panel_line, _append_panel_line
+from hermes_cli.cli_render import _append_blank_panel_line, _append_panel_line, _cells
 
 
 class _Panel:
@@ -13,7 +13,7 @@ class _Panel:
             # Title inlined into the top rule: ``╭─ Title ───╮``.
             self.lines.append((border, "╭─ "))
             self.lines.append((title_style, title))
-            self.lines.append((border, " " + ("─" * max(0, box_width - len(title) - 3)) + "╮\n"))
+            self.lines.append((border, " " + ("─" * max(0, box_width - _cells(title) - 3)) + "╮\n"))
         else:
             self.lines.append((border, "╭" + ("─" * box_width) + "╮\n"))
 

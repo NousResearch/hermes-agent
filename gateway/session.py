@@ -365,11 +365,6 @@ _STATIC_PLATFORM_NOTES = {
         "1–3 sentences each. If the user needs a detailed answer, give the short version first and "
         "offer to elaborate."
     ),
-    Platform.YUANBAO: (
-        "**Platform notes:** You are running inside Yuanbao. To send a private (DM) message to a "
-        "user in the current group, use the yb_send_dm tool (look up the recipient by name or pass "
-        "their user_id). Your normal reply is delivered to the group you are responding in."
-    ),
 }
 
 # Platform -> extra "Platform notes" lines for the session-context prompt.
@@ -974,7 +969,7 @@ class SessionStore(
                 self._route_reset_reason(observed),
             )
         # Phase 2 (lock): apply the decisions to _entries.
-        decision = self._apply_route_checks(session_key, checks, force_new, touch_activity, now)
+        decision = self._apply_route_checks(session_key, checks, force_new, touch_activity, now, source)
 
         # Phase 3 (no lock): recovery + create + save + DB ops.
         if decision.needs_recover and decision.prev_session_id is None:
@@ -1005,7 +1000,7 @@ class SessionStore(
 
     def _apply_route_checks(
         self, session_key: str, checks: Optional[_RouteChecks], force_new: bool,
-        touch_activity: bool, now: datetime,
+        touch_activity: bool, now: datetime, source: SessionSource,
     ) -> _RouteDecision:
         """Apply stale/reset decisions to ``_entries`` under ``_lock``. If another thread replaced
         the entry during the lock-free window the snapshot no longer applies: route is healthy."""
@@ -1045,9 +1040,19 @@ class SessionStore(
                 # Internal/system events preserve the user-activity clock.
                 if touch_activity:
                     entry.updated_at = now
+                # Creation is the only other writer of origin, so an entry persisted without one
+                # (#146696) stays unroutable for completions, recovery and lane naming until an
+                # inbound turn on this very route fills it.
+                if touch_activity and entry.origin is None:
+                    entry.origin = source
                 decision.entry = entry
                 decision.needs_save = touch_activity or healed
                 decision.metadata_only_save = touch_activity and not healed
+                # Only creation wrote the receiving bot, and /reset, /new and switches copy it, so a
+                # route saved before the column existed stays NULL and its completions stay pending
+                # after a restart. Its next inbound turn records the bot that verifiably received it.
+                if touch_activity and entry.transport_profile is None:
+                    entry.transport_profile = transport_profile_of(source)
         return decision
 
     def _route_recover(

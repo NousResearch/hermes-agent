@@ -35,6 +35,9 @@ from tests.e2e.core.upgrade.pm import _pm as P
 from tests.e2e.core.upgrade.test_upgrade_path import _RETRY_PREFIX, _refs, make_leg
 from tests.fakes.fake_llm_provider import FakeLLMServer
 
+# A main-era install is a release from before PM shipped (pm/ first appears in v0.21.6).
+PRE_PM_GENERATION = "handoff"
+
 pytestmark = [
     pytest.mark.platforms("linux"),
     pytest.mark.live_system_guard_bypass,
@@ -131,12 +134,13 @@ def test_configured_gateway_platform_has_its_sdk_after_update(rebuilt):
 
 @pytest.fixture(scope="module")
 def migrated(tmp_path_factory, provider):
-    """Release N-1 installed main-era style (``venv/`` from N-1's own uv.lock with ``[all]``) plus
+    """The newest pre-PM release installed main-era style (``venv/`` from N-1's own uv.lock with ``[all]``) plus
     the ``[messaging]`` extra (Telegram, Discord, Slack SDKs) the main-era docs installed, then
     updated to HEAD."""
-    if not _refs().base_tag:
+    pre_pm = I.upgrade_base(PRE_PM_GENERATION)
+    if pre_pm is None:
         pytest.skip("no release tag reachable before HEAD (fetch tags)")
-    leg = make_leg(tmp_path_factory.mktemp("pm-legacy") / "leg", None)
+    leg = make_leg(tmp_path_factory.mktemp("pm-legacy") / "leg", None, base=pre_pm.commit)
     no_cfg = leg.root / "uv-config"
     uv_env = {k: v for k, v in os.environ.items() if k not in ("VIRTUAL_ENV", "UV_NO_CONFIG", "UV_CONFIG_FILE")}
     uv_env.update(UV_PROJECT_ENVIRONMENT=str(leg.install / "venv"), XDG_CONFIG_HOME=str(no_cfg),

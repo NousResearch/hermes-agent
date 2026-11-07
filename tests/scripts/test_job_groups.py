@@ -37,7 +37,10 @@ def test_selects_all_refuses_partial_selections():
     assert selects_all(None) is True
     assert selects_all(ALL_JOBS) is True
     assert selects_all("termux") is False
-    assert selects_all("darwin-arm64,darwin-x64,win32-arm64,win32-x64") is False
+    assert selects_all("darwin-arm64,win32-arm64,win32-x64") is False
+    # Intel macOS is not a job group: no caller can select a darwin-x64 build.
+    with pytest.raises(ValueError, match="unknown job group: darwin-x64"):
+        selects_all("darwin-arm64,darwin-x64")
     with pytest.raises(ValueError):
         selects_all("bogus")
 
@@ -46,7 +49,6 @@ def test_phase_jobs_judge_only_the_selected_groups():
     every = {group: True for group in JOB_GROUPS}
     candidate = phase_jobs(every, "candidate")
     assert candidate == ["validate", "build-darwin-arm64", "smoke-darwin-arm64",
-                         "build-darwin-x64", "smoke-darwin-x64",
                          "build-win32-arm64", "smoke-win32-arm64",
                          "build-win32-x64", "smoke-win32-x64",
                          "assemble-win32-bundle", "termux-deb"]
@@ -86,7 +88,7 @@ def test_windows_smokes_with_bundle_move_the_msix_smokes_to_the_bundle_call():
 
 
 @pytest.mark.parametrize("jobs, expected", [(None, "true"), ("termux", "false"),
-                                            ("darwin-arm64,darwin-x64", "false")])
+                                            ("darwin-arm64,win32-x64", "false")])
 def test_admission_emits_all_jobs_only_for_a_full_selection(monkeypatch, capsys, jobs, expected):
     from scripts.releases import job_groups
 

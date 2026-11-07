@@ -235,13 +235,32 @@ def _endpoint_owner(saved, config):
                             detail=f'{identity} no longer serves the saved endpoint; select a model to continue')
 
 
+def adopts_client_history(authority, actor, row):
+    """Whether this resume adopts *row*, a phone app's self-labelled chat
+    (``hermes_state_local_migration.client_history_row``), as a writable conversation: only for the
+    native owner adoption requires, and only when it validates for that owner. A read-only view of it
+    already open (a metadata read came first) is promoted in place (restore_local_session); a session
+    this authority serves any other way is left alone."""
+    from gateway.session_history_mount import is_history_mount
+    from hermes_state_local_migration import client_history_row, validate_legacy_row
+    live = authority.sessions.get(row['id'])
+    if (not client_history_row(row) or (live is not None and not is_history_mount(live))
+            or getattr(authority, '_native_legacy_transports', {}).get(actor.transport_id) != actor):
+        return False
+    try:
+        validate_legacy_row(authority.db, row, subject=actor.subject)
+    except RuntimeStoreError:
+        return False
+    return True
+
+
 def adopt_legacy_session(authority, actor, row):
     if actor.profile_id != authority.profile_id:
         raise RuntimeStoreError('profile_mismatch')
     if (getattr(authority, '_native_legacy_transports', {}).get(actor.transport_id) != actor
             or not {'session:read', 'session:create'} <= actor.capabilities):
         raise RuntimeStoreError('not_found')
-    from hermes_state_local_migration import LEGACY_CREATION_SOURCES, validate_legacy_row
+    from hermes_state_local_migration import legacy_creation_source, validate_legacy_row
     validate_legacy_row(authority.db, row, subject=actor.subject)
     authority._require_admission_open()
     from gateway.run import _load_gateway_config, _resolve_gateway_model
@@ -253,7 +272,7 @@ def adopt_legacy_session(authority, actor, row):
     request_id = 'legacy:' + row['id']
     sid = row['id']
     params, api_mode = legacy_launch_params(row)
-    params['source'] = LEGACY_CREATION_SOURCES.get(row['source'], row['source'])
+    params['source'] = legacy_creation_source(row)
     private = {}
     config = _load_gateway_config()
     params, api_mode = legacy_bot_chat_launch(row, params, api_mode, config)

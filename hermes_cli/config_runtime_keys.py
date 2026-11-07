@@ -2,11 +2,13 @@
 
 ``_validate_config_key`` asks here only AFTER the schema walk refused a key, so nothing here can
 override a schema verdict; it only vouches for an exact path (and what is below it) a reader uses.
-Three owners supply them:
+Four owners supply them:
 
 * Core selection keys (``browser.cloud_provider``, ``<category>.use_gateway``, ``stt.provider``):
   :func:`tools.tool_backend_helpers.selection_config_keys`, built from ``read_selection``'s tables.
 * Core-owned unseeded keys outside that table, each listed with its reader (:data:`CORE_RUNTIME_KEYS`).
+* MoA preset fields under any preset name (:func:`hermes_cli.moa_config.is_preset_field_path`). Only a
+  preset's own fields and its aggregator slot fields qualify, not arbitrary descendants of ``moa.presets``.
 * ACTIVE plugins: a ``config_keys`` list in ``plugin.yaml`` (or ``extensions.com.nousresearch.hermes``
   in a portable ``plugin.json``) names core-section paths the plugin's code reads, e.g.
   ``memory.retaindb``. Plugins are found and gated by the loader's own discovery
@@ -100,11 +102,18 @@ def plugin_declared_config_keys() -> frozenset[str]:
     return frozenset(keys)
 
 
-def is_runtime_read_key(key: str) -> bool:
-    """True when ``key`` (dotted) is a core selection key, a core runtime key, or sits at/under a path
-    an active plugin declares. Call only for a key the schema walk refused."""
+def is_runtime_read_key(parts: list[str]) -> bool:
+    """True when the split key ``parts`` is a MoA preset field, a core selection key, a core runtime key,
+    or sits at/under a path an active plugin declares. Call only for a key the schema walk refused.
+
+    The MoA rule needs the segments (a preset name may contain a dot); the other owners match the
+    dotted join."""
+    from hermes_cli.moa_config import is_preset_field_path
     from tools.tool_backend_helpers import selection_config_keys
 
-    if key in selection_config_keys() or _covered(key, CORE_RUNTIME_KEYS):
+    if is_preset_field_path(parts):
         return True
-    return _covered(key, plugin_declared_config_keys())
+    dotted = ".".join(parts)
+    if dotted in selection_config_keys() or _covered(dotted, CORE_RUNTIME_KEYS):
+        return True
+    return _covered(dotted, plugin_declared_config_keys())

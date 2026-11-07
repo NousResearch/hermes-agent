@@ -37,9 +37,12 @@ def mark_producer_admission(authority, event, row):
 
 class _Bracket:
     def __init__(self, adapter, event, hooks):
-        from gateway.platforms.base import _thread_metadata_for_event
+        from gateway.platforms.base import _reply_anchor_for_event, _thread_metadata_for_event
+        from gateway.platforms.helpers import typing_metadata_for_turn
         self.adapter, self.event, self.hooks = adapter, event, hooks
-        self.metadata = _thread_metadata_for_event(event)
+        # The status anchor is this turn's: a message that reaches the chat later must not move it.
+        self.metadata = typing_metadata_for_turn(
+            adapter, event.source.chat_id, _reply_anchor_for_event(event), _thread_metadata_for_event(event))
         self.stop = asyncio.Event()
         self.typing = None
         self.closed = False

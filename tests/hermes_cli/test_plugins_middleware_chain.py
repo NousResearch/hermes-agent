@@ -65,3 +65,27 @@ def test_request_middleware_in_place_mutation_does_not_leak(seen, kind, apply):
     # Each callback gets its own copy of the payload and of the pre-middleware snapshot.
     assert "meddler" not in result.payload["steps"]
     assert seen[kind][1] == result.original_payload == original == {"input": ["original"]}
+
+
+def test_tool_request_original_args_is_the_pre_relay_call(seen, monkeypatch):
+    from types import SimpleNamespace
+
+    from agent import relay_tools, tool_executor
+
+    def relay_rewrites(_name, args, callback, **_kwargs):
+        relay_args = {**args, "relay": True}
+        return callback(relay_args), relay_args
+
+    dispatched = []
+    monkeypatch.setattr(relay_tools, "execute", relay_rewrites)
+    monkeypatch.setattr(tool_executor, "_dispatch_authorized_once", lambda _agent, _state, ref, **_k: dispatched.append(ref.args))
+
+    tool_executor._run_agent_tool_execution_middleware(
+        SimpleNamespace(session_id="s1"), function_name="fixture", function_args={"input": ["original"]},
+        effective_task_id="t1", tool_call_id="c1", execute=None,
+    )
+
+    # Middleware sees Relay's rewrite as ``args`` but the model's own call as ``original_args``.
+    assert seen["tool_request"] == ({"input": ["original"], "relay": True, "steps": ["first"]},
+                                    {"input": ["original"]})
+    assert dispatched == [{"input": ["original"], "relay": True, "steps": ["first"], "second": True}]

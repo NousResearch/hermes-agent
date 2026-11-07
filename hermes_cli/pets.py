@@ -208,7 +208,8 @@ def _cmd_show(args) -> int:
 def _cmd_doctor(args) -> int:
     """Report install state, active pet, config, and terminal capability."""
     from agent.pet import store
-    from agent.pet.render import detect_terminal_graphics, resolve_mode
+    from agent.pet.render import resolve_mode
+    from agent.terminal_image import detect_terminal_graphics
 
     cfg = _pet_config()
     enabled = _pet_enabled(cfg)

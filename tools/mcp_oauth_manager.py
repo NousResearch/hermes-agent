@@ -330,7 +330,7 @@ class MCPOAuthManager:
             if entry is None:
                 entry = self._entries[key] = _ProviderEntry(server_url=server_url, oauth_config=oauth_config)
             if entry.provider is None:
-                entry.provider = self._build_provider(server_name, entry)
+                entry.provider = self._build_provider(server_name, entry, key[0])
                 if entry.provider is not None:
                     entry.provider._hermes_home = key[0]
             return entry.provider
@@ -341,8 +341,13 @@ class MCPOAuthManager:
         home = Path(hermes_home) if hermes_home is not None else get_hermes_home()
         return (str(home.expanduser().resolve(strict=False)), server_name)
 
-    def _build_provider(self, server_name: str, entry: _ProviderEntry) -> Optional[Any]:
-        """Build a ``HermesMCPOAuthProvider``; None if the SDK's OAuth support is unavailable."""
+    def _build_provider(self, server_name: str, entry: _ProviderEntry,
+                        hermes_home: str | None = None) -> Optional[Any]:
+        """Build a ``HermesMCPOAuthProvider``; None if the SDK's OAuth support is unavailable.
+
+        ``hermes_home`` is the profile the entry was keyed for. It pins the provider's token storage,
+        because the SDK's later reads and writes run on the MCP loop, which no longer carries that
+        profile's home override (#148324)."""
         if _HERMES_PROVIDER_CLS is None:
             logger.warning("MCP OAuth '%s': SDK auth module unavailable", server_name)
             return None
@@ -351,7 +356,8 @@ class MCPOAuthManager:
         from tools.mcp_oauth_provider import build_provider_kwargs, prepare_oauth_config
         if not _OAUTH_AVAILABLE:
             return None
-        cfg, storage = prepare_oauth_config(server_name, entry.server_url, entry.oauth_config)
+        cfg, storage = prepare_oauth_config(server_name, entry.server_url, entry.oauth_config,
+                                            hermes_home=hermes_home)
         if get_dashboard_oauth_flow() is None and not _is_interactive() and not storage.has_cached_tokens():
             raise OAuthNonInteractiveError(
                 f"MCP OAuth for '{server_name}': non-interactive environment and no cached tokens found. "

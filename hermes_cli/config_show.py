@@ -11,6 +11,27 @@ from hermes_cli import managed_scope
 from hermes_cli.colors import Colors, color
 
 
+def _mapping(value: Any) -> dict[str, Any]:
+    """A config section as a dict; a hand-edited scalar/list (``terminal: docker``) reads as empty.
+
+    The runtime already ignores such shapes (e.g. ``_task_config`` for ``auxiliary.<task>``), so the
+    read-only summary must not be the one command that crashes on them.
+    """
+    return value if isinstance(value, dict) else {}
+
+
+def _percent(value: Any) -> str:
+    """Render a ratio as a percentage, accepting the numeric strings the runtime's ``float()`` reads.
+
+    Anything else (an explicit ``null`` included) is shown as-is: the agent's own ``float()``
+    rejects it at startup, so reporting the default here would hide the problem.
+    """
+    try:
+        return f"{float(value) * 100:.0f}%"
+    except (TypeError, ValueError):
+        return f"{value!r} (not a number)"
+
+
 def _section(title: str) -> None:
     print()
     print(color(f"◆ {title}", Colors.CYAN, Colors.BOLD))
@@ -63,7 +84,7 @@ def _show_model_section(config: dict[str, Any]) -> None:
 
 def _show_display_section(config: dict[str, Any]) -> None:
     _section("Display")
-    display = config.get('display', {})
+    display = _mapping(config.get('display'))
     try:
         from hermes_cli.personality import active_personality_name
         active_personality = active_personality_name(config) or 'none'
@@ -82,7 +103,7 @@ def _show_display_section(config: dict[str, Any]) -> None:
 
 def _show_terminal_section(config: dict[str, Any]) -> None:
     _section("Terminal")
-    terminal = config.get('terminal', {})
+    terminal = _mapping(config.get('terminal'))
     print(f"  Backend:      {terminal.get('backend', 'local')}")
     print(f"  Working dir:  {terminal.get('cwd', '.')}")
     print(f"  Timeout:      {terminal.get('timeout', 60)}s")
@@ -110,22 +131,22 @@ def _show_terminal_section(config: dict[str, Any]) -> None:
 
 def _show_compression_section(config: dict[str, Any]) -> None:
     _section("Context Compression")
-    compression = config.get('compression', {})
+    compression = _mapping(config.get('compression'))
     enabled = compression.get('enabled', True)
     print(f"  Enabled:      {'yes' if enabled else 'no'}")
     if not enabled:
         return
-    print(f"  Threshold:    {compression.get('threshold', 0.50) * 100:.0f}%")
+    print(f"  Threshold:    {_percent(compression.get('threshold', 0.50))}")
     tt = compression.get('threshold_tokens')
     try:
         if tt is not None and int(tt) > 0:
             print(f"  Token cap:    {int(tt):,} tokens (takes lower of ratio vs absolute)")
     except (TypeError, ValueError):
         pass
-    print(f"  Target ratio: {compression.get('target_ratio', 0.20) * 100:.0f}% of threshold preserved")
+    print(f"  Target ratio: {_percent(compression.get('target_ratio', 0.20))} of threshold preserved")
     print(f"  Protect last: {compression.get('protect_last_n', 20)} messages")
     print(f"  Protect first: {compression.get('protect_first_n', 3)} non-system head messages")
-    aux_comp = config.get('auxiliary', {}).get('compression', {})
+    aux_comp = _mapping(_mapping(config.get('auxiliary')).get('compression'))
     print(f"  Model:        {aux_comp.get('model', '') or '(auto)'}")
     comp_provider = aux_comp.get('provider', 'auto')
     if comp_provider and comp_provider != 'auto':
@@ -133,7 +154,7 @@ def _show_compression_section(config: dict[str, Any]) -> None:
 
 
 def _show_aux_overrides(config: dict[str, Any]) -> None:
-    aux_tasks = {"Vision": config.get('auxiliary', {}).get('vision', {})}
+    aux_tasks = {"Vision": _mapping(_mapping(config.get('auxiliary')).get('vision'))}
     overrides = {
         label: (t.get('provider', 'auto'), t.get('model', ''))
         for label, t in aux_tasks.items()

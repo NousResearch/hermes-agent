@@ -467,10 +467,17 @@ def dispatch_tool_search(args: dict[str, Any], *, current_tool_defs: list[dict[s
         if not matches and available_sources:
             group["available_sources"] = available_sources
             group["hint"] = (
-                "This query returned no lexical matches, but the sources above "
-                "are connected and their tools remain available. Retry "
-                "tool_search with the service name plus a concrete action or "
-                "object before concluding the capability is unavailable.")
+                "No tool matched this query. Find the tool's exact name in "
+                "tool_search's description (tool list or server summary) and call "
+                "tool_describe with it, or search again with the tool's name plus one "
+                "action instead of your task. If that finds nothing, stop searching "
+                "and answer the user with what you have.")
+        if matches:
+            group["next"] = (
+                "Pick one tool from 'matches'; its 'required' args are listed in 'tools'. "
+                "If they are clear, call tool_call now, otherwise call tool_describe with "
+                "that name first. Example: task 'send a Gmail email' -> tool_describe(["
+                "\"gmail_send_email\"]) -> tool_call. Do not search again.")
         results.append(group)
     remote_count = sum(1 for name in tools_map if is_connector_name(name))
     payload: dict[str, Any] = {"queries": queries, "total_available": len(catalog) + remote_count,

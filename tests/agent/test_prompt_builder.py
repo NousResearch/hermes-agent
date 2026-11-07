@@ -461,6 +461,22 @@ class TestBuildContextFilesPrompt:
         assert "Never give up" not in result
         assert result == ""
 
+    @pytest.mark.platforms("not windows")  # a process cwd cannot be removed on Windows
+    def test_deleted_launch_dir_skips_discovery_but_keeps_soul(self, monkeypatch, tmp_path):
+        # A kanban worker's scratch workspace (process cwd + TERMINAL_CWD) is removed by
+        # kanban_complete before the routed background-review fork rebuilds its prompt;
+        # os.getcwd() then raises FileNotFoundError, which used to kill the review.
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()
+        (hermes_home / "SOUL.md").write_text("Soul survives.", encoding="utf-8")
+        gone = tmp_path / "workspace"
+        gone.mkdir()
+        monkeypatch.chdir(gone)
+        gone.rmdir()
+        result = build_context_files_prompt(cwd=None, home_override=hermes_home)
+        assert "Soul survives." in result
+        assert build_context_files_prompt(cwd=None, skip_soul=True) == ""
+
 
 
 

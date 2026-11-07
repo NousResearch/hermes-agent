@@ -1,0 +1,5 @@
+name: yaml_tools
+version: 1.0.0
+description: "User-defined tools from declarative YAML files in ~/.hermes/tools/*.yaml. Each file defines one callable tool (name, description, parameters, shell command) in the agent's `custom` toolset — no Python plugin required. Model parameters use dedicated HERMES_TOOL_ARG_* variables, and execution reuses the guarded terminal pipeline."
+author: NousResearch
+kind: backend

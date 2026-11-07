@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { memo, type ReactNode, useDeferredValue, useEffect, useRef, useState } from 'react'
+import { memo, type ReactNode, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
@@ -9,6 +9,8 @@ import { Masonry } from '@/components/ui/masonry'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
+import { overlayFrom } from '@/i18n/catalog-content'
+import { useContentDictionary } from '@/i18n/catalog-content/use-content-dictionary'
 import { cn } from '@/lib/utils'
 
 import { DetailColumn, ListColumn, MasterDetail } from '../../master-detail'
@@ -34,6 +36,7 @@ import {
   catalogTags,
   filterCatalog,
   relatedEntries, sortCatalog } from './catalog-query'
+import { localizeCatalogEntries } from './localize-catalog'
 import { $catalogCardView } from './store'
 import { useCatalogFilters } from './use-catalog-filters'
 
@@ -325,7 +328,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
   onQueryChange,
   searchHints
 }: CatalogBrowserProps) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const c = t.catalog
   const cardView = useStore($catalogCardView)
   const { data, isPending, error, refetch } = useCatalog(kind)
@@ -365,7 +368,15 @@ export const CatalogBrowser = memo(function CatalogBrowser({
   const root = useRef<HTMLDivElement>(null)
   useEffect(() => (CATALOG_POINTER_ENABLED && root.current ? trackCatalogPointer(root.current) : undefined), [])
 
-  const entries = mergeInstalled(data ?? [], installedEntries ?? [], matchInstalled)
+  const overlay = overlayFrom(t)
+  const dictionaryVersion = useContentDictionary(locale)
+
+  // Localizing ~100k feed rows costs tens of ms: redo it only when its inputs change.
+  const entries = useMemo(
+    () => localizeCatalogEntries(mergeInstalled(data ?? [], installedEntries ?? [], matchInstalled), kind, locale, overlay),
+    [data, installedEntries, matchInstalled, kind, locale, overlay, dictionaryVersion]
+  )
+
   const visible = isSuperseded ? entries.filter(entry => !isSuperseded(entry)) : entries
   const filtered = sortCatalog(filterCatalog(visible, facets, deferredQuery, isInstalled, kind), sort, kind)
 

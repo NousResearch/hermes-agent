@@ -10,6 +10,7 @@ import { CheckCircle2 } from '@/lib/icons'
 import { fmtDateTime, relativeTime } from '@/lib/time'
 
 import { type CatalogEntry, catalogLabel } from './catalog-data'
+import { categoryText } from './localize-catalog'
 
 /** Trust tiers read at a glance (same tones as the installed-plugin pill); the rest stay muted. */
 const SOURCE_TONE: Record<string, 'default' | 'success'> = { official: 'default', verified: 'success' }
@@ -76,7 +77,7 @@ export function CatalogMetadata({ entry, onCategory, onTag, onSearch, onOpen, li
   const primary: CatalogChip[] = [
     {
       id: 'category',
-      label: catalogLabel(entry.categoryLabel),
+      label: categoryText(entry.categoryLabel),
       onClick: onCategory ? () => onCategory(entry.category) : undefined
     },
     ...entry.platforms.map(value => ({

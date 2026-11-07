@@ -10,6 +10,7 @@ import { useI18n } from '@/i18n'
 
 import { catalogLabel } from './catalog-data'
 import type { CatalogFacets } from './catalog-query'
+import { categoryText } from './localize-catalog'
 
 export interface FacetRow {
   value: string
@@ -133,7 +134,7 @@ export function CatalogFilters({
         all={c.allCategories}
         label={c.category}
         onSelect={onCategory}
-        rows={categories.map(([value, { label, count }]) => ({ value, label: catalogLabel(label), count }))}
+        rows={categories.map(([value, { label, count }]) => ({ value, label: categoryText(label), count }))}
       />
       <Facet active={facets.tags} label={c.tags} onSelect={onTag} rows={tags} />
       {sidebarActions}

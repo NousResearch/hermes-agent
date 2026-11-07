@@ -63,6 +63,8 @@ export const enCatalog: CatalogTranslations = {
   previousSlide: 'Previous featured',
   nextSlide: 'Next featured',
   slideOf: (index: number, count: number) => `${index} of ${count}`,
+  contentOriginal: 'Original (English)',
+  contentTechnicalId: 'Technical id',
   tierLabels: { official: 'Official', verified: 'Verified', community: 'Community' },
   tiers: {
     official: { title: 'Official Plugins', blurb: 'Built and maintained by Nous Research.' },

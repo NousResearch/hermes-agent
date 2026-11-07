@@ -12,8 +12,9 @@ import { ExternalLink } from '@/lib/external-link'
 import { cn } from '@/lib/utils'
 
 import { catalogIcon, CatalogImage } from './catalog-card'
-import { type CatalogEntry, type CatalogKind, catalogLabel } from './catalog-data'
+import { type CatalogEntry, type CatalogKind } from './catalog-data'
 import { CatalogDates, CatalogHeaderMeta, CatalogMetadata } from './catalog-metadata'
+import { catalogByline } from './localize-catalog'
 
 interface CatalogDetailProps {
   entry: CatalogEntry
@@ -44,7 +45,7 @@ function CatalogDetailHeader({ entry, action, dialog }: { entry: CatalogEntry; a
                 {action && <span className="shrink-0">{action}</span>}
               </div>
               <div className="mt-1 flex min-w-0 items-center gap-2 text-xs text-(--ui-text-tertiary)">
-                <span className="min-w-0 truncate">{entry.author || catalogLabel(entry.source)}</span>
+                <span className="min-w-0 truncate">{catalogByline(entry)}</span>
                 <CatalogHeaderMeta entry={entry} />
               </div>
             </div>
@@ -107,6 +108,7 @@ export function CatalogDetail({
       <p className="whitespace-pre-wrap break-words text-[length:var(--conversation-caption-font-size)] leading-relaxed text-(--ui-text-secondary)">
         {entry.description}
       </p>
+      <CatalogOriginal entry={entry} />
       {entry.overview && entry.overview !== entry.description && (
         <p className="whitespace-pre-wrap break-words text-[length:var(--conversation-caption-font-size)] leading-relaxed text-(--ui-text-tertiary)">
           {entry.overview}
@@ -202,5 +204,25 @@ export function CatalogDetail({
         </section>
       )}
     </div>
+  )
+}
+
+/** The untranslated title, id and description behind a localized entry. */
+function CatalogOriginal({ entry }: { entry: CatalogEntry }) {
+  const { t } = useI18n()
+
+  if (!entry.originalName && !entry.originalDescription) {
+    return null
+  }
+
+  return (
+    <details className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)" data-catalog-original>
+      <summary className="cursor-pointer select-none">{t.catalog.contentOriginal}</summary>
+      <p className="mt-1">
+        {t.catalog.contentTechnicalId}: <code>{entry.identifier || entry.originalName}</code>
+        {entry.originalName && entry.originalName !== entry.identifier ? ` · ${entry.originalName}` : ''}
+      </p>
+      {entry.originalDescription && <p className="mt-1 whitespace-pre-wrap break-words leading-relaxed">{entry.originalDescription}</p>}
+    </details>
   )
 }

@@ -72,6 +72,8 @@ function leadingGlyph(item: ComposerStatusItem, s: Translations['statusStack'], 
 
 interface StatusItemRowProps {
   item: ComposerStatusItem
+  /** Parent row: true when its descendants are hidden. */
+  collapsed?: boolean
   /** Render a retained, non-running task snapshot. */
   historical?: boolean
   /** Clear a finished background task from the stack. */
@@ -81,6 +83,10 @@ interface StatusItemRowProps {
   onOpen?: () => void
   /** Cancel a running background task. */
   onStop?: (id: string) => void
+  /** Parent row: toggle its descendants; the whole row becomes the target. */
+  onToggle?: () => void
+  /** Parent row: child progress shown next to the title (`done/total`). */
+  subtree?: { done: number; total: number }
 }
 
 /**
@@ -89,11 +95,14 @@ interface StatusItemRowProps {
  * keeps ticking instead of resetting).
  */
 export const StatusItemRow = memo(function StatusItemRow({
+  collapsed,
   historical = false,
   item,
   onDismiss,
   onOpen,
-  onStop
+  onStop,
+  onToggle,
+  subtree
 }: StatusItemRowProps) {
   const { t } = useI18n()
   const s = t.statusStack
@@ -110,14 +119,17 @@ export const StatusItemRow = memo(function StatusItemRow({
   const canOpen = item.type === 'subagent' && !!onOpen
 
   // Background rows link to their read-only terminal tab; subagents open their session.
+  // A todo parent's whole row is its disclosure, so it owns the activation.
   const onActivate =
-    item.type === 'background' ? () => openAgentTerminal(item.id, item.title) : canOpen ? onOpen : undefined
+    onToggle ??
+    (item.type === 'background' ? () => openAgentTerminal(item.id, item.title) : canOpen ? onOpen : undefined)
 
   return (
     <Fragment>
       <StatusRow
         depth={Math.min(item.depth ?? 0, 4)}
         dismiss={action ? { label: action.label, onDismiss: action.onClick } : undefined}
+        expanded={onToggle ? !collapsed : undefined}
         leading={leadingGlyph(item, s, historical)}
         onActivate={onActivate}
         trailing={
@@ -126,6 +138,14 @@ export const StatusItemRow = memo(function StatusItemRow({
           ) : undefined
         }
       >
+        {onToggle && (
+          <Codicon
+            aria-hidden
+            className="shrink-0 text-muted-foreground/60"
+            name={collapsed ? 'chevron-right' : 'chevron-down'}
+            size="0.75rem"
+          />
+        )}
         <span
           className={cn(
             'min-w-0 flex-1 truncate text-[0.73rem] leading-4',
@@ -138,6 +158,11 @@ export const StatusItemRow = memo(function StatusItemRow({
         >
           {item.title}
         </span>
+        {subtree && subtree.total > 0 && (
+          <span className="shrink-0 text-[0.62rem] leading-4 tabular-nums text-muted-foreground/60">
+            {subtree.done}/{subtree.total}
+          </span>
+        )}
         {item.type === 'subagent' && item.currentTool && (
           <span className="shrink-0 truncate text-[0.62rem] leading-4 text-muted-foreground/70">
             {toolLabel(item.currentTool)}

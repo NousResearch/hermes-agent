@@ -1860,6 +1860,9 @@ export function activateTreePane(groupId: string, paneId: string) {
 
   if (tree) {
     commit(setActivePaneOp(tree, groupId, paneId))
+    // A tab click is an explicit request to show the pane. Keep any owning
+    // toggle store truthful just like the rail and restore paths do.
+    paneOpeners[paneId]?.()
   }
 }
 

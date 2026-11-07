@@ -3,6 +3,7 @@ import type { ReadableAtom } from 'nanostores'
 import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
 import {
   activeGatewayHasShell,
+  closeSessionTerminal,
   openSessionInTerminalPane,
   type OpenSessionTuiOptions,
   type OpenSessionTuiResult

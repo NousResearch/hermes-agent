@@ -45,4 +45,32 @@ describe('host.terminal', () => {
     // Collapsing never kills the tab: the TUI keeps running behind the rail.
     expect($terminals.get()).toHaveLength(1)
   })
+
+  it('closeSession closes a tab openSession returned and refuses any other', () => {
+    const result = host.terminal.openSession('sess-1')
+
+    expect(result.ok).toBe(true)
+    expect(host.terminal.closeSession('not-ours')).toBe(false)
+
+    if (result.ok) {
+      expect(host.terminal.closeSession(result.terminalId)).toBe(true)
+      expect($terminals.get()).toHaveLength(0)
+    }
+  })
+
+  it('a restart pins the resume to the NEW tab even while the old one is still mounted', () => {
+    const first = host.terminal.openSession('sess-1')
+
+    expect(first.ok).toBe(true)
+    $terminalInjection.set(null) // the first tab consumed its command
+
+    const second = host.terminal.openSession('sess-1')
+
+    expect(second.ok).toBe(true)
+
+    if (first.ok && second.ok) {
+      expect($terminalInjection.get()).toEqual({ command: second.command, terminalId: second.terminalId })
+      expect(host.terminal.closeSession(first.terminalId)).toBe(true)
+    }
+  })
 })

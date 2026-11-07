@@ -269,6 +269,9 @@ def plan_sweep(repo_root: str, max_age_hours: int = 24, settings: Optional[dict]
         except OSError:
             continue
         kanban = re.match(r"^t_[0-9a-f]+$", entry.name)
+        if not kanban and ops._cwd_within(entry):
+            decisions.append(Decision(entry.name, str(entry), "skip-live-process", "in use as the current working tree", round(age, 1)))
+            continue
         decisions.append(Decision(entry.name, str(entry), "skip-kanban" if kanban else "skip-young",
                                   "owned by kanban gc" if kanban else "younger than its age tier", round(age, 1)))
     verdicts = ops._classify_prune_candidates(repo_root, candidates) if candidates else []

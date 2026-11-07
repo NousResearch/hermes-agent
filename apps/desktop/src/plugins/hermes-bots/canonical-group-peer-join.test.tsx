@@ -574,3 +574,31 @@ it.each(['create', 'disband'])('keeps a newer replacement request when an older 
   expect(calls('groups.create')[3][2]).toEqual(newer)
   expect(rooms.size).toBe(2)
 })
+
+it('offers Start again without only where the gateway lists groups.create', async () => {
+  gateways({ home: method => method === 'groups.capabilities' ? { ...HOME, methods: HOME.methods.filter(name => name !== 'groups.create') } : undefined })
+  render(<CanonicalGroupWorkspace binding={binding} />)
+  const row = (await screen.findByText(say(words.peerNotJoined))).closest('[role="status"]') as HTMLElement
+  expect(within(row).getByRole('button', { name: 'Retry' })).toBeTruthy()
+  expect(within(row).queryByRole('button', { name: say(words.peerStartWithout) })).toBeNull()
+})
+
+it('keeps a replacement that finishes after its view closed registered, without opening it', async () => {
+  let finish!: () => void
+  const held = new Promise<void>(resolve => { finish = resolve })
+  const { rooms, create } = strictGroupCreation()
+  gateways({ home: (method, params) => method === 'groups.create' ? held.then(() => create(params))
+    : method === 'groups.disband' ? { tombstone: { room_id: 'linked', disbanded_at: 1 } } : undefined })
+  const onReplaced = vi.fn()
+  const view = render(<CanonicalGroupWorkspace binding={binding} onReplaced={onReplaced} />)
+  await startWithout('Hermes · Mac Mini')
+  await waitFor(() => expect(calls('groups.create')).toHaveLength(1))
+  // The person closes the group chat (or the socket resets) while the new group is being made.
+  view.unmount()
+  await act(async () => { finish(); await held })
+  await waitFor(() => expect(calls('groups.disband')).toHaveLength(1))
+  await act(async () => {})
+  const [next] = [...rooms.values()]
+  expect(Object.values($canonicalGroupBindings.get()).map(entry => entry.roomId)).toContain(next.room_id)
+  expect(onReplaced).not.toHaveBeenCalled()
+})

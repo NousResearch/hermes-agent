@@ -336,11 +336,22 @@ export async function createRoomWithIntent(
   return room
 }
 
+/** What makes two creation attempts the same request: the route, the entered name and the Bots
+ *  picked, each by its connection and profile. Display data (titles, labels, a generated "Team 2")
+ *  is computed once inside the frozen payload, so a retry after a lost reply resends that payload
+ *  instead of making a second room. */
+export function groupCreationKey(route: CanonicalGroupRoute, name: string, members: GroupMember[]): string {
+  return JSON.stringify([route.connectionId, route.profile, name,
+    members.map(member => [member.route?.connectionId ?? member.connectionId ?? '', member.route?.targetProfile ?? member.targetProfile ?? member.name])])
+}
+
 export async function createCanonicalGroup(
   route: CanonicalGroupRoute,
   name: string,
   members: GroupMember[],
-  intent: GroupCreationIntent = {}
+  intent: GroupCreationIntent = {},
+  /** The room name sent, from the entered one (New group chat makes it unique among this Desktop's). */
+  sentName: (name: string) => string = entered => entered
 ): Promise<{ binding: CanonicalGroupBinding; room: CanonicalRoom }> {
   requireRoute(route)
   const checked = canonicalGroupRoster(route, members)
@@ -354,8 +365,8 @@ export async function createCanonicalGroup(
       { canonicalGroupProblem: checked.problem })
   }
 
-  const key = JSON.stringify([route.connectionId, route.profile, name, checked.roster])
-  const room = await createRoomWithIntent(route, intent, key, () => ({ room_id: randomUuid(), name, members: checked.roster }))
+  const room = await createRoomWithIntent(route, intent, groupCreationKey(route, name, members),
+    () => ({ room_id: randomUuid(), name: sentName(name), members: checked.roster }))
 
   return { binding: { ...route, roomId: room.room_id }, room }
 }

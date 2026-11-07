@@ -1,5 +1,5 @@
 import { Button, ConfirmDialog, host, useValue } from '@hermes/plugin-sdk'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { canonicalMemberName } from './canonical-group-activity'
 import { type GroupMethods, offersGroupMethod } from './canonical-group-capabilities'
@@ -56,6 +56,15 @@ function PeerJoinRows({ binding, room, routes, methods, onChanged, onReplaced }:
   const errors = useValue($peerJoinErrors)
   const [busy, setBusy] = useState(false)
   const [removing, setRemoving] = useState<CanonicalRoomMember | null>(null)
+  // A replacement that finishes after these controls unmount (a reconnect, the pane closed) stays
+  // registered, but only the view that asked for it may move to it.
+  const mounted = useRef(true)
+  // eslint-disable-next-line no-restricted-syntax -- mounted lifetime, not a reactive store mirror
+  useEffect(() => {
+    mounted.current = true
+
+    return () => { mounted.current = false }
+  }, [])
   const away = peerMemberStates(room.members, routes).filter(({ status }) => status !== 'ready')
   const roster = () => cachedUnionRoster()?.profiles ?? []
 
@@ -91,6 +100,7 @@ function PeerJoinRows({ binding, room, routes, methods, onChanged, onReplaced }:
         : labels.peerStartWithoutKept.replace('{reason}', labels.disbandUnconfirmed) })
     }
 
+    if (!mounted.current) {return}
     setRemoving(null)
     onReplaced?.(key)
   }
@@ -109,7 +119,7 @@ function PeerJoinRows({ binding, room, routes, methods, onChanged, onReplaced }:
         {error !== undefined && <p className="text-(--ui-text-secondary)">{status === 'missing' ? peerJoinText(error, name, labels) : labels.peerRetryFailed.replace('{name}', name)}</p>}
         <div className="flex flex-wrap gap-2">
           {canRetry && <Button disabled={busy} onClick={() => void retry(member)}>{labels.retry}</Button>}
-          {room.members.length > 2 && offersGroupMethod(methods, 'groups.disband') &&
+          {room.members.length > 2 && offersGroupMethod(methods, 'groups.create') && offersGroupMethod(methods, 'groups.disband') &&
             <Button className="max-w-full whitespace-normal text-start" disabled={busy} onClick={() => setRemoving(member)}>{labels.peerStartWithout.replace('{name}', name)}</Button>}
         </div>
       </div>

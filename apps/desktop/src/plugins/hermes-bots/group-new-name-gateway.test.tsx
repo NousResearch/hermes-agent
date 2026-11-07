@@ -19,6 +19,7 @@ import type * as GroupChatParts from './group-chat-parts'
 import { GroupChatWorkspace } from './group-chat-view'
 import { translateBots } from './i18n-test-helper'
 import type { RosterRow } from './types'
+import { moveGroupChatsToSection } from './user-sections'
 
 const { request, notify, openWorkspace } = vi.hoisted(() => ({ request: vi.fn(), notify: vi.fn(), openWorkspace: vi.fn() }))
 vi.mock('@hermes/plugin-sdk', async importOriginal => {
@@ -121,4 +122,18 @@ it('a new name on a gateway too old to run group chats says to update it, as New
   expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
   expect(screen.queryByRole('textbox')).toBeNull()
   expect($groupChats.get()).toEqual({})
+})
+
+it.each(['section', 'order'])('a membership-only name filed by a layout write (%s) still never opens Desktop-run', async write => {
+  // Filing a group into a section or reordering it writes an empty record for the name.
+  if (write === 'section') {moveGroupChatsToSection(['Research'], 'work')} else {
+    $groupChats.set({ Research: { log: [], watermarks: {}, epoch: 0, running: false, rosterOrder: 0 } })
+  }
+
+  expect($groupChats.get().Research).toBeTruthy()
+  await act(async () => { render(<GroupChatWorkspace group="Research" members={[alpha, remote]} />) })
+
+  await waitFor(() => expect(request.mock.calls.map(call => call[1])).toContain('groups.list'))
+  expect(screen.queryByRole('textbox', { name: 'Message Research' })).toBeNull()
+  expect(desktopRecords()).toEqual([])
 })

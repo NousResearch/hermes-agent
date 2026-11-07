@@ -1646,6 +1646,26 @@ Notes:
 - See OpenRouter's [Pareto Router docs](https://openrouter.ai/docs/guides/routing/routers/pareto-router) for the full router behavior.
 - To use the Pareto Code router for a specific **auxiliary task** (compression, vision, etc.) instead of the main agent, set `extra_body.plugins` under that task — see [Auxiliary Models → OpenRouter routing & Pareto Code for auxiliary tasks](../user-guide/configuration.md#openrouter-routing--pareto-code-for-auxiliary-tasks).
 
+## OpenRouter session stickiness
+
+Every OpenRouter chat-completions request Hermes sends carries a top-level `session_id`. Hermes sets it on the OpenAI client's `extra_body`, and that client sends `extra_body` fields as top-level JSON — the key is not nested on the wire, and it is not a hash of the opening messages. OpenRouter uses it as the conversation's sticky-routing key from the first request. See [Auto Router session stickiness](https://openrouter.ai/docs/guides/routing/routers/auto-router#session-stickiness) and [provider sticky routing](https://openrouter.ai/docs/guides/best-practices/prompt-caching#provider-sticky-routing).
+
+The value is chosen in this order:
+
+1. The turn's declared routing scope, when one was published. For a messaging chat that is a hash of the platform, the gateway session key, and the conversation generation. `/new` and other resets advance the generation, so the next conversation gets a new key. Context compression does not.
+2. Otherwise the conversation's lineage root, which a compression rotation keeps. A subagent with no declared scope of its own resolves that root through its parent, so it stays on the parent's key.
+3. Otherwise the current session id.
+
+A cron or scheduler id shaped `cron_<job_id>_<YYYYMMDD_HHMMSS>` is reduced to `cron_<job_id>`, so later runs of the same job share one key. If nothing resolves, the field is omitted and OpenRouter fingerprints the messages instead.
+
+The key is per conversation, not per user and not global. Auxiliary calls during the turn (compression, titles, vision, and the rest) send the same key. They do not pass a session id of their own; they read the turn's scope.
+
+On `openrouter/auto` and `openrouter/auto-beta`, OpenRouter remembers the model that session landed on and prefers it on later requests only while that model is still a top candidate. Every request is ranked again, including each tool round in one turn, so a change of task can switch models and miss the prompt cache. The same key also holds requests on one provider, which is what makes that cache reusable across turns. The `model` field on the OpenRouter response is the model that served the request. The [`post_api_request`](../user-guide/features/hooks.md#post_api_request) hook receives it as `response_model`.
+
+Nothing in config turns this off or selects a different key. `model.extra_body` is not read, so a `session_id` set there is ignored. Two maps are merged *after* the OpenRouter profile writes `session_id` and will replace it: `providers.<name>.extra_body` (including a legacy `custom_providers` entry) and `delegation.request_overrides.extra_body`. A static `session_id` in either one pins every request on that route — CLI, messaging, and cron — to a single routing session. Leave it unset. `auxiliary.<task>.extra_body` is applied first and does not override the key while the turn has one.
+
+This is separate from [provider routing](../user-guide/features/provider-routing.md), which chooses which upstreams may serve a fixed model, and from [fallback providers](../user-guide/features/fallback-providers.md), which switches Hermes to another provider after a request fails.
+
 ## Fallback Providers
 
 Configure a chain of backup providers Hermes tries in order when the primary model fails (rate limits, server errors, auth failures). The canonical format is a top-level `fallback_providers:` list:

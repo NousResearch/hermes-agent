@@ -224,6 +224,8 @@ provider_routing:
 
 When no `provider_routing` section is configured (the default), the aggregator uses its own default routing logic, which generally balances cost and availability automatically.
 
+Hermes also sends a per-conversation `session_id` on every OpenRouter chat-completions request. That key is how the Auto Router prefers the model a conversation already landed on, and how requests stay on one provider for prompt caching. It is not part of `provider_routing`, and there is no config switch for it. See [OpenRouter session stickiness](../../integrations/providers.md#openrouter-session-stickiness).
+
 :::tip Provider Routing vs. Fallback Models
 Provider routing controls which **sub-providers behind OpenRouter** handle your requests. For automatic failover to an entirely different provider when your primary model fails, see [Fallback Providers](./fallback-providers.md).
 :::

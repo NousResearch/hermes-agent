@@ -33,7 +33,7 @@ from agent.credential_pool import (
 from agent.error_classifier import FailoverReason
 from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_message
 from agent.message_metadata import MERGED_TURN_PREFIX
-from agent.turn_context import drop_stale_api_content
+from agent.turn_context import drop_stale_api_content, merge_user_text_content
 from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
 from agent.primary_runtime_snapshot import _build_primary_runtime_snapshot
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
@@ -685,24 +685,18 @@ def _merge_consecutive_users(messages: list[dict]) -> tuple[list[dict], int]:
             # Only merge plain-text content; leave multimodal (list or undecodable sentinel) content alone.
             and _plain_text(prev.get("content", "")) and _plain_text(msg.get("content", ""))
         ):
-            prev_content, new_content = prev.get("content", ""), msg.get("content", "")
-            merged_content = (
-                (prev_content + "\n\n" + new_content) if prev_content and new_content else (prev_content or new_content)
-            )
-            had_api_sidecar = "api_content" in prev
+            prev_content = prev.get("content", "")
+            content_changed = merge_user_text_content(prev, msg)
             # Read before the marker is popped below. An unpersisted turn folded in ends the claim:
             # the dict no longer stands for durable rows only.
             if (prev.get(_DB_PERSISTED_MARKER) or prev.get(MERGED_DURABLE_ROWS)) and msg.get(_DB_PERSISTED_MARKER):
                 prev[MERGED_DURABLE_ROWS] = int(prev.get(MERGED_DURABLE_ROWS) or 1) + 1
             else:
                 prev.pop(MERGED_DURABLE_ROWS, None)
-            prev["content"] = merged_content
             # The clean-text persist override must replace only the absorbed turn, never the
             # unanswered text before it; kept across replay passes (an empty turn absorbs too).
             if prev_content:
                 prev[MERGED_TURN_PREFIX] = prev_content
-            # Merged content invalidates the api_content sidecar; drop it so replay cannot use stale bytes.
-            drop_stale_api_content(prev)
             # A display-marker row (e.g. a model-switch marker persisted as role=user on
             # purpose, #48338) merging with a plain user row must not bury the plain row's
             # addressable identity: keeping the marker's display_kind hides the merged pair
@@ -730,7 +724,7 @@ def _merge_consecutive_users(messages: list[dict]) -> tuple[list[dict], int]:
                 prev.pop(_DB_PERSISTED_MARKER, None)
             # Pop the persist marker only when the durable row actually changed: a merge that
             # reproduces the persisted bytes (e.g. an empty incoming turn) keeps its stamp.
-            if merged_content != prev_content or had_api_sidecar:
+            if content_changed:
                 prev.pop(_DB_PERSISTED_MARKER, None)
             _remember_absorbed_row(prev, msg, folded=True)
             repairs += 1

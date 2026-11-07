@@ -61,3 +61,31 @@ def test_empty_gateway_timestamp_turn_preserves_all_unanswered_rows_on_live_and_
         assert _db_flush_row(agent, messages[1], True)["content"] == expected
         # A later non-empty override on the same row joins like the merge does.
         assert _db_flush_row(_agent_persisting("later"), messages[1], True)["content"] == expected + "\n\nlater"
+
+
+def test_repaired_user_rows_keep_injected_context_on_replay():
+    from agent.turn_context import substitute_api_content
+
+    messages = [
+        {"role": "user", "content": "first question", "api_content": "first question\n\nrecalled memory"},
+        {"role": "user", "content": "job finished", "api_content": ""},
+        {"role": "user", "content": "@file:voice.wav", "api_content": "@file:voice.wav\n\nvoice transcript"},
+    ]
+    assert repair_message_sequence(None, messages) == 2
+    row = _db_flush_row(_agent_persisting(None), messages[0], False)
+    assert row["content"] == "first question\n\njob finished\n\n@file:voice.wav"
+    substitute_api_content(row)
+    assert row["content"] == "first question\n\nrecalled memory\n\njob finished\n\n@file:voice.wav\n\nvoice transcript"
+
+
+def test_empty_user_row_with_wire_context_invalidates_the_persist_stamp():
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+
+    messages = [
+        {"role": "user", "content": "job finished", _DB_PERSISTED_MARKER: True},
+        {"role": "user", "content": "", "api_content": "voice transcript"},
+    ]
+    assert repair_message_sequence(None, messages) == 1
+    assert messages[0]["content"] == "job finished"
+    assert messages[0]["api_content"] == "job finished\n\nvoice transcript"
+    assert _DB_PERSISTED_MARKER not in messages[0]

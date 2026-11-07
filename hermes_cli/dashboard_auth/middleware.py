@@ -45,6 +45,8 @@ _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
     "/auth/login", "/auth/callback", "/auth/native/authorize", "/auth/native/token",
     "/auth/native/refresh", "/auth/password-login", "/auth/logout", "/login",
     "/api/auth/providers", "/api/mcp/oauth/callback/",
+    # A saved gateway's sign-in redirect: its one-use state is the credential (gateway_connections_oauth).
+    "/webapp/gateway-connections/oauth/callback",
     # A hub's code exchange: authenticated by its PKCE verifier and key (webapp_relay_grants).
     "/api/webapp/relay/token",
     "/assets/", "/dashboard-plugins/", "/favicon.ico", "/ds-assets/", "/fonts/", "/fonts-terminal/")

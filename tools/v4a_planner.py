@@ -10,6 +10,7 @@ This module does not write.
 
 from __future__ import annotations
 
+import bisect
 import itertools
 import re
 import unicodedata
@@ -257,6 +258,7 @@ def partial_sites(
     pattern = "\n".join(search)
     needles = [pattern] if eol == "\n" else [pattern, pattern.replace("\n", eol)]
     spans = char_spans(pieces)
+    starts = [lo for lo, _hi in spans]
     found: list[Site] = []
     seen: set[tuple[int, int]] = set()
     for needle in needles:
@@ -267,9 +269,14 @@ def partial_sites(
             if (at, end) in seen:
                 continue
             seen.add((at, end))
-            covered = [i for i, (lo, hi) in enumerate(spans) if lo < end and at < hi]
-            if not covered:
-                covered = [i for i, (lo, hi) in enumerate(spans) if lo <= at < hi]
+            first_idx = max(0, bisect.bisect_right(starts, at) - 1)
+            covered = []
+            for i in range(first_idx, len(spans)):
+                lo, hi = spans[i]
+                if lo >= end:
+                    break
+                if lo < end and at < hi:
+                    covered.append(i)
             if not covered:
                 continue
             if any(

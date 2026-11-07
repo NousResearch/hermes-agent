@@ -3,7 +3,6 @@
 + ``+`` lines; ``*** Delete File: o``; ``*** Move File: a -> b``. Entry points:
 ``parse_v4a_patch(text) -> (ops, error)`` and ``apply_v4a_operations(ops, file_ops)``."""
 
-import contextlib
 import difflib
 import inspect
 import ntpath
@@ -11,7 +10,7 @@ import posixpath
 import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, NamedTuple, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, NamedTuple, Optional, Tuple
 
 if TYPE_CHECKING:  # annotations only; the real import is per-call in apply_v4a_operations
     from tools.file_operations_common import PatchResult
@@ -629,7 +628,7 @@ def _commit_resolved(commits: list[_Commit], file_ops: Any) -> PatchResult:
             code = 'INTERNAL_ERROR' if ok is None else _io_code(payload)
             errors.append(f"{prefix} {op.file_path}: {code}")
             continue
-        if write and op.operation is OperationType.UPDATE:
+        if write:
             written_sha[key] = write[2]
         if op.operation is OperationType.MOVE and op.new_path:
             written_sha[_overlay_key(op.new_path, file_ops)] = written_sha.pop(key, None)

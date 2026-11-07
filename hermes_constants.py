@@ -1100,6 +1100,13 @@ def parse_reasoning_effort(effort) -> dict | None:
     return None
 
 
+_KNOWN_PROVIDER_PREFIXES = (
+    'anthropic', 'openai', 'google', 'openrouter', 'groq', 'mistral',
+    'xai', 'cohere', 'perplexity', 'together', 'fireworks', 'deepseek',
+)
+_KNOWN_AGGREGATOR_PREFIXES = ('openrouter', 'opencode', 'fireworks', 'groq', 'together')
+
+
 def _canonical_model_variants(model: str) -> list[str]:
     """Spelling variants for tolerant override matching, exact first, deduped in order.
 
@@ -1125,15 +1132,10 @@ def _canonical_model_variants(model: str) -> list[str]:
         _add_with_derivatives(parts[-1])
     if len(parts) >= 3:  # strip aggregator only: "openrouter/anthropic/x" → "anthropic/x"
         _add_with_derivatives('/'.join(parts[1:]))
-    known_providers = (
-        'anthropic', 'openai', 'google', 'openrouter', 'groq', 'mistral',
-        'xai', 'cohere', 'perplexity', 'together', 'fireworks', 'deepseek',
-    )
     for v in [v for v in variants if '/' not in v]:
-        _add(*(f"{provider}/{v}" for provider in known_providers))
-    known_aggregators = ('openrouter', 'opencode', 'fireworks', 'groq', 'together')
+        _add(*(f"{provider}/{v}" for provider in _KNOWN_PROVIDER_PREFIXES))
     for v in [v for v in variants if v.count('/') == 1]:
-        _add(*(f"{agg}/{v}" for agg in known_aggregators))
+        _add(*(f"{agg}/{v}" for agg in _KNOWN_AGGREGATOR_PREFIXES))
     return variants
 
 

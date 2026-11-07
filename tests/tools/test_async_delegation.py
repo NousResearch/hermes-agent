@@ -837,8 +837,11 @@ def _patch_delegation_cfg(monkeypatch, model="upstage/solar-pro-4", provider="op
 
 
 def test_batch_model_rejection_notice_prepended(monkeypatch):
-    """A rejected delegation model must surface ONE config-level notice above
-    the per-task blocks instead of staying buried in each summary (#97654)."""
+    """Genuine FAILED results whose ``error`` carries the provider's rejection of
+    the configured delegation model surface ONE config-level notice above the
+    per-task blocks (#97654). Only ``error`` is failure evidence (a completed
+    result's summary is prose), and the notice must not overclaim: no
+    fabricated HTTP status, no "every task failed" / "before any work" claims."""
     rejection = "HTTP 400: upstage/solar-pro-4 is not a valid model ID"
     _patch_delegation_cfg(monkeypatch)
     evt = _make_async_evt(
@@ -848,7 +851,8 @@ def test_batch_model_rejection_notice_prepended(monkeypatch):
         results=[
             {
                 "task_index": 0,
-                "status": "completed",
+                "status": "failed",
+                "error": rejection,
                 "summary": rejection,
                 "api_calls": 1,
                 "duration_seconds": 0.74,
@@ -857,7 +861,8 @@ def test_batch_model_rejection_notice_prepended(monkeypatch):
             },
             {
                 "task_index": 1,
-                "status": "completed",
+                "status": "failed",
+                "error": rejection,
                 "summary": rejection,
                 "api_calls": 1,
                 "duration_seconds": 0.71,
@@ -868,11 +873,15 @@ def test_batch_model_rejection_notice_prepended(monkeypatch):
     )
     text = format_process_notification(evt)
     assert text is not None
-    assert "SUBAGENT MODEL REJECTED" in text
+    assert text.count("SUBAGENT MODEL REJECTED") == 1
     assert "upstage/solar-pro-4" in text
     assert "delegation.model" in text
     # The notice precedes the per-task blocks, not just trails them.
     assert text.index("SUBAGENT MODEL REJECTED") < text.index("TASK 1/2")
+    # The corrected notice does not overclaim.
+    assert "Every task in this batch failed" not in text
+    assert "before doing any work" not in text
+    assert "HTTP 400: not a valid model ID" not in text
 
 
 def test_batch_model_rejection_notice_absent_when_clean(monkeypatch):

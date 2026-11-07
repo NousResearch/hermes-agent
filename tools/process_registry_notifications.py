@@ -3,11 +3,18 @@ watch_match, watch_disabled, watch_overflow_*, async_delegation) into the
 ``[IMPORTANT: ...]`` / ``[ASYNC DELEGATION ...]`` text the CLI drain loop, gateway and
 TUI inject into the agent conversation."""
 
+import re
 import time
 from dataclasses import dataclass
 from contextlib import suppress
 
+from hermes_constants import _KNOWN_AGGREGATOR_PREFIXES
+
 _DONE = ("completed", "success")
+_STATUS_LABELS = {"failed": "Failed", "error": "Failed", "cancelled": "Cancelled",
+                  "interrupted": "Interrupted", "timeout": "Timed Out", "stalled": "Stalled",
+                  "unknown": "Unknown", "rejected": "Failed"}
+_FAILURE_STATUSES = frozenset(_STATUS_LABELS) - {"unknown"}
 _REASON_STATUS = {"lost": "marked lost because the process backend disappeared", "failed_start": "failed to start"}
 
 
@@ -108,16 +115,76 @@ def _delegation_config() -> dict:
         return {}
 
 
-def _delegation_model_not_found(results, config) -> bool:
-    """True when a result reflects a config-level model_not_found rejection: needs a
-    model-not-found phrase AND the currently-configured model name in the same text,
-    so a stale task failing on a removed model is not mis-attributed to the config."""
-    model = str((config or {}).get("model") or "").lower()
-    if not model:
+def _same_model(a, b) -> bool:
+    """Full-id equality (case-insensitive): namespace identity is preserved; only the documented
+    aggregator transport prefix (``hermes_constants._KNOWN_AGGREGATOR_PREFIXES``) may be dropped."""
+    a, b = str(a or "").strip().lower(), str(b or "").strip().lower()
+    if not (a and b):
         return False
+    short, long_ = sorted((a, b), key=len)
+    parts = long_.split("/")
+    return a == b or (len(parts) >= 3 and parts[0] in _KNOWN_AGGREGATOR_PREFIXES and "/".join(parts[1:]) == short)
+
+
+def _route(result) -> dict:
+    route = result.get("route")
+    return route if isinstance(route, dict) else {}
+
+
+def _served_model(result) -> str:
+    """The model that actually served the task: its own ``model`` field, else the route report's."""
+    return str(result.get("model") or _route(result).get("model") or "").strip()
+
+
+_QUOTE = "[\"']?"
+_MODEL_ID = r"[a-z0-9._:/-]+"
+# An id token right before the phrase, itself preceded by start / ``:`` ``(`` ``,`` / the word "model":
+# ``for <model> does not exist`` deliberately does not bind (the model is the object of "for").
+_SUBJECT_BEFORE = re.compile(rf"(?:^|[:(,]\s*|\bmodel\s+){_QUOTE}({_MODEL_ID}){_QUOTE}\s*$")
+_SUBJECT_AFTER = re.compile(rf":\s*{_QUOTE}({_MODEL_ID})")
+
+
+def _rejection_subjects(error: str, patterns) -> set[str]:
+    """Model ids the rejection phrases in ``error`` (lowercased) are attached to: ``<id> <phrase>`` or,
+    for a phrase ending in the word "model", ``<phrase>: <id>`` (``is not a valid model ID`` binds nothing)."""
+    subjects = set()
+    for phrase in patterns:
+        for m in re.finditer(re.escape(phrase), error):
+            before = _SUBJECT_BEFORE.search(error, 0, m.start())
+            after = _SUBJECT_AFTER.match(error, m.end()) if phrase.split()[-1] == "model" else None
+            tokens = [before[1]] if before else []
+            tokens += [after[1].rstrip(".:")] if after else []  # a sentence-final "." is not part of the id
+            subjects.update(t for t in tokens if re.search(r"[0-9./_-]", t))
+    return subjects
+
+
+def _is_config_model_rejection(result, config, patterns) -> bool:
+    """True when this FAILED result shows the configured Subagent Model was rejected by the provider.
+
+    Only ``error`` is evidence (``summary`` is prose that may quote other files, histories or models),
+    and a completed/unknown-status result is never a confirmed failure. The rejection must be about the
+    configured model: a phrase attached to another model clears the default, and structured evidence
+    (``failure_reason`` / a bare ``model_not_found``) needs a served model that IS the configured one."""
+    config_model = str((config or {}).get("model") or "").strip()
+    if not config_model:
+        return False
+    served = _served_model(result)
+    if served and not _same_model(served, config_model):
+        return False  # a named route served another model: not the configured default's fault
+    status, structured = result.get("status"), result.get("failure_reason") == "model_not_found"
+    if status in _DONE or (status in (None, "", "unknown") and not structured):
+        return False
+    error = str(result.get("error") or "").lower()
+    subjects = _rejection_subjects(error, patterns)
+    if subjects:
+        return any(_same_model(s, config_model) for s in subjects)
+    return bool(served) and (structured or error.strip() == "model_not_found")  # served == configured here
+
+
+def _delegation_model_not_found(results, config) -> bool:
+    """True when some result carries config-level model-rejection evidence (see ``_is_config_model_rejection``)."""
     patterns = _model_not_found_patterns()
-    texts = (" ".join(str(x) for x in (r.get("error"), r.get("summary")) if x).lower() for r in results or [])
-    return any(model in text and any(p in text for p in patterns) for text in texts)
+    return any(_is_config_model_rejection(r, config, patterns) for r in results or [])
 
 
 def _delegation_model_not_found_notice(results) -> list[str] | None:
@@ -125,18 +192,35 @@ def _delegation_model_not_found_notice(results) -> list[str] | None:
     config = _delegation_config()
     if not _delegation_model_not_found(results, config):
         return None
+    patterns = _model_not_found_patterns()
+    results = list(results or [])
+    rejected = [(i, r) for i, r in enumerate(results) if _is_config_model_rejection(r, config, patterns)]
+    first_idx, first = rejected[0]
+    succeeded = sum(1 for r in results if r.get("status") in _DONE)
+    total, n_rejected = len(results), len(rejected)
+    rejected_idx = {i for i, _ in rejected}
+    failed_other = sum(1 for i, r in enumerate(results) if i not in rejected_idx and r.get("status") in _FAILURE_STATUSES)
+    unknown = total - n_rejected - succeeded - failed_other
+    if n_rejected == total:
+        counts = f"All {total} tasks in this batch failed with this model rejection."
+    else:
+        parts = [f"{n} {what}" for n, what in ((succeeded, "succeeded"), (failed_other, "failed for another reason"),
+                                               (unknown, "have no recorded outcome")) if n]
+        counts = (f"{n_rejected} of {total} tasks in this batch failed with this model rejection"
+                  + ("; " + "; ".join(parts) if parts else "") + ".")
     model = config.get("model") or "?"
-    provider = config.get("provider") or "configured provider"
+    provider = _route(first).get("provider") or config.get("provider") or "configured provider"
+    evidence = " ".join(str(first.get("error") or "model_not_found").split())[:200]
     lines = [
         "⚠ SUBAGENT MODEL REJECTED: the configured Subagent Model "
-        f'"{model}" was rejected by provider "{provider}" '
-        "(HTTP 400: not a valid model ID).",
-        "Every task in this batch failed for this reason before doing any work.",
+        f'"{model}" was rejected by provider "{provider}".',
+        f"Evidence (task {first.get('task_index', first_idx) + 1}): {evidence}",
+        counts,
         "Check Settings → Advanced → Subagent Model (or: hermes config get delegation.model)."]
     with suppress(Exception):
         from hermes_cli.fallback_config import get_fallback_chain
         if not get_fallback_chain(config):
-            lines.append("No fallback chain is configured, so no failover was attempted.")
+            lines.append("No fallback chain is configured (delegation.fallback_providers).")
     return lines
 
 
@@ -324,13 +408,10 @@ def async_delegation_display_text(evt: dict) -> str:
     results = results or [evt]
     goals = evt.get("goals") or []
     labels, titles = [], []
-    status_labels = {"failed": "Failed", "error": "Failed", "cancelled": "Cancelled",
-                     "interrupted": "Interrupted", "timeout": "Timed Out", "stalled": "Stalled",
-                     "unknown": "Unknown", "rejected": "Failed"}
     for result in results:
         status = result.get("status") or ("failed" if result.get("error") else "completed")
         label = ("Incomplete" if _is_truncated(result) else "Completed") if status in _DONE else (
-            status_labels.get(status, "Incomplete"))
+            _STATUS_LABELS.get(status, "Incomplete"))
         labels.append(label)
         index = result.get("task_index", 0)
         goal = goals[index] if 0 <= index < len(goals) else result.get("goal", "")

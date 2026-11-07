@@ -13,6 +13,34 @@ user docs: `website/docs/user-guide/features/skills.md`, `curator.md`.
 
 Reviewing a skill PR: check the target directory — heavy-dep or niche skills go to `optional-skills/`.
 
+## Skills Hub sources (`tools/skills_hub_*.py`)
+
+`hermes skills install <identifier>` resolves against every registered `SkillSource` adapter
+(`tools/skills_hub_models.py` ABC; `create_source_router()` in `tools/skills_hub_search.py`):
+`github`, `official` (`optional-skills/`), `clawhub`, `skills.sh`, `browse-sh`, `url`, and
+`local-dir` (`tools/skills_hub_local.py`). Every non-`official` source installs at
+`TRUST_LEVEL = "community"` and goes through the same quarantine → security scan →
+`should_allow_install` gate regardless of origin.
+
+**`local-dir`** lets a user point Hermes at *any* local folder of `<name>/SKILL.md` skills —
+e.g. another agent tool's personal skills directory — without vendoring that content into this
+repo (per-skill licensing/attribution varies and the path is machine-specific, so it can't be a
+hardcoded default or a bundled catalog):
+
+```bash
+hermes skills local add ~/.agents/skills      # register a directory (persisted, not vendored)
+hermes skills local list                      # show configured directories
+hermes skills browse --source local-dir       # browse what's in them
+hermes skills install local-dir:/abs/path/to/skills/some-skill
+hermes skills import-all local-dir --yes      # bulk-install everything found, through the normal scan gate
+hermes skills local remove ~/.agents/skills
+```
+
+`import-all` also works with `official` (`hermes skills import-all official --yes`) to install
+every `optional-skills/` entry in one pass. Configured directories are stored in
+`skills/.hub/local_dirs.json` under `HERMES_HOME` (via `LocalDirsManager`), never in `config.yaml`
+or `.env`. See `website/docs/user-guide/features/skills.md` for full CLI reference.
+
 ## SKILL.md frontmatter
 
 `name`, `description`, `version`, `author`, `license`, `platforms` (OS gate: `[macos]`,

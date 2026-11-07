@@ -683,7 +683,7 @@ def test_an_unfetched_release_is_judged_from_github(installation, tmp_path, monk
     responses[f"{api}/releases/latest"] = (200, {"draft": False, "prerelease": False, "tag_name": "v1.2.3"})
     responses[f"{api}/commits/v1.2.3"] = (200, {"sha": release})
     responses[f"{api}/compare/{git('rev-parse', 'HEAD')}...{release}"] = (200, {"status": "diverged"})
-    responses[f"{api}/git/trees/{release}"] = (200, {"truncated": False, "tree": [
+    responses[f"{api}/git/trees/{release}?recursive=1"] = (200, {"truncated": False, "tree": [
         {"path": "hermes_state.py", "type": "blob"}, {"path": "hermes_state_common.py", "type": "blob"},
         {"path": "run_agent.py", "type": "blob"}]})
     responses[f"/NousResearch/hermes-agent/{release}/hermes_state.py"] = (200, "from hermes_state_common import *\n")
@@ -710,7 +710,7 @@ def test_runtime_lookup_has_one_deadline_with_bounded_parallel_reads(installatio
     from hermes_cli import source_check
 
     _root, _linked, home, _base, sha, responses, _requests, _git = installation
-    tree = f"/repos/fixture/fork/git/trees/{sha}"
+    tree = f"/repos/fixture/fork/git/trees/{sha}?recursive=1"
     paths = [f"hermes_state_{i}.py" for i in range(12)]
     responses[tree] = (200, {"tree": [{"path": path, "type": "blob"} for path in paths]})
     release = threading.Event()
@@ -760,6 +760,27 @@ def test_runtime_lookup_has_one_deadline_with_bounded_parallel_reads(installatio
         checker.join(5)
 
 
+@pytest.mark.parametrize("runtime", [True, False])
+def test_a_release_with_the_state_store_inside_the_package_is_judged_by_its_package_modules(
+        installation, runtime):
+    """After the state store moves under ``src/hermes_agent/`` a root compat shell stays behind. The
+    verdict must come from the package's modules, which a top-level tree listing does not show."""
+    from hermes_cli import source_check
+    from hermes_state_common import SCHEMA_SQL
+
+    _root, _linked, home, _base, sha, responses, _requests, _git = installation
+    shell, store = "hermes_state.py", "src/hermes_agent/hermes_state/common.py"
+    top = [{"path": shell, "type": "blob"}, {"path": "src", "type": "tree"}]
+    # As GitHub answers: a plain listing stops at the root; ``recursive=1`` lists every path.
+    responses[f"/repos/fixture/fork/git/trees/{sha}"] = (200, {"truncated": False, "tree": top})
+    responses[f"/repos/fixture/fork/git/trees/{sha}?recursive=1"] = (200, {"truncated": False, "tree": [
+        *top, {"path": store, "type": "blob"}]})
+    responses[f"/fixture/fork/{sha}/{shell}"] = (200, "from hermes_agent.compat import finder\n")
+    responses[f"/fixture/fork/{sha}/{store}"] = (200, SCHEMA_SQL if runtime else "SCHEMA_SQL = 'old schema'")
+
+    assert source_check._github_predates_runtime("fixture/fork", sha, home / "runtime.json") is (not runtime)
+
+
 @pytest.mark.parametrize("failure", ["tree", "module"])
 @pytest.mark.parametrize("runtime", [True, False])
 def test_unknown_runtime_verdict_expires_but_definite_verdict_does_not(installation, monkeypatch, failure, runtime):
@@ -768,7 +789,7 @@ def test_unknown_runtime_verdict_expires_but_definite_verdict_does_not(installat
     _root, _linked, home, _base, sha, responses, requests, _git = installation
     clock = [1000000.0]
     monkeypatch.setattr(source_check.time, "time", lambda: clock[0])
-    tree = f"/repos/fixture/fork/git/trees/{sha}"
+    tree = f"/repos/fixture/fork/git/trees/{sha}?recursive=1"
     module = f"/fixture/fork/{sha}/hermes_state_common.py"
     responses[tree] = (200, {"tree": [{"path": "hermes_state_common.py", "type": "blob"}]})
     from hermes_state_common import SCHEMA_SQL

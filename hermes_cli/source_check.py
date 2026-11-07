@@ -318,7 +318,9 @@ def _read_runtime_verdict(repository: str, sha: str) -> Optional[bool]:
             raise Empty
         return replies.get(timeout=remaining)
 
-    launch(f"https://api.github.com/repos/{repository}/git/trees/{sha}", api=True)
+    # Recursive: once the state store lives under src/hermes_agent/, a top-level listing would show
+    # only a root compat shell and read as a pre-runtime release.
+    launch(f"https://api.github.com/repos/{repository}/git/trees/{sha}?recursive=1", api=True)
     try:
         tree = _quiet(lambda: json.loads(receive() or ""))
         entries = tree.get("tree") if isinstance(tree, dict) and not tree.get("truncated") else None

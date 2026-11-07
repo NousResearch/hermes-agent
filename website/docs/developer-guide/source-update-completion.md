@@ -50,7 +50,12 @@ receipt's `outcome` stays `"success"`. The step's own obligation stays armed:
 the host fleet-restart obligation for gateways (the CLI startup warning keeps naming it; an
 owed restart records the pre-update gateways on the obligation, so a gateway that died at boot
 stays owed until it serves the checkout instead of being settled by the gateway-less discharge),
-the unstamped bytecode fingerprint for the sweep. The next launch or `hermes update` —
+the unstamped bytecode fingerprint for the sweep. The sweep also removes each directory left empty by
+files the new commit dropped (diffed against the commit the fingerprint recorded): git keeps a
+dropped package's directory while `__pycache__` is in it, and once that is cleared the empty
+directory imports as an empty namespace package that hides the package's new location. Only empty
+directories go; one that still holds any file is kept. The launch-time sweep does the same after a
+manual pull. The next launch or `hermes update` —
 including the "Already up to date" path, which runs the same completion — retries it. A host
 stamped "restarted" for this commit whose fleet is still off the checkout restarts again
 instead of dead-ending. Exit 2 (refused / concurrent) and exit 1 (nothing committed, or

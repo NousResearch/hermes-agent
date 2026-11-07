@@ -1773,10 +1773,10 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             if _pk:
                 _completed_turns.discard(_pk)
 
-        # Restart the typing indicator; the outer typing task may be stale.
-        if _clear_adapter:
+        # Restart typing; the outer task may be stale. Stop first: Discord's send_typing no-ops while its loop runs.
+        for _typing_call in ("_stop_typing_quietly", "send_typing") if _clear_adapter else ():
             with suppress(Exception):
-                await _clear_adapter.send_typing(source.chat_id, metadata=typing_metadata_for_turn(
+                await getattr(_clear_adapter, _typing_call)(source.chat_id, typing_metadata_for_turn(
                     _clear_adapter, source.chat_id, next_message_id, _status_thread_metadata))
 
         # Re-baseline the cached agent's message_count snapshot before recursing into the in-band queued

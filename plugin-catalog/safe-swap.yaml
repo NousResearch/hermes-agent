@@ -1,6 +1,6 @@
 name: safe-swap
 repo: https://github.com/itsolaph/hermes-safe-swap
-sha: "c0d731f967d85100e3d50771165c11059573bb1c"
+sha: "6e66f5fe6651e25951fcd3592a7ac2e75787e7f6"
 description: >-
   Rewrites destructive shell commands into safe twins before they run instead of snapshotting afterwards:
   git push --force becomes --force-with-lease --force-if-includes, rm -r becomes a move into a quarantine

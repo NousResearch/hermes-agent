@@ -22,15 +22,31 @@ from agent.provider_base import ProviderBase
 
 
 def get_provider_env(name: str) -> str:
-    """Config-aware env lookup (``os.environ`` first, then ``~/.hermes/.env``) so
-    credentials set through the config layer are visible in gateway sessions /
-    delegate children / subprocess runs. Stripped value, or ``""`` when unset.
+    """Config-aware env lookup preferring ``~/.hermes/.env`` over process env.
 
-    Falls back to a bare ``os.getenv`` when the config module is unavailable (stripped installs, early
-    import contexts). See #40190. Never when a profile secret scope is bound: a scoped miss means the
-    served profile has no key, and ``os.environ`` holds the LAUNCH profile's — a routed profile without
-    an Exa/Parallel key must be refused, not search on another profile's key.
+    Hermes-managed provider keys are rotated by editing ``.env``; a stale export
+    from a parent shell must not keep winning (Tavily, Firecrawl, Exa, …; #65459).
+    :func:`hermes_cli.config.get_env_value_prefer_dotenv` is scope-aware, and an
+    empty result is authoritative — a routed profile with no key must not fall
+    through to an env-first read of another profile's process env.
+
+    Falls back to :func:`hermes_cli.config.get_env_value` and then a bare
+    ``os.getenv`` only when the prefer-dotenv helper cannot be imported
+    (stripped installs / early import). See #40190. That fallback never borrows
+    ``os.environ`` when a profile secret scope is bound, and raises
+    ``UnscopedSecretError`` when multiplexing is on with no scope: a scoped miss
+    means the served profile has no key, and ``os.environ`` holds the launch
+    profile's.
     """
+    # Empty is authoritative. Fallbacks apply only when the helper is missing.
+    try:
+        from hermes_cli.config import get_env_value_prefer_dotenv
+    except Exception:  # noqa: BLE001 — prefer-dotenv optional on older trees
+        get_env_value_prefer_dotenv = None  # type: ignore[assignment]
+
+    if get_env_value_prefer_dotenv is not None:
+        return (get_env_value_prefer_dotenv(name) or "").strip()
+
     try:
         from hermes_cli.config import get_env_value
 

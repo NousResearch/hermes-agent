@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -500,6 +501,58 @@ def cmd_doctor(args) -> int:
     return 1 if bad else 0
 
 
+def _gc_launcher_entries(store_root: Path) -> set[str]:
+    """Store entries still executed by a launcher minted for this install."""
+    from pm import paths
+    from hermes_cli._launchers import _launcher_checkout, _launcher_python, _owns_launcher
+    from hermes_constants import get_default_hermes_root
+    from pm.filesystem import native
+
+    root = paths.install_root().resolve()
+    store_root = Path(native(store_root.resolve()))
+    entries = set()
+    directories = (root / ".hermes" / "bin", get_default_hermes_root() / "bin")
+    for directory in dict.fromkeys(directories):
+        try:
+            try:
+                if not stat.S_ISDIR(directory.stat().st_mode):
+                    continue
+            except FileNotFoundError:
+                continue  # This optional launcher directory has not been created.
+            targets = list(directory.iterdir())
+        except OSError as exc:
+            raise OSError(f"Cannot scan launcher directory: {directory}") from exc
+        for target in targets:
+            try:
+                try:
+                    if not stat.S_ISREG(target.stat().st_mode):
+                        continue
+                except FileNotFoundError:
+                    continue  # A removed launcher cannot keep an interpreter alive.
+                # Path.is_file and the launcher parsers suppress OS errors. Test
+                # both underlying read paths before consulting those parsers;
+                # an incomplete scan must not authorize a destructive sweep.
+                target.read_bytes()
+                if target.suffix.lower() != ".exe":
+                    try:
+                        target.read_text(encoding="utf-8-sig")
+                    except UnicodeError:
+                        pass  # Binary non-exe files are not readable launchers.
+                if not (_owns_launcher(target, root, strict_io=True)
+                        or _launcher_checkout(target, strict_io=True) == root):
+                    continue
+                python = _launcher_python(target, strict_io=True)
+                if python is None:
+                    continue
+                for parent in python.parents:
+                    if parent.resolve() == store_root:
+                        entries.add(python.relative_to(parent).parts[0])
+                        break
+            except OSError as exc:
+                raise OSError(f"Cannot inspect launcher: {target}") from exc
+    return entries
+
+
 def _doctor_uv_cache(*, repair: bool) -> int:
     """Report (and with --repair, remove) uv cache entries an interrupted install corrupted.
 
@@ -555,6 +608,7 @@ def _gc_store(store, facts) -> tuple[int, int]:
         facts.forget(RETIRED_DEFAULTS)
         facts.reload()
         keep = facts.entries_in_use()
+        keep.update(_gc_launcher_entries(store.root))
         collect_partials(partials_dir)
         removed += _reclaim_set_aside(store)
         for item in sorted(store.root.iterdir()):

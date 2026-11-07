@@ -1005,13 +1005,11 @@ def _previous_user_message_text(conversation_history: Optional[list[Any]]) -> st
     skipped, so the value is what the person last asked. A compaction carrier contributes the live ask it
     wraps, and an image-only turn ends the search with ``""`` rather than falling back to an older ask."""
     from agent.context_compressor import user_originated_turn_view
-    from agent.conversation_compression import _SYNTHETIC_USER_FLAGS, _SYNTHETIC_USER_PREFIXES, _message_text
+    from agent.conversation_compression_scaffolding import is_user_role_scaffolding
 
     for message in reversed(conversation_history or []):
         # The canonical view cannot see metadata-flagged scaffolding, so screen it out first.
-        if not isinstance(message, dict) or any(message.get(flag) for flag in _SYNTHETIC_USER_FLAGS):
-            continue
-        if _message_text(message).strip().startswith(_SYNTHETIC_USER_PREFIXES):
+        if not isinstance(message, dict) or message.get("role") != "user" or is_user_role_scaffolding(message):
             continue
         live_view = user_originated_turn_view(message)
         if live_view is not None:
@@ -1232,7 +1230,7 @@ def build_turn_context(
     logger.info(_turn_fmt, *_turn_args)
 
     # Before this turn's message is appended and compaction rebinds the history.
-    previous_user_message = _previous_user_message_text(conversation_history)
+    previous_user_message = _previous_user_message_text(conversation_history) if agent._memory_manager else ""
 
     # Copy so the caller's list is never mutated.
     messages = list(conversation_history) if conversation_history else []

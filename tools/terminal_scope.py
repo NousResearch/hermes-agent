@@ -115,7 +115,7 @@ def build_profile_terminal_scope(
     hermes_home: Any, *, env_overlay: Optional[dict[str, str]] = None) -> dict[str, str]:
     """Build the COMPLETE effective ``TERMINAL_*`` policy for a profile home.
 
-    Projection: ``DEFAULT_CONFIG['terminal']`` <- profile ``.env`` TERMINAL_* <- *env_overlay*
+    Projection: defaults <- profile ``.env`` <- *env_overlay* <- managed ``.env``
     <- profile ``config.yaml`` ``terminal:`` <- managed-scope ``terminal:``. Total by construction,
     so a bound scope never widens back to ambient authority. Raises :class:`TerminalPolicyUnavailable`
     if a present file is unreadable, except a ``.env`` that refuses reads while managed scope pins
@@ -162,6 +162,10 @@ def build_profile_terminal_scope(
         # value that differs from the default can prove a choice made there.
         if env_overlay.get("TERMINAL_DOCKER_IMAGE") not in (None, default_image):
             image_pinned = True
+    # The administrator's dotenv overrides profile and launcher dotenv, before YAML bridging.
+    managed_env = managed_scope.load_managed_env()
+    scope.update((k, str(v)) for k, v in managed_env.items() if k.startswith("TERMINAL_"))
+    image_pinned = image_pinned or "TERMINAL_DOCKER_IMAGE" in managed_env
     # Read config.yaml directly, not via read_raw_config() (which collapses "missing" and
     # "unparseable" into {}): present-but-unparseable must fail closed.
     config_path = home / "config.yaml"

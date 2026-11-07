@@ -665,6 +665,7 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
     with session["history_lock"]:
         session["running"] = False
         session["last_active"] = time.time()
+        session.pop("_hosted_submit_active", None)
         session.pop("_hosted_room_task", None)
         _clear_inflight_turn(session)
         _release_active_session_slot(session)
@@ -677,6 +678,8 @@ def _run_after_agent_ready(
 ):
     """Turn thread body: patient wait for a deferred build (a slow build must not eat the
     accepted in-flight message), then run."""
+    with session["history_lock"]:
+        session.pop("_hosted_submit_active", None)
     # The wait delivers the prompt when the still-running build completes, honors a cancel promptly, notices
     # the user once past the slow threshold, and only errors when the build itself fails or the bounded cap
     # expires. See #63078.
@@ -808,6 +811,7 @@ def _lock_in_submit_turn(
         session["last_active"] = time.time()
         if hosted_task is not None:
             session["_hosted_room_task"] = dict(hosted_task)
+            session["_hosted_submit_active"] = True
         _start_inflight_turn(session, text, display_kind=display_kind)
     return None, fields
 
@@ -815,6 +819,25 @@ def _lock_in_submit_turn(
 # Per-turn client surfaces that carry a model-bound note (session_notifications._hud_surface_note);
 # the canonical admission path shares the same set (gateway.session_surface).
 from gateway.session_surface import SURFACES as _CLIENT_SURFACES
+
+
+def _start_submit_run_thread(sid, session, run_thread):
+    try:
+        # A completed FAILED build must not wedge the session: rebuild, don't replay it.
+        if not _restart_completed_failed_agent_build(sid, session, session.get("agent_ready")):
+            _start_agent_build(sid, session)
+        # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
+        session["_run_thread"] = run_thread
+        run_thread.start()
+    except Exception:
+        # No turn thread will run: release what the hosted submit reserved, as a storage failure does.
+        with session["history_lock"]:
+            if session.pop("_hosted_submit_active", None):
+                session["running"] = False
+                session.pop("_hosted_room_task", None)
+                _clear_inflight_turn(session)
+                _release_active_session_slot(session)
+        raise
 
 
 @method("prompt.submit")
@@ -959,17 +982,12 @@ def _(rid, params: dict) -> dict:
     staged_user = session.get("_submit_user_row") or {}
     if isinstance(staged_user.get("_row_id"), int):
         survivor_fields["user_row_id"] = staged_user["_row_id"]
-    # A completed FAILED build must not wedge the session: rebuild, don't replay it.
-    if not _restart_completed_failed_agent_build(sid, session, session.get("agent_ready")):
-        _start_agent_build(sid, session)
     run_thread = threading.Thread(
         target=lambda: _run_after_agent_ready(
             rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author,
             hosted_images),
         daemon=True)
-    # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
-    session["_run_thread"] = run_thread
-    run_thread.start()
+    _start_submit_run_thread(sid, session, run_thread)
     return _ok(rid, {"status": "streaming", **survivor_fields})
 
 

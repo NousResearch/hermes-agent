@@ -27,7 +27,7 @@ from gateway.hosted_room_peer import (
     room_grant_needs_dispatch_refresh)
 from tui_gateway import hosted_room_prepare_stall as prepare_stall
 from tui_gateway import hosted_room_router_call as router_call
-from tui_gateway.hosted_room_driver import HostedRoomBinding, HostedRoomRuntime
+from tui_gateway.hosted_room_driver import HostedRoomBinding, HostedRoomRuntime, _bounded_terminal_result
 from tui_gateway.hosted_room_member_activity import (
     forget_task_progress, record_task_progress, task_is_active, task_progress)
 from tui_gateway.hosted_room_server_rpc import HostedRoomServerRPC
@@ -41,6 +41,7 @@ _HOSTED_ROOM_ACTIVE_POLL_SECONDS = 0.25
 _HOSTED_ROOM_TERMINAL_GRACE_SECONDS = 30.0
 
 _TERMINAL_STATUSES = ("deferred", "settled", "failed", "cancelled")
+_DISBAND_STOP_WAIT_SECONDS = 5.0
 _LIVE_STATUSES = ("queued", "running", "stopping")
 _STOPPABLE_STATUSES = ("queued", "running", "indeterminate", "deferred", "stopping")
 _RETRYABLE_STATUSES = ("indeterminate", "deferred")
@@ -988,8 +989,10 @@ class HostedRoomService:
             result = self.runtime.cancel(task["identity"], cancel_id=own_cancel_id or cancel_id)
             if result["status"] == "stopping":
                 pending += 1
-            elif result["status"] == "deferred":
+            elif result["status"] in {"queued", "running", "indeterminate", "deferred"}:
                 unconfirmed.append(result)
+        if require_acknowledged and pending and not unconfirmed:
+            pending = self._stops_still_pending(room_id)
         # Disband waits for every member's Stop, a member on another gateway included: a deferred
         # turn its gateway has not confirmed stopped holds it until confirmed or Discarded.
         if require_acknowledged and (pending or unconfirmed):
@@ -997,6 +1000,16 @@ class HostedRoomService:
                 "Group chat work is still stopping; retry deletion after Stop completes.")
         self.runtime.wakeup()
         return len(tasks) - len(unconfirmed)
+
+    def _stops_still_pending(self, room_id: str) -> int:
+        """Give a Stop just delivered a moment, so a bot that winds down at once needs no second Disband.
+        Counts the group chat's unfinished work again each time: a message may have started more."""
+        deadline = time.monotonic() + _DISBAND_STOP_WAIT_SECONDS
+        while True:
+            left = sum(1 for _ in self._list_tasks(room_id, _STOPPABLE_STATUSES))
+            if not left or time.monotonic() >= deadline:
+                return left
+            time.sleep(0.1)
 
     def _stop_pending_refusal(
             self, room_id: str, deferred: list[dict[str, Any]]) -> hosted_rooms.RoomStopPendingError | None:
@@ -1017,7 +1030,7 @@ class HostedRoomService:
             "target_install_id": route.target_install_id, "target_profile": route.target_profile,
             "task_id": task["identity"].task_id, "execution_generation": int(task["execution_generation"])})
 
-    def _stop_deferred_peer(self, room_id: str, task: Mapping[str, Any]) -> bool:
+    def _stop_deferred_peer(self, room_id: str, task: Mapping[str, Any], *, discard: bool = False) -> bool:
         """Whether a deferred task may be cancelled here: for a member on this gateway, once the
         process serving it confirms (``deferred_stop_confirmed``). For a member on another
         gateway, only once that gateway answers that the exact run this home holds a receipt for
@@ -1045,6 +1058,16 @@ class HostedRoomService:
                 return True
             self.runtime._record_error(f"stop of deferred task {task['identity'].task_id} is unconfirmed: {exc}")
             return False
+        if not discard and result is not None and result.get("status") in {"completed", "failed"}:
+            # stop_receipt is bound to this attempt's saved run; consume its finished answer
+            # without resolving a transport (which could replay admission for a deferred turn).
+            binding = HostedRoomBinding(room_id, *self._owned_authority(room_id))
+            receipt_id = f"peer-run:{result['run_id']}"
+            self.runtime._fenced(driver.settle_stopping_task, binding, task,
+                self.runtime._ensure_lease(binding), settlement_id=receipt_id,
+                status="settled" if result["status"] == "completed" else "failed",
+                result=_bounded_terminal_result({"message_id": receipt_id,
+                    "text": result.get("output") or result.get("error") or ""}))
         return result is not None and str(result.get("status") or "") in _PEER_RUN_ENDED
 
     def _close_missing_peer_run(self, room_id: str, task: Mapping[str, Any], client: Any) -> bool:

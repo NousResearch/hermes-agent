@@ -782,6 +782,8 @@ def _interrupt_session_turn(
     # abort it nor clear `running` under it, or the next submit is admitted idle and loses its reply (#133504).
     compressing = bool(session.get("_manual_compress_active"))
     should_interrupt = bool(session.get("running")) and not compressing
+    # A hosted submit reserves running before its run thread exists: that thread is still coming.
+    submit_active = bool(session.get("_hosted_submit_active"))
     run_thread_alive = False
     if use_compute_host:
         # The host owns the live turn (parent `running` can lag a blocked tool), so let it decide. Gate on
@@ -817,7 +819,7 @@ def _interrupt_session_turn(
             request_hard_interrupt(session.get("agent"))
         if not run_thread_alive and not compressing:
             with session["history_lock"]:
-                if session.get("running"):
+                if session.get("running") and not submit_active and not session.get("_hosted_submit_active"):
                     session["running"] = False
                     _clear_inflight_turn(session)
     # Sibling of the #102895 finalize-path fix above: an explicit /stop (or the WS-orphan reaper's

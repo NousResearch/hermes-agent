@@ -405,6 +405,27 @@ class TestLoadGatewayConfig:
 
         assert config.multiplex_profiles is True
 
+    def test_session_store_max_age_days_from_nested_gateway_section(self, tmp_path, monkeypatch):
+        """The key was writable by ``hermes config set`` but never bridged from
+        the nested gateway section, so pruning kept running at the 90-day default.
+        Issue #143848 documents ``gateway.session_store_max_age_days: 0`` as the
+        official workaround for the 90-day prune bricking sessions, but that
+        workaround silently did nothing.
+        """
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n  session_store_max_age_days: 730\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.session_store_max_age_days == 730
+
     def test_stale_multiplex_allowlist_key_is_ignored(self, tmp_path, monkeypatch):
         # The removed ``multiplex_profile_allowlist`` key may linger in an un-migrated
         # config.yaml; it must not break loading or the multiplex flag.

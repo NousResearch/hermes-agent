@@ -445,6 +445,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             self._bridge_port = 3000
         self._bridge_script: str = extra.get("bridge_script", str(self._DEFAULT_BRIDGE_DIR / "bridge.js"))
         self._session_path = _session_dir(extra)
+        from .bridge_dependencies import whatsapp_activation_signature
+        self._activation_signature = whatsapp_activation_signature(self._profile_home, self._session_path)
         self._reply_prefix: Optional[str] = extra.get("reply_prefix")
         self._dm_policy = str(_extra_or_secret(extra, "dm_policy", "WHATSAPP_DM_POLICY", "pairing")).strip().lower()
         self._allow_from = self._coerce_allow_list(self._select_dm_allowlist(extra, ("WHATSAPP_ALLOWED_USERS",), _wenv))
@@ -488,13 +490,21 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     def _ensure_bridge_deps(self, bridge_dir: Path) -> bool:
         """npm install when node_modules is missing OR package.json hash != stamp file. False = fatal error set."""
-        _dep_stamp = bridge_dir / "node_modules" / ".hermes-pkg-hash"  # holds the package.json hash of the last install
-        _pkg_hash = _file_content_hash(bridge_dir / "package.json")
+        from .bridge_dependencies import bridge_dependencies_ready, bridge_dependency_install_lock
+        if bridge_dependencies_ready(bridge_dir):
+            return True
         try:
-            if (bridge_dir / "node_modules").exists() and _dep_stamp.read_text(encoding="utf-8-sig").strip() == _pkg_hash and bool(_pkg_hash):
-                return True
-        except OSError:
-            pass
+            with bridge_dependency_install_lock(bridge_dir):
+                if bridge_dependencies_ready(bridge_dir):
+                    return True
+                return self._install_bridge_deps(bridge_dir)
+        except (OSError, TimeoutError) as exc:
+            self._set_fatal_error("whatsapp_npm_install_failed", f"WhatsApp bridge dependency lock failed ({exc})",
+                                  retryable=isinstance(exc, TimeoutError))
+            return False
+
+    def _install_bridge_deps(self, bridge_dir: Path) -> bool:
+        from .bridge_dependencies import stamp_bridge_dependencies
         print(f"[{self.name}] Installing WhatsApp bridge dependencies...")
         detail = ""
         try:  # Default 300s accommodates slow systems like an Unraid NAS.
@@ -512,17 +522,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                                             env=env, **_RUN_TEXT, check=False)
             if install_result.returncode == 0:
                 print(f"[{self.name}] Dependencies installed")
-                with suppress(OSError):  # Stamp is an optimization; install still succeeded
-                    if _pkg_hash:
-                        _dep_stamp.write_text(_pkg_hash, encoding="utf-8")
+                stamp_bridge_dependencies(bridge_dir)
                 return True
             print(f"[{self.name}] npm install failed: {install_result.stderr}")
             detail = f" ({install_result.stderr.strip()[-500:]})" if install_result.stderr else ""
         except Exception as e:
             print(f"[{self.name}] Failed to install dependencies: {e}")
+            logger.warning("WhatsApp bridge dependency install failed", exc_info=True)
             detail = f" ({e})"
         self._set_fatal_error("whatsapp_npm_install_failed", f"WhatsApp bridge npm install failed{detail}. "
-                              "Run `hermes whatsapp`, then restart `hermes gateway`.", retryable=False)
+                              "Run `hermes whatsapp` to repair dependencies, then activate WhatsApp again.", retryable=False)
         return False
 
     def _attach_to_bridge(self, managed_process) -> None:
@@ -713,7 +722,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         except Exception as e:
             logger.warning("[%s] Could not acquire session lock (non-fatal): %s", self.name, e)
         try:
-            if not self._ensure_bridge_deps(bridge_path.parent):
+            if not await asyncio.to_thread(self._ensure_bridge_deps, bridge_path.parent):
                 return False
             self._session_path.mkdir(parents=True, exist_ok=True)
             # A secondary adopts or reaps only a bridge its own pidfile identifies; the default keeps

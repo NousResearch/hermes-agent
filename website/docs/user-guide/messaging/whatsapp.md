@@ -193,7 +193,8 @@ needs the participant paired or `WHATSAPP_ALLOW_ALL_USERS=true`. By default the 
 message; set `require_mention: true` / `WHATSAPP_REQUIRE_MENTION=true` to answer only @mentions, replies to the
 bot, or `/commands` (groups in `free_response_chats` are exempt).
 
-Then start the gateway:
+If the gateway is already running, completing the pairing wizard activates its WhatsApp adapter
+without restarting the gateway or interrupting active chats. If the gateway is stopped, start it:
 
 ```bash
 hermes gateway              # Foreground
@@ -201,7 +202,8 @@ hermes gateway install      # Install as a user service
 sudo hermes gateway install --system   # Linux only: boot-time system service
 ```
 
-The gateway starts the WhatsApp bridge automatically using the saved session.
+The gateway starts the WhatsApp bridge automatically using the saved session. If activation fails,
+check `hermes gateway status` for the WhatsApp error; local chats remain available.
 
 ---
 

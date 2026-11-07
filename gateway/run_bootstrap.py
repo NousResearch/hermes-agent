@@ -352,9 +352,22 @@ async def _start_gateway_start_control_socket(runner):
                 result = {"pending": True, "served_profiles": runner.served_profile_names()}
             return {"multiplex": bool(getattr(runner.config, "multiplex_profiles", False)), **result}
 
+        def _activate_whatsapp_handler(params: dict) -> dict:
+            """Connect a newly paired adapter while chat turns keep running."""
+            profile = params.get("profile")
+            if not isinstance(profile, str) or not profile or len(profile) > 128:
+                raise ValueError("valid profile required")
+            future = asyncio.run_coroutine_threadsafe(runner.activate_whatsapp(profile), _main_loop)
+            try:
+                return future.result(timeout=5.0)
+            except concurrent.futures.TimeoutError:
+                # The connect continues on the gateway loop; the caller can inspect platform status.
+                return {"pending": True}
+
         _control_server = GatewayControlServer(
             verb_handlers={"pause-for-update": _pause_for_update_handler, "identify": _identify_runtime,
                            "rescan-profiles": _rescan_profiles_handler,
+                           "activate-whatsapp": _activate_whatsapp_handler,
                            "migrate-profile-identity": migrate_profile_identity_verb(runner),
                            "unserve-profile": unserve_profile_verb(runner),
                            "serve-profile": serve_profile_verb(runner),

@@ -166,7 +166,8 @@ class GatewayProfileReconcileMixin:
 
     # ── reconcile ─────────────────────────────────────────────────────────────────────────────────
 
-    async def reconcile_served_profiles(self, *, reason: str = "request") -> dict[str, Any]:
+    async def reconcile_served_profiles(self, *, reason: str = "request",
+                                        refresh_whatsapp: Optional[str] = None) -> dict[str, Any]:
         """Diff ``profiles/`` (what exists now) against the served set (the process reservation):
         reserve + build the runtime and start adapters for new profiles, tear down, unroute and
         unreserve deleted ones, (re)build adapters for served profiles whose config/.env changed.
@@ -234,12 +235,16 @@ class GatewayProfileReconcileMixin:
             removed = [n for n in known if n not in live and n != active]
             changed = [n for n in live if n in known and n != active and n not in added
                        and profile_serve_signature(live[n]) != sigs.get(n)]
+            if refresh_whatsapp in live and refresh_whatsapp in known and refresh_whatsapp != active \
+                    and refresh_whatsapp not in changed:
+                changed.append(refresh_whatsapp)
             current = {n: h for n, h in live.items() if n in known or n == active}
             return await self._apply_profile_changes(
-                current, added, removed, changed, reason=reason, live=live, result=result)
+                current, added, removed, changed, reason=reason, live=live, result=result,
+                refresh_whatsapp=refresh_whatsapp)
 
     async def _apply_profile_changes(self, current, added, removed, changed, *, reason,
-                                     live=None, result=None):
+                                     live=None, result=None, refresh_whatsapp=None):
         """Apply a selected diff under the reconcile lock, shared by the watcher and the
         serve/unserve control verbs. New profiles first get a runtime (reservation + store); one
         whose home another gateway owns or whose store is unusable is parked, not served."""
@@ -276,7 +281,12 @@ class GatewayProfileReconcileMixin:
             if name in changed:
                 self._drop_stale_platform_verdicts(name)
             try:
-                connected = await self._start_one_profile_adapters(name, current[name], claimed)
+                profile_cfg = None
+                if name == refresh_whatsapp:
+                    profile_cfg = await self._load_secondary_profile_config(name, current[name])
+                    await self._refresh_secondary_whatsapp(name, current[name], profile_cfg)
+                connected = await self._start_one_profile_adapters(
+                    name, current[name], claimed, profile_cfg=profile_cfg)
             except MultiplexConfigError as exc:
                 # Runtime config refusal is a real park, not an adapter-less served profile:
                 # withdraw the authority/tickets, release the reservation and publish the
@@ -329,6 +339,37 @@ class GatewayProfileReconcileMixin:
             await self._after_profiles_added([(n, current[n]) for n in added])
         result["served_profiles"] = self.served_profile_names()
         return result
+
+    async def _refresh_secondary_whatsapp(self, name: str, home: Path, profile_cfg) -> None:
+        """Replace only a named profile's WhatsApp adapter after policy or pairing changed."""
+        from gateway.config import Platform
+        from gateway.run import _profile_runtime_scope
+        from plugins.platforms.whatsapp.bridge_dependencies import whatsapp_activation_signature
+
+        platform = Platform.WHATSAPP
+        live = (getattr(self, "_profile_adapters", None) or {}).get(name) or {}
+        adapter = live.get(platform)
+        pending = (getattr(self, "_profile_failed_platforms", None) or {}).get(name) or {}
+        task = pending.get(platform)
+        with _profile_runtime_scope(home, hydrate_secrets=False):
+            platform_config = profile_cfg.platforms.get(platform)
+            if platform_config is not None:
+                platform_config.extra.setdefault("group_sessions_per_user", self.config.group_sessions_per_user)
+                platform_config.extra.setdefault(
+                    "thread_sessions_per_user", getattr(self.config, "thread_sessions_per_user", False))
+            if adapter is not None and task is None and adapter.config == platform_config \
+                    and getattr(adapter, "_activation_signature", None) == (
+                        whatsapp_activation_signature(home, adapter._session_path)):
+                return
+            if isinstance(task, asyncio.Task):
+                task.cancel()
+                done, _ = await asyncio.wait({task}, timeout=self._adapter_disconnect_timeout_secs())
+                if task not in done:
+                    raise RuntimeError(f"WhatsApp reconnect for profile {name} is still stopping")
+                pending.pop(platform, None)
+            if adapter is not None:
+                live.pop(platform, None)
+                await self._bounded_adapter_teardown(adapter, platform, profile=name)
 
     def _drop_stale_platform_verdicts(self, name: str) -> None:
         """Before a changed profile's rescan, drop its ``<name>:<platform>`` status entries for

@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import signal
 from contextlib import contextmanager
 from pathlib import Path
@@ -89,6 +90,33 @@ _ENV_RECREATED_NOTE = (
 )
 
 
+def _unambiguous_command_name(command: str) -> str:
+    """Attribute status only to one literal command, without shell expansion.
+
+    A short-circuited chain may never run its last command; a pipeline may
+    report an earlier failure under pipefail; even a redirect can fail before
+    the executable starts. Reuse the approval lexer's quote-aware scan rather
+    than treating quoted regex operators as shell separators.
+    """
+    from tools.approval_detection import _scan_shell
+
+    command = command.strip()
+    for kind, i, _j, quote in _scan_shell(command, subst="uq", brace=True, comments=True):
+        if kind == "subst":
+            return ""
+        if kind == "char" and (
+            (quote is None and command[i] in ";&|\n(){}<>")
+            or (quote != "'" and command[i] in "$`")
+        ):
+            return ""
+    try:
+        words = shlex.split(command, comments=True)
+    except ValueError:
+        return ""
+    return next((word.rsplit("/", 1)[-1] for word in words
+                 if not re.match(r"^[A-Za-z_][A-Za-z_0-9]*=", word)), "")
+
+
 def _interpret_exit_code(command: str, exit_code: int) -> str | None:
     """Note for a non-zero exit code that is informational rather than an
     error (grep=1 "no matches", diff=1 "files differ", signal deaths), so the
@@ -104,12 +132,7 @@ def _interpret_exit_code(command: str, exit_code: int) -> str | None:
         # re-running or mis-diagnosing (137 = OOM kill is the big one). 130/SIGINT is deliberately absent:
         # the executor has bespoke interrupt-marker handling for rc=130.
         return signal_note
-    # The last command of a pipeline/chain determines the exit code; base
-    # command = its first word that isn't a VAR=val assignment, basename'd.
-    segments = re.split(r'\s*(?:\|\||&&|[|;])\s*', command)
-    last_segment = (segments[-1] if segments else command).strip()
-    base_cmd = next((w.split("/")[-1] for w in last_segment.split()
-                     if "=" not in w or w.startswith("-")), "")
+    base_cmd = _unambiguous_command_name(command)
     return _EXIT_CODE_SEMANTICS.get(base_cmd, {}).get(exit_code)
 
 

@@ -51,6 +51,7 @@ _OBSERVABLE_METRIC_NAMES = (
     "hermes.cron.scheduler.heartbeat_age_seconds", "hermes.cron.scheduler.last_success_age_seconds",
     "hermes.cron.scheduler.catch_up_occurrences", "hermes.cron.jobs.enabled", "hermes.cron.jobs.running",
     "hermes.cron.jobs.overdue", "hermes.cron.store.writable", "hermes.cron.store.skipped_runs",
+    "hermes.gateway.previous_exit", "hermes.gateway.memory_pressure",
 )
 
 
@@ -170,12 +171,12 @@ def _read_background_delegations_count() -> int:
     return _count("background-delegations count failed", "tools.async_delegation", lambda m: m.active_count())
 
 
-def _read_runtime_snapshot(config: dict[str, Any]):
+def _read_runtime_snapshot(config: dict[str, Any], *, events_only: bool = False):
     gateway_snapshot = _read_gateway_snapshot(config)
-    # Background/subagent work is appended to the gateway snapshot so it rides the same base
-    # resource attributes (service.instance.id etc.).
+    # Background/subagent work and memory health are appended to the gateway snapshot so they
+    # ride the same base resource attributes (service.instance.id etc.).
+    base = dict(gateway_snapshot.metrics[0].attributes) if gateway_snapshot.metrics else {}
     try:
-        base = dict(gateway_snapshot.metrics[0].attributes) if gateway_snapshot.metrics else {}
         for name, read in (
             ("hermes.gateway.background_work", _read_background_work_count),
             ("hermes.gateway.background_delegations", _read_background_delegations_count),
@@ -184,6 +185,15 @@ def _read_runtime_snapshot(config: dict[str, Any]):
     except Exception as exc:
         logger.warning("background-work snapshot unavailable; metric not exported (error_type=%s)", type(exc).__name__)
         logger.debug("background-work snapshot traceback", exc_info=True)
+    try:
+        if not events_only:  # gauges only: the events pass would read the files for nothing
+            from agent.monitoring.gateway_memory_health import build_memory_health_metrics
+
+            gateway_snapshot.metrics.extend(build_memory_health_metrics(base))
+    except Exception as exc:
+        logger.warning("memory health snapshot unavailable; previous-exit and memory-pressure gauges not exported "
+                       "(error_type=%s)", type(exc).__name__)
+        logger.debug("memory health snapshot traceback", exc_info=True)
     try:
         gateway_snapshot.metrics.extend(_read_cron_snapshot().metrics)
     except Exception as exc:
@@ -198,7 +208,7 @@ def _emit_snapshot_events(config: dict[str, Any]) -> None:
     if not _gateway_health_config(config).get("diagnostic_events_enabled", True):
         return
     try:
-        for event in _read_runtime_snapshot(config).events:
+        for event in _read_runtime_snapshot(config, events_only=True).events:
             emitter.emit(event)
     except Exception:
         logger.debug("gateway health snapshot emit failed", exc_info=True)

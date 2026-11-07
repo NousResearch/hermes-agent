@@ -1,10 +1,11 @@
 """Memory status rollup for ``/api/status``.
 
 Read side for signals the gateway already persists: the 30s ``state/gateway.heartbeat``
-(RSS + MemAvailable/MemTotal + swap) and the lifecycle sentinel's ``suspected_oom``
-flag — two small file reads, no IPC.  ``/api/status`` is unauthenticated, so only
-coarse numbers (MB), enums and booleans.  A missing/corrupt file degrades to
-``pressure="unknown"`` rather than raising into the status endpoint.
+(RSS + MemAvailable/MemTotal + swap) and the lifecycle sentinel's prior-exit flags
+(``suspected_oom``, kernel OOM-kill activity, watchdog exit, memory starvation) — two small file reads, no IPC.
+``/api/status`` is unauthenticated, so only coarse numbers (MB), enums and booleans.  A
+missing/corrupt file degrades to ``pressure="unknown"`` rather than raising into the status
+endpoint.
 """
 
 from __future__ import annotations
@@ -20,10 +21,13 @@ _CRITICAL_AVAILABLE_KIB = 64 * 1024  # < 64 MiB available
 _CRITICAL_AVAILABLE_FRACTION = 0.05  # < 5% of MemTotal
 _ELEVATED_AVAILABLE_KIB = 128 * 1024  # < 128 MiB available
 _ELEVATED_AVAILABLE_FRACTION = 0.15  # < 15% of MemTotal
+PRESSURE_CRITICAL = "critical"
 _PRESSURE_TIERS = (  # order-sensitive: worst first
-    ("critical", _CRITICAL_AVAILABLE_KIB, _CRITICAL_AVAILABLE_FRACTION),
+    (PRESSURE_CRITICAL, _CRITICAL_AVAILABLE_KIB, _CRITICAL_AVAILABLE_FRACTION),
     ("elevated", _ELEVATED_AVAILABLE_KIB, _ELEVATED_AVAILABLE_FRACTION),
 )
+# Every level ``classify_pressure`` (and so ``collect_memory_status``'s ``pressure``) can return.
+PRESSURE_LEVELS = ("ok", *(tier[0] for tier in _PRESSURE_TIERS), "unknown")
 
 # Writer cadence is 30s; 150s tolerates a briefly stalled loop without letting
 # a long-dead gateway's last sample pose as current.
@@ -71,6 +75,15 @@ def _read_state_files(home: Optional[Path]) -> tuple:
         return None, None
 
 
+def _prior_watchdog_flags(sentinel: dict[str, Any]) -> tuple[bool, bool]:
+    """``(watchdog_exit, memory_starved)`` for the previous life, from the ``prior_exit_reason`` /
+    ``prior_host_memory_pressure`` keys the lifecycle ledger stamps at boot (#148527)."""
+    from gateway.status import is_watchdog_exit_reason
+
+    watchdog = is_watchdog_exit_reason(sentinel.get("prior_exit_reason"))
+    return watchdog, watchdog and sentinel.get("prior_host_memory_pressure") == PRESSURE_CRITICAL
+
+
 def collect_memory_status(
     home: Optional[Path] = None,
     *,
@@ -83,6 +96,11 @@ def collect_memory_status(
     status: dict[str, Any] = {
         "pressure": "unknown", "gateway_rss_mb": None, "system_total_mb": None, "system_available_mb": None,
         "swap_used_mb": None, "sampled_at": None, "last_boot_unclean": False, "last_boot_suspected_oom": False,
+        # The previous life was killed by a watchdog / and the host was critically short of memory then.
+        "last_boot_watchdog_exit": False, "last_boot_memory_starved": False,
+        # The previous life died uncleanly and, between its last heartbeat and this boot, the kernel
+        # OOM-killed a process in the gateway's cgroup ("cgroup") or on the host ("host"); else None.
+        "last_boot_oom_kill": None,
         # Identity of the CURRENT life (sentinel started_at): the dashboard keys
         # banner dismissal on it so acknowledging one OOM restart does not mute the NEXT.
         "boot_id": None,
@@ -106,6 +124,10 @@ def collect_memory_status(
     if sentinel:
         status["last_boot_unclean"] = bool(sentinel.get("prior_unclean_exit"))
         status["last_boot_suspected_oom"] = bool(sentinel.get("prior_suspected_oom"))
+        scope = sentinel.get("prior_oom_kill_scope")
+        status["last_boot_oom_kill"] = scope if sentinel.get("prior_oom_kill_seen") is True and scope in (
+            "cgroup", "host") else None
+        status["last_boot_watchdog_exit"], status["last_boot_memory_starved"] = _prior_watchdog_flags(sentinel)
         started_at = sentinel.get("started_at")
         status["boot_id"] = started_at if isinstance(started_at, str) and started_at else None
 

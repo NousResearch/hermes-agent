@@ -241,11 +241,23 @@ def check_state_db_integrity(home: Optional[Path] = None, *, deadline_s: Optiona
     (renewed from a SQLite progress handler, #115542) so a long healthy check
     on a huge store is not mistaken for a parked deadlock.
 
+    PostgreSQL checks connectivity and the session schema, not server page integrity.
+
     ``deadline_s`` (optional): abort the scan once that many seconds elapse and
     return ``"check-incomplete: exceeded <N>s"``.  ``deadline_s=None`` (default) is the
     historic unbounded behaviour -- the progress handler never aborts the PRAGMA.
     """
     path = _home_path(home, "state.db")
+    try:
+        from hermes_state_backend import resolve_database_settings
+        settings = resolve_database_settings(path)
+        if settings.backend == "postgres":
+            from hermes_state import SessionDB
+            with SessionDB(path, read_only=True, database_settings=settings) as db, db._read_ctx() as conn:
+                conn.execute("SELECT 1 FROM sessions LIMIT 1").fetchone()
+            return "ok"
+    except Exception as exc:
+        return f"check-failed: {type(exc).__name__}"
     if not path.exists():
         return "absent"
     deadline_at: Optional[float] = None

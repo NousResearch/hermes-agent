@@ -14,6 +14,7 @@ import json
 import re
 import sqlite3
 import time
+from contextlib import closing, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Iterator, Optional
@@ -91,8 +92,15 @@ def default_db_path() -> Path:
     return get_hermes_home() / "state.db"
 
 
-def _connect_readonly(db_path: Path) -> sqlite3.Connection:
-    return sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+@contextmanager
+def _connect_readonly(db_path: Path, settings):
+    if settings.backend == "postgres":
+        from hermes_state import SessionDB
+        with SessionDB(db_path, read_only=True, database_settings=settings) as db, db._read_ctx() as conn:
+            yield conn
+    else:
+        with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
+            yield conn
 
 
 def _fetch_rows(cur) -> Iterator[tuple]:
@@ -108,7 +116,7 @@ def _json_or_none(raw):
         return None
 
 
-def _iter_terminal_calls(con: sqlite3.Connection, since_ts: float) -> Iterator[tuple[str, str]]:
+def _iter_terminal_calls(con, since_ts: float) -> Iterator[tuple[str, str]]:
     """Yield ``(tool_call_id, command)`` for every terminal tool call."""
     cur = con.execute(
         "SELECT tool_calls FROM messages WHERE role='assistant' AND tool_calls IS NOT NULL "
@@ -129,7 +137,7 @@ def _iter_terminal_calls(con: sqlite3.Connection, since_ts: float) -> Iterator[t
                 yield (call.get("id") or "", command)
 
 
-def _blocked_tool_call_ids(con: sqlite3.Connection, since_ts: float) -> set:
+def _blocked_tool_call_ids(con, since_ts: float) -> set:
     """Collect tool_call_ids whose result shows the command never ran freely."""
     cur = con.execute(
         "SELECT tool_call_id, content FROM messages "
@@ -149,15 +157,16 @@ def scan_approval_history(db_path: Optional[Path] = None, days: int = 90) -> lis
     that actually executed (i.e. carried an implied user approval).
     """
     from tools.approval_detection import detect_dangerous_command, detect_hardline_command
+    from hermes_state_backend import resolve_database_settings
     path = Path(db_path) if db_path else default_db_path()
-    if not path.exists():
+    settings = resolve_database_settings(path)
+    if settings.backend == "sqlite" and not path.exists():
         return []
 
     since_ts = 0.0 if days <= 0 else time.time() - days * 86400
 
     records: list[tuple[str, str]] = []
-    con = _connect_readonly(path)
-    try:
+    with _connect_readonly(path, settings) as con:
         blocked = _blocked_tool_call_ids(con, since_ts)
         for tool_call_id, command in _iter_terminal_calls(con, since_ts):
             if tool_call_id in blocked:
@@ -169,8 +178,6 @@ def scan_approval_history(db_path: Optional[Path] = None, days: int = 90) -> lis
             is_dangerous, _key, description = detect_dangerous_command(command)
             if is_dangerous:
                 records.append((command, description))
-    finally:
-        con.close()
     return records
 
 
@@ -315,9 +322,10 @@ def _render_text(proposals: list[Proposal], days: int) -> None:
 
 def suggest_command(args) -> int:
     """Entry point for ``hermes approvals suggest``."""
+    from hermes_state_backend import resolve_database_settings
     db_path = Path(args.db) if getattr(args, "db", None) else default_db_path()
     days = getattr(args, "days", 90)
-    if not db_path.exists():
+    if resolve_database_settings(db_path).backend == "sqlite" and not db_path.exists():
         print(f"Session database not found: {db_path}")
         return 1
 

@@ -65,6 +65,39 @@ def test_sessions_export_verified_delete_keeps_file(monkeypatch, tmp_path, capsy
     assert "Deleted exported session" in capsys.readouterr().out
 
 
+def test_sessions_export_verified_delete_with_carriage_returns_in_tool_output(monkeypatch, tmp_path, capsys):
+    """Terminal output keeps its ``\\r`` (progress bars, CRLF files); an untampered export of it must
+    pass its own verification, so --delete-after-verified deletes instead of reporting a sha256 mismatch."""
+    import hermes_cli.main as main_mod
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    path = tmp_path / "state.db"
+    db = SessionDB(db_path=path)
+    db.create_session("cr-session", "cli")
+    db.append_message("cr-session", "user", "fetch it")
+    db.append_message("cr-session", "tool", "Downloading 10%\r50%\r100%\nsaved a\r\nb", tool_name="terminal")
+    db.close()
+    monkeypatch.setattr(sys, "argv", [
+        "hermes", "sessions", "export", "--format", "md",
+        "--session-id", "cr-session", "--delete-after-verified", "--yes",
+        str(tmp_path / "exports"),
+    ])
+
+    main_mod.main()
+
+    output = capsys.readouterr().out
+    assert "Export verification failed" not in output
+    assert "Deleted exported session" in output
+    files = list((tmp_path / "exports").glob("*.md"))
+    assert len(files) == 1
+    assert "Downloading 10%\r50%\r100%\nsaved a\r\nb" in files[0].read_bytes().decode("utf-8")
+    db = SessionDB(db_path=path, read_only=True)
+    try:
+        assert db.get_session("cr-session") is None
+    finally:
+        db.close()
+
+
 def test_sessions_export_redact_scrubs_secrets(monkeypatch, tmp_path):
     """Redaction affects the exported file, never the stored transcript."""
     import hermes_cli.main as main_mod

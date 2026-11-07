@@ -1,0 +1,17 @@
+name: distro-reader
+title: Distro Reader
+repo: https://github.com/Distro-Media/hermes-plugin-distro-reader
+sha: 875cb6c52ebb3daedd3fae71c65f5d1baa6f3c31
+description: 'Read independent Distro publications in Hermes through the public Distro Reader MCP server: search, feeds, full stories, visual article and book rendering, podcasts, payment information, and user-approved tips. Portable Agent Plugins v1 package with two workflow skills; public reading needs no account or API key.'
+maintainer: Distro-Media
+tier: community
+category: tools
+version: "1.0.0"
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/Distro-Media/hermes-plugin-distro-reader
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

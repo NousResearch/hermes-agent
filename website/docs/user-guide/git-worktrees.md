@@ -196,7 +196,9 @@ worktree has uncommitted changes or unpushed commits, Hermes asks:
 
 One-shot runs (`-q`, `-z`), cron jobs, gateway sessions and any exit without a
 terminal never ask: the tree is kept and the stale-worktree sweep handles it
-later. A clean tree whose commits are pushed is removed without asking.
+later. A clean tree whose commits are pushed is removed without asking. The
+session's branch counts too: if you checked out or detached onto another ref
+inside the tree, commits left only on the session branch keep the tree.
 
 ## Stale worktree sweep and restore
 
@@ -239,6 +241,12 @@ line-ending or filter rule is applied. Untracked files larger than
 tree is then kept: exit **Archive** and the subagent result say so. A
 branch that exists on a remote (an open PR) is kept; otherwise the archive
 holds its commits and the local branch is deleted.
+
+A `hermes/` session branch left without a tree (for example after
+`git worktree remove --force`) is deleted by the sweep too; when it holds
+commits no remote has, it is archived first under the same
+`refs/hermes/archive/<name>` scheme, so `hermes worktree restore <name>` brings
+it back in a fresh tree. If that archive fails the branch is kept.
 
 ```bash
 hermes worktree list                 # trees plus archives (name, age, branch, reason)

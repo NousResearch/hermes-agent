@@ -11,6 +11,7 @@ import functools
 import json
 import logging
 import os
+import sqlite3
 import time
 from contextlib import contextmanager
 from typing import Any, Callable, Optional
@@ -537,6 +538,10 @@ def _goal_gate(tool_name: str, task, tid: str, evidence: str) -> None:
 # worker context (no ``HERMES_KANBAN_TASK``). - No durable note on these auto-heartbeats; that's reserved
 # for the explicit tool which carries a model-supplied note.
 _AUTO_HEARTBEAT_MIN_INTERVAL_SECONDS = 60.0
+# The bridge runs inline on the turn thread (stream monitor, chunk path), so it must not inherit the board's
+# long writer wait: the default busy_timeout × boundary retries can hold a write-locked board for minutes and
+# starve the stream stale watchdog (#145886). A busy board skips this beat; the next window retries.
+_AUTO_HEARTBEAT_BUSY_TIMEOUT_MS = 500
 _auto_heartbeat_last_attempt: float = 0.0
 _auto_heartbeat_fence_warned = False
 
@@ -576,6 +581,7 @@ def heartbeat_current_worker_from_env() -> bool:
     try:
         from hermes_cli import kanban_db_dispatch as kbd
         with _board(None, quiet_close=True) as (kb, conn):
+            conn.execute(f"PRAGMA busy_timeout={_AUTO_HEARTBEAT_BUSY_TIMEOUT_MS}")
             ops = ((kb.heartbeat_claim, {"claimer": os.environ.get("HERMES_KANBAN_CLAIM_LOCK")}),
                    (kbd.heartbeat_worker, {"note": None, "expected_run_id": _worker_run_id(tid)}))
             succeeded = True
@@ -597,6 +603,10 @@ def heartbeat_current_worker_from_env() -> bool:
                             "treats it as a delegate_task descendant and its claim will not be extended by "
                             "activity. Only the dispatcher's own spawn grants worker scope; do not copy a "
                             "worker's environment into a hand-launched process.", tid, exc)
+                except sqlite3.OperationalError:
+                    # Locked (or unwritable) board: the second write would wait out the same lock.
+                    logger.debug("auto-heartbeat: %s skipped, board busy", op, exc_info=True)
+                    return False
                 except Exception:
                     logger.debug("auto-heartbeat: %s failed", op, exc_info=True)
                     succeeded = False

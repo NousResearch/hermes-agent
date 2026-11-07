@@ -555,7 +555,10 @@ test('a Windows dev run fetches the missing binding into the installed package o
       installed.push(root)
       makeFakeNode(join(root, 'lib', 'binding', 'napi-9-win32-unknown-x64', 'node-get-windows.node'), 'win32')
     }
-    const run = () => ensureDevGetWindowsBinding({ platform: 'win32', arch: 'x64', resolveRoot: () => srcRoot, install })
+    const run = (platform = 'win32', arch = 'x64') => ensureDevGetWindowsBinding({ platform, arch, resolveRoot: () => srcRoot, install })
+    run('linux')
+    run('win32', 'arm64') // no prebuilt to fetch
+    assert.deepEqual(installed, [])
     run()
     run()
     assert.deepEqual(installed, [srcRoot])

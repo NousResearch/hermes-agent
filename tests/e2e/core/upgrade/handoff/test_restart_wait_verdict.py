@@ -41,3 +41,11 @@ def test_a_wait_that_outlives_the_cap_names_its_holders(tmp_path):
 
 def test_a_wait_that_never_closes_fails(tmp_path):
     assert "never closed" in _verdict(tmp_path, OPENED, HOLDING)
+
+
+def test_a_later_wait_neither_closes_nor_names_the_holders_of_an_earlier_one(tmp_path):
+    later_open = OPENED.replace("23:31:20,808", "23:32:00,000")
+    later_holding = HOLDING.replace("23:31:20,810", "23:32:00,001").replace("local-1", "local-2")
+    verdict = _verdict(tmp_path, OPENED, HOLDING, later_open, later_holding,
+                       f"2026-11-06 23:32:10,000 {CLOSES['drained']}")
+    assert "never closed" in verdict and "local-1" in verdict and "local-2" not in verdict

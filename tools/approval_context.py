@@ -383,3 +383,13 @@ def _get_approval_transport_config() -> tuple[str, str | None]:
         # prompt on a built-in surface the operator may not be watching.
         return "config-error", None
     return selected or "builtin", "builtin" if fallback == "builtin" else None
+
+
+def _get_approval_transport_mode() -> str:
+    """Mirror only under an exact opt-in; preserve replacement for every other value."""
+    from hermes_cli.config import load_config_readonly
+    try:
+        cfg = ((load_config_readonly() or {}).get("security") or {}).get("approval") or {}
+        return "mirror" if cfg.get("transport_mode") == "mirror" else "replace"
+    except (OSError, ValueError, TypeError, AttributeError):
+        return "replace"

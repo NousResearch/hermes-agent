@@ -285,6 +285,41 @@ On messaging platforms, the agent sends the dangerous command details to the cha
 
 The `HERMES_EXEC_ASK=1` environment variable is automatically set when running the gateway.
 
+### Plugin approval transports
+
+A selected [plugin approval transport](features/plugins.md#approval-transports),
+such as a phone push prompt, replaces the built-in prompt by default
+(`security.approval.transport_mode: replace`). To answer from either place:
+
+```yaml
+security:
+  approval:
+    transport: my-ui
+    transport_mode: mirror
+```
+
+In `mirror` mode the TUI/Desktop card or ACP prompt remains live while the
+selected transport presents the same command or code approval. The first valid answer
+wins; late answers are discarded. Transport errors, busy workers, and timeouts
+leave the built-in prompt live until it is answered or its usual timeout expires.
+Chat apps stay built-in only: their buttons answer the session's oldest pending
+request rather than the card's request ID, so mirroring could apply stale consent.
+Classic CLI sessions (including ones attached to the gateway) stay built-in only: their
+prompt blocks on terminal input that a remote answer cannot withdraw. Gateway/ask
+sessions without a notify callback also stay on the built-in path, without a transport
+prompt in mirror mode.
+Webhook, API server, cron, and kanban sessions are not mirrored.
+Only the exact value `mirror` enables mirroring; missing or other values keep
+the default `replace` behavior.
+
+Anyone who can answer the selected transport can approve the operation, with
+the same trust as `replace` mode. Enable only transports whose recipients and
+response authentication you trust. Mirroring does not broaden the choices
+offered for a request (Smart DENY overrides still offer only once/deny).
+Plugin-escalated actions, protected instruction-file writes, MCP elicitation
+consent, and ACP editor edits stay on their built-in approval path; they are
+not eligible for a selected transport in either mode.
+
 ### Permanent Allowlist
 
 Commands approved with "always" are saved to `~/.hermes/config.yaml`:

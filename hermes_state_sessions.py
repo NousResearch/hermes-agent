@@ -519,8 +519,11 @@ class SessionSessionsMixin:
         mount until the next send. Idempotent; returns the number of rows retired.
         """
         with session_lineage_guard(self.db_path, session_id, timeout_s=self._WRITE_PATIENCE_S):
-            return self._execute_write(
-                lambda conn: self._retire_undrained_queue_rows_conn(conn, session_id))
+            def retire(conn):
+                from hermes_state_adoption_records import _pending_component_records
+                _pending_component_records(conn, session_id, self)
+                return self._retire_undrained_queue_rows_conn(conn, session_id)
+            return self._execute_write(retire)
 
     def reopen_session(self: Any, session_id: str) -> None:
         """Clear ended_at/end_reason so a session can be resumed; first freeze markerless legacy reset

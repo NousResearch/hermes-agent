@@ -458,3 +458,51 @@ def test_half_retired_legacy_mismatch_without_witness_stays_pending(home, monkey
     finally:
         donor.close()
         target.close()
+
+
+def test_disappearing_pending_transfer_fails_closed(home, monkeypatch):
+    from contextlib import contextmanager
+    from hermes_state_adoption_records import AdoptionConflict, retirement_pending_source
+
+    donor, target = _open(home, default=True), _open(home)
+    root, tip = "disappear-root", "disappear-tip"
+    try:
+        _seed_compression_lineage(donor, root, tip)
+        with monkeypatch.context() as patch:
+            patch.setattr(SessionDB, "_retire_donor_segment", _retire_fails_for(root))
+            assert target.adopt_session_lineage_from(donor, tip)["pending_ids"] == [root, tip]
+        original = target._read_ctx
+
+        class Result:
+            def __init__(self, cursor):
+                self.cursor = cursor
+
+            def fetchall(self):
+                rows = self.cursor.fetchall()
+                target._conn.execute("DELETE FROM adoption_transfers")
+                target._conn.commit()
+                return rows
+
+        class Connection:
+            def __init__(self, conn):
+                self.conn = conn
+
+            def execute(self, sql, params=()):
+                result = self.conn.execute(sql, params)
+                if sql.startswith("SELECT DISTINCT transfer_id FROM adoption_transfers"):
+                    return Result(result)
+                return result
+
+        @contextmanager
+        def intercepted():
+            with original() as conn:
+                yield Connection(conn)
+
+        monkeypatch.setattr(target, "_read_ctx", intercepted)
+        with pytest.raises(AdoptionConflict, match="disappeared"):
+            retirement_pending_source(target, root)
+        assert donor.get_session(root)["end_reason"] == "compression"
+        assert target._conn.execute("SELECT COUNT(*) FROM sessions WHERE id IN (?, ?)", (root, tip)).fetchone()[0] == 2
+    finally:
+        donor.close()
+        target.close()

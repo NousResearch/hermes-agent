@@ -93,5 +93,88 @@ def test_foreign_pages_confine_handles_and_failed_import_rolls_back(tmp_path, mo
         with pytest.raises(RuntimeError, match="interrupted write"):
             browser.import_browser_session(page["sessions"][0]["id"], db, "default")
         assert db.session_count() == 0
+        from tui_gateway import server
+        monkeypatch.setattr(server, "_get_db", lambda: db)
+        monkeypatch.setattr(server, "_profile_home", lambda profile: None)
+        with pytest.raises(RuntimeError, match="interrupted write"):
+            server.handle_request({"id": 2, "method": "session.foreign.import",
+                                   "params": {"id": page["sessions"][0]["id"]}})
+        assert db.session_count() == 0
     finally:
         db.close()
+
+
+@pytest.mark.parametrize("collision", ["foreign_live", "foreign_ended", "local"])
+def test_foreign_rpc_refuses_generated_id_collision(tmp_path, monkeypatch, collision):
+    from hermes_state import SessionDB
+    import hermes_state_portability as portability
+    from tui_gateway import server
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    folder = tmp_path / ".claude" / "projects" / "project"
+    folder.mkdir(parents=True)
+    log = folder / "session.jsonl"
+    log.write_text(json.dumps({"type": "user", "sessionId": "foreign-one", "message": {"role": "user", "content": "external"}}), encoding="utf-8")
+    original = log.read_bytes()
+    home = tmp_path / ".hermes"
+    profile = home / "profiles" / "science"
+    profile.mkdir(parents=True)
+    local, sibling = SessionDB(home / "state.db"), SessionDB(profile / "state.db")
+    sid = "fixed-foreign-collision"
+    owner = local if collision == "local" else sibling
+    try:
+        owner.create_session(sid, "cli")
+        owner.append_message(sid, "user", "preserve")
+        if collision == "foreign_ended":
+            owner.end_session(sid, "done")
+        def snapshot():
+            return [[tuple(row) for row in db._conn.execute("SELECT * FROM " + table + " ORDER BY rowid")]
+                    for db in (local, sibling) for table in ("sessions", "messages")]
+        before = snapshot()
+        monkeypatch.setattr(portability, "new_session_id", lambda **kwargs: sid)
+        monkeypatch.setattr(server, "_get_db", lambda: local)
+        monkeypatch.setattr(server, "_profile_home", lambda profile: None)
+        page = server._methods["session.foreign.list"](1, {"limit": 1})["result"]
+        response = server.handle_request({"id": 2, "method": "session.foreign.import", "params": {"id": page["sessions"][0]["id"]}})
+        assert response.get("error"), response
+        assert snapshot() == before
+        assert (local.get_session(sid) is not None) == (collision == "local")
+        assert log.read_bytes() == original
+    finally:
+        local.close()
+        sibling.close()
+
+
+def test_foreign_rpc_existing_origin_replay_precedes_new_id_admission(tmp_path, monkeypatch):
+    from hermes_state import SessionDB
+    import hermes_state_portability as portability
+    from tui_gateway import server
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    folder = tmp_path / ".claude" / "projects" / "project"
+    folder.mkdir(parents=True)
+    log = folder / "session.jsonl"
+    log.write_text(json.dumps({"type": "user", "sessionId": "replay-foreign", "message": {"role": "user", "content": "content"}}), encoding="utf-8")
+    home = tmp_path / ".hermes"
+    profile = home / "profiles" / "science"
+    profile.mkdir(parents=True)
+    local, sibling = SessionDB(home / "state.db"), SessionDB(profile / "state.db")
+    try:
+        sibling.create_session("blocked-next-id", "cli")
+        monkeypatch.setattr(server, "_get_db", lambda: local)
+        monkeypatch.setattr(server, "_profile_home", lambda profile: None)
+        handle = server._methods["session.foreign.list"](1, {"limit": 1})["result"]["sessions"][0]["id"]
+        monkeypatch.setattr(portability, "new_session_id", lambda **kwargs: "first-import-id")
+        first = server.handle_request({"id": 2, "method": "session.foreign.import", "params": {"id": handle}})["result"]
+        assert first == {"session_id": "first-import-id", "already_imported": False}
+        before = [tuple(row) for row in local._conn.execute("SELECT * FROM sessions ORDER BY id")]
+        monkeypatch.setattr(portability, "new_session_id", lambda **kwargs: "blocked-next-id")
+        replay = server.handle_request({"id": 3, "method": "session.foreign.import", "params": {"id": handle}})["result"]
+        assert replay == {"session_id": "first-import-id", "already_imported": True}
+        assert [tuple(row) for row in local._conn.execute("SELECT * FROM sessions ORDER BY id")] == before
+        assert local.get_session("blocked-next-id") is None
+    finally:
+        local.close()
+        sibling.close()

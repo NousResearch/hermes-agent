@@ -180,3 +180,45 @@ def test_resume_reopens_valid_half_retired_queued_donor(gateway, monkeypatch):
     finally:
         reopened.close()
         mod._db = donor
+
+
+@pytest.mark.parametrize("damage", ["missing_root", "missing_manifest", "malformed_manifest", "inconsistent_member", "malformed_donor"])
+def test_resume_refuses_corrupt_pending_component_without_mutation(gateway, monkeypatch, damage):
+    mod, donor, profile_home = gateway
+    root, tip = "corrupt-resume-root", "corrupt-resume-tip"
+    _seed_compression_lineage(donor, root, tip)
+    donor._conn.execute("UPDATE messages SET display_metadata=? WHERE session_id=? AND role='user'", ('{"_queued_prompt":true}', root))
+    donor._conn.commit()
+    target = SessionDB(profile_home / "state.db")
+    try:
+        target.create_session("unrelated", "tui")
+        with monkeypatch.context() as patch:
+            patch.setattr(SessionDB, "_retire_donor_segment", _retire_fails_for(tip))
+            assert target.adopt_session_lineage_from(donor, tip)["pending_ids"] == [tip]
+        if damage == "malformed_donor":
+            import json
+            manifest = json.loads(target._conn.execute(
+                "SELECT manifest_json FROM adoption_transfers WHERE member_id=?", (root,)).fetchone()[0])
+            manifest["donor"][1] = "invalid"
+            statement = ("UPDATE adoption_transfers SET manifest_json=? WHERE member_id=?", (json.dumps(manifest), root))
+        else:
+            statement = {
+                "missing_root": ("DELETE FROM adoption_transfers WHERE member_id=?", (root,)),
+                "missing_manifest": ("UPDATE adoption_transfers SET manifest_json=NULL WHERE member_id=?", (root,)),
+                "malformed_manifest": ("UPDATE adoption_transfers SET manifest_json='{' WHERE member_id=?", (root,)),
+                "inconsistent_member": ("UPDATE adoption_transfers SET member_order=7 WHERE member_id=?", (tip,)),
+            }[damage]
+        target._conn.execute(*statement)
+        target._conn.commit()
+        assert not _resume(mod, "unrelated", "unrelated-control").get("error")
+        def snapshot():
+            return [[tuple(row) for row in db._conn.execute("SELECT * FROM " + table + " ORDER BY rowid")]
+                    for db in (donor, target) for table in ("sessions", "messages")]
+        before = snapshot()
+        response = _resume(mod, root, "corrupt-retry")
+        assert response.get("error"), response
+        assert "adoption" in response["error"]["message"].lower()
+        assert snapshot() == before
+        assert not donor.get_session(tip)["archived"]
+    finally:
+        target.close()

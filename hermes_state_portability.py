@@ -369,6 +369,10 @@ class SessionPortabilityMixin:
         Reuse the portability validator and message writer so counters and FTS
         obey the same contract as ordinary transcript imports.
         """
+        from hermes_state_lineage import SessionIdOwnedElsewhereError, SessionLineageAmbiguousError
+        existing = self.find_foreign_import(origin)
+        if existing:
+            return {"session_id": existing, "already_imported": True}
         session_id = new_session_id(hex_len=12)
         normalized, errors = self._validate_import_payload([
             {"id": session_id, "source": origin["tool"], "title": title,
@@ -380,6 +384,8 @@ class SessionPortabilityMixin:
             existing = self._find_foreign_import_on_conn(conn, origin)
             if existing:
                 return {"session_id": existing, "already_imported": True}
+            if conn.execute("SELECT 1 FROM sessions WHERE id=?", (session_id,)).fetchone():
+                raise ValueError("Generated session ID already exists; retry the import")
             # Titles are globally unique within a profile. Preserve a readable
             # title while giving unrelated conversations with the same text room.
             item = normalized[0]
@@ -390,7 +396,13 @@ class SessionPortabilityMixin:
                          (json.dumps({"imported_from": origin}), profile, session_id))
             return {"session_id": session_id, "already_imported": False}
 
-        return self._execute_write(_do)
+        try:
+            with session_lineage_guard(self.db_path, session_id, timeout_s=self._WRITE_PATIENCE_S) as snapshot:
+                if snapshot is not None and snapshot.rows_by_id.get(session_id):
+                    raise ValueError("Generated session ID already exists; retry the import")
+                return self._execute_write(_do)
+        except (SessionIdOwnedElsewhereError, SessionLineageAmbiguousError) as exc:
+            raise ValueError("Generated session ID already exists; retry the import") from exc
 
     @classmethod
     def _compact_session_cols(cls) -> str:

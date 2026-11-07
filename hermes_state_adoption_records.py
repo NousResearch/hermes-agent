@@ -279,18 +279,65 @@ def set_retirement_intent(conn, record, requested):
                      ("pending" if requested else "copied", time.time(), record["transfer_id"]))
 
 
-def retirement_pending_source(db, session_id):
-    """A hint only: adoption revalidates the complete record and intent under locks."""
-    with db._read_ctx() as conn:
-        if not _table_exists(conn):
-            return None
+def _pending_component_records(conn, session_id, db):
+    """Reject damaged pending membership connected to the requested target row."""
+    if not _table_exists(conn):
+        return []
+    _check_schema(conn)
+    members = [row[0] for row in conn.execute(
+        "WITH RECURSIVE component(id) AS (SELECT ? UNION "
+        "SELECT s.parent_session_id FROM sessions s JOIN component c ON s.id=c.id "
+        "WHERE s.parent_session_id IS NOT NULL UNION "
+        "SELECT s.id FROM sessions s JOIN component c ON s.parent_session_id=c.id) "
+        "SELECT id FROM component LIMIT 8193", (session_id,))]
+    if len(members) > 8192:
+        raise AdoptionConflict("Pending adoption component exceeds the verification bound")
+    markers = ",".join("?" for _ in members)
+    target_store = str(db.db_path.resolve(strict=True))
+    transfers = conn.execute(
+        f"SELECT DISTINCT transfer_id FROM adoption_transfers WHERE member_id IN ({markers}) "
+        "AND status='pending' LIMIT 8193", members).fetchall()
+    if len(transfers) > 8192:
+        raise AdoptionConflict("Pending adoption inventory exceeds the verification bound")
+    valid = []
+    for (transfer,) in transfers:
         rows = conn.execute(
-            "SELECT DISTINCT transfer_id,donor_store FROM adoption_transfers"
-            " WHERE member_id=? AND target_store=? AND status='pending'",
-            (session_id, str(db.db_path.resolve(strict=True))),
-        ).fetchall()
-    if not rows:
-        return None
-    if len(rows) != 1:
+            "SELECT transfer_id,member_id,member_order,donor_store,target_store,status,"
+            "format_version,manifest_json FROM adoption_transfers WHERE transfer_id=? ORDER BY member_order LIMIT 8193",
+            (transfer,)).fetchall()
+        if not rows:
+            raise AdoptionConflict("Pending adoption record disappeared during verification")
+        if len(rows) > 8192:
+            raise AdoptionConflict("Pending adoption membership exceeds the verification bound")
+        manifest = _read_manifest(rows[0])
+        ids = [member["id"] for member in manifest["members"]]
+        donor = manifest.get("donor")
+        if (not isinstance(donor, list) or len(donor) != 3
+                or not isinstance(donor[0], str) or not donor[0]
+                or (donor[1] is not None and (not isinstance(donor[1], list) or len(donor[1]) != 2
+                    or any(type(part) is not int for part in donor[1])))
+                or type(donor[2]) is not int or donor[2] < 0
+                or (donor[1] is None and donor[2] == 0)):
+            raise AdoptionConflict("Invalid pending adoption donor identity; inspect the saved transfer")
+        if manifest.get("target") != store_identity(db) or len(rows) != len(ids):
+            raise AdoptionConflict("Incomplete pending adoption membership; inspect the saved transfer")
+        if any(mid not in members for mid in ids):
+            raise AdoptionConflict("Pending adoption member is missing from its target component")
+        for order, row in enumerate(rows):
+            expected = (transfer_id(manifest), ids[order], order, manifest["donor"][0], target_store,
+                        "pending", FORMAT, rows[0][7] if order == 0 else None)
+            if tuple(row) != expected:
+                raise AdoptionConflict("Inconsistent pending adoption membership; inspect the saved transfer")
+        valid.append((manifest, rows[0][3]))
+    return valid
+
+
+def retirement_pending_source(db, session_id):
+    """Find a pending transfer after verifying its connected component's membership."""
+    with db._read_ctx() as conn:
+        records = _pending_component_records(conn, session_id, db)
+        sources = [source for manifest, source in records
+                   if session_id in {member["id"] for member in manifest["members"]}]
+    if len(sources) > 1:
         raise AdoptionConflict("Several pending adoptions claim this session; inspect the complete transfer records")
-    return rows[0][1]
+    return sources[0] if sources else None

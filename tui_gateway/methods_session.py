@@ -764,6 +764,10 @@ def _resume_materialize_minted(ctx: _Resume) -> None:
 def _resume_locate(ctx: _Resume) -> dict | None:
     """Resolve ``ctx.target`` to a stored row (``ctx.found``); a dict is an early response."""
     from .methods_session_adoption import adopt_stranded, resume_pending
+    if ctx.owns_db:
+        response = resume_pending(ctx, _get_db, _err, logger)
+        if response is not None:
+            return response
     ctx.found = ctx.db.get_session(ctx.target)
     if ctx.found:
         return resume_pending(ctx, _get_db, _err, logger) if ctx.owns_db else None

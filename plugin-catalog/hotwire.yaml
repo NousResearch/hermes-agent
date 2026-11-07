@@ -1,6 +1,6 @@
 name: hotwire
 repo: https://github.com/RohanGlitched/hotwire
-sha: 17a7a59e91b3d2da780d21cf4dbe555ec521f94d
+sha: 571c3bd3b5829cabc3cd980b157dcd94a19d0672
 version: "1.0.0"
 title: Hotwire
 description: >-
@@ -24,14 +24,14 @@ tier: community
 category: tools
 docs_url: https://github.com/RohanGlitched/hotwire#readme
 readme: true
-image: https://raw.githubusercontent.com/RohanGlitched/hotwire/17a7a59e91b3d2da780d21cf4dbe555ec521f94d/docs/cover.png
+image: https://raw.githubusercontent.com/RohanGlitched/hotwire/571c3bd3b5829cabc3cd980b157dcd94a19d0672/docs/cover.png
 screenshots:
-  - https://raw.githubusercontent.com/RohanGlitched/hotwire/17a7a59e91b3d2da780d21cf4dbe555ec521f94d/docs/desktop/bench-light.png
-  - https://raw.githubusercontent.com/RohanGlitched/hotwire/17a7a59e91b3d2da780d21cf4dbe555ec521f94d/docs/desktop/listen-light.png
-  - https://raw.githubusercontent.com/RohanGlitched/hotwire/17a7a59e91b3d2da780d21cf4dbe555ec521f94d/docs/desktop/live-light.png
-  - https://raw.githubusercontent.com/RohanGlitched/hotwire/17a7a59e91b3d2da780d21cf4dbe555ec521f94d/docs/desktop/board-light.png
-  - https://raw.githubusercontent.com/RohanGlitched/hotwire/17a7a59e91b3d2da780d21cf4dbe555ec521f94d/docs/desktop/chat-light.png
-  - https://raw.githubusercontent.com/RohanGlitched/hotwire/17a7a59e91b3d2da780d21cf4dbe555ec521f94d/docs/desktop/bench-dark.png
+  - https://raw.githubusercontent.com/RohanGlitched/hotwire/571c3bd3b5829cabc3cd980b157dcd94a19d0672/docs/desktop/bench-light.png
+  - https://raw.githubusercontent.com/RohanGlitched/hotwire/571c3bd3b5829cabc3cd980b157dcd94a19d0672/docs/desktop/listen-light.png
+  - https://raw.githubusercontent.com/RohanGlitched/hotwire/571c3bd3b5829cabc3cd980b157dcd94a19d0672/docs/desktop/live-light.png
+  - https://raw.githubusercontent.com/RohanGlitched/hotwire/571c3bd3b5829cabc3cd980b157dcd94a19d0672/docs/desktop/board-light.png
+  - https://raw.githubusercontent.com/RohanGlitched/hotwire/571c3bd3b5829cabc3cd980b157dcd94a19d0672/docs/desktop/chat-light.png
+  - https://raw.githubusercontent.com/RohanGlitched/hotwire/571c3bd3b5829cabc3cd980b157dcd94a19d0672/docs/desktop/bench-dark.png
 requires_hermes: ">=0.23.0"
 capabilities:
   provides_tools:

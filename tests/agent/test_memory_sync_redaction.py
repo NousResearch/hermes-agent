@@ -102,3 +102,13 @@ def test_key_detected_in_a_json_tool_result_is_also_masked_where_the_model_repea
     user, _assistant, messages = provider.seen[0]
     assert key not in repr(provider.seen)
     assert user == "show my ov.conf" and json.loads(json.loads(messages[0]["content"])["output"])["model"] == "gemini"
+
+
+def test_on_turn_start_scrubs_user_text_but_hands_identity_through_raw():
+    # A phone-number author id (SMS, Signal) matches the phone pattern; masking it would merge two senders.
+    phone = "+1" + "555" + "0123456"
+    mgr, provider = _manager()
+    mgr.on_turn_start(2, "next ask", previous_message=_LEAK, author_id=phone, author_name=phone, model="test/model")
+    message, kwargs = provider.seen[0]
+    assert message == "next ask" and _SECRET not in kwargs["previous_message"]
+    assert kwargs["author_id"] == phone and kwargs["author_name"] == phone and kwargs["model"] == "test/model"

@@ -1609,3 +1609,11 @@
 .hermes-kanban-trash-label {
   font-weight: 500;
 }
+
+/* Producer-supplied plain text; the client owns the bounded semantic palette. */
+.hermes-kanban-task-attention { margin: 0.35rem 0; }
+.hermes-kanban-task-attention p { white-space: pre-wrap; }
+.hermes-kanban-task-attention--success { color: var(--color-success, #059669); }
+.hermes-kanban-task-attention--info { color: var(--color-info, #2563eb); }
+.hermes-kanban-task-attention--warning { color: var(--color-warning, #d97706); }
+.hermes-kanban-task-attention--danger { color: var(--color-destructive, #dc2626); }

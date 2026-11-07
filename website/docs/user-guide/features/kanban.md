@@ -524,6 +524,51 @@ Three reasons:
 
 The auto-injected kanban guidance teaches the model which tool to call when and in what order. It is injected only for the dispatcher-spawned worker that owns the task: an interactive session that merely has the `kanban` toolset enabled keeps the tools but is not told it "has been assigned ONE task", and a `delegate_task` child or a cron run fired from inside a worker — which inherit the worker's `HERMES_KANBAN_TASK` — neither receives the worker protocol nor records a terminal outcome against the worker's card when its own turn budget runs out.
 
+### Current human attention in Web and Desktop
+
+The Review column can contain ordinary agent review or a request for a person.
+To make a human handoff explicit, pass `metadata.wait_reason` through the existing
+`kanban_request_review` tool:
+
+```python
+kanban_request_review(
+    summary="Should the export include archived records?",
+    metadata={"wait_reason": "awaiting-answer"},
+)
+```
+
+`awaiting-answer` displays **Needs your answer**; `awaiting-test` displays
+**Awaiting your testing**. The drawer shows the concrete request from the run
+summary. Without one of these values, review keeps its ordinary presentation.
+These values describe the handoff; they do not change dispatch policy. Use
+`kanban.review_dispatch: false` for a human-only review board.
+
+The badge belongs to the latest ended run and its matching review event, not to
+old metadata or words found in a summary. Reopening, resolving, or claiming new
+work clears it. A current crashed, timed-out, failed-to-spawn, or exhausted run
+instead displays **Run failed** with its recorded error in the drawer; explicit
+resolution clears that badge without deleting the run history. The board and
+task APIs expose this optional projection as `current_attention` (`kind`,
+`run_id`, `summary`, and the current `handoff_event_id`); the board truncates the summary to 200 characters, while
+the task detail retains it. The projection does not add task state; optional producer badges use the existing event log.
+
+Current handoffs display one attention badge in Desktop and the web board: blue for
+awaiting testing, amber for an answer, and red for a failed run. A producer may supply
+a short plain-text badge and semantic tone for the current testing handoff. It replaces
+the default testing label without changing the underlying wait state, order or worker slots.
+
+Native integrations can call
+`hermes_cli.kanban_db_attention.set_review_attention(conn, task_id, expected_handoff_event_id=..., badge={"label": "Ready for acceptance", "tone": "success"})`
+(or `badge=None` to clear). Labels must be nonempty and at most 80 characters;
+tones are `success`, `info`, `warning` or `danger`. The expected event ID is exposed
+as `current_attention.handoff_event_id` and in native `kanban show --json` events.
+The setter accepts only the current unclaimed, ended `awaiting-test` review handoff,
+returns `False` for stale/ineligible handoffs and `True` for valid writes or identical no-ops.
+It appends a run-bound `review_attention` event without rewriting approval metadata.
+A new claim, handoff or lifecycle transition invalidates the annotation automatically.
+Selection policy and custom wording belong to the producer. Older backends without a
+badge retain the ordinary attention label; older clients ignore the optional badge.
+
 ### Recommended handoff evidence
 
 `kanban_complete(summary=..., metadata={...})` is intentionally flexible:

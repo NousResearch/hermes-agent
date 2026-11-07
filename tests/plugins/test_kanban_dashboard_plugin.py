@@ -1259,3 +1259,135 @@ def test_ws_events_for_archived_board_does_not_recreate_it(tmp_path, monkeypatch
         "/api/plugins/kanban/events?token=secret-xyz&board=alive"
     ) as ws:
         assert ws is not None
+
+
+# Current human waits are lifecycle projections, never labels inferred from summaries.
+def _attention_task(client, task_id):
+    board = client.get("/api/plugins/kanban/board").json()
+    return next(t for c in board["columns"] for t in c["tasks"] if t["id"] == task_id)
+
+
+@pytest.mark.parametrize("reason", ["awaiting-answer", "awaiting-test"])
+def test_current_attention_wait_is_bound_to_native_handoff(client, reason):
+    summary = "A concrete question or testing request. " * 20
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="Keep this title", assignee="implementer")
+        assert kb.request_review(conn, tid, reviewer="implementer", summary=summary,
+                                 metadata={"wait_reason": reason})
+        kb.add_comment(conn, tid, author="reader", body="Acknowledged; no answer yet")
+        kb.edit_task(conn, tid, priority=7)
+        before = [(e.id, e.kind) for e in kb.list_events(conn, tid)]
+    task = _attention_task(client, tid)
+    assert task["title"] == "Keep this title"
+    assert task["current_attention"]["kind"] == reason
+    assert len(task["current_attention"]["summary"]) == 200
+    detail = client.get(f"/api/plugins/kanban/tasks/{tid}").json()
+    assert detail["task"]["current_attention"]["summary"] == summary
+    with kbc.connect() as conn:
+        assert before == [(e.id, e.kind) for e in kb.list_events(conn, tid)]
+        assert kb.reopen_review_task(conn, tid)
+    assert "current_attention" not in _attention_task(client, tid)
+
+
+def test_current_attention_same_second_reopen_and_new_review(client, monkeypatch):
+    monkeypatch.setattr(kb.time, "time", lambda: 1_800_000_000)
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="Question", assignee="implementer")
+        assert kb.request_review(conn, tid, reviewer="implementer", summary="Choose an option",
+                                 metadata={"wait_reason": "awaiting-answer"})
+        assert kb.reopen_review_task(conn, tid)
+        assert kb.request_review(conn, tid, reviewer="reviewer", summary="Ordinary code review")
+    assert "current_attention" not in _attention_task(client, tid)
+    with kbc.connect() as conn:
+        assert kb.reopen_review_task(conn, tid)
+        assert kb.request_review(conn, tid, reviewer="implementer", summary="Please test",
+                                 metadata={"wait_reason": "awaiting-test"})
+    assert _attention_task(client, tid)["current_attention"]["kind"] == "awaiting-test"
+    with kbc.connect() as conn:
+        assert kb.complete_task(conn, tid)
+    assert "current_attention" not in _attention_task(client, tid)
+
+
+@pytest.mark.parametrize("metadata", ["not-json", "[]", '{"wait_reason": {}}', '{"wait_reason": ["awaiting-answer"]}'])
+def test_current_attention_malformed_historical_metadata_is_ignored(client, metadata):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="Question", assignee="implementer")
+        assert kb.request_review(conn, tid, reviewer="implementer", summary="Question",
+                                 metadata={"wait_reason": "awaiting-answer"})
+        conn.execute("UPDATE task_runs SET metadata = ? WHERE task_id = ?", (metadata, tid))
+        conn.commit()
+    assert "current_attention" not in _attention_task(client, tid)
+
+
+def test_current_attention_requires_matching_run_event(client):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="Question", assignee="implementer")
+        assert kb.request_review(conn, tid, reviewer="implementer", summary="Question",
+                                 metadata={"wait_reason": "awaiting-answer"})
+        conn.execute("UPDATE task_events SET run_id = NULL WHERE task_id = ? AND kind = 'review_requested'", (tid,))
+        conn.commit()
+    assert "current_attention" not in _attention_task(client, tid)
+
+
+@pytest.mark.parametrize("source_phase", ["ready", "review"])
+def test_current_attention_failed_run_is_not_a_question_and_clears_on_resolution(client, source_phase):
+    from hermes_cli.kanban_db_dispatch import _record_task_failure
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="Broken worker", assignee="implementer")
+        if source_phase == "review":
+            assert kb.request_review(conn, tid, reviewer="reviewer", summary="Old human question",
+                                     metadata={"wait_reason": "awaiting-answer"})
+            assert kb.claim_review_task(conn, tid, claimer="test")
+        else:
+            assert kb.claim_task(conn, tid, claimer="test")
+        assert not _record_task_failure(conn, tid, "Could not launch executable", outcome="spawn_failed",
+                                        failure_limit=3, release_claim=True, end_run=True)
+    task = _attention_task(client, tid)
+    assert task["status"] == source_phase
+    assert task["current_attention"]["kind"] == "run-failed"
+    assert task["current_attention"]["summary"] == "Could not launch executable"
+    # An explicit native handoff resolves this failure state even though the old run remains.
+    with kbc.connect() as conn:
+        if source_phase == "review":
+            assert kb.reopen_review_task(conn, tid)
+        assert kb.request_review(conn, tid, reviewer="reviewer", summary="Resolved; review this work")
+    assert "current_attention" not in _attention_task(client, tid)
+
+
+def test_current_attention_new_claim_clears_old_question(client):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="Question", assignee="implementer")
+        assert kb.request_review(conn, tid, reviewer="implementer", summary="Question",
+                                 metadata={"wait_reason": "awaiting-answer"})
+        assert kb.reopen_review_task(conn, tid)
+        assert kb.claim_task(conn, tid, claimer="test")
+    assert "current_attention" not in _attention_task(client, tid)
+
+
+def test_current_attention_unblock_clears_failure_without_erasing_run_history(client):
+    from hermes_cli.kanban_db_dispatch import _record_task_failure
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="Broken worker", assignee="implementer")
+        assert kb.claim_task(conn, tid, claimer="test")
+        assert _record_task_failure(conn, tid, "Launch failed", outcome="spawn_failed",
+                                    failure_limit=1, release_claim=True, end_run=True)
+        runs_before = kb.list_runs(conn, tid)
+    assert _attention_task(client, tid)["current_attention"]["kind"] == "run-failed"
+    with kbc.connect() as conn:
+        assert kb.unblock_task(conn, tid)
+        assert kb.list_runs(conn, tid) == runs_before
+    assert "current_attention" not in _attention_task(client, tid)
+
+
+def test_review_badge_reaches_board_and_drawer_without_lifecycle_change(client):
+    from hermes_cli.kanban_db_attention import set_review_attention
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title='Selected PR', assignee='forge')
+        assert kb.request_review(conn, tid, metadata={'wait_reason': 'awaiting-test'})
+    current = _attention_task(client, tid)['current_attention']
+    with kbc.connect() as conn:
+        assert set_review_attention(conn, tid, expected_handoff_event_id=current['handoff_event_id'], badge={"label": "Acceptance ready", "tone": "success"})
+    for task in (_attention_task(client, tid), client.get(f'/api/plugins/kanban/tasks/{tid}').json()['task']):
+        assert task['status'] == 'review'
+        assert task['current_attention']['kind'] == 'awaiting-test'
+        assert task['current_attention']['badge'] == {'label': 'Acceptance ready', 'tone': 'success'}

@@ -1,0 +1,15 @@
+name: hermes-sentinel
+repo: https://github.com/SaltProphet/hermes-sentinel
+sha: "39fade2083fc0033b2b2b537ec54e7634825cd88"
+tier: community
+maintainer: Justin Strange
+description: "Deterministic runtime circuit breaker, loop trap prevention, and execution truth auditor for Hermes Agent."
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - pre_tool_call
+    - post_tool_call
+    - transform_tool_result
+  provides_middleware: []
+  requires_env: []

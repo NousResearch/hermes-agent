@@ -13,12 +13,14 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+from agent.context_compressor_summary import _accepts_keyword_argument
 from agent.context_engine import automatic_compaction_status_message
 from agent.conversation_compression import (
     PRE_API_COMPRESSION_STATUS_TEMPLATE, _reset_read_dedup_caches, compression_blocked_transiently,
     compression_skipped_due_to_lock, context_compression_timed_out, conversation_history_after_compression,
 )
 from agent.conversation_compression_feasibility import ensure_compression_feasibility_checked
+from agent.prompt_caching import provider_cache_expired
 from agent.turn_context import _review_fork_first_request_pending
 from agent.turn_context_compaction import (
     _apply_grown_window, _blocked_compress_reason, _clear_overflow_warn, _refund_api_call,
@@ -400,10 +402,15 @@ def _proactive_tool_result_prune(agent: Any, compressor: Any, messages: list, cu
             _record_checkpoint_gate_suppression(agent, "the proactive tool-result prune")
         return messages
     prune = getattr(compressor, "prune_tool_results_only", None)
-    if not callable(prune):
+    # No bound session row keeps the originals: a committed prune would drop them for good.
+    if not (callable(prune) and getattr(compressor, "_session_db", None) is not None
+            and getattr(compressor, "_session_id", "")):
         return messages
+    kwargs: dict[str, Any] = {"current_tokens": current_tokens}
+    if _accepts_keyword_argument(prune, "cold_cache"):  # older plugin engines keep their signature
+        kwargs["cold_cache"] = provider_cache_expired(agent, messages)
     try:
-        pruned_msgs, pruned_n = prune(messages, current_tokens=current_tokens)
+        pruned_msgs, pruned_n = prune(messages, **kwargs)
     except Exception:
         logger.debug("proactive tool-result prune failed; skipping", exc_info=True)
         return messages

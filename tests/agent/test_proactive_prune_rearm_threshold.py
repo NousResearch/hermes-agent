@@ -30,6 +30,7 @@ def _compressor(**kw: Any) -> ContextCompressor:
         protect_last_n=4,
         proactive_prune_tokens=48_000,
         proactive_prune_min_result_chars=8_000,
+        proactive_prune_min_reclaim_tokens=4096,  # ~5-7K-token fixture; shipped default is 64K
     )
     defaults.update(kw)
     with patch(

@@ -13,6 +13,8 @@ import logging
 from typing import Any, Optional
 
 logger = logging.getLogger("agent.context_compressor")
+# Reclaim gate on an already-expired provider cache: there is no cache break to amortize.
+_COLD_CACHE_MIN_RECLAIM_TOKENS = 16_000
 
 
 def _cc():
@@ -35,14 +37,16 @@ class ProactivePruneMixin:
         )
 
     def prune_tool_results_only(
-        self, messages: list[dict[str, Any]], current_tokens: int | None = None,
+        self, messages: list[dict[str, Any]], current_tokens: int | None = None, *, cold_cache: bool = False,
     ) -> tuple[list[dict[str, Any]], int]:
         """Deterministic, no-LLM tool-result prune gated on ``proactive_prune_tokens``.
 
-        Protects the tail by message COUNT only. A commit breaks the prompt cache, so it requires
-        ``proactive_prune_min_reclaim_tokens`` and a full regrowth runway; otherwise returns the INPUT
-        object as ``(messages, 0)``. The rearm gate is measured on message bodies only, so it is
-        bypassed (never the reclaim gate) when a provider-billed ``current_tokens`` reading already
+        Protects the tail by message COUNT only. A warm commit breaks the prompt cache, so it requires
+        ``proactive_prune_min_reclaim_tokens`` (less what cold prunes freed since the last warm one) and a
+        full regrowth runway; otherwise returns the INPUT object as ``(messages, 0)``. ``cold_cache`` (the
+        provider cache has already expired) has nothing to break: the gate drops to
+        ``_COLD_CACHE_MIN_RECLAIM_TOKENS`` and the runway is neither checked nor moved. The rearm gate is
+        measured on message bodies only, so it is bypassed (never the reclaim gate) when a provider-billed ``current_tokens`` reading already
         puts the request over ``threshold_tokens`` (#101889); every no-op taken while over threshold
         is logged once per distinct reason.
 
@@ -64,12 +68,12 @@ class ProactivePruneMixin:
         _estimate_msg_budget_tokens = _cc()._estimate_msg_budget_tokens
         before = sum(_estimate_msg_budget_tokens(m) for m in messages)
         # Under-threshold runway skip is ordinary hysteresis (silent); above it the lockout is the bug.
-        if before < self._proactive_prune_rearm_tokens and not self._billed_basis_over_threshold(current_tokens):
+        if (not cold_cache and before < self._proactive_prune_rearm_tokens
+                and not self._billed_basis_over_threshold(current_tokens)):
             return messages, 0
-        # Capability gate first: a store without archive_and_compact makes every prune a no-op.
-        session_db = getattr(self, "_session_db", None)
-        session_id = getattr(self, "_session_id", "")
-        if session_db and session_id and not callable(getattr(session_db, "archive_and_compact", None)):
+        # Capability gate first: a store that cannot archive (no archive_and_compact, or no bound row) loses the originals.
+        session_db, session_id = getattr(self, "_session_db", None), getattr(self, "_session_id", "")
+        if session_db and not (session_id and callable(getattr(session_db, "archive_and_compact", None))):
             self._warn_reclamation_no_op("prune:store_cannot_persist", current_tokens)
             return messages, 0
         pruned_msgs, pruned_count = self._prune_old_tool_results(
@@ -84,16 +88,20 @@ class ProactivePruneMixin:
         # Prompt-cache hysteresis: commit only when the reclaim is meaningful.
         after = sum(_estimate_msg_budget_tokens(m) for m in pruned_msgs)
         reclaimed = max(0, before - after)
-        if reclaimed < self.proactive_prune_min_reclaim_tokens:
+        gate = self.proactive_prune_min_reclaim_tokens
+        cold_gate = min(gate, _COLD_CACHE_MIN_RECLAIM_TOKENS)
+        if reclaimed < (cold_gate if cold_cache else max(cold_gate, gate - self._proactive_prune_cold_credit)):
             self._warn_reclamation_no_op("prune:reclaim_below_minimum", current_tokens, before=before)
             return messages, 0
-        # Require a full trigger-sized regrowth before the next cache-breaking rewrite.
-        runway = max(reclaimed, self.proactive_prune_tokens, self.proactive_prune_min_reclaim_tokens)
-        next_rearm_tokens = after + runway
+        if cold_cache:  # Nothing to protect: keep the warm runway and credit the reclaim to the next warm gate.
+            next_rearm_tokens, cold_credit = self._proactive_prune_rearm_tokens, self._proactive_prune_cold_credit + reclaimed
+        else:  # Require a full trigger-sized regrowth before the next cache-breaking rewrite.
+            next_rearm_tokens, cold_credit = after + max(reclaimed, self.proactive_prune_tokens, gate), 0
         if session_db and session_id:
             _cc_ = _cc()
             from hermes_state_errors import HeldRowRewrittenError
-            model_config_patch = {_cc_.PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: next_rearm_tokens}
+            model_config_patch = {_cc_.PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: next_rearm_tokens,
+                                  _cc_.PROACTIVE_PRUNE_COLD_CREDIT_MODEL_CONFIG_KEY: cold_credit}
             StaleHeldHistory = _cc_.StaleHeldHistory
             _DB_PERSISTED_MARKER = _cc_._DB_PERSISTED_MARKER
             rewritten = None
@@ -136,7 +144,7 @@ class ProactivePruneMixin:
                 stamp_db_persisted_markers([
                     replacement for original, replacement in zip(messages, pruned_msgs)
                     if original.get(_DB_PERSISTED_MARKER)])
-        self._proactive_prune_rearm_tokens = next_rearm_tokens
+        self._proactive_prune_rearm_tokens, self._proactive_prune_cold_credit = next_rearm_tokens, cold_credit
         # Reclamation just ran: let a future lockout warn again.
         self._last_reclaim_block_warn = None
         return pruned_msgs, pruned_count

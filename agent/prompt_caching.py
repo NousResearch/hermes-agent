@@ -6,6 +6,7 @@ breakpoint plus the last 3 messages). All markers share one TTL (5m or 1h).
 """
 
 import copy
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
@@ -173,6 +174,41 @@ def effective_cache_ttl(ttl: str | None, *, model: str = "", provider: str = "")
     if provider_lower in MEASURED_1H_PROVIDERS:
         return "5m" if _flat_model(model) in NO_1H_TIER_MODELS else "1h"
     return "5m" if is_qwen_model(model) or provider_lower in ALIBABA_FAMILY_PROVIDERS else "1h"
+
+
+_CACHE_TTL_SECONDS = {"5m": 300, "1h": 3600}
+# Slack past the TTL before calling the cache expired: a prune on a still-warm cache is a paid cache break.
+_CACHE_EXPIRY_SLACK_SECONDS = 30
+
+
+def _last_response_wall_time(agent: Any, messages: Any) -> float | None:
+    """Wall-clock time of the last provider response: this process's stamp, else (a resumed session) the
+    newest persisted assistant row's ``timestamp``."""
+    last = getattr(agent, "_last_api_response_at", None)
+    if isinstance(last, (int, float)) and not isinstance(last, bool):
+        return float(last)
+    for msg in reversed(messages if isinstance(messages, list) else ()):
+        if isinstance(msg, dict) and msg.get("role") == "assistant":
+            ts = msg.get("timestamp")
+            return float(ts) if isinstance(ts, (int, float)) and not isinstance(ts, bool) else None
+    return None
+
+
+def provider_cache_expired(agent: Any, messages: Any = None, now: float | None = None) -> bool:
+    """True only when this agent's ``cache_control`` prompt cache has certainly expired: caching is on and
+    more than the route's effective TTL (+ slack) has passed since the last provider response. Caching off,
+    no known response time, or an unknown tier all answer False, so callers keep warm-cache behaviour."""
+    if not getattr(agent, "_use_prompt_caching", False) or getattr(agent, "_cache_disabled", False):
+        return False
+    last = _last_response_wall_time(agent, messages)
+    if last is None:
+        return False
+    ttl = _CACHE_TTL_SECONDS.get(effective_cache_ttl(
+        getattr(agent, "_cache_ttl", None), model=getattr(agent, "model", "") or "",
+        provider=getattr(agent, "provider", "") or ""))
+    if ttl is None:
+        return False
+    return (time.time() if now is None else now) - last > ttl + _CACHE_EXPIRY_SLACK_SECONDS
 
 
 def _apply_system_cache_markers(

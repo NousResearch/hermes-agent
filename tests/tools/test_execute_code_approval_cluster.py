@@ -291,18 +291,18 @@ def test_guard_gateway_missing_notify_is_pending(gw_session):
 def test_guard_smart_mode(gw_session, monkeypatch):
     monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "smart")
 
-    monkeypatch.setattr(approval_smart, "_smart_approve", lambda c, d: "approve")
+    monkeypatch.setattr(approval_smart, "_smart_approve", lambda c, d, **__: "approve")
     res = A.check_execute_code_guard("import os", "local")
     assert res["approved"] is True and res.get("smart_approved") is True
 
     # Smart DENY on an interactive surface now asks the owner. With no bound
     # notifier it remains pending rather than being hard-denied.
-    monkeypatch.setattr(approval_smart, "_smart_approve", lambda c, d: "deny")
+    monkeypatch.setattr(approval_smart, "_smart_approve", lambda c, d, **__: "deny")
     res = A.check_execute_code_guard("import os", "local")
     assert res["approved"] is False and res["status"] == "pending_approval"
 
     # escalate → falls through to manual gateway approval
-    monkeypatch.setattr(approval_smart, "_smart_approve", lambda c, d: "escalate")
+    monkeypatch.setattr(approval_smart, "_smart_approve", lambda c, d, **__: "escalate")
     _register_resolver(gw_session, "once")
     res = A.check_execute_code_guard("import os", "local")
     assert res["approved"] is True
@@ -314,7 +314,7 @@ def test_terminal_smart_deny_owner_override_is_one_operation(gw_session, monkeyp
         A._permanent_approved.discard("owner-override-test-danger")
         A._session_approved.get(gw_session, set()).discard("owner-override-test-danger")
     monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "smart")
-    monkeypatch.setattr(approval_smart, "_smart_approve", lambda _command, _description: "deny")
+    monkeypatch.setattr(approval_smart, "_smart_approve", lambda _command, _description, **__: "deny")
     monkeypatch.setattr(
         A,
         "detect_dangerous_command",
@@ -347,7 +347,7 @@ def test_execute_code_smart_deny_owner_override_is_one_operation(gw_session, mon
         A._permanent_approved.discard("execute_code")
         A._session_approved.get(gw_session, set()).discard("execute_code")
     monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "smart")
-    monkeypatch.setattr(approval_smart, "_smart_approve", lambda _command, _description: "deny")
+    monkeypatch.setattr(approval_smart, "_smart_approve", lambda _command, _description, **__: "deny")
 
     shown = _register_capturing_resolver(gw_session, "session")
     result = A.check_execute_code_guard("print('first')", "local")
@@ -370,7 +370,7 @@ def test_smart_escalate_still_persists_session_choice(gw_session, monkeypatch):
     with A._lock:
         A._session_approved.get(gw_session, set()).discard(key)
     monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "smart")
-    monkeypatch.setattr(approval_smart, "_smart_approve", lambda _command, _description: "escalate")
+    monkeypatch.setattr(approval_smart, "_smart_approve", lambda _command, _description, **__: "escalate")
     monkeypatch.setattr(
         A, "detect_dangerous_command",
         lambda command: (True, key, f"risk:{command}"),
@@ -391,7 +391,7 @@ def test_smart_escalate_still_persists_session_choice(gw_session, monkeypatch):
 
 def test_terminal_smart_deny_pending_payload_is_one_operation(gw_session, monkeypatch):
     monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "smart")
-    monkeypatch.setattr(approval_smart, "_smart_approve", lambda _command, _description: "deny")
+    monkeypatch.setattr(approval_smart, "_smart_approve", lambda _command, _description, **__: "deny")
     monkeypatch.setattr(
         A, "detect_dangerous_command",
         lambda command: (True, "pending-smart-deny", f"risk:{command}"),
@@ -414,7 +414,7 @@ def test_terminal_smart_deny_pending_payload_is_one_operation(gw_session, monkey
 
 def test_execute_code_smart_deny_pending_payload_is_one_operation(gw_session, monkeypatch):
     monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "smart")
-    monkeypatch.setattr(approval_smart, "_smart_approve", lambda _command, _description: "deny")
+    monkeypatch.setattr(approval_smart, "_smart_approve", lambda _command, _description, **__: "deny")
 
     result = A.check_execute_code_guard("print('pending')", "local")
 
@@ -515,3 +515,23 @@ def test_env_scrub_passthrough_overrides_secret_block():
 # ---------------------------------------------------------------------------
 # 6. Env-scrub diagnosability mitigation (#27303 follow-up)
 # ---------------------------------------------------------------------------
+
+
+def test_execute_code_guard_passes_the_script_to_the_guardian(gw_session, monkeypatch):
+    """The gate must hand the raw script to the guardian: the whole point of the
+    ``smart_code`` wiring is that the program is assessed as code, not re-lexed as a
+    shell string. A stub that swallows ``**kwargs`` would hide a regression here."""
+    monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "smart")
+    seen = {}
+
+    def fake_approve(command, description, *, code=None):
+        seen["command"], seen["description"], seen["code"] = command, description, code
+        return "approve"
+
+    monkeypatch.setattr(approval_smart, "_smart_approve", fake_approve)
+    script = "print('the-real-program')"
+    result = A.check_execute_code_guard(script, "local")
+
+    assert result["approved"] is True and result.get("smart_approved") is True
+    assert seen["code"] == script
+    assert "the-real-program" in seen["command"]

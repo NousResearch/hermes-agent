@@ -286,7 +286,7 @@ def test_local_session_unattended_contexts_still_resolve_first(turn, monkeypatch
 def test_local_session_smart_mode_skips_script_assessment(turn, monkeypatch):
     monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "smart")
     assessed = []
-    monkeypatch.setattr(approval_smart, "_smart_approve", lambda c, d: assessed.append(c) or "deny")
+    monkeypatch.setattr(approval_smart, "_smart_approve", lambda c, d, **__: assessed.append(c) or "deny")
     prompts = turn(source="tui")
     assert A.check_execute_code_guard("import os", "local")["approved"] is True
     assert assessed == [] and prompts == []

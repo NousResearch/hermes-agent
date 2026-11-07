@@ -149,7 +149,12 @@ def check_monitor(job: dict) -> MonitorOutcome:
     if len(shown_output) > MAX_OUTPUT_CHARS:
         shown_output = shown_output[:MAX_OUTPUT_CHARS] + "\n... [output truncated]"
 
-    current = f"### Current output\n\n```\n{shown_output}\n```"
+    # The data fences outgrow any backtick run in the injected output, so a monitored
+    # command that prints its own fenced block cannot close the data block early (#135721).
+    from cron.scheduler_prompt import _data_fence
+
+    out_fence = _data_fence(shown_output)
+    current = f"### Current output\n\n{out_fence}\n{shown_output}\n{out_fence}"
     if first_run:
         context_block = (
             "## Monitor Baseline (first run)\n\n"
@@ -158,10 +163,12 @@ def check_monitor(job: dict) -> MonitorOutcome:
         )
     else:
         diff = build_monitor_diff(old_output, output)
+        diff_fence = _data_fence(diff)
         context_block = (
             "## MONITOR CHANGE DETECTED\n\n"
             "The monitored source's output changed since the last run.\n\n"
-            f"### Diff (previous → current)\n\n```diff\n{diff}\n```\n\n" + current
+            f"### Diff (previous → current)\n\n{diff_fence}diff\n{diff}\n{diff_fence}\n\n"
+            + current
         )
 
     _persist_monitor_state(job_id, new_hash, output)

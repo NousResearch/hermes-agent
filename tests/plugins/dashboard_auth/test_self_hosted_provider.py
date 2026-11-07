@@ -696,11 +696,12 @@ class TestVerifySession:
         token = _mint_id_token(rsa_keypair, aud="some-other-client")
         assert provider.verify_session(access_token=token) is None
 
-    def test_failure_message_surfaces_claims(self, provider, rsa_keypair):
+    def test_failure_message_surfaces_claims(self, provider, rsa_keypair, caplog):
+        import logging
         token = _mint_id_token(rsa_keypair, iss="https://evil.example")
-        with pytest.raises(InvalidCodeError) as excinfo:
-            provider._verify_id_token(token)
-        msg = str(excinfo.value)
+        with caplog.at_level(logging.WARNING, logger="plugins.dashboard_auth._shared"):
+            assert provider.verify_session(access_token=token) is None
+        msg = caplog.text
         assert "'https://evil.example'" in msg
         assert f"'{_ISSUER}'" in msg
 

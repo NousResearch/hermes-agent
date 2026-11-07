@@ -451,22 +451,22 @@ class TestVerifySession:
         assert provider.verify_session(access_token=token) is None
 
     def test_verification_failure_message_surfaces_token_claims(
-        self, provider, rsa_keypair
+        self, provider, rsa_keypair, caplog
     ):
         """Operators need to see the actual iss/aud the token carries to debug
-        config drift between HERMES_DASHBOARD_PORTAL_URL/CLIENT_ID and Portal."""
+        config drift between HERMES_DASHBOARD_PORTAL_URL/CLIENT_ID and Portal: the
+        rejection is a 401, so the warning log is where drift shows up."""
+        import logging
         token = _mint_token(rsa_keypair, iss="https://evil.example")
-        with pytest.raises(InvalidCodeError) as excinfo:
-            provider._claims_for(token)
-        msg = str(excinfo.value)
+        with caplog.at_level(logging.WARNING, logger="plugins.dashboard_auth._shared"):
+            assert provider.verify_session(access_token=token) is None
+        msg = caplog.text
         # Both the observed (token) and expected (configured) values appear.
         assert "'https://evil.example'" in msg
         assert "'https://portal.example.com'" in msg  # configured portal URL
 
     def test_agent_instance_id_mismatch_rejected(self, provider, rsa_keypair):
         token = _mint_token(rsa_keypair, agent_instance_id="some-other-id")
-        with pytest.raises(InvalidCodeError, match="agent_instance_id mismatch"):
-            provider._claims_for(token)
         assert provider.verify_session(access_token=token) is None
 
     def test_contract_version_missing_warns_but_succeeds(

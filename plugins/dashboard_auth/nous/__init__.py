@@ -94,14 +94,7 @@ class NousDashboardAuthProvider(JwtOAuthProvider):
             idp="Portal", endpoint="Portal token endpoint", token_key="access_token",
             missing_msg="Portal token response missing access_token")
         # Rotating RT the caller MUST persist back to the cookie.
-        try:
-            claims = self._claims_for(access_token)
-        except InvalidCodeError as exc:
-            # Verify-stage denial inside a grant (expired / foreign token): map to the
-            # caller's bad_request_exc so the refresh scan rejects this provider
-            # (RefreshExpiredError) instead of crashing on an uncaught InvalidCodeError.
-            raise bad_request_exc(str(exc)) from exc
-        return self._session(access_token, refresh_token_from(payload), claims)
+        return self._session(access_token, refresh_token_from(payload), self._claims_for(access_token))
 
 
     def _claims_for(self, access_token: str) -> dict[str, Any]:
@@ -116,6 +109,8 @@ class NousDashboardAuthProvider(JwtOAuthProvider):
         if token_instance_id is not None and token_instance_id != self._agent_instance_id:
             raise InvalidCodeError(
                 f"agent_instance_id mismatch: token={token_instance_id!r} vs configured={self._agent_instance_id!r}")
+        # A contract version this agent does not support stays a 503: every token Portal
+        # mints would fail it, so treating it as "not ours" would only log everyone out.
         contract_version = claims.get("oauth_contract_version")
         if contract_version is None:
             logger.warning(

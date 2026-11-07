@@ -45,7 +45,8 @@ class ProviderError(Exception):
 
 
 class InvalidCodeError(Exception):
-    """OAuth callback ``code``/``state`` failed validation. Middleware -> HTTP 400."""
+    """A code, state or token failed validation (not an outage): the OAuth callback answers 400,
+    ``verify_session`` returns ``None``."""
 
 
 class InvalidCredentialsError(Exception):
@@ -66,7 +67,7 @@ def classify_jwks_lookup_error(exc: BaseException) -> Exception:
     """Map a ``PyJWKClient.get_signing_key_from_jwt`` failure to the protocol. Only a genuine
     transport failure (``PyJWKClientConnectionError``, or an unexpected JWKS shape) is a
     :class:`ProviderError` (503, never forces logout). A non-JWT bearer (``DecodeError``), a JWKS
-    with no key for this ``kid`` (``PyJWKSetError``) or any other invalid token is simply not
+    with no usable key or no key for this ``kid``, or any other invalid token is simply not
     verifiable by this provider -> :class:`InvalidCodeError` (``verify_session`` returns ``None``).
     Folding "cannot parse" into "cannot reach" once made every opaque bearer a fast 503.
 

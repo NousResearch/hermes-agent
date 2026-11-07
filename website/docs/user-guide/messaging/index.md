@@ -310,6 +310,11 @@ Semantics are honest at-least-once:
 Disable with `gateway.delivery_ledger: false` in `config.yaml` (restores the
 old behavior: in-flight responses are lost on crash).
 
+To customize the visible recovery wording, set any of
+`gateway.delivery_ledger_markers.recovered`, `.reconnected`, `.flood`, or `.retry` in
+`config.yaml`. Empty or invalid values keep Hermes' built-in warning so ambiguous redelivery is
+never silently unlabeled.
+
 ### Session continuity
 
 Gateway conversations do not reset after inactivity or at a daily boundary. Use `/new`

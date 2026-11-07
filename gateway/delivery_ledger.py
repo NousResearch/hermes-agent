@@ -48,6 +48,14 @@ RECONNECTED_MARKER = ("♻️ Recovered reply — the messaging platform reconne
 # of the markers above tells the truth here (no restart, no reconnect): the rate limit gets its own.
 FLOOD_MARKER = ("♻️ Recovered reply — the messaging platform's rate limit refused the original, so part of "
                 "it may already have arrived above:\n\n")
+RETRIED_MARKER = ("♻️ Recovered reply — the previous delivery attempt was refused, so this may be a "
+                  "duplicate:\n\n")
+_DEFAULT_MARKERS = {
+    "recovered": RECOVERED_MARKER,
+    "reconnected": RECONNECTED_MARKER,
+    "flood": FLOOD_MARKER,
+    "retry": RETRIED_MARKER,
+}
 
 # Errors whose send contract proves the platform never saw the request: retried as soon as the adapter
 # is back, no backoff. Every other rejection is retried too (#91653: a 5xx or a transient parse error
@@ -80,6 +88,8 @@ FLOOD_RETRY_SLACK_SECONDS = 2.0
 # Matching requires the "flood control" wording as well as the delay, so an unrelated error that
 # merely suggests retrying is never mistaken for a flood.
 _RAW_FLOOD_RE = re.compile(r"flood control exceeded.*?retry in\s+(\d+(?:\.\d+)?)", re.IGNORECASE)
+_QQ_FLOOD_RE = re.compile(r"qq bot api error\s*\[429\]", re.IGNORECASE)
+_WEIXIN_FLOOD_RE = re.compile(r"ilink sendmessage rate limited; cooldown active", re.IGNORECASE)
 
 
 def _raw_flood_wait(text: str) -> Optional[float]:
@@ -100,9 +110,34 @@ def is_reconnect_only(error: Any) -> bool:
 
 def is_flood_error(error: Any) -> bool:
     """True for a flood refusal: the adapters' fail-closed ``flood_control:<seconds>`` result, or a
-    row still carrying the platform's own flood wording (see ``_RAW_FLOOD_RE``)."""
+    row still carrying the platform's own flood wording (see ``_RAW_FLOOD_RE``). QQ's HTTP 429 and
+    Weixin's active iLink cooldown are equivalent platform-native forms."""
     text = str(error or "").strip().lower()
-    return text.startswith(FLOOD_ERROR_PREFIX) or _raw_flood_wait(text) is not None
+    return (text.startswith(FLOOD_ERROR_PREFIX) or _raw_flood_wait(text) is not None
+            or _QQ_FLOOD_RE.search(text) is not None or _WEIXIN_FLOOD_RE.search(text) is not None)
+
+
+def delivery_ledger_markers(config: Optional[dict[str, Any]] = None) -> dict[str, str]:
+    """Return visible delivery-ledger markers, with valid per-cause gateway overrides.
+
+    A missing, malformed, or blank override keeps the compatibility default: the ledger must not
+    silently remove its at-least-once warning when a config file cannot be read.
+    """
+    markers = dict(_DEFAULT_MARKERS)
+    try:
+        if config is None:
+            from hermes_cli.config import load_config
+            config = load_config()
+        configured = (config.get("gateway") or {}).get("delivery_ledger_markers", {})
+        if not isinstance(configured, dict):
+            return markers
+        for cause, default in _DEFAULT_MARKERS.items():
+            value = configured.get(cause, default)
+            if isinstance(value, str) and value.strip():
+                markers[cause] = value
+    except Exception:
+        return markers
+    return markers
 
 
 def flood_wait_seconds(error: Any, default: float = FLOOD_RETRY_DEFAULT_SECONDS) -> float:
@@ -353,11 +388,15 @@ def _claimed_row(oid, session_key, platform, chat_id, thread_id, content, attemp
                  needs_marker: bool, runtime: bool = False, flood: bool = False,
                  last_error: Optional[str] = None) -> dict[str, Any]:
     """Claimed-row dict handed back for redelivery. A marked row names its own cause: ``flood`` (a reply
-    the rate limit refused, possibly after accepting part of it) gets FLOOD_MARKER at boot or at runtime, a
-    ``runtime`` reconnect replay gets RECONNECTED_MARKER, and a boot-recovered crash keeps the runner's
-    restart marker default. ``last_error`` is the row's pre-claim error, carried so a runtime claim that is
-    released unsent goes back to ``failed`` with the same error and keeps its retry eligibility."""
-    marker = FLOOD_MARKER if flood else (RECONNECTED_MARKER if runtime else None)
+    the rate limit refused, possibly after accepting part of it) gets the flood marker at boot or at runtime.
+    A runtime replay names a reconnect only when its saved error establishes that cause; all other runtime
+    rejections get the neutral retry marker. ``last_error`` is the row's pre-claim error, carried so a runtime
+    claim that is released unsent goes back to ``failed`` with the same error and keeps its retry eligibility."""
+    marker = None
+    if needs_marker:
+        markers = delivery_ledger_markers()
+        marker = (markers["flood"] if flood else markers["reconnected"] if runtime and is_reconnect_only(last_error)
+                  else markers["retry"] if runtime else markers["recovered"])
     return {"obligation_id": oid, "session_key": session_key, "platform": platform, "chat_id": chat_id,
             "thread_id": thread_id, "content": content, "needs_marker": needs_marker,
             **({"marker": marker} if needs_marker and marker else {}), "profile": profile,
@@ -457,7 +496,8 @@ def sweep_failed_for_runtime(platform: str, now: Optional[float] = None, *,
     that gap without weakening ownership: only rows stamped to this exact process instance, only rows
     past their ``retry_not_before`` deadline, same attempts/staleness bounds, every update guarded by the
     prior owner stamp and ``failed`` state. Claimed rows always carry a marker (the failed send's ack is not safe to
-    infer): the reconnect one, or the rate-limit one for a flood-refused row."""
+    infer): a reconnect marker only for ``send_path_degraded``, a rate-limit marker for flood-refused rows, or the
+    neutral retry marker for other rejections."""
     now, (pid, started) = now if now is not None else time.time(), _owner_stamp()
     if started is None:  # PID alone cannot distinguish this process from a stale row left after PID
         return []        # reuse; runtime replay is optional, so fail closed (startup recovery remains).

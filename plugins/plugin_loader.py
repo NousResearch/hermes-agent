@@ -137,7 +137,7 @@ def _exec(mod: Any, logger: Optional[logging.Logger] = None) -> bool:
         return True
     except Exception as e:
         if logger:
-            logger.debug("Failed to exec_module %s: %s", mod.__name__, e)
+            logger.warning("Failed to exec_module %s: %s", mod.__name__, e)
         return False
 
 

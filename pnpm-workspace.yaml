@@ -62,5 +62,11 @@ allowBuilds:
   node-pty@1.1.0: true
   electron-winstaller@5.4.0: true
   fsevents@2.3.3: true
-  get-windows@9.3.0: true
+  # get-windows is a regular dependency because pnpm >= 11.6 infers os: [win32] from the name of an
+  # optional one and skips it on macOS and Linux (pnpm/pnpm#17774). Its install script only fetches the
+  # win32 binding, falling back to a node-gyp build that fails where no prebuilt exists (win32-arm64,
+  # Linux without a compiler) and, for a regular dependency, fails the whole install.
+  # stage-native-deps.mjs runs that installer itself on win32 and degrades when it fails (dev runs:
+  # apps/desktop/scripts/dev-get-windows.mjs). Keyed by name: the denial holds for every version.
+  get-windows: false
   lefthook@2.2.1: true

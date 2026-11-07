@@ -292,6 +292,9 @@ importers:
       frimousse:
         specifier: 0.4.0
         version: 0.4.0(react@19.3.0)(typescript@6.0.3)
+      get-windows:
+        specifier: 9.3.0
+        version: 9.3.0(encoding@0.1.13)(supports-color@10.2.2)
       hast-util-from-html-isomorphic:
         specifier: 2.0.0
         version: 2.0.0
@@ -512,10 +515,6 @@ importers:
       ws:
         specifier: 8.22.0
         version: 8.22.0
-    optionalDependencies:
-      get-windows:
-        specifier: 9.3.0
-        version: 9.3.0(encoding@0.1.13)(supports-color@10.2.2)
 
   apps/shared:
     devDependencies:

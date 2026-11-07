@@ -23,9 +23,9 @@
     "dev:fake-boot": "cross-env HERMES_DESKTOP_BOOT_FAKE=1 HERMES_DESKTOP_BOOT_FAKE_STEP_MS=650 pnpm run dev",
     "dev:mock": "node ../../tests-js/scripts/mock-server.ts",
     "dev:renderer": "node scripts/assert-root-install.mjs && pnpm run clean:renderer && vite --host 127.0.0.1 --port 5174",
-    "dev:electron": "tsc --build tsconfig.electron.json && wait-on http://127.0.0.1:5174 && node scripts/bundle-electron-main.mjs --dev && cross-env XCURSOR_SIZE=24 HERMES_DESKTOP_DEV_SERVER=http://127.0.0.1:5174 electron .",
-    "profile:main": "tsc --build tsconfig.electron.json && wait-on http://127.0.0.1:5174 && node scripts/bundle-electron-main.mjs --dev && cross-env XCURSOR_SIZE=24 HERMES_DESKTOP_DEV_SERVER=http://127.0.0.1:5174 electron --inspect=9229 .",
-    "profile:main:cpu": "tsc --build tsconfig.electron.json && wait-on http://127.0.0.1:5174 && node scripts/bundle-electron-main.mjs --dev && cross-env XCURSOR_SIZE=24 NODE_OPTIONS=--cpu-prof HERMES_DESKTOP_DEV_SERVER=http://127.0.0.1:5174 electron .",
+    "dev:electron": "node scripts/dev-get-windows.mjs && tsc --build tsconfig.electron.json && wait-on http://127.0.0.1:5174 && node scripts/bundle-electron-main.mjs --dev && cross-env XCURSOR_SIZE=24 HERMES_DESKTOP_DEV_SERVER=http://127.0.0.1:5174 electron .",
+    "profile:main": "node scripts/dev-get-windows.mjs && tsc --build tsconfig.electron.json && wait-on http://127.0.0.1:5174 && node scripts/bundle-electron-main.mjs --dev && cross-env XCURSOR_SIZE=24 HERMES_DESKTOP_DEV_SERVER=http://127.0.0.1:5174 electron --inspect=9229 .",
+    "profile:main:cpu": "node scripts/dev-get-windows.mjs && tsc --build tsconfig.electron.json && wait-on http://127.0.0.1:5174 && node scripts/bundle-electron-main.mjs --dev && cross-env XCURSOR_SIZE=24 NODE_OPTIONS=--cpu-prof HERMES_DESKTOP_DEV_SERVER=http://127.0.0.1:5174 electron .",
     "start": "pnpm run build && electron .",
     "build:webapp": "node scripts/build-webapp.mjs",
     "build": "node scripts/build.mjs",
@@ -128,6 +128,7 @@
     "emojibase-data": "16.0.3",
     "fflate": "0.8.3",
     "frimousse": "0.4.0",
+    "get-windows": "9.3.0",
     "hast-util-from-html-isomorphic": "2.0.0",
     "hast-util-to-text": "4.0.2",
     "https-proxy-agent": "7.0.6",
@@ -162,9 +163,6 @@
     "vfile": "6.0.3",
     "web-haptics": "0.0.6",
     "yaml": "2.9.1"
-  },
-  "optionalDependencies": {
-    "get-windows": "9.3.0"
   },
   "devDependencies": {
     "@babel/core": "8.0.7",

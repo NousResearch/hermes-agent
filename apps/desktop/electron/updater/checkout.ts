@@ -105,11 +105,13 @@ const WITHDRAW_RETRY_MS = 250
  * The manual command card for a checkout with no staged updater: the exact
  * `hermes update` line to run, branch-pinned to the checkout's current branch
  * for non-main (bare `hermes update` would silently switch the install
- * off-branch).
+ * off-branch). --stay-on-branch (#80041) keeps the card's contract identical
+ * to the desktop product update: the update ends on the tracked target and a
+ * feature-branch stash is never auto-restored onto it.
  */
 export function buildManualUpdateCommand(currentBranch: string | null | undefined): string {
   return currentBranch && currentBranch !== 'HEAD' && currentBranch !== 'main'
-    ? `hermes update --branch ${currentBranch}`
+    ? `hermes update --branch ${currentBranch} --stay-on-branch`
     : 'hermes update'
 }
 
@@ -448,7 +450,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): CheckoutStra
     const targetLabel: string = status.channel ?? branch
 
     const manualCommand: string = status.channel
-      ? `hermes update --channel ${status.channel}`
+      ? `hermes update --channel ${status.channel} --stay-on-branch`
       : buildManualUpdateCommand(branch)
 
     const updater: string | null = deps.resolveUpdaterBinary()
@@ -698,6 +700,13 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): CheckoutStra
       '--install-root',
       updateRoot,
       ...targetArgs,
+      // Desktop product-update contract (#80041): end the update on the
+      // tracked branch/channel target. A checkout parked on a feature branch
+      // must not be switched back to it — the post-update desktop rebuild
+      // packages this checkout, and the stale feature branch is exactly what
+      // left the app on an old version while the CLI said "already up to
+      // date". Feature-branch WIP stays parked in the stash instead.
+      '--stay-on-branch',
       '--desktop-pid',
       String(process.pid)
     ]

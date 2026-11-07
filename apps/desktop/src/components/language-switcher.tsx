@@ -32,6 +32,7 @@ interface LanguageCommandProps {
   disabled?: boolean
   locale: Locale
   noResults: string
+  packHint: string
   onSelect: (code: Locale) => void
   searchPlaceholder: string
   /** `menu` inside the desktop popover; the mobile sheet keeps the palette rows. */
@@ -106,6 +107,7 @@ export function LanguageSwitcher({ className, collapsed = false, dropUp = false 
             locale={locale}
             noResults={t.language.noResults}
             onSelect={code => void selectLocale(code)}
+            packHint={t.language.packHint}
             searchPlaceholder={t.language.searchPlaceholder}
           />
         </SheetContent>
@@ -124,6 +126,7 @@ export function LanguageSwitcher({ className, collapsed = false, dropUp = false 
           locale={locale}
           noResults={t.language.noResults}
           onSelect={code => void selectLocale(code)}
+          packHint={t.language.packHint}
           searchPlaceholder={t.language.searchPlaceholder}
           variant="menu"
         />
@@ -139,6 +142,7 @@ function LanguageCommand({
   locale,
   noResults,
   onSelect,
+  packHint,
   searchPlaceholder,
   variant = 'default'
 }: LanguageCommandProps) {
@@ -164,7 +168,10 @@ function LanguageCommand({
     <Command className="bg-transparent" shouldFilter={false} variant={variant}>
       <CommandInput autoFocus={autoFocus} onValueChange={setSearch} placeholder={searchPlaceholder} value={search} />
       <CommandList className={variant === 'menu' ? undefined : 'max-h-80 p-1'}>
-        <CommandEmpty>{noResults}</CommandEmpty>
+        <CommandEmpty>
+          <span>{noResults}</span>
+          <span className="mt-1 block text-[0.7rem] text-(--ui-text-tertiary)">{packHint}</span>
+        </CommandEmpty>
         {filtered.map(option => {
           const selected = option.id === locale
 
@@ -182,6 +189,8 @@ function LanguageCommand({
             </CommandItem>
           )
         })}
+        {/* While browsing (not searching) the list is short and looks complete: say where the rest are. */}
+        {!q && <div className="px-2 py-1.5 text-[0.7rem] text-(--ui-text-tertiary)">{packHint}</div>}
       </CommandList>
     </Command>
   )

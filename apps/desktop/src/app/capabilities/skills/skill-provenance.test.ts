@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { SkillInfo } from '@/types/hermes'
 
-import { catalogSourceFor, isEditableProvenance } from './skill-provenance'
+import { catalogSourceFor, isArchivableProvenance, isEditableProvenance } from './skill-provenance'
 
 // #108032: externally mounted skills get an 'external' provenance tier — origin
 // labeling without losing in-place edit rights (commit 8c8fc6c1ec / PR #17512).
@@ -38,5 +38,11 @@ describe('skill provenance tiers', () => {
       const skill: SkillInfo = { category: 'general', description: 'd', enabled: true, name: 'legacy' }
       expect(isEditableProvenance(skill.provenance)).toBe(false)
     })
+  })
+
+  it('offers Archive only where the backend archives: learned/local skills', () => {
+    expect(isArchivableProvenance('agent')).toBe(true)
+    const others: SkillInfo['provenance'][] = ['external', 'bundled', 'hub', undefined]
+    expect(others.map(isArchivableProvenance)).toEqual([false, false, false, false])
   })
 })

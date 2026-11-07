@@ -29,3 +29,9 @@ export function isEditableProvenance(provenance: SkillInfo['provenance']): boole
   // place (the user pointed skills.external_dirs at them).
   return provenance === 'agent' || provenance === 'external'
 }
+
+export function isArchivableProvenance(provenance: SkillInfo['provenance']): boolean {
+  // The archive backend (skill_usage.archive_skill) refuses external mounts as well as
+  // bundled/hub skills, so only learned/local skills get the button.
+  return provenance === 'agent'
+}

@@ -5,6 +5,7 @@ import { translateNow } from '@/i18n'
 import {
   copyTextToClipboard,
   isDesktopFsRemoteMode,
+  openDesktopPathWithDefaultApp,
   renameDesktopPath,
   revealDesktopPath,
   trashDesktopPath
@@ -60,6 +61,14 @@ export function cancelInlineRename(): void {
 export async function revealFile(path: string): Promise<void> {
   try {
     await revealDesktopPath(path)
+  } catch (error) {
+    notifyError(error, translateNow('errors.genericFailure'))
+  }
+}
+
+export async function openFileWithDefaultApp(path: string): Promise<void> {
+  try {
+    await openDesktopPathWithDefaultApp(path)
   } catch (error) {
     notifyError(error, translateNow('errors.genericFailure'))
   }

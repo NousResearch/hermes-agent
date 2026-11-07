@@ -137,6 +137,9 @@ describe('fmtCost + fmtTokens', () => {
     expect(fmtTokens(542)).toBe('542')
     expect(fmtTokens(1234)).toBe('1.2k')
     expect(fmtTokens(45678)).toBe('46k')
+    expect(fmtTokens(9_960)).toBe('10k')
+    expect(fmtTokens(999_500)).toBe('1M')
+    expect(fmtTokens(2_345_678)).toBe('2.3M')
   })
 })
 

@@ -251,7 +251,9 @@ def test_runtime_exec_tracks_scope_and_clears_missing_value(monkeypatch):
     second_env = (calls[1][2].get("env") or {})
     assert second_env.get("SERVICE_TOKEN") != "token-for-profile-a"
     assert not any("token-for-profile-a" in str(a) for a in second_cmd)
-    assert "unset SERVICE_TOKEN" in second_cmd[-1]
+    # The command text rides the client env too, never argv.
+    assert "unset SERVICE_TOKEN" in second_env[docker_env.COMMAND_ENV_VAR]
+    assert not any("printf" in str(a) for a in first_cmd + second_cmd)
 
 
 def test_wrapped_exec_scopes_explicit_forward_env_across_profiles(monkeypatch, tmp_path):

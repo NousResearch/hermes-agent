@@ -13,6 +13,7 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -30,11 +31,13 @@ from tools.terminal_tool_config import (
 from tools.environments.base_output import _popen_bash
 from tools.environments.docker_egress import (
     _EGRESS_LABEL_KEY, _critical_egress_env_names, _egress_enforce_on_docker, _egress_proxy_args_for_docker,
+    _env_flag_value,
     _egress_reuse_fingerprint, check_docker_env_collisions, check_extra_args_collisions,
     check_forward_env_collisions, merge_egress_env,
 )
 from tools.environments.docker_ownership import (
     hand_back_sandbox_files, reclaim_sandbox_files, strip_sandbox_privileges)
+from tools.environments.docker_reuse_owners import OWNER_LABEL, ReuseLease, ReuseOwners, reap_owned_containers
 from tools.environments.path_utils import sanitize_task_id_for_path
 from tools.environments.remote_common import (
     bash_argv, client_env_with, load_hermes_env_vars, prepend_unset, resolve_passthrough_env, run_capture)
@@ -50,6 +53,7 @@ _DOCKER_SEARCH_PATHS = [
 _docker_executable: Optional[str] = None  # resolved once, cached
 _ENV_VAR_NAME_RE = _SHELL_ENV_NAME_RE
 _ENVIRONMENT_LABEL_KEY = "hermes-environment"
+_RUNTIME_LABEL_KEY = "hermes-runtime-fingerprint"
 # Stamped at create time on per-workspace persistent containers (task key ``<base>:ws:<digest>``)
 # with the digest as its value. The orphan reaper reads it to spare a container the idle reaper
 # stopped on purpose; ``hermes-task-id`` cannot serve, it is truncated to 63 chars.
@@ -182,9 +186,9 @@ def reap_orphan_containers(
     *, max_age_seconds: int = 600, profile_filter: str | None = None, docker_exe: str | None = None,
 ) -> int:
     """Remove stale hermes-tagged containers left behind by prior processes (SIGKILL/OOM
-    exits that bypass atexit). Only ``status=exited`` containers (running ones may belong
-    to a sibling process), only the caller's profile, and only if ``FinishedAt`` is older
-    than *max_age_seconds* (a just-exited sibling may be about to reuse its container).
+    exits that bypass atexit). Legacy cleanup uses ``status=exited`` and FinishedAt.
+    Ownership-managed containers require a superseded configuration older than
+    *max_age_seconds* and proof that every owner is gone, even when still running.
     Best-effort and idempotent: failures log at debug and the count removed so far is returned.
     """
     docker = docker_exe or find_docker() or "docker"
@@ -200,7 +204,7 @@ def reap_orphan_containers(
 
     # Per-container inspect keeps the failure blast radius to one container.
     now = datetime.datetime.now(datetime.UTC)
-    removed = 0
+    removed = reap_owned_containers(get_hermes_home(), docker, max_age_seconds, profile_filter)
     for cid in (ln.strip() for ln in listing.stdout.splitlines() if ln.strip()):
         finished_at = _container_finished_at(docker, cid)
         if finished_at is None:  # unknown age — be conservative
@@ -209,6 +213,13 @@ def reap_orphan_containers(
         if age < max_age_seconds:
             continue
         strip_sandbox_privileges(docker, cid)  # its teardown never ran; owners stay (it may restart)
+        owner = _docker_query(
+            [docker, "inspect", "--format", f'{{{{index .Config.Labels "{OWNER_LABEL}"}}}}', cid],
+            timeout=10, fail="orphan reaper owner probe failed: %s")
+        if owner is None or owner.returncode != 0:
+            continue
+        if owner.stdout.strip() not in ("", "<no value>"):
+            continue  # Managed containers require the serialized ownership proof above.
         if _is_idle_workspace_container(docker, cid):
             continue
         # No -f: a sibling may have restarted the container between the ps snapshot
@@ -258,6 +269,43 @@ def _container_finished_at(docker_exe: str, container_id: str):
     except ValueError as e:
         logger.debug("could not parse FinishedAt %r for %s: %s", raw, container_id[:12], e)
         return None
+
+
+_SNAP_LABEL_DIR_PREFIX = "hermes-docker-label-"
+_SNAP_LABEL_STALE_SECONDS = 24 * 3600
+_snap_label_dirs_swept = False
+
+
+def _sweep_stale_snap_label_dirs() -> None:
+    """Snap mode stages the runtime fingerprint label under ``$HOME`` (confined snap
+    Docker cannot read host ``/tmp``); ``TemporaryDirectory`` covers every normal exit
+    but a SIGKILL or host crash leaves the 0700 dir behind. Sweep stale leftovers once
+    per process: only our prefix, only real directories still mode 0700 and owned by
+    this uid, only older than a day, so a concurrent creator's fresh dir is untouched."""
+    global _snap_label_dirs_swept
+    if _snap_label_dirs_swept:
+        return
+    _snap_label_dirs_swept = True
+    get_uid = getattr(os, "getuid", None)  # absent on Windows: skip the owner check there
+    try:
+        home = Path.home()
+        if not home.is_dir():
+            return
+        cutoff = time.time() - _SNAP_LABEL_STALE_SECONDS
+        for entry in home.glob(f"{_SNAP_LABEL_DIR_PREFIX}*"):
+            try:
+                if entry.is_symlink() or not entry.is_dir():
+                    continue
+                st = entry.stat()
+                if stat.S_IMODE(st.st_mode) != 0o700 or (get_uid is not None and st.st_uid != get_uid()):
+                    continue
+                if st.st_mtime > cutoff:
+                    continue
+                shutil.rmtree(entry)
+            except OSError:
+                continue
+    except OSError:
+        pass
 
 
 def _is_executable(path: str) -> bool:
@@ -398,6 +446,64 @@ _S6_INIT_ENTRYPOINTS = ("/init", "/package/admin/s6-overlay/command/init")
 
 
 _NO_NEW_PRIVILEGES_ARGS = ["--security-opt", "no-new-privileges"]
+
+
+def _runtime_reuse_fingerprint(
+    image: str, all_run_args: list[str], *, workdir: str = "/root",
+    client_env: dict[str, str] | None = None, init: bool = True,
+    owner_namespace: str = "",
+) -> str:
+    """Stable label for the final immutable ``docker run`` configuration.
+
+    ``all_run_args`` is assembled immediately before this call from every
+    create-time option that Hermes passes to Docker. Name-only environment
+    flags also bind their client-side values, and env files bind their contents
+    and inherited bare names. Secrets enter only the hash, never logs or argv.
+    """
+    client_env = client_env if client_env is not None else {}
+    inherited: dict[str, str | None] = {}
+    env_files: list[str] = []
+    index = 0
+    while index < len(all_run_args):
+        arg = all_run_args[index]
+        if arg == "--":
+            break
+        parsed = _env_flag_value(arg)
+        index += 1
+        if parsed is None:
+            continue
+        kind, value = parsed
+        if value is None:
+            value = all_run_args[index] if index < len(all_run_args) else ""
+            index += 1
+        if kind == "env-file":
+            try:
+                contents = Path(value).read_bytes()
+            except OSError as exc:
+                raise RuntimeError(f"Cannot read Docker env file {value!r}") from exc
+            env_files.append(hashlib.sha256(contents).hexdigest())
+            for line in contents.decode("utf-8-sig").splitlines():
+                name = line.strip()
+                if name and not name.startswith("#") and "=" not in name:
+                    inherited[name] = client_env.get(name)
+        elif "=" not in value:
+            inherited[value] = client_env.get(value)
+    # Preserve upstream's cross-process identity for disposable skills copies.
+    canonical_args = [
+        f"<volatile-tempdir-mount>:{arg.split(':', 1)[1]}"
+        if index and all_run_args[index - 1] in ("-v", "--volume")
+        and _is_volatile_mount_spec(arg) else arg
+        for index, arg in enumerate(all_run_args)]
+    posture = {"version": 2, "image": image, "run_args": canonical_args, "workdir": workdir,
+               "init": init, "inherited": inherited, "env_files": env_files}
+    if owner_namespace:
+        posture.update(version=3, owner_namespace=owner_namespace)
+    payload = json.dumps(
+        posture,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
 
 
 def _build_security_args(run_as_host_user: bool, run_exec: bool = False, snap_compat: bool = False) -> list[str]:
@@ -689,6 +795,8 @@ class DockerEnvironment(BaseEnvironment):
         self._env = _normalize_env_dict(env)
         self._init_unset_passthrough_names: tuple[str, ...] = ()
         self._container_id: Optional[str] = None
+        self._reuse_owners = ReuseOwners(get_hermes_home()) if persist_across_processes and not shared_container_key else None
+        self._reuse_lease: ReuseLease | None = None
         self._init_env_values: dict[str, str] = {}
         self._workspace_dir: Optional[str] = None
         self._home_dir: Optional[str] = None
@@ -758,6 +866,8 @@ class DockerEnvironment(BaseEnvironment):
             _EGRESS_LABEL_KEY: egress_label}
         if workspace := _WORKSPACE_TASK_RE.search(task_id or ""):
             self._labels[_WORKSPACE_LABEL_KEY] = workspace.group(1)
+        if self._reuse_owners is not None:
+            self._labels[OWNER_LABEL] = self._reuse_owners.namespace
         # Explicit sharing opts into the first creator's settings. Otherwise,
         # changed image/mount/home configuration must start a fresh container.
         if not shared_container_key:
@@ -769,14 +879,27 @@ class DockerEnvironment(BaseEnvironment):
         self._image_pinned = image_pinned
         self._image_uses_s6_init = image_uses_s6_init
         self._all_run_args = all_run_args
+        self._run_as_host_user = run_as_host_user and bool(user_args)
+        self._run_args_after_security = all_run_args[len(security_args):]
+        self._create_cwd = cwd
+        self._network = network
+        # The requested image/args are restored whenever reuse is refused, so a
+        # preserved sandbox's adopted image never leaks into a fresh creation.
+        self._requested_image = image
+        self._requested_s6_init = image_uses_s6_init
+        self._requested_all_run_args = all_run_args
+        self._refresh_runtime_fingerprint()
 
         reused = persist_across_processes and self._attach_existing_container(
             task_label, profile_name, egress_label, network)
         if not reused:
+            self._restore_requested_image()
             self._container_id = self._docker_run(cwd)
         else:  # it never stopped, so no teardown stripped what it left
             strip_sandbox_privileges(self._docker_exe, self._container_id)
         reclaim_sandbox_files(self._docker_exe, self._container_id, self._sandbox_mounts)
+        if self._reuse_owners is not None:
+            self._reuse_owners.supersede(self._labels, self._runtime_fp)
 
         # Init-time env forwarding args seed the snapshot.
         self._init_env_args = self._build_init_env_args()
@@ -800,6 +923,8 @@ class DockerEnvironment(BaseEnvironment):
 
         merged_env = merge_egress_env(self._env, egress_env_overrides, enforce_egress)
         self._run_env_values = dict(merged_env)
+        # Bind name-only flags and the Docker client's launch to one snapshot.
+        self._run_client_env = self._docker_client_env(self._run_env_values) or dict(os.environ)
 
         validated_extra = []
         for arg in (extra_args or []):
@@ -930,11 +1055,47 @@ class DockerEnvironment(BaseEnvironment):
         across sessions"; opt out via ``docker_persist_across_processes: false``).
         Network guard is lockdown-only: a bridge container under ``docker_network: false``
         is removed and recreated, but a ``none`` container under default config is kept so
-        ``--network=none`` in extra args doesn't churn containers every startup."""
-        existing = self._find_reusable_container(task_label, profile_name, egress_label)
-        if existing is None:
+        ``--network=none`` in extra args doesn't churn containers every startup. The runtime
+        fingerprint guard refuses drifted or legacy containers without deleting
+        another process's sandbox. The probe returns fingerprint matches first, but a
+        running box that cannot be removed (drifted image or network posture) must not
+        mask a stopped compatible sibling behind it: every candidate is checked for a
+        clean attach before the single-candidate removal policy runs on the probe's
+        head."""
+        candidates = self._find_reusable_candidates(task_label, profile_name, egress_label)
+        if not candidates:
             return False
-        container_id, state = existing
+        # A default-image change still requires approval even if a later sibling
+        # already runs that image. Apply the preservation policy before selection.
+        head_image = self._container_image(candidates[0][0])
+        if head_image is not None and head_image != self._image and not self._image_pinned:
+            return self._attach_legacy_candidate(candidates, task_label, profile_name, egress_label, network)
+        saw_compatible = False
+        for container_id, state, actual_fp in candidates:
+            if actual_fp != self._runtime_fp:
+                continue
+            actual_image = self._container_image(container_id)
+            if actual_image is None or actual_image != self._image:
+                continue
+            if not network and self._container_network_mode(container_id) != "none":
+                continue
+            saw_compatible = True
+            if not self._claim_reuse_candidate(container_id, state):
+                continue
+            logger.info(
+                "Reusing container %s (task=%s, profile=%s, prior state=%s)",
+                container_id[:12], task_label, profile_name, state)
+            return True
+        if saw_compatible:
+            return False
+        return self._attach_legacy_candidate(candidates, task_label, profile_name, egress_label, network)
+
+    def _attach_legacy_candidate(self, candidates, task_label, profile_name, egress_label, network: bool) -> bool:
+        """Single-candidate policy for the probe's head: image adoption or pinned-image
+        removal, lockdown network enforcement, fingerprint preservation. Runs only when
+        no candidate verifiably matches up front; ``candidates[0]`` is the same box the
+        old single-result probe returned."""
+        container_id, state, actual_fp = candidates[0]
         # A container built from another image. Explicitly configured image (config.yaml /
         # TERMINAL_DOCKER_IMAGE): the user changed it, so the old container is not their sandbox any
         # more — recreate (the image is immutable after creation). Default image: a default flip
@@ -942,6 +1103,7 @@ class DockerEnvironment(BaseEnvironment):
         # keep it and let the CLI / Screen pane ask. Same rule Modal (snapshot wins) and Daytona
         # (labeled sandbox wins) already apply.
         actual_image = self._container_image(container_id)
+        image_kept = False
         if actual_image is not None and actual_image != self._image:
             if not self._image_pinned:
                 logger.warning(
@@ -950,6 +1112,8 @@ class DockerEnvironment(BaseEnvironment):
                     "terminal.docker_image %s` (files in /root and /workspace carry over) or pin the "
                     "current image to stop this notice (task=%s, profile=%s).",
                     container_id[:12], actual_image, self._image, self._image, task_label, profile_name)
+                self._adopt_reuse_image(actual_image)
+                image_kept = True
             elif not self._image_available_locally():
                 # The replacement image cannot be had (private/misspelled tag, registry down, pull past
                 # its timeout). Removing the old container first would throw away its writable layer with
@@ -959,16 +1123,27 @@ class DockerEnvironment(BaseEnvironment):
                     "Existing container %s runs image %s; docker_image is %s but that image could not be "
                     "pulled — keeping the current sandbox until it can (task=%s, profile=%s).",
                     container_id[:12], actual_image, self._image, task_label, profile_name)
+                self._adopt_reuse_image(actual_image)
+                image_kept = True
             else:
                 logger.warning(
                     "Existing container %s runs image %s but docker_image is %s — removing it and "
                     "starting fresh (task=%s, profile=%s).",
                     container_id[:12], actual_image, self._image, task_label, profile_name)
                 try:
-                    run_capture([self._docker_exe, "rm", "-f", container_id], timeout=30)
+                    # A sibling may still use it; plain rm atomically refuses
+                    # a running container instead of killing its work.
+                    run_capture([self._docker_exe, "rm", container_id], timeout=30)
                 except (subprocess.TimeoutExpired, OSError) as e:
                     logger.warning("Failed to remove mismatched container %s: %s", container_id[:12], e)
                 return False
+        if image_kept:
+            # Re-select with the kept image's fingerprint: a preserved stale
+            # sibling must not hide an already compatible replacement.
+            candidates = self._find_reusable_candidates(task_label, profile_name, egress_label)
+            if not candidates:
+                return False
+            container_id, state, actual_fp = candidates[0]
         if not network:
             actual_mode = self._container_network_mode(container_id)
             if actual_mode != "none":
@@ -978,24 +1153,75 @@ class DockerEnvironment(BaseEnvironment):
                     "container — removing it and starting fresh (task=%s, profile=%s).",
                     container_id[:12], actual_mode or "unknown", task_label, profile_name)
                 try:
-                    run_capture([self._docker_exe, "rm", "-f", container_id], timeout=30)
+                    run_capture([self._docker_exe, "rm", container_id], timeout=30)
                 except (subprocess.TimeoutExpired, OSError) as e:
                     logger.warning("Failed to remove mismatched container %s: %s", container_id[:12], e)
                 return False
 
-        if state != "running":
-            err = self._start_container(container_id)
-            if err is not None:
-                logger.warning(
-                    "Failed to start existing container %s (state=%s): "
-                    "%s — falling back to a fresh container.",
-                    container_id[:12], state, err)
-                return False
-        self._container_id = container_id
+        if actual_fp != self._runtime_fp:
+            # Missing labels cannot prove compatibility. Keep the prior box:
+            # it may hold another process's work or an unmounted writable layer.
+            logger.warning(
+                "Existing container %s does not match the current "
+                "creation config — preserving it and starting "
+                "fresh (task=%s, profile=%s).",
+                container_id[:12], task_label, profile_name)
+            return False
+
+        if not self._claim_reuse_candidate(container_id, state):
+            return False
         logger.info(
             "Reusing container %s (task=%s, profile=%s, prior state=%s)",
             container_id[:12], task_label, profile_name, state)
         return True
+
+    def _claim_reuse_candidate(self, container_id: str, state: str) -> bool:
+        def start() -> bool:
+            error = self._start_container(container_id) if state != "running" else None
+            if error is not None:
+                logger.warning("Cannot restart reusable container %s: %s", container_id[:12], error)
+            return error is None
+
+        owners = getattr(self, "_reuse_owners", None)
+        if owners is not None:
+            lease = owners.claim(container_id, start)
+            if lease is None:
+                return False
+            self._reuse_lease = lease
+        elif not start():
+            return False
+        self._container_id = container_id
+        return True
+
+    def _refresh_runtime_fingerprint(self) -> None:
+        # An explicit shared key opts into the first creator's configuration.
+        if _ENVIRONMENT_LABEL_KEY not in self._labels:
+            self._runtime_fp = ""
+            return
+        self._runtime_fp = _runtime_reuse_fingerprint(
+            self._image, self._all_run_args, workdir=self._create_cwd,
+            client_env=self._run_client_env,
+            init=not (self._image_uses_s6_init or self._snap_compat),
+            owner_namespace=self._labels.get(OWNER_LABEL, ""))
+        self._labels[_RUNTIME_LABEL_KEY] = self._runtime_fp
+
+    def _adopt_reuse_image(self, image: str) -> None:
+        """Bind proof and recovery to the image the existing image policy keeps."""
+        self._image = image
+        self._image_uses_s6_init = _image_uses_init_entrypoint(self._docker_exe, image)
+        self._all_run_args = _build_security_args(
+            self._run_as_host_user, run_exec=self._image_uses_s6_init,
+            snap_compat=self._snap_compat) + self._run_args_after_security
+        self._refresh_runtime_fingerprint()
+
+    def _restore_requested_image(self) -> None:
+        """Undo :meth:`_adopt_reuse_image` after a refused attach: every path that
+        falls through to a fresh ``docker run`` must create the requested image,
+        not the preserved sandbox's adopted one."""
+        self._image = self._requested_image
+        self._image_uses_s6_init = self._requested_s6_init
+        self._all_run_args = self._requested_all_run_args
+        self._refresh_runtime_fingerprint()
 
     def _image_available_locally(self) -> bool:
         """True once ``self._image`` is in the local image store, pulling it when it is not. Called BEFORE a
@@ -1019,10 +1245,11 @@ class DockerEnvironment(BaseEnvironment):
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             return e
 
-    def _run_command(self, name: str, workdir: str) -> list[str]:
+    def _run_command(self, name: str, workdir: str, runtime_label_file: str) -> list[str]:
         """``docker run -d`` argv for a fresh ``sleep infinity`` container (idle reaper handles
         lifetime). s6-overlay images already provide PID 1, so ``--init`` is skipped for them."""
-        label_args = [arg for k, v in self._labels.items() for arg in ("--label", f"{k}={v}")]
+        label_args = [arg for k, v in self._labels.items() if k != _RUNTIME_LABEL_KEY
+                      for arg in ("--label", f"{k}={v}")]
         return [
             # tini/catatonit as PID 1 reaps zombie children — but s6-overlay images already provide their
             # own /init PID 1, so adding --init there creates two competing inits and breaks startup
@@ -1031,6 +1258,7 @@ class DockerEnvironment(BaseEnvironment):
             *([] if self._image_uses_s6_init or self._snap_compat else ["--init"]),
             "--name", name,
             *label_args,
+            "--label-file", runtime_label_file,
             "-w", workdir,
             *self._all_run_args,
             self._image,
@@ -1040,20 +1268,38 @@ class DockerEnvironment(BaseEnvironment):
         """Start a fresh container and return its id. A failed ``docker run`` (exit 125, timeout
         mid-pull) can leave a "Created" orphan the exited-only reaper never catches, so it is
         removed by name before re-raising."""
-        container_name = f"hermes-{uuid.uuid4().hex[:8]}"
-        run_cmd = self._run_command(container_name, cwd)
-        logger.debug("Starting container: %s", ' '.join(run_cmd))
+        container_name = f"hermes-{uuid.uuid4().hex}"
+        owners = getattr(self, "_reuse_owners", None)
+        lease = owners.reserve(container_name, self._labels, self._runtime_fp) if owners is not None else None
+        # A hash of a weak secret is still an offline guessing oracle.
+        # The private directory keeps this label out of both argv and logs.
+        # Snap-packaged Docker runs confined and cannot read host /tmp, so snap
+        # mode stages the file in a random 0700 non-hidden directory under $HOME
+        # instead; the TemporaryDirectory cleanup around the run is unchanged.
+        label_parent = str(Path.home()) if self._snap_compat else None
+        if self._snap_compat:
+            _sweep_stale_snap_label_dirs()
         try:
-            result = run_capture(
-                run_cmd, timeout=120, check=True,  # image pull may take a while
-                env=self._docker_client_env(self._run_env_values))
+            with tempfile.TemporaryDirectory(prefix="hermes-docker-label-", dir=label_parent) as label_dir:
+                label_file = Path(label_dir) / "runtime.label"
+                label_file.write_text(f"{_RUNTIME_LABEL_KEY}={self._runtime_fp}\n", encoding="utf-8")
+                run_cmd = self._run_command(container_name, cwd, str(label_file))
+                logger.debug("Starting container: %s", ' '.join(run_cmd))
+                result = run_capture(
+                    run_cmd, timeout=120, check=True,  # image pull may take a while
+                    env=self._run_client_env)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             logger.warning("docker run failed for %s, cleaning up orphaned container: %s", container_name, e)
             subprocess.run(
                 [self._docker_exe, "rm", "-f", container_name],
                 capture_output=True, timeout=10, stdin=subprocess.DEVNULL, check=False)
+            if owners is not None and lease is not None:
+                owners.release(lease)
             raise
         container_id = result.stdout.strip()
+        if owners is not None:
+            owners.finish(container_name, container_id)
+            self._reuse_lease = lease
         logger.info("Started container %s (%s)", container_name, container_id[:12])
         return container_id
 
@@ -1137,34 +1383,28 @@ class DockerEnvironment(BaseEnvironment):
         may have recreated it), else a fresh one from the saved image/run-args. False when
         recovery fails so the caller surfaces the original error."""
         logger.warning("Container %s appears to be gone — attempting recovery", (self._container_id or "")[:12])
+        lease = getattr(self, "_reuse_lease", None)
+        self._reuse_lease = None
+        self._release_runtime_owner(lease)
         self._container_id = None
 
-        existing = self._find_reusable_container(
-            self._labels.get("hermes-task-id", ""),
-            self._labels.get("hermes-profile", ""),
-            self._labels.get(_EGRESS_LABEL_KEY, "off"))
-        if existing is not None:
-            cid, state = existing
-            if state == "running":
-                self._container_id = cid
-                logger.info("Recovery: reusing running container %s", cid[:12])
-            elif (err := self._start_container(cid)) is None:
-                self._container_id = cid
-                logger.info("Recovery: restarted container %s", cid[:12])
-            else:
-                logger.warning("Recovery: failed to start container %s: %s", cid[:12], err)
+        try:
+            self._refresh_runtime_fingerprint()
+            reused = self._attach_existing_container(
+                self._labels.get("hermes-task-id", ""),
+                self._labels.get("hermes-profile", ""),
+                self._labels.get(_EGRESS_LABEL_KEY, "off"), self._network)
+        except (RuntimeError, OSError, UnicodeError) as exc:
+            logger.error("Recovery: cannot verify the saved Docker configuration: %s", exc)
+            return False
 
-        if not self._container_id:
+        if not reused:
             if not self._image:
                 logger.error("Recovery: no saved image name, cannot recreate container")
                 return False
+            self._restore_requested_image()
             try:
-                new_name = f"hermes-{uuid.uuid4().hex[:8]}"
-                result = run_capture(
-                    self._run_command(new_name, self.cwd), timeout=120, check=True,
-                    env=self._docker_client_env(self._run_env_values))
-                self._container_id = result.stdout.strip()
-                logger.info("Recovery: created fresh container %s (%s)", new_name, self._container_id[:12])
+                self._container_id = self._docker_run(self.cwd)
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
                 logger.error("Recovery: failed to create new container: %s", e)
                 return False
@@ -1179,6 +1419,11 @@ class DockerEnvironment(BaseEnvironment):
         logger.info("Recovery successful — new container %s", (self._container_id or "")[:12])
         self._mark_recreated()
         return True
+
+    def _release_runtime_owner(self, lease: ReuseLease | None) -> None:
+        owners = getattr(self, "_reuse_owners", None)
+        if owners is not None and lease is not None:
+            owners.release(lease)
 
     def execute(self, command: str, cwd: str = "", **kwargs) -> dict:
         """Execute a command; if the container was removed out-of-band (idle reaper,
@@ -1240,12 +1485,28 @@ class DockerEnvironment(BaseEnvironment):
             fail="docker inspect NetworkMode failed: %s", nonzero="docker inspect NetworkMode returned %d: %s")
         return (result.stdout.strip() or None) if result is not None else None
 
-    def _find_reusable_container(
-        self, task_label: str, profile_label: str, egress_label: str) -> Optional[tuple[str, str]]:
-        """``(container_id, state)`` of an existing container labeled for this task/profile/
-        egress posture and immutable environment, or ``None`` on miss or any failure.
-        Explicit shared keys opt out of the environment filter. The egress posture is a label
-        FILTER for every posture, "off" included: a container built with egress on must not be
+    def _container_runtime_fingerprint(self, container_id: str) -> str:
+        """Return the stored ``hermes-runtime-fingerprint`` label, or ``""``."""
+        result = _docker_query(
+            [self._docker_exe, "inspect", "--format",
+             '{{index .Config.Labels "' + _RUNTIME_LABEL_KEY + '"}}', container_id],
+            timeout=10, fail="docker inspect runtime fingerprint failed: %s",
+            nonzero="docker inspect runtime fingerprint returned %d: %s")
+        if result is None:
+            return ""
+        value = result.stdout.strip()
+        if value in ("", "<no value>"):
+            return ""
+        return value
+
+    def _find_reusable_candidates(
+        self, task_label: str, profile_label: str, egress_label: str) -> list[tuple[str, str, str]]:
+        """Ordered ``(container_id, state, runtime_fingerprint)`` candidates for this
+        task/profile/egress posture and immutable environment, fingerprint matches
+        first (running before stopped inside each group), or ``[]`` on miss or any
+        failure. Explicit shared keys opt out of the environment filter. The egress
+        posture is a label FILTER for every posture, "off" included: a container built
+        with egress on must not be
         reused after ``hermes egress disable`` (baked-in proxy env and CA mounts), and every
         container this class creates carries the label. The ``{{.Label "key"}}`` template
         function is Docker-only — podman ps exits 125 on it — so the probe never uses it (#99213)."""
@@ -1261,20 +1522,25 @@ class DockerEnvironment(BaseEnvironment):
             fail="docker ps probe failed: %s — will start a fresh container",
             nonzero="docker ps probe returned %d: %s — will start a fresh container")
         if result is None:
-            return None
-        # Multiple matches can happen after a crash mid-cleanup: prefer a running
-        # one, else the first listed; stale duplicates are the orphan reaper's job.
-        running = first = None
+            return []
+        candidates = []
         for ln in (ln for ln in result.stdout.splitlines() if ln.strip()):
             parts = ln.split("\t", 1)
             if len(parts) != 2:
                 continue
             cid, state = parts[0], parts[1].strip().lower()
-            if first is None:
-                first = (cid, state)
-            if state == "running" and running is None:
-                running = (cid, state)
-        return running or first
+            candidates.append((cid, state))
+        # Inspect instead of a fingerprint filter: the derived secret value
+        # must not enter the ps client's world-readable argv either.
+        candidates.sort(key=lambda candidate: candidate[1] != "running")
+        if not self._runtime_fp:
+            return [(cid, state, "") for cid, state in candidates]
+        matches: list[tuple[str, str, str]] = []
+        others: list[tuple[str, str, str]] = []
+        for cid, state in candidates:
+            fingerprint = self._container_runtime_fingerprint(cid)
+            (matches if fingerprint == self._runtime_fp else others).append((cid, state, fingerprint))
+        return matches + others
 
     def _remove_bind_dirs(self) -> None:
         for d in (self._workspace_dir, self._home_dir):
@@ -1305,13 +1571,21 @@ class DockerEnvironment(BaseEnvironment):
         docker_exe = self._docker_exe
         log_id = container_id[:12]
         sandbox_mounts = list(getattr(self, "_sandbox_mounts", []))
+        lease = getattr(self, "_reuse_lease", None)
+        self._reuse_lease = None  # a delayed worker must not release a later recovery's lease
 
         if not force_remove and self._persist_across_processes:
             # Drop the in-process handle so a fresh __init__ re-probes via
             # labels instead of reusing a stale Python reference.
             self._container_id = None
             # The host user may run what the container left before it is reattached.
-            self._start_teardown(lambda: strip_sandbox_privileges(docker_exe, container_id), log_id)
+            def release() -> None:
+                try:
+                    strip_sandbox_privileges(docker_exe, container_id)
+                finally:
+                    self._release_runtime_owner(lease)
+
+            self._start_teardown(release, log_id)
             return
 
         def _do_cleanup() -> None:
@@ -1325,6 +1599,7 @@ class DockerEnvironment(BaseEnvironment):
                         capture_output=True, timeout=30, stdin=subprocess.DEVNULL, check=False)
                 except (subprocess.TimeoutExpired, OSError) as e:
                     logger.warning(fail_msg, log_id, e)
+            self._release_runtime_owner(lease)
 
         self._start_teardown(_do_cleanup, log_id)
         self._container_id = None
@@ -1346,6 +1621,8 @@ class DockerEnvironment(BaseEnvironment):
         if not container_id:
             return
         docker_exe, log_id = self._docker_exe, container_id[:12]
+        lease = getattr(self, "_reuse_lease", None)
+        self._reuse_lease = None
 
         def _do_stop() -> None:
             try:
@@ -1354,6 +1631,7 @@ class DockerEnvironment(BaseEnvironment):
             except (subprocess.TimeoutExpired, OSError) as e:
                 logger.warning("docker stop %s (idle workspace) failed: %s", log_id, e)
             strip_sandbox_privileges(docker_exe, container_id)
+            self._release_runtime_owner(lease)
 
         self._start_teardown(_do_stop, log_id)
         self._container_id = None

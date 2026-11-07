@@ -431,7 +431,7 @@ terminal:
   # container shared across sessions" contract — see Container lifecycle).
   docker_persist_across_processes: true   # Reuse container across Hermes restarts
   docker_shared_container_key: ""         # Opt in trusted profiles to one identity
-  docker_orphan_reaper: true              # Sweep abandoned Exited containers at startup
+  docker_orphan_reaper: true              # Sweep exited or provably abandoned superseded containers
 
   # Cross-backend lifecycle settings (apply to docker as well)
   timeout: 180                     # Per-command timeout in seconds
@@ -442,7 +442,7 @@ terminal:
 
 **`terminal.docker_extra_args`** (also overridable via `TERMINAL_DOCKER_EXTRA_ARGS='["--gpus=all"]'`) lets you pass arbitrary `docker run` flags that Hermes doesn't surface as first-class keys — `--gpus`, `--network`, `--add-host`, alternative `--security-opt` overrides, etc. Each entry must be a string; the list is appended last to the assembled `docker run` invocation so it can override Hermes' defaults if needed. Use sparingly — flags that conflict with the sandbox hardening (capability drops, `--user`, the workspace bind mount) will silently weaken isolation.
 
-**`terminal.docker_network`** (default `true`; env: `TERMINAL_DOCKER_NETWORK`) — set to `false` to run the sandbox container with `--network=none`, cutting off all network egress from agent commands. This applies to the execution container used by `terminal`, `execute_code`, and the file tools. Because containers persist across Hermes processes, flipping this to `false` while an older networked container exists will remove that container and start a fresh air-gapped one (a warning is logged); background processes running inside it are lost. Prefer this key over passing `--network=none` through `docker_extra_args`.
+**`terminal.docker_network`** (default `true`; env: `TERMINAL_DOCKER_NETWORK`) — set to `false` to run the sandbox container with `--network=none`, cutting off all network egress from agent commands. This applies to the execution container used by `terminal`, `execute_code`, and the file tools. A previous networked container is not reused for an air-gapped request. A compatible sibling is preferred; otherwise Hermes starts a fresh air-gapped container while preserving a running sibling. Superseded non-shared containers become eligible for the ownership-aware cleanup below. Prefer this key over passing `--network=none` through `docker_extra_args`.
 
 **Requirements:** Docker Desktop or Docker Engine installed and running. Hermes probes `$PATH` plus common macOS install locations (`/usr/local/bin/docker`, `/opt/homebrew/bin/docker`, Docker Desktop app bundle). Podman is supported out of the box: set `HERMES_DOCKER_BINARY=podman` (or the full path) to force it when both are installed.
 
@@ -454,24 +454,27 @@ Hermes-managed containers carry labels so subsequent processes (and the orphan r
 - `hermes-task-id=<sanitized task_id>` — keys the per-task reuse probe
 - `hermes-profile=<sanitized profile name>` — scopes reuse and reaping to the active Hermes profile by default; when `docker_shared_container_key` is set, its sanitized value is used instead
 - `hermes-environment=<digest>` — for containers without an explicit shared key, scopes reuse to the requested image, mount arguments, and active `HERMES_HOME`; host paths and volume sources are hashed rather than exposed in this label. Per-process tempdir-sourced mounts (the symlink-safe skills copy) are hashed by their stable container path, not the random host tempdir, so they don't defeat reuse
+- `hermes-runtime-fingerprint=<digest>` — additionally binds immutable creation settings such as resource limits, security flags, environment values and env-file contents, initial working directory, and init mode. It is delivered through a private label file rather than command-line arguments
+- `hermes-reuse-owners=<namespace>` — identifies the profile-local ownership registry for cross-process reuse without an explicit shared key
 
 On startup, Hermes runs `docker ps --filter label=hermes-task-id=<id> --filter label=hermes-profile=<identity>` and **attaches to the existing container** when it finds one. The identity is the active profile unless `docker_shared_container_key` explicitly opts trusted profiles into a common value. If the container is `exited` (e.g. after a Docker daemon restart), it's `docker start`'d and reused — filesystem state and any installed packages survive, but in-container background processes do not.
 
-Without an explicit shared key, the reuse probe also requires a matching `hermes-environment` label. Changing the image, mount arguments, or `HERMES_HOME` starts a fresh container instead of silently using another configuration. Containers created before this label was introduced do not match, so the first session after upgrading starts a fresh container; existing running containers are not removed.
+Without an explicit shared key, reuse requires matching environment and runtime fingerprints plus an ownership record. Changing immutable settings starts a fresh container instead of silently using another configuration. Containers from older builds cannot prove ownership and compatibility, so the first session after upgrading starts a fresh container; those unknown containers remain available for manual inspection and cleanup. An unpinned default image still requires the existing image-upgrade approval. The private ownership namespace also prevents older clients from matching the new runtime fingerprint. The registry under the profile's `runtime/docker-reuse-owners/` directory is local runtime state; copying it does not transfer authority over the original containers.
 
-When a Hermes process exits — `/quit`, closing a TUI session, gateway shutdown, even SIGKILL — the cleanup path is a **no-op for the container in default mode**. The container keeps running. The next Hermes process attaches to it in milliseconds via the label probe. This is the behavior the "one long-lived container shared across sessions" contract requires: it's the only way background processes (npm watchers, dev servers, long-running pytest) survive across sessions.
+When a Hermes process exits, default-mode cleanup leaves its container running and releases its ownership lease. Kernel-held file locks also release automatically on process death, including SIGKILL. A compatible persistent container remains reusable even with no active owners, preserving background processes across sessions.
 
-**The container is only torn down (stopped and `docker rm -f`'d) in these cases:**
+**Container teardown rules:**
 
 | Trigger | When it fires |
 |---|---|
 | `docker_persist_across_processes: false` | Explicit per-process isolation. Every `cleanup()` does `stop` + `rm -f`. Matches pre-issue-#20561 behavior. |
 | Idle reaper (`lifetime_seconds`, default 300s) | Only when the env is `persist_across_processes=false`. Persist-mode envs are no-op'd; container survives the idle sweep. |
-| Orphan reaper at next startup | Sweeps **Exited** hermes-labeled containers older than `2 × lifetime_seconds` (default 600s = 10 min), scoped to the current profile. **Running containers are never touched** — sibling-process safety. Set `docker_orphan_reaper: false` to disable. |
+| Orphan reaper at next startup | Legacy exited containers retain their age-based sweep. Ownership-managed containers are eligible, running or stopped, only after a different configuration successfully supersedes them, the `2 × lifetime_seconds` grace period passes, and every recorded owner is provably gone. Claims and cleanup are serialized; active, compatible, explicitly shared, foreign, or unprovable containers are preserved. Cleanup stops an eligible running container, then uses plain `docker rm`. Set `docker_orphan_reaper: false` to disable. |
 | Direct user action | `docker rm -f`, `docker system prune`, Docker Desktop restart. We don't set `--restart=always`, so a host reboot leaves the container `Exited` (its CoW layer survives and gets reused on next startup, but bg processes are gone). |
 
 Edge cases worth knowing:
 
+- **State after configuration changes**: bind-mounted files remain on the host. Packages or data stored only in a superseded container's writable layer are not migrated and are removed when that container is reclaimed. Disable the orphan reaper if you need to inspect that state before cleanup.
 - **OOM kill of in-container PID 1** transitions the container to `Exited`. Next reuse will `docker start` it; filesystem state survives, bg processes do not.
 - **Switching profiles** isolates containers from each other — a container labeled `hermes-profile=work` is invisible to a Hermes process running under `hermes-profile=research`. The orphan reaper is profile-scoped too, so cross-profile containers don't get reaped accidentally, but they also won't get cleaned up automatically until you start Hermes again under their original profile.
 - **Explicit cross-profile sharing** — set the same non-empty `docker_shared_container_key` under `terminal:` for profiles that intentionally collaborate in one trusted workspace. This replaces only their container identity label; task, egress, and network compatibility checks still apply. Profiles without the key remain isolated. The identity label is derived from the key with a short digest suffix, so similar-looking keys (`team/workspace` vs `team_workspace`) never collide into one container. **Important: a shared container is created once, by whichever profile starts it first** — that profile's `docker_image`, volumes, shm size, and other immutable Docker settings win, and later profiles attach to it as-is; differing settings in their configs are ignored until the container is removed and recreated. Profiles sharing a key should agree on image and mounts.

@@ -1,6 +1,7 @@
 """Browser resolution uses installed PM facts and config without provisioning a browser."""
 
 import os
+import shutil
 
 import pytest
 
@@ -130,3 +131,75 @@ def test_termux_hint_never_mentions_npm(homes, monkeypatch):
     monkeypatch.setattr(runtime, "is_termux", lambda: True)
     hint = browser_runtime.chromium_missing_hint()
     assert "pkg install" in hint and "npm" not in hint and "npx" not in hint
+
+
+LDD_OUTPUT = """\
+\tlinux-vdso.so.1 (0x00007f0e0d5f7000)
+\tlibnspr4.so => not found
+\tlibnss3.so => not found
+\tlibdl.so.2 => /usr/lib/libdl.so.2 (0x00007f0e0d5f3000)
+"""
+
+
+def _fake_ldd(monkeypatch, output=LDD_OUTPUT):
+    import subprocess
+
+    monkeypatch.setattr(shutil, "which", lambda name, *a, **k: f"/usr/bin/{name}")
+
+    def _run(argv, **kwargs):
+        assert argv[0] == "/usr/bin/ldd", argv
+        assert kwargs["check"] is False
+        return subprocess.CompletedProcess(argv, 0, output, "")
+
+    monkeypatch.setattr(subprocess, "run", _run)
+
+
+def test_missing_shared_libraries_names_the_unresolved_objects(tmp_path, monkeypatch):
+    binary = tmp_path / "chrome"
+    binary.write_bytes(b"")
+    _fake_ldd(monkeypatch)
+
+    assert browser_runtime.missing_shared_libraries(str(binary), platform="linux") == ["libnspr4.so", "libnss3.so"]
+
+
+def test_missing_shared_libraries_stays_quiet_where_it_cannot_answer(tmp_path, monkeypatch):
+    """Another OS, no ldd, a binary that is not there, a loader that never answers: an unknown is not broken."""
+    import subprocess
+
+    binary = tmp_path / "chrome"
+    binary.write_bytes(b"")
+    assert browser_runtime.missing_shared_libraries(str(binary), platform="darwin") == []
+    monkeypatch.setattr(shutil, "which", lambda *a, **k: None)
+    assert browser_runtime.missing_shared_libraries(str(binary), platform="linux") == []
+    _fake_ldd(monkeypatch)
+    assert browser_runtime.missing_shared_libraries(str(tmp_path / "absent"), platform="linux") == []
+
+    def _timeout(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, 10)
+
+    monkeypatch.setattr(subprocess, "run", _timeout)
+    assert browser_runtime.missing_shared_libraries(str(binary), platform="linux") == []
+
+
+def test_missing_libraries_advice_names_the_install_command(monkeypatch):
+    import importlib.util
+    import sys
+
+    monkeypatch.setattr(shutil, "which", lambda *a, **k: "/usr/bin/apt-get")
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
+
+    assert browser_runtime.install_dependency_lines() == [
+        f"Install missing system libraries with: {sys.executable} -m playwright install-deps chromium"]
+    advice = browser_runtime.local_browser_failure_advice(
+        "error while loading shared libraries: libnspr4.so: cannot open shared object file")
+    assert "install-deps chromium" in advice and "reinstalling Chromium will not help" in advice
+
+
+def test_missing_libraries_advice_falls_back_to_the_upstream_guide(monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda *a, **k: None)
+
+    assert browser_runtime.install_dependency_lines()[0] == "System dependency installation guide:"
+    advice = browser_runtime.local_browser_failure_advice("error while loading shared libraries: libnspr4.so")
+    assert "playwright.dev" in advice and "install-deps" not in advice
+    # Any other launch failure keeps the existing reinstall / switch-backends advice.
+    assert "(re)install Chromium" in browser_runtime.local_browser_failure_advice("Chromium exited with code 1")

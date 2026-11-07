@@ -91,3 +91,51 @@ def test_importable_sdk_does_not_bypass_pm_constraints(monkeypatch, capsys, key,
         assert "Restart Hermes" not in output
     else:
         assert "Restart Hermes" in output
+
+
+@pytest.mark.platforms("linux")
+def test_post_setup_reports_missing_system_libraries_instead_of_ready(tmp_path, capsys):
+    """An installed binary the loader cannot start is not "ready" (#148660)."""
+    from hermes_cli import browser_runtime
+
+    binary = tmp_path / "chrome"
+    binary.write_bytes(b"")
+    with (
+        patch("tools.browser_use_cli._find_cli", return_value=["harness"]),
+        patch("hermes_cli.browser_runtime.chromium_executable", return_value=str(binary)),
+        patch.object(browser_runtime, "missing_shared_libraries",
+                     return_value=["libnspr4.so", "libnss3.so"], create=True),
+        patch("hermes_constants.is_termux", return_value=False),
+        patch("hermes_platform.host.runtime.is_termux", return_value=False),
+        patch("importlib.util.find_spec", return_value=object()),
+        patch("shutil.which", return_value="/usr/bin/apt-get"),
+        patch("pm.ensure"),
+    ):
+        _run_post_setup("chromium")
+
+    output = capsys.readouterr().out
+    assert "Chromium ready" not in output
+    assert "libnspr4.so" in output and "libnss3.so" in output
+    assert "install-deps chromium" in output
+
+
+@pytest.mark.platforms("linux")
+def test_post_setup_still_reports_ready_when_libraries_resolve(tmp_path, capsys):
+    from hermes_cli import browser_runtime
+
+    binary = tmp_path / "chrome"
+    binary.write_bytes(b"")
+    with (
+        patch("tools.browser_use_cli._find_cli", return_value=["harness"]),
+        patch("hermes_cli.browser_runtime.chromium_executable", return_value=str(binary)),
+        patch.object(browser_runtime, "missing_shared_libraries", return_value=[], create=True),
+        patch("hermes_constants.is_termux", return_value=False),
+        patch("hermes_platform.host.runtime.is_termux", return_value=False),
+        patch("importlib.util.find_spec", return_value=object()),
+        patch("shutil.which", return_value="/usr/bin/apt-get"),
+        patch("pm.ensure"),
+    ):
+        _run_post_setup("chromium")
+
+    output = capsys.readouterr().out
+    assert "Chromium ready" in output and str(binary) in output

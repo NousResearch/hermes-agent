@@ -388,8 +388,9 @@ def _resolve_local_cdp(env: dict, task_id: Optional[str], session_name: str = ""
         fail = lambda e: (f"Lightpanda could not be started: {e} Set browser.engine to auto "
                           "to use local Chrome, or switch backends via `hermes tools` → Browser Automation.")
     else:
+        from hermes_cli.browser_runtime import local_browser_failure_advice
         fail = lambda e: (f"The local browser could not be started: {e} "
-                          "Run `hermes tools` → Browser Automation to (re)install Chromium, or switch backends.")
+                          f"{local_browser_failure_advice(str(e))}")
     err = _export_session_cdp(env, _session_info, key, fail, "The local browser session returned no CDP endpoint.")
     if err is None:
         _mark_local_browser(env, session, key)

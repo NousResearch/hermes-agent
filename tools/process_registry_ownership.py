@@ -42,8 +42,12 @@ class ProcessOwnershipMixin:
             proc = spawn_owned(argv, purpose="terminal-background", **popen_kwargs)
             session._owned_pgid = proc.pid
             return proc
-        # noqa: subprocess-stdin — a forwarder: spawn_local passes stdin=DEVNULL in popen_kwargs
-        return subprocess.Popen(argv, start_new_session=True, **popen_kwargs)  # detached-spawn: ok — see _owns_job
+        try:
+            # noqa: subprocess-stdin — a forwarder: spawn_local passes stdin=DEVNULL in popen_kwargs
+            return subprocess.Popen(argv, start_new_session=True, **popen_kwargs)  # detached-spawn: ok — see _owns_job
+        except OSError as exc:
+            exc._hermes_child_not_started = True  # type: ignore[attr-defined]
+            raise
 
     def _own_pty_job(self, session: Any, pty_proc: Any) -> None:
         """The PTY child leads its own session and group (pty.fork). Its hangup reaches only jobs that

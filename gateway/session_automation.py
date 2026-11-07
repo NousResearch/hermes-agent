@@ -602,7 +602,7 @@ def restore_local_automation(authority, ref, row):
     return event
 
 
-async def admit_automation(authority, adapter, event, identity, replaces=None, fold=None):
+async def admit_automation(authority, adapter, event, identity, replaces=None, fold=None, *, _producer_guard=None):
     """``replaces``: a queued automation row of the same session this input supersedes (a liveness
     tick carrying the output of the one still waiting). Its cancellation commits in this admission's
     own transaction, so neither lands without the other. ``fold``: ``replaces`` is a completion this
@@ -627,12 +627,20 @@ async def admit_automation(authority, adapter, event, identity, replaces=None, f
             if replaced:  # the guard ran in the committed write; an exact replay runs no guard
                 authority._settle_cancelled(ref, replaces)
             return admitted(row)
+    replacement_guard = replaces and (
+        _replace_queued(replaces, ref.session_id, replaced) if fold is None
+        else _fold_queued(replaces, ref.session_id, replaced, fold))
+
+    def authorize(conn):
+        if replacement_guard:
+            replacement_guard(conn)
+        if _producer_guard:
+            _producer_guard(conn)
+
     return await tracked_write(authority, partial(
         admit_session_input, authority.db, epoch=authority.epoch, principal_id='automation:' + entry.session_key,
         session_id=ref.session_id, request_id=identity, payload=deepcopy(payload),
-        _authorize_write=authority._admission_gate(replaces and (
-            _replace_queued(replaces, ref.session_id, replaced) if fold is None
-            else _fold_queued(replaces, ref.session_id, replaced, fold)))),
+        _authorize_write=authority._admission_gate(authorize)),
         then=admitted, ordered=True, after=partial(authority._schedule_admitted, ref))
 
 

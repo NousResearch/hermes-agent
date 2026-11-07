@@ -402,7 +402,7 @@ import { runNativeLogin } from './native-oauth-login'
 import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
 import { execGit, killTimedGitChildren, setNoConsoleGitRoots } from './no-console-git'
 import { registerNativeNotifications } from './notification-ipc'
-import { createRemovedConnectionCookieCleaner } from './oauth-jar-removal'
+import { connectionConfigUrls, createRemovedConnectionCookieCleaner } from './oauth-jar-removal'
 import { loginFlightKey, OauthLoginFlights } from './oauth-login-flights'
 import { startOauthLoginWindow } from './oauth-login-window'
 import { isExpectedOauthNavigationAbort } from './oauth-navigation'
@@ -7085,7 +7085,7 @@ const clearRemovedOauthJars = createRemovedConnectionCookieCleaner({
   sessionFor: partition => (partition === OAUTH_SESSION_PARTITION ? getOauthSession() : app.isReady() ? session.fromPartition(partition) : null),
   clearMirror: (partition, url) => remoteSessionCookies.clear(partition, url),
   v1RemoteUrl: () => readDesktopConnectionConfig()?.remote?.url,
-  sharedUrls: () => [resolvePortalBaseUrl(), readDesktopConnectionConfig()?.remote?.url]
+  sharedUrls: () => [resolvePortalBaseUrl(), ...connectionConfigUrls(readDesktopConnectionConfig())]
 })
 
 async function clearOauthSession(baseUrl) {

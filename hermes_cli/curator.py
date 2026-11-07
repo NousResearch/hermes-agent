@@ -364,7 +364,8 @@ def _idle_days(record: dict) -> Optional[int]:
 
 
 def _cmd_prune(args) -> int:
-    """Bulk-archive curator-managed skills idle for >= N days (pinned exempt, archived skipped)."""
+    """Bulk-archive curator-managed skills idle for >= N days (pinned exempt, archived skipped, locked
+    skipped: a user lock freezes the skill against this pass too)."""
     from agent import curator
     from tools import skill_usage
     days = getattr(args, "days", None)
@@ -377,6 +378,13 @@ def _cmd_prune(args) -> int:
         (r["name"], idle) for r in skill_usage.curated_report()
         if not (r.get("pinned") or r.get("state") == skill_usage.STATE_ARCHIVED)
         and (idle := _idle_days(r)) is not None and idle >= days]
+    locked = skill_usage.locked_skill_names()
+    if locked:
+        from tools.skill_lock import is_locked_skill
+        skipped = [name for name, _ in candidates if is_locked_skill(name, locked)]
+        if skipped:
+            candidates = [c for c in candidates if c[0] not in set(skipped)]
+            print(f"curator: skipping {len(skipped)} locked skill(s): {', '.join(skipped)}")
     if not candidates:
         print(f"curator: nothing to prune (no unpinned skills idle >= {days}d)")
         return 0

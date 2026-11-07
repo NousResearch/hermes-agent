@@ -148,6 +148,16 @@ def flood_not_before(updated_at: Any, last_error: Any) -> float:
     return _failed_stamp(updated_at) + flood_wait_seconds(last_error)
 
 
+_TERMINAL_MESSAGE_ERROR_PATTERNS = ("过期", "msgid", "msg_id")
+
+
+def is_terminal_message_error(error: Any) -> bool:
+    """True for a failed send whose error is specific to the message itself and cannot be cured by retry
+    (e.g., passive reply msg_id expired or recalled by sender)."""
+    text = str(error or "").strip().lower()
+    return any(k in text for k in _TERMINAL_MESSAGE_ERROR_PATTERNS)
+
+
 def retry_not_before(updated_at: Any, last_error: Any, attempts: Any) -> Optional[float]:
     """Earliest moment a failed row may be resent, or ``None`` for a row the runtime must leave alone:
     a flood refusal keeps the platform's own wait, an allowlisted reconnect error is due at once, a
@@ -162,10 +172,13 @@ def retry_not_before(updated_at: Any, last_error: Any, attempts: Any) -> Optiona
         return _failed_stamp(updated_at)
     if classify_dead_error(text):
         return None
+    if is_terminal_message_error(text):
+        return None
     spent = int(attempts or 0)
     if spent >= MAX_ATTEMPTS - 1:
         return None
     return _failed_stamp(updated_at) + _RETRY_BACKOFF_SECONDS[spent]
+
 
 
 def _db_path():
@@ -399,11 +412,12 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
              owner_pid, owner_started_at, adapter_profile, last_error, updated_at) in rows:
             if _owner_alive(owner_pid, owner_started_at):
                 continue  # a live gateway still owns this row
-            if attempts >= MAX_ATTEMPTS or (now - created_at) > STALE_AFTER_SECONDS:  # exhausted -> abandoned
+            if attempts >= MAX_ATTEMPTS or (now - created_at) > STALE_AFTER_SECONDS or is_terminal_message_error(last_error):  # exhausted/unrecoverable -> abandoned
                 conn.execute(
                     """UPDATE delivery_obligations
                        SET state='abandoned', updated_at=? WHERE obligation_id=?""", (now, oid))
                 continue
+
             if ((deliverable_platforms is not None and platform not in deliverable_platforms)
                     or (deliverable_targets is not None and (platform, adapter_profile) not in deliverable_targets)):
                 continue  # no adapter this boot — claiming would spend an attempt on a no-op

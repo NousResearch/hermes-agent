@@ -355,6 +355,10 @@ class SimplexAdapter(BasePlatformAdapter):
         if not sender_id:
             logger.debug("SimpleX: ignoring message with no sender")
             return
+        # SimpleX has no typing indicator, so read state is the only native signal that a
+        # message was picked up. Mark it read as soon as the item is accepted, which tells the
+        # user their message landed without us sending any "working on it" chat text.
+        await self._mark_chat_read(chat_id)
         # Attachment: chatItem.chatItem.file (sibling of meta/content/chatDir).
         media_urls: list[str] = []
         media_types: list[str] = []
@@ -445,6 +449,20 @@ class SimplexAdapter(BasePlatformAdapter):
     async def _send_fire_and_forget(self, command: str) -> None:
         """Send a command the daemon never replies to with a corrId (e.g. ``/freceive``)."""
         await self._send_ws({"corrId": self._make_corr_id(), "cmd": command})
+
+    async def _mark_chat_read(self, chat_id: str) -> None:
+        """Tell the daemon this chat is read, so the peer's client shows read state.
+
+        SimpleX has no typing indicator at all, so read state is the only native "your
+        message arrived" signal. Fire-and-forget by design: the receipt is a courtesy
+        signal, so a failure here must never delay or drop the user's actual message.
+        """
+        target = f"#{chat_id[6:]}" if chat_id.startswith("group:") else f"@{chat_id}"
+        try:
+            await self._send_fire_and_forget(f"/_read chat {target}")
+            logger.debug("SimpleX: marked chat read (%s)", _redact_id(chat_id))
+        except Exception:
+            logger.debug("SimpleX: could not mark chat read", exc_info=True)
 
     async def _send_items(self, chat_id: str, items: list, error: str) -> SendResult:
         """Send a structured ``/_send`` payload and await the reply."""

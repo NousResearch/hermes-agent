@@ -42,6 +42,13 @@ _INTERPRETER_PREFIXES = tuple({
     # checkout's own .venv is not Hermes state; without this every run from a default install
     # trips on its first traceback.
     Path(__file__).resolve().parent.parent,
+} | {
+    # PM's payload probes (``pm/runtime.py::_resident_runtime``, ``pm/environments.py::
+    # store_root``) test ``<checkout>/../manifest.json`` to detect a packaged payload. For a
+    # checkout that is a child of the home, the candidate IS ``<home>/manifest.json`` — an
+    # existence probe of a packaging file, not a read of Hermes state. Exempt the candidate
+    # only, so a real sibling (config.yaml, state.db) stays refused.
+    Path(__file__).resolve().parent.parent.parent / "manifest.json",
 })
 # The same prefixes as plain strings for the check() fast path. PurePath comparison folds case on
 # Windows; ``os.path.normcase`` (identity on POSIX) reproduces that for string compares. Prefixes
@@ -120,13 +127,13 @@ class HomeIOGuard:
             for prefix in _INTERPRETER_PREFIX_STRS:
                 if _within(absolute, prefix) or (metadata and _contains(absolute, prefix)):
                     return
-            # Check the lexical path first: resolving must not probe a protected
-            # tree merely to decide that the original path was forbidden.
-            for root in roots:
-                if _within(absolute, root):
-                    self.refuse(value)
             if resolved is None:
                 resolved = _normcase(os.path.realpath(absolute))
+            # The resolved allows must run before the roots refuse: ``~/.hermes/installs``
+            # can itself be a symlink (house TMPDIR layout), so pytest's co_filename keeps
+            # that spelling while the realpath is the running venv's installation — matched
+            # only by the resolved prefixes, never by the lexical ones above. Real state is
+            # unaffected: neither allow matches, and the refuse loop below still refuses it.
             if metadata and resolved in roots:
                 return
             # A fixture symlink to the running interpreter resolves into its installation.
@@ -134,7 +141,7 @@ class HomeIOGuard:
                 if _within(resolved, prefix):
                     return
             for root in roots:
-                if _within(resolved, root):
+                if _within(absolute, root) or _within(resolved, root):
                     self.refuse(value)
         finally:
             self.checking.active = False

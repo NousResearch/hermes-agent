@@ -1,12 +1,9 @@
-# Hermes catalog entry — goes to plugin-catalog/elcaro.yaml in
-# NousResearch/hermes-agent, pinned at the commit that contains it.
-# Open the PR from the repo owner's GitHub account (admission rule 5).
 name: elcaro
 title: Elcaro
 repo: https://github.com/udirobert/elcaro
-sha: 9f6a14c160884a8c9fe3b6cfc7aef264a5fd0fba  # pragma: allowlist secret — git SHA pin, required by catalog rules
+sha: f24b2f3c10f5b897599d0c316667bc4a03fb20ed
 subdir: hermes-plugin
-version: "1.0.0"
+version: "1.1.0"
 description: >-
   Runtime prompt-injection defense and tamper-evident flight recorder. Every
   tool result is scanned before it reaches the model by a deterministic
@@ -26,24 +23,39 @@ description: >-
   Ed25519-signed threat log with a Desktop pane (chain-verified badge,
   honeypot status, propagation rows, signed-receipts drawer), a /elcaro
   slash command (status / calibrate / verify / explain), and a
-  `hermes elcaro` CLI. Disclosure — no network access by default (httpx is
-  only invoked when the user configures an optional api_url lane); no
-  credentials required; filesystem writes confined to the plugin data dir
-  (threat-log.jsonl, decoy-marker.txt, service-credentials.env — the
-  decoy is honeypot bait, never read by the plugin); Python deps pydantic,
-  cryptography, httpx; no core overrides; the desktop surface imports only
-  @hermes/plugin-sdk and react.
+  `hermes elcaro` CLI. Two on-demand tools close the loop input scanning
+  can't: elcaro_lint_response flags concealed-compromise artifacts in agent
+  output (canary echoes, text-channel tool calls, tracking pixels, secrets —
+  caught 148/152 compromised transcripts in the public 24-task IPI
+  benchmark), and elcaro_harden_prompt returns a hardened system prompt plus
+  a gullibility score. Engine validated on that benchmark: 22/22 attack
+  tasks flagged (regression coverage, not held-out proof). Disclosure — no
+  network access by default (httpx is only invoked when the user configures
+  an optional api_url lane); no credentials required; filesystem writes
+  confined to the plugin data dir (threat-log.jsonl, decoy-marker.txt,
+  service-credentials.env — the decoy is honeypot bait, never read by the
+  plugin); Python deps pydantic, cryptography, httpx; no core overrides; the
+  desktop surface imports only @hermes/plugin-sdk and react.
 maintainer: udirobert
 tier: community
 category: general
 requires_hermes: ">=0.22"
 docs_url: https://github.com/udirobert/elcaro/tree/main/hermes-plugin
 platforms: [windows, macos, linux]
+screenshots:
+  - https://raw.githubusercontent.com/udirobert/elcaro/f24b2f3c10f5b897599d0c316667bc4a03fb20ed/hermes-plugin/screenshots/01-architecture-overview.png
+  - https://raw.githubusercontent.com/udirobert/elcaro/f24b2f3c10f5b897599d0c316667bc4a03fb20ed/hermes-plugin/screenshots/02-scanner-calibrate.png
+  - https://raw.githubusercontent.com/udirobert/elcaro/f24b2f3c10f5b897599d0c316667bc4a03fb20ed/hermes-plugin/screenshots/03-enforcement-decoy-honeypot.png
+  - https://raw.githubusercontent.com/udirobert/elcaro/f24b2f3c10f5b897599d0c316667bc4a03fb20ed/hermes-plugin/screenshots/04-flight-recorder-verify.png
+  - https://raw.githubusercontent.com/udirobert/elcaro/f24b2f3c10f5b897599d0c316667bc4a03fb20ed/hermes-plugin/screenshots/05-response-lint.png
+  - https://raw.githubusercontent.com/udirobert/elcaro/f24b2f3c10f5b897599d0c316667bc4a03fb20ed/hermes-plugin/screenshots/06-prompt-armor.png
 capabilities:
   provides_tools:
     - elcaro_scan
     - elcaro_quick_scan
     - elcaro_explain
+    - elcaro_lint_response
+    - elcaro_harden_prompt
   provides_hooks:
     - transform_tool_result
     - pre_tool_call

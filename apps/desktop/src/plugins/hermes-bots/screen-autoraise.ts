@@ -7,9 +7,9 @@
  *
  * What counts as "started driving": a live `tool.start` for a screen tool
  * (computer_use, the browser tools) on a session the bot owns. Live means
- * arriving on the socket now; replayed history never opens anything — the
- * reconnect replay in `@hermes/shared` re-dispatches parked frames, so a
- * seq-gated ring is not enough and the wake is also rate-limited per bot.
+ * arriving on the socket now: `@hermes/shared` tags both replayed history and
+ * frames it held across a reconnect with `replayed`, so that flag — not a
+ * seq-gated ring — is the fence, and the wake is also rate-limited per bot.
  *
  * Fencing rules, in order:
  *   - the tab is already open → nothing (never re-front over what you moved to)
@@ -118,6 +118,12 @@ export function noteScreenTabClosed(bot: RosterRow, now = Date.now()): void {
 }
 
 export function handleScreenToolStart(event: RpcEvent, now = Date.now()): boolean {
+  // Reconnect replay: recovered work, never "the bot just started driving". Checked before anything
+  // else so a replayed frame cannot spend the per-bot wake budget the live call behind it needs.
+  if (event.replayed) {
+    return false
+  }
+
   const payload = event.payload as { name?: string } | undefined
 
   if (!isScreenTool(payload?.name)) {

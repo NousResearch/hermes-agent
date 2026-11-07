@@ -102,3 +102,48 @@ async def test_standalone_sender_reports_missing_credentials(monkeypatch):
 
     result = await standalone_send(PlatformConfig(enabled=True, extra={}), "chat-1", "hi")
     assert "QQ_APP_ID" in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# Long cron output must reach QQ whole, not truncated at MAX_PLATFORM_OUTPUT
+# ---------------------------------------------------------------------------
+
+class _NonChunkingProbe:
+    """Adapter without the flag — legacy behaviour (cron output gets truncated)."""
+
+
+def test_qq_adapter_declares_native_chunking():
+    """send() splits via truncate_message(), so cron delivery must not pre-truncate.
+
+    gateway/delivery.py caps cron output at MAX_PLATFORM_OUTPUT (4000) for
+    adapters that do not advertise ``splits_long_messages``.  QQAdapter.send()
+    already chunks via truncate_message(MAX_MESSAGE_LENGTH) — without this flag
+    the delivery router cut long reports (daily closes run ~10k chars) down to
+    4k before the adapter ever saw them.
+    """
+    from plugins.platforms.qqbot.adapter import QQAdapter
+
+    assert QQAdapter.splits_long_messages is True
+
+    # The flag is only meaningful because send() really does chunk.
+    chunks = QQAdapter.truncate_message("行情" * 3000, QQAdapter.MAX_MESSAGE_LENGTH)
+    assert len(chunks) > 1
+    assert all(len(c) <= QQAdapter.MAX_MESSAGE_LENGTH for c in chunks)
+
+
+def test_cron_output_not_truncated_for_qq(monkeypatch, tmp_path):
+    """A 9000-char cron payload survives delivery for QQ, but not for a legacy adapter."""
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    from gateway.delivery import MAX_PLATFORM_OUTPUT, DeliveryRouter
+    from plugins.platforms.qqbot.adapter import QQAdapter
+
+    # _cap_oversized_output only touches self._save_full_output → no router init needed.
+    router = object.__new__(DeliveryRouter)
+    payload = "x" * (MAX_PLATFORM_OUTPUT * 2 + 1000)
+
+    assert router._cap_oversized_output(QQAdapter, payload, "job-long") == payload
+
+    visible = router._cap_oversized_output(_NonChunkingProbe(), payload, "job-long")
+    assert len(visible) < len(payload)
+    assert "full output saved to" in visible
+

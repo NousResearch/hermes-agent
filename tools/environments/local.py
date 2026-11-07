@@ -523,8 +523,9 @@ def strip_launch_profile_env(env: dict, target_home: str | Path | None = None) -
     # removed or renamed in the launch .env after boot is still in os.environ with the old value, and
     # a re-parse of the file alone no longer names it (#107695 review). External secret sources
     # (vault, 1Password, ...) write their names into the same shared os.environ, and a name the
-    # LAUNCH profile's source supplied is not the target profile's to see; the caller's scope
-    # overlay puts back exactly the ones the target's own sources supply. The administrator-managed
+    # LAUNCH profile's source supplied is not the target profile's to see; the target's own declared
+    # passthrough values are put back below (from its own sources — no bound scope is needed, so a
+    # single-process worker acting for a routed home keeps them). The administrator-managed
     # .env is NOT residue: its values are policy for every profile (``_apply_managed_env`` applies
     # it last, with override, so it beats the user's own .env) — leave them in place. Neither is
     # the config backend's deployment (which backend, which plane, which instance): it is the
@@ -537,8 +538,15 @@ def strip_launch_profile_env(env: dict, target_home: str | Path | None = None) -
         set(load_env_file(launch_home / ".env")) | set(launch_dotenv_keys())
         | set(TERMINAL_CONFIG_ENV_MAP.values()) | set(source_supplied_names())
         if not _is_global_env(key.upper()) or key.upper().startswith("TERMINAL_")} - managed_names
-    for key in [k for k in env if k.upper() in residue_names]:
+    removed = [k for k in env if k.upper() in residue_names]
+    for key in removed:
         del env[key]
+    if removed:
+        # Names the target profile itself declares in ``terminal.env_passthrough`` and supplies from
+        # its own ``.env``/sources come back with the TARGET's value: the caller's scope overlay only
+        # exists under multiplex, and without this restore a vault-only name vanished here silently.
+        from tools.env_passthrough import routed_profile_passthrough_additions
+        env.update(routed_profile_passthrough_additions(target, removed))
     # Authorization gates are the one residue a name list cannot see: a unit-file ``Environment=``
     # or an operator export never appears in the launch ``.env``, the secret scrub ignores
     # non-credentials, and the target's own ``.env`` rarely defines the key to overwrite it (#113270).

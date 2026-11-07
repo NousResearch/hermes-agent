@@ -68,3 +68,20 @@ async def test_gateway_acp_advertises_every_session_capability_it_implements(tmp
     assert advertised.model_dump(exclude_none=True) == expected.model_dump(exclude_none=True)
     for capability in advertised.model_dump(exclude_none=True):
         assert callable(getattr(gateway, f"{capability}_session" if capability != "list" else "list_sessions"))
+
+
+@pytest.mark.asyncio
+async def test_acp_advertises_http_mcp_capability_in_both_projections(tmp_path, monkeypatch):
+    """Clients that gate on mcpCapabilities.http (e.g. qwen-audio-agent) must see it from either agent.
+
+    Both projections register ACP-supplied HTTP/SSE MCP servers on the session, so declining the
+    capability in initialize misreports what the adapter can do and locks such clients out.
+    """
+    from acp_adapter.session import SessionManager
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    gateway = HermesACPAgent()
+    in_process = HermesACPAgent(session_manager=SessionManager(agent_factory=object))
+    for agent in (gateway, in_process):
+        caps = (await agent.initialize(protocol_version=1)).agent_capabilities.mcp_capabilities
+        assert caps is not None
+        assert caps.http is True

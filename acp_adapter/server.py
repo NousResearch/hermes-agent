@@ -18,7 +18,8 @@ from typing import Any, Callable, Deque, Optional
 import acp
 from acp.schema import (
     AgentCapabilities, AgentMessageChunk, AuthenticateResponse, ClientCapabilities, ForkSessionResponse,
-    Implementation, InitializeResponse, ListSessionsResponse, LoadSessionResponse, McpServerHttp, McpServerSse,
+    Implementation, InitializeResponse, ListSessionsResponse, LoadSessionResponse, McpCapabilities,
+    McpServerHttp, McpServerSse,
     McpServerStdio, ModelInfo, NewSessionResponse, PromptCapabilities, PromptResponse, ResumeSessionResponse,
     SessionCapabilities, SessionForkCapabilities, SessionInfo, SessionInfoUpdate, SessionListCapabilities,
     SessionMode, SessionModeState, SessionModelState, SessionResumeCapabilities, SetSessionConfigOptionResponse,
@@ -581,6 +582,12 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             agent_capabilities=AgentCapabilities(
                 load_session=True,
                 prompt_capabilities=PromptCapabilities(image=True),
+                # The adapter accepts McpServerHttp/McpServerSse in new_session/load_session and
+                # registers them on the session (see _register_session_mcp_servers), but clients
+                # that gate on the handshake capability — e.g. qwen-audio-agent's ACP drivers
+                # assert mcpCapabilities.http before attaching — treat a missing declaration as
+                # "cannot take HTTP MCP servers" and refuse the backend.
+                mcp_capabilities=McpCapabilities(http=True, sse=True),
                 session_capabilities=SessionCapabilities(
                     fork=SessionForkCapabilities(), list=SessionListCapabilities(), resume=SessionResumeCapabilities(),
                 ),

@@ -10,7 +10,7 @@ import uuid
 import acp
 from acp.schema import (
     AgentCapabilities, Implementation, InitializeResponse, LoadSessionResponse,
-    NewSessionResponse, PromptCapabilities, PromptResponse, ResumeSessionResponse,
+    McpCapabilities, NewSessionResponse, PromptCapabilities, PromptResponse, ResumeSessionResponse,
     SessionCapabilities, SessionForkCapabilities, SessionListCapabilities, SessionResumeCapabilities,
 )
 
@@ -144,6 +144,10 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             agent_info=Implementation(name="hermes-agent", version=__version__),
             agent_capabilities=AgentCapabilities(load_session=True,
                 prompt_capabilities=PromptCapabilities(image=True),
+                # Same declaration as acp_adapter/server.py: this gateway-backed agent registers
+                # ACP-supplied HTTP/SSE MCP servers on the session too, so a client that gates on
+                # mcpCapabilities.http (qwen-audio-agent's ACP drivers) must not be told otherwise.
+                mcp_capabilities=McpCapabilities(http=True, sse=True),
                 session_capabilities=SessionCapabilities(fork=SessionForkCapabilities(), list=SessionListCapabilities(),
                                                          resume=SessionResumeCapabilities())),
             auth_methods=build_auth_methods())

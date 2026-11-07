@@ -261,7 +261,11 @@ def build_local_transcribe_kwargs(stt_config: Optional[dict[str, Any]] = None) -
         kwargs["language"] = forced_lang
     initial_prompt = local_cfg.get("initial_prompt")
     if not initial_prompt:
-        initial_prompt = "درود، سلام هرمس، وضعیت آب و هوا، برنامه‌نویسی و گفتگو به زبان فارسی و انگلیسی."
+        initial_prompt = (
+            "درود هرمس، وضعیت server، docker و git status را بررسی کن. "
+            "لطفاً error لاگ‌ها و کد python رو debug کن و به زبان فارسی پاسخ بده. "
+            "Hello Hermes, check system performance, weather and logs, reply in Persian or English."
+        )
     if isinstance(initial_prompt, str) and initial_prompt.strip():
         kwargs["initial_prompt"] = initial_prompt
     return kwargs
@@ -285,11 +289,14 @@ def _is_hallucinated_segment(segment: Any, no_speech_threshold: float, logprob_t
 
 
 def _normalize_stt_transcript(text: str) -> str:
-    """Harmonize characters and correct common Whisper phonetic mishearings in Persian."""
+    """Harmonize characters, fix bilingual script boundaries, and correct common Whisper mishearings."""
     if not text:
         return text
     if re.search(r'[\u0600-\u06ff]', text):
         text = text.replace('\u064a', '\u06cc').replace('\u0643', '\u06a9')
+        # Enforce proper boundary spacing between Persian and Latin/digit tokens
+        text = re.sub(r'([\u0600-\u06ff])([A-Za-z0-9])', r'\1 \2', text)
+        text = re.sub(r'([A-Za-z0-9])([\u0600-\u06ff])', r'\1 \2', text)
         persian_fixes = [
             (r'\bتروت\b', 'درود'),
             (r'\bخبستی\b', 'خسته نباشی'),
@@ -311,10 +318,12 @@ def _normalize_stt_transcript(text: str) -> str:
             (r'\bآپا\b', 'آب و'),
             (r'\bهواد\b', 'هوا'),
             (r'\bتو رست\b', 'چطوره'),
+            (r'\bآلی\s*است\b', 'عالی است'),
+            (r'\bآلیه\b', 'عالیه'),
         ]
         for pattern, repl in persian_fixes:
             text = re.sub(pattern, repl, text)
-    return text
+    return text.strip()
 
 
 def _join_confident_segments(segments: Any, local_cfg: dict[str, Any]) -> str:

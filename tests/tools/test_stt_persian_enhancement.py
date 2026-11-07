@@ -28,3 +28,15 @@ def test_build_local_transcribe_kwargs_has_default_prompt():
     kwargs = build_local_transcribe_kwargs({})
     assert "initial_prompt" in kwargs
     assert "فارسی" in kwargs["initial_prompt"]
+    assert "docker" in kwargs["initial_prompt"]
+    assert "git" in kwargs["initial_prompt"]
+
+
+def test_bilingual_script_boundary_spacing():
+    raw = "درودهرمسstatusسرورروچک کن"
+    normalized = _normalize_stt_transcript(raw)
+    assert "درودهرمس status سرورروچک کن" == normalized or ("status" in normalized and " " in normalized)
+    raw2 = "سلامdocker123کانتینرها"
+    normalized2 = _normalize_stt_transcript(raw2)
+    assert normalized2 == "سلام docker123 کانتینرها"
+

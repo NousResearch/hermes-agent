@@ -18,6 +18,20 @@ logger = logging.getLogger(__name__)
 _TELEGRAM_API_HOST = "api.telegram.org"
 
 
+def _redact_telegram_error_text(error: object) -> str:
+    """Redact secrets from Telegram transport errors before logging or returning them."""
+    text = "" if error is None else str(error)
+    if not text:
+        # httpx timeout exceptions (ConnectTimeout, ReadTimeout, ...) stringify to "" — keep the
+        # class name so failure lines never log an empty reason (#111211).
+        return f"<{type(error).__name__}>" if error is not None else text
+    try:
+        from agent.redact import redact_sensitive_text
+        return redact_sensitive_text(text, force=True)
+    except Exception:
+        return "<telegram error redacted>"
+
+
 def _describe_transport_error(error: Exception) -> str:
     """Return a non-empty, secret-safe exception representation for diagnostics."""
     try:

@@ -42,6 +42,11 @@ class _DispatcherSettings:
     reconcile_orphans: bool
     default_assignee: Optional[str]
     max_in_progress_per_profile: Optional[int]
+    # Raw ``kanban.provider_concurrency`` mapping (#123654): kept as the plain
+    # dict config.yaml carries so asdict/tick_once_for_board passes it through
+    # unchanged and (when #117755 lands) the dict-diff swap picks edits up for
+    # free. Parsed per tick inside dispatch_once.
+    provider_concurrency: Optional[dict] = None
 
 
 def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettings:
@@ -102,6 +107,21 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
         logger.info("kanban dispatcher: default_assignee=%r (unassigned ready tasks "
                     "will route to this profile)", default_assignee)
 
+    # Per-provider concurrency budget (#123654): raw mapping carried through;
+    # the tick parses it. One boot line so operators can see it is on. Keys
+    # print in their log-safe form (normalized URLs, no userinfo/query) — a
+    # secret embedded in a configured base URL never reaches the log (D7/D9).
+    provider_concurrency = kanban_cfg.get("provider_concurrency")
+    if isinstance(provider_concurrency, dict) and provider_concurrency:
+        from hermes_cli.kanban_provider_budget import log_safe_key
+
+        logger.info("kanban dispatcher: provider_concurrency=%s",
+                    ",".join(f"{log_safe_key(str(k))}:{v}" for k, v in provider_concurrency.items()))
+    else:
+        # Empty mapping / non-dict means "off" — normalize to None so the
+        # tick's `if provider_concurrency` fast path skips parsing entirely.
+        provider_concurrency = None
+
     return _DispatcherSettings(
         interval=interval,
         max_spawn=max_spawn,
@@ -115,6 +135,7 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
         # Per-profile concurrency cap: no single profile's local model / API
         # quota / browser pool gets overwhelmed by a fan-out.
         max_in_progress_per_profile=_positive_int_setting(kanban_cfg, "max_in_progress_per_profile"),
+        provider_concurrency=provider_concurrency if isinstance(provider_concurrency, dict) else None,
     )
 
 

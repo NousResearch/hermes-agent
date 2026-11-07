@@ -551,6 +551,115 @@ def test_respawn_guard_ignores_auth_words_in_crashed_worker_output(kanban_home):
         assert kbd.check_respawn_guard(conn, spawn_failed_id) == "blocker_auth"
 
 
+def _seed_ended_run(conn, tid, outcome, ended_at, last_failure_error):
+    """Seed one ended run with ``outcome`` plus the task's stamped failure text,
+    the shape a rate-limit requeue + later terminal leaves behind."""
+    kb.claim_task(conn, tid)
+    run_id = conn.execute(
+        "SELECT current_run_id FROM tasks WHERE id = ?", (tid,),
+    ).fetchone()[0]
+    conn.execute(
+        "UPDATE task_runs SET outcome=?, status=?, ended_at=? WHERE id=?",
+        (outcome, outcome, ended_at, run_id),
+    )
+    conn.execute(
+        "UPDATE tasks SET status='ready', current_run_id=NULL, "
+        "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+        "last_failure_error=? WHERE id=?",
+        (last_failure_error, tid),
+    )
+
+
+STALE_QUOTA_STAMP = "pid 1 exited rate-limited (quota wall) — requeued"
+
+
+@pytest.mark.parametrize("outcome", ["review_requested", "changes_requested", "completed"])
+def test_respawn_guard_success_terminal_lifts_stale_rate_limit_stamp(
+    kanban_home, monkeypatch, outcome,
+):
+    """A success terminal ends its run WITHOUT clearing ``last_failure_error``,
+    so the quota stamp from an earlier rate-limit requeue survives on the task
+    row. By then the stamp is stale — the successful run superseded it — so the
+    guard must not park the next spawn as ``blocker_auth`` (#119070: review
+    handoffs were held forever; a ``changes_requested`` rework loop likewise).
+
+    Regression for the ``rate_limited`` cooldown rhythm itself (the stamp still
+    defers while its own run is the latest) lives in
+    ``test_respawn_guard_defers_rate_limited_within_cooldown``.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
+    now = 5_000_000
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="stale-stamp", assignee="a")
+        _seed_ended_run(conn, tid, outcome, now, STALE_QUOTA_STAMP)
+        conn.commit()
+
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 100)
+        # Review-lane spawn (the reviewer after a handoff): never blocked on the
+        # stale stamp.
+        assert kbd.check_respawn_guard(conn, tid, lane="review") is None
+        # Ready lane: review_requested / changes_requested flow through;
+        # a completed run is held only by the recent_success window — a
+        # different, deliberate guard — never by blocker_auth.
+        expected = "recent_success" if outcome == "completed" else None
+        assert kbd.check_respawn_guard(conn, tid) == expected
+
+
+@pytest.mark.parametrize(
+    "outcome, error_text",
+    [
+        ("spawn_failed", "provider authentication failed"),
+        ("timed_out", "run exceeded max_runtime_seconds; upstream says 403 quota exhausted"),
+        ("gave_up", "giving up after repeated failures: authentication error from provider"),
+    ],
+)
+def test_respawn_guard_blocker_auth_on_latest_real_failure(
+    kanban_home, monkeypatch, outcome, error_text,
+):
+    """Auth/quota text written by the LATEST failed run itself still trips the
+    guard (fail closed): spawn diagnostics, timeout and gave-up errors are
+    diagnoses, not worker prose. Real credential walls stay blocked; only the
+    stale stamp after a success terminal is lifted. ``crashed`` remains exempt
+    (``test_respawn_guard_ignores_auth_words_in_crashed_worker_output``) and
+    ``reclaimed_before_start`` is a neutral requeue with no failure of its own
+    (next test)."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
+    now = 5_000_000
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="real-failure", assignee="a")
+        _seed_ended_run(conn, tid, outcome, now, error_text)
+        conn.commit()
+
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 100)
+        assert kbd.check_respawn_guard(conn, tid) == "blocker_auth"
+        assert kbd.check_respawn_guard(conn, tid, lane="review") == "blocker_auth"
+
+
+def test_respawn_guard_reclaimed_before_start_is_not_an_auth_stamp(kanban_home, monkeypatch):
+    """``reclaimed_before_start`` (t_e5175316) is a neutral self-exit before the
+    worker did any work; a rate-limit text left by an EARLIER requeue must not
+    turn the next spawn into a permanent ``blocker_auth``."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
+    now = 5_000_000
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="reclaimed", assignee="a")
+        _seed_ended_run(conn, tid, "reclaimed_before_start", now, STALE_QUOTA_STAMP)
+        conn.commit()
+
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 100)
+        assert kbd.check_respawn_guard(conn, tid) is None
+        assert kbd.check_respawn_guard(conn, tid, lane="review") is None
+
+
 def test_infrastructure_spawn_refusal_never_charges_the_card(
     kanban_home, monkeypatch, all_assignees_spawnable,
 ):

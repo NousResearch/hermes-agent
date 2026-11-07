@@ -28,6 +28,13 @@ _MAX_QUIET_NOTIFY_ROUNDS = 8
 # instead, so a clean exit without a terminal board call is booked as the same protocol violation
 # (and a 75 as the same rate-limit requeue) whichever process notices the death.
 KANBAN_WORKER_EXIT_TRAILER = "[kanban-worker-exit] rc="
+# Registration-guard self-exit (cli_single_query): the worker found its run already
+# reclaimed and exited before it could register, WITHOUT an rc trailer — by then the
+# task log belongs to the run that replaced this one, and a bare rc=0 could be
+# misattributed to that successor. The pid-scoped marker lets the dead-worker sweep
+# book the stale spawn as ``reclaimed_before_start`` (no failure, no gave_up) instead
+# of a crash (t_8ebbdbcf run 1952).
+KANBAN_WORKER_RECLAIMED_EXIT_TRAILER = "[kanban-worker-exit] reclaimed"
 
 
 def exit_single_query(code: int) -> None:

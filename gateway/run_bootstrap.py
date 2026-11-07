@@ -776,6 +776,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         return False
     if profile_homes and not getattr(resolved_config, 'multiplex_profiles', False):
         profile_homes = []  # implicit default downgraded: this named launch serves only itself
+        if config is None:  # the first load read the default root's platforms under its scope
+            resolved_config = _reload_config_keeping_multiplex_verdict(resolved_config)
 
     # Multiplex-only: the ONE host gateway decides first. Attach to it, make it serve this profile,
     # replace it (--replace) or refuse — before anything below binds a port or claims a PID file.

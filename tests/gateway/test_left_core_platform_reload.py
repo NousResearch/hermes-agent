@@ -51,14 +51,15 @@ async def test_a_platform_installed_by_this_start_is_in_the_runners_config(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_a_named_launch_stays_standalone_across_the_reload(tmp_path, monkeypatch):
+@pytest.mark.parametrize("installed", [["yuanbao"], []])
+async def test_a_named_launch_stays_standalone_across_the_reload(tmp_path, monkeypatch, installed):
     """``hermes -p foo gateway run`` on a host with default + foo downgrades the implicit multiplex
     default to standalone and reserves only foo. The reload after the migration installed a platform
     must keep that verdict: a fresh decision re-enables multiplex and serves default's adapters,
-    which this process never reserved."""
+    which this process never reserved. With or without an install, the runner gets foo's own platforms."""
     root = tmp_path / ".hermes"
     (root / "profiles" / "foo").mkdir(parents=True)
-    (root / "config.yaml").write_text("model: {default: m}\n")
+    (root / "config.yaml").write_text("model: {default: m}\nplatforms:\n  slack: {enabled: true, token: xoxb-default}\n")
     (root / "profiles" / "foo" / "config.yaml").write_text("model: {default: m}\n")
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "foo"))
@@ -71,11 +72,12 @@ async def test_a_named_launch_stays_standalone_across_the_reload(tmp_path, monke
     import hermes_cli.gateway_multiplex_mode as mux
     monkeypatch.setattr(mux, "log_multiplex_decision", decisions.append)
 
-    class Runner:
+    class Runner(gateway_run.GatewayRunner):  # the multiplex preflight reads its class attributes
         def __init__(self, config):
             seen["multiplex"] = config.multiplex_profiles
             seen["served"] = [name for name, _home in gateway_run._multiplex_profile_homes(config)] \
                 if config.multiplex_profiles else ["foo"]
+            seen["default_slack"] = Platform.SLACK in config.platforms  # default's platform, not foo's
             raise SystemExit(0)
 
     from agent.secret_scope import is_multiplex_active, set_multiplex_active
@@ -85,7 +87,7 @@ async def test_a_named_launch_stays_standalone_across_the_reload(tmp_path, monke
     def recover_at_startup(*, say=None, gateway_start=False):
         # The install reads this profile's env unscoped (manifest requires_env): it must not fail closed.
         seen["multiplex_active_at_migration"] = is_multiplex_active()
-        return ["yuanbao"]
+        return installed
 
     monkeypatch.setattr("hermes_cli.left_core_migration.recover_at_startup", recover_at_startup)
     monkeypatch.setattr("gateway.run._host_attach_or_none", lambda replace, force: _none())
@@ -104,7 +106,8 @@ async def test_a_named_launch_stays_standalone_across_the_reload(tmp_path, monke
     finally:
         set_multiplex_active(False)
 
-    assert seen == {"multiplex": False, "served": ["foo"], "multiplex_active_at_migration": False}
+    assert seen == {"multiplex": False, "served": ["foo"], "multiplex_active_at_migration": False,
+                    "default_slack": False}
     assert [(d.enabled, d.source) for d in decisions] == [(True, "default"), (False, "guard")]  # no re-decision
 
 

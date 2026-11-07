@@ -12,8 +12,9 @@ Two independent guards, both failing OPEN to legacy behaviour:
    remaining retries and go straight to the fallback chain. Missing usage or
    ``output_tokens > 0`` (think-block stripping, whitespace, flaky decoding) never classifies.
 2. Cost-aware budget: when one empty attempt's estimated input cost exceeds the threshold
-   (default $0.25), the retry budget drops from 3 to 1. Unknown pricing / missing usage /
-   included routes leave it untouched.
+   (default $0.25), the retry budget drops from the configured ceiling (default 3) to
+   min(ceiling, 1). Unknown pricing, missing usage, or included routes leave it
+   untouched.
 
 1. **Deterministic-empty detection** — two consecutive empty attempts from
    the same (model, provider, finish_reason) are treated as deterministic
@@ -25,17 +26,20 @@ Two independent guards, both failing OPEN to legacy behaviour:
 
 2. **Cost-aware retry budget** — when the estimated input cost of a
    single empty attempt exceeds the configured threshold (default
-   $0.25), the empty-retry budget for this streak drops from 3 to 1.
-   Unknown pricing, missing usage, or included/subscription routes
-   leave the budget untouched.
+   $0.25), the empty-retry budget for this streak drops from the
+   configured ceiling (default 3) to ``min(ceiling, 1)``. Unknown
+   pricing, missing usage, or included/subscription routes leave the
+   budget untouched. This path retries empty completions only; it does
+   not swallow API errors.
 
 Configured via the additive ``agent.empty_response_guard`` section in
 ``config.yaml`` (resolved once at agent init by ``agent_init``)::
 
     agent:
       empty_response_guard:
-        enabled: true            # false = legacy fixed 3-retry behaviour
-        cost_threshold_usd: 0.25 # per-attempt cost that halves the budget
+        enabled: true            # false = legacy fixed budget behaviour
+        cost_threshold_usd: 0.25 # per-attempt cost that reduces the budget
+        max_retries: 3           # base empty-response retry ceiling (>= 0)
 
 Per project policy, no ``HERMES_*`` environment variables are involved —
 ``.env`` is reserved for credentials; behavioural settings live in
@@ -63,6 +67,7 @@ _ATTEMPTS_ATTR = "_empty_attempt_history"
 _STREAK_COST_ATTR = "_empty_streak_cost_usd"
 _ENABLED_ATTR = "_empty_guard_enabled"
 _THRESHOLD_ATTR = "_empty_guard_cost_threshold_usd"
+_MAX_RETRIES_ATTR = "_empty_response_max_retries"
 
 
 @dataclass(frozen=True)
@@ -81,10 +86,34 @@ class EmptyAttempt:
         return (self.model, self.provider, self.finish_reason)
 
 
-def resolve_guard_settings(section: Any) -> tuple[bool, Decimal]:
-    """Resolve ``agent.empty_response_guard`` into (enabled, threshold); malformed input → schema defaults."""
+def _coerce_max_retries(raw: Any) -> int:
+    """Int-coerce ``max_retries`` and clamp to ``>= 0``. Invalid input → 3.
+
+    ``0`` disables empty-response retries. ``bool`` is rejected (it is an
+    ``int`` subclass). There is no unbounded retry: callers compare a
+    finite counter to this ceiling.
+    """
+    if raw is None or isinstance(raw, bool):
+        return DEFAULT_EMPTY_RETRY_BUDGET
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        logger.debug("empty-guard: invalid max_retries %r, using default", raw)
+        return DEFAULT_EMPTY_RETRY_BUDGET
+
+
+def resolve_guard_settings(section: Any) -> tuple[bool, Decimal, int]:
+    """Resolve ``agent.empty_response_guard`` into (enabled, threshold, max_retries).
+
+    Malformed input falls back to schema defaults. ``max_retries`` is the
+    base empty-response retry ceiling (default 3, clamp ``>= 0``).
+    """
     if not isinstance(section, dict):
-        return (DEFAULT_GUARD_ENABLED, DEFAULT_COST_THRESHOLD_USD)
+        return (
+            DEFAULT_GUARD_ENABLED,
+            DEFAULT_COST_THRESHOLD_USD,
+            DEFAULT_EMPTY_RETRY_BUDGET,
+        )
 
     enabled = section.get("enabled", DEFAULT_GUARD_ENABLED)
     if isinstance(enabled, str):  # YAML quoting can turn true/false into strings.
@@ -101,7 +130,10 @@ def resolve_guard_settings(section: Any) -> tuple[bool, Decimal]:
                 threshold = candidate
         except Exception:
             logger.debug("empty-guard: invalid cost_threshold_usd %r, using default", threshold_raw)
-    return (enabled, threshold)
+    max_retries = _coerce_max_retries(
+        section.get("max_retries", DEFAULT_EMPTY_RETRY_BUDGET)
+    )
+    return (enabled, threshold, max_retries)
 
 
 def guard_enabled(agent: Any) -> bool:
@@ -113,6 +145,14 @@ def guard_enabled(agent: Any) -> bool:
 def _cost_threshold_usd(agent: Any) -> Decimal:
     value = getattr(agent, _THRESHOLD_ATTR, None)
     return value if isinstance(value, Decimal) and value > 0 else DEFAULT_COST_THRESHOLD_USD
+
+
+def base_empty_retry_budget(agent: Any) -> int:
+    """Configured base empty-response retry ceiling (default 3, never negative)."""
+    value = getattr(agent, _MAX_RETRIES_ATTR, None)
+    if value is None:
+        return DEFAULT_EMPTY_RETRY_BUDGET
+    return _coerce_max_retries(value)
 
 
 def _attempts(agent: Any) -> list[EmptyAttempt]:
@@ -227,14 +267,20 @@ def deterministic_empty(agent: Any) -> bool:
 
 
 def empty_retry_budget(agent: Any, response: Any) -> int:
-    """Empty-retry budget for the current streak (3, or 1 when a single attempt is
-    estimated to cost more than the configured threshold)."""
-    if not guard_enabled(agent):
-        return DEFAULT_EMPTY_RETRY_BUDGET
+    """Empty-retry budget for the current streak.
+
+    Base ceiling is ``agent.empty_response_guard.max_retries`` (default 3).
+    When the guard is on and one attempt costs at least the threshold, the
+    budget drops to ``min(base, 1)``. ``0`` disables empty retries. Unknown
+    cost leaves the base untouched. API errors are not retried here.
+    """
+    base = base_empty_retry_budget(agent)
+    if not guard_enabled(agent) or base <= 0:
+        return base
     cost = _estimate_attempt_cost(agent, response)
     if cost is not None and cost >= _cost_threshold_usd(agent):
-        return REDUCED_EMPTY_RETRY_BUDGET
-    return DEFAULT_EMPTY_RETRY_BUDGET
+        return min(base, REDUCED_EMPTY_RETRY_BUDGET)
+    return base
 
 
 def streak_cost_usd(agent: Any) -> Optional[Decimal]:

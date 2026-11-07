@@ -83,7 +83,7 @@ export async function installVscodeThemeFromMarketplace(id: string): Promise<Des
   const api = window.hermesDesktop?.themes
 
   if (!api?.fetchMarketplace) {
-    throw new Error('Marketplace install is only available in the desktop app.')
+    throw new Error('Marketplace theme installation is not available.')
   }
 
   const result = await api.fetchMarketplace(trimmed)

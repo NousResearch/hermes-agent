@@ -109,6 +109,19 @@ def _direct_io_args(executable: Path) -> tuple[str, ...]:
     return ("-dio",) if "--direct-io" in help_text else ()
 
 
+def _loading_args(executable: Path, preset_path: Path | None) -> tuple[str, ...]:
+    from hermes_cli.local_runtime.presets import read_preset_decisions
+
+    direct_io = _direct_io_args(executable)
+    entries = read_preset_decisions(preset_path) if preset_path is not None else {}
+    if not any(entry.spilled and entry.keys is not None for entry in entries.values()):
+        return direct_io
+    # Direct I/O materializes CPU tensors in Vulkan host buffers, consuming the device budget
+    # that spilling should free. Router CLI flags override per-model presets, so a mixed library
+    # must use mmap throughout. Older engines already default to mmap when -dio is absent.
+    return ("--load-mode", "mmap") if "--load-mode" in direct_io else ()
+
+
 class LlamaServerSupervisor:
     """Own one llama-server router process for the life of a Hermes session."""
 
@@ -188,9 +201,8 @@ class LlamaServerSupervisor:
             "--slots",            # /slots endpoint is also opt-in; is_idle reads it
             "--no-ui",
             "--jinja",
-            # Direct I/O on model load bypasses the page cache so a multi-GB load doesn't evict
-            # half the OS cache — measured faster on NVMe, and our router bounces reload often.
-            *_direct_io_args(exe),
+            # Keep direct I/O's page-cache benefit where every admitted model fits on the device.
+            *_loading_args(exe, self.preset_path),
         ]
         if self.preset_path and self.preset_path.exists():
             cmd += ["--models-preset", str(self.preset_path)]

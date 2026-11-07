@@ -1,6 +1,7 @@
 """``hermes portal`` — the human-readable entry point for Nous Portal."""
 from __future__ import annotations
 
+import argparse
 import sys
 import webbrowser
 
@@ -138,10 +139,12 @@ def _cmd_login(args) -> int:
     Reuses the exact wiring behind ``hermes setup --portal`` so the commands stay in lockstep.
     """
     from hermes_cli.setup import _run_portal_one_shot
+    from hermes_cli.setup_verify import verification_scope
 
     config = load_config() or {}
     try:
-        _run_portal_one_shot(config)
+        with verification_scope(args):
+            _run_portal_one_shot(config)
     except (KeyboardInterrupt, EOFError):
         print()
         print("Portal setup cancelled.")
@@ -186,6 +189,7 @@ def add_parser(subparsers) -> None:
             "Subcommands: login (default), info, open, tools."
         ),
     )
+    portal_parser.add_argument("--no-verify", action="store_true", help="Skip the live model check")
     portal_sub = portal_parser.add_subparsers(dest="portal_command")
 
     # `status` is a hidden (no help) back-compat alias; registration order = `hermes portal -h` order.
@@ -196,6 +200,9 @@ def add_parser(subparsers) -> None:
         ("open", "Open the Portal subscription page in your default browser"),
         ("tools", "List Tool Gateway tools and which are routed via Nous"),
     ):
-        portal_sub.add_parser(name, **({} if help_text is None else {"help": help_text}))
+        sub = portal_sub.add_parser(name, **({} if help_text is None else {"help": help_text}))
+        if name == "login":
+            sub.add_argument("--no-verify", action="store_true", default=argparse.SUPPRESS,
+                             help="Skip the live model check")
 
     portal_parser.set_defaults(func=portal_command)

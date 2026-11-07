@@ -8,6 +8,8 @@ import os
 import sys
 from pathlib import Path
 
+from hermes_cli.setup_verify import finish_model_setup
+
 logger = logging.getLogger("hermes_cli.setup")
 
 # (env-var name substring, platform label, emoji) — order matters: first match wins.
@@ -19,6 +21,7 @@ def _blank_slate_done(config: dict, hermes_home, tools_line: str, *extra: str, i
     """Shared Blank Slate epilogue: success banner, the "enable later" hints, then the summary."""
     from hermes_cli.setup import _info, _print_setup_summary, print_success
     print()
+    finish_model_setup(config)
     print_success("Blank Slate setup complete — minimal agent ready.")
     _info(*([intro] if intro else []), tools_line, "  Seed skills:         hermes skills opt-in --sync",
           "  Add MCP servers:     hermes mcp add", *extra, "  Tune agent settings: hermes setup agent", None)
@@ -80,6 +83,7 @@ def _run_portal_one_shot(config: dict) -> None:
     with contextlib.suppress(Exception):
         _reload_config_into(config, dict_only=True)
     print()
+    finish_model_setup(config)
     print_success("Portal setup complete.")
     _info("  Run `hermes portal info` to inspect routing.", "  Run `hermes` to start chatting.")
     _record_setup_completed(config)
@@ -168,6 +172,7 @@ def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool, im
         from hermes_cli.gateway_setup_service import ensure_gateway_service
         ensure_gateway_service(context="setup", interactive=True, config=config)
     print()
+    finish_model_setup(config)
     print_success("Setup complete! You're ready to go.")
     _info(None, "  Configure all settings:    hermes setup")
     if gateway_choice != 0:

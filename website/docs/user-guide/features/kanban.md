@@ -321,6 +321,7 @@ up on the next tick (60s by default).
 # config.yaml
 kanban:
   dispatch_in_gateway: true        # default
+  require_explicit_board: false    # default: warn rather than refuse implicit routing
   dispatch_interval_seconds: 60    # default
   review_dispatch: true            # default: spawn the assigned profile with
                                    # the bundled sdlc-review skill. Set false
@@ -333,6 +334,12 @@ kanban:
                                    # or a bare `dispatch_profiles:` claims
                                    # nothing, and so does an unreadable config.
 ```
+
+Board-less `create`, `dispatch`, `swarm`, `init`, `gc`, `repair`, `specify --all`, `decompose --all` and `daemon --force` warn on stderr (including with `--json` where supported) when only the shared `kanban/current` file selects a non-default board.
+Set `kanban.require_explicit_board: true` to refuse these calls with exit code 2 before initialising, repairing or changing board data; the `kanban_create` tool then returns an error too.
+Pass `--board <slug>` before the subcommand, set `HERMES_KANBAN_BOARD`, or pass `board` to the tool to be explicit.
+An explicit `HERMES_KANBAN_DB` pin and the `default` board are unaffected.
+Set the key back to `false` to restore warning-only CLI behaviour and silent tool creation; missing or unreadable config also uses `false`.
 
 Override the config flag at runtime via `HERMES_KANBAN_DISPATCH_IN_GATEWAY=0`
 for debugging. Standard gateway supervision applies: run `hermes gateway

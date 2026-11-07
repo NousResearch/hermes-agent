@@ -24,9 +24,56 @@ def _kanban_config() -> dict:
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
-        return (cfg.get("kanban", {}) if isinstance(cfg, dict) else {}) or {}
+        section = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+        return section if isinstance(section, dict) else {}
     except Exception:
         return {}
+
+
+def _board_wide(action: str, args: argparse.Namespace) -> bool:
+    """Whether a write selects or creates work without a task ID.
+
+    ID-addressed verbs are excluded: random task IDs normally fail as not found
+    on the wrong board, rather than selecting unrelated work. Read verbs (including
+    list's readiness refresh) are outside this guard's policy.
+    """
+    if action in {"specify", "decompose"}:
+        return bool(getattr(args, "all_triage", False))
+    if action == "daemon":
+        return bool(getattr(args, "force", False))
+    return action in {"create", "dispatch", "swarm", "gc", "init", "repair"}
+
+
+def _implicit_board_guard(board: str | None = None) -> tuple[str | None, bool]:
+    """Message and refusal flag for mutations routed only by the shared current file.
+
+    DB pins bypass slug resolution; any explicit board (argument or scoped ``--board``,
+    even one the write path will reject) bypasses the shared file. Blank slugs are not explicit.
+    Config failures retain the default warning-only behaviour.
+    """
+    try:
+        explicit = kb._explicit_board_slug(board)
+    except ValueError:
+        explicit = board  # invalid slug: the write path reports it
+    if explicit or os.environ.get("HERMES_KANBAN_DB", "").strip():
+        return None, False
+    current = kb.get_current_board()
+    try:
+        env_pin = kb._normalize_board_slug(os.environ.get("HERMES_KANBAN_BOARD", ""))
+    except ValueError:
+        env_pin = None
+    # Context was handled above; a valid env pin outranks the file, so a match means "explicit".
+    if current == kb.DEFAULT_BOARD or current == env_pin:
+        return None, False
+    required = _kanban_config().get("require_explicit_board", False) is True
+    message = (
+        f"kanban: board {current!r} was selected only by {kb.current_board_path()} "
+        f"(shared by every session). Pass --board {current} or set "
+        f"HERMES_KANBAN_BOARD={current} to select it explicitly."
+    )
+    if required:
+        message += " Refusing implicit routing; set kanban.require_explicit_board: false in config.yaml to allow it."
+    return message, required
 
 
 def _poll_loop(interval: float, tick) -> int:

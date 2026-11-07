@@ -4,7 +4,7 @@ Inbound: authenticated HTTP callbacks or a Cloud Pub/Sub pull subscription. Outb
 Chat REST API (synchronous googleapiclient via ``asyncio.to_thread``). The Pub/Sub
 callback runs on a background thread, so ``handle_message`` is scheduled thread-safely
 onto the loop and never awaited there. Only MESSAGE events reach the agent; membership
-events cache the bot id, card clicks are ACK'd only.
+events cache the bot id; card clicks resolve exec-approval cards (``approvals.py``), other clicks are ACK'd only.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import asyncio
 import contextlib
 import contextvars
 import importlib
+import itertools
 import json
 import logging
 import os
@@ -27,9 +28,13 @@ from urllib.parse import urlparse
 from agent.i18n import t
 from agent.secret_scope import is_multiplex_active
 from gateway.platforms._shared import (
-    get_scoped_secret as _get_scoped_secret, seed_extra_from_env as _seed_extra_from_env, send_error
+    get_scoped_secret as _get_scoped_secret, platform_gate_env as _scoped_gate_env,
+    seed_extra_from_env as _seed_extra_from_env, send_error,
 )
 
+from .approvals import (
+    APPROVAL_ACTION, APPROVAL_CHOICES, APPROVAL_FUNCTION, CardClick, approval_card, parse_card_click, retired_card,
+)
 from .cards import card_spec_to_cards_v2, format_message as _format_message
 
 
@@ -128,7 +133,7 @@ from gateway.config import Platform, PlatformConfig
 Platform("google_chat")
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
-    gateway_trust_env, BasePlatformAdapter, SendResult,
+    gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, SendResult,
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_bytes_async,
     cache_video_from_bytes_async,
 )
@@ -145,6 +150,7 @@ _MAX_TEXT_LENGTH = 4000  # Chat limit is 4096; leave margin.
 _RATE_LIMIT_WARN_THRESHOLD = 5
 # Bounded outbound retry for transient 429/5xx so a true outage surfaces quickly.
 _RETRY_MAX_ATTEMPTS, _RETRY_BASE_DELAY, _RETRY_MAX_DELAY, _RETRY_JITTER = 3, 1.0, 8.0, 0.3
+_APPROVAL_CARDS_MAX = 200
 _RETRYABLE_HTTP_STATUSES = frozenset({429, 500, 502, 503, 504})
 _TRANSPORT_ERROR_PHRASES = ("timeout", "timed out", "broken pipe", "remote disconnected")
 # Left in ``_typing_messages`` after ``send()`` patched the typing card: stops
@@ -418,6 +424,11 @@ class GoogleChatAdapter(BasePlatformAdapter):
         self._shutting_down = False
         self._typing_messages: dict[str, str] = {}
         self._clarify_state, self._rate_limit_hits = {}, {}
+        # Live exec-approval cards by message name: the click resolves THIS session key, never
+        # one carried by the click payload. Popped on the first click or edit (double-click guard).
+        self._approval_cards: dict[str, dict[str, str]] = {}
+        self._approval_seq = itertools.count(1)
+        self._subscription_topic = ""
         # Last inbound thread per space: DMs get a NEW thread per top-level message but users
         # see one conversation, so thread_id leaves the source (stable session key) and is cached here.
         self._last_inbound_thread: dict[str, str] = {}
@@ -618,13 +629,16 @@ class GoogleChatAdapter(BasePlatformAdapter):
         }
         self._subscriber = pubsub_v1.SubscriberClient(credentials=credentials)
         try:
-            await asyncio.to_thread(lambda: self._subscriber.get_subscription(request={"subscription": subscription_path}))
+            subscription = await asyncio.to_thread(
+                lambda: self._subscriber.get_subscription(request={"subscription": subscription_path}))
         except (gax_exceptions.NotFound, gax_exceptions.PermissionDenied) as exc:
             code, message = fatals[type(exc)]
             self._set_fatal_error(code=code, message=message, retryable=False)
             return False
         except Exception as exc:
             return self._connect_failed("[GoogleChat] subscription.get failed: %s", exc, "subscription_check", retryable=True)
+        # Card buttons must name this topic, or Chat drops the click (approvals.py).
+        self._subscription_topic = str(getattr(subscription, "topic", "") or "")
         return True
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
@@ -840,6 +854,11 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 dump = "<redact filter unavailable>"
             logger.debug("[GoogleChat] RAW envelope (redacted): %s", dump[:2000])
         try:
+            click = parse_card_click(envelope)
+            if click is not None:
+                self._submit_on_loop(self._handle_card_click(click))
+                message.ack()
+                return
             if "membership" in ce_type or "MEMBERSHIP" in ce_type:
                 mpl = (envelope.get("chat") or {}).get("membershipPayload") or {}
                 space = mpl.get("space") or {}
@@ -866,6 +885,10 @@ class GoogleChatAdapter(BasePlatformAdapter):
 
     async def dispatch_http_event(self, envelope: dict[str, Any]) -> dict[str, Any]:
         from gateway.parked_route_refusal import ParkedRouteRefused, retryable_ingress
+        click = parse_card_click(envelope)
+        if click is not None:
+            await self._handle_card_click(click)
+            return {}
         prepared = self._prepare_inbound(envelope)
         if prepared is None:
             return {}
@@ -1161,12 +1184,92 @@ class GoogleChatAdapter(BasePlatformAdapter):
             return result
         return await super().send_clarify(chat_id, question, choices, clarify_id, session_key, metadata)
 
+    async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
+        """Card v2 approval prompt; a button click resolves via ``_handle_card_click``."""
+        card_id = f"hermes-approval-{next(self._approval_seq)}"
+        function = self._subscription_topic or self._http_events_url or APPROVAL_FUNCTION
+        card = approval_card(card_id, function, prompt.command, prompt.description, prompt.actions, prompt.smart_denied)
+        result = await self.send_card(prompt.chat_id, card, metadata=prompt.metadata)
+        if result.success and result.message_id:
+            # Bounded: cards answered by typed /approve or restarts are never clicked or edited.
+            while len(self._approval_cards) >= _APPROVAL_CARDS_MAX:
+                self._approval_cards.pop(next(iter(self._approval_cards)))
+            self._approval_cards[result.message_id] = {
+                "session_key": prompt.session_key, "chat_id": prompt.chat_id, "card_id": card_id,
+                "command": prompt.command, "description": prompt.description}
+        return result
+
+    async def _retire_approval_card(self, message_name: str, outcome: str) -> SendResult:
+        """Rewrite a live approval card without its buttons, ending on ``outcome``."""
+        entry = self._approval_cards.pop(message_name, None)
+        if entry is None:
+            return SendResult(success=False, error="approval card already resolved")
+        card = retired_card(entry["card_id"], entry["command"], entry["description"], outcome)
+        try:
+            return await self._patch_message(message_name, {"cardsV2": [card]})
+        except Exception as exc:
+            if _http_status(exc) == 429:
+                self._note_rate_limit(entry["chat_id"])
+            logger.warning("[GoogleChat] Could not update approval card: %s", _redact_sensitive(str(exc)), exc_info=True)
+            return SendResult(success=False, error=_redact_sensitive(str(exc)))
+
+    def _card_click_authorized(self, click: CardClick) -> bool:
+        """Default-deny gate for approval clicks: the gateway's own sender check when wired,
+        else GOOGLE_CHAT_ALLOWED_USERS (emails), else GATEWAY_ALLOW_ALL_USERS."""
+        user_id = click.user_email or click.user_name
+        if not user_id:
+            return False
+        chat_type = "dm" if click.space_type in {"DIRECT_MESSAGE", "DM"} else "group"
+        injected = self._is_sender_authorized(user_id, chat_type, click.space_name)
+        if injected is not None:
+            return injected
+        if _scoped_gate_env("GOOGLE_CHAT_ALLOW_ALL_USERS").lower() in {"true", "1", "yes"}:
+            return True
+        allowed = {entry.strip().lower() for var in ("GOOGLE_CHAT_ALLOWED_USERS", "GATEWAY_ALLOWED_USERS")
+                   for entry in _scoped_gate_env(var).split(",") if entry.strip()}
+        if allowed:
+            return "*" in allowed or user_id.lower() in allowed
+        return _scoped_gate_env("GATEWAY_ALLOW_ALL_USERS").lower() in {"true", "1", "yes"}
+
+    async def _handle_card_click(self, click: CardClick) -> None:
+        """Resolve an exec-approval button click; any other card click is ACK'd only."""
+        if click.parameters.get("hermes_action") != APPROVAL_ACTION:
+            logger.info("[GoogleChat] Card click ack'd (no handler for this action)")
+            return
+        choice = click.parameters.get("choice", "")
+        entry = self._approval_cards.get(click.message_name)
+        if entry is None or choice not in APPROVAL_CHOICES or entry["chat_id"] != click.space_name:
+            logger.info("[GoogleChat] Approval click ignored: unknown, already resolved or foreign card")
+            return
+        if not self._card_click_authorized(click):
+            logger.warning("[GoogleChat] Unauthorized approval click by %s - ignoring", click.user_email or click.user_name)
+            return
+        try:
+            from tools.approval import resolve_gateway_approval
+            count = resolve_gateway_approval(entry["session_key"], choice)
+        except Exception:
+            # Still pending: keep the card and its buttons (typed /approve also still works).
+            logger.exception("[GoogleChat] Failed to resolve gateway approval from a card click")
+            return
+        logger.info("[GoogleChat] Card click resolved %d approval(s) (choice=%s)", count, choice)
+        if count:
+            mark = "❌" if choice == "deny" else "✅"
+            outcome = f"{mark} {self._EA_ACTION_LABELS[choice]} · {click.user_display or click.user_email}"
+        else:
+            outcome = t("platform.shared.approval_expired")
+        if not (await self._retire_approval_card(click.message_name, outcome)).success:
+            await self.send(entry["chat_id"], outcome)
+
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
         """Edit via ``messages.patch`` (required by the tool-progress / token-streaming
         pipeline). ``finalize`` is unused: Chat's patch has no streaming lifecycle.
         404/403 are non-success so the gateway falls back to ``send()``."""
         if not message_id:
             return SendResult(success=False, error="missing message_id")
+        if message_id in self._approval_cards:
+            # Approval timeout notice: a text patch would leave the buttons live on the card.
+            outcome = (content or "").strip().split("\n", 1)[0]
+            return await self._retire_approval_card(message_id, outcome)
         if len(content) > _MAX_TEXT_LENGTH:
             content = content[: _MAX_TEXT_LENGTH - 1] + "…"
         try:

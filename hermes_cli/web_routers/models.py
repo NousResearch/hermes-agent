@@ -20,6 +20,7 @@ from agent.model_metadata import is_local_endpoint
 from starlette.concurrency import run_in_threadpool
 from hermes_cli.web_models import ModelAssignment, MoaConfigPayload, MoaModelSlot
 from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK, config_write_scope, http_failure
+from hermes_cli.web_routers import _route_cache
 
 _log = logging.getLogger("hermes_cli.web_server")
 router = APIRouter()
@@ -165,7 +166,15 @@ async def get_model_options(
                     load_picker_context(), explicit_only=bool(explicit_only),
                     include_unconfigured=bool(include_unconfigured), refresh=bool(refresh))
 
-        return await run_in_threadpool(_build_payload_scoped)
+        cache_key = ("model_options", profile or "", bool(explicit_only), bool(include_unconfigured))
+        if not refresh:
+            cached = _route_cache.get(cache_key)
+            if cached is not None:
+                return cached
+        payload = await run_in_threadpool(_build_payload_scoped)
+        if not refresh:
+            _route_cache.put(cache_key, payload, ttl=10.0)
+        return payload
 
 
 def _nous_recommended_default() -> dict:

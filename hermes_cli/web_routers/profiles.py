@@ -37,6 +37,7 @@ from hermes_cli.web_server_config import (
 )
 from hermes_cli.web_server_gateway import _strip_session_list_rows
 from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK
+from hermes_cli.web_routers import _route_cache
 from hermes_cli.web_server_profiles import (
     _fallback_profile_dicts, _hub_action_name, _write_profile_mcp_servers,
 )
@@ -806,9 +807,30 @@ def _read_profiles():
         return {"profiles": _fallback_profile_dicts(profiles_mod)}
 
 
+def _profiles_cache_signature() -> tuple:
+    from hermes_constants import get_hermes_home
+    root = Path(get_hermes_home())
+    sig = []
+    for path in (root / "profiles", root / "config.yaml"):
+        try:
+            st = path.stat()
+            sig.append((st.st_mtime_ns, st.st_size))
+        except OSError:
+            sig.append(None)
+    return tuple(sig)
+
+
 @router.get("/api/profiles")
 async def list_profiles_endpoint():
-    return await _read_profiles()
+    # 3s: config-derived payload, polled in bursts. The signature keeps a
+    # create/delete/rename visible immediately.
+    cache_key = ("profiles", _profiles_cache_signature())
+    cached = _route_cache.get(cache_key)
+    if cached is not None:
+        return cached
+    value = await _read_profiles()
+    _route_cache.put(cache_key, value, ttl=3.0)
+    return value
 
 
 @router.post("/api/profiles")

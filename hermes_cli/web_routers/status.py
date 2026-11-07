@@ -30,6 +30,7 @@ from hermes_cli.version_info import get_version_info
 from hermes_constants import get_process_hermes_home, profile_name_for_home
 from hermes_cli.web_models import CuratorPause, LearningNodeRef, LearningNodeEdit, DebugShareRequest
 from hermes_cli.web_routers._common import config_scoped_to_thread, destructive_profile, scoped_to_thread
+from hermes_cli.web_routers import _route_cache
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -542,6 +543,12 @@ async def get_status(profile: Optional[str] = None,
     status_scope = None
     # A signed-out caller's ``?profile=`` is ignored: an unknown name's 404 would tell it which exist.
     requested_profile = "" if signed_out else (profile or "").strip()
+    # 1s: the endpoint is polled ~1/s; the brief payload reuse collapses bursts while
+    # a signed-out caller keeps its narrower (path-free) shape via the key.
+    cache_key = ("status", requested_profile.lower(), bool(signed_out))
+    cached_payload = _route_cache.get(cache_key)
+    if cached_payload is not None:
+        return cached_payload
     profile_dir: Optional[Path] = None
     if requested_profile and requested_profile.lower() != "current":
         profile_dir = _resolve_profile_dir(requested_profile)
@@ -629,6 +636,7 @@ async def get_status(profile: Optional[str] = None,
 
         if signed_out:
             return {key: value for key, value in status.items() if key in _WEBAPP_SIGNED_OUT_STATUS_KEYS}
+        _route_cache.put(cache_key, status, ttl=1.0)
         return status
     finally:
         if status_scope is not None:

@@ -152,6 +152,12 @@ function answer(capabilities: unknown) {
   })
 }
 
+/** The room record an older build saved for "Existing": a name with no record is a new group chat. */
+function existingRoom() {
+  updateGroupChat('Existing', room => ({ ...room, members: roster }))
+  vi.mocked(updateGroupChat).mockClear()
+}
+
 async function submitDialog() {
   const onCreated = vi.fn()
   const onClose = vi.fn()
@@ -218,6 +224,7 @@ it.each(refused)('classifies %j as unavailable on both surfaces: no legacy rende
 
 it('keeps positive classifications working: legacy renders its existing rooms but never creates one, canonical creates a gateway room', async () => {
   answer(legacy)
+  existingRoom()
   await act(async () => { render(<GroupChatWorkspace group="Existing" members={roster} />) })
   expect(screen.getByRole('textbox')).toBeTruthy()
   cleanup()
@@ -492,6 +499,7 @@ it('reads the group driver again on Retry after a failed capability read', async
 
     throw new Error(`Unexpected RPC: ${method}`)
   })
+  existingRoom()
   await act(async () => { render(<GroupChatWorkspace group="Existing" members={roster} />) })
   // A transient failure: couldn't reach the gateway, what to check, Retry; nothing is lost.
   expect(screen.getByText(CANONICAL_GROUP_LOCALES.en.groupsUnreachable)).toBeTruthy()

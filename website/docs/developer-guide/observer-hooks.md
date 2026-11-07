@@ -152,7 +152,7 @@ API hooks describe provider attempts inside the agent loop:
 `post_api_request` includes the same identity/runtime fields plus:
 
 - `api_duration`, `started_at`, `ended_at`
-- `finish_reason`, `message_count`, `response_model`
+- `finish_reason`, `message_count`, `response_model`, `response_id`
 - `usage`
 - `assistant_content_chars`, `assistant_tool_call_count`
 - sanitized response payload: `response`

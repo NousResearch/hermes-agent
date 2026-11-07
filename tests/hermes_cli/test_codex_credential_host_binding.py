@@ -55,14 +55,17 @@ def _write_config(home: Path, *, base_url: str = "") -> None:
     (home / "config.yaml").write_text(yaml.safe_dump({"model": model}))  # load cache keys on stat
 
 
-def _write_pool(home: Path, key: str, *, row_base: str = CHATGPT) -> None:
+def _write_pool(home: Path, key: str, *, row_base: str = CHATGPT, model_cooldowns: dict | None = None) -> None:
     """A pool-only setup: the gateway key lives in ``credential_pool.openai-codex`` (no singleton)."""
+    row = {
+        "id": "gw", "label": "gateway", "auth_type": "api_key", "priority": 0,
+        "source": "manual", "access_token": key, "base_url": row_base,
+    }
+    if model_cooldowns:
+        row["model_cooldowns"] = model_cooldowns
     (home / "auth.json").write_text(json.dumps({
         "version": 1, "providers": {},
-        "credential_pool": {"openai-codex": [{
-            "id": "gw", "label": "gateway", "auth_type": "api_key", "priority": 0,
-            "source": "manual", "access_token": key, "base_url": row_base,
-        }]},
+        "credential_pool": {"openai-codex": [row]},
     }))
 
 
@@ -320,6 +323,20 @@ def test_aux_codex_client_binds_pool_key_to_model_base_url_gateway(monkeypatch):
     token, base_url = aux._resolve_codex_credential_and_base()
 
     assert (token, base_url) == (OPAQUE, GW)
+
+
+def test_aux_codex_pool_pick_is_scoped_to_the_call_model(monkeypatch):
+    """An entitlement bench on one slug (a year) must not hide the credential from another slug:
+    the auxiliary resolver knows its model and picks for it, as the chat path does."""
+    import time
+    from agent.credential_pool_model_cooldowns import MODEL_ENTITLEMENT_BENCH_SECONDS
+    home = _home(monkeypatch)
+    _write_config(home)
+    _write_pool(home, OPAQUE, model_cooldowns={"gpt-5.5": time.time() + MODEL_ENTITLEMENT_BENCH_SECONDS})
+    from agent import auxiliary_client as aux
+
+    assert aux._resolve_codex_credential_and_base("gpt-5.3-codex") == (OPAQUE, CHATGPT)
+    assert aux._resolve_codex_credential_and_base("gpt-5.5")[0] is None
 
 
 def test_aux_codex_client_singleton_positive_control(monkeypatch):

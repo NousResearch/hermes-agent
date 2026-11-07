@@ -109,7 +109,21 @@ class GatewayGoalCommandsMixin:
         """Handle /heartbeat (mirror of the CLI handler): the session's one recurring re-entry
         prompt. The gateway-wide poller injects due heartbeats through the adapter FIFO as
         ordinary user turns, so alternation and caching hold."""
-        from hermes_cli.heartbeat import parse_interval, format_interval, MIN_INTERVAL_SECONDS
+        from hermes_cli.heartbeat import parse_interval, format_interval, MIN_INTERVAL_SECONDS, HEARTBEAT_FILE_MARKER, heartbeat_file_path
+
+        def _orders_display(prompt_text: str) -> str:
+            # 11-05 trio of fixes, his rulings: (1) report the resolved path, not the raw "file:"
+            # marker (/heartbeat file used to look like a dumb prompt); (2) report the BASENAME
+            # only — outbound replies containing absolute file paths get their files UPLOADED by
+            # the message pipeline (upstream bug, filing pending) — TEMPORARY: full paths are the
+            # eventual display once that's fixed; (3) never lie about resolution.
+            if prompt_text.startswith(HEARTBEAT_FILE_MARKER):
+                p = heartbeat_file_path(prompt_text)
+                # 11-06 wording (his ask): "File loaded: HEARTBEAT.md" reads better than
+                # "orders file HEARTBEAT.md" — still basename-only (bare-path uploads, 9g).
+                return f"File loaded: {p.name}" if p else "File loaded: (unresolved)"
+            return prompt_text
+
         args = (event.get_command_args() or "").strip()
         lower = args.lower()
         mgr, _session_entry = await self._get_heartbeat_manager_for_event(event)
@@ -125,23 +139,33 @@ class GatewayGoalCommandsMixin:
             return mgr.status_line()
         if lower == "pause":
             state = mgr.pause()
-            return t("gateway.heartbeat.paused", prompt=state.prompt) if state else t("gateway.heartbeat.none_set")
+            return t("gateway.heartbeat.paused", prompt=_orders_display(state.prompt)) if state else t("gateway.heartbeat.none_set")
         if lower == "resume":
             state = mgr.resume()
             if state is None:
                 return t("gateway.heartbeat.no_resume")
             _watch()
-            return t("gateway.heartbeat.resumed", interval=format_interval(state.interval_seconds), prompt=state.prompt)
+            return t("gateway.heartbeat.resumed", interval=format_interval(state.interval_seconds), prompt=_orders_display(state.prompt))
         if lower in {"clear", "stop", "off"}:
             had = mgr.clear()
             if quick_key:
                 self._unregister_heartbeat_watch(quick_key)
             return t("gateway.heartbeat.cleared") if had else t("gateway.heartbeat.none_set")
 
-        # Set: `/heartbeat every 10m <prompt>` (also accepts `10m <prompt>`).
+        # Set: `/heartbeat every 10m <prompt>` (also accepts `10m <prompt>`)
+        # File mode: `/heartbeat file 60m [path]` — orders read fresh from disk on every tick.
         tokens = args.split(None, 2)
         interval, prompt = None, ""
-        if tokens[0].lower() == "every" and len(tokens) >= 2:
+        if tokens[0].lower() == "file":
+            if len(tokens) < 2:
+                return t("gateway.heartbeat.file_usage")
+            interval = parse_interval(tokens[1])
+            if interval is None:
+                return t("gateway.heartbeat.file_usage")
+            if interval < 0:
+                return t("gateway.heartbeat.interval_too_small", min_seconds=MIN_INTERVAL_SECONDS)
+            prompt = f"{HEARTBEAT_FILE_MARKER}{tokens[2].strip() if len(tokens) > 2 else ''}"
+        elif tokens[0].lower() == "every" and len(tokens) >= 2:
             interval = parse_interval(f"every {tokens[1]}")
             prompt = tokens[2] if len(tokens) > 2 else ""
         else:
@@ -157,7 +181,7 @@ class GatewayGoalCommandsMixin:
         if err:
             return err
         _watch()
-        return t("gateway.heartbeat.set", interval=format_interval(state.interval_seconds), prompt=state.prompt)
+        return t("gateway.heartbeat.set", interval=format_interval(state.interval_seconds) if state else "(?)", prompt=_orders_display(state.prompt) if state else "")
 
     def _idle_cached_agent_or_error(self, event: MessageEvent, verb: str):
         """``(session_key, cached_agent, None)`` for /refine and /review, or ``(_, _, error_text)``:

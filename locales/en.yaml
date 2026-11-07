@@ -949,6 +949,7 @@ gateway:
     prompt_required: "Usage: /heartbeat every <interval> <prompt> — the prompt is required."
     invalid_prefix: "Invalid heartbeat"
     set: "♥ Heartbeat set (every {interval}): {prompt}\nFires as a normal turn whenever this session is idle and the interval has elapsed. Lives while the gateway runs — use `hermes cron` for durable schedules."
+    file_usage: "Usage: /heartbeat file <interval> [path] — the file's CURRENT contents are injected as your standing orders on every tick. Default path: HEARTBEAT.md in hermes home; relative paths anchor to hermes home."
 
   refine:
     unavailable: "Refine unavailable (no session)."

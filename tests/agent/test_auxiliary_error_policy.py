@@ -394,9 +394,9 @@ def test_discovered_api_key_client_classifies_on_its_concrete_provider(monkeypat
     assert seen and set(seen) == {("opencode-go", FailoverReason.upstream_rate_limit, False)}
 
 
-def _wire(handle, *, key, url="https://openrouter.ai/api/v1"):
-    return openai.OpenAI(api_key=key, base_url=url, max_retries=0, http_client=httpx.Client(
-        transport=httpx.MockTransport(handle)))
+def _wire(handle, *, key, url="https://openrouter.ai/api/v1", is_async=False):
+    sdk_client, http = (openai.AsyncOpenAI, httpx.AsyncClient) if is_async else (openai.OpenAI, httpx.Client)
+    return sdk_client(api_key=key, base_url=url, max_retries=0, http_client=http(transport=httpx.MockTransport(handle)))
 
 
 def test_refreshed_nous_stream_error_falls_back():
@@ -635,9 +635,7 @@ def test_a_refusal_no_resend_can_change_is_sent_once(refusal, is_async, stream):
             raise InterruptedError("auxiliary stream interrupted")
         return httpx.Response(refusal[0], json=refusal[1], request=request)
 
-    sdk_client, http = (openai.AsyncOpenAI, httpx.AsyncClient) if is_async else (openai.OpenAI, httpx.Client)
-    client = sdk_client(api_key="sk", base_url="https://openrouter.ai/api/v1", max_retries=0,
-                        http_client=http(transport=httpx.MockTransport(handle)))
+    client = _wire(handle, key="sk", is_async=is_async)
     if refusal is None:  # the SDK would wrap it as a connection error: raise it as the stream guard does
         client.chat.completions.create = (AsyncMock if is_async else MagicMock)(
             side_effect=lambda **kw: handle(None))
@@ -645,3 +643,44 @@ def test_a_refusal_no_resend_can_change_is_sent_once(refusal, is_async, stream):
         outcome = run_ladder(None, provider="nous", is_async=is_async, client=client,
                              max_tokens=16, temperature=0.3)
     assert (len(sent), outcome.fell_back) == (1, False), outcome.result
+
+
+def _routed_call(clients, *, provider, is_async, pool=None, **call_kw):
+    """``call_llm`` on ``provider`` whose client builds return ``clients`` in turn (an auto route re-resolving
+    its retry); the configured chains are empty and the last-resort fallback answers."""
+    builds, fallback = iter(clients), MagicMock(base_url="https://api.example.com/v1")
+    fallback.chat.completions.create = (AsyncMock if is_async else MagicMock)(return_value=_ok())
+    with patch.multiple(
+        "agent.auxiliary_client", _resolve_task_provider_model=lambda *_a: (provider, "fast-1", None, None, None),
+        _get_cached_client=lambda *_a, **_k: (next(builds), "fast-1"), _transient_retry_count=lambda *_a: 0,
+        _refresh_provider_credentials=lambda *_a, **_k: True, _mark_provider_unhealthy=lambda *_a, **_k: None,
+        _try_configured_fallback_chain=lambda *_a, **_k: (None, None, ""),
+        _try_main_fallback_chain=lambda *_a, **_k: (None, None, ""),
+        _try_payment_fallback=lambda *_a, **_k: (fallback, "fb", "fallback"),
+        _try_main_agent_model_fallback=lambda *_a, **_k: (fallback, "fb", "fallback"),
+    ), patch("agent.auxiliary_client.load_pool", lambda _p: pool):
+        if is_async:
+            result = asyncio.run(async_call_llm(task="title_generation", messages=_MESSAGES, **call_kw))
+        else:
+            result = call_llm(task="title_generation", messages=_MESSAGES, **call_kw)
+    return result.choices[0].message.content
+
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize("retry_url,benched", [("https://api.deepseek.com/v1", None), ("https://openrouter.ai/api/v1", 402)],
+                         ids=["retry-on-another-backend", "retry-on-the-same-pool"])
+def test_a_rebuilt_retry_benches_only_the_key_that_sent_it(is_async, retry_url, benched):
+    """The pool rotates off k0 (model not served to this account); the rebuilt retry's 402 benches k1 only when
+    k1 sent it: an auto route that re-resolved to another backend leaves this pool's unused key alone."""
+    sent = []
+    def handle(status, message):
+        return lambda r: sent.append(r.url.host) or httpx.Response(status, json={"error": {"message": message}}, request=r)
+    pool = CredentialPool("openrouter", [Key("openrouter", f"k{i}", f"k{i}", "api_key", i, "manual", f"sk-{i}")
+                                         for i in range(2)])
+    clients = [_wire(handle(400, "model fast-1 is not supported for this account"), key="sk-0", is_async=is_async),
+               _wire(handle(402, "Insufficient Balance"), key="sk-1", url=retry_url, is_async=is_async)]
+    assert _routed_call(clients, provider="auto", is_async=is_async, pool=pool) == "fallback"
+    k0, k1 = pool.entries()
+    assert sent == ["openrouter.ai", httpx.URL(retry_url).host]
+    assert (sorted(k0.model_cooldowns or {}), k1.last_error_code) == (["fast-1"], benched)
+

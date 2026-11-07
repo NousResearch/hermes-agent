@@ -186,6 +186,7 @@ interface RosterPresentationInput {
   groupNames: string[]
   visibleRoster: RosterRow[]
   gatewayOptions: ReturnType<typeof rosterGatewayOptions>
+  hasCustomOrder?: boolean
 }
 
 export function deriveRosterPresentation({
@@ -199,7 +200,8 @@ export function deriveRosterPresentation({
   roster,
   groupNames,
   visibleRoster,
-  gatewayOptions
+  gatewayOptions,
+  hasCustomOrder = false
 }: RosterPresentationInput) {
   const activeFilterCount =
     (rowKindFilter === 'all' ? 0 : 1) + (activityFilter === 'all' ? 0 : 1) + (gatewayFilter === 'all' ? 0 : 1)
@@ -220,7 +222,8 @@ export function deriveRosterPresentation({
     gatewayOptions.length > 1 ||
     groupNames.length > 0 ||
     rosterItemCount >= BOT_ROSTER_SEARCH_THRESHOLD ||
-    activeFilterCount > 0
+    activeFilterCount > 0 ||
+    hasCustomOrder
 
   const showRosterTools = showRosterSearch || showRosterFilters
 

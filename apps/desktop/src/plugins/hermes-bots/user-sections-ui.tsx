@@ -119,12 +119,14 @@ interface UserSectionHeaderProps {
   canMoveUp: boolean
   collapsed: boolean
   count: number
+  hasCustomOrder?: boolean
   /** null for Unassigned, which has no record and therefore no menu. */
   id: null | string
   name: string
   onDelete: () => void
   onMove: (delta: number) => void
   onRename: () => void
+  onResetOrder?: () => void
   onToggle: () => void
 }
 
@@ -133,20 +135,21 @@ export function UserSectionHeader({
   canMoveUp,
   collapsed,
   count,
+  hasCustomOrder,
   id,
   name,
   onDelete,
   onMove,
   onRename,
+  onResetOrder,
   onToggle
 }: UserSectionHeaderProps) {
   const b = useBots()
   const { t } = useI18n()
 
   // Unassigned has no record to rename, reorder or delete — it is whatever is
-  // left over — so it gets the plain heading rather than a menu of disabled
-  // items.
-  if (!id) {
+  // left over — so it gets the plain heading unless its custom order can be reset.
+  if (!id && (!hasCustomOrder || !onResetOrder)) {
     return (
       <RosterSectionHeader
         collapsed={collapsed}
@@ -158,20 +161,27 @@ export function UserSectionHeader({
     )
   }
 
+  const label = id ? name : b.sections.unassigned
+
   // RIGHT-CLICK IS THE SAME MENU. The ⋯ button only appears on hover and is a
   // small target; right-clicking the heading is what people actually try
   // first. Both drive the identical actions, so neither can drift.
-  const items = [
-    { icon: 'edit', label: b.sections.rename, onSelect: onRename },
-    { disabled: !canMoveUp, icon: 'arrow-up', label: b.sections.moveUp, onSelect: () => onMove(-1) },
-    { disabled: !canMoveDown, icon: 'arrow-down', label: b.sections.moveDown, onSelect: () => onMove(1) }
-  ]
+  const items: { disabled?: boolean; icon: string; label: string; onSelect: () => void }[] = id
+    ? [
+        { icon: 'edit', label: b.sections.rename, onSelect: onRename },
+        { disabled: !canMoveUp, icon: 'arrow-up', label: b.sections.moveUp, onSelect: () => onMove(-1) },
+        { disabled: !canMoveDown, icon: 'arrow-down', label: b.sections.moveDown, onSelect: () => onMove(1) },
+        ...(hasCustomOrder && onResetOrder
+          ? [{ icon: 'clear-all', label: b.sections.resetOrder, onSelect: onResetOrder }]
+          : [])
+      ]
+    : [{ icon: 'clear-all', label: b.sections.resetOrder, onSelect: onResetOrder! }]
 
   const action = (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button
-          aria-label={b.sections.options(name)}
+          aria-label={b.sections.options(label)}
           className="shrink-0 rounded-md p-0.5 text-(--ui-text-quaternary) opacity-0 transition hover:text-foreground group-hover/section:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100"
           type="button"
         >
@@ -185,11 +195,15 @@ export function UserSectionHeader({
             {item.label}
           </DropdownMenuItem>
         ))}
-        <DropdownMenuSeparator />
-        <DropdownMenuItem onSelect={onDelete} variant="destructive">
-          <Codicon className="mr-1.5" name="trash" />
-          {t.common.delete}
-        </DropdownMenuItem>
+        {id ? (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={onDelete} variant="destructive">
+              <Codicon className="mr-1.5" name="trash" />
+              {t.common.delete}
+            </DropdownMenuItem>
+          </>
+        ) : null}
       </DropdownMenuContent>
     </DropdownMenu>
   )
@@ -197,16 +211,16 @@ export function UserSectionHeader({
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
-        <div data-section-id={id} data-slot="bots-section-heading">
+        <div data-section-id={id || 'unassigned'} data-slot="bots-section-heading">
           <RosterSectionHeader
             action={action}
             collapsed={collapsed}
             count={count}
-            icon="folder"
-            label={name}
-            onDoubleClick={onRename}
+            icon={id ? 'folder' : 'inbox'}
+            label={label}
+            onDoubleClick={id ? onRename : undefined}
             onToggle={onToggle}
-            tip={b.sections.headingTip}
+            tip={id ? b.sections.headingTip : undefined}
           />
         </div>
       </ContextMenuTrigger>
@@ -216,10 +230,14 @@ export function UserSectionHeader({
             {item.label}
           </ContextMenuItem>
         ))}
-        <ContextMenuSeparator />
-        <ContextMenuItem onSelect={onDelete} variant="destructive">
-          {t.common.delete}
-        </ContextMenuItem>
+        {id ? (
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuItem onSelect={onDelete} variant="destructive">
+              {t.common.delete}
+            </ContextMenuItem>
+          </>
+        ) : null}
       </ContextMenuContent>
     </ContextMenu>
   )

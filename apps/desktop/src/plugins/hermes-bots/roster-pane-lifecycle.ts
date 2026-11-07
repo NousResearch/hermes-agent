@@ -1,11 +1,12 @@
 import { atom, host } from '@hermes/plugin-sdk'
 import { useEffect } from 'react'
 
-import { $lastRoster } from './data'
+import { $lastRoster, botRosterKey } from './data'
 import type { useRoster } from './data'
 import { displayName } from './labels'
 import { pullServerAvatars } from './profile-ops'
 import { trackInboundActivity } from './roster-actions'
+import { pruneRosterOrder } from './roster-order'
 import { botRosterMeta, botWorkspaceOwnerKey } from './routing'
 import { backfillMessagingProtocol } from './soul'
 import type { GatewaySource } from './types'
@@ -48,6 +49,10 @@ export function usePublishRosterSnapshot({ data, live, roster, allMeta, activeSo
     pullServerAvatars(activeSourceRoster)
     trackInboundActivity(roster)
     backfillMessagingProtocol(activeSourceRoster)
+
+    if (Array.isArray(data?.sources) || typeof host.agents !== 'function') {
+      pruneRosterOrder(new Set(roster.filter(row => !row?.ghost).map(botRosterKey)), data?.sources)
+    }
     // React Query owns the stable server snapshot; derived arrays intentionally
     // follow that snapshot rather than retriggering on their own atom writes.
     // Key on the `profiles`/`sources` subtrees, not the envelope: every 5 s

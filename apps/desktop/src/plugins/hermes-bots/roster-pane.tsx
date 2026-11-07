@@ -40,15 +40,17 @@ import { GroupChatWorkspace, openGroupChat } from './group-chat-view'
 import { groupChatMemberBots } from './group-membership'
 import { $groupMainTabsRev, groupOpenOrigin, shouldRenderGroupChatInPane } from './group-panes'
 import { $activeGroupMemberKeys } from './group-presence'
-import { $showHiddenBots, isBotHidden } from './hidden-bots'
+import { $showHiddenBots, isBotHidden, isBotPinned } from './hidden-bots'
 import { useBots } from './i18n'
 import { $activityToasts } from './roster-actions'
+import { $rosterOrder, hasAnyCustomRosterOrder, rosterSectionScope } from './roster-order'
+import { ReorderableRosterRow } from './roster-order-row'
 import { renderRosterContent } from './roster-pane-content'
 import { deriveRosterPresentation, deriveRosterRows, type RosterGroupRow, sortRosterBots } from './roster-pane-derivation'
 import { renderRosterDialogs } from './roster-pane-dialogs'
 import { RosterGroupRowView } from './roster-pane-groups'
 import { $lastSources, usePublishRosterSnapshot } from './roster-pane-lifecycle'
-import { rosterSectionRenderers } from './roster-pane-sections'
+import { type BotRowOrderBindings, rosterSectionRenderers } from './roster-pane-sections'
 import { renderRosterToolbar } from './roster-pane-toolbar'
 import { botNeedsHandleLabel, rosterGatewayOptions } from './roster-sections'
 import { botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
@@ -59,6 +61,7 @@ import {
   $draggingBot,
   adoptBotSectionsFromMeta,
   backfillBotSectionNames,
+  botSectionId,
   type SectionDialogState
 } from './user-sections'
 import { useEscapeCancelsBotDrag } from './user-sections-ui'
@@ -231,6 +234,36 @@ function useReconcileRosterOwner(
   }, [data, error, selectionHydrated, roster, sourceSnapshot, allMeta])
 }
 
+function getDraggingBotScope(
+  dragging: string | null,
+  roster: RosterRow[],
+  allMeta: Record<string, BotMeta>,
+  showGatewaySections: boolean,
+  gatewayFilter: string,
+  gatewayOptions: ReturnType<typeof rosterGatewayOptions>
+): { draggingPinned: boolean | null; draggingScope: string | null } {
+  if (!dragging) {
+    return { draggingPinned: null, draggingScope: null }
+  }
+
+  const draggedBot = roster.find(bot => botRosterKey(bot) === dragging) || null
+
+  if (!draggedBot) {
+    return { draggingPinned: null, draggingScope: null }
+  }
+
+  const connection = showGatewaySections
+    ? String(draggedBot.connectionId || 'legacy').trim() || 'legacy'
+    : gatewayFilter !== 'all'
+      ? gatewayFilter
+      : gatewayOptions[0]?.connectionId || 'local'
+
+  return {
+    draggingPinned: isBotPinned(draggedBot, allMeta),
+    draggingScope: rosterSectionScope(botSectionId(draggedBot, allMeta), connection)
+  }
+}
+
 export function BotsPane() {
   const { t } = useI18n()
   const b = useBots()
@@ -279,6 +312,7 @@ export function BotsPane() {
   const rosterHydrated = useValue($rosterHydrated)
   const selectionHydrated = useValue($selectedRosterHydrated)
   const selectedRosterKey = useValue($selectedRosterKey)
+  const rosterOrder = useValue($rosterOrder)
 
   // The socket opening (boot, SSH reconnect, sleep/wake) is the signal to
   // retry immediately instead of waiting out the poll interval.
@@ -360,6 +394,15 @@ export function BotsPane() {
     isPinned
   })
 
+  const { draggingPinned, draggingScope } = getDraggingBotScope(
+    dragging,
+    roster,
+    allMeta,
+    showGatewaySections,
+    gatewayFilter,
+    gatewayOptions
+  )
+
   const {
     activeFilterCount,
     hasRosterConstraint,
@@ -382,7 +425,8 @@ export function BotsPane() {
     roster,
     groupNames,
     visibleRoster,
-    gatewayOptions
+    gatewayOptions,
+    hasCustomOrder: hasAnyCustomRosterOrder(rosterOrder)
   })
 
   const rosterSectionCollapsed = (id: string): boolean => !hasRosterConstraint && collapsedRosterSections.has(id)
@@ -430,17 +474,42 @@ export function BotsPane() {
     return <GroupChatWorkspace group={groupChatName} members={groupChatMembers} origin={groupOpenOrigin(groupChatName)} />
   }
 
-  const renderBotRow = (bot: RosterRow, keyPrefix = '') => (
-    <BotRow
-      bot={bot}
-      key={`${keyPrefix}${botRosterKey(bot)}`}
-      onDelete={setDeleting}
-      onEdit={setEditing}
-      onGroup={setGrouping}
-      onNewSection={target => setSectionDialog({ bot: target, mode: 'create' })}
-      showHandle={botNeedsHandleLabel(bot, roster, allMeta)}
-    />
-  )
+  const renderBotRow = (bot: RosterRow, keyPrefix = '', orderBindings?: BotRowOrderBindings) => {
+    const itemKey = botRosterKey(bot)
+    const rowKey = `${keyPrefix}${itemKey}`
+
+    const row = (
+      <BotRow
+        bot={bot}
+        key={orderBindings ? undefined : rowKey}
+        onDelete={setDeleting}
+        onEdit={setEditing}
+        onGroup={setGrouping}
+        onMoveDown={orderBindings?.onMoveDown}
+        onMoveUp={orderBindings?.onMoveUp}
+        onNewSection={target => setSectionDialog({ bot: target, mode: 'create' })}
+        showHandle={botNeedsHandleLabel(bot, roster, allMeta)}
+      />
+    )
+
+    if (!orderBindings) {
+      return row
+    }
+
+    return (
+      <ReorderableRosterRow
+        draggingPinned={draggingPinned}
+        draggingScope={draggingScope}
+        itemKey={itemKey}
+        key={rowKey}
+        onReorder={orderBindings.onReorder}
+        pinned={isPinned(bot)}
+        scopeKey={orderBindings.scopeKey}
+      >
+        {row}
+      </ReorderableRosterRow>
+    )
+  }
 
   // Move up / down reorders Desktop rooms; gateway rooms keep recency order.
   const desktopGroupRows = sortedGroupRows.filter(row => !row.gateway)
@@ -476,6 +545,11 @@ export function BotsPane() {
       roster,
       allMeta,
       groupRooms,
+      rosterOrder,
+      gatewayFilter,
+      gatewayOptions,
+      activityOf,
+      isPinned,
       dragging,
       rosterSectionCollapsed,
       toggleRosterSection,
@@ -507,7 +581,8 @@ export function BotsPane() {
         activityFilter,
         setActivityFilter,
         gatewayFilter,
-        setGatewayFilter
+        setGatewayFilter,
+        rosterOrder
       })}
       {renderRosterContent({
         b,

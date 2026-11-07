@@ -2160,12 +2160,12 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         self._current_id = entry.id
         return entry, pending_refresh
 
-    def peek(self) -> Optional[PooledCredential]:
+    def peek(self, *, model: Optional[str] = None) -> Optional[PooledCredential]:
         with self._lock:
             current = self._current_unlocked()
             if current is not None:
                 return current
-            available, _pending = self._available_entries()
+            available, _pending = self._available_entries(model=model)
             return available[0] if available else None
 
     def reclaim(self, credential_id: str, *, model: Optional[str] = None) -> Optional[PooledCredential]:

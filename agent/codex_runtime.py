@@ -1149,9 +1149,16 @@ def _consume_codex_event_stream(
     callback); ``on_commentary_message`` once per completed ``phase=commentary`` message, before any following
     tool item; ``on_first_delta`` one-shot; ``on_event`` every event before any processing; ``interrupt_check()``
     True breaks the loop and may raise ``TimeoutError`` / ``InterruptedError`` for request retirement that
-    must not become a partial final response."""
+    must not become a partial final response.
+
+    Text and reasoning deltas also feed the ``RunawayStreamWatch`` the chat_completions and Anthropic streams
+    use (#130551): a channel that turns into a repetition loop ends the stream there, and the result carries
+    ``_runaway_repetition`` so the turn ends on the length path instead of streaming to the output cap."""
+    from agent.repetition_guard import RunawayStreamWatch
     assembler = _CodexResponseAssembler(model=model, on_text_delta=on_text_delta, on_reasoning_delta=on_reasoning_delta,
                                         on_commentary_message=on_commentary_message, on_first_delta=on_first_delta)
+    text_watch, reasoning_watch = RunawayStreamWatch(), RunawayStreamWatch()
+    runaway = None
     for event in event_iter:
         if on_event is not None:
             try:
@@ -1162,7 +1169,27 @@ def _consume_codex_event_stream(
                 logger.debug("Codex stream on_event hook raised", exc_info=True)
         if (interrupt_check is not None and interrupt_check()) or assembler.feed(event):
             break
-    return assembler.result()
+        event_type = _event_field(event, "type", "")
+        if event_type in _CODEX_TEXT_DELTA_EVENTS or event_type in _CODEX_REASONING_DELTA_EVENTS:
+            delta = _event_field(event, "delta", "")
+            if isinstance(delta, str) and delta:
+                if event_type in _CODEX_TEXT_DELTA_EVENTS and text_watch.feed(delta):
+                    runaway = "content"
+                elif event_type in _CODEX_REASONING_DELTA_EVENTS and reasoning_watch.feed(delta):
+                    runaway = "reasoning"
+                if runaway:
+                    break
+    if runaway:
+        assembler.saw_terminal = True  # a cut ends the stream on purpose; a reasoning-only cut is not "truncated"
+    result = assembler.result()
+    if runaway:
+        logger.warning("Stream cut: the %s turned into a runaway repetition loop (model=%s, provider=codex).", runaway, model)
+        result._runaway_repetition = True
+    return result
+
+
+_CODEX_TEXT_DELTA_EVENTS = frozenset({"response.output_text.delta", "response.text.delta"})
+_CODEX_REASONING_DELTA_EVENTS = frozenset({"response.reasoning_summary_text.delta", "response.reasoning_text.delta"})
 
 
 def _sanitize_consumer_codex_request(agent: Any, request: dict[str, Any]) -> dict[str, Any]:
@@ -1456,7 +1483,8 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     continue
                 _log_failure(exc)
                 raise
-            if not agent._interrupt_requested:
+            # A runaway cut must not drain: the rest of the stream is the loop it just stopped.
+            if not agent._interrupt_requested and not getattr(final, "_runaway_repetition", False):
                 _drain_for_finalizer(event_stream)
             if final.status in {"incomplete", "failed"}:
                 logger.warning("Codex Responses stream terminal status=%s "

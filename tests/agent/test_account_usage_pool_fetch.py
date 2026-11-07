@@ -147,10 +147,11 @@ def test_anthropic_fetch_honors_explicit_api_key_and_marks_model_scoped_windows(
 
     def fake_get_json(url, headers, *, timeout):
         called["url"], called["headers"] = url, headers
-        return {"five_hour": {"utilization": 0.3, "resets_at": "2026-10-05T12:00:00Z"},
-                "seven_day": {"utilization": 0.2, "resets_at": "2026-10-08T12:00:00Z"},
-                "seven_day_opus": {"utilization": 1.0, "resets_at": "2026-10-09T12:00:00Z"},
-                "seven_day_sonnet": {"utilization": 0.4, "resets_at": "2026-10-09T12:00:00Z"}}
+        # The OAuth usage endpoint already reports percentages: 1.0 means 1%, not 100%.
+        return {"five_hour": {"utilization": 30.0, "resets_at": "2026-10-05T12:00:00Z"},
+                "seven_day": {"utilization": 20.0, "resets_at": "2026-10-08T12:00:00Z"},
+                "seven_day_opus": {"utilization": 100.0, "resets_at": "2026-10-09T12:00:00Z"},
+                "seven_day_sonnet": {"utilization": 40.0, "resets_at": "2026-10-09T12:00:00Z"}}
 
     monkeypatch.setattr(account_usage, "_get_json", fake_get_json)
     monkeypatch.setattr(account_usage, "resolve_anthropic_token",
@@ -165,6 +166,23 @@ def test_anthropic_fetch_honors_explicit_api_key_and_marks_model_scoped_windows(
                       "Opus week": "model", "Sonnet week": "model"}
     percents = {w.label: w.used_percent for w in snapshot.windows}
     assert percents["Opus week"] == 100.0 and percents["Current session"] == 30.0
+
+
+def test_a_session_window_at_one_percent_stays_one_percent(monkeypatch):
+    """The live regression from the report: a freshly started Anthropic session window arrives as
+    ``"utilization": 1.0`` and claude.ai shows 1% for it. Scaling every value ``<= 1`` by 100 — the
+    "this endpoint reports fractions" assumption — rendered that as **100%**, so a window that had
+    just opened looked exhausted and downstream threshold alerts fired on it. Values that happen to
+    be ``<= 1`` are percentages like every other value this endpoint returns."""
+    payload = {"five_hour": {"utilization": 1.0, "resets_at": "2026-10-27T21:20:00Z"},
+               "seven_day": {"utilization": 17.0, "resets_at": "2026-11-02T09:00:00Z"}}
+    monkeypatch.setattr(account_usage, "_get_json", lambda url, headers, *, timeout: payload)
+
+    snapshot = fetch_account_usage("anthropic", api_key="sk-ant-oat01-live")
+
+    assert snapshot is not None
+    percents = {w.label: w.used_percent for w in snapshot.windows}
+    assert percents == {"Current session": 1.0, "Current week": 17.0}
 
 
 def test_read_only_fetch_remembered_under_identity_slot(monkeypatch, tmp_path):

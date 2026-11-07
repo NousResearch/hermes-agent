@@ -2138,13 +2138,18 @@ class SlackAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _task_update_chunk(task: dict[str, str]) -> dict[str, Any]:
-        """One ``task_update`` stream chunk; unknown statuses coerce to ``in_progress``."""
+        """One ``task_update`` stream chunk; unknown statuses coerce to ``in_progress``. A task's
+        ``detail`` (the step's argument) goes in ``details``, which Slack renders under the title
+        and accepts as a plain string."""
         status = str(task.get("status") or "in_progress")
         status = status if status in {"in_progress", "complete", "error"} else "in_progress"
         task_id = str(task.get("id") or task.get("task_id") or "task")
-        return {
+        chunk = {
             "type": "task_update", "id": task_id, "title": str(task.get("title") or task_id)[:256],
             "status": status}
+        if detail := str(task.get("detail") or ""):
+            chunk["details"] = detail[:256]
+        return chunk
 
     async def _stop_native_task_card_stream(
         self, key: tuple[str, str, str], stream: _NativeTaskCardStream) -> None:

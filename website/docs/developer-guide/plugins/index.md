@@ -114,6 +114,45 @@ empty), the entry is treated as if it weren't there: the server doesn't get the
 literal `${NAME}`, and `NAME` keeps whatever value the server would have without
 that line (usually unset). Optional variables are safe to forward.
 
+### User-owned MCP environment settings
+
+Set machine-specific, **non-secret** engine paths without editing a portable
+package or replacing it with a same-name native MCP server. Core reads
+`plugins.entries.<plugin-id>.mcp_env.<declared-server-name>` from the active
+profile's config. Use the exact plugin ID from `hermes plugins list` and the
+server name from that package's `mcp.json`; this is outside the plugin's
+`settings` / `config` namespace.
+
+For example, if `example.tools` declares the stdio server `analysis`:
+
+```bash
+hermes config set 'plugins.entries.example\.tools.mcp_env.analysis' '{"JAVA_HOME": "C:/Tools/JDK", "GHIDRA_INSTALL_DIR": "C:/Tools/Ghidra"}'
+hermes config unset 'plugins.entries.example\.tools.mcp_env.analysis.JAVA_HOME'
+```
+
+Escape literal dots in IDs/server names as `\.` in CLI paths, including on
+first creation. Pass a JSON/YAML mapping with **quoted string values**, including
+numeric-looking settings such as `"900000"`. Restart Hermes after changes so
+plugin discovery and MCP connections are rebuilt. Unsetting an override restores
+that variable's package default; an empty mapping changes nothing.
+
+- Only the named plugin's declared **stdio** server receives the env merge;
+  user values win over package env defaults. On Windows, variable matching is
+  case-insensitive. Sibling servers/plugins and native `mcp_servers` are untouched.
+- `command`, `args`, `cwd`, URL, trust, timeouts, package version and ownership
+  stay package-controlled. This does not create servers, grant capabilities,
+  widen trust, or add global environment passthrough.
+- Names must match `[A-Za-z_][A-Za-z0-9_]*`; values must be strings without NUL
+  bytes. `PLUGIN_ROOT` / `PLUGIN_DATA` are reserved. Case-duplicate names on
+  Windows are rejected. An invalid target env map skips **that server**, with a
+  warning and no partial merge/default fallback; valid siblings still load. A
+  malformed outer `mcp_env` map skips that plugin's MCP servers. Unknown targets
+  and overrides aimed at remote servers warn and are ignored.
+- Do not store credentials here. Keep secrets in the existing profile secret
+  store / `.env`; config values can use the existing `${VAR}` or `${env:VAR}`
+  expansion instead of secret literals. This namespace is settings storage,
+  not a credential vault, and does not add a new secret resolver.
+
 The current portable subset supports stdio and Streamable HTTP MCP entries.
 Portable `streamable-http` entries are routed through Hermes' existing native
 remote MCP client (the same runtime that powers URL-based `mcp_servers`

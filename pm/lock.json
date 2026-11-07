@@ -541,6 +541,16 @@
             "url": "https://registry.npmjs.org/pnpm/-/pnpm-12.15.0.tgz"
           }
         ],
+        "linux-arm64-bionic": [
+          {
+            "sha256": "3356eb9f4552e2299464c843447fdae01c80dde10436af046fae6b443c7c186d",
+            "url": "https://registry.npmjs.org/@pnpm/exe.android-arm64/-/exe.android-arm64-12.15.0.tgz"
+          },
+          {
+            "sha256": "f5173f6127cc505cdb36ec17719fe54a8511c6fd8560c7ceb4bf7c73e3b4458b",
+            "url": "https://registry.npmjs.org/pnpm/-/pnpm-12.15.0.tgz"
+          }
+        ],
         "linux-arm64-musl": [
           {
             "sha256": "cf6d6d7a08107743ef0c768389c2935c1ffb7002b02ab00682d2ee5650e0483d",

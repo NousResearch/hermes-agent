@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, List, Optional
 
 from agent.lazy_forward import forward_static as _forward_static
+from agent.vision_byte_replay import byte_image_records, persist_byte_image_records, route_fingerprint
 from agent.tool_dispatch_helpers import _is_multimodal_tool_result, _multimodal_text_summary
 from utils import base_url_host_matches, base_url_hostname
 
@@ -55,6 +56,48 @@ def _provider_model_key(agent: Any) -> tuple[str, str]:
         (getattr(agent, "provider", "") or "").strip().lower(),
         (getattr(agent, "model", "") or "").strip(),
     )
+
+
+def _byte_strip_route_key(agent: Any) -> tuple[str, str, str, str]:
+    """A byte limit belongs to an endpoint and API mode, not just a model name."""
+    return (
+        *_provider_model_key(agent),
+        str(getattr(agent, "base_url", "") or "").rstrip("/"),
+        str(getattr(agent, "api_mode", "") or ""),
+    )
+
+
+def _tool_image_key(message: dict, part: dict) -> tuple[str, bytes]:
+    # IDs survive history replay; the digest lets a replacement image keep its vision input
+    # without retaining another copy of a potentially multi-megabyte data URL.
+    return (
+        str(message.get("tool_call_id") or ""),
+        hashlib.sha256(json.dumps(part, sort_keys=True).encode("utf-8")).digest(),
+    )
+
+
+def apply_byte_stripped_tool_images(agent: Any, api_messages: list) -> bool:
+    """Replay only actual 413 evictions on wire copies; fresh tool images remain usable."""
+    state = byte_image_records(agent)
+    stripped = state.get(route_fingerprint(_byte_strip_route_key(agent))) if state else None
+    if not stripped:
+        return False
+    changed = False
+    for msg in api_messages:
+        content = msg.get("content")
+        if msg.get("role") != "tool" or not isinstance(content, list):
+            continue
+        remaining = [part for part in content if not (
+            _is_image_part(part) and _tool_image_key(msg, part) in stripped
+        )]
+        if len(remaining) == len(content):
+            continue
+        changed = True
+        msg["content"] = remaining if any(_is_image_part(part) for part in remaining) else (
+            "\n\n".join(_salvage_text_parts(remaining, any_dict_text=False))
+            or "[image content removed — request payload too large]"
+        )
+    return changed
 
 
 class VisionMessagePrepMixin:
@@ -256,13 +299,18 @@ class VisionMessagePrepMixin:
     _try_shrink_image_parts_in_messages = _forward_static("agent.conversation_compression", "try_shrink_image_parts_in_messages")
 
     def _try_strip_image_parts_from_tool_messages(
-        self, api_messages: list, *, remember_model: bool = True
+        self, api_messages: list, *, remember_model: bool = True, remember_bytes: bool = False, retained_messages: list | None = None
     ) -> bool:
         """Downgrade list-type tool messages to text in place; True if any were downgraded.
 
         Recovery for providers that 400 on list-type tool content (e.g. MiMo "text is not set"). By default
         records (provider, model) in ``_no_list_tool_content_models`` so later results downgrade without a
         round-trip; 413 recovery passes ``remember_model=False`` (body too large ≠ provider rejects lists).
+
+        ``remember_bytes`` remembers only the image parts actually removed by 413 recovery,
+        keyed by endpoint, API mode, provider, model and tool-call ID. Later wire copies keep
+        those rejected payloads stripped without disabling fresh vision input (#148146).
+        Canonical history is unchanged. A session sidecar carries fingerprints across workers.
         """
         if not isinstance(api_messages, list):
             return False
@@ -284,13 +332,24 @@ class VisionMessagePrepMixin:
             if not self._content_has_image_parts(content):
                 continue
 
+            if remember_bytes and _provider_model_key(self)[1]:
+                state = byte_image_records(self)
+                stripped = state.setdefault(route_fingerprint(_byte_strip_route_key(self)), set())
+                stripped.update(_tool_image_key(msg, part) for part in content if _is_image_part(part))
+
             # Salvage any text parts so the model still sees some signal.
             msg["content"] = "\n\n".join(_salvage_text_parts(content, any_dict_text=False)) or (
-                "[image content removed — provider does not accept "
-                "list-type tool message content]"
+                "[image content removed — request payload too large]" if remember_bytes else
+                "[image content removed — provider does not accept list-type tool message content]"
             )
             changed = True
 
+        if changed and remember_bytes and _provider_model_key(self)[1]:
+            retained_ids = None if retained_messages is None else {
+                str(msg.get("tool_call_id") or "") for msg in retained_messages
+                if isinstance(msg, dict) and msg.get("role") == "tool" and self._content_has_image_parts(msg.get("content"))
+            }
+            persist_byte_image_records(self, retained_ids)
         return changed
 
     def _anthropic_preserve_dots(self) -> bool:

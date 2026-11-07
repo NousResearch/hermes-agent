@@ -1,0 +1,52 @@
+manifest_version: 1
+name: filmease
+connector_slug: filmease
+description: >-
+  Find streamable movies and manage your FilmEase watchlist, ratings, private reviews,
+  viewing history, taste, country, and streaming services. Requires a FilmEase account.
+  Sends movie queries and requested account changes to FilmEase's hosted service,
+  which records authenticated activity, request summaries, latency, and errors for
+  service analytics. Hermes manages OAuth; write-capable tools require approval.
+source: https://github.com/Filmease/filmease-hermes-plugin
+
+# Hosted Streamable HTTP server; no clone, bootstrap, key, or local process.
+transport:
+  type: http
+  url: https://filmease-mcp.fancy-fire-1eba.workers.dev/mcp
+
+# Native MCP OAuth discovery, dynamic registration, S256 PKCE, and refresh.
+auth:
+  type: oauth
+
+# Preserve the portable plugin's approval policy on native-only installations.
+trust: untrusted
+
+suggest:
+  keywords:
+    - filmease
+  hosts:
+    - filmease.net
+  examples:
+    - Find uplifting movies I can stream tonight.
+    - Check where a named movie is streaming in my country.
+    - Show my FilmEase watchlist.
+
+post_install: |
+  Complete FilmEase sign-in and consent when Hermes offers the authorization link.
+  Hermes stores and refreshes the OAuth grant; do not paste tokens or API keys.
+  For a reconnect, run `hermes mcp login filmease` in the same Hermes profile.
+  Verify the connection with `hermes mcp test filmease`, then start a new session
+  or reload MCP connections where supported.
+
+  Account changes are gated by Hermes approval (trust: untrusted). Streaming
+  availability depends on country and provider. Reviews and companion labels
+  remain private unless you explicitly ask otherwise.
+
+  The existing FilmEase plugin is optional movie-workflow guidance. If enabled,
+  this same-name native connection takes precedence; do not create a second
+  FilmEase server under another name. Existing manual OAuth connections can be
+  reinstalled under the same profile and server name.
+
+  Privacy: https://www.filmease.net/privacy
+  Terms: https://www.filmease.net/terms
+  Support: https://www.filmease.net/support

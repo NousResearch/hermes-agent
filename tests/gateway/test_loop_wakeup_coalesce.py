@@ -246,6 +246,33 @@ async def test_landed_probe_executor_raise_still_abandons_the_tick(loop_env):
     assert state.landed_tick == 0  # probe unprovable -> blind rollback
 
 
+@pytest.mark.asyncio
+async def test_snapshot_executor_raise_still_abandons_the_tick(loop_env):
+    """Review fix (sys-8xces5): the pre-injection snapshot await sits AFTER fire_tick persisted
+    awaiting_response=True but OUTSIDE the try/except that calls abandon_tick. An executor raise
+    there (e.g. 'cannot schedule new futures after shutdown') must degrade to snapshot=-1 so the
+    later raise still reaches abandon_tick — otherwise the persisted True wedges the loop forever
+    (manual /loop resume only), the same wedge class test_landed_probe_executor_raise guards."""
+    store = _FakeStore()
+    runner = _make_runner(store, _Adapter(store, fail="after"))  # persist, then raise
+    real_exec = runner._run_in_executor_with_context
+
+    async def _flaky(fn, *args):
+        from gateway import run_goals
+        if fn is run_goals._loop_wakeup_transcript_len:
+            raise RuntimeError("cannot schedule new futures after shutdown")
+        return await real_exec(fn, *args)
+
+    runner._run_in_executor_with_context = _flaky
+    _set_loop()
+    await _watcher_pass(runner)
+
+    assert len(_wakeup_turns(store, 1)) == 1  # prompt persisted before the raise
+    state = loops.load_loop(SID)
+    assert state.ticks_fired == 0 and state.awaiting_response is False  # abandoned, not wedged
+    assert state.landed_tick == 0  # snapshot unmeasurable -> blind rollback, never a coalesce stamp
+
+
 class TestLoopManagerCoalesce:
     """Shared-manager surface (covers the CLI/TUI firers and the viewer RPC too)."""
 

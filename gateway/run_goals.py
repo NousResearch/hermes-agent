@@ -551,9 +551,16 @@ class GatewayGoalsMixin:
         # or a slash command that repeats verbatim every tick, must not false-land a pre-persist
         # failure. Slash wakeups (snapshot -1) skip the probe entirely: the digest cannot
         # distinguish attempts, so a raise always rolls back (worst case one duplicate command).
+        # The snapshot await is under its OWN suppress (sys-8xces5 review): it runs after
+        # fire_tick persisted awaiting_response=True but before the try/except that calls
+        # abandon_tick, so an executor raise here must degrade to snapshot=-1 (probe unprovable
+        # -> always roll back), not escape and wedge the loop with a persisted True.
         is_slash = wakeup.lstrip().startswith("/")
-        snapshot = -1 if is_slash else await self._run_in_executor_with_context(
-            _loop_wakeup_transcript_len, self, session_key)
+        snapshot = -1
+        if not is_slash:
+            with suppress(Exception):
+                snapshot = await self._run_in_executor_with_context(
+                    _loop_wakeup_transcript_len, self, session_key)
         # #85957: after the parent turn's event.complete the CLIENT owns the next turn on this stateless
         # surface. Persist the completion as a durable delivery row — never self-post it as a new role=user
         # prompt.

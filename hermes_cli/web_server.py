@@ -69,6 +69,8 @@ _log = logging.getLogger(__name__)
 
 from hermes_cli.web_server_lifecycle import (
     PORT_IN_USE_EXIT_CODE,
+    AccessLogMiddleware,
+    access_log_enabled,
     _dashboard_forwarded_allow_ips,
     _eager_reconcile_own_session_db,
     _maybe_open_browser,
@@ -582,6 +584,10 @@ class _LocalOriginCORSMiddleware(CORSMiddleware):
 # Without this, an OPTIONS preflight from a cross-origin SPA hits the auth
 # middlewares before CORS can answer, producing 401 instead of 204 + headers.
 app.add_middleware(_LocalOriginCORSMiddleware, allow_methods=["*"], allow_headers=["*"])
+
+# Outermost so it measures the full request (CORS, auth gate, route, but not the socket).
+if access_log_enabled():
+    app.add_middleware(AccessLogMiddleware)
 
 
 # Authenticated-route self-test: one in-process request per minute against a

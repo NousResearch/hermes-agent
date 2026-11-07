@@ -10,6 +10,7 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 from utils import atomic_json_write
@@ -550,6 +551,65 @@ def _uvicorn_console_logging() -> None:
             logger.addHandler(handler)
     # LOGGING_CONFIG's level for the parent; uvicorn.Config sets only the child loggers' levels.
     logging.getLogger("uvicorn").setLevel(logging.INFO)
+
+
+def access_log_enabled() -> bool:
+    return os.environ.get("HERMES_ACCESS_LOG", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _access_logger() -> logging.Logger:
+    logger = logging.getLogger("hermes_cli.access")
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    if not logger.handlers:
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        logger.addHandler(handler)
+    return logger
+
+
+class AccessLogMiddleware:
+    """One JSON line per HTTP request: timestamp, peer, target, status, duration, bytes.
+
+    uvicorn's default access line carries neither a timestamp nor a duration, so a
+    "the app felt slow" report cannot be localised after the fact.
+    """
+
+    def __init__(self, app):
+        self.app = app
+        self._log = _access_logger()
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            return await self.app(scope, receive, send)
+        started = time.perf_counter()
+        status = None
+        size = 0
+
+        async def _send(message):
+            nonlocal status, size
+            if message["type"] == "http.response.start":
+                status = message.get("status")
+            elif message["type"] == "http.response.body":
+                size += len(message.get("body") or b"")
+            await send(message)
+
+        try:
+            await self.app(scope, receive, _send)
+        finally:
+            peer = scope.get("client") or ("", 0)
+            self._log.info(
+                '{"ts":"%s","peer":"%s","method":"%s","path":"%s","query":"%s",'
+                '"status":%s,"dur_ms":%.1f,"bytes":%d}',
+                datetime.now(UTC).isoformat(timespec="milliseconds"),
+                peer[0],
+                scope.get("method", ""),
+                scope.get("path", ""),
+                scope.get("query_string", b"").decode("latin-1"),
+                status if status is not None else 0,
+                (time.perf_counter() - started) * 1000.0,
+                size,
+            )
 
 
 def build_listener_server(served_app, host: str, port: int, *, auth_required: bool,

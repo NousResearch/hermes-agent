@@ -505,16 +505,37 @@ export function canRejoinPeer(binding: CanonicalGroupBinding, member: CanonicalR
     bot.sourceReachable !== false && !bot.sourceMissing && !!peerRoute(bot, binding.connectionId))
 }
 
-interface PeerLabels {
-  peerJoinConnect: string
-  peerJoinFailed: string
-  peerJoinUnconfirmed: string
-  peerJoinUnreachable: string
-  peerJoinChanged: string
-}
+type PeerLabels = Pick<CanonicalGroupMessages, 'peerJoinChanged' | 'peerJoinConnect' | 'peerJoinFailed' | 'peerJoinUnconfirmed' |
+  'peerJoinUnreachable' | PeerSetupKey | 'peerSetupGeneric'>
 
 const fill = (words: string, values: Record<string, string>) =>
   Object.entries(values).reduce((text, [key, value]) => text.replace(`{${key}}`, value), words)
+
+type PeerSetupKey = 'peerSetupAddress' | 'peerSetupApiServer' | 'peerSetupApprovals' | 'peerSetupBackground' | 'peerSetupRoomKey' |
+  'peerSetupRunStorage' | 'peerSetupUpdate'
+
+/** What a lender's `groups.capabilities` refusal (`peerTargetState`: gateway/session_group_peers.py
+ *  `room_link`, tui_gateway/methods_groups.py, or the catalog checks above) asks of its operator. */
+const PEER_SETUP_TEXT: Record<string, PeerSetupKey> = {
+  api_server_required: 'peerSetupApiServer',
+  durable_run_storage_required: 'peerSetupRunStorage',
+  gateway_roomlink_secret_unavailable: 'peerSetupRoomKey',
+  execution_policy_unsupported: 'peerSetupApprovals',
+  endpoint_required: 'peerSetupAddress',
+  persistent_process_required: 'peerSetupBackground',
+  peer_invite_unsupported: 'peerSetupUpdate',
+  peer_target_unsupported: 'peerSetupUpdate',
+  text_only_required: 'peerSetupUpdate',
+  room_link_unavailable: 'peerSetupUpdate'
+}
+
+/** Why `connection` cannot lend a Bot to a room here, and what to change there; an unknown reason
+ *  gets the general setup advice, never the raw code. */
+export function peerSetupText(reason: string, connection: string, labels: Pick<CanonicalGroupMessages, PeerSetupKey | 'peerSetupGeneric' | 'peerTargetSetup'>): string {
+  const key = Object.hasOwn(PEER_SETUP_TEXT, reason) ? PEER_SETUP_TEXT[reason] : 'peerSetupGeneric'
+
+  return fill(labels.peerTargetSetup, { connection, reason: labels[key] })
+}
 
 /** Why `name` has not joined, in the reader's words: Desktop's own finding or the gateway's refusal
  *  (`message` is its reason on the gateway, its detail on `hermes serve`). */
@@ -531,6 +552,9 @@ export function peerJoinText(error: unknown, name: string, labels: PeerLabels): 
   if (reason === 'registration_unconfirmed') {return fill(labels.peerJoinUnconfirmed, { name })}
 
   if (['peer_gateway_changed', 'peer_target_mismatch', 'peer_target_unsupported'].includes(reason)) {return fill(labels.peerJoinChanged, { name })}
+
+  // A lender capability refusal (`findPeerSeat`) is a code; say what to change on its computer.
+  if (Object.hasOwn(PEER_SETUP_TEXT, reason)) {return fill(labels.peerJoinFailed, { name, reason: labels[PEER_SETUP_TEXT[reason]] })}
   const detail = typeof refusal?.data?.detail === 'string' && refusal.data.detail ? refusal.data.detail : reason
 
   return fill(labels.peerJoinFailed, { name, reason: detail })

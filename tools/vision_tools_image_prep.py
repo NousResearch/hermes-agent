@@ -181,13 +181,63 @@ def rasterize_svg_data_url(url: str) -> Optional[str]:
                 path.unlink()
 
 
+def _vision_flatten_alpha_enabled() -> bool:
+    """``vision.flatten_alpha`` from config.yaml (default true). Some OpenAI-compatible
+    backends (e.g. GLM/Zai routes behind LiteLLM proxies) hang or error on alpha-channel
+    rasters (RGBA PNG) instead of decoding them; compositing onto an opaque background
+    is the standard remedy and visually lossless for opaque screenshots."""
+    try:
+        from hermes_cli.config import cfg_get, load_config
+        return bool(cfg_get(load_config(), "vision", "flatten_alpha", default=True))
+    except Exception:  # config unavailable — flatten, never break the embed path
+        logger.debug("vision.flatten_alpha read failed; defaulting to flatten", exc_info=True)
+        return True
+
+
+def _flatten_image_alpha(image_path: Path) -> Optional[Path]:
+    """Composite an alpha-channel PNG/WebP onto white → opaque RGB JPEG temp file the CALLER
+    owns. Re-encodes as JPEG (quality 85) rather than PNG: alpha flattening exists because
+    some OpenAI-compatible backends stall on RGBA rasters, and the same routes are typically
+    also an order of magnitude slower decoding PNG than JPEG. Returns ``None`` (input
+    untouched) without Pillow, when the image has no alpha channel, or on any failure —
+    flattening is an optimization and must never break the embed path. Animated GIF is
+    intentionally excluded (multi-frame flatten)."""
+    try:
+        from PIL import Image
+    except ImportError:
+        return None
+    try:
+        with Image.open(image_path) as img:
+            img.load()
+        if img.mode not in ("RGBA", "LA", "PA") and not (
+                img.mode == "P" and "transparency" in img.info):
+            return None  # fully opaque — nothing to flatten
+        rgba = img.convert("RGBA")
+        background = Image.new("RGB", rgba.size, (255, 255, 255))
+        background.paste(rgba, mask=rgba.getchannel("A"))
+        from tools.vision_tools import _secure_cache_dir
+        out_path = (_secure_cache_dir("cache/vision", "temp_vision_images")
+                    / f"flattened_{uuid.uuid4()}.jpg")
+        background.save(out_path, format="JPEG", quality=85)
+        return out_path if _nonempty_file(out_path) else None
+    except Exception as exc:
+        logger.debug("alpha flatten skipped for %s: %s", image_path, exc, exc_info=True)
+        return None
+
+
 def _normalize_to_supported_image(
     image_path: Path, detected_mime: str) -> tuple[Optional[Path], Optional[str], Optional[str]]:
     """Ensure an image is in a provider-supported format. Returns ``(path, mime, error)``: the input
     unchanged when supported; ``(new_png_path, "image/png", None)`` after conversion — a temp file
     the CALLER must clean up; ``(None, None, message)`` when impossible. SVG is rasterized; other
-    Pillow-readable rasters (BMP, TIFF) re-encode to PNG."""
+    Pillow-readable rasters (BMP, TIFF) re-encode to PNG. Alpha-channel PNG/WebP are flattened
+    onto an opaque background first unless ``vision.flatten_alpha`` is ``false`` in config.yaml —
+    some OpenAI-compatible backends stall on RGBA rasters."""
     if detected_mime in _supported_media_types():
+        if detected_mime in ("image/png", "image/webp") and _vision_flatten_alpha_enabled():
+            flattened = _flatten_image_alpha(image_path)
+            if flattened is not None:
+                return flattened, "image/jpeg", None
         return image_path, detected_mime, None
     from tools.vision_tools import _secure_cache_dir
     out_dir = _secure_cache_dir("cache/vision", "temp_vision_images")

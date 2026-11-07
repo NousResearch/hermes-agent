@@ -121,9 +121,9 @@ def _schema_of(provider) -> list:
 
 def _saved_provider_config(provider, provider_name: str, config: dict) -> dict:
     """Values to offer as current on (re-)setup. Providers overriding ``save_config`` keep their
-    config outside ``memory.<name>`` (holographic: ``plugins.hermes-memory-store``); when they
-    expose ``load_saved_config`` it is authoritative — otherwise schema defaults are offered as
-    current and written back over the saved values. Falls back to the ``memory.<name>`` block."""
+    config outside ``memory.<name>``; when they expose ``load_saved_config`` it is authoritative —
+    otherwise schema defaults are offered as current and written back over the saved values.
+    Falls back to the ``memory.<name>`` block."""
     if hasattr(provider, "load_saved_config"):
         try:
             saved = provider.load_saved_config()
@@ -171,6 +171,15 @@ def _find_provider(providers: list, provider_name: str):
     return next((p for p in providers if p[0] == provider_name), None)
 
 
+def _catalog_install_hint(provider_name: str):
+    """The install command for a catalog memory provider that resolves nowhere, else None."""
+    from plugins.memory import find_provider_dir
+    from hermes_cli.memory_provider_migration import catalog_install_hint
+    if not provider_name or find_provider_dir(provider_name) is not None:
+        return None
+    return catalog_install_hint(provider_name, category="memory")
+
+
 def _post_setup_hook(provider, config: dict) -> bool:
     """Normalize the ``memory`` block; True when the provider's ``post_setup`` took over (it owns
     config, connection test and activation), so the caller must stop."""
@@ -189,7 +198,11 @@ def cmd_setup_provider(provider_name: str) -> None:
     match = _find_provider(_get_available_providers(), provider_name)
     if not match:
         print(f"\n  Memory provider '{provider_name}' not found.")
-        print("  Run 'hermes memory setup' to see available providers.\n")
+        install = _catalog_install_hint(provider_name)
+        if install:
+            print(f"  It is a catalog plugin that is not installed. Install it with: {install}\n")
+        else:
+            print("  Run 'hermes memory setup' to see available providers.\n")
         return
     name, _, provider = match
 
@@ -258,9 +271,8 @@ def _prompt_schema_fields(name: str, schema: list, provider_config: dict, env_wr
         else:
             saved = provider_config.get(key)
             # `saved or default` treated any falsy saved value (0, False, "")
-            # as unset and silently rewrote it on Enter; legal zeros like the
-            # holographic provider's default_trust: 0 must survive re-runs
-            # (review P2 on #123599).
+            # as unset and silently rewrote it on Enter; legal falsy saved
+            # values must survive re-runs (review P2 on #123599).
             effective_default = default if saved is None else saved
             val = _prompt(desc, default=str(effective_default) if effective_default is not None else None)
             if val:
@@ -418,7 +430,11 @@ def cmd_status(args) -> None:
             for key, val in display_config.items():
                 print(f"    {key}: {val}")
 
-        if provider:
+        from plugins.memory import parked_provider_notice
+        parked = parked_provider_notice(provider_name)
+        if parked:
+            print(f"\n  Plugin:    turned off ✗\n  {parked}")
+        elif provider:
             print("\n  Plugin:    installed ✓")
             if provider.is_available():
                 print("  Status:    available ✓")
@@ -440,7 +456,11 @@ def cmd_status(args) -> None:
                 print("        set any variables above in the service environment.")
         else:
             print("\n  Plugin:    NOT installed ✗")
-            print(f"  Install the '{provider_name}' memory plugin to ~/.hermes/plugins/")
+            install = _catalog_install_hint(provider_name)
+            if install:
+                print(f"  Install it with: {install}")
+            else:
+                print(f"  Install the '{provider_name}' memory plugin to ~/.hermes/plugins/")
 
     if providers:
         print("\n  Installed plugins:")

@@ -1,0 +1,22 @@
+name: serpapi
+repo: https://github.com/serpapi/serpapi-hermes-plugin
+sha: b5049b4aa0f56836d2f88908c1c2ebca2b9dcf64
+description: "SerpApi web, Maps, News, Shopping, Hotels, Flights, and Travel Explore for Hermes Agent."
+maintainer: serpapi
+tier: community
+category: web
+title: SerpApi
+version: "1.1.1"
+docs_url: https://github.com/serpapi/serpapi-hermes-plugin#readme
+capabilities:
+  provides_tools:
+    - serpapi_maps_search
+    - serpapi_news_search
+    - serpapi_shopping_search
+    - serpapi_hotels_search
+    - serpapi_flights_search
+    - serpapi_travel_explore_search
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - SERPAPI_API_KEY

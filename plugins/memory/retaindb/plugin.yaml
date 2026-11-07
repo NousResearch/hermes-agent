@@ -3,3 +3,5 @@ version: 1.0.0
 description: "RetainDB — cloud memory API with hybrid search and 7 memory types."
 requires_env:
   - RETAINDB_API_KEY
+config_keys:
+  - memory.retaindb  # base_url / project persisted by the dashboard

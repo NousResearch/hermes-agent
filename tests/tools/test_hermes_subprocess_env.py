@@ -114,6 +114,14 @@ class TestTierInvariants:
                 f"Tier-1 keys leaked with inherit_credentials={inherit}: {sorted(leaked)}"
             )
 
+    def test_left_core_secrets_stripped_without_their_plugin(self):
+        """A feature that left core for a catalog plugin keeps its credentials out of children even
+        when the plugin is not installed (no manifest declares them then)."""
+        from hermes_cli.left_core_migration import LEFT_CORE
+        names = {"HASS_TOKEN"} | {n for feature in LEFT_CORE for n in feature.secret_env}
+        for inherit in (False, True):
+            assert not names & set(_build({n: "secret" for n in names}, inherit_credentials=inherit))
+
     def test_tier1_covers_gateway_bot_token(self):
         assert "TELEGRAM_BOT_TOKEN" in _ALWAYS_STRIP_KEYS
 
@@ -123,28 +131,33 @@ class TestTierInvariants:
     def test_tier1_covers_infra_secrets(self):
         assert {"MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET", "DAYTONA_API_KEY"} <= _ALWAYS_STRIP_KEYS
 
+    def test_tier1_covers_dashboard_auth(self):
+        # Credentialed CLIs (claude/codex) must not be able to mint dashboard sessions.
+        assert {"HERMES_DASHBOARD_BASIC_AUTH_PASSWORD", "HERMES_DASHBOARD_BASIC_AUTH_SECRET",
+                "HERMES_DASHBOARD_OIDC_CLIENT_SECRET", "HERMES_DASHBOARD_DRAIN_SECRET"} <= _ALWAYS_STRIP_KEYS
+
 
 class TestBrowserPassthroughPattern:
     def test_browser_keys_recoverable_after_strip(self):
-        """Browser tool pattern: strip everything, then re-add the browser
-        backend keys agent-browser actually needs."""
-        from tools.browser_tool import _BROWSER_PASSTHROUGH_KEYS
+        """browser_exec pattern: strip everything, then re-add only the key
+        the browser harness itself reads."""
+        from tools.browser_use_cli import _HARNESS_PASSTHROUGH_KEYS
 
         leaked = {
+            "BROWSER_USE_API_KEY": "bu-key",
             "BROWSERBASE_API_KEY": "bb-key",
-            "BROWSERBASE_PROJECT_ID": "bb-proj",
-            "FIRECRAWL_API_KEY": "fc-key",
             "ANTHROPIC_API_KEY": "ant-should-go",
             "TELEGRAM_BOT_TOKEN": "bot-should-go",
         }
         with patch.dict(os.environ, {**_SAFE_SAMPLE, **leaked}, clear=True):
             env = hermes_subprocess_env(inherit_credentials=False)
-            for key in _BROWSER_PASSTHROUGH_KEYS:
+            for key in _HARNESS_PASSTHROUGH_KEYS:
                 if key in os.environ:
                     env[key] = os.environ[key]
 
-        assert env["BROWSERBASE_API_KEY"] == "bb-key"
-        assert env["FIRECRAWL_API_KEY"] == "fc-key"
+        assert env["BROWSER_USE_API_KEY"] == "bu-key"
+        # Cloud-provider keys stay in-process (sessions are created over HTTP), never in the child.
+        assert "BROWSERBASE_API_KEY" not in env
         # Provider + gateway secrets must NOT come back.
         assert "ANTHROPIC_API_KEY" not in env
         assert "TELEGRAM_BOT_TOKEN" not in env

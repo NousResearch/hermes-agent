@@ -5,6 +5,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -168,8 +169,8 @@ class TestDynamicContextFileCap:
     @pytest.fixture(autouse=True)
     def _no_explicit_config(self, monkeypatch):
         # No explicit context_file_max_chars → dynamic path is eligible.
-        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
-        monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {})
+        monkeypatch.setattr("hermes_cli.config.load_config", dict)
+        monkeypatch.setattr("hermes_cli.config.load_config_readonly", dict)
 
 
 
@@ -699,6 +700,48 @@ class TestEnvironmentHints:
         _pb._BACKEND_PROBE_CACHE.clear()
         assert f"Current working directory: {tmp_path}" in _pb.build_environment_hints()
 
+    def test_running_bot_screen_rides_the_environment_hints(self, monkeypatch):
+        """#125830: with this profile's Bot Screen up, the local-backend hints must NAME it —
+        display number and lease holder — so 'open chrome in screen 20' resolves to the bot's own
+        screen instead of launching on the user's display via a confused terminal call."""
+        import agent.prompt_builder as _pb
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        monkeypatch.setattr("tools.bot_desktop.runtime.published_env",
+                            lambda: {"DISPLAY": ":20", "XAUTHORITY": "/run/x"})
+        monkeypatch.setattr("tools.bot_desktop.lease.get", lambda: SimpleNamespace(holder="agent"))
+        hints = _pb.build_environment_hints()
+        assert "Bot Screen" in hints and "display :20" in hints and "you hold it" in hints
+
+    def test_human_held_bot_screen_says_so(self, monkeypatch):
+        import agent.prompt_builder as _pb
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        monkeypatch.setattr("tools.bot_desktop.runtime.published_env", lambda: {"DISPLAY": ":20"})
+        monkeypatch.setattr("tools.bot_desktop.lease.get", lambda: SimpleNamespace(holder="human"))
+        hints = _pb.build_environment_hints()
+        assert "a human holds it" in hints and "do not drive the screen" in hints
+
+    def test_stopped_bot_screen_leaves_no_hint(self, monkeypatch):
+        """No screen running → nothing added; the block must drop out entirely, not say 'None'."""
+        import agent.prompt_builder as _pb
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        monkeypatch.setattr("tools.bot_desktop.runtime.published_env", dict)
+        _pb._BACKEND_PROBE_CACHE.clear()
+        assert "Bot Screen" not in _pb.build_environment_hints()
+
+    def test_remote_backend_never_sees_a_host_bot_screen(self, monkeypatch):
+        """A sandboxed terminal cannot open windows on the gateway host, so the hint is local-only."""
+        import agent.prompt_builder as _pb
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setattr(_pb, "_probe_remote_backend", lambda _t: None)
+        monkeypatch.setattr("tools.bot_desktop.runtime.published_env",
+                            lambda: {"DISPLAY": ":20"})
+        _pb._BACKEND_PROBE_CACHE.clear()
+        assert "Bot Screen" not in _pb.build_environment_hints()
+
 
 
     def test_remote_backend_probe_carries_no_user_home_cwd(self, monkeypatch):
@@ -795,7 +838,7 @@ class TestEnvironmentHints:
         probe must use the bare call instead of dying on TypeError."""
         import agent.prompt_builder as _pb
 
-        monkeypatch.setenv("TERMINAL_ENV", "singularity")
+        monkeypatch.setenv("TERMINAL_ENV", "daytona")
         _pb._clear_backend_probe_cache()
 
         calls = []
@@ -816,7 +859,7 @@ class TestEnvironmentHints:
         import tools.terminal_tool_backends as _tt
         monkeypatch.setattr(_tt, "_create_environment", lambda **kw: _LegacyEnv())
 
-        assert _pb._probe_remote_backend("singularity") is not None
+        assert _pb._probe_remote_backend("daytona") is not None
         assert calls == ["bare"]
 
     def test_probe_remote_backend_ssh_is_probe_only_and_torn_down(self, monkeypatch):

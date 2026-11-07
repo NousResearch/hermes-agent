@@ -53,8 +53,8 @@ def _get_bot_token() -> Optional[str]:
 
 
 def _discord_request(
-    method: str, path: str, token: str, params: Optional[Dict[str, str]] = None,
-    body: Optional[Dict[str, Any]] = None, timeout: int = 15) -> Any:
+    method: str, path: str, token: str, params: Optional[dict[str, str]] = None,
+    body: Optional[dict[str, Any]] = None, timeout: int = 15) -> Any:
     """Make a request to the Discord REST API."""
     url = f"{DISCORD_API_BASE}{path}"
     if params:
@@ -92,7 +92,7 @@ def _channel_type_name(type_id: int) -> str:
 
 # ── capability detection (application intents) ──────────────────────────────
 # Per-token in-process cache: the app/me endpoint is hit at most once per process.
-_capability_cache: Dict[str, Dict[str, Any]] = {}
+_capability_cache: dict[str, dict[str, Any]] = {}
 
 # Privileged intents change only when the user flips them in the Developer Portal, so
 # 24h disk staleness is harmless: a hidden action re-appears on the next refresh; an
@@ -118,7 +118,7 @@ def _token_cache_key(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
 
 
-def _read_caps_file(path: Path) -> Dict[str, Any]:
+def _read_caps_file(path: Path) -> dict[str, Any]:
     """Disk cache contents ({token_key: {"caps", "ts"}}); {} when missing/corrupt."""
     try:
         with path.open("r", encoding="utf-8-sig") as f:
@@ -128,7 +128,7 @@ def _read_caps_file(path: Path) -> Dict[str, Any]:
         return {}
 
 
-def _load_caps_from_disk(token: str) -> Optional[Dict[str, Any]]:
+def _load_caps_from_disk(token: str) -> Optional[dict[str, Any]]:
     """Return fresh disk-cached capabilities for *token*, or None."""
     try:
         entry = _read_caps_file(_capability_disk_cache_path()).get(_token_cache_key(token))
@@ -140,7 +140,7 @@ def _load_caps_from_disk(token: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def _save_caps_to_disk(token: str, caps: Dict[str, Any]) -> None:
+def _save_caps_to_disk(token: str, caps: dict[str, Any]) -> None:
     try:
         path = _capability_disk_cache_path()
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -154,7 +154,7 @@ def _save_caps_to_disk(token: str, caps: Dict[str, Any]) -> None:
         logger.debug("discord capability disk-cache write failed", exc_info=True)
 
 
-def _detect_capabilities_nonblocking(token: str) -> Dict[str, Any]:
+def _detect_capabilities_nonblocking(token: str) -> dict[str, Any]:
     """Schema-build lookup: in-process cache → fresh disk cache → permissive default plus a
     fire-and-forget background detection that fills the disk cache for the NEXT process
     (the ~2-5s blocking HTTPS call must stay off the cold-start critical path)."""
@@ -186,11 +186,11 @@ def _detect_capabilities_nonblocking(token: str) -> Dict[str, Any]:
     return caps_default
 
 
-def _fetch_capabilities(token: str) -> Dict[str, Any]:
+def _fetch_capabilities(token: str) -> dict[str, Any]:
     """Fetch capabilities from GET /applications/@me. Pure network fetch — never touches
     the in-process cache (background detection must not mutate schemas mid-process).
     Detection failure is permissive."""
-    caps: Dict[str, Any] = dict(_PERMISSIVE_CAPS)
+    caps: dict[str, Any] = dict(_PERMISSIVE_CAPS)
     try:
         app = _discord_request("GET", "/applications/@me", token, timeout=5)
         flags = int(app.get("flags", 0) or 0)
@@ -202,7 +202,7 @@ def _fetch_capabilities(token: str) -> Dict[str, Any]:
     return caps
 
 
-def _detect_capabilities(token: str, *, force: bool = False) -> Dict[str, Any]:
+def _detect_capabilities(token: str, *, force: bool = False) -> dict[str, Any]:
     """Blocking detection via GET /applications/@me, cached per token (the warm-up path;
     schema builds use the non-blocking variant). ``force`` re-fetches."""
     if token in _capability_cache and not force:
@@ -221,11 +221,11 @@ def _reset_capability_cache() -> None:
 
 
 # ── action implementations ───────────────────────────────────────────────────
-def _listing(key: str, items: List[Dict[str, Any]]) -> str:
+def _listing(key: str, items: list[dict[str, Any]]) -> str:
     return json.dumps({key: items, "count": len(items)})
 
 
-def _member_summary(m: Dict[str, Any], *, full: bool) -> Dict[str, Any]:
+def _member_summary(m: dict[str, Any], *, full: bool) -> dict[str, Any]:
     """Member row; ``full`` adds the avatar/join fields member_info exposes
     (key order is part of the result text, so the two shapes stay explicit)."""
     user = m.get("user", {})
@@ -236,7 +236,7 @@ def _member_summary(m: Dict[str, Any], *, full: bool) -> Dict[str, Any]:
     return row if full else {k: v for k, v in row.items() if k not in ("avatar", "joined_at", "premium_since")}
 
 
-def _message_summary(msg: Dict[str, Any]) -> Dict[str, Any]:
+def _message_summary(msg: dict[str, Any]) -> dict[str, Any]:
     author = msg.get("author", {})
     return {
         "id": msg["id"], "content": msg.get("content", ""),
@@ -284,7 +284,7 @@ def _list_channels(token: str, guild_id: str, **_kwargs: Any) -> str:
     """All channels grouped by category (uncategorized first), each sorted by position."""
     channels = _discord_request("GET", f"/guilds/{guild_id}/channels", token)
     cats = sorted((ch for ch in channels if ch["type"] == 4), key=lambda c: c.get("position", 0))
-    groups: Dict[Optional[str], List[Dict[str, Any]]] = {None: [], **{c["id"]: [] for c in cats}}
+    groups: dict[Optional[str], list[dict[str, Any]]] = {None: [], **{c["id"]: [] for c in cats}}
     for ch in channels:
         if ch["type"] == 4:  # category
             continue
@@ -336,7 +336,7 @@ def _fetch_messages(
     token: str, channel_id: str, limit: int = 50,
     before: Optional[str] = None, after: Optional[str] = None, **_kwargs: Any) -> str:
     """``before``/``after`` are message snowflakes for reverse/forward pagination."""
-    params: Dict[str, str] = {"limit": _limit_param(limit, 50)}
+    params: dict[str, str] = {"limit": _limit_param(limit, 50)}
     if before:
         params["before"] = before
     if after:
@@ -359,7 +359,7 @@ def _create_thread(
     token: str, channel_id: str, name: str, message_id: Optional[str] = None,
     auto_archive_duration: int = 1440, **_kwargs: Any) -> str:
     """Create a thread — anchored to ``message_id`` when given, else standalone public."""
-    body: Dict[str, Any] = {"name": name, "auto_archive_duration": auto_archive_duration}
+    body: dict[str, Any] = {"name": name, "auto_archive_duration": auto_archive_duration}
     path = f"/channels/{channel_id}/threads"
     if message_id:
         path = f"/channels/{channel_id}/messages/{message_id}/threads"
@@ -409,7 +409,7 @@ _ACTION_MANIFEST = [
     ("remove_role", _remove_role, "(guild_id, user_id, role_id)", "remove a role"),
 ]
 _ACTIONS = {name: fn for name, fn, _sig, _desc in _ACTION_MANIFEST}
-_REQUIRED_PARAMS: Dict[str, List[str]] = {
+_REQUIRED_PARAMS: dict[str, list[str]] = {
     name: [p.strip() for p in sig.strip("()").split(",") if p.strip()]
     for name, _fn, sig, _desc in _ACTION_MANIFEST}
 
@@ -423,7 +423,7 @@ _ADMIN_ACTIONS = {k: v for k, v in _ACTIONS.items() if k not in _CORE_ACTION_NAM
 _INTENT_GATED_MEMBERS = frozenset({"member_info", "search_members"})
 
 
-def _load_allowed_actions_config() -> Optional[List[str]]:
+def _load_allowed_actions_config() -> Optional[list[str]]:
     """``discord.server_actions`` allowlist (comma string or YAML list), or ``None`` when
     unrestricted. Unknown names are dropped with a warning."""
     try:
@@ -449,7 +449,7 @@ def _load_allowed_actions_config() -> Optional[List[str]]:
     return [n for n in names if n in _ACTIONS]
 
 
-def _available_actions(caps: Dict[str, Any], allowlist: Optional[List[str]]) -> List[str]:
+def _available_actions(caps: dict[str, Any], allowlist: Optional[list[str]]) -> list[str]:
     """Visible actions from intents + config allowlist, in :data:`_ACTIONS` order."""
     members_ok = caps.get("has_members_intent", True)
     return [
@@ -472,7 +472,7 @@ _TOOL_DESCRIPTIONS = {
     ),
 }
 
-_SCHEMA_PROPERTIES: Dict[str, Any] = {
+_SCHEMA_PROPERTIES: dict[str, Any] = {
     "guild_id": {"type": "string", "description": "Discord server (guild) ID."},
     "channel_id": {"type": "string", "description": "Discord channel ID."},
     "user_id": {"type": "string", "description": "Discord user ID."},
@@ -505,8 +505,8 @@ _CONTENT_NOTE = (
 
 
 def _build_schema(
-    actions: List[str], caps: Optional[Dict[str, Any]] = None, tool_name: str = "discord",
-) -> Optional[Dict[str, Any]]:
+    actions: list[str], caps: Optional[dict[str, Any]] = None, tool_name: str = "discord",
+) -> Optional[dict[str, Any]]:
     """Tool schema for the filtered action list; ``None`` when empty (drop the tool)."""
     caps = caps or {}
     if not actions:
@@ -527,7 +527,7 @@ def _build_schema(
             "required": ["action"]}}
 
 
-def _get_dynamic_schema(action_subset: Dict[str, Any], tool_name: str) -> Optional[Dict[str, Any]]:
+def _get_dynamic_schema(action_subset: dict[str, Any], tool_name: str) -> Optional[dict[str, Any]]:
     """Build a dynamic schema for *action_subset* filtered by intents + config."""
     token = _get_bot_token()
     if not token:
@@ -584,7 +584,7 @@ _HANDLER_DEFAULTS = {
     "name": "", "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440}
 
 
-def _run_discord_action(action: str, valid_actions: Dict[str, Any], tool_label: str, **params: Any) -> str:
+def _run_discord_action(action: str, valid_actions: dict[str, Any], tool_label: str, **params: Any) -> str:
     """Shared handler logic for both discord tools (``params`` default per :data:`_HANDLER_DEFAULTS`)."""
     token = _get_bot_token()
     if not token:
@@ -631,16 +631,3 @@ for _name, _actions, _handler in (
         handler=lambda args, _h=_handler, **kw: _h(**{"action": "", **args}),
         check_fn=check_discord_tool_requirements,
         requires_env=["DISCORD_BOT_TOKEN"])
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import TYPE_CHECKING  # noqa: F401,E402
-from typing import Tuple  # noqa: F401,E402
-
-def get_dynamic_schema() -> Optional[Dict[str, Any]]:
-    """Backward-compat wrapper — returns core schema."""
-    return get_dynamic_schema_core()
-# ---- END PLUGIN-COMPAT ----

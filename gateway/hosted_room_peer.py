@@ -96,6 +96,24 @@ def gateway_room_grant_secret(root: Path | str | None = None) -> bytes:
     return _gateway_room_grant_secret_for_home(str(Path(root).expanduser().resolve()))
 
 
+def gateway_room_grant_secret_available(root: Path | str | None = None) -> bool:
+    """Whether this installation has, or can mint, its RoomLink secret, without minting it: a
+    read-only capability probe must never create the file (``gateway_room_grant_secret`` does,
+    when a grant is first issued)."""
+    if root is None:
+        from hermes_constants import get_hermes_home
+        root = os.environ.get("HERMES_HOME") or get_hermes_home()
+    home = Path(root).expanduser().resolve()
+    path = home / _ROOM_GRANT_SECRET_FILE
+    try:
+        return len(path.read_bytes()) == 32
+    except FileNotFoundError:
+        parent = home if home.exists() else next((p for p in home.parents if p.exists()), home)
+        return os.access(parent, os.W_OK | os.X_OK)
+    except OSError:
+        return False
+
+
 def derive_room_grant_secret(api_key: str) -> bytes:
     """Domain-separate room grants from the configured API key.
 
@@ -206,7 +224,7 @@ class GatewayRoomCatalog:
     transport_security: TransportSecurity | None = None
 
     @classmethod
-    def from_mapping(cls, value: Mapping[str, Any]) -> "GatewayRoomCatalog":
+    def from_mapping(cls, value: Mapping[str, Any]) -> GatewayRoomCatalog:
         _exact_fields(value, required=_CATALOG_FIELDS, optional={"endpoint"}, label="capability catalog")
         installation_id = _identifier(value["installation_id"], field="installation_id")
         versions = tuple(_protocol_versions(_non_empty_list(value["protocol_versions"], field="protocol_versions")))
@@ -379,7 +397,7 @@ class HostedMemberDispatch:
         return asdict(self)
 
     @classmethod
-    def from_mapping(cls, value: Mapping[str, Any]) -> "HostedMemberDispatch":
+    def from_mapping(cls, value: Mapping[str, Any]) -> HostedMemberDispatch:
         _exact_fields(value, required=set(_DISPATCH_FIELDS) | {"prompt", "prompt_digest"}, label="dispatch")
         if not isinstance(prompt := value["prompt"], str) or not prompt.strip():
             raise HostedRoomPeerError("prompt must be a non-empty string")
@@ -486,6 +504,30 @@ def decode_room_grant(secret: bytes, token: str, *, permission: str, now: float 
     return payload
 
 
+def room_grant_hard_expiry(token: str, *, now: float | None = None) -> float:
+    """When a grant and every renewal of it are dead (its status horizon), read without the secret:
+    the home only schedules by it. An unreadable token counts as living the longest horizon."""
+    try:
+        claims = json.loads(_split_token(token)[0].decode("ascii"))
+        return float(claims.get("status_expires_at", claims["expires_at"]))
+    except (ValueError, KeyError, TypeError, AttributeError):  # grant/base64/JSON errors are ValueErrors
+        return clock(now) + MAX_STATUS_GRANT_TTL_SECONDS
+
+
+def room_grant_matches_scope(
+    token: str, *, room_id: str, member_id: str, home_install_id: str,
+    authority_gateway_id: str, authority_epoch: int) -> bool:
+    """Read the scope the member's revoke endpoint acts on, without authenticating the token.
+    A refused registration must never schedule revocation of a different group's grant."""
+    expected = {"room_id": room_id, "member_id": member_id, "home_install_id": home_install_id,
+                "authority_gateway_id": authority_gateway_id, "authority_epoch": authority_epoch}
+    try:
+        claims = json.loads(_split_token(token)[0].decode("ascii"))
+        return all(claims.get(key) == value for key, value in expected.items())
+    except (ValueError, TypeError, AttributeError):
+        return False
+
+
 def room_grant_needs_dispatch_refresh(token: str, *, now: float | None = None, leeway_seconds: float = 5 * 60) -> bool:
     """Read only grant timing to schedule refresh; trust is established by the target, not here."""
     try:
@@ -493,57 +535,3 @@ def room_grant_needs_dispatch_refresh(token: str, *, now: float | None = None, l
         return clock(now) + max(0.0, float(leeway_seconds)) >= expires_at
     except Exception:
         return True
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import time  # noqa: F401,E402
-
-@dataclass(frozen=True)
-class RoomLinkProbe:
-    """One gateway-verified route candidate."""
-
-    mode: LinkMode
-    verified: bool
-    encrypted: bool
-    latency_ms: float
-
-_LINK_PRIORITY = {
-    "direct": 0,
-    "overlay": 1,
-    "relay": 2,
-    "pull": 3,
-    "desktop": 4,
-}
-
-def select_room_link(
-    probes: Iterable[RoomLinkProbe],
-    *,
-    desktop_available: bool,
-) -> RoomLinkProbe | None:
-    """Choose the fastest safe route without weakening encryption."""
-    candidates = [
-        probe
-        for probe in probes
-        if probe.verified
-        and probe.encrypted
-        and probe.mode != "desktop"
-        and math.isfinite(probe.latency_ms)
-        and probe.latency_ms >= 0
-    ]
-    if candidates:
-        return min(
-            candidates,
-            key=lambda item: (_LINK_PRIORITY[item.mode], item.latency_ms),
-        )
-    if desktop_available:
-        return RoomLinkProbe(
-            mode="desktop",
-            verified=True,
-            encrypted=True,
-            latency_ms=0,
-        )
-    return None
-# ---- END PLUGIN-COMPAT ----

@@ -32,20 +32,31 @@ import subprocess
 import sys
 
 SRC_DIRS = ("agent", "gateway", "hermes_cli", "tools", "tui_gateway", "cron", "acp_adapter", "plugins")
-_TEST_DEF_RE = re.compile(r"^\s*(?:async\s+)?def test_", re.M)
+_TEST_DEF_RE = re.compile(r"^\s*(?:async\s+)?def test_", re.MULTILINE)
 
 
 def _git(*args: str) -> str:
-    return subprocess.run(["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
+    return subprocess.run(["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace", check=False).stdout
 
 
-def _changed_py(base: str, head: str) -> list[str]:
-    out = _git("diff", "--name-only", "--diff-filter=M", base, head)
-    return [f for f in out.split() if f.endswith(".py")]
+def _changed_py(base: str, head: str) -> list[tuple[str, str]]:
+    """``(path at base, path at head)`` for every modified or renamed ``.py`` file; a moved file is
+    compared with its old self (``-l0``: no rename-detection limit, so a large move is still seen)."""
+    fields = _git("diff", "--name-status", "-z", "-M", "-l0", "--diff-filter=MR", base, head).split("\0")
+    pairs: list[tuple[str, str]] = []
+    i = 0
+    while i < len(fields) and fields[i]:
+        if fields[i].startswith("R"):
+            pairs.append((fields[i + 1], fields[i + 2]))
+            i += 3
+        else:
+            pairs.append((fields[i + 1], fields[i + 1]))
+            i += 2
+    return [(old, new) for old, new in pairs if new.endswith(".py")]
 
 
 def _show(rev: str, path: str) -> str | None:
-    r = subprocess.run(["git", "show", f"{rev}:{path}"], capture_output=True, text=True, encoding="utf-8", errors="replace")
+    r = subprocess.run(["git", "show", f"{rev}:{path}"], capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
     return r.stdout if r.returncode == 0 else None
 
 
@@ -101,6 +112,7 @@ def public_methods(src: str) -> set[str]:
 
 
 def _is_source(path: str) -> bool:
+    path = path.removeprefix("src/hermes_agent/")
     return "/" not in path or path.split("/", 1)[0] in SRC_DIRS
 
 
@@ -108,16 +120,16 @@ def diff_surface(base: str, head: str) -> dict:
     dropped_names: dict[str, list[str]] = {}
     dropped_methods: dict[str, list[str]] = {}
     test_drops: dict[str, tuple[int, int]] = {}
-    for path in _changed_py(base, head):
-        before, after = _show(base, path), _show(head, path)
+    for old, path in _changed_py(base, head):
+        before, after = _show(base, old), _show(head, path)
         if before is None or after is None:
             continue
-        if path.startswith("tests/"):
+        if old.startswith("tests/"):
             nb, na = len(_TEST_DEF_RE.findall(before)), len(_TEST_DEF_RE.findall(after))
             if na < nb:
                 test_drops[path] = (nb, na)
             continue
-        if not _is_source(path) or path.startswith("tests"):
+        if not (_is_source(old) or _is_source(path)):
             continue
         pb, pa = public_toplevel(before), public_toplevel(after)
         if pb is not None and pa is not None and (gone := sorted(pb - pa)):
@@ -160,7 +172,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--json", dest="json_out", help="also write the report as JSON")
     args = ap.parse_args(argv)
     for ref in (args.base, args.head):
-        if subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], capture_output=True).returncode != 0:
+        if subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], capture_output=True, check=False).returncode != 0:
             print(f"public-surface: cannot resolve ref {ref!r} (fetch it first); refusing to report a clean diff", file=sys.stderr)
             return 2
     base = _git("merge-base", args.base, args.head).strip()

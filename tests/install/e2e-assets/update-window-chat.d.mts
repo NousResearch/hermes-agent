@@ -1,9 +1,9 @@
-import type { ElectronApplication, Page } from '@playwright/test'
-
-import type { NativeProcess } from '../../../tests-js/scripts/desktop-smoke-process.ts'
+import type { BackendProcess } from '../../../tests-js/scripts/desktop-smoke-process.ts'
+import type { ElectronApplication, Page } from '../../../tests-js/scripts/e2e-driver-deps.ts'
 
 export interface UpdateWindowIdentity {
   hermesRoot: string
+  hermesHome?: string
 }
 
 export interface UpdateWindowChatOptions {
@@ -28,10 +28,11 @@ export function assertUpdateWindowProcess(
 ): void
 
 export function assertUpdateWindowBackendOrigin(
-  backend: NativeProcess,
+  backend: BackendProcess,
   identity: UpdateWindowIdentity,
   root: string,
   origin: 'source' | 'bundled',
+  installedCommit?: string,
 ): void
 
 export function runUpdateWindowChat(

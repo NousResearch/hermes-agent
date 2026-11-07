@@ -17,13 +17,13 @@ _DEFAULT_SIZES = {"image_size_preset": _PRESET_SIZES, "aspect_ratio": _ASPECT_SI
 
 def _model(
     display: str, speed: str, strengths: str, price: str, *, style: str = "image_size_preset",
-    sizes: Optional[Dict[str, Any]] = None, defaults: Dict[str, Any], supports: set,
+    sizes: Optional[dict[str, Any]] = None, defaults: dict[str, Any], supports: set,
     edit_endpoint: Optional[str] = None, edit_supports: Optional[set] = None,
     max_reference_images: Optional[int] = None, edit_image_param: Optional[str] = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Build one catalog entry; edit keys are present only for edit-capable models. ``edit_image_param``
     names the source-image key when the edit endpoint takes a singular ``image_url`` instead of ``image_urls``."""
-    entry: Dict[str, Any] = {
+    entry: dict[str, Any] = {
         "display": display, "speed": speed, "strengths": strengths, "price": price,
         "size_style": style, "sizes": sizes if sizes is not None else _DEFAULT_SIZES[style],
         "defaults": defaults, "supports": supports, "upscale": False,
@@ -37,7 +37,7 @@ def _model(
     return entry
 
 
-FAL_MODELS: Dict[str, Dict[str, Any]] = {
+FAL_MODELS: dict[str, dict[str, Any]] = {
     "fal-ai/flux-2/klein/9b": _model(
         "FLUX 2 Klein 9B", "<1s", "Fast, crisp text", "$0.006/MP",
         defaults={

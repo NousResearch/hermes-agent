@@ -74,15 +74,34 @@ def checkout_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def _root_to_verify(project_root: Path | None) -> Path:
+    """The root the receipt may describe: a caller's root is a hint, not a contract.
+
+    The hand-off script is read before the pull, so an update that ships a fix to
+    the caller side cannot apply it to its own run: a pre-fix ``windows.ps1`` still
+    passes ``Path.cwd()``, which is HERMES_HOME and never holds a packaged Desktop
+    app. Honour a caller-supplied root only while it actually carries one, and fall
+    back to the checkout this module was imported from -- the tree the update just
+    wrote. A supplied root that does carry a packaged app is still verified as
+    given, so real damage there stays fail-closed.
+    """
+    if project_root is None:
+        return checkout_root()
+    if _desktop_packaged_executable(project_root / "apps" / "desktop") is not None:
+        return project_root
+    return checkout_root()
+
+
 def verify_windows_desktop_update(project_root: Path | None = None) -> None:
     """Raise when a zero-exit updater left an incomplete or stale packaged app.
 
     The root defaults to the imported checkout, never the caller's cwd: the hand-off
     is spawned from HERMES_HOME by the pre-update Desktop, and a cwd-derived root
-    reported a healthy install as "Desktop executable is missing" (Sep 2026).
+    reported a healthy install as "Desktop executable is missing" (Sep 2026). A
+    caller-supplied root with no packaged app falls back to that same checkout, so a
+    stale in-flight hand-off cannot fail a healthy install either.
     """
-    if project_root is None:
-        project_root = checkout_root()
+    project_root = _root_to_verify(project_root)
     desktop = project_root / "apps" / "desktop"
     executable = _desktop_packaged_executable(desktop)
     if executable is None:

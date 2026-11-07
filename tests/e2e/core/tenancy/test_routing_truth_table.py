@@ -339,6 +339,11 @@ class Switch:
     keyless: bool = False  # the host may also see NO credential (withholding a key is not a leak)
 
 
+def _titled(gw: TuiGateway, sid: str, title: str) -> Callable[[dict[str, Any]], bool]:
+    is_title = gw.event("session.title", sid)
+    return lambda m: is_title(m) and ((m.get("params") or {}).get("payload") or {}).get("title") == title
+
+
 def test_tui_gateway_model_switch_routing(tmp_path: Path, request: pytest.FixtureRequest) -> None:
     """One live session walks the switch matrix; after every switch the next turn lands on
     exactly the selected host with exactly its key, and nothing reaches any other host.
@@ -381,7 +386,13 @@ def test_tui_gateway_model_switch_routing(tmp_path: Path, request: pytest.Fixtur
             pool_state["fail"] = leg.host == "pool" and not leg.ok
             done = gw.turn(sid, f"turn {i}")
             if i == 0:
-                gw.seen_or_wait(gw.event("session.title", sid), timeout=120)  # first-turn aux call settles
+                # Turn 0 titles the session twice: an instant ``derived`` title at turn START (the
+                # first session.title event), then a model upgrade on a background thread started as
+                # the turn settles (custom is self-hosted, #117296). That upgrade snapshots and
+                # validates main's runtime before any switch, so its aux request is THIS leg's
+                # traffic: wait for the upgraded title main's aux endpoint answered, or a slow
+                # runner lands the request after leg 1's marks and it reads as a leak.
+                gw.seen_or_wait(_titled(gw, sid, "aux-from-main"), timeout=120)
             log = fleet.since(marks)
             payload = (done.get("params") or {}).get("payload") or {}
             ctx = f"leg {i} ({leg.value!r} -> {leg.host}): {done.get('params', {}).get('type')} {str(payload)[:300]}\n{describe(log)}"

@@ -38,6 +38,44 @@ export function packagedReleaseChannel(stamp: Readonly<InstallStamp> | null): st
   return isCanaryTag(stamp.tag) ? 'canary' : 'stable'
 }
 
+/** Values that mean "no version known" rather than a real release: the empty
+ *  backend reply, the backend's own unknown marker, and the 0.0.0 placeholder
+ *  both package.json files carry on main (real releases are date-based, and
+ *  channel builds override the version at pack time). Repeating any of these
+ *  in About is how the panel ends up reporting Version 0.0.0 (#124581). */
+const PLACEHOLDER_VERSIONS = new Set(['', '0.0.0', 'v0.0.0', 'unknown'])
+
+function firstRealVersion(candidates: Array<string | null | undefined>): string {
+  for (const candidate of candidates) {
+    if (candidate && !PLACEHOLDER_VERSIONS.has(candidate)) {
+      return candidate
+    }
+  }
+
+  return ''
+}
+
+/** Map version info to the native About panel string. Unlike the renderer —
+ *  which renders '' as its localized "unavailable" copy — an empty
+ *  applicationVersion falls back to the bundle version (the 0.0.0 placeholder
+ *  on local builds), so unknown must become an explicit label. Commit
+ *  spelling matches the backend's untagged-checkout display_version
+ *  (`git.<short>[.dirty]`).
+ *  ponytail: English-only fallback; localize if the native panel ever needs it. */
+export function nativeAboutVersion(info: AppVersionInfo): string {
+  const version = firstRealVersion([info.appVersion, info.baseVersion])
+
+  if (version) {
+    return version
+  }
+
+  if (info.commit && !/^0+$/.test(info.commit)) {
+    return `git.${info.commit.slice(0, 7)}${info.dirty ? '.dirty' : ''}`
+  }
+
+  return 'unknown'
+}
+
 /** The backend may live on another machine and run a different release. */
 export function appVersionInfo(
   stamp: Readonly<InstallStamp> | null,
@@ -45,7 +83,7 @@ export function appVersionInfo(
   packageVersion: string
 ): AppVersionInfo {
   if (!stamp) {
-    return { appVersion: runtimeVersion, baseVersion: packageVersion }
+    return { appVersion: firstRealVersion([runtimeVersion, packageVersion]), baseVersion: packageVersion }
   }
 
   const build = stamp.channelBuild
@@ -54,8 +92,8 @@ export function appVersionInfo(
     appVersion: build
       ? `${build.sourceVersion} (${build.channel} #${build.sequence}, ${build.commit.slice(0, 8)})`
       : stamp.payload === 'bootstrap'
-        ? runtimeVersion
-        : stamp.displayVersion || packageVersion,
+        ? firstRealVersion([runtimeVersion, stamp.displayVersion, stamp.baseVersion, packageVersion])
+        : firstRealVersion([stamp.displayVersion, stamp.baseVersion, packageVersion, runtimeVersion]),
     baseVersion: build?.sourceVersion ?? stamp.baseVersion ?? undefined,
     sequence: build?.sequence,
     buildId: build?.buildId,

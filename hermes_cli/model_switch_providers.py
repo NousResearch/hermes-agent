@@ -1370,6 +1370,7 @@ def list_picker_providers(
     current_provider: str = "", current_base_url: str = "", user_providers: dict | None = None,
     custom_providers: list | None = None, max_models: int | None = None, current_model: str = "",
     include_moa: bool = False, excluded_providers: list | None = None,
+    excluded_models: dict | None = None,
     non_blocking_catalogs: bool = False, probe_custom_providers: bool = True,
     probe_current_custom_provider: bool = False) -> list[dict]:
     """Interactive-picker variant of :func:`list_authenticated_providers`.
@@ -1379,11 +1380,15 @@ def list_picker_providers(
     custom endpoints, where the user may supply their own model set through config.
     ``non_blocking_catalogs`` makes every catalog read cache-only: provider catalogs warm in the
     background, OpenRouter's stale disk copy is served as-is; the ``probe_*`` flags are forwarded."""
+    from hermes_cli.model_filters import filter_model_ids
     from hermes_cli.model_switch import list_authenticated_providers
     from hermes_cli.models import fetch_openrouter_models
+    # Exclusions must run against the complete provider inventory: capping first would discard later
+    # allowed models when the first ``max_models`` entries all match exclusion rules.
     providers = list_authenticated_providers(
         current_provider=current_provider, current_base_url=current_base_url,
-        user_providers=user_providers, custom_providers=custom_providers, max_models=max_models,
+        user_providers=user_providers, custom_providers=custom_providers,
+        max_models=None if excluded_models else max_models,
         current_model=current_model, for_picker=True, excluded_providers=excluded_providers,
         non_blocking_catalogs=non_blocking_catalogs, probe_custom_providers=probe_custom_providers,
         probe_current_custom_provider=probe_current_custom_provider)
@@ -1392,14 +1397,21 @@ def list_picker_providers(
 
     filtered: list[dict] = []
     for p in providers:
-        if str(p.get("slug", "")).lower() == "openrouter":
+        slug = str(p.get("slug", "")).lower()
+        if slug == "openrouter":
             try:
                 live_ids = [mid for mid, _ in fetch_openrouter_models(cache_only=non_blocking_catalogs)]
             except Exception:
                 live_ids = list(p.get("models", []))
             p = dict(p)
-            p["models"] = _cap_models(live_ids, max_models, "openrouter")
-            p["total_models"] = len(live_ids)
+            allowed = filter_model_ids(slug, live_ids, excluded_models)
+            p["models"] = _cap_models(allowed, max_models, "openrouter")
+            p["total_models"] = len(allowed)
+        elif excluded_models:
+            allowed = filter_model_ids(slug, list(p.get("models") or []), excluded_models)
+            p = dict(p)
+            p["models"] = _cap_models(allowed, max_models, slug)
+            p["total_models"] = len(allowed)
 
         is_custom_endpoint = bool(p.get("is_user_defined")) and bool(p.get("api_url"))
         if p.get("models") or is_custom_endpoint:

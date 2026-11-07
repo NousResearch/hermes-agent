@@ -56,6 +56,27 @@ def test_wizard_writes_named_provider_carrying_the_key_env(monkeypatch):
     assert "base_url" not in cfg["model"]
 
 
+def test_wizard_filters_with_persisted_bedrock_mantle_scope(monkeypatch):
+    import hermes_cli.auth as auth_mod
+
+    captured = {}
+
+    def _capture_prompt(*_args, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", TOKEN)
+    monkeypatch.setattr(
+        auth_mod,
+        "_prompt_model_selection",
+        _capture_prompt,
+    )
+
+    _model_flow_bedrock_api_key({}, REGION)
+
+    assert captured["filter_provider"] == "custom:bedrock-mantle"
+    assert captured["confirm_provider"] == "custom"
+
+
 def test_wizard_does_not_park_the_bedrock_token_in_openai_api_key(monkeypatch):
     home, _cfg = _run_wizard(monkeypatch)
 

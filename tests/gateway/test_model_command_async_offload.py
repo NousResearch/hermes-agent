@@ -49,8 +49,52 @@ def _isolated_config(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# Text-fallback path  ->  list_authenticated_providers
+# Text-fallback path  ->  list_picker_providers
 # --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_text_fallback_forwards_provider_scoped_exclusions(
+    _isolated_config,
+    monkeypatch,
+):
+    captured = {}
+    def _fake_list_picker_providers(**kwargs):
+        captured.update(kwargs)
+        return [{
+            "slug": "openrouter",
+            "name": "OpenRouter",
+            "is_current": True,
+            "models": ["deepseek/deepseek-v4"],
+            "total_models": 1,
+        }]
+
+    monkeypatch.setattr(
+        "hermes_cli.model_switch_providers.list_picker_providers",
+        _fake_list_picker_providers,
+    )
+    monkeypatch.setattr(
+        "gateway.run._load_gateway_config",
+        lambda **_kwargs: {
+            "model": {
+                "provider": "openrouter",
+                "default": "deepseek/deepseek-v4",
+            },
+            "model_catalog": {
+                "excluded_models": {
+                    "openrouter": ["anthropic/*", "openai/*"],
+                },
+            },
+        },
+    )
+
+    runner = _make_runner()
+    result = await runner._handle_model_command(_make_event())
+
+    assert "**OpenRouter**" in result
+    assert captured["excluded_models"] == {
+        "openrouter": ["anthropic/*", "openai/*"],
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -96,6 +140,65 @@ async def test_picker_path_runs_provider_listing_off_the_event_loop(_isolated_co
     assert threading.get_ident() not in listing_threads, (
         "list_picker_providers ran inline on the event-loop thread"
     )
+
+
+@pytest.mark.asyncio
+async def test_picker_path_forwards_provider_scoped_exclusions(
+    _isolated_config,
+    monkeypatch,
+):
+    captured = {}
+
+    def _fake_list_picker_providers(**kwargs):
+        captured.update(kwargs)
+        return [{
+            "slug": "openrouter",
+            "name": "OpenRouter",
+            "is_current": True,
+            "models": ["deepseek/deepseek-v4"],
+            "total_models": 1,
+        }]
+
+    monkeypatch.setattr(
+        "hermes_cli.model_switch_providers.list_picker_providers",
+        _fake_list_picker_providers,
+    )
+    monkeypatch.setattr(
+        "gateway.run._load_gateway_config",
+        lambda **_kwargs: {
+            "model": {
+                "provider": "openrouter",
+                "default": "deepseek/deepseek-v4",
+            },
+            "model_catalog": {
+                "excluded_models": {
+                    "openrouter": ["anthropic/*", "openai/*"],
+                },
+            },
+        },
+    )
+
+    runner = _make_runner()
+    runner.adapters = {Platform.TELEGRAM: _FakePickerAdapter()}
+    monkeypatch.setattr(
+        runner,
+        "_thread_metadata_for_source",
+        lambda *a, **k: None,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_reply_anchor_for_event",
+        lambda *a, **k: None,
+        raising=False,
+    )
+
+    result = await runner._handle_model_command(_make_event())
+
+    assert result is None
+    assert captured["excluded_models"] == {
+        "openrouter": ["anthropic/*", "openai/*"],
+    }
 
 
 @pytest.mark.asyncio

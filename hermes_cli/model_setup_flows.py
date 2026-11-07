@@ -69,7 +69,7 @@ def _model_flow_openrouter(config, current_model=""):
     # Live pricing is non-blocking — empty dict on failure.
     pricing = get_pricing_for_provider("openrouter", force_refresh=True)
     selected = _prompt_model_selection(
-        openrouter_models, current_model=current_model, pricing=pricing, confirm_provider="openrouter",
+        openrouter_models, current_model=current_model, pricing=pricing, filter_provider="openrouter", confirm_provider="openrouter",
         confirm_base_url=OPENROUTER_BASE_URL, confirm_api_key=_resolved or existing_key)
     _finish_model(selected, "openrouter", f"Default model set to: {selected} (via OpenRouter)",
                   base_url=OPENROUTER_BASE_URL, api_mode="chat_completions")
@@ -94,7 +94,7 @@ def _model_flow_ai_gateway(config, current_model=""):
     from hermes_cli.models_pricing import get_pricing_for_provider
     models_list = ai_gateway_model_ids(force_refresh=True)
     pricing = get_pricing_for_provider("ai-gateway", force_refresh=True)
-    selected = _prompt_model_selection(models_list, current_model=current_model, pricing=pricing)
+    selected = _prompt_model_selection(models_list, current_model=current_model, pricing=pricing, filter_provider="ai-gateway")
     # Inline credentials are deliberately left untouched here (historical behavior).
     _finish_model(selected, "ai-gateway", f"Default model set to: {selected} (via Vercel AI Gateway)",
                   base_url=AI_GATEWAY_BASE_URL, api_mode="chat_completions", clear_creds=False)
@@ -347,7 +347,7 @@ def _model_flow_nous(config, current_model="", args=None):
 
     selected = _prompt_model_selection(
         model_ids, current_model=current_model, pricing=pricing, unavailable_models=unavailable_models,
-        portal_url=_nous_portal_url, unavailable_message=unavailable_message, confirm_provider="nous",
+        portal_url=_nous_portal_url, unavailable_message=unavailable_message, filter_provider="nous", confirm_provider="nous",
         confirm_base_url=creds.get("base_url", ""), confirm_api_key=creds.get("api_key", ""),
         usage=_usage)
     if not selected:
@@ -391,7 +391,7 @@ def _model_flow_openai_codex(config, current_model=""):
 
     codex_models = get_codex_model_ids(access_token=_codex_token, base_url=_codex_base)
     selected = _prompt_model_selection(
-        codex_models, current_model=current_model, confirm_provider="openai-codex",
+        codex_models, current_model=current_model, filter_provider="openai-codex", confirm_provider="openai-codex",
         confirm_base_url=_codex_base or DEFAULT_CODEX_BASE_URL, confirm_api_key=_codex_token or "")
     _activate_provider_model(selected, "openai-codex", DEFAULT_CODEX_BASE_URL,
                              f"Default model set to: {selected} (via OpenAI Codex)")
@@ -418,7 +418,7 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
         base_url = (creds.get("base_url") or "").strip().rstrip("/") or base_url
 
     models = provider_model_ids("xai-oauth")
-    selected = _prompt_model_selection(models, current_model=current_model or (models[0] if models else "grok-4.6"))
+    selected = _prompt_model_selection(models, current_model=current_model or (models[0] if models else "grok-4.6"), filter_provider="xai-oauth")
     _activate_provider_model(selected, "xai-oauth", base_url,
                              f"Default model set to: {selected} (via xAI Grok OAuth — SuperGrok / Premium+)")
 
@@ -445,7 +445,7 @@ def _model_flow_qwen_oauth(_config, current_model=""):
         models = list(_DEFAULT_QWEN_PORTAL_MODELS)
 
     default = current_model or (models[0] if models else "qwen3-coder-plus")
-    selected = _prompt_model_selection(models, current_model=default, confirm_provider="qwen-oauth", confirm_base_url=DEFAULT_QWEN_BASE_URL)
+    selected = _prompt_model_selection(models, current_model=default, filter_provider="qwen-oauth", confirm_provider="qwen-oauth", confirm_base_url=DEFAULT_QWEN_BASE_URL)
     _activate_provider_model(selected, "qwen-oauth", DEFAULT_QWEN_BASE_URL, f"Default model set to: {selected} (via Qwen OAuth)")
 
 
@@ -473,7 +473,7 @@ def _model_flow_minimax_oauth(config, current_model="", args=None):
 
     from hermes_cli.models import _PROVIDER_MODELS
     model_ids = _PROVIDER_MODELS.get("minimax-oauth", [])
-    selected = _prompt_model_selection(model_ids, current_model, confirm_provider="minimax-oauth", confirm_base_url=creds["base_url"])
+    selected = _prompt_model_selection(model_ids, current_model, filter_provider="minimax-oauth", confirm_provider="minimax-oauth", confirm_base_url=creds["base_url"])
     _activate_provider_model(selected, "minimax-oauth", creds["base_url"], f"\u2713 Using MiniMax model: {selected}", no_change=None)
 
 
@@ -505,7 +505,7 @@ def _model_flow_kimi(config, current_model=""):
 
     model_list = _PROVIDER_MODELS.get("kimi-coding" if is_coding_plan else "moonshot", [])
     selected = _pick_model_or_prompt(
-        model_list, "Enter model name: ", current_model=current_model, confirm_provider=provider_id,
+        model_list, "Enter model name: ", current_model=current_model, filter_provider=provider_id, confirm_provider=provider_id,
         confirm_base_url=effective_base, confirm_api_key=existing_key)
     # api_mode is dropped so the runtime auto-detects it from the URL.
     _finish_model(selected, provider_id, f"Default model set to: {selected} (via {'Kimi Coding' if is_coding_plan else 'Moonshot'})",
@@ -558,7 +558,7 @@ def _model_flow_stepfun(config, current_model=""):
             print(f"  Could not auto-detect models from {pconfig.name} API — showing Step Plan fallback catalog.")
 
     selected = _pick_model_or_prompt(
-        model_list, "Model name: ", current_model=current_model, confirm_provider=provider_id,
+        model_list, "Model name: ", current_model=current_model, filter_provider=provider_id, confirm_provider=provider_id,
         confirm_base_url=effective_base, confirm_api_key=existing_key)
     model = _finish_model(selected, provider_id, f"Default model set to: {selected} (via {pconfig.name})",
                           base_url=effective_base, drop_api_mode=True)
@@ -610,7 +610,7 @@ def _model_flow_vertex(config, current_model=""):
     model_list = _PROVIDER_MODELS.get("vertex", []) or ["google/gemini-3-pro-preview", "google/gemini-3-flash-preview"]
     host = "aiplatform.googleapis.com" if region == "global" else f"{region}-aiplatform.googleapis.com"
     base_url_preview = f"https://{host}/v1beta1/projects/<project>/locations/{region}/endpoints/openapi"
-    selected = _prompt_model_selection(model_list, current_model=current_model, confirm_provider="vertex", confirm_base_url=base_url_preview)
+    selected = _prompt_model_selection(model_list, current_model=current_model, filter_provider="vertex", confirm_provider="vertex", confirm_base_url=base_url_preview)
 
     def _finish(cfg, _model):
         vcfg = _ensure_dict_section(cfg, "vertex")
@@ -827,7 +827,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         except Exception:
             pricing = {}
     selected = _pick_model_or_prompt(
-        model_list, "Model name: ", current_model=current_model, pricing=pricing, confirm_provider=provider_id,
+        model_list, "Model name: ", current_model=current_model, pricing=pricing, filter_provider=provider_id, confirm_provider=provider_id,
         confirm_base_url=effective_base, confirm_api_key=existing_key)
     if selected and is_opencode:
         selected = normalize_opencode_model_id(provider_id, selected)
@@ -913,7 +913,7 @@ def _model_flow_anthropic(config, current_model=""):
 
     selected = _pick_model_or_prompt(
         _PROVIDER_MODELS.get("anthropic", []), "Model name (e.g., claude-sonnet-4-20250514): ",
-        current_model=current_model, confirm_provider="anthropic")
+        current_model=current_model, filter_provider="anthropic", confirm_provider="anthropic")
     # Clear base_url: resolve_runtime_provider() always hardcodes Anthropic's URL, and a
     # stale value can contaminate other providers on a later switch.
     _finish_model(selected, "anthropic", f"Default model set to: {selected} (via Anthropic)", drop_base_url=True, drop_api_mode=True)
@@ -1041,7 +1041,7 @@ def _model_flow_plugin_provider(config, provider_id, current_model=""):
     live, notes = _plugin_flow_live_rows(profile, api_key, base_url)
     model_list = merge_profile_catalog(provider_id, profile, live) or []
     selected = _pick_model_or_prompt(
-        model_list, "Model name: ", current_model=current_model, confirm_provider=provider_id,
+        model_list, "Model name: ", current_model=current_model, filter_provider=provider_id, confirm_provider=provider_id,
         confirm_base_url=base_url, confirm_api_key=api_key, notes=notes)
     _finish_model(selected, provider_id, f"Default model set to: {selected} (via {profile.display_name or provider_id})",
                   base_url=base_url or None, api_mode=profile.api_mode or None)

@@ -89,29 +89,36 @@ class _ModelSwitchContext:
     user_provs: Any = None
     custom_provs: Any = None
     excluded_provs: list = dataclasses.field(default_factory=list)
+    excluded_models: dict = dataclasses.field(default_factory=dict)
 
     def read_config(self) -> None:
         """Fill the current route from ``config_path``; fail-open to the defaults."""
         from gateway.run import _load_gateway_config
+        from hermes_cli.config import coerce_provider_id, stringify_provider_map
         try:
             cfg = _load_gateway_config(config_path=self.config_path)
             if not cfg:
                 return
             model_cfg = cfg.get("model", {})
             if isinstance(model_cfg, dict):
-                self.current_model = model_cfg.get("default", "")
-                self.current_provider = model_cfg.get("provider", self.current_provider)
-                self.route_provider = model_cfg.get("provider")
-                self.current_base_url = model_cfg.get("base_url", "")
-            self.user_provs = cfg.get("providers")
+                self.current_model = str(model_cfg.get("default", "") or "")
+                self.current_provider = coerce_provider_id(model_cfg.get("provider", self.current_provider))
+                self.route_provider = coerce_provider_id(model_cfg.get("provider")) if model_cfg.get("provider") is not None else None
+                self.current_base_url = str(model_cfg.get("base_url", "") or "")
+            self.user_provs = stringify_provider_map(cfg.get("providers"))
             try:
                 from hermes_cli.config import get_compatible_custom_providers
                 self.custom_provs = get_compatible_custom_providers(cfg)
             except Exception:
                 self.custom_provs = cfg.get("custom_providers")
-            excl = cfg.get("model_catalog", {}).get("excluded_providers")
-            if isinstance(excl, list):
-                self.excluded_provs = excl
+            catalog_cfg = cfg.get("model_catalog", {})
+            if isinstance(catalog_cfg, dict):
+                excl = catalog_cfg.get("excluded_providers")
+                if isinstance(excl, list):
+                    self.excluded_provs = excl
+                excluded_models = catalog_cfg.get("excluded_models")
+                if isinstance(excluded_models, dict):
+                    self.excluded_models = excluded_models
         except Exception:
             pass
 
@@ -489,13 +496,14 @@ class GatewayModelCommandsMixin:
         self, event: MessageEvent, ctx: _ModelSwitchContext, profile_home
     ) -> Optional[str]:
         """``/model`` with no args: interactive picker where supported, else the text list."""
-        from hermes_cli.model_switch import list_authenticated_providers
+        from hermes_cli.model_switch_providers import list_picker_providers
         from hermes_cli.providers import get_label
 
         listing_kwargs = dict(
             current_provider=ctx.current_provider, current_base_url=ctx.current_base_url,
             current_model=ctx.current_model, user_providers=ctx.user_provs,
             custom_providers=ctx.custom_provs, excluded_providers=ctx.excluded_provs,
+            excluded_models=ctx.excluded_models,
             # Chat `/model` is a read path: catalogs come from the disk cache and stale ones warm
             # in the background, and only the selected custom endpoint is probed live, so one
             # degraded provider can't stall the reply (#74003). Mirrors the GUI read path.
@@ -523,7 +531,7 @@ class GatewayModelCommandsMixin:
         lines = [t("gateway.model.current_label", model=ctx.current_model or t("gateway.shared.unknown_value"),
                    provider=get_label(ctx.current_provider)), ""]
         try:  # off-loop: listing still reads config/disk cache synchronously (#41289)
-            providers = await asyncio.to_thread(list_authenticated_providers, max_models=_TEXT_LISTING_MODELS, **listing_kwargs)
+            providers = await asyncio.to_thread(list_picker_providers, max_models=_TEXT_LISTING_MODELS, **listing_kwargs)
             lines.extend(_model_provider_listing_lines(providers))
         except Exception:
             pass

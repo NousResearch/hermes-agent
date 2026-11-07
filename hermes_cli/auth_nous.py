@@ -1654,7 +1654,7 @@ def _pick_nous_model_after_login(
             "use \"Enter custom model name\" for others.")
         return _prompt_model_selection(
             model_ids, pricing=pricing, unavailable_models=unavailable_models, portal_url=_portal,
-            unavailable_message=unavailable_message, confirm_provider="nous",
+            unavailable_message=unavailable_message, filter_provider="nous", confirm_provider="nous",
             confirm_base_url=inference_base_url, confirm_api_key=runtime_key,
             usage=_usage)
     if unavailable_models:

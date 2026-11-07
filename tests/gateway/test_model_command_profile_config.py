@@ -44,22 +44,37 @@ async def test_model_picker_reads_routed_profile_config(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     (secondary_home / "config.yaml").write_text(
-        "model:\n  default: secondary-model\n  provider: secondary-provider\n",
+        "model:\n"
+        "  default: 2070\n"
+        "  provider: 2071\n"
+        "  base_url: 2072\n"
+        "providers:\n"
+        "  2071:\n"
+        "    base_url: https://example.invalid/v1\n"
+        "model_catalog:\n"
+        "  excluded_models:\n"
+        "    2071: [blocked/*]\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(gateway_run, "_hermes_home", default_home)
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
-    monkeypatch.setattr(
-        "hermes_cli.model_switch_providers.list_picker_providers",
-        lambda **_kwargs: [
+    listing_kwargs = {}
+
+    def _list_picker_providers(**kwargs):
+        listing_kwargs.update(kwargs)
+        return [
             {
-                "slug": "secondary-provider",
+                "slug": "2071",
                 "name": "Secondary Provider",
                 "is_current": True,
-                "models": ["secondary-model"],
+                "models": ["2070"],
                 "total_models": 1,
             }
-        ],
+        ]
+
+    monkeypatch.setattr(
+        "hermes_cli.model_switch_providers.list_picker_providers",
+        _list_picker_providers,
     )
 
     runner = object.__new__(GatewayRunner)
@@ -77,5 +92,12 @@ async def test_model_picker_reads_routed_profile_config(tmp_path, monkeypatch):
 
     assert result is None
     assert adapter.kwargs is not None
-    assert adapter.kwargs["current_model"] == "secondary-model"
-    assert adapter.kwargs["current_provider"] == "secondary-provider"
+    assert adapter.kwargs["current_model"] == "2070"
+    assert adapter.kwargs["current_provider"] == "2071"
+    assert listing_kwargs["current_model"] == "2070"
+    assert listing_kwargs["current_provider"] == "2071"
+    assert listing_kwargs["current_base_url"] == "2072"
+    assert listing_kwargs["user_providers"] == {
+        "2071": {"base_url": "https://example.invalid/v1"},
+    }
+    assert listing_kwargs["excluded_models"] == {2071: ["blocked/*"]}

@@ -222,7 +222,8 @@ async def fire_post_delivery(authority, admission_id):
     taken = _registry(authority, 'post_delivery').pop(admission_id, None)
     if taken is None:
         return
-    from gateway.platforms.base import _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS, _split_post_delivery_entry
+    from gateway.platforms.base import _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS
+    from gateway.platforms.delivery_confirm import _split_post_delivery_entry
     from gateway.platforms.base_post_delivery import run_post_delivery_callback
     callback = _split_post_delivery_entry(taken[2])[1]
     with await _execution_scope(authority, None):  # off-turn: the owning profile's scope

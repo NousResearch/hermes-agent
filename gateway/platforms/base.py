@@ -439,6 +439,7 @@ from gateway.platforms.base_exec_approval import (
 from gateway.platforms.base_streaming_tts import (
     AudioFormat, StreamingTTSHandle, streaming_tts_should_skip_whole_file, streaming_tts_turn_key)
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from gateway.platforms.delivery_confirm import _split_post_delivery_entry, confirm_delivery_result
 from gateway.warning_notifications import diagnostic_wake_muted
 from hermes_cli.observability.shared_metrics_gateway import records_delivery, stop_reply_clock
 from hermes_cli.home_data_layout import SECRET_CACHE_STORES
@@ -1785,12 +1786,6 @@ def resolve_channel_skills(
                     nm for name in skills if isinstance(name, str) and (nm := name.strip()))
                 return list(seen) or None
     return None
-
-
-def _split_post_delivery_entry(entry: Any) -> tuple[Optional[int], Any]:
-    """``(generation, callback)`` from a post-delivery slot; legacy bare callbacks have no
-    generation."""
-    return entry if isinstance(entry, tuple) and len(entry) == 2 else (None, entry)
 
 
 def _lazy_attr(obj: Any, name: str, factory: Callable[[], Any]) -> Any:
@@ -4298,6 +4293,7 @@ class BasePlatformAdapter(ABC):
             await self._release_turn_marker(event)  # the ledger now owns the crash recovery
         result = await delivery_adapter._send_with_retry(
             chat_id=event.source.chat_id, content=text_content, reply_to=reply_to, metadata=metadata)
+        result = confirm_delivery_result(delivery_adapter, text_content, event, result)
         stop_reply_clock(delivery_adapter, event.source.chat_id, result)
         if obligation_id is not None:
             await self._finalize_delivery_obligation(obligation_id, result, event, delivery_adapter)

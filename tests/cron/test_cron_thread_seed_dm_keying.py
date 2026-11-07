@@ -15,9 +15,17 @@ user's in-thread reply will build. Asserting on build_session_key output —
 not on SessionSource field shapes — pins the end-to-end contract.
 """
 
-from unittest.mock import MagicMock, patch
+import asyncio
+from concurrent.futures import Future
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from cron.scheduler_delivery import _seed_cron_channel_session, _seed_cron_thread_session
+import pytest
+
+from cron.scheduler_delivery import (
+    _deliver_result,
+    _seed_cron_channel_session,
+    _seed_cron_thread_session,
+)
 from gateway.config import Platform
 from gateway.session import SessionSource, build_session_key
 
@@ -143,6 +151,84 @@ def test_telegram_forum_topic_seed_key_matches_topic_reply_key():
     )
     assert build_session_key(_seeded_source(store)) == build_session_key(reply_source)
     assert build_session_key(_seeded_source(store)) == "agent:main:telegram:group:-1001234567:77"
+
+
+def test_originless_telegram_dm_topic_delivery_seeds_dm_key():
+    """A job with no captured origin, defined from a manifest and delivering to an explicit
+    ``telegram:<chat>`` with ``attach_to_session``, opens a topic in a private chat; the seed must
+    land on the ``dm`` row the Telegram adapter types a private-chat topic reply with — the pre-fix
+    shape read DM only from the origin or a Slack "D" id and seeded ``group``."""
+    store = MagicMock()
+    adapter = AsyncMock()
+    adapter._session_store = store
+    adapter.create_handoff_thread = AsyncMock(return_value="88")
+    adapter.send.return_value = MagicMock(
+        success=True, message_id="msg_1", raw_response=None,
+    )
+
+    pconfig = MagicMock()
+    pconfig.enabled = True
+    pconfig.extra = {}
+    mock_cfg = MagicMock()
+    mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+    loop = MagicMock()
+    loop.is_running.return_value = True
+
+    def fake_run_coro(coro, _loop):
+        future = Future()
+        try:
+            future.set_result(asyncio.run(coro))
+        except BaseException as exc:
+            future.set_exception(exc)
+        return future
+
+    job = {
+        "id": "j9",
+        "name": "watch",
+        "deliver": "telegram:1234567",
+        "attach_to_session": True,
+    }
+
+    with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+         patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+         patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro), \
+         patch("gateway.mirror.mirror_to_session", return_value=True):
+        delivery_err = _deliver_result(
+            job, "Three bullets", adapters={Platform.TELEGRAM: adapter}, loop=loop,
+        )
+
+    assert delivery_err is None
+    adapter.create_handoff_thread.assert_awaited_once()
+    assert adapter.create_handoff_thread.await_args.args[0] == "1234567"
+
+    reply_source = SessionSource(
+        platform=Platform.TELEGRAM, chat_id="1234567", chat_type="dm", user_id="1234567",
+        thread_id="88",
+    )
+    seeded_key = build_session_key(_seeded_source(store))
+    assert seeded_key == build_session_key(reply_source)
+    assert seeded_key == "agent:main:telegram:dm:1234567:88"
+
+
+@pytest.mark.parametrize(
+    "origin, platform, chat_id, expected",
+    [
+        ({"chat_type": "dm"}, "slack", "C0AAAAAAAA", True),     # the origin decides when present
+        ({"chat_type": "group"}, "telegram", "1234567", False),
+        ({}, "slack", "D0BJTDCSR7C", True),                      # Slack DM id
+        ({}, "slack", "C0AAAAAAAA", False),
+        ({}, "telegram", "1234567", True),                        # Telegram private chat
+        ({}, "telegram", "-1001234567", False),                   # supergroup / forum
+        ({}, "telegram", "-4567", False),                         # basic group
+        ({}, "discord", "1234567", False),                        # positive ids mean nothing elsewhere
+        ({}, "telegram", "@channel", False),
+    ],
+)
+def test_target_is_dm(origin, platform, chat_id, expected):
+    from cron.scheduler_delivery import _target_is_dm
+
+    assert _target_is_dm(origin, platform, chat_id) is expected
 
 
 def test_scoped_dm_thread_seed_key_matches_scoped_reply_key():

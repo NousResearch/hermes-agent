@@ -2578,7 +2578,7 @@ class _BedrockStream:
             "falling back to non-streaming InvokeModel.\n"
             "   Grant that action to restore streaming output.\n", diagnostic=True)
         logger.info("bedrock: converse_stream denied by IAM (%s) — "
-            "using non-streaming converse() for this session.", type(exc).__name__)
+            "using non-streaming converse() on this route.", type(exc).__name__)
         return normalize_converse_response(client.converse(**final_kwargs))
 
     def _worker(self):
@@ -3224,10 +3224,10 @@ class _StreamingCall(StreamingWaitMonitor):
             getattr(self.agent, "provider", "") or "unknown")
 
     def _adopt_final_response(self, final_response):
-        """Adapter returned a completed response for ``stream=True``: switch the
-        session to non-streaming and replay its content as deltas."""
+        """Adapter returned a completed response for ``stream=True``: switch this
+        route to non-streaming and replay its content as deltas."""
         logger.info("Streaming request returned a final response object instead of an iterator; "
-            "switching %s/%s to non-streaming for this session.", self.agent.provider or "unknown",
+            "switching %s/%s to non-streaming on this route.", self.agent.provider or "unknown",
             self.agent.model or "unknown")
         self.agent._disable_streaming = True
         return self._replay_final_response(final_response)
@@ -3525,11 +3525,11 @@ class _StreamingCall(StreamingWaitMonitor):
             self.agent._disable_streaming = True
             logger.warning(
                 "Provider stream returned an empty SSE frame (keepalive, no payload) before any "
-                "delta — switching %s/%s to non-streaming for this session.",
+                "delta — switching %s/%s to non-streaming on this route.",
                 self.agent.provider or "unknown", self.agent.model or "unknown")
             # Durable channel, not _buffer_status: this recovery is expected to SUCCEED, and
             # buffered retry chatter is dropped on successful recovery. Fires at most once per
-            # session (streaming is off from here on).
+            # route (streaming is off on this route from here on).
             self.agent._emit_warning(
                 "⚠️ Provider stream returned an empty keepalive frame — retrying this turn "
                 "without streaming (streaming stays off on this route).")
@@ -3584,10 +3584,10 @@ class _StreamingCall(StreamingWaitMonitor):
         _is_transient = _is_timeout or _is_conn_err or _is_sse_conn_err or _is_stream_parse_err
 
         if not self.deltas_were_sent["yes"] and not getattr(self.agent, "_stream_options_unsupported", False) and _rejects_stream_options(e):
-            # Nothing streamed yet: drop the usage extension for this session and re-open.
+            # Nothing streamed yet: drop the usage extension on this route and re-open.
             self.agent._stream_options_unsupported = True
             self._compat_retries = 1
-            logger.info("Endpoint rejected stream_options (HTTP %s); retrying without it for this session.",
+            logger.info("Endpoint rejected stream_options (HTTP %s); retrying without it on this route.",
                         getattr(e, "status_code", None))
             self._cancel_current_stream_attempt("stream_options_rejected_retry")
             self.clients.close_once("stream_options_rejected_retry")

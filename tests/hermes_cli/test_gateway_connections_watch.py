@@ -7,6 +7,7 @@ as its writer does (the TS module's live proof is in the PR's FIXES notes).
 import asyncio
 import json
 import threading
+from types import SimpleNamespace
 
 import pytest
 from starlette.websockets import WebSocketDisconnect
@@ -94,3 +95,33 @@ def test_one_entrys_failed_teardown_still_tears_down_the_others(monkeypatch):
     watch_mod._teardown([], ["a", "b"])
     assert closed == ["a", "b"]
     assert forgotten == ["a", "b"]
+
+
+def test_the_webapp_lifespan_ending_closes_every_ssh_tunnel_it_opened(tmp_path, monkeypatch):
+    """Stopping the listener tears down its tunnels (forward, owned remote serve, master)."""
+    from fastapi import FastAPI
+    from starlette.testclient import TestClient
+
+    from hermes_cli import gateway_connections_ssh as ssh
+    from hermes_cli.web_server_app import http_lifespan
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    torn: list[str] = []
+
+    class Master:
+        def cancel_forward(self, local_port, remote_port):
+            torn.append(f"forward {local_port}->{remote_port}")
+
+        def close(self):
+            torn.append("master")
+
+    monkeypatch.setattr(ssh, "disconnect_remote", lambda _ssh, oid: torn.append(f"serve {oid}"))
+    connected = SimpleNamespace(local_port=41000, remote_port=9119)
+    monkeypatch.setitem(ssh._tunnels, "box", ssh._Tunnel(Master(), "oid", connected, "box.lan", ()))
+
+    app = FastAPI(lifespan=http_lifespan)
+    app.state.ui_surface = "webapp"
+    with TestClient(app):
+        assert torn == []
+    assert torn == ["forward 41000->9119", "serve oid", "master"]
+    assert "box" not in ssh._tunnels

@@ -21,5 +21,9 @@ export function webappSessionKey(basePath: string): string {
  * that in its history. Reloads keep only this tab's grant.
  */
 export function readWebappSession(basePath: string): string {
-  try { return sessionStorage.getItem(webappSessionKey(basePath)) || '' } catch { return '' }
+  try {
+    return sessionStorage.getItem(webappSessionKey(basePath)) || ''
+  } catch {
+    return ''
+  }
 }

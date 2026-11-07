@@ -533,6 +533,7 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-optional-productivity',
                   collapsed: true,
                   items: [
+                    'user-guide/skills/optional/productivity/productivity-bark',
                     'user-guide/skills/optional/productivity/productivity-box',
                     'user-guide/skills/optional/productivity/productivity-canvas',
                     'user-guide/skills/optional/productivity/productivity-decision-questionnaire',

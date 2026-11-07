@@ -150,6 +150,50 @@ def _is_truncated(entry: dict) -> bool:
     return bool(entry.get("truncated") or entry.get("exit_reason") == "max_iterations")
 
 
+def _money_label(amount: float) -> str:
+    """Sub-cent spend keeps its significant digits — ``$0.00`` would hide the whole point."""
+    return f"${amount:.4f}" if amount >= 0.01 else f"${amount:.6f}".rstrip("0").rstrip(".")
+
+
+def _triage_lines(entry: dict) -> list[str]:
+    """What a background child spent, and — when it did not finish — the classified reason it stopped.
+
+    A background completion is the parent's only view of a child whose transcript it will never
+    scroll: ``cost_usd``/``tokens`` say which branch of a fan-out is expensive, and
+    ``failure_reason`` separates a provider quota wall from a task error without parsing prose.
+    Lines appear only for fields the runner actually reported, so nothing is guessed: a route with
+    no pricing entry says ``cost unknown`` rather than a fabricated ``$0``.
+    """
+    lines: list[str] = []
+    reason = entry.get("failure_reason")
+    if isinstance(reason, str) and reason.strip():
+        lines.append(f"Reason: {reason.strip()}")
+    parts: list[str] = []
+    raw_tokens = entry.get("tokens")
+    tokens = raw_tokens if isinstance(raw_tokens, dict) else {}
+    try:
+        tokens_in, tokens_out = int(tokens.get("input") or 0), int(tokens.get("output") or 0)
+    except (TypeError, ValueError):
+        tokens_in = tokens_out = 0
+    if tokens_in or tokens_out:
+        parts.append(f"{tokens_in:,} in / {tokens_out:,} out")
+    cost, cost_status = entry.get("cost_usd"), str(entry.get("cost_status") or "")
+    try:
+        amount = float(cost) if cost is not None else None
+    except (TypeError, ValueError):
+        amount = None
+    if amount is not None:
+        if cost_status in ("actual", "estimated"):
+            parts.append(f"{_money_label(amount)} ({cost_status})")
+        elif cost_status == "included":
+            parts.append("cost included in plan")
+        else:
+            parts.append("cost unknown (route has no pricing entry)")
+    if parts:
+        lines.append("Usage: " + " · ".join(parts))
+    return lines
+
+
 def _notice_lines(results) -> list[str]:
     """Blank + model_not_found notice block, or [] when the notice does not apply."""
     notice = _delegation_model_not_found_notice(results)
@@ -254,6 +298,7 @@ def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> s
             lines.append(f"(no summary — status={r_status}" + (f": {r_error}" if r_error else "") + ")")
         if r.get("live_transcript"):
             lines.append(f"Full live transcript (complete tool/assistant trace): {r['live_transcript']}")
+        lines += _triage_lines(r)
         lines += _process_accounting_lines(r)
     return "\n".join(lines)
 
@@ -314,6 +359,7 @@ def _format_async_delegation(evt: dict) -> str:
             lines += _recovery_lines(evt)
         if summary:
             lines += ["Partial output:", summary]
+    lines += _triage_lines(evt)
     return "\n".join(lines)
 
 

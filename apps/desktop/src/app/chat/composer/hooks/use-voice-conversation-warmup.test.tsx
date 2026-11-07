@@ -1,6 +1,9 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { AUDIO_CHAINED_STT_REQUEST_TIMEOUT_MS, AUDIO_STT_LEASE_REQUEST_TIMEOUT_MS } from '@/api/system'
+import { notifyError } from '@/store/notifications'
+
 import type { MicRecording } from './use-mic-recorder'
 import { useVoiceConversation } from './use-voice-conversation'
 
@@ -117,6 +120,7 @@ const OWNER_A = { connectionId: 'gateway-a', profile: 'worker_alpha' }
 describe('useVoiceConversation STT readiness barrier', () => {
   beforeEach(() => {
     cleanup()
+    vi.mocked(notifyError).mockClear()
     ambient.connectionId = 'gateway-a'
     ambient.profile = 'worker_alpha'
     micHandle.start.mockClear()
@@ -129,10 +133,11 @@ describe('useVoiceConversation STT readiness barrier', () => {
 
   afterEach(() => {
     cleanup()
+    vi.useRealTimers()
   })
 
   function renderConversation(
-    onTranscribeAudio: (audio: Blob, owner?: unknown) => Promise<string>,
+    onTranscribeAudio: (audio: Blob, owner?: unknown, timeoutMs?: number) => Promise<string>,
     onSubmit: (text: string) => void = () => undefined
   ) {
     const hook = renderHook(() =>
@@ -159,7 +164,7 @@ describe('useVoiceConversation STT readiness barrier', () => {
         })
     )
 
-    const transcribe = vi.fn(async () => 'hello world')
+    const transcribe = vi.fn(async (_audio: Blob, _owner?: unknown, _timeoutMs?: number) => 'hello world')
     const hook = renderConversation(transcribe)
 
     // Listening starts: the mic opens without waiting on the warm-up.
@@ -190,7 +195,115 @@ describe('useVoiceConversation STT readiness barrier', () => {
     })
 
     await waitFor(() => expect(transcribe).toHaveBeenCalledTimes(1))
+    const call = transcribe.mock.calls[0]
+    expect(call?.[0]).toBeInstanceOf(Blob)
+    expect(call?.[1]).toEqual(OWNER_A)
+    expect(call?.[2]).toEqual(expect.any(Number))
+    expect(call?.[2]).toBeGreaterThan(0)
+    expect(call?.[2]).toBeLessThanOrEqual(AUDIO_CHAINED_STT_REQUEST_TIMEOUT_MS)
     expect(await transcribe.mock.results[0].value).toBe('hello world')
+  })
+
+  it('re-arms when cold-model warm-up exceeds its separate deadline', async () => {
+    vi.useFakeTimers()
+    vi.mocked(notifyError).mockClear()
+    syncSttLeaseSpy.mockImplementationOnce(() => new Promise<void>(() => undefined))
+    const transcribe = vi.fn(async () => 'hello world')
+    const hook = renderConversation(transcribe)
+
+    await act(async () => {
+      await hook.result.current.start()
+    })
+    await act(async () => {
+      hook.result.current.stopTurn()
+
+      for (let i = 0; i < 6; i += 1) {
+        await Promise.resolve()
+      }
+    })
+    expect(transcribe).not.toHaveBeenCalled()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(AUDIO_STT_LEASE_REQUEST_TIMEOUT_MS)
+
+      for (let i = 0; i < 6; i += 1) {
+        await Promise.resolve()
+      }
+    })
+
+    expect(notifyError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringMatching(/timed out/i) }),
+      'transcription failed'
+    )
+    expect(micHandle.start).toHaveBeenCalledTimes(2)
+    expect(hook.result.current.status).toBe('listening')
+  })
+
+  it('re-arms and reports an unresolved STT turn after its deadline', async () => {
+    vi.useFakeTimers()
+    vi.mocked(notifyError).mockClear()
+    const transcribe = vi.fn(() => new Promise<string>(() => undefined))
+    const hook = renderConversation(transcribe)
+
+    await act(async () => {
+      await hook.result.current.start()
+    })
+    await act(async () => {
+      hook.result.current.stopTurn()
+
+      for (let i = 0; i < 6; i += 1) {
+        await Promise.resolve()
+      }
+    })
+    expect(transcribe).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(AUDIO_CHAINED_STT_REQUEST_TIMEOUT_MS)
+
+      for (let i = 0; i < 6; i += 1) {
+        await Promise.resolve()
+      }
+    })
+
+    expect(notifyError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringMatching(/timed out/i) }),
+      'transcription failed'
+    )
+    expect(micHandle.start).toHaveBeenCalledTimes(2)
+    expect(hook.result.current.status).toBe('listening')
+  })
+
+  it('does not report a timeout when the user ends voice mode during STT', async () => {
+    vi.useFakeTimers()
+    vi.mocked(notifyError).mockClear()
+    const transcribe = vi.fn(() => new Promise<string>(() => undefined))
+    const hook = renderConversation(transcribe)
+
+    await act(async () => {
+      await hook.result.current.start()
+    })
+    await act(async () => {
+      hook.result.current.stopTurn()
+
+      for (let i = 0; i < 6; i += 1) {
+        await Promise.resolve()
+      }
+    })
+    expect(transcribe).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      await hook.result.current.end()
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(AUDIO_CHAINED_STT_REQUEST_TIMEOUT_MS)
+
+      for (let i = 0; i < 6; i += 1) {
+        await Promise.resolve()
+      }
+    })
+
+    expect(notifyError).not.toHaveBeenCalled()
+    expect(hook.result.current.status).toBe('idle')
   })
 
   // #128668 review (P1): end() while the warm-up is still settling fences the

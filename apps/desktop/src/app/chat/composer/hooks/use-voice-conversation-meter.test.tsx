@@ -95,7 +95,7 @@ describe('useVoiceConversation with a failed level meter', () => {
       lastStartOptions().onMeterFailure?.()
     })
 
-    await waitFor(() => expect(onTranscribeAudio).toHaveBeenCalledWith(take.audio, expect.anything()))
+    await waitFor(() => expect(onTranscribeAudio).toHaveBeenCalledWith(take.audio, expect.anything(), expect.any(Number)))
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith('what time is it'))
   })
 

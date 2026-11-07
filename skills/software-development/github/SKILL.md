@@ -27,6 +27,7 @@ starting that workflow, the body below only routes.
 | Auth broken / new machine / token or SSH setup / gh login | `references/auth.md` |
 | Create, triage, label, assign, close issues | `references/issues.md` |
 | Branch, commit, open PR, watch CI, merge | `references/pr-workflow.md` |
+| Follow a PR's comments, reviews and CI back into this chat | `references/pr-workflow.md` § Follow a PR (`scripts/follow_pr.py`) |
 | Carry an ISSUE to a verified PR (full delivery loop) | `references/issue-to-pr.md` |
 | Review someone's PR: diffs, inline comments, verdict | `references/code-review.md` |
 | Clone/create/fork repos, remotes, releases | `references/repo-management.md` |

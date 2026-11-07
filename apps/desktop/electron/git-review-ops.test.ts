@@ -12,6 +12,7 @@ import {
   resolveRenamePath,
   REVIEW_FILE_CAP,
   reviewCreatePr,
+  reviewDiff,
   reviewList,
   simpleGitHostEnv
 } from './git-review-ops'
@@ -276,6 +277,15 @@ test('reviewList reports an untracked directory without recursively listing its 
     result.files.map(file => file.path),
     ['browser-profile/']
   )
+})
+
+// A cwd this machine does not have (a deleted worktree, a session another SSH gateway
+// owns) is an empty review, not an IPC handler error on every refresh (#150024).
+test('review reads fail soft on a cwd that does not exist here', async () => {
+  const missing = path.join(os.tmpdir(), `hermes-review-missing-${process.pid}-${Date.now()}`)
+
+  assert.deepEqual(await reviewList(missing, 'uncommitted', null, 'git'), { files: [], base: null })
+  assert.equal(await reviewDiff(missing, 'a.ts', 'uncommitted', null, false, 'git'), '')
 })
 
 test('reviewList caps the file payload returned to the renderer', async () => {

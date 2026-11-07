@@ -39,7 +39,7 @@ import {
   toggleReview,
   unstageReviewFile
 } from './review'
-import { $busy, $currentCwd } from './session'
+import { $busy, $currentCwd, $selectedStoredSessionId, setSessionOwnerHint } from './session'
 import { $sessionStates } from './session-states'
 
 // requestOneShot is the only cross-module dependency that must be faked (it
@@ -118,6 +118,7 @@ beforeEach(() => {
   $reviewScopeTarget.set('main')
   $currentCwd.set('/repo')
   $busy.set(false)
+  $selectedStoredSessionId.set(null)
   $sessionStates.set({})
 })
 
@@ -125,6 +126,51 @@ afterEach(() => {
   vi.clearAllTimers()
   vi.useRealTimers()
   delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+})
+
+// The pane reads the repo where the session runs: a session another (SSH) gateway
+// owns goes over that gateway's /api/git, never local git on the remote cwd (#150024).
+describe('review git routing by session owner', () => {
+  function stubApi() {
+    const api = vi.fn(async () => ({ base: null, files: [file('remote.ts')] }))
+
+    ;(window.hermesDesktop as unknown as { api: typeof api }).api = api
+
+    return api
+  }
+
+  it('lists a remote-owned session over the owning gateway, not the local bridge', async () => {
+    const review = stubReview()
+    const api = stubApi()
+    setSessionOwnerHint('ssh-session', { connectionId: 'dellg3', mode: 'remote', profile: 'alldrivers-dev' })
+    $selectedStoredSessionId.set('ssh-session')
+    $currentCwd.set('/home/rarf')
+    $reviewOpen.set(true)
+
+    await refreshReview()
+
+    expect(review.list).not.toHaveBeenCalled()
+    expect(api).toHaveBeenCalledTimes(1)
+    const [request] = api.mock.calls[0] as unknown as [{ connectionId: string; path: string; profile: string }]
+    expect(request.connectionId).toBe('dellg3')
+    expect(request.profile).toBe('alldrivers-dev')
+    expect(new URL(request.path, 'http://x').pathname).toBe('/api/git/review/list')
+    expect(new URL(request.path, 'http://x').searchParams.get('path')).toBe('/home/rarf')
+    expect($reviewFiles.get().map(f => f.path)).toEqual(['remote.ts'])
+  })
+
+  it('keeps a locally owned session on the local bridge', async () => {
+    const review = stubReview({ list: vi.fn(async () => ({ files: [file('local.ts')] })) })
+    const api = stubApi()
+    setSessionOwnerHint('local-session', { connectionId: 'local', mode: 'local', profile: 'development' })
+    $selectedStoredSessionId.set('local-session')
+    $reviewOpen.set(true)
+
+    await refreshReview()
+
+    expect(review.list).toHaveBeenCalledWith('/repo', 'uncommitted', null)
+    expect(api).not.toHaveBeenCalled()
+  })
 })
 
 describe('refreshReview', () => {

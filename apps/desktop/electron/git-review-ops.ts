@@ -125,6 +125,18 @@ function gitFor(cwd, gitBin) {
   return Array.isArray(binary) ? git.env(simpleGitHostEnv(process.env, gitBin || 'git')) : git
 }
 
+// A review cwd can name a directory this machine does not have: a deleted worktree, or
+// a session another (SSH) connection owns. simple-git throws at construction on a
+// missing baseDir, so review reads fail soft like repoStatus instead of raising
+// IPC handler errors on every pane refresh.
+async function isDirectory(cwd) {
+  try {
+    return (await fs.stat(cwd)).isDirectory()
+  } catch {
+    return false
+  }
+}
+
 // simple-git reports renames as `old => new` (and `dir/{old => new}/f`); resolve
 // to the NEW path so the row addresses the real file for diff/stage.
 function resolveRenamePath(raw) {
@@ -306,6 +318,10 @@ async function reviewList(repoPath, scope, baseRef, gitBin) {
     return { files: [], base: null }
   }
 
+  if (!(await isDirectory(cwd))) {
+    return { files: [], base: null }
+  }
+
   const git = gitFor(cwd, gitBin)
 
   try {
@@ -396,6 +412,10 @@ async function reviewDiff(repoPath, filePath, scope, baseRef, staged, gitBin) {
   try {
     cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Review diff' })
   } catch {
+    return ''
+  }
+
+  if (!(await isDirectory(cwd))) {
     return ''
   }
 

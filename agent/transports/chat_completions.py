@@ -554,6 +554,13 @@ class ChatCompletionsTransport(ProviderTransport):
         sanitized_pairs = [(m, _sanitize_message(m, strip_extra_content, strip_reasoning, native_type,
                                                  mistral_tool_ids=mistral_ids))
                            for m in messages]
+        # Chat Completions permits omitted assistant content alongside tool_calls.
+        # Keep empty content in durable history, but leave it off every provider's wire.
+        for idx, (original, cleaned) in enumerate(sanitized_pairs):
+            wire = original if cleaned is None else cleaned
+            if (isinstance(wire, dict) and wire.get("role") == "assistant"
+                    and wire.get("tool_calls") and "content" in wire and wire["content"] in (None, "")):
+                sanitized_pairs[idx] = (original, {k: v for k, v in wire.items() if k != "content"})
         if all(s is None for _, s in sanitized_pairs):
             return messages
         return [m if s is None else s for m, s in sanitized_pairs]

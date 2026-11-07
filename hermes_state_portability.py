@@ -109,7 +109,7 @@ def _adoption_value(field, value):
     return value
 
 
-def _adoption_history_covers(donor_conn, target_conn, session_id):
+def _adoption_history_covers(donor_conn, target_conn, session_id, *, retired_witness=None):
     """Does the target retain every donor row in storage order, regardless of physical row ids?"""
     if (donor_conn.execute("SELECT 1 FROM sessions WHERE id=?", (session_id,)).fetchone() is None
             or target_conn.execute("SELECT 1 FROM sessions WHERE id=?", (session_id,)).fetchone() is None):
@@ -118,6 +118,23 @@ def _adoption_history_covers(donor_conn, target_conn, session_id):
     target = target_conn.execute("SELECT * FROM messages WHERE session_id=? ORDER BY id", (session_id,)).fetchall()
     if len(donor) > len(target):
         return False
+    allowed_retired_rows = set()
+    if retired_witness is not None:
+        from hermes_state_adoption_records import AdoptionConflict, activity_digest
+        from hermes_state_common import _sql_json_extract, QUEUED_PROMPT_METADATA_KEY
+        source_state = donor_conn.execute(
+            "SELECT end_reason, archived FROM sessions WHERE id=?", (session_id,)).fetchone()
+        count = retired_witness.get("source_count")
+        witness = retired_witness.get("target_active_digest")
+        if count is None or witness is None:
+            raise AdoptionConflict("Saved adoption has no activity witness; inspect history before recovery")
+        if count != len(donor) or activity_digest(target_conn, session_id, count) != witness:
+            raise AdoptionConflict("Saved adoption activity witness differs; inspect history before recovery")
+        if source_state and source_state[0] == "adopted_by_profile" and source_state[1] == 1:
+            expression = _sql_json_extract('display_metadata', '$.' + QUEUED_PROMPT_METADATA_KEY)
+            allowed_retired_rows = {row[0] for row in donor_conn.execute(
+                "SELECT id FROM messages WHERE session_id=? AND role='user' AND active=0 "
+                f"AND COALESCE({expression}, 0) = 1", (session_id,))}
     for source, destination in zip(donor, target):
         src, dst = dict(source), dict(destination)
         if src.keys() != dst.keys():
@@ -126,6 +143,9 @@ def _adoption_history_covers(donor_conn, target_conn, session_id):
             if field in _ADOPTION_PHYSICAL_FIELDS or (field in _ADOPTION_OPTIONAL_UID_FIELDS and value is None):
                 continue
             if _adoption_value(field, value) != _adoption_value(field, dst[field]):
+                if (field == "active" and value == 0 and dst[field] == 1
+                        and src["id"] in allowed_retired_rows):
+                    continue
                 return False
     return True
 
@@ -679,7 +699,9 @@ class SessionPortabilityMixin:
                 if conn.execute("SELECT 1 FROM sessions WHERE id=?", (sid,)).fetchone():
                     with donor_db._read_ctx() as donor_conn:
                         if not _adoption_history_covers(donor_conn, conn, sid):
-                            raise AdoptionConflict("Target transcript differs from donor; recover the history before adoption")
+                            member = next((m for m in current["manifest"]["members"] if m["id"] == sid), None) if current else None
+                            if member is None or not _adoption_history_covers(donor_conn, conn, sid, retired_witness=member):
+                                raise AdoptionConflict("Target transcript differs from donor; recover the history before adoption")
                         try:
                             portable = _adoption_accounting_covers(donor_conn, conn, sid)
                         except ValueError as exc:
@@ -694,7 +716,10 @@ class SessionPortabilityMixin:
                     try:
                         for sid in result["imported_ids"]:
                             _copy_adoption_portable_state(self, donor_conn, conn, sid)
-                        if any(not _adoption_history_covers(donor_conn, conn, segment["id"])
+                        members = {m["id"]: m for m in current["manifest"]["members"]} if current else {}
+                        if any(not (_adoption_history_covers(donor_conn, conn, segment["id"])
+                                    or (segment["id"] in members and _adoption_history_covers(
+                                        donor_conn, conn, segment["id"], retired_witness=members[segment["id"]])))
                                or not _adoption_accounting_covers(donor_conn, conn, segment["id"])
                                for segment in segments):
                             raise AdoptionConflict("Imported history or accounting differs from donor; inspect before adoption")
@@ -720,6 +745,9 @@ class SessionPortabilityMixin:
         if adopted and retire_donor:
             pending = []
             for order, member in enumerate(members):
+                existing = donor_db.get_session(member)
+                if existing and existing.get("end_reason") == "adopted_by_profile" and existing.get("archived"):
+                    continue
                 if not self._retire_donor_segment(donor_db, member):
                     pending = members[order:]
                     break

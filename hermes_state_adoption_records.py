@@ -61,8 +61,15 @@ def _validate_member(member):
         raise AdoptionConflict("Invalid adoption member identity")
     if not _valid_state(member.get("source")) or not _valid_state(member.get("target")):
         raise AdoptionConflict("Invalid saved adoption lifecycle evidence")
+    witness = member.get("target_active_digest")
+    source_count = member.get("source_count")
+    if ("target_active_digest" in member or "source_count" in member) and (
+            type(source_count) is not int or source_count < 0
+            or not isinstance(witness, str) or len(witness) != 64
+            or any(ch not in "0123456789abcdef" for ch in witness)):
+        raise AdoptionConflict("Invalid saved adoption activity witness")
     count, digest = member.get("target_count"), member.get("target_digest")
-    if type(count) is not int or count < 0:
+    if type(count) is not int or count < 0 or (source_count is not None and source_count > count):
         raise AdoptionConflict("Invalid saved adoption transcript length")
     if not isinstance(digest, str) or len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest):
         raise AdoptionConflict("Invalid saved adoption transcript fingerprint")
@@ -153,6 +160,12 @@ def _history(conn, session_id, count=None):
     return len(rows), digest
 
 
+def activity_digest(conn, session_id, count):
+    rows = [row[0] for row in conn.execute(
+        "SELECT active FROM messages WHERE session_id=? ORDER BY id LIMIT ?", (session_id, count))]
+    return hashlib.sha256(json.dumps(rows, separators=(",", ":")).encode()).hexdigest()
+
+
 def _lifecycle(row):
     return [row.get("parent_session_id"), row.get("ended_at"), row.get("end_reason")]
 
@@ -167,8 +180,12 @@ def build_manifest(db, donor_db, segments, conn):
         if target is None:
             raise AdoptionConflict("Imported target member is missing; adoption was not committed")
         count, digest = _history(conn, mid)
+        with donor_db._read_ctx() as donor_conn:
+            source_count = donor_conn.execute(
+                "SELECT count(*) FROM messages WHERE session_id=?", (mid,)).fetchone()[0]
         members.append({"id": mid, "source": _lifecycle(segment), "target": list(target),
-                        "target_count": count, "target_digest": digest})
+                        "target_count": count, "target_digest": digest, "source_count": source_count,
+                        "target_active_digest": activity_digest(conn, mid, source_count)})
     return {"format": FORMAT, "donor": store_identity(donor_db),
             "target": store_identity(db), "members": members}
 
@@ -222,6 +239,9 @@ def validate_members(db, donor_db, record):
             raise AdoptionConflict("Target member lifecycle differs from the pending transfer")
         with db._read_ctx() as conn:
             history = _history(conn, member["id"], member["target_count"])
+            if ("target_active_digest" in member and activity_digest(
+                    conn, member["id"], member["source_count"]) != member["target_active_digest"]):
+                raise AdoptionConflict("Saved adoption activity witness differs; inspect history before recovery")
         if history != (member["target_count"], member["target_digest"]):
             raise AdoptionConflict("Target history differs from the saved transfer; inspect it before retiring the donor")
 

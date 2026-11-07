@@ -117,19 +117,32 @@ def test_retry_by_root_after_partial_retirement_keeps_full_membership(home, monk
     root_id, tip_id = "20261105_segC", "20261105_segD"
     try:
         _seed_compression_lineage(donor, root_id, tip_id)
+        donor._conn.execute(
+            "UPDATE messages SET display_metadata=? WHERE session_id=? AND role='user' AND active=1",
+            ('{"_queued_prompt":true}', root_id),
+        )
+        donor._conn.commit()
         with monkeypatch.context() as patch:
             patch.setattr(SessionDB, "_retire_donor_segment", _retire_fails_for(tip_id))
             first = target.adopt_session_lineage_from(donor, tip_id)
         assert first["adopted"] is True and first["donor_retired"] is False
         assert donor.get_session(root_id)["end_reason"] == "adopted_by_profile"
 
+        assert first["pending_ids"] == [tip_id]
         retried = target.adopt_session_lineage_from(donor, root_id)  # BY THE ROOT
         assert retried["donor_retired"] is True, "retry must complete the FULL recorded membership"
-        assert first["pending_ids"] == [tip_id]
         assert sorted(retried["member_ids"]) == sorted([root_id, tip_id])
         tip_row = donor.get_session(tip_id)
         assert tip_row is not None and tip_row["end_reason"] == "adopted_by_profile"
         assert len(target.get_messages(tip_id)) == 2  # no transcript loss
+        target_root = target.get_messages(root_id, include_inactive=True)
+        donor_root = donor.get_messages(root_id, include_inactive=True)
+        assert [row["content"] for row in target_root] == [row["content"] for row in donor_root]
+        assert target_root[0]["active"] == 1 and donor_root[0]["active"] == 0
+        assert target_root[0]["display_metadata"] == {"_queued_prompt": True}
+        model_history, display_history = target.get_resume_conversations(tip_id)
+        assert all("root q" not in str(row.get("content", "")) for row in model_history)
+        assert any("root q" in str(row.get("content", "")) for row in display_history)
         target.append_message(tip_id, "user", "still writable")
         assert len(target.get_messages(tip_id)) == 3
     finally:
@@ -229,6 +242,164 @@ def test_standalone_pair_adoption_contract_is_unchanged(tmp_path):
         donor.append_message(sid, "user", "q")
         result = target.adopt_session_lineage_from(donor, sid)
         assert result["adopted"] is True and result["donor_retired"] is True
+    finally:
+        donor.close()
+        target.close()
+
+
+@pytest.mark.parametrize("corruption", ["target_drift", "legacy", "malformed"])
+def test_partial_retry_rejects_missing_or_changed_activity_witness(home, monkeypatch, corruption):
+    import json
+
+    donor, target = _open(home, default=True), _open(home)
+    root, tip = "witness-root", "witness-tip"
+    try:
+        _seed_compression_lineage(donor, root, tip)
+        donor._conn.execute(
+            "UPDATE messages SET display_metadata=? WHERE session_id=? AND role='user'",
+            ('{"_queued_prompt":true}', root))
+        donor._conn.commit()
+        with monkeypatch.context() as patch:
+            patch.setattr(SessionDB, "_retire_donor_segment", _retire_fails_for(tip))
+            assert target.adopt_session_lineage_from(donor, tip)["pending_ids"] == [tip]
+        if corruption == "target_drift":
+            target._conn.execute("UPDATE messages SET active=0 WHERE session_id=? AND role='user'", (root,))
+        else:
+            row = target._conn.execute("SELECT transfer_id,manifest_json FROM adoption_transfers WHERE manifest_json IS NOT NULL").fetchone()
+            manifest = json.loads(row[1])
+            member = next(m for m in manifest["members"] if m["id"] == root)
+            if corruption == "legacy":
+                del member["source_count"]
+                del member["target_active_digest"]
+            else:
+                member["target_active_digest"] = None
+            target._conn.execute("UPDATE adoption_transfers SET manifest_json=? WHERE transfer_id=? AND manifest_json IS NOT NULL",
+                                 (json.dumps(manifest), row[0]))
+        target._conn.commit()
+        outcome = target.adopt_session_lineage_from(donor, root)
+        assert outcome["conflict"] and "activity witness" in outcome["error"]
+        assert donor.get_session(tip)["end_reason"] != "adopted_by_profile"
+        assert target._conn.execute("SELECT count(*) FROM adoption_transfers").fetchone()[0] == 2
+    finally:
+        donor.close()
+        target.close()
+
+
+@pytest.mark.parametrize("metadata,role,should_retire", [
+    ('{"_queued_prompt":true}', "user", True),
+    ('{"_queued_prompt":1}', "user", True),
+    ('{"_queued_prompt":1.0}', "user", True),
+    ('{"_queued_prompt":"1"}', "user", False),
+    ('{"_queued_prompt":0}', "user", False),
+    ('{broken', "user", False),
+    ('{"_queued_prompt":{}}', "user", False),
+    ('{"_queued_prompt":true}', "assistant", False),
+])
+def test_retired_activity_exception_matches_sql_marker(home, monkeypatch, metadata, role, should_retire):
+    donor, target = _open(home, default=True), _open(home)
+    root, tip = "marker-root", "marker-tip"
+    try:
+        _seed_compression_lineage(donor, root, tip)
+        donor._conn.execute("UPDATE messages SET display_metadata=? WHERE session_id=? AND role=?", (metadata, root, role))
+        donor._conn.commit()
+        with monkeypatch.context() as patch:
+            patch.setattr(SessionDB, "_retire_donor_segment", _retire_fails_for(tip))
+            first = target.adopt_session_lineage_from(donor, tip)
+        if metadata == "{broken":
+            # Import normalizes invalid metadata, so the strict copy check refuses it
+            # before a recorded retry exists; retirement must not begin.
+            assert not first["adopted"] and not first["donor_retired"]
+            assert donor.get_session(root)["end_reason"] == "compression"
+            return
+        assert first["pending_ids"] == [tip]
+        source = donor._conn.execute("SELECT active FROM messages WHERE session_id=? AND role=?", (root, role)).fetchone()[0]
+        assert source == (0 if should_retire else 1)
+        if not should_retire:
+            donor._conn.execute("UPDATE messages SET active=0 WHERE session_id=? AND role=?", (root, role))
+            donor._conn.commit()
+        result = target.adopt_session_lineage_from(donor, root)
+        if should_retire:
+            assert result["donor_retired"]
+        else:
+            assert result["conflict"] and not result["donor_retired"]
+            assert donor.get_session(tip)["end_reason"] is None
+    finally:
+        donor.close()
+        target.close()
+
+
+def test_three_member_retirement_retry_survives_reopening(home, monkeypatch):
+    donor, target = _open(home, default=True), _open(home)
+    root, middle, tip = "reopen-root", "reopen-middle", "reopen-tip"
+    try:
+        _seed_compression_lineage(donor, root, middle)
+        donor._conn.execute("INSERT INTO sessions (id, source, started_at, parent_session_id) VALUES (?, 'tui', ?, ?)", (tip, time.time(), middle))
+        donor._conn.commit()
+        donor.append_message(tip, "user", "tip input")
+        donor._conn.execute("UPDATE sessions SET ended_at=?, end_reason='compression' WHERE id=?", (time.time(), middle))
+        donor._conn.execute("UPDATE messages SET display_metadata=? WHERE session_id IN (?, ?) AND role='user'", ('{"_queued_prompt":true}', root, middle))
+        donor._conn.commit()
+        with monkeypatch.context() as patch:
+            patch.setattr(SessionDB, "_retire_donor_segment", _retire_fails_for(middle))
+            first = target.adopt_session_lineage_from(donor, tip)
+        assert first["pending_ids"] == [middle, tip]
+        donor.close(); target.close()
+        donor, target = _open(home, default=True), _open(home)
+        with monkeypatch.context() as patch:
+            patch.setattr(SessionDB, "_retire_donor_segment", _retire_fails_for(tip))
+            second = target.adopt_session_lineage_from(donor, root)
+        assert second["pending_ids"] == [tip]
+        donor.close(); target.close()
+        donor, target = _open(home, default=True), _open(home)
+        final = target.adopt_session_lineage_from(donor, middle)
+        assert final["donor_retired"] and final["member_ids"] == [root, middle, tip]
+        assert all(donor.get_session(mid)["end_reason"] == "adopted_by_profile" for mid in (root, middle, tip))
+        assert [len(target.get_messages(mid, include_inactive=True)) for mid in (root, middle, tip)] == [2, 2, 1]
+    finally:
+        donor.close()
+        target.close()
+
+
+def test_legacy_saved_transfer_with_exact_history_can_retry(home, monkeypatch):
+    import json
+
+    donor, target = _open(home, default=True), _open(home)
+    root, tip = "legacy-exact-root", "legacy-exact-tip"
+    try:
+        _seed_compression_lineage(donor, root, tip)
+        with monkeypatch.context() as patch:
+            patch.setattr(SessionDB, "_retire_donor_segment", _retire_fails_for(tip))
+            assert target.adopt_session_lineage_from(donor, tip)["pending_ids"] == [tip]
+        row = target._conn.execute("SELECT transfer_id, manifest_json FROM adoption_transfers WHERE manifest_json IS NOT NULL").fetchone()
+        manifest = json.loads(row[1])
+        for member in manifest["members"]:
+            del member["source_count"]
+            del member["target_active_digest"]
+        target._conn.execute("UPDATE adoption_transfers SET manifest_json=? WHERE transfer_id=? AND manifest_json IS NOT NULL", (json.dumps(manifest), row[0]))
+        target._conn.commit()
+        result = target.adopt_session_lineage_from(donor, root)
+        assert result["donor_retired"] and result["member_ids"] == [root, tip]
+    finally:
+        donor.close()
+        target.close()
+
+
+def test_recorded_malformed_queue_marker_cannot_authorize_activity_mismatch(home, monkeypatch):
+    donor, target = _open(home, default=True), _open(home)
+    root, tip = "malformed-root", "malformed-tip"
+    try:
+        _seed_compression_lineage(donor, root, tip)
+        donor._conn.execute("UPDATE messages SET display_metadata=? WHERE session_id=? AND role='user'", ('{"_queued_prompt":true}', root))
+        donor._conn.commit()
+        with monkeypatch.context() as patch:
+            patch.setattr(SessionDB, "_retire_donor_segment", _retire_fails_for(tip))
+            assert target.adopt_session_lineage_from(donor, tip)["pending_ids"] == [tip]
+        for db in (donor, target):
+            db._conn.execute("UPDATE messages SET display_metadata=? WHERE session_id=? AND role='user'", ('{broken', root))
+            db._conn.commit()
+        result = target.adopt_session_lineage_from(donor, root)
+        assert result["conflict"] and not result["donor_retired"]
+        assert donor.get_session(tip)["end_reason"] is None
     finally:
         donor.close()
         target.close()

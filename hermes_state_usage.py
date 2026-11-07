@@ -91,6 +91,40 @@ class _TokenBatchInterrupted(BaseException):
         self.cause, self.uncertain, self.pending = cause, uncertain, pending
 
 
+class _TokenBatchWriteReceipt:
+    """Per-delta transaction evidence; successful or unknown commits are sticky."""
+    def __init__(self):
+        self._committed = False
+        self._unknown = False
+        self._retryable_error = None
+
+    def transaction_started(self):
+        self._retryable_error = None
+
+    def transaction_committed(self):
+        self._committed = True
+        self._retryable_error = None
+
+    def transaction_rolled_back(
+        self, *, commit_attempted, transaction_active, rollback_succeeded, commit_rollback_proven,
+    ):
+        self._retryable_error = None
+        if (not rollback_succeeded or not transaction_active
+                or (commit_attempted and not commit_rollback_proven)):
+            self._unknown = True
+
+    def retryable_lock_timeout(self, error):
+        if not self._committed and not self._unknown:
+            self._retryable_error = error
+
+    def has_uncertain_effect(self):
+        return self._committed or self._unknown
+
+    def proves_unapplied(self, error):
+        return (not self._committed and not self._unknown
+                and self._retryable_error is error)
+
+
 class SessionUsageMixin:
     """Coalesced token writer, per-model usage rows, billing route."""
 
@@ -447,15 +481,32 @@ class SessionUsageMixin:
             raise _TokenBatchInterrupted(exc, [], batch) from exc
         from hermes_state_lineage import SessionLineageError
         for index, (session_id, kwargs) in enumerate(coalesced):
+            receipt = _TokenBatchWriteReceipt()
+            previous = getattr(self._token_batch_write_context, "receipt", None)
+            self._token_batch_write_context.receipt = receipt
             try:
-                self.update_token_counts(session_id, **kwargs)
-            except SessionLineageError as exc:
-                logger.warning("async token accounting: apply refused; retaining queued deltas (session=%s): %s",
-                               session_id, exc)
-                return coalesced[index:]
-            except BaseException as exc:
-                # The write may have committed before interruption or an IO failure.
-                raise _TokenBatchInterrupted(exc, [coalesced[index]], coalesced[index + 1:]) from exc
+                try:
+                    self.update_token_counts(session_id, **kwargs)
+                except SessionLineageError as exc:
+                    if receipt.has_uncertain_effect():
+                        raise _TokenBatchInterrupted(
+                            exc, [coalesced[index]], coalesced[index + 1:]
+                        ) from exc
+                    logger.warning("async token accounting: apply refused; retaining queued deltas (session=%s): %s",
+                                   session_id, exc)
+                    return coalesced[index:]
+                except BaseException as exc:
+                    if receipt.proves_unapplied(exc):
+                        logger.warning(
+                            "async token accounting: SQLite write timed out before commit; "
+                            "retaining the unapplied delta and suffix (session=%s)", session_id)
+                        return coalesced[index:]
+                    # A callback interruption or ambiguous commit may have persisted this item.
+                    raise _TokenBatchInterrupted(
+                        exc, [coalesced[index]], coalesced[index + 1:]
+                    ) from exc
+            finally:
+                self._token_batch_write_context.receipt = previous
         return []
 
     def _coalesce_token_deltas(self, batch: list[tuple[str, dict[str, Any]]]) -> list[tuple[str, dict[str, Any]]]:

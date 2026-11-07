@@ -120,3 +120,27 @@ def test_default_resume_does_not_take_over_an_explicit_named_donor(gateway, monk
     finally:
         target.close()
         other.close()
+
+
+def test_profile_resume_retries_partial_retirement_with_queued_ancestor(gateway, monkeypatch):
+    mod, donor, profile_home = gateway
+    root, tip = "queued-resume-root", "queued-resume-tip"
+    _seed_compression_lineage(donor, root, tip)
+    donor._conn.execute(
+        "UPDATE messages SET display_metadata=? WHERE session_id=? AND role='user'",
+        ('{"_queued_prompt":true}', root))
+    donor._conn.commit()
+    with monkeypatch.context() as patch:
+        patch.setattr(SessionDB, "_retire_donor_segment", _retire_fails_for(tip))
+        _resume(mod, tip, "queued-first")
+    assert donor.get_session(root)["end_reason"] == "adopted_by_profile"
+    assert donor.get_session(tip)["end_reason"] is None
+    response = _resume(mod, root, "queued-retry")
+    assert not response.get("error"), response.get("error")
+    assert donor.get_session(tip)["end_reason"] == "adopted_by_profile"
+    target = SessionDB(profile_home / "state.db")
+    try:
+        assert len(target.get_messages(root, include_inactive=True)) == 2
+        assert len(target.get_messages(tip, include_inactive=True)) == 2
+    finally:
+        target.close()

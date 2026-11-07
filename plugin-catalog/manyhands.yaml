@@ -1,0 +1,66 @@
+name: manyhands
+title: manyhands
+repo: https://github.com/PhiBao/manyhands
+sha: ab0670577f36181bec75cfd4009ba81c78defec5
+version: "0.3.0"
+description: >-
+  Identity, memory and permissions for every person who talks to one Hermes bot. A gateway is a
+  single-operator agent: the platform already carries sender_id and platform into every turn and
+  nothing acts on it, so everybody in a group or a household shares the same memory, the same tools
+  and the same approval authority. manyhands acts on it. Roles (owner, member, guest, blocked) are
+  resolved from the platform event, never from message text, and applied as three states per tool:
+  allow runs, ask parks the call under a four-character code and sends it to the owner's own DM,
+  and everything else is refused with a message that names only the asker's own role. `/many approve
+  CODE` opens a one-shot grant bound to that person and that tool, spent by the next call and
+  expired on silence — only a human typing the slash command can approve, and nobody can approve
+  their own ask. The operator's own MEMORY.md and USER.md blocks are withheld from everybody else's
+  system prompt and replaced with a card about that person, because "everyone gets their own
+  Hermes" has to include not handing a stranger your notes; each person also gets their own facts,
+  their own token budget, and `/many pause`. Six tools (whoami, people, remember, recall, share,
+  audit) and `/many` (roster, invite, claim, role, audit, approve, deny, pause). Identity fails
+  closed: a session with no human turn on it — a restart, a subagent, a tool driven from the
+  gateway socket — gets the guest allowlist, not the owner's. Every turn, tool decision, refusal,
+  escalation, approval, spent grant and token count is an audit row you can read back.
+  Disclosure — hooks, one middleware and six tools, no other capability. pre_llm_call resolves the
+  sender from the platform event, records the session and turn to person map, redeems `join CODE`
+  invites and appends that person's facts to their turn; pre_tool_call applies the role to the tool
+  allowlist, parks asks, spends grants and fails closed; post_api_request records token usage per
+  person; an llm_request middleware rewrites the outgoing provider request for non-owners, removing
+  the operator's memory blocks and injecting the person card. One SQLite file under
+  plugin-data/manyhands (people, facts, shared facts, invites, approvals, sessions, settings,
+  audit) holding sender ids as platform:sender_id, roster names you set, the facts people store and
+  the audit trail; `/many remove` deletes a person and their facts. Reads no other file on disk,
+  runs no command, makes no network call, imports nothing outside the Python standard library and
+  calls no model. Approval prompts are delivered through the host's own gateway injection into the
+  owner's DM, which the host records as a turn in that chat.
+maintainer: PhiBao
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/PhiBao/manyhands#readme
+image: https://raw.githubusercontent.com/PhiBao/manyhands/ab0670577f36181bec75cfd4009ba81c78defec5/docs/approval.png
+screenshots:
+  - https://raw.githubusercontent.com/PhiBao/manyhands/ab0670577f36181bec75cfd4009ba81c78defec5/docs/approval.png
+  - https://raw.githubusercontent.com/PhiBao/manyhands/ab0670577f36181bec75cfd4009ba81c78defec5/docs/roster.png
+platforms: []
+known_issues:
+  - "Identity is only as good as the platform event: machine-generated turns (cron, internal notices, auto-continuation) are the operator's, and a session that never carried a human turn fails closed — delegation and subagent sessions therefore cannot use restricted tools unless you set unknown_session_policy to operator."
+  - "DM routing is Telegram-shaped: a private chat id is the user id, so the approval prompt reaches that chat. Other platforms need their own DM resolution; the prompt fails closed there rather than guessing, which means asks are denied until a code is minted another way."
+  - "The operator's own memory is withheld by removing the two built-in block titles (MEMORY, USER PROFILE). A block rendered by a third-party memory provider is not removed, so run manyhands without one if that matters to you."
+  - "A plugin escalation cannot use Hermes's approval-transport seam: request_tool_approval routes it through _ACTION_GATE, which is built with transport=False. manyhands parks and DMs the ask itself and leaves the registered transport to the dangerous-command prompts that do consult it."
+  - "The approval prompt arrives as a plugin-triggered turn in the owner's chat (inject_gateway_message), so each prompt costs one turn in that conversation; keep approval_timeout_s honest so a stale code cannot sit there long."
+capabilities:
+  provides_tools:
+    - manyhands_whoami
+    - manyhands_people
+    - manyhands_remember
+    - manyhands_recall
+    - manyhands_share
+    - manyhands_audit
+  provides_hooks:
+    - pre_llm_call
+    - pre_tool_call
+    - post_api_request
+  provides_middleware:
+    - llm_request
+  requires_env: []

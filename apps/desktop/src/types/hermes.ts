@@ -420,6 +420,16 @@ export interface RelayLinkCodeState {
 
 export interface MessagingPlatformsResponse {
   platforms: MessagingPlatformInfo[]
+  /** Set when Team Gateway owns messaging: channels are configured in Nous Portal (absent on older backends). */
+  team_gateway?: null | TeamGatewayInfo
+}
+
+/** Team Gateway owns messaging: channels are set under Manage Agents (`portal_url`); `platforms` are the
+ *  ones its shared bots carry, `direct_platforms` the surfaces it leaves running (API server, webhooks). */
+export interface TeamGatewayInfo {
+  direct_platforms?: string[]
+  platforms: string[]
+  portal_url: string
 }
 
 /** A pending pairing request, or an already-approved user, for one platform. */

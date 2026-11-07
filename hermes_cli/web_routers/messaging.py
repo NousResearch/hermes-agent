@@ -350,6 +350,38 @@ def _relay_channel_view(home: Path) -> tuple[frozenset[str], bool]:
     return relay_channel_view()
 
 
+def _team_gateway_payload(home: Path) -> Optional[dict[str, Any]]:
+    """Set when Team Gateway owns this profile's messaging (the relay-exclusive env stamp), else None.
+
+    Then no direct messaging bot can run and the agent's channels are configured in Nous Portal, so
+    the Channels surfaces show that in place of the messaging platforms. ``direct_platforms`` are the
+    surfaces the rule leaves running (API server, webhooks), which keep their setup here. The opt-out
+    (``GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS``) keeps the per-platform page: direct bots run there."""
+    fronted, exclusive = _relay_channel_view(home)
+    if not exclusive:
+        return None
+    from gateway.config import Platform
+    from gateway.config_env import RELAY_EXCLUSIVE_KEEPS
+
+    direct = sorted(p.value for p in RELAY_EXCLUSIVE_KEEPS - {Platform.RELAY, Platform.LOCAL})
+    return {"portal_url": _portal_agents_url(), "platforms": sorted(fronted), "direct_platforms": direct}
+
+
+def _portal_agents_url() -> str:
+    """The Portal's agents page; the default Portal when the stored sign-in cannot be read, so an
+    unreadable auth store costs only the right Portal host, not the whole platforms response."""
+    from gateway.relay.link import portal_agents_url
+
+    try:
+        return portal_agents_url()
+    except OSError:
+        from hermes_cli.auth_constants import DEFAULT_NOUS_PORTAL_URL
+
+        _log.warning("could not read the Nous sign-in for the Portal link; using the default Portal",
+                     exc_info=True)
+        return f"{DEFAULT_NOUS_PORTAL_URL}/agents"
+
+
 @contextlib.contextmanager
 def _onboarding_save_errors(log_msg: str, detail: str):
     """Map onboarding env/config write failures: ValueError -> 400 (its text),
@@ -988,6 +1020,8 @@ async def get_messaging_platforms(profile: Optional[str] = None):
                 "env_path": str(get_env_path()),
                 "gateway_start_command": " ".join(["hermes", *_gateway_subcommand(profile, "start")]),
                 "platforms": _platform_payloads(scoped_dir, _messaging_platform_catalog()),
+                "team_gateway": _team_gateway_payload(scoped_dir if scoped_dir is not None
+                                                      else get_process_hermes_home()),
             }
 
     return await asyncio.to_thread(_run)

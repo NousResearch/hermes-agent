@@ -8,8 +8,10 @@ from typing import Any, Dict, List
 logger = logging.getLogger("run_agent")
 
 
-def _fallback_entries(fallback_model) -> list[dict[str, Any]]:
-    """Normalize legacy single-dict ``fallback_model`` / list ``fallback_providers``."""
+def _fallback_entries(fallback_model, *, provider=None) -> list[dict[str, Any]]:
+    """Normalize configured backups, excluding implicit plan-to-billing switches."""
+    if provider == "openai-chatgpt":
+        return []
     if isinstance(fallback_model, dict):
         fallback_model = [fallback_model]
     if not isinstance(fallback_model, list):
@@ -26,7 +28,7 @@ def _init_fallback_chain(agent, fallback_model):
     sync_credential_pool_entry_id(agent)
 
     # Ordered backups tried when the primary is exhausted (legacy single-dict or list).
-    agent._fallback_chain = _fallback_entries(fallback_model)
+    agent._fallback_chain = _fallback_entries(fallback_model, provider=agent.provider)
     agent._fallback_index = 0
     agent._fallback_activated = getattr(agent, "_fallback_activated", False)
     # Legacy attribute kept for backward compat (tests, external callers)

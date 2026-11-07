@@ -2207,6 +2207,73 @@ def _apply_default_assignee(
     return True
 
 
+def _repair_blocked_assignee(
+    conn: sqlite3.Connection, task_id: str, old: str, new: Optional[str], *, route: str,
+) -> bool:
+    """CAS-reassign one blocked card and record ONE recovery episode.
+
+    ``AND assignee = old AND status = 'blocked'`` makes a concurrent reassign or
+    unblock between the read and this write a 0-row update: the caller's change
+    is dropped and no event claims a repair that did not happen.
+    """
+    with _kb.write_txn(conn):
+        cur = conn.execute(
+            "UPDATE tasks SET assignee = ? WHERE id = ? AND assignee = ? AND status = 'blocked'",
+            (new, task_id, old),
+        )
+        if cur.rowcount != 1:
+            return False
+        _kb._append_event(
+            conn, task_id, "assignee_recovered",
+            {"assignee": old, "reassigned_to": new, "route": route,
+             "reason": "assignee_not_live"},
+        )
+    return True
+
+
+def _recover_blocked_assignees(conn: sqlite3.Connection, *, dry_run: bool = False) -> None:
+    """Re-own blocked cards whose assignee can never work them again.
+
+    A block addressed to a deleted or tombstoned profile never clears — no worker
+    is left to unblock it — so the card deadlocks behind a dead name. Route it to
+    the card's creator when that is a live profile, else clear the assignee and
+    say so (``route="human"``). Ownership repair only: the card stays blocked, is
+    never completed, never unblocked and never spawned.
+    """
+    if dry_run:
+        return
+    rows = conn.execute(
+        "SELECT id, assignee, created_by FROM tasks "
+        "WHERE status = 'blocked' AND assignee IS NOT NULL AND assignee != ''"
+    ).fetchall()
+    if not rows:
+        return
+    profile_exists = _profile_exists_fn()
+    if profile_exists is None:
+        # No profile introspection on this host: fail closed, never reassign blind.
+        return
+    for row in rows:
+        old = row["assignee"]
+        try:
+            if profile_exists(old):
+                continue
+            creator = (row["created_by"] or "").strip() or None
+            new = creator if creator and profile_exists(creator) else None
+        except Exception:
+            # Unreadable profile state: leave the card exactly as the operator left it.
+            _kb._log.debug(
+                "kanban dispatch: profile check failed for blocked task %s; not reassigning",
+                row["id"], exc_info=True,
+            )
+            continue
+        route = "created_by" if new else "human"
+        if _repair_blocked_assignee(conn, row["id"], old, new, route=route):
+            _kb._log.info(
+                "kanban dispatch: blocked %s re-owning %s -> %s (%s; assignee not live)",
+                row["id"], old, new, route,
+            )
+
+
 def _run_reclaim_phase(
     conn: sqlite3.Connection,
     result: DispatchResult,
@@ -2215,6 +2282,7 @@ def _run_reclaim_phase(
     failure_limit: int,
     reconcile_orphans: bool,
     board: Optional[str] = None,
+    dry_run: bool = False,
 ) -> None:
     """Reclaim stale/orphaned/crashed/timed-out running tasks, then promote."""
     reap_worker_zombies()
@@ -2230,6 +2298,9 @@ def _run_reclaim_phase(
     result.rate_limited.extend(getattr(detect_crashed_workers, "_last_rate_limited", []))
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = _kb.recompute_ready(conn, failure_limit=failure_limit)
+    # Ownership repair runs last so it never competes with promotion for a card:
+    # it only ever re-owns blocked rows, and never changes status.
+    _recover_blocked_assignees(conn, dry_run=dry_run)
 
 
 def _tick_spawn_budget(
@@ -2376,6 +2447,7 @@ def _dispatch_once_locked(
     _run_reclaim_phase(
         conn, result, stale_timeout_seconds=stale_timeout_seconds,
         failure_limit=failure_limit, reconcile_orphans=reconcile_orphans, board=board,
+        dry_run=dry_run,
     )
     may_spawn, spawn_budget = _tick_spawn_budget(
         conn, result, max_spawn=max_spawn, max_in_progress=max_in_progress, board=board,

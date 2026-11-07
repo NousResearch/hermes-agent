@@ -216,6 +216,22 @@ def get_recommended_default_model(provider: str = "", profile: Optional[str] = N
         return {"provider": slug, "model": "", "free_tier": None}
 
 
+@router.get("/api/model/balance")
+async def get_model_balance(profile: Optional[str] = None, refresh: bool = False):
+    """Provider balance/quota snapshot: ``{"fetched_at", "providers": [{id, label,
+    configured, status: ok|no_key|unsupported|error, error, primary, breakdown, quota,
+    extra}]}``.
+
+    ``refresh=1`` busts the 60 s in-memory cache (the Balance card's refresh button).
+    Every probe is bounded (10 s) and degrades to a per-row ``status`` — a provider with
+    no documented balance endpoint reports ``unsupported`` rather than a guessed URL.
+    """
+    from hermes_cli.provider_balance import fetch_balances
+
+    # Off the event loop: catalog + key resolution are disk reads, probes are HTTP.
+    return await asyncio.to_thread(fetch_balances, profile, bool(refresh))
+
+
 @router.get("/api/model/auxiliary")
 def get_auxiliary_models(profile: Optional[str] = None):
     """Current auxiliary task assignments: ``{"tasks": [{task, provider, model,

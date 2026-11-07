@@ -37,6 +37,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/c
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Switch } from "@nous-research/ui/ui/components/switch";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { BalanceCard } from "@/components/BalanceCard";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
@@ -1269,6 +1270,8 @@ export default function ModelsPage() {
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-6">
       <PluginSlot name="models:top" />
+
+      <BalanceCard />
 
       <div className="grid min-w-0 gap-6 lg:grid-cols-2">
         <ModelSettingsPanel

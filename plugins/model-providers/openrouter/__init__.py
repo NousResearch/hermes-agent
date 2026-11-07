@@ -3,6 +3,8 @@
 import logging
 from typing import Any
 
+import httpx
+
 from agent.portal_tags import get_affinity_scope, get_conversation_context
 from agent.prompt_cache_scope import GROK_AGGREGATOR_MODEL_PREFIXES, is_fork_cache_scope
 from agent.reasoning_effort import codex_supported_efforts
@@ -55,6 +57,33 @@ _SPEED_TIERED_BASES = ("openai/gpt-6-astra", "openai/gpt-6-astra-pro")
 OPENROUTER_ENDPOINT_PINS: dict[str, tuple[str, tuple[str, ...]]] = {
     base + suffix: (base, tags) for base in _SPEED_TIERED_BASES for suffix, tags in _SPEED_TIER_ENDPOINTS.items()
 }
+
+
+def balance_probe(api_key: str) -> dict:
+    """``GET https://openrouter.ai/api/v1/credits`` → purchased credits minus usage.
+
+    The endpoint reports totals rather than a balance, so the remaining amount is
+    ``total_credits - total_usage``. There is no daily quota here: ``quota`` stays empty.
+    """
+    response = httpx.get(
+        "https://openrouter.ai/api/v1/credits",
+        headers={"Authorization": f"Bearer {api_key}"},
+        timeout=10.0,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict) or "total_credits" not in data or "total_usage" not in data:
+        raise ValueError("OpenRouter credits response missed data.total_credits/total_usage")
+    try:
+        purchased = float(data.get("total_credits") or 0.0)
+        used = float(data.get("total_usage") or 0.0)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("OpenRouter credits response carried a non-numeric amount") from exc
+    return {
+        "primary": {"amount": max(purchased - used, 0.0), "unit": "USD", "label": "Remaining credits"},
+        "breakdown": {"currency": "USD", "total_credits": purchased, "total_usage": used},
+    }
 
 
 class OpenRouterProfile(ProviderProfile):
@@ -212,6 +241,7 @@ openrouter = OpenRouterProfile(
         "anthropic/claude-sonnet-4.6", "openai/gpt-5.4", "deepseek/deepseek-chat", "google/gemini-3.8-flash",
         "google/gemini-3.7-flash", "qwen/qwen3-plus",
     ),
+    balance_probe=balance_probe,
 )
 
 register_provider(openrouter)

@@ -10,6 +10,8 @@ Retired ``deepseek-chat``/``deepseek-reasoner`` IDs are remapped in
 
 from typing import Any
 
+import httpx
+
 from agent.reasoning_effort import DEEPSEEK_V4_EFFORTS, DEEPSEEK_V4_OVERRIDES, thinking_toggle_extras
 from providers import register_provider
 from providers.base import ProviderProfile
@@ -20,6 +22,43 @@ from providers.base import ProviderProfile
 # ``deepseek-flash`` and the API accepts it directly, so the generation check in
 # ``build_api_kwargs_extras`` cannot recognise it.
 _THINKING_CAPABLE_IDS: frozenset[str] = frozenset({"deepseek-flash"})
+
+
+def balance_probe(api_key: str) -> dict:
+    """``GET https://api.deepseek.com/user/balance`` → the account balance.
+
+    ``balance_infos[]`` carries one row per currency: a topped-up CNY account reports
+    CNY, so CNY wins when present and the first row (USD) is the fallback.
+    """
+    response = httpx.get(
+        "https://api.deepseek.com/user/balance",
+        headers={"Authorization": f"Bearer {api_key}"},
+        timeout=10.0,
+    )
+    response.raise_for_status()
+    data = response.json()
+    infos = [row for row in (data.get("balance_infos") or []) if isinstance(row, dict)]
+    if not infos:
+        raise ValueError("DeepSeek balance response carried no balance_infos")
+    chosen = next((row for row in infos if str(row.get("currency") or "").upper() == "CNY"), infos[0])
+
+    def amount(field: str) -> float:
+        try:
+            return float(chosen.get(field) or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    unit = str(chosen.get("currency") or "").upper() or "CNY"
+    return {
+        "primary": {"amount": amount("total_balance"), "unit": unit, "label": "Total balance"},
+        "breakdown": {
+            "currency": unit,
+            "granted_balance": amount("granted_balance"),
+            "topped_up_balance": amount("topped_up_balance"),
+            "is_available": bool(data.get("is_available")),
+        },
+    }
+
 
 
 class DeepSeekProfile(ProviderProfile):
@@ -59,6 +98,7 @@ deepseek = DeepSeekProfile(
     # Native API implements only ``json_object`` (https://api-docs.deepseek.com/guides/json_mode);
     # ``json_schema`` is a guaranteed HTTP 400 "This response_format type is unavailable now".
     unsupported_response_formats=("json_schema",),
+    balance_probe=balance_probe,
 )
 
 register_provider(deepseek)

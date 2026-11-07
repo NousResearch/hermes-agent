@@ -240,6 +240,21 @@ npm ci --prefix website
 npm run build:fast --prefix website
 ```
 
+In the repository root and the JS workspace folders, npm refuses every command that
+installs or resolves dependencies (`npm install` with or without `--ignore-scripts`,
+`--package-lock-only` or `--force`, `npm ci`, `update`, `dedupe`, `uninstall`,
+`link`): each of these folders has an `.npmrc` with `engine-strict=true`, and its
+`package.json` declares an `engines.npm` that no npm satisfies. `npm rebuild` and
+`npm pkg set` are not refused. An explicit `--engine-strict=false` overrides the
+refusal.
+
+`npx`, `npm exec` and `npm run` keep working, so MCP servers and tools still start.
+But `engine-strict` applies anywhere in the checkout: in these folders, and through
+the root `.npmrc` in every folder without a `package.json` of its own (`agent/`,
+`tools/`, the Docker image's `/opt/hermes`). There `npx` refuses to install a package
+when it or any non-optional dependency it pulls in declares `engines` the current Node
+or npm does not satisfy, where it would only warn outside the checkout.
+
 Use a Node version accepted by the corresponding `package.json` engines.
 Native desktop dependencies can also require the platform build toolchain.
 

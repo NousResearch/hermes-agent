@@ -63,3 +63,34 @@ def test_single_query_mode_never_auto_approves_this_gate(tmp_path, monkeypatch, 
     assert asked == []
     assert "BLOCKED" in res["error"]
     assert not target.exists()
+
+
+@pytest.mark.parametrize("finite_via", ["env", "admitted_turn"])
+def test_gateway_hosted_single_query_never_enqueues_a_gateway_prompt(tmp_path, monkeypatch, finite_via):
+    """A ``hermes chat -q`` turn admitted by the gateway daemon registers a gateway notify callback for its
+    route. Nobody answers it, so the gate used to block for the full ``approvals.timeout`` (3600 s here)."""
+    import tools.approval as A
+    from gateway import session_finite
+    from tools.approval_context import reset_current_session_key, set_current_session_key
+    from tools.file_tools import write_file_tool
+
+    if finite_via == "env":
+        monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+    else:
+        token_finite = session_finite._finite_turn.set(True)
+    session_key = "agent:main:local:dm:local-test"
+    token = set_current_session_key(session_key)
+    notified = []
+    A.register_gateway_notify(session_key, lambda data: notified.append(data))
+    try:
+        target = tmp_path / "AGENTS.md"
+        res = json.loads(write_file_tool(str(target), "content"))
+    finally:
+        A.unregister_gateway_notify(session_key)
+        reset_current_session_key(token)
+        if finite_via != "env":
+            session_finite._finite_turn.reset(token_finite)
+
+    assert notified == []
+    assert "no interactive user or gateway is present" in res["error"]
+    assert not target.exists()

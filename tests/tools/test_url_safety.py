@@ -494,6 +494,66 @@ class TestIPv4TranslatedIPv6SSRF:
             assert is_always_blocked_url("http://[::ffff:0:a9fe:a9fe]/") is True
 
 
+class TestNAT64WellKnownPrefixSSRF:
+    """DNS64 resolvers synthesize ``64:ff9b::x.x.x.x`` (RFC 6052 well-known prefix) for A-only
+    hostnames on NAT64 networks (carrier mobile data, dual-stack-lite consumer ISPs). CPython
+    flags the whole prefix ``is_reserved``, so every public site behind it was a false-positive
+    SSRF block; the embedded IPv4 must decide — on the pre-flight check, the metadata floor
+    (also with ``allow_private_urls`` on) and the connect-time transport check alike."""
+
+    @pytest.mark.parametrize("ip_str, embedded", [
+        ("64:ff9b::a9fe:a9fe", "169.254.169.254"),  # cloud metadata
+        ("64:ff9b::0a00:0001", "10.0.0.1"),          # RFC 1918
+        ("64:ff9b::7f00:0001", "127.0.0.1"),         # loopback
+        ("64:ff9b::c0a8:0001", "192.168.0.1"),       # RFC 1918
+        ("64:ff9b::6440:0001", "100.64.0.1"),        # CGNAT
+        ("64:ff9b::e000:0001", "224.0.0.1"),         # multicast
+        ("64:ff9b::", "0.0.0.0"),                    # unspecified
+    ])
+    def test_embedded_blocked_ranges_stay_blocked(self, ip_str, embedded):
+        ip = ipaddress.ip_address(ip_str)
+        assert _is_blocked_ip(ip) is True, f"{ip_str} (wraps {embedded}) must stay blocked"
+
+    def test_embedded_public_ipv4_is_allowed(self):
+        # 64:ff9b::808:808 wraps 8.8.8.8 — a public service reachable via NAT64.
+        assert _is_blocked_ip(ipaddress.ip_address("64:ff9b::808:808")) is False
+
+    def test_public_nat64_answer_passes_preflight(self):
+        with _resolves_to("64:ff9b::d896:141"):  # wraps 216.150.1.65
+            assert is_safe_url("https://example.com/") is True
+
+    def test_nat64_metadata_answer_hits_the_floor(self):
+        with _resolves_to("64:ff9b::a9fe:a9fe"):
+            assert is_always_blocked_url("http://attacker.example/") is True
+
+    def test_nat64_metadata_stays_blocked_with_allow_private_urls(self, monkeypatch):
+        # The toggle skips _is_blocked_ip(); the floor must still unwrap NAT64.
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        _reset_allow_private_cache()
+        try:
+            with _resolves_to("64:ff9b::a9fe:a9fe"):
+                assert is_safe_url("http://attacker.example/") is False
+        finally:
+            _reset_allow_private_cache()
+
+    def test_literal_nat64_metadata_wrapper_hits_the_floor_without_dns(self):
+        # URL input need not come through DNS: the wrapper can be in the URL itself.
+        with patch("socket.getaddrinfo", side_effect=socket.gaierror("nope")):
+            assert is_always_blocked_url("http://[64:ff9b::a9fe:a9fe]/") is True
+
+    def test_connect_path_allows_public_nat64(self):
+        with _resolves_to("64:ff9b::d896:141"):
+            assert (
+                _resolved_http_connect_ips("example.com", 443, "https")
+                == ["64:ff9b::d896:141"]
+            )
+
+    def test_connect_path_blocks_nat64_metadata(self):
+        with _resolves_to("64:ff9b::a9fe:a9fe"):
+            with pytest.raises(SSRFConnectionBlocked, match="metadata"):
+                _resolved_http_connect_ips("example.com", 443, "https")
+
+
 class _FakeResponse:
     """Minimal stand-in for an httpx response as seen inside a response hook."""
 

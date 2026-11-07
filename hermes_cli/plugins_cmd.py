@@ -412,6 +412,42 @@ def _looks_like_plugin_dir(target: Path) -> bool:
         or (target / "__init__.py").exists())
 
 
+# Conventional skill-bundle sub-paths used across agent harnesses (Claude Code, Codex/Agents,
+# plain `skills/`) — mirrors tools.skills_hub_skillssh.SkillsShSource._STANDARD_BASE_PATHS. A
+# plugin install that turns out NOT to be a Hermes plugin (no plugin.yaml/plugin.json/__init__.py,
+# e.g. a Claude Code plugin shaped as `.claude-plugin/plugin.json` + `.claude/skills/*`) is not
+# limited to that one foreign format: any of these conventional layouts is auto-converted into
+# real Hermes skills instead of being left as a silently-enabled, inert plugin entry.
+_SKILL_BUNDLE_BASE_PATHS = ("skills", ".agents/skills", ".claude/skills")
+
+
+def _import_bundled_skills(target: Path, plugin_name: str) -> list[str]:
+    """Copy every ``<base>/<skill>/SKILL.md`` bundle under *target* (any base in
+    :data:`_SKILL_BUNDLE_BASE_PATHS`) into ``~/.hermes/skills/<plugin_name>/<skill>/`` and return the
+    names actually imported. An existing destination is left untouched (never overwritten) and is
+    not counted as imported, so re-installs/updates do not clobber local edits."""
+    dest_root = get_hermes_home() / "skills" / plugin_name
+    imported: list[str] = []
+    for base in _SKILL_BUNDLE_BASE_PATHS:
+        base_dir = target / base
+        if not base_dir.is_dir():
+            continue
+        for child in sorted(base_dir.iterdir()):
+            if not child.is_dir() or not (child / "SKILL.md").is_file():
+                continue
+            dest = dest_root / child.name
+            if dest.exists():
+                continue
+            try:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copytree(child, dest)
+            except OSError as exc:
+                logger.warning("Failed to import bundled skill '%s' from %s: %s", child.name, target, exc)
+                continue
+            imported.append(child.name)
+    return imported
+
+
 def _copy_example_files(plugin_dir: Path, console) -> None:
     """Copy ``*.example`` files to their real names (``config.yaml.example`` -> ``config.yaml``),
     never overwriting an existing file so reinstall keeps user config."""

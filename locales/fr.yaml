@@ -942,6 +942,7 @@ gateway:
     ack_generate: "Génération d'AGENTS.md à partir d'une analyse du projet…"
   moa:
     prepare_failed: "Échec de la préparation du tour MoA."
+    managed_session: "/moa n'est pas disponible dans cette session : les sessions en mode sans échec, sans configuration, kanban et à worker géré exécutent chaque tour sur leur propre modèle. Envoyez le prompt sans /moa."
   quick_command:
     no_output: "La commande n'a renvoyé aucune sortie."
     timed_out: "Délai de la commande rapide dépassé (30 s)."

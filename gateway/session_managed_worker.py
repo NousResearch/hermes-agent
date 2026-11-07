@@ -38,13 +38,16 @@ class ManagedExecutionUnknown(RuntimeError):
 
 
 def managed_policy(authority, ref):
-    """Bypass (safe / config-only) sessions always execute out of process; other local
-    sessions only under the explicit custom-provider opt-in.
+    from gateway.session_policy import policy_for_source
+    return policy_if_managed(policy_for_source(authority.runner, authority.sessions[ref.session_id].source))
+
+
+def policy_if_managed(policy):
+    """``policy`` when its session executes out of process, else None. Bypass (safe / config-only)
+    sessions always do; other local sessions only under the explicit custom-provider opt-in.
 
     The frozen creation snapshot, not current profile config, chooses execution.
     """
-    from gateway.session_policy import policy_for_source
-    policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
     if policy is None:
         return None
     if policy.ignore_user_config or policy.kanban_json is not None:

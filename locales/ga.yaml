@@ -800,6 +800,7 @@ gateway:
     ack_generate: "Ag giniúint AGENTS.md ó scanadh tionscadail…"
   moa:
     prepare_failed: "Theip ar sheal MoA a ullmhú."
+    managed_session: "Níl /moa ar fáil sa seisiún seo: ritheann seisiúin mhód sábháilte, gan chumraíocht, kanban agus oibrí bainistithe gach seal ar a samhail féin. Seol an leid gan /moa."
   quick_command:
     no_output: "Níor chuir an t-ordú aon aschur ar ais."
     timed_out: "Chuaigh an mear-ordú thar am (30s)."

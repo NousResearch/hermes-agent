@@ -800,6 +800,7 @@ gateway:
     ack_generate: "正在根据项目扫描生成 AGENTS.md…"
   moa:
     prepare_failed: "准备 MoA 回合失败。"
+    managed_session: "此会话无法使用 /moa：安全模式、无配置、kanban 和托管 worker 会话的每一轮都在自身模型上运行。请直接发送提示，不要加 /moa。"
   quick_command:
     no_output: "命令没有返回任何输出。"
     timed_out: "快捷命令超时（30 秒）。"

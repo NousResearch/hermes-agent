@@ -45,6 +45,9 @@ def test_local_review_reviews_the_stored_conversation_once_the_cached_agent_is_g
         'auxiliary': {'title_generation': {'enabled': False}},
         'provider_routing': {'only': ['daemon-start'], 'data_collection': 'allow'},
         'prefill_messages_file': 'prefill.json',
+        # /moa runs the default preset: its references and aggregator stay on the loopback model.
+        'moa': {'presets': {'default': {'reference_models': [{'provider': 'openrouter', 'model': 'openai/gpt-5'}],
+                                        'aggregator': {'provider': 'openrouter', 'model': 'openai/gpt-5'}}}},
     }
     (home / 'prefill.json').write_text(json.dumps([{'role': 'user', 'content': 'PREFILL_EXAMPLE'},
                                                   {'role': 'assistant', 'content': 'Noted.'}]))

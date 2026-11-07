@@ -800,6 +800,7 @@ gateway:
     ack_generate: "Gerando AGENTS.md a partir de uma varredura do projeto…"
   moa:
     prepare_failed: "Falha ao preparar o turno MoA."
+    managed_session: "/moa não está disponível nesta sessão: sessões em modo seguro, sem configuração, de kanban e de worker gerenciado executam cada turno no próprio modelo. Envie o prompt sem /moa."
   quick_command:
     no_output: "O comando não retornou saída."
     timed_out: "O comando rápido excedeu o tempo limite (30s)."

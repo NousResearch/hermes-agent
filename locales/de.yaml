@@ -800,6 +800,7 @@ gateway:
     ack_generate: "Erzeuge AGENTS.md anhand eines Projekt-Scans…"
   moa:
     prepare_failed: "MoA-Zug konnte nicht vorbereitet werden."
+    managed_session: "/moa ist in dieser Sitzung nicht verfügbar: Sitzungen im abgesicherten Modus, ohne Konfiguration, für Kanban und mit verwaltetem Worker führen jeden Turn auf ihrem eigenen Modell aus. Sende den Prompt ohne /moa."
   quick_command:
     no_output: "Befehl hat keine Ausgabe zurückgegeben."
     timed_out: "Zeitüberschreitung beim Schnellbefehl (30s)."

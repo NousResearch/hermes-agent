@@ -392,6 +392,23 @@ def _saved_login(handle: str) -> tuple[Any, Any]:
         return backend, None
 
 
+def _sms_code_if_configured() -> Optional[str]:
+    """Opt-in: ``browser_vault.sms_code_source`` (``messages`` or a command) supplies a texted code so the user is
+    not asked. Returns None when unset or when no fresh code arrives in time (the user prompt is the fallback)."""
+    try:
+        from hermes_cli.config import read_raw_config_readonly
+        cfg = (read_raw_config_readonly().get("browser_vault") or {})
+        source = str(cfg.get("sms_code_source") or "").strip()
+        if not source:
+            return None
+        import time
+        from agent.vault_sms import GRACE_SECONDS, wait_for_code
+        return wait_for_code(source, time.time() - GRACE_SECONDS, float(cfg.get("sms_code_timeout", 90)))
+    except Exception:
+        logger.debug("sms code source failed", exc_info=True)
+        return None
+
+
 @plugin_errors_as_refusal
 def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) -> str:
     """Second factor: fill the one-time code the CURRENT page asks for. If the saved login (``handle``) has an
@@ -450,6 +467,9 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
         written = write_backend_code(backend, handle, meta, origin, lambda code: write(code, backend.name))
         if written is not None:
             return written
+    sms_code = _sms_code_if_configured()
+    if sms_code:
+        return write(sms_code, "sms")
     prompt = get_code_prompt_callback()
     if prompt is None or not can_prompt_here():
         return json.dumps({"success": False, "error_type": "prompt_unavailable",

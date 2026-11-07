@@ -7,6 +7,7 @@ import json
 import os
 import threading
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 import hermes_yaml as yaml
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketException
@@ -648,16 +649,27 @@ def _strip_dashboard_manifest(p: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in p.items() if not k.startswith("_")}
 
 
-_PLUGINS_HUB_CACHE_TTL_SECONDS = 5.0
+# A rebuild is expensive (0.3s warm, seconds to a minute on a CPU-starved host)
+# and every mutation path that knows better calls _invalidate_plugins_hub_cache(),
+# so hold the payload long enough that a burst of page loads rides one build.
+_PLUGINS_HUB_CACHE_TTL_SECONDS = 30.0
 _plugins_hub_cache: dict[str, dict[str, Any]] = {}
 _plugins_hub_cache_expires_at: dict[str, float] = {}
 _plugins_hub_cache_lock = threading.Lock()
+# The rebuild each cache key's callers may join. Replacing or dropping an entry retires that rebuild:
+# its joined callers still get its payload, but it no longer publishes to the cache.
+_plugins_hub_inflight: dict[str, Future] = {}
+# Slow rebuilds and the callers waiting on them queue here, never on the default executor that every
+# other dashboard ``to_thread`` shares (#147669).
+_PLUGINS_HUB_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="plugins-hub")
 
 
 def _invalidate_plugins_hub_cache() -> None:
     with _plugins_hub_cache_lock:
         _plugins_hub_cache.clear()
         _plugins_hub_cache_expires_at.clear()
+        # A running rebuild may have read the state this invalidation is about.
+        _plugins_hub_inflight.clear()
 
 
 _plugins_hub_probe_inflight: set = set()
@@ -732,21 +744,49 @@ def _merged_plugins_hub(force_refresh: bool = False) -> dict[str, Any]:
 
     IMPORTANT: powers a dashboard request path, so it must stay read-only and cheap — never
     execute tool ``check_fn`` probes here (imports, auth/network checks would starve the root
-    event loop). Only cached availability is consumed and the payload is memoized briefly to
-    collapse the dashboard's bursty duplicate fetches.
+    event loop). Only cached availability is consumed; the payload is memoized briefly and callers
+    that miss the cache join the rebuild in flight, which collapses the dashboard's bursty duplicate
+    fetches. ``force_refresh`` never joins: it wants state newer than any rebuild already running.
     """
-    from hermes_cli.web_server_memory import _discover_memory_provider_statuses, _normalize_memory_provider_name
-    from hermes_cli.web_server import _get_dashboard_plugins
-    from hermes_cli.config import get_hermes_home, load_config
+    from hermes_cli.config import get_hermes_home
     from hermes_constants import hermes_home_key
 
     cache_key = hermes_home_key(get_hermes_home())
-    now = time.monotonic()
-    if not force_refresh:
-        with _plugins_hub_cache_lock:
+    joined: Optional[Future] = None
+    flight: Future = Future()
+    with _plugins_hub_cache_lock:
+        if not force_refresh:
             cached = _plugins_hub_cache.get(cache_key)
-            if cached is not None and now < _plugins_hub_cache_expires_at.get(cache_key, 0.0):
+            if cached is not None and time.monotonic() < _plugins_hub_cache_expires_at.get(cache_key, 0.0):
                 return cached
+            joined = _plugins_hub_inflight.get(cache_key)
+        if joined is None:
+            _plugins_hub_inflight[cache_key] = flight
+    if joined is not None:
+        return joined.result()
+
+    try:
+        payload = _rebuild_plugins_hub()
+    except BaseException as exc:
+        with _plugins_hub_cache_lock:
+            if _plugins_hub_inflight.get(cache_key) is flight:
+                del _plugins_hub_inflight[cache_key]
+        flight.set_exception(exc)
+        raise
+    with _plugins_hub_cache_lock:
+        if _plugins_hub_inflight.get(cache_key) is flight:
+            del _plugins_hub_inflight[cache_key]
+            _plugins_hub_cache[cache_key] = payload
+            _plugins_hub_cache_expires_at[cache_key] = time.monotonic() + _PLUGINS_HUB_CACHE_TTL_SECONDS
+    flight.set_result(payload)
+    return payload
+
+
+def _rebuild_plugins_hub() -> dict[str, Any]:
+    """One full hub rebuild for the current profile home; ``_merged_plugins_hub`` is the only caller."""
+    from hermes_cli.web_server_memory import _discover_memory_provider_statuses, _normalize_memory_provider_name
+    from hermes_cli.web_server import _get_dashboard_plugins
+    from hermes_cli.config import get_hermes_home, load_config
 
     started_at = time.monotonic()
     from hermes_cli.plugins_cmd import (
@@ -819,7 +859,7 @@ def _merged_plugins_hub(force_refresh: bool = False) -> dict[str, Any]:
     memory_providers = _discover_memory_provider_statuses()
     try:
         context_engines = [{"name": n, "description": desc} for n, desc in _discover_context_engines()]
-    except Exception:
+    except Exception:  # health: allow BLE001 -- moved as is: one broken context engine must not take down the hub
         context_engines = []
 
     payload = {
@@ -837,9 +877,6 @@ def _merged_plugins_hub(force_refresh: bool = False) -> dict[str, Any]:
         _log.info(
             "plugins/hub rebuilt in %.3fs (plugins=%d memory_options=%d)", duration, len(rows), len(memory_providers)
         )
-    with _plugins_hub_cache_lock:
-        _plugins_hub_cache[cache_key] = payload
-        _plugins_hub_cache_expires_at[cache_key] = time.monotonic() + _PLUGINS_HUB_CACHE_TTL_SECONDS
     return payload
 
 

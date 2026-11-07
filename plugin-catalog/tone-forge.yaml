@@ -1,7 +1,7 @@
 name: tone-forge
 title: ToneForge
 repo: https://github.com/efesn/toneforge-hermes-plugin
-sha: 5035b3563033dddd8a0def041d31703042f29496
+sha: 52fac43babd9698df5f0206360e233ac3236e0ed
 version: "1.1.1"
 description: "AI guitar tone engineer for IK Multimedia AmpliTube 5 inside Hermes Agent: plain-language tone recipes (ordered chain, amp/cab families, mic placement, pedals, 7-band EQ, noise gate, levels) with a per-decision rationale, a versioned JSON preset library, a reference-track analyser that sets the numbers from a measured recording, and a MIDI bridge that drives only the CCs the user assigned. Disclosure: the analysis tool spawns ffmpeg (and yt-dlp only when the caller passes an explicit url) with fixed argv and no shell; downloads land in a temporary directory deleted after the call; the plugin writes only under HERMES_HOME/plugin-data/tone-forge and never modifies AmpliTube's own files."
 maintainer: efesn

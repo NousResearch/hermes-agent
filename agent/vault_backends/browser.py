@@ -79,17 +79,36 @@ class BrowserProfileLoginBackend(LoginBackend):
         copy_dir = self._copy_dir()
         if copy_dir and self._login_data_present(copy_dir) and self._snapshot_matches_source(copy_dir):
             return copy_dir
+        # Either there is no usable snapshot yet, or the existing one POSITIVELY belongs to a
+        # DIFFERENT source profile than ``browser.real_profile_pin`` now selects (the user switched).
+        mismatch = bool(
+            copy_dir and self._login_data_present(copy_dir) and not self._snapshot_matches_source(copy_dir))
         # No usable/current snapshot: drive the real-profile lifecycle to create or refresh one.
         # Failure (consent off, unsupported browser, locked profile) is non-fatal here — fall back to
         # whatever the copy dir holds (usually nothing), so listing degrades to empty rather than
         # raising.
         try:
-            from tools.browser_session_real_profile import real_profile_cdp
+            from tools.browser_session_real_profile import (
+                real_profile_cdp, terminate_real_profile_browser)
+            # A profile switch with the old real-profile browser STILL RUNNING is the case the
+            # round-2 marker check alone misses: ``real_profile_cdp()`` would re-ATTACH to that live
+            # browser and return its connection WITHOUT re-syncing, leaving the old identity's logins
+            # on disk. Stop it first so the relaunch re-snapshots from the now-pinned source — never
+            # overwrite the snapshot underneath a live browser.
+            if mismatch:
+                terminate_real_profile_browser()
             real_profile_cdp()
         except Exception as exc:  # health: allow BLE001 -- listing must never raise; a later fill surfaces the real error
             logger.debug("real-profile logins: snapshot preparation failed: %s", exc)
         copy_dir = self._copy_dir()
-        return copy_dir if copy_dir and self._login_data_present(copy_dir) else None
+        if not (copy_dir and self._login_data_present(copy_dir)):
+            return None
+        # If the refresh was triggered by a source mismatch and the snapshot STILL belongs to another
+        # source (the refresh failed), refuse to list the wrong identity's accounts rather than
+        # serving the stale snapshot.
+        if mismatch and not self._snapshot_matches_source(copy_dir):
+            return None
+        return copy_dir
 
     def _snapshot_matches_source(self, copy_dir: str) -> bool:
         """False only when the existing snapshot POSITIVELY came from a DIFFERENT profile than the one
@@ -171,7 +190,11 @@ class BrowserProfileLoginBackend(LoginBackend):
                 id=self._handle(nav_url, raw_username), kind="login",
                 label=f"{origin.split('://', 1)[-1]}" + (f" ({display_username})" if display_username else ""),
                 origin=origin, created_at="",
-                identifier_type="username" if display_username else None, identifier=display_username,
+                # ``identifier`` is NOT display-only: the Desktop key button writes ``meta.identifier``
+                # into the page's username field, so it must carry the RAW saved username actually
+                # filled — a saved ' bob ' fills as ' bob ', not the stripped 'bob' (a different
+                # account). Only the human-facing ``label`` uses the stripped copy.
+                identifier_type="username" if raw_username else None, identifier=raw_username or None,
                 allowed_origins=(origin,)))
         return out
 

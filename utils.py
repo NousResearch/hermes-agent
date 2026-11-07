@@ -539,12 +539,31 @@ def _roundtrip_load(path: Path):
 
 
 def _roundtrip_dump(path: Path, yaml_rt, config, *, extra_content: str | None = None) -> None:
-    def _write(f) -> None:
-        yaml_rt.dump(config, f)
-        if extra_content:
-            f.write(extra_content)
+    from io import StringIO
 
-    _atomic_write(path, _write, prefix=f".{path.stem}_", mode=_preserve_file_mode(path))
+    rendered = StringIO()
+    yaml_rt.dump(config, rendered)
+    body = rendered.getvalue() + (extra_content or "")
+    _refuse_unparseable_config(path, body)
+    _atomic_write(path, lambda f: f.write(body), prefix=f".{path.stem}_",
+                  mode=_preserve_file_mode(path))
+
+
+def _refuse_unparseable_config(path: Path, body: str) -> None:
+    """Raise instead of replacing a config file with YAML its own reader refuses.
+
+    The comment-preserving merge can hand ruamel a document it emits as text no reader accepts
+    (a commented key whose collection is emptied renders ``[]`` at column 0 and drags the next
+    keys onto one line, #148524). The merge no longer produces that shape; this is the net under
+    it, so no future emitter state can leave an unloadable config.yaml on disk.
+    """
+    if not body.strip():
+        return
+    try:
+        yaml.safe_load(body)
+    except yaml.YAMLError as exc:
+        raise ValueError(
+            f"refusing to write {path}: the rendered config does not parse ({exc})") from exc
 
 
 def atomic_roundtrip_yaml_update(path: str | Path, key_path: str, value: Any) -> None:
@@ -655,9 +674,14 @@ def atomic_roundtrip_yaml_save(path: str | Path, new_state: dict, *,
 
     def _merge_item(dst, key, value) -> None:
         current = dst[key]
-        if isinstance(value, dict) and isinstance(current, CommentedMap):
+        # ``value`` first: an empty mapping/sequence is REPLACED, never emptied in place. A parsed
+        # node keeps the position it was read at, and ruamel cannot emit an empty block collection
+        # from it — with a comment on the key line it writes ``[]`` at column 0 and drags the
+        # following keys onto one line, which is the unparseable config.yaml of #148524. A fresh
+        # node renders as ``key: []`` / ``key: {}``.
+        if value and isinstance(value, dict) and isinstance(current, CommentedMap):
             _merge(current, value)
-        elif isinstance(value, list) and isinstance(current, CommentedSeq):
+        elif value and isinstance(value, list) and isinstance(current, CommentedSeq):
             _merge_seq(current, value)
         elif not _unchanged(current, value):
             dst[key] = _rt_value(value)

@@ -82,7 +82,7 @@ def resolve_memory_provider(name: str, say=None):
         reason = ""
         try:
             reason = provider.unavailable_reason()
-        except Exception:  # health: allow BLE001 -- a provider's own hint must never break agent init
+        except (Exception, SystemExit):  # health: allow BLE001 -- a provider's own hint must never break agent init
             logger.debug("unavailable_reason() failed for %s", name, exc_info=True)
         _warn_memory_provider_unavailable(name, reason, say=say)
     return None

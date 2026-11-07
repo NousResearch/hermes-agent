@@ -1,7 +1,7 @@
 # Catalog entry for NousResearch/hermes-agent -> plugin-catalog/plan-tracker.yaml
 name: plan-tracker
 repo: https://github.com/Hjuanma/hermes-plan-tracker
-sha: c8ff18e0d1c09ab3700de21dc7d2c7b9d40918b1
+sha: c86fc28fb205b3608d5ded3c0f2f289068107963
 description: >
   Track the markdown plans you already write: milestone progress bars from the
   checkboxes in your .md files, in a dockable pane plus a status-bar chip, with
@@ -12,7 +12,7 @@ maintainer: Hjuanma
 tier: community
 category: desktop
 requires_hermes: ">=0.23.0"
-version: "0.5.0"
+version: "0.6.0"
 platforms:
   - linux
   - macos

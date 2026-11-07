@@ -1,6 +1,6 @@
 name: dirtside
 repo: https://github.com/the-ai-entrepreneur-ai-hub/hermes-dirtside
-sha: e27d457b309a1febe23448cebd07d8f493bb2832
+sha: 0ae9359b4bd29114072343983abd0b624269acc3
 description: >
   Remote brain, local hands: run the terminal and file tools on a device you
   own, chosen per conversation with /dirtside use, while Hermes keeps running on
@@ -18,9 +18,9 @@ category: tools
 requires_hermes: ">=0.22.7"
 docs_url: https://github.com/the-ai-entrepreneur-ai-hub/hermes-dirtside#readme
 version: "0.1.0"
-image: https://raw.githubusercontent.com/the-ai-entrepreneur-ai-hub/hermes-dirtside/e27d457b309a1febe23448cebd07d8f493bb2832/docs/assets/card.png
+image: https://raw.githubusercontent.com/the-ai-entrepreneur-ai-hub/hermes-dirtside/0ae9359b4bd29114072343983abd0b624269acc3/docs/assets/card.png
 screenshots:
-  - https://raw.githubusercontent.com/the-ai-entrepreneur-ai-hub/hermes-dirtside/e27d457b309a1febe23448cebd07d8f493bb2832/docs/assets/architecture.png
+  - https://raw.githubusercontent.com/the-ai-entrepreneur-ai-hub/hermes-dirtside/0ae9359b4bd29114072343983abd0b624269acc3/docs/assets/architecture.png
 platforms: [linux, macos]
 capabilities:
   provides_tools: []

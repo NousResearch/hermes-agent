@@ -408,8 +408,9 @@ def test_pinned_custom_provider_entitlement_benches_only_the_model():
         assert [_try_openrouter(model=m)[0] is None for m in ("gpt-ok", "gpt-gated")] == [False, True]
 
 
-def test_codex_entitlement_cooldown_keeps_the_key_for_its_other_models():
-    """A ChatGPT account refused one Codex model (#71970) still serves aux calls on its other models."""
+def test_model_entitlement_cooldown_keeps_the_key_for_its_other_models():
+    """A ChatGPT account refused one Codex model (#71970), or an Anthropic key one Claude model, still serves aux
+    calls on its other models."""
     from agent.auxiliary_client import _build_codex_client, resolve_provider_client
 
     key = Key("openai-codex", "k1", "k1", "api_key", 0, "manual", "tok", model_cooldowns={"gpt-5.5-pro": 9e9})
@@ -418,6 +419,11 @@ def test_codex_entitlement_cooldown_keeps_the_key_for_its_other_models():
         assert [_build_codex_client(m)[0] is None for m in ("gpt-5.4-mini", "gpt-5.5-pro")] == [False, True]
         assert [resolve_provider_client("openai-codex", model=m, raw_codex=True)[0] is None
                 for m in ("gpt-5.4-mini", "gpt-5.5-pro")] == [False, True]
+    key = Key("anthropic", "k1", "k1", "api_key", 0, "manual", "sk-ant-api", model_cooldowns={"claude-opus-4-6": 9e9})
+    with (patch("agent.auxiliary_client.load_pool", lambda _p: CredentialPool("anthropic", [key])),
+          patch("agent.anthropic_credentials.resolve_anthropic_token", return_value=None)):
+        assert [resolve_provider_client("anthropic", model=m)[0] is None
+                for m in ("claude-haiku-4-5", "claude-opus-4-6")] == [False, True]
 
 
 def test_missing_model_on_a_candidate_hides_only_that_model(monkeypatch):

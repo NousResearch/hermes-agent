@@ -654,13 +654,19 @@ def multiplexed_profile_refusal(profile: Optional[str], verb: str) -> Optional[s
             return None  # parks the profile inside the host
         return (f"The default gateway already serves profile '{requested}' as a multiplexer; "
                 f"{verb} it from the default profile instead of a separate gateway for this profile.")
+    from hermes_cli import gateway as gw
     from hermes_cli.gateway_migrate import _installed_services
     if _installed_services(profile_dir):
         return None  # a --force-installed fleet member is not NEW; its own service is started normally
+    if gw._running_under_s6():
+        from hermes_cli.service_manager import S6ServiceManager
+        if S6ServiceManager().has_force_run_script(f"gateway-{requested}"):
+            return None
+    force_verb = "start" if gw._running_under_s6() else "install"
     return (f"Profile '{requested}' does not get a gateway of its own: one host gateway serves every "
             f"profile. Install or start it from the default profile (hermes gateway install), or fold an "
             f"existing per-profile fleet with `hermes gateway migrate --multiplex`; "
-            f"`hermes -p {requested} gateway install --force` starts a separate one anyway.")
+            f"`hermes -p {requested} gateway {force_verb} --force` starts a separate one anyway.")
 
 
 def live_session_refusal(profile: Optional[str], verb: str) -> Optional[str]:

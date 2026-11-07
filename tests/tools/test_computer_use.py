@@ -1818,6 +1818,56 @@ class TestMcpInvocationResolution:
         assert cmd == "/opt/cua-driver"
         assert args == ["mcp"]
 
+    def test_environment_wrapper_remains_spawn_command(self, monkeypatch):
+        """A remote wrapper must not be replaced by the remote manifest's
+        absolute executable path, which does not exist on the Hermes host.
+        """
+        from unittest.mock import patch
+        from tools.computer_use.cua_backend_driver import _resolve_mcp_invocation
+
+        wrapper = "/home/hermes/.local/bin/cua-mac.sh"
+        manifest = (
+            '{"schema_version":"1",'
+            '"mcp_invocation":{"command":"/Applications/CuaDriver.app/'
+            'Contents/MacOS/cua-driver","args":["mcp"]}}'
+        )
+        monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", wrapper)
+        with patch("subprocess.run", new=self._fake_run(stdout=manifest)):
+            cmd, args = _resolve_mcp_invocation(wrapper)
+        assert cmd == wrapper
+        assert args == ["mcp"]
+
+    @pytest.mark.platforms("posix")
+    def test_bare_path_wrapper_remains_spawn_command(self, tmp_path, monkeypatch):
+        """A bare PATH override is normalized by resolution before manifest
+        discovery, so the wrapper—not the remote manifest path—remains the
+        local spawn command.
+        """
+        from tools.computer_use.cua_backend_driver import (
+            _resolve_mcp_invocation,
+            resolve_cua_driver_cmd,
+        )
+
+        wrapper = tmp_path / "cua-wrapper"
+        wrapper.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1\" = manifest ]; then\n"
+            "  printf '%s\\n' '{\"mcp_invocation\":{\"command\":\"/Applications/CuaDriver.app/Contents/MacOS/cua-driver\",\"args\":[\"mcp\"]}}'\n"
+            "fi\n",
+            encoding="utf-8",
+        )
+        wrapper.chmod(0o755)
+        monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ.get("PATH", ""))
+        monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", wrapper.name)
+
+        resolved = resolve_cua_driver_cmd()
+        assert resolved is not None
+        cmd, args = _resolve_mcp_invocation(resolved)
+
+        assert resolved == str(wrapper)
+        assert cmd == str(wrapper)
+        assert args == ["mcp"]
+
     def test_falls_back_when_manifest_missing_command(self):
         """If the manifest knows the args but not the command, keep our
         resolved driver path (so HERMES_CUA_DRIVER_CMD still wins)."""

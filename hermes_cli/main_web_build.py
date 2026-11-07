@@ -5,6 +5,7 @@ are imported lazily inside the functions that use them (avoids an import cycle).
 """
 
 import logging
+import os
 import subprocess
 import sys
 
@@ -73,7 +74,7 @@ def _prune_dropped_directories(root: Path, recorded_fingerprint: str) -> int:
     if listed.returncode != 0:
         raise OSError(f"could not list the files dropped since {since[:10]}: git exited {listed.returncode}")
     real_root = root.resolve()
-    directories = {parent for name in listed.stdout.decode("utf-8", "replace").split("\0") if name
+    directories = {parent for name in os.fsdecode(listed.stdout).split("\0") if name
                    for parent in (root / name).parents if parent != root and parent.is_relative_to(root)}
     removed = 0
     for directory in sorted(directories, key=lambda path: len(path.parts), reverse=True):

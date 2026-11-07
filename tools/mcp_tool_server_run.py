@@ -8,7 +8,13 @@ import logging
 import time
 from dataclasses import dataclass
 from typing import Optional
-from tools.mcp_tool_common import _core, _get_lifecycle_seconds, _jittered, _resolve_tool_timeout
+from tools.mcp_tool_common import (
+    _core,
+    _get_lifecycle_seconds,
+    _jittered,
+    _parse_boolish,
+    _resolve_tool_timeout,
+)
 from tools import mcp_tool_errors as _errors
 from tools import mcp_tool_registration as _registration
 from tools import mcp_tool_sampling as _sampling
@@ -186,21 +192,24 @@ class MCPServerRunMixin:
             logger.warning(msg, *args)
 
     async def _park(self, revival_reason: str) -> bool:
-        """Drop this server's tools and wait for a reconnect request; True when shutdown came instead.
+        """Park a server until a reconnect request; True when shutdown came instead.
         The run task must NOT exit (it is the only ``_reconnect_event`` listener, so returning
-        leaves the server unrevivable). With tools deregistered no call can reach the breaker
-        probe, so the wait is TIMED (one self-probe per ``_PARKED_RETRY_INTERVAL``); an explicit
-        ``_reconnect_event.set()`` wakes it immediately."""
+        leaves the server unrevivable). Eager tools are deregistered so no call can reach the
+        breaker probe, making the wait TIMED (one self-probe per ``_PARKED_RETRY_INTERVAL``).
+        Lazy tools came from the schema cache, so they stay registered and the next call can
+        wake the server immediately; an explicit ``_reconnect_event.set()`` also wakes it."""
         # Do NOT return — exiting the task orphans the server: nothing would ever listen for
         # _reconnect_event again and the server would be permanently wedged for the life of the process
-        # (#16788). Instead, drop the phantom tools from the registry and park. Because parking deregisters
-        # the tools, no tool call can reach the circuit-breaker half-open probe or _signal_reconnect — so
-        # the park is a TIMED wait: every _PARKED_RETRY_INTERVAL we wake and attempt one reconnect ourselves
-        # (#57129). An explicit _reconnect_event.set() (OAuth recovery, manual /mcp refresh) still wakes us
-        # immediately.
+        # (#16788). Instead, drop an eager server's phantom tools and park. Because that removes
+        # the call path to the circuit-breaker half-open probe, the park is a TIMED wait: every
+        # _PARKED_RETRY_INTERVAL we wake and attempt one reconnect ourselves (#57129). Lazy tools
+        # come from the schema cache, not a dead transport, and are the only synchronous wake path
+        # for a lazy server, so retain them. An explicit _reconnect_event.set() (OAuth recovery,
+        # manual /mcp refresh) still wakes both cases immediately.
         self._was_parked = True
         self._park_reason = revival_reason
-        self._deregister_tools()
+        if not _parse_boolish((self._config or {}).get("lazy", False), default=False):
+            self._deregister_tools()
         self._reconnect_event.clear()
         paused = False
         while True:

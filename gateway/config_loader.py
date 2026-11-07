@@ -514,6 +514,24 @@ def read_yaml_layers(home: Path) -> dict:
     return managed_scope.apply_managed_overlay(yaml_cfg)
 
 
+def bridge_platform_layers(
+    yaml_cfg: dict, gw_data: dict, platforms_data: dict, targets: list, *, warned: Optional[set] = None,
+) -> tuple:
+    """The loader's env-free platform step on merged *platforms_data* (in place): the authored
+    ``platforms.<p>.extra`` minus administrator pins, then the shared-key bridge (root blocks,
+    ``channel_overrides``). Returns ``(authored, managed_extra)`` for the plugin YAML hooks."""
+    gateway_section = yaml_cfg.get("gateway")
+    # "Authored" is config.yaml only: a scratch merge leaves out the legacy gateway.json extra
+    # already in ``platforms_data``, which stays the base layer every config.yaml key overrides.
+    authored = snapshot_authored_extra(merge_platform_sections(yaml_cfg, gateway_section, {}))
+    from hermes_cli import managed_scope
+    managed_extra = _apply_managed_extra(authored, managed_scope.apply_managed_overlay({}), platforms_data)
+    bridge_platform_shared_keys(
+        yaml_cfg, gateway_section.get("platforms") if isinstance(gateway_section, dict) else None,
+        gw_data, platforms_data, targets, warned=warned, authored=authored)
+    return authored, managed_extra
+
+
 def load_yaml_layer(home: Path, gw_data: dict) -> None:
     """Overlay ``read_yaml_layers`` onto *gw_data* in place. Raises on any failure (caller warns + falls back)."""
     yaml_cfg = read_yaml_layers(home)
@@ -541,14 +559,8 @@ def load_yaml_layer(home: Path, gw_data: dict) -> None:
         entries = registry.configured_entries(activation_predicate(
             yaml_cfg=yaml_cfg, platform_names=platforms_data, home=home, registry=registry))
     targets = shared_loop_targets(registry, None if entries is None else [e for e in entries if e.source == "plugin"])
-    # "Authored" is config.yaml only: a scratch merge leaves out the legacy gateway.json extra
-    # already in ``platforms_data``, which stays the base layer every config.yaml key overrides.
-    authored = snapshot_authored_extra(merge_platform_sections(yaml_cfg, gateway_section, {}))
-    from hermes_cli import managed_scope
-    managed_extra = _apply_managed_extra(authored, managed_scope.apply_managed_overlay({}), platforms_data)
     warned: set = set()  # one warning per conflicting (platform, key) across both copy sites
-    bridge_platform_shared_keys(
-        yaml_cfg, gateway_platforms, gw_data, platforms_data, targets, warned=warned, authored=authored)
+    authored, managed_extra = bridge_platform_layers(yaml_cfg, gw_data, platforms_data, targets, warned=warned)
     apply_plugin_yaml_hooks(yaml_cfg, gateway_platforms, platforms_data, registry,
                             warned=warned, authored=authored, managed_extra=managed_extra, entries=entries)
     bridge_core_env_settings(yaml_cfg, platforms_data)

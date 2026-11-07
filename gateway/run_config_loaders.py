@@ -40,6 +40,7 @@ logger = logging.getLogger("gateway.run")
 DEFAULT_HUMAN_DELAY_RANGE_MS: tuple[int, int] = (800, 2500)
 
 _BUSY_INPUT_MODES = {"interrupt", "queue", "steer"}
+_ROUTED_WARNED: set = set()  # routed silence lookups log each conflicting (platform, key) once
 
 
 class GatewayConfigLoadersMixin:
@@ -116,9 +117,13 @@ class GatewayConfigLoadersMixin:
             agent_result=agent_result)
 
     def _room_allow_silence(self, source: SessionSource) -> Optional[bool]:
-        """Resolve the room policy in the serving profile, never the launch snapshot for a route."""
+        """Resolve the room policy in the serving profile, never the launch snapshot for a route.
+
+        A matching ``channel_overrides`` entry that sets ``allow_silence`` decides; otherwise a
+        platform-level ``allow_silence`` covers the platform's shared chats (never DMs).
+        """
         from gateway.config import GatewayConfig
-        from gateway.config_loader import merge_platform_sections, platform_section
+        from gateway.config_loader import bridge_platform_layers, merge_platform_sections
         from gateway.run import _get_channel_override, _load_gateway_config
         from gateway.session_identity import identity_of
         config = getattr(self, "config", None)
@@ -130,26 +135,28 @@ class GatewayConfigLoadersMixin:
         try:
             if config is None or routed:
                 raw = _load_gateway_config(self._resolve_profile_home_for_source(source) / "config.yaml")
-                # The loader's own two steps: merge every nested platform block, then the overrides of
-                # the block platform_section picks (a top-level ``<platform>:`` block first) win.
-                # ``GatewayConfig.from_dict(raw)`` alone reads only the nested ``platforms`` form.
-                name, gateway_section = str(source.platform.value), raw.get("gateway")
-                overrides = (merge_platform_sections(raw, gateway_section, {}).get(name) or {}).get("channel_overrides")
-                section, _ = platform_section(raw, name, (
-                    gateway_section.get("platforms") if isinstance(gateway_section, dict) else None))
-                if isinstance(section, dict) and isinstance(section.get("channel_overrides"), dict):
-                    overrides = section["channel_overrides"]
-                config = GatewayConfig.from_dict({"platforms": {name: {
-                    "channel_overrides": overrides if isinstance(overrides, dict) else {}}}})
+                # The loader's own env-free platform steps; ``GatewayConfig.from_dict(raw)`` alone
+                # reads only the nested ``platforms`` form.
+                gw_data: dict = {}
+                platforms = merge_platform_sections(raw, raw.get("gateway"), gw_data)
+                bridge_platform_layers(raw, gw_data, platforms, [source.platform], warned=_ROUTED_WARNED)
+                config = GatewayConfig.from_dict({"platforms": {
+                    source.platform.value: platforms.get(source.platform.value) or {}}})
             override = _get_channel_override(
                 config, source.platform, source.chat_id,
                 thread_id=source.thread_id, parent_id=source.parent_chat_id)
+            platform_config = (getattr(config, "platforms", None) or {}).get(source.platform)
         except Exception:
             # No permission means the default reply rule; a lookup failure must not become an error reply.
             logger.warning("Room allow_silence lookup failed for %s; keeping the reply rule",
                            source.chat_id, exc_info=True)
             return None
-        return override.allow_silence if override is not None else None
+        if override is not None and override.allow_silence is not None:
+            return override.allow_silence
+        if platform_config is None or source.chat_type == "dm":
+            return None
+        value = (platform_config.extra or {}).get("allow_silence")
+        return value if isinstance(value, bool) else None
 
     def _resolve_model_for_channel(
         self, platform: Platform, chat_id: str, *, user_config: Optional[dict] = None,

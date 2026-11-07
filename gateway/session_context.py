@@ -5,6 +5,7 @@ Replaces the old ``os.environ``-based ``HERMES_SESSION_*`` state with task-local
 other's routing ids.  ``get_session_env`` is a drop-in for ``os.getenv``.
 """
 
+import copy
 import os
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -53,6 +54,26 @@ _SESSION_ASYNC_DELIVERY = ContextVar("HERMES_SESSION_ASYNC_DELIVERY", default=_U
 # Request-local proof that the client resumes SessionDB history. No env fallback
 # or child-process export: a bound id alone cannot authorize detached delivery.
 _SESSION_HISTORY_DELIVERY = ContextVar("HERMES_SESSION_HISTORY_DELIVERY", default=_UNSET)
+
+# A Host Project row is resolved and validated by the owning backend. This context carries only that
+# server-verified projection to turn hooks; no renderer-supplied path is trusted or exported to env.
+_SESSION_DESKTOP_PROJECT = ContextVar("HERMES_SESSION_DESKTOP_PROJECT", default=None)
+
+
+@contextmanager
+def scoped_desktop_project(project: dict[str, Any] | None) -> Iterator[None]:
+    """Bind a verified Desktop Project projection for the current session turn only."""
+    token = _SESSION_DESKTOP_PROJECT.set(copy.deepcopy(project) if project is not None else None)
+    try:
+        yield
+    finally:
+        _SESSION_DESKTOP_PROJECT.reset(token)
+
+
+def get_session_desktop_project() -> dict[str, Any] | None:
+    """Return a copy of the Host Project verified for this turn, or ``None``."""
+    project = _SESSION_DESKTOP_PROJECT.get()
+    return copy.deepcopy(project) if project is not None else None
 
 # Cron auto-delivery vars, set per-job in run_job() so concurrent jobs don't clobber.
 _CRON_AUTO_DELIVER_PLATFORM = ContextVar("HERMES_CRON_AUTO_DELIVER_PLATFORM", default=_UNSET)

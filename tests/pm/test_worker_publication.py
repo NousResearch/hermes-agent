@@ -356,6 +356,51 @@ def test_staged_publication_preserves_a_concurrent_sibling_install_record(
     assert (target / "code.py").read_text() == "new code"
 
 
+def _icacls(path: Path) -> list[str]:
+    out = subprocess.run(["icacls", str(path)], capture_output=True, text=True, encoding="oem",
+                         errors="replace", check=True).stdout
+    return [line.replace(str(path), "").strip() for line in out.splitlines() if ":(" in line]
+
+
+@pytest.mark.platforms("windows")
+def test_published_plugin_takes_the_plugins_dir_permissions_not_the_staging_folders(
+    client, tmp_path, monkeypatch, isolated_python,
+):
+    """`plugins install` / `update` stage in tempfile.TemporaryDirectory, which Python >= 3.13 gives a
+    private, protected DACL on Windows (SYSTEM, Administrators, OWNER RIGHTS), and os.replace keeps it.
+    The published plugin then lacks every entry of plugins/: the user's own, the sandbox groups'. A
+    gateway run as a Windows service is elevated, so the __pycache__ it writes there is owned by
+    Administrators and the same user's non-elevated hermes can neither read nor delete it."""
+    import tempfile
+
+    from pm.store import tree_digest
+
+    _current_environment(tmp_path, monkeypatch, [])
+    home = tmp_path / "home"
+    plugins = home / "plugins"
+    plugins.mkdir(parents=True)
+    (home / "config.yaml").write_text("plugins:\n  enabled: []\n", encoding="utf-8")
+    # An entry only plugins/ carries, so inheritance is visible whatever tmp_path's own DACL is.
+    subprocess.run(["icacls", str(plugins), "/grant", "*S-1-5-32-545:(OI)(CI)(RX)"], check=True, capture_output=True)
+    worker_toolchain(client, monkeypatch, isolated_python, "")
+    target = plugins / "example"
+    with tempfile.TemporaryDirectory(prefix=".install-", dir=plugins) as tmp:
+        staged = Path(tmp) / "plugin"
+        (staged / "pkg").mkdir(parents=True)
+        (staged / "plugin.yaml").write_text("name: example\n", encoding="utf-8")
+        (staged / "pkg" / "mod.py").write_text("x = 1\n", encoding="utf-8")
+        client.sync_venv(explicit=True, plugins=StagedUpdate({
+            "target": str(target), "staged": str(staged), "target_digest": None,
+            "old_metadata": {}, "new_metadata": {"example": {"revision": "new"}},
+        }))
+
+    assert (target / "pkg" / "mod.py").read_text(encoding="utf-8-sig") == "x = 1\n"
+    for path in (target, target / "pkg", target / "pkg" / "mod.py"):
+        entries = _icacls(path)
+        assert any(line.startswith("BUILTIN\\Users:(I)") for line in entries), (path, entries)
+        assert all("(I)" in line for line in entries), (path, entries)
+
+
 def test_inactive_portable_publication_does_not_inspect_unrelated_dependency_manifests(client, tmp_path, monkeypatch):
     from pm.store import tree_digest
     _current_environment(tmp_path, monkeypatch, [])

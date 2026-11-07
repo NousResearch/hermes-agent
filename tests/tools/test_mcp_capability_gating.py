@@ -263,6 +263,14 @@ class TestMethodNotFoundDetection:
         assert _is_method_not_found_error(_mcp_error(-32601)) is True
 
 
+    def test_method_not_supported_phrasing_matches(self):
+        # gws's MCP server answers ping with a non-standard code but the
+        # message "Method not supported: ping" — must latch the fallback
+        # instead of reconnect-looping.
+        from tools.mcp_tool_errors import _is_method_not_found_error
+        assert _is_method_not_found_error(_mcp_error(-32000, "Method not supported: ping")) is True
+        assert _is_method_not_found_error(Exception("Method not supported: ping")) is True
+
     def test_unrelated_exception_is_not_match(self):
         from tools.mcp_tool_errors import _is_method_not_found_error
         assert _is_method_not_found_error(TimeoutError()) is False

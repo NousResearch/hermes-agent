@@ -1,14 +1,14 @@
 name: lampstand
 title: lampstand
 repo: https://github.com/vincitamore/lampstand
-sha: 4da701bf3f9a9f987570eef9bb40c13ed674e311
-version: "0.3.0"
+sha: 18354a0476a3b55e4926ba0706421740a4c8a5a7
+version: "0.3.1"
 description: "lampstand turns one Hermes into a team that remembers who it works for. Plant a house (a git repository you own) and every chat started in it works under the same written principles and rules, keeps one shared record of tasks, decisions, knowledge and reminders as plain Markdown, and can wake the other chats through shared rooms, including from a Telegram, Discord or Slack chat. Nine house tools plus role-briefed delegation, /lampstand, a desktop House page (five lamps for the house's checks, work, inbox, knowledge, the constitution with adopt and strike, rooms, rhythm, health), a status-bar lamp and transcript cards. Nothing becomes a rule until you adopt it. Disclosure: runs its own Node CLI (Node 22.13+) and git in the house, and each act lands as a git commit with no per-call approval; rooms are off until you install vincitamore/agora (not the catalog's agora entry) and grant allow_gateway_injection, after which it runs that agora checkout from PATH with the gateway's environment, a background thread polls listening chats every 15 s, and a room message starts a full agent turn with that chat's tools and approval mode; reads the profile's state.db read-only to route wakes; the agent/operator split is an environment marker, not a security boundary; no network calls of its own, no telemetry, no stored credentials."
 maintainer: vincitamore
 category: tools
 tier: community
 requires_hermes: ">=0.22.6"
-docs_url: "https://github.com/vincitamore/lampstand/blob/4da701bf3f9a9f987570eef9bb40c13ed674e311/docs/install-hermes.md"
+docs_url: "https://github.com/vincitamore/lampstand/blob/18354a0476a3b55e4926ba0706421740a4c8a5a7/docs/install-hermes.md"
 screenshots:
 - "https://raw.githubusercontent.com/vincitamore/lampstand/cb10d05f7f60ba804f957a485ce787d2674388aa/docs/screenshots/1-overview.png"
 - "https://raw.githubusercontent.com/vincitamore/lampstand/cb10d05f7f60ba804f957a485ce787d2674388aa/docs/screenshots/2-constitution.png"

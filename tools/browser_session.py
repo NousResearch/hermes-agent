@@ -4,8 +4,12 @@ always carrying a ``cdp_url``.
 Precedence (``BU_CDP_*`` operator env is honoured earlier, by ``browser_exec``):
 CDP override (live ``/browser connect`` > ``BROWSER_CDP_URL`` > ``browser.cdp_url``) > hybrid ``::local``
 sidecar (private URL, never the real profile) > cloud provider (``create_session``; on failure a LOCAL
-session marked ``fallback_from_cloud``) > local: real profile (consented) > Lightpanda
-(``browser.engine: lightpanda``) > the packaged Chromium via ``tools.browser_launcher``.
+session marked ``fallback_from_cloud``) > local.
+
+The local branch is NOT itself a fallback chain. It serves the consented real profile when
+``browser.use_real_profile`` is on, else a fresh browser on the configured engine: the packaged Chromium
+by default, or Lightpanda only when ``browser.engine: lightpanda`` is set. Lightpanda is a configured
+engine choice, never a rung tried automatically.
 
 State lives here; sibling modules (``browser_session_*``) late-import this module inside functions.
 """

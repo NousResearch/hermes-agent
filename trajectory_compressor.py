@@ -21,7 +21,7 @@ import hermes_yaml as yaml
 import logging
 import asyncio
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, TextIO, Tuple
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 
@@ -87,6 +87,16 @@ def _load_jsonl(path: Path, on_error: Optional[Callable[[int, json.JSONDecodeErr
 def _write_jsonl(path: Path, entries) -> None:
     with open(path, 'w', encoding='utf-8') as f:
         f.writelines(json.dumps(entry, ensure_ascii=False) + '\n' for entry in entries)
+
+
+def _open_text_write(path: Path) -> TextIO:
+    """Sync open for ``asyncio.to_thread`` so the caller gets a typed text handle."""
+    return open(path, 'w', encoding='utf-8')
+
+
+def _next_jsonl_batch(batches: Iterator[tuple[list[tuple[int, dict]], int]]) -> tuple[list[tuple[int, dict]], int] | None:
+    """Typed ``next(batches, None)`` for ``asyncio.to_thread``."""
+    return next(batches, None)
 
 
 # YAML section -> keys; "yaml_key:attr" when the config attribute name differs.
@@ -612,7 +622,70 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                     run.finish(update_status=False)
                 return entry, TrajectoryMetrics()  # keep the original on error
 
+    def _count_jsonl_lines(self, jsonl_files: list[Path]) -> int:
+        """Total non-blank lines across *jsonl_files*; blocking IO stays in this sync helper."""
+        total = 0
+        for file_path in jsonl_files:
+            with open(file_path, "r", encoding="utf-8") as handle:
+                total += sum(1 for line in handle if line.strip())
+        return total
+
+    def _jsonl_batches(self, file_path: Path, batch_size: int) -> Iterator[tuple[list[tuple[int, dict]], int]]:
+        """Yield ``(batch, invalid_count)`` from one JSONL file; invalid lines warn and are counted."""
+        batch: list[tuple[int, dict]] = []
+        invalid = 0
+        with open(file_path, "r", encoding="utf-8") as handle:
+            for line_num, line in enumerate(handle):
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    entry = json.loads(stripped)
+                except json.JSONDecodeError as exc:
+                    self.logger.warning("Skipping invalid JSON at %s:%s: %s", file_path, line_num, exc)
+                    invalid += 1
+                    continue
+                batch.append((line_num, entry))
+                if len(batch) >= batch_size:
+                    yield batch, invalid
+                    batch, invalid = [], 0
+        if batch or invalid:
+            yield batch, invalid
+
+    async def _compress_jsonl_file(self, run: _RunProgress, file_path: Path, output_dir: Path, batch_size: int) -> None:
+        """Compress one JSONL file in bounded batches to a tmp file, then atomically replace."""
+        output_path = output_dir / file_path.name
+        tmp_path = output_path.with_name(output_path.name + ".tmp")
+        out = await asyncio.to_thread(_open_text_write, tmp_path)
+        try:
+            batches = self._jsonl_batches(file_path, batch_size)
+            while (item := await asyncio.to_thread(_next_jsonl_batch, batches)) is not None:
+                batch, invalid = item
+                if invalid:
+                    run.progress.advance(run.main_task, invalid)
+                outcomes = await asyncio.gather(
+                    *(self._process_one(run, file_path, idx, entry) for idx, entry in batch)
+                )
+                for outcome in outcomes:
+                    if outcome is not None:
+                        out.write(json.dumps(outcome[0], ensure_ascii=False) + "\n")
+            out.flush()
+            os.fsync(out.fileno())
+        except Exception:
+            if tmp_path.exists():
+                tmp_path.unlink()
+            raise
+        finally:
+            out.close()
+        try:
+            os.replace(tmp_path, output_path)
+        except Exception:
+            if tmp_path.exists():
+                tmp_path.unlink()
+            raise
+
     async def _process_directory_async(self, input_dir: Path, output_dir: Path):
+        """Stream JSONL files in bounded batches and write incrementally."""
         console = Console()
         self.aggregate_metrics.processing_start_time = datetime.now().isoformat()
         start_time = time.time()
@@ -621,13 +694,8 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
             self.logger.warning("No JSONL files found in %s", input_dir)
             return
 
-        console.print("\n[dim]Loading all entries...[/dim]")
-        all_entries = []  # List of (file_path, entry_idx, entry)
-        for file_path in jsonl_files:
-            def _warn(line_num, e, file_path=file_path):
-                self.logger.warning("Skipping invalid JSON at %s:%s: %s", file_path, line_num, e)
-            all_entries.extend((file_path, idx, entry) for idx, entry in _load_jsonl(file_path, _warn))
-        total_entries = len(all_entries)
+        batch_size = max(1, int(self.config.max_concurrent_requests))
+        total_entries = await asyncio.to_thread(self._count_jsonl_lines, jsonl_files)
 
         console.print(f"\n{'='*60}")
         console.print(f"📂 Input: {input_dir}")
@@ -636,31 +704,24 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         console.print(f"📊 Total trajectories: {total_entries:,}")
         console.print(f"🎯 Target max tokens: {self.config.target_max_tokens:,}")
         console.print(f"📝 Summary target tokens: {self.config.summary_target_tokens}")
-        console.print(f"⚡ Max concurrent API calls: {self.config.max_concurrent_requests}")
+        console.print(f"⚡ Max concurrent API calls: {batch_size}")
         console.print(f"{'='*60}\n")
+
+        await asyncio.to_thread(output_dir.mkdir, parents=True, exist_ok=True)
 
         with Progress(
             SpinnerColumn(), TextColumn("[progress.description]{task.description}"), BarColumn(), TaskProgressColumn(),
             TextColumn("•"), TimeElapsedColumn(), TextColumn("•"), TimeRemainingColumn(),
-            console=console, refresh_per_second=10,  # Higher refresh for async
+            console=console, refresh_per_second=10,
         ) as progress:
             run = _RunProgress(
                 progress, progress.add_task(f"[cyan]Compressing {total_entries:,} trajectories", total=total_entries),
                 progress.add_task("[dim]Starting...[/dim]", total=None),
-                asyncio.Lock(), asyncio.Semaphore(self.config.max_concurrent_requests),
+                asyncio.Lock(), asyncio.Semaphore(batch_size),
             )
-            outcomes = await asyncio.gather(*(self._process_one(run, *item) for item in all_entries))
+            for file_path in jsonl_files:
+                await self._compress_jsonl_file(run, file_path, output_dir, batch_size)
             progress.remove_task(run.status_task)
-
-        # Write results preserving original order; timed-out entries are dropped.
-        console.print("\n[dim]Writing output files...[/dim]")
-        output_dir.mkdir(parents=True, exist_ok=True)
-        results = {f: [] for f in jsonl_files}
-        for (file_path, _, _), outcome in zip(all_entries, outcomes):
-            if outcome is not None:
-                results[file_path].append(outcome[0])
-        for file_path in jsonl_files:
-            _write_jsonl(output_dir / file_path.name, results[file_path])
 
         self.aggregate_metrics.processing_end_time = datetime.now().isoformat()
         self.aggregate_metrics.processing_duration_seconds = time.time() - start_time

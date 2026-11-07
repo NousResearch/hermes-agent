@@ -5,6 +5,7 @@ import {
   isStableOpen,
   JSON_RPC_METHOD_NOT_FOUND,
   JsonRpcGatewayError,
+  LOCAL_CONNECTION_ID,
   reconnectBackoffDelayMs
 } from '@hermes/shared'
 import { useEffect, useRef } from 'react'
@@ -25,7 +26,12 @@ import {
 import { resolveDesktopGatewayWsUrl } from '@/lib/gateway-ws-url'
 import { hostHas } from '@/lib/host-capabilities'
 import { browserLaunchProfile } from '@/lib/platform'
-import { BACKEND_BOOT_WAIT_TIMEOUT_MS, RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
+import {
+  BACKEND_BOOT_WAIT_TIMEOUT_MS,
+  isTimeoutError,
+  RECONNECT_ATTEMPT_TIMEOUT_MS,
+  withTimeout
+} from '@/lib/with-timeout'
 import {
   $desktopBoot,
   applyDesktopBootProgress,
@@ -342,7 +348,14 @@ export function useGatewayBoot({
     // A Settings apply (softSwitch below) commits through beginGatewaySwitch(),
     // which runs this window's machine-context reset (#93937).
     const offSwitchLifecycle = registerGatewaySwitchLifecycle({
-      beforeConnectionSwitch: () => callbacksRef.current.beforeConnectionSwitch(),
+      beforeConnectionSwitch: () => {
+        // Explicit source selection supersedes the old cold boot, including
+        // an eligibility lookup that has not finished resolving yet.
+        lateLocalBootRecoveryArmed = false
+        lateLocalBootRecoveryConsumed = true
+
+        return callbacksRef.current.beforeConnectionSwitch()
+      },
       refreshSessions: shouldPublish => callbacksRef.current.refreshSessions(shouldPublish)
     })
 
@@ -432,6 +445,11 @@ export function useGatewayBoot({
     // Bounded automatic boot retry for transient REMOTE failures (#82679).
     let bootRetryAttempt = 0
     let bootRetryTimer: ReturnType<typeof setTimeout> | null = null
+    // Late-ready recovery belongs to the original local startup (#98124).
+    let lateLocalBootRecoveryArmed = false
+    let lateLocalBootRecoveryConsumed = false
+    let localPrimaryBoot: boolean | null = null
+    let primaryBootRouteResolved = false
 
     const clearBootRetryTimer = () => {
       if (bootRetryTimer !== null) {
@@ -452,6 +470,33 @@ export function useGatewayBoot({
       } catch {
         return false
       }
+    }
+
+    const primaryBootIsLocal = async (): Promise<boolean> => {
+      // A timed-out route lookup has not established which source is booting.
+      if (!primaryBootRouteResolved) {
+        return false
+      }
+
+      if (localPrimaryBoot !== null) {
+        return localPrimaryBoot
+      }
+
+      try {
+        const config = await withTimeout(
+          desktop.getConnectionConfig(),
+          RECONNECT_ATTEMPT_TIMEOUT_MS,
+          'Timed out resolving the desktop connection mode'
+        )
+
+        localPrimaryBoot = config.mode === 'local'
+      } catch {
+        // This check only controls an optional recovery. When IPC is unhealthy,
+        // retain the ordinary terminal boot failure instead of guessing.
+        localPrimaryBoot = false
+      }
+
+      return localPrimaryBoot
     }
 
     // Wrap the live getter in a call so TS control-flow analysis doesn't narrow
@@ -760,6 +805,13 @@ export function useGatewayBoot({
           ? await desktop.profile?.getDefault?.()
           : null
 
+      if (startup) {
+        primaryBootRouteResolved = true
+        // A pinned/saved source overrides the legacy global mode. Capture the
+        // same identity used by the actual dial before awaiting its readiness.
+        localPrimaryBoot = route?.connectionId ? route.connectionId === LOCAL_CONNECTION_ID : null
+      }
+
       // Initial registry publication can precede boot. Resolve captured launch
       // intent explicitly rather than through that still-initializing mirror.
       if (route?.connectionId && desktop.getConnectionFor) {
@@ -1003,10 +1055,49 @@ export function useGatewayBoot({
       }
     }
 
+    const recoverLateLocalBoot = (payload: { error: string | null; phase: string; running: boolean }) => {
+      if (
+        cancelled ||
+        bootCompleted ||
+        $gatewaySwitching.get() ||
+        !lateLocalBootRecoveryArmed ||
+        lateLocalBootRecoveryConsumed ||
+        payload.error !== null ||
+        payload.phase !== 'backend.ready' ||
+        !payload.running
+      ) {
+        return
+      }
+
+      lateLocalBootRecoveryArmed = false
+      lateLocalBootRecoveryConsumed = true
+      // Explicitly clear the timeout overlay before retrying the same local
+      // connection. The backend is already healthy; this is an attach retry,
+      // not another spawn or an unbounded reconnect loop.
+      bootFailed = false
+      resumeDesktopBootForRetry(translateNow('boot.steps.startingDesktopConnection'))
+      void boot()
+    }
+
+    const armLateLocalBootRecovery = () => {
+      void primaryBootIsLocal().then(isLocal => {
+        if (cancelled || bootCompleted || lateLocalBootRecoveryConsumed || !isLocal) {
+          return
+        }
+
+        lateLocalBootRecoveryArmed = true
+        // backend.ready can arrive before the connection-mode IPC reply above.
+        // Re-read the current snapshot so that race still gets its one attach.
+        void desktop.getBootProgress().then(recoverLateLocalBoot).catch(() => undefined)
+      })
+    }
+
     const onBootProgress = (payload: DesktopBootProgress) => {
       if (cancelled) {
         return
       }
+
+      recoverLateLocalBoot(payload)
 
       // Soft switch / post-boot startHermes re-emits progress — ignore so the
       // cold-boot CONNECTING overlay stays down. A boot that ended in failure
@@ -1691,6 +1782,14 @@ export function useGatewayBoot({
       } catch (err) {
         if (!cancelled) {
           const message = err instanceof Error ? err.message : String(err)
+
+          // A local backend can keep booting in the main process after the
+          // renderer's bounded wait above expires. Arm exactly one recovery
+          // attach for the case where that same local backend later publishes
+          // backend.ready (#98124).
+          if (isTimeoutError(err) && !lateLocalBootRecoveryConsumed) {
+            armLateLocalBootRecovery()
+          }
 
           // Main's classification (#82679) still decides every failure it can
           // see. The one it cannot see is the renderer-owned WebSocket dial:

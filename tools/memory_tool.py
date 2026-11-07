@@ -119,6 +119,8 @@ _STORE_ACTIONS = {
 
 
 def _batch_op_line(op: dict[str, Any]) -> str:
+    if not isinstance(op, dict):
+        return f"- {op}"
     op = op or {}
     act, content, old = op.get("action", "?"), op.get("content") or op.get("new_text") or "", op.get("old_text", "")
     if act == "remove":

@@ -2,7 +2,7 @@
  "counts": {
   "http": {
    "keep-host-wide": 1,
-   "undecided": 327
+   "undecided": 334
   },
   "rpc": {
    "authority": 108,
@@ -27,6 +27,7 @@
   {"current_path": "hermes_cli.web_routers.dashboard_ui:delete_agent_plugin", "decision": "undecided", "handler": "DELETE /api/dashboard/agent-plugins/{name:path}", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.config_env:remove_env_var", "decision": "undecided", "handler": "DELETE /api/env", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.files:delete_managed_file", "decision": "undecided", "handler": "DELETE /api/files", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.gateway_connections:remove_connection; surface: gateway_connections", "decision": "undecided", "handler": "DELETE /api/gateway-connections/{connection_id}", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.status:delete_learning_node", "decision": "undecided", "handler": "DELETE /api/learning/node", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.local_models:local_models_delete", "decision": "undecided", "handler": "DELETE /api/local-models/models/{model_id}", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.mcp:cancel_mcp_oauth_flow", "decision": "undecided", "handler": "DELETE /api/mcp/oauth/flows/{flow_id}", "kind": "http", "ref": ""},
@@ -86,6 +87,7 @@
   {"current_path": "hermes_cli.web_routers.files:fs_list", "decision": "undecided", "handler": "GET /api/fs/list", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.files:fs_read_data_url", "decision": "undecided", "handler": "GET /api/fs/read-data-url", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.files:fs_read_text", "decision": "undecided", "handler": "GET /api/fs/read-text", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.gateway_connections:list_connections; surface: gateway_connections", "decision": "undecided", "handler": "GET /api/gateway-connections", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.actions:gateway_migrate_plan", "decision": "undecided", "handler": "GET /api/gateway/migrate/plan", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.git:git_base_branches_route", "decision": "undecided", "handler": "GET /api/git/base-branches", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.git:git_branches_route", "decision": "undecided", "handler": "GET /api/git/branches", "kind": "http", "ref": ""},
@@ -228,6 +230,11 @@
   {"current_path": "hermes_cli.web_routers.files:upload_managed_file", "decision": "undecided", "handler": "POST /api/files/upload", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.files:upload_managed_file_stream", "decision": "undecided", "handler": "POST /api/files/upload-stream", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.files:fs_write_text", "decision": "undecided", "handler": "POST /api/fs/write-text", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.gateway_connections:save_connection; surface: gateway_connections", "decision": "undecided", "handler": "POST /api/gateway-connections", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.gateway_connections:set_last_used; surface: gateway_connections", "decision": "undecided", "handler": "POST /api/gateway-connections/last-used", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.gateway_connections:set_launch_mode; surface: gateway_connections", "decision": "undecided", "handler": "POST /api/gateway-connections/launch-mode", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.gateway_connections:set_primary; surface: gateway_connections", "decision": "undecided", "handler": "POST /api/gateway-connections/{connection_id}/primary", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.gateway_connections:test_connection; surface: gateway_connections", "decision": "undecided", "handler": "POST /api/gateway-connections/{connection_id}/test", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.actions:gateway_drain", "decision": "undecided", "handler": "POST /api/gateway/drain", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.actions:gateway_migrate", "decision": "undecided", "handler": "POST /api/gateway/migrate", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.actions:restart_gateway", "decision": "undecided", "handler": "POST /api/gateway/restart", "kind": "http", "ref": ""},

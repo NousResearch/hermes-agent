@@ -164,71 +164,29 @@ If that build fails, the gateway reports the Webapp unavailable, and the page sa
 
 ### Reach your other gateways from one Webapp
 
-A Webapp can also open the other Hermes gateways you run, such as a desktop and a mini PC on your
-tailnet. They join the gateway switcher and the sidebar's gateway groups, the same way saved
-connections do in the native app. The browser talks only to the gateway serving the page. That
-gateway relays each request and socket to the other gateway and signs it with its own key.
-Any gateway can relay. Set it up on both machines and you can start from either one. A relay
-never reaches past the gateway it was paired with. A Webapp tab and the windows it opens run on the
-gateway serving the page, so **Open in new window** and **Set as default** are offered for that
-gateway's own profiles. Open another gateway's from the switcher. A chat on another gateway stays in
-the tab: popping it out says so instead of opening a window.
+The Webapp's **Settings → Gateways** has the same **Saved connections** list as the native app,
+and it is the same list: a machine keeps one, in `gateway-connections.json` in its Hermes home
+(user-only, beside `ui-preferences.json`). Adding, editing or removing a connection in the native app
+shows in the Webapp, and the other way round, without a restart. The first time the native app runs
+after this change it copies its existing connections in, with the same ids, so nothing needs to be
+set up again.
 
-Turn it on for each gateway that should take part, behind sign-in:
+Each saved gateway joins the Webapp's gateway switcher and the sidebar's gateway groups. The
+browser still talks only to the gateway serving the page. That gateway sends each request and socket
+on to the saved one, with the credential saved for it, exactly as the native app would: the session
+token in the `X-Hermes-Session-Token` header, or the bearer token of a sign-in, plus any extra
+headers saved with the connection. The other gateway needs no setting of its own.
 
-```yaml
-webapp:
-  enabled: true
-  public_url: https://desktop.example.ts.net  # or a non-loopback webapp.host
-  relay:
-    enabled: true
-```
+Anyone who can sign in to this Webapp can use every gateway saved on this machine, as whoever the
+saved credential belongs to. Save only gateways you would let them reach. What a saved gateway sends
+back never runs as this Webapp's page: it is served under a sandboxing content policy, the browser
+keeps no copy of it, and it cannot redirect outside that gateway. Removing a connection closes its
+open sockets at once.
 
-Then, in the Webapp of the gateway you want to start from:
-
-1. Sign in to the other gateway's Webapp in the same browser, as the same account.
-2. Open **Settings → Gateways → Other gateways**. Enter the other gateway's Webapp address and a
-   name, then choose **Connect**.
-3. The other gateway's consent page names this gateway and your account. It also lists the optional
-   access you can grant: terminals, files, bot screens and voice. Uncheck any you do not want, then
-   choose **Allow**.
-
-Chats, profiles, sessions, settings, scheduled jobs and skills always come with the grant.
-Unchecked access stays closed even through a socket. A socket opened under the grant must
-match what was allowed. On the gateway's own socket, shell and CLI commands need terminal access,
-except Bot Mode's profile edits. Screen and voice commands need theirs, and the wake word counts
-as voice. Attaching files to a message and completing file paths need file access, as do Git
-review and image uploads. These choices close the Webapp's own terminal, file, bot-screen and
-voice panels. They do not limit what an agent on that machine can do in a chat, because its
-tools run there with that profile's settings.
-
-The relay acts as the account that approved it. Anyone signed in to the relaying gateway as that
-account can run agents, tools and commands on the other machine. No other account on it can
-reach that machine. The relaying gateway keeps only its own key
-(`webapp/relay-key.pem`, user-only) and a list of the gateways it reaches
-(`webapp/relay-gateways.json`). The gateway it reaches keeps the grants it issued
-(`webapp/relay-grants.json`).
-
-A grant lasts until it is revoked. The gateway being reached does not check it again with your
-sign-in provider: anyone who controls the relaying gateway's machine and its key can use the grant.
-Pair only gateways you trust as much as the one being reached. What a relayed gateway sends back
-never runs as the relaying gateway's page. It is served under a sandboxing content policy, the
-browser keeps no copy of it, and it cannot redirect outside that gateway.
-
-To end a grant, use either of these:
-
-- **Settings → Gateways → Gateways that reach this one → Revoke** on the gateway being reached.
-- **Remove** on the relaying gateway, which also revokes the grant there. If the other gateway is
-  offline or does not confirm the revocation, the gateway stays listed and Settings says why. You
-  can try again, or choose **Remove here only**. That leaves the grant working until you revoke it
-  on the other gateway.
-
-`hermes webapp --sign-out` on the gateway being reached ends every grant it issued, along with
-every browser login. Either way, the relayed connections close at once. After that, the relaying
-gateway reports the other gateway as needing a reconnect, and you can pair again from Settings.
-
-The relay carries what you do in the Webapp. It does not let an agent on one gateway run tools
-or read credentials on another.
+A Webapp tab and the windows it opens run on the gateway serving the page, so **Open in new window**
+and **Set as default** are offered for that gateway's own profiles. Open another gateway's from the
+switcher. A chat on another gateway stays in the tab: popping it out says so instead of opening a
+window.
 
 ### Terminal in the Webapp
 

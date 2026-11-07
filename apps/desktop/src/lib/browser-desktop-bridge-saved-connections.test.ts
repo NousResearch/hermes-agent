@@ -1,34 +1,61 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import type { DesktopConnectionsRegistry, DesktopRegistryConnection } from '@/global'
 import { $defaultProfileRoute, setDefaultProfile } from '@/store/default-profile'
 import { $connection, workspaceCwdForNewSession } from '@/store/session'
 import { dropTilesForProfile } from '@/store/session-states'
 
 import { installBrowserDesktopBridge } from './browser-desktop-bridge'
 import { dropBrowserProfilePrefs, migrateBrowserProfilePrefs } from './browser-profile-prefs'
-import { RELAYED_ROSTER_TIMEOUT_MS } from './browser-relay'
+import { RELAYED_ROSTER_TIMEOUT_MS } from './browser-saved-connections'
 import { UnservedProfileError } from './browser-served-profiles'
 
 type RelayWindow = Window & {
   __HERMES_AUTH_REQUIRED__?: boolean
   __HERMES_BASE_PATH__?: string
-  __HERMES_GATEWAY_RELAY__?: boolean
+  __HERMES_UI_SURFACE__?: string
   hermesDesktop?: Window['hermesDesktop']
 }
 
 const win = window as unknown as RelayWindow
 
-const MINI = { added_at: 1, id: 'mini', label: 'Mini', scopes: ['files'], url: 'https://mini.example.ts.net' }
+const LOCAL: DesktopRegistryConnection = {
+  id: 'local',
+  kind: 'local',
+  label: 'Hub',
+  tokenPreview: null,
+  tokenSet: false
+}
+
+const MINI: DesktopRegistryConnection = {
+  authMode: 'token',
+  headerNames: [],
+  id: 'mini',
+  kind: 'remote',
+  label: 'Mini',
+  tokenPreview: '...abcdef',
+  tokenSet: true,
+  url: 'https://mini.example.ts.net'
+}
+
+const registryWith = (rows: DesktopRegistryConnection[]): DesktopConnectionsRegistry => ({
+  connections: [LOCAL, ...rows],
+  lastUsed: 'local',
+  launchMode: 'primary',
+  primary: 'local',
+  secureTokenStorage: true,
+  version: 2
+})
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' }, status })
 
 /**
- * The serving gateway at /hermes, relaying to Mini; answers by path and records every request. A
- * stalled Mini takes the request and never answers it. `miniServes` is the served set Mini reports
- * (its multiplexer's `gateway_shared_with`); left out, Mini reports none, as an older one does.
- * `miniProfiles` is what Mini has installed. A test changes either array to change Mini, and
- * changes `mini` to pair a different gateway as Mini (`row`) or have it run as another profile.
+ * The serving gateway at /hermes, whose machine saved Mini; answers by path and records every
+ * request. A stalled Mini takes the request and never answers it. `miniServes` is the served set
+ * Mini reports (its multiplexer's `gateway_shared_with`); left out, Mini reports none, as an older
+ * one does. `miniProfiles` is what Mini has installed. A test changes either array to change Mini,
+ * and changes `mini` to point the saved entry elsewhere (`row`) or have it run as another profile.
  */
 function servingGateway({
   mini = { own: 'default', row: MINI },
@@ -36,28 +63,32 @@ function servingGateway({
   miniServes,
   miniStalled = false
 }: {
-  mini?: { own: string; row: typeof MINI }
+  mini?: { own: string; row: DesktopRegistryConnection }
   miniProfiles?: string[]
   miniServes?: string[]
   miniStalled?: boolean
 } = {}) {
-  const requests: { method: string; path: string; search: string }[] = []
+  const requests: { body?: unknown; method: string; path: string; search: string }[] = []
+  const saved = { rows: [mini.row] }
 
   const fetchMock = vi.fn(async (url: URL, init?: RequestInit) => {
     const path = url.pathname
-    requests.push({ method: init?.method || 'GET', path, search: url.search })
+    const method = init?.method || 'GET'
+    requests.push({ body: init?.body ? JSON.parse(String(init.body)) : undefined, method, path, search: url.search })
+    saved.rows = saved.rows.map(row => (row.id === 'mini' ? mini.row : row))
 
-    if (path === '/hermes/api/webapp/relay/gateways') {
-      return json({ gateways: [mini.row] })
+    if (path === '/hermes/api/gateway-connections' && method === 'GET') {
+      return json(registryWith(saved.rows))
     }
 
-    // Mini is down: it cannot confirm it revoked the grant, so only forgetting it here removes it.
-    if (path === '/hermes/api/webapp/relay/gateways/mini' && init?.method === 'DELETE') {
-      return json(
-        url.searchParams.get('forget') === '1'
-          ? { removed: true, revoked: false }
-          : { detail: "Mini did not confirm it revoked this gateway's access: it answered 503.", removed: false }
-      )
+    if (path.startsWith('/hermes/api/gateway-connections') && method === 'POST') {
+      return json({ ok: true, registry: registryWith(saved.rows) })
+    }
+
+    if (path === '/hermes/api/gateway-connections/mini' && method === 'DELETE') {
+      saved.rows = []
+
+      return json({ ok: true, registry: registryWith(saved.rows) })
     }
 
     if (path === '/hermes/api/relay/mini/api/profiles') {
@@ -98,16 +129,13 @@ function servingGateway({
 
   vi.stubGlobal('fetch', fetchMock)
 
-  return requests
+  return Object.assign(requests, { saved })
 }
 
-function install({ relay = true } = {}) {
+function install({ surface = 'webapp' } = {}) {
   win.__HERMES_AUTH_REQUIRED__ = true
   win.__HERMES_BASE_PATH__ = '/hermes'
-
-  if (relay) {
-    win.__HERMES_GATEWAY_RELAY__ = true
-  }
+  win.__HERMES_UI_SURFACE__ = surface
 
   expect(installBrowserDesktopBridge()).toBe(true)
 
@@ -117,7 +145,7 @@ function install({ relay = true } = {}) {
 afterEach(() => {
   delete win.__HERMES_AUTH_REQUIRED__
   delete win.__HERMES_BASE_PATH__
-  delete win.__HERMES_GATEWAY_RELAY__
+  delete win.__HERMES_UI_SURFACE__
   Reflect.deleteProperty(win, 'hermesDesktop')
   document.documentElement.removeAttribute('data-hermes-desktop-host')
   window.localStorage.clear()
@@ -128,8 +156,8 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-describe('a Webapp whose gateway relays to others', () => {
-  it('lists the relayed gateways beside its own as registry connections', async () => {
+describe('a Webapp on a machine with saved gateway connections', () => {
+  it("lists the machine's saved connections with native Desktop's ids", async () => {
     servingGateway()
     const registry = await install().connections!.list()
 
@@ -140,25 +168,41 @@ describe('a Webapp whose gateway relays to others', () => {
     expect(registry.primary).toBe('local')
   })
 
-  it('keeps a gateway that did not confirm the revocation until it is removed here only', async () => {
+  it('saves, removes, sets the primary and the launch mode on the one list, and reports each change', async () => {
     const requests = servingGateway()
     const desktop = install()
     await desktop.connections!.list()
     const events: string[] = []
     desktop.connections!.onChanged!(event => events.push(`${event.connectionId}:${event.reason}`))
 
-    await expect(desktop.connections!.remove('mini')).rejects.toThrow('Mini did not confirm')
-    expect(events).toEqual([])
+    await desktop.connections!.setLaunchMode!('last-used')
+    await desktop.connections!.setPrimary('mini')
+    await desktop.connections!.save({ kind: 'remote', label: 'Mini', token: 'tok', url: MINI.url })
+    await desktop.connections!.remove('mini')
 
-    await expect(desktop.gatewayRelay!.removeGateway('mini', { forget: true })).resolves.toEqual({
-      removed: true,
-      revoked: false
-    })
-    expect(requests.filter(request => request.method === 'DELETE').map(request => request.search)).toEqual([
-      '',
-      '?forget=1'
+    expect(requests.filter(r => r.method !== 'GET').map(r => [r.method, r.path, r.body])).toEqual([
+      ['POST', '/hermes/api/gateway-connections/launch-mode', { mode: 'last-used' }],
+      ['POST', '/hermes/api/gateway-connections/mini/primary', undefined],
+      ['POST', '/hermes/api/gateway-connections', { kind: 'remote', label: 'Mini', token: 'tok', url: MINI.url }],
+      ['DELETE', '/hermes/api/gateway-connections/mini', undefined]
     ])
-    expect(events).toEqual(['mini:removed'])
+    expect(events).toContain('mini:removed')
+  })
+
+  it('reports a connection native Desktop re-pointed as updated, so its sockets redial', async () => {
+    const mini = { own: 'default', row: MINI }
+    servingGateway({ mini })
+    const desktop = install()
+    await desktop.connections!.list()
+    const events: string[] = []
+    desktop.connections!.onChanged!(event => events.push(`${event.connectionId}:${event.reason}`))
+
+    mini.row = { ...MINI, label: 'Mini PC' }
+    await desktop.connections!.list()
+    mini.row = { ...MINI, label: 'Mini PC', url: 'https://mini-2.example.ts.net' }
+    await desktop.connections!.list()
+
+    expect(events).toEqual(['mini:saved', 'mini:updated'])
   })
 
   it("sends a relayed connection's requests through the relay and owns their rows to it", async () => {
@@ -175,7 +219,7 @@ describe('a Webapp whose gateway relays to others', () => {
     expect(listed.sessions.map(session => session.connection_id)).toEqual(['mini'])
   })
 
-  it("dials a relayed gateway's socket with its ticket and the serving gateway's relay ticket", async () => {
+  it("dials a saved gateway's socket with only the serving gateway's relay ticket", async () => {
     servingGateway()
     const desktop = install()
     await desktop.connections!.list()
@@ -188,7 +232,9 @@ describe('a Webapp whose gateway relays to others', () => {
     expect(dial.ok).toBe(true)
     const url = new URL(dial.wsUrl)
     expect(url.pathname).toBe('/hermes/api/relay/mini/api/ws')
-    expect(url.searchParams.get('ticket')).toBe('mini-gateway')
+    // The serving gateway mints Mini's own credential for the dial; none rides the browser's URL.
+    expect(url.searchParams.has('ticket')).toBe(false)
+    expect(url.searchParams.has('native_dial')).toBe(false)
     expect(url.searchParams.get('relay_ticket')).toBe('hub-relay')
     expect(url.searchParams.get('profile')).toBe('research')
 
@@ -198,7 +244,7 @@ describe('a Webapp whose gateway relays to others', () => {
     expect(new URL(connection.wsUrl).searchParams.has('ticket')).toBe(false)
   })
 
-  it('follows the window onto a relayed gateway for its host terminal and files', async () => {
+  it('follows the window onto a saved gateway for its host terminal and files', async () => {
     servingGateway()
     const desktop = install()
     await desktop.connections!.list()
@@ -226,7 +272,7 @@ describe('a Webapp whose gateway relays to others', () => {
 
     await desktop.terminal.start({ restoreKey: 'relayed' }).catch(() => undefined)
     expect(dialed[0]?.pathname).toBe('/hermes/api/relay/mini/api/host-terminal')
-    expect(dialed[0]?.searchParams.get('ticket')).toBe('mini-host-terminal')
+    expect(dialed[0]?.searchParams.has('ticket')).toBe(false)
     expect(dialed[0]?.searchParams.get('relay_ticket')).toBe('hub-relay')
 
     const stream = new URL(await desktop.getGatewayFileStreamUrl!({ connectionId: 'mini', path: '/tmp/a.png' }))
@@ -304,7 +350,7 @@ describe('a Webapp whose gateway relays to others', () => {
     expect(new URL(wrapper.querySelector('iframe')!.src).pathname).toBe('/hermes/assets/webapp-preview.html')
   })
 
-  it("keeps the default folder a relayed gateway's profile chose apart from this gateway's", async () => {
+  it("keeps the default folder a saved gateway's profile chose apart from this gateway's", async () => {
     servingGateway()
     const desktop = install()
     await desktop.connections!.list()
@@ -369,7 +415,7 @@ describe('a Webapp whose gateway relays to others', () => {
     expect(open).not.toHaveBeenCalled()
   })
 
-  it('lists the profiles of every relayed gateway in the agent roster', async () => {
+  it('lists the profiles of every saved gateway in the agent roster', async () => {
     servingGateway()
     const roster = await install().getAgentRoster!()
 
@@ -383,7 +429,7 @@ describe('a Webapp whose gateway relays to others', () => {
     ])
   })
 
-  it("lists a relayed gateway's installed but unserved profile as unreachable and refuses its dial", async () => {
+  it("lists a saved gateway's installed but unserved profile as unreachable and refuses its dial", async () => {
     // Mini serves only its own `default`; `research` is installed there but parked or standalone.
     servingGateway({ miniServes: ['default'] })
     const desktop = install()
@@ -403,7 +449,7 @@ describe('a Webapp whose gateway relays to others', () => {
     })
   })
 
-  it('opens a profile created on a relayed gateway since the last roster read', async () => {
+  it('opens a profile created on a saved gateway since the last roster read', async () => {
     // Mini serves its `default`; `fresh` is created there, and served, after the roster was read.
     const miniProfiles = ['default', 'research']
     const miniServes = ['default']
@@ -422,9 +468,9 @@ describe('a Webapp whose gateway relays to others', () => {
     )
   })
 
-  it("reads a re-paired gateway's served profiles afresh though it reuses the removed one's id", async () => {
-    // Another tab removes Mini and pairs a different gateway labelled Mini, which gets the id `mini`
-    // back. The new one has the same profiles installed but runs as, and serves, `research` only.
+  it("reads a re-pointed connection's served profiles afresh though it keeps its id", async () => {
+    // Native Desktop edits Mini to point at another gateway, keeping the id `mini`. The new one has
+    // the same profiles installed but runs as, and serves, `research` only.
     const mini = { own: 'default', row: MINI }
     const miniServes = ['default']
     servingGateway({ mini, miniServes })
@@ -432,7 +478,7 @@ describe('a Webapp whose gateway relays to others', () => {
     await desktop.getAgentRoster!()
 
     mini.own = 'research'
-    mini.row = { ...MINI, added_at: 2, url: 'https://mini-2.example.ts.net' }
+    mini.row = { ...MINI, url: 'https://mini-2.example.ts.net' }
     miniServes.splice(0, miniServes.length)
     const roster = await desktop.getAgentRoster!()
 
@@ -447,7 +493,7 @@ describe('a Webapp whose gateway relays to others', () => {
     })
   })
 
-  it('lists a relayed gateway that never answers as unreachable without holding the roster', async () => {
+  it('lists a saved gateway that never answers as unreachable without holding the roster', async () => {
     servingGateway({ miniStalled: true })
     vi.useFakeTimers()
     let settled = false
@@ -464,11 +510,25 @@ describe('a Webapp whose gateway relays to others', () => {
     ])
   })
 
-  it('reaches only its own gateway when the relay is off', async () => {
-    const requests = servingGateway()
-    const desktop = install({ relay: false })
+  it('lists each saved gateway as its own roster source under its registry id and label', async () => {
+    servingGateway()
+    const roster = await install().getAgentRoster!()
 
-    expect(desktop.gatewayRelay).toBeUndefined()
+    expect(roster.sources.map(source => [source.connectionId, source.kind, source.label])).toEqual([
+      ['local', 'local', 'Hub'],
+      ['mini', 'remote', 'Mini']
+    ])
+    expect(roster.agents.find(agent => agent.connectionId === 'mini')).toMatchObject({
+      connectionKind: 'remote',
+      connectionLabel: 'Mini'
+    })
+  })
+
+  it('reaches only its own gateway where the host serves no saved connections', async () => {
+    const requests = servingGateway()
+    const desktop = install({ surface: 'dashboard' })
+
+    expect(desktop.connections).toBeUndefined()
     await expect(desktop.getConnectionFor!({ connectionId: 'mini' })).rejects.toThrow(/mini/)
     expect(requests.some(request => request.path.includes('/relay/'))).toBe(false)
   })

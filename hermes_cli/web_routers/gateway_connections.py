@@ -43,15 +43,30 @@ def list_connections() -> dict:
     return store.public_registry(_call(store.read_registry))
 
 
+def _dial(registry: dict, connection_id: object) -> object:
+    entry = next((c for c in registry["connections"] if c["id"] == connection_id), None)
+    return entry and {k: entry.get(k) for k in ("kind", "url", "authMode", "token", "headers")}
+
+
 @router.post("/api/gateway-connections")
 def save_connection(payload: dict = Body(...)) -> dict:
+    from hermes_cli.web_routers.webapp_relay_proxy import close_gateway_sockets
+
+    before = _dial(_call(store.read_registry), payload.get("id")) if payload.get("id") else None
     connection, registry = _call(lambda: store.save_connection(payload))
+    # An edit that moves the dial ends the Webapp's relayed sockets to the old target.
+    if before is not None and before != _dial(_call(store.read_registry), connection["id"]):
+        close_gateway_sockets(connection["id"])
     return _answer(registry, connection=connection)
 
 
 @router.delete("/api/gateway-connections/{connection_id}")
 def remove_connection(connection_id: str) -> dict:
-    return _answer(_call(lambda: store.remove_connection(connection_id)))
+    from hermes_cli.web_routers.webapp_relay_proxy import close_gateway_sockets
+
+    registry = _call(lambda: store.remove_connection(connection_id))
+    close_gateway_sockets(connection_id)
+    return _answer(registry)
 
 
 @router.post("/api/gateway-connections/launch-mode")

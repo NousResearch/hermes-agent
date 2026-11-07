@@ -2,7 +2,7 @@ import { LOCAL_CONNECTION_ID } from '@hermes/shared'
 
 import type { HermesApiRequest, HermesConnection } from '@/global'
 import { webappSignInRequired } from '@/lib/browser-launch-session'
-import type { BrowserRelays } from '@/lib/browser-relay'
+import type { BrowserSavedConnections } from '@/lib/browser-saved-connections'
 import { createServedProfiles, SERVED_SET_READ_TIMEOUT_MS, UnservedProfileError } from '@/lib/browser-served-profiles'
 import {
   type AudioSocketPath,
@@ -34,8 +34,14 @@ function ridesWithProfile(profile?: null | string): boolean {
   return Boolean(name) && name !== browserLaunchProfileOrDefault()
 }
 
-function connectionFor(bootstrap: BrowserBootstrap, profile: null | string | undefined, servedHere: boolean): HermesConnection {
-  if (!bootstrap.authRequired && !bootstrap.token) {throw webappSignInRequired()}
+function connectionFor(
+  bootstrap: BrowserBootstrap,
+  profile: null | string | undefined,
+  servedHere: boolean
+): HermesConnection {
+  if (!bootstrap.authRequired && !bootstrap.token) {
+    throw webappSignInRequired()
+  }
 
   const baseUrl = `${window.location.origin}${bootstrap.basePath}`
 
@@ -84,12 +90,23 @@ function browserConnectionConfig(bootstrap: BrowserBootstrap, profile?: null | s
 interface BrowserConnectionOptions {
   api: <T>(request: HermesApiRequest) => Promise<T>
   bootstrap: BrowserBootstrap
-  /** The gateways the serving one relays to, when its relay is on (`browser-relay.ts`). */
-  relays?: BrowserRelays | null
+  /** This machine's saved gateway connections, reached through the serving gateway
+   *  (`browser-saved-connections.ts`). Absent: only the serving gateway. */
+  relays?: BrowserSavedConnections | null
 }
 
-const relayed = (relays: BrowserRelays | null | undefined, connectionId?: null | string) =>
+const relayed = (relays: BrowserSavedConnections | null | undefined, connectionId?: null | string) =>
   relays && connectionId && connectionId !== LOCAL_CONNECTION_ID ? relays : null
+
+function sameGateway(a: string, b: string): boolean {
+  try {
+    const [x, y] = [new URL(a), new URL(b)]
+
+    return x.origin === y.origin && x.pathname.replace(/\/+$/, '') === y.pathname.replace(/\/+$/, '')
+  } catch {
+    return false
+  }
+}
 
 /** Connection, gateway socket, roster and sign-in members, all bound to the serving origin. */
 export function createBrowserConnectionBridge({
@@ -179,8 +196,9 @@ export function createBrowserConnectionBridge({
     }
   }
 
-  // Every relayed gateway's profiles, read through the relay; one that cannot answer is listed
-  // unreachable rather than failing the roster.
+  // Every saved gateway's profiles, read through the serving gateway, each its own source keyed by
+  // its registry id (the id native Desktop and group-chat records route by); one that cannot
+  // answer is listed unreachable rather than failing the roster.
   const relayedRoster = async () => {
     if (!relays) {
       return { agents: [], sources: [] }
@@ -202,7 +220,7 @@ export function createBrowserConnectionBridge({
       agents: read.flatMap(entry => entry.agents),
       sources: read.map(entry => ({
         connectionId: entry.row.id,
-        kind: 'remote' as const,
+        kind: entry.row.kind,
         label: entry.row.label,
         reachable: !('error' in entry),
         ...('error' in entry ? { error: entry.error } : {})
@@ -221,7 +239,7 @@ export function createBrowserConnectionBridge({
   return {
     getAgentRoster: async () => {
       const [profiles, remote] = await Promise.all([installedProfiles(), relayedRoster()])
-      const connectionLabel = window.location.host
+      const connectionLabel = relays?.localLabel() || window.location.host
 
       return {
         agents: [
@@ -275,8 +293,10 @@ export function createBrowserConnectionBridge({
     getConnectionConfig: async (profile?: null | string) => browserConnectionConfig(bootstrap, profile),
     getConnectionFor: async (payload: { connectionId?: null | string; profile?: null | string }) => {
       if (relayed(relays, payload.connectionId)) {
+        // A tab restored before this page read its saved connections; an unreadable list names no
+        // connection, which the descriptor read below refuses by id.
         if (!relays!.gateway(payload.connectionId)) {
-          await relays!.gateways()
+          await relays!.gateways().catch(() => undefined)
         }
 
         return relays!.connection(payload.connectionId!, payload.profile)
@@ -329,13 +349,28 @@ export function createBrowserConnectionBridge({
         }))
     },
     oauthLoginConnectionConfig: async (remoteUrl: string) => {
+      // Signing in to another gateway is that gateway's sign-in, which this tab cannot run here.
+      if (!sameGateway(remoteUrl, `${window.location.origin}${bootstrap.basePath}`)) {
+        return {
+          baseUrl: remoteUrl,
+          connected: false,
+          error: 'Signing in to another gateway is not available in the Webapp yet. Use a session token.',
+          ok: false
+        }
+      }
+
       const target = new URL(`${bootstrap.basePath}/login`, window.location.origin)
       target.searchParams.set('next', `${window.location.pathname}${window.location.search}${window.location.hash}`)
       navigateToBrowserLogin(new BrowserReauthRequiredError('Sign in required', target.href))
 
       return { baseUrl: remoteUrl, connected: false, ok: false }
     },
-    oauthLogoutConnectionConfig: async () => {
+    oauthLogoutConnectionConfig: async (remoteUrl?: string) => {
+      // Only this gateway's own sign-in ends here; another gateway's is not this tab's to end.
+      if (remoteUrl && new URL(remoteUrl, window.location.origin).origin !== window.location.origin) {
+        return { connected: false, error: 'Only this gateway can be signed out from the Webapp.', ok: false }
+      }
+
       const response = await fetch(endpointUrl('/auth/logout', bootstrap.basePath), {
         credentials: 'same-origin',
         method: 'POST'
@@ -370,11 +405,18 @@ export function createBrowserConnectionBridge({
 
       return { ok: true, rebuilt: false }
     },
-    testConnectionConfig: async () => ({
-      baseUrl: `${window.location.origin}${bootstrap.basePath}`,
-      ok: true,
-      reachable: true,
-      version: null
-    })
+    // Only the serving gateway is reachable before a connection is saved; a saved one is tested
+    // from its row (`connections.test`), through the serving gateway with its saved credential.
+    testConnectionConfig: async payload => {
+      const own = `${window.location.origin}${bootstrap.basePath}`
+
+      return !payload?.remoteUrl || sameGateway(payload.remoteUrl, own)
+        ? { baseUrl: own, ok: true, reachable: true, version: null }
+        : {
+            baseUrl: payload.remoteUrl,
+            error: 'Save this connection, then use Test on its row: the Webapp tests it through this gateway.',
+            ok: false
+          }
+    }
   }
 }

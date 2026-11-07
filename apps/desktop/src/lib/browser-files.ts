@@ -23,7 +23,7 @@ interface BrowserFilesOptions {
   bootstrap: BrowserBootstrap
   currentProfile: () => string | null
   /** The bootstrap a file of *connectionId* is read through: a relayed gateway's, when the serving
-   *  gateway relays to it (`browser-relay.ts`). Absent: only the serving gateway's files. */
+   *  saved connection's (`browser-saved-connections.ts`). Absent: only the serving gateway's files. */
   bootstrapFor?: (connectionId?: null | string) => BrowserBootstrap
 }
 

@@ -168,3 +168,36 @@ def test_writer_that_opens_the_store_mid_run_gets_the_paced_cycle(legacy_db, mon
     assert len(slept) >= len(teardown) > 0 and min(slept) >= SessionDB._FTS_REBUILD_MIN_PAUSE
     assert "paced: another process" in _optimize_progress_line(chunks[-1])
     assert not [t for t in threading.enumerate() if t.name == "optimize-holder-watch"]
+
+
+def test_rebuild_percent_tracks_messages_when_ids_start_far_above_one(tmp_path, monkeypatch):
+    # An import with explicit ids moves AUTOINCREMENT to ~3.85e12 (#144879); the percent that
+    # session_search and the dashboard show must follow messages indexed, not the id's distance from 0.
+    first_id, n = 3_850_000_000_000, 2000
+    raw = sqlite3.connect(str(tmp_path / "state.db"))
+    raw.executescript(SCHEMA_SQL + LEGACY_FTS_SQL + LEGACY_FTS_TRIGRAM_SQL)
+    raw.execute("INSERT INTO sessions (id, source, started_at) VALUES ('s1', 'cli', ?)", (time.time(),))
+    raw.executemany("INSERT INTO messages (id, session_id, timestamp, role, content) VALUES (?, 's1', ?, 'user', ?)",
+                    [(first_id + i, time.time(), f"payload {i}") for i in range(n)])
+    raw.commit()
+    raw.close()
+    monkeypatch.setattr(time, "sleep", lambda _s: None)
+    monkeypatch.setattr(SessionDB, "_FTS_REBUILD_CHUNK_MIN_ROWS", 500)
+    monkeypatch.setattr(SessionDB, "_FTS_REBUILD_CHUNK_MAX_ROWS", 500)
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        percents, real_step = [], db.fts_rebuild_step
+
+        def observed_step(*args):
+            more = real_step(*args)
+            status = db.fts_rebuild_status()
+            if status is not None:
+                percents.append(status["percent"])
+            return more
+
+        db.fts_rebuild_step = observed_step
+        assert db.optimize_fts_storage(vacuum=False)["ok"] is True
+        assert percents == [25, 50, 75]
+        assert db.search_messages("payload")
+    finally:
+        db.close()

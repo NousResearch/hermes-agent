@@ -965,7 +965,10 @@ def get_scratch_dir(home: str | Path | None = None, *, prune: bool = True) -> Pa
     Every Hermes process and child gets ``TMPDIR``/``TMP``/``TEMP`` pointed here at boot (see
     :func:`export_scratch_tmp_env`), so ``tempfile`` defaults land here without call sites
     knowing. Entries idle for ``SCRATCH_MAX_IDLE_HOURS`` are pruned at most once per process
-    and once per hour across processes (stamp file), so a fan-out of children stays cheap.
+    and once per hour across processes (stamp file), so a fan-out of children stays cheap. The
+    process gate is stamped only when a pass is handed off, so an attempt that lands inside the
+    hour costs nothing and a later call still gets the chance; a caller that outlives many hours
+    -- a gateway -- re-runs :func:`prune_scratch_dir_if_due` on its own cadence instead.
     The pass itself runs in a detached child process (``hermes_constants_scratch_detach``): the
     directory is created and permissioned before this returns, no caller (the boot hook
     included) waits on the idle scan or the ``rmtree`` of a multi-GB entry, and the pass still
@@ -1002,23 +1005,58 @@ def prune_scratch_dir(scratch: Path | None = None, max_idle_hours: float = SCRAT
     return prune_idle_entries(root, max_idle_hours, frozenset({_SCRATCH_PRUNE_STAMP}), log_file)
 
 
+def _scratch_prune_due(scratch: Path) -> bool:
+    """True when the stamped cross-process hour has elapsed.
+
+    One ``stat`` on the stamp file; an unreadable or absent stamp is due (fail-open), which
+    matches the pre-existing behaviour of treating a missing marker as "never pruned".
+    """
+    import time
+    try:
+        return time.time() - (scratch / _SCRATCH_PRUNE_STAMP).stat().st_mtime >= _SCRATCH_PRUNE_INTERVAL_SECONDS
+    except OSError:
+        return True
+
+
+def _run_scratch_prune(scratch: Path) -> None:
+    """Stamp the hour and hand the pass to a detached child; a failure here stays contained."""
+    with contextlib.suppress(Exception):
+        (scratch / _SCRATCH_PRUNE_STAMP).touch()
+        from hermes_constants_scratch_detach import spawn_prune
+
+        spawn_prune(scratch)
+
+
 def _prune_scratch_dir_once(scratch: Path) -> None:
     global _scratch_pruned_once
     if _scratch_pruned_once:
         return
+    # The gate is stamped only once a pass is actually handed off. Setting it before the
+    # hour check spent the process's single chance on a tick that pruned nothing: a process
+    # whose first call landed inside the hour the last pass stamped -- a gateway restarted
+    # minutes after a prune, say -- then returned on every later call and never pruned for
+    # the rest of its life.
+    if not _scratch_prune_due(scratch):
+        return
     _scratch_pruned_once = True
-    import time
-    stamp = scratch / _SCRATCH_PRUNE_STAMP
-    try:
-        if time.time() - stamp.stat().st_mtime < _SCRATCH_PRUNE_INTERVAL_SECONDS:
-            return
-    except OSError:
-        pass
-    with contextlib.suppress(Exception):
-        stamp.touch()
-        from hermes_constants_scratch_detach import spawn_prune
+    _run_scratch_prune(scratch)
 
-        spawn_prune(scratch)
+
+def prune_scratch_dir_if_due(scratch: Path | None = None) -> None:
+    """Prune when the stamped cross-process hour has elapsed, however long this process lives.
+
+    :func:`get_scratch_dir`'s gate spends itself once per process, which suits the short-lived
+    processes it serves but strands a gateway that stays up for days: its one chance is used by
+    whichever call comes first, and if that call lands inside the hour of the previous pass it
+    prunes nothing and the process never tries again.
+
+    A long-lived caller re-runs this on its own cadence. The stamp -- not the process age --
+    decides whether a pass is due, so the hour stays the floor for every caller at once.
+    """
+    root = scratch if scratch is not None else get_scratch_dir(prune=False)
+    if not _scratch_prune_due(root):
+        return
+    _run_scratch_prune(root)
 
 
 def scratch_dir_usage_bytes(scratch: Path | None = None) -> int:

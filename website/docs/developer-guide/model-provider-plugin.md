@@ -349,8 +349,16 @@ A provider's own `hermes model` step calls these instead of re-implementing core
 ## Account usage
 
 Model-provider plugins can provide account or plan usage to `/usage` by
-overriding `ProviderProfile.fetch_account_usage`. Import and return the shared
-`agent.account_usage.AccountUsageSnapshot` (with any `AccountUsageWindow`
+overriding `ProviderProfile.fetch_account_usage`.
+
+`AccountUsageWindow` optionally carries `duration_seconds`, `source_key`, and
+`duration_source`: populate duration only from provider-supplied metadata, and name
+its payload field in `duration_source`. A missing duration is `None`; a reset time
+is not a window duration. Keep model-family caps at `scope="model"` so they never
+imply that the entire account is exhausted. The snapshot's `provider` and `source`
+identify the fetch provenance.
+
+Return `agent.account_usage.AccountUsageSnapshot` (with any `AccountUsageWindow`
 entries); do not format output in the plugin. Returning `None`, or raising an
 exception, leaves `/usage` empty just as it does for providers without usage
 data. Built-in usage fetchers always take precedence, so this hook cannot

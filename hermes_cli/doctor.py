@@ -31,6 +31,7 @@ from hermes_cli.doctor_config import (
     _check_mcp_security,
     _check_relay_plugins,
     _check_xai_retirement,
+    _check_model_availability,
     _check_retired_session_reset,
 )
 from hermes_cli.doctor_platform import (
@@ -118,6 +119,7 @@ DOCTOR_CHECKS = (
     ('Configuration Files', _check_env_file),
     (None, _check_config_file), (None, _check_config_drift),
     ('xAI Model Retirement (May 15, 2026)', _check_xai_retirement),
+    ('Configured Model Availability', _check_model_availability),
     ('Session Reset (timers removed Sep 7, 2026)', _check_retired_session_reset),
     ('Auth Providers', _check_auth_providers),
     ('Directory Structure', _check_directory_structure), (None, _check_state_db), (None, _check_cron_store),

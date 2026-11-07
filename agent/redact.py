@@ -747,7 +747,7 @@ _URL_USERINFO_PAIR_RE = re.compile(r"(//)([^/\s?#@\"]+)@")
 # Scheme-less network path (``mount //user:pass@host/share``), masked under force only: ``//`` must
 # start a token (comments are ``// note``, protocol-relative URLs carry no ``@``) and the password
 # needs 8+ characters, so ``//user:note@x`` stays as written.
-_NETWORK_PATH_USERINFO_RE = re.compile(r"(?<![^\s\"'=(`,\[])(//)([^/\s?#@:\"]+):([^/\s?#@\"]{8,})@")
+_NETWORK_PATH_USERINFO_RE = re.compile(r"(?<![^\s\"'=(`,\[<\uff1a])(//)([^/\s?#@:\"]+):([^/\s?#@\"]{8,})@")
 
 # ``NAME=user:pass`` where NAME carries no secret keyword — an HTTP Basic auth pair is often stored
 # this way (#125664). Shape-only on arbitrary names, so it runs force-only (persistence boundary,

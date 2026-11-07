@@ -27,6 +27,12 @@ def _kbd():
     from hermes_cli import kanban_db_dispatch
     return kanban_db_dispatch
 
+
+def _kbec():
+    from hermes_cli import kanban_endpoint_caps
+    return kanban_endpoint_caps
+
+
 _CORRUPT_DB_MARKERS = ("file is not a database", "database disk image is malformed")
 
 
@@ -42,6 +48,7 @@ class _DispatcherSettings:
     reconcile_orphans: bool
     default_assignee: Optional[str]
     max_in_progress_per_profile: Optional[int]
+    max_in_progress_per_endpoint: Optional[dict[str, int]]
 
 
 def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettings:
@@ -115,6 +122,11 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
         # Per-profile concurrency cap: no single profile's local model / API
         # quota / browser pool gets overwhelmed by a fan-out.
         max_in_progress_per_profile=_positive_int_setting(kanban_cfg, "max_in_progress_per_profile"),
+        # Per-endpoint concurrency cap: one model server / one cloud account is one quota lane,
+        # whatever the profile split. Unset = no endpoint cap (unchanged behaviour).
+        max_in_progress_per_endpoint=_kbec().parse_caps(
+            kanban_cfg.get("max_in_progress_per_endpoint")
+        ),
     )
 
 

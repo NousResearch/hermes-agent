@@ -126,6 +126,14 @@ class DispatchResult:
     """``(task_id, assignee, current_running_count)`` deferred because the
     assignee is at ``kanban.max_in_progress_per_profile``. Picked up on a later
     tick; separate bucket so dashboards show "profile busy" vs "stuck"."""
+    skipped_endpoint_capped: list[tuple[str, str, int]] = field(default_factory=list)
+    """``(task_id, endpoint, current_running_count)`` deferred because the candidate's
+    provider endpoint is at ``kanban.max_in_progress_per_endpoint`` (one model server /
+    one cloud account = one quota lane); ``endpoint`` is the normalised key counted,
+    ``"*"`` included. Empty unless that key is configured."""
+    endpoint_by_task: dict[str, str] = field(default_factory=dict)
+    """Resolved endpoint key per candidate examined this tick, also recorded on the
+    ``spawned`` event payload. Empty unless ``kanban.max_in_progress_per_endpoint`` is set."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -1491,13 +1499,15 @@ def _record_task_failure(
         return True
 
 
-def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int, *, run_id=None, claim_lock=None) -> None:
+def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int, *, run_id=None, claim_lock=None,
+                    endpoint: Optional[str] = None) -> None:
     """Publish the launcher only while this claim has no executing worker yet, together with its
     restart-stable fingerprint (``_process_fingerprint``); the ``spawned`` event carries both. The
     fingerprint is what lets every later liveness/kill decision tell OUR worker from a process that
     recycled the PID after a reboot. A failed capture is persisted as ``UNVERIFIED_WORKER_FINGERPRINT``,
     never NULL: NULL is the legacy pre-fingerprint row whose bare-PID kill authority a new spawn must
-    not inherit."""
+    not inherit. ``endpoint`` rides the same event only when the per-endpoint cap resolved one, so
+    "which quota lane is this worker on" is answerable from the board."""
     started_at = _process_fingerprint(int(pid)) or UNVERIFIED_WORKER_FINGERPRINT
     with _kb.write_txn(conn):
         if run_id is None:
@@ -1510,7 +1520,10 @@ def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int, *, run_id=
         if cur.rowcount:
             conn.execute("UPDATE task_runs SET worker_pid = ?, worker_started_at = ? WHERE id = ?",
                          (int(pid), started_at, run_id))
-        _kb._append_event(conn, task_id, "spawned", {"pid": int(pid), "started_at": started_at}, run_id=run_id)
+        payload = {"pid": int(pid), "started_at": started_at}
+        if endpoint is not None:
+            payload["endpoint"] = endpoint
+        _kb._append_event(conn, task_id, "spawned", payload, run_id=run_id)
 
 
 def adopt_worker_pid(conn: sqlite3.Connection, task_id: str, run_id: int, pid: int) -> bool:
@@ -1904,58 +1917,18 @@ def configured_max_in_progress() -> Optional[int]:
     return ival if ival >= 1 else None
 
 
-def count_running_tasks(conn: sqlite3.Connection) -> int:
-    """Number of tasks in ``status='running'``.
+def configured_max_in_progress_per_endpoint() -> Optional[dict[str, int]]:
+    """Read ``kanban.max_in_progress_per_endpoint``; ``None`` when unset.
 
-    Used by the multi-board sweep to count OTHER boards' workers against the
-    host-level budget — the memory-derived cap bounds the machine, not the
-    board. Fails open to 0 so a broken board doesn't brick dispatch on healthy ones.
+    Same seam as :func:`configured_max_in_progress`, so the daemon, the CLI and
+    the gateway all resolve the endpoint caps identically.
     """
     try:
-        return int(
-            conn.execute(
-                "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
-            ).fetchone()[0]
-        )
-    except Exception:
-        return 0
-
-
-def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
-    """Total ``running`` tasks across every board EXCEPT ``board``.
-
-    Caps bound the HOST, but each board's tick only sees its own DB; without
-    this a derived cap of N gets multiplied by the number of active boards.
-    Boards are matched by resolved DB path, so ``HERMES_KANBAN_DB`` (pins every
-    board to one file) yields 0. Fails open per board.
-    """
-    try:
-        current_path = str(_kb.kanban_db_path(board=board).expanduser().resolve())
-    except Exception:
-        current_path = None
-    try:
-        boards = _kb.list_boards(include_archived=False)
-    except Exception:
-        return 0
-    total = 0
-    for meta in boards:
-        slug = meta.get("slug") or _kb.DEFAULT_BOARD
-        try:
-            path = _kb.kanban_db_path(board=slug).expanduser()
-            resolved = str(path.resolve())
-            if current_path is not None and resolved == current_path:
-                continue
-            if not path.exists():
-                continue
-            other = _kbc.connect(board=slug)
-            try:
-                total += count_running_tasks(other)
-            finally:
-                with contextlib.suppress(Exception):
-                    other.close()
-        except Exception:
-            continue
-    return total
+        from hermes_cli.config import load_config_readonly
+        raw = (load_config_readonly() or {}).get("kanban", {}).get("max_in_progress_per_endpoint")
+    except Exception:  # health: allow BLE001 -- a broken config read means "no cap", never "no dispatch"
+        return None
+    return _kbec.parse_caps(raw)
 
 
 def _memory_pressure_level(sample: Optional[Mapping[str, Any]] = None) -> str:
@@ -1990,6 +1963,7 @@ def dispatch_once(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    max_in_progress_per_endpoint: Optional[dict[str, int]] = None,
     reconcile_orphans: bool = True,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
@@ -2013,6 +1987,7 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            max_in_progress_per_endpoint=max_in_progress_per_endpoint,
             reconcile_orphans=reconcile_orphans,
         )
 
@@ -2063,6 +2038,9 @@ def _dispatch_lane_task(
     spawn_fn,
     per_profile_cap: Optional[int],
     per_profile_running: dict[str, int],
+    per_endpoint_caps: Optional[dict[str, int]],
+    per_endpoint_running: dict[str, int],
+    endpoint_routes: dict[str, tuple[Optional[str], Optional[str]]],
 ) -> bool:
     """Guard, claim, resolve the workspace and spawn one ready/review row.
     Returns True when a spawn slot was consumed (real or ``dry_run``); every
@@ -2097,6 +2075,16 @@ def _dispatch_lane_task(
         if current >= per_profile_cap:
             result.skipped_per_profile_capped.append((task_id, assignee, current))
             return False
+    # Per-endpoint cap: one model server / one cloud account is one quota lane,
+    # independent of which profiles and how many global slots are free.
+    # ``endpoint`` is "" only when no endpoint cap is configured.
+    endpoint, endpoint_full = _kbec.note_candidate(
+        result, task_id, row, per_endpoint_caps, per_endpoint_running, endpoint_routes,
+    )
+    endpoint = endpoint or ""
+    if endpoint_full is not None:
+        result.skipped_endpoint_capped.append((task_id, endpoint, endpoint_full))
+        return False
     guard_reason = check_respawn_guard(conn, task_id, lane=lane)
     if guard_reason is not None:
         result.respawn_guarded.append((task_id, guard_reason))
@@ -2117,6 +2105,8 @@ def _dispatch_lane_task(
         # ticks re-query from the DB.
         if per_profile_cap is not None and name:
             per_profile_running[name] = per_profile_running.get(name, 0) + 1
+        if endpoint:
+            per_endpoint_running[endpoint] = per_endpoint_running.get(endpoint, 0) + 1
 
     if dry_run:
         result.spawned.append((task_id, assignee, ""))
@@ -2150,7 +2140,8 @@ def _dispatch_lane_task(
     try:
         pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn, claimed, str(workspace), board)
         if pid:
-            _set_worker_pid(conn, claimed.id, int(pid), run_id=claimed.current_run_id, claim_lock=claimed.claim_lock)
+            _set_worker_pid(conn, claimed.id, int(pid), run_id=claimed.current_run_id,
+                            claim_lock=claimed.claim_lock, endpoint=endpoint or None)
         # Fires AFTER the PID (when reported) is durably persisted. Best-effort.
         _kb._fire_worker_spawned_hook(conn, claimed, str(workspace), pid, board=board)
         # consecutive_failures is deliberately NOT reset here: resetting on
@@ -2254,7 +2245,7 @@ def _tick_spawn_budget(
     running_count = 0
     spawn_budget: Optional[int] = None
     if max_spawn is not None or max_in_progress is not None:
-        running_count = count_running_tasks(conn)
+        running_count = _kbhc.count_running_tasks(conn)
 
     # Both ready and review loops consume from the same budget.
     if max_spawn is not None:
@@ -2263,7 +2254,7 @@ def _tick_spawn_budget(
         spawn_budget = max_spawn - running_count
 
     if max_in_progress is not None:
-        total_running = running_count + count_running_tasks_other_boards(board)
+        total_running = running_count + _kbhc.count_running_tasks_other_boards(board)
         if total_running >= max_in_progress:
             return False, None
         remaining = max_in_progress - total_running
@@ -2296,7 +2287,7 @@ def _tick_spawn_budget(
 def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
     """Unclaimed rows of one lane in dispatch order."""
     return conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT id, assignee, provider_override, model_override FROM tasks "
         f"WHERE status = '{status}' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
@@ -2308,19 +2299,24 @@ def _any_spawnable_review(
     *,
     per_profile_cap: Optional[int] = None,
     per_profile_running: Optional[dict[str, int]] = None,
+    per_endpoint_caps: Optional[dict[str, int]] = None,
+    per_endpoint_running: Optional[dict[str, int]] = None,
+    endpoint_routes: Optional[dict[str, tuple[Optional[str], Optional[str]]]] = None,
 ) -> bool:
     """Mirror review dispatch gates before reserving ready-lane capacity.
 
     Unavailable profile metadata retains the historic fail-open behavior. A
     review row that :func:`_dispatch_lane_task` would refuse this tick — its
-    assignee already at the per-profile cap, or respawn-guarded — cannot
-    consume the reservation, so it must not withhold capacity from an
-    otherwise ready task (one such row would pin ``ready_budget`` to 0).
+    assignee already at the per-profile cap, its endpoint at the per-endpoint
+    cap, or respawn-guarded — cannot consume the reservation, so it must not
+    withhold capacity from an otherwise ready task (one such row would pin
+    ``ready_budget`` to 0).
     """
     if not review_rows:
         return False
     profile_exists = _profile_exists_fn()
     running = per_profile_running or {}
+    lanes = per_endpoint_running or {}
     for row in review_rows:
         assignee = row["assignee"]
         if not assignee:
@@ -2329,6 +2325,10 @@ def _any_spawnable_review(
             continue
         if per_profile_cap is not None and running.get(assignee, 0) >= per_profile_cap:
             continue
+        if per_endpoint_caps is not None:
+            key = _kbec.endpoint_for_row(row, endpoint_routes if endpoint_routes is not None else {})
+            if _kbec.lane_is_full(per_endpoint_caps, lanes, key) is not None:
+                continue
         if check_respawn_guard(conn, row["id"], lane="review") is None:
             return True
     return False
@@ -2365,6 +2365,7 @@ def _dispatch_once_locked(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    max_in_progress_per_endpoint: Optional[dict[str, int]] = None,
     reconcile_orphans: bool = True,
 ) -> DispatchResult:
     """One dispatcher tick: reclaim stale/crashed running tasks, promote
@@ -2411,16 +2412,27 @@ def _dispatch_once_locked(
     # consume the ENTIRE shared budget, starving reviews under a sustained ready
     # backlog. When spawnable review work exists and there is any budget, hold
     # one slot back.
+    per_endpoint_caps = max_in_progress_per_endpoint or None
+    per_endpoint_running: dict[str, int] = {}
+    endpoint_routes: dict[str, tuple[Optional[str], Optional[str]]] = {}
+    if per_endpoint_caps is not None:
+        # Counted from the DB every tick (never cached across ticks) so a
+        # finished worker frees its lane on the very next tick.
+        per_endpoint_running = _kbec.running_counts(conn, endpoint_routes)
     ready_budget = spawn_budget
     if spawn_budget is not None and spawn_budget > 0 and _any_spawnable_review(
         conn, review_rows,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+        per_endpoint_caps=per_endpoint_caps, per_endpoint_running=per_endpoint_running,
+        endpoint_routes=endpoint_routes,
     ):
         ready_budget = max(spawn_budget - 1, 0)
     lane_kwargs: dict[str, Any] = dict(
         dry_run=dry_run, ttl_seconds=ttl_seconds, board=board,
         failure_limit=failure_limit, spawn_fn=spawn_fn,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+        per_endpoint_caps=per_endpoint_caps, per_endpoint_running=per_endpoint_running,
+        endpoint_routes=endpoint_routes,
     )
     default_assignee = _resolve_default_assignee(default_assignee)
     spawned = 0
@@ -2464,70 +2476,6 @@ def _positive_int(value: Any, default: int, *, minimum: int = 1) -> int:
     return parsed if parsed >= minimum else default
 
 
-def _module_hermes_argv() -> list[str]:
-    """Interpreter-bound Hermes CLI invocation (``hermes_cli.main`` is the
-    console-script target — there is no top-level ``hermes`` package)."""
-    return [sys.executable, "-m", "hermes_cli.main"]
-
-
-def _absolute_hermes_path(path: str) -> str:
-    """Return an absolute filesystem path for a resolved Hermes shim."""
-    expanded = os.path.expanduser(path)
-    return expanded if os.path.isabs(expanded) else os.path.abspath(expanded)
-
-
-def _looks_like_path(value: str) -> bool:
-    """Return true when a command override is an explicit path, not a name."""
-    expanded = os.path.expanduser(value)
-    return (
-        expanded.startswith("~")
-        or os.path.isabs(expanded)
-        or bool(os.path.dirname(expanded))
-        or "\\" in expanded
-        or bool(re.match(r"^[A-Za-z]:", expanded))
-    )
-
-
-def _is_windows_batch_shim(path: str) -> bool:
-    """Return true for Windows shell/batch shims that should not be argv[0]."""
-    return path.lower().endswith((".cmd", ".bat"))
-
-
-def _path_search_names(command: str) -> list[str]:
-    """Return executable names to try for an unqualified command."""
-    if not _kb._IS_WINDOWS or os.path.splitext(command)[1]:
-        return [command]
-    raw = os.environ.get("PATHEXT") or ".COM;.EXE;.BAT;.CMD"
-    return [command + ext for ext in raw.split(";") if ext]
-
-
-def _safe_which_no_cwd(command: str) -> Optional[str]:
-    """Resolve a bare command from PATH without implicit current-dir search.
-
-    On Windows ``shutil.which`` may search the current directory before PATH
-    for bare names — unsafe for a dispatcher. Only explicit PATH entries are
-    considered; empty / ``.`` entries are skipped.
-    """
-    for raw_dir in os.environ.get("PATH", "").split(os.pathsep):
-        if not raw_dir or raw_dir == ".":
-            continue
-        directory = os.path.expanduser(raw_dir)
-        for name in _path_search_names(command):
-            candidate = os.path.join(directory, name)
-            if os.path.isfile(candidate) and (_kb._IS_WINDOWS or os.access(candidate, os.X_OK)):
-                return candidate
-    return None
-
-
-def _hermes_path_argv(path: str) -> list[str]:
-    """argv for a resolved Hermes executable path. Windows batch shims
-    (``.cmd``/``.bat``) are unsafe as argv[0] because the argument vector
-    includes task-derived values; prefer the module form."""
-    if _kb._IS_WINDOWS and _is_windows_batch_shim(path):
-        return _module_hermes_argv()
-    return [_absolute_hermes_path(path)]
-
-
 def _resolve_hermes_argv() -> list[str]:
     """Resolve the ``hermes`` invocation as argv for ``Popen``: ``$HERMES_BIN``
     (path-like -> absolute; bare names keep PATH semantics, never a
@@ -2545,23 +2493,23 @@ def _resolve_hermes_argv() -> list[str]:
 
     env_bin = os.environ.get("HERMES_BIN", "").strip()
     if env_bin:
-        if _looks_like_path(env_bin):
-            return _hermes_path_argv(env_bin)
-        resolved_env_bin = _safe_which_no_cwd(env_bin)
+        if _kbwp.looks_like_path(env_bin):
+            return _kbwp.hermes_path_argv(env_bin)
+        resolved_env_bin = _kbwp.safe_which_no_cwd(env_bin)
         if resolved_env_bin:
-            return _hermes_path_argv(resolved_env_bin)
-        return _module_hermes_argv()
+            return _kbwp.hermes_path_argv(resolved_env_bin)
+        return _kbwp.module_hermes_argv()
 
     try:
         if importlib.util.find_spec("hermes_cli") is not None:
-            return _module_hermes_argv()
+            return _kbwp.module_hermes_argv()
     except Exception:
         pass
 
-    hermes_bin = _safe_which_no_cwd("hermes") if _kb._IS_WINDOWS else shutil.which("hermes")
+    hermes_bin = _kbwp.safe_which_no_cwd("hermes") if _kb._IS_WINDOWS else shutil.which("hermes")
     if hermes_bin:
-        return _hermes_path_argv(hermes_bin)
-    return _module_hermes_argv()
+        return _kbwp.hermes_path_argv(hermes_bin)
+    return _kbwp.module_hermes_argv()
 
 
 def _worker_terminal_timeout_env(
@@ -2940,12 +2888,14 @@ def run_daemon(
             # Re-resolved every tick (config load is mtime-cached) so operator
             # edits apply without a restart.
             max_in_progress = resolve_max_in_progress(configured_max_in_progress())
+            per_endpoint = configured_max_in_progress_per_endpoint()
             with contextlib.closing(_kbc.connect()) as conn:
                 res = dispatch_once(
                     conn,
                     max_spawn=max_spawn,
                     max_in_progress=max_in_progress,
                     failure_limit=failure_limit,
+                    max_in_progress_per_endpoint=per_endpoint,
                 )
             if on_tick is not None:
                 with contextlib.suppress(Exception):
@@ -2962,3 +2912,6 @@ def run_daemon(
 from hermes_cli import kanban_db as _kb
 from hermes_cli import kanban_db_connect as _kbc
 from hermes_cli import kanban_db_workspace as _kbw
+from hermes_cli import kanban_endpoint_caps as _kbec
+from hermes_cli import kanban_host_capacity as _kbhc
+from hermes_cli import kanban_worker_paths as _kbwp

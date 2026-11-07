@@ -90,5 +90,12 @@ def set_primary(connection_id: str) -> dict:
 @router.post("/api/gateway-connections/{connection_id}/test")
 async def test_connection(connection_id: str) -> dict:
     from hermes_cli.gateway_connections_probe import probe_connection
+    from hermes_cli.web_routers.gateway_connections_reach import http_error
 
-    return await probe_connection(connection_id)
+    try:
+        return await probe_connection(connection_id)
+    except Exception as exc:
+        mapped = http_error(exc)
+        if mapped is None:
+            raise
+        raise mapped from exc

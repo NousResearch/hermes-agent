@@ -16,7 +16,6 @@ from starlette.concurrency import run_in_threadpool
 
 from hermes_cli import gateway_connections as store
 from hermes_cli import gateway_connections_reach as reach
-from hermes_cli.gateway_connections_ssh_transport import SshReachError
 
 _TIMEOUT_S = 8.0
 
@@ -61,25 +60,15 @@ async def _probe(base_url: str, headers: dict[str, str]) -> dict[str, Any]:
 
 
 async def probe_connection(connection_id: str) -> dict[str, Any]:
-    from fastapi import HTTPException
+    """Raises the store's and the reach path's own errors; the route maps them to HTTP."""
+    entry = next((c for c in store.read_registry()["connections"] if c["id"] == connection_id), None)
+    if entry is None:
+        raise store.NoSuchConnection(f'No connection with id "{connection_id}".')
+    if entry["kind"] == "local":
+        from hermes_cli import __version__
 
-    try:
-        entry = next((c for c in store.read_registry()["connections"] if c["id"] == connection_id), None)
-        if entry is None:
-            raise store.NoSuchConnection(f'No connection with id "{connection_id}".')
-        if entry["kind"] == "local":
-            from hermes_cli import __version__
-
-            return {"ok": True, "baseUrl": None, "version": __version__}
-        if entry["kind"] == "ssh":
-            target = await run_in_threadpool(reach.resolve_target, connection_id)
-            return await _probe(*target)
-        return await _probe(*_credential_headers(entry["id"]))
-    except store.NoSuchConnection as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except store.ConnectionStoreError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except store.ConnectionStoreBusy as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except SshReachError as exc:
-        raise HTTPException(status_code=502, detail={"message": str(exc), "kind": exc.kind}) from exc
+        return {"ok": True, "baseUrl": None, "version": __version__}
+    if entry["kind"] == "ssh":
+        target = await run_in_threadpool(reach.resolve_target, connection_id)
+        return await _probe(*target)
+    return await _probe(*_credential_headers(entry["id"]))

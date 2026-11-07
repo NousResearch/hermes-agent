@@ -2287,13 +2287,8 @@ DEFAULT_CONFIG = {
         # legacy index is detected (a later layout change gets a rebuild notice without a size estimate);
         # require = the same notices worded as REQUIRED (tooling may gate on it); off = none.
         "fts_optimize_notice": "advise",
-        # CJK-bigram search index (messages_fts_cjk). When the extension is built
-        # (native/fts5_cjk/build.sh → ~/.hermes/lib/libfts5_cjk.so), 1-2 char CJK terms get exact
-        # index matches instead of LIKE scans. True = use when present (inert otherwise); False =
-        # never load/serve it. Bridged to HERMES_CJK_FTS.
-        "cjk_fts": True,
         # Slow session-search threshold (ms): searches at/above it log one INFO line with the
-        # routing path (fts_cjk / fts5 / trigram / like_scan). 0 logs every search. Bridged to
+        # routing path (fts5 / trigram / like_scan). 0 logs every search. Bridged to
         # HERMES_SEARCH_SLOW_MS.
         "search_slow_ms": 1000,
         # Transcript guards (a runaway 100k+ row session can exhaust memory when materialized at

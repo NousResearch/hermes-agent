@@ -23,7 +23,7 @@ MAX_ACTIVE_POLICY_EVENTS = 64
 # budget, so they are bounded on their own: sizing the reply budget exactly must leave room.
 MAX_ACTIVE_RETRY_RECEIPTS = 64
 MAX_THREAD_TRANSCRIPT_EVENTS = 24
-_TRANSCRIPT_SCHEMA_VERSION = 4
+_TRANSCRIPT_SCHEMA_VERSION = 5  # 5: rebuild threads an old settle closed under a newer message
 MAX_TRANSCRIPT_POLICY_EVENTS = MAX_THREAD_TRANSCRIPT_EVENTS * (MAX_ACTIVE_POLICY_EVENTS + 2)
 _TERMINAL_KINDS = frozenset({"turn.settled", "turn.failed", "turn.cancelled", "turn.deferred"})
 # What a Continue restores into a reopened discussion's active projection (the cap's activity is not one).
@@ -254,8 +254,12 @@ class HostedRoomPolicyCheckpoint:
     def _apply_room_activity(
         self, conn: sqlite3.Connection, event: Mapping[str, Any], payload: Mapping[str, Any]) -> None:
         room_id, thread_id = str(event["room_id"]), _text(payload, "thread_id")
-        conn.execute(_DELETE_ACTIVE_EVENTS_SQL, (room_id, _text(payload, "discussion_event_id")))
-        conn.execute("DELETE FROM hosted_room_policy_threads WHERE room_id=? AND thread_id=?", (room_id, thread_id))
+        discussion_event_id = _text(payload, "discussion_event_id")
+        conn.execute(_DELETE_ACTIVE_EVENTS_SQL, (room_id, discussion_event_id))
+        # A newer message on this thread may already have reopened it under its own discussion: the
+        # old discussion's completion (planned before that message) must not close the new one.
+        conn.execute("DELETE FROM hosted_room_policy_threads WHERE room_id=? AND thread_id=? AND discussion_event_id=?",
+                     (room_id, thread_id, discussion_event_id))
 
     def _apply_continued(
         self, conn: sqlite3.Connection, event: Mapping[str, Any], payload: Mapping[str, Any]) -> None:
@@ -268,6 +272,12 @@ class HostedRoomPolicyCheckpoint:
             return
         source_event = _event_from_room_row(source)
         thread_id = _text(source_event["payload"], "thread_id")
+        # A Continue written by an older build after a newer message on the thread (the router now
+        # refuses those) must not hand the thread back: the newer discussion owns it.
+        if conn.execute("""SELECT 1 FROM hosted_room_events WHERE room_id=? AND seq>? AND seq<=?
+                AND kind='message.user' AND json_extract(payload_json, '$.thread_id')=? LIMIT 1""",
+                (room_id, int(source_event["seq"]), int(event["seq"]), thread_id)).fetchone():
+            return
         conn.execute("""INSERT INTO hosted_room_policy_threads(
                    room_id, thread_id, discussion_event_id, latest_user_seq, completed
                ) VALUES (?, ?, ?, ?, 0)

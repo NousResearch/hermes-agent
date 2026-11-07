@@ -2204,8 +2204,7 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
     if archive_root is None:
         raise ValueError("Profile archive must contain exactly one top-level directory.")
 
-    # Default-profile archives have "default/" at top level; importing as "default" would
-    # target ~/.hermes itself.
+    # A "default/" archive imported as "default" would target ~/.hermes itself.
     canon = _canon_valid(inferred_name)
     if canon == "default":
         raise ValueError(
@@ -2235,6 +2234,7 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
                 else:
                     child.unlink()
         shutil.move(str(final_source), str(profile_dir))
+    clear_named_profile_deleted(profile_dir)
     return profile_dir
 
 
@@ -2317,10 +2317,8 @@ def rename_profile(old_name: str, new_name: str) -> Path:
             print(f"⚠ The gateway service was removed. Reinstall it with: hermes -p {old_canon} gateway install")
         raise
     print(f"✓ Renamed {old_dir.name} → {new_dir.name}")
-    # The tombstone lives at profiles/.deleted/<old_name>; old_dir is gone so nothing can
-    # resurrect it, and a future profile reusing the old name must not read as deleted.
-    if live_mux:
-        clear_named_profile_deleted(old_dir)
+    clear_named_profile_deleted(old_dir)
+    clear_named_profile_deleted(new_dir)
 
     # 2b. Record the rename so Bot Mode group chats can re-link persisted
     # member descriptors to the new slug (#110200). Best-effort: a metadata

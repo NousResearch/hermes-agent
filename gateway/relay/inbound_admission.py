@@ -13,11 +13,13 @@ async def admit_relay_delivery(adapter, runner, event):
     Without producer hooks admission waits only for the SQLite receipt, on the socket reader. With
     one, ``pre_gateway_dispatch`` or ``post_gateway_admission`` plugin code runs before the commit and
     may await ``adapter.send()``, whose ``outbound_result`` only that reader delivers, or wait for
-    another inbound message: the admission then runs in a task off the reader, after any earlier
-    admission of the same chat, so one chat's deliveries still commit in arrival order."""
+    another inbound message; so may answering a running turn (``session_ingress_live_turn``). The
+    admission then runs in a task off the reader, after any earlier admission of the same chat, so
+    one chat's deliveries still commit in arrival order."""
     from gateway.run_inbound_consumer import POST_ADMISSION_HOOK
+    from gateway.session_ingress_live_turn import may_answer_live_turn
     from hermes_cli.lifecycle import has_hook
-    if not (has_hook('pre_gateway_dispatch') or has_hook(POST_ADMISSION_HOOK)):
+    if not (has_hook('pre_gateway_dispatch') or has_hook(POST_ADMISSION_HOOK) or may_answer_live_turn(runner)):
         await _admit(adapter, runner, event)
         return None
     lanes = adapter._admission_lanes

@@ -514,6 +514,10 @@ This returns the webhook URL and an auto-generated HMAC secret. Configure your s
 hermes webhook list
 ```
 
+For scripts, `hermes webhook list --json` prints an array of route metadata. It includes a route's
+`toolsets` when explicitly configured, and excludes HMAC secrets. An empty subscription store
+produces `[]`.
+
 ### Remove a subscription
 
 ```bash

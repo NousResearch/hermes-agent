@@ -440,11 +440,11 @@ class ProviderProfile:
         """
         return None
 
-    # ── L1 wire seams (per-model wire, endpoint-keyed headers, max-tokens param) ──
+    # ── L1 wire seams (per-model wire, endpoint-keyed headers, Anthropic auth style, max-tokens param) ──
     # Endpoint-keyed hooks take the request's ``base_url``: core asks the named provider's profile first,
     # then any registered profile overriding the hook (``agent.provider_route_hooks``), so a ``custom``
     # route pointed at this provider's host is served too. Return None / ``{}`` for an endpoint that is
-    # not yours. All four are pure: no I/O unless the docstring says so.
+    # not yours. All five are pure: no I/O unless the docstring says so.
 
     def api_mode_for_model(self, model: str, *, api_key: str | None = None) -> str | None:
         """Wire (``api_mode``) this provider serves *model* on, or None to keep the static ``api_mode``.
@@ -462,6 +462,19 @@ class ProviderProfile:
         endpoint-specific headers there (core then uses the static ``default_headers``). ``has_images``
         asks for the headers of a request-scoped client carrying native image parts. Core merges user
         ``model.default_headers`` over the result and re-adds missing keys on snapshot rebuilds."""
+        return None
+
+    def anthropic_auth_style(self, *, base_url: str) -> str | None:
+        """Auth header for an Anthropic Messages client built for *base_url*:
+        ``"bearer"`` (Authorization: Bearer) or ``"api_key"`` (x-api-key), or None to keep core's
+        host heuristics. Answering also opts the client into this profile's ``client_headers``,
+        which on that path receives the live credential as ``api_key`` (never log or echo it).
+        Asked only for an https (or strictly local ``http``: localhost, loopback, private or link-local IP)
+        URL on an ASCII host whose auth core does not own: native Anthropic / Claude, OAuth, Azure,
+        MiniMax, Kimi / Moonshot and Nous hosts ignore it. Header names must be RFC 9110 tokens with
+        ``str`` values of printable ASCII or tab (no leading or trailing whitespace); credential, beta,
+        ``anthropic-version``, transport and hop-by-hop headers (``Host``, ``Content-Length``, ``Cookie``,
+        ``Expect``, ...) are dropped. Pure: no I/O."""
         return None
 
     def request_headers(self, *, base_url: str, model: str = "", user_initiated: bool = False) -> dict[str, str]:
@@ -649,7 +662,13 @@ class ProviderProfile:
 
     def refresh_runtime_credentials(self, *, reason: str) -> tuple[str, str | None] | None:
         """Re-mint the live client's ``(api_key, base_url or None)`` on ``reason`` (``unauthorized`` |
-        ``stale`` | ``auxiliary_unauthorized``); None = nothing fresher. Error path only, I/O allowed."""
+        ``stale`` | ``auxiliary_unauthorized``); None = nothing fresher. Error path only, I/O allowed.
+        The token must be a ``str`` of visible ASCII (no whitespace or control characters) and ``base_url``
+        a ``str`` or None, else the refresh is ignored. A ``base_url`` may keep the current origin (no scheme
+        or port change on the same host); a new host must be https (or strictly local ``http``), claimed in
+        this profile's ``hostnames``, and this must be the session's named provider, else the whole refresh
+        is ignored (no retry). A profile serving the route only by host (a ``custom`` route) keeps the
+        current base URL: its token is adopted, its move is dropped."""
         return None
 
     def is_stale_credential_error(self, *, status_code: int | None, message: str) -> bool:

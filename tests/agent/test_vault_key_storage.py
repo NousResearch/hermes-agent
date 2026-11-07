@@ -323,3 +323,40 @@ def test_cleanup_of_an_already_deleted_keychain_entry_completes(home, keychain):
     assert "keychain_entry_left" not in VaultStore().key_location()
     assert not (h / "vault" / "vault.keyref").exists()
     assert VaultStore().resolve_secret(item)["password"] == _LOGIN["password"]
+
+
+def test_a_keychain_that_never_answers_fails_the_open_and_frees_the_vault(home, keychain, monkeypatch):
+    """A locked keychain waiting on an unseen unlock prompt must not hold the vault lock forever,
+    nor read as a lost key (no new key minted, no "start over" advice)."""
+    import threading
+
+    from agent import vault_keychain
+
+    h = home(key_storage="keychain")
+    item = _add(VaultStore())
+    ciphertext = (h / "vault" / "vault.json.enc").read_bytes()
+    stalled, release = threading.Event(), threading.Event()
+    answer = keychain.get_password
+
+    def stalling_get(service, username):
+        if not release.is_set():
+            stalled.set()
+            release.wait(30)
+        return answer(service, username)
+
+    monkeypatch.setattr(keychain, "get_password", stalling_get)
+    monkeypatch.setattr(vault_keychain, "ANSWER_TIMEOUT_S", 2.0)
+    try:
+        with pytest.raises(VaultError) as err:
+            VaultStore().list_items()
+        assert stalled.is_set()
+        with pytest.raises(VaultError):
+            VaultStore().list_items()  # retries wait on the stalled read instead of stacking threads
+        assert sum(t.name == "hermes-keychain-read" for t in threading.enumerate()) == 1
+        assert "did not answer" in str(err.value) and "still saved" in str(err.value)
+        assert "delete vault.json.enc" not in str(err.value)
+        assert (h / "vault" / "vault.json.enc").read_bytes() == ciphertext
+        assert len(keychain.entries) == 1 and not (h / "vault" / "vault.key").exists()
+    finally:
+        release.set()
+    assert VaultStore().resolve_secret(item)["password"] == _LOGIN["password"], "the lock was released"

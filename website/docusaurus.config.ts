@@ -137,13 +137,8 @@ const config: Config = {
           label: 'Docs',
         },
         {
-          to: '/skills',
-          label: 'Skills',
-          position: 'left',
-        },
-        {
-          to: '/plugins',
-          label: 'Plugins',
+          href: 'https://hermes-agent.nousresearch.com/marketplace',
+          label: 'Marketplace',
           position: 'left',
         },
         {

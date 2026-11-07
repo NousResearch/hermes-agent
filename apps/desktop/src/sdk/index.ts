@@ -1573,7 +1573,8 @@ export {
   type ComposerContextMenuProvider,
   type ComposerMiddleware,
   type ComposerModelPillContext,
-  type ComposerModelPillProvider
+  type ComposerModelPillProvider,
+  type ComposerVoiceEngine
 } from '@/app/chat/composer/contrib'
 /** The main composer's surface pieces, so a plugin composer (Bot Mode rooms) reads as the
  *  same input: the ring, the fill layer behind the editor, and the ghost / primary icon buttons. */

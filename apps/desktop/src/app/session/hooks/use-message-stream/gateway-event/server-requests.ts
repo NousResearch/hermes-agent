@@ -3,7 +3,8 @@ import { JSON_RPC_INTERNAL_ERROR, type SetupBeat } from '@hermes/shared'
 import {
   hasLivePreviewSurface,
   requestPopoutPreviewAct,
-  requestPopoutPreviewRead
+  requestPopoutPreviewRead,
+  requestPopoutPreviewVault
 } from '@/app/chat/right-rail/preview-popout-bridge'
 import { readActivePreview } from '@/app/chat/right-rail/preview-reader'
 import {
@@ -580,13 +581,24 @@ const previewAct: Handler = ({ deps, isActiveSession, request, sessionId }) => {
       : undefined
 
     const scope = { connectionId: request.connectionId ?? null, profile: request.profile, sessionId }
+    const owner = previewOwnerFor(sessionId)
+
+    // After pop-out the live document lives in the Browser window; this window
+    // still owns the session gate. Forward the binding op there (mirroring the
+    // non-vault act path below) and answer with the pop-out's result. No pop-out
+    // answering (null) falls through to the local binding map, which keeps the
+    // legacy behaviour for a pane docked in this window (#150283 pop-out vault).
+    const forwardVault = (operation: string) =>
+      hasLivePreviewSurface(owner)
+        ? null
+        : requestPopoutPreviewVault({ expression, operation, owner, scope, target }, owner)
 
     void loadPreviewVault()
-      .then(mod => {
+      .then(async mod => {
         // Close is cleanup and must remain available after the request was
         // withdrawn; it only drops the opaque renderer binding.
         if (operation === 'close') {
-          return mod.closePreviewVaultBinding({ ...scope, target })
+          return (await forwardVault('close')) ?? mod.closePreviewVaultBinding({ ...scope, target })
         }
 
         // A cancelled or stopped request may settle while the lazy module is
@@ -600,10 +612,24 @@ const previewAct: Handler = ({ deps, isActiveSession, request, sessionId }) => {
             return { error: 'The session changed before the preview vault action.', success: false as const }
           }
 
-          return mod.openPreviewVaultBinding(scope, previewOwnerFor(sessionId))
+          return (await forwardVault('open')) ?? mod.openPreviewVaultBinding(scope, owner)
         }
 
         if (operation === 'evaluate') {
+          // The local binding re-checks isSessionActive itself; the forwarded
+          // path cannot, so gate here before reaching across to the pop-out.
+          if (!hasLivePreviewSurface(owner)) {
+            if (!isSessionActive()) {
+              return { error: 'The session changed before the preview vault action.', success: false as const }
+            }
+
+            const forwarded = await forwardVault('evaluate')
+
+            if (forwarded) {
+              return forwarded
+            }
+          }
+
           return mod.evaluatePreviewVaultBinding({
             ...scope,
             expression,

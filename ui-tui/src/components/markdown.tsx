@@ -536,7 +536,7 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
 // the terminal's default foreground. Without it a single line mixes
 // themed spans (code, links, math) with unthemed prose — and because an
 // inline token can match mid-word, so can a single word.
-function MdInline({ color, t, text }: { color?: string; t: Theme; text: string }) {
+export function MdInline({ color, t, text }: { color?: string; t: Theme; text: string }) {
   const parts: ReactNode[] = []
 
   let last = 0

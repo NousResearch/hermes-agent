@@ -30,7 +30,10 @@ def test_reserved_constructor_backfill_and_end_are_receipted(tmp_path):
         store.create_session('owned', 'cli', model='ignored', system_prompt='ignored',
                              model_config={'max_iterations': 10})
         assert db.get_session('owned')['model'] == 'requested'
-        assert db.get_session_model_config_value('owned', 'max_iterations') == 5
+        # The second receipt now wins on constructor facts (json_patch merge beside the occupied
+        # blob, #149379), matching the delegate-child contract; model/system_prompt stay
+        # keep-existing, and only a NULL model_config row was ever first-receipt-wins.
+        assert db.get_session_model_config_value('owned', 'max_iterations') == 10
         assert store.session_lifecycle_statuses(['owned']) == {'owned': 'empty'}
         with pytest.raises(WorkerPersistenceError, match='permission_denied'):
             store.create_session('foreign', 'cli')

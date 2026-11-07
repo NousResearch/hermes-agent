@@ -58,11 +58,77 @@ def project_compaction_message_for_display(message: dict[str, Any]) -> Optional[
     # A safety-refused ask embedded in a composite carrier keeps its ``content_refused`` tag through
     # the unwrap, or a reopened chat would redraw it as an ordinary user bubble with no refused notice
     # (#149708 review): the model-facing handoff is gone, the user's live ask survives as a greyed
-    # refused block. Every other carrier drops its internal ``display_kind`` as before.
+    # refused block. A carrier that already names its producer notice kind keeps it too.
     from agent.turn_failure_copy import CONTENT_REFUSED_DISPLAY_KIND
-    if projected.get("display_kind") != CONTENT_REFUSED_DISPLAY_KIND:
-        projected.pop("display_kind", None)
+    from gateway.response_filters import PRODUCER_NOTICE_DISPLAY_KINDS
+    kind = projected.get("display_kind")
+    if kind == CONTENT_REFUSED_DISPLAY_KIND or kind in PRODUCER_NOTICE_DISPLAY_KINDS:
+        return projected
+    projected.pop("display_kind", None)
+    # The compressor merges the summary into the tail row when no standalone summary row can
+    # alternate. When that tail was a producer notice, its ``display_kind`` sidecar never reached the
+    # carrier, and the unwrapped envelope would paint as a user message: name its kind again.
+    notice = producer_notice_display(flatten_message_text(projected.get("content")))
+    if notice is not None:
+        projected["display_kind"], label = notice
+        metadata = projected.get("display_metadata")
+        projected["display_metadata"] = {**(metadata if isinstance(metadata, dict) else {}), **label}
     return projected
+
+
+# The envelopes ``tools.process_registry_notifications`` writes. ``hermes_state_timeline._SYNTHETIC_PROMPT``
+# and the Desktop's ``asyncResultBody`` key on the same leading tags.
+_DELEGATION_TASK_HEADER = re.compile(
+    r"^--- [✓✗⚠] TASK (\d+)/\d+(?:: ([\s\S]*?))?  \(status=([^,)\n]*)([^\n]*)\) ---$", re.MULTILINE)
+_DELEGATION_GOAL = re.compile(r"^(?:Original goal|Task): (.*)$", re.MULTILINE)
+_DELEGATION_STATUS = re.compile(r"^Status: (\S+)", re.MULTILINE)
+_PROCESS_COMPLETION_HEADER = re.compile(
+    r"^\[IMPORTANT: Background process \S+ (.+?) \(exit code (-?\d+|\?)", re.MULTILINE)
+_PROCESS_BATCH_HEADER = re.compile(r"\[IMPORTANT: \d+ background processes completed\.")
+_PROCESS_COMMAND = re.compile(r"^Command: (.*)$", re.MULTILINE)
+
+
+def producer_notice_display(text: str) -> Optional[tuple[str, dict[str, Any]]]:
+    """``(display_kind, display_metadata)`` for a producer notice envelope, else ``None``.
+
+    The labels come from the producers' own helpers, rebuilt from the envelope's headers, so a
+    recovered row reads as the original notice did. Anything else, a user's ask included, is ``None``.
+    """
+    from tools.process_registry_notifications import (
+        PROCESS_COMPLETE_DISPLAY_KIND, async_delegation_display_text, process_completion_display_text)
+    if text.startswith("[ASYNC DELEGATION "):
+        event = _delegation_event(text)
+        return "async_delegation_complete", {
+            "display_text": async_delegation_display_text(event), "task_count": len(event.get("results") or [event])}
+    if text.startswith("[IMPORTANT: Background process ") or _PROCESS_BATCH_HEADER.match(text):
+        events = _process_events(text)
+        if events:
+            return PROCESS_COMPLETE_DISPLAY_KIND, {"display_text": process_completion_display_text(events)}
+    return None
+
+
+def _delegation_event(text: str) -> dict[str, Any]:
+    tasks = _DELEGATION_TASK_HEADER.findall(text)
+    if tasks:
+        return {"results": [
+            {"task_index": int(index) - 1, "goal": goal, "status": status, "truncated": "TRUNCATED" in rest}
+            for index, goal, status, rest in tasks]}
+    goal, status = _DELEGATION_GOAL.search(text), _DELEGATION_STATUS.search(text)
+    return {"goal": goal.group(1) if goal else "", "status": status.group(1) if status else "completed",
+            "truncated": "[TRUNCATED: hit max_iterations" in text}
+
+
+def _process_events(text: str) -> list[dict[str, Any]]:
+    from tools.process_registry_notifications import _REASON_STATUS
+    events = []
+    for header in _PROCESS_COMPLETION_HEADER.finditer(text):
+        status, exit_code = header.groups()
+        reason = "killed" if status.startswith("terminated by ") else next(
+            (key for key, value in _REASON_STATUS.items() if value == status), "exited")
+        command = _PROCESS_COMMAND.search(text, header.end())
+        events.append({"completion_reason": reason, "exit_code": int(exit_code) if exit_code != "?" else "?",
+                       "command": command.group(1) if command else ""})
+    return events
 
 
 

@@ -38,7 +38,7 @@ class TestKimiProfileParity:
         """The kimi-coding profile (``kimi`` is an alias of it) leaves temperature to the server."""
         assert get_provider_profile("kimi") is get_provider_profile("kimi-coding")
         kwargs = transport.build_kwargs(
-            model="kimi-k2", messages=_msgs(), tools=None,
+            model="kimi-k2", messages=_msgs(), tools=None, temperature=0.7,
             provider_profile=get_provider_profile("kimi-coding"),
         )
         assert "temperature" not in kwargs

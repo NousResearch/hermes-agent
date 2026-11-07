@@ -202,7 +202,9 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
         seen.current = { epoch, seq: log.at(-1)?.seq ?? cursor }
         setState(snapshot)
 
-        if (snapshot.driver_status && !snapshot.driver_status.working && !snapshot.driver_status.counts?.stopping) {
+        // The stop notice tells people to use Retry or Discard on kept turns: it stays while any wait.
+        if (snapshot.driver_status && !snapshot.driver_status.working && !snapshot.driver_status.counts?.stopping &&
+          !snapshot.driver_status.pending_actions?.length) {
           setNotice(current => current === 'stopped' ? '' : current)
         }
 

@@ -1229,10 +1229,10 @@ it('clears the stop notice only once the gateway reports no work still stopping'
   const binding = { connectionId: 'local', profile: 'team', roomId: 'settled-stop' }
   const view = render(<CanonicalGroupWorkspace binding={binding} />)
   fireEvent.click(await screen.findByRole('button', { name: 'Stop the group' }))
-  await screen.findByText('Stop requested')
+  await screen.findByText(CANONICAL_GROUP_LOCALES.en.stopped)
   stopping = 0
   // Resuming the retained pane triggers the next authoritative read immediately.
   view.rerender(<CanonicalGroupWorkspace binding={binding} visible={false} />)
   view.rerender(<CanonicalGroupWorkspace binding={binding} visible />)
-  await waitFor(() => expect(screen.queryByText('Stop requested')).toBeNull())
+  await waitFor(() => expect(screen.queryByText(CANONICAL_GROUP_LOCALES.en.stopped)).toBeNull())
 })

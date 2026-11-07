@@ -10,7 +10,6 @@ import { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
 import { PeerJoinError, peerJoinText, peerSetupText, peerTargetState } from './canonical-group-peers'
 import { $canonicalGroupBindings } from './canonical-group-registry'
 import { CreateGroupChatDialog } from './create-dialog'
-import { CROSS_GATEWAY_GROUP_LOCALES } from './cross-gateway-locales'
 import { $botMeta } from './data'
 import { $groupChats } from './group-chat'
 import type * as GroupChatParts from './group-chat-parts'
@@ -45,7 +44,7 @@ const REFUSALS = [
   ['a_future_reason', link('a_future_reason'), 'peerSetupGeneric']
 ] as const
 
-const CODES = [...new Set([...REFUSALS.map(([code]) => code), 'canonical_driver_required', 'unreachable', 'default_profile_required'])]
+const CODES = [...new Set([...REFUSALS.map(([code]) => code), 'canonical_driver_required', 'unreachable'])]
 const rawCode = new RegExp(CODES.join('|'))
 
 beforeEach(() => {
@@ -60,8 +59,8 @@ afterEach(() => { cleanup(); localStorage.clear() })
 
 const box = (row: Element | undefined) => row?.closest('label')?.querySelector('button[role="checkbox"]') as HTMLButtonElement
 
-it.each(REFUSALS)('explains a lender refusing with %s in words, not its code', async (code, capabilities, key) => {
-  expect((peerTargetState(capabilities) as { reason?: string }).reason).toBe(code)
+it.each(REFUSALS)('explains a lender refusing with %s in words, not its code, and never falls back to Desktop', async (code, capabilities, key) => {
+  expect((peerTargetState(capabilities, 'default') as { reason?: string }).reason).toBe(code)
   answerGroupRequests(request, {
     local: method => method === 'groups.capabilities' ? { ...HOME, room_link: { enabled: false } } : undefined,
     mini: method => method === 'groups.capabilities' ? capabilities : undefined
@@ -72,9 +71,9 @@ it.each(REFUSALS)('explains a lender refusing with %s in words, not its code', a
   const rows = [...baseElement.querySelectorAll('[data-bot-face="default"]')]
   fireEvent.click(box(rows[0]))
   fireEvent.click(box(rows[1]))
-  const note = await waitFor(() => baseElement.querySelector('[data-group-engine="desktop"]')!)
+  const note = await waitFor(() => baseElement.querySelector('[data-group-engine="unavailable"]')!)
   const words = CANONICAL_GROUP_LOCALES.en
-  expect(note.textContent).toContain(CROSS_GATEWAY_GROUP_LOCALES.en.desktopDriven)
+  expect(baseElement.querySelector('[data-group-engine="desktop"]')).toBeNull()
   expect(note.textContent).toContain(words.peerTargetSetup.replace('{connection}', 'Mac Mini').replace('{reason}', words[key]))
   expect(note.textContent).not.toMatch(rawCode)
   expect(note.textContent).not.toMatch(/[{}]/)

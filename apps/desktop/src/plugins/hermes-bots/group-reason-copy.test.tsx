@@ -60,8 +60,10 @@ it.each([
     ]
 
     const view = render(<CanonicalGroupHistory binding={binding} events={events} />)
+    // A member that did not answer in time reads as that in the log; its status chip keeps the reason.
+    const logged = reason === 'member_unavailable' ? labels.turnNoAnswer : text
     expect([...view.container.querySelectorAll('[data-room-notice] p')].map(node => node.textContent)).toEqual(
-      [labels.turnDeferred, labels.turnFailed, labels.turnFailed, labels.turnCancelled].map(word => word + (text ? ': ' + text : '')))
+      [labels.turnDeferred, labels.turnFailed, labels.turnFailed, labels.turnCancelled].map(word => word + (logged ? ': ' + logged : '')))
     view.unmount()
 
     const activity = groupActivityLabel({ at: 1, epoch: 0, kind: 'failed', member: 'Helper', reason })
@@ -100,15 +102,15 @@ it.each([
 })
 
 it.each([
-  ["en", "{name}’s turn didn’t finish here. Retry it?"],
-  ["ja", "{name} のターンはここでは完了しませんでした。再試行しますか？"],
-  ["zh", "{name} 的回合未在此处完成。要重试吗？"],
-  ["zh-hant", "{name} 的回合未在此處完成。要重試嗎？"],
-  ["ar", "لم يكتمل دور {name} هنا. هل تعيد المحاولة؟"],
-  ["ru", "Ход {name} здесь не завершился. Повторить?"],
-  ["fr", "Le tour de {name} ne s’est pas terminé ici. Réessayer ?"],
-  ["de", "Der Zug von {name} wurde hier nicht abgeschlossen. Erneut versuchen?"],
-  ["es", "El turno de {name} no terminó aquí. ¿Reintentar?"],
-])('limits the retry claim to this computer in %s', (locale, template) => {
+  ["en", "{name}’s turn has not finished. Retry it?"],
+  ["ja", "{name} のターンはまだ完了していません。再試行しますか？"],
+  ["zh", "{name} 的回合尚未完成。要重试吗？"],
+  ["zh-hant", "{name} 的回合尚未完成。要重試嗎？"],
+  ["ar", "لم ينتهِ دور {name} بعد. هل تعيد المحاولة؟"],
+  ["ru", "Ход {name} ещё не завершён. Повторить?"],
+  ["fr", "Le tour de {name} n’est pas terminé. Réessayer ?"],
+  ["de", "Der Turn von {name} ist noch nicht abgeschlossen. Erneut versuchen?"],
+  ["es", "El turno de {name} no ha terminado. ¿Reintentar?"],
+])('asks to retry a turn that has not finished, wherever it ran, in %s', (locale, template) => {
   expect(fill(CANONICAL_GROUP_LOCALES[locale as keyof typeof CANONICAL_GROUP_LOCALES].pendingRetry, { name: 'Helper' })).toBe(template.replace('{name}', 'Helper'))
 })

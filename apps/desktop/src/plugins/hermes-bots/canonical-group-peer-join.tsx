@@ -4,9 +4,9 @@ import { useEffect, useState } from 'react'
 import { canonicalMemberName } from './canonical-group-activity'
 import { type GroupMethods, offersGroupMethod } from './canonical-group-capabilities'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
-import { $peerJoinErrors, canRejoinPeer, type GroupCreationIntent, PeerJoinError, peerJoinKey, peerJoinText, peerMemberStates, peerRenewalSettled, rejoinPeer, renewPeers, startAgainWithout } from './canonical-group-peers'
+import { $peerJoinErrors, canRejoinPeer, PeerJoinError, peerJoinKey, peerJoinText, peerMemberStates, peerRenewalSettled, rejoinPeer, renewPeers, startAgainWithout } from './canonical-group-peers'
 import { endCanonicalGroup, registerCanonicalGroup } from './canonical-group-registry'
-import type { CanonicalGroupBinding, CanonicalRoom, CanonicalRoomMember } from './canonical-groups'
+import type { CanonicalGroupBinding, CanonicalRoom, CanonicalRoomMember, GroupCreationIntent } from './canonical-groups'
 import { cachedUnionRoster } from './data'
 
 type RenewalState = { room: CanonicalRoom; driver_status?: { peer_routes?: unknown } } | null

@@ -14,17 +14,20 @@ import {
   $groupChatWorkspace,
   groupChatSyncSnapshot,
   mergeGroupChatSyncSnapshots,
-  mergeRemoteGroupChatSnapshotIntoRooms
+  mergeRemoteGroupChatSnapshotIntoRooms,
+  updateGroupChat
 } from './group-chat'
 import type * as GroupChatModule from './group-chat'
 import type * as GroupChatParts from './group-chat-parts'
 import { GroupChatWorkspace } from './group-chat-view'
+import { setGroupChatMembers } from './group-chat-view-members'
 import { translateBots } from './i18n-test-helper'
 import type { RosterRow } from './types'
 
 // Group chats whose bots live on different connected machines (#141178, #142248):
-// the active gateway owns only rooms of its own bots, so a selection spanning
-// connections becomes a Desktop-driven room instead of a refused groups.create.
+// every new group chat is run by a gateway. A selection spanning connections is
+// created only when this gateway can seat the other computers' bots; otherwise
+// the dialog says what is missing, and no Desktop-driven room is ever made.
 
 const { request, notify, openWorkspace } = vi.hoisted(() => ({ request: vi.fn(), notify: vi.fn(), openWorkspace: vi.fn() }))
 vi.mock('@hermes/plugin-sdk', async importOriginal => {
@@ -67,8 +70,6 @@ const beta: RosterRow = { name: 'beta', connectionId: 'local', connectionLabel: 
 const remote: RosterRow = { name: 'remote', connectionId: 'other-box', connectionLabel: 'Other box', remoteSource: true }
 const scout: RosterRow = { name: 'scout', connectionId: 'other-box', connectionLabel: 'Other box', remoteSource: true }
 const unreachable: RosterRow = { ...remote, name: 'offline', sourceReachable: false }
-
-const desktopDriven = CROSS_GATEWAY_GROUP_LOCALES.en.desktopDriven
 
 beforeEach(() => {
   connectionId.set('local')
@@ -127,23 +128,19 @@ it('offers bots from every reachable connection, each with its device badge', as
   expect(badges).toEqual(['This device', 'This device', 'Other box'])
 })
 
-it('a selection spanning two connections creates a Desktop-driven room, never a refused groups.create', async () => {
+it('a selection spanning two connections never becomes a Desktop-driven room: it says which computer must change', async () => {
   const { onCreated } = await pick([alpha, beta, remote], ['alpha', 'remote'])
 
-  expect(screen.getByRole('note').textContent).toBe(desktopDriven)
+  // This gateway runs group chats but cannot seat bots from other computers yet.
+  expect(screen.getByRole('note').textContent).toBe(CROSS_GATEWAY_GROUP_LOCALES.en.ownerCannotSeatPeers('This device'))
   const submit = screen.getByRole('button', { name: 'Create group (2)' }) as HTMLButtonElement
-  expect(submit.disabled).toBe(false)
+  expect(submit.disabled).toBe(true)
   await act(async () => { fireEvent.click(submit) })
 
+  expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
   expect(request.mock.calls.filter(call => call[1] === 'groups.create')).toHaveLength(0)
-  expect($canonicalGroupBindings.get()).toEqual({})
-  const [[group, origin]] = onCreated.mock.calls
-  expect(origin).toBe('name')
-  const members = $groupChats.get()[group].members ?? []
-  expect(members.map((member: RosterRow) => [member.name, member.connectionId])).toEqual([
-    ['alpha', 'local'],
-    ['remote', 'other-box']
-  ])
+  expect(onCreated).not.toHaveBeenCalled()
+  expect($groupChats.get()).toEqual({})
 })
 
 it('a selection on this connection alone still creates the gateway-owned room (control)', async () => {
@@ -182,7 +179,7 @@ it.each(['unchanged', 'reopened after disband', 'disbanded', 'renamed', 'disband
       return { room }
     })
     let { view, onCreated } = await pick([alpha, beta], ['alpha', 'beta'])
-    const submit = () => act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Create Group (2)' })) })
+    const submit = () => act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Create group (2)' })) })
     await submit()
     expect(onCreated).not.toHaveBeenCalled()
     screen.getByText(CANONICAL_GROUP_LOCALES.en.createUncertain)
@@ -225,7 +222,7 @@ it.each(['reopened', 'edited'])('a late answer says nothing about the current dr
     ? new Promise((_, reject) => { fail = reject })
     : normal(route, method, params))
   const { view } = await pick([alpha, beta], ['alpha', 'beta'])
-  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Create Group (2)' })) })
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Create group (2)' })) })
 
   if (change === 'reopened') {await pick([alpha, beta], ['alpha', 'beta'], view)} else {
     fireEvent.change(screen.getByRole('textbox', { name: translateBots('group.nameLabel') }), { target: { value: 'Other' } })
@@ -250,18 +247,16 @@ it('a room whose members span connections opens in the Desktop-driven view on a 
   expect(request.mock.calls.filter(call => call[1] === 'groups.list')).toHaveLength(0)
 })
 
-it('a room created across connections stays Desktop-driven after its remote member is removed', async () => {
-  const { onCreated, view } = await pick([alpha, beta, remote], ['alpha', 'beta', 'remote'])
-  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Create group (3)' })) })
-  view.unmount()
-  const [[group]] = onCreated.mock.calls
+it('an existing Desktop-driven room stays Desktop-driven after its remote member is removed', async () => {
+  // Saved by an older build: no new room is ever made this way, but this one keeps working.
+  updateGroupChat('Mixed', room => ({ ...room, engine: 'desktop', members: [alpha, beta, remote], roomId: 'old-room' }))
+  await act(async () => { await setGroupChatMembers('Mixed', [alpha, beta]) })
 
-  expect($groupChats.get()[group].engine).toBe('desktop')
+  expect($groupChats.get().Mixed.engine).toBe('desktop')
 
   // Manage groups removed the remote bot: every remaining member is on this connection.
-  await act(async () => { render(<GroupChatWorkspace group={group} members={[alpha, beta]} />) })
+  await act(async () => { render(<GroupChatWorkspace group="Mixed" members={[alpha, beta]} />) })
 
-  expect(screen.queryByRole('button', { name: 'Start gateway group' })).toBeNull()
   expect(screen.getAllByRole('textbox').length).toBeGreaterThan(0)
   expect(request.mock.calls.filter(call => call[1] === 'groups.list')).toHaveLength(0)
 })

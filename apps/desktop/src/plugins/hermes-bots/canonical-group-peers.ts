@@ -19,9 +19,6 @@ import type { GroupMember, ProfileRoute, RosterRow } from './types'
  *  A setup that stops between its steps leaves a member that has not joined: `groups.state` shows
  *  it (`driver_status.peer_routes`), and running the steps again seats it. */
 
-/** The one profile another gateway lends a room (gateway/session_group_peers.py `register`). */
-const PEER_PROFILE = 'default'
-
 /** The longest dispatch lifetime a member gateway grants, and, where it advertises
  *  `peer_renewal_horizon`, the longest horizon up to which the home may renew it. */
 const LIFETIME = { ttl_seconds: 86400 }
@@ -30,30 +27,31 @@ const HORIZON = { status_ttl_seconds: 30 * 86400 }
 /** Whether another connection's gateway can host a Bot in a room this connection owns, as its own
  *  `groups.capabilities` says. `gateway` is its authority id, the installation a pinned member names. */
 export type PeerTargetState =
-  | { ready: true; gateway: string; installationId: string; catalogDigest: string; renewal: boolean }
+  | { ready: true; gateway: string; installationId: string; catalogDigest: string; renewal: boolean; profile: string }
   | { ready: false; gateway?: string; reason: string }
 
 type Answer = Record<string, unknown> & { room_link?: Record<string, any>; methods?: unknown; features?: unknown }
 
-function peerCatalogProblem(catalog: Record<string, any>, gateway: string | undefined): string | undefined {
+function peerCatalogProblem(catalog: Record<string, any>, gateway: string | undefined, profile: string): string | undefined {
   const listed = (field: unknown, name: string | number) => Array.isArray(field) && field.includes(name)
 
   // What the home's registration requires of the member's gateway (`register`, `_probe`): the catalog
-  // its endpoint answers with is the pinned one, it takes text only and lends its default profile.
+  // its endpoint answers with is the pinned one, it takes text only and lends the profile asked for.
   if (!listed(catalog.protocol_versions, 2) || !listed(catalog.link_modes, 'direct')) {return 'peer_target_unsupported'}
 
   if (catalog.persistent_process !== true) {return 'persistent_process_required'}
 
   if (catalog.text !== true || catalog.attachments !== false) {return 'text_only_required'}
 
-  if (catalog.execution_policy?.target_profile !== PEER_PROFILE) {return 'default_profile_required'}
+  if (catalog.execution_policy?.target_profile !== profile) {return 'peer_target_unsupported'}
 
   if (catalog.endpoint?.available !== true || (typeof catalog.endpoint.url !== 'string' || !catalog.endpoint.url.trim())) {return 'endpoint_required'}
 
   if (!gateway || catalog.installation_id !== gateway || (typeof catalog.catalog_digest !== 'string' || !catalog.catalog_digest)) {return 'room_link_unavailable'}
 }
 
-export function peerTargetState(value: unknown): PeerTargetState {
+/** `groups.capabilities` of the gateway lending `profile`: whether it can seat that Bot here. */
+export function peerTargetState(value: unknown, profile: string): PeerTargetState {
   const answer: Answer = value && typeof value === 'object' ? value as Answer : {}
   const gateway = typeof answer.authority_gateway_id === 'string' && answer.authority_gateway_id ? answer.authority_gateway_id : undefined
   const listed = (field: unknown, name: string | number) => Array.isArray(field) && field.includes(name)
@@ -65,37 +63,42 @@ export function peerTargetState(value: unknown): PeerTargetState {
   if (link?.enabled !== true) {return refused(typeof link?.reason === 'string' && link.reason ? link.reason : 'room_link_unavailable')}
   const catalog = link.catalog ?? {}
 
-  const problem = peerCatalogProblem(catalog, gateway)
+  const problem = peerCatalogProblem(catalog, gateway, profile)
 
   if (problem || !gateway) {return refused(problem || 'room_link_unavailable')}
 
-  return { ready: true, gateway, installationId: gateway, catalogDigest: catalog.catalog_digest, renewal: listed(answer.features, 'peer_renewal_horizon') }
+  return { ready: true, gateway, installationId: gateway, catalogDigest: catalog.catalog_digest, renewal: listed(answer.features, 'peer_renewal_horizon'), profile }
 }
 
 /** A Bot's own connection route when it is a Bot another connection's room could seat: on another
- *  connection than `home`, consistently, and that connection's default profile. */
+ *  connection than `home`, consistently. Any profile that connection's gateway serves can be lent. */
 export function peerRoute(bot: Partial<RosterRow> | null | undefined, home: null | string): null | ProfileRoute {
   const { route } = resolveBotConnectionRoute(bot)
 
   if (bot?.ghost || !route || !home) {return null}
 
-  return route.connectionId !== home && route.targetProfile === PEER_PROFILE &&
-    (!bot?.connectionId || bot.connectionId === route.connectionId) ? route : null
+  return route.connectionId !== home && (!bot?.connectionId || bot.connectionId === route.connectionId) ? route : null
 }
+
+/** A lender answers per profile (`room_link` is the asked profile's catalog), so checks are kept per
+ *  connection and profile. */
+export const peerTargetKey = (route: Pick<ProfileRoute, 'connectionId' | 'targetProfile'>) =>
+  JSON.stringify([route.connectionId, route.targetProfile])
 
 function peerRequest<T>(route: ProfileRoute, method: string, params: Record<string, unknown> = {}): Promise<T> {
   return host.requestProfile<T>(route, method, { ...params, profile: route.targetProfile })
 }
 
-/** `groups.capabilities` of each connection the given Bots run on, while `active`: undefined while
- *  it is read, then that gateway's `peerTargetState`. Read again each time `active` turns on. */
+/** `groups.capabilities` of each connection and profile the given Bots run as, while `active` (keyed
+ *  by `peerTargetKey`): undefined while it is read, then that gateway's `peerTargetState`. Read again
+ *  each time `active` turns on. */
 export function usePeerTargets(bots: Partial<RosterRow>[], home: null | string, active: boolean, attempt = 0): ReadonlyMap<string, PeerTargetState> {
   const routes = new Map<string, ProfileRoute>()
 
   for (const bot of bots) {
     const route = peerRoute(bot, home)
 
-    if (route && !routes.has(route.connectionId)) {routes.set(route.connectionId, route)}
+    if (route && !routes.has(peerTargetKey(route))) {routes.set(peerTargetKey(route), route)}
   }
 
   const epoch = useGatewayActivationEpoch()
@@ -110,10 +113,10 @@ export function usePeerTargets(bots: Partial<RosterRow>[], home: null | string, 
 
     for (const [connectionId, mode, profile, targetProfile] of JSON.parse(key) as [string, 'local' | 'remote', string, string][]) {
       void peerRequest<unknown>({ connectionId, mode, profile, targetProfile }, 'groups.capabilities')
-        .then(peerTargetState, () => ({ ready: false, reason: 'unreachable' }) as const)
+        .then(value => peerTargetState(value, targetProfile), () => ({ ready: false, reason: 'unreachable' }) as const)
         .then(state => {
           if (cancelled) {return}
-          states.set(connectionId, state)
+          states.set(peerTargetKey({ connectionId, targetProfile }), state)
           setRead({ key, epoch, states: new Map(states) })
         })
     }
@@ -127,10 +130,11 @@ export function usePeerTargets(bots: Partial<RosterRow>[], home: null | string, 
 /** Fresh lender checks immediately before creating a room. */
 export async function readPeerTargets(bots: RosterRow[], home: string): Promise<ReadonlyMap<string, PeerTargetState>> {
   const routes = new Map(bots.map(bot => peerRoute(bot, home)).filter((route): route is ProfileRoute => route !== null)
-    .map(route => [route.connectionId, route]))
+    .map(route => [peerTargetKey(route), route]))
 
   return new Map(await Promise.all([...routes].map(async ([id, route]) => [id,
-    await peerRequest(route, 'groups.capabilities').then(peerTargetState, () => ({ ready: false, reason: 'unreachable' }) as const)
+    await peerRequest(route, 'groups.capabilities').then(value => peerTargetState(value, route.targetProfile),
+      () => ({ ready: false, reason: 'unreachable' }) as const)
   ] as const)))
 }
 
@@ -153,7 +157,7 @@ export class PeerJoinError extends Error {
   }
 }
 
-interface PinnedPeer { kind: 'peer'; installation_id: string; capability_digest: string }
+interface PinnedPeer { kind: 'peer'; installation_id: string; capability_digest: string; profile: string }
 type RoomAuthority = Pick<CanonicalRoom, 'room_id' | 'authority_gateway_id' | 'authority_epoch'>
 export interface PeerSeat { member: CanonicalRoomMember; route: ProfileRoute; renewal: boolean; alreadyJoined?: boolean }
 
@@ -254,7 +258,7 @@ export async function createGroupAcrossConnections(
 
   const checked = canonicalGroupRoster(route, members, member => {
     const own = peerRoute(member, route.connectionId)
-    const target = own && targets.get(own.connectionId)
+    const target = own && targets.get(peerTargetKey(own))
 
     if (!own || !target?.ready) {return undefined}
     seats.set(member, { route: own, renewal: target.renewal })
@@ -309,7 +313,7 @@ function routeTo(installation: string, digest: string, routes: ProfileRoute[]) {
     if (!left) {resolve(null)}
 
     for (const route of routes) {
-      void peerRequest<unknown>(route, 'groups.capabilities').then(peerTargetState, () => null).then(state => {
+      void peerRequest<unknown>(route, 'groups.capabilities').then(value => peerTargetState(value, route.targetProfile), () => null).then(state => {
         const rank = routeRank(state, installation, digest)
 
         if (state && rank > (best?.rank ?? 0)) {best = { route, state, rank }}
@@ -333,7 +337,8 @@ export async function findPeerSeat(home: CanonicalGroupRoute, member: CanonicalR
   for (const bot of roster) {
     const route = peerRoute(bot, home.connectionId)
 
-    if (route && !routes.has(route.connectionId)) {routes.set(route.connectionId, route)}
+    // Only a route to the profile the room pinned can answer for this member.
+    if (route && route.targetProfile === pin?.profile && !routes.has(route.connectionId)) {routes.set(route.connectionId, route)}
   }
 
   const found = pin && await routeTo(pin.installation_id, pin.capability_digest, [...routes.values()])

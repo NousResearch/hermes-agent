@@ -27,7 +27,7 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   botOnConnection,
   connectionName,
-  groupNeedsDesktopCourier,
+  groupDrivenByDesktop,
   seatableGroupBots,
   useGroupCapability
 } from './canonical-group-capabilities'
@@ -83,15 +83,15 @@ async function commitGroupChatRoster(group: string, previous: RosterRow[], seate
   // Watermarks are `<thread>::<memberKey>` (group-round-members); the member
   // key may itself carry a `::`, so split at the first one only.
   const watermarkMember = (key: string) => (key.includes('::') ? key.slice(key.indexOf('::') + 2) : key)
-  // A room that spans machines on either side of this edit is Desktop-driven
-  // for good: dropping its last remote member must not hand it to a gateway
-  // (older records carry no engine field until their first edit).
+  // An existing Desktop-driven room stays Desktop-driven through the edit, so
+  // dropping its last remote member never hands it to the migration gate (older
+  // records carry no engine field until their first edit). No edit ever makes a
+  // room Desktop-driven that was not already.
   const connectionId = host.state.connectionId.get()
-  const desktopDriven = groupNeedsDesktopCourier(previous, connectionId) || groupNeedsDesktopCourier(seated, connectionId)
 
   updateGroupChat(group, (room: GroupChatRoom) => ({
     ...room,
-    ...stickyGroupEngine(room, desktopDriven ? { engine: 'desktop' } : undefined),
+    ...stickyGroupEngine(room, groupDrivenByDesktop(room, previous, connectionId) ? { engine: 'desktop' } : undefined),
     members: durableGroupChatMembers(seated),
     heldMessages: without(room.heldMessages, key => key),
     holds: without(room.holds, key => key),

@@ -125,7 +125,7 @@ class TestLeanSingleAuxiliaryCall:
         ) as mock_call:
             c._generate_summary(turns)
         assert mock_call.call_count == 1
-        prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+        prompt = "\n".join(m["content"] for m in mock_call.call_args.kwargs["messages"])
         # Bounded input with explicit elision markers, not a second request.
         assert len(prompt) <= c._SUMMARY_INPUT_MAX_CHARS + 20_000
         assert "chars elided" in prompt
@@ -159,7 +159,7 @@ class TestSampledSummaryInput:
         ) as mock_call:
             c._generate_summary(turns)
         assert mock_call.call_count == 1
-        prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+        prompt = "\n".join(m["content"] for m in mock_call.call_args.kwargs["messages"])
         assert "summary input truncated" in prompt
 
 

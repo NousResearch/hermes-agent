@@ -63,6 +63,11 @@ class NormalizedResponse:
 
     Response-level ``provider_data``: Anthropic ``{"reasoning_details": [...]}``,
     Codex ``{"codex_reasoning_items": [...], "codex_message_items": [...]}``, else ``None``.
+
+    ``row_token_count`` is THIS response's own provider-reported completion figure for the
+    transcript row built from it (``None`` = no usage reported/unknown, ``0`` = a reported
+    zero). ``normalize_response_for_agent`` fills it; the transports leave it unset because
+    ``usage`` is not populated uniformly across wires.
     """
 
     content: str | None
@@ -71,6 +76,7 @@ class NormalizedResponse:
     reasoning: str | None = None
     usage: Usage | None = None
     provider_data: dict[str, Any] | None = field(default=None, repr=False)
+    row_token_count: int | None = None
 
     # Back-compat accessors so NormalizedResponse passes through where the old
     # _nr_to_assistant_message() shim mapped these from provider_data.

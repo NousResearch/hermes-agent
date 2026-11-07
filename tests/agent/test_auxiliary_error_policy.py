@@ -515,6 +515,33 @@ def test_pinned_custom_provider_entitlement_benches_only_the_model():
         assert [_try_openrouter(model=m)[0] is None for m in ("gpt-ok", "gpt-gated")] == [False, True]
 
 
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+def test_a_key_cooled_down_for_the_model_is_not_peeked_after_a_sibling_selected_it(monkeypatch, is_async):
+    """k0 is refused for gpt-gated and still current after serving gpt-ok: a gpt-gated aux call peeks k1 and sends
+    its one request with k1."""
+    from agent import auxiliary_client as aux
+
+    keys = [Key("openrouter", "k0", "k0", "api_key", 0, "manual", "cooled-key",
+                model_cooldowns={"openai/gpt-gated": 9e9}),
+            Key("openrouter", "k1", "k1", "api_key", 1, "manual", "eligible-key")]
+    pool = CredentialPool("openrouter", keys)
+    assert pool.select(model="openai/gpt-ok").id == "k0"
+    assert [pool.peek(model="openai/gpt-gated").id, aux._peek_pool_entry("openrouter", pool, "gpt-gated").id,
+            pool.peek().id] == ["k1", "k1", "k0"]
+    sent, ok = [], {"id": "x", "object": "chat.completion", "created": 0, "model": "m", "choices": [
+        {"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}]}
+    transport = httpx.MockTransport(lambda r: sent.append(r.headers["authorization"]) or httpx.Response(200, json=ok))
+    monkeypatch.setattr(aux, "_client_cache", {})
+    with (patch("agent.auxiliary_client.load_pool", lambda _p: pool),
+          patch("agent.auxiliary_client._openai_http_client_kwargs", lambda _url, async_mode=False: {
+              "http_client": (httpx.AsyncClient if async_mode else httpx.Client)(transport=transport)}),
+          patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task, **_kw: resp)):
+        call = (async_call_llm if is_async else call_llm)(provider="openrouter", model="openai/gpt-gated",
+                                                          messages=_MESSAGES)
+        asyncio.run(call) if is_async else call
+    assert sent == ["Bearer eligible-key"]
+
+
 def test_model_entitlement_cooldown_keeps_the_key_for_its_other_models():
     """A ChatGPT account refused one Codex model (#71970), or an Anthropic key one Claude model, still serves aux
     calls on its other models."""

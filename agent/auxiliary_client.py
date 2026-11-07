@@ -1046,13 +1046,16 @@ def _peek_pool_entry(provider: str, pool: Any = None, model: Optional[str] = Non
     if pool is None:
         return None
     try:
+        peek_fn = getattr(pool, "peek", None)
+        if model and callable(peek_fn):  # the pool checks its current entry against the model's cooldowns
+            with contextlib.suppress(TypeError):  # a pool whose peek takes no model: current, then peek
+                return peek_fn(model=_normalize_resolved_model(model, provider))
         current_fn = getattr(pool, "current", None)
         current = current_fn() if callable(current_fn) else None
         if current is not None:
             return current
-        peek_fn = getattr(pool, "peek", None)
         if callable(peek_fn):
-            return peek_fn(model=_normalize_resolved_model(model, provider)) if model else peek_fn()
+            return peek_fn()
     except Exception as exc:
         logger.debug("Auxiliary client: could not peek pool entry for %s: %s", provider, exc)
     return None

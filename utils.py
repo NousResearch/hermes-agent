@@ -14,7 +14,7 @@ import threading
 import time
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, Union
+from typing import Any, Callable, Union
 from urllib.parse import urlparse
 
 import hermes_yaml as yaml
@@ -615,6 +615,25 @@ def _rt_value(value: Any) -> Any:
     return value
 
 
+def _seq_survivors(old: list, new: list, same: Callable[[Any, Any], bool]) -> list[tuple[int, int]]:
+    """Longest order-preserving ``(old_index, new_index)`` pairing of entries that are ``same``."""
+    longest = [[0] * (len(new) + 1) for _ in range(len(old) + 1)]
+    for i in reversed(range(len(old))):
+        for j in reversed(range(len(new))):
+            longest[i][j] = (longest[i + 1][j + 1] + 1 if same(old[i], new[j])
+                             else max(longest[i + 1][j], longest[i][j + 1]))
+    pairs, i, j = [], 0, 0
+    while i < len(old) and j < len(new):
+        if same(old[i], new[j]):
+            pairs.append((i, j))
+            i, j = i + 1, j + 1
+        elif longest[i + 1][j] >= longest[i][j + 1]:
+            i += 1
+        else:
+            j += 1
+    return pairs
+
+
 def atomic_roundtrip_yaml_save(path: str | Path, new_state: dict, *,
                                extra_content_on_create: str | None = None) -> None:
     """Persist a full config-state dict while preserving comments and ordering.
@@ -641,17 +660,34 @@ def atomic_roundtrip_yaml_save(path: str | Path, new_state: dict, *,
     yaml_rt, existing = _roundtrip_load(path)
 
     def _unchanged(current: Any, value: Any) -> bool:
-        # ``True == 1`` in Python; a bool↔int flip is a real change for YAML readers.
-        return current == value and isinstance(current, bool) is isinstance(value, bool)
+        if isinstance(current, dict) and isinstance(value, dict):
+            return current.keys() == value.keys() and all(
+                _unchanged(current[key], item) for key, item in value.items()
+            )
+        if isinstance(current, list) and isinstance(value, list):
+            return len(current) == len(value) and all(
+                _unchanged(old, new) for old, new in zip(current, value)
+            )
+        # Python equates True, 1 and 1.0; YAML readers distinguish their scalar kinds.
+        return current == value and all(
+            isinstance(current, kind) is isinstance(value, kind) for kind in (bool, int, float)
+        )
 
     def _merge_seq(dst: CommentedSeq, src: list) -> None:
-        # Element-wise so appending/editing one entry keeps the comments on its siblings.
-        for i, value in enumerate(src):
-            if i < len(dst):
-                _merge_item(dst, i, value)
-            else:
-                dst.append(_rt_value(value))
-        del dst[len(src):]
+        # An entry on both sides keeps its own node, so a removal or insertion cannot hand one
+        # entry's comment to a neighbour. Only the gaps between survivors merge by position, which
+        # is what keeps the comments on an entry edited in place. Walks backwards because del and
+        # insert renumber the entries after them, and those are already done.
+        old_end, new_end = len(dst), len(src)
+        for old_at, new_at in reversed([(-1, -1), *_seq_survivors(dst, src, _unchanged)]):
+            at, new_start = old_at + 1, new_at + 1
+            paired = min(old_end - at, new_end - new_start)
+            for offset in range(paired):
+                _merge_item(dst, at + offset, src[new_start + offset])
+            del dst[at + paired:old_end]
+            for offset, value in enumerate(src[new_start + paired:new_end]):
+                dst.insert(at + paired + offset, _rt_value(value))
+            old_end, new_end = old_at, new_at
 
     def _merge_item(dst, key, value) -> None:
         current = dst[key]

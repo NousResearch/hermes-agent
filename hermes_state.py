@@ -1046,49 +1046,14 @@ class SessionDB(
             # raising a sticky DeletedWalGenerationError that permanently refuses
             # later writes (#105567). Inside the lock the probe only ever sees the
             # stable post-close state (identity cleared → adopt / reopen path).
-            fn_started = False
-            commit_attempted = False
-            commit_completed = False
-            rollback_succeeded = False
-            transaction_active_before_rollback = False
+            from hermes_state_transactions import WriteAttempt, retry_locked_write
+            attempt = WriteAttempt(token_batch_receipt)
             try:
                 with self._lock:
                     self._raise_if_db_replaced()
                     if self._conn is None:  # close() raced this writer
                         self._reopen_after_close_locked(context="write")
-                    self._conn.execute("BEGIN IMMEDIATE")
-                    try:
-                        fn_started = True
-                        if token_batch_receipt is not None:
-                            token_batch_receipt.transaction_started()
-                        result = fn(self._conn)
-                        commit_attempted = True
-                        self._conn.commit()
-                        commit_completed = True
-                        if token_batch_receipt is not None:
-                            token_batch_receipt.transaction_committed()
-                    except BaseException as write_error:
-                        try:
-                            transaction_active_before_rollback = bool(self._conn.in_transaction)
-                        except BaseException:
-                            transaction_active_before_rollback = False
-                        try:
-                            self._conn.rollback()
-                            rollback_succeeded = not self._conn.in_transaction
-                        except BaseException:
-                            pass
-                        if token_batch_receipt is not None:
-                            code = getattr(write_error, "sqlite_errorcode", None)
-                            commit_rollback_proven = (
-                                commit_attempted and transaction_active_before_rollback
-                                and rollback_succeeded and isinstance(code, int)
-                                and (code & 0xFF) in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED))
-                            token_batch_receipt.transaction_rolled_back(
-                                commit_attempted=commit_attempted,
-                                transaction_active=transaction_active_before_rollback,
-                                rollback_succeeded=rollback_succeeded,
-                                commit_rollback_proven=commit_rollback_proven)
-                        raise
+                    result = attempt.execute(self._conn, fn)
                 # Success — periodic best-effort checkpoint + FTS merge.
                 self._write_count += 1
                 if self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0:
@@ -1115,16 +1080,7 @@ class SessionDB(
             except sqlite3.Error as exc:
                 # 'no more rows' is a transient engine error on contended WAL appends (some builds
                 # raise it as InterfaceError, a sibling of DatabaseError): retry like locked/busy.
-                code = getattr(exc, "sqlite_errorcode", None)
-                commit_rollback_proven = (
-                    commit_attempted and transaction_active_before_rollback
-                    and rollback_succeeded and isinstance(code, int)
-                    and (code & 0xFF) in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED))
-                transaction_retry_safe = (
-                    not commit_completed
-                    and (not fn_started or (
-                        rollback_succeeded and transaction_active_before_rollback
-                        and (not commit_attempted or commit_rollback_proven))))
+                transaction_retry_safe = attempt.retry_safe(exc)
                 if _is_no_more_rows(exc):
                     if transaction_retry_safe and self._sleep_before_write_retry(deadline, patience_s):
                         continue
@@ -1134,26 +1090,11 @@ class SessionDB(
                 err_msg = str(exc).lower()
                 if isinstance(exc, sqlite3.OperationalError):
                     if is_sqlite_lock_error(exc):
-                        if not transaction_retry_safe:
-                            raise
-                        if self._sleep_before_write_retry(deadline, patience_s):
+                        if retry_locked_write(self, exc, transaction_retry_safe, deadline, patience_s,
+                                              token_batch_receipt, log_write_lock_holders):
                             continue
-                        # Say what actually happened, not disk/permission damage. The holder goes to
-                        # the log, not the message: classify_persistence_error() buckets by phrase and
-                        # a holder's argv (a worktree named fix-corrupt-db) would flip the bucket.
-                        log_write_lock_holders(self.db_path, patience_s)
-                        lock_error = sqlite3.OperationalError(
-                            f"database is locked (another Hermes process held the "
-                            f"state.db write lock for over {patience_s:.0f}s — "
-                            "likely a long maintenance operation such as VACUUM, "
-                            "a large WAL checkpoint, or an older pre-update "
-                            "process; the database itself is healthy)"
-                        )
-                        if token_batch_receipt is not None:
-                            token_batch_receipt.retryable_lock_timeout(lock_error)
-                        raise lock_error from exc
                     if (
-                        _DISK_IO_ERROR_MARKER in err_msg and not fn_started and not ioerr_begin_retried
+                        _DISK_IO_ERROR_MARKER in err_msg and not attempt.fn_started and not ioerr_begin_retried
                         and self._sleep_before_write_retry(deadline, patience_s)
                     ):
                         # Retry on the SAME connection: close()+reopen would cancel this process's

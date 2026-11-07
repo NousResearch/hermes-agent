@@ -446,3 +446,63 @@ def test_failed_transaction_state_probe_keeps_original_error_and_uncertainty(del
         sibling.execute("ROLLBACK")
         sibling.close()
         db._conn = inner
+
+
+@pytest.mark.parametrize("interrupt", [KeyboardInterrupt, SystemExit])
+@pytest.mark.parametrize("point", ["rollback", "before_probe", "after_probe"])
+def test_commit_busy_cleanup_interrupt_propagates_and_quarantines(delete_database, monkeypatch, interrupt, point):
+    db = delete_database
+    for sid in ("current", "suffix"):
+        db.create_session(sid, "cli")
+    db._conn.execute("PRAGMA busy_timeout=0")
+    db._TRANSCRIPT_WRITE_PATIENCE_S = 0
+    monkeypatch.setattr(db, "_token_writer_loop", lambda: None)
+    for sid, tokens in (("current", 3), ("suffix", 7)):
+        db.queue_token_counts(sid, input_tokens=tokens)
+        db._token_writer_thread.join(5)
+    sibling = sqlite3.connect(db.db_path, timeout=0, isolation_level=None)
+    sibling.execute("BEGIN")
+    sibling.execute("SELECT * FROM sessions").fetchall()
+    inner = db._conn
+    commit_errors, probes = [], []
+
+    class InterruptedCleanup:
+        def __getattr__(self, name):
+            return getattr(inner, name)
+
+        @property
+        def in_transaction(self):
+            probes.append(True)
+            if point == ("before_probe" if len(probes) == 1 else "after_probe"):
+                raise interrupt("cleanup interrupted")
+            return inner.in_transaction
+
+        def commit(self):
+            try:
+                return inner.commit()
+            except sqlite3.OperationalError as exc:
+                commit_errors.append(exc.sqlite_errorcode)
+                raise
+
+        def rollback(self):
+            if point == "rollback":
+                raise interrupt("cleanup interrupted")
+            return inner.rollback()
+
+    db._conn = InterruptedCleanup()
+    try:
+        with pytest.raises(interrupt, match="cleanup interrupted"):
+            db.flush_token_counts()
+        assert commit_errors == [sqlite3.SQLITE_BUSY]
+        assert [sid for sid, _ in db._token_writer_uncertain] == ["current"]
+        assert [sid for sid, _ in db._token_queue] == ["suffix"]
+        assert db._token_pending_marker is not None
+        assert db.flush_token_counts() is False
+        with pytest.raises(TimeoutError):
+            db.close()
+        assert commit_errors == [sqlite3.SQLITE_BUSY]
+    finally:
+        sibling.execute("ROLLBACK")
+        sibling.close()
+        inner.rollback()
+        db._conn = inner

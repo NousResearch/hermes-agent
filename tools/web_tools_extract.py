@@ -15,7 +15,9 @@ from typing import Any, Dict, List, Optional
 
 from tools.tool_backend_helpers import selection_error, selection_exists
 from tools.url_safety import normalize_url_for_request
-from tools.web_tools_rescue import _rescue_eligible, _rescue_extract
+from tools.web_tools_rescue import (
+    _backstop_eligible, _backstop_extract, _policy_blocked_result, _rescue_eligible, _rescue_extract,
+)
 
 logger = logging.getLogger("tools.web_tools")
 
@@ -159,7 +161,9 @@ async def _fetch_with_rescue(provider, fetch_urls: list[str], format: Optional[s
 
     Rescue fires on a raised exception — including a dispatch timeout — or when the WHOLE batch
     failed (backend outage, not per-page problems): an origin HTTP 4xx/5xx is the page's own answer,
-    so a batch with one never triggers it. Returns ``(results, rescued)``.
+    so a batch with one never triggers it. Returns ``(results, rescued)``. The mirror case — the
+    batch rode the keyless ring and every vendor throttled — gets a one-shot keyed backstop instead,
+    which returns ``rescued=False`` (cacheable: the answer came from the configured backend's own key).
     """
     import inspect
     timeout = _extract_timeout_seconds()
@@ -185,8 +189,15 @@ async def _fetch_with_rescue(provider, fetch_urls: list[str], format: Optional[s
             raise
         failed = [_result_entry(u, str(exc)) for u in fetch_urls]
         return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, failed), True
-    if _backend_failed_whole_batch(results) and _rescue_eligible(provider):
-        return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, results), True
+    if _backend_failed_whole_batch(results):
+        if _rescue_eligible(provider):
+            return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, results), True
+        # Policy blocks are intentional refusals and are never backstopped.
+        from plugins.web.keyless_mcp import extract_ring_exhausted
+        if not any(_policy_blocked_result(r) for r in results) and _backstop_eligible(
+            provider, "", exhausted=extract_ring_exhausted(results)
+        ):
+            results = await asyncio.to_thread(_backstop_extract, provider, fetch_urls, results)
     return results, False
 
 
@@ -228,8 +239,8 @@ async def _gate_final_urls(results: list[dict], requested: set[str]) -> list[dic
 
 
 async def _dispatch_extract(provider, fetch_urls: list[str], format: Optional[str]) -> list[dict]:
-    """Fetch *fetch_urls* (with keyless rescue), re-gate redirect targets, then cache the passes.
-    Rescued batches are never cached."""
+    """Fetch *fetch_urls* (with keyless rescue / keyed backstop), re-gate redirect targets, then
+    cache the passes. Rescued batches are never cached; backstopped ones are."""
     from tools.web_result_cache import extract_cache_put, extract_cache_record_final_url
     results, rescued = await _fetch_with_rescue(provider, fetch_urls, format)
     requested = set(fetch_urls)

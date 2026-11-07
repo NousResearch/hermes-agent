@@ -160,6 +160,7 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
   const {
     activeGatewayProfile,
     activeSessionIdRef,
+    flushQueuedDeltas,
     hydrateFromStoredSession,
     lastCwdInfoSessionRef,
     queryClient,
@@ -356,6 +357,17 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
       // terminal message arrived. Drives the sidebar refresh; the hydrate
       // below stays gated on recoveredIncompleteTurn.
       let endedLiveTurn = false
+
+      // A running=false that ends a live turn is the last settle edge before
+      // the turn's queued deltas would flush on their timer. With no live turn
+      // left, that flush would seed a fresh bubble the settle already passed
+      // over — none of the settle-time finalizers can reach it, and every
+      // merge skips `pending` rows, so it strands as a ghost. Drain the queue
+      // into the turn's own bubble first; `finalizeInterruptedMessages` below
+      // then settles the text the user already watched.
+      if (!payload!.running && knownState && (knownState.turnLive || knownState.busy || knownState.awaitingResponse)) {
+        flushQueuedDeltas(sessionId)
+      }
 
       const nextState = updateSessionState(
         sessionId,

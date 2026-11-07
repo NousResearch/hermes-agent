@@ -197,6 +197,8 @@ lacks reads as unset: the caller's environment is never used. An exception (`Sys
 create/rename request on every surface, so do network work on a background thread. Under
 `plugins.isolation: host`, a plugin host started only for the hook is stopped when it returns.
 
+The per-turn hooks (`on_turn_start`, `prefetch`, `queue_prefetch`, `sync_turn`) run only for user-originated turns: a turn the host typed with a display kind when it arrived (a notice, a task result, a hidden prompt) is skipped. `on_session_end` and `on_pre_compress` receive the transcript as before.
+
 For native `replace` and `remove`, `metadata["previous_content"]` contains the full
 entry selected under the native-store lock. Notifications are emitted only after
 the complete write or batch succeeds. Batch notifications preserve operation order;

@@ -1458,8 +1458,9 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, db=No
     await asyncio.to_thread(settle_recovered_unattended, db, epoch)
     await asyncio.to_thread(backfill_legacy_session_owners, db)
     await asyncio.to_thread(backfill_compression_created_sources, db)
-    from gateway.session_local_recovery import release_handed_off_receipts
+    from gateway.session_local_recovery import release_handed_off_receipts, release_orphaned_receipts
     await asyncio.to_thread(release_handed_off_receipts, db, epoch=epoch)
+    await asyncio.to_thread(release_orphaned_receipts, db, epoch=epoch)
     from gateway.session_bot import release_superseded_bot_chat_at_boot
     await asyncio.to_thread(release_superseded_bot_chat_at_boot, db, runner.session_store)
     authority = SessionAuthority(runner, profile_id=profile_id, instance_id=instance_id, db=db, epoch=epoch)

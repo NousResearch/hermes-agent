@@ -101,7 +101,9 @@ def _kanban_dispatch_allowed() -> bool:
     """False while the global emergency stop (`hermes pause`) is engaged.
 
     Checked every tick before spawning, so a pause applies on the next tick;
-    in-flight workers are never touched. Fails open if estop is unimportable.
+    in-flight workers are never touched (a worker that dies while paused is
+    still released by ``_KanbanDispatcher.paused_reclaim``). Fails open if
+    estop is unimportable.
     """
     try:
         from agent.estop import check_paused

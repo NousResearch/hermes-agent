@@ -140,9 +140,8 @@ BEHAVIOUR = [
                                     metadata={"raw": "rate-limited upstream", "provider_name": "DeepInfra"}),
      "openrouter", dict(attempts=1, fell_back=True, rotated=False)),
     # An upstream's quota wording does not bench the healthy OpenRouter key's provider.
-    ("openrouter-upstream-quota", openai.APIError("Provider returned error", _REQ, body={"error": {
-        "message": "Provider returned error", "code": 429,
-        "metadata": {"raw": '{"error": {"message": "Quota exceeded for this model"}}', "provider_name": "DeepInfra"}}}),
+    ("openrouter-upstream-quota", sdk(429, "Provider returned error", wrapped=True, code=429, metadata={
+        "raw": '{"error": {"message": "Quota exceeded for this model"}}', "provider_name": "DeepInfra"}),
      "openrouter", dict(fell_back=True, unhealthy=False, rotated=False)),
     # A safety refusal is of the content itself: it is never resent to another provider.
     ("gemini-prompt-blocked", _gemini_prompt_block(), "gemini", dict(attempts=1, fell_back=False)),
@@ -293,13 +292,6 @@ def test_plugin_hook_overrides_win_over_aux_defaults(monkeypatch, hook, expected
     monkeypatch.setattr(plugins, "get_plugin_error_classification", lambda **kw: hook)
     outcome = run_ladder(sdk(400, "plugin-owned failure"))
     assert (outcome.attempts, outcome.fell_back) == expected
-
-
-@pytest.mark.parametrize("retry_outcome", [ConnectionError("Connection refused"), TimeoutError("timed out")])
-def test_failure_after_a_401_refresh_does_not_bench_the_refreshed_key(retry_outcome):
-    outcome = run_ladder([sdk(401, "invalid api key"), retry_outcome, retry_outcome])
-    assert outcome.refreshed == ["openrouter"]
-    assert (outcome.rotated, outcome.fell_back) == (False, True)
 
 
 @pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
@@ -494,6 +486,16 @@ def _candidate_outcome(first, refreshed):
         except Exception as exc:  # the outcome under test
             raised = type(exc)
     return raised, [(k["reason"], k["ttl"]) for k in marks]
+
+
+@pytest.mark.parametrize("retry_outcome,mark", [(ConnectionError("Connection refused"), ("connection error", 60)),
+                                                (TimeoutError("timed out"), ("request timed out", None))])
+def test_failure_after_a_candidates_401_refresh_does_not_bench_the_refreshed_key(retry_outcome, mark):
+    """401, refresh, then a transport failure: the candidate is held for that failure, not as a stale credential."""
+    stale = _wire(lambda r: httpx.Response(401, json={"error": {"message": "bad key"}}, request=r), key="sk-old")
+    refreshed = MagicMock(base_url="https://openrouter.ai/api/v1", api_key="sk-fresh")
+    refreshed.chat.completions.create.side_effect = retry_outcome
+    assert _candidate_outcome(stale, refreshed)[1] == [mark]
 
 
 @pytest.mark.parametrize("body", [b"null", b'{"success": false, "data": {"error": {"message": "crashed"}}}'])

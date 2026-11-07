@@ -718,6 +718,8 @@ include = [
   "providers.*",
   "hermes_platform",
   "hermes_platform.*",
+  "hermes_agent",
+  "hermes_agent.*",
   "pm",
   "pm.*",
   "tools",

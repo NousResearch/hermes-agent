@@ -57,7 +57,9 @@ def install_cua_driver(*args, **kwargs) -> NoReturn:
 # Platforms already warned about an all-invalid platform_toolsets list (warn once, not per resolution).
 _warned_invalid_platform_toolsets: set[str] = set()
 
-PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+from hermes_cli._startup_fast import project_root_str
+
+PROJECT_ROOT = Path(project_root_str())
 
 # Platform display config derived from the canonical registry (dict-of-dicts for ``PLATFORMS[key]["label"]``).
 PLATFORMS = {k: {"label": info.label, "default_toolset": info.default_toolset} for k, info in _PLATFORMS_REGISTRY.items()}

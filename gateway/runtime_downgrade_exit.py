@@ -23,13 +23,14 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
+from hermes_cli._startup_fast import project_root_str
 from hermes_cli.update_downgrade_guard import STATE_MODULES, defines_runtime
 
 logger = logging.getLogger(__name__)
 
 POLL_S = 30.0
 _CONFIRMATIONS = 2
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_PROJECT_ROOT = Path(project_root_str())
 
 
 def tree_predates_runtime(root: Path = _PROJECT_ROOT) -> bool:

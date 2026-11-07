@@ -1070,12 +1070,16 @@ _canon_args_cache_bytes = 0
 
 def _canonicalize_tool_call_arguments(arg_str: str) -> str:
     """Canonical wire form of a tool-call arguments JSON string; raises on malformed input
-    (the caller falls back to ``_repair_tool_call_arguments``)."""
+    (the caller falls back to ``_repair_tool_call_arguments``). Non-ASCII stays literal:
+    ``\\uXXXX`` escapes would replay every CJK/emoji argument at several times its token
+    cost and diverge from the bytes the model generated."""
     global _canon_args_cache_bytes
     cached = _CANON_ARGS_CACHE.get(arg_str)
     if cached is not None:
         return cached
-    canonical = json.dumps(json.loads(arg_str), separators=(",", ":"), sort_keys=True)
+    canonical = json.dumps(
+        json.loads(arg_str), separators=(",", ":"), sort_keys=True, ensure_ascii=False,
+    )
     _CANON_ARGS_CACHE[arg_str] = canonical
     _canon_args_cache_bytes += len(arg_str) + len(canonical)
     while len(_CANON_ARGS_CACHE) > _CANON_ARGS_CACHE_MAX or (

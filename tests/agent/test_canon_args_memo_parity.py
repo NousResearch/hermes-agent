@@ -92,7 +92,8 @@ def build_history(n_tool_calls, arg_bytes=2048):
 
 
 def canonicalize_pass_OLD(api_messages):
-    """Byte-exact reference of the pre-fix inline loop."""
+    """Byte-exact reference of the pre-fix (unmemoized) inline loop, in the current
+    canonical form (non-ASCII kept literal)."""
     for am in api_messages:
         tcs = am.get("tool_calls")
         if not tcs:
@@ -106,7 +107,7 @@ def canonicalize_pass_OLD(api_messages):
                         **tc["function"],
                         "arguments": json.dumps(
                             args_obj, separators=(",", ":"),
-                            sort_keys=True,
+                            sort_keys=True, ensure_ascii=False,
                         ),
                     }}
                 except Exception:
@@ -169,11 +170,23 @@ class TestMemoSemantics:
         canon = cl._canonicalize_tool_call_arguments(raw)
         assert canon == cl._canonicalize_tool_call_arguments(raw)
         assert cl._canonicalize_tool_call_arguments(canon) == canon
-        # exact canonical form: sorted keys, tight separators, ascii-escaped
+        # exact canonical form: sorted keys, tight separators, non-ASCII literal
         assert canon == json.dumps(json.loads(raw), separators=(",", ":"),
-                                   sort_keys=True)
-        assert canon == canon.encode().decode()  # pure ASCII wire form
+                                   sort_keys=True, ensure_ascii=False)
 
+    def test_non_ascii_arguments_replay_literally(self):
+        """CJK/emoji arguments go back to the model as the characters it wrote,
+        not as \\uXXXX escapes that cost several tokens per character."""
+        raw = json.dumps({"path": "notes.md", "content": UNI})  # ascii-escaped input
+        msgs = [{"role": "assistant", "content": "",
+                 "tool_calls": [{"id": "c1", "type": "function",
+                                 "function": {"name": "write_file",
+                                              "arguments": raw}}]}]
+        cl._canonicalize_api_tool_calls(msgs)
+        sent = msgs[0]["tool_calls"][0]["function"]["arguments"]
+        assert UNI in sent
+        assert "\\u" not in sent
+        assert json.loads(sent) == json.loads(raw)
 
     def test_malformed_never_memoized(self):
         with pytest.raises(Exception):

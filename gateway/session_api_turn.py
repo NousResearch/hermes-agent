@@ -194,18 +194,23 @@ def admit_api_steps(adapter, **kwargs):
     request_id = kwargs.get('request_id') or kwargs.get('active_run_id') or uuid.uuid4().hex
     if not isinstance(kwargs['user_message'], list):
         return (yield from _admit_api_payload(authority, adapter, sid, request_id, payload, settings, declared_key, kwargs))
-    from gateway.session_api_media import commit_api_images
+    from gateway.session_api_media import api_image_retry_payload, commit_api_images
     from gateway.session_ingress_media import capture_lease, drop_capture_lease, release_unheld_media
+    retry_payload = api_image_retry_payload(authority.db, epoch=authority.epoch,
+        session_id=sid, request_id=request_id, payload=payload, client_key=bool(kwargs.get('request_id')))
+    replay_only = retry_payload is not payload
+    payload = retry_payload
     # Content-addressed bytes another admission may name are held from capture until this one
     # commits or is refused: a concurrent release would otherwise unlink them in between.
     with capture_lease():
-        payload['api_turn_v1']['media'] = commit_api_images(kwargs['user_message'])
+        payload['api_turn_v1']['media'] = commit_api_images(kwargs['user_message'], include_aliases=not replay_only)
         # Retained bytes belong to an accepted admission. A refused request (or an exact retry of a
         # retired one, whose references were erased) owns nothing, so its bytes are collected unless
         # another admission holds them.
         release = partial(release_unheld_media, authority.db, payload['api_turn_v1']['media'])
         try:
-            admitted = yield from _admit_api_payload(authority, adapter, sid, request_id, payload, settings, declared_key, kwargs)
+            admitted = yield from _admit_api_payload(authority, adapter, sid, request_id, payload, settings,
+                                                    declared_key, kwargs, replay_only=replay_only)
         except Exception:
             drop_capture_lease()
             yield release
@@ -214,7 +219,7 @@ def admit_api_steps(adapter, **kwargs):
     return admitted
 
 
-def _admit_api_payload(authority, adapter, sid, request_id, payload, settings, declared_key, kwargs):
+def _admit_api_payload(authority, adapter, sid, request_id, payload, settings, declared_key, kwargs, *, replay_only=False):
     from hermes_state_terminal import retry_terminal_admission
     row = retry_terminal_admission(authority.db, epoch=authority.epoch, principal_id='api',
         session_id=sid, request_id=request_id, payload=payload)
@@ -229,14 +234,17 @@ def _admit_api_payload(authority, adapter, sid, request_id, payload, settings, d
                         session_id=sid, request_id=request_id, payload=payload,
                         _authorize_write=authority._admission_gate(partial(
                             _admit_target, sid, request_id, payload['api_turn_v1']['settings'],
-                            client_key=bool(kwargs.get('request_id')))))
+                            client_key=bool(kwargs.get('request_id')), replay_only=replay_only)))
     return authority, ref, row
 
 
-def _admit_target(session_id, request_id, settings, conn, *, client_key=True):
+def _admit_target(session_id, request_id, settings, conn, *, client_key=True, replay_only=False):
     """Inside the admission's own off-loop transaction: one target per request id, and the
     session's settings for its later payload-less (internal) turns, committed with the admitted
     turn rather than by the drain on the owner loop (N50)."""
+    if replay_only:
+        # A historical capture projection is retry evidence, never input for a new admission.
+        raise RuntimeStoreError('admission_conflict')
     _one_target(session_id, request_id, conn, client_key=client_key)
     conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
                  (_SETTINGS_PREFIX + session_id, _json(settings)))

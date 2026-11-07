@@ -13,6 +13,8 @@ def _data_url_bytes(url):
     """``(mime, bytes)`` for a committable ``data:image/...;base64,`` URL, else ``None``."""
     header, _, encoded = url.partition(',')
     mime = header[len('data:'):].split(';', 1)[0].strip().lower()
+    if mime == 'image/jpg':
+        mime = 'image/jpeg'
     if not url.lower().startswith('data:') or mime not in _MIME_EXT or ';base64' not in header.lower():
         return None
     try:
@@ -27,17 +29,34 @@ def _image_urls(content):
             yield (part.get('image_url') or {}).get('url', '')
 
 
-def commit_api_images(content):
+def _api_images(content, *, include_aliases=True):
+    from gateway.session_ingress_media import sniff_image_mime
+    for url in _image_urls(content):
+        if not include_aliases and _is_jpeg_alias(url):
+            continue
+        decoded = _data_url_bytes(url)
+        if decoded is not None:
+            yield sniff_image_mime(decoded[1]), decoded[1]
+
+
+def _api_image_reference(mime, data):
+    """The same immutable name for fingerprint projection and actual capture."""
+    from gateway.session_ingress_media import native_inputs_root
+    digest = hashlib.sha256(data).hexdigest()
+    name = 'api_' + digest[:32] + _MIME_EXT[mime]
+    return {'path': str(native_inputs_root() / digest / name), 'sha256': digest, 'size': len(data)}
+
+
+def commit_api_images(content, *, include_aliases=True):
     """Stage every inline ``data:`` image deterministically (same bytes -> same path, so an
     exact retry keeps its admission digest) and commit the bytes as immutable media."""
     from gateway.platforms.base import get_image_cache_dir
     from gateway.platforms.base import get_inbound_media_max_bytes
-    from gateway.session_ingress_media import capture_native_media, sniff_image_mime
+    from gateway.session_ingress_media import capture_native_media
     from hermes_state_runtime import RuntimeStoreError
     # The bytes decide the committed type: SDKs often label JPEG bytes ``data:image/png`` and
     # main forwarded those to the provider; only bytes that are no supported image are refused.
-    images = [(sniff_image_mime(decoded[1]), decoded[1])
-              for decoded in map(_data_url_bytes, _image_urls(content)) if decoded is not None]
+    images = list(_api_images(content, include_aliases=include_aliases))
     # Validate the whole batch before one byte lands on disk: a refused request must not
     # leave staged or committed bytes behind.
     limit = max(0, get_inbound_media_max_bytes())
@@ -46,7 +65,7 @@ def commit_api_images(content):
         raise RuntimeStoreError('invalid_params')
     staged = []
     for mime, data in images:
-        path = Path(get_image_cache_dir()).resolve() / ('api_' + hashlib.sha256(data).hexdigest()[:32] + _MIME_EXT[mime])
+        path = Path(get_image_cache_dir()).resolve() / Path(_api_image_reference(mime, data)['path']).name
         if not path.exists():
             temporary = path.with_name(f'{path.name}.{os.getpid()}.tmp')
             temporary.write_bytes(data)
@@ -55,16 +74,70 @@ def commit_api_images(content):
     return capture_native_media(staged)
 
 
+def _project_api_images(payload, *, include_aliases):
+    """Fingerprint candidate without publishing bytes or applying fresh-admission caps."""
+    images = list(_api_images(payload['text'], include_aliases=include_aliases))
+    if any(mime is None for mime, _ in images):
+        return None
+    data = payload['api_turn_v1']
+    media = [_api_image_reference(mime, image) for mime, image in images]
+    return {**payload, 'api_turn_v1': {**data, 'media': media}}
+
+
+def _is_jpeg_alias(url):
+    return (url.lower().startswith('data:')
+            and url.split(';', 1)[0][len('data:'):].strip().lower() == 'image/jpg')
+
+
+def api_image_retry_payload(db, *, epoch, session_id, request_id, payload, client_key):
+    """Use the old capture projection only for an exact existing live or retired identity.
+
+    The normal admission path rechecks this fingerprint and epoch. This projection must never
+    create work; the caller fences new writes and captures only the historical subset on a match.
+    """
+    import json
+    from gateway.session_api_turn import _one_target
+    from hermes_state_runtime import ADMITTED_REQUEST_CONFLICT, RuntimeStoreError, _epoch, _text, admission_fingerprint
+    from hermes_state_terminal import identity_key, terminal_admission
+    content = payload['text']
+    if not isinstance(content, list) or not any(_is_jpeg_alias(url) for url in _image_urls(content)):
+        return payload
+    _text(session_id)
+    _text(request_id)
+    with db._read_ctx() as conn:
+        _epoch(conn, epoch)
+        _one_target(session_id, request_id, conn, client_key=client_key)
+        row = conn.execute("SELECT payload_digest FROM session_admissions WHERE principal_id='api' "
+                           'AND target_session_id=? AND request_id=?', (session_id, request_id)).fetchone()
+        if row is None:
+            saved = conn.execute('SELECT value FROM state_meta WHERE key=?',
+                                 (identity_key('api', session_id, request_id),)).fetchone()
+            row = terminal_admission(conn, json.loads(saved[0])) if saved else None
+    if row is None:
+        return payload
+    for include_aliases in (False, True):
+        candidate = _project_api_images(payload, include_aliases=include_aliases)
+        if candidate is not None and row['payload_digest'] == admission_fingerprint(
+                canonical_target=session_id, payload={'input': candidate, 'intent': 'queue'}):
+            # Modern retries still take normal capture; only an exact historical digest may
+            # omit newly supported aliases. Changed requests conflict before capture can refuse.
+            return payload if include_aliases else candidate
+    raise RuntimeStoreError('admission_conflict', **ADMITTED_REQUEST_CONFLICT)
+
+
 def restore_api_images(content, media):
     """The transient content keeps its pixels; its text gains the validated committed reference
     per inline image (remote URLs keep their address) so the persisted user row records what
     was seen, exactly like native image turns."""
     from gateway.session_ingress_media import restore_native_media
-    paths = iter(restore_native_media(media))
+    # Legacy rows skipped aliases: positional consumption would steal the next image's path.
+    paths = {reference['sha256']: path for reference, path in zip(media, restore_native_media(media), strict=True)}
     hints = []
     for url in _image_urls(content):
-        if _data_url_bytes(url) is not None:
-            hints.append(f'[Image attached at: {next(paths)}]')
+        decoded = _data_url_bytes(url)
+        path = paths.get(hashlib.sha256(decoded[1]).hexdigest()) if decoded is not None else None
+        if path is not None:
+            hints.append(f'[Image attached at: {path}]')
         else:
             hints.append(f'[Image attached: {url}]')
     if not hints:
@@ -84,15 +157,16 @@ _RETAINED = 'hermes-retained:'
 
 def _compacted(content, media):
     """``content`` with every committed inline image reduced to its digest, or ``None`` when
-    nothing changes. Only bytes this admission committed are compacted (same order as capture)."""
+    nothing changes. Only bytes this admission committed are compacted, including legacy rows
+    whose unretained aliases have no corresponding media entry."""
     if not isinstance(content, list) or not media:
         return None
-    digests, parts, changed = iter(reference['sha256'] for reference in media), [], False
+    digests, parts, changed = {reference['sha256'] for reference in media}, [], False
     for part in content:
         url = (part.get('image_url') or {}).get('url', '') if isinstance(part, dict) and part.get('type') == 'image_url' else ''
         decoded = _data_url_bytes(url) if url else None
-        digest = next(digests, None) if decoded is not None else None
-        if digest is not None and hashlib.sha256(decoded[1]).hexdigest() == digest:
+        digest = hashlib.sha256(decoded[1]).hexdigest() if decoded is not None else None
+        if digest in digests:
             part = {**part, 'image_url': {**part['image_url'], 'url': _RETAINED + digest}}
             changed = True
         parts.append(part)

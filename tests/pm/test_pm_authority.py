@@ -451,3 +451,20 @@ def test_tree_digest_ignores_pycache(pm_env, monkeypatch):
     # contribute nothing in either direction.
     (tree / "Lib" / "os.py").write_text("print('stdlib')")
     assert tree_digest(tree) == before
+
+
+def test_doctor_flags_configured_features_with_missing_dependencies(pm_env, monkeypatch, capsys):
+    """PM's package audit covers only recorded packages, so a configured
+    platform whose SDK is not in this environment reads green while the
+    gateway cannot load it on restart; doctor must flag it and exit 1.
+    Regression for #146281."""
+    from pm.install import ensure
+    ensure("faketool", base_env={})  # a fully healthy PM state, so only the
+    # configured-feature check can contribute the failure
+    monkeypatch.setattr("hermes_cli.main_install_repair._configured_features_missing_deps",
+                        lambda: [("Matrix", "Run `hermes setup` to install Matrix support", "matrix")])
+    from pm.cli import cmd_doctor
+    assert cmd_doctor(None) == 1
+    out = capsys.readouterr().out
+    assert "Matrix" in out
+    assert "hermes setup" in out

@@ -605,6 +605,53 @@ async def test_reconnect_schedules_heartbeat_probe_on_success():
 # So with cancel raised on the Nth patched sleep, get_me() fires (N-1) times.
 
 
+async def _run_heartbeat_probes(adapter, probes: int) -> None:
+    """Run the heartbeat loop for exactly *probes* get_me() calls."""
+    sleep_calls = 0
+
+    async def fast_sleep(_seconds):
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls > probes:
+            raise asyncio.CancelledError()
+
+    with patch("asyncio.sleep", side_effect=fast_sleep):
+        await adapter._polling_heartbeat_loop()
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_single_failed_probe_keeps_polling():
+    """One flaky general-path probe must not interrupt a healthy getUpdates loop."""
+    adapter = _make_adapter()
+    mock_app = MagicMock()
+    mock_app.bot.get_me = AsyncMock(side_effect=[OSError("transient proxy timeout"), MagicMock()])
+    adapter._app = mock_app
+    adapter._probe_pending_updates = AsyncMock()
+    adapter._check_polling_stall = AsyncMock()
+    adapter._check_ingress_dispatch_stall = MagicMock()
+    adapter._schedule_polling_recovery = MagicMock()
+
+    await _run_heartbeat_probes(adapter, probes=2)
+
+    adapter._schedule_polling_recovery.assert_not_called()
+    assert adapter._polling_heartbeat_failure_count == 0
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_two_consecutive_failed_probes_recover_polling():
+    """A genuinely dead path still enters recovery, on the second failure in a row."""
+    adapter = _make_adapter()
+    mock_app = MagicMock()
+    mock_app.bot.get_me = AsyncMock(side_effect=OSError("proxy unavailable"))
+    adapter._app = mock_app
+    adapter._schedule_polling_recovery = MagicMock()
+
+    await _run_heartbeat_probes(adapter, probes=2)
+
+    adapter._schedule_polling_recovery.assert_called_once()
+    assert adapter._polling_heartbeat_failure_count == 0
+
+
 @pytest.mark.asyncio
 async def test_heartbeat_loop_skips_reconnect_if_already_in_progress():
     """If a reconnect task is already running, the heartbeat must not spawn another."""

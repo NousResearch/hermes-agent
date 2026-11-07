@@ -674,6 +674,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         # Consecutive heartbeat probes seeing queued updates the poller isn't consuming (get_me() can't
         # see a wedged getUpdates) / finding the updater stopped with no reconnect in flight; escalate after two.
         self._polling_pending_stuck_count = self._polling_not_running_count = 0
+        # Consecutive failed get_me() heartbeat probes. One failure on the general path can be a brief proxy
+        # or IPv6 routing wobble while getUpdates stays healthy, so recovery waits for a second one in a row.
+        self._polling_heartbeat_failure_count: int = 0
         # Degraded until getUpdates makes progress; while True, send() short-circuits to failure so callers
         # (cron live-adapter branch) fall through to standalone delivery.
         # Consecutive heartbeat probes that saw queued updates the running poller is not consuming. get_me()
@@ -2112,6 +2115,21 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         steady-state wedges the one-shot verifier can't."""
         HEARTBEAT_INTERVAL = 90   # seconds between probes
         PROBE_TIMEOUT = 15        # seconds before declaring the path dead
+        HEARTBEAT_FAILURE_THRESHOLD = 2  # consecutive failed probes before recovery
+
+        def record_probe_failure(probe_err: Exception) -> None:
+            # A single failed probe keeps the active polling generation: restarting it on one proxy
+            # hiccup interrupts a healthy getUpdates long-poll for nothing.
+            self._polling_heartbeat_failure_count += 1
+            failures = self._polling_heartbeat_failure_count
+            if failures < HEARTBEAT_FAILURE_THRESHOLD:
+                logger.warning(
+                    "[%s] Telegram heartbeat probe failed (%d/%d); keeping the active polling generation. Error: %s",
+                    self.name, failures, HEARTBEAT_FAILURE_THRESHOLD, _redact_telegram_error_text(probe_err))
+                return
+            self._polling_heartbeat_failure_count = 0
+            self._schedule_polling_recovery(probe_err, reason="heartbeat probe")
+
         # Wedged-recovery watchdog: note when a recovery task is first seen in-flight and force-escalate
         # if the *same* task object still runs past the stuck timeout.
         # Tracked locally so no _polling_error_task assignment site needs to stamp a timestamp: the
@@ -2160,6 +2178,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                 if not callable(getattr(bot, "get_me", None)):
                     return
                 await asyncio.wait_for(bot.get_me(), PROBE_TIMEOUT)
+                self._polling_heartbeat_failure_count = 0
                 # get_me() refreshes PTB's cached bot user: adopt a BotFather rename before routing on it.
                 self._bot_identity_checked_at = time.monotonic()
                 self._note_bot_username(getattr(bot, "username", None))
@@ -2181,11 +2200,13 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             except asyncio.CancelledError:
                 return
             except (TimeoutError, OSError) as probe_err:
-                self._schedule_polling_recovery(probe_err, reason="heartbeat probe")
+                record_probe_failure(probe_err)
             except Exception as probe_err:
                 # Non-connectivity errors (e.g. TelegramError 401) aren't CLOSE-WAIT symptoms.
                 if self._looks_like_network_error(probe_err):
-                    self._schedule_polling_recovery(probe_err, reason="heartbeat probe")
+                    record_probe_failure(probe_err)
+                else:
+                    self._polling_heartbeat_failure_count = 0
 
     async def _probe_pending_updates(self, bot, probe_timeout: float) -> None:
         """Detect a wedged or stopped getUpdates consumer via pending_update_count.

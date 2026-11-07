@@ -438,7 +438,9 @@ def _codex_quota_exhausted_error(retry_after: Optional[int]) -> AuthError:
         if retry_after is not None else
         "Codex provider quota exhausted (429). Credentials are still valid; "
         "retry after the usage limit resets.")
-    return _codex_err(message, CODEX_RATE_LIMITED_CODE, relogin=False)
+    error = _codex_err(message, CODEX_RATE_LIMITED_CODE, relogin=False)
+    error.retry_after = retry_after
+    return error
 
 
 def _codex_refresh_failure_error(response: httpx.Response) -> AuthError:

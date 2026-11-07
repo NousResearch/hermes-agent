@@ -183,6 +183,54 @@ def _resolution_failure_reply(exc: Exception, platform: Platform) -> tuple[str, 
     return t("gateway.errors.no_credentials"), auth_permanent, False
 
 
+def _resolution_failure_result(exc, policy, source, session_key, authority=None):
+    """Record and package a failed route without exposing pinned CLI resolver data."""
+    from agent.turn_failure_copy import stamp_failure
+    from gateway.session_worker_construct import cli_launch_route_pinned
+    try:
+        frozen, model = policy.effective(authority, secrets=False) if policy else ({}, None)
+    except Exception:  # health: allow BLE001 -- a broken profile read must still fail closed
+        frozen, model = (json.loads(policy.config_json), policy.model) if policy else ({}, None)
+    pinned_rate = False
+    pinned_transient = False
+    transient_retryable = False
+    message = ''
+    if policy and cli_launch_route_pinned(policy, frozen, model):
+        from hermes_cli.auth import AuthError, is_rate_limited_auth_error
+        from hermes_cli.auth_constants import CODEX_RATE_LIMITED_CODE
+        from hermes_cli.cli_route_diagnostics import pinned_route_message, safe_runtime_store_error
+        from hermes_cli.runtime_provider_custom import LocalRuntimeUnavailableError
+        from hermes_state_runtime import RuntimeStoreError
+        message = pinned_route_message(exc)
+        if isinstance(exc, RuntimeStoreError):
+            exc = safe_runtime_store_error(exc)
+        elif isinstance(exc, LocalRuntimeUnavailableError):
+            exc = LocalRuntimeUnavailableError(message, retryable=exc.retryable is True)
+        elif not isinstance(exc, AuthError) and (isinstance(exc, OSError) or isinstance(exc.__cause__, OSError)):
+            exc = OSError(message)
+        else:
+            cause = exc.__cause__
+            cause_rate = isinstance(cause, Exception) and is_rate_limited_auth_error(cause)
+            pinned_rate = is_rate_limited_auth_error(exc) or cause_rate
+            pinned_transient = isinstance(exc, AuthError) and exc.code in ('upstream_blocked', 'temporarily_unavailable')
+            transient_retryable = pinned_transient and getattr(exc, 'retryable', None) is not False
+            if cause_rate:
+                message = pinned_route_message(cause)
+            exc = RuntimeError(message)
+            if pinned_rate:
+                exc.__cause__ = AuthError(message, code=CODEX_RATE_LIMITED_CODE)
+        logger.warning("Pinned CLI route resolution failed: %s", message)
+    else:
+        logger.warning("Model resolution failed for session %s: %s", session_key or "", exc, exc_info=True)
+    text, reason, retryable = _resolution_failure_reply(exc, source.platform)
+    if pinned_rate or pinned_transient:
+        text = f"⚠️ {message}"
+    if pinned_transient:
+        reason, retryable = 'server_error', transient_retryable
+    return stamp_failure({"final_response": text, "messages": [], "api_calls": 0, "tools": [],
+                          "failed": True, "completed": False, "error": str(exc)}, reason, retryable)
+
+
 class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
     """Per-turn collaborator carrying ``GatewayRunner._run_agent_inner``'s tool-progress callbacks."""
 
@@ -1309,16 +1357,11 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 "run_agent resolved: model=%s provider=%s session=%s",
                 model, runtime_kwargs.get("provider"), ctx.session_key or "",
             )
-        except Exception as exc:
-            # Model/credential resolution failed before the turn began; the raw text (URLs, status
-            # codes) belongs in the log, and the chat gets the commands that fix it. The result is
-            # a FAILED turn: a one-shot client exits non-zero, transcript persistence closes the
-            # turn, and an API receipt reports failure, never a completed turn with an apology.
-            logger.warning("Model resolution failed for session %s: %s", ctx.session_key or "", exc, exc_info=True)
-            from agent.turn_failure_copy import stamp_failure
-            text, reason, retryable = _resolution_failure_reply(exc, ctx.source.platform)
-            return stamp_failure({"final_response": text, "messages": [], "api_calls": 0, "tools": [],
-                                  "failed": True, "completed": False, "error": str(exc)}, reason, retryable)
+        except Exception as exc:  # health: allow BLE001 -- boundary logs safely via _resolution_failure_result
+            # A failed resolution must produce a failed turn, including for oneshot clients,
+            # so that the transcript and API receipt record failure, not a completed turn.
+            from gateway.session_authorities import active_authority
+            return _resolution_failure_result(exc, policy, ctx.source, ctx.session_key, active_authority(runner))
         from gateway.session_authorities import active_authority
         from gateway.session_worker_construct import session_routing
         pr = session_routing(active_authority(runner), policy) if policy else runner._provider_routing

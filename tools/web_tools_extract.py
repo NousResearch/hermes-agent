@@ -135,6 +135,17 @@ def _resolve_extract_provider(backend: str):
     return provider, None
 
 
+def check_web_extract_available() -> bool:
+    """Advertise extraction only when its selected route supports extraction and is ready."""
+    from tools import web_tools
+    web_tools._ensure_web_plugins_loaded()
+    backend = web_tools._get_extract_backend()
+    if not web_tools._backend_supports_capability(backend, "extract"):
+        return False
+    provider, error = _resolve_extract_provider(backend)
+    return error is None and web_tools._provider_is_ready(provider)
+
+
 def _extract_timeout_seconds() -> float:
     """Wall-clock cap for one provider ``extract()`` dispatch (``web.extract_timeout``, default 120s).
 

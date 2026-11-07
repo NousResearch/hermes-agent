@@ -38,6 +38,8 @@ Brave Search, DDGS, xAI, and OpenAI Native are **search-only** — pair any of t
 
 **Per-capability split:** you can use different providers for search and extract independently — for example SearXNG (free) for search and Firecrawl for extract. See [Per-capability configuration](#per-capability-configuration) below.
 
+Automatic selection considers each operation separately: an available search-only provider such as DDGS does not prevent extraction from using an available extraction provider or the enabled keyless tier. Explicit shared or per-operation selections remain authoritative; selecting a search-only provider for extraction reports a configuration error. `web_extract` is advertised only when its selected route supports extraction and has credentials or an enabled keyless tier.
+
 :::info Works out of the box — keyless free-tier rotation
 A fresh install with **no web credentials at all** gets working `web_search` and `web_extract` out of the box: requests rotate round-robin across the ring vendors' public free tiers — **Exa, Parallel, Firecrawl, and Keenable** — spreading load evenly, and a rate-limited request automatically retries on the next vendor in the ring (multi-hop, until one serves or all fail). A search that a vendor refuses (a 401/402/403 access gate or a 5xx) retries the same way. No signup, no key. This tier is strictly last-resort — any configured backend or present API key always wins — and requests carry no user identifiers (only a random per-process session id, rotated on restart). For guaranteed, unthrottled service, set up a keyed provider. Disable the keyless tier entirely with `web.keyless_fallback: false`.
 :::

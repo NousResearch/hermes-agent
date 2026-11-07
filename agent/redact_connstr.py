@@ -17,7 +17,14 @@ import re
 # ``(?:^|[;\s])\s*`` rescans runs of whitespace from every start position: quadratic, and
 # a 16K-space line took ~30s. Value extents are found by _kv_value_end, not by regex, so
 # each grammar (ODBC braces, ADO.NET doubled quotes, libpq backslash escapes) is exact.
+# ``=`` is a companion-key boundary because an assigned connection string
+# (``Environment=CONN=Server=db;…``, ``printenv`` output, a ``docker run -e CONN=…`` argv dump)
+# puts the first key right after it. It is deliberately NOT added to _KV_KEY_BOUNDARY: a
+# ``password=``/``pwd=`` key behind ``=`` is ``note=password=…`` prose far more often than a
+# field. For assigned forms, only a password key immediately after ``;`` is eligible,
+# so ``env X=host=db PWD=/home/app/project`` stays verbatim.
 _KV_KEY_BOUNDARY = r"(?<![^\s;\"'])"
+_KV_ASSIGNED_KEY_BOUNDARY = r"(?<![^\s;\"'=])"
 _KV_CONNSTR_PW_RE = re.compile(
     _KV_KEY_BOUNDARY + r"(?:password|pwd)[ \t]*=[ \t]*", re.IGNORECASE)
 _KV_CONNSTR_GATE_RE = re.compile(r"(?:password|pwd)\s*=", re.IGNORECASE)
@@ -29,6 +36,13 @@ _KV_CONNSTR_KEYS = (
     r"user(?:name)?|database|dbname|hostaddr|initial\s+catalog|port")
 _KV_CONNSTR_COMPANION_RE = re.compile(
     _KV_KEY_BOUNDARY + r"(?:" + _KV_CONNSTR_KEYS + r")[ \t]*=", re.IGNORECASE)
+_KV_CONNSTR_ASSIGNED_COMPANION_RE = re.compile(
+    _KV_ASSIGNED_KEY_BOUNDARY + r"(?:" + _KV_CONNSTR_KEYS + r")[ \t]*=", re.IGNORECASE)
+# Do not parse preceding fields: arbitrary options and quoted/braced values are legal.
+_KV_ASSIGNED_PW_RE = re.compile(
+    r"(?<=;)[ \t]*(?:password|pwd)[ \t]*=[ \t]*", re.IGNORECASE)
+_NEXT_ASSIGNMENT_RE = re.compile(r"[ \t]+[A-Za-z_]\w*=")
+_PADDED_PROSE_RE = re.compile(r"[^\s;\"'{}]+[ \t]*$")
 # ``;``-delimited grammar (ADO.NET/ODBC/JDBC) when a ``;`` is followed by a known field.
 # libpq values may contain a bare ``;`` (``password=a;b dbname=x``), so a ``;`` alone
 # does not decide the grammar.
@@ -102,30 +116,113 @@ def _kv_value_end(line: str, i: int, semicolon: bool) -> int:
     return min(j, n)
 
 
+def _quote_states(line: str, indexes: list[int]) -> list[tuple[bool, bool, bool, int]]:
+    """Quote/ODBC context and assignment identity at ascending indexes, in one linear walk.
+
+    A top-level whitespace-separated assignment ends the preceding value, but whitespace in
+    a field name (``User Id=``) does not. Quotes inside another quote or ODBC brace are data.
+    """
+    states, pos, assignment = [], 0, 0
+    in_dq = in_sq = in_brace = False
+    in_value = value_padding = False
+    for index in indexes:
+        while pos < index:
+            ch = line[pos]
+            if in_dq:
+                if ch == '"':
+                    in_dq = False
+            elif in_sq:
+                if ch == "'":
+                    in_sq = False
+            elif in_brace:
+                if ch == "}":
+                    if line[pos:pos + 2] == "}}":
+                        pos += 2
+                        continue
+                    in_brace = False
+            else:
+                if (ch in " \t" and line[pos - 1] not in " \t"
+                        and (in_value or (line[pos - 1] == ";"
+                             and not _KV_SEMICOLON_FIELD_RE.match(line, pos - 1)))
+                        and _NEXT_ASSIGNMENT_RE.match(line, pos)):
+                    assignment += 1
+                    in_value = False
+                if ch == '"':
+                    in_dq = True
+                elif ch == "'":
+                    in_sq = True
+                elif ch == "{" and value_padding:
+                    in_brace = True
+                if ch == "=":
+                    in_value = value_padding = True
+                elif ch == ";":
+                    in_value = value_padding = False
+                elif ch not in " \t":
+                    value_padding = False
+            pos += 1
+        states.append((in_dq, in_sq, in_brace, assignment))
+    return states
+
+
 def _redact_kv_connection_line(line: str, code_file: bool) -> str:
-    if not _KV_CONNSTR_GATE_RE.search(line) or not _KV_CONNSTR_COMPANION_RE.search(line):
+    if not _KV_CONNSTR_GATE_RE.search(line):
         return line
     semicolon = _KV_SEMICOLON_FIELD_RE.search(line) is not None
+    companion = _KV_CONNSTR_COMPANION_RE.search(line)
+    assigned = companion is None
+    if assigned:
+        companion = _KV_CONNSTR_ASSIGNED_COMPANION_RE.search(line)
+        if companion is None:
+            return line
+    # Assigned companions only license semicolon-prefixed passwords, not a neighbouring PWD
+    # environment variable.
+    pw_re = _KV_ASSIGNED_PW_RE if assigned else _KV_CONNSTR_PW_RE
+    matches = list(pw_re.finditer(line))
+    if not matches:
+        return line
+    # An assigned companion and a ``;``-prefixed password can still sit in different shell
+    # assignments (``env X=host=db NOTE=";password=off"``), so the password must share the
+    # companion's quoting context.
+    if assigned:
+        companion_state = _quote_states(line, [companion.start()])[0]
+        states = _quote_states(line, [m.start() for m in matches])
+    else:
+        companion_state, states = None, []
+    # Preserve rejection of incomplete padded ODBC values without scanning a suffix per match.
+    last_brace = line.rfind("}")
     out, pos = [], 0
-    for m in _KV_CONNSTR_PW_RE.finditer(line):
+    for i, m in enumerate(matches):
         if m.start() < pos:  # inside a value already masked
             continue
-        vstart = m.end()
-        vend = _kv_value_end(line, vstart, semicolon)
-        value = line[vstart:vend]
-        # ``the pwd= flag``: space after ``=`` but not before it is prose, not an empty value followed
-        # by the next word. Padding on both sides (``password = x``) is still a conninfo field.
+        if assigned and states[i] != companion_state:
+            continue
+        # ``the pwd= flag``: space after ``=`` but not before it is prose, not an empty value
+        # followed by the next word. Padding on both sides (``password = x``) is still a conninfo
+        # field. An assigned semicolon field only keeps the guard for a final bare word:
+        # ``X=host=db; password= field`` is prose, but ``Password= x;`` is a connection field.
+        # It runs before the value scan so a rejected candidate cannot rescan the rest of the line.
         eq = line.rindex("=", m.start(), m.end())
-        if not value or (not semicolon and line[m.end() - 1] in " \t" and line[eq - 1] not in " \t"):
+        if (line[m.end() - 1] in " \t" and line[eq - 1] not in " \t"
+                and ((assigned and _PADDED_PROSE_RE.match(line, m.end()))
+                     or (assigned and line[m.end():m.end() + 1] == "{"
+                         and last_brace < m.end())
+                     or (not assigned and not semicolon))):
+            continue
+        # A semicolon-prefixed assigned field uses the ADO.NET/ODBC grammar, not libpq.
+        field_semicolon = semicolon or assigned
+        vstart = m.end()
+        vend = _kv_value_end(line, vstart, field_semicolon)
+        value = line[vstart:vend]
+        if not value:
             continue
         bare = value.strip("\"'")
         # Templates, not credentials: ``Password={0}``, ``Password=${DB_PASS}``, ``{pw}``. ODBC braces a
         # literal value (``PWD={Zq7x;LmP2}``), so on a ``;`` line only a format slot or an identifier
         # counts as a template; ``cat appsettings.json`` output is read as code_file.
         if code_file and bare.startswith(("{", "${")) and bare.endswith("}") and (
-                not semicolon or bare.startswith("${") or _FORMAT_SLOT_RE.fullmatch(bare)):
+                not field_semicolon or bare.startswith("${") or _FORMAT_SLOT_RE.fullmatch(bare)):
             continue
-        if value[0] == "{" and semicolon:
+        if value[0] == "{" and field_semicolon:
             masked = "{***}"
         elif value[0] in "\"'" and len(value) > 1 and value[-1] == value[0]:
             masked = f"{value[0]}***{value[0]}"

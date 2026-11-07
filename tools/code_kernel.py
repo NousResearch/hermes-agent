@@ -88,6 +88,11 @@ _CAPTURE_LIMIT = {_RUNNER_CAPTURE_BYTES}
 _SPILL_DIR = os.environ.get("HERMES_KERNEL_SPILL_DIR", "")
 _SPILL_CAP = {5_000_000}
 _PARENT_PROCESS_HANDLE = os.environ.pop("HERMES_KERNEL_PARENT_PROCESS_HANDLE", "")
+# sys.path already holds the boot entries. Processes spawned from cells get the path without
+# the runtime site-packages (see code_execution_env._build_child_env).
+_CHILD_PYTHONPATH = os.environ.pop("HERMES_KERNEL_CHILD_PYTHONPATH", None)
+if _CHILD_PYTHONPATH is not None:
+    os.environ["PYTHONPATH"] = _CHILD_PYTHONPATH
 
 
 def _start_parent_process_watchdog():

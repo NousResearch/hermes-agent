@@ -147,6 +147,8 @@ def _render_surface(home: Path, platform: str, model: str, code: bool) -> tuple[
 
 def _render_child(out: Path) -> int:
     home = Path(os.environ["HOME"]).resolve()
+    # Render the stock managed-temp policy independently of the runner's temporary home.
+    os.environ["TMPDIR"] = str(home / ".hermes" / "cache" / "scratch")
     (home / "plain").mkdir(parents=True, exist_ok=True)
     (home / "code").mkdir(parents=True, exist_ok=True)
     (home / "code" / "pyproject.toml").write_text('[project]\nname = "demo"\n', encoding="utf-8")

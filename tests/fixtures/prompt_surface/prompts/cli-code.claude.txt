@@ -116,6 +116,6 @@ Platform: cli
 Host: <HOST_OS>
 User home directory: <HOME>
 Current working directory: <HOME>/code
-Scratch directory: <HERMES_HOME>/cache/scratch (TMPDIR points here; write temporary files and probes there, never under the system temp dir; entries idle for 24h are pruned)
+Scratch directory: <HERMES_HOME>/cache/scratch (write temporary files and probes here; entries idle for 24h are pruned)
 
 <!-- End Hermes runtime environment -->

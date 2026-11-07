@@ -137,10 +137,14 @@ async def build_channel_directory(adapters: dict[Any, Any]) -> dict[str, Any]:
         try:
             list_channels = getattr(adapter, "list_channels", None)
             if callable(list_channels):
+                # Delegated enumeration owns this platform even on failure. Only an
+                # explicit None opts back into less-scoped platform/session discovery.
+                platforms[platform.value] = []
                 platform_channels = await list_channels()
                 if platform_channels is not None:
                     platforms[platform.value] = _normalize_adapter_channels(platform_channels)
                     continue
+                del platforms[platform.value]
             if platform == Platform.DISCORD:
                 platforms["discord"] = await asyncio.to_thread(_build_discord, adapter)
             elif platform == Platform.SLACK:

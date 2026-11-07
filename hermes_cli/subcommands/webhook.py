@@ -64,4 +64,9 @@ def build_webhook_parser(subparsers, *, cmd_webhook: Callable) -> None:
     wh_test.add_argument(
         "--payload", default="", help="JSON payload to send (default: test payload)")
 
+    wh_history = webhook_subparsers.add_parser(
+        "history", help="Show recent deliveries: accepted, duplicate, ignored (with the reason) or failed")
+    wh_history.add_argument("--route", default=None, help="Only deliveries to this route")
+    wh_history.add_argument("--limit", type=int, default=20, help="How many deliveries to show (default: 20)")
+
     webhook_parser.set_defaults(func=cmd_webhook)

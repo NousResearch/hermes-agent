@@ -172,11 +172,16 @@ def _plugin_probe_seed(entry) -> Optional[dict]:
 
 def _plugin_is_configured(entry, existing_extra: dict, seed: Optional[dict]) -> bool:
     """``entry.is_connected`` on a transient ``enabled=True`` view seeded with env extras (never the real config)."""
+    from gateway.config_loader import _SHARED_KEYS
+
+    # Shared policy keys (allow_from, user_allowed_commands, ...) reach every platform's extra; they don't set it up.
+    shared = {key for key, _, _ in _SHARED_KEYS}
+    probe_extra = {k: v for k, v in existing_extra.items() if k not in shared}
     try:
         for k, v in (seed or {}).items():
             if k != "home_channel":
-                existing_extra.setdefault(k, v)
-        configured = bool(entry.is_connected(PlatformConfig(enabled=True, extra=existing_extra)))
+                probe_extra.setdefault(k, v)
+        configured = bool(entry.is_connected(PlatformConfig(enabled=True, extra=probe_extra)))
     except Exception as exc:
         logger.debug("is_connected for %s raised: %s — skipping enablement", entry.name, exc)
         return False

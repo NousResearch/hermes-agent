@@ -102,3 +102,39 @@ async def test_unowned_completion_refunds_every_sibling_without_consuming_budget
         event['parent_session_id'] = sid
     assert await runner._deliver_async_delegation_group(events) is True
     assert len(list_session_admissions(authority.db, session_id=sid, pending_only=False)) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('process_ids', [['process-one'], ['process-one', 'process-two']])
+async def test_automation_admits_completion_drain_metadata(tmp_path, monkeypatch, process_ids):
+    """Completion drain metadata must not make an authority-backed wake invalid."""
+    from gateway.config import GatewayConfig, Platform, PlatformConfig
+    from gateway.platforms.event import MessageEvent
+    from gateway.run import GatewayRunner
+    from gateway.session_authority import initialize_session_authority, SessionAuthority
+    from gateway.session_ingress_context import native_callback
+    from hermes_constants import get_hermes_home
+    from plugins.platforms.discord.adapter import DiscordAdapter
+
+    monkeypatch.setattr(SessionAuthority, '_schedule', lambda self, ref: None)
+    monkeypatch.setenv('DISCORD_ALLOWED_USERS', '42')
+    runner = GatewayRunner(GatewayConfig())
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token='fixture-token', typing_indicator=False))
+    runner.adapters = {Platform.DISCORD: adapter}
+    authority = await initialize_session_authority(runner, profile_id='default', instance_id='drain-metadata')
+    runner._wire_adapter_handlers(adapter)
+    source = adapter.build_source(chat_id='42', chat_type='dm', user_id='42')
+    human = MessageEvent(text='human', source=source, message_id='human')
+    with native_callback(runner, human, get_hermes_home()):
+        await authority.admit_native(human)
+    key = runner.session_store._generate_session_key(source)
+    completion = MessageEvent(
+        text='background process completed', source=source, internal=True,
+        metadata={
+            'gateway_session_key': key,
+            'gateway_session_id': runner.session_store.peek_session_id(key),
+            'gateway_process_session_ids': process_ids,
+        },
+    )
+
+    await authority.admit_automation(adapter, completion, 'completion-drain-metadata')

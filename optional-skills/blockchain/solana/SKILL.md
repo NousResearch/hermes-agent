@@ -1,7 +1,7 @@
 ---
 name: solana
 description: Query Solana wallets, tokens, txs, and NFTs in USD.
-version: 0.2.0
+version: 0.2.1
 author: Deniz Alagoz (gizdusum), enhanced by Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -37,7 +37,8 @@ No API key needed. Uses only Python standard library (urllib, json, argparse).
 ## Prerequisites
 
 The helper script uses only Python standard library (urllib, json, argparse).
-No external packages required.
+No external packages required. Requires Python 3.9+
+(use `python3` if `python` is not on PATH, e.g. on macOS).
 
 Pricing data comes from CoinGecko's free API (no key needed, rate-limited
 to ~10-30 requests/minute). For faster lookups, use `--no-prices` flag.
@@ -175,7 +176,8 @@ python ~/.hermes/skills/blockchain/solana/scripts/solana_client.py price DezXAZ8
 ```
 
 Known symbols: SOL, USDC, USDT, BONK, JUP, WETH, JTO, mSOL, stSOL,
-PYTH, HNT, RNDR, WEN, W, TNSR, DRIFT, bSOL, JLP, WIF, MEW, BOME, PENGU.
+PYTH, RLB, HNT, RENDER (alias RNDR), WEN, W, TNSR, DRIFT, bSOL, JLP, WIF, MEW,
+BOME, PENGU. Any other token: pass its mint address.
 
 ---
 
@@ -189,14 +191,17 @@ PYTH, HNT, RNDR, WEN, W, TNSR, DRIFT, bSOL, JLP, WIF, MEW, BOME, PENGU.
   (Helius, QuickNode, Triton).
 - **NFT detection is heuristic** — amount=1 + decimals=0. Compressed
   NFTs (cNFTs) and Token-2022 NFTs won't appear.
+- **Token-2022 fungibles** — `wallet` only scans the classic SPL Token
+  program, so Token-2022 tokens (e.g. PYUSD) are not listed.
 - **Whale detector scans latest block only** — not historical. Results
   vary by the moment you query.
 - **Transaction history** — public RPC keeps ~2 days. Older transactions
   may not be available.
-- **Token names** — ~25 well-known tokens are labeled by name. Others
+- **Token names** — 23 well-known tokens are labeled by name. Others
   show abbreviated mint addresses. Use the `token` command for full info.
 - **Retry on 429** — both RPC and CoinGecko calls retry up to 2 times
-  with exponential backoff on rate-limit errors.
+  with an increasing delay on rate-limit errors. If CoinGecko stays
+  rate-limited, `wallet` output includes a `warning` field.
 
 ---
 

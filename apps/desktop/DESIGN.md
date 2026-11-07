@@ -321,7 +321,7 @@ existing traffic-light and Window Controls Overlay measurements.
 On macOS, native traffic lights use a 12-point left inset in every titled window.
 Keep the renderer's startup fallback insets aligned with that position so the
 adjacent toolbar and panel reservations do not jump when native state arrives.
-Windows/Linux retain their previous toolbar startup fallback until native state arrives.
+Windows/Linux have no traffic lights, so they start on their edge-pinned layout.
 
 The left cluster shows sidebar, settings, layout editor, and HUD controls. Flip
 and the right-sidebar toggle sit on the right; haptics remain in settings.

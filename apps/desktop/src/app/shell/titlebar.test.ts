@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  knownWindowButtonPosition,
   MACOS_TAHOE_DARWIN_MAJOR,
   TITLEBAR_CONTROL_OFFSET_X,
   TITLEBAR_EDGE_INSET,
@@ -25,14 +26,22 @@ describe('titlebarControlsPosition', () => {
     expect(titlebarControlsPosition(null).left).toBe(TITLEBAR_EDGE_INSET)
   })
 
+  it('clears native controls the desktop placed on the left', () => {
+    expect(titlebarControlsPosition(null, false, 72).left).toBe(72 + TITLEBAR_EDGE_INSET)
+  })
+
+  it('ignores the overlay inset on macOS, where traffic lights are positioned natively', () => {
+    expect(titlebarControlsPosition({ x: 24, y: 10 }, true, 72).left).toBe(TITLEBAR_EDGE_INSET)
+    expect(titlebarControlsPosition({ x: 24, y: 10 }, false, 72).left).toBe(24 + TITLEBAR_CONTROL_OFFSET_X)
+  })
+
   it('does not move macOS tools when the native traffic-light position arrives', () => {
     vi.spyOn(navigator, 'platform', 'get').mockReturnValue('MacIntel')
     expect(titlebarControlsPosition(undefined)).toEqual(titlebarControlsPosition({ x: 12, y: 10 }))
   })
 
-  it.each(['Win32', 'Linux x86_64'])('preserves the previous startup spacing on %s', platform => {
-    vi.spyOn(navigator, 'platform', 'get').mockReturnValue(platform)
-    expect(titlebarControlsPosition(undefined).left).toBe(24 + TITLEBAR_CONTROL_OFFSET_X)
+  it('starts Windows/Linux at the edge before native state arrives', () => {
+    expect(titlebarControlsPosition(knownWindowButtonPosition(undefined, false)).left).toBe(TITLEBAR_EDGE_INSET)
   })
 })
 
@@ -63,5 +72,20 @@ describe('titlebarToolsRightCss', () => {
 
   it('matches the left edge inset on macOS fullscreen', () => {
     expect(titlebarToolsRightCss(0, { darwinMajor: 25, isFullscreen: true })).toBe(`${TITLEBAR_EDGE_INSET}px`)
+  })
+})
+
+describe('knownWindowButtonPosition', () => {
+  it('treats an unknown position as no traffic lights off macOS', () => {
+    expect(knownWindowButtonPosition(undefined, false)).toBeNull()
+  })
+
+  it('keeps an unknown position unknown on macOS', () => {
+    expect(knownWindowButtonPosition(undefined, true)).toBeUndefined()
+  })
+
+  it('passes a reported position through', () => {
+    expect(knownWindowButtonPosition({ x: 24, y: 10 }, false)).toEqual({ x: 24, y: 10 })
+    expect(knownWindowButtonPosition(null, true)).toBeNull()
   })
 })

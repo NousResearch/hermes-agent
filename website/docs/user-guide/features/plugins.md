@@ -1106,6 +1106,7 @@ In gateway mode with a key:
 - `session_key` must identify an existing gateway session. It is the stable routing key, not the CLI session ID.
 - Hermes reuses that session's stored platform, chat, thread, profile, and conversation history. Plugins cannot change that route through `session_key`.
 - The session must belong to the plugin's own profile: the key of another profile's chat or local session gets `False` right away, with the reason in the gateway log.
+- A closed local CLI/TUI/Desktop conversation can be woken without reopening its viewer, including after a gateway restart. Hermes validates its stored creation receipt in the plugin's own profile and restores it before queuing the turn. Deleted or suspended conversations and invalid receipts remain refused; the gateway must be running.
 - Hermes rechecks the stored route against the gateway's current authorisation rules before dispatch.
 - Routes that relied only on an adapter-time or upstream authorisation decision are rejected unless Hermes can revalidate them from current core allowlists, pairing, or explicit allow-all configuration.
 - Injected text is always conversational input. It cannot invoke slash commands, approve tools, or resolve pending confirmation and clarification prompts.

@@ -147,8 +147,10 @@ class GatewayPluginInjectionMixin:
         from gateway.session_identity import replace_source
         source = replace_source(self._restored_source(entry))
         if source.platform == Platform.LOCAL:
-            return self._plugin_local_session(source, session_key, plugin_home=plugin_home,
-                                              plugin_id=plugin_id) is not None
+            if entry.suspended:
+                return False
+            return self._plugin_local_authority(source, session_key, plugin_home=plugin_home,
+                                                plugin_id=plugin_id) is not None
         return self._plugin_messaging_session_owned(session_key, plugin_home=plugin_home, plugin_id=plugin_id)
 
     def _plugin_messaging_session_owned(self, session_key: str, *, plugin_home: Optional[Path],
@@ -169,21 +171,36 @@ class GatewayPluginInjectionMixin:
                        "plugin's profile %s", plugin_id, session_key, owner, profile)
         return False
 
-    def _plugin_local_session(self, source: SessionSource, session_key: str, *, plugin_home: Optional[Path],
-                              plugin_id: str):
-        """A local session's own source passes no chat allowlist, so the plugin's profile boundary is
-        the only check: the session authority registered for the plugin's immutable home must hold
-        the live session under this key. Its ``LiveSession``, or ``None`` (logged). Never resolved
-        through the source's profile, whose fallback is the ambient scope (a default-profile local
-        source carries none, so under beta's scope it would read as beta's)."""
+    def _plugin_local_authority(self, source: SessionSource, session_key: str, *, plugin_home: Optional[Path],
+                                plugin_id: str):
+        """The plugin's own authority, only when it owns this live or stored local route.
+
+        Admission can run on a plugin worker thread: inspect receipts here, but restore only on
+        the gateway loop at dispatch. Never resolve ownership through the ambient profile scope.
+        """
         from gateway.session_authorities import authority_for_home
         authority = authority_for_home(self, plugin_home) if plugin_home is not None else None
         live = authority.sessions.get(source.chat_id) if authority is not None else None
         if live is not None and live.route == session_key:
-            return live
+            return authority
+        if authority is not None and live is None:
+            from gateway.session_local_recovery import owned_receipt
+            try:
+                _receipt, _source, route, _entry = owned_receipt(authority, source.chat_id)
+                if route == session_key:
+                    return authority
+            except (KeyError, TypeError, ValueError, AttributeError):
+                logger.debug("Plugin message injection receipt refused: plugin=%s session=%s",
+                             plugin_id, session_key, exc_info=True)
         logger.warning("Plugin message injection refused: plugin=%s session=%s is not a live local session of the "
-                       "plugin's profile home %s", plugin_id, session_key, plugin_home)
+                       "plugin's profile home %s and has no matching stored route", plugin_id, session_key, plugin_home)
         return None
+
+    def _plugin_local_session(self, source: SessionSource, session_key: str, *, plugin_home: Optional[Path],
+                              plugin_id: str):
+        """Return a live local session for status messages; never restore one just to post a notice."""
+        authority = self._plugin_local_authority(source, session_key, plugin_home=plugin_home, plugin_id=plugin_id)
+        return authority.sessions.get(source.chat_id) if authority is not None else None
 
     async def _dispatch_plugin_message_injection(
         self, *, session_key: str, content: str, plugin_id: str, plugin_home: Optional[Path] = None,
@@ -236,10 +253,29 @@ class GatewayPluginInjectionMixin:
         turn is committed to its FIFO on the live session's own source and adapter, as a bot delivery
         is, only when the plugin's own profile's authority holds the session (checked before entering
         that scope). Main queued key-less CLI injections into the REPL; this is where they land now."""
-        live = self._plugin_local_session(source, entry.session_key, plugin_home=plugin_home, plugin_id=plugin_id)
-        if live is None:
+        if entry.suspended:
+            return False
+        authority = self._plugin_local_authority(source, entry.session_key, plugin_home=plugin_home,
+                                                 plugin_id=plugin_id)
+        if authority is None:
             return False
         async with self._plugin_injection_scope(source, plugin_home):
+            if source.chat_id not in authority.sessions:
+                from gateway.session_local_adoption import adopt_before_restore
+                from gateway.session_local_recovery import restore_local_session
+                from hermes_state_runtime import RuntimeStoreError
+                try:
+                    await adopt_before_restore(authority, source.chat_id)
+                    if entry.suspended:
+                        return False
+                    restore_local_session(authority, source.chat_id)
+                except RuntimeStoreError as exc:
+                    logger.warning("Plugin message injection could not restore local session: plugin=%s "
+                                   "session=%s (%s)", plugin_id, entry.session_key, exc.reason)
+                    return False
+            live = self._plugin_local_session(source, entry.session_key, plugin_home=plugin_home, plugin_id=plugin_id)
+            if live is None:
+                return False
             return bool(await self._admit_plugin_injection(
                 self._adapter_for_source(live.source), live.source, session_key=entry.session_key,
                 session_id=entry.session_id, content=content, plugin_id=plugin_id))

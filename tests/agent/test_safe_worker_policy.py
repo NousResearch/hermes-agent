@@ -131,17 +131,26 @@ def test_safe_worker_never_discovers_or_invokes_customizations(tmp_path, mode):
             from agent.safe_worker_policy import _bind_safe_worker_policy
             _bind_safe_worker_policy(safe_mode=mode == "safe", ignore_user_config=True, config={"plugins": {"enabled": ["sentinel"]}})
         reads = []
+        bundled_providers = Path.cwd() / "plugins" / "model-providers"  # Hermes's own provider rules
         def audit(event, args):
-            if event == "open" and "plugins" in Path(str(args[0])).parts and args[1] != "w":
+            if event != "open" or args[1] == "w":
+                return
+            path = Path(str(args[0]))
+            if "plugins" in path.parts and not path.is_relative_to(bundled_providers):
                 reads.append(str(args[0]))
         sys.addaudithook(audit)
         import providers
         from hermes_cli import plugins, lifecycle
+        providers._discover_entry_point_providers = lambda: mark("entry-points")  # pip-installed providers
         plugins.discover_plugins()
         providers.list_providers()
         from providers.base import ProviderProfile
         providers.register_provider(ProviderProfile(name="injected"))
         injected = providers.get_provider_profile("injected")
+        import hermes_cli.config_backend as config_backend
+        config_backend.config_cache_version = lambda *a: mark("config-backend")  # named-custom lookup on a miss
+        providers.get_provider_profile("no-such-provider")
+        bundled = providers.get_provider_profile("nvidia") is not None
         manager = plugins.get_plugin_manager()
         manager._hooks.setdefault("on_session_start", []).append(lambda **kw: mark("direct-hook"))
         manager._middleware.setdefault("probe", []).append(lambda **kw: mark("middleware"))
@@ -155,13 +164,14 @@ def test_safe_worker_never_discovers_or_invokes_customizations(tmp_path, mode):
         shell_hooks._make_callback(shell_hooks.ShellHookSpec(event="on_session_start", command="inert"))()
         outbound_webhooks._make_callback("on_session_start", outbound_webhooks.WebhookTarget(url="http://127.0.0.1/inert", events=["on_session_start"]))()
         if mode == "safe": assert not reads
-        print(json.dumps({"events": events.read_text().splitlines() if events.exists() else [], "reads": reads, "injected": injected is not None}))
+        print(json.dumps({"events": events.read_text().splitlines() if events.exists() else [], "reads": reads, "injected": injected is not None, "bundled": bundled}))
     """, mode)
     if mode == "safe":
-        assert result == {"events": [], "reads": [], "injected": False}
+        # Bundled profiles are Hermes's own provider rules, not customization: they still load.
+        assert result == {"events": [], "reads": [], "injected": False, "bundled": True}
     else:
-        assert {"plugin-import", "plugin-register", "plugin-hook", "model-providers/nested", "flat", "direct-hook", "middleware", "observer", "shell", "outbound"} <= set(result["events"])
-        assert result["reads"] and result["injected"]
+        assert {"plugin-import", "plugin-register", "plugin-hook", "model-providers/nested", "flat", "entry-points", "config-backend", "direct-hook", "middleware", "observer", "shell", "outbound"} <= set(result["events"])
+        assert result["reads"] and result["injected"] and result["bundled"]
 
 
 @pytest.mark.parametrize("mode", ["safe", "config", "ordinary"])
@@ -321,3 +331,28 @@ def test_private_policy_refuses_late_binding_and_fork_inheritance(tmp_path):
         print(json.dumps({"refused": True}))
     """, "fork")
     assert fork == {"refused": True}
+
+
+@pytest.mark.parametrize("mode", ["safe", "ordinary"])
+def test_safe_worker_builds_bundled_provider_request_kwargs(tmp_path, mode):
+    """Bundled profiles carry provider wire rules (NVIDIA's max_tokens cap, DeepSeek's thinking
+    toggle): safe and ordinary workers both build kwargs carrying them."""
+    result = run_worker(tmp_path, r"""
+        import json, os
+        if os.environ["PROBE_MODE"] == "safe":
+            from agent.safe_worker_policy import _bind_safe_worker_policy
+            _bind_safe_worker_policy(safe_mode=True, ignore_user_config=True,
+                config={"agent": {"environment_probe": False}})
+        from run_agent import AIAgent
+        out = {}
+        for provider, model, url in (("nvidia", "nvidia/nemotron-3-super-120b-a12b", "https://integrate.api.nvidia.com/v1"),
+                                     ("deepseek", "deepseek-v4-pro", "https://api.deepseek.com/v1")):
+            agent = AIAgent(model=model, provider=provider, base_url=url, api_key="fixture",
+                enabled_toolsets=[], quiet_mode=True, skip_context_files=True, skip_memory=True,
+                save_trajectories=False)
+            kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+            out[provider] = [kwargs.get("max_tokens"), kwargs.get("extra_body")]
+            agent.close()
+        print(json.dumps(out))
+    """, mode)
+    assert result == {"nvidia": [16384, None], "deepseek": [None, {"thinking": {"type": "enabled"}}]}

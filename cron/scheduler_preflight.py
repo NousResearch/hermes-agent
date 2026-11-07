@@ -77,6 +77,15 @@ def _is_transient_provider_resolve_error(exc: BaseException) -> bool:
     return False
 
 
+def primary_resolve_falls_through(exc: BaseException) -> bool:
+    """True when a primary provider's resolve failure may walk the fallback chain: an ``AuthError`` (expired
+    credentials, exhausted quota, a pool in cooldown) or a transient network error. Shared by
+    ``cron.scheduler._resolve_job_runtime`` and delegation's resolve-time fallback
+    (``tools/delegate_tool_resolve_fallback.py``)."""
+    from hermes_cli.auth import AuthError
+    return isinstance(exc, AuthError) or _is_transient_provider_resolve_error(exc)
+
+
 def _cron_preflight_enabled(cfg: dict) -> bool:
     """Preflight is ON unless ``cron.preflight`` is literally ``false``."""
     cron_cfg = (cfg or {}).get("cron")

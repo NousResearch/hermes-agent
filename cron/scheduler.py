@@ -1763,10 +1763,9 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
     except Exception as resolve_exc:
         # Walk the fallback chain on AuthError AND transient network/DNS failures (e.g. during
         # OAuth refresh); anything else re-raises.
-        is_auth = isinstance(resolve_exc, AuthError)
-        is_transient_net = _is_transient_provider_resolve_error(resolve_exc)
-        if not (is_auth or is_transient_net):
+        if not primary_resolve_falls_through(resolve_exc):
             raise RuntimeError(format_runtime_provider_error(resolve_exc)) from resolve_exc
+        is_auth = isinstance(resolve_exc, AuthError)
 
         chain = _job_fallback_chain(job, jc.cfg) or []
         logger.warning(
@@ -4385,7 +4384,7 @@ from cron.scheduler_prompt import (
 )
 from cron.scheduler_preflight import (
     BLOCKED_CONFIG_MARKER, BLOCKED_CONFIG_SILENT_MARKER, _cron_preflight_enabled,
-    _empty_requested_mcp_toolsets, _is_transient_provider_resolve_error, _preflight_job_config,
+    _empty_requested_mcp_toolsets, _preflight_job_config, primary_resolve_falls_through,
 )
 
 

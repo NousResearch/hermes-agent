@@ -1,6 +1,6 @@
 """Models staged under the old per-profile ``<profile home>/models`` layout are moved into the
 machine-scoped ``<root>/models`` so they keep loading."""
-from hermes_cli.local_runtime import bootstrap
+from plugins.local_models import bootstrap
 
 
 def _profile(root, name, *, identity=True):
@@ -40,7 +40,7 @@ def test_legacy_models_move_into_the_machine_dir_without_clobbering(tmp_path, mo
 
 
 def test_boot_and_status_both_adopt_legacy_models(tmp_path, monkeypatch):
-    from hermes_cli.local_runtime import binaries
+    from plugins.local_models import binaries
     from hermes_cli.web_routers import local_models as lm
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

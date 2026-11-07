@@ -567,7 +567,7 @@ class CLIModelSwitchMixin:
         if route is None:
             return
         stored_model, stored_provider, stored_base_url, stored_api_mode, provider_changed = route
-        from hermes_cli.local_runtime.endpoint import LLAMACPP_ALIASES
+        from plugins.local_models.endpoint import LLAMACPP_ALIASES
         managed = str(stored_provider or "").strip().lower() in LLAMACPP_ALIASES
         self.model = stored_model
         if stored_provider:

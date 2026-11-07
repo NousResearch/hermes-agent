@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli.local_runtime import catalog, hardware
+from plugins.local_models import catalog, hardware
 
 
 @pytest.mark.platforms("windows")

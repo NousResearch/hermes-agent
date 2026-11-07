@@ -395,7 +395,7 @@ def _endpoint_identity(base_url: str) -> Optional[str]:
         return identity
     # The managed server has no custom-provider config entry. Recover its menu key
     # from the ownership-checked endpoint, never from a model name or a fixed port.
-    from hermes_cli.local_runtime.endpoint import _state_endpoint
+    from plugins.local_models.endpoint import _state_endpoint
     endpoint = _state_endpoint()
     if endpoint and _route_key(base_url) == _route_key(endpoint["base_url"]):
         return "llamacpp"
@@ -603,7 +603,7 @@ def _resolve_llamacpp_runtime(requested_provider: str, explicit_api_key: Optiona
     message (server off → point at the switch; else the setup pane)."""
     rp = _rp()
     try:
-        from hermes_cli.local_runtime.endpoint import resolve_llamacpp_endpoint
+        from plugins.local_models.endpoint import resolve_llamacpp_endpoint
         endpoint = resolve_llamacpp_endpoint(config=rp.load_config())
     except Exception:
         endpoint = None

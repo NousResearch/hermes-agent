@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from hermes_cli.local_runtime.binaries import Engine
+from plugins.local_models.binaries import Engine
 
 
 @pytest.fixture
@@ -45,7 +45,7 @@ def test_quickstart_unknown_model_404s(client):
 
 def test_quickstart_without_recommendation_requires_explicit_choice(client, monkeypatch):
     """One budget: automatic setup refuses; an explicit spilled choice reaches activation."""
-    from hermes_cli.local_runtime.estimator import HardwareBudget
+    from plugins.local_models.estimator import HardwareBudget
     import hermes_cli.web_routers.local_models as lm
 
     gib = 1 << 30
@@ -115,7 +115,7 @@ def test_quickstart_refuses_when_nothing_fits(client, monkeypatch):
     """Preflight is synchronous: a machine no catalog entry fits gets a 409
     with guidance, not a doomed background job."""
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.catalog.select_variant", lambda *a, **k: None)
+        "plugins.local_models.catalog.select_variant", lambda *a, **k: None)
     r = client.post("/api/local-models/quickstart", json={})
     assert r.status_code == 409
     assert "Local Models" in r.json()["detail"]
@@ -124,8 +124,8 @@ def test_quickstart_refuses_when_nothing_fits(client, monkeypatch):
 @pytest.fixture
 def capable_hardware(monkeypatch):
     """Success-path orchestration tests need a model to fit, independent of host load."""
-    from hermes_cli.local_runtime import hardware
-    from hermes_cli.local_runtime.estimator import HardwareBudget
+    from plugins.local_models import hardware
+    from plugins.local_models.estimator import HardwareBudget
 
     gib = 1 << 30
     budget = HardwareBudget(
@@ -150,9 +150,9 @@ def test_quickstart_runs_all_three_legs(client, capable_hardware, monkeypatch, t
 
     # Leg 1: no runtime installed yet; install is the stubbed binaries call.
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.binaries.installed_engine", lambda *args, **kwargs: None)
+        "plugins.local_models.binaries.installed_engine", lambda *args, **kwargs: None)
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.binaries.ensure_engine",
+        "plugins.local_models.binaries.ensure_engine",
         lambda backend, **kwargs: calls.append("install"))
 
     # Leg 2: nothing staged; the download writes the files the plan names.
@@ -167,7 +167,7 @@ def test_quickstart_runs_all_three_legs(client, capable_hardware, monkeypatch, t
 
     # Leg 3: activation — stub the server start and the model assignment.
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.bootstrap.ensure_local_runtime",
+        "plugins.local_models.bootstrap.ensure_local_runtime",
         lambda config, force=False: calls.append("server") or None)
     monkeypatch.setattr(
         "hermes_cli.web_routers.local_models._state_endpoint",
@@ -203,13 +203,13 @@ def test_quickstart_skips_satisfied_legs(client, capable_hardware, monkeypatch):
     calls: list[str] = []
 
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.binaries.installed_engine", lambda *args, **kwargs: Engine("cpu", "b10362", Path("unused")))
+        "plugins.local_models.binaries.installed_engine", lambda *args, **kwargs: Engine("cpu", "b10362", Path("unused")))
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.binaries.ensure_engine",
+        "plugins.local_models.binaries.ensure_engine",
         lambda backend, **kwargs: calls.append("install"))
 
     # Every model file and companion is already present.
-    from hermes_cli.local_runtime.catalog import CATALOG
+    from plugins.local_models.catalog import CATALOG
     from hermes_cli.web_routers.local_models import _download_plan
 
     for entry in CATALOG:
@@ -221,7 +221,7 @@ def test_quickstart_skips_satisfied_legs(client, capable_hardware, monkeypatch):
         "hermes_cli.web_routers.local_models._download_job",
         lambda *a, **k: calls.append("download"))
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.bootstrap.ensure_local_runtime",
+        "plugins.local_models.bootstrap.ensure_local_runtime",
         lambda config, force=False: None)
     monkeypatch.setattr(
         "hermes_cli.web_routers.local_models._state_endpoint",
@@ -249,12 +249,12 @@ def quickstart_ready(monkeypatch):
     installed and every entry's first variant is servable, so the POST
     reaches the single-flight lock instead of 409ing at fit/engine
     preflight on machines where nothing fits."""
-    from hermes_cli.local_runtime.catalog import VariantChoice
+    from plugins.local_models.catalog import VariantChoice
 
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.binaries.installed_engine", lambda *args, **kwargs: Engine("cpu", "b10362", Path("unused")))
+        "plugins.local_models.binaries.installed_engine", lambda *args, **kwargs: Engine("cpu", "b10362", Path("unused")))
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.catalog.select_variant",
+        "plugins.local_models.catalog.select_variant",
         lambda entry, budget: VariantChoice(variant=entry.variants[0],
                                             zero_spill=True,
                                             reason_key="best-fits"))
@@ -296,8 +296,8 @@ def test_quickstart_prices_after_installing_the_engine(client, monkeypatch):
     """A Vulkan/HIP card's size comes from the installed engine's own device probe, so the model the
     job downloads and makes default is the one priced AFTER the install, not the preflight guess."""
     import hermes_cli.web_routers.local_models as lm
-    from hermes_cli.local_runtime.catalog import CATALOG, VariantChoice
-    from hermes_cli.local_runtime.estimator import HardwareBudget
+    from plugins.local_models.catalog import CATALOG, VariantChoice
+    from plugins.local_models.estimator import HardwareBudget
 
     gib = 1 << 30
     as_ram = HardwareBudget(usable_vram_bytes=50 * gib, total_device_bytes=50 * gib,

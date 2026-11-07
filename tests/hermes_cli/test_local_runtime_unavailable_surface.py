@@ -15,7 +15,7 @@ from hermes_constants import get_hermes_home
 
 @pytest.fixture
 def llamacpp_home(monkeypatch):
-    from hermes_cli.local_runtime import detect
+    from plugins.local_models import detect
 
     def write(local_runtime: dict) -> None:
         home = get_hermes_home()

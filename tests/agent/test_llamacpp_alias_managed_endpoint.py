@@ -19,8 +19,8 @@ import psutil
 import pytest
 
 from agent import auxiliary_client as aux
-from hermes_cli.local_runtime import detect
-from hermes_cli.local_runtime.supervisor import state_path
+from plugins.local_models import detect
+from plugins.local_models.supervisor import state_path
 
 MODEL = "SmolLM2-135M-Instruct-Q4_K_M"
 

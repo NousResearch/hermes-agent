@@ -24,9 +24,9 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from hermes_cli.local_runtime.binaries import runtimes_root
-from hermes_cli.local_runtime.endpoint import child_query
-from hermes_cli.local_runtime.processes import server_child_env, spawn_server
+from plugins.local_models.binaries import runtimes_root
+from plugins.local_models.endpoint import child_query
+from plugins.local_models.processes import server_child_env, spawn_server
 from hermes_cli.process_identity import release_process_group_once_empty, stop_owned_group_survivors
 
 logger = logging.getLogger(__name__)

@@ -12,9 +12,9 @@ from __future__ import annotations
 from dataclasses import replace
 from types import SimpleNamespace
 
-from hermes_cli.local_runtime import bootstrap, catalog, presets
-from hermes_cli.local_runtime.catalog import AssetFile, CatalogEntry, QuantVariant
-from hermes_cli.local_runtime.estimator import HardwareBudget
+from plugins.local_models import bootstrap, catalog, presets
+from plugins.local_models.catalog import AssetFile, CatalogEntry, QuantVariant
+from plugins.local_models.estimator import HardwareBudget
 from hermes_cli.web_routers import local_models
 
 GIB = 1 << 30

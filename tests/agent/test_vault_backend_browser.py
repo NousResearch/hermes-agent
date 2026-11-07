@@ -136,7 +136,9 @@ def test_resolve_refuses_wrong_account_on_multi_account_origin():
     def fake_cdp_call(ws, mid, method, params=None):
         if method == "Runtime.evaluate":
             expr = (params or {}).get("expression", "")
-            if "getBoundingClientRect" in expr:
+            # The value-read JS is the only one that reads ``location.origin``; the field-point JS is
+            # everything else (both now share the visibility helper's getBoundingClientRect call).
+            if "location.origin" not in expr:
                 return {"result": {"value": '{"x": 1, "y": 1}'}}  # field-point read
             return {"result": {"value": calls["read_value"]}}      # password/username value read
         return {"result": {}}
@@ -165,7 +167,7 @@ def test_resolve_refuses_when_page_redirected_off_saved_origin():
 
     def fake_cdp_call(ws, mid, method, params=None):
         if method == "Runtime.evaluate":
-            if "getBoundingClientRect" in (params or {}).get("expression", ""):
+            if "location.origin" not in (params or {}).get("expression", ""):
                 return {"result": {"value": '{"x": 1, "y": 1}'}}
             # Autofilled a password, but the page is now on evil.example, NOT the saved origin.
             return {"result": {"value": '{"password": "victim-site-pw", "username": "",'
@@ -183,7 +185,7 @@ def test_resolve_refuses_when_page_redirected_off_saved_origin():
 
     def fake_same_origin(ws, mid, method, params=None):
         if method == "Runtime.evaluate":
-            if "getBoundingClientRect" in (params or {}).get("expression", ""):
+            if "location.origin" not in (params or {}).get("expression", ""):
                 return {"result": {"value": '{"x": 1, "y": 1}'}}
             return {"result": {"value": '{"password": "victim-site-pw", "username": "",'
                                         ' "origin": "https://bank.example"}'}}
@@ -319,7 +321,7 @@ class _FakeAutofillWS:
             self._clicked = True
         elif method == "Runtime.evaluate":
             expr = params.get("expression", "")
-            if "getBoundingClientRect" in expr:
+            if "location.origin" not in expr:
                 result = {"result": {"value": '{"x": 10, "y": 20}'}}
             else:
                 # The browser only fills after a trusted gesture landed on the form.
@@ -451,6 +453,35 @@ def test_read_login_metadata_with_hash_in_path(tmp_path):
         "logins under a '#'-containing path were dropped (unescaped sqlite URI)")
 
 
+# ── finding 3 (round 3): a RELATIVE copy dir (HERMES_HOME=./root) must still list, not ValueError ──
+
+def test_read_login_metadata_with_relative_copy_dir(tmp_path, monkeypatch):
+    """``HERMES_HOME=./root`` (a supported setting) makes ``real_profile_copy_dir()`` relative, so
+    the DB path reaches ``read_login_metadata`` relative. ``Path.as_uri()`` raises ValueError on a
+    relative path, which escapes the ``sqlite3.Error`` handler and makes listing fail for EVERY
+    source once a snapshot exists. Resolving the path to absolute first must let the real logins
+    read back — the picker WORKS, not merely swallows the error."""
+    from tools.browser_real_profile_logins import read_login_metadata
+
+    base = tmp_path / "copy"
+    default = base / "Default"
+    default.mkdir(parents=True)
+    con = sqlite3.connect(default / "Login Data")
+    con.execute("CREATE TABLE logins (origin_url TEXT, username_value TEXT, password_value BLOB, "
+                "blacklisted_by_user INTEGER DEFAULT 0)")
+    con.execute("INSERT INTO logins VALUES ('https://example.com/login', 'jane', X'00', 0)")
+    con.commit()
+    con.close()
+
+    # Make the copy dir RELATIVE to cwd, exactly as a relative HERMES_HOME would.
+    monkeypatch.chdir(tmp_path)
+    rel = Path("copy")
+    assert not rel.is_absolute()
+    rows = read_login_metadata(str(rel))
+    assert [r["origin_url"] for r in rows] == ["https://example.com/login"], (
+        "a relative copy dir failed to list logins (as_uri ValueError on a relative path)")
+
+
 # ── finding 4: listing refreshes when the snapshot's source profile no longer matches the pin ────
 
 def _write_snapshot(copy_dir: Path, *, source: str, origin: str, username: str) -> None:
@@ -538,3 +569,66 @@ def test_list_does_not_refresh_when_snapshot_source_still_matches(tmp_path, monk
 
     assert refreshed["n"] == 0, "listing needlessly refreshed a snapshot whose source still matches"
     assert {m.origin for m in items} == {"https://alice.example"}
+
+
+# ── round-3 finding (2): a profile switch while the old browser is RUNNING must not serve stale ───
+
+class _FakeRunningBrowser:
+    def __init__(self, cdp_url):
+        self.cdp_url = cdp_url
+
+
+def test_list_refreshes_when_pin_changed_and_browser_is_running(tmp_path, monkeypatch):
+    """A snapshot exists for 'Default' (alice) AND the real-profile browser is still RUNNING. The
+    user switches ``browser.real_profile_pin`` to 'Profile 2' (bob).
+
+    This drives the REAL ``real_profile_cdp()``: while a browser is running it ATTACHES and returns
+    the existing connection WITHOUT re-syncing, so the round-2 marker check alone kept listing
+    ALICE. The fix stops the running browser first on a source mismatch, so the relaunch re-snapshots
+    BOB. Only ``get_browser`` / ``_launch`` / ``stop_browser`` are stubbed — the attach-vs-relaunch
+    decision is the production code's.
+    """
+    import tools.browser_session_real_profile as rpf
+    from agent.vault_backends import enabled_backends
+
+    live_root = tmp_path / "chrome-data"
+    (live_root / "Default").mkdir(parents=True)
+    (live_root / "Profile 2").mkdir(parents=True)
+    copy_dir = tmp_path / ".hermes" / "browser-profile" / "chrome"
+    _write_snapshot(copy_dir, source="Default", origin="https://alice.example/login", username="alice")
+
+    monkeypatch.setattr("hermes_cli.browser_connect._real_profile_pin", lambda: "Profile 2")
+
+    # Browser lifecycle state: a browser is running, attached to the old (alice) snapshot.
+    state = {"running": True}
+
+    def fake_get_browser(key):
+        return _FakeRunningBrowser("ws://running") if state["running"] else None
+
+    def fake_stop_browser(key):
+        state["running"] = False  # terminate_real_profile_browser's effect
+
+    def fake_launch(browser_name):
+        # A real relaunch re-snapshots from the now-pinned 'Profile 2' (bob) and re-stamps the marker.
+        import shutil
+        shutil.rmtree(copy_dir, ignore_errors=True)
+        _write_snapshot(copy_dir, source="Profile 2", origin="https://bob.example/login", username="bob")
+        state["running"] = True
+        return ("ws://relaunched", None)
+
+    monkeypatch.setattr("tools.browser_session_cloud.use_real_profile", lambda: True)
+    monkeypatch.setattr("tools.browser_lightpanda.using_lightpanda_engine", lambda: False)
+    monkeypatch.setattr("tools.browser_launcher.get_browser", fake_get_browser)
+    monkeypatch.setattr("tools.browser_launcher.stop_browser", fake_stop_browser)
+    monkeypatch.setattr(rpf, "_launch", fake_launch)
+
+    with patch("agent.vault_backends.base._browser_profile_enabled", return_value=True), \
+         patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
+         patch("hermes_cli.browser_connect.real_profile_copy_dir", return_value=str(copy_dir)), \
+         patch("hermes_cli.browser_connect.real_profile_data_dir", return_value=str(live_root)):
+        backend = next(b for b in enabled_backends() if b.name == "browser")
+        items = backend.list_items()
+
+    origins = {m.origin for m in items}
+    assert origins == {"https://bob.example"}, (
+        f"profile switch with a running browser listed the stale profile's logins: {origins}")

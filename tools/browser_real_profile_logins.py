@@ -78,7 +78,10 @@ def read_login_metadata(copy_dir: str) -> list[dict[str, str]]:
             # Build the file: URI from the path with pathlib so a '#', '?' or space in any directory
             # component is percent-escaped — a bare f"file:{db}" truncates at the first '#' and the
             # query string, silently opening the wrong (or an empty) database.
-            con = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True)
+            # ``as_uri()`` raises ValueError on a RELATIVE path, and ``HERMES_HOME=./root`` (a
+            # supported setting) makes the copy dir relative — resolve to absolute first so the
+            # picker still lists instead of the ValueError escaping the sqlite3.Error handler.
+            con = sqlite3.connect(f"{db.absolute().as_uri()}?mode=ro", uri=True)
         except sqlite3.Error as exc:
             logger.debug("real-profile logins: cannot open %s: %s", db, exc)
             continue
@@ -144,29 +147,52 @@ def _page_target(cdp_url: str, target_url: str) -> Iterator[str]:
 
 # Shared JS: locate the sign-in form's password field and the username field TIED to it, rather than
 # guessing the username by a name heuristic (a plain <input type=text name=login> that Chrome fills
-# correctly is otherwise invisible). The username is the nearest "texty" input that PRECEDES the
-# autofilled password field inside the same form (Chrome's own pairing), falling back to the last
-# texty input before it in the document, or the first filled texty input.
+# correctly is otherwise invisible). Only VISIBLE inputs are eligible — a CSS-hidden / zero-size
+# honeypot text input or a type=hidden control is skipped so it can never be mistaken for the
+# username. Among the eligible fields an EXPLICIT username hint (autocomplete=username, type=email,
+# or a user/email/login name/id token) is preferred FIRST, so a trailing plain text field after the
+# real autocomplete=username field never wins; only when no field carries a hint do we fall back to
+# POSITION (the last visible texty input preceding the password inside the same form), then to the
+# first filled visible texty input, then the first visible texty input.
 _FORM_JS_HELPER = (
     "const texty = el => {"
     "  if (!el || el.tagName !== 'INPUT') return false;"
     "  const t = (el.type || 'text').toLowerCase();"
     "  return !['password','hidden','submit','button','checkbox','radio','image','file','range','color'].includes(t);"
     "};"
+    "const visible = el => {"
+    "  if (!el) return false;"
+    "  const r = el.getBoundingClientRect();"
+    "  if (r.width <= 0 || r.height <= 0) return false;"
+    "  const win = el.ownerDocument && el.ownerDocument.defaultView;"
+    "  const s = win ? win.getComputedStyle(el) : null;"
+    "  return !s || (s.visibility !== 'hidden' && s.display !== 'none');"
+    "};"
+    "const usernameHint = el => {"
+    "  const ac = (el.getAttribute('autocomplete') || '').toLowerCase().split(/\\s+/);"
+    "  if (ac.includes('username')) return true;"
+    "  if ((el.type || '').toLowerCase() === 'email') return true;"
+    "  return /user|email|login/.test(((el.name || '') + ' ' + (el.id || '')).toLowerCase());"
+    "};"
     "const pwFields = Array.from(document.querySelectorAll('input[type=password]'))"
-    "  .filter(p => p.offsetParent !== null || p.getClientRects().length);"
+    "  .filter(visible);"
     "const pw = pwFields.find(p => p.value) || pwFields[0] || null;"
     "const usernameFor = p => {"
     "  if (!p) return null;"
     "  const form = p.form;"
     "  const scope = form ? Array.from(form.elements) : Array.from(document.querySelectorAll('input'));"
     "  const idx = scope.indexOf(p);"
-    "  const before = scope.slice(0, idx < 0 ? scope.length : idx).filter(texty);"
+    "  const cutoff = idx < 0 ? scope.length : idx;"
+    "  const eligible = scope.filter(e => texty(e) && visible(e));"
+    "  const before = eligible.filter(e => scope.indexOf(e) < cutoff);"
+    "  const hintedBefore = before.filter(usernameHint);"
+    "  if (hintedBefore.length) return hintedBefore[hintedBefore.length - 1];"
     "  if (before.length) return before[before.length - 1];"
-    "  const filled = scope.filter(e => texty(e) && e.value);"
+    "  const hintedAny = eligible.filter(usernameHint);"
+    "  if (hintedAny.length) return hintedAny[0];"
+    "  const filled = eligible.filter(e => e.value);"
     "  if (filled.length) return filled[0];"
-    "  const any = scope.filter(texty);"
-    "  return any.length ? any[0] : null;"
+    "  return eligible.length ? eligible[0] : null;"
     "};"
 )
 

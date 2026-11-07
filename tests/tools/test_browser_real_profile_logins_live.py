@@ -23,11 +23,12 @@ import socket
 import sqlite3
 import subprocess
 import threading
-import time
 import urllib.request
 from pathlib import Path
 
 import pytest
+
+from tests.waiting import wait_until
 
 pytestmark = pytest.mark.platforms("linux")
 
@@ -71,19 +72,20 @@ def _launch_chrome(profile_root: Path) -> tuple[subprocess.Popen, str]:
          "--no-first-run", "--no-default-browser-check", f"--remote-debugging-port={port}",
          "--disable-gpu", "about:blank"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    ws_url = None
-    for _ in range(200):
+
+    def _devtools_ws():
+        """The CDP endpoint once it is up; None until then. A dead process is a hard failure, not a
+        thing to keep waiting on."""
+        if proc.poll() is not None:
+            raise RuntimeError("chrome exited before opening its CDP port")
         try:
             info = json.load(urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version"))
-            ws_url = info["webSocketDebuggerUrl"]
-            break
+            return info["webSocketDebuggerUrl"]
         except Exception:
-            if proc.poll() is not None:
-                raise RuntimeError("chrome exited before opening its CDP port")
-            time.sleep(0.1)
-    if not ws_url:
-        proc.kill()
-        raise RuntimeError("chrome did not expose a CDP endpoint in time")
+            return None
+
+    ws_url = wait_until(_devtools_ws, timeout=20, interval=0.1,
+                        what="chrome CDP endpoint")
     return proc, ws_url
 
 
@@ -104,15 +106,29 @@ def _login_data_schema(scratch: Path) -> bytes:
     root.mkdir(parents=True)
     proc, _ = _launch_chrome(root)
     ld = root / "Default" / "Login Data"
+    probe = root / "schema-probe.db"
     try:
-        for _ in range(200):
-            if ld.is_file():
-                time.sleep(1.0)  # let chrome finish initialising the schema
-                break
-            time.sleep(0.1)
-        if not ld.is_file():
-            raise RuntimeError("chrome did not create Login Data")
-        return ld.read_bytes()
+        # Wait for Chrome to finish initialising the schema: the file existing is not enough (it is
+        # created before the ``logins`` table is), and the live DB is write-locked by the running
+        # browser, so poll a COPY until its ``logins`` table is queryable — then return that copy's
+        # bytes. This replaces a fixed 1 s sleep that raced schema creation on a loaded runner.
+        def _schema_bytes():
+            if not ld.is_file():
+                return None
+            try:
+                shutil.copy(ld, probe)
+                con = sqlite3.connect(probe)
+                try:
+                    con.execute("SELECT origin_url, username_value, password_value, "
+                                "blacklisted_by_user FROM logins LIMIT 0")
+                finally:
+                    con.close()
+                return probe.read_bytes()
+            except (OSError, sqlite3.Error):
+                return None
+
+        return wait_until(_schema_bytes, timeout=30, interval=0.1,
+                          what="chrome Login Data logins table")
     finally:
         _kill(proc)
 
@@ -192,6 +208,24 @@ _FORM_LATE = (b"<!doctype html><html><body><div id=app></div><script>setTimeout(
               b"<input type='password' name='password' autocomplete='current-password'>"
               b"<button type='submit'>Sign in</button></form>\";}, 1800);</script>"
               b"</body></html>")
+# An autocomplete=username field FOLLOWED by a plain trailing text input (e.g. a 2FA/search box).
+# The round-2 resolver chose the LAST texty input before the password, which is the trailing box,
+# read its empty value and refused the valid login. The fix prefers the explicit username hint.
+_FORM_HINT_THEN_TRAILING = (
+    b"<!doctype html><html><body><form action='/login' method='post'>"
+    b"<input type='text' name='user' autocomplete='username'>"
+    b"<input type='text' name='coupon' autocomplete='off'>"
+    b"<input type='password' name='password' autocomplete='current-password'>"
+    b"<button type='submit'>Sign in</button></form></body></html>")
+# A CSS-hidden honeypot text input placed AFTER the real username field. The round-2 resolver, which
+# only skipped type=hidden and picked the last texty input before the password, chose the honeypot
+# and read the wrong (empty) username. The fix skips non-visible inputs.
+_FORM_HONEYPOT = (
+    b"<!doctype html><html><body><form action='/login' method='post'>"
+    b"<input type='text' name='username' autocomplete='username'>"
+    b"<input type='text' name='email_confirm' style='display:none'>"
+    b"<input type='password' name='password' autocomplete='current-password'>"
+    b"<button type='submit'>Sign in</button></form></body></html>")
 
 
 @pytest.fixture(scope="module")
@@ -259,6 +293,30 @@ def test_name_login_text_field_resolves(live):
     assert got == "NAME-LOGIN-PW"
 
 
+# ── round-3 finding (1): the explicit username field is chosen over a trailing/honeypot control ───
+
+@_requires_chrome
+def test_username_hint_preferred_over_trailing_text_field(live):
+    """A form with an explicit ``autocomplete=username`` field FOLLOWED by a plain trailing text
+    input. The round-2 resolver picked the LAST texty input before the password (the trailing box),
+    read its empty value and refused the valid login. The fix prefers the explicit username hint, so
+    the real username is read and the saved password resolves."""
+    got = live([("jane@example.com", "HINT-PW", 10)], _FORM_HINT_THEN_TRAILING,
+               "jane@example.com", name="hint-trailing")
+    assert got == "HINT-PW"
+
+
+@_requires_chrome
+def test_css_hidden_honeypot_text_field_is_skipped(live):
+    """A CSS-hidden honeypot text input sits AFTER the real username field. The round-2 resolver only
+    skipped ``type=hidden`` and chose the honeypot (last texty input before the password), reading
+    the wrong (empty) username and refusing. The fix skips non-visible inputs, so the real username
+    resolves."""
+    got = live([("jane@example.com", "HONEYPOT-PW", 10)], _FORM_HONEYPOT,
+               "jane@example.com", name="honeypot")
+    assert got == "HONEYPOT-PW"
+
+
 # ── finding 3: a form that renders after the old 1s deadline still resolves ───────────────────────
 
 @_requires_chrome
@@ -300,6 +358,10 @@ def test_whitespace_username_resolves_through_the_backend(tmp_path, _schema, mon
                                 lambda: (ws_url, None))
             backend = next(b for b in enabled_backends() if b.name == "browser")
             item = next(i for i in backend.list_items() if i.origin == origin)
+            # The identifier is what the Desktop key button writes into the page's username field, so
+            # it must carry the RAW saved username (' bob '), not the stripped 'bob' (a different
+            # account). The label stays stripped for display.
+            assert item.identifier == " bob ", f"identifier lost its spaces: {item.identifier!r}"
             got = backend.resolve_password(item.id)
         finally:
             _kill(proc)

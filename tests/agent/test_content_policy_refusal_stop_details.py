@@ -32,3 +32,263 @@ def test_empty_refusal_reports_stop_details_explanation():
     )
     assert verdict.action == "return"
     assert "classifier halt" in verdict.result["error"]
+
+
+def test_has_explicit_refusal_distinguishes_stream_drop_from_real_refusal():
+    from agent.turn_truncation import has_explicit_refusal
+
+    drop_resp = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(refusal=None))], stop_reason=None)
+    drop_norm = SimpleNamespace(provider_data={})
+    assert has_explicit_refusal(drop_resp, drop_norm) is False
+
+    openai_refusal = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(refusal="I cannot help"))], stop_reason=None)
+    assert has_explicit_refusal(openai_refusal, drop_norm) is True
+
+    anthropic_refusal = SimpleNamespace(choices=None, stop_reason="refusal")
+    assert has_explicit_refusal(anthropic_refusal, drop_norm) is True
+
+    provider_data_refusal = SimpleNamespace(provider_data={"stop_details": {"type": "refusal"}})
+    assert has_explicit_refusal(drop_resp, provider_data_refusal) is True
+
+    responses_api_refusal = SimpleNamespace(
+        choices=None, stop_reason=None, status="incomplete", incomplete_details={"reason": "content_filter"},
+    )
+    assert has_explicit_refusal(responses_api_refusal, drop_norm) is True
+
+
+def test_empty_content_filter_without_explicit_refusal_does_not_leak_reasoning():
+    agent = _agent()
+    agent._extract_reasoning.return_value = "internal chain of thought before stream dropped"
+    drop_resp = SimpleNamespace(
+        content=[], stop_reason="end_turn", usage=None, model="claude", stop_details=None,
+    )
+    verdict = handle_content_policy_refusal(
+        agent, drop_resp, TurnRetryState(), thinking_spinner=None, messages=[], api_messages=[], api_kwargs={},
+        active_system_prompt=None, conversation_history=[], api_call_count=1, effective_task_id="t", turn_id="u",
+        api_request_id="r", api_start_time=0.0, retry_count=0, max_retries=0,
+    )
+    assert verdict.action == "return"
+    assert "internal chain of thought" not in verdict.result["error"]
+
+
+def _chat_agent():
+    import agent.transports.chat_completions
+    from agent.transports import get_transport
+
+    agent = MagicMock()
+    agent.api_mode, agent.provider, agent.model, agent.log_prefix = "chat_completions", "openai", "gpt-4o", ""
+    agent._is_anthropic_oauth = False
+    agent._get_transport.return_value = get_transport("chat_completions")
+    agent._has_pending_fallback.return_value = False
+    agent._try_activate_fallback.return_value = False
+    agent._extract_reasoning.return_value = "partial internal thought"
+    agent._should_treat_stop_as_truncated.return_value = False
+    return agent
+
+
+def test_chat_completions_legitimate_content_filter_without_extra_metadata_is_not_retried():
+    """(a) Standards-compliant Chat Completions content_filter with content=None and refusal=None
+    must enter refusal handling immediately, not be retried as a transient stream drop."""
+    from agent.turn_response_check import check_api_response
+
+    agent = _chat_agent()
+    msg = SimpleNamespace(role="assistant", content=None, refusal=None, tool_calls=None, reasoning_content=None)
+    response = SimpleNamespace(
+        id="chatcmpl-real-filter",
+        model="gpt-4o",
+        usage=SimpleNamespace(prompt_tokens=10, completion_tokens=0, total_tokens=10),
+        choices=[SimpleNamespace(index=0, message=msg, finish_reason="content_filter")],
+    )
+    verdict = check_api_response(
+        agent, response=response, _retry=TurnRetryState(), thinking_spinner=None, messages=[],
+        api_messages=[], api_kwargs={}, active_system_prompt=None, conversation_history=[],
+        finish_reason="content_filter", retry_count=0, max_retries=2, compression_attempts=0,
+        max_compression_attempts=2, length_continue_retries=0, truncated_response_parts=[],
+        truncated_tool_call_retries=0, current_turn_user_idx=0, api_call_count=1,
+        api_request_id="r1", api_start_time=0.0, effective_task_id="t1", turn_id="u1",
+        _preflight_compression_blocked=False, _last_preflight_pressure=None,
+    )
+    assert verdict.action == "return"
+    assert verdict.retry_count == 0
+    assert verdict.result["failed"] is True
+
+
+def test_producer_completed_stream_content_filter_with_reasoning_and_no_usage_is_not_labeled_aborted():
+    """Producer-level inverse: a completed stream ending with finish_reason='content_filter',
+    one reasoning delta, usage_obj=None (endpoint lacks stream_options.include_usage), and no
+    refusal/content delta must NOT be labeled an aborted transport or retried."""
+    from agent import chat_completion_helpers as cch
+    from agent.turn_response_check import check_api_response
+
+    agent = _chat_agent()
+    call = cch._StreamingCall.__new__(cch._StreamingCall)
+    call.agent = agent
+
+    class _CompletedStream:
+        def __iter__(self):
+            yield SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(reasoning_content="partial internal thought", content=None, refusal=None), finish_reason=None)],
+                usage=None,
+            )
+            yield SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(reasoning_content=None, content=None, refusal=None), finish_reason="content_filter")],
+                usage=None,
+            )
+
+    stream = _CompletedStream()
+    chunks = list(cch._iter_provider_stream_chunks(stream))
+    assert len(chunks) == 2
+    response = call._finish_chat_stream(
+        stream, "assistant", [], ["partial internal thought"], {}, "content_filter",
+        "gemini-2.5-pro", None, flush_pending=lambda: None,
+    )
+    assert getattr(response, "_proxy_stream_drop", False) is False
+
+    verdict = check_api_response(
+        agent, response=response, _retry=TurnRetryState(), thinking_spinner=None, messages=[],
+        api_messages=[], api_kwargs={}, active_system_prompt=None, conversation_history=[],
+        finish_reason="content_filter", retry_count=0, max_retries=2, compression_attempts=0,
+        max_compression_attempts=2, length_continue_retries=0, truncated_response_parts=[],
+        truncated_tool_call_retries=0, current_turn_user_idx=0, api_call_count=1,
+        api_request_id="r-prod-1", api_start_time=0.0, effective_task_id="t-prod-1", turn_id="u-prod-1",
+        _preflight_compression_blocked=False, _last_preflight_pressure=None,
+    )
+    assert verdict.action == "return"
+    assert verdict.retry_count == 0
+    assert "partial internal thought" not in verdict.result["error"]
+
+
+def test_chat_completions_positively_flagged_proxy_stream_drop_retries_without_leaking_reasoning(monkeypatch):
+    """(b) Producer-level observed transport abort after a content_filter frame sets a trusted
+    _proxy_stream_drop marker on the assembled response, retries on the same model while budget
+    remains, and suppresses partial reasoning if retries are exhausted."""
+    import httpx
+    import time
+    from agent import chat_completion_helpers as cch
+    from agent.turn_response_check import check_api_response
+
+    monkeypatch.setattr(time, "sleep", lambda _s: None)
+    agent = _chat_agent()
+    call = cch._StreamingCall.__new__(cch._StreamingCall)
+    call.agent = agent
+
+    class _AbortedStream:
+        def __iter__(self):
+            yield SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(reasoning_content="partial internal thought before proxy stream cut", content=None, refusal=None), finish_reason=None)],
+                usage=None,
+            )
+            yield SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(reasoning_content=None, content=None, refusal=None), finish_reason="content_filter")],
+                usage=None,
+            )
+            raise httpx.RemoteProtocolError("peer closed connection without sending complete message body")
+
+    stream = _AbortedStream()
+    chunks = list(cch._iter_provider_stream_chunks(stream))
+    assert len(chunks) == 2
+    response = call._finish_chat_stream(
+        stream, "assistant", [], ["partial internal thought before proxy stream cut"], {},
+        "content_filter", "claude-via-proxy", None, flush_pending=lambda: None,
+    )
+    assert getattr(response, "_proxy_stream_drop", False) is True
+
+    first = check_api_response(
+        agent, response=response, _retry=TurnRetryState(), thinking_spinner=None, messages=[],
+        api_messages=[], api_kwargs={}, active_system_prompt=None, conversation_history=[],
+        finish_reason="content_filter", retry_count=0, max_retries=2, compression_attempts=0,
+        max_compression_attempts=2, length_continue_retries=0, truncated_response_parts=[],
+        truncated_tool_call_retries=0, current_turn_user_idx=0, api_call_count=1,
+        api_request_id="r2", api_start_time=0.0, effective_task_id="t2", turn_id="u2",
+        _preflight_compression_blocked=False, _last_preflight_pressure=None,
+    )
+    assert first.action == "continue"
+    assert first.retry_count == 1
+
+    exhausted = check_api_response(
+        agent, response=response, _retry=TurnRetryState(), thinking_spinner=None, messages=[],
+        api_messages=[], api_kwargs={}, active_system_prompt=None, conversation_history=[],
+        finish_reason="content_filter", retry_count=1, max_retries=2, compression_attempts=0,
+        max_compression_attempts=2, length_continue_retries=0, truncated_response_parts=[],
+        truncated_tool_call_retries=0, current_turn_user_idx=0, api_call_count=2,
+        api_request_id="r3", api_start_time=0.0, effective_task_id="t2", turn_id="u2",
+        _preflight_compression_blocked=False, _last_preflight_pressure=None,
+    )
+    assert exhausted.action == "return"
+    assert "partial internal thought" not in exhausted.result["error"]
+
+
+def test_early_exit_partial_stub_retires_proxy_drop_marker_before_later_unmarked_content_filter():
+    """Producer-level seam regression: a proxy-marked stream that exits _finish_chat_stream early
+    via the no-finish reasoning-only partial stub retires its drop marker immediately, so a
+    subsequent unmarked legitimate content_filter stream (even reusing the same stream object/ID)
+    does not inherit _proxy_stream_drop or retry."""
+    from agent import chat_completion_helpers as cch
+    from agent.turn_response_check import check_api_response
+    from agent.turn_truncation import _OBSERVED_PROXY_DROP_STREAMS
+
+    agent = _chat_agent()
+    call = cch._StreamingCall.__new__(cch._StreamingCall)
+    call.agent = agent
+
+    class _ReusableStream:
+        __slots__ = ("frames",)
+
+        def __init__(self, frames):
+            self.frames = frames
+
+        def __iter__(self):
+            return iter(self.frames)
+
+    # 1. Proxy-marked stream yields reasoning, then clean EOF with finish_reason=None (early exit).
+    reusable = _ReusableStream([
+        SimpleNamespace(
+            proxy_stream_drop=True,
+            choices=[SimpleNamespace(delta=SimpleNamespace(reasoning_content="dropped thought", content=None, refusal=None), finish_reason=None)],
+            usage=None,
+        ),
+    ])
+    chunks_1 = list(cch._iter_provider_stream_chunks(reusable))
+    assert len(chunks_1) == 1
+    assert id(reusable) in _OBSERVED_PROXY_DROP_STREAMS
+
+    stub = call._finish_chat_stream(
+        reusable, "assistant", [], ["dropped thought"], {}, None,
+        "claude-via-proxy", None, flush_pending=lambda: None,
+    )
+    assert getattr(stub, "_clean_eof", False) is True
+    # Marker must be retired on the early exit even for a __slots__ stream without __dict__.
+    assert id(reusable) not in _OBSERVED_PROXY_DROP_STREAMS
+
+    # 2. Negative control: an unmarked, legitimate content_filter stream reusing the exact same ID/object
+    # must NOT inherit _proxy_stream_drop or be retried by check_api_response.
+    reusable.frames = [
+        SimpleNamespace(
+            choices=[SimpleNamespace(delta=SimpleNamespace(reasoning_content="normal thought", content=None, refusal=None), finish_reason=None)],
+            usage=None,
+        ),
+        SimpleNamespace(
+            choices=[SimpleNamespace(delta=SimpleNamespace(reasoning_content=None, content=None, refusal=None), finish_reason="content_filter")],
+            usage=None,
+        ),
+    ]
+    chunks_2 = list(cch._iter_provider_stream_chunks(reusable))
+    assert len(chunks_2) == 2
+    response = call._finish_chat_stream(
+        reusable, "assistant", [], ["normal thought"], {}, "content_filter",
+        "gpt-4o", None, flush_pending=lambda: None,
+    )
+    assert getattr(response, "_proxy_stream_drop", False) is False
+
+    verdict = check_api_response(
+        agent, response=response, _retry=TurnRetryState(), thinking_spinner=None, messages=[],
+        api_messages=[], api_kwargs={}, active_system_prompt=None, conversation_history=[],
+        finish_reason="content_filter", retry_count=0, max_retries=2, compression_attempts=0,
+        max_compression_attempts=2, length_continue_retries=0, truncated_response_parts=[],
+        truncated_tool_call_retries=0, current_turn_user_idx=0, api_call_count=1,
+        api_request_id="r-seam", api_start_time=0.0, effective_task_id="t-seam", turn_id="u-seam",
+        _preflight_compression_blocked=False, _last_preflight_pressure=None,
+    )
+    assert verdict.action == "return"
+    assert verdict.retry_count == 0
+    assert verdict.result["failed"] is True

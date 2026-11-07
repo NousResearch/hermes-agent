@@ -168,6 +168,140 @@ def normalize_response_for_agent(agent: Any, response: Any) -> Any:
     return agent._get_transport().normalize_response(response)
 
 
+def has_explicit_refusal(response: Any, normalized: Any) -> bool:
+    """True only when the provider flagged the refusal explicitly — ``provider_data.refusal`` /
+    ``provider_data.stop_details``, an OpenAI-style ``message.refusal``, Anthropic's native
+    ``stop_reason == "refusal"``, or Responses API ``incomplete_details.reason == "content_filter"``.
+    OpenAI-compatible Chat Completions proxies may report ``finish_reason=content_filter`` when the
+    upstream stream drops; those carry none of these flags."""
+    provider_data = getattr(normalized, "provider_data", None) or {}
+    if isinstance(provider_data, dict) and (provider_data.get("refusal") or provider_data.get("stop_details")):
+        return True
+    if getattr(response, "stop_reason", None) == "refusal":
+        return True
+    incomplete = getattr(response, "incomplete_details", None)
+    inc_reason = incomplete.get("reason") if isinstance(incomplete, dict) else getattr(incomplete, "reason", None)
+    if isinstance(inc_reason, str) and inc_reason.strip().lower() == "content_filter":
+        return True
+    choices = getattr(response, "choices", None)
+    if isinstance(choices, (list, tuple)) and choices:
+        if getattr(getattr(choices[0], "message", None), "refusal", None):
+            return True
+    return False
+
+
+def is_proxy_stream_drop(response: Any, normalized: Any = None) -> bool:
+    """True only when the transport or proxy positively flagged an aborted stream
+    (``response._proxy_stream_drop`` or ``provider_data["proxy_stream_drop"]``) rather
+    than a standards-compliant Chat Completions ``finish_reason="content_filter"``."""
+    if getattr(response, "_proxy_stream_drop", False):
+        return True
+    provider_data = getattr(normalized, "provider_data", None) or {}
+    if isinstance(provider_data, dict) and provider_data.get("proxy_stream_drop"):
+        return True
+    return False
+
+
+_OBSERVED_PROXY_DROP_STREAMS: set[int] = set()
+
+
+def _chunk_has_proxy_drop_marker(chunk: Any) -> bool:
+    """True when a stream chunk or its first choice/delta carries an explicit proxy abort flag."""
+    for obj in (chunk, *(getattr(chunk, "choices", None) or ())[:1]):
+        if getattr(obj, "proxy_stream_drop", False) or getattr(obj, "_proxy_stream_drop", False):
+            return True
+        extra = getattr(obj, "model_extra", None)
+        if isinstance(extra, dict) and extra.get("proxy_stream_drop"):
+            return True
+        delta = getattr(obj, "delta", None)
+        if delta is not None:
+            if getattr(delta, "proxy_stream_drop", False) or getattr(delta, "_proxy_stream_drop", False):
+                return True
+            d_extra = getattr(delta, "model_extra", None)
+            if isinstance(d_extra, dict) and d_extra.get("proxy_stream_drop"):
+                return True
+    return False
+
+
+def _mark_stream_proxy_drop(stream: Any) -> None:
+    if stream is None:
+        return
+    import contextlib
+    import weakref
+    sid = id(stream)
+    _OBSERVED_PROXY_DROP_STREAMS.add(sid)
+    with contextlib.suppress(TypeError):
+        weakref.finalize(stream, _OBSERVED_PROXY_DROP_STREAMS.discard, sid)
+    try:
+        stream._proxy_stream_drop = True
+    except Exception:
+        logger.debug("Could not attach _proxy_stream_drop to stream object", exc_info=True)
+
+
+def consume_stream_proxy_drop(stream: Any, *, proxy_stream_drop: bool = False) -> bool:
+    """Consume and retire any recorded proxy-drop marker for ``stream`` so an early return
+    or later object-ID reuse cannot leak the marker onto a subsequent stream."""
+    import contextlib
+    observed = bool(proxy_stream_drop)
+    if stream is not None:
+        sid = id(stream)
+        if sid in _OBSERVED_PROXY_DROP_STREAMS:
+            _OBSERVED_PROXY_DROP_STREAMS.discard(sid)
+            observed = True
+        if getattr(stream, "_proxy_stream_drop", False):
+            observed = True
+            with contextlib.suppress(Exception):
+                stream._proxy_stream_drop = False
+    return observed
+
+
+def iter_provider_stream_with_drop_guard(stream: Any):
+    """Yield chunks from ``stream`` while recording an observed proxy/transport abort
+    that occurs on or immediately after a ``finish_reason == "content_filter"`` frame."""
+    import httpx as _httpx
+
+    if stream is not None:
+        _OBSERVED_PROXY_DROP_STREAMS.discard(id(stream))
+    saw_content_filter = False
+    try:
+        for chunk in stream:
+            if _chunk_has_proxy_drop_marker(chunk):
+                _mark_stream_proxy_drop(stream)
+            choices = getattr(chunk, "choices", None)
+            if isinstance(choices, (list, tuple)) and choices:
+                fr = getattr(choices[0], "finish_reason", None)
+                if isinstance(fr, str) and fr.strip().lower() == "content_filter":
+                    saw_content_filter = True
+            yield chunk
+    except _httpx.HTTPError:
+        if not saw_content_filter:
+            raise
+        _mark_stream_proxy_drop(stream)
+
+
+def stamp_proxy_stream_drop(
+    stream: Any,
+    response: Any,
+    effective_finish_reason: Optional[str],
+    content_parts: Any,
+    refusal_parts: Any,
+    tool_calls_acc: Any,
+    *,
+    proxy_stream_drop: bool = False,
+) -> None:
+    """Stamp ``response._proxy_stream_drop = True`` only when an independent transport/proxy
+    abort was observed for a terminal ``content_filter`` stream with no visible payload."""
+    observed = consume_stream_proxy_drop(stream, proxy_stream_drop=proxy_stream_drop)
+    if (
+        observed
+        and effective_finish_reason == "content_filter"
+        and not content_parts
+        and not refusal_parts
+        and not tool_calls_acc
+    ):
+        response._proxy_stream_drop = True
+
+
 def partial_result(
     messages: list[dict[str, Any]], api_call_count: int, final_response: str,
     error: Optional[str] = None, *, failed: bool = False, compression_exhausted: bool = False,
@@ -728,7 +862,9 @@ def handle_content_policy_refusal(
 
     _refusal_result = normalize_response_for_agent(agent, response)
     _refusal_text = (getattr(_refusal_result, "content", None) or "").strip()
-    if not _refusal_text:
+    # Only fall back to the reasoning channel when the refusal was flagged explicitly,
+    # so a proxy stream drop mid-reasoning is not surfaced as a safety refusal.
+    if not _refusal_text and has_explicit_refusal(response, _refusal_result):
         _refusal_text = (agent._extract_reasoning(_refusal_result) or "").strip()
     # Anthropic stop_reason=refusal carries its reason on stop_details (category + optional explanation),
     # not in a content block — without it a classifier halt reads as "(no text)" (#113689).

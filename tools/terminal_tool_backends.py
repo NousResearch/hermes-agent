@@ -375,7 +375,8 @@ def _check_requirements(env_type: str, config: dict[str, Any]) -> bool:
         executable = finder()
         if not executable:
             return _reject(missing_msg or f"the {env_type!r} backend's executable was not found")
-        probe = subprocess.run([executable, arg], capture_output=True, timeout=5, stdin=subprocess.DEVNULL, check=False)
+        timeout = importlib.import_module("tools.environments.docker").DOCKER_PROBE_TIMEOUT if env_type == "docker" else 5
+        probe = subprocess.run([executable, arg], capture_output=True, timeout=timeout, stdin=subprocess.DEVNULL, check=False)
         if probe.returncode != 0:
             return _reject(f"{_PROBE_FAILED_REASONS[env_type]} (`{executable} {arg}` exited with code {probe.returncode})")
         return True

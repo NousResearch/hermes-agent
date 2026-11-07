@@ -48,3 +48,22 @@ def test_check_terminal_requirements_exception_captures_reason(monkeypatch):
     monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
     assert terminal_tool.check_terminal_requirements() is False
     assert "boom" in terminal_tool.terminal_backend_unavailable_reason()
+
+
+def test_docker_probe_uses_shared_timeout(monkeypatch):
+    """The docker probe waits DOCKER_PROBE_TIMEOUT, not the generic 5 s: a slow Docker Desktop CLI on
+    Windows must not be reported as a dead daemon (and killed mid-request) after 5 s."""
+    from tools.environments.docker import DOCKER_PROBE_TIMEOUT
+
+    seen: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"], seen["timeout"] = cmd, kwargs.get("timeout")
+        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+    monkeypatch.setitem(backends._BACKEND_SPECS, "docker",
+                        {"binary": (lambda: "/usr/bin/docker", "version", "unused")})
+    monkeypatch.setattr(backends.subprocess, "run", fake_run)
+    assert backends._check_requirements("docker", {}) is True
+    assert seen["cmd"] == ["/usr/bin/docker", "version"]
+    assert seen["timeout"] == DOCKER_PROBE_TIMEOUT >= 20

@@ -136,18 +136,20 @@ class TestZaiGLM52ReasoningEffort:
 
 
 class TestZaiGLM53ReasoningEffort:
-    """GLM-5.3's graded low/medium/high/max effort scale (issue #91789).
+    """GLM-5.3's graded effort scale is low/high/max.
 
-    Verified live on api.z.ai/api/coding/paas/v4: all four levels accepted
-    with monotonic reasoning-token scaling. Unlike 5.2, low and medium must
-    reach the wire instead of clamping up to high.
+    ``medium`` is rejected by the wire (HTTP 400 code 1210: "please use low,
+    high, or max") on both api/paas/v4 and api/coding/paas/v4, for glm-5.3 and
+    glm-5.3-flash, with or without the thinking marker (live-verified
+    2026-09-23) — so it rounds UP onto high instead of reaching the wire. Unlike
+    5.2, ``low`` must reach the wire rather than clamping up to high.
     """
 
     @pytest.mark.parametrize(
         ("effort", "expected"),
         [
             ("low", "low"),
-            ("medium", "medium"),
+            ("medium", "high"),
             ("high", "high"),
             ("max", "max"),
             ("xhigh", "max"),
@@ -161,6 +163,20 @@ class TestZaiGLM53ReasoningEffort:
         )
         assert extra_body == {"thinking": {"type": "enabled", "clear_thinking": False}}
         assert top_level == {"reasoning_effort": expected}
+
+    @pytest.mark.parametrize("effort", ["none", "minimal", "low", "medium", "high", "max", "xhigh", "ultra"])
+    @pytest.mark.parametrize(
+        "model", ["glm-5.3", "glm-5.3-flash", "z-ai/glm-5.3", "glm-5-3", "glm-5p3", "zai-org-glm-5-3"]
+    )
+    def test_emitted_effort_is_always_one_the_53_wire_accepts(self, zai_profile, model, effort):
+        """Every effort this profile puts on the wire for a 5.3-family model must be one the
+        model accepts — ``medium`` there is a hard 400 that silently diverts the request."""
+        _, top_level = zai_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": effort},
+            model=model,
+        )
+        emitted = top_level.get("reasoning_effort")
+        assert emitted in (None, "low", "high", "max"), (model, effort, top_level)
 
     @pytest.mark.parametrize(
         "model",
@@ -177,6 +193,15 @@ class TestZaiGLM53ReasoningEffort:
         """The 5.3 widening must not leak into 5.2's two-level wire."""
         _, top_level = zai_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": "low"},
+            model="glm-5.2",
+        )
+        assert top_level == {"reasoning_effort": "high"}
+
+    def test_glm_5_2_medium_lands_on_high(self, zai_profile):
+        """5.2's declared wire is high/max, so ``medium`` clamps DOWN onto high — the 5.3
+        override must not be what puts it there, and 5.2 keeps its two-level vocabulary."""
+        _, top_level = zai_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "medium"},
             model="glm-5.2",
         )
         assert top_level == {"reasoning_effort": "high"}

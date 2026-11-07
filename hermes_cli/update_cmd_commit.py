@@ -381,20 +381,25 @@ def _requires_python_spec(pyproject: bytes | str | None) -> str | None:
 
 
 MISSING_STARTUP_FILE = "the tree lists this startup file in [tool.hermes] update-startup-files but does not contain it"
+INVALID_STARTUP_FILES = "[tool.hermes] update-startup-files must be a list of relative file paths"
 
 
-def startup_files(pyproject: bytes | str | None, undeclared) -> tuple[tuple[str, ...], bool]:
+def startup_files(pyproject: bytes | str | None, undeclared) -> tuple[tuple[str, ...], bool] | None:
     """``(files, required)``: the startup files to compile in a tree, and whether each must exist.
 
     A tree that declares ``[tool.hermes] update-startup-files`` is judged by its own list, so a move
     that relocates a startup file edits that list and an update to it is judged by the new paths. A
     declared file the tree lacks refuses the update. A tree that declares none (a release before the
     declaration) is judged by ``undeclared`` with absent files skipped, so a rollback to it still works.
+    None: the tree declares a list that is not one, which refuses (never the older-release fallback).
     """
-    declared = _pyproject_tables(pyproject).get("tool", {}).get("hermes", {}).get("update-startup-files")
-    if isinstance(declared, list) and all(isinstance(rel, str) for rel in declared):
-        return tuple(declared), True
-    return tuple(undeclared), False
+    declared = _pyproject_tables(pyproject).get("tool", {}).get("hermes", {})
+    if "update-startup-files" not in declared:
+        return tuple(undeclared), False
+    listed = declared["update-startup-files"]
+    if not isinstance(listed, list) or not all(isinstance(rel, str) and rel for rel in listed):
+        return None
+    return tuple(listed), True
 
 
 def _spec_admits(spec: str, version: str) -> bool:
@@ -534,7 +539,9 @@ def target_syntax_error(git_cmd, root: Path, target_ref: str, relpaths) -> tuple
     try:
         files = read_target_files(git_cmd, root, target_ref, ["pyproject.toml", *relpaths])
         pyproject = files.pop("pyproject.toml", None)
-        names, required = startup_files(pyproject, relpaths)
+        if (selection := startup_files(pyproject, relpaths)) is None:
+            return "pyproject.toml", INVALID_STARTUP_FILES
+        names, required = selection
         if unread := [rel for rel in names if rel not in files]:
             files.update(read_target_files(git_cmd, root, target_ref, unread))
     except subprocess.TimeoutExpired:
@@ -550,7 +557,9 @@ def tree_syntax_error(root: Path, relpaths) -> tuple[str, str] | None:
     root = Path(root)
     pyproject_path = root / "pyproject.toml"
     pyproject = pyproject_path.read_bytes() if pyproject_path.is_file() else None
-    names, required = startup_files(pyproject, relpaths)
+    if (selection := startup_files(pyproject, relpaths)) is None:
+        return "pyproject.toml", INVALID_STARTUP_FILES
+    names, required = selection
     sources: dict[str, bytes | None] = {}
     for rel in names:
         try:

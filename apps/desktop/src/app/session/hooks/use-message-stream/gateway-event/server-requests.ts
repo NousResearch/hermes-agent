@@ -591,7 +591,7 @@ const previewAct: Handler = ({ deps, isActiveSession, request, sessionId }) => {
     const forwardVault = (operation: string) =>
       hasLivePreviewSurface(owner)
         ? null
-        : requestPopoutPreviewVault({ expression, operation, owner, scope, target }, owner)
+        : requestPopoutPreviewVault({ expression, operation, owner, scope, target }, owner, signal)
 
     void loadPreviewVault()
       .then(async mod => {

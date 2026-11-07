@@ -73,6 +73,11 @@ type BridgeResponse =
   | { id: string; kind: 'vault'; result: VaultBridgeResult }
   | { id: string; kind: 'error'; error: string }
 
+/** Cancel a forwarded request mid-flight (F5): the chat window owns the Stop/timeout
+ *  gate, so when its signal aborts it tells the pop-out to abort the in-flight op
+ *  before queued work (e.g. a password fill) reaches the page. */
+type BridgeCancel = { cancel: true; id: string }
+
 let seq = 0
 
 type RelayBus = {
@@ -136,7 +141,8 @@ function nextId(prefix: string): string {
 function askPopout<T>(
   request: BridgeRequest,
   timeoutMs: number,
-  pick: (response: BridgeResponse) => T | undefined
+  pick: (response: BridgeResponse) => T | undefined,
+  signal?: AbortSignal
 ): Promise<T | null> {
   const bus = getBus()
 
@@ -146,11 +152,40 @@ function askPopout<T>(
 
   return new Promise(resolve => {
     let stop: (() => void) | undefined
+    let onAbort: (() => void) | undefined
+
+    const finish = (value: T | null) => {
+      if (onAbort) {
+        signal?.removeEventListener('abort', onAbort)
+      }
+
+      resolve(value)
+    }
 
     const timer = window.setTimeout(() => {
       stop?.()
-      resolve(null)
+      finish(null)
     }, timeoutMs)
+
+    // The chat window's Stop/timeout aborted: tell the pop-out to abort its own
+    // in-flight controller so a queued fill never reaches the page (F5), then
+    // stop waiting for a reply.
+    if (signal) {
+      onAbort = () => {
+        window.clearTimeout(timer)
+        bus.post({ cancel: true, id: request.id } satisfies BridgeCancel)
+        stop?.()
+        finish(null)
+      }
+
+      if (signal.aborted) {
+        onAbort()
+
+        return
+      }
+
+      signal.addEventListener('abort', onAbort, { once: true })
+    }
 
     stop = bus.subscribe(data => {
       if (!data || typeof data !== 'object') {
@@ -173,12 +208,12 @@ function askPopout<T>(
       stop?.()
 
       if (response.kind === 'error') {
-        resolve(null)
+        finish(null)
 
         return
       }
 
-      resolve(pick(response as BridgeResponse) ?? null)
+      finish(pick(response as BridgeResponse) ?? null)
     })
 
     bus.post(request)
@@ -209,9 +244,16 @@ export function requestPopoutPreviewRead(
  *  `owner`'s tabs answers — the caller then runs the op locally (#150283
  *  server-requests pop-out forwarding). The chat window keeps the session gate;
  *  this only reaches the document after that gate passed. */
-export function requestPopoutPreviewVault(payload: VaultPayload, owner?: PreviewOwner): Promise<VaultBridgeResult | null> {
-  return askPopout({ id: nextId('vault'), kind: 'vault', payload, ...scopeFor(owner) }, VAULT_TIMEOUT_MS, response =>
-    response.kind === 'vault' ? response.result : undefined
+export function requestPopoutPreviewVault(
+  payload: VaultPayload,
+  owner?: PreviewOwner,
+  signal?: AbortSignal
+): Promise<VaultBridgeResult | null> {
+  return askPopout(
+    { id: nextId('vault'), kind: 'vault', payload, ...scopeFor(owner) },
+    VAULT_TIMEOUT_MS,
+    response => (response.kind === 'vault' ? response.result : undefined),
+    signal
   )
 }
 
@@ -223,7 +265,7 @@ export function requestPopoutPreviewVault(payload: VaultPayload, owner?: Preview
  * `close` releases it. The agent's session-active re-check lives in the chat
  * window, so here the binding's own document-still-pinned guard is authority.
  */
-async function runPopoutVaultOperation(payload: VaultPayload): Promise<VaultBridgeResult> {
+async function runPopoutVaultOperation(payload: VaultPayload, signal?: AbortSignal): Promise<VaultBridgeResult> {
   const { expression, operation, owner, scope, target } = payload
 
   if (operation === 'close') {
@@ -243,6 +285,10 @@ async function runPopoutVaultOperation(payload: VaultPayload): Promise<VaultBrid
       // The chat window gated the session before forwarding; the binding's own
       // document-pinned guard decides whether the page is still the right one.
       isSessionActive: () => true,
+      // Carry the chat window's cancellation (F5): a Stop while this pop-out
+      // waits to acquire guest activity must abort before the fill reaches the
+      // page, not merely bump a revision after the await.
+      signal,
       target
     })
   }
@@ -265,8 +311,20 @@ export function installPopoutPreviewResponder(): () => void {
     return () => {}
   }
 
+  // In-flight forwarded ops the chat window can still cancel (F5). Keyed by
+  // request id; a `cancel` message aborts the matching op before it fills.
+  const inFlight = new Map<string, AbortController>()
+
   const stop = bus.subscribe(data => {
     if (!data || typeof data !== 'object') {
+      return
+    }
+
+    const cancel = data as Partial<BridgeCancel>
+
+    if (cancel.cancel === true && typeof cancel.id === 'string') {
+      inFlight.get(cancel.id)?.abort()
+
       return
     }
 
@@ -298,8 +356,15 @@ export function installPopoutPreviewResponder(): () => void {
         }
 
         if (request.kind === 'vault') {
-          const result = await runPopoutVaultOperation(request.payload as VaultPayload)
-          bus.post({ id, kind: 'vault', result } satisfies BridgeResponse)
+          const controller = new AbortController()
+          inFlight.set(id, controller)
+
+          try {
+            const result = await runPopoutVaultOperation(request.payload as VaultPayload, controller.signal)
+            bus.post({ id, kind: 'vault', result } satisfies BridgeResponse)
+          } finally {
+            inFlight.delete(id)
+          }
 
           return
         }
@@ -307,6 +372,7 @@ export function installPopoutPreviewResponder(): () => void {
         const result = await readActivePreview(request.payload as PreviewReadOptions)
         bus.post({ id, kind: 'read', result } satisfies BridgeResponse)
       } catch (error) {
+        inFlight.delete(id)
         bus.post({
           id,
           kind: 'error',

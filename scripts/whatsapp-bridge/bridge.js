@@ -12,6 +12,7 @@
  *   POST /send-media     - Send media natively { chatId, filePath, mediaType?, caption?, fileName?, mentions? }
  *   POST /send-location  - Send location pin { chatId, latitude, longitude, name?, address? }
  *   POST /typing         - Send typing indicator { chatId }
+ *   POST /react          - React to a message { chatId, messageId, emoji, senderId?, fromMe? }
  *   GET  /chat/:id       - Get chat info
  *   GET  /health         - Health check
  *
@@ -19,7 +20,7 @@
  *   node bridge.js --port 3000 --session ~/.hermes/whatsapp/session
  */
 
-import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage, getAggregateVotesInPollMessage, decryptPollVote, getKeyAuthor, jidNormalizedUser } from '@whiskeysockets/baileys';
+import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage, getAggregateVotesInPollMessage, decryptPollVote, getKeyAuthor, jidNormalizedUser, generateMessageIDV2 } from '@whiskeysockets/baileys';
 import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
@@ -31,8 +32,10 @@ import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedSender, matchesAllowedUser, matchesInboundWhatsAppGroup, parseAllowedUsers } from './allowlist.js';
-import { createOutboundIdTracker } from './outbound_ids.js';
+import { createOutboundIdTracker, isOwnSendEcho } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
+import { registerReactionRoute } from './reaction.js';
+import { createSendQueue } from './send_queue.js';
 import {
   addMentions,
   buildPollPayload,
@@ -139,35 +142,12 @@ const CHUNK_DELAY_MS = parseInt(process.env.WHATSAPP_CHUNK_DELAY_MS || '300', 10
 // fires. Fail fast instead so the gateway can surface a real error and retry.
 const SEND_TIMEOUT_MS = parseInt(process.env.WHATSAPP_SEND_TIMEOUT_MS || '60000', 10);
 
-// --- Send queue: serialise all sock.sendMessage() calls across concurrent
-//     HTTP handlers so a single Baileys socket never has overlapping sends.
-//     Overlapping sends are the root cause of cross-chat contamination
-//     (#33360) — the WhatsApp protocol-level routing can misdeliver when
-//     two sendMessage() Promises race on the same socket. ---
-let _sendQueue = Promise.resolve();
-
-function enqueueSend(fn) {
-  const task = _sendQueue.then(() => fn(), () => fn());
-  _sendQueue = task.catch(() => {});
-  return task;
-}
+// Every sock.sendMessage() goes through one serialized, timeout-bounded queue
+// (see send_queue.js for why sends must never overlap on the socket).
+const { sendWithTimeout } = createSendQueue({ getSocket: () => sock, defaultTimeoutMs: SEND_TIMEOUT_MS });
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-function sendWithTimeout(chatId, payload, options = {}, timeoutMs = SEND_TIMEOUT_MS) {
-  let timer;
-  const timeoutPromise = new Promise((_, reject) => {
-    timer = setTimeout(
-      () => reject(new Error(`sendMessage timed out after ${timeoutMs / 1000}s`)),
-      timeoutMs,
-    );
-  });
-  return enqueueSend(() =>
-    Promise.race([sock.sendMessage(chatId, payload, options), timeoutPromise])
-      .finally(() => clearTimeout(timer))
-  );
 }
 
 function formatOutgoingMessage(message) {
@@ -762,8 +742,15 @@ async function startSocket() {
       });
       event.fromOwner = fromOwner;
 
-      // Ignore Hermes' own reply messages in self-chat mode to avoid loops.
-      if (msg.key.fromMe && ((REPLY_PREFIX && event.body.startsWith(REPLY_PREFIX)) || recentlySentIds.has(msg.key.id))) {
+      // Ignore Hermes' own sends (replies, reactions) echoed back as fromMe, to avoid loops.
+      const ownEcho = isOwnSendEcho({
+        fromMe: msg.key.fromMe,
+        messageId: msg.key.id,
+        body: event.body,
+        replyPrefix: REPLY_PREFIX,
+        recentlySent: recentlySentIds,
+      });
+      if (ownEcho) {
         if (WHATSAPP_DEBUG) {
           emitDebugEvent({
             stage: 'ignored',
@@ -1075,6 +1062,16 @@ app.post('/send-location', async (req, res) => {
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
+});
+
+// React to an existing message. The injected send function is the same
+// serialized, timeout-bounded path used by every other outbound send.
+registerReactionRoute(app, {
+  getSocket: () => sock,
+  getConnectionState: () => connectionState,
+  sendWithTimeout,
+  trackSentMessageId,
+  newMessageId: () => generateMessageIDV2(sock?.user?.id),
 });
 
 // Typing indicator

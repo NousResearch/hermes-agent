@@ -82,9 +82,10 @@ one core browser tool (beside `browser_cdp` / `browser_dialog` / `browser_vault`
 CDP endpoint comes from is `browser_session.get_session_info(cache_key)`: operator `BU_CDP_*` env (in
 browser_exec) > CDP override (live `/browser connect` > `BROWSER_CDP_URL` > `browser.cdp_url`) >
 hybrid `::local` sidecar > cloud provider (failure → local session marked `fallback_from_cloud`) >
-local. The local branch is not a further fallback chain: it serves the consented real profile when
-`browser.use_real_profile` is on, else a fresh browser on the configured engine — the packaged
-Chromium from `browser_launcher.launch_chromium` by default, or Lightpanda only when
+local. The local branch is not a further fallback chain: it tries the consented real profile when
+`browser.use_real_profile` is on, and otherwise (consent off, the profile can't load, or a
+no-profile engine like Lightpanda) runs a fresh signed-out browser on the configured engine — the
+packaged Chromium from `browser_launcher.launch_chromium` by default, or Lightpanda only when
 `browser.engine: lightpanda` is set (never tried automatically). One browser per cache key
 (`--remote-debugging-port=0` + `DevToolsActivePort`). State lives in
 `browser_session.py`; siblings late-import it inside functions. Every launched Chromium is stopped

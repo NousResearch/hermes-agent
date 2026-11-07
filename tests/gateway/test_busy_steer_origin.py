@@ -47,7 +47,7 @@ async def test_busy_injection_preserves_original_routing_fields(route, platform,
     if route == "explicit":
         await runner._busy_steer_command(event, "key", source)
     elif route == "priority":
-        runner._hm_busy_steer(event, receiver, "key")
+        await runner._hm_busy_steer(event, receiver, "key")
     elif route == "priority_redirect":
         await runner._hm_busy_interrupt(event, source, receiver, "key")
     else:

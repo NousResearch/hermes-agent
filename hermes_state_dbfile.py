@@ -26,8 +26,9 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from hermes_state_holders import canonical_sqlite_path, read_only_db_uri
 from hermes_state_common import (
-    FTS_REBUILD_DEFERRAL_KEY, stat_db_file_identity as _stat_db_file_identity
+    FTS_REBUILD_DEFERRAL_KEY, path_is_under, stat_db_file_identity as _stat_db_file_identity
 )
+from hermes_state_lockguard import own_descriptors
 
 # Log-record parity with the origin module (caplog tests pin "hermes_state").
 logger = logging.getLogger("hermes_state")
@@ -68,6 +69,8 @@ def _prepare_connection_retirement():
 # cached for the life of the process (opening never cancels locks).  When the path is re-pointed
 # at a new inode (the very replacement this probe detects) the stale fd is RETIRED, never closed
 # — closing it would cancel the live connection's locks.  Replacements are rare and halt writes.
+# close_all_under (hermes_state_registry) closes a home's probes, but only once no other
+# descriptor in the process is open on the inode: the only lock-safe time to close.
 _HEADER_PROBE_LOCK = threading.Lock()
 _HEADER_PROBE_FDS: dict[str, tuple[int, int, int]] = {}  # key -> (fd, dev, ino)
 _RETIRED_HEADER_PROBE_FDS: list[int] = []  # intentionally never closed
@@ -109,6 +112,38 @@ def _pread_db_range(db_path: Path, offset: int, length: int) -> Optional[bytes]:
         with contextlib.suppress(OSError):
             return os.pread(cached[0], length, offset)
     return None
+
+
+def header_probes_under(root: Path) -> dict[str, tuple[int, int, int]]:
+    """Snapshot of the cached probes at or under *root*: key -> (fd, dev, ino)."""
+    with _HEADER_PROBE_LOCK:
+        entries = dict(_HEADER_PROBE_FDS)
+    return {key: entry for key, entry in entries.items() if path_is_under(Path(key), root)}
+
+
+def inodes_with_other_descriptors(identities: set[tuple[int, int]]) -> Optional[set[tuple[int, int]]]:
+    """Which of *identities* (``(st_dev, st_ino)``) have a non-probe descriptor open in this
+    process; None when the fd table is unreadable (callers then close nothing). Probes are left
+    out: they hold no locks, so two spellings of one path must not pin each other. The probe lock
+    is taken only to copy the probe fds, never across the scan."""
+    with _HEADER_PROBE_LOCK:
+        probe_fds = {entry[0] for entry in _HEADER_PROBE_FDS.values()}
+        probe_fds.update(_RETIRED_HEADER_PROBE_FDS)  # retired probes hold no locks either
+    descriptors = own_descriptors()
+    if descriptors is None:
+        return None
+    return {ident for fd, ident in descriptors if fd not in probe_fds and ident in identities}
+
+
+def close_header_probe_if_unchanged(key: str, expected: tuple[int, int, int]) -> bool:
+    """False, and the fd stays, when the entry changed since the caller checked it."""
+    with _HEADER_PROBE_LOCK:
+        if _HEADER_PROBE_FDS.get(key) != expected:
+            return False
+        del _HEADER_PROBE_FDS[key]
+        with contextlib.suppress(OSError):
+            os.close(expected[0])
+    return True
 
 
 def _pread_db_header(db_path: Path, length: int) -> Optional[bytes]:
@@ -440,22 +475,7 @@ def _own_descriptor_for_identity(identity) -> Optional[int]:
     if not identity:
         return None
     wanted = tuple(identity)
-    for fd_dir in ("/proc/self/fd", "/dev/fd"):
-        try:
-            names = os.listdir(fd_dir)
-        except OSError:
-            continue
-        for name in names:
-            if not name.isdigit():
-                continue
-            try:
-                st = os.fstat(int(name))
-            except OSError:
-                continue
-            if (st.st_dev, st.st_ino) == wanted:
-                return int(name)
-        return None  # the table was readable: a definitive miss
-    return None
+    return next((fd for fd, ident in own_descriptors() or () if ident == wanted), None)
 
 
 def _copy_range(read: Callable[[int, int], Optional[bytes]], dest: Path, *, size: int) -> dict[str, Any]:

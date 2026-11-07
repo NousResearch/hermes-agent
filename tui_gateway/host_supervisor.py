@@ -449,14 +449,19 @@ class HostSupervisor:
             if self._proc is not proc:
                 return
             self._proc = None
+            # Detached with the process: anything registered after this belongs to a replacement host.
+            waiters = self._detach_waiters_locked()
         self._remove_registry()
-        self._fail_pending_turns(reason="crash", message=f"compute host exited with code {code}")
+        self._fail_pending_turns(reason="crash", message=f"compute host exited with code {code}", waiters=waiters)
         self._maybe_respawn_after_crash()
 
-    def _fail_pending_turns(self, *, reason: str, message: str) -> None:
-        with self._lock:
-            pending = self._pending_turns
-            self._pending_turns = {}
+    def _detach_waiters_locked(self) -> tuple[dict, dict, dict]:
+        detached = (self._pending_turns, self._pending_controls, self._late_control_handlers)
+        self._pending_turns, self._pending_controls, self._late_control_handlers = {}, {}, {}
+        return detached
+
+    def _fail_pending_turns(self, *, reason: str, message: str, waiters: tuple[dict, dict, dict]) -> None:
+        pending, waiting, late = waiters
         failure = {"reason": reason, "message": message}
         for request_id, (sid, cb) in pending.items():
             self.rpc_sink({"jsonrpc": "2.0", "method": "event",
@@ -466,11 +471,6 @@ class HostSupervisor:
                 _call_logged(cb, frame, "compute host error callback failed")
         # A crashed host never answers controls still waiting or the late acks timed-out waiters
         # expect; fail both so neither the caller nor the client's "still running" notice hangs.
-        with self._lock:
-            waiting = self._pending_controls
-            self._pending_controls = {}
-            late = self._late_control_handlers
-            self._late_control_handlers = {}
         for request_id, (q, error_type) in waiting.items():
             with contextlib.suppress(queue.Full):
                 q.put_nowait({"type": error_type, "request_id": request_id, **failure})

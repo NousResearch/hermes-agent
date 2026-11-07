@@ -46,6 +46,19 @@ def _session(**extra) -> dict:
     }
 
 
+class _ExitedHost:
+    def wait(self):
+        return 1
+
+
+def _crash(sup: HostSupervisor) -> None:
+    """Run the supervisor's own exit path for a host that exited with code 1."""
+    sup._proc = _ExitedHost()
+    sup._remove_registry = lambda: None
+    sup._maybe_respawn_after_crash = lambda: None
+    sup._wait_for_exit(sup._proc)
+
+
 # ── HostSupervisor: late-ack registration ───────────────────────────────────
 
 
@@ -114,7 +127,7 @@ def test_host_crash_fails_outstanding_late_ack_handlers():
     with pytest.raises(queue.Empty):
         sup.control("sid", route_name="session.compress", wait=True, timeout=0.01,
                     on_late_ack=fired.append)
-    sup._fail_pending_turns(reason="crash", message="compute host exited with code 1")
+    _crash(sup)
     assert len(fired) == 1
     assert fired[0]["type"] == "control.error"
     assert fired[0]["request_id"] == sent[0]["request_id"]
@@ -136,7 +149,7 @@ def test_host_crash_answers_controls_still_waiting():
         caller.start()
     assert wait_until(lambda: len(sup._pending_controls) == 3, timeout=5)
 
-    sup._fail_pending_turns(reason="crash", message="compute host exited with code 1")
+    _crash(sup)
     for caller in callers:
         caller.join(timeout=5)
 
@@ -279,8 +292,44 @@ def test_reload_mcp_reports_a_host_crash_as_an_error(compute_host_gateway):
     caller.start()
     assert wait_until(lambda: sup._pending_controls, timeout=5)
 
-    sup._fail_pending_turns(reason="crash", message="compute host exited with code 1")
+    _crash(sup)
     caller.join(timeout=5)
 
     assert replies[0]["error"]["code"] == 5019
     assert "compute host exited with code 1" in replies[0]["error"]["message"]
+
+
+def test_a_crash_does_not_fail_controls_sent_to_the_replacement_host():
+    """Waiters are detached with the exited process; a control registered afterwards, while a turn
+    callback has already started a replacement host, keeps waiting for that host's reply."""
+    sup, sent = _supervisor()
+    replies: list = []
+
+    def start_a_new_control(_frame):
+        threading.Thread(target=lambda: replies.append(sup.control(
+            "sid", route_name="session.save", wait=True, timeout=5))).start()
+        assert wait_until(lambda: sup._pending_controls, timeout=5)
+
+    sup._pending_turns["turn-1"] = ("sid", start_a_new_control)
+    _crash(sup)
+
+    new_request = sent[-1]["request_id"]
+    assert replies == []
+    sup._handle_host_frame({"type": "control.ack", "sid": "sid", "request_id": new_request, "route_name": "session.save"})
+    assert wait_until(lambda: replies, timeout=5)[0]["type"] == "control.ack"
+
+
+def test_reload_mcp_reports_an_error_inside_the_host_ack(compute_host_gateway):
+    """The host wraps its own reload.mcp reply in reload_mcp.ack even when that reply is an error."""
+    sup, sent, _emitted, _session = compute_host_gateway
+    replies: list = []
+    caller = threading.Thread(target=lambda: replies.append(server.handle_request(
+        {"id": "9", "method": "reload.mcp", "params": {"session_id": "sid", "confirm": True}})))
+    caller.start()
+    assert wait_until(lambda: sent, timeout=5)
+    sup._handle_host_frame({"type": "reload_mcp.ack", "sid": "sid", "request_id": sent[-1]["request_id"],
+                            "response": {"id": "9", "error": {"code": 5000, "message": "discovery failed"}}})
+    caller.join(timeout=5)
+
+    assert replies[0]["error"]["code"] == 5019
+    assert "discovery failed" in replies[0]["error"]["message"]

@@ -336,3 +336,13 @@ def test_third_patch_failure_hint_requires_a_full_reread_before_write_file(tmp_p
     assert "failure #3" in hint
     assert "re-read the file in full, then use write_file to replace it" in hint
     assert "use write_file to replace the entire file" not in hint
+
+
+def test_add_then_update_in_one_patch_keeps_the_baseline(tmp_path, task):
+    added = tmp_path / "added_then_updated.txt"
+    _ok(_dispatch("patch", task, mode="patch", patch=(
+        f"*** Begin Patch\n*** Add File: {added}\n+one\n"
+        f"*** Update File: {added}\n@@\n-one\n+two\n*** End Patch")))
+    assert added.read_text() == "two"
+    _ok(_write(added, task, "replaced\n"))
+    assert added.read_text() == "replaced\n"

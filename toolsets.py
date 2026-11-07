@@ -101,6 +101,14 @@ TOOLSETS = {
         "instructions and knowledge",
         ["skills_list", "skill_view", "skill_manage"],
     ),
+    # Halves of ``skills`` for hosts whose sessions may read skills but must not create or edit them:
+    # enable ``skills_read``, or keep ``skills`` and disable ``skills_manage``. The tools stay registered
+    # under ``skills``, so every existing configuration resolves exactly as before.
+    "skills_read": _ts(
+        "List and read skill documents with specialized instructions and knowledge",
+        ["skills_list", "skill_view"],
+    ),
+    "skills_manage": _ts("Create, edit, and manage skill documents", ["skill_manage"]),
     # web_search belongs to `web`/`search` only. Listing it here too let
     # `disabled_toolsets: [browser]` (headless/Docker deployments) strip
     # web_search from every session, because disabled toolsets are a strict

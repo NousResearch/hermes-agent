@@ -1329,6 +1329,16 @@ def _render_skills_index(
         if len(rows) > 1:
             index_lines.append(f"  {category}:")
         index_lines.extend(f"{indent}- {name}: {desc}" if desc else f"{indent}- {name}" for name, desc in rows.items())
+    # A session with read-only skills (``skills_read`` without ``skills_manage``) must not be told to
+    # patch or save skills it has no tool for.
+    if available_tools is None or "skill_manage" in available_tools:
+        maintenance_guidance = (
+            "If a skill has issues, fix it with skill_manage(action='patch').\n"
+            "After difficult/iterative tasks, offer to save as a skill. If a skill you loaded was missing steps, "
+            "had wrong commands, or needed pitfalls you discovered, update it before finishing.\n"
+        )
+    else:
+        maintenance_guidance = "Skills are read-only in this session. Do not attempt to modify them.\n"
     from agent.oneshot_footprint import ONESHOT_SKILLS_LOAD_GUIDANCE, is_single_query_session
     if is_single_query_session():
         return (
@@ -1347,10 +1357,8 @@ def _render_skills_index(
         "Skills also encode the user's preferred approach, conventions, and quality standards for tasks like "
         "code review, planning, and testing — load them even for tasks you already know how to do, because "
         "the skill defines how it should be done here.\n"
-        "If a skill has issues, fix it with skill_manage(action='patch').\n"
-        "After difficult/iterative tasks, offer to save as a skill. If a skill you loaded was missing steps, "
-        "had wrong commands, or needed pitfalls you discovered, update it before finishing.\n"
-        "\n"
+        + maintenance_guidance
+        + "\n"
         "<available_skills>\n"
         + "\n".join(index_lines) + "\n"
         "</available_skills>\n\n"

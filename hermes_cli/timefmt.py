@@ -32,7 +32,7 @@ def coerce_epoch(value: Any, *, session_id: Optional[str] = None, field: str = "
         return None
     try:
         ts = float(value.timestamp()) if isinstance(value, datetime) else float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError, OSError):
         ts = math.nan
     if not (EPOCH_MIN <= ts <= EPOCH_MAX):  # also False for nan
         logger.warning("Ignoring corrupt %s %r%s", field, value, f" on session {session_id}" if session_id else "")

@@ -1,0 +1,37 @@
+name: assumption-ledger
+title: Assumption Ledger
+version: "0.1.1"
+repo: https://github.com/itzebe/hermes-assumption-ledger
+sha: 388cf029ccc5324c3f246423c8d461aa93d60090
+description: >-
+  Persistent operational-assumption ledger. Captures the assumptions an agent makes from its own
+  observable output (explicit markers and anchored patterns), keeps the sentence each came from as
+  provenance, verifies them with deterministic checks, and blocks only the decisions that depend on
+  an assumption evidence has contradicted. Disclosure — all state is local: assumptions, evidence
+  and decisions are stored in a plain SQLite database under HERMES_HOME/plugin-data/assumption-ledger/
+  (created on first use, never pruned by the plugin; delete the directory to clear it). It makes no
+  network request of its own and needs no credentials; the only outbound traffic is the HTTP checks
+  you explicitly record (http_status, http_json_field) against URLs you name. It reads local files,
+  git state, environment variables, SQLite databases and the output of read-only commands you
+  declare, and it injects a short summary of live assumptions into the next turn's context. It
+  exposes no tools that write to external systems.
+maintainer: itzebe
+tier: community
+category: memory
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/itzebe/hermes-assumption-ledger#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - assumption_record
+    - assumption_check
+    - assumption_status
+    - assumption_decide
+  provides_hooks:
+    - pre_llm_call
+    - post_llm_call
+    - post_tool_call
+    - pre_verify
+  provides_middleware: []
+  requires_env: []

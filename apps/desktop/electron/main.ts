@@ -46,6 +46,7 @@ import { type ActiveRuntimeState, classifyActiveRuntime } from './active-runtime
 import { HERMES_API_EXPECTED_404 } from './api-expected-404'
 import {
   destroyKeepaliveAgents,
+  freshJsonAgentFor,
   htmlResponseError,
   httpStatusError,
   jsonAgentFor,
@@ -5205,7 +5206,11 @@ function fetchJson(url, token, options: any = {}) {
 
         const parsed = new URL(url)
         const client = parsed.protocol === 'https:' ? https : http
-        const agent = jsonAgentFor(parsed.protocol)
+        // freshSocket bypasses the keep-alive pool: a health probe that must
+        // tell "stale pooled socket" (wedge leftover) from "backend gone" needs
+        // a socket that cannot have come from the pool. Bulk traffic keeps the
+        // shared pooled agent above.
+        const agent = options.freshSocket ? freshJsonAgentFor(parsed.protocol) : jsonAgentFor(parsed.protocol)
         const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
 
         if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
@@ -5300,7 +5305,7 @@ function fetchJson(url, token, options: any = {}) {
         req.end()
       })
     },
-    { method: options.method || 'GET' }
+    { method: options.method || 'GET', timeoutMs: resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS) } (fix(desktop): scale retry backoff to the triggering timeout with jitter)
   )
 }
 
@@ -5402,7 +5407,7 @@ function fetchPublicJson(url, options: any = {}) {
 
         req.end()
       }),
-    { method: options.method || 'GET' }
+    { method: options.method || 'GET', timeoutMs: resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS) }
   )
 }
 
@@ -15130,7 +15135,7 @@ async function getJsonForBackend(descriptor, path, opts: any = {}) {
 async function fetchJsonForBackend(
   descriptor,
   path,
-  opts: { method?: string; body?: unknown; upload?: unknown; timeoutMs?: number; profileScoped?: boolean } = {}
+  opts: { method?: string; body?: unknown; upload?: unknown; timeoutMs?: number; profileScoped?: boolean; freshSocket?: boolean } = {}
 ) {
   const url = `${descriptor.baseUrl}${path}`
 
@@ -15158,7 +15163,7 @@ async function fetchJsonForBackend(
 
   if (descriptor.authMode === 'oauth') {
     // The OAuth cookie path rides electron.net with JSON headers; multipart
-    // isn't wired there. Fail loudly rather than corrupting the upload.
+    // isn't wired there. Fail loudly rather than corrupt the upload.
     if (opts.upload) {
       throw new Error('File uploads are not supported against OAuth-gated remote backends yet.')
     }
@@ -15167,6 +15172,7 @@ async function fetchJsonForBackend(
       method: opts.method,
       body: opts.body,
       timeoutMs: opts.timeoutMs,
+      freshSocket: opts.freshSocket,
       headers: descriptor.headers
     }
 
@@ -15182,6 +15188,7 @@ async function fetchJsonForBackend(
     body: opts.body,
     upload: opts.upload,
     timeoutMs: opts.timeoutMs,
+    freshSocket: opts.freshSocket,
     headers: descriptor.headers,
     gatewayDescriptor: descriptor.gatewayEndpoint ? descriptor : undefined
   })

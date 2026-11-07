@@ -9,6 +9,7 @@ import { promisify } from 'node:util'
 import { test, vi } from 'vitest'
 
 import {
+  _hasZombieForwardChannel,
   baseSshOptions,
   buildControlArgs,
   buildExecArgs,
@@ -583,6 +584,183 @@ test('mux forward keeps the ControlPersist master alive until the final forward 
     vi.useRealTimers()
   }
 })
+
+test('keepalive periodically runs a real exec so a wedged mux channel is evicted', async () => {
+  vi.useFakeTimers()
+
+  try {
+    const logs: string[] = []
+    // `-O check` succeeds (mux answers) but the real `exit 0` exec fails —
+    // exactly the wedged-channel signature. On the Nth tick the keepalive
+    // promotes check -> exec, sees the failure, and evicts the stale master.
+    const spawnFn = scriptedSpawn(args => {
+      if (args[args.length - 1] === 'exit 0') {
+        return { code: 255, stderr: 'client_loop: send disconnect: Broken pipe' }
+      }
+
+      return { code: 0 }
+    })
+
+    const conn = new SshConnection(
+      { host: 'box', user: 'me' },
+      { spawnFn, controlDir: '/tmp/d', rememberLog: l => logs.push(l), procNetTcpPaths: ['/dev/null'] }
+    )
+
+    await conn.forward(5000, 6000)
+
+    const execs = () => spawnFn.calls.filter(args => args[args.length - 1] === 'exit 0').length
+    const exits = () => spawnFn.calls.filter(args => args[0] === '-O' && args[1] === 'exit').length
+
+    // Ticks 1..4 are plain `-O check` refreshes; tick 5 promotes to a real exec.
+    await vi.advanceTimersByTimeAsync(CONTROL_FORWARD_KEEPALIVE_MS * 4)
+    assert.equal(execs(), 0, 'the first four ticks stay on the cheap -O check')
+
+    await vi.advanceTimersByTimeAsync(CONTROL_FORWARD_KEEPALIVE_MS)
+    assert.equal(execs(), 1, 'the fifth tick runs a real exec to detect a wedged channel')
+    assert.equal(exits(), 1, 'a failed exec evicts the stale master')
+
+    await vi.advanceTimersByTimeAsync(CONTROL_FORWARD_KEEPALIVE_MS)
+    assert.ok(
+      logs.some(l => l.includes('failed periodic exec verification')),
+      'the eviction is logged for the user'
+    )
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+
+test('keepalive evicts a dead control master only after consecutive failed checks', async () => {
+  vi.useFakeTimers()
+
+  try {
+    const logs: string[] = []
+    // `-O check` fails (control socket gone — ControlPersist idle-expiry), while
+    // any real exec still "succeeds" so only the isAlive() path sees the death.
+    const spawnFn = scriptedSpawn(args =>
+      args[0] === '-O' && args[1] === 'check' ? { code: 255 } : { code: 0 }
+    )
+
+    const conn = new SshConnection(
+      { host: 'box', user: 'me' },
+      { spawnFn, controlDir: '/tmp/d', rememberLog: l => logs.push(l) }
+    )
+
+    await conn.forward(5000, 6000)
+
+    const exits = () => spawnFn.calls.filter(args => args[0] === '-O' && args[1] === 'exit').length
+
+    // First failing tick: one failure is not enough (transient guard), no evict yet.
+    await vi.advanceTimersByTimeAsync(CONTROL_FORWARD_KEEPALIVE_MS)
+    assert.equal(exits(), 0, 'a single failed check must not evict a possibly-healthy master')
+    assert.equal(
+      logs.some(l => l.includes('keepalive check failed repeatedly')),
+      false,
+      'no eviction is logged on the first failure'
+    )
+
+    // Second consecutive failing tick: the master is confirmed dead, evict it.
+    await vi.advanceTimersByTimeAsync(CONTROL_FORWARD_KEEPALIVE_MS)
+    assert.equal(exits(), 1, 'two consecutive failures confirm the master is dead and evict it')
+    assert.ok(
+      logs.some(l => l.includes('keepalive check failed repeatedly')),
+      'the keepalive eviction is logged for the user'
+    )
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+test('keepalive resets its failure streak when a check succeeds again', async () => {
+  vi.useFakeTimers()
+
+  try {
+    const logs: string[] = []
+    // Fails on the 1st and 3rd check, succeeds on the 2nd: the successful check
+    // must clear the streak so two failures are never counted non-consecutively.
+    let checkCount = 0
+    const spawnFn = scriptedSpawn(args => {
+      if (args[0] === '-O' && args[1] === 'check') {
+        checkCount += 1
+        return checkCount === 2 ? { code: 0 } : { code: 255 }
+      }
+
+      return { code: 0 }
+    })
+
+    const conn = new SshConnection(
+      { host: 'box', user: 'me' },
+      { spawnFn, controlDir: '/tmp/d', rememberLog: l => logs.push(l) }
+    )
+
+    await conn.forward(5000, 6000)
+
+    const exits = () => spawnFn.calls.filter(args => args[0] === '-O' && args[1] === 'exit').length
+
+    await vi.advanceTimersByTimeAsync(CONTROL_FORWARD_KEEPALIVE_MS)
+    assert.equal(exits(), 0, 'first failure alone never evicts')
+
+    await vi.advanceTimersByTimeAsync(CONTROL_FORWARD_KEEPALIVE_MS)
+    assert.equal(exits(), 0, 'the successful check in between clears the streak — no evict')
+
+    await vi.advanceTimersByTimeAsync(CONTROL_FORWARD_KEEPALIVE_MS)
+    assert.equal(exits(), 0, 'the next failure restarts the count from one, not two')
+
+    await vi.advanceTimersByTimeAsync(CONTROL_FORWARD_KEEPALIVE_MS)
+    assert.equal(exits(), 1, 'only the second *consecutive* failure evicts')
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+test('keepalive evicts when isAlive reports not-alive after timeout (wedge path)', async () => {
+  vi.useFakeTimers()
+
+  try {
+    const logs: string[] = []
+    // Wedge simulation: `-O check` hangs until the hard connect timeout fires →
+    // runSsh REJECTS with SSH_ERROR.TIMEOUT (never resolves false). This is the
+    // real wedge signature; the resolve-false path only covers a vanished process.
+    const spawnFn = scriptedSpawn(args => {
+      if (args[0] === '-O' && args[1] === 'check') {
+        const err: any = new Error('ssh timed out after 10000ms')
+        err.kind = 'timeout'
+        throw err
+      }
+
+      return { code: 0 }
+    })
+
+    const conn = new SshConnection(
+      { host: 'box', user: 'me' },
+      { spawnFn, controlDir: '/tmp/d', rememberLog: l => logs.push(l) }
+    )
+
+    await conn.forward(5000, 6000)
+
+    const exits = () => spawnFn.calls.filter(args => args[0] === '-O' && args[1] === 'exit').length
+
+    // First rejected check: a single timeout is not enough (transient guard).
+    await vi.advanceTimersByTimeAsync(CONTROL_FORWARD_KEEPALIVE_MS)
+    assert.equal(exits(), 0, 'a single not-alive report must not evict')
+    assert.equal(
+      logs.some(l => l.includes('keepalive check failed repeatedly')),
+      false,
+      'no eviction is logged on the first not-alive report'
+    )
+
+    // Second consecutive rejected check: the master is unresponsive — evict it.
+    await vi.advanceTimersByTimeAsync(CONTROL_FORWARD_KEEPALIVE_MS)
+    assert.equal(exits(), 1, 'two consecutive not-alive reports confirm a dead master and evict it')
+    assert.ok(
+      logs.some(l => l.includes('keepalive check failed repeatedly')),
+      'the eviction is logged'
+    )
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
 
 test('lifecycle logging passes through redaction', async () => {
   const logs: string[] = []
@@ -1646,4 +1824,148 @@ test('#103288: every spawn uses the injected sshBinary; the default stays bare s
   const plain = createSshProbeConnection({ host: 'box', user: 'me' }, { spawnFn })
   await plain.open()
   assert.deepEqual([...new Set(commands)], ['ssh'])
+})
+
+// ── Patch E: zombie forwarded channel detection ──────────────────────────────
+// A zombie channel is a CLOSE_WAIT socket with Recv-Q > 0: the peer sent FIN
+// but the master never read the remaining data and never closed its end.
+// Forensics on a Linux box captured 1075 wedge events; every zombie had Recv-Q >= 90
+// (one HTTP response frame); no healthy connection ever showed Recv-Q > 0
+// in CLOSE_WAIT.
+
+// Helper: build a fake /proc/net/tcp with one socket entry.
+// stateHex: TCP state (08=CLOSE_WAIT, 01=ESTABLISHED, 06=TIME_WAIT)
+// rxHex: Recv-Q in hex (e.g. "0000005A" = 90 bytes pending)
+function fakeProcNetTcp(entries: { state: string; rx: string }[]): string {
+  const header = '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode'
+  const lines = entries.map((e, i) => {
+    const port = (5000 + i).toString(16).toUpperCase().padStart(4, '0')
+    return `   ${i}: 0100007F:${port} 0100007F:1ED2 ${e.state} 00000000:${e.rx} 00:00000000 00000000  1000        0 ${1344865 + i} 1 0000000000000000 100 0 0 10 0`
+  })
+  return [header, ...lines, ''].join('\n')
+}
+
+test('_hasZombieForwardChannel: CLOSE_WAIT with Recv-Q > 0 is a zombie', () => {
+  // Only run the actual /proc check on Linux
+  if (process.platform !== 'linux') {
+    return
+  }
+
+
+  // Write a fake /proc/net/tcp to a temp file
+  const os = require('os')
+  const fs = require('fs')
+  const path = require('path')
+  const tmpFile = path.join(os.tmpdir(), `proc-tcp-zombie-${process.pid}`)
+
+  try {
+    // One CLOSE_WAIT with rx_queue = 90 (0x5A)
+    fs.writeFileSync(tmpFile, fakeProcNetTcp([{ state: '08', rx: '0000005A' }]))
+    assert.equal(_hasZombieForwardChannel(new Set([5000]), [tmpFile]), true, 'CLOSE_WAIT + Recv-Q=90 must be detected as zombie')
+
+    // CLOSE_WAIT with rx_queue = 0 (normal close, not zombie)
+    fs.writeFileSync(tmpFile, fakeProcNetTcp([{ state: '08', rx: '00000000' }]))
+    assert.equal(_hasZombieForwardChannel(new Set([5000]), [tmpFile]), false, 'CLOSE_WAIT + Recv-Q=0 is a normal close, not a zombie')
+
+    // ESTABLISHED with rx_queue > 0 (active connection, not zombie)
+    fs.writeFileSync(tmpFile, fakeProcNetTcp([{ state: '01', rx: '0000005A' }]))
+    assert.equal(_hasZombieForwardChannel(new Set([5000]), [tmpFile]), false, 'ESTABLISHED is never a zombie regardless of Recv-Q')
+
+    // Empty table (no sockets)
+    fs.writeFileSync(tmpFile, '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n')
+    assert.equal(_hasZombieForwardChannel(new Set([5000]), [tmpFile]), false, 'empty table has no zombies')
+  } finally {
+    try { fs.unlinkSync(tmpFile) } catch {}
+  }
+})
+
+test('keepalive evicts a zombie forward channel (CLOSE_WAIT with Recv-Q > 0)', async () => {
+  if (process.platform !== 'linux') {
+    return
+  }
+
+  vi.useFakeTimers()
+
+  try {
+    const logs: string[] = []
+    const os = require('os')
+    const fs = require('fs')
+    const path = require('path')
+
+    // Fake /proc/net/tcp with one zombie channel
+    const tmpFile = path.join(os.tmpdir(), `proc-tcp-keepalive-${process.pid}`)
+    fs.writeFileSync(tmpFile, fakeProcNetTcp([{ state: '08', rx: '0000005A' }]))
+
+    // All ssh ops succeed (exit 0 works fine — the zombie is in an EXISTING
+    // channel, not the one exit 0 opens). The zombie check must catch it.
+    const spawnFn = scriptedSpawn(() => ({ code: 0 }))
+
+    const conn = new SshConnection(
+      { host: 'box', user: 'me' },
+      { spawnFn, controlDir: '/tmp/d', rememberLog: l => logs.push(l), procNetTcpPaths: [tmpFile] }
+    )
+
+    await conn.forward(5000, 6000)
+
+    const exits = () => spawnFn.calls.filter(args => args[0] === '-O' && args[1] === 'exit').length
+
+    // Advance to the verify tick (5th tick)
+    await vi.advanceTimersByTimeAsync(CONTROL_FORWARD_KEEPALIVE_MS * 11)
+
+    // The zombie must have triggered an eviction
+    assert.equal(exits(), 1, 'zombie channel triggers master eviction')
+    assert.ok(
+      logs.some(l => l.includes('zombie forward channel')),
+      'the zombie eviction is logged for the user'
+    )
+
+    try { fs.unlinkSync(tmpFile) } catch {}
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+test('keepalive does NOT evict when there is no zombie (CLOSE_WAIT with Recv-Q=0)', async () => {
+  if (process.platform !== 'linux') {
+    return
+  }
+
+  vi.useFakeTimers()
+
+  try {
+    const logs: string[] = []
+    const os = require('os')
+    const fs = require('fs')
+    const path = require('path')
+
+    // Fake /proc/net/tcp with one CLOSE_WAIT but Recv-Q=0 (normal close)
+    const tmpFile = path.join(os.tmpdir(), `proc-tcp-nozombie-${process.pid}`)
+    fs.writeFileSync(tmpFile, fakeProcNetTcp([{ state: '08', rx: '00000000' }]))
+
+    // All ssh ops succeed
+    const spawnFn = scriptedSpawn(() => ({ code: 0 }))
+
+    const conn = new SshConnection(
+      { host: 'box', user: 'me' },
+      { spawnFn, controlDir: '/tmp/d', rememberLog: l => logs.push(l), procNetTcpPaths: [tmpFile] }
+    )
+
+    await conn.forward(5000, 6000)
+
+    const exits = () => spawnFn.calls.filter(args => args[0] === '-O' && args[1] === 'exit').length
+
+    // Advance past the verify tick
+    await vi.advanceTimersByTimeAsync(CONTROL_FORWARD_KEEPALIVE_MS * 5)
+
+    // No zombie → no eviction; exit 0 succeeds → no eviction either
+    assert.equal(exits(), 0, 'no zombie and healthy exit 0 means no eviction')
+    assert.ok(
+      !logs.some(l => l.includes('zombie forward channel')),
+      'no zombie eviction is logged'
+    )
+
+    try { fs.unlinkSync(tmpFile) } catch {}
+  } finally {
+    vi.useRealTimers()
+  }
 })

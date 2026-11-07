@@ -8,6 +8,12 @@ export const REMOTE_LIVENESS_TIMEOUT_MS = 10_000
 // reuse the background liveness budget so a quiet-box cold-start (~6-8s) can
 // finish instead of failing the probe and kicking off a reconnect storm.
 export const POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS = REMOTE_LIVENESS_TIMEOUT_MS
+// One bounded retry before a dispatch failure may retire a pooled descriptor.
+// The first probe can lose the race against an in-flight cold-start or a
+// synchronous ssh-lifecycle bootstrap occupying the channel; a short pause
+// lets the forward answer on the second attempt instead of tearing down a
+// healthy tunnel. Kept small so a genuinely dead descriptor still fails fast.
+export const POOLED_DISPATCH_PROBE_RETRY_DELAY_MS = 1_500
 export const REMOTE_LIVENESS_FAILURE_LIMIT = 3
 // Even at the capped retry path, consecutive liveness observations are at most
 // about 48s apart (ticket mint + socket open + backoff + the next status probe).
@@ -83,7 +89,7 @@ export class RemoteRevalidationCoordinator {
 interface EnsureHealthyPooledRemoteBackendForDispatchOptions<TConnection extends RemoteConnectionDescriptor> {
   connectionPromise: Promise<TConnection>
   currentConnectionPromise: () => null | Promise<TConnection>
-  probe: (connection: TConnection, path: string, options: { timeoutMs: number }) => Promise<unknown>
+  probe: (connection: TConnection, path: string, options: { timeoutMs: number; freshSocket?: boolean }) => Promise<unknown>
   reconnect: () => Promise<TConnection>
   retire: (error: unknown) => Promise<void> | void
 }
@@ -105,6 +111,32 @@ export async function ensureHealthyPooledRemoteBackendForDispatch<TConnection ex
 }: EnsureHealthyPooledRemoteBackendForDispatchOptions<TConnection>): Promise<TConnection> {
   let connection: TConnection
 
+  // A first probe failure does not prove the descriptor is dead: on a fresh
+  // SSH forward the remote /api/health answer can lose the race against the
+  // background liveness budget while ssh-lifecycle's synchronous bootstrap
+  // (platform/locate/version) still owns the channel, and a quiet-box
+  // cold-start needs ~6-8s. Retiring on the first miss tears down a healthy
+  // forward mid-use and kicks off a reconnect storm, so give the descriptor
+  // one bounded retry before the retire path below runs.
+  async function probeWithRetry(path: string): Promise<void> {
+    try {
+      await probe(connection, path, { timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS })
+    } catch (firstError) {
+      if (isMissingHealthEndpointError(firstError)) {
+        throw firstError
+      }
+
+      await new Promise(resolve => setTimeout(resolve, POOLED_DISPATCH_PROBE_RETRY_DELAY_MS))
+      // The retry must NOT reuse the keep-alive pool: the first failure may
+      // have come from a stale pooled socket whose SSH mux forward channel
+      // wedged (socket stays open locally, never delivers → 'socket hang
+      // up'). Retrying on the pool would hit the same dead socket and wrongly
+      // retire a healthy forward (#131765). A fresh socket makes the TCP
+      // handshake itself the liveness test.
+      await probe(connection, path, { timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS, freshSocket: true })
+    }
+  }
+
   try {
     connection = await connectionPromise
 
@@ -113,9 +145,7 @@ export async function ensureHealthyPooledRemoteBackendForDispatch<TConnection ex
     }
 
     try {
-      await probe(connection, '/api/health', {
-        timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
-      })
+      await probeWithRetry('/api/health')
     } catch (healthError) {
       // A remote that predates /api/health would otherwise 404 every dispatch,
       // retire the tunnel and reconnect forever; the boot probe falls back the
@@ -124,9 +154,7 @@ export async function ensureHealthyPooledRemoteBackendForDispatch<TConnection ex
         throw healthError
       }
 
-      await probe(connection, '/api/status', {
-        timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
-      })
+      await probeWithRetry('/api/status')
     }
   } catch (error) {
     if (currentConnectionPromise() === connectionPromise) {

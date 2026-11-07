@@ -35,6 +35,7 @@ describe('ErrorBoundary assistant-ui lookup recovery', () => {
 
   it.each([
     ['the current useClientLookup error', CURRENT_LOOKUP_ERROR],
+    ['the keyed-scope useClientLookup error', new Error('useClientLookup: Key "1791842467.8330417-98-assistant" not found')],
     ['the legacy tapClientLookup error', new Error('tapClientLookup: Index 6 out of bounds (length: 2)')],
     ['the legacy tapClientResource error', new Error('tapClientResource: Index 6 out of bounds (length: 2)')]
   ])('recovers the production root composition without StrictMode after %s clears', (_label, error) => {
@@ -200,7 +201,7 @@ describe('ErrorBoundary assistant-ui lookup recovery', () => {
 
   it.each([
     ['a differently cased classifier near-miss', new Error('UseClientLookup: Index 6 out of bounds (length: 2)')],
-    ['a non-bounds lookup error', new Error('useClientLookup: Key "missing" not found')],
+    ['a structural lookup error', new Error('useClientLookup: Element has no key')],
     ['an unrelated render error', new Error('some unrelated application error')]
   ])('does not auto-recover %s at root', (_label, error) => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)

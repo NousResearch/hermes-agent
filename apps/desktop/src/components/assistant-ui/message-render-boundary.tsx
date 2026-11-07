@@ -9,8 +9,14 @@ import { Component, type ReactNode } from 'react'
 // The throw is transient and self-heals on the next consistent snapshot, but
 // without a local boundary it unwinds to the root and blanks the whole app.
 // Upstream-tracked: assistant-ui/assistant-ui#4051, #3652.
+// The store throws two wordings for the same race: the index form
+// (`Index 3 out of bounds (length: 2)`) and, since keyed child scopes, the
+// key form (`Key "<ts>-<n>-assistant" not found`). Both must match, or the
+// keyed race escapes to the root and React recovers by re-rendering the whole
+// tree synchronously — a multi-second white window on a large session set.
 const isTransientLookupError = (error: unknown): boolean =>
-  error instanceof Error && /(useClientLookup|tapClient(Lookup|Resource)).*out of bounds/.test(error.message)
+  error instanceof Error &&
+  /(useClientLookup|tapClient(Lookup|Resource)).*(out of bounds|not found)/.test(error.message)
 
 // Consecutive transient retries before giving up and waiting for a structural
 // resetKey change (the pre-retry behavior). The race heals on the next

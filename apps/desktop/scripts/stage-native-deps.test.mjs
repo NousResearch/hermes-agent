@@ -669,6 +669,38 @@ test('get-windows native install invokes node-pre-gyp directly from the package 
   }
 })
 
+// The documented mirror key reaches the installer as npm_config_node_get_windows_binary_host_mirror
+// (npm and source_build.py turn every '-' into '_'); node-pre-gyp 1.0.11 only reads
+// npm_config_node_get-windows_binary_host_mirror.
+test('get-windows native install hands node-pre-gyp the mirror under the name it reads', () => {
+  const documented = 'npm_config_node_get_windows_binary_host_mirror'
+  const read = 'npm_config_node_get-windows_binary_host_mirror'
+  const saved = { [documented]: process.env[documented], [read]: process.env[read] }
+  const envOf = () => {
+    let env
+    installGetWindowsNativeBinding('C:\\fake\\get-windows', {
+      resolveInstaller: () => 'C:\\fake\\node-pre-gyp',
+      spawn: (command, args, options) => {
+        env = options.env ?? process.env
+        return { status: 0 }
+      }
+    })
+    return env
+  }
+  try {
+    process.env[documented] = 'https://mirror.invalid/get-windows/'
+    delete process.env[read]
+    assert.equal(envOf()[read], 'https://mirror.invalid/get-windows/')
+    process.env[read] = 'https://explicit.invalid/'
+    assert.equal(envOf()[read], 'https://explicit.invalid/')
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+})
+
 test('get-windows native install surfaces node-pre-gyp failure', () => {
   assert.throws(
     () =>

@@ -680,9 +680,16 @@ export function installGetWindowsNativeBinding(
     throw new Error(`[stage-native-deps] cannot resolve get-windows native installer: ${detail}`)
   }
 
+  // node-pre-gyp 1.0.11 reads the mirror as npm_config_node_get-windows_binary_host_mirror (it
+  // turns only the first '-' of node-get-windows into '_'), but npm and source_build.py export
+  // the npmrc key with every '-' as '_'. Hand it the name it reads.
+  const mirror = process.env.npm_config_node_get_windows_binary_host_mirror
+  const bridged = 'npm_config_node_get-windows_binary_host_mirror'
+  const env = mirror && !process.env[bridged] ? { ...process.env, [bridged]: mirror } : undefined
   const result = spawn(process.execPath, [installerPath, 'install', '--fallback-to-build'], {
     cwd: srcRoot,
     stdio: 'inherit',
+    ...(env ? { env } : {}),
     ...(timeoutMs ? { timeout: timeoutMs } : {})
   })
   if (result.error?.code === 'ETIMEDOUT') {

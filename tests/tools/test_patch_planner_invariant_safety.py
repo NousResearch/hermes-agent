@@ -2,8 +2,9 @@
 
 Unhinted cases use real ``parse_v4a_patch`` / ``apply_v4a_operations`` against
 an in-memory store. Hinted cases are handwritten safety checks only: a refusal
-writes nothing, an unnamed file is never written, and diagnostics do not quote
-source or hint text. They do not choose a hint site.
+writes nothing, an unnamed file is never written, a named-file success is only
+the unique expected bytes, and diagnostics do not quote source or hint text.
+They do not choose a hint site or assume a hint window matched.
 
 Each test is one invariant or one defect class. An xfail raises
 ``_KnownPlannerDefect`` only for the shape observed on this baseline, so a
@@ -100,6 +101,33 @@ def _landed(result, store, path, expected):
 def _require_refusal(result, store, source, shape):
     if not _clean_refusal(result, store, source):
         pytest.fail(f"{shape} was not a clean refusal")
+
+
+def _spec_open_unique_or_refusal(result, store, source, path, expected):
+    """Hint windows are open: refuse unchanged, or write only ``expected``.
+
+    A partial or wrong write to the named file is neither outcome. Other files
+    stay byte-for-byte identical in both.
+    """
+    if (
+        result.success is False
+        and not store.writes
+        and store.files == source
+        and not _reported(result)
+    ):
+        return
+    others = {name: text for name, text in source.items() if name != path}
+    if (
+        result.success is True
+        and result.error is None
+        and result.no_change is False
+        and store.writes == [(path, expected)]
+        and store.files.get(path) == expected
+        and {name: store.files.get(name) for name in others} == others
+        and set(_reported(result)) == {path}
+    ):
+        return
+    pytest.fail("named file was partially or wrongly written")
 
 
 def _diagnostics(result):
@@ -429,7 +457,12 @@ def test_errors_omit_hint_on_hinted_ambiguous():
 
 
 def test_hinted_update_does_not_write_unnamed_file():
-    """A hint that also occurs in an unnamed file does not write that file."""
+    """A hint that occurs only in an unnamed file does not write that file.
+
+    The named file is the unique line ``old``. Hint-window bounds are open, so
+    a refusal may leave every file unchanged, and a success may write only
+    ``new`` with that file's ending. Any other named-file bytes fail.
+    """
     hint = "OPAQUE_HINT_7X4Y"
     secret = "OPAQUE_OTHER_7X4Y"
     source = {
@@ -437,9 +470,7 @@ def test_hinted_update_does_not_write_unnamed_file():
         "b.py": f"{hint}\nold\nsecret = {secret}\n",
     }
     result, store = _apply(source, _update("a.py", f"@@ {hint} @@\n-old\n+new"))
-    assert "b.py" not in [path for path, _content in store.writes]
-    assert store.files["b.py"] == source["b.py"]
-    assert set(_reported(result)) <= {"a.py"}
+    _spec_open_unique_or_refusal(result, store, source, "a.py", "new\n")
     _assert_absent(result, (("hint excerpt", hint), ("source excerpt", secret)))
 
 

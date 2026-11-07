@@ -384,22 +384,22 @@ DEFAULT_CONFIG = {
         # per-page char budget for web_extract; larger pages truncate, full text kept in cache/web
         "extract_char_limit": 15000,
         # Keyless free-tier ring: with NO web backend configured or keyed, web_search/web_extract
-        # rotate round-robin across exa, parallel, firecrawl, keenable public free tiers, failing
-        # over on rate limits. Never pre-empts a configured/keyed backend. false = disable.
+        # rotate across exa/parallel/firecrawl/keenable public free tiers (rate-limit failover);
+        # never pre-empts a configured/keyed backend. false = disable.
         "keyless_fallback": True,
-        # One-shot rescue: when the chosen/keyed backend fails a call, THAT call retries once on the
-        # keyless ring; the next call tries the chosen backend again (no sticky failover). Off when
-        # keyless_fallback is false.
+        # One-shot rescue: a failed chosen/keyed backend call retries once on the keyless ring; the
+        # next call tries the backend again (no sticky failover). Off when keyless_fallback is false.
         "keyless_rescue": True,
+        # Mixed-batch rescue: when on, only the failed URLs ride the ring (one shot, never cached);
+        # off by default — a partially failed batch can double-fetch against a paid backend.
+        "rescue_partial_failures": False,  # requires keyless_rescue
         # Per-vendor tier for vendors with both a keyless free endpoint and a keyed paid path (exa,
         # parallel, firecrawl, keenable; tavily is opt-in keyless via `hermes tools`, not a ring
-        # member). Set by the `hermes tools` picker. "free" = always anonymous endpoint even with a
-        # key; "paid" = always keyed (missing key = error; vendor excluded from the ring); unset =
-        # keyed when the key is present, else the ring.
+        # member). "free" = anonymous endpoint, "paid" = always keyed (missing key = error; excluded
+        # from the ring), unset = keyed when the key is present, else the ring.
         "provider_tier": {},
-        # TTL caching for web_search + web_extract: repeat searches (same query + provider) within
-        # the TTL come from an in-process memo; repeat extracts from the cache/web store. Concurrent
-        # identical searches coalesce into one vendor request. Only successes cached.
+        # TTL caching for web_search + web_extract: repeat searches (same query + provider) come
+        # from an in-process memo; repeat extracts from the cache/web store. Successes only.
         "cache_enabled": True,
         "cache_ttl_minutes": 20,
         # Hosts always fetched live, never from the extract cache (staging deploys, tunnel URLs,

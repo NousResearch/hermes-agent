@@ -81,7 +81,11 @@ describe('hovered zone retargets the tab verbs', () => {
     expect(activeOf('grp-side')).toBe('session-tile:c')
     expect(activeOf('grp-main')).toBe('workspace')
 
-    expect(tree.focusedSessionTabAnchor()).toBe('session-tile:c')
+    // Placement (the ⌘T dock anchor) resolves the FOCUSED zone — grp-main's
+    // active session pane, the workspace here — NOT the hovered one. Hover
+    // tracking there was the regression this suite's fix removes; ⌃Tab and ⌘W
+    // below still prove the in-place verbs follow the pointer.
+    expect(tree.focusedSessionTabAnchor()).toBe('workspace')
 
     expect(tree.closeFocusedSessionTab()).toBe(true)
     expect(model.allPaneIds(tree.$layoutTree.get()!)).not.toContain('session-tile:c')

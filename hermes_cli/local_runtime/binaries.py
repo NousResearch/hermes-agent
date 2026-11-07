@@ -39,9 +39,9 @@ class Engine:
 
 def runtimes_root() -> Path:
     """Machine-scoped presets and server state. Binaries belong to PM's store."""
-    from hermes_constants import get_default_hermes_root
+    from hermes_cache import managed_cache_dir
 
-    return get_default_hermes_root() / "runtimes" / "llamacpp"
+    return managed_cache_dir("runtimes/llamacpp")
 
 
 def pinned_tag(backend: str) -> str:

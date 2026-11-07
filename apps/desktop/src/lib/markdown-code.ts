@@ -222,6 +222,7 @@ const SHIKI_LANGUAGE_BY_EXTENSION: Record<string, string> = {
   scala: 'scala',
   scss: 'scss',
   sh: 'bash',
+  sol: 'solidity',
   sql: 'sql',
   svelte: 'svelte',
   swift: 'swift',

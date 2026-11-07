@@ -260,6 +260,35 @@ class TestStartRun:
                 assert status["object"] == "hermes.run"
 
     @pytest.mark.asyncio
+    async def test_completed_output_inlines_media_like_chat_completions(self, adapter, tmp_path):
+        """A run whose reply carries a ``MEDIA:<path>`` image returns it inlined as a data URL, the
+        same way /v1/chat/completions does; a remote client cannot read a server path."""
+        image = tmp_path / "chart.png"
+        image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create, \
+                    patch("gateway.platforms.api_server.validate_media_delivery_path", side_effect=lambda s: s):
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": f"Here it is: MEDIA:{image}"}
+                mock_agent.session_prompt_tokens = 10
+                mock_agent.session_completion_tokens = 5
+                mock_agent.session_total_tokens = 15
+                mock_create.return_value = mock_agent
+
+                run_id = (await (await cli.post("/v1/runs", json={"input": "chart"})).json())["run_id"]
+                body = {}
+                for _ in range(80):
+                    body = await (await cli.get(f"/v1/runs/{run_id}")).json()
+                    if body.get("status") == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+        assert body["status"] == "completed"
+        assert "MEDIA:" not in body["output"]
+        assert "data:image/png;base64," in body["output"]
+
+    @pytest.mark.asyncio
     async def test_start_binds_chat_id_for_delegation_wake_target(self, adapter):
         """/v1/runs must bind the raw session id as the api_server chat_id
         (like every other agent-entry route does via _run_agent): the async

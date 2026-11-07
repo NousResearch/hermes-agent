@@ -83,6 +83,12 @@ def standard_user_access(paths: list[Path]) -> dict[Path, str]:
     finally:
         advapi32.SaferCloseLevel(level)
     try:
+        # Some hosts (Blacksmith's Windows runners) hand back the SAFER token with Administrators
+        # still enabled. Mark it deny-only, as UAC's filtered token does, so the check never
+        # depends on the host's SAFER policy (a no-op where SAFER already did it).
+        restricted = _without_administrators(advapi32, kernel32, primary, check)
+        kernel32.CloseHandle(primary)
+        primary = restricted
         check(advapi32.DuplicateToken(primary, 2, ctypes.byref(imp)), "DuplicateToken")  # SecurityImpersonation
         mapping = GENERIC_MAPPING(0x120089, 0x120116, 0x1200A0, 0x1F01FF)
         verdicts: dict[Path, str] = {}
@@ -107,6 +113,33 @@ def standard_user_access(paths: list[Path]) -> dict[Path, str]:
         for h in (imp, primary):
             if h:
                 kernel32.CloseHandle(h)
+
+
+def _without_administrators(advapi32, kernel32, token, check):
+    """A copy of ``token`` with BUILTIN\\Administrators deny-only (CreateRestrictedToken)."""
+    import ctypes
+    from ctypes import wintypes
+
+    class SID_AND_ATTRIBUTES(ctypes.Structure):
+        _fields_ = [("Sid", ctypes.c_void_p), ("Attributes", wintypes.DWORD)]
+
+    handle = wintypes.HANDLE
+    advapi32.ConvertStringSidToSidW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_void_p)]
+    advapi32.CreateRestrictedToken.argtypes = [handle, wintypes.DWORD, wintypes.DWORD,
+                                               ctypes.POINTER(SID_AND_ATTRIBUTES), wintypes.DWORD, ctypes.c_void_p,
+                                               wintypes.DWORD, ctypes.c_void_p, ctypes.POINTER(handle)]
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    sid = ctypes.c_void_p()
+    check(advapi32.ConvertStringSidToSidW("S-1-5-32-544", ctypes.byref(sid)), "ConvertStringSidToSidW")
+    try:
+        disable = (SID_AND_ATTRIBUTES * 1)(SID_AND_ATTRIBUTES(sid, 0))
+        out = handle()
+        # DISABLE_MAX_PRIVILEGE=0x1: drop every privilege but SeChangeNotify, as a standard user has.
+        check(advapi32.CreateRestrictedToken(token, 0x1, 1, disable, 0, None, 0, None, ctypes.byref(out)),
+              "CreateRestrictedToken")
+        return out
+    finally:
+        kernel32.LocalFree(sid)
 
 
 def _standard_user_token_is_really_restricted(scratch: Path) -> str:

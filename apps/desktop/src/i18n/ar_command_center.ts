@@ -1,3 +1,4 @@
+import { arCronControl } from './ar_cron_control'
 import type { TranslationOverrides } from './define-locale'
 
 export const arCommandCenter = {
@@ -195,6 +196,32 @@ export const arCommandCenter = {
     restartNow: 'إعادة التشغيل الآن',
     restarting: 'جارٍ إعادة التشغيل…',
     restartFailedManual: 'فشلت إعادة تشغيل البوابة — أعد تشغيلها يدويًا وتحقق من سجلات البوابة.',
+    relayLink: {
+      title: 'Team Gateway',
+      badge: 'لا حاجة لرمز بوت',
+      intro: (platform: string) => `يصل ${platform} إلى هذا الوكيل عبر بوت Hermes المشترك. اربط حسابك في ${platform} ثم راسل البوت للتحدث مع وكيلك.`,
+      link: (platform: string) => `ربط ${platform}`,
+      linkAnother: (platform: string) => `ربط حساب ${platform} آخر`,
+      linkedAccounts: 'الحسابات المرتبطة',
+      unlink: 'إلغاء الربط',
+      unlinkFailed: 'تعذر إلغاء ربط هذا الحساب',
+      stepOpen: (platform: string) => `1. امسح الرمز بهاتفك، أو افتح البوت في ${platform}.`,
+      stepSend: '2. أرسل هذه الرسالة إلى البوت من الحساب الذي تريد ربطه:',
+      open: (platform: string) => `فتح ${platform}`,
+      copy: 'نسخ الرسالة',
+      copied: 'تم النسخ',
+      copyFailed: (command: string) => `تعذر النسخ. اكتب ${command} بدلًا من ذلك.`,
+      waiting: 'بانتظار وصول رسالتك إلى البوت. الرمز يعمل مرة واحدة.',
+      linked: (platform: string) => `تم ربط حساب ${platform}. راسل البوت للتحدث مع وكيلك.`,
+      expired: 'انتهت صلاحية الرمز قبل استخدامه. احصل على رمز جديد وحاول مرة أخرى.',
+      refused: (platform: string) => `رفض ${platform} الربط. احصل على رمز جديد وحاول مرة أخرى.`,
+      qrAlt: (platform: string) => `رمز QR لبوت ${platform} المشترك`,
+      managed: 'تتم إدارته عبر Team Gateway',
+      managedNote: (platform: string) => `يتولى Team Gateway المراسلة في هذا المثيل، لذا يوقف البوابة الاتصال المباشر بـ ${platform} عند كل تشغيل. لتشغيله بجانب المرحّل، اضبط GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true في بيئة البوابة (الاتصال المباشر يمنع المثيل من التقلص إلى الصفر وقد يسلّم الرسائل مرتين).`,
+      managedIntro: 'تُربط حسابات هذا الوكيل من Nous Portal.',
+      openPortal: 'اربط الحسابات في Nous Portal',
+      noNewAccount: (platform: string) => `لم يعد الرمز نشطًا ولم يظهر حساب جديد. إذا لم يكن حسابك في ${platform} مدرجًا، فاحصل على رمز جديد وحاول مرة أخرى.`
+    },
     telegramQr: {
       title: 'اختر طريقة ربط بوت Telegram',
       subtitle: 'كلا الخيارين يربط بوتًا تتحكم به ويحفظ بياناته في هذا التثبيت من Hermes فقط.',
@@ -241,6 +268,9 @@ export const arCommandCenter = {
     replaceValue: 'استبدال القيمة',
     openDocs: 'فتح الوثائق',
     clearField: key => `مسح ${key}`,
+    addListEntry: 'إضافة آخر',
+    removeListEntry: 'إزالة',
+    listEntryPlaceholder: 'أدخل معرّفًا',
     enableAria: name => `تفعيل ${name}`,
     disableAria: name => `تعطيل ${name}`,
     platformEnabled: name => `تم تفعيل ${name}`,
@@ -263,7 +293,7 @@ export const arCommandCenter = {
       },
       TELEGRAM_ALLOWED_USERS: {
         label: 'معرّفات مستخدمي Telegram المسموح بهم',
-        help: 'موصى به. معرّفات رقمية مفصولة بفواصل من @userinfobot. بدون ذلك، يمكن لأي شخص مراسلة بوتك مباشرة.'
+        help: 'موصى به. معرّفات رقمية (واحد في كل حقل) من @userinfobot. بدون ذلك، يمكن لأي شخص مراسلة بوتك مباشرة.'
       },
       TELEGRAM_PROXY: {
         label: 'رابط الـ Proxy',
@@ -275,7 +305,7 @@ export const arCommandCenter = {
       },
       DISCORD_ALLOWED_USERS: {
         label: 'معرّفات مستخدمي Discord المسموح بهم',
-        help: 'موصى به. معرّفات مستخدمي Discord مفصولة بفواصل.'
+        help: 'موصى به. معرّفات مستخدمي Discord (واحد في كل حقل).'
       },
       DISCORD_REPLY_TO_MODE: {
         label: 'نمط الرد',
@@ -325,7 +355,7 @@ export const arCommandCenter = {
       },
       SLACK_ALLOWED_USERS: {
         label: 'معرّفات مستخدمي Slack المسموح بهم',
-        help: 'موصى به. معرّفات مستخدمي Slack مفصولة بفواصل.'
+        help: 'موصى به. معرّفات مستخدمي Slack (واحد في كل حقل).'
       },
       MATTERMOST_URL: {
         label: 'رابط الخادم',
@@ -336,7 +366,7 @@ export const arCommandCenter = {
       },
       MATTERMOST_ALLOWED_USERS: {
         label: 'معرّفات المستخدمين المسموح بهم',
-        help: 'موصى به. معرّفات مستخدمي Mattermost مفصولة بفواصل.'
+        help: 'موصى به. معرّفات مستخدمي Mattermost (واحد في كل حقل).'
       },
       MATRIX_HOMESERVER: {
         label: 'رابط Homeserver',
@@ -351,7 +381,7 @@ export const arCommandCenter = {
       },
       MATRIX_ALLOWED_USERS: {
         label: 'معرّفات مستخدمي Matrix المسموح بهم',
-        help: 'موصى به. معرّفات مستخدمين مفصولة بفواصل بصيغة @user:server.'
+        help: 'موصى به. معرّفات مستخدمين (واحد في كل حقل) بصيغة @user:server.'
       },
       SIGNAL_HTTP_URL: {
         label: 'رابط جسر Signal',
@@ -364,7 +394,7 @@ export const arCommandCenter = {
       },
       SIGNAL_ALLOWED_USERS: {
         label: 'مستخدمو Signal المسموح بهم',
-        help: 'موصى به. معرّفات Signal مفصولة بفواصل.'
+        help: 'موصى به. معرّفات Signal (واحد في كل حقل).'
       },
       WHATSAPP_ENABLED: {
         label: 'تفعيل جسر WhatsApp',
@@ -375,7 +405,7 @@ export const arCommandCenter = {
       },
       WHATSAPP_ALLOWED_USERS: {
         label: 'مستخدمو WhatsApp المسموح بهم',
-        help: 'موصى به. أرقام هواتف أو معرّفات WhatsApp مفصولة بفواصل.'
+        help: 'موصى به. أرقام هواتف أو معرّفات WhatsApp (واحد في كل حقل).'
       }
     },
     platformIntro: {}
@@ -394,18 +424,17 @@ export const arCommandCenter = {
     exported: 'تم تصدير الملف الشخصي',
     failedImport: 'فشل استيراد الملف الشخصي',
     failedExport: 'فشل تصدير الملف الشخصي',
+    exportNeedsHost: name => `لا يمكن للمتصفح حفظ أرشيف الملف الشخصي. على مضيف Hermes، شغّل: hermes profile export ${name}`,
     allProfiles: 'كل الملفات الشخصية',
     showAllProfiles: 'إظهار كل الملفات الشخصية',
+    notServedHere: 'غير متاح هنا',
     switchToProfile: name => `التبديل إلى ${name}`,
     switchToConnection: name => `التبديل إلى ${name}`,
     switchConnectionFailed: name => `تعذّر الاتصال بـ ${name}`,
     manageProfiles: 'إدارة الملفات الشخصية',
     fleet: {
       localDevice: 'هذا الجهاز (خلفية محلية — تثبّت Hermes إن كان مفقودًا، وإلا تفتح جلسة جديدة)',
-      switchDeviceTitle: 'التبديل إلى هذا الجهاز؟',
-      switchDeviceDesc: 'يفتح هذا جلسة جديدة على هذا الحاسوب. تبقى المحادثة الحالية على البوابة الأخرى.',
-      switchDeviceConfirm: 'تبديل',
-      installDeviceTitle: 'التبديل إلى هذا الجهاز؟',
+      installDeviceTitle: 'تثبيت Hermes على هذا الجهاز؟',
       installDeviceDesc: 'سيُثبَّت Hermes محليًا ثم تُفتح جلسة جديدة على هذا الحاسوب. لا يبدأ التثبيت قبل التأكيد.',
       installDeviceConfirm: 'تثبيت محليًا',
       connectExistingInstead: 'الاتصال بموجود بدلًا من ذلك'
@@ -515,6 +544,7 @@ export const arCommandCenter = {
     failedRename: 'فشل إعادة التسمية'
   },
   cron: {
+    control: arCronControl,
     close: 'إغلاق',
     search: 'بحث',
     loading: 'جار التحميل...',
@@ -577,6 +607,7 @@ export const arCommandCenter = {
     last: 'آخر تشغيل',
     next: 'التالي',
     noRuns: 'لا توجد تشغيلات',
+    queuedRun: 'تشغيل في قائمة الانتظار',
     manage: 'إدارة',
     showRuns: 'إظهار التشغيلات',
     hideRuns: 'إخفاء التشغيلات',

@@ -1,0 +1,19 @@
+name: empiriolabs
+title: EmpirioLabs AI
+repo: https://github.com/EmpirioLabs-AI/hermes-empiriolabs
+sha: 20f049d5913ec850e98bef3d289f6cb43645869e
+subdir: provider
+description: "EmpirioLabs AI as a Hermes model provider (provider id `empiriolabs`): chat models with tool calling from the live EmpirioLabs AI catalog, each with its context window, image input and reasoning support declared to Hermes, a low-cost auxiliary model picked from the same catalog, and `reasoning_effort` sent only when you choose a level and the model accepts it. Submitted by EmpirioLabs AI. Disclosure — registers one model provider at import and nothing else (no tools, hooks, commands or threads); chat requests (prompts, tool definitions and tool results) go through Hermes' own client to https://api.empiriolabs.ai/v1 (or EMPIRIOLABS_BASE_URL) with EMPIRIOLABS_API_KEY, which Hermes reads, and are billed to that EmpirioLabs AI account; the plugin itself only reads the model catalog (GET /v1/models, kept in memory for an hour), writes no files and starts no processes."
+maintainer: EmpirioLabs-AI
+tier: community
+category: models
+requires_hermes: ">=0.21.6"
+version: "1.0.0"
+docs_url: https://github.com/EmpirioLabs-AI/hermes-empiriolabs/blob/20f049d5913ec850e98bef3d289f6cb43645869e/provider/README.md
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - EMPIRIOLABS_API_KEY

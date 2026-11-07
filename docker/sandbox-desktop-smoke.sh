@@ -8,7 +8,7 @@
 #   2. the real launcher.sh brings up Xvnc + Xfce and publishes its env file
 #   3. the RFB socket answers the protocol handshake when relayed over `docker exec -i`
 #      stdio, which is exactly how the gateway bridge will reach it
-#   4. headed Chromium starts on that display (cua-driver and agent-browser both need it)
+#   4. headed Chromium starts on that display (cua-driver and the agent's browser both need it)
 set -euo pipefail
 
 IMAGE="${1:?usage: sandbox-desktop-smoke.sh <image>}"
@@ -23,11 +23,10 @@ echo "== 1. binaries (as pn)"
 docker exec -u pn "$NAME" bash -c '
   set -e
   for b in Xvnc xfwm4 xfce4-panel xfdesktop xfsettingsd dbus-run-session xauth xdpyinfo xprop \
-           xfce4-terminal cua-driver agent-browser jq rg fd tmux rsync sudo python3 node; do
+           xfce4-terminal cua-driver jq rg fd tmux rsync sudo python3 node; do
     command -v "$b" >/dev/null || { echo "missing: $b"; exit 1; }
   done
   cua-driver --version
-  agent-browser --version
   ls /opt/playwright/chromium-*/chrome-linux*/chrome >/dev/null || { echo "missing headed chromium"; exit 1; }
   python3 -c "from PIL import ImageGrab"  # the Screen pane thumbnail is grabbed inside the sandbox
   # an ssh login session (pam_env) must find the browser the way docker exec does
@@ -81,7 +80,7 @@ EOF
 echo "== 4. headed Chromium opens on the display"
 # Docker's default seccomp profile denies unprivileged user namespaces, so Chromium's own
 # layer-2 sandbox cannot start in any container; the container is the sandbox. The gateway's
-# spawn sites already inject this (browser_tool_session._needs_chromium_sandbox_bypass).
+# launcher already injects this (tools/browser_launcher.needs_chromium_sandbox_bypass).
 docker exec -u pn "$NAME" bash -c '
   set -e; set -a; . /tmp/bd/env; set +a
   chrome=$(ls /opt/playwright/chromium-*/chrome-linux*/chrome | head -1)

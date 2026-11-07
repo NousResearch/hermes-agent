@@ -13,7 +13,7 @@ def test_model_tools_import_creates_no_state_db(tmp_path):
     env = {**os.environ, "HERMES_HOME": str(typo_home), "PYTHONPATH": str(REPO)}
     env.pop("HERMES_DELEGATED_CHILD_CONTEXT", None)
     proc = subprocess.run([sys.executable, "-c", "import model_tools"], cwd=REPO, env=env,
-                          text=True, capture_output=True, timeout=120)
+                          text=True, capture_output=True, timeout=120, check=False)
     assert proc.returncode == 0, proc.stderr[-2000:]
     assert not (typo_home / "state.db").exists(), sorted(os.listdir(typo_home)) if typo_home.exists() else None
 

@@ -1,0 +1,174 @@
+{
+  "fixtureVersion": 1,
+  "name": "global-lock-binds-every-level",
+  "description": "Proves rule-3, r7: A Global lock binds every stored level; siblings of the locked leaf stay writable; a scalar at its parent is refused.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {
+        "web": {
+          "use_gateway": true,
+          "backend": "firecrawl"
+        }
+      },
+      "locks": [
+        "web.use_gateway"
+      ]
+    },
+    {
+      "kind": "tenant",
+      "values": {
+        "web": {
+          "use_gateway": false,
+          "backend": "exa"
+        }
+      },
+      "locks": []
+    },
+    {
+      "kind": "group",
+      "groupId": "g-support",
+      "values": {
+        "web": {
+          "use_gateway": false
+        }
+      },
+      "locks": []
+    },
+    {
+      "kind": "principal",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "agent",
+      "values": {
+        "web": {
+          "use_gateway": false
+        }
+      },
+      "locks": []
+    },
+    {
+      "kind": "profile",
+      "values": {
+        "web": {
+          "backend": "tavily"
+        }
+      },
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "web": {
+        "use_gateway": true,
+        "backend": "tavily"
+      }
+    },
+    "provenance": {
+      "web.use_gateway": "global",
+      "web.backend": "profile"
+    },
+    "locks": [
+      {
+        "path": "web.use_gateway",
+        "level": "global"
+      }
+    ]
+  },
+  "writes": [
+    {
+      "by": "tenant",
+      "op": "set",
+      "path": "web.use_gateway",
+      "value": false,
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "web.use_gateway",
+        "lockedBy": "global"
+      }
+    },
+    {
+      "by": "group",
+      "op": "set",
+      "path": "web.use_gateway",
+      "value": false,
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "web.use_gateway",
+        "lockedBy": "global"
+      }
+    },
+    {
+      "by": "principal",
+      "op": "set",
+      "path": "web.use_gateway",
+      "value": false,
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "web.use_gateway",
+        "lockedBy": "global"
+      }
+    },
+    {
+      "by": "agent",
+      "op": "set",
+      "path": "web.use_gateway",
+      "value": false,
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "web.use_gateway",
+        "lockedBy": "global"
+      }
+    },
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "web.use_gateway",
+      "value": false,
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "web.use_gateway",
+        "lockedBy": "global"
+      }
+    },
+    {
+      "by": "tenant",
+      "op": "set",
+      "path": "web.backend",
+      "value": "parallel",
+      "expect": {
+        "result": "accept"
+      }
+    },
+    {
+      "by": "tenant",
+      "op": "set",
+      "path": "web",
+      "value": {
+        "backend": "exa"
+      },
+      "expect": {
+        "result": "accept"
+      }
+    },
+    {
+      "by": "tenant",
+      "op": "set",
+      "path": "web",
+      "value": false,
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "web.use_gateway",
+        "lockedBy": "global"
+      }
+    }
+  ]
+}

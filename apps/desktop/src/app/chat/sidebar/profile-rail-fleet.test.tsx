@@ -49,14 +49,10 @@ vi.mock('@/i18n', () => ({
           installDeviceConfirm: 'Install locally',
           installDeviceDesc:
             'This will install Hermes locally, then open a fresh session on this computer. Nothing is installed until you confirm.',
-          installDeviceTitle: 'Switch to This device?',
+          installDeviceTitle: 'Install Hermes on This device?',
           localDevice: 'This device (local backend — installs Hermes if missing, otherwise opens a fresh session)',
           onGateway: (name: string, gateway: string) => `${name} · ${gateway}`,
-          switchDeviceConfirm: 'Switch',
-          switchDeviceDesc:
-            'This opens a fresh session on this computer. The conversation you are in stays on the other gateway.',
-          switchDeviceTitle: 'Switch to This device?',
-          switchTo: (name: string, gateway: string) => `Switch to ${name} on ${gateway}`
+          switchTo: (name: string, gateway: string) => `Open ${name} on ${gateway}`
         },
         importProfile: 'Import profile…',
         manageProfiles: 'Manage profiles…',
@@ -94,6 +90,7 @@ vi.mock('@/store/profile', () => ({
   $showAllProfiles: atom(false),
   ALL_PROFILES: '*',
   normalizeProfileKey: (name: string) => name,
+  prewarmProfilePick: vi.fn(),
   profileLabel: (profile: { display_name?: string; name: string }) =>
     (profile.display_name ?? '').trim() || profile.name,
   refreshActiveProfile: vi.fn().mockResolvedValue(undefined),
@@ -147,7 +144,8 @@ const connectionsRegistry = connectionsStore.$connectionsRegistry as ReturnType<
   typeof atom<DesktopConnectionsRegistry | null>
 >
 
-const { $profileOrder, $profiles, $profileScope } = await import('@/store/profile')
+const { $activeGatewayProfile, $profileOrder, $profiles, $profileScope } = await import('@/store/profile')
+const activeGatewayProfile = $activeGatewayProfile as ReturnType<typeof atom<string>>
 const profiles = $profiles as ReturnType<typeof atom<Array<{ is_default: boolean; name: string }>>>
 const profileScope = $profileScope as ReturnType<typeof atom<string>>
 const { _resetFleetRosterForTests } = await import('@/store/fleet-roster')
@@ -243,6 +241,7 @@ afterEach(() => {
   hasMultipleConnections.set(false)
   connectionsRegistry.set(null)
   activeConnectionId.set(null)
+  activeGatewayProfile.set('default')
   profileScope.set('default')
   profiles.set([{ is_default: true, name: 'default' }])
   delete (window as { hermesDesktop?: unknown }).hermesDesktop
@@ -528,7 +527,7 @@ describe('ProfileRail fleet mode', () => {
     expect(builder.getAttribute('aria-busy')).toBeNull()
   })
 
-  it('asks before a fresh session when This device is already installed', async () => {
+  it('opens an installed This device with no prompt', async () => {
     armFleet()
     await renderFleet()
 
@@ -538,21 +537,8 @@ describe('ProfileRail fleet mode', () => {
       })
     )
 
-    expect(selectConnection).not.toHaveBeenCalled()
-    expect(await screen.findByRole('dialog', { name: 'Switch to This device?' })).toBeTruthy()
-    expect(
-      screen.getByText(
-        'This opens a fresh session on this computer. The conversation you are in stays on the other gateway.'
-      )
-    ).toBeTruthy()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Switch' }))
-
-    await act(async () => {
-      await Promise.resolve()
-    })
-
-    expect(selectConnection).toHaveBeenCalledWith('local', { profile: 'default' })
+    await vi.waitFor(() => expect(selectConnection).toHaveBeenCalledWith('local', { profile: 'default' }))
+    expect(screen.queryByRole('dialog')).toBeNull()
   })
 
   it('confirms before installing and offers connect-to-existing inline', async () => {
@@ -577,24 +563,6 @@ describe('ProfileRail fleet mode', () => {
 
     expect(selectConnection).not.toHaveBeenCalled()
     expect(await screen.findByText('Connect to existing Hermes')).toBeTruthy()
-  })
-
-  it('does not switch when the fresh-session cue is cancelled', async () => {
-    armFleet()
-    await renderFleet()
-
-    fireEvent.click(
-      screen.getByRole('button', {
-        name: 'This device (local backend — installs Hermes if missing, otherwise opens a fresh session)'
-      })
-    )
-    fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }))
-
-    await act(async () => {
-      await Promise.resolve()
-    })
-
-    expect(selectConnection).not.toHaveBeenCalled()
   })
 
   it('keeps the active gateway click on the plain profile path', async () => {
@@ -663,4 +631,89 @@ describe('ProfileRail fleet mode', () => {
     const gatewayBHome = screen.getByRole('menuitem', { name: 'default · Gateway B' })
     expect(gatewayBHome.querySelector('.codicon-home')).toBeTruthy()
   })
+
+  // Regression for #106017 / #131632: the condensed menu listed every at-rest gateway's
+  // default but dropped the ACTIVE gateway's own — This device's, in the usual
+  // case — leaving it reachable only by hotkey.
+  it.each(['local', 'gateway-a'])(
+    'lists the active gateway default in the condensed menu (%s active)',
+    async active => {
+      armFleet()
+      activeConnectionId.set(active)
+      profiles.set([
+        { display_name: 'Arya', is_default: true, name: 'default' } as { is_default: boolean; name: string },
+        ...Array.from({ length: 11 }, (_, index) => ({ is_default: false, name: `p${index + 1}` }))
+      ])
+      await renderFleet()
+
+      const trigger = screen.getByRole('button', { name: 'Profiles' })
+      expect(trigger.textContent).toContain('Arya')
+
+      fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false })
+
+      const home = await screen.findByRole('menuitemradio', { name: 'Arya' })
+      expect(home.querySelector('.codicon-home')).toBeTruthy()
+      expect(home.getAttribute('aria-checked')).toBe('true')
+
+      fireEvent.click(home)
+      expect(selectProfile).toHaveBeenCalledWith('default')
+    }
+  )
+})
+
+// Every rail layout must keep a pointer door back to the ACTIVE gateway's
+// default. Each layout renders that door through its own code path (single-
+// gateway pill, fleet home square, condensed menu); the condensed fleet menu
+// dropped it (#106017, #131632). A new layout that drops it fails here.
+describe('ProfileRail: the active default is always one click away', () => {
+  const ARYA = { display_name: 'Arya', is_default: true, name: 'default' } as { is_default: boolean; name: string }
+
+  const named = (count: number) =>
+    Array.from({ length: count }, (_, index) => ({ is_default: false, name: `p${index + 1}` }))
+
+  // Profile counts sit either side of the condensed threshold (13), counting
+  // the fleet's at-rest squares: 3 on the other gateways in armFleet's roster.
+  const layouts = [
+    { fleet: false, condensed: false, active: null, count: 2 },
+    { fleet: false, condensed: true, active: null, count: 13 },
+    { fleet: true, condensed: false, active: 'local', count: 2 },
+    { fleet: true, condensed: true, active: 'local', count: 11 },
+    { fleet: true, condensed: false, active: 'gateway-a', count: 2 },
+    { fleet: true, condensed: true, active: 'gateway-a', count: 11 }
+  ] as const
+
+  const cases = layouts.flatMap(layout => (['named', 'all'] as const).map(from => ({ ...layout, from })))
+
+  it.each(cases)(
+    'fleet=$fleet condensed=$condensed active=$active, from $from',
+    async ({ active, condensed, count, fleet, from }) => {
+      if (fleet) {
+        armFleet()
+        activeConnectionId.set(active)
+      }
+
+      profiles.set([ARYA, ...named(count)])
+      activeGatewayProfile.set('p1')
+      profileScope.set(from === 'all' ? '*' : 'p1')
+      await renderFleet()
+
+      expect(Boolean(screen.queryByRole('button', { name: 'Profiles' })), 'layout under test').toBe(condensed)
+
+      // A visible control named for the default (home pill / home square)…
+      const pill = screen
+        .queryAllByRole('button')
+        .find(button => /\bArya\b/.test(button.getAttribute('aria-label') ?? ''))
+
+      if (pill) {
+        fireEvent.click(pill)
+      } else {
+        // …or its row in the condensed menu.
+        fireEvent.pointerDown(screen.getByRole('button', { name: 'Profiles' }), { button: 0, ctrlKey: false })
+        fireEvent.click(await screen.findByRole('menuitemradio', { name: 'Arya' }))
+      }
+
+      expect(selectProfile).toHaveBeenCalledWith('default')
+      expect(selectConnection).not.toHaveBeenCalled()
+    }
+  )
 })

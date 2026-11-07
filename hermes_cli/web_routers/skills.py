@@ -15,8 +15,8 @@ from fastapi import APIRouter, HTTPException
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_profiles import _hub_action_name, _installed_hub_identifiers
 from hermes_cli.web_models import (
-    SkillContentUpdate, SkillCreate, SkillInstallRequest, SkillToggle, SkillUninstallRequest,
-    SkillsUpdateRequest)
+    SkillContentUpdate, SkillCreate, SkillInstallRequest, SkillLock, SkillToggle,
+    SkillUninstallRequest, SkillsUpdateRequest)
 from hermes_cli.web_routers._common import (
     _profile_scope, config_write_scope, http_failure, log as _log, require, scoped_to_thread,
     spawn_profile_action)
@@ -342,7 +342,7 @@ async def scan_skill_hub(identifier: str = "", profile: Optional[str] = None):
 
 @router.get("/api/skills")
 async def get_skills(profile: Optional[str] = None):
-    from tools.skills_tool import _find_all_skills
+    from tools.skills_tool import find_all_skills
     from hermes_cli.skills_config import get_disabled_skills
     from tools.skill_usage import (
         _external_skill_names, _read_bundled_names, _read_hub_installed_names, activity_count, load_usage)
@@ -351,7 +351,7 @@ async def get_skills(profile: Optional[str] = None):
         with _profile_scope(profile):
             config = load_config()
             disabled = get_disabled_skills(config)
-            skills = _find_all_skills(skip_disabled=True)
+            skills = find_all_skills(skip_disabled=True)
             usage = load_usage()
             # Set-based provenance (same classification as skill_usage.provenance,
             # without a per-skill manifest read): hub > bundled > external > agent.
@@ -363,7 +363,9 @@ async def get_skills(profile: Optional[str] = None):
             bundled_names = _read_bundled_names()
             hub_names = _read_hub_installed_names()
             external_names = _external_skill_names() - bundled_names - hub_names
+            locked_dirs, dir_by_name = _locked_index()
         for s in skills:
+            s["locked"] = dir_by_name.get(s["name"], s["name"]) in locked_dirs
             s["enabled"] = s["name"] not in disabled
             s["usage"] = activity_count(usage.get(s["name"], {}))
             s["provenance"] = (
@@ -372,6 +374,43 @@ async def get_skills(profile: Optional[str] = None):
                 else "external" if s["name"] in external_names
                 else "agent")
         return skills
+
+    return await asyncio.to_thread(_run)
+
+
+def _locked_index() -> tuple[set, dict]:
+    """(locked directory names, load name -> directory name) for the ``locked`` row flag.
+    Locks are keyed by the skill's DIRECTORY (what the write guards resolve to) while rows
+    carry the load name. A corrupt sidecar reads as unlocked here (``locked_skill_names`` is
+    best-effort); the write guards decide enforcement."""
+    from tools.skill_usage import locked_skill_names
+    locked = set(locked_skill_names())
+    if not locked:
+        return set(), {}
+    from tools.skills_tool import _skill_catalog
+    return locked, {e["load_name"]: e["path"].parent.name
+                    for e in _skill_catalog(skip_disabled=True) if e.get("load_name")}
+
+
+@router.put("/api/skills/lock")
+async def lock_skill(body: SkillLock, profile: Optional[str] = None):
+    """Lock/unlock a skill against AGENT edits (same record as ``hermes curator lock``).
+    The user's own edits (this dashboard's editor, their editor) stay allowed."""
+    from tools import skill_usage
+    from tools.skill_manager_tool import _find_skill
+
+    def _run():
+        with config_write_scope(body.profile or profile):
+            existing = _find_skill(body.name)
+            if existing is None:
+                raise HTTPException(status_code=404, detail=f"Skill '{body.name}' not found.")
+            key = existing["path"].name
+            if not skill_usage.set_locked(key, body.locked):
+                verb = "lock" if body.locked else "unlock"
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Could not {verb} '{key}': skills/.usage.json is not writable.")
+        return {"ok": True, "name": body.name, "locked": body.locked}
 
     return await asyncio.to_thread(_run)
 
@@ -416,13 +455,14 @@ async def get_skill_content(name: str, profile: Optional[str] = None):
 
 
 @router.post("/api/skills")
-async def create_skill(body: SkillCreate):
+async def create_skill(body: SkillCreate, profile: Optional[str] = None):
     """Create a skill via the agent's ``skill_manage`` write path, minus the
-    write-approval gate — an authenticated dashboard write IS the user."""
+    write-approval gate — an authenticated dashboard write IS the user.
+    Profile from the body or ``?profile=``, like the rest of ``/api/skills``."""
     from tools.skill_manager_tool import _create_skill
 
     result = await scoped_to_thread(
-        body.profile, lambda: _create_skill(body.name, body.content, body.category or None))
+        body.profile or profile, lambda: _create_skill(body.name, body.content, body.category or None))
     if not result.get("success"):
         raise HTTPException(status_code=400, detail=result.get("error", "Failed to create skill."))
     _clear_skills_prompt_cache()
@@ -430,11 +470,11 @@ async def create_skill(body: SkillCreate):
 
 
 @router.put("/api/skills/content")
-async def update_skill_content(body: SkillContentUpdate):
+async def update_skill_content(body: SkillContentUpdate, profile: Optional[str] = None):
     """Replace the SKILL.md of an existing skill (full rewrite) from the editor."""
     from tools.skill_manager_tool import _edit_skill
 
-    result = await scoped_to_thread(body.profile, lambda: _edit_skill(body.name, body.content))
+    result = await scoped_to_thread(body.profile or profile, lambda: _edit_skill(body.name, body.content))
     if not result.get("success"):
         err = result.get("error", "Failed to update skill.")
         status = 404 if "not found" in str(err).lower() else 400

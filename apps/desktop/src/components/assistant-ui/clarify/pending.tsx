@@ -3,18 +3,24 @@
 import { useStore } from '@nanostores/react'
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { Button } from '@/components/ui/button'
 import { Loader } from '@/components/ui/loader'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { Loader2, MessageQuestion } from '@/lib/icons'
-import { bareChoice, type ClarifyQuestion, type ClarifyRequest, clearClarifyRequest } from '@/store/clarify'
+import { MessageQuestion } from '@/lib/icons'
+import {
+  bareChoice,
+  type ClarifyQuestion,
+  type ClarifyRequest,
+  clearClarifyRequest,
+  skipClarify
+} from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
 import { reconnectAction } from '@/store/gateway-reconnect'
 import { notifyError } from '@/store/notifications'
-import { forgetServerRequest, respondToServerRequest } from '@/store/server-requests'
+import { forgetServerRequest } from '@/store/server-requests'
 import { requestForOwnedSession } from '@/store/session-states'
 
+import { ClarifyConfirmBar } from './core/confirm-bar'
 import { emptyStage, QuestionBlock } from './core/question-block'
 import { CLARIFY_ICON_CLASS, ClarifyShell } from './core/shell'
 import { useClarifyKeys } from './core/use-clarify-keys'
@@ -71,9 +77,28 @@ export function ClarifyToolPending({
   const [staged, setStaged] = useState<Record<string, { choices: string[]; draft: string }>>({})
   const [submitting, setSubmitting] = useState(false)
 
-  // Reconnect replay: answers the server already locked (an earlier window's
-  // partial progress) pre-stage their questions so the restored card shows
-  // them selected instead of blank.
+  // Locked answers (a reconnect replay, or text typed in the composer) stage
+  // their questions. A newly locked answer replaces what the card staged, so
+  // Confirm never re-sends an older pick; an answer seen before is left alone,
+  // so a later edit on the card stands.
+  const [seenLocks, setSeenLocks] = useState<Record<string, null | string>>({})
+
+  // A canonical gateway answers a batch one card at a time through the SAME
+  // mounted tool row: a new live request is a new card, so the previous card's
+  // submit latch, staged picks and seen locks must not carry over (that left
+  // question 2 disabled behind question 1's spinner).
+  const [cardRequestId, setCardRequestId] = useState(request?.requestId)
+
+  if (request?.requestId !== cardRequestId) {
+    setCardRequestId(request?.requestId)
+
+    if (request?.requestId) {
+      setSubmitting(false)
+      setStaged({})
+      setSeenLocks({})
+    }
+  }
+
   useEffect(() => {
     const lockedAnswers = request?.lockedAnswers
 
@@ -81,13 +106,15 @@ export function ClarifyToolPending({
       return
     }
 
+    setSeenLocks(lockedAnswers)
+
     setStaged(current => {
       const next = { ...current }
 
       for (const question of questions) {
         const answer = lockedAnswers[question.qid]
 
-        if (answer === undefined || answer === null || next[question.qid]) {
+        if (answer === undefined || answer === null || seenLocks[question.qid] === answer) {
           continue
         }
 
@@ -107,8 +134,9 @@ export function ClarifyToolPending({
         }
 
         const matchedChoices = options.filter(choice => replayedAnswers.includes(bareChoice(choice)))
-        next[question.qid] =
-          matchedChoices.length > 0 ? { choices: matchedChoices, draft: '' } : { choices: [], draft: answer }
+        // Words that name no choice (typed in the composer) go to the free-text field as words, not JSON.
+        const draft = replayedAnswers.filter(value => !options.some(choice => bareChoice(choice) === value)).join(', ')
+        next[question.qid] = { choices: matchedChoices, draft }
       }
 
       return next
@@ -221,10 +249,8 @@ export function ClarifyToolPending({
     }
 
     onAnswered()
-    clearClarifyRequest(request.requestId, request.sessionId)
-
     // A response with no `answers` is the cancel-all (the plain Esc path).
-    respondToServerRequest(request.requestId, {})
+    skipClarify(request)
   }, [onAnswered, request])
 
   const handleSubmit = useCallback(
@@ -285,7 +311,7 @@ export function ClarifyToolPending({
       <ClarifyShell className="grid gap-3">
         <div className="flex items-start gap-2">
           <span className="flex-1 text-[0.6875rem] leading-4 text-(--ui-text-tertiary)">
-            {copy.questionProgress(answeredCount, questions.length)}
+            {questions.length === 1 ? copy.oneQuestion : copy.questionProgress(answeredCount, questions.length)}
           </span>
           <MessageQuestion aria-hidden className={CLARIFY_ICON_CLASS} />
         </div>
@@ -306,23 +332,12 @@ export function ClarifyToolPending({
       </ClarifyShell>
 
       {undelivered ? null : (
-        <div className="flex items-center justify-end gap-1">
-          <Button disabled={disabled} onClick={() => void cancelAll()} size="xs" type="button" variant="text">
-            {copy.skip}
-          </Button>
-          <Button disabled={disabled || !canConfirm} size="xs" type="submit">
-            {submitting ? (
-              <Loader2 className="animate-spin" />
-            ) : (
-              <>
-                {copy.confirmAndContinueLabel}
-                <span aria-hidden className="ml-0.5 text-[0.625rem] opacity-70">
-                  ⏎
-                </span>
-              </>
-            )}
-          </Button>
-        </div>
+        <ClarifyConfirmBar
+          canConfirm={canConfirm}
+          disabled={disabled}
+          onSkip={() => void cancelAll()}
+          submitting={submitting}
+        />
       )}
     </form>
   )

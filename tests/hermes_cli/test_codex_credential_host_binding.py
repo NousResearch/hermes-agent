@@ -12,6 +12,7 @@ import base64
 import importlib.util
 import json
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import urlparse
@@ -226,12 +227,30 @@ def test_full_picker_discovers_codex_models_with_pinned_canonical_url(monkeypatc
 
     monkeypatch.setattr(httpx, "get", catalog_get)
     # Unrelated metadata sources stay offline; config, auth, discovery, cache and picker are real.
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
-    monkeypatch.setattr("hermes_cli.models.get_curated_nous_model_ids", lambda: [])
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
+    monkeypatch.setattr("hermes_cli.models.get_curated_nous_model_ids", list)
     monkeypatch.setattr("hermes_cli.models.fetch_ollama_cloud_models", lambda **kw: [])
     monkeypatch.setattr("hermes_cli.models_pricing.get_pricing_for_provider", lambda *a, **kw: {})
+    # The picker's background usage refresh outlives this test: left running, it sends the JWT
+    # through whatever ``httpx.Client`` a LATER case has patched in, polluting that case's recorder.
+    monkeypatch.setattr("agent.account_usage_cache.refresh_account_usage_async", lambda *a, **kw: [])
+    monkeypatch.setattr("agent.account_usage_cache.refresh_account_usage_entries_async", lambda *a, **kw: [])
+    # Offline, and any HTTP a background worker attempts is recorded: that work outlives the test.
+    stray = []
+    test_thread = threading.current_thread()
+
+    def offline_client(*_a, **_kw):
+        if threading.current_thread() is not test_thread:
+            stray.append(threading.current_thread().name)
+        raise httpx.ConnectError("test is offline")
+
+    monkeypatch.setattr(httpx, "Client", offline_client)
+    threads_before = set(threading.enumerate())
 
     payload = build_model_options_payload(load_picker_context(), refresh=True)
+    for worker in set(threading.enumerate()) - threads_before:
+        worker.join(timeout=10)
+    assert stray == [], "the picker left HTTP work behind that would land in a later test"
     row = next(p for p in payload["providers"] if p["slug"] == "openai-codex")
     assert discovered in row["models"]
     assert seen

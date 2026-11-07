@@ -5,6 +5,9 @@ import { type SessionResumeRequest, setResumeExhaustedSessionId } from '@/store/
 import type { SessionProfileRoute } from '@/store/session-request-router'
 import { markSelectionRestore } from '@/store/session-states'
 
+import { useResumeReattach } from './use-resume-reattach'
+import { MAX_RESUME_RETRIES, type ResumeAttemptOptions, resumeRetryDelayMs } from './use-session-actions/resume-latches'
+
 interface RouteResumeOptions {
   activeSessionId: string | null
   activeSessionIdRef: MutableRefObject<string | null>
@@ -13,7 +16,12 @@ interface RouteResumeOptions {
   freshDraftReady: boolean
   gatewayState: string | undefined
   locationPathname: string
-  resumeSession: (sessionId: string, focus: boolean, ownerRoute?: SessionProfileRoute) => Promise<unknown>
+  resumeSession: (
+    sessionId: string,
+    focus: boolean,
+    ownerRoute?: SessionProfileRoute,
+    options?: ResumeAttemptOptions
+  ) => Promise<unknown>
   // Stored-session id whose most recent resume failed terminally (set by
   // useSessionActions, mirrored from $resumeFailedSessionId). While this equals
   // routedSessionId the window would otherwise latch on the loader forever, so
@@ -37,13 +45,26 @@ interface RouteResumeOptions {
 // (gateway RPC reject + REST fallback failure) on a transiently wedged backend —
 // dead provider key, a runaway turn hogging the dispatcher, flaky DNS. Without a
 // retry the loader latches forever. We retry with backoff, capped, so a
-// genuinely dead backend doesn't hot-loop the resume.
-const MAX_RESUME_RETRIES = 4
-const RESUME_RETRY_BASE_MS = 1_000
-const RESUME_RETRY_MAX_MS = 8_000
+// genuinely dead backend doesn't hot-loop the resume (MAX_RESUME_RETRIES /
+// resumeRetryDelayMs, shared with useResumeReattach).
 
-function resumeRetryDelayMs(attempt: number): number {
-  return Math.min(RESUME_RETRY_MAX_MS, RESUME_RETRY_BASE_MS * 2 ** attempt)
+// Resume the routed session with the owner route / snapshot mode carried by an
+// explicit resume request for that same session.
+function dispatchRouteResume(
+  resumeSession: RouteResumeOptions['resumeSession'],
+  routedSessionId: string,
+  sessionResumeRequest: SessionResumeRequest | null,
+  explicitlyRequested: boolean
+): void {
+  const ownerRoute = sessionResumeRequest?.sessionId === routedSessionId ? sessionResumeRequest.ownerRoute : undefined
+
+  if (explicitlyRequested && sessionResumeRequest?.authoritativeSnapshot) {
+    void resumeSession(routedSessionId, true, ownerRoute, { authoritativeSnapshot: true })
+  } else if (ownerRoute) {
+    void resumeSession(routedSessionId, true, ownerRoute)
+  } else {
+    void resumeSession(routedSessionId, true)
+  }
 }
 
 // HashRouter boot edge case: pathname briefly reads `/` before the hash is
@@ -197,14 +218,7 @@ export function useRouteResume({
 
         bootResumeRef.current = false
 
-        const ownerRoute =
-          sessionResumeRequest?.sessionId === routedSessionId ? sessionResumeRequest.ownerRoute : undefined
-
-        if (ownerRoute) {
-          void resumeSession(routedSessionId, true, ownerRoute)
-        } else {
-          void resumeSession(routedSessionId, true)
-        }
+        dispatchRouteResume(resumeSession, routedSessionId, sessionResumeRequest, explicitlyRequested)
       }
 
       return
@@ -352,4 +366,15 @@ export function useRouteResume({
     routedSessionId,
     selectedStoredSessionIdRef
   ])
+
+  useResumeReattach({
+    activeSessionId,
+    activeSessionIdRef,
+    creatingSessionRef,
+    currentView,
+    gatewayState,
+    resumeSession,
+    routedSessionId,
+    selectedStoredSessionIdRef
+  })
 }

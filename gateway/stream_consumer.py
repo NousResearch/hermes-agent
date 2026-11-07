@@ -162,6 +162,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._current_edit_interval = self.cfg.edit_interval  # adaptive backoff
         self._delivered_commentary_texts: list[str] = []
         self._delivered_segment_texts: list[str] = []  # finalized text per past segment
+        # Commentary folded into a native cumulative bubble (see _deliver_commentary).  Adopting
+        # the authoritative final would otherwise overwrite the one bubble with a body lacking it.
+        self._folded_commentary: list[str] = []
         self._last_segment_delivery: Optional[tuple[str, Optional[float], str, set[str]]] = None
         self._superseded_reply_ids: set[str] = set()
         self._in_think_block = False  # think-tag filter state (mirrors CLI _stream_delta)
@@ -732,6 +735,23 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._accumulated = self._stream_ledger = final_raw
         return True
 
+    def _reapply_folded_commentary(self) -> None:
+        """Keep commentary that was folded into a native cumulative bubble across final adoption.
+
+        A native stream renders ONE bubble per turn, so _deliver_commentary appends mid-turn
+        commentary to that bubble instead of opening a second message.  The authoritative
+        final_response never contains that commentary — adopting it wholesale would wipe text the
+        reader already saw (it appears, then vanishes).  Re-add any folded text the body lost."""
+        if not self._folded_commentary:
+            return
+        body = self._accumulated
+        missing = [t for t in self._folded_commentary if t not in body]
+        if not missing:
+            return
+        prefix = "\n\n".join(missing)
+        self._accumulated = (prefix + "\n\n" + body) if body.strip() else prefix
+        self._stream_ledger = self._accumulated
+
     def _adopt_final_text(self, final_raw: str) -> None:
         """Adopt the authoritative final (see finish()) as the finalize content — only if this
         consumer streamed something (a no-stream turn keeps the gateway's final-send
@@ -747,6 +767,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             if final_payload and final_payload != self._clean_for_display(self._accumulated):
                 self._accumulated = final_raw
                 self._stream_ledger = final_raw
+                self._reapply_folded_commentary()
             return
         ledger = self._stream_ledger
         if ledger and final_raw.startswith(ledger) and len(final_raw) > len(ledger):
@@ -966,7 +987,26 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
 
     async def _deliver_commentary(self, commentary_text: str) -> None:
         """Post commentary as its own message.  Cumulative transports keep the stream going —
-        resetting _accumulated would break the append-only invariant / lose text."""
+        resetting _accumulated would break the append-only invariant / lose text.
+
+        Native streaming is the exception.  Such a transport renders ONE bubble per turn,
+        anchored under the user's message and overwritten in place; a send() there opens a SECOND
+        message that the client places at the bottom of the conversation while the real answer
+        keeps growing in the anchored bubble above it.  The reader then sees the answer in the
+        middle and a stray fragment of the same answer last — the answer looks out of order.
+        Fold the text into the single bubble instead, so one turn stays one message in reading
+        order."""
+        if self._use_native_streaming:
+            text = self._clean_for_display(commentary_text)
+            if not text.strip():
+                return
+            if self._accumulated.strip():
+                self._append_accumulated("\n\n")
+            self._append_accumulated(text)
+            self._folded_commentary.append(text)
+            await self._push_update(_Tick())
+            self._last_edit_time = time.monotonic()
+            return
         cumulative = self._cumulative_transport()
         if not cumulative:
             self._reset_segment_state()

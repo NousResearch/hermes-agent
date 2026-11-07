@@ -1287,6 +1287,11 @@ def _sdk_build(request_cls: Any, **fields: Any) -> Any:
 
 class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
     """Feishu/Lark bot adapter."""
+    # Local /model picker joins the shared card-action routes (provider/model drill-down).
+    _CARD_ACTION_ROUTES = (
+        *FeishuChoiceCardsMixin._CARD_ACTION_ROUTES,
+        ("hermes_model_picker_action", "_handle_model_picker_card_action"),
+    )
     # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
     serves_profile_prefix: bool = True
 
@@ -1348,6 +1353,8 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         self._init_choice_card_state()
         # Reaction deletion needs the opaque reaction_id from create, cached per message_id.
         self._pending_processing_reactions: OrderedDict[str, str] = OrderedDict()
+        # Model picker state (chat_id -> {providers, session_key, on_model_selected, ...})
+        self._model_picker_state: dict[str, dict[str, Any]] = {}
         self._load_seen_message_ids()
 
     @staticmethod
@@ -1866,6 +1873,204 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         tmp_path = response_path.with_suffix(".tmp")
         tmp_path.write_text(answer, encoding="utf-8")
         tmp_path.replace(response_path)
+
+
+    # --- /model picker (provider → model drill-down, settled in place) ---
+    _MODEL_PAGE_SIZE = 8
+    _MODEL_LABEL_MAX = 40
+
+    async def send_model_picker(
+        self, chat_id: str, providers: list, current_model: str, current_provider: str, session_key: str,
+        on_model_selected, metadata: Optional[dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send the /model card: one button per provider, then that provider's models in place.
+
+        ``providers`` rows are ``{"slug", "name", "is_current", "models": [model_id, ...],
+        "total_models"}``; ``on_model_selected(chat_id, model_id, provider_slug) -> str`` returns the
+        confirmation text. The callback contract is the gateway's, shared with Telegram/Discord/Slack.
+        """
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+        if not providers:
+            return SendResult(success=False, error="No providers")
+        try:
+            card = self._build_provider_card(providers, current_model, current_provider)
+            return await self._send_interactive_card(
+                chat_id, card, metadata, "send_model_picker failed",
+                state_map=self._model_picker_state, state_id=str(chat_id), session_key=session_key,
+                extra_state={
+                    "providers": providers, "current_model": current_model,
+                    "current_provider": current_provider, "on_model_selected": on_model_selected,
+                },
+            )
+        except Exception as exc:
+            logger.warning("[Feishu] send_model_picker failed: %s", exc, exc_info=True)
+            return SendResult(success=False, error=str(exc))
+
+    @staticmethod
+    def _model_picker_card(header: str, template: str, elements: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "config": {"wide_screen_mode": True, "update_multi": True},
+            "header": {"title": {"content": header, "tag": "plain_text"}, "template": template},
+            "elements": elements,
+        }
+
+    @staticmethod
+    def _model_picker_body(state: dict[str, Any], *, provider: bool = False) -> str:
+        model = str(state.get("current_model") or "")
+        current = f"**当前模型**: `{model}`" if model else "**当前模型**: （未设置）"
+        if not provider:
+            return current
+        name = str(state.get("selected_provider_name") or state.get("selected_provider") or "")
+        total = len(state.get("model_list") or [])
+        return f"{current}\n**提供商**: {name}（{total} 个模型）\n\n点一个模型完成切换："
+
+    def _build_provider_card(
+        self, providers: list, current_model: str, current_provider: str,
+    ) -> dict[str, Any]:
+        """Provider stage: two buttons per row, current provider marked with a tick."""
+        buttons: list[dict[str, Any]] = []
+        for p in providers:
+            slug = str(p.get("slug") or "")
+            if not slug:
+                continue
+            count = p.get("total_models", len(p.get("models") or []))
+            name = str(p.get("name") or slug)
+            label = f"{name} ({count})" if count else name
+            is_current = bool(p.get("is_current")) or slug == str(current_provider or "")
+            if is_current:
+                label = f"✓ {label}"
+            buttons.append(_card_button(
+                label[: self._MODEL_LABEL_MAX], "primary" if is_current else "default",
+                {"hermes_model_picker_action": f"mp:{slug}"},
+            ))
+        rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+        elements: list[dict[str, Any]] = [
+            {"tag": "markdown", "content": self._model_picker_body(
+                {"current_model": current_model}) + "\n\n选择模型提供商："},
+        ]
+        elements.extend({"tag": "action", "actions": row} for row in rows)
+        elements.append({"tag": "action", "actions": [
+            _card_button("✗ 取消", "danger", {"hermes_model_picker_action": "mx"}),
+        ]})
+        return self._model_picker_card("⚙ 模型切换", "blue", elements)
+
+    def _build_model_card(self, state: dict[str, Any], page: int) -> dict[str, Any]:
+        """Model stage: the selected provider's models, paginated, with back/cancel."""
+        models = [str(m) for m in (state.get("model_list") or [])]
+        per = self._MODEL_PAGE_SIZE
+        total_pages = max(1, (len(models) + per - 1) // per)
+        page = max(0, min(int(page), total_pages - 1))
+        state["model_page"] = page
+        start = page * per
+        current = str(state.get("current_model") or "")
+        elements: list[dict[str, Any]] = [
+            {"tag": "markdown", "content": self._model_picker_body(state, provider=True)},
+        ]
+        for i, model_id in enumerate(models[start:start + per]):
+            short = model_id.split("/")[-1] if "/" in model_id else model_id
+            label = f"✓ {short}" if model_id == current else short
+            elements.append({"tag": "action", "actions": [
+                _card_button(
+                    label[: self._MODEL_LABEL_MAX], "primary" if model_id == current else "default",
+                    {"hermes_model_picker_action": f"mm:{start + i}"},
+                ),
+            ]})
+        nav: list[dict[str, Any]] = []
+        if page > 0:
+            nav.append(_card_button("◀ 上一页", "default", {"hermes_model_picker_action": f"mg:{page - 1}"}))
+        nav.append(_card_button(f"{page + 1}/{total_pages}", "default", {"hermes_model_picker_action": "noop"}))
+        if page < total_pages - 1:
+            nav.append(_card_button("下一页 ▶", "default", {"hermes_model_picker_action": f"mg:{page + 1}"}))
+        nav.append(_card_button("← 返回", "default", {"hermes_model_picker_action": "mb"}))
+        nav.append(_card_button("✗ 取消", "danger", {"hermes_model_picker_action": "mx"}))
+        elements.append({"tag": "action", "actions": nav})
+        return self._model_picker_card("⚙ 选择模型", "blue", elements)
+
+    def _handle_model_picker_card_action(
+        self, *, event: Any, action_value: dict[str, Any], loop: Any,
+    ) -> Any:
+        """Route a /model card tap: mp: provider, mm: model, mg: page, mb: back, mx: cancel."""
+        token = str(action_value.get("hermes_model_picker_action") or "")
+        context = getattr(event, "context", None)
+        chat_id = str(getattr(context, "open_chat_id", "") or "")
+        state = self._model_picker_state.get(chat_id)
+        if not state:
+            logger.debug("[Feishu] Model picker expired for chat %s", chat_id)
+            return self._card_response(self._model_picker_card("⌛ 卡片已失效", "grey", [
+                {"tag": "markdown", "content": "这个选择器已过期，请重新发送 `/model`。"},
+            ]))
+        checked = self._validate_card_action(event=event, state=state, label="model picker", ident=token)
+        if checked is None:
+            return self._card_response()
+        user_name = checked[2]
+        if token.startswith("mp:"):
+            slug = token[3:]
+            provider = next((p for p in state.get("providers") or [] if str(p.get("slug")) == slug), None)
+            if provider is None:
+                return self._card_response(self._model_picker_card("❌ 未找到提供商", "red", [
+                    {"tag": "markdown", "content": f"`{slug}` 不在当前列表里，请重新发送 `/model`。"},
+                ]))
+            state["selected_provider"] = slug
+            state["selected_provider_name"] = str(provider.get("name") or slug)
+            state["model_list"] = [str(m) for m in (provider.get("models") or [])]
+            return self._card_response(self._build_model_card(state, 0))
+        if token.startswith("mg:"):
+            try:
+                page = int(token[3:])
+            except ValueError:
+                return self._card_response()
+            return self._card_response(self._build_model_card(state, page))
+        if token.startswith("mm:"):
+            try:
+                idx = int(token[3:])
+            except ValueError:
+                return self._card_response()
+            models = state.get("model_list") or []
+            if not (0 <= idx < len(models)):
+                logger.debug("[Feishu] Model picker index %s out of range", idx)
+                return self._card_response()
+            callback = state.get("on_model_selected")
+            if callback is None:
+                return self._card_response()
+            model_id = str(models[idx])
+            provider_slug = str(state.get("selected_provider") or "")
+            if not self._submit_on_loop(
+                loop, self._apply_model_picker_selection(state, model_id, provider_slug, callback),
+            ):
+                return self._card_response()
+            short = model_id.split("/")[-1] if "/" in model_id else model_id
+            return self._card_response(self._model_picker_card("⚙ 切换中…", "blue", [
+                {"tag": "markdown", "content": (
+                    f"{self._model_picker_body(state, provider=True)}\n\n"
+                    f"⏳ **{short}** — {user_name}，正在切换…"
+                )},
+            ]))
+        if token == "mb":
+            return self._card_response(self._build_provider_card(
+                state.get("providers") or [], str(state.get("current_model") or ""),
+                str(state.get("current_provider") or ""),
+            ))
+        if token == "mx":
+            self._model_picker_state.pop(chat_id, None)
+            return self._card_response(self._model_picker_card("已取消", "grey", [
+                {"tag": "markdown", "content": "模型切换已取消。"},
+            ]))
+        return self._card_response()
+
+    async def _apply_model_picker_selection(
+        self, state: dict[str, Any], model_id: str, provider_slug: str, callback: Any,
+    ) -> None:
+        """Run the gateway's applier off the SDK thread, then post its confirmation to the chat."""
+        chat_id = str(state.get("chat_id") or "")
+        try:
+            result_text = await callback(chat_id, model_id, provider_slug)
+        except Exception as exc:
+            logger.exception("[Feishu] Model picker selection failed: %s", exc)
+            result_text = f"❌ 切换失败：{exc}"
+        self._model_picker_state.pop(chat_id, None)
+        if result_text:
+            await self.send(chat_id, str(result_text), metadata=state.get("metadata"))
 
     async def send_voice(
         self, chat_id: str, audio_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,

@@ -1158,8 +1158,9 @@ class TestSecondaryProfileConfigHandling:
         assert connected == (2 if paired else 1)
         assert factory_calls == ([Platform.WHATSAPP, Platform.DISCORD] if paired else [Platform.DISCORD])
         if not paired:
-            assert statuses[-1][1]["error_code"] == "whatsapp_unpaired"
-            assert "hermes -p clientbot whatsapp" in statuses[-1][1]["error_message"]
+            # Not statuses[-1]: the connected stamp now lands after this note.
+            note = next(s for s in statuses if s[1]["error_code"] == "whatsapp_unpaired")
+            assert "hermes -p clientbot whatsapp" in note[1]["error_message"]
 
 
 class TestSecondaryProfileHookRegistration:

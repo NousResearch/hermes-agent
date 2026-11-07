@@ -1520,10 +1520,15 @@ platform_toolsets:
 #           - my_plugin_command
 #           - my-important-skill
 #   matrix:
+#     # Platform-wide: successful explicit NO_REPLY/[SILENT] finals stay silent in every
+#     # chat on this platform (DMs included), even when addressed. A room's own
+#     # allow_silence (true or false) overrides it; omitted/null inherits.
+#     # allow_silence: true
 #     channel_overrides:
 #       "!exampleTeamRoom:example.org":
 #         # Successful explicit NO_REPLY/[SILENT] finals stay silent, even when addressed.
-#         # Omitted/null/false keeps the current reply policy; failures remain visible.
+#         # Omitted/null inherits the platform's allow_silence; false keeps the current
+#         # reply policy. Failures remain visible.
 #         # Restart the gateway after changing room overrides.
 #         allow_silence: true
 #   slack:
@@ -2015,7 +2020,9 @@ display:
 
   # Opt-in: hide automatic warning/diagnostic notifications (compression, retry
   # and fallback notices, credit/subagent failure lines, inactivity and watchdog
-  # stalls, media-delivery fallbacks, cron failure alerts) on this surface.
+  # stalls, media-delivery fallbacks, cron failure alerts) on this surface. Also
+  # hides the "returned only a silence marker" notice: a successful turn ending
+  # on a bare [SILENT]/NO_REPLY then stays silent (failed/partial turns still show).
   # Requested results, approvals, clarifications and command outcomes are never
   # hidden, and nothing is removed from the logs. Per-platform override under
   # display.platforms.<platform>.suppress_warning_notifications.

@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { cookieJarToClearOnRemoval, LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
+import {
+  connectionOauthPartition,
+  LEGACY_OAUTH_PARTITION,
+  oauthJarsToClearOnRemoval,
+  resolveOauthPartition
+} from './oauth-partition'
 
 // #92183 — two basic-auth (cookie-flow) gateways registered in the v2
 // connections registry must not share one cookie jar. Chromium cookie jars
@@ -364,50 +369,60 @@ describe('resolveOauthPartition with connectionId (pre-save sign-in identity)', 
   })
 })
 
-// #98242 — re-adding a removed remote gateway flashed "Signed in" and skipped
-// the login page. Removing a connection never cleared its cookie jar (nor its
-// native bearer tokens), so re-registering the same URL resolved to the same
-// persist: partition and read a stale, already-invalidated session as live.
-// cookieJarToClearOnRemoval is the pure pre-removal decision of which URL's
-// jar to wipe; it must see the registry BEFORE the entry is deleted.
-describe('cookieJarToClearOnRemoval (#98242 stale auth state on re-add)', () => {
-  it('names the URL of a removed cookie-auth (oauth) remote, primary or secondary alike', () => {
-    // A removed PRIMARY rode the shared legacy jar; a removed secondary rode
-    // its own connection-scoped jar. Both must be named — either way the
-    // re-added URL reads whatever cookies were left behind.
-    const secondary = registry('local', [remote('conn-a', 'https://gw.example.com')])
-    const primary = registry('conn-a', [remote('conn-a', 'https://gw.example.com')])
+// #98242 — re-adding a removed remote gateway read the old sign-in as live. A
+// connection rides its own jar while secondary and the shared legacy jar while
+// primary, so removal must name both, and touch only its host in the shared one.
+describe('oauthJarsToClearOnRemoval (#98242 stale auth state on re-add)', () => {
+  const own = connectionOauthPartition('conn-a')
+  const legacyHost = { partition: LEGACY_OAUTH_PARTITION, url: 'https://gw.example.com', scope: 'host' }
+  const ownAll = { partition: own, url: 'https://gw.example.com', scope: 'all' }
 
-    expect(cookieJarToClearOnRemoval('conn-a', secondary)).toBe('https://gw.example.com')
-    expect(cookieJarToClearOnRemoval('conn-a', primary)).toBe('https://gw.example.com')
+  it('names its own jar and its host in the legacy jar, primary or secondary alike', () => {
+    for (const primary of ['local', 'conn-a']) {
+      const before = registry(primary, [{ id: 'local', kind: 'local' }, remote('conn-a', 'https://gw.example.com')])
+      const after = registry('local', [{ id: 'local', kind: 'local' }])
+
+      expect(oauthJarsToClearOnRemoval('conn-a', before, after)).toEqual([ownAll, legacyHost])
+    }
   })
 
-  it('returns null for connections that never rode a cookie jar', () => {
+  it('leaves the legacy jar alone when a remaining gateway, Cloud or the Portal on that host rides it', () => {
+    const before = registry('conn-b', [
+      remote('conn-a', 'https://gw.example.com:9119'),
+      remote('conn-b', 'https://gw.example.com:9220')
+    ])
+
+    const after = registry('conn-b', [remote('conn-b', 'https://gw.example.com:9220')])
+    const alone = registry('local', [remote('conn-a', 'https://gw.example.com')])
+    const cloud = registry('local', [{ id: 'cloud-1', kind: 'cloud', url: 'https://gw.example.com/agent' }])
+
+    expect(oauthJarsToClearOnRemoval('conn-a', before, after)).toEqual([
+      { ...ownAll, url: 'https://gw.example.com:9119' }
+    ])
+    expect(oauthJarsToClearOnRemoval('conn-a', alone, cloud)).toEqual([ownAll])
+    expect(
+      oauthJarsToClearOnRemoval('conn-a', alone, registry('local', []), {
+        sharedUrls: ['https://gw.example.com/portal']
+      })
+    ).toEqual([ownAll])
+    // A non-primary oauth gateway on that host has its own jar: the legacy share is still ours.
+    const secondary = registry('local', [remote('conn-c', 'https://gw.example.com:9220')])
+    expect(oauthJarsToClearOnRemoval('conn-a', alone, secondary)).toEqual([ownAll, legacyHost])
+  })
+
+  it('returns nothing for connections that never rode a cookie jar', () => {
     const reg = registry('local', [
       remote('tok-1', 'https://gw-t.example.com', { authMode: 'token' }),
       { id: 'ssh-1', kind: 'ssh', host: 'gw.example.com' },
-      { id: 'local', kind: 'local' }
+      { id: 'cloud-1', kind: 'cloud', url: 'https://agent.nousresearch.com', authMode: 'oauth' },
+      { id: 'local', kind: 'local' },
+      remote('bad', '')
     ])
 
-    expect(cookieJarToClearOnRemoval('tok-1', reg)).toBeNull()
-    expect(cookieJarToClearOnRemoval('ssh-1', reg)).toBeNull()
-    expect(cookieJarToClearOnRemoval('local', reg)).toBeNull()
-  })
+    for (const id of ['tok-1', 'ssh-1', 'cloud-1', 'local', 'bad', 'missing']) {
+      expect(oauthJarsToClearOnRemoval(id, reg, reg)).toEqual([])
+    }
 
-  it('keeps the shared cloud portal jar out of removal (the silent cascade needs it)', () => {
-    const reg = registry('local', [
-      { id: 'cloud-1', kind: 'cloud', url: 'https://agent.nousresearch.com', authMode: 'oauth' }
-    ])
-
-    expect(cookieJarToClearOnRemoval('cloud-1', reg)).toBeNull()
-  })
-
-  it('returns null for an id that is not in the (pre-removal) registry or a malformed one', () => {
-    const reg = registry('local', [remote('conn-a', 'https://gw.example.com')])
-
-    expect(cookieJarToClearOnRemoval('conn-b', reg)).toBeNull()
-    expect(cookieJarToClearOnRemoval('conn-a', null)).toBeNull()
-    expect(cookieJarToClearOnRemoval('conn-a', { connections: 'nope' } as any)).toBeNull()
-    expect(cookieJarToClearOnRemoval('conn-a', registry('local', [remote('conn-a', '')]))).toBeNull()
+    expect(oauthJarsToClearOnRemoval('conn-a', null, null)).toEqual([])
   })
 })

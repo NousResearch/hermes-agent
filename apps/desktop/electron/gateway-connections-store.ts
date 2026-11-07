@@ -81,6 +81,12 @@ export interface ConnectionsChange {
   reason: 'removed' | 'saved' | 'updated'
 }
 
+/** `before`/`after`: the list as last announced and as now read (a removed entry is only in `before`). */
+export type RegistryChangeHandler = (
+  changes: ConnectionsChange[],
+  lists: { after: ConnectionRegistry; before: ConnectionRegistry }
+) => void
+
 export interface GatewayConnectionsStoreDeps {
   /** The store directory (main's ROOT Hermes home, through symlinks). */
   root: string
@@ -627,7 +633,7 @@ export interface GatewayConnectionsStore {
   /** A NativeTokenStoreIo over the tokens file, keyed by connection id (unbound URLs fall back). */
   nativeTokenIo(log?: (message: string) => void): NativeTokenStoreIo
   /** Stat-poll both files; `onRegistry` gets per-connection changes another writer made. */
-  watch(handlers: { onRegistry: (changes: ConnectionsChange[]) => void; onTokens: () => void }): () => void
+  watch(handlers: { onRegistry: RegistryChangeHandler; onTokens: () => void }): () => void
 }
 
 export function createGatewayConnectionsStore(deps: GatewayConnectionsStoreDeps): GatewayConnectionsStore {
@@ -896,7 +902,7 @@ export function createGatewayConnectionsStore(deps: GatewayConnectionsStoreDeps)
     }
   }
 
-  function watch(handlers: { onRegistry: (changes: ConnectionsChange[]) => void; onTokens: () => void }) {
+  function watch(handlers: { onRegistry: RegistryChangeHandler; onTokens: () => void }) {
     // No read here: main registers this at load, before safeStorage may be used.
     const onRegistryStat = () => {
       const before = announced
@@ -909,7 +915,7 @@ export function createGatewayConnectionsStore(deps: GatewayConnectionsStoreDeps)
         const changes = registryChanges(before, after)
 
         if (changes.length) {
-          handlers.onRegistry(changes)
+          handlers.onRegistry(changes, { after, before })
         }
       }
     }

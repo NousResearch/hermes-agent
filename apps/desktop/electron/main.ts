@@ -402,11 +402,12 @@ import { runNativeLogin } from './native-oauth-login'
 import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
 import { execGit, killTimedGitChildren, setNoConsoleGitRoots } from './no-console-git'
 import { registerNativeNotifications } from './notification-ipc'
+import { createRemovedConnectionCookieCleaner } from './oauth-jar-removal'
 import { loginFlightKey, OauthLoginFlights } from './oauth-login-flights'
 import { startOauthLoginWindow } from './oauth-login-window'
 import { isExpectedOauthNavigationAbort } from './oauth-navigation'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
-import { cookieJarToClearOnRemoval, LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
+import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
 import {
   canShowInteractiveOauthLogin,
   mintGatewayWsTicket as mintOauthGatewayWsTicket,
@@ -7079,6 +7080,13 @@ async function hasLiveOauthSession(baseUrl) {
 
   return readLive()
 }
+
+const clearRemovedOauthJars = createRemovedConnectionCookieCleaner({
+  sessionFor: partition => (partition === OAUTH_SESSION_PARTITION ? getOauthSession() : app.isReady() ? session.fromPartition(partition) : null),
+  clearMirror: (partition, url) => remoteSessionCookies.clear(partition, url),
+  v1RemoteUrl: () => readDesktopConnectionConfig()?.remote?.url,
+  sharedUrls: () => [resolvePortalBaseUrl(), readDesktopConnectionConfig()?.remote?.url]
+})
 
 async function clearOauthSession(baseUrl) {
   const sess = getOauthSessionForUrl(baseUrl)
@@ -14407,16 +14415,8 @@ ipcMain.handle('hermes:connections:save', async (_event, payload) => {
 ipcMain.handle('hermes:connections:remove', async (_event, id) => {
   const key = String(id || '')
   managedConnectionUpdateGate.assertCanMutate(key)
-  const cookieUrlToClear = cookieJarToClearOnRemoval(key, readDesktopConnectionsRegistry())
-
-  // Clear the removed connection's cookie jar before its registry entry is
-  // gone: clearOauthSession() resolves the partition from the stored registry,
-  // and a primary vs secondary entry rides a different jar. Left behind, a
-  // re-add of the same URL reads the stale session as "Signed in" (#98242).
-  // Its native sign-in goes with the registry write (signedInIdsGone).
-  if (cookieUrlToClear) {
-    await clearOauthSession(cookieUrlToClear)
-  }
+  // Every jar it rode, primary or not (#98242); its native sign-in goes with the write (signedInIdsGone).
+  await clearRemovedOauthJars(key, readDesktopConnectionsRegistry())
 
   // A fresh read after that await, written without yielding: a save or removal
   // another window made meanwhile must not be overwritten by an older snapshot.
@@ -15236,6 +15236,7 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
 
   const key = connectionScopeKey(payload?.profile)
   const scope = key || ''
+
   // registerGlobalRoute: an applied SSH route joins the list (reconcileApplied… leaves SSH alone).
   const nextRegistry = key
     ? previousRegistry
@@ -16303,6 +16304,7 @@ const streamThrottle = createStreamThrottle(undefined, undefined, {
   // normal idle throttling contract.
   keepFullscreenPainting: process.platform === 'linux' && linuxOzoneBackend(process.env, process.argv) === 'wayland'
 })
+
 registerStreamWorkClock(ipcMain, sender => BrowserWindow.fromWebContents(sender))
 
 function isAnyTurnInFlight() {
@@ -16329,9 +16331,11 @@ ipcMain.on('hermes:active-work', (event, payload) => {
       event.sender.off('destroyed', forget)
       event.sender.off('render-process-gone', forget)
       activeWorkByWebContents.delete(id)
+
       if (owner) {
         streamThrottle.setVoiceActive(owner, false)
       }
+
       updateStreamThrottleFromActiveWork()
     }
 
@@ -16345,9 +16349,11 @@ ipcMain.on('hermes:active-work', (event, payload) => {
   const work = normalizeActiveWork(payload)
   activeWorkByWebContents.set(id, work)
   lastActiveWorkSeen = work
+
   if (owner?.webContents === event.sender && event.senderFrame === event.sender.mainFrame) {
     streamThrottle.setVoiceActive(owner, payload?.voiceActive === true)
   }
+
   updateStreamThrottleFromActiveWork()
 })
 
@@ -16820,12 +16826,16 @@ registerLocalSkinIpc(ipcMain, HERMES_HOME, id => windowConnectionRoutes.get(id)?
 registerMachineUiPreferences(HERMES_HOME)
 // Another writer (the Webapp) changed the shared list: same teardown as a local save/remove.
 gatewayConnectionsStore.watch({
-  onRegistry: changes => {
+  onRegistry: (changes, { after, before }) => {
     if (changes.some(change => change.reason === 'removed')) {
       forgetDesktopGlobalRouteIfRemoved()
     }
 
     for (const change of changes) {
+      if (change.reason === 'removed') {
+        void clearRemovedOauthJars(change.connectionId, before, after)
+      }
+
       if (change.reason !== 'saved') {
         void stopRegistryConnectionBackends(change.connectionId)
         evictConnectionCaches(change.connectionId)

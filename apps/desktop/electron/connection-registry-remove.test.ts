@@ -5,7 +5,7 @@ import path from 'node:path'
 import { expect, it, onTestFinished } from 'vitest'
 
 import { type ConnectionRegistry, normalizeRegistry, reconcileRegistryDrift } from './connection-registry'
-import { removeSavedConnection } from './connection-registry-remove'
+import { registerGlobalRoute, removeSavedConnection } from './connection-registry-remove'
 import { writeSecretFileAtomic } from './hardening'
 
 function fixture(kind: 'cloud' | 'remote' | 'ssh', primary = 'saved-ssh') {
@@ -158,4 +158,34 @@ it('does not overwrite a subsequent registry edit while removal finishes', async
     'saved-ssh',
     'new-ssh'
   ])
+})
+
+it('applying another remote profile on a saved SSH host adds it and leaves the saved profile alone', () => {
+  const registry = normalizeRegistry({
+    version: 2,
+    primary: 'coder',
+    launchMode: 'last-used',
+    lastUsed: 'coder',
+    connections: [
+      { id: 'local', kind: 'local', label: 'This device' },
+      {
+        id: 'coder',
+        kind: 'ssh',
+        label: 'Box (coder)',
+        host: 'box.example.invalid',
+        user: 'hermes',
+        remoteProfile: 'coder'
+      }
+    ]
+  })
+
+  const next = registerGlobalRoute(registry, {
+    mode: 'ssh',
+    remote: { host: 'box.example.invalid', user: 'hermes', remoteProfile: 'writer' }
+  })
+
+  const ssh = next.connections.filter(c => c.kind === 'ssh')
+  expect(ssh.find(c => c.id === 'coder')?.remoteProfile).toBe('coder')
+  expect(ssh.map(c => c.remoteProfile).sort()).toEqual(['coder', 'writer'])
+  expect(next.connections.find(c => c.id === next.primary)?.remoteProfile).toBe('writer')
 })

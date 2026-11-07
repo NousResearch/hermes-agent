@@ -15,7 +15,7 @@ from ruamel.yaml import YAML
 
 from scripts.ci import timings_report
 
-GATE = "All required checks pass (v2)"
+GATE = "All required checks pass (v3)"
 ROOT = Path(__file__).resolve().parents[2]
 
 

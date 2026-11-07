@@ -98,6 +98,29 @@ def test_present_blank_or_null_allowlist_skips_all_cards(
                for r in caplog.records)
 
 
+@pytest.mark.parametrize("rendered", [
+    "kanban:\n",
+    "kanban: corrupt\n",
+    "kanban: 42\n",
+    "kanban:\n  - dispatch_profiles\n  - sage\n",
+], ids=["null", "string", "int", "list"])
+def test_malformed_kanban_section_skips_all_cards(
+    kanban_home, all_assignees_spawnable, rendered, caplog,
+):
+    """A present but non-mapping ``kanban`` section is a corrupt config, not an
+    absent one: it must fail closed like an unreadable config instead of
+    widening this shared-board home to every existing profile."""
+    (kanban_home / "config.yaml").write_text(rendered, encoding="utf-8")
+    with kbc.connect() as conn, caplog.at_level("WARNING", logger="hermes_cli.kanban_db"):
+        tid = kb.create_task(conn, title="foreign card", assignee="default")
+        assert kbd.has_spawnable_ready(conn) is False
+        res = kbd.dispatch_once(conn, dry_run=True)
+    assert res.spawned == []
+    assert res.skipped_nonspawnable == [tid]
+    assert any("kanban section" in r.getMessage() and "not a mapping" in r.getMessage()
+               for r in caplog.records)
+
+
 def test_allowlist_config_read_failure_skips_all_cards(
     kanban_home, all_assignees_spawnable, monkeypatch,
 ):
@@ -113,6 +136,31 @@ def test_allowlist_config_read_failure_skips_all_cards(
         res = kbd.dispatch_once(conn, dry_run=True)
     assert res.spawned == []
     assert res.skipped_nonspawnable == [tid]
+
+
+@pytest.mark.parametrize("loaded", [["kanban"], "corrupt", 42], ids=["list", "str", "int"])
+def test_truthy_non_mapping_top_level_config_skips_all_cards(
+    kanban_home, all_assignees_spawnable, monkeypatch, loaded,
+):
+    """A truthy non-mapping top-level config is as corrupt as an unreadable one:
+    fail closed instead of raising out of the dispatcher."""
+    from hermes_cli import config_effective
+
+    monkeypatch.setattr(config_effective, "load_user_config_effective", lambda **_kw: loaded)
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="foreign card", assignee="default")
+        assert kbd.has_spawnable_ready(conn) is False
+        res = kbd.dispatch_once(conn, dry_run=True)
+    assert res.spawned == []
+    assert res.skipped_nonspawnable == [tid]
+
+
+def test_empty_kanban_mapping_stays_allow_all(kanban_home, all_assignees_spawnable):
+    """``kanban: {}`` has no ``dispatch_profiles``: legacy allow-all, not malformed."""
+    (kanban_home / "config.yaml").write_text("kanban: {}\n", encoding="utf-8")
+    with kbc.connect() as conn:
+        kb.create_task(conn, title="own card", assignee="default")
+        assert kbd.has_spawnable_ready(conn) is True
 
 
 @pytest.mark.parametrize("config, expected", [

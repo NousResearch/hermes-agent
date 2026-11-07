@@ -231,6 +231,13 @@ All container backends run with security hardening:
 
 Docker can optionally receive an explicit env allowlist via `terminal.docker_forward_env`, but forwarded variables are visible to commands inside the container and should be treated as exposed to that session.
 
+### Live output while a command runs
+
+A foreground `terminal` command shows its newest output line while it runs: beside the timer on the
+Desktop tool row and on the classic CLI spinner line. A `\r` progress redraw counts as a line, and the
+line is ANSI-stripped and redacted the same way as the final result. The model still sees only the
+finished output.
+
 ## Background Process Management
 
 Start background processes and manage them:

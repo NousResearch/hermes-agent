@@ -457,7 +457,8 @@ event("tool.output_risk", ToolOutputRiskPayload, doc="Tool output was classified
 
 class ToolProgressPayload(Payload):
     """``agent.tool_progress_relay.tool_progress_payload`` — an MCP server's
-    ``notifications/progress`` for a running call, throttled to one per 500 ms per call."""
+    ``notifications/progress`` or a foreground terminal command's newest output line
+    (``message``) for a running call, throttled to one per 500 ms per call."""
 
     tool_id: str
     name: str
@@ -467,7 +468,7 @@ class ToolProgressPayload(Payload):
     message: str | None = None
 
 
-event("tool.progress", ToolProgressPayload, doc="Live progress of a running tool call (MCP notifications/progress).")
+event("tool.progress", ToolProgressPayload, doc="Live progress of a running tool call (MCP notifications/progress, terminal output).")
 
 
 class TodoUpdatedPayload(Payload):

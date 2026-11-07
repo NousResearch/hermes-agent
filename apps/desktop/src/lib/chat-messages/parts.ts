@@ -113,10 +113,10 @@ export function reasoningTextFromDetails(details: unknown): string {
 }
 
 /**
- * Known deliverable file extensions — mirrors the Python-side
- * `MEDIA_DELIVERY_EXTS` in `gateway/platforms/base.py` so the two surfaces
- * agree on which `MEDIA:` paths are valid. Used to anchor the end of an
- * unquoted path that may contain interior spaces (#96657).
+ * Deliverable extensions anchor unquoted paths with interior spaces (#96657).
+ * Includes the gateway's `MEDIA_DELIVERY_EXTS` plus Office variants: the
+ * gateway can recover unknown extensions by checking the filesystem, while
+ * the renderer must recognize their boundaries without host filesystem access.
  */
 const MEDIA_DELIVERY_EXTS = [
   'png',
@@ -143,6 +143,8 @@ const MEDIA_DELIVERY_EXTS = [
   'pdf',
   'docx',
   'doc',
+  'docm',
+  'dotx',
   'odt',
   'rtf',
   'txt',
@@ -150,6 +152,10 @@ const MEDIA_DELIVERY_EXTS = [
   'epub',
   'xlsx',
   'xls',
+  'xlsb',
+  'xlsm',
+  'xltx',
+  'xltm',
   'ods',
   'csv',
   'tsv',
@@ -163,6 +169,9 @@ const MEDIA_DELIVERY_EXTS = [
   'gpx',
   'pptx',
   'ppt',
+  'pptm',
+  'potx',
+  'vsdx',
   'odp',
   'key',
   'zip',

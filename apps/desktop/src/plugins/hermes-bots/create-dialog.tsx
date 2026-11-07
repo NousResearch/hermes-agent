@@ -55,9 +55,9 @@ import {
   useGroupCapability
 } from './canonical-group-capabilities'
 import type { GroupCapabilityState, GroupCreationEngine } from './canonical-group-capabilities'
-import { registerCanonicalGroup } from './canonical-group-registry'
+import { refreshGatewayGroupRooms, registerCanonicalGroup } from './canonical-group-registry'
 import type { CanonicalGroupOrigin } from './canonical-group-registry'
-import { canonicalGroupRequest, createCanonicalGroup } from './canonical-groups'
+import { canonicalGroupCreateError, canonicalGroupRequest, createCanonicalGroup } from './canonical-groups'
 import type { CanonicalGroupRoute } from './canonical-groups'
 import { $botMeta, $lastRoster, botHandle, botRosterKey, filterBots, ROSTER_KEY, saveBotMeta } from './data'
 import { labeled, ResizableFrame } from './dialog-parts'
@@ -1473,6 +1473,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       // Creation already succeeded; leave it on its owner without adopting a stale result.
       if (!sourceCurrent()) {return}
       const key = registerCanonicalGroup(route, created.room)
+      refreshGatewayGroupRooms()
       onClose()
       onCreated?.(key, 'key')
 
@@ -1487,7 +1488,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     onClose()
     onCreated?.(groupName, 'name')
     } catch (error) {
-      host.notify({ kind: 'error', message: error instanceof Error ? error.message : String(error) })
+      host.notify({ kind: 'error', message: canonicalGroupCreateError(error, b.canonical) })
     } finally { creating.current = false }
   }
 

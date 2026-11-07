@@ -73,7 +73,7 @@ The existing `release-signing` environment supplies:
 Publishing requires the Apple credentials. The existing after-sign hook owns
 notarization, so electron-builder's second notarization path is disabled.
 The publish gate verifies the signature, stapled ticket and Gatekeeper assessment.
-The Darwin publish job waits for both native builds and serializes channel writes.
+The Darwin publish job waits for the arm64 build and its smoke, and serializes channel writes.
 
 ## Verification limits
 

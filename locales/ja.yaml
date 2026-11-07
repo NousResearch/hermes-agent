@@ -974,9 +974,6 @@ platform:
     approved: "✅ 承認しました。"
     denied: "❌ 拒否しました。"
     approval_expired: "⌛ 承認の有効期限が切れました — コマンドは実行されませんでした（すでにタイムアウトしたか、別の場所で処理済みです）。"
-  yuanbao:
-    slow_response_notice: "このタスクは少し手間がかかります — 処理を続けていますので、しばらくお待ちください..."
-    owner_command_denied: "⚠️ {command} はプライベートチャットモードで作成者のみが使用できます"
   shared:
     truncated_suffix: "\n...(省略)"
     unknown: "不明"
@@ -1371,6 +1368,12 @@ platform:
       unauthorized: "これらの操作は、認可された Matrix ユーザーのみが使用できます。"
       not_requester: "これらの操作は、このアクションをリクエストしたユーザーのみが使用できます。"
   feishu:
+    clarify:
+      title: "Hermes が入力を求めています"
+      other: "✏️ その他（回答を入力）"
+      awaiting_typed: "{user} からの入力を待っています…"
+    picker:
+      apply_error: "選択の適用エラー: {error}"
     approval:
       action_session: "セッション中"
       action_always: "常に"
@@ -1474,6 +1477,8 @@ platform:
     prompt_other: "✏️ その他（回答を入力）"
     prompt_expired: ⌛ このプロンプトはもう回答を待っていません。通常のメッセージとして返信を送ってください。
 slash:
+  rewind:
+    description: "以前のプロンプトまで巻き戻して編集・再送信、またはそこから分岐 (Esc Esc)"
   approve:
     description: "保留中の危険なコマンドを承認"
   bg:
@@ -1701,6 +1706,20 @@ slash:
   quit:
     description: "CLI を終了（--delete でセッション履歴も削除）"
 cli:
+  backtrack:
+    title: "↺ トランスクリプト — 編集するプロンプトを選択"
+    keys_hint: "トランスクリプトを閲覧中 · ↑↓/jk スクロール · ←→/hl プロンプト · ↵ 編集 · f 分岐 · esc 戻る"
+    prime_hint: "もう一度 esc で前のメッセージを編集"
+    no_previous: "編集できる前のメッセージはありません。"
+    editing_hint: "↺ プロンプト {number} を編集中 — Enter でここまで巻き戻して送信 · Esc Esc でキャンセル"
+    edit_cancelled: "↺ 巻き戻しをキャンセルしました。何も削除されていません。"
+    rewound: "↺ プロンプト {number} まで巻き戻しました({count} 件のメッセージをアーカイブ)。編集内容を送信します。"
+    forked: "⑂ プロンプト {number} の手前で分岐しました。元のセッション {parent} は変更されていません。下のプロンプトを編集し、Enter で送信してください。"
+    nothing: "(._.) 巻き戻せる以前のプロンプトがありません。"
+    target_changed: "(x_x) プロンプト {number} を選択した後にセッションが変更されました。何も削除されていません。編集内容は入力欄に戻されました。"
+    invalid: "(._.) プロンプト {value} はありません — 1 から {total} の間で選択してください。"
+    usage: "使い方: /rewind [N | fork N]"
+    rewind_failed: "(x_x) 巻き戻しに失敗しました。履歴は変更されていません: {error}"
   modern:
     thought_for: "{seconds}秒考えました"
     thought: "考えました"
@@ -2164,6 +2183,7 @@ cli:
     images_attached_other: "📎 画像 {count} 件を添付しました"
     command_interrupted: "コマンドを中断しました。"
     welcome: "Hermes Agent へようこそ！メッセージを入力するか、/help でコマンド一覧を表示します。"
+    vscode_images_hint: "VS Code ではここで画像をフル解像度で表示できます。設定で terminal.integrated.enableImages をオンにしてください。"
     activated_skills_label: "有効化されたスキル:"
     redaction_disabled_title: "⚠  シークレットの秘匿化が無効です"
     redaction_disabled_body: "(HERMES_REDACT_SECRETS={value})。API キーやトークンがチャット出力、セッション JSON、ログにそのまま表示される可能性があります。再度有効にするには config.yaml で {setting} を設定してください。"
@@ -2618,6 +2638,7 @@ cli:
     goal_turns: "⊙ 目標 {used}/{max}"
     goal: "⊙ 目標"
     ctx_pinned: " 固定"
+    ctx_fallback: " 既定値"
     ctx_unknown: "ctx --"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 スタッシュ（{count} 件）"
@@ -3957,3 +3978,8 @@ plan_usage:
   large_notice_limit: "大型モデル：{name}の上限に達しました（{resets}）。"
   large_notice_limit_stops: "大型モデル：{name}の上限に達しました（{resets}）。それまで実行できません。"
   large_notice_percent: "大型モデル：1メッセージあたりプランの利用量を多く消費します。大型モデルの月間上限：{percent} 使用。"
+shared:
+  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  undo_rollback:
+    list: "↶ 取り消したターンで変更されたファイル: {files}。/rollback でチェックポイントを一覧表示し、1 つを復元してください。"
+    more: "ほか {count} 件"

@@ -118,7 +118,7 @@ jobs:
 
       - name: Install locked chat driver dependencies
         shell: bash
-        run: npm ci --workspace tests-js --include-workspace-root --omit=dev --ignore-scripts --no-audit --no-fund
+        run: pnpm install --frozen-lockfile --filter "{./tests-js}..." --prod --ignore-scripts
 
       # One recording mechanism on every OS (Xvfb gives headless linux a
       # display; the same display serves any app the driver launches).

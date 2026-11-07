@@ -22,6 +22,7 @@ import {
   resolveBotConnectionRoute,
   setBotsWorkspaceOwner
 } from './routing'
+import { rpcMethodMissing } from './rpc-errors'
 import { getPluginCtx, ID } from './shared'
 import type {
   AttentionClass,
@@ -446,18 +447,6 @@ async function settleServerOutcome(
   }
 }
 
-/** JSON-RPC method-not-found (`tui_gateway/rpc_dispatch.py`): the backend predates the call.
- *  The message match covers errors that lost their frame across the IPC bridge. */
-function rpcMethodMissing(error: unknown): boolean {
-  const code = error && typeof error === 'object' ? (error as { code?: unknown }).code : undefined
-
-  if (typeof code === 'number') {
-    return code === -32601
-  }
-
-  return /method not found|-32601|unknown method|no such method/i.test(error instanceof Error ? error.message : String(error))
-}
-
 /** Rewrite this window's copy of one bot's metadata (and its plugin storage) without touching
  *  the bot's backend: the local half of a save, and how a caller mirrors a server value it read. */
 function writeLocalBotMeta(key: string, route: null | ProfileRoute, patch: StoredBotMeta): Promise<void> {
@@ -791,7 +780,7 @@ interface UnionAgentRow {
   /** Credential-free metadata Electron enumerates alongside the name — the
    *  only source of a REMOTE row's title, since profiles.list is asked of the
    *  active gateway alone. */
-  profileMetadata?: Pick<RosterRow, 'display_name' | 'has_avatar' | 'title' | 'ui_meta'>
+  profileMetadata?: Pick<RosterRow, 'description' | 'display_name' | 'has_avatar' | 'title' | 'ui_meta'>
   /** False when the source lists the profile but does not serve it. */
   reachable?: boolean
   targetProfile?: string

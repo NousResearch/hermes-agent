@@ -321,6 +321,39 @@ def reanchor_current_turn_user_idx(messages: list[Any], user_message: Any) -> in
     return fallback
 
 
+def history_before_current_turn(
+    messages: Any, current_turn_user_idx: Any, fallback: Any = None,
+) -> list[Any]:
+    """The pre-turn boundary: the conversation history BEFORE the current turn's user row.
+
+    Hands a refused turn's caller a CLEAN in-memory history (the refused request + its tool rounds
+    dropped), robust to in-place compaction. The loop's ``conversation_history`` is the flush
+    baseline, which in-place compaction rewrites into ``list(messages)`` — the WHOLE poisoned working
+    set, including the current (refused) turn (#149708 review). ``messages`` is already the compacted
+    working set and ``current_turn_user_idx`` the re-anchored index of this turn's user row, so the
+    slice before it is the real clean prefix. Falls back to ``fallback`` only when the index is
+    unusable.
+    """
+    if (isinstance(messages, list) and isinstance(current_turn_user_idx, int)
+            and 0 <= current_turn_user_idx <= len(messages)):
+        return list(messages[:current_turn_user_idx])
+    return list(fallback) if isinstance(fallback, list) else []
+
+
+def refused_turn_boundary_row_id(messages: Any, current_turn_user_idx: Any) -> Optional[int]:
+    """The durable row id that STARTED the current (refused) turn, or ``None``.
+
+    The owner uses it to soft-delete the EXACT refused run from the transcript: the newest user turn
+    is the wrong target when a mid-turn steer appended a newer user row, or the refused input was a
+    hidden/internal row (#149708 review). Reads the committed row id of this turn's user message.
+    """
+    from agent.persisted_turn_receipt import committed_row_id
+    if (isinstance(messages, list) and isinstance(current_turn_user_idx, int)
+            and 0 <= current_turn_user_idx < len(messages)):
+        return committed_row_id(messages[current_turn_user_idx])
+    return None
+
+
 def export_current_turn_boundary(agent: Any, result: Any, user_message: Any) -> Any:
     """Stamp ``{turn_id, current_turn_user_idx}`` on a result envelope, proven against the
     exact ``result["messages"]`` projection it travels with.
@@ -963,8 +996,39 @@ def _memory_query_text(original_user_message: Any) -> str:
     return ""
 
 
+def _previous_user_message_text(conversation_history: Optional[list[Any]]) -> str:
+    """Semantic text of the last real user message in the history a turn starts from (``""`` on a first turn).
+
+    Read before the turn appends its own message or turn-start compaction rebinds the history: in-place
+    compaction hands back a list that already ends in this turn's message, and rotation hands back none.
+    Runtime scaffolding in the user role (continue nudges, task-list snapshots, compaction summaries) is
+    skipped, so the value is what the person last asked. A compaction carrier contributes the live ask it
+    wraps, and an image-only turn ends the search with ``""`` rather than falling back to an older ask.
+    The value is the text of that turn's clean persisted ask, as a live process saw it: a gateway timestamp
+    prefix comes off, and a mid-turn /steer row is skipped (gateway replay drops its type, so it is matched by
+    its marker). Best-effort: replay also drops the type of internal-notification rows, so one without a known
+    prefix (a cron delivery, a process heartbeat, a watch-disabled notice) can still be returned."""
+    from agent.context_compressor import user_originated_turn_view
+    from agent.conversation_compression_scaffolding import is_user_role_scaffolding
+    from agent.prompt_builder import STEER_MARKER_OPEN
+    from gateway.message_timestamps import strip_leading_message_timestamps
+
+    for message in reversed(conversation_history or []):
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str) and (clean := strip_leading_message_timestamps(content)[0]) != content:
+            message = {**message, "content": clean}
+        if flatten_message_text(message.get("content")).lstrip().startswith(STEER_MARKER_OPEN):  # text parts only
+            continue
+        # The canonical view cannot see metadata-flagged scaffolding, so screen it out first.
+        if not is_user_role_scaffolding(message) and (live_view := user_originated_turn_view(message)) is not None:
+            return _memory_query_text(live_view.get("content"))
+    return ""
+
+
 def _memory_turn_start_and_prefetch(
-    agent: Any, original_user_message: Any, turn_author: Optional[dict[str, Any]] = None,
+    agent: Any, original_user_message: Any, turn_author: Optional[dict[str, Any]], previous_message: str,
 ) -> str:
     """Notify memory providers of the new turn, then prefetch external memory once
     before the tool loop (skipped on trivial prompts with no semantic signal).
@@ -977,8 +1041,10 @@ def _memory_turn_start_and_prefetch(
     with suppress(Exception):
         agent._memory_manager.on_turn_start(
             agent._user_turn_count, _query,
+            model=getattr(agent, "model", "") or "",
             author_id=_author.get("id") or None, author_name=_author.get("name") or None,
             author_is_bot=bool(_author.get("is_bot")),
+            previous_message=previous_message,
         )
     ext_prefetch_cache = ""
     with suppress(Exception):
@@ -1121,6 +1187,9 @@ def build_turn_context(
     recovered_history = recover_rotated_compression_session(agent)
     if recovered_history is not None:
         conversation_history = recovered_history
+    # After recovery, so the bot-to-bot chain is keyed by the session id this turn's sends use.
+    from agent.bot_chain import on_turn_start as _bot_chain_turn_start
+    _bot_chain_turn_start(agent, turn_author, persist_user_display_kind, persist_user_message or user_message)
 
     # Tag log records on this thread with the session ID for ``hermes logs``; bind the
     # skill write-origin ContextVar; restore the primary runtime after a fallback turn.
@@ -1164,6 +1233,9 @@ def build_turn_context(
         _turn_fmt += " origin=%s"
         _turn_args.append(_turn_origin)
     logger.info(_turn_fmt, *_turn_args)
+
+    # Before this turn's message is appended and compaction rebinds the history.
+    previous_user_message = _previous_user_message_text(conversation_history) if agent._memory_manager else ""
 
     # Copy so the caller's list is never mutated.
     messages = list(conversation_history) if conversation_history else []
@@ -1259,7 +1331,7 @@ def build_turn_context(
     _bind_interrupt_scope(agent, ra)
     # A vetoed prompt never leaves the host: no external-memory prefetch, no titling call.
     ext_prefetch_cache = "" if plugin_block_message else _memory_turn_start_and_prefetch(
-        agent, original_user_message, turn_author)
+        agent, original_user_message, turn_author, previous_user_message)
 
     # Title the session now: titling depends only on the user's ask (before any injected
     # context lands on list content), so it runs concurrently with the turn. Daemon thread,

@@ -15,11 +15,11 @@ from hermes_cli.release_channels import (
 )
 from scripts.bundles.channel_artifacts import assemble
 from scripts.releases import handoff, lanes as lane_set, r2, stable
+from scripts.releases.desktop_targets import MANIFEST_PLATFORM, MANIFEST_TARGETS, NATIVE_LEGS, TARGETS
 from scripts.releases.channels import ChannelPublisher, R2ChannelStore
 from scripts.releases.progress import log
 from scripts.releases.versioning import parse_attempt_ref
 
-NATIVE_LEGS = ("darwin-arm64", "win32-arm64", "win32-x64", "windows-universal")
 CANARY_NEEDS = ("validate", "build-win32-x64", "build-win32-arm64",
                 "build-darwin-arm64",
                 "build-linux-x64", "build-linux-arm64", "builds-table",
@@ -54,19 +54,7 @@ def product_identity(tag: str, run=subprocess.check_output) -> dict:
     return validate_identity(identity)
 
 
-def _leg_targets(legs: tuple[str, ...]) -> list[tuple[str, str]]:
-    targets = []
-    for name in legs:
-        if name == "windows-universal":
-            continue
-        platform, arch = name.split("-")
-        targets.append(("macos" if platform == "darwin" else "windows", arch))
-    return targets
-
-
-def read_native_receipts(root: Path, tag: str, commit: str,
-                         legs: tuple[str, ...] = NATIVE_LEGS, *,
-                         payload_tag: str | None = None) -> dict:
+def read_native_receipts(root: Path, tag: str, commit: str, *, payload_tag: str | None = None) -> dict:
     """Receipts bind the archive tag; metadata rows bind the payload tag.
 
     For stable those differ: the handoffs are staged under the attempt ref
@@ -74,7 +62,7 @@ def read_native_receipts(root: Path, tag: str, commit: str,
     """
     payload_tag = payload_tag or tag
     files = {}
-    for name in legs:
+    for name in NATIVE_LEGS:
         receipt = json.loads((root / handoff.receipt_name(name)).read_text(encoding="utf-8-sig"))
         for row in handoff.validate_receipt(receipt, tag, commit, name):
             if row["path"] in files and files[row["path"]] != row:
@@ -85,7 +73,7 @@ def read_native_receipts(root: Path, tag: str, commit: str,
                 raise ChannelError("Native artifact differs from its receipt")
             files[row["path"]] = row
     rows = []
-    for platform, arch in sorted(_leg_targets(legs)):
+    for platform, arch in sorted(MANIFEST_TARGETS):
         name = f"metadata-{platform}-{arch}.json"
         if name not in files or not (root / name).is_file():
             raise ChannelError(f"Missing receipt-bound native metadata: {name}")
@@ -99,14 +87,14 @@ def read_native_receipts(root: Path, tag: str, commit: str,
 def match_accepted_packages(manifest: dict, accepted: dict) -> None:
     by_target = {(row["platform"], row["arch"]): row for row in accepted["packages"]}
     # Every desktop package the channel serves, and no other.
-    accepted_targets = {("darwin" if platform == "macos" else "win32", arch)
-                        for platform, arch in by_target if platform in ("macos", "windows")}
-    required = {("darwin", "arm64"), ("win32", "arm64"), ("win32", "x64")}
+    electron = {manifest_platform: platform for platform, manifest_platform in MANIFEST_PLATFORM.items()}
+    accepted_targets = {(electron[platform], arch) for platform, arch in by_target if platform in electron}
+    required = set(TARGETS)
     if (accepted_targets != required
             or {(row["platform"], row["arch"]) for row in manifest["packages"]} != required):
         raise ChannelError("Protected manifest must include every native target")
     for package in manifest["packages"]:
-        platform = "macos" if package["platform"] == "darwin" else "windows"
+        platform = MANIFEST_PLATFORM[package["platform"]]
         row = by_target.get((platform, package["arch"]), {})
         signing = "teamId" if platform == "macos" else "publisher"
         if (any(row.get(key) != package.get(key) for key in ("identity", "version", signing))

@@ -784,14 +784,21 @@ def _retired_cjk_snapshot_health(db_path: Path, conn: sqlite3.Connection) -> Opt
             snapshot = Path(tmp) / "state.db"
             try:
                 _copy_database_snapshot(db_path, snapshot, source_connection=conn)
-                with _repair_conn(snapshot) as probe:
-                    drop_retired_cjk_index(probe.cursor())
             except sqlite3.Error as exc:
-                # Making the copy touches the source only to read it: corruption there is the store's, every
-                # other failure (cannot open, read-only, I/O, full) is the temporary copy's.
+                # The copy touches the source only to read it: corruption there is the store's, every other
+                # failure (cannot open, read-only, I/O, full) is the temporary copy's.
                 if getattr(exc, "sqlite_errorname", None) in ("SQLITE_CORRUPT", "SQLITE_NOTADB"):
                     raise
                 return HealthCheckUnavailable(f"could not make the probe copy ({exc})")
+            with _repair_conn(snapshot) as probe:
+                try:
+                    drop_retired_cjk_index(probe.cursor())
+                except sqlite3.Error as exc:
+                    # The retirement is what the next open runs: failing on the copy is the store's state,
+                    # e.g. a damaged base FTS index that the rename's trigger validation trips over.
+                    if is_disk_full_error(exc):
+                        return HealthCheckUnavailable(f"no room for the probe copy ({exc})")
+                    return str(exc)
             reason = _db_opens_cleanly(snapshot)
     except OSError as exc:  # the temporary directory or the copy, not the store (includes the copy timeout)
         return HealthCheckUnavailable(f"could not make the probe copy ({exc})")

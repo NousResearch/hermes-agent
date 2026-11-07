@@ -76,6 +76,21 @@ class TestDatabaseClientCredentials:
     def test_masked(self, text, secret):
         _assert_masked(text, secret)
 
+    @pytest.mark.parametrize("text, expected", [
+        ("Server=db;User Id=sa;Password=it's-s3cretpw;Database=x",
+         "Server=db;User Id=sa;Password=***;Database=x"),
+        ('Server=db;User Id=sa;Password=ab"s3cretpw;Database=x',
+         "Server=db;User Id=sa;Password=***;Database=x"),
+        ("host=db user=app password=ab's3cretpw dbname=x", "host=db user=app password=*** dbname=x"),
+        # The quote that wraps the whole string still ends the value.
+        ("conn = 'Server=db;User Id=sa;Password=s3cretpw'", "conn = 'Server=db;User Id=sa;Password=***'"),
+        ('{"Default": "Server=db;User Id=sa;Password=s3cretpw"}',
+         '{"Default": "Server=db;User Id=sa;Password=***"}'),
+        ('psql "host=db user=app password=s3cretpw"', 'psql "host=db user=app password=***"'),
+    ])
+    def test_quote_inside_unquoted_password_masked(self, text, expected):
+        assert redact_sensitive_text(text, force=True) == expected
+
     def test_braced_odbc_password_masked_in_a_file_read(self):
         # ``cat`` output is read as code, where ``{pw}`` is a template; an ODBC brace is a literal.
         out = redact_terminal_output("Server=db;UID=app;PWD={Zq7x;LmP2};Database=core",

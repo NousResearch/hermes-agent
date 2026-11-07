@@ -141,10 +141,18 @@ export const WIRE_REFERENCE_KINDS = ['file', 'folder', 'url', 'image', 'tool', '
  * The one pattern that recognises a reference in text.
  *
  * A value is quoted whenever it needs to be — `@url:` always, and any path with
- * a space — so the quoted forms are tried BEFORE bare `\S+`, or a quoted value
- * would end at the first space and strand the rest as prose.
+ * a space — so the quoted forms are tried BEFORE the bare branch, or a quoted
+ * value would end at the first space and strand the rest as prose.
+ *
+ * The lookbehind keeps inline-code spans (`` `@session:<profile>/<id>` ``),
+ * string literals (`"@file:x"`), and email/path prefixes (`me@session:x`,
+ * `a/@file:x`) from being mistaken for live directives, and the bare branch
+ * stops before quotes, brackets, and angle brackets so a reference adjacent to
+ * prose delimiters (`(@file:a.ts)`, `` `@session:<id>` ``) never swallows its
+ * closing delimiter into the chip id.
  */
-const REFERENCE_PATTERN = /@(file|folder|url|image|tool|line|terminal|session):(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)/
+const REFERENCE_PATTERN =
+  /(?<![\w/`"'])@(file|folder|url|image|tool|line|terminal|session):(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|[^\s()[\]{}<>"'`]+)/
 
 /**
  * A fresh matcher for every surface that has to find references in text: the

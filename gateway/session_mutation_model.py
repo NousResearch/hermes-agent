@@ -129,7 +129,11 @@ async def prepare_model(authority, live, payload, prepared):
     # The picked entry's private subtree is replaced whole: a key or header its current declaration
     # withdrew must not follow it to the new endpoint.
     # An unrelated entry the pick displaced carries its own secrets to its new index.
-    secrets = {moved.get(path[:2], path[:2]) + path[2:]: value for path, value in secrets.items()}
+    # ``moved`` is ``{old (section, index): new}`` only for an index-displacing pick; the
+    # follows-profile branch above rebinds it to a tuple of route-bound model keys, which carry no
+    # index to remap, so secrets keep their paths there instead of crashing on ``tuple.get``.
+    index_moves = moved if isinstance(moved, dict) else {}
+    secrets = {index_moves.get(path[:2], path[:2]) + path[2:]: value for path, value in secrets.items()}
     secrets = {path: value for path, value in secrets.items() if path[:2] not in retired}
     secrets.update(provider_secrets)
     # A cleared field's private value must not be re-hydrated into the new route by config().

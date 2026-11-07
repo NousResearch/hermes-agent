@@ -185,3 +185,27 @@ async def test_a_rewrap_before_any_page_of_a_split_carrier_walk_repeats_nothing(
                 db, owner, ref.session_id, target, limit, order, random.Random(at), at)
         finally:
             await owner.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('order', ['oldest', 'latest'])
+@pytest.mark.parametrize('limit', [1, 2])
+@pytest.mark.parametrize('blocks', [False, True])
+async def test_two_uidless_carriers_of_one_handoff_show_it_once_whatever_their_content_shape(tmp_path, monkeypatch,
+                                                                                             blocks, limit, order):
+    """Two uid-less carriers hold the same handoff, as plain text or as content blocks (a compaction merged
+    into a structured tail keeps the blocks). Paged in either order, the handoff shows once, as a full read
+    shows it."""
+    with _session(tmp_path, monkeypatch) as (db, _authority, owner, ref, target):
+        try:
+            text = _merged('wrapped text', 'same')
+            content = [{'type': 'text', 'text': text}] if blocks else text
+            for role in ('user', 'assistant'):
+                db.append_message(target, role, content, _compressed_summary=True)
+            db._write_sql('UPDATE messages SET message_uid = NULL WHERE session_id = ?', (target,))
+            whole = (await _call(owner, 'session.transcript', session_id=ref.session_id, limit=100,
+                                 order=order))['result']['rows']
+            assert Counter(row['row_kind'] for row in whole) == {'compaction': 1, 'message': 2}
+            assert await _every_page(owner, ref.session_id, limit, order) == whole
+        finally:
+            await owner.close()

@@ -291,8 +291,9 @@ class SessionStoredReadsMixin:
         from hermes_state_messages import DISPLAY_VISIBLE_SQL
         handoffs = list(handoffs)
         uids = sorted({uid for uid, _ in handoffs if uid})
+        # Structured (content-block) carriers are matched by their stored encoding, as strings are.
         contents = sorted({self._encode_content(content) for uid, content in handoffs
-                           if not uid and isinstance(content, str)})
+                           if not uid and isinstance(content, (str, list, dict))})
         match = [*(['g.message_uid IN (SELECT value FROM json_each(:uids))'] if uids else []),
                  *(["(g.message_uid IS NULL OR g.message_uid = '') AND g.content IN (SELECT value FROM json_each(:contents))"]
                    if contents else [])]

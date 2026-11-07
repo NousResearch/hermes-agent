@@ -174,6 +174,47 @@ def _optional_table_columns(conn) -> dict[str, set[str]]:
 _HANDOFF_FAIL_SQL = "UPDATE sessions SET handoff_state = 'failed', handoff_error = ? WHERE "
 
 
+def _rekey_api_binding_receipts(conn, *, old: str, new: str, old_ns: str, new_ns: str) -> int:
+    """Rewrite the API-binding receipts a profile rename would strand; returns how many changed.
+
+    ``restore_api_session`` compares ``entry.session_key`` against a key generated FRESH from the
+    current profile name, and requires ``entry.origin.profile`` to be the served profile. A receipt
+    minted under the old name therefore refuses every resume with ``admission_conflict`` /
+    ``profile_mismatch`` after ``hermes profile rename``, although ``rekey_profile_state`` already
+    moved the session rows, the routing index and the origin columns. ``profile_id`` is left as
+    stored: the resume gate accepts a receipt minted under an older home of this store when its
+    origin names this profile (#150633). Local-policy receipts carry the same fields but are rekeyed
+    with the local session lane, not here.
+    """
+    from hermes_state_local import API_BINDING_PREFIX
+
+    rewritten = 0
+    rows = conn.execute(
+        "SELECT key, value FROM state_meta WHERE key GLOB ?", (API_BINDING_PREFIX + "*",)).fetchall()
+    for key, raw in rows:
+        try:
+            payload = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        entry = payload.get("entry") if isinstance(payload, dict) else None
+        if not isinstance(entry, dict):
+            continue
+        changed = False
+        session_key = entry.get("session_key")
+        if isinstance(session_key, str) and session_key.startswith(old_ns):
+            entry["session_key"] = new_ns + session_key[len(old_ns):]
+            changed = True
+        origin = entry.get("origin")
+        if isinstance(origin, dict) and origin.get("profile") == old:
+            origin["profile"] = new
+            changed = True
+        if changed:
+            conn.execute("UPDATE state_meta SET value=? WHERE key=?",
+                         (json.dumps(payload, ensure_ascii=False), key))
+            rewritten += 1
+    return rewritten
+
+
 class SessionGatewayMixin:
     """Routing index, session peers/orphans, hygiene streaks, heartbeats, handoffs."""
 
@@ -671,7 +712,13 @@ class SessionGatewayMixin:
         self._write_sql("DELETE FROM gateway_hygiene_state WHERE session_key = ?", (session_key,))
 
     def rekey_profile_state(self, old_name: str, new_name: str) -> dict[str, int]:
-        """Atomically rewrite exact profile identity in this state database."""
+        """Atomically rewrite exact profile identity in this state database.
+
+        Covers the API-binding session receipts too: ``restore_api_session`` compares their
+        ``entry.session_key`` and ``entry.origin.profile`` against the CURRENT profile name, so a
+        rename that skipped them strands those chats even though their rows moved. Local-policy
+        receipts are rekeyed with the local session lane.
+        """
         old, new = (old_name or "").strip(), (new_name or "").strip()
         counts: dict[str, int] = {}
         if not old or not new or old == new:
@@ -775,6 +822,8 @@ class SessionGatewayMixin:
                     "UPDATE gateway_routing SET session_key = ?, entry_json = ? WHERE rowid = ?",
                     (new_session_key, new_json, rowid))
             counts["gateway_routing"] = len(routing)
+            counts["api_binding_receipts"] = _rekey_api_binding_receipts(
+                conn, old=old, new=new, old_ns=old_ns, new_ns=new_ns)
 
         self._execute_write(_do)
         return counts

@@ -13,7 +13,6 @@ import { arSettings } from './ar_settings'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 
 export const arOverrides = {
-
   catalog: {
     add: 'إضافة',
     added: 'تمت الإضافة',
@@ -114,6 +113,8 @@ export const arOverrides = {
   artifactPreview: arArtifacts.artifactPreview,
   sidebar: arChrome.sidebar,
   composer: {
+    voiceModeDuplex: 'Duplex',
+    voiceLanguageAuto: 'تلقائي',
     ...arChat.composer,
     redirect: 'إعادة توجيه التشغيل الحالي',
     queueLostNote: 'فُقد الدور أثناء إعادة التشغيل',

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import urllib.error
 import urllib.request
 from typing import Any, Dict, Optional
@@ -35,6 +36,14 @@ CHAINED_MODE = "chained"
 DEFAULT_LIVE_MODEL = "gpt-live-1"
 DEFAULT_LIVE_VOICE = "marin"
 DEFAULT_LIVE_BASE_URL = "https://api.openai.com/v1"
+# ``<plugin>:<engine>``: a live voice engine a Desktop extension registers (``VOICE_ENGINE_AREA``,
+# apps/desktop/src/contrib/voice-engines.ts). The extension owns its transport; this backend only
+# stores and reports the choice. Whether that plugin is installed is the renderer's call: it falls
+# back to chained when no registered engine matches.
+EXTENSION_MODE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}:[a-z0-9][a-z0-9_-]{0,63}$")
+# ``voice.gpt_live.language``: a BCP 47-shaped tag (fr, pt-BR, zh-Hant). It is interpolated into
+# the live instructions, so anything else (free text, newlines) is refused, never forwarded.
+LANGUAGE_TAG_RE = re.compile(r"[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*")
 # Voices the vendor lists for gpt-live-1 (live-conversations guide) plus the realtime defaults it
 # accepts; free text stays allowed for custom voices.
 GPT_LIVE_VOICES = (
@@ -104,10 +113,20 @@ def _live_section(voice: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     return section if isinstance(section, dict) else {}
 
 
+def is_voice_chat_mode(value: str) -> bool:
+    """True for a value ``voice.voice_chat_mode`` may hold (already lower-cased by the writer):
+    ``chained``, ``gpt-live`` or an extension engine id ``<plugin>:<engine>``."""
+    return value in {CHAINED_MODE, GPT_LIVE_MODE} or bool(EXTENSION_MODE_RE.match(value))
+
+
 def voice_chat_mode(voice: Optional[dict[str, Any]] = None) -> str:
-    """``chained`` (default) or ``gpt-live``. Accepts the underscore spelling too."""
+    """``chained`` (default), ``gpt-live``, or an extension engine id ``<plugin>:<engine>``.
+    Accepts the underscore spelling of ``gpt-live`` too; anything else is ``chained``."""
     raw = (voice if voice is not None else _voice_section()).get("voice_chat_mode")
-    mode = str(raw or CHAINED_MODE).strip().lower().replace("_", "-")
+    mode = str(raw or CHAINED_MODE).strip().lower()
+    if EXTENSION_MODE_RE.match(mode):
+        return mode  # plugin ids keep their underscores
+    mode = mode.replace("_", "-")
     return GPT_LIVE_MODE if mode in {GPT_LIVE_MODE, "gptlive", "live"} else CHAINED_MODE
 
 
@@ -124,13 +143,26 @@ def _resolve_credentials(live: dict[str, Any]) -> tuple[str, str]:
 
 
 def live_instructions(live: Optional[dict[str, Any]] = None) -> str:
-    extra = str((live if live is not None else _live_section()).get("instructions") or "").strip()
-    return f"{LIVE_PERSONA}\n\n{extra}" if extra else LIVE_PERSONA
+    live = live if live is not None else _live_section()
+    extra = str(live.get("instructions") or "").strip()
+    instructions = f"{LIVE_PERSONA}\n\n{extra}" if extra else LIVE_PERSONA
+    language = str(live.get("language") or "auto").strip()
+    if language.lower() == "auto":  # a hand-edited "Auto" is still auto, not a broken session
+        return instructions  # Preserve the existing multilingual behavior and persona byte-for-byte.
+    if len(language) > 35 or not LANGUAGE_TAG_RE.fullmatch(language):
+        raise ValueError("GPT-Live language must be auto or a language tag such as fr or pt-BR")
+    # Live controls response language through instructions, not a Realtime/STT language field.
+    return (
+        f"{instructions}\n\nResponse language: {language}. "
+        "Always answer in this language, even when the user speaks another language. "
+        "Keep the delegation policy above unchanged."
+    )
 
 
 def resolve_gpt_live_status() -> dict[str, Any]:
     """Non-secret readiness verdict for the client: which mode is selected and whether GPT-Live
-    can start (a key resolves). Never returns the key."""
+    can start (a key resolves). Never returns the key. ``available``/``reason`` always describe
+    GPT-Live, whichever mode is selected: an extension engine answers its own status in Desktop."""
     voice = _voice_section()
     mode = voice_chat_mode(voice)
     live = _live_section(voice)

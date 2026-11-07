@@ -144,8 +144,8 @@ it.each([
 ])('opens the room even when a Bot does not join (%s), and says why', async (_case, local, peer, why, registers) => {
   gateways(local, peer)
   await createWithMini(await openDialog())
-  // The opened group chat's row says why; a toast would outlive it and follow the person elsewhere.
-  expect(notify).not.toHaveBeenCalled()
+  // The opened group chat's row says why; one notice names who is missing, so a failed seat is never silent.
+  expect(notify.mock.calls).toEqual([[{ kind: 'warning', message: words.createdNotJoined.replace('{names}', 'Hermes · Mac Mini') }]])
   const [binding] = Object.values($canonicalGroupBindings.get())
   expect(peerJoinText($peerJoinErrors.get()[peerJoinKey(binding, 'hermes-mac-mini')], 'Hermes · Mac Mini', words)).toBe(why.replace('{name}', 'Hermes · Mac Mini'))
   expect(request.mock.calls.some(call => call[1] === 'groups.peer.register')).toBe(registers)

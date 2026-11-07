@@ -9,8 +9,10 @@ are resolved through :func:`_origin` at call time.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import contextlib
+import io
 import json
 import logging
 import os
@@ -193,26 +195,107 @@ def _rewrite_with_auxiliary_model(
 
 
 # --- Edge TTS (free default) ---
+def _has_persian_script(text: str) -> bool:
+    return any(
+        ("\u0600" <= ch <= "\u06ff" or "\ufb50" <= ch <= "\ufdff" or "\ufe70" <= ch <= "\ufeff")
+        for ch in text
+    )
+
+
+def _has_latin_script(text: str) -> bool:
+    return any(("A" <= ch <= "Z" or "a" <= ch <= "z") for ch in text)
+
+
+def _partition_bilingual_edge_text(
+    text: str, default_voice: str, persian_voice: str
+) -> list[tuple[str, str]]:
+    """Partition text into sentences, routing Persian blocks to persian_voice and pure English blocks to default_voice."""
+    paragraphs = [p.strip() for p in re.split(r"(\n+)", text) if p.strip()]
+    chunks: list[tuple[str, str]] = []
+    for p in paragraphs:
+        sentences = [s.strip() for s in re.split(r"(?<=[.!?؟])\s+", p) if s.strip()]
+        for s in sentences:
+            voice = persian_voice if _has_persian_script(s) else default_voice
+            chunks.append((s, voice))
+
+    if not chunks:
+        voice = persian_voice if _has_persian_script(text) else default_voice
+        return [(text, voice)]
+
+    merged: list[tuple[str, str]] = [chunks[0]]
+    for s, v in chunks[1:]:
+        last_s, last_v = merged[-1]
+        if v == last_v:
+            merged[-1] = (last_s + " " + s, v)
+        else:
+            merged.append((s, v))
+    return merged
+
+
 async def _generate_edge_tts(text: str, output_path: str, tts_config: dict[str, Any]) -> str:
     edge_tts = _origin()._import_edge_tts()
     edge_config = tts_config.get("edge") or {}
     speed = float(edge_config.get("speed", tts_config.get("speed", 1.0)))
-    voice = edge_config.get("voice") or DEFAULT_EDGE_VOICE
-    is_persian = any("\u0600" <= ch <= "\u06ff" or "\ufb50" <= ch <= "\ufdff" or "\ufe70" <= ch <= "\ufeff" for ch in text)
-    if is_persian and (voice == DEFAULT_EDGE_VOICE or (not voice.startswith("fa-") and "Multilingual" not in voice)):
-        voice = "fa-IR-DilaraNeural"
-    kwargs = {"voice": voice}
-    if speed != 1.0:
-        kwargs["rate"] = f"{round((speed - 1.0) * 100):+d}%"
-    try:
+    default_voice = edge_config.get("voice") or DEFAULT_EDGE_VOICE
+    persian_voice = edge_config.get("persian_voice", "fa-IR-DilaraNeural")
+
+    rate_arg = f"{round((speed - 1.0) * 100):+d}%" if speed != 1.0 else None
+
+    is_persian = _has_persian_script(text)
+    has_latin = _has_latin_script(text)
+
+    # 1. Monolingual Persian (or Persian with short loanwords in single sentence)
+    if is_persian and not has_latin:
+        kwargs: dict[str, Any] = {"voice": persian_voice}
+        if rate_arg:
+            kwargs["rate"] = rate_arg
         await edge_tts.Communicate(text, **kwargs).save(output_path)
+        return output_path
+
+    # 2. Monolingual non-Persian (English, etc.)
+    if not is_persian:
+        kwargs = {"voice": default_voice}
+        if rate_arg:
+            kwargs["rate"] = rate_arg
+        await edge_tts.Communicate(text, **kwargs).save(output_path)
+        return output_path
+
+    # 3. Code-switched / Bilingual text (contains both Persian and Latin scripts)
+    parts = _partition_bilingual_edge_text(text, default_voice, persian_voice)
+    if len(parts) == 1:
+        kwargs = {"voice": parts[0][1]}
+        if rate_arg:
+            kwargs["rate"] = rate_arg
+        await edge_tts.Communicate(parts[0][0], **kwargs).save(output_path)
+        return output_path
+
+    async def _synth_part(p_text: str, p_voice: str) -> bytes:
+        p_kwargs: dict[str, Any] = {"voice": p_voice}
+        if rate_arg:
+            p_kwargs["rate"] = rate_arg
+        buf = io.BytesIO()
+        comm = edge_tts.Communicate(p_text, **p_kwargs)
+        async for chunk in comm.stream():
+            if chunk["type"] == "audio":
+                buf.write(chunk["data"])
+        return buf.getvalue()
+
+    try:
+        tasks = [_synth_part(p_text, p_voice) for p_text, p_voice in parts]
+        audio_chunks = await asyncio.gather(*tasks)
+        with open(output_path, "wb") as f_out:
+            for chunk in audio_chunks:
+                f_out.write(chunk)
     except Exception as exc:
-        if is_persian and voice != "fa-IR-DilaraNeural":
-            logger.info("Retrying Persian TTS with fa-IR-DilaraNeural after %s failed: %s", voice, exc)
-            kwargs["voice"] = "fa-IR-DilaraNeural"
-            await edge_tts.Communicate(text, **kwargs).save(output_path)
-        else:
-            raise
+        logger.warning(
+            "Bilingual Edge TTS chunked synthesis failed (%s); falling back to single voice %s",
+            exc, persian_voice,
+        )
+        kwargs = {"voice": persian_voice}
+        if rate_arg:
+            kwargs["rate"] = rate_arg
+        await edge_tts.Communicate(text, **kwargs).save(output_path)
+
     return output_path
 
 

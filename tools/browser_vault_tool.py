@@ -501,9 +501,16 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     page_origin = _bound_page_origin(effective_task_id, meta, meta.kind)
     if isinstance(page_origin, dict):
         return json.dumps(page_origin)
-    if meta.kind == "payment" and not _confirm_payment_fill(meta.label, page_origin):
-        return json.dumps({"success": False, "error_type": "payment_declined",
-                           "error": "The user did not confirm filling this payment card. Do not retry; ask them instead."})
+    if meta.kind == "payment":
+        # Ask only when this page can take the card: a checkout whose card inputs sit in a processor's
+        # cross-origin frame would otherwise prompt for a fill that cannot happen. The page is inspected
+        # again after consent and only that inspection's controls are written.
+        inspected = _inspect_page(effective_task_id, meta.kind)
+        if isinstance(inspected, dict):
+            return json.dumps(inspected)
+        if not _confirm_payment_fill(meta.label, page_origin):
+            return json.dumps({"success": False, "error_type": "payment_declined",
+                               "error": "The user did not confirm filling this payment card. Do not retry; ask them instead."})
 
     with backend.fill_context():
         refusal = snapshot_refusal(backend, handle, meta, page_origin)
@@ -512,37 +519,29 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
         return _fill_bound_page(backend, handle, meta, page_origin, effective_task_id)
 
 
-def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, effective_task_id: str) -> str:
-    """Inspect the page, resolve the item's secret and write it; runs inside the backend's fill_context
-    after the origin guard passed."""
-    from agent.redact import register_vault_redaction_value
+def _inspect_page(task_id: str, kind: str) -> tuple[str, list[Any]] | dict[str, Any]:
+    """Inspect and classify the current page's controls for a ``kind`` fill: ``(nonce, classified)``, whose
+    nonce binds a write to THIS inspection's stamps, or the refusal to return. A payment fill needs a card
+    number control; billing fields alone are not a card form."""
     from agent.vault_login_classifier import (
         ClassifiedLoginControl,
         LoginControl,
-        build_fill_js,
         build_inspection_js,
         classify_checkout_control,
         classify_login_control,
-        select_checkout_fills,
-        select_password_fill,
     )
-    from agent.vault_backends import UnlockRequired
-    from agent.vault_store import ADDRESS_FIELDS, PAYMENT_FIELDS, scrub_secret_from_text
 
-    # ── Inspect + classify page controls ────────────────────────────────────
-    nonce = secrets.token_hex(8)  # binds this fill to THIS inspection's stamps
-    inspect = _eval_js(effective_task_id, build_inspection_js(nonce))
+    nonce = secrets.token_hex(8)
+    inspect = _eval_js(task_id, build_inspection_js(nonce))
     if not inspect.get("success"):
-        return json.dumps(
-            {"success": False, "error": f"Could not inspect page inputs: {inspect.get('error', 'eval failed')}"}
-        )
+        return {"success": False, "error": f"Could not inspect page inputs: {inspect.get('error', 'eval failed')}"}
     raw_controls = _parse_json_result(inspect.get("result"))
     if isinstance(raw_controls, str):
         raw_controls = _parse_json_result(raw_controls)
     if not isinstance(raw_controls, list):
-        return json.dumps({"success": False, "error": "Page input inspection returned no usable controls."})
+        return {"success": False, "error": "Page input inspection returned no usable controls."}
 
-    classify = classify_login_control if meta.kind == "login" else classify_checkout_control
+    classify = classify_login_control if kind == "login" else classify_checkout_control
     classified: list[ClassifiedLoginControl] = []
     for raw in raw_controls:
         if not isinstance(raw, dict):
@@ -550,8 +549,28 @@ def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, eff
         result = classify(LoginControl.from_dict(raw))
         if result is not None:
             classified.append(result)
+    if kind == "payment" and not any(control.token == "cc-number" for control in classified):
+        return {"success": False, "error_type": "no_payment_fields",
+                "error": ("No card number field was found on the current page. Card inputs inside a payment "
+                          "processor's embedded frame cannot be filled by the vault. Do not retry; ask the user "
+                          "to enter the card themselves.")}
     if not classified:
-        return json.dumps({"success": False, "error": f"No {meta.kind} form fields were found on the current page."})
+        return {"success": False, "error": f"No {kind} form fields were found on the current page."}
+    return nonce, classified
+
+
+def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, effective_task_id: str) -> str:
+    """Inspect the page, resolve the item's secret and write it; runs inside the backend's fill_context
+    after the origin guard passed."""
+    from agent.redact import register_vault_redaction_value
+    from agent.vault_login_classifier import build_fill_js, select_checkout_fills, select_password_fill
+    from agent.vault_backends import UnlockRequired
+    from agent.vault_store import ADDRESS_FIELDS, PAYMENT_FIELDS, scrub_secret_from_text
+
+    inspected = _inspect_page(effective_task_id, meta.kind)
+    if isinstance(inspected, dict):
+        return json.dumps(inspected)
+    nonce, classified = inspected
 
     # ── Resolve secret and fill (secret never enters any logged string) ─────
     try:

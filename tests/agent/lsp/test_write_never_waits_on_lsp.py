@@ -111,7 +111,7 @@ def test_late_verdict_reaches_the_model_before_the_turn_ends(mock_workspace, mon
     gate.touch()
     agent = SimpleNamespace(session_id="S-end", _current_task_id="t-S-end",
                             _interim_content_was_streamed=lambda _text: False,
-                            _emit_interim_assistant_message=lambda _msg: None,
+                            _emit_interim_assistant_message=lambda _msg, **_kw: None,
                             _flush_messages_to_session_db=lambda *_a: None)
     messages = [{"role": "user", "content": "edit c.py"}]
     verdict = apply_stop_gates(agent, {"role": "assistant", "content": "done"}, final_response="done",

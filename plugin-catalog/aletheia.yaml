@@ -1,0 +1,19 @@
+name: aletheia
+repo: https://github.com/ousiaresearch/aletheia
+sha: 365db2f98f4d1d7b46f2306b84ac177dbcea88ad
+description: "Evidence-bound scoped memory for Hermes agents, over the Weft substrate: each turn is written to a local SQLite store under the active profile, recall is scoped before it is ranked (deny-by-default, deterministic, never widened by anything read), and every recall returns a receipt naming the scope consulted, the ids selected and the tier. Duplicates are not re-ingested, deletions cascade, corrections preserve lineage. Registers as memory.provider: aletheia and exposes weft_recall, weft_ingest, weft_forget and weft_receipt, with recall on a worker thread so a turn's prefetch is not blocked; the built-in memory store keeps running alongside it. Disclosure — the store and all retrieval stay local (SQLite in the profile directory; no network calls, no telemetry, no credentials); the required embedder (bge-m3) and cross-encoder reranker are fetched once at setup from their official Hugging Face repositories (~0.7 GB) and are not vendored; optional OCR (Qwen3.5-2B, 2.5 GB) and Whisper (547 MB) enable image and audio ingest, and without them those media types are refused by name while text keeps working fully; AGPL-3.0, and the substrate it depends on (weft-memory on PyPI) is AGPL-3.0 as well."
+maintainer: ousiaresearch
+tier: community
+category: memory
+docs_url: https://github.com/ousiaresearch/aletheia
+requires_hermes: ">=0.22.5"
+version: "1.1.0"
+title: "Aletheia"
+readme: true
+platforms:
+- macos
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

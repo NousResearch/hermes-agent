@@ -14,6 +14,38 @@ def _load():
     return mod
 
 
+def test_import_time_edits_in_classes_inverted_guards_and_match_cases_are_counted(tmp_path):
+    """Class bodies, ``match`` cases and the import branch of an inverted ``__main__`` guard run at
+    import, and removals change the search path too; the script-only branch and function bodies do not."""
+    lint = _load()
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.setuptools.packages.find]\ninclude = ["pkg", "pkg.*"]\n', encoding="utf-8")
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "guarded.py").write_text(
+        "import sys\n"
+        "class Bootstrap:\n"
+        "    sys.path.insert(0, '/a')\n"
+        "if __name__ != '__main__':\n"
+        "    sys.path.append('/b')\n"
+        "else:\n"
+        "    sys.path.append('/script-only')\n"
+        "match sys.platform:\n"
+        "    case 'linux':\n"
+        "        sys.path.append('/c')\n"
+        "if __name__ == '__main__':\n"
+        "    sys.path.append('/script-only')\n"
+        "def run():\n"
+        "    sys.path.append('/call-time')\n"
+        "sys.path.remove('/a')\n"
+        "del sys.path[0]\n"
+        "sys.path.clear()\n",
+        encoding="utf-8")
+
+    assert lint.collect(tmp_path)["module_sys_path"] == [
+        "pkg/guarded.py:3", "pkg/guarded.py:5", "pkg/guarded.py:10",
+        "pkg/guarded.py:15", "pkg/guarded.py:16", "pkg/guarded.py:17"]
+
+
 def test_new_root_climb_and_module_sys_path_edit_fail_and_name_the_owner(tmp_path):
     lint = _load()
     (tmp_path / "pyproject.toml").write_text(

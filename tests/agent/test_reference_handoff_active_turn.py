@@ -334,6 +334,84 @@ class TestReanchorSkipsHandoffFallback:
         assert reanchor_current_turn_user_idx(messages, "rewritten ask") == 1
 
 
+class TestReanchorAbsorbedSyntheticEvent:
+    """#140650: sequence repair merges a ``model_switch`` marker into a typed
+    ``async_delegation_complete`` event row; the merged row keeps the marker's
+    ``display_kind``, so the event's exact-match anchor disappears. The merged row
+    still carries the event text and must remain the turn's anchor — never an older
+    human request, and never -1 when no prior human row exists."""
+
+    EVENT = "[ASYNC DELEGATION BATCH COMPLETE — repro]\nResult: background task finished."
+    MARKER = "[System: The active model for this chat has changed to another model.]"
+
+    def _messages(self, with_human: bool) -> list[dict]:
+        messages: list[dict] = []
+        if with_human:
+            messages += [
+                {"role": "user", "content": "Publish the completed changes."},
+                {"role": "assistant", "content": "Waiting for the background result."},
+            ]
+        messages += [
+            {"role": "user", "content": self.MARKER, "display_kind": "model_switch"},
+            {"role": "user", "content": self.EVENT, "display_kind": "async_delegation_complete"},
+        ]
+        return messages
+
+    def test_standalone_completion_is_positive_control(self):
+        messages = self._messages(with_human=True)[:-2]
+        messages.append(
+            {"role": "user", "content": self.EVENT, "display_kind": "async_delegation_complete"}
+        )
+        assert repair_message_sequence(None, messages) == 0
+        assert reanchor_current_turn_user_idx(messages, self.EVENT) == 2
+
+    def test_merged_marker_event_anchors_the_carrier_row(self):
+        messages = self._messages(with_human=True)
+        assert repair_message_sequence(None, messages) == 1
+        idx = reanchor_current_turn_user_idx(messages, self.EVENT)
+        assert idx == len(messages) - 1
+        assert self.EVENT in messages[idx]["content"]
+
+    def test_merged_marker_event_without_prior_human_still_anchors(self):
+        messages = self._messages(with_human=False)
+        assert repair_message_sequence(None, messages) == 1
+        idx = reanchor_current_turn_user_idx(messages, self.EVENT)
+        assert idx == 0
+        assert self.EVENT in messages[idx]["content"]
+
+    def test_reanchor_propagates_carrier_index_to_persist_anchor(self):
+        from types import SimpleNamespace
+
+        from agent.turn_context_compaction import _reanchor
+
+        messages = self._messages(with_human=True)
+        repair_message_sequence(None, messages)
+        agent = SimpleNamespace(_persist_user_message_idx=len(messages) - 1)
+        idx = _reanchor(agent, messages, self.EVENT)
+        assert idx == len(messages) - 1
+        assert agent._persist_user_message_idx == idx
+
+    def test_anchors_current_turn_accepts_absorbed_event_row(self):
+        from agent.turn_iteration_prep import _anchors_current_turn
+
+        messages = self._messages(with_human=True)
+        repair_message_sequence(None, messages)
+        assert _anchors_current_turn(messages, len(messages) - 1, self.EVENT) is True
+
+    def test_row_carries_user_message_excludes_summary_handoff(self):
+        from agent.turn_context import row_carries_user_message
+
+        handoff = _standalone_handoff(task="ship it")
+        handoff["content"] += f"\nQuoted event: {self.EVENT}"
+        assert row_carries_user_message(handoff, self.EVENT) is False
+
+    def test_row_carries_user_message_rejects_empty_and_non_text(self):
+        from agent.turn_context import row_carries_user_message
+
+        assert row_carries_user_message({"role": "user", "content": "anything"}, "") is False
+        assert row_carries_user_message({"role": "user", "content": ["blocks"]}, ["blocks"]) is False
+
+
 class TestRetryableUserText:
     def test_losslessly_flattens_text_only_parts(self):
         assert retryable_user_text(

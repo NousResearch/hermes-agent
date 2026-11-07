@@ -10,7 +10,7 @@ from gateway.session_envelope import restore_native
 from gateway.session_producer_lifecycle import close_producer_turn, producer_turn
 from hermes_cli.observability.shared_metrics_busy import (
     busy_turn_started, note_busy_admitted, note_busy_parked, settle_busy_arrival)
-from hermes_state_runtime import RuntimeStoreError
+from hermes_state_runtime import ADMITTED_REQUEST_CONFLICT, RuntimeStoreError
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +34,9 @@ _CONTENT_CLAUSES = frozenset({
 # Nothing was committed (main's busy-queue cap); /retry answers it before rewriting (#139257).
 QUEUE_FULL_REPLY = ('⏳ Too many messages are already waiting in this conversation; '
                     'send this again after the current reply.')
+# Nothing new was committed: the message id is already admitted with other content.
+ALREADY_ADMITTED_REPLY = ('⚠️ Hermes already received a different message under this message id, so this '
+                          'version was not saved. Send it again as a new message to continue.')
 
 
 async def admit_message(authority, event):
@@ -56,6 +59,12 @@ async def admit_message(authority, event):
             named = f'{exc.reason}: {exc.field}' if exc.field in _CONTENT_CLAUSES else exc.reason
             return (f'⚠️ Hermes refused this message ({named}), so it was not saved '
                     'or answered. Ask the operator to check gateway.log.')
+        if exc.reason == 'admission_conflict' and exc.field == ADMITTED_REQUEST_CONFLICT['field']:
+            # The provider id is already admitted with other content (a redelivery of the same message
+            # resolves to its row in ``reconcile_native_retry``): the earlier message is the one that runs.
+            logger.warning('Native message %s refused: its id is already admitted with other content',
+                           getattr(event, 'message_id', None))
+            return ALREADY_ADMITTED_REPLY
         if exc.reason != 'queue_full':
             raise
         # Nothing was committed (main's busy-queue cap): say so instead of a generic turn error.

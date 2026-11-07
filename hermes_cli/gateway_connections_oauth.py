@@ -269,11 +269,12 @@ def complete_from_url(callback_url: str, *, connection_id: str = "") -> dict:
 
 def _store_tokens(connection_id: str, base_url: str, tokens: dict) -> None:
     # The entry may have been edited to another URL (or removed) while the browser was away; a
-    # sign-in for the old address must not land on the new one.
-    entry = next((c for c in store.read_registry()["connections"] if c["id"] == connection_id), None)
-    if entry is None or str(entry.get("url") or "").rstrip("/") != base_url:
-        raise OAuthSignInError("The connection changed while signing in; sign in again.")
-    store.write_tokens(connection_id, tokens)
+    # sign-in for the old address must not land on the new one. The store re-checks the issuer
+    # under its tokens lock, so an edit landing between here and the write is refused too.
+    try:
+        store.write_tokens(connection_id, tokens, issued_by=base_url)
+    except (store.ConnectionStoreError, store.NoSuchConnection) as exc:
+        raise OAuthSignInError("The connection changed while signing in; sign in again.") from exc
 
 
 def sign_out(connection_id: str) -> None:
@@ -341,7 +342,11 @@ def _refresh(connection_id: str, headers: dict, tokens: dict) -> str:
     if current.get("accessToken") != tokens.get("accessToken"):
         # A sign-in (Desktop's or a browser's) replaced the tokens meanwhile: it wins.
         return current.get("accessToken") or rotated["accessToken"]
-    store.write_tokens(connection_id, rotated)
+    try:
+        store.write_tokens(connection_id, rotated, issued_by=base_url)
+    except (store.ConnectionStoreError, store.NoSuchConnection) as exc:
+        # Re-pointed or removed while the remote answered: this rotation belongs to neither host.
+        raise NotSignedIn("The connection changed while renewing its sign-in; sign in again.") from exc
     return rotated["accessToken"]
 
 

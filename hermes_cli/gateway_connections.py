@@ -347,16 +347,22 @@ def read_tokens(connection_id: str) -> Optional[dict]:
     return found
 
 
-def write_tokens(connection_id: str, token_set: Optional[dict]) -> None:
-    """Store (or with ``None`` drop) *connection_id*'s sign-in, bound to the URL it names now."""
-    entry = _entry(connection_id)
+def write_tokens(connection_id: str, token_set: Optional[dict], *, issued_by: Optional[str] = None) -> None:
+    """Store (or with ``None`` drop) *connection_id*'s sign-in, bound to the URL it names now.
+
+    *issued_by* is the URL the set came from (a refresh or a completed sign-in). The entry is read
+    again under the tokens lock and a set whose issuer it no longer names is refused, so a re-point
+    landing while the remote answered never binds one host's tokens to another."""
     if token_set is not None and not (isinstance(token_set, dict) and token_set.get("accessToken")):
         raise ConnectionStoreError("A token set needs an accessToken.")
-    url = _entry_url(entry)
-    if token_set is not None and url is None:
-        raise ConnectionStoreError(f'"{entry.get("label")}" has no gateway address to sign in to.')
     path = tokens_path()
     with _locked(path) as still_ours:
+        entry = _entry(connection_id)
+        url = _entry_url(entry)
+        if token_set is not None and url is None:
+            raise ConnectionStoreError(f'"{entry.get("label")}" has no gateway address to sign in to.')
+        if token_set is not None and issued_by is not None and _bound_url({"baseUrl": issued_by}) != url:
+            raise ConnectionStoreError(f'"{entry.get("label")}" changed address while signing in; sign in again.')
         doc, corrupt, _exists = _token_doc(path)
         if url:
             doc["unbound"].pop(url, None)

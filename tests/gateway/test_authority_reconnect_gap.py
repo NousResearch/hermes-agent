@@ -6,10 +6,12 @@ from types import SimpleNamespace
 import pytest
 
 
-def _drain(peer):
+def _drain(peer, through):
+    """The peer's frames up to sequence ``through`` (what its stream has published): a fanout peer is
+    written by its own daemon thread, so a published frame can still be on its way to the socket."""
     frames = []
-    while not peer.frames.empty():
-        frames.append(peer.frames.get_nowait()['params'])
+    while not frames or frames[-1]['seq'] < through:
+        frames.append(peer.frames.get(timeout=10)['params'])
     return frames
 
 
@@ -52,14 +54,15 @@ async def test_resume_after_replay_delivers_the_frames_published_in_between(tmp_
 
     attached = await old.resume(ref, {})
     await turn('one')
-    seen = _drain(dropped)[-1]['seq']
+    stream = authority.sessions['chat'].event_stream
+    seen = _drain(dropped, stream.sequence)[-1]['seq']
     # The reconnect: the replay is answered on the new socket before its resume rebinds it.
     replay = (await new.dispatch({'id': 1, 'method': 'session.events.since', 'params': {
         'session_id': 'chat', 'replay_epoch': attached['replay_epoch'], 'last_sequence': seen}}))['result']
     assert replay['events'] == []
     await turn('two')  # commits in the gap: only the dead socket is subscribed
     await new.resume(ref, {})
-    caught_up = _drain(reconnected)
+    caught_up = _drain(reconnected, stream.sequence)
     assert caught_up and caught_up[0]['seq'] == seen + 1
     assert [f['seq'] for f in caught_up] == list(range(seen + 1, seen + 1 + len(caught_up)))
     complete = [f for f in caught_up if f['type'] == 'message.complete']
@@ -67,4 +70,4 @@ async def test_resume_after_replay_delivers_the_frames_published_in_between(tmp_
 
     # A viewer that never replayed opens from the snapshot alone: no backlog is pushed to it.
     await AuthorityConnection(authority, fresh, {'user_id': 'viewer'}).resume(ref, {})
-    assert _drain(fresh) == []
+    assert fresh.frames.empty()

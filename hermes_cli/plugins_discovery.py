@@ -160,7 +160,11 @@ def scan_directory(
         # pathlib.Path.is_dir() swallows OSError, but injected Path-likes
         # and test doubles can still raise. Fail closed per child.
         try:
-            if not child.is_dir() or (depth == 0 and skip_names and child.name in skip_names):
+            if (
+                not child.is_dir()
+                or child.name.startswith(".")
+                or (depth == 0 and skip_names and child.name in skip_names)
+            ):
                 continue
             manifest_file = next((f for f in (child / "plugin.yaml", child / "plugin.yml") if f.exists()), None)
             portable_file = child / "plugin.json"

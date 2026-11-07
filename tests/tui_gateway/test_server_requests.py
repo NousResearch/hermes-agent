@@ -87,3 +87,24 @@ def test_a_pinned_request_goes_to_and_is_settled_only_by_the_socket_that_asked(w
     assert server_requests.resolve_pinned_response({"id": rid, "result": {"value": "ok"}}, asker)
     worker.join(timeout=10)
     assert out == [{"value": "ok"}]
+
+
+def _answer_with_error(code, message):
+    result: list = []
+    asker = threading.Thread(target=lambda: result.append(server_requests.send("sudo", "s1", {}, timeout=10)))
+    asker.start()
+    from tests.waiting import wait_until
+    request = wait_until(lambda: server_requests.open_requests("s1"))[0]
+    server_requests.resolve_response({"jsonrpc": "2.0", "id": request["id"], "error": {"code": code, "message": message}})
+    asker.join(timeout=10)
+    return result
+
+
+@pytest.mark.parametrize("code", [-32603, -32601])
+def test_an_error_answer_is_logged_with_its_code(wire, caplog, code):
+    """An error answer still reads as unanswered for the caller, but its code and message reach the
+    log at warning: a client handler crash (-32603) or a missing handler (-32601) is no longer silent."""
+    with caplog.at_level("WARNING", logger="tui_gateway.server_requests"):
+        assert _answer_with_error(code, "handler crashed: TypeError") == [None]
+
+    assert any(str(code) in r.getMessage() and "handler crashed" in r.getMessage() for r in caplog.records)

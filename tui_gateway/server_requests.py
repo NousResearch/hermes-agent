@@ -325,7 +325,6 @@ def resolve_response(frame: dict, transport: Any = None) -> bool:
         # here wins instead of a later cancellation overwriting a response.
         _open.pop(rid, None)
         if "error" in frame:
-            logger.debug("server request %s (%s) answered with error: %s", rid, req.method, frame.get("error"))
             req.result, req.answered = None, False
         else:
             result = frame.get("result")
@@ -336,6 +335,10 @@ def resolve_response(frame: dict, transport: Any = None) -> bool:
                 # session owner's registry: ``tools.clarify_batch``).
                 req.result = settle_batch(req.locked, req.result)
             req.answered = True
+    if "error" in frame:
+        error = frame["error"] if isinstance(frame["error"], dict) else {}
+        logger.warning("server request %s (%s) answered with error %s: %s",
+                       rid, req.method, error.get("code"), error.get("message"))
     if req.on_result is not None:
         req.on_result(req.result)
     req.event.set()

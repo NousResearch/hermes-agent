@@ -9,6 +9,7 @@ from __future__ import annotations
 import codecs
 import json
 import os
+import runpy
 import signal
 from pathlib import Path
 import subprocess
@@ -562,7 +563,8 @@ def main() -> int:
     request = json.loads(request_path.read_text(encoding="utf-8-sig"))
     if request["schema"] != 1:
         raise ValueError("unsupported source completion request")
-    root = Path(__file__).resolve().parents[1]
+    # -I -S keeps the checkout off sys.path, so the install-root owner is run from its file.
+    root = Path(runpy.run_path(str(Path(__file__).with_name("_startup_fast.py")))["project_root_str"]())
     if root != Path(request["source"]).resolve():
         raise ValueError("completion checkout does not match request")
     # -I deliberately ignores inherited PYTHONPATH during PM preparation.

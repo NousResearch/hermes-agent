@@ -552,14 +552,14 @@ DEFAULT_CONFIG = {
         "hard_stop_after": {
             "exact_failure": 5, "same_tool_failure": 8, "idempotent_no_progress": 5
         },
-        # Per-turn hard ceilings for runaway-prone tools; counters reset every turn, always on
-        # regardless of the thresholds above. Dozens of searches/subagents in ONE turn is already
-        # pathological, hence low defaults. 0 = unlimited.
+        # Per-turn hard ceilings for runaway-prone tools, always on and reset every turn; dozens of
+        # searches/subagents in ONE turn is already pathological, hence low defaults. 0 = unlimited.
         "loop_caps": {
             "max_web_searches": 50,   # web_search calls per turn
             "max_subagents": 50,      # subagents spawned per turn
         },
     },
+    "usage_limits": {"turn_wall_clock_seconds": 0, "turn_total_tokens": 0, "session_total_tokens": 0, "session_cost_usd": 0},
 
     "compression": {
         "enabled": True,

@@ -77,7 +77,7 @@ function stripTags(value: string): string {
     .trim()
 }
 
-function titleFromTag(content: string, tag: 'h1' | 'title'): string {
+function titleFromTag(content: string, tag: 'h1' | 'text' | 'title'): string {
   const match = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`, 'i').exec(content)
 
   return match ? stripTags(match[1] || '').slice(0, 80) : ''
@@ -137,7 +137,7 @@ export function detectArtifact(language: string | undefined, code: string | unde
     // Small svg fences keep their inline embed (svg-embed.tsx); only a large
     // standalone graphic graduates into an artifact tab.
     if (trimmed.length >= SVG_MIN_CHARS && /<svg[\s>]/i.test(trimmed)) {
-      return { kind: 'svg', language: clean, title: titleFromTag(trimmed, 'title') || 'SVG' }
+      return { kind: 'svg', language: clean, title: titleFromTag(trimmed, 'title') || titleFromTag(trimmed, 'text') || 'SVG' }
     }
 
     return null

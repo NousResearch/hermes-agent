@@ -102,13 +102,13 @@ function SelectItem({ className, children, ...props }: React.ComponentProps<type
       className={cn(
         menuItemClass,
         menuItemFocusClass,
-        'w-full cursor-pointer pr-7 data-disabled:pointer-events-none data-disabled:cursor-default data-disabled:opacity-50',
+        'w-full cursor-pointer pe-7 data-disabled:pointer-events-none data-disabled:cursor-default data-disabled:opacity-50',
         className
       )}
       data-slot="select-item"
       {...props}
     >
-      <span className="absolute right-2 flex size-3.5 items-center justify-center text-foreground">
+      <span className="absolute end-2 flex size-3.5 items-center justify-center text-foreground">
         <SelectPrimitive.ItemIndicator>
           <Codicon name="check" size="0.75rem" />
         </SelectPrimitive.ItemIndicator>

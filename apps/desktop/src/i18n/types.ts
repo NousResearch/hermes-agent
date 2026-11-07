@@ -921,6 +921,13 @@ export interface Translations extends NoticeTranslations {
     }
     fieldLabels: Record<string, string>
     fieldDescriptions: Record<string, string>
+    /**
+     * Localized labels for dynamic select option values, keyed by schema key
+     * (field-copy camelCase, e.g. 'agent.imageInputMode') then by the raw
+     * option value. Optional: locales that omit it keep prettyName(option).
+     * Brand, model, and provider values stay unmapped on purpose.
+     */
+    optionLabels?: Record<string, Record<string, string>>
     uninstallSection: UninstallSectionTranslations
     memoryLayers: MemoryLayersTranslations
     customEndpoints: {

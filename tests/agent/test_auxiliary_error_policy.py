@@ -336,6 +336,41 @@ def test_opencode_go_candidate_classifies_on_its_concrete_provider(monkeypatch, 
     assert ("opencode-go", FailoverReason.upstream_rate_limit) in seen
 
 
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+def test_discovered_api_key_client_classifies_on_its_concrete_provider(monkeypatch, is_async):
+    """Auto discovery's API-key step builds the OpenCode Go client itself (no hand-set tag): its upstream
+    throttle is judged on Go's profile, not under the route label "api-key", so the key is not rotated."""
+    import model_tools  # registers the bundled provider profiles
+    from agent import auxiliary_client as aux, auxiliary_error_policy as aux_errors
+
+    seen, real = [], aux_errors.classify_api_error
+    monkeypatch.setattr(aux_errors, "classify_api_error", lambda exc, **kw: seen.append(
+        (kw["provider"], (v := real(exc, **kw)).reason, v.should_rotate_credential)) or v)
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "sk-go")
+    monkeypatch.setattr(aux, "_client_cache", {})
+    body = {"error": {"type": "server_error", "message": "Upstream request failed: Rate limit exceeded."}}
+    transport = httpx.MockTransport(lambda request: httpx.Response(429, json=body, request=request))
+    none = lambda *_a, **_k: (None, None)
+    with (
+        patch.multiple(aux, _try_openrouter=none, _try_nous=none, _try_custom_endpoint=none),
+        patch("agent.auxiliary_client._openai_http_client_kwargs", lambda _url, async_mode=False: {
+            "http_client": (httpx.AsyncClient if async_mode else httpx.Client)(transport=transport)}),
+        patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("auto", None, None, None, None)),
+        patch("agent.auxiliary_client._transient_retry_count", return_value=0),
+        patch("agent.auxiliary_client._try_configured_fallback_chain", return_value=(None, None, "")),
+        patch("agent.auxiliary_client._try_main_fallback_chain", return_value=(None, None, "")),
+        patch("agent.auxiliary_client._try_payment_fallback", return_value=(None, None, "")),
+        patch("agent.auxiliary_client._try_main_agent_model_fallback", return_value=(None, None, "")),
+        patch("agent.auxiliary_client._mark_provider_unhealthy"),
+        pytest.raises(openai.APIError),
+    ):
+        if is_async:
+            asyncio.run(async_call_llm(task="title_generation", messages=_MESSAGES))
+        else:
+            call_llm(task="title_generation", messages=_MESSAGES)
+    assert seen and set(seen) == {("opencode-go", FailoverReason.upstream_rate_limit, False)}
+
+
 def _wire(handle, *, key, url="https://openrouter.ai/api/v1"):
     return openai.OpenAI(api_key=key, base_url=url, max_retries=0, http_client=httpx.Client(
         transport=httpx.MockTransport(handle)))

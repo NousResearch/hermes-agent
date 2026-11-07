@@ -787,7 +787,7 @@ def _retired_cjk_snapshot_health(db_path: Path, conn: sqlite3.Connection) -> Opt
                 drop_retired_cjk_index(probe.cursor())
             reason = _db_opens_cleanly(snapshot)
     except OSError as exc:  # the temporary directory or the copy, not the store (includes the copy timeout)
-        return HealthCheckUnavailable(f"could not make the probe copy in {tempfile.gettempdir()} ({exc})")
+        return HealthCheckUnavailable(f"could not make the probe copy ({exc})")
     except sqlite3.Error as exc:
         if not is_disk_full_error(exc):
             raise

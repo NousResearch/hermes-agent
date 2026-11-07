@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import platform
+import re
 import shlex
 import subprocess
 import tempfile
@@ -259,6 +260,8 @@ def build_local_transcribe_kwargs(stt_config: Optional[dict[str, Any]] = None) -
     if forced_lang:
         kwargs["language"] = forced_lang
     initial_prompt = local_cfg.get("initial_prompt")
+    if not initial_prompt:
+        initial_prompt = "درود، سلام هرمس، وضعیت آب و هوا، برنامه‌نویسی و گفتگو به زبان فارسی و انگلیسی."
     if isinstance(initial_prompt, str) and initial_prompt.strip():
         kwargs["initial_prompt"] = initial_prompt
     return kwargs
@@ -281,6 +284,39 @@ def _is_hallucinated_segment(segment: Any, no_speech_threshold: float, logprob_t
         return False
 
 
+def _normalize_stt_transcript(text: str) -> str:
+    """Harmonize characters and correct common Whisper phonetic mishearings in Persian."""
+    if not text:
+        return text
+    if re.search(r'[\u0600-\u06ff]', text):
+        text = text.replace('\u064a', '\u06cc').replace('\u0643', '\u06a9')
+        persian_fixes = [
+            (r'\bتروت\b', 'درود'),
+            (r'\bخبستی\b', 'خسته نباشی'),
+            (r'\bچتوری\b', 'چطوری'),
+            (r'\bچتوره\b', 'چطوره'),
+            (r'\bایم\s*روز\b', 'امروز'),
+            (r'\bایمروز\b', 'امروز'),
+            (r'\bوزید\s*ح[بو]ا\b', 'وضعیت آب و هوا'),
+            (r'\bوزید\s*هوا\b', 'وضعیت آب و هوا'),
+            (r'\bوضعیت\s*حوا\b', 'وضعیت آب و هوا'),
+            (r'\bدریاف\s*کردی\b', 'دریافت کردی'),
+            (r'\bپیامن\b', 'پیامم'),
+            (r'\bآيپایامر\b', 'آیا پیامم'),
+            (r'\bموصال\b', 'ماسال'),
+            (r'\bارم[سش]ار\b', 'ماسال'),
+            (r'\bسدویمن\b', 'سلام من'),
+            (r'\bرومشنه\b', 'روشنه'),
+            (r'\bبزیت\b', 'وضعیت'),
+            (r'\bآپا\b', 'آب و'),
+            (r'\bهواد\b', 'هوا'),
+            (r'\bتو رست\b', 'چطوره'),
+        ]
+        for pattern, repl in persian_fixes:
+            text = re.sub(pattern, repl, text)
+    return text
+
+
 def _join_confident_segments(segments: Any, local_cfg: dict[str, Any]) -> str:
     """Join segment texts, dropping probable silence hallucinations."""
     no_speech_threshold, logprob_threshold = _confidence_thresholds(local_cfg)
@@ -292,7 +328,8 @@ def _join_confident_segments(segments: Any, local_cfg: dict[str, Any]) -> str:
                          getattr(segment, "avg_logprob", float("nan")))
             continue
         kept.append(segment.text.strip())
-    return " ".join(kept).strip()
+    raw_text = " ".join(kept).strip()
+    return _normalize_stt_transcript(raw_text)
 
 
 def _transcribe_local_command(

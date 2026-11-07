@@ -65,11 +65,14 @@ export function slashMutation(command: string): { operation: string; payload: Re
   const arg = rest.join(' ').trim()
 
   if (name === 'model') {
-    if (!arg || arg.startsWith('-')) { return null }
-    const [model, ...flags] = arg.split(/\s+/)
+    // The server parses flags in any order, and `--session` is a no-op on the always
+    // session-scoped mutation; one that is `--provider`'s value stays for the parser to refuse.
+    const [model, ...flags] = rest.filter((token, i) => token !== '--session' || rest[i - 1] === '--provider')
+
+    if (!model || model.startsWith('-')) { return null }
 
     if (!flags.length) { return { operation: 'model', payload: { model } } }
-    const pick = pickerModelMutation(arg)
+    const pick = pickerModelMutation([model, ...flags].join(' '))
 
     return pick ? { operation: 'model', payload: pick } : null
   }

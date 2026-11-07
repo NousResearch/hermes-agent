@@ -1,7 +1,7 @@
 import { useAuiState, useMessageRuntime } from '@assistant-ui/react'
 import { registryBackendScopeKey } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
-import { type MouseEvent, useCallback } from 'react'
+import { type MouseEvent, useCallback, useRef } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import type { ChatMessage } from '@/lib/chat-messages'
@@ -32,19 +32,54 @@ export const DOUBLE_CLICK_REACTION = QUICK_REACTIONS[0]
 const NOT_A_TAPBACK = 'a, button, input, pre, select, textarea, [contenteditable="true"], [role="button"]'
 
 /**
+ * A press that ends further than this from where it went down was a DRAG, not a
+ * tap. macOS double-click slop is a couple of pixels; a selection drag is tens
+ * to hundreds.
+ */
+const TAPBACK_SLOP_PX = 5
+
+export interface TapbackGesture {
+  /** Release point, straight off the MouseEvent. */
+  clientX?: number
+  clientY?: number
+  detail: number
+  /** Where this gesture's press went down; ignored when absent. */
+  press?: null | { x: number; y: number }
+  target: EventTarget | null
+}
+
+/**
  * Is this double-click the "heart it" gesture?
  *
  * `detail === 2` keeps a triple-click (select-the-paragraph) from re-firing,
  * and anything the browser already gives a double-click meaning keeps it.
+ *
+ * A press that ENDS somewhere other than where it went down was a drag-select:
+ * the press picked the word and the drag extended the highlight. Claiming that
+ * as a tapback is what used to eat the selection, because the handler clears it
+ * (a real tapback leaves a stray highlighted word otherwise). A gesture that
+ * travelled down the page belongs to the text, so it is not a tapback.
  */
-export function isTapbackDoubleClick(event: { detail: number; target: EventTarget | null }): boolean {
+export function isTapbackDoubleClick(event: TapbackGesture): boolean {
   if (event.detail !== 2) {
     return false
   }
 
   const target = event.target
 
-  return target instanceof Element ? !target.closest(NOT_A_TAPBACK) : true
+  if (target instanceof Element && target.closest(NOT_A_TAPBACK)) {
+    return false
+  }
+
+  const { press } = event
+
+  if (press && event.clientX !== undefined && event.clientY !== undefined) {
+    if (Math.hypot(event.clientX - press.x, event.clientY - press.y) > TAPBACK_SLOP_PX) {
+      return false
+    }
+  }
+
+  return true
 }
 
 /** Paint the tapback locally, then persist behind it. */
@@ -131,26 +166,48 @@ export function useMessageReactions(
  * perf-sensitive message root to every reaction change would be pure cost.
  * Returns `undefined` while reactions are off, so the element carries no
  * listener at all.
+ *
+ * Two handlers, not one: `dblclick` reports only where the gesture ENDED, and a
+ * double-click that ends somewhere else was a drag-select (press picks the word,
+ * drag extends the highlight). The press point is recorded per message element,
+ * so a gesture that travelled is left to the text instead of being hearted and
+ * having its selection cleared.
  */
 export function useTapbackDoubleClick(
   messageId: string,
   role: ChatMessage['role']
-): ((event: MouseEvent<HTMLElement>) => void) | undefined {
+): { onDoubleClick: (event: MouseEvent<HTMLElement>) => void; onMouseDown: (event: MouseEvent<HTMLElement>) => void } | undefined {
   const enabled = useStore($reactionsEnabled)
   const messageRuntime = useMessageRuntime()
   const sessionView = useSessionView()
   const runtimeSessionId = useStore(sessionView.$runtimeId)
   const storedSessionId = useStore(sessionView.$storedId)
   const sessionId = runtimeSessionId ?? storedSessionId
+  const press = useRef<null | { x: number; y: number }>(null)
+
+  const onMouseDown = useCallback((event: MouseEvent<HTMLElement>) => {
+    press.current = { x: event.clientX, y: event.clientY }
+  }, [])
 
   const onDoubleClick = useCallback(
     (event: MouseEvent<HTMLElement>) => {
-      if (isTouchInteraction(event.nativeEvent) || !isTapbackDoubleClick(event)) {
+      if (
+        isTouchInteraction(event.nativeEvent) ||
+        !isTapbackDoubleClick({
+          clientX: event.clientX,
+          clientY: event.clientY,
+          detail: event.detail,
+          press: press.current,
+          target: event.target
+        })
+      ) {
         return
       }
 
       // Double-click has already selected the word underneath — the tapback,
-      // not a stray selection, is what the gesture meant.
+      // not a stray selection, is what the gesture meant. A gesture that dragged
+      // never reaches here (the press/release check above), so this only ever
+      // clears the single-word pick a real tapback leaves behind.
       window.getSelection()?.removeAllRanges()
       triggerHaptic('selection')
 
@@ -178,5 +235,5 @@ export function useTapbackDoubleClick(
     [messageId, messageRuntime, role, sessionId]
   )
 
-  return enabled ? onDoubleClick : undefined
+  return enabled ? { onDoubleClick, onMouseDown } : undefined
 }

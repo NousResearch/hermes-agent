@@ -273,7 +273,9 @@ _LOGIN_CONTROL_INSPECTION_JS_TEMPLATE = """(() => {
       .join(" ");
     const resolvedFormIndex = element.form ? forms.indexOf(element.form) : -1;
     return [{
-      autocomplete: element.autocomplete || "",
+      // Firefox (Camofox) returns "" from the autocomplete IDL property for tokens such as
+      // one-time-code even when the attribute is set; read the attribute as the fallback.
+      autocomplete: element.autocomplete || element.getAttribute("autocomplete") || "",
       formIndex: resolvedFormIndex >= 0 ? resolvedFormIndex : null,
       index,
       maxLength: element.maxLength > 0 ? element.maxLength : null,

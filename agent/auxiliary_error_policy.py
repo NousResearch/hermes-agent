@@ -10,12 +10,14 @@ from typing import Any, NamedTuple, Optional
 
 import httpx
 
-from agent.error_classifier import ClassifiedError, FailoverReason, classify_api_error
+from agent.auxiliary_call_outcome import is_cancellation
+from agent.error_classifier import (
+    POLICY_REFUSAL_REASONS, TRANSIENT_REASONS, ClassifiedError, FailoverReason, classify_api_error,
+)
 
 _R = FailoverReason
 AUTH_ERROR, PAYMENT_ERROR, MODEL_INCOMPATIBLE = "auth error", "payment error", "model incompatible with route"
 MODEL_NOT_FOUND = "model not found"
-_TRANSIENT = frozenset({_R.timeout, _R.overloaded, _R.server_error})
 # The request's own shape failed: another provider only helps once a parameter rung changed the request.
 _REQUEST_SHAPE = frozenset({
     _R.format_error, _R.role_alternation, _R.multimodal_tool_content_unsupported, _R.reasoning_mandatory,
@@ -29,7 +31,7 @@ _LABELS = {
     _R.model_entitlement: MODEL_INCOMPATIBLE, _R.incomplete_response: "invalid provider response",
     _R.overloaded: "provider overloaded", _R.server_error: "server error", _R.long_context_tier: "long context tier",
 }
-_PROVIDER_REFUSALS = _TRANSIENT | {_R.auth, _R.auth_permanent, _R.billing, _R.rate_limit, _R.upstream_rate_limit}
+_PROVIDER_REFUSALS = TRANSIENT_REASONS | {_R.auth, _R.auth_permanent, _R.billing, _R.rate_limit, _R.upstream_rate_limit}
 
 
 class Failure(NamedTuple):
@@ -44,7 +46,7 @@ def classify_attempt(error: Exception, provider: Optional[str], client: Any = No
     """``classify_api_error`` on the backend, model, endpoint and credential ``client`` was sent to."""
     slug = str(provider or "").strip().lower()
     url, key = getattr(client, "base_url", None), getattr(client, "api_key", None)
-    if isinstance(error, InterruptedError):  # a cancelled task: no retry, no other provider
+    if is_cancellation(error):  # a cancelled task: no retry, no other provider
         return ClassifiedError(_R.unknown, provider=slug, retryable=False, message=str(error),
                                error_context={"interrupted": True})
     return classify_api_error(
@@ -54,7 +56,7 @@ def classify_attempt(error: Exception, provider: Optional[str], client: Any = No
 
 
 def same_provider_retry(verdict: ClassifiedError) -> bool:
-    return verdict.reason in _TRANSIENT and verdict.retryable
+    return verdict.reason in TRANSIENT_REASONS and verdict.retryable
 
 
 def auth_refresh(verdict: ClassifiedError) -> bool:
@@ -67,7 +69,7 @@ def same_key_retry(verdict: ClassifiedError) -> bool:
 
 def resend_cannot_help(verdict: ClassifiedError) -> bool:
     """A cancelled task or a policy refusal: no stripped field or stream flag changes the answer."""
-    return verdict.reason in (_R.data_policy_denied, _R.content_policy_blocked) or bool(verdict.error_context.get("interrupted"))
+    return verdict.reason in POLICY_REFUSAL_REASONS or bool(verdict.error_context.get("interrupted"))
 
 
 def benches_provider(verdict: ClassifiedError) -> bool:

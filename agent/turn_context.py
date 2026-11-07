@@ -1020,32 +1020,30 @@ def _memory_query_text(original_user_message: Any) -> str:
 
 def _previous_user_message_text(conversation_history: Optional[list[Any]]) -> str:
     """Semantic text of the last real user message in the history a turn starts from (``""`` on a first turn).
+    The contract providers see is ``MemoryProvider.on_turn_start``; this is how the value is found.
 
     Read before the turn appends its own message or turn-start compaction rebinds the history: in-place
     compaction hands back a list that already ends in this turn's message, and rotation hands back none.
-    Runtime scaffolding in the user role (continue nudges, task-list snapshots, compaction summaries) is
-    skipped, so the value is what the person last asked. A compaction carrier contributes the live ask it
-    wraps, and an image-only turn ends the search with ``""`` rather than falling back to an older ask.
-    The value is the text of that turn's clean persisted ask, as a live process saw it: a gateway timestamp
-    prefix comes off, and a mid-turn /steer row is skipped (gateway replay drops its type, so it is matched by
-    its marker). A multimodal turn's injected context sits in its parts, so its ask is read from the
-    ``TYPED_ASK`` stamp (an older row without one has only the memory fence stripped). Best-effort: replay
-    also drops the type of internal-notification rows, so one without a known prefix (a cron delivery, a
-    process heartbeat, a watch-disabled notice) can still be returned."""
+    Flagged scaffolding is skipped first (the canonical view cannot see flags), then the gateway timestamp
+    comes off (replay renders one on every user row, scaffolding included) and a /steer row is matched by
+    its marker (replay drops its type). A compaction carrier yields the ask it wraps; an image-only turn ends
+    the search with ``""``. A multimodal turn's injected context sits in its parts, so its ask is read from
+    the ``TYPED_ASK`` stamp; an older row without one has only the memory fence stripped."""
     from agent.context_compressor import user_originated_turn_view
-    from agent.conversation_compression_scaffolding import is_user_role_scaffolding
+    from agent.conversation_compression_scaffolding import has_scaffolding_flag, is_user_role_scaffolding
     from agent.prompt_builder import STEER_MARKER_OPEN
     from gateway.message_timestamps import strip_leading_message_timestamps
 
     for message in reversed(conversation_history or []):
         if not isinstance(message, dict) or message.get("role") != "user":
             continue
+        if has_scaffolding_flag(message):
+            continue
         content = message.get("content")
         if isinstance(content, str) and (clean := strip_leading_message_timestamps(content)[0]) != content:
             message = {**message, "content": clean}
-        if flatten_message_text(message.get("content")).lstrip().startswith(STEER_MARKER_OPEN):  # text parts only
+        if flatten_message_text(message.get("content")).lstrip().startswith(STEER_MARKER_OPEN):
             continue
-        # The canonical view cannot see metadata-flagged scaffolding, so screen it out first.
         if not is_user_role_scaffolding(message) and (live_view := user_originated_turn_view(message)) is not None:
             ask = typed_ask_text(message)
             if ask is None:

@@ -80,6 +80,47 @@ def test_submit_ack_binds_the_written_row_even_if_worker_consumes_staging(monkey
         db.close()
 
 
+def test_display_text_is_stored_while_the_model_keeps_the_original_envelope(monkeypatch, tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+    model_text = '{"protocol":"example.turn.v1","human_input":{"text":"summarise this page"},"page":"private context"}'
+    display_text = "summarise this page"
+    try:
+        with session["history_lock"]:
+            session["running"] = True
+            server._start_inflight_turn(session, model_text, display_text=display_text)
+        assert session["inflight_turn"]["user"] == display_text
+        assert server._persist_session_row_for_submit(
+            "rid", session, model_text, None, display_text=display_text) is None
+        assert [(r["role"], r["content"]) for r in db.get_messages_as_conversation(key)] == [
+            ("user", display_text)]
+
+        agent = _flush_agent(db, key)
+        agent._persist_user_message_override = display_text
+        server._adopt_submit_user_row(session, agent, display_text, model_text, display_text)
+        user_msg, _pending = _stage_turn_user_message(agent, model_text, display_text, None, None, None, None)
+        assert user_msg["content"] == model_text
+        assert isinstance(user_msg.get("_row_id"), int)
+        from agent.turn_context import _stamp_api_content_sidecar
+        _stamp_api_content_sidecar(agent, [user_msg], 0, "", "", preflight_compressed=False)
+        row = db.get_messages_as_conversation(key)[0]
+        assert row["content"] == display_text
+        assert row["api_content"] == model_text
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
+def test_display_text_is_bounded_and_falls_back_to_model_text():
+    from tui_gateway.methods_prompt import _submit_display_text
+
+    assert _submit_display_text("typed words", "protocol envelope") == "typed words"
+    assert _submit_display_text(None, "original") == "original"
+    assert _submit_display_text("x" * 100_001, "original") == "original"
+    assert _submit_display_text({"text": "spoof"}, "original") == "original"
+
+
 def test_turn_adopts_the_submit_row_and_writes_no_duplicate(monkeypatch, tmp_path):
     db = SessionDB(db_path=tmp_path / "state.db")
     sid, key = _desktop_session(monkeypatch, db)

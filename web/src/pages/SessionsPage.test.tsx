@@ -122,6 +122,24 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
+describe("SessionsPage display projection", () => {
+  it("shows display text for a browser turn without exposing its envelope", async () => {
+    apiMocks.getSessionMessages.mockResolvedValue({ messages: [
+      { role: "user", content: '{"protocol":"hermes.browser.turn.v2","browser_context":"private page"}', display_content: "Hello from the browser" },
+      { role: "user", content: "ordinary text" },
+    ] });
+    await renderSessionsPage([
+      { id: "browser-session", profile: "default", source: "cli", model: null, title: "Browser session",
+        started_at: 1, ended_at: null, last_active: 1, is_active: false, message_count: 2,
+        tool_call_count: 0, input_tokens: 1, output_tokens: 1, preview: "hello" },
+    ]);
+    await act(async () => click(button("Delete session")!.closest("div.cursor-pointer")));
+    await waitFor(() => container.textContent?.includes("ordinary text") === true);
+    expect(container.textContent).toContain("Hello from the browser");
+    expect(container.textContent).not.toContain("private page");
+  });
+});
+
 describe("SessionsPage per-row profile routing (#99387)", () => {
   it("sends every per-row request to the row's owning profile, not the management default", async () => {
     await renderSessionsPage([

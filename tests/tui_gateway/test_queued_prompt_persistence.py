@@ -11,6 +11,8 @@ instead of writing a duplicate.
 
 import types
 
+import pytest
+
 from agent.turn_context import _stage_turn_user_message
 from hermes_state import SessionDB
 from run_agent import AIAgent
@@ -297,3 +299,53 @@ def test_merge_after_in_place_compaction_updates_the_live_queued_row(monkeypatch
     finally:
         server._sessions.pop(sid, None)
         db.close()
+
+
+# -- a queued prompt that will never run leaves the transcript with the queue ------------------------
+
+def _marker_rows(db, key, **kw):
+    return [r for r in db.get_messages_as_conversation(key, include_row_ids=True, **kw)
+            if "QUEUED-MARKER" in str(r["content"])]
+
+
+@pytest.mark.parametrize("discard", ["stop", "stop_after_compaction", "agent_reset", "duplicate_scrub"])
+def test_a_queued_prompt_that_never_runs_leaves_the_live_transcript(monkeypatch, tmp_path, discard):
+    """Stop, an agent reset and the #84417 self-duplicate scrub discard a queued envelope without
+    running it. Its accept-time row sat ahead of the live turn's reply, so the next resume's
+    repair_alternation glued it into the user's previous message and the model read a prompt the
+    user had cancelled. Every discard path retires that row: inactive, never deleted. After an
+    in-place compaction the live row is a clone under a new id, and that is the one retired."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+    try:
+        server._ensure_session_db_row(session)
+        if discard == "duplicate_scrub":
+            with session["history_lock"]:
+                session["running"] = True  # busy, but the in-flight original is not registered yet
+            server._handle_busy_submit("r1", sid, session, "prompt QUEUED-MARKER", "ws-1", queued=True,
+                                       display_kind=None)
+            with session["history_lock"]:
+                server._start_inflight_turn(session, "prompt QUEUED-MARKER")
+                server._drop_queued_duplicates_of_inflight_user(session)
+        else:
+            db.append_message(key, "user", content="prompt A")
+            _busy(session, "prompt A")
+            server._handle_busy_submit("r1", sid, session, "rm -rf build QUEUED-MARKER", "ws-1", queued=True,
+                                       display_kind=None)
+            if discard == "stop_after_compaction":
+                _compact_in_place_while_queued(db, key)
+            if discard.startswith("stop"):
+                server._interrupt_session_turn(sid, session)
+            else:
+                for name in ("_rebuild_session_agent", "_session_info", "_emit", "_restart_slash_worker"):
+                    monkeypatch.setattr(server, name, lambda *a, **k: types.SimpleNamespace())
+                server._reset_session_agent(sid, session)
+        assert session.get("queued_prompt") is None
+        assert not _marker_rows(db, key)
+        kept = 2 if discard == "stop_after_compaction" else 1  # the compacted original and its clone
+        assert len(_marker_rows(db, key, include_inactive=True)) == kept
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+

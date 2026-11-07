@@ -22,6 +22,21 @@ interface SourceOptions {
   env?: NodeJS.ProcessEnv
 }
 
+/**
+ * Windows installers may publish both launchers. Keep the executable as the
+ * first choice, but let a working command launcher recover from a policy or
+ * compatibility block on the executable before Desktop falls back to setup.
+ */
+export function installationLauncherCandidates(launcher: string, isWindows: boolean): string[] {
+  if (!isWindows || !/\.exe$/i.test(launcher)) {
+    return [launcher]
+  }
+
+  const commandLauncher: string = launcher.replace(/\.exe$/i, '.cmd')
+
+  return existsSync(commandLauncher) ? [launcher, commandLauncher] : [launcher]
+}
+
 /** Keep the validated command. PM owns interpreter and generation selection. */
 export async function resolveSourceInstallationBackend(
   root: string,
@@ -39,34 +54,39 @@ export async function resolveSourceInstallationBackend(
     return null
   }
 
-  const shell: boolean = isWindows && /\.(cmd|bat)$/i.test(launcher)
-  const command: string = shell ? `"${launcher}"` : launcher
   const env: NodeJS.ProcessEnv = buildDesktopBackendEnv({ currentEnv: options.env ?? process.env })
 
-  try {
-    await execProbe(command, ['--version'], {
-      cwd: root,
-      env: { ...process.env, ...options.env, ...env },
-      shell,
-      stdio: 'ignore',
-      timeout: PROBE_TIMEOUT_MS,
-      windowsHide: true
-    })
-  } catch {
-    return null
+  for (const candidate of installationLauncherCandidates(launcher, isWindows)) {
+    const shell: boolean = isWindows && /\.(cmd|bat)$/i.test(candidate)
+    const command: string = shell ? `"${candidate}"` : candidate
+
+    try {
+      await execProbe(command, ['--version'], {
+        cwd: root,
+        env: { ...process.env, ...options.env, ...env },
+        shell,
+        stdio: 'ignore',
+        timeout: PROBE_TIMEOUT_MS,
+        windowsHide: true
+      })
+
+      return {
+        kind: 'command',
+        label: `Hermes at ${root}`,
+        command,
+        args: [...args],
+        env,
+        root,
+        bootstrap: false,
+        shell,
+        local: 'installed'
+      }
+    } catch {
+      // A blocked or incompatible .exe can have a usable .cmd sibling.
+    }
   }
 
-  return {
-    kind: 'command',
-    label: `Hermes at ${root}`,
-    command,
-    args: [...args],
-    env,
-    root,
-    bootstrap: false,
-    shell,
-    local: 'installed'
-  }
+  return null
 }
 
 /** Developer overrides retain their interpreter, even outside the checkout. */

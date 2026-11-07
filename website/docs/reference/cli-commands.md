@@ -27,7 +27,7 @@ hermes [global-options] <command> [subcommand/options]
 | `--version`, `-V` | Show version and exit. |
 | `--profile <name>`, `-p <name>` | Select which Hermes profile to use for this invocation. Overrides the sticky default set by `hermes profile use`. |
 | `--resume <session>`, `-r <session>` | Resume a previous session by ID or title. The keyword `latest` resumes the most recent session (workspace-scoped, same lookup as `-c`). |
-| `--continue [name]`, `-c [name]` | Resume the most recent session, or the most recent session matching a title. |
+| `--continue [name]`, `-c [name]` | Resume the most recent session, or the most recent session matching a title. A chat another Hermes window holds open is refused — except the profile's **Bot Chat** under `-Q`: that turn is handed to the Desktop/TUI that has it open and answered there (the lane Bot Mode DMs and cron already use), so an external agent's message lands in the chat you are looking at. |
 | `--in <dir>` | Change into `<dir>` before starting or resuming. Scopes `--resume latest` / `-c` lookups to that directory's workspace and keeps the session there (skips the recorded-cwd restore). |
 | `--worktree`, `-w` | Start in an isolated git worktree for parallel-agent workflows. |
 | `--yolo` | Bypass dangerous-command approval prompts. |

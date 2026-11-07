@@ -18,6 +18,7 @@ import {
   $sessionDotStateById,
   $unreadSessionCount,
   hasLiveTurn,
+  isStillWorking,
   showsRunningArc,
   unreadSessionCount
 } from './session-dot-state'
@@ -61,6 +62,24 @@ describe('hasLiveTurn', () => {
   })
 })
 
+describe('isStillWorking', () => {
+  it('files work that outlived the turn under Working, not Done', () => {
+    expect(isStillWorking('background')).toBe(true)
+  })
+
+  it('covers every live turn', () => {
+    for (const state of ['needs-input', 'stalled', 'working'] as const) {
+      expect(isStillWorking(state)).toBe(true)
+    }
+  })
+
+  it('leaves finished and untouched sessions under Done', () => {
+    for (const state of ['draft', 'idle', 'unread', undefined] as const) {
+      expect(isStillWorking(state)).toBe(false)
+    }
+  })
+})
+
 describe('$delegatingSessionIds', () => {
   const subagent = (status: SubagentProgress['status']): SubagentProgress => ({
     id: 'sub-1',
@@ -101,6 +120,17 @@ describe('$delegatingSessionIds', () => {
     $subagentsBySession.set({ 'runtime-fresh': [subagent('queued')] })
 
     expect($delegatingSessionIds.get()).toContain('runtime-fresh')
+  })
+
+  it('keeps a delegating session under Working after the parent turn ended', () => {
+    publishSessionState('runtime-1', { ...createClientSessionState('stored-1'), busy: false })
+    $subagentsBySession.set({ 'runtime-1': [subagent('running')] })
+
+    expect(isStillWorking($sessionDotStateById.get()['stored-1'])).toBe(true)
+
+    $subagentsBySession.set({ 'runtime-1': [subagent('completed')] })
+
+    expect(isStillWorking($sessionDotStateById.get()['stored-1'])).toBe(false)
   })
 })
 

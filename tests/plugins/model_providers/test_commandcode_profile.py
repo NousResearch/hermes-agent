@@ -203,6 +203,14 @@ class TestCommandCodeBaseUrlOverride:
     def test_custom_base_url_redirects_anthropic_fetch(
         self, commandcode_anthropic_profile
     ):
+        """A custom endpoint's catalog is filtered by THIS profile's wire.
+
+        Rows with no ``supported_endpoints`` annotation are admitted (an absent
+        field is not evidence of another wire), so the deepseek row the old
+        ``claude-*`` prefix guess would have hidden is now listed — a proxy may
+        legitimately serve it over Messages, and the endpoint's own API answers
+        whether it accepts it.
+        """
         server, port = self._serve(
             [{"id": "claude-sonnet-4-6"}, {"id": "deepseek/deepseek-v4-pro"}]
         )
@@ -210,7 +218,7 @@ class TestCommandCodeBaseUrlOverride:
             result = commandcode_anthropic_profile.fetch_models(
                 api_key="k", base_url=f"http://127.0.0.1:{port}"
             )
-            assert result == ["claude-sonnet-4-6"]  # claude-* filter still applies
+            assert result == ["claude-sonnet-4-6", "deepseek/deepseek-v4-pro"]
         finally:
             server.shutdown()
 

@@ -122,8 +122,17 @@ def without_generation_models(models):
         return kept
 
 
-def chat_catalog_ids(items: Any) -> list[str]:
-    """Model ids from a ``/models`` payload, minus generation rows."""
+def chat_catalog_ids(items: Any, *, endpoint: str = "") -> list[str]:
+    """Model ids from a ``/models`` payload, minus generation rows.
+
+    ``endpoint`` filters to rows whose ``supported_endpoints`` includes it, so a
+    profile serving one wire never offers a model the provider only accepts on
+    another (CommandCode's claude-* rows are ``/messages``-only, so listing them
+    on the chat_completions profile produced a 400 on every selection). Rows that
+    publish no ``supported_endpoints`` are kept — an absent field is not evidence
+    of a different wire, and dropping every unannotated model would empty the
+    picker for providers that omit it.
+    """
     if not isinstance(items, list):
         return []
     ids: list[str] = []
@@ -132,5 +141,18 @@ def chat_catalog_ids(items: Any) -> list[str]:
             continue
         if note_catalog_item(item):
             continue
+        if endpoint and not _item_supports_endpoint(item, endpoint):
+            continue
         ids.append(item["id"])
     return ids
+
+
+def _item_supports_endpoint(item: dict, endpoint: str) -> bool:
+    """Whether a catalog row declares *endpoint*; absent/empty annotation admits it."""
+    supported = item.get("supported_endpoints")
+    if not isinstance(supported, list):
+        return True
+    endpoints = {str(e).strip() for e in supported if str(e or "").strip()}
+    if not endpoints:
+        return True
+    return endpoint in endpoints

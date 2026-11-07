@@ -1,0 +1,10 @@
+name: model-doctor
+version: 1.0.0
+description: "Proactive LLM health monitor — observes every provider API request Hermes makes, records per-model uptime/latency, diagnoses failures (401 auth, 429 rate-limit, 5xx upstream, empty replies), and exposes model_doctor_status / model_doctor_ping tools. Catches dead models before your chat does."
+author: cailin
+license: MIT
+tags: [observability, models, monitoring]
+hooks:
+  - pre_api_request
+  - post_api_request
+  - api_request_error

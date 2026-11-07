@@ -247,6 +247,8 @@ def git_app(project_root: Path, *, faults: list[Response] | None = None) -> App:
                 return queue.pop(0)
         path, _, query = req.path.partition("?")
         body = req.body
+        if req.headers.get("content-encoding", "").lower() == "gzip":
+            body = gzip.decompress(body)
         env = {
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
             "GIT_PROJECT_ROOT": str(project_root), "GIT_HTTP_EXPORT_ALL": "1",
@@ -255,8 +257,6 @@ def git_app(project_root: Path, *, faults: list[Response] | None = None) -> App:
             "GIT_PROTOCOL": req.headers.get("git-protocol", ""), "REMOTE_ADDR": "127.0.0.1",
             "GIT_CONFIG_NOSYSTEM": "1", "HOME": str(project_root),
         }
-        if req.headers.get("content-encoding", "").lower() == "gzip":
-            body = gzip.decompress(body)
         cp = subprocess.run([git, "http-backend"], input=body, env=env, capture_output=True, timeout=300, check=False)
         head, _, payload = cp.stdout.partition(b"\r\n\r\n")
         if not _:

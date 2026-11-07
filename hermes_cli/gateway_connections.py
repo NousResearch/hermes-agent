@@ -1,0 +1,329 @@
+"""The machine's saved gateway connections: ONE list that native Desktop and every browser on this
+machine's Webapp read and write.
+
+The file is ``<root>/gateway-connections.json`` beside the machine's UI preferences store (same
+root rule as :func:`hermes_cli.ui_preferences.store_path`: a profile home names its root), mode
+0600. Its document is Electron's v2 connection registry (``apps/desktop/electron/connection-registry.ts``)
+plus a ``revision`` counter and ``importedFrom`` (the Desktop userData directories already merged in,
+so a connection removed here is never re-imported). Writers share the ``<store>.lock`` directory lock,
+replace the file whole by temp + rename, keep an unparseable file aside as ``.corrupt-<ms>``, and
+treat only a missing file as "no store". The Electron twin is ``electron/gateway-connections-store.ts``.
+
+Secrets are ``{"encoding": "plain", "value": ...}`` envelopes. The one exception is a secret Desktop
+could not decrypt when it imported its old store: it stays the original ``safeStorage`` envelope (and
+is named in ``importNotices``) rather than being dropped, reads here as unset, and Desktop converts it
+to plain on its next write once its keychain answers.
+
+OAuth sign-ins for oauth-mode entries live in ``<root>/gateway-connection-tokens.json`` under the same
+lock contract: ``{"version": 1, "revision": N, "tokens": {<connection id>: NativeTokenSet},
+"unbound": {<base url>: NativeTokenSet}}`` (``unbound`` holds sign-ins for a URL no entry names yet).
+"""
+
+from __future__ import annotations
+
+import json
+import shutil
+import time
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any, Callable, Iterator, Optional
+
+from hermes_cli import ui_preferences
+from hermes_cli.gateway_connections_normalize import (
+    ConnectionStoreBusy,
+    ConnectionStoreError,
+    DuplicateConnection,
+    NoSuchConnection,
+    connection_dial_fields_changed,
+    merge_connection_input,
+    normalize_connection_input,
+    normalize_registry,
+    normalize_remote_base_url,
+    remove_connection as _remove,
+    sanitize_header_value,
+    set_connection_launch_mode,
+    set_last_used_connection,
+    set_primary_connection,
+    upsert_connection,
+)
+from utils import atomic_json_write
+
+__all__ = [
+    "STORE_NAME",
+    "TOKENS_NAME",
+    "ConnectionStoreBusy",
+    "ConnectionStoreError",
+    "DuplicateConnection",
+    "NoSuchConnection",
+    "connection_secret",
+    "public_registry",
+    "read_registry",
+    "read_tokens",
+    "remove_connection",
+    "save_connection",
+    "set_last_used",
+    "set_launch_mode",
+    "set_primary",
+    "store_path",
+    "tokens_path",
+    "write_tokens",
+]
+
+STORE_NAME = "gateway-connections.json"
+TOKENS_NAME = "gateway-connection-tokens.json"
+_REGISTRY_KEYS = ("version", "primary", "launchMode", "lastUsed", "connections", "quarantined")
+_CARRIED_KEYS = ("importedFrom", "importNotices")
+
+
+def _root(root: Optional[Path]) -> Path:
+    return Path(root) if root is not None else ui_preferences.store_path().parent
+
+
+def store_path(root: Optional[Path] = None) -> Path:
+    return _root(root) / STORE_NAME
+
+
+def tokens_path(root: Optional[Path] = None) -> Path:
+    return _root(root) / TOKENS_NAME
+
+
+def _read_doc(path: Path) -> tuple[Optional[dict], bool]:
+    """``(document, corrupt)``; ``(None, False)`` for a missing file. Any other read failure says
+    nothing about the content, so it refuses rather than reading as empty."""
+    try:
+        raw = path.read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
+        return None, False
+    except OSError as exc:
+        raise ConnectionStoreBusy(f"gateway connections store is unreadable: {exc}") from exc
+    try:
+        doc = json.loads(raw)
+    except ValueError:
+        doc = None
+    return (doc, False) if isinstance(doc, dict) else (None, True)
+
+
+def _revision(doc: Optional[dict]) -> int:
+    value = (doc or {}).get("revision")
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+@contextmanager
+def _locked(path: Path) -> Iterator[Callable[[], bool]]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with ui_preferences._store_lock(path) as still_ours:
+            yield still_ours
+    except ui_preferences.PreferencesBusy as exc:
+        raise ConnectionStoreBusy(str(exc).replace("preferences", "gateway connections")) from exc
+
+
+def _replace(path: Path, doc: dict, corrupt: bool, still_ours: Callable[[], bool]) -> None:
+    if not still_ours():
+        # Held past the stale limit and broken by another writer: replacing now could drop its save.
+        raise ConnectionStoreBusy("gateway connections store lock was taken over")
+    if corrupt:
+        shutil.copy2(path, path.with_name(f"{path.name}.corrupt-{int(time.time() * 1000)}"))
+    atomic_json_write(path, doc, mode=0o600)
+
+
+def read_registry(path: Optional[Path] = None) -> dict:
+    """The normalized registry, secrets included (server-internal), plus ``revision``."""
+    doc, _corrupt = _read_doc(path or store_path())
+    return {**normalize_registry(doc), "revision": _revision(doc)}
+
+
+def _mutate(change: Callable[[dict], Any], path: Optional[Path] = None) -> tuple[dict, Any]:
+    """Apply *change* to the fresh registry under the lock and land the result; *change* returns
+    ``(registry, extra)``. An unchanged registry writes nothing."""
+    path = path or store_path()
+    with _locked(path) as still_ours:
+        doc, corrupt = _read_doc(path)
+        current = normalize_registry(doc)
+        updated, extra = change(current)
+        updated = normalize_registry(updated)
+        revision = _revision(doc)
+        if updated != current or doc is None:
+            revision += 1
+            carried = {k: doc[k] for k in _CARRIED_KEYS if doc and k in doc}
+            _replace(path, {"version": 2, "revision": revision, **carried,
+                            **{k: updated[k] for k in _REGISTRY_KEYS if k in updated}}, corrupt, still_ours)
+    return {**updated, "revision": revision}, extra
+
+
+def _plain(secret: Any) -> str:
+    """The plaintext of a stored envelope; a ``safeStorage`` blob only Desktop's keychain opens
+    reads as unset."""
+    if isinstance(secret, str):
+        return secret
+    if not isinstance(secret, dict) or secret.get("encoding") == "safeStorage":
+        return ""
+    value = secret.get("value")
+    return value if isinstance(value, str) else ""
+
+
+def _envelope(value: str) -> dict:
+    return {"encoding": "plain", "value": value}
+
+
+def _token_preview(value: str) -> Optional[str]:
+    if not value:
+        return None
+    return "set" if len(value) <= 8 else f"...{value[-6:]}"
+
+
+def _public_connection(entry: dict) -> dict:
+    rest = {k: v for k, v in entry.items() if k not in ("token", "headers")}
+    token = _plain(entry.get("token"))
+    headers = entry.get("headers")
+    return {**rest, "tokenSet": bool(token), "tokenPreview": _token_preview(token),
+            "headerNames": list(headers) if isinstance(headers, dict) else []}
+
+
+def public_registry(reg: dict) -> dict:
+    """Electron's ``sanitizeConnectionsRegistry`` shape: never a token or header value."""
+    return {
+        "version": reg["version"],
+        "primary": reg["primary"],
+        "launchMode": reg["launchMode"],
+        "lastUsed": reg["lastUsed"],
+        "secureTokenStorage": True,
+        "connections": [_public_connection(c) for c in reg["connections"]],
+        "quarantined": [
+            {"reason": str(q.get("reason") or "unknown"),
+             "label": q["entry"]["label"] if isinstance(q.get("entry"), dict)
+             and isinstance(q["entry"].get("label"), str) else ""}
+            for q in reg.get("quarantined") or [] if isinstance(q, dict)
+        ],
+    }
+
+
+def _incoming_headers(raw: dict, existing: Any) -> dict:
+    """``encryptIncomingRemoteHeaders``: a string is a new value, ``None`` keeps the stored one,
+    an envelope is stored verbatim; a name missing from *raw* is cleared."""
+    stored = existing if isinstance(existing, dict) else {}
+    out: dict = {}
+    for name, value in raw.items():
+        key = str(name or "").strip()
+        if not key:
+            continue
+        if isinstance(value, str):
+            if value.strip():
+                out[key] = _envelope(value.strip())
+        elif value is None:
+            if key in stored:
+                out[key] = stored[key]
+        elif isinstance(value, dict):
+            out[key] = value
+    return out
+
+
+def save_connection(payload: dict) -> tuple[dict, dict]:
+    """Create or edit one connection: Electron ``saveRegistryConnection``. Returns
+    ``(public connection, registry)``. Raises :class:`DuplicateConnection` on a label, URL or SSH
+    target collision and :class:`ConnectionStoreError` on any other invalid payload."""
+    if not isinstance(payload, dict):
+        raise ConnectionStoreError("A connection save needs a JSON object.")
+
+    def change(registry: dict):
+        existing = next((c for c in registry["connections"] if payload.get("id") and c["id"] == payload["id"]), None)
+        data = dict(payload)
+        data.pop("token", None)
+        incoming = payload.get("token").strip() if isinstance(payload.get("token"), str) else ""
+        token = _envelope(incoming) if incoming else (existing or {}).get("token")
+        if token is not None:
+            data["token"] = token
+        if isinstance(payload.get("headers"), dict):
+            data["headers"] = _incoming_headers(payload["headers"], (existing or {}).get("headers"))
+        entry = normalize_connection_input(merge_connection_input(data, existing), registry)
+        if entry["kind"] == "remote" and entry.get("authMode") != "oauth" and not _plain(entry.get("token")):
+            raise ConnectionStoreError("Remote gateway session token is required.")
+        changed = bool(existing) and connection_dial_fields_changed(existing, entry)
+        return upsert_connection(registry, entry), (entry, changed)
+
+    registry, (entry, _changed) = _mutate(change)
+    return _public_connection(entry), registry
+
+
+def remove_connection(connection_id: str) -> dict:
+    if not any(c["id"] == connection_id for c in read_registry()["connections"]):
+        raise NoSuchConnection(f'No connection with id "{connection_id}".')
+    return _mutate(lambda reg: (_remove(reg, connection_id), None))[0]
+
+
+def set_primary(connection_id: str) -> dict:
+    return _mutate(lambda reg: (set_primary_connection(reg, connection_id), None))[0]
+
+
+def set_launch_mode(mode: str) -> dict:
+    return _mutate(lambda reg: (set_connection_launch_mode(reg, mode), None))[0]
+
+
+def set_last_used(connection_id: str) -> dict:
+    return _mutate(lambda reg: (set_last_used_connection(reg, connection_id), None))[0]
+
+
+def _entry(connection_id: str) -> dict:
+    entry = next((c for c in read_registry()["connections"] if c["id"] == connection_id), None)
+    if entry is None:
+        raise NoSuchConnection(f'No connection with id "{connection_id}".')
+    return entry
+
+
+def connection_secret(connection_id: str) -> dict:
+    """``{"token": str | None, "headers": {name: value}}`` for dialing *connection_id* (the proxy)."""
+    entry = _entry(connection_id)
+    headers = {}
+    for name, secret in (entry.get("headers") or {}).items():
+        value = sanitize_header_value(_plain(secret))
+        if value:
+            headers[name] = value
+    return {"token": _plain(entry.get("token")) or None, "headers": headers}
+
+
+# ── OAuth token sets ─────────────────────────────────────────────────────────
+
+
+def _token_doc(path: Path) -> tuple[dict, bool, bool]:
+    doc, corrupt = _read_doc(path)
+    exists = doc is not None
+    doc = doc or {}
+    return ({"version": 1, "revision": _revision(doc),
+             **{k: doc[k] if isinstance(doc.get(k), dict) else {} for k in ("tokens", "unbound", "undecrypted")}},
+            corrupt, exists)
+
+
+def _entry_url(entry: dict) -> Optional[str]:
+    try:
+        return normalize_remote_base_url(entry["url"]) if entry.get("url") else None
+    except ConnectionStoreError:
+        return None
+
+
+def read_tokens(connection_id: str) -> Optional[dict]:
+    """The NativeTokenSet signed in for *connection_id*, or ``None``."""
+    entry = _entry(connection_id)
+    doc, _corrupt, _exists = _token_doc(tokens_path())
+    found = doc["tokens"].get(connection_id)
+    if found is None and _entry_url(entry):
+        found = doc["unbound"].get(_entry_url(entry))
+    return found if isinstance(found, dict) and found.get("accessToken") else None
+
+
+def write_tokens(connection_id: str, token_set: Optional[dict]) -> None:
+    """Store (or with ``None`` drop) *connection_id*'s sign-in."""
+    entry = _entry(connection_id)
+    if token_set is not None and not (isinstance(token_set, dict) and token_set.get("accessToken")):
+        raise ConnectionStoreError("A token set needs an accessToken.")
+    path = tokens_path()
+    with _locked(path) as still_ours:
+        doc, corrupt, _exists = _token_doc(path)
+        url = _entry_url(entry)
+        if url:
+            doc["unbound"].pop(url, None)
+        if token_set is None:
+            doc["tokens"].pop(connection_id, None)
+        else:
+            doc["tokens"][connection_id] = token_set
+        doc["revision"] += 1
+        _replace(path, doc, corrupt, still_ours)

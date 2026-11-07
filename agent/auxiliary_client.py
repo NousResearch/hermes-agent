@@ -4839,6 +4839,9 @@ def _wrap_transport(req: _ResolveRequest, client_obj: Any, final_model_str: str,
     _oc_mode, _oc_base = opencode_transport(req.provider, final_model_str, base_url_str)
     if _oc_mode:
         req, base_url_str = req._replace(api_mode=_oc_mode), _oc_base
+    # No explicit api_mode: the profile's declared wire wins (commandcode-anthropic/meta-ai).
+    declared = None if req.api_mode else _profile_declared_api_mode(req.provider)
+    req = req._replace(api_mode=declared) if declared == "codex_responses" else req
     needs_codex = not (
         isinstance(client_obj, CodexAuxiliaryClient) or req.raw_codex
     ) and (
@@ -4854,17 +4857,14 @@ def _wrap_transport(req: _ResolveRequest, client_obj: Any, final_model_str: str,
                      "(api_mode=%s, model=%s, base_url=%s)",
                      req.api_mode or "auto-detected", final_model_str, base_url_str[:60] if base_url_str else "")
         return CodexAuxiliaryClient(client_obj, final_model_str)
-    # A profile that declares the Messages wire (commandcode-anthropic) is on it whatever the URL
-    # looks like; the same declaration gates ``_reasoning_config`` in _build_call_kwargs.
-    api_mode = req.api_mode or _profile_declared_messages_wire(req.provider)
+    api_mode = req.api_mode or (declared if declared == "anthropic_messages" else None)
     return _maybe_wrap_anthropic(client_obj, final_model_str, api_key_str, base_url_str, api_mode)
 
 
-def _profile_declared_messages_wire(provider: str) -> Optional[str]:
-    """``"anthropic_messages"`` when the registered profile declares that api_mode, else None."""
+def _profile_declared_api_mode(provider: str) -> Optional[str]:
+    """The registered profile's declared ``api_mode``, or None for an unregistered provider."""
     from providers import get_provider_profile
-    profile = get_provider_profile(str(provider or "").strip().lower())
-    return "anthropic_messages" if profile is not None and profile.api_mode == "anthropic_messages" else None
+    return getattr(get_provider_profile(str(provider or "").strip().lower()), "api_mode", None)
 
 
 def _route_client(req: _ResolveRequest, client_obj: Any, final_model_str: Optional[str]) -> _ResolveResult:

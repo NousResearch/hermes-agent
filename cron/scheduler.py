@@ -534,27 +534,10 @@ from cron.scheduler_bookkeeping import _classify_delivery_outcome
 from cron.cancellation import (CancelRequest, _CancelEventLike, _CombinedCancelEvent, cancel_reason,
                                clear_cancel, finish_lost_execution,
                                run_job_unless_cancelled as _run_job_unless_cancelled)
+from cron.scheduler_turn_verdict import CRON_FAILURE_MARKER, _cron_failure_marker_error, refused_turn_error
 
 # Response marker that suppresses delivery (output is still saved locally for audit).
 SILENT_MARKER = "[SILENT]"
-
-# Agent-declared failure marker for cron runs. Unlike SILENT, it is deliberately strict so a
-# report that merely quotes the token cannot turn a healthy run into a failed one.
-CRON_FAILURE_MARKER = "[CRON_FAILURE]"
-
-
-def _cron_failure_marker_error(text: str) -> Optional[str]:
-    """Return failure evidence when an agent response declares a cron failure.
-
-    Only the exact, standalone first line is control text. The caller keeps the complete response
-    in the saved run output while routing this evidence through normal failure bookkeeping.
-    """
-    lines = (text or "").splitlines()
-    if not lines or lines[0].rstrip() != CRON_FAILURE_MARKER:
-        return None
-    evidence = "\n".join(lines[1:]).strip()
-    return evidence or "Cron agent reported failure."
-
 
 def _is_cron_silence_response(text: str) -> bool:
     """True when a cron final response should suppress delivery: ``[SILENT]`` (or SILENT /
@@ -2066,6 +2049,8 @@ def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgen
     max_iteration_summary = is_max_iteration_handoff(result)
     if result.get("failed") is True or (result.get("completed") is False and not max_iteration_summary):
         raise RuntimeError(result.get("error") or final_response_text or "agent reported failure")
+    if (err := refused_turn_error(result, result.get("final_response") or "")):
+        raise RuntimeError(err)
     if max_iteration_summary:
         logger.warning(
             "Job '%s' reached the iteration limit but produced a final fallback response; "

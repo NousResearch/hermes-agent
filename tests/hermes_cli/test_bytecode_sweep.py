@@ -78,3 +78,45 @@ def test_clear_plugin_bytecode_removes_nested_caches(tmp_path):
     assert not nested.exists()
 
 
+
+
+def test_a_package_the_checkout_moved_leaves_no_directory_behind(monkeypatch, tmp_path):
+    """Git removes a moved package's files but keeps its directory while ``__pycache__`` is in it;
+    the sweep emptied it, and the empty directory imported as a namespace package that hid the
+    package's new location. A directory that still holds a user's file is kept."""
+    import subprocess
+
+    repo = tmp_path / "repo"
+
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
+
+    (repo / "pkg" / "sub").mkdir(parents=True)
+    (repo / "notes").mkdir()
+    for rel in ("pkg/__init__.py", "pkg/sub/__init__.py", "notes/__init__.py", "kept.py"):
+        (repo / rel).write_text("x = 1\n", encoding="utf-8")
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "test@example.invalid")
+    git("config", "user.name", "Test")
+    git("add", ".")
+    git("commit", "-qm", "flat")
+    flat = git("rev-parse", "HEAD")
+    (repo / "src").mkdir()
+    git("mv", "pkg", "src/pkg")
+    git("rm", "-q", "notes/__init__.py")
+    git("commit", "-qm", "move pkg under src")
+    git("checkout", "-q", "--detach", flat)
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", repo)
+    hermes_main._sweep_stale_bytecode_if_checkout_changed()
+    for cache in ("pkg/__pycache__", "pkg/sub/__pycache__", "notes/__pycache__"):
+        (repo / cache).mkdir()
+        (repo / cache / "m.cpython-311.pyc").write_bytes(b"stale")
+    (repo / "notes" / "mine.txt").write_text("user file\n", encoding="utf-8")
+    git("checkout", "-q", "main")
+    assert (repo / "pkg" / "sub").is_dir(), "sanity: git leaves the directory while __pycache__ is in it"
+
+    hermes_main._sweep_stale_bytecode_if_checkout_changed()
+
+    assert not (repo / "pkg").exists()
+    assert (repo / "notes" / "mine.txt").is_file()
+    assert (repo / "src" / "pkg" / "sub" / "__init__.py").is_file()

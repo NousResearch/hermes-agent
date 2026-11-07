@@ -48,6 +48,9 @@ _CONFIG_SCHEMA_TYPES: dict[str, tuple] = {
     # ``secret`` values live in ``.env`` (see hermes_cli.plugins_settings), so a config.yaml copy is
     # only ever a stray string.
     "secret": (str,),
+    # ``text`` is a string with a textarea in the settings form; ``rows`` and
+    # ``placeholder`` are presentation only and never reach config.yaml.
+    "text": (str,),
 }
 
 

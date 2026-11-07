@@ -63,6 +63,50 @@ def _make_dummy_env(**kwargs):
     )
 
 
+@pytest.mark.parametrize("source", ["/host", r"C:\host"])
+@pytest.mark.parametrize("mode", ["rw", "ro", "rw,z"])
+def test_explicit_mounts_preserve_mode_without_duplicate_automatic_targets(monkeypatch, source, mode):
+    """Credential, skills and cache binds share the same composition contract."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+    targets = ["google_token.json", "client_secret.json", "skills", "cache"]
+    volumes = [f"{source}/{name}:/root/.hermes/{name}/:{mode}" for name in targets]
+    original = volumes.copy()
+    automatic = [arg for name in targets for arg in
+                 ("-v", f"{source}/{name}:/root/.hermes/{name}:ro")]
+    # The same source at a different target is not a duplicate; defaults stay RO.
+    automatic += ["-v", f"{source}/cache:/opt/cache:ro", "-v", "/host/default:/opt/default:ro"]
+    monkeypatch.setattr(docker_env, "_readonly_skill_mount_args", lambda: automatic)
+
+    _make_dummy_env(volumes=volumes)
+
+    run = next(cmd for cmd, _ in calls if cmd[1] == "run")
+    mounts = [run[i + 1] for i, arg in enumerate(run) if arg == "-v"]
+    assert mounts == original + [f"{source}/cache:/opt/cache:ro", "/host/default:/opt/default:ro"]
+    assert volumes == original
+    assert automatic[-4:] == ["-v", f"{source}/cache:/opt/cache:ro", "-v", "/host/default:/opt/default:ro"]
+
+
+@pytest.mark.parametrize("target", ["/root/.hermes/skills", "/root/.hermes/skills/", "/root/.hermes/./skills"])
+def test_conflicting_automatic_mount_source_fails_before_container_start(monkeypatch, tmp_path, target):
+    """An explicit raw skills directory must not replace the sanitized automatic copy."""
+    from tools import credential_files
+
+    safe_skills = tmp_path / "safe-skills"
+    safe_skills.mkdir()
+    monkeypatch.setattr(credential_files, "get_credential_file_mounts", list)
+    monkeypatch.setattr(credential_files, "get_cache_directory_mounts", list)
+    monkeypatch.setattr(credential_files, "get_skills_directory_mount", lambda: [
+        {"host_path": str(safe_skills), "container_path": "/root/.hermes/skills"}])
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    with pytest.raises(ValueError, match="Conflicting Docker mount.*skills"):
+        _make_dummy_env(volumes=[f"/host/raw-skills:{target}:ro"])
+
+    assert not any(cmd[1] == "run" for cmd, _ in calls)
+
+
 def test_ensure_docker_available_raises_when_not_found(monkeypatch):
     """When docker cannot be found, raise a clear error before container setup."""
 

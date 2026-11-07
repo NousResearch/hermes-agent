@@ -84,14 +84,17 @@ def _reset_model_to_session_baseline(cli, silent: bool) -> None:
     _startup_provider = getattr(cli, "_startup_provider", None)
     _startup_input = getattr(cli, "_startup_model_input", None)
     _startup_base_url = getattr(cli, "_startup_base_url", None)
+    # A bare --provider uses providers.<name>.base_url, not the config default
+    # endpoint. /new must compare it even when model and provider are unchanged.
+    _startup_endpoint = _startup_base_url or getattr(cli, "_startup_named_endpoint", None)
     _credential_unchanged = not (_startup_model or _startup_input) or (
         getattr(cli, "_startup_api_key_fingerprint", None)
         == _credential_fingerprint(getattr(cli, "api_key", None)))
     if (_credential_unchanged and _startup_model
             and _startup_model == getattr(cli, "model", None)
             and (not _startup_provider or _startup_provider == getattr(cli, "provider", None))
-            and (not _startup_base_url
-                 or _startup_base_url == (getattr(cli, "base_url", None) or ""))):
+            and (not _startup_endpoint
+                 or _startup_endpoint == (getattr(cli, "base_url", None) or ""))):
         return  # already on the startup route (alias replay skipped: name != id)
     _model_config = CLI_CONFIG.get("model", {})
     if isinstance(_model_config, dict):
@@ -115,8 +118,8 @@ def _reset_model_to_session_baseline(cli, silent: bool) -> None:
     if not _desired_model or (
             _credential_unchanged and _desired_model == getattr(cli, "model", None)
             and (not _desired_provider or _desired_provider == getattr(cli, "provider", None))
-            and (not _startup_base_url
-                 or _startup_base_url == (getattr(cli, "base_url", None) or ""))):
+            and (not _startup_endpoint
+                 or _startup_endpoint == (getattr(cli, "base_url", None) or ""))):
         return
     try:
         from hermes_cli.model_switch import switch_model as _switch_model

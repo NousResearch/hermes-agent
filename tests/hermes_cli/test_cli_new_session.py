@@ -985,4 +985,49 @@ def test_no_flags_boundary_uses_config_default(_offline_route, monkeypatch):
     assert (cli.model, cli.provider, cli.base_url) == (
         "config-default-model", "openrouter", _OPENROUTER_URL)
 
+def test_provider_only_new_session_restores_named_endpoint_without_model_drift(
+        _offline_route, monkeypatch):
+    """#150748 (Roffild): /new must not keep the router URL for --provider myllama.
 
+    The model and provider can stay unchanged while a session-only endpoint
+    switch replaces the URL. The launch provider's configured endpoint is the
+    baseline even when no --model or --base-url was passed.
+    """
+    router_url = "http://router.local/api/v1"
+    llama_url = "http://127.0.0.1:8080/v1"
+    llama_model = "ggml-org/gemma-4-E4B-it-GGUF:Q4_0"
+    router_model = "openai/gpt-6-luna"
+    providers = {
+        "router": {"base_url": router_url, "default_model": router_model},
+        "myllama": {"base_url": llama_url, "api_key": "test-local-key",
+                    "default_model": llama_model},
+    }
+    config_yaml = (
+        "model:\n"
+        f"  default: {router_model}\n"
+        "  provider: custom:router\n"
+        "providers:\n"
+        "  router:\n"
+        f"    base_url: {router_url}\n"
+        f"    default_model: {router_model}\n"
+        "  myllama:\n"
+        f"    base_url: {llama_url}\n"
+        "    api_key: test-local-key\n"
+        f"    default_model: {llama_model}\n"
+    )
+    cli = _make_startup_cli(
+        monkeypatch, config_yaml=config_yaml,
+        model_cfg={"provider": "custom:router", "default": router_model},
+        extra_cli_cfg={"providers": providers}, provider="myllama")
+    assert (cli.model, cli.provider) == (llama_model, "myllama")
+    assert cli._startup_base_url is None  # no explicit --base-url
+
+    # A session-scoped switch changed only the endpoint; the old early return
+    # compared model/provider but omitted the named provider's configured URL.
+    cli.base_url = router_url
+    cli.agent = _RecordingAgent()
+    cli.new_session(silent=True)
+
+    assert (cli.model, cli.provider, cli.base_url) == (
+        llama_model, "myllama", llama_url)
+    assert cli.agent.switch_calls[-1]["base_url"] == llama_url

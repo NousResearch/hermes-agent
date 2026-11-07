@@ -321,6 +321,11 @@ class CLIInitMixin:
             # Only explicit/alias endpoints are pinned: self.base_url may still
             # be the global config URL before lazy provider resolution.
             self._startup_base_url = self._explicit_base_url or None
+            # A provider-only launch selects the named endpoint as well as its model.
+            # Keep the endpoint identity, not a credential, for /new comparison.
+            self._startup_named_endpoint = (
+                str((_named_custom or {}).get("base_url") or "").strip()
+                if not model and provider else "")
             self._startup_provider_input = (provider or "").strip() or None
             from hermes_cli import model_switch as _ms
             _ms._ensure_direct_aliases()

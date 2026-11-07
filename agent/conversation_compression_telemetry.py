@@ -15,6 +15,7 @@ import uuid
 from typing import Any
 
 from agent.compaction_events import publish_attempt
+from agent.turn_timing import add_turn_seconds
 
 logger = logging.getLogger("agent.conversation_compression")
 
@@ -139,6 +140,7 @@ def _emit_compression_attempt_telemetry(
                 or getattr(compressor, "_last_aux_model_failure_model", None)
             )
         )
+        add_turn_seconds(agent, "_turn_compaction_seconds", payload["total_duration_ms"] / 1000)
         _log_attempt_record(payload)
         publish_attempt(agent, payload)
         from hermes_cli.observability.shared_metrics_events import finish_compression_attempt
@@ -187,6 +189,7 @@ def _emit_bypassed_attempt_telemetry(
             "total_duration_ms": int((time.monotonic() - started_at) * 1000), "commit_status": commit_status,
             "split_status": "not_applicable", "fallback_used": False,
         }
+        add_turn_seconds(agent, "_turn_compaction_seconds", payload["total_duration_ms"] / 1000)
         _log_attempt_record(payload)
         publish_attempt(agent, payload)
     except Exception as exc:

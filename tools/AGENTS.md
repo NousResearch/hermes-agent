@@ -142,7 +142,9 @@ it is never the first signal a live parent receives.
 
 Spawns a subagent with isolated context + terminal session; the parent waits for the summary unless
 `background=true`, which returns a delegation id and re-enters the result via the async-delegation
-completion queue. Shapes: single (`goal` + optional `context`, `toolsets`) or batch (`tasks: [...]`,
+completion queue. New ids use a full UUID; terminal events carry the validated, presentation-only
+`hermes.internal_event.v1` envelope (`delegation_events.py`). Legacy ids survive replay unchanged;
+early batch failure notices are not terminal events. Shapes: single (`goal` + optional `context`, `toolsets`) or batch (`tasks: [...]`,
 concurrency capped by `delegation.max_concurrent_children`, default 3). A background batch returns as ONE
 completion by default; with `delegation.independent_completions` it is split into completion **units**
 (`delegate_tool_dispatch._units_of`): tasks sharing a `group` join and report together; each ungrouped

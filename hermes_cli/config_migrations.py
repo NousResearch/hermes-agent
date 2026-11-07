@@ -873,6 +873,17 @@ MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
     # 51 -> 52: browser.backend + browser.extension_control dropped, AGENT_BROWSER_* .env settings ->
     # browser.* (see config_migrations_browser.migrate_to_52).
     (52, migrate_to_52),
+    # 52 → 53: prompt_caching.cache_ttl defaults to "auto" (1h for human-paced sessions, 5m for
+    # machine-paced ones). The old "5m" default was copied into config.yaml by the template seeder
+    # and `doctor --fix`, where it reads as a user choice and keeps every session on 5m. Drop only
+    # that exact value; "1h", "auto" and an off value are preserved.
+    (53, _rewrite_stale_default(
+        section="prompt_caching", key="cache_ttl", old="5m", new=None,
+        added='removed prompt_caching.cache_ttl: "5m" (the old default)',
+        message=(
+            '  ✓ Removed prompt_caching.cache_ttl: "5m" — the old default. Prompt caching now '
+            'follows "auto": the 1h tier for sessions you type into, 5m for subagents, cron and '
+            'other machine-paced runs. Set cache_ttl: "5m" to pin the old behaviour.'))),
 )
 
 #: Steps triggered by a legacy key or identifier (a renamed or retired key, a removed plugin or

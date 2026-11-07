@@ -1,4 +1,4 @@
-"""Anthropic prompt caching strategy — pure functions, no AIAgent dependency.
+"""Anthropic prompt caching strategy and session TTL resolution.
 
 Default layout: 4 cache_control breakpoints — the static system prefix, the end of the
 system prompt, and the last 2 non-system messages (without a static prefix: one system
@@ -6,6 +6,7 @@ breakpoint plus the last 3 messages). All markers share one TTL (5m or 1h).
 """
 
 import copy
+import json
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
@@ -150,9 +151,13 @@ def is_qwen_model(model: str) -> bool:
 # seconds until they finish and never collect the retention, so they stay on 5m.
 # Measured on one install (2 days of per-call logs): 63% of interactive cache-write tokens
 # were cold re-writes after a 5–60 min idle gap (1h saves ~42% of write cost there), while
-# 1h on subagents/cron would have cost ~49% more.
+# 1h on subagents/cron would have cost ~49% more. ``auto`` is the shipped default
+# (hermes_cli/config_defaults.py). ``api_server`` is the API server's platform label and
+# ``curator`` the background skill curator (tens of back-to-back calls); both are machine-paced.
 AUTO_CACHE_TTL = "auto"
-MACHINE_PACED_SOURCES = frozenset({"subagent", "cron", "oneshot", "webhook", "kanban", "api", "tool", "batch"})
+MACHINE_PACED_SOURCES = frozenset({
+    "subagent", "cron", "oneshot", "webhook", "kanban", "api", "api_server", "tool", "batch", "curator",
+    "a2a", "msgraph_webhook", "gateway_hygiene"})
 
 
 def auto_cache_ttl_for_source(source: str | None) -> str:
@@ -161,15 +166,41 @@ def auto_cache_ttl_for_source(source: str | None) -> str:
     return "5m" if (source or "").strip().lower() in MACHINE_PACED_SOURCES else "1h"
 
 
-def effective_cache_ttl(ttl: str | None, *, model: str = "", provider: str = "") -> str:
+def auto_cache_ttl_for_agent(agent: Any) -> str:
+    """Resolve auto, including finite gateway admissions whose launch env was scrubbed."""
+    from agent.session_source import session_source_for
+    from gateway.session_finite import finite_turn_required
+    from gateway.session_policy import active_policy
+
+    agent._cache_ttl_auto = True
+    finite = finite_turn_required()
+    policy = active_policy()
+    if finite is None and policy is not None:
+        # Read the frozen admission when turn context is not yet bound at construction.
+        finite = json.loads(policy.request_json).get("turn_v1", {}).get("finite", policy.source == "oneshot")
+    ttl = "5m" if finite is True else auto_cache_ttl_for_source(
+        session_source_for(getattr(agent, "platform", None)))
+    return effective_cache_ttl(ttl, provider=getattr(agent, "provider", ""), auto=True)
+
+
+def refresh_auto_cache_ttl(agent: Any) -> None:
+    """Re-resolve an auto tier after a platform stamp, preserving side agents and explicit pins."""
+    if getattr(agent, "_cache_ttl_auto", False) and not getattr(agent, "side_agent", False):
+        agent._cache_ttl = auto_cache_ttl_for_agent(agent)
+
+
+def effective_cache_ttl(ttl: str | None, *, model: str = "", provider: str = "", auto: bool = False) -> str:
     """Clamp a requested cache TTL to what the destination route supports (``None`` → ``5m``).
 
     Qwen/Alibaba routes drop ``1h`` (→ ``5m``) except on ``MEASURED_1H_PROVIDERS`` minus
     ``NO_1H_TIER_MODELS``; that check runs BEFORE the generic Qwen clamp, which would swallow it.
+    Bedrock keeps auto on 5m for legacy models; an explicit 1h pin is preserved.
     """
     if ttl != "1h":
         return ttl or "5m"
     provider_lower = (provider or "").lower()
+    if auto and provider_lower == "bedrock":
+        return "5m"
     if provider_lower in MEASURED_1H_PROVIDERS:
         return "5m" if _flat_model(model) in NO_1H_TIER_MODELS else "1h"
     return "5m" if is_qwen_model(model) or provider_lower in ALIBABA_FAMILY_PROVIDERS else "1h"

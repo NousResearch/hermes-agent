@@ -1,6 +1,6 @@
 name: hermes-roam
 repo: https://github.com/vcruz305/hermes-roam
-sha: 8faf924d1791f7dcb72bd7bb7ef6a6929ba8038c
+sha: a522dbca63572dec7c1f8887ae8f2512a0f2289d
 description: >-
   Encrypted, host-scoped sync of the Hermes Agent home between your own machines:
   an AES-256-GCM sealed bundle of the shared home (config.yaml minus host-scoped

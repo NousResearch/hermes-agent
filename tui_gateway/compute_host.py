@@ -397,7 +397,9 @@ class ComputeHost:
                 server._init_session(
                     sid, key, agent, list(history), cols=int(frame.get("cols") or 80),
                     cwd=str(frame.get("cwd") or "") or None, session_db=session_db,
-                    source=frame.get("source"), explicit_cwd=bool(frame.get("explicit_cwd")))
+                    source=frame.get("source"), explicit_cwd=bool(frame.get("explicit_cwd")),
+                    # Services need the routed home before the notification poller starts.
+                    profile_home=profile_home or None)
             finally:
                 reset_transport(token)
         except Exception:

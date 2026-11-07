@@ -49,10 +49,18 @@ def _room_identity(source: dict[str, Any], *, coerce: bool = False) -> dict[str,
     return {k: int(source[k]) if k == "authority_epoch" else text(source[k]) for k in _ROOM_IDENTITY_FIELDS}
 
 
+def request_target_profile(_api_request_profile) -> str:
+    """The served profile this request runs as: its ``/p/<profile>/`` prefix, else the listener's
+    own profile (``default`` on a multiplexed host, the launch profile of a single-profile one)."""
+    from gateway.session_authorities import served_profile_name
+    from hermes_constants import get_hermes_home
+    return _api_request_profile.get() or served_profile_name(get_hermes_home())
+
+
 def _local_target(claims: dict[str, Any] | None, _api_request_profile) -> tuple[str, str]:
     """Return ``(profile, installation_id)`` for this gateway; *claims* must target it."""
     from gateway import hosted_rooms
-    profile = _api_request_profile.get() or "default"
+    profile = request_target_profile(_api_request_profile)
     installation_id = hosted_rooms.local_authority_gateway_id()
     if claims is not None and (claims["target_profile"], claims["target_install_id"]) != (profile, installation_id):
         raise ValueError("room grant target does not match this profile")
@@ -114,6 +122,15 @@ def _room_grant_claims(self, request: web.Request, *, permission: str) -> dict[s
         raise RoomGrantReauthorizationRequired("room grant is revoked")
     if not hosted_rooms.peer_room_grant_is_current(db_path, claims=claims):
         raise RoomGrantReauthorizationRequired("room grant is no longer current")
+    return claims
+
+
+def room_run_claims(self, request: web.Request, *, permission: str) -> dict[str, Any]:
+    """Claims of a grant presented to a run route: it answers only on its own profile's route
+    (``/p/<target_profile>/``), so the runs, stops and approvals it reaches are that profile's."""
+    from gateway.platforms.api_server import _api_request_profile
+    claims = self._room_grant_claims(request, permission=permission)
+    _local_target(claims, _api_request_profile)
     return claims
 
 

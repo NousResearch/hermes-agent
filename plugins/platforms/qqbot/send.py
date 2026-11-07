@@ -102,18 +102,27 @@ async def _qqbot_send_media_message(client, headers, chat_type, chat_id, file_in
     return await _qqbot_api_json(client, headers, "POST", path, body)
 
 
-async def _qqbot_send_text_message(client, headers, chat_id, message: str) -> dict:
-    """Try channel → C2C → group text endpoints (pre-media standalone behavior)."""
-    payload = {"content": (message or "")[:4000], "msg_type": 0}
-    endpoints = (("channel", f"https://api.sgroup.qq.com/channels/{chat_id}/messages"),
-                 ("c2c", f"https://api.sgroup.qq.com/v2/users/{chat_id}/messages"),
-                 ("group", f"https://api.sgroup.qq.com/v2/groups/{chat_id}/messages"))
+async def _qqbot_send_text_message(client, headers, chat_id, message: str,
+                                   markdown: bool = False) -> dict:
+    """Try channel → C2C → group text endpoints (pre-media standalone behavior).
+
+    ``markdown=True`` mirrors the in-process adapter on the C2C and group endpoints:
+    ``msg_type=2`` with a ``markdown`` object, which the Open Platform opens to every bot
+    in C2C and group scenes. Guild channels keep plain ``content`` — the adapter's
+    ``_send_guild_text()`` does the same, because guild markdown is invitation-only.
+    """
+    text = (message or "")[:4000]
+    plain = {"content": text, "msg_type": 0}
+    rich = {"markdown": {"content": text}, "msg_type": 2} if markdown else plain
+    endpoints = (("channel", f"https://api.sgroup.qq.com/channels/{chat_id}/messages", plain),
+                 ("c2c", f"https://api.sgroup.qq.com/v2/users/{chat_id}/messages", rich),
+                 ("group", f"https://api.sgroup.qq.com/v2/groups/{chat_id}/messages", rich))
     statuses = []
-    for kind, url in endpoints:
-        resp = await client.post(url, json=payload, headers=headers)
+    for kind, url, body in endpoints:
+        resp = await client.post(url, json=body, headers=headers)
         if resp.status_code in {200, 201}:
             return _success("qqbot", chat_id, message_id=resp.json().get("id"))
-        statuses.append(f"{kind}={resp.status_code}")
+        statuses.append(f"{kind}(msg_type={body['msg_type']})={resp.status_code}")
     return _error(f"QQBot send failed: {' '.join(statuses)}")
 
 
@@ -172,6 +181,9 @@ async def send_qqbot(pconfig, chat_id, message, media_files=None, caption=None, 
     from gateway.platforms._shared import get_scoped_secret
     from .constants import FILE_UPLOAD_TIMEOUT
     extra = pconfig.extra or {}
+    # Same switch the in-process adapter honors; the standalone path used to ignore it and
+    # always send msg_type=0, so markdown arrived as literal asterisks.
+    markdown = bool(extra.get("markdown_support", True))
     appid = extra.get("app_id") or get_scoped_secret("QQ_APP_ID", "")
     secret = pconfig.token or extra.get("client_secret") or get_scoped_secret("QQ_CLIENT_SECRET", "")
     if not appid or not secret:
@@ -199,7 +211,8 @@ async def send_qqbot(pconfig, chat_id, message, media_files=None, caption=None, 
                 text = (message or "").strip()
                 warnings: list[str] = []
                 if text and not (caption and caption.strip()):
-                    text_result = await _qqbot_send_text_message(client, headers, chat_id, text)
+                    text_result = await _qqbot_send_text_message(client, headers, chat_id, text,
+                                                                markdown=markdown)
                     if isinstance(text_result, dict) and text_result.get("error"):
                         return text_result
                     last_result = text_result
@@ -234,7 +247,8 @@ async def send_qqbot(pconfig, chat_id, message, media_files=None, caption=None, 
                     if not fallback_text:
                         return {"error": "QQBot: no deliverable media attachments",
                                 **({"warnings": warnings} if warnings else {})}
-                    text_result = await _qqbot_send_text_message(client, headers, chat_id, fallback_text)
+                    text_result = await _qqbot_send_text_message(client, headers, chat_id, fallback_text,
+                                                                markdown=markdown)
                     if isinstance(text_result, dict) and text_result.get("error"):
                         return {**text_result, **({"warnings": warnings} if warnings else {})}
                     last_result = text_result
@@ -243,7 +257,8 @@ async def send_qqbot(pconfig, chat_id, message, media_files=None, caption=None, 
                 return last_result
 
             # --- Text-only path: first 2xx wins (pre-media behavior) ---
-            return await _qqbot_send_text_message(client, headers, chat_id, message or "")
+            return await _qqbot_send_text_message(client, headers, chat_id, message or "",
+                                                  markdown=markdown)
     except Exception as e:
         logger.debug("QQBot standalone send failed", exc_info=True)
         return _error(f"QQBot send failed: {e}")

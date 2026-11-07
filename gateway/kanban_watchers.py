@@ -319,6 +319,9 @@ class GatewayKanbanWatchersMixin:
                         "`hermes kanban list --status ready`.",
                         bad_ticks, f" Last tick held back: {held}." if held else "",
                     )
+                    _kb._fire_dispatcher_stuck_hook(
+                        board=None, bad_ticks=bad_ticks, held=held, source="gateway",
+                    )
                     last_warn_at = now
             except asyncio.CancelledError:
                 logger.debug("kanban dispatcher: cancelled")

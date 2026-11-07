@@ -207,7 +207,14 @@ def build_gateway_parser(
 
     gateway_subparsers.add_parser("list", help="List all profiles and their gateway status")
 
-    gateway_subparsers.add_parser("setup", help="Configure messaging platforms")
+    gateway_setup = gateway_subparsers.add_parser("setup", help="Configure messaging platforms",
+        description="Configure one messaging platform, or run the interactive wizard with no arguments.")
+    gateway_setup.add_argument("platform", nargs="?", help="Platform key (for example, telegram)")
+    _flag(gateway_setup, "--quick", help="Create a managed Telegram bot without pasting a token")
+    gateway_setup.add_argument("--allow", default="", metavar="IDS", help="Comma-separated numeric Telegram user IDs")
+    _flag(gateway_setup, "--replace", help="Replace an existing Telegram bot token")
+    gateway_setup.add_argument("--timeout", type=float, default=None, metavar="SECONDS",
+        help="Time to wait for Telegram bot creation (default 180)")
 
     gateway_migrate_legacy = gateway_subparsers.add_parser(
         "migrate-legacy", help="Remove legacy hermes.service units from pre-rename installs",

@@ -113,7 +113,9 @@ def _check_manifest_fields(report: ValidationReport, manifest: dict) -> None:
 
 
 def _check_requires_hermes(report: ValidationReport, manifest: dict) -> None:
-    spec = str(manifest.get("requires_hermes") or "").strip()
+    from hermes_cli.plugins_manifest import requires_hermes_spec
+
+    spec = requires_hermes_spec(manifest)
     if not spec:
         report.add("requires_hermes", True, "not declared")
         return
@@ -678,6 +680,7 @@ def _validate_portable_plugin(report: ValidationReport, plugin_dir: Path) -> Val
                        f"{len(config['tool_costs'])} costed tool(s), "
                        + (f"spend limit {limit} {config.get('cost_unit') or 'credits'} per chat" if limit
                           else "no spend limit"))
+    _check_requires_hermes(report, manifest)
     for server_name, server_decl in package.server_declarations.items():
         result = availability(server_decl.declaration)
         detail = result.state

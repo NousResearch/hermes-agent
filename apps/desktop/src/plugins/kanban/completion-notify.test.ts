@@ -25,7 +25,7 @@ interface Mod {
 }
 
 const { hostMock } = vi.hoisted(() => ({
-  hostMock: { notify: vi.fn(), navigate: vi.fn() }
+  hostMock: { dismissNotification: vi.fn(), notify: vi.fn(), navigate: vi.fn() }
 }))
 
 vi.mock('@hermes/plugin-sdk', () => ({
@@ -399,18 +399,117 @@ describe('notification failure isolation', () => {
 })
 
 describe('terminal kinds beyond completed', () => {
-  it('blocked notifies with the payload reason and a warning toast', async () => {
+  it.each<[string, Record<string, unknown> | null]>([
+    ['unblocked', null],
+    ['promoted', null],
+    ['promoted_manual', null],
+    ['status', { status: 'todo' }],
+    ['status', { status: 'triage' }]
+  ])('retracts only the matching task warning after %s', async (recoveryKind, payload) => {
     const m = await loadModule()
     m.bindCompletionNotify(makeRest(() => 100) as never)
 
-    const fired = await m.onKanbanEventsFrame('smoke', [ev(101, 'blocked', { reason: 'needs API key' })])
+    await m.onKanbanEventsFrame('smoke', [
+      ev(101, 'blocked', { kind: 'needs_input', reason: 'Task A needs input' }, 'task-a'),
+      ev(102, 'blocked', { kind: 'needs_input', reason: 'Task B needs input' }, 'task-b')
+    ])
+    expect(hostMock.notify.mock.calls[0][0]).toMatchObject({ id: 'kanban:smoke:task-a' })
+    expect(hostMock.notify.mock.calls[1][0]).toMatchObject({ id: 'kanban:smoke:task-b' })
+
+    const fired = await m.onKanbanEventsFrame('smoke', [ev(103, recoveryKind, payload, 'task-a')])
+
+    expect(fired).toBe(false)
+    expect(hostMock.dismissNotification).toHaveBeenCalledExactlyOnceWith('kanban:smoke:task-a')
+    expect(hostMock.dismissNotification).not.toHaveBeenCalledWith('kanban:smoke:task-b')
+  })
+
+  it('keeps the matching task warning when a status event still says blocked', async () => {
+    const m = await loadModule()
+    m.bindCompletionNotify(makeRest(() => 100) as never)
+
+    await m.onKanbanEventsFrame('smoke', [
+      ev(101, 'blocked', { kind: 'needs_input', reason: 'Task A needs input' }, 'task-a'),
+      ev(102, 'status', { status: 'blocked' }, 'task-a')
+    ])
+
+    expect(hostMock.notify).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: 'kanban:smoke:task-a' }))
+    expect(hostMock.dismissNotification).not.toHaveBeenCalled()
+  })
+
+  it('retracts a transient crash when the same task is claimed for retry', async () => {
+    const m = await loadModule()
+    m.bindCompletionNotify(makeRest(() => 100) as never)
+
+    await m.onKanbanEventsFrame('smoke', [ev(101, 'crashed', null, 'task-a')])
+    await m.onKanbanEventsFrame('smoke', [ev(102, 'claimed', null, 'task-a')])
+
+    expect(hostMock.notify).toHaveBeenCalledWith(expect.objectContaining({ id: 'kanban:smoke:task-a' }))
+    expect(hostMock.dismissNotification).toHaveBeenCalledExactlyOnceWith('kanban:smoke:task-a')
+  })
+
+  it('needs_input notifies without requiring a board-specific reason prefix', async () => {
+    const m = await loadModule()
+    m.bindCompletionNotify(makeRest(() => 100) as never)
+
+    const fired = await m.onKanbanEventsFrame('smoke', [
+      ev(101, 'blocked', { kind: 'needs_input', reason: 'Choose a release channel' })
+    ])
 
     expect(fired).toBe(true)
     expect(lastNotify()).toMatchObject({
       kind: 'warning',
-      message: 'needs API key',
+      title: 'Task blocked — needs your input',
+      message: 'Choose a release channel',
       detail: 't101'
     })
+  })
+
+  it('legacy untyped blocked events keep the existing input notification', async () => {
+    const m = await loadModule()
+    m.bindCompletionNotify(makeRest(() => 100) as never)
+
+    const fired = await m.onKanbanEventsFrame('smoke', [ev(101, 'blocked', { reason: 'Legacy worker blocked' })])
+
+    expect(fired).toBe(true)
+    expect(lastNotify()).toMatchObject({
+      kind: 'warning',
+      title: 'Task blocked — needs your input',
+      message: 'Legacy worker blocked',
+      detail: 't101'
+    })
+  })
+
+  it('backend null block kind keeps the legacy input notification', async () => {
+    const m = await loadModule()
+    m.bindCompletionNotify(makeRest(() => 100) as never)
+
+    const fired = await m.onKanbanEventsFrame('smoke', [
+      ev(101, 'blocked', { kind: null, reason: 'Legacy backend block' })
+    ])
+
+    expect(fired).toBe(true)
+    expect(lastNotify()).toMatchObject({
+      kind: 'warning',
+      title: 'Task blocked — needs your input',
+      message: 'Legacy backend block',
+      detail: 't101'
+    })
+  })
+
+  it.each<[string, string]>([
+    ['capability', 'The card declares completion_contract = local-only'],
+    ['dependency', 'Waiting for another task'],
+    ['transient', 'Temporary backend failure']
+  ])('does not address typed %s blocks to the board owner', async (blockKind, reason) => {
+    const m = await loadModule()
+    m.bindCompletionNotify(makeRest(() => 100) as never)
+
+    const fired = await m.onKanbanEventsFrame('smoke', [
+      ev(101, 'blocked', { kind: blockKind, reason }, 'task-capability')
+    ])
+
+    expect(fired).toBe(false)
+    expect(hostMock.notify).not.toHaveBeenCalled()
   })
 
   it('block_loop_detected notifies that a decision is needed', async () => {
@@ -463,9 +562,12 @@ describe('terminal kinds beyond completed', () => {
     expect(hostMock.notify).not.toHaveBeenCalled()
 
     // Cursor moved past 103: a replayed blocked at 102 stays silent, 104 fires.
-    await m.onKanbanEventsFrame('smoke', [ev(102, 'blocked'), ev(104, 'blocked')])
+    await m.onKanbanEventsFrame('smoke', [
+      ev(102, 'blocked', { kind: 'needs_input', reason: 'Replayed input request' }),
+      ev(104, 'blocked', { kind: 'needs_input', reason: 'New input request' })
+    ])
     expect(hostMock.notify).toHaveBeenCalledTimes(1)
-    expect(lastNotify().message).toBe('t104')
+    expect(lastNotify().message).toBe('New input request')
   })
 })
 
@@ -475,10 +577,12 @@ describe('native OS door', () => {
     const m = await loadModule()
     m.bindCompletionNotify(makeRest(() => 100) as never, undefined, os)
 
-    await m.onKanbanEventsFrame('smoke', [ev(101, 'blocked', { reason: 'needs input' })])
+    await m.onKanbanEventsFrame('smoke', [
+      ev(101, 'blocked', { kind: 'needs_input', reason: 'Needs input' })
+    ])
 
     expect(os.notify).toHaveBeenCalledTimes(1)
-    expect(os.notify.mock.calls[0][0]).toMatchObject({ body: 'needs input\nt101' })
+    expect(os.notify.mock.calls[0][0]).toMatchObject({ body: 'Needs input\nt101' })
   })
 
   it('an os door that throws never breaks the toast or the frame result', async () => {
@@ -505,7 +609,10 @@ describe('native OS door', () => {
     const m = await loadModule()
     m.bindCompletionNotify(makeRest(() => 100) as never)
 
-    const fired = await m.onKanbanEventsFrame('smoke', [ev(101, 'blocked')])
+    const fired = await m.onKanbanEventsFrame('smoke', [
+      ev(101, 'blocked', { kind: 'needs_input', reason: 'Needs input' })
+    ])
+
     expect(fired).toBe(true)
     expect(hostMock.notify).toHaveBeenCalledTimes(1)
   })

@@ -115,7 +115,9 @@ async def _assert_a_rewrap_mid_walk_repeats_nothing(db, owner, session_id, tip, 
     started = (await full())['result']['rows']
     if at is None:
         at = rng.randint(1, max(1, -(-len(started) // limit) - 1))
-    walked = await _walk_across(owner, session_id, limit, order, at, lambda: _rewrap_newest(db, tip, rng))
+    fired = []
+    walked = await _walk_across(owner, session_id, limit, order, at, lambda: fired.append(_rewrap_newest(db, tip, rng)))
+    assert fired, (order, limit, at)  # the walk reached page *at*, so the re-wrap really landed mid-walk
     after = (await full())['result']['rows']
     if order == 'oldest':
         assert walked == after, (limit, at)
@@ -126,6 +128,8 @@ async def _assert_a_rewrap_mid_walk_repeats_nothing(db, owner, session_id, tip, 
     assert not Counter(map(ident, walked)) - allowed, (limit, at, walked)
     def text(rows):
         return Counter((row['row_kind'], row.get('text')) for row in rows)
+    # A carried message's old and new copies differ in row_id, so the identity check above lets both through.
+    assert not text(walked) - (text(started) | text(after)), (limit, at, walked)
     assert not text(started) - text(walked), (limit, at, walked)
 
 
@@ -166,8 +170,11 @@ async def test_identical_uidless_handoffs_on_two_carriers_are_one_row(tmp_path, 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('order', ['oldest', 'latest'])
-@pytest.mark.parametrize(('limit', 'at'), [(limit, at) for limit in range(1, 6) for at in range(1, -(-6 // limit) + 1)])
+# Six items: a newest-first walk ends on its last page, so the re-wrap lands before one of the others; an
+# oldest-first walk reads one more, empty page.
+@pytest.mark.parametrize(('order', 'limit', 'at'), [(order, limit, at) for order in ('oldest', 'latest')
+                                                    for limit in range(1, 6)
+                                                    for at in range(1, -(-6 // limit) + (order == 'oldest'))])
 async def test_a_rewrap_before_any_page_of_a_split_carrier_walk_repeats_nothing(tmp_path, monkeypatch, order,
                                                                                 limit, at):
     """Question 2's carrier holds two handoffs; a third re-wrap lands before page *at* of the walk."""

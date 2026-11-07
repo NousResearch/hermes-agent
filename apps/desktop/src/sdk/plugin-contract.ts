@@ -1,5 +1,7 @@
 // The plugin authoring contract types; the SDK barrel re-exports them.
 
+export type { PluginFocusedSessionOwner, PluginSubmitPromptOptions, PluginSubmitPromptResult } from './confirmed-submit'
+
 export type {
   HermesPlugin,
   PetMessageTone,

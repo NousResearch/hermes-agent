@@ -602,13 +602,26 @@ def open_monitor(cli):
     monitor.opening = True
 
     async def run():
+        from hermes_cli import cli_render
         try:
             async with in_terminal():
-                # Paint the roster the dock's tick already holds; refreshing here would block the UI
-                # loop on the gateway's subagent.list. The spinner thread's next tick re-reads it.
-                monitor.poll_soon()
-                monitor.app = build_monitor_application(monitor)
-                await monitor.app.run_async()
+                # Master output (``_cprint``) paints through the app prompt_toolkit reports as current,
+                # which is the monitor while it is open: each paint would leave its alternate screen,
+                # print on the main screen and redraw it, a flicker per streamed chunk. Hold it until
+                # the monitor closes, then paint it in order on the main screen. Paints a pending
+                # resize recovery already holds stay held for that recovery to release.
+                owns_hold = cli_render._HELD_PAINTS is None
+                cli_render._hold_paints()
+                try:
+                    # Paint the roster the dock's tick already holds; refreshing here would block the
+                    # UI loop on the gateway's subagent.list. The spinner thread's next tick re-reads it.
+                    monitor.poll_soon()
+                    monitor.app = build_monitor_application(monitor)
+                    await monitor.app.run_async()
+                finally:
+                    monitor.app = None  # paints released below go to the main screen, not the monitor
+                    if owns_hold:
+                        cli_render._release_paints()
         finally:
             monitor.app = monitor.viewer = None
             monitor.detail = monitor.opening = False

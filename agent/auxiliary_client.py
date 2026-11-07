@@ -5659,6 +5659,8 @@ def _refresh_nous_auxiliary_client(
         client, final_model = _to_async_client(sync_client, model or "", is_vision=is_vision)
     else:
         client, final_model = sync_client, model
+    with contextlib.suppress(AttributeError):  # the probe stub has slots
+        client._hermes_aux_effective_provider = "nous"  # an auto route's retry still classifies as Nous
     cache_key = _client_cache_key(
         cache_provider, async_mode=async_mode, base_url=base_url, api_key=api_key,
         api_mode=api_mode, main_runtime=main_runtime, is_vision=is_vision, task=lookup_task,

@@ -361,6 +361,18 @@ def test_refreshed_nous_stream_error_falls_back():
         assert call_llm(task="title_generation", messages=_MESSAGES).choices[0].message.content == "fallback"
 
 
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+def test_refreshed_nous_client_under_auto_classifies_as_nous(monkeypatch, is_async):
+    from agent import auxiliary_client as aux
+
+    seen = []
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_error_classification", lambda **kw: seen.append(kw["provider"]))
+    with patch.object(aux, "_resolve_nous_runtime_api", return_value=("sk-fresh", "https://inference-api.nousresearch.com/v1")):
+        client, _model = aux._refresh_nous_auxiliary_client(cache_provider="auto", model="m", async_mode=is_async)
+    aux._classify_failure(sdk(500, "down"), "auto", client, "m", None)
+    assert seen == ["nous"]
+
+
 def test_invalid_answer_classifies_as_incomplete_response():
     from agent.error_classifier import classify_api_error
 

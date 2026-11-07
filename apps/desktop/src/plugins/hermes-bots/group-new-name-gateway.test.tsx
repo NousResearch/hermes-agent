@@ -11,6 +11,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { $canonicalGroupBindings } from './canonical-group-registry'
 import { GroupDialog } from './create-dialog'
+import { CROSS_GATEWAY_GROUP_LOCALES } from './cross-gateway-locales'
 import { $botMeta, $lastRoster } from './data'
 import { $groupChats, $groupChatWorkspace } from './group-chat'
 import type * as GroupChatModule from './group-chat'
@@ -110,4 +111,14 @@ it('a name with no room record never opens Desktop-run, even when its bots span 
   await waitFor(() => expect(request.mock.calls.map(call => call[1])).toContain('groups.list'))
   expect(screen.queryByRole('textbox', { name: 'Message Research' })).toBeNull()
   expect(desktopRecords()).toEqual([])
+})
+
+it('a new name on a gateway too old to run group chats says to update it, as New group chat does', async () => {
+  gateway({ driver: false, persistent_process: false })
+  await act(async () => { render(<GroupChatWorkspace group="Research" members={[alpha, beta]} />) })
+
+  expect(await screen.findByText(CROSS_GATEWAY_GROUP_LOCALES.en.ownerUpdateRequired('This device'))).toBeTruthy()
+  expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
+  expect(screen.queryByRole('textbox')).toBeNull()
+  expect($groupChats.get()).toEqual({})
 })

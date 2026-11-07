@@ -8,6 +8,8 @@ replaying the identical request until ``max_retries``.
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.turn_retry_state import TurnRetryState
 
@@ -161,3 +163,90 @@ def test_rejected_reasoning_level_retries_without_the_effort():
     _recover(agent, _REVERSED_400)
     assert _wire_reasoning_config(agent) == {"enabled": True, "effort": "high"}
     assert any("rejects disabling reasoning" in n for n in agent.notices)
+
+
+# Claude Sonnet 5.5 off the native adapter: the route translates the generic disable into
+# ``thinking: {"type": "disabled"}`` and the model refuses it, naming its own "off".
+_SONNET_55_400 = (
+    'To turn thinking off on this model, send "thinking": {"type": "between_tools"} instead of '
+    '{"type": "disabled"}. The model does not think before responding.'
+)
+
+
+def test_refused_continuation_disable_retries_at_the_floor_then_restores_the_session_config():
+    """The one-shot "answer without thinking" length-continuation is the disable that 400s. The retry
+    is still that continuation: as close to "no thinking" as the route allows (the floor), not the
+    session's full effort, which would re-burn the budget that just ate the output cap. The next
+    ordinary request goes back to the session's own config (cache key preserved)."""
+    from agent.auxiliary_reasoning_floor import REASONING_FLOOR_EFFORT
+
+    agent = _WireAgent({"enabled": True, "effort": "high"})
+    agent.model = "claude-sonnet-5-5"
+    agent._ephemeral_reasoning_off = True
+    assert _wire_reasoning_config(agent) == {"enabled": False, "effort": "none"}  # the request that 400ed
+    _recover(agent, _SONNET_55_400)
+    assert _wire_reasoning_config(agent) == {"enabled": True, "effort": REASONING_FLOOR_EFFORT}
+    assert _wire_reasoning_config(agent) == {"enabled": True, "effort": "high"}
+
+
+# Alibaba token-plan: a closed level set that starts at ``minimal`` (also in
+# test_error_classifier_reasoning_level.py, which imports this module).
+_TOKENPLAN_400 = (
+    "Error code: 400 - {'error':{'code':'invalid_parameter_error','param':None,"
+    "'message':\"'reasoning_effort' must be one of: 'minimal', 'low', 'medium', 'high', "
+    "'xhigh', 'max', 'ultra'\",'type':'invalid_request_error'}}"
+)
+
+
+@pytest.mark.parametrize("message, session_effort, continuation_effort", [
+    # GLM on Nous Portal: "mandatory" — the continuation steps down to the floor.
+    ("Reasoning is mandatory for this endpoint and cannot be disabled.", "high", "low"),
+    ("Reasoning is mandatory for this endpoint and cannot be disabled.", "medium", "low"),
+    # Token-plan: the floor never raises a session that already sits at or below it.
+    (_TOKENPLAN_400, "high", "low"),
+    (_TOKENPLAN_400, "minimal", "minimal"),
+    (_TOKENPLAN_400, "low", "low"),
+])
+def test_floor_route_continuation_never_exceeds_the_session_effort(message, session_effort, continuation_effort):
+    """The re-arm covers every floor route, not only between_tools: the refused continuation retries at
+    the floor, or at the session's own effort when that is lower, and so does every later thinking-only
+    continuation on the route this session. Ordinary requests keep the session config throughout."""
+    from agent.auxiliary_reasoning_floor import REASONING_FLOOR_EFFORT
+
+    assert REASONING_FLOOR_EFFORT == "low"
+    session = {"enabled": True, "effort": session_effort}
+    agent = _WireAgent(dict(session))
+    agent._ephemeral_reasoning_off = True
+    assert _wire_reasoning_config(agent) == {"enabled": False, "effort": "none"}
+    _recover(agent, message)
+    assert _wire_reasoning_config(agent) == {"enabled": True, "effort": continuation_effort}
+    assert _wire_reasoning_config(agent) == session
+    agent._ephemeral_reasoning_off = True  # a later thinking-only continuation on the same route
+    assert _wire_reasoning_config(agent) == {"enabled": True, "effort": continuation_effort}
+    assert _wire_reasoning_config(agent) == session
+
+
+def test_no_rearm_when_the_refused_request_carried_no_disable():
+    """Nothing disabled went out (an unset session on the Anthropic Messages path sends no reasoning
+    config): the 400 must not invent a continuation, so the retry is what the session sent."""
+    from agent.chat_completion_helpers import _build_api_kwargs_for_mode
+
+    agent = _WireAgent(None)
+    agent.api_mode = "anthropic_messages"
+    with patch("agent.chat_completion_helpers._build_anthropic_kwargs",
+               lambda agent, msgs, tools, reasoning_config, overrides: {"reasoning_config": reasoning_config}):
+        first = _build_api_kwargs_for_mode(agent, [], [])["reasoning_config"]
+        _recover(agent, _SONNET_55_400)
+        assert agent._ephemeral_reasoning_off is False
+        assert _build_api_kwargs_for_mode(agent, [], [])["reasoning_config"] == first
+
+
+def test_session_configured_with_thinking_off_steps_up_to_the_floor_on_between_tools():
+    """A session whose own config is a disable gets the floor on every request after the 400."""
+    from agent.auxiliary_reasoning_floor import REASONING_FLOOR_EFFORT
+
+    agent = _WireAgent({"enabled": False, "effort": "none"})
+    agent.model = "claude-sonnet-5-5"
+    _recover(agent, _SONNET_55_400)
+    assert _wire_reasoning_config(agent) == {"enabled": True, "effort": REASONING_FLOOR_EFFORT}
+    assert _wire_reasoning_config(agent) == {"enabled": True, "effort": REASONING_FLOOR_EFFORT}

@@ -53,8 +53,6 @@ def _make_mock_parent(depth=0):
     return parent
 
 
-
-
 class TestStripBlockedTools(unittest.TestCase):
     def test_removes_blocked_toolsets(self):
         result = _strip_blocked_tools(["terminal", "file", "delegation", "clarify", "memory", "code_execution"])
@@ -321,9 +319,8 @@ class TestDelegateTask(unittest.TestCase):
                 child_db = kwargs["session_db"]
                 self.assertIsInstance(child_db, SessionDB)
                 self.assertIsNot(child_db, parent_db)
-                self.assertEqual(
-                    str(child_db.db_path), str(parent_db.db_path)
-                )
+                # The registry resolves symlinks, including macOS temp paths.
+                self.assertTrue(Path(child_db.db_path).samefile(parent_db.db_path))
             finally:
                 if child_db is not None:
                     child_db.close()

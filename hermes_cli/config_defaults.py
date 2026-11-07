@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- session-budget default for #52484: the only growth is the documented max_children_per_session key in DEFAULT_CONFIG (its comments are the user-facing config.yaml docs); the canonical defaults file has no other home for a new default
 """Default configuration data for Hermes Agent: DEFAULT_CONFIG and OPTIONAL_ENV_VARS.
 
 Pure-data leaf module — must not import from hermes_cli.config. Comments are the user-facing
@@ -1362,6 +1363,10 @@ DEFAULT_CONFIG = {
         # (or `group`) returns on its own as it finishes — more new turns for the orchestrator.
         "independent_completions": False,
         "gateway_mode": "auto",  # gateway: inline (join in the turn) | background | auto = inline where interim msgs are off
+        # Total child sessions a parent may create across repeated
+        # delegate_task calls. Unlike max_concurrent_children, completed
+        # children still consume this budget. Set to 0 to disable the cap.
+        "max_children_per_session": 10,
         # Orchestrator role controls. Depth floored at 1, no ceiling; each level multiplies cost.
         "max_spawn_depth": 1,  # 1 = flat, 2 = orchestrator→leaf, 3+ = deeper
         "orchestrator_enabled": True,  # kill switch for role="orchestrator"

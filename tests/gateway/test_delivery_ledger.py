@@ -9,6 +9,7 @@ id stability, and the startup redelivery sweep's contract:
 - poison rows abandon at the attempts cap / stale cutoff
 """
 
+import asyncio
 import os
 import sqlite3
 import threading
@@ -410,6 +411,133 @@ class TestGatewayRedeliverySweep:
             return_value=MagicMock(success=success, error="" if success else "nope")
         )
         return adapter
+
+    @staticmethod
+    def _healthy_telegram_adapter():
+        """A bare real Telegram adapter with the polling health edge confirmed."""
+        from gateway.config import Platform
+        from plugins.platforms.telegram.adapter import TelegramAdapter
+
+        adapter = TelegramAdapter.__new__(TelegramAdapter)
+        adapter.platform = Platform.TELEGRAM
+        adapter._owner_profile = "default"
+        adapter._running = True
+        adapter._polling_teardown_started = False
+        adapter._polling_progress_accepting = True
+        adapter._polling_generation = 1
+        adapter._polling_progress_event = asyncio.Event()
+        adapter._polling_network_error_count = 0
+        adapter._polling_conflict_count = 0
+        adapter._polling_conflict_recovery_generation = None
+        adapter._send_path_degraded = True
+        adapter._fatal_error_code = None
+        adapter._fatal_error_message = None
+        adapter._fatal_error_retryable = True
+        adapter.send = AsyncMock(return_value=MagicMock(success=True, error=""))
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_telegram_health_before_failed_write_replays_once(self, monkeypatch):
+        """A confirmed health sweep that beats mark_failed cannot strand the reply.
+
+        The real SQLite ledger and real GatewayRunner sweep make the race deterministic:
+        block the threaded write, let Telegram's current-generation polling health sweep
+        observe no failed rows, then release the write. Finalization must issue exactly
+        one post-write sweep; a later sweep must not duplicate the send.
+        """
+        from gateway.config import Platform
+        from gateway.platforms.base import SendResult
+        from gateway.platforms.event import MessageEvent
+        from gateway.session import SessionSource
+
+        _record(platform="telegram")
+        dl.mark_attempting("ob-1")
+        adapter = self._healthy_telegram_adapter()
+        runner = self._runner()
+        runner.adapters = {Platform.TELEGRAM: adapter}
+        runner._background_tasks = set()
+        adapter.gateway_runner = runner
+        source = SessionSource(
+            platform=Platform.TELEGRAM, chat_id="4242", chat_type="dm", user_id="u1"
+        )
+        event = MessageEvent(text="probe", source=source, message_id="m-probe")
+
+        entered_write = threading.Event()
+        release_write = threading.Event()
+        original_mark_failed = dl.mark_failed
+
+        def delayed_mark_failed(*args, **kwargs):
+            entered_write.set()
+            if not release_write.wait(timeout=2):
+                raise AssertionError("test did not release delayed mark_failed")
+            original_mark_failed(*args, **kwargs)
+
+        health_sweep_finished = asyncio.Event()
+        sweep_results = []
+        original_redeliver = runner._redeliver_failed_obligations_for_platform
+
+        async def observed_redeliver(*args, **kwargs):
+            result = await original_redeliver(*args, **kwargs)
+            sweep_results.append(result)
+            if len(sweep_results) == 1:
+                health_sweep_finished.set()
+            return result
+
+        monkeypatch.setattr(dl, "mark_failed", delayed_mark_failed)
+        runner._redeliver_failed_obligations_for_platform = observed_redeliver
+        finalize = asyncio.create_task(adapter._finalize_delivery_obligation(
+            "ob-1", SendResult(success=False, error="send_path_degraded"), event, adapter,
+        ))
+        assert await asyncio.to_thread(entered_write.wait, 2), "mark_failed did not start"
+
+        assert adapter._record_polling_progress(1) is True
+        await asyncio.wait_for(health_sweep_finished.wait(), timeout=2)
+        assert sweep_results == [0]
+        assert _row("ob-1")["state"] == "attempting"
+
+        release_write.set()
+        await finalize
+
+        assert sweep_results == [0, 1]
+        adapter.send.assert_awaited_once()
+        assert _row("ob-1")["state"] == "delivered"
+        assert await runner._redeliver_failed_obligations_for_platform(Platform.TELEGRAM) == 0
+        adapter.send.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_discord_without_client_does_not_replay_same_adapter(self):
+        """A dead Discord adapter is not a polling-health-confirmed reconnect."""
+        from gateway.config import Platform
+        from gateway.platforms.event import MessageEvent
+        from gateway.session import SessionSource
+        from plugins.platforms.discord.adapter import DiscordAdapter
+
+        _record(platform="discord")
+        dl.mark_attempting("ob-1")
+        adapter = DiscordAdapter.__new__(DiscordAdapter)
+        adapter.platform = Platform.DISCORD
+        adapter._owner_profile = "default"
+        adapter._client = None
+        calls = []
+
+        async def redeliver(*args, **kwargs):
+            calls.append((args, kwargs))
+            return 0
+
+        adapter.gateway_runner = MagicMock()
+        adapter.gateway_runner._redeliver_failed_obligations_for_platform = redeliver
+        source = SessionSource(
+            platform=Platform.DISCORD, chat_id="4242", chat_type="dm", user_id="u1"
+        )
+        event = MessageEvent(text="probe", source=source, message_id="m-probe")
+
+        result = await adapter.send("4242", "unreachable final")
+        await adapter._finalize_delivery_obligation("ob-1", result, event, adapter)
+
+        assert result.error == "send_path_degraded"
+        assert calls == []
+        assert _row("ob-1")["state"] == "failed"
+        assert _row("ob-1")["attempts"] == 0
 
     @pytest.mark.asyncio
     async def test_pending_redelivers_plain_and_clears_resume(self):

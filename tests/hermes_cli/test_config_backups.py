@@ -57,3 +57,18 @@ def test_legacy_siblings_move_but_user_named_copies_stay(tmp_path: Path):
     assert (root / "config.yaml.corrupt.20260729-093706.bak").exists()
     assert (tmp_path / "config.yaml.bak-my-note").read_text() == "mine"
     assert not list(tmp_path.glob("config.yaml.bak.*")) and not list(tmp_path.glob("config.yaml.corrupt.*"))
+
+
+def test_backup_of_world_readable_config_is_owner_only(tmp_path: Path, monkeypatch):
+    # copy2 preserves the source mode; a config.yaml left 0644 by an editor must not yield a
+    # world-readable backup of the user's credentials (#148317).
+    monkeypatch.setattr("hermes_cli.config.is_managed", lambda: False)
+    monkeypatch.setattr("hermes_cli.config._container_or_chmod_skipped", lambda: False)
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("api_key: secret\n")
+    os.chmod(cfg, 0o644)
+
+    dest = backup_config(cfg, "pre-setup")
+
+    assert dest is not None
+    assert dest.stat().st_mode & 0o777 == 0o600

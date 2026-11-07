@@ -62,13 +62,56 @@ def _normalize_enabled(value: Any) -> bool:
 
 # --- Pending store (file-backed) ---
 
+_PENDING_ID_RE = re.compile(r"[0-9a-f]{8}")  # how stage_write mints ids: uuid4().hex[:8]
+
+
+def _pending_dir(subsystem: str) -> Path:
+    """``<HERMES_HOME>/pending/<subsystem>``; raises when a symlink inside the store leads elsewhere
+    (a planted link would make reads, deletes and approvals act on files outside it)."""
+    if subsystem not in _SUBSYSTEMS:
+        raise ValueError(f"unknown write-approval subsystem {subsystem!r}")
+    d = get_hermes_home().resolve() / "pending" / subsystem
+    if d.resolve() != d:
+        raise ValueError(f"pending store {d} is a link that leaves the Hermes home")
+    return d
+
+
 def _pending_path(subsystem: str, pending_id: str) -> Path:
-    return get_hermes_home() / "pending" / subsystem / f"{pending_id}.json"
+    """Path of one pending record. Ids are typed by users (``/skills reject <id>``), so only the
+    minted format is accepted: anything else (``../x``, ``/abs``, ``a/b``) raises instead of
+    naming a file outside the store, and so does a record file that is a symlink."""
+    if not isinstance(pending_id, str) or not _PENDING_ID_RE.fullmatch(pending_id):
+        raise ValueError(f"invalid pending id {pending_id!r}")
+    path = _pending_dir(subsystem) / f"{pending_id}.json"
+    if path.is_symlink():
+        raise ValueError(f"pending record {pending_id!r} is a symlink")
+    return path
+
+
+# A claim lasts one apply (seconds at most); one older than this was left by a crash.
+_STALE_CLAIM_SECONDS = 600
+
+
+def _release_stale_claims(d: Path) -> None:
+    """Put a ``<id>.claimed`` left by a process that died mid-approval back in the queue."""
+    cutoff = time.time() - _STALE_CLAIM_SECONDS
+    for p in d.glob("*.claimed"):
+        with suppress(OSError):
+            back = p.with_suffix(".json")
+            if (_PENDING_ID_RE.fullmatch(p.stem) and not p.is_symlink() and p.stat().st_mtime < cutoff
+                    and not back.exists()):
+                os.replace(p, back)
 
 
 def _pending_files(subsystem: str) -> list:
-    d = _pending_path(subsystem, "").parent
-    return list(d.glob("*.json")) if d.exists() else []
+    try:
+        d = _pending_dir(subsystem)
+    except ValueError:
+        logger.warning("write_approval: ignoring the %s pending store", subsystem, exc_info=True)
+        return []
+    _release_stale_claims(d)
+    return [p for p in d.glob("*.json")
+            if _PENDING_ID_RE.fullmatch(p.stem) and not p.is_symlink()] if d.exists() else []
 
 
 def stage_write(subsystem: str, payload: dict[str, Any], *, summary: str, origin: str) -> dict[str, Any]:
@@ -84,20 +127,22 @@ def stage_write(subsystem: str, payload: dict[str, Any], *, summary: str, origin
     }
     try:
         atomic_json_write(_pending_path(subsystem, pid), record)
-    except Exception as e:  # pragma: no cover - disk failure path
+    except Exception as e:  # disk failure, or a store refused as a link
         logger.error("Failed to stage pending %s write: %s", subsystem, e, exc_info=True)
+        record["error"] = f"the pending {subsystem} store could not be written"  # callers report it, not "staged"
     return record
 
 
 def list_pending(subsystem: str) -> list[dict[str, Any]]:
-    """Return all pending records for ``subsystem``, oldest first."""
+    """Return all pending records for ``subsystem``, oldest first. A record's ``id`` is its file
+    name, never the id written inside it (approve and discard act on that id)."""
     records: list[dict[str, Any]] = []
     for p in _pending_files(subsystem):
         try:
             record = json.loads(p.read_text(encoding="utf-8-sig"))
             if not isinstance(record, dict):
                 raise ValueError(f"expected a JSON object, got {type(record).__name__}")
-            records.append(record)
+            records.append({**record, "id": p.stem})
         except Exception:
             logger.warning("Skipping unreadable pending record: %s", p)
     records.sort(key=lambda r: r.get("created_at", 0))
@@ -105,15 +150,52 @@ def list_pending(subsystem: str) -> list[dict[str, Any]]:
 
 
 def get_pending(subsystem: str, pending_id: str) -> Optional[dict[str, Any]]:
-    """Return a single pending record by id, or None."""
-    path = _pending_path(subsystem, pending_id)
+    """Return a single pending record by id, or None (also for an id that was never minted)."""
+    try:
+        path = _pending_path(subsystem, pending_id)
+    except ValueError:
+        return None
     if not path.exists():
         return None
     try:
         data = json.loads(path.read_text(encoding="utf-8-sig"))
-        return data if isinstance(data, dict) else None
+        return {**data, "id": pending_id} if isinstance(data, dict) else None
     except Exception:
         return None
+
+
+def claim_pending(subsystem: str, pending_id: str) -> Optional[dict[str, Any]]:
+    """Take a pending record for applying: an atomic rename to ``<id>.claimed`` that only one caller
+    wins, so two approvals of one id never apply it twice. Returns the claimed record, or None (no
+    such record, or another caller holds it). Finish with :func:`finish_claim`."""
+    try:
+        src = _pending_path(subsystem, pending_id)
+        claimed = src.with_suffix(".claimed")
+        os.utime(src)  # the claim's age, read by _release_stale_claims
+        os.replace(src, claimed)
+    except (OSError, ValueError):
+        return None
+    try:
+        record = json.loads(claimed.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        record = None
+    if not isinstance(record, dict):
+        finish_claim(subsystem, pending_id, applied=False)
+        return None
+    return {**record, "id": pending_id}
+
+
+def finish_claim(subsystem: str, pending_id: str, *, applied: bool) -> None:
+    """Applied: drop the claimed record. Not applied: put it back in the queue."""
+    try:
+        src = _pending_path(subsystem, pending_id)
+        claimed = src.with_suffix(".claimed")
+        if applied:
+            claimed.unlink(missing_ok=True)
+        else:
+            os.replace(claimed, src)
+    except (OSError, ValueError):
+        logger.warning("write_approval: could not finish the claim on %s/%s", subsystem, pending_id, exc_info=True)
 
 
 def discard_pending(subsystem: str, pending_id: str) -> bool:
@@ -123,6 +205,8 @@ def discard_pending(subsystem: str, pending_id: str) -> bool:
         if path.exists():
             path.unlink()
             return True
+    except ValueError:
+        return False  # not a minted id: no such record
     except Exception as e:  # pragma: no cover
         logger.error("Failed to discard pending %s/%s: %s", subsystem, pending_id, e)
     return False
@@ -130,11 +214,8 @@ def discard_pending(subsystem: str, pending_id: str) -> bool:
 
 def pending_count(subsystem: str) -> int:
     """Cheap count of pending records (for notification badges)."""
-    d = _pending_path(subsystem, "").parent
-    if not d.exists():
-        return 0
     with suppress(Exception):
-        return sum(1 for _ in d.glob("*.json"))
+        return len(_pending_files(subsystem))
     return 0
 
 
@@ -192,7 +273,7 @@ def _staged(subsystem: str) -> GateDecision:
     if _slash_review_surface():
         where = f"review with {command}"
     else:
-        where = (f"pending records live in {_pending_path(subsystem, '').parent} "
+        where = (f"pending records live in {_pending_dir(subsystem)} "
                  f"(review from an interactive CLI session with {command})")
     return GateDecision(stage=True, message=(f"Staged for approval ({subsystem}.write_approval is on). "
                                              f"Not yet saved — {where}."))
@@ -286,14 +367,20 @@ def _find_skill_path(name: str) -> Optional[Path]:
     return found["path"] if found else None
 
 
+def _skill_file_refused(skill_dir: Path, target_label: str) -> bool:
+    """A staged file_path is the model's: apply the checks approval applies before reading it."""
+    from tools.skill_manager_tool import _resolve_supporting_file
+    return target_label != "SKILL.md" and _resolve_supporting_file(Path(skill_dir), target_label)[1] is not None
+
+
 def _staged_base(name: str, target_label: str, staged: Optional[dict[str, dict[str, str]]]) -> str:
     """What an op diffs against: the content earlier ops of the same batch left in this file,
-    else the on-disk copy (empty for a file that does not exist yet)."""
+    else the on-disk copy (empty for a file that does not exist yet or may not be read)."""
     files = (staged or {}).get(name)
     if files and target_label in files:
         return files[target_label]
     skill_dir = _find_skill_path(name)
-    if not skill_dir:
+    if not skill_dir or _skill_file_refused(skill_dir, target_label):
         return ""
     with suppress(Exception):
         p = skill_dir / target_label
@@ -323,6 +410,9 @@ def skill_pending_diff(
 
     # patch/write_file target a file inside the skill; edit always targets SKILL.md.
     target_label = "SKILL.md" if action == "edit" else (payload.get("file_path") or "SKILL.md")
+    skill_dir = _find_skill_path(name)
+    if skill_dir and _skill_file_refused(skill_dir, target_label):
+        return f"(refused: {action} path {target_label!r} is outside the skill's allowed files)"
     current = _staged_base(name, target_label, staged)
 
     if action == "patch":

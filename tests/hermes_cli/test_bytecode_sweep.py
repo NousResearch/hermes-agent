@@ -13,6 +13,8 @@ updaters).
 
 from pathlib import Path
 
+import pytest
+
 from hermes_cli import main as hermes_main
 from hermes_cli import main_web_build
 
@@ -144,3 +146,35 @@ def test_a_sweep_that_cannot_list_dropped_files_keeps_the_old_fingerprint(monkey
     hermes_main._sweep_stale_bytecode_if_checkout_changed()
 
     assert (repo / build._BYTECODE_FINGERPRINT_FILE).read_text(encoding="utf-8") == recorded
+
+
+@pytest.mark.platforms("linux")
+def test_dropped_directory_keeps_exact_filename_bytes(monkeypatch, tmp_path):
+    import os
+    import subprocess
+
+    repo = tmp_path / "repo"
+    dropped = repo / os.fsdecode(b"old-\xff")
+    dropped.mkdir(parents=True)
+    (dropped / "__init__.py").write_text("", encoding="utf-8")
+
+    def git(*args):
+        subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, timeout=30)
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "test@example.invalid")
+    git("config", "user.name", "Test")
+    git("add", ".")
+    git("commit", "-qm", "before")
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", repo)
+    hermes_main._sweep_stale_bytecode_if_checkout_changed()
+    _make_pycache(repo, dropped.name)
+    git("rm", "--", f"{dropped.name}/__init__.py")
+    git("commit", "-qm", "drop package")
+    unrelated = repo / "old-\ufffd"
+    unrelated.mkdir()
+
+    hermes_main._sweep_stale_bytecode_if_checkout_changed()
+
+    assert unrelated.is_dir(), "lossy decoding must not target a different directory"
+    assert not dropped.exists()

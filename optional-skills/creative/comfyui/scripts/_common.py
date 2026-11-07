@@ -440,8 +440,10 @@ def http_request(
     """Single entry point for all HTTP traffic.
 
     Behavior:
-      - Retries on connection errors and on HTTP statuses in RETRY_STATUS_CODES,
-        with exponential backoff + jitter.
+      - Retries only bodyless GET/HEAD/OPTIONS on connection errors and HTTP
+        statuses in RETRY_STATUS_CODES, with exponential backoff + jitter.
+        Other requests get one attempt: losing a response does not prove the
+        server rejected a submission, and upload streams may already be consumed.
       - For cross-host redirects, drops Authorization-style headers (so signed
         URLs don't leak the API key to S3/CloudFront).
       - When `stream=True` and `sink` is a Path, streams the response body to
@@ -462,6 +464,12 @@ def http_request(
                 "Multipart upload requires the `requests` package. "
                 "Install with: pip install requests"
             )
+
+    # client_id routes events, but does not deduplicate workflow submissions.
+    if method.upper() not in {"GET", "HEAD", "OPTIONS"} or any(
+        body is not None for body in (json_body, data, files, form)
+    ):
+        retries = min(retries, 1)
 
     last_exc: Exception | None = None
     for attempt in range(retries):

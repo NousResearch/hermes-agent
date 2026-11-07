@@ -1551,3 +1551,26 @@ class TestLockedGuard:
         assert autonomous["success"] is False, autonomous
         assert "could not be verified" in autonomous["error"], autonomous
         assert foreground["success"] is True, foreground
+
+
+class TestDescriptionBudget:
+    def test_default_description_budget_rejects_over_60(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("HERMES_SKILLS_INDEX_DESC_LIMIT", raising=False)
+        from tools.skill_manager_tool import _description_budget_error
+        long_desc = "---\nname: test\ndescription: " + "A" * 65 + "\n---\n\nContent"
+        err = _description_budget_error(long_desc)
+        assert err is not None
+        assert "65 chars" in err
+        assert "60-char" in err
+
+    def test_custom_description_budget_allows_longer(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_SKILLS_INDEX_DESC_LIMIT", "100")
+        from tools.skill_manager_tool import _description_budget_error
+        desc_80 = "---\nname: test\ndescription: " + "A" * 80 + "\n---\n\nContent"
+        assert _description_budget_error(desc_80) is None
+
+        desc_110 = "---\nname: test\ndescription: " + "A" * 110 + "\n---\n\nContent"
+        err = _description_budget_error(desc_110)
+        assert err is not None
+        assert "110 chars" in err
+        assert "100-char" in err

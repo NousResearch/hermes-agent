@@ -1,0 +1,14 @@
+{
+  "name": "local-models",
+  "label": "Local Models",
+  "icon": "Cpu",
+  "version": "1.0.0",
+  "description": "Local llama.cpp runtime management — model catalog, hardware detection, downloads, and activation",
+  "tab": {
+    "path": "/local-models",
+    "position": "after:skills"
+  },
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
+  "api": "plugin_api.py"
+}

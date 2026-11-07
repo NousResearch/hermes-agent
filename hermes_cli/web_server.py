@@ -780,7 +780,7 @@ def _get_dashboard_plugins(force_rescan: bool = False) -> list:
 from hermes_cli.web_routers import (
     files as _files_routes,
     git as _git_routes,
-    local_models as _local_models_routes,
+    local_models as _local_models_routes,  # Dashboard plugin API
     status as _status_routes,
     actions as _actions_routes,
     audio as _audio_routes,

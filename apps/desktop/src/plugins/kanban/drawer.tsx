@@ -57,6 +57,7 @@ import {
   uploadAttachment,
   useKanbanScope
 } from './api'
+import { needsCompletionSummary, useCompletionSummary } from './completion-summary'
 import { ModelOverrideField, overridePatch } from './model-override'
 import {
   type Diagnostic,
@@ -871,11 +872,13 @@ export function TaskDrawer({
     void qc.invalidateQueries({ queryKey: boardKeyPrefix(scope) })
   }
 
+  const { dialog: summaryDialog, withSummary } = useCompletionSummary()
+
   // Optimistic status change against the task cache; rolls back + toasts on a
   // rejected transition (the backend enforces the workflow).
   const moveMut = useMutation({
-    mutationFn: (status: string) => patchTask(id!, { status }),
-    onMutate: async status => {
+    mutationFn: ({ status, summary }: { status: string; summary?: string }) => patchTask(id!, { status, summary }),
+    onMutate: async ({ status }) => {
       await qc.cancelQueries({ queryKey: taskKey(scope, slug, id!) })
       const previous = qc.getQueryData<KanbanTaskDetail>(taskKey(scope, slug, id!))
 
@@ -957,7 +960,7 @@ export function TaskDrawer({
       return
     }
 
-    moveMut.mutate(status)
+    void withSummary(needsCompletionSummary(task, status), summary => moveMut.mutate({ status, summary }))
   }
 
   // The shared Dialog owns the chrome tokens, focus trap, Esc and outside-click
@@ -1179,6 +1182,7 @@ export function TaskDrawer({
             </div>
           )}
         </div>
+        {summaryDialog}
       </DialogContent>
     </Dialog>
   )

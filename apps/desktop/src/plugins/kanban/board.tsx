@@ -83,6 +83,7 @@ import {
   useKanbanScope
 } from './api'
 import { BoardSwitcher } from './board-switcher'
+import { needsCompletionSummary, useCompletionSummary } from './completion-summary'
 import { TaskDrawer } from './drawer'
 import { EMPTY_OVERRIDE, ModelOverrideField, overrideCreateFields, type TaskModelOverride } from './model-override'
 import { OrchestrationPanel } from './orchestration'
@@ -972,11 +973,13 @@ function FilterMenu({
  */
 function SelectionBar({
   columns,
+  needsSummary,
   onClear,
   onDone,
   selected
 }: {
   columns: string[]
+  needsSummary: (target: string) => boolean
   onClear: () => void
   onDone: (failed: string[]) => void
   selected: ReadonlySet<string>
@@ -1021,6 +1024,11 @@ function SelectionBar({
   })
 
   const busy = bulk.isPending || bulkDelete.isPending
+  const { dialog: summaryDialog, withSummary } = useCompletionSummary()
+
+  const moveTo = (status: string) =>
+    withSummary(needsSummary(status), summary => bulk.mutate({ status, summary }), selected.size)
+
   // One menu at a time — controlled, so a click on the second trigger can
   // never race Radix's dismiss layer into two open menus.
   const [menu, setMenu] = useState<'assign' | 'move' | null>(null)
@@ -1042,7 +1050,7 @@ function SelectionBar({
             {columns
               .filter(name => !isLockedTarget(name))
               .map(name => (
-                <DropdownMenuItem key={name} onSelect={() => bulk.mutate({ status: name })}>
+                <DropdownMenuItem key={name} onSelect={() => void moveTo(name)}>
                   <span className="size-2 rounded-full" style={{ backgroundColor: columnMeta(name).tone }} />
                   {columnLabel(k, name)}
                 </DropdownMenuItem>
@@ -1093,6 +1101,7 @@ function SelectionBar({
           </Button>
         </Tip>
       </div>
+      {summaryDialog}
     </div>
   )
 }
@@ -1121,6 +1130,7 @@ export function KanbanBoardPage() {
   const [tenant, setTenant] = useState('')
   const [assignee, setAssignee] = useState('')
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
+  const { dialog: summaryDialog, withSummary } = useCompletionSummary()
 
   // A new-task request raised from outside the page (⌘⌥N, the palette row).
   // The command navigates here and parks the lane; the page picks it up on
@@ -1207,7 +1217,8 @@ export function KanbanBoardPage() {
   const total = filtered?.columns.reduce((sum, col) => sum + col.tasks.length, 0) ?? 0
 
   const moveMut = useMutation({
-    mutationFn: ({ id, status }: { id: string; status: string }) => patchTask(id, { status }),
+    mutationFn: ({ id, status, summary }: { id: string; status: string; summary?: string }) =>
+      patchTask(id, { status, summary }),
     onMutate: async ({ id, status }) => {
       await qc.cancelQueries({ queryKey: boardKey(scope, slug, archived) })
       const previous = qc.getQueryData<KanbanBoard>(boardKey(scope, slug, archived))
@@ -1266,7 +1277,7 @@ export function KanbanBoardPage() {
       return
     }
 
-    moveMut.mutate({ id, status })
+    void withSummary(needsCompletionSummary(task, status), summary => moveMut.mutate({ id, status, summary }))
   }
 
   const errorMessage = error ? errText(error) : null
@@ -1440,12 +1451,18 @@ export function KanbanBoardPage() {
       {selected.size > 0 && (
         <SelectionBar
           columns={columnNames}
+          needsSummary={target =>
+            board?.columns.some(col =>
+              col.tasks.some(task => selected.has(task.id) && needsCompletionSummary(task, target))
+            ) ?? false
+          }
           onClear={() => setSelected(new Set())}
           onDone={failed => setSelected(new Set(failed))}
           selected={selected}
         />
       )}
 
+      {summaryDialog}
       <NewTaskDialog onClose={() => setAddStatus(null)} parents={parentOptions} target={addStatus} />
       <TaskDrawer columns={columnNames} id={openId} onClose={() => setOpenId(null)} onOpen={setOpenId} />
     </div>

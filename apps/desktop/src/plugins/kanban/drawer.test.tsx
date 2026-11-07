@@ -434,3 +434,45 @@ describe('blocked task detail', () => {
     )
   })
 })
+
+describe('completing a task from the status menu', () => {
+  const todo = { ...legacyDetail, attachments: [] as [] }
+
+  const moveToDone = async () => {
+    // Radix opens the menu from the trigger's keyboard path under jsdom.
+    fireEvent.keyDown(await screen.findByRole('button', { name: en.col.todo.label }), { key: 'Enter' })
+    fireEvent.click(await screen.findByRole('menuitem', { name: en.col.done.label }))
+  }
+
+  const patches = () => rest.mock.calls.filter(([, options]) => options?.method === 'PATCH')
+
+  it('asks for a summary and sends it with the move', async () => {
+    detail = todo
+    openDrawer()
+    await moveToDone()
+
+    expect(patches()).toHaveLength(0)
+    fireEvent.change(await screen.findByPlaceholderText(en.completePlaceholder), {
+      target: { value: 'approved by hand' }
+    })
+    fireEvent.click(screen.getByRole('button', { name: en.complete }))
+
+    await waitFor(() =>
+      expect(rest).toHaveBeenCalledWith(
+        '/tasks/t_example',
+        expect.objectContaining({ method: 'PATCH', body: { status: 'done', summary: 'approved by hand' } })
+      )
+    )
+  })
+
+  it('drops the move when the user cancels the summary', async () => {
+    detail = todo
+    openDrawer()
+    await moveToDone()
+
+    fireEvent.click(await screen.findByRole('button', { name: en.cancel }))
+
+    await waitFor(() => expect(screen.queryByPlaceholderText(en.completePlaceholder)).toBeNull())
+    expect(patches()).toHaveLength(0)
+  })
+})

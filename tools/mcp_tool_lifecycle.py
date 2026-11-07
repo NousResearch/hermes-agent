@@ -87,22 +87,32 @@ _NON_MCP_CHILD_CMDLINE_MARKERS: tuple[str, ...] = (
 )
 
 
-def _filter_mcp_children(pids: set) -> set:
-    """Drop non-MCP children from a PID snapshot delta. Tracking a stray child in _stdio_pgids
-    is catastrophic if it lacks start_new_session: its pgid can be the TUI parent's, so the
-    shutdown killpg() would kill the TUI itself."""
+_STDIO_SPAWN_TOKEN_ENV = "HERMES_MCP_SPAWN_ID"
+
+
+def _filter_mcp_children(pids: set, *, spawn_token: Optional[str] = None) -> set:
+    """Only adopt this connection's tagged children, not a concurrent scheduler's.
+
+    The process-wide snapshot includes children of every gateway thread. A
+    unique token passed directly to the SDK child proves ownership even when
+    two stdio connections spawn concurrently. Unreadable identity fails closed.
+    The marker-only path remains for legacy callers without a spawn token.
+    """
     if not pids:
         return pids
     try:
         import psutil
     except ImportError:
-        return pids  # keep all PIDs (prior behavior)
+        return set() if spawn_token is not None else pids
     kept = set()
     for pid in pids:
         try:
-            argv = psutil.Process(pid).cmdline()
+            process = psutil.Process(pid)
+            if spawn_token is not None and process.environ().get(_STDIO_SPAWN_TOKEN_ENV) != spawn_token:
+                continue
+            argv = process.cmdline()
         except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
-            continue  # raced away or zombie — cannot be our fresh server, unsafe to track
+            continue
         if is_owner_death_supervisor(argv):
             continue  # the shared reaper of every owned child; MCP teardown must never kill it
         if not any(marker in arg for arg in argv[1:] for marker in _NON_MCP_CHILD_CMDLINE_MARKERS):

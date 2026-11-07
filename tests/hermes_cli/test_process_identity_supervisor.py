@@ -637,6 +637,7 @@ def _stdio_connection(child_pid, fake_supervisor):
 
     with (
         patch("tools.mcp_tool.stdio_client", return_value=stdio_cm),
+        patch("tools.mcp_tool_transport.token_hex", return_value="supervisor-wiring"),
         patch("tools.mcp_tool.ClientSession", return_value=session_cm),
         # First call is the pids_before baseline; the second reports our child
         # as the newly spawned server.
@@ -656,7 +657,8 @@ def _stdio_connection(child_pid, fake_supervisor):
 @pytest.mark.skipif(not mcp_tool._MCP_AVAILABLE, reason="MCP SDK not installed")
 def test_connecting_a_stdio_server_registers_its_real_process_group():
     fake = _FakeSupervisor()
-    child = subprocess.Popen(_VICTIM, start_new_session=True)
+    child = subprocess.Popen(_VICTIM, start_new_session=True, env={
+        **os.environ, _mcp_lifecycle._STDIO_SPAWN_TOKEN_ENV: "supervisor-wiring"})
     try:
         with _stdio_connection(child.pid, fake) as server:
             asyncio.run(server.start({"command": "echo", "args": ["hi"]}))
@@ -673,7 +675,8 @@ def test_connecting_a_stdio_server_registers_its_real_process_group():
 @pytest.mark.skipif(not mcp_tool._MCP_AVAILABLE, reason="MCP SDK not installed")
 def test_a_server_that_exited_is_released_on_teardown():
     fake = _FakeSupervisor()
-    child = subprocess.Popen(_VICTIM, start_new_session=True)
+    child = subprocess.Popen(_VICTIM, start_new_session=True, env={
+        **os.environ, _mcp_lifecycle._STDIO_SPAWN_TOKEN_ENV: "supervisor-wiring"})
     pgid = None
     try:
         with _stdio_connection(child.pid, fake) as server:
@@ -704,7 +707,8 @@ def test_a_server_that_survived_teardown_stays_registered():
     # The case the supervisor exists for: teardown did not manage to kill it.
     # Releasing it here would hand the orphan back to nobody.
     fake = _FakeSupervisor()
-    child = subprocess.Popen(_VICTIM, start_new_session=True)
+    child = subprocess.Popen(_VICTIM, start_new_session=True, env={
+        **os.environ, _mcp_lifecycle._STDIO_SPAWN_TOKEN_ENV: "supervisor-wiring"})
     try:
         with _stdio_connection(child.pid, fake) as server:
 

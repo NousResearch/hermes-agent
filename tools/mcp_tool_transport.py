@@ -5,6 +5,7 @@ protocol negotiation and initial tool discovery. Split from tools/mcp_tool.py.""
 import logging
 import asyncio
 import os
+from secrets import token_hex
 import urllib.parse
 import urllib.request
 from contextlib import asynccontextmanager
@@ -379,8 +380,12 @@ class MCPServerTransportMixin:
         command, safe_env, stdio_cwd = inputs
         # OSV malware preflight, then the cached-npx swap (ordering enforced there).
         command, args = await _core._preflight_stdio_command(self.name, command, config.get("args", []))
+        # This nonce is launch identity, not configuration: snapshot deltas also
+        # include unrelated cron/terminal children and other MCP connections.
+        spawn_token = token_hex(16)
         server_params = _core.StdioServerParameters(
-            command=command, args=args, env=safe_env or None, cwd=stdio_cwd,
+            command=command, args=args,
+            env={**(safe_env or {}), _lifecycle._STDIO_SPAWN_TOKEN_ENV: spawn_token}, cwd=stdio_cwd,
             # Windows pipes can split non-UTF-8 bytes at chunk boundaries; substitute, don't raise.
             encoding_error_handler="replace")
         # Windows has no POSIX parent-death supervisor / killpg safety net (#61059): when this
@@ -412,9 +417,10 @@ class MCPServerTransportMixin:
         stderr = _config._StderrTee(_config._get_mcp_stderr_log())
         try:
             async with _core.stdio_client(server_params, errlog=stderr.sink) as (read_stream, write_stream):
-                # New PIDs for force-kill cleanup, minus non-MCP children (slash_worker, LSP) racing
-                # into the window: they share the TUI's pgid — leaking them would killpg() the TUI.
-                new_pids = _filter_mcp_children(_lifecycle._snapshot_child_pids() - pids_before)
+                # The delta is only a candidate list. Require the per-connection
+                # launch nonce before granting cleanup/supervisor ownership.
+                new_pids = _filter_mcp_children(
+                    _lifecycle._snapshot_child_pids() - pids_before, spawn_token=spawn_token)
                 if new_pids:
                     self._track_spawned_children(new_pids)
                 self._stdio_child_pids = set(new_pids)  # so in-flight calls fail fast when the child dies

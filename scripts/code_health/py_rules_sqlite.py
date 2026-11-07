@@ -12,7 +12,9 @@ anything else (``path``, ``db``), a dict/attribute lookup, or another function's
 missed, and so is a URI built from a plain path (``f"file:{path}?mode=ro"``, ``path.as_uri()``) or
 a connect reached through dynamic dispatch (``getattr(sqlite3, "connect")``, a ``connect`` passed
 in as a callable). A ``read_only_db_uri`` over some other database (kanban) is flagged and takes a
-waiver. Those limits are why this rule is advisory; the matcher stays textual on purpose.
+waiver. The commonest spellings of the store are among the misses: ``DEFAULT_DB_PATH``,
+``_default_db_path()``, ``session_db.db_path``. Those limits are why this rule is advisory; the
+matcher stays textual on purpose.
 """
 
 from __future__ import annotations

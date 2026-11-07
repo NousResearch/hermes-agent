@@ -1,9 +1,10 @@
 import { useStore } from '@nanostores/react'
 import { atom, computed } from 'nanostores'
-import type { CSSProperties, ReactElement, PointerEvent as ReactPointerEvent } from 'react'
+import type { CSSProperties, ReactElement, ReactNode, PointerEvent as ReactPointerEvent } from 'react'
 
 import { SessionDraftTitle } from '@/app/chat/session-draft-title'
 import { SessionStatusDot } from '@/app/chat/session-status-dot'
+import { SessionTabTint } from '@/app/chat/session-tab-tint'
 import { PALETTE_AREA, type PaletteContribution, paletteToggle } from '@/app/command-palette/contrib'
 import { type StatusbarItem } from '@/app/shell/statusbar-controls'
 import { InlinePreviewDirective } from '@/components/assistant-ui/inline-preview-directive'
@@ -158,9 +159,25 @@ const renderWorkspacePane = () => (
 // Boot-hidden panes mount behind display:none (instant-toggle contract) — defer
 // them to idle so they're off the first-paint path, warm before reveal.
 const idle = (node: ReactElement) => <IdleMount>{node}</IdleMount>
+
 // The main tab carries the same session context menu as tile tabs (targets
 // the loaded primary session; no menu on a fresh draft).
-const wrapWorkspaceTab = (tab: ReactElement) => <WorkspaceTabMenu>{tab}</WorkspaceTabMenu>
+//
+// The paint wraps the MENU, not the tab: the menu's trigger takes the tab as
+// `asChild`, and a component that is not the tab itself would have to forward
+// its ref for the trigger to keep working. Custom properties inherit through
+// `display: contents`, so the colour reaches the tab from outside either way.
+const WorkspaceSessionTab = ({ children }: { children: ReactNode }) => {
+  const stored = useStore($selectedStoredSessionId)
+
+  return <SessionTabTint storedSessionId={stored}>{children}</SessionTabTint>
+}
+
+const wrapWorkspaceTab = (tab: ReactElement) => (
+  <WorkspaceSessionTab>
+    <WorkspaceTabMenu>{tab}</WorkspaceTabMenu>
+  </WorkspaceSessionTab>
+)
 
 /** The `@session` payload for the workspace tab — the loaded primary session,
  *  or null on a fresh draft / full-page view (nothing to link). */

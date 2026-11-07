@@ -6,7 +6,16 @@ import { makeCwdSession } from '../test/session-info'
 
 import { $projects } from './projects'
 import { $sessions } from './session'
-import { $sessionColorById, $sessionColorOverrides, sessionColorFor, setSessionColorOverride } from './session-color'
+import {
+  $sessionColorById,
+  $sessionColorOverrides,
+  $sessionTabTintById,
+  $sessionTileColors,
+  sessionColorFor,
+  sessionTabTintFor,
+  setSessionColorOverride,
+  setSessionTileColor
+} from './session-color'
 
 function makeProject(id: string, folders: string[], color: null | string): ProjectInfo {
   return {
@@ -28,6 +37,7 @@ afterEach(() => {
   $sessions.set([])
   $projects.set([])
   $sessionColorOverrides.set({})
+  $sessionTileColors.set({})
 })
 
 describe('$sessionColorById', () => {
@@ -107,5 +117,72 @@ describe('sessionColorFor', () => {
   it('returns undefined for a null/absent session', () => {
     expect(sessionColorFor(null)).toBeUndefined()
     expect(sessionColorFor(undefined)).toBeUndefined()
+  })
+})
+
+describe('the tile tier ($sessionTileColors)', () => {
+  it('tints the TAB and leaves the session colour (the row dot) alone', () => {
+    const a = makeCwdSession('/other/place')
+
+    $sessions.set([a])
+    setSessionTileColor(a.id, '#ff8800')
+
+    expect($sessionTabTintById.get()[a.id]).toBe('#ff8800')
+    // The dot says what the session IS; a group tint says where it is filed.
+    // A tile tier that moved the dot would repaint the sidebar behind a verb
+    // the user ran in another pane.
+    expect($sessionColorById.get()[a.id]).toBeUndefined()
+  })
+
+  it('a hand-picked session colour wins over the tile tier', () => {
+    const a = makeCwdSession('/other/place')
+
+    $sessions.set([a])
+    setSessionTileColor(a.id, '#ff8800')
+    setSessionColorOverride(a.id, '#0000ff')
+
+    expect($sessionTabTintById.get()[a.id]).toBe('#0000ff')
+    expect(sessionTabTintFor(a)).toBe('#0000ff')
+  })
+
+  it('sits above the inherited project colour', () => {
+    const a = makeCwdSession('/www/app', { git_repo_root: '/www/app' })
+
+    $projects.set([makeProject('p_app', ['/www/app'], '#4a9eff')])
+    $sessions.set([a])
+
+    expect($sessionTabTintById.get()[a.id]).toBe('#4a9eff')
+
+    setSessionTileColor(a.id, '#7bc86c')
+    expect($sessionTabTintById.get()[a.id]).toBe('#7bc86c')
+  })
+
+  it('clears by DROPPING the key, not by writing an empty string', () => {
+    const a = makeCwdSession('/other/place')
+
+    setSessionTileColor(a.id, '#ff8800')
+    setSessionTileColor(a.id, null)
+
+    expect(a.id in $sessionTileColors.get()).toBe(false)
+  })
+
+  it('keys on the durable lineage id so a tint survives compression', () => {
+    const tip = makeCwdSession('/x', { id: 'tip', _lineage_root_id: 'root' })
+
+    setSessionTileColor('root', '#abcdef')
+    $sessions.set([tip])
+
+    expect($sessionTabTintById.get().tip).toBe('#abcdef')
+  })
+
+  it('resolves a session outside the recents page through the same tiers', () => {
+    // A project-tree tile older than the paginated page has no map entry; the
+    // resolver is what keeps its colour.
+    const a = makeCwdSession('/other/place')
+
+    setSessionTileColor(a.id, '#123456')
+
+    expect($sessionTabTintById.get()[a.id]).toBeUndefined()
+    expect(sessionTabTintFor(a)).toBe('#123456')
   })
 })

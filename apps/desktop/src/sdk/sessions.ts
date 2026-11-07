@@ -6,7 +6,7 @@ import {
   unpinSession
 } from '@/store/layout'
 import { $sessions, sessionMatchesStoredId, sessionPinId } from '@/store/session'
-import { setSessionColorOverride } from '@/store/session-color'
+import { setSessionColorOverride, setSessionTileColor } from '@/store/session-color'
 
 /** Pins and colours are keyed by the DURABLE (lineage-root) id so they survive
  *  compression's session-id rotation; a row's live id resolves through
@@ -75,5 +75,15 @@ export const sessionsHost = {
    *  a hand-picked colour are one value. */
   setColor: (storedSessionId: string, color: null | string): void => {
     setSessionColorOverride(durableSessionPinId(storedSessionId), color)
+  },
+
+  /** Tint a session's TAB (or clear it with `null`) — a tier of its own, BELOW
+   *  the explicit session colour and ABOVE the colour inherited from the
+   *  project. For a surface that owns a grouping the app has no model for (a
+   *  plugin's colour-coded groups): it paints the member tabs without rewriting
+   *  — and so destroying — a colour the user picked for one session by hand,
+   *  which a whole-document writer could not read back to restore. */
+  setTileColor: (storedSessionId: string, color: null | string): void => {
+    setSessionTileColor(durableSessionPinId(storedSessionId), color)
   }
 }

@@ -688,7 +688,15 @@ host.sessions.pin(storedSessionId: string, pinned?: boolean, index?: number): vo
 host.sessions.reorder(storedSessionIds: string[]): void   // Recents; [] = clear manual order → default sort
 host.sessions.reorderPinned(storedSessionIds: string[]): void  // Pinned section; omitted pins keep their slot
 host.sessions.setColor(storedSessionId: string, color: string | null): void
+host.sessions.setTileColor(storedSessionId: string, color: string | null): void
 ```
+
+`setColor` is the session's own colour — the sidebar row's dot and the tab read it.
+`setTileColor` is a TILE tier of its own: it tints the session's TAB and nothing
+else, sits below an explicit `setColor` and above the colour inherited from the
+project, so a plugin that owns a grouping (colour-coded groups, a board) can paint
+its members' tabs without overwriting a colour the user picked by hand. Both take
+`null` to clear; both are keyed on the durable lineage id.
 
 Ids are STORED session ids: a live id is resolved to its durable lineage root,
 so pins and colours survive compression's id rotation — and the row-decoration
@@ -975,7 +983,8 @@ Nothing persists app-side, so there is nothing to clean up in `ctx.onDispose`.
 For colour picking use the app's own swatch grid — `ColorSwatches` (already an
 SDK export) renders exactly what the profile rail and project dialog render,
 with your own `onChange`; feed it `PROFILE_SWATCHES` and pair it with
-`host.sessions.setColor(id, color)` for session colours.
+`host.sessions.setColor(id, color)` for session colours (and `setTileColor` when
+the colour is about a grouping you own rather than the session itself).
 
 Migrations for the plugins that motivated this slot:
 
@@ -1452,6 +1461,7 @@ host.sessions.pin(storedSessionId, pinned?, index?)  // pin/unpin (default pinne
 host.sessions.reorder(ids)                 // replace the manual Recents order (what a drag persists); [] resets
 host.sessions.reorderPinned(ids)           // permute the Pinned section (the pinned drag path)
 host.sessions.setColor(storedSessionId, color | null)  // per-session colour override; null clears
+host.sessions.setTileColor(storedSessionId, color | null) // the session TAB's tint (below setColor, above project); null clears
 host.skills.list(profile?)                 // every skill for the scope (Capabilities endpoints)
 host.skills.setEnabled(name, on, profile?)  // enable/disable a skill — the Capabilities toggle
 host.toolsets.list(profile?)               // toolsets + enabled state

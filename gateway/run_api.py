@@ -7,7 +7,8 @@ not bootstrap an agent, scheduler, hosted room, or a second gateway.
 The native session WebSocket (ticketed ``/api/ws`` — every local CLI/TUI/Desktop session) is served
 without the dashboard app: importing ``hermes_cli.web_server`` (about 690 routes, ~0.6 s) before the
 listener bound stalled every cold start and the control socket's identify. The dashboard is mounted
-on its first request (imported off the event loop) or warmed after READY for a supervised gateway
+on its first request (imported off the event loop) or warmed when a supervised gateway admits its first
+host-scoped (native Desktop) client
 (``warm_gateway_dashboard``); a gated listener (non-loopback bind, ``webapp.public_url`` on the Webapp's,
 ``dashboard.public_url`` on the private one) and a
 process that already imported it mount it before the listener starts, exactly as before.
@@ -299,8 +300,8 @@ async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0, w
 
 
 def warm_gateway_dashboard(runner) -> None:
-    """Mount the dashboard in the background once the gateway is READY (supervised gateways, whose
-    clients — Desktop, the dashboard SPA — call its routes right away). Never raises."""
+    """Mount the dashboard in the background when a supervised gateway admits its first host-scoped
+    interactive client (native Desktop, whose renderer calls its routes right away). Never raises."""
     handle = getattr(runner, "session_api", None)
     mount = getattr(handle, "app", None)
     if not isinstance(mount, GatewayDashboardMount) or mount.loaded:
@@ -476,6 +477,14 @@ class GatewayRuntimeAPI:
         if authority is None:
             await ws.close(code=4403)
             return
+        if (operator and grant.get('scope') == 'host'
+                and getattr(self.runner, '_warm_dashboard_on_client', False)):
+            # The dashboard app is ~20 MB of an idle gateway's Python heap. Only native Desktop mints
+            # host-scoped interactive grants, and its renderer calls the dashboard routes right away;
+            # CLI/TUI, kanban workers and cron recovery never warm it (a dashboard request still
+            # mounts it on demand). Admitted clients only: a refused socket warms nothing.
+            self.runner._warm_dashboard_on_client = False
+            warm_gateway_dashboard(self.runner)
         # The ticket names the served profile; this connection binds to that home's authority.
         scope['hermes.session_authority'] = authority
         from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL

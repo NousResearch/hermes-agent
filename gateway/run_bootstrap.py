@@ -914,11 +914,11 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 from gateway.run_idle_exit import arm_unmanaged_idle_exit
                 arm_unmanaged_idle_exit(runner)
             else:
-                # A supervised/explicit gateway serves Desktop and the dashboard SPA, which call the
-                # dashboard routes right away: mount them now, after READY. A client's own idle-exit
-                # gateway (chat -q, TUI) only uses the native WebSocket; it mounts on first request.
-                from gateway.run_api import warm_gateway_dashboard
-                warm_gateway_dashboard(runner)
+                # A supervised/explicit gateway may serve Desktop, whose renderer calls the dashboard
+                # routes right away: mount them when the first host-scoped (Desktop) client is admitted,
+                # not at READY, so a messaging/cron/kanban-only gateway and its CLI clients never load
+                # them. Any dashboard request (the SPA included) still mounts them on demand.
+                runner._warm_dashboard_on_client = True
             await wait_gateway_runtime(runner)
         finally:
             try:

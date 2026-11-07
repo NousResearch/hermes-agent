@@ -744,6 +744,10 @@ SKILL_VIEW_SCHEMA = {
                 "type": "string",
                 "description": "OPTIONAL: Path to a linked file within the skill (e.g., 'references/api.md', 'templates/config.yaml', 'scripts/validate.py'). Omit to get the main SKILL.md content.",
             },
+            "full": {
+                "type": "boolean",
+                "description": "OPTIONAL: Return the complete file even if this conversation already has it (a repeat view otherwise returns an 'unchanged' stub or, after an edit, a diff).",
+            },
         },
         "required": ["name"],
     },
@@ -770,7 +774,10 @@ def _skill_view_with_bump(args, **kw):
     with suppress(Exception):
         parsed = json.loads(result)
         if isinstance(parsed, dict) and parsed.get("success"):
-            if (stub := dedup_skill_view(dedup_task_id, name, args.get("file_path"), parsed, result)) is not None:
+            # full=true: the caller asked for the whole file — no repeat-view stub (and the executor
+            # skips its changed-file delta); skipping the record keeps the cache conservative.
+            if not args.get("full") and (
+                    stub := dedup_skill_view(dedup_task_id, name, args.get("file_path"), parsed, result)) is not None:
                 return stub
             if resolved := parsed.get("name") or name:  # qualified forms return the canonical name
                 from tools.skill_usage import bump_use, bump_view

@@ -1,0 +1,32 @@
+manifest_version: 1
+
+name: workouter
+description: Create structured Apple Watch workouts and read saved workouts, allowance, and delivery status.
+source: https://workouter.co/docs/mcp
+
+# Vendor-hosted Streamable HTTP with native MCP OAuth (CIMD and DCR).
+# No local server, bootstrap step, static token, or pre-registered client needed.
+transport:
+  type: http
+  url: https://workouter.co/api/mcp
+
+auth:
+  type: oauth
+
+suggest:
+  keywords:
+    - workouter
+    - apple watch workout
+  hosts:
+    - workouter.co
+
+post_install: |
+  Follow the authorization link to sign in to Workouter and approve access.
+  You can connect without Pro, but all workout tools require a Workouter Pro subscription.
+  Start a new Hermes session or use /reload-mcp to load the tools.
+
+  Workouts are saved to your Workouter account. Delivery to Apple Watch requires
+  the Workouter iPhone app and a paired Apple Watch; Garmin is not supported.
+
+  Review enabled tools at any time with:
+    hermes mcp configure workouter

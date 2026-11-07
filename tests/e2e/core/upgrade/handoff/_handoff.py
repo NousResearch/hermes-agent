@@ -168,7 +168,10 @@ def _user_uv(env: dict[str, str], hermes_home: Path) -> None:
 
 
 def stage_n1(root: Path) -> Install:
-    """A git install at release N-1 with its own venv, as the N-1 installer left it."""
+    """A git install at release N-1 as the N-1 installer left it: a release that ships PM through its
+    own installer (PM provisions node for the dashboard build), an older one as a venv from its uv.lock."""
+    if I.updater_generation(refs().base) == "by-path":
+        return _install_with_installer(root, "n1", refs().base)
     root.mkdir(parents=True, exist_ok=True)
     origin = I.make_origin(root, refs().base)
     sb = I.new_sandbox(root / "sb", origin)
@@ -200,16 +203,22 @@ def stage_n1(root: Path) -> Install:
 
 def stage_head(root: Path) -> Install:
     """HEAD's installer into an empty HOME (the HEAD -> NEXT column)."""
+    return _install_with_installer(root, "head", refs().head)
+
+
+def _install_with_installer(root: Path, column: str, ref: str) -> Install:
+    """``ref``'s own installer into an empty HOME, installing ``ref``."""
     root.mkdir(parents=True, exist_ok=True)
-    origin = I.make_origin(root, refs().head)
+    origin = I.make_origin(root, ref)
     # Serve partial clones as GitHub does: the installer asks for ``--filter=blob:none``.
     I.git("config", "uploadpack.allowFilter", "true", cwd=origin)
     I.git("config", "uploadpack.allowAnySHA1InWant", "true", cwd=origin)
     sb = I.new_sandbox(root / "sb", origin)
-    cp = I.run_installer(sb)
-    assert cp.returncode == 0 and TRACEBACK not in cp.stdout + cp.stderr, "HEAD install failed:\n" + I.describe(cp)
+    cp = I.run_installer(sb, ref=None if column == "head" else ref)
+    assert cp.returncode == 0 and TRACEBACK not in cp.stdout + cp.stderr, f"{column} install failed:\n" + I.describe(cp)
+    assert I.git("rev-parse", "HEAD", cwd=sb.checkout) == ref, f"the {column} installer did not install {ref[:12]}"
     sb.env["PATH"] = os.pathsep.join([str(sb.home / ".local" / "bin"), sb.env["PATH"]])
-    return Install("head", root, origin, sb.env)
+    return Install(column, root, origin, sb.env)
 
 
 def stage(column: str, root: Path) -> Install:

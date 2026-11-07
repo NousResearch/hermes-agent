@@ -24,6 +24,12 @@ import { RICH_INPUT_SLOT } from './rich-editor'
 export type ComposerTarget = 'edit' | 'main' | (string & {})
 export type ComposerInsertMode = 'block' | 'inline' | 'prefix'
 
+/** Where the caret lands after the insert. `'end'` (the default) leaves it at
+ *  the end of the inserted text. `'below'` appends a blank line and parks it
+ *  there, so typing continues UNDER an inserted block instead of appending to
+ *  its last line — a quoted passage must not be edited by the next keystroke. */
+export type ComposerInsertCaret = 'end' | 'below'
+
 export interface FocusDetail {
   target: ComposerTarget
   /** Append after focus (type-to-focus / soft `/`). */
@@ -31,6 +37,7 @@ export interface FocusDetail {
 }
 
 interface InsertDetail {
+  caret?: ComposerInsertCaret
   mode: ComposerInsertMode
   target: ComposerTarget
   text: string
@@ -284,7 +291,11 @@ export const requestComposerFocus = (
 
 export const requestComposerInsert = (
   text: string,
-  { mode = 'block', target = 'active' }: { mode?: ComposerInsertMode; target?: ComposerTarget | 'active' } = {}
+  {
+    caret = 'end',
+    mode = 'block',
+    target = 'active'
+  }: { caret?: ComposerInsertCaret; mode?: ComposerInsertMode; target?: ComposerTarget | 'active' } = {}
 ) => {
   const trimmed = text.trim()
 
@@ -292,7 +303,7 @@ export const requestComposerInsert = (
     return
   }
 
-  dispatch<InsertDetail>(INSERT_EVENT, { mode, target: resolve(target), text: trimmed })
+  dispatch<InsertDetail>(INSERT_EVENT, { caret, mode, target: resolve(target), text: trimmed })
 }
 
 /** Acked insert for the plugin SDK (`host.composer.insertText`).
@@ -305,7 +316,11 @@ export const requestComposerInsert = (
  *  silent no-op. Internal callers keep the fire-and-forget form above. */
 export const requestComposerInsertAcked = (
   text: string,
-  { mode = 'block', target = 'active' }: { mode?: ComposerInsertMode; target?: ComposerTarget | 'active' } = {}
+  {
+    caret = 'end',
+    mode = 'block',
+    target = 'active'
+  }: { caret?: ComposerInsertCaret; mode?: ComposerInsertMode; target?: ComposerTarget | 'active' } = {}
 ): Promise<boolean> => {
   const trimmed = text.trim()
   const pending = insertReplies
@@ -320,7 +335,7 @@ export const requestComposerInsertAcked = (
   return new Promise<boolean>(resolve => {
     pending.set(token, resolve)
 
-    dispatch<InsertDetail>(INSERT_EVENT, { mode, target: resolvedTarget, text: trimmed, token })
+    dispatch<InsertDetail>(INSERT_EVENT, { caret, mode, target: resolvedTarget, text: trimmed, token })
 
     // No claimant (unmounted address, input disabled, mid-teardown) must not
     // strand the promise: settle false and drop the slot.

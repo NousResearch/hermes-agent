@@ -118,6 +118,56 @@ def _rescue_search(provider_name: str, original_error: str, query: str, limit: i
     }
 
 
+def _empty_search_note(provider_name: str, rescue_outcome: "str | None") -> str:
+    """Note for an empty success. *rescue_outcome*: None (no rescue tried), ``"empty"`` (the ring
+    answered with nothing) or ``"failed"`` (the ring errored/raised, so it proves nothing)."""
+    tail = {
+        "empty": " The keyless free tier found nothing either.",
+        "failed": " A keyless free-tier rescue was attempted but failed, so it could not confirm this.",
+    }.get(rescue_outcome or "", "")
+    return (
+        f"0 results from '{provider_name}'. Either nothing matches, or its upstream silently blocked "
+        f"the query (scraping-based search such as a self-hosted Firecrawl can report an anti-bot block as an empty success).{tail} "
+        f"Rephrase or retry before treating this as 'no results exist'."
+    )
+
+
+def _rescue_empty_search(provider_name: str, query: str, limit: int) -> "tuple[dict | None, str]":
+    """One-shot ring rescue for a SUCCESSFUL but empty search -> (rescued response or None, outcome).
+
+    outcome is ``"rescued"``, ``"empty"`` (ring answered with no hits) or ``"failed"`` (ring returned
+    an error or raised). An empty success is ambiguous, so the ring's own failure is never surfaced as
+    the call's error: this is a best-effort boundary and ordinary exceptions (e.g. a ring parser choking
+    on a malformed payload) are logged and swallowed. BaseException (KeyboardInterrupt, SystemExit)
+    still propagates."""
+    from plugins.web.keyless_mcp import search_with_failover
+    logger.warning("web_search backend '%s' returned 0 results; one-shot keyless rescue", provider_name)
+    try:
+        rescued = search_with_failover(provider_name, query, limit)
+    except Exception:  # rescue is best-effort: keep the original empty success
+        logger.warning("keyless rescue of empty '%s' search raised", provider_name, exc_info=True)
+        return None, "failed"
+    if not isinstance(rescued, dict) or not rescued.get("success"):
+        return None, "failed"
+    if not _search_hits(rescued):
+        return None, "empty"
+    rescued.setdefault("data", {}).update(
+        rescued_from=provider_name,
+        backend_error=(
+            f"Configured backend '{provider_name}' returned 0 results this call (its upstream may be "
+            f"blocking queries); result served by the keyless free tier. "
+            f"The next call will use '{provider_name}' again."
+        ),
+    )
+    return rescued, "rescued"
+
+
+def _search_hits(resp: dict) -> list:
+    data = resp.get("data") if isinstance(resp, dict) else None
+    web = data.get("web") if isinstance(data, dict) else None
+    return web if isinstance(web, list) else []
+
+
 def _policy_blocked_result(result: dict) -> bool:
     """True for a website-policy refusal — intentional, never rescued (it would fetch blocked content)."""
     error = str(result.get("error") or "").lower()

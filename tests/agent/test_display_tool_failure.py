@@ -58,6 +58,12 @@ class TestDetectToolFailureTerminal:
         assert suffix.startswith(" [")
         assert suffix.endswith("]")
 
+    def test_nested_mcp_failure_does_not_override_terminal_exit_rule(self):
+        result = json.dumps({
+            "result": json.dumps({"ok": False, "error": "remote failed"}),
+        })
+        assert _detect_tool_failure("terminal", result) == (False, "")
+
     def test_degraded_backend_shows_full_reason_and_retry_hint(self):
         """A degraded backend (Docker down, SSH host unreachable) is an infrastructure problem: the user
         needs the whole reason plus the fix hint, not the 48-char trimmed 'Terminal backend degraded: ...'."""
@@ -179,6 +185,36 @@ class TestDetectToolFailureStructured:
         for result in bad:
             assert _detect_tool_failure("delegate_task", result)[0] is True, result
             assert classify_tool_failure("delegate_task", result)[0] is True, result
+
+    def test_mcp_result_json_string_failure_is_surfaced(self):
+        result = json.dumps({
+            "result": json.dumps({
+                "ok": False,
+                "error": "upstream timeout",
+            }),
+        })
+        assert _detect_tool_failure(
+            "mcp__example__search",
+            result,
+        ) == (True, " [upstream timeout]")
+
+    def test_mcp_result_dict_failure_is_surfaced(self):
+        result = {"result": {"error": "provider unavailable"}}
+        assert _detect_tool_failure(
+            "mcp__example__search",
+            result,
+        ) == (True, " [provider unavailable]")
+
+    def test_mcp_result_nested_success_is_not_flagged(self):
+        result = {"result": json.dumps({"ok": True, "data": "hello"})}
+        assert _detect_tool_failure(
+            "mcp__example__search",
+            result,
+        ) == (False, "")
+
+    def test_result_inside_success_payload_is_not_unwrapped(self):
+        result = json.dumps({"success": True, "result": {"error": "page validation text"}})
+        assert _detect_tool_failure("browser_cdp", result) == (False, "")
 
 
 class TestGetCuteToolMessageFailureSuffix:

@@ -22,6 +22,7 @@ enabler: #80774.
 
 from __future__ import annotations
 
+import gzip
 import json
 import sys
 
@@ -416,6 +417,221 @@ def test_monitor_script_failure_is_error_not_change(hermes_env, monkeypatch):
     assert observed["agent_runs"] == 1  # agent NOT invoked on source failure
     # Stored hash untouched — a later recovery to 'state A' still suppresses.
     assert get_job(job["id"])["monitor_state"]["last_output_hash"] == stored_hash
+
+
+# ---------------------------------------------------------------------------
+# monitor_url: fetched through the shared tools.url_safety policy
+# ---------------------------------------------------------------------------
+
+_METADATA_HOST = "169.254.169.254"
+_GZIP_STATE = gzip.compress(b"state A\n", mtime=0)
+_GZIP_EXPANDS = gzip.compress(b"\0" * (8 * 1024 * 1024), mtime=0)  # ~8 KiB on the wire
+_HUGE_BYTES = 1024 * 1024
+
+
+@pytest.fixture
+def monitor_server(hermes_env, monkeypatch):
+    """Loopback HTTP server recording request paths and User-Agents.
+
+    ``socket.create_connection`` is fenced so a fetch that tries to dial the
+    metadata address fails locally and is recorded — no real network traffic.
+    """
+    import http.server
+    import socket
+    import threading
+
+    from cron.monitor import MAX_URL_BYTES
+    from tools import url_safety
+
+    hits: list[str] = []
+    agents: list[str] = []
+    encodings: list[str] = []
+    dialed: list[str] = []
+    gzip_header = {"Content-Encoding": "gzip"}
+    routes = {
+        "/status": (200, {}, b"state A\n"),
+        "/hop": (302, {"Location": "/status"}, b""),
+        "/to-metadata": (302, {"Location": f"http://{_METADATA_HOST}/latest/meta-data/"}, b""),
+        "/big": (200, {}, b"x" * (MAX_URL_BYTES + 100)),
+        # Served compressed whatever the client negotiated.
+        "/gzip": (200, gzip_header, _GZIP_STATE),
+        "/mislabelled-gzip": (200, gzip_header, b"state A\n"),
+        "/gzip-expands": (200, gzip_header, _GZIP_EXPANDS),
+        "/huge": (200, {}, b"y" * _HUGE_BYTES),
+    }
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def do_GET(self):
+            hits.append(self.path)
+            agents.append(self.headers.get("User-Agent", ""))
+            encodings.append(self.headers.get("Accept-Encoding", ""))
+            status, headers, body = routes.get(self.path, (404, {}, b"missing"))
+            self.send_response(status)
+            for name, value in headers.items():
+                self.send_header(name, value)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            try:
+                self.wfile.write(body)
+            except OSError:
+                pass  # client stopped reading at the size cap
+
+    real_create_connection = socket.create_connection
+
+    def fenced_create_connection(address, *args, **kwargs):
+        if address[0] == _METADATA_HOST:
+            dialed.append(address[0])
+            raise OSError("test fence: metadata address dialed")
+        return real_create_connection(address, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "create_connection", fenced_create_connection)
+    monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
+    url_safety._reset_allow_private_cache()
+    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        yield {"base": f"http://127.0.0.1:{httpd.server_address[1]}", "hits": hits,
+               "agents": agents, "encodings": encodings, "dialed": dialed}
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        url_safety._reset_allow_private_cache()
+
+
+def _allow_private_urls(monkeypatch):
+    from tools import url_safety
+
+    monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "1")
+    url_safety._reset_allow_private_cache()
+
+
+def test_monitor_url_to_loopback_is_refused_before_connect(monitor_server):
+    """A private/loopback monitor_url is refused by default, like other URL fetches."""
+    from cron.monitor import check_monitor
+
+    outcome = check_monitor({"id": "mon-private", "monitor_url": monitor_server["base"] + "/status"})
+
+    assert outcome.ok is False
+    assert "allow_private_urls" in (outcome.error or "")
+    assert monitor_server["hits"] == []
+
+
+def test_monitor_url_redirect_to_metadata_is_refused(monitor_server, monkeypatch):
+    """Redirect hops are re-validated; the metadata floor holds even with private URLs allowed."""
+    from cron.monitor import _fetch_monitor_url
+
+    _allow_private_urls(monkeypatch)
+    ok, message = _fetch_monitor_url(monitor_server["base"] + "/to-metadata")
+
+    assert ok is False
+    assert monitor_server["hits"] == ["/to-metadata"]
+    assert monitor_server["dialed"] == []
+    assert "test fence" not in message
+
+
+def test_monitor_url_allowed_fetch_keeps_redirects_cap_and_errors(monitor_server, monkeypatch):
+    """With private URLs allowed: redirects followed, User-Agent sent, body capped, 4xx is an error."""
+    from cron.monitor import MAX_URL_BYTES, _fetch_monitor_url
+
+    _allow_private_urls(monkeypatch)
+    base = monitor_server["base"]
+
+    assert _fetch_monitor_url(base + "/hop") == (True, "state A\n")
+    assert monitor_server["hits"] == ["/hop", "/status"]
+    assert set(monitor_server["agents"]) == {"hermes-cron-monitor"}
+
+    ok, body = _fetch_monitor_url(base + "/big")
+    assert ok is True
+    assert body == "x" * MAX_URL_BYTES
+
+    ok, message = _fetch_monitor_url(base + "/missing")
+    assert ok is False
+    assert "404" in message
+
+
+def _urllib_fetch(url: str) -> str:
+    """The pre-policy urllib fetch, used as the reference for the stored-hash contract."""
+    import urllib.request
+
+    from cron.monitor import MAX_URL_BYTES
+
+    req = urllib.request.Request(url, headers={"User-Agent": "hermes-cron-monitor"})
+    with urllib.request.urlopen(req, timeout=10) as resp:  # nosec B310 — loopback test server
+        body = resp.read(MAX_URL_BYTES + 1)
+    return body[:MAX_URL_BYTES].decode("utf-8", errors="replace")
+
+
+def test_monitor_url_hashes_raw_bytes_like_before(monitor_server, monkeypatch):
+    """Content-encoded responses are compared as raw bytes, matching the urllib fetch.
+
+    A source that gzips regardless of negotiation must keep producing the same output (so
+    existing stored hashes still match), and a body mislabelled as gzip is not an error.
+    """
+    from cron.monitor import _fetch_monitor_url, hash_monitor_output
+
+    _allow_private_urls(monkeypatch)
+    base = monitor_server["base"]
+
+    reference = _urllib_fetch(base + "/gzip")
+    assert reference == _GZIP_STATE.decode("utf-8", errors="replace")
+    first = _fetch_monitor_url(base + "/gzip")
+    second = _fetch_monitor_url(base + "/gzip")
+    assert first == (True, reference)
+    assert hash_monitor_output(second[1]) == hash_monitor_output(reference)
+
+    assert _fetch_monitor_url(base + "/mislabelled-gzip") == (True, _urllib_fetch(base + "/mislabelled-gzip"))
+
+
+def test_monitor_url_requests_identity_encoding(monitor_server, monkeypatch):
+    from cron.monitor import _fetch_monitor_url
+
+    _allow_private_urls(monkeypatch)
+    assert _fetch_monitor_url(monitor_server["base"] + "/hop") == (True, "state A\n")
+    assert monitor_server["encodings"] == ["identity", "identity"]
+
+
+def test_monitor_url_size_cap_bounds_raw_reads(monitor_server, monkeypatch):
+    """The 256 KiB cap applies to wire bytes: no decompression, no reading past the cap."""
+    import httpx
+
+    from cron.monitor import MAX_URL_BYTES, _fetch_monitor_url
+
+    _allow_private_urls(monkeypatch)
+    base = monitor_server["base"]
+    pulled: list[int] = []
+    real_iter_raw = httpx.Response.iter_raw
+
+    def counting_iter_raw(self, *args, **kwargs):
+        for chunk in real_iter_raw(self, *args, **kwargs):
+            pulled.append(len(chunk))
+            yield chunk
+
+    monkeypatch.setattr(httpx.Response, "iter_raw", counting_iter_raw)
+
+    # A small compressed body that would expand to 8 MiB is returned as its wire bytes.
+    ok, body = _fetch_monitor_url(base + "/gzip-expands")
+    assert ok is True
+    assert body == _GZIP_EXPANDS.decode("utf-8", errors="replace")
+    assert sum(pulled) == len(_GZIP_EXPANDS)
+
+    # A large body stops being read once the cap is reached.
+    pulled.clear()
+    ok, body = _fetch_monitor_url(base + "/huge")
+    assert ok is True
+    assert body == "y" * MAX_URL_BYTES
+    assert sum(pulled) == MAX_URL_BYTES
+    assert max(pulled) <= 64 * 1024
+
+
+def test_monitor_url_rejects_non_http_scheme(hermes_env):
+    from cron.monitor import _fetch_monitor_url
+
+    ok, message = _fetch_monitor_url("file:///etc/passwd")
+    assert ok is False
+    assert "http(s)" in message
 
 
 # ---------------------------------------------------------------------------

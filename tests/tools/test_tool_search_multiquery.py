@@ -97,6 +97,37 @@ class TestStemming:
         catalog = build_catalog(issue_defs)
         assert search_catalog(catalog, "post gmail message", limit=5) == []
 
+    def test_tokenize_falls_back_to_unstemmed_token_without_stemmer(self, monkeypatch):
+        """Regression for #147946: tool_search is a progressive-disclosure
+        path, so it must degrade, never fail, when the stemmer is
+        unavailable — _tokenize returns the token unchanged."""
+        import tools.tool_search_catalog as catalog_module
+        from tools.tool_search_catalog import _stem, _tokenize
+
+        monkeypatch.setattr(catalog_module, "snowballstemmer", None)
+        _stem.cache_clear()
+        try:
+            assert _tokenize("running") == ["running"]
+            assert _stem("running") == "running"
+        finally:
+            _stem.cache_clear()
+
+    def test_search_still_finds_tool_without_stemmer(self, issue_defs, monkeypatch):
+        """Without a stemmer, exact-token search still works; only the
+        morphological recall (e.g. 'issues' -> 'issue') is lost."""
+        import tools.tool_search_catalog as catalog_module
+        from tools.tool_search import build_catalog, search_catalog
+        from tools.tool_search_catalog import _stem
+
+        monkeypatch.setattr(catalog_module, "snowballstemmer", None)
+        _stem.cache_clear()
+        try:
+            catalog = build_catalog(issue_defs)
+            names = [h.name for h in search_catalog(catalog, "create issue", limit=5)]
+            assert "mq_linear_create_issue" in names
+        finally:
+            _stem.cache_clear()
+
 
     def test_parallel_tokenize_search_and_dispatch_are_deterministic(self, issue_defs):
         from tools.tool_search import (

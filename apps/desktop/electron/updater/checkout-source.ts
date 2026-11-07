@@ -75,6 +75,13 @@ export async function sourceUpdateEnvironment(
 
   delete env.HERMES_RUNTIME_DIR
 
+  // A GUI process may carry an SDKROOT from an older Command Line Tools install.
+  // Native helper builds should resolve the active Xcode/CLT toolchain themselves;
+  // inheriting this value can make every detached update fail at the linker.
+  if (process.platform === 'darwin') {
+    delete env.SDKROOT
+  }
+
   return env
 }
 

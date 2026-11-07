@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 from tools.todo_tool import TodoStore, todo_tool
 
 class TestWriteAndRead:
@@ -284,6 +286,23 @@ class TestRejectEmptyContent:
         items = store.read()
         assert items[0]["content"] == "Keep this"
         assert items[0]["status"] == "completed"
+
+    @pytest.mark.parametrize("merge", [False, True])
+    def test_null_content_is_rejected_not_stored_as_none_text(self, merge):
+        """JSON null is missing content, on both the replace and the merge-new paths."""
+        store = TodoStore()
+        result = json.loads(todo_tool(
+            todos=[{"id": "1", "content": None, "status": "pending"}], merge=merge, store=store))
+        assert "empty or missing content" in result["error"]
+        assert store.read() == []
+
+    @pytest.mark.parametrize("blank", ["", "   ", "\n\t", None])
+    def test_merge_existing_item_keeps_content_on_blank_content(self, blank):
+        """A blank or null content on a merge update means "not provided", never "erase"."""
+        store = TodoStore()
+        store.write([{"id": "1", "content": "Keep this", "status": "pending"}])
+        store.write([{"id": "1", "content": blank, "status": "completed"}], merge=True)
+        assert store.read() == [{"id": "1", "content": "Keep this", "status": "completed"}]
 
     def test_valid_content_still_works(self):
         """Regression: valid items still pass through normally."""

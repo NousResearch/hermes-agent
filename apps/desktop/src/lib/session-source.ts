@@ -2,7 +2,7 @@ import { normalize } from '@/lib/text'
 
 const SOURCE_LABELS: Record<string, string> = {
   acp: 'ACP',
-  api_server: 'API',
+  api_server: 'Browser',
   bluebubbles: 'iMessage',
   cli: 'CLI',
   codex: 'Codex',

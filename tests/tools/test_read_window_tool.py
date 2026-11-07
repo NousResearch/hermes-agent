@@ -2,6 +2,8 @@
 
 import json
 
+from tests.tools import desktop_read_redaction as drr
+
 from tools import read_window_tool as rw
 
 
@@ -39,3 +41,15 @@ def test_callback_failure_is_reported():
 
     result = json.loads(rw.read_window_below_tool(callback=_boom))
     assert "renderer went away" in result["error"]
+
+
+def test_output_is_redacted():
+    drr.assert_redacted(rw.read_window_below_tool(callback=lambda **_: json.dumps(drr.PAYLOAD)))
+
+
+def test_redaction_failure_does_not_leak(monkeypatch):
+    drr.assert_fail_closed(monkeypatch, lambda cb: rw.read_window_below_tool(callback=cb))
+
+
+def test_non_string_leaves_kept():
+    drr.assert_non_string_leaves_kept(lambda cb: rw.read_window_below_tool(callback=cb))

@@ -26,9 +26,9 @@ from pathlib import Path
 from tools.binary_extensions import has_binary_extension
 from agent.file_safety import get_write_denied_error
 from tools.file_operations_common import (
-    ExecuteResult, PatchResult, ReadResult, SearchResult, WriteResult,
+    MISSING_DIR_MARK, ExecuteResult, PatchResult, ReadResult, SearchResult, WriteResult,
     _UTF8_BOM, _detect_line_ending, _has_bom, _normalize_line_endings, _strip_bom,
-    _strip_terminal_fence_leaks, normalize_read_pagination, normalize_search_pagination)
+    _strip_terminal_fence_leaks, normalize_read_pagination, normalize_search_pagination, similar_names)
 from tools.file_operations_lint import LINTERS_INPROC, LintMixin, _FAIL_CLOSED_INPROC_EXTS
 from tools.file_operations_search import SearchMixin
 from tools import file_operations_native as _native_io
@@ -1211,42 +1211,27 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         return None
 
     def _suggest_similar_files(self, path: str) -> ReadResult:
-        """"File not found" result listing up to 5 similar names from the same directory."""
+        """"File not found" result listing up to 5 similar names from the same directory. When
+        the directory itself is gone (a removed worktree, a moved folder, a relative path resolved
+        from the wrong place), name the first missing folder and its nearest existing ancestor
+        instead, so the model fixes the folder rather than guessing file names. One shell call."""
         dir_path = os.path.dirname(path) or "."
-        filename = os.path.basename(path)
-        basename_no_ext = os.path.splitext(filename)[0].lower()
-        ext = os.path.splitext(filename)[1].lower()
-        lower_name = filename.lower()
-        ls_result = self._exec(f"ls -1 {self._escape_shell_arg(dir_path)} 2>/dev/null | head -50")
-        scored: list = []  # (score, filepath) — higher is better
-        if ls_result.exit_code == 0 and ls_result.stdout.strip():
-            for f in ls_result.stdout.strip().split('\n'):
-                if not f:
-                    continue
-                lf = f.lower()
-                score = 0
-                if lf == lower_name:
-                    score = 100
-                elif os.path.splitext(f)[0].lower() == basename_no_ext:  # config.yml vs config.yaml
-                    score = 90
-                elif lf.startswith(lower_name) or lower_name.startswith(lf):
-                    score = 70
-                elif lower_name in lf:
-                    score = 60
-                elif lf in lower_name and len(lf) > 2:
-                    score = 40
-                elif ext and os.path.splitext(f)[1].lower() == ext:
-                    common = set(lower_name) & set(lf)
-                    if len(common) >= max(len(lower_name), len(lf)) * 0.4:
-                        score = 30
-                # Near-miss spelling (AGENT.md -> AGENTS.md) the substring checks miss.
-                if score == 0 and difflib.SequenceMatcher(None, lower_name, lf).ratio() >= 0.8:
-                    score = 50
-                if score > 0:
-                    scored.append((score, os.path.join(dir_path, f)))
-        scored.sort(key=lambda x: -x[0])
+        quoted = self._escape_shell_arg(dir_path)
+        ls_result = self._exec(
+            f"ls -1 {quoted} 2>/dev/null | head -50; d={quoted}; if [ ! -d \"$d\" ]; then c=$d; "
+            "while [ ! -d \"$d\" ]; do c=$d; p=$(dirname -- \"$d\"); [ \"$p\" = \"$d\" ] && break; d=$p; done; "
+            f"k=missing; [ -e \"$c\" ] && k=file; "
+            f"printf '%s\\n%s\\n%s\\n%s\\n' {MISSING_DIR_MARK} \"$k\" \"$c\" \"$d\"; ls -1 -- \"$d\" 2>/dev/null | head -50; fi")
+        lines = ls_result.stdout.strip().split("\n") if ls_result.exit_code == 0 and ls_result.stdout.strip() else []
+        if MISSING_DIR_MARK in lines and len(lines) >= lines.index(MISSING_DIR_MARK) + 4:
+            at = lines.index(MISSING_DIR_MARK)
+            kind, missing, nearest = lines[at + 1:at + 4]
+            why = (f"{missing} is a file, not a folder." if kind == "file" else
+                   f"The folder {missing} does not exist. The nearest folder that does is {nearest}.")
+            return ReadResult(error=f"File not found: {path}\n\n{why}", not_found=True,
+                              similar_files=similar_names(lines[at + 4:], os.path.basename(missing), nearest))
         return ReadResult(error=f"File not found: {path}", not_found=True,
-                          similar_files=[fp for _, fp in scored[:5]])
+                          similar_files=similar_names(lines, os.path.basename(path), dir_path))
 
     def read_file_raw(self, path: str) -> ReadResult:
         """Whole file as a plain string (no pagination/line numbers/clamping)."""

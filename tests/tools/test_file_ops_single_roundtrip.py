@@ -150,6 +150,16 @@ class TestReadFileNonTextPaths:
         assert r.error and "File not found" in r.error
         assert any(s.endswith("notes.txt") for s in r.similar_files)
 
+    def test_missing_folder_names_nearest_existing_one(self, shell, tmp_path):
+        # A removed worktree / moved folder: the miss names the folder, not just the file.
+        ops, _calls = shell
+        (tmp_path / "src").mkdir()
+        r = ops.read_file(str(tmp_path / "sr" / "deep" / "app.ts"))
+        assert r.not_found
+        assert f"The folder {tmp_path / 'sr'} does not exist" in r.error
+        assert f"nearest folder that does is {tmp_path}." in r.error
+        assert r.similar_files == [str(tmp_path / "src")]
+
     def test_unicode_variant_retry_still_works(self, shell, tmp_path):
         ops, _calls = shell
         # A curly apostrophe vs the ASCII one: visually identical in a

@@ -47,6 +47,7 @@ class SubagentMonitor:
         self.opening = False
         self.collapsed = False
         self.detail = False  # the monitor's detail view is open (its tick fetches the gateway tail)
+        self.viewer = None  # the open subagent viewer (cli_subagent_viewer.SubagentViewer)
 
     @property
     def has_rows(self):
@@ -138,6 +139,8 @@ class SubagentMonitor:
         try:
             changed = self.refresh()
             changed = self._poll_tail() or changed
+            viewer = self.viewer
+            changed = (viewer is not None and viewer.poll()) or changed
         except Exception:  # health: allow BLE001 -- the spinner thread runs this tick; one raise would end that thread for the session
             logger.debug("subagent monitor tick failed", exc_info=True)
             return
@@ -368,8 +371,13 @@ def build_monitor_application(monitor, **kwargs):
                 prefix = f"{procs.process_glyph(row)} {procs.process_activity(row)} · "
                 activity = ''
                 subject = row['command']
+            elif row.get('kind') == 'finished':
+                state_text = t('cli.subagents.finished_status' if row.get('ended') else 'cli.subagents.not_live_status')
+                prefix = f"✓ {row['elapsed']}s · {state_text} · "
+                activity = ''
+                subject = row.get('goal') or row['subagent_id']
             else:
-                prefix = f"{row['elapsed']}s · {row.get('status') or t('cli.subagents.starting')} · "
+                prefix = f"● {row['elapsed']}s · {row.get('status') or t('cli.subagents.starting')} · "
                 activity = ' · ' + t('cli.subagents.last_tool', tool=row['last_tool']) if row.get('last_tool') else ''
                 subject = row.get('goal') or row['subagent_id']
             goal_width = max(0, size.columns - 2 - get_cwidth(prefix + activity))
@@ -413,6 +421,8 @@ def build_monitor_application(monitor, **kwargs):
             noun = t('cli.subagents.noun_process' if process else 'cli.subagents.noun_subagent')
             return (t('cli.subagents.footer_confirm_stop_compact') if narrow
                     else t('cli.subagents.footer_confirm_stop', noun=noun))
+        if monitor.viewer is not None:
+            return viewer_footer()
         if state['steering']:
             return t('cli.subagents.footer_steering_compact' if narrow else 'cli.subagents.footer_steering')
         steer = '' if process else t('cli.subagents.footer_steer_key')
@@ -422,7 +432,7 @@ def build_monitor_application(monitor, **kwargs):
         steer = '' if process else t('cli.subagents.footer_steer_key_long')
         return t('cli.subagents.footer_detail' if monitor.detail else 'cli.subagents.footer_roster', steer=steer)
 
-    def run_control(action, message, target):
+    def run_call(call):
         """Steer/stop off the UI loop: a stalled gateway call (up to its timeout) must not freeze the
         monitor's repaint, Esc or Ctrl+C. The answer lands in the notice line when it arrives."""
         import asyncio
@@ -436,12 +446,20 @@ def build_monitor_application(monitor, **kwargs):
             state['notice'] = result.get('error') or result.get('note') or str(result)
             app.invalidate()
 
-        asyncio.get_running_loop().run_in_executor(
-            None, lambda: monitor.control(action, message, target=target)).add_done_callback(done)
+        asyncio.get_running_loop().run_in_executor(None, call).add_done_callback(done)
+
+    def run_control(action, message, target):
+        run_call(lambda: monitor.control(action, message, target=target))
+
+    from hermes_cli.cli_subagent_viewer import SubagentViewer, viewer_ui
+    viewer_box, viewer_entry, viewer_kb, viewer_header, viewer_footer = viewer_ui(
+        monitor, state, lambda: app, run_call)
+    viewing = Condition(lambda: monitor.viewer is not None)
 
     kb = KeyBindings()
     normal = Condition(lambda: not state['steering'] and not state['confirm'])
-    listing = normal & Condition(lambda: not monitor.detail)
+    keys = normal & ~viewing  # single-letter shortcuts; in the viewer, letters are typed into its input
+    listing = keys & Condition(lambda: not monitor.detail)
 
     @kb.add('up', filter=listing)
     def up(event):
@@ -452,14 +470,35 @@ def build_monitor_application(monitor, **kwargs):
         monitor.select(1)
 
     @kb.add('enter', filter=listing)
-    def detail(event):
-        if monitor.selected:
-            monitor.detail = True
-            monitor.poll_soon()  # the spinner thread's next tick fetches the tail
-            update_tail()
-            app.layout.focus(tail)
+    def open_entry(event):
+        row = monitor.selected
+        if row is None:
+            return
+        if row.get('kind') == 'process':
+            show_tail()
+            return
+        monitor.viewer = SubagentViewer(monitor, row.get('child_session_id') or row['subagent_id'])
+        app.layout.focus(viewer_entry)
 
-    @kb.add('s', filter=normal)
+    @kb.add('t', filter=listing)
+    def raw_tail(event):
+        """The raw live transcript tail of a running subagent (or a process's log)."""
+        row = monitor.selected
+        if row is not None and row.get('kind') != 'finished':
+            show_tail()
+
+    def show_tail():
+        monitor.detail = True
+        monitor.poll_soon()  # the spinner thread's next tick fetches the tail
+        update_tail()
+        app.layout.focus(tail)
+
+    @kb.add('m', filter=listing)
+    def master_view(event):
+        monitor.viewer = SubagentViewer(monitor, 'master')
+        app.layout.focus(viewer_entry)
+
+    @kb.add('s', filter=keys)
     def start_steer(event):
         if monitor.selected and monitor.selected_process is None:
             state['steering'] = True
@@ -475,7 +514,7 @@ def build_monitor_application(monitor, **kwargs):
         state['steering'] = False
         app.layout.focus(tail if monitor.detail else roster)
 
-    @kb.add('x', filter=normal)
+    @kb.add('x', filter=keys)
     def stop(event):
         if monitor.selected:
             state['confirm'] = True
@@ -483,21 +522,32 @@ def build_monitor_application(monitor, **kwargs):
 
     @kb.add('y', filter=Condition(lambda: state['confirm']))
     def confirm(event):
-        run_control('stop', None, state['target'])
+        action = state.pop('confirm_action', None)
+        if action is not None:
+            run_call(action)
+        else:
+            run_control('stop', None, state['target'])
         state['confirm'] = False
+
+    def focus_home():
+        app.layout.focus(viewer_entry if monitor.viewer else tail if monitor.detail else roster)
 
     @kb.add('escape', eager=True)
     def back(event):
         if state['steering'] or state['confirm']:
             state['steering'] = state['confirm'] = False
-            app.layout.focus(tail if monitor.detail else roster)
+            state.pop('confirm_action', None)
+            focus_home()
+        elif monitor.viewer is not None:
+            monitor.viewer = None
+            app.layout.focus(roster)
         elif monitor.detail:
             monitor.detail = False
             app.layout.focus(roster)
         else:
             app.exit()
 
-    @kb.add('q', filter=normal)
+    @kb.add('q', filter=keys)
     @kb.add('f6', filter=normal)
     @kb.add('c-t', filter=normal)
     @kb.add('c-c')
@@ -505,9 +555,10 @@ def build_monitor_application(monitor, **kwargs):
         app.exit()
 
     layout = Layout(HSplit([
-        Window(FormattedTextControl(header), height=1),
-        ConditionalContainer(roster, filter=Condition(lambda: not monitor.detail)),
-        ConditionalContainer(tail, filter=Condition(lambda: monitor.detail)),
+        Window(FormattedTextControl(lambda: viewer_header() if monitor.viewer else header()), height=1),
+        ConditionalContainer(roster, filter=Condition(lambda: not monitor.detail) & ~viewing),
+        ConditionalContainer(tail, filter=Condition(lambda: monitor.detail) & ~viewing),
+        ConditionalContainer(viewer_box, filter=viewing),
         ConditionalContainer(steer, filter=Condition(lambda: state['steering'])),
         Window(FormattedTextControl(lambda: _clip(state['notice'], app.output.get_size().columns)), height=1),
         Window(FormattedTextControl(footer), height=1),
@@ -523,7 +574,9 @@ def build_monitor_application(monitor, **kwargs):
     from prompt_toolkit.styles import Style
     from hermes_cli.skin_engine import get_prompt_toolkit_style_overrides
     kwargs.setdefault('style', Style.from_dict(get_prompt_toolkit_style_overrides()))
-    app = Application(layout=layout, key_bindings=kb, full_screen=True, mouse_support=False,
+    from prompt_toolkit.key_binding import merge_key_bindings
+    app = Application(layout=layout, key_bindings=merge_key_bindings([kb, viewer_kb]), full_screen=True,
+                      mouse_support=False,
                       before_render=before_render, **kwargs)
     return app
 
@@ -545,7 +598,7 @@ def open_monitor(cli):
                 monitor.app = build_monitor_application(monitor)
                 await monitor.app.run_async()
         finally:
-            monitor.app = None
+            monitor.app = monitor.viewer = None
             monitor.detail = monitor.opening = False
             cli._invalidate()
 

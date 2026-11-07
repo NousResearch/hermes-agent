@@ -150,7 +150,7 @@ def test_detail_view_paints_the_cached_tail_and_only_the_tick_asks_the_gateway(g
             task = asyncio.create_task(app.run_async())
             await asyncio.wait_for(rendered.wait(), 3)
             rendered.clear()
-            pipe.send_text("\r")  # open the detail view: several frames, none of them asks the gateway
+            pipe.send_text("t")  # open the raw tail view: several frames, none of them asks the gateway
             await asyncio.wait_for(rendered.wait(), 3)
             for _ in range(3):
                 rendered.clear()

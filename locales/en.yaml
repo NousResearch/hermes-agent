@@ -2408,9 +2408,11 @@ cli:
     footer_steer_key: " s steer"
     footer_steer_key_long: " · s steer"
     footer_detail_compact: "PgUp/Dn ·{steer} x stop · Esc"
-    footer_roster_compact: "↑↓ · Enter tail · Ctrl+T close"
+    footer_roster_compact: "↑↓ · Enter open · Ctrl+T close"
     footer_detail: "Esc roster · PgUp/PgDn tail{steer} · x stop"
-    footer_roster: "↑/↓ select · Enter tail{steer} · x stop · q/Ctrl+T close"
+    footer_roster: "↑/↓ select · Enter open · t tail · m master{steer} · x stop · q/Ctrl+T close"
+    finished_status: "done"
+    not_live_status: "not running"
 
   subagent_view:
     label_brief: "Brief"
@@ -2427,6 +2429,14 @@ cli:
     outcome_error: "error"
     waiting_for_result: "(waiting for the result)"
     result_truncated: "… (result truncated)"
+    master: "Master"
+    no_transcript: "No stored conversation yet."
+    input_prompt: "→ {target} › "
+    nothing_to_send: "Type a message first."
+    nothing_to_stop: "Only a running subagent can be stopped."
+    sent_to_master: "Sent to the master session."
+    footer: "Tab/Shift+Tab switch · ↑↓ entry · Enter open/send · PgUp/PgDn scroll · Ctrl+X stop · Esc list"
+    footer_compact: "Tab switch · ↑↓ · Enter · Esc list"
 
   dock:
     process_goal_label: "background process"

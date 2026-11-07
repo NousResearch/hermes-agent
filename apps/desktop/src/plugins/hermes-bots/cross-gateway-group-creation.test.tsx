@@ -240,6 +240,8 @@ it('a selection wholly on another connection is not offered for creation from he
 })
 
 it('a room whose members span connections opens in the Desktop-driven view on a gateway-owned install', async () => {
+  // An unmarked record an older build saved; a name with no record is a new group chat.
+  updateGroupChat('Mixed', room => ({ ...room, members: [alpha, remote] }))
   await act(async () => { render(<GroupChatWorkspace group="Mixed" members={[alpha, remote]} />) })
 
   expect(screen.queryByRole('button', { name: 'Start gateway group' })).toBeNull()

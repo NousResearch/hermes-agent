@@ -1148,12 +1148,15 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
 interface GroupDialogProps {
   bot: RosterRow
   onClose: () => void
+  /** Called with the group chat New group chat created for a new name. */
+  onCreated?: (group: string, origin: CanonicalGroupOrigin) => void
 }
 
 /** Assign a bot to a group-chat membership without replacing its others.
- *  Existing groups are independent toggles; the input creates and joins a new
- *  one. Canonical groups + the legacy scalar projection ride ui_meta. */
-export function GroupDialog({ bot, onClose }: GroupDialogProps) {
+ *  Existing groups are independent toggles. A new name is a new group chat, so
+ *  Create & join opens New group chat with this bot and the name filled in: a
+ *  gateway runs it, and nothing here makes a Desktop-run room. */
+export function GroupDialog({ bot, onClose, onCreated }: GroupDialogProps) {
   const b = useBots()
   const meta = useValue($botMeta)
   const [name, setName] = useState('')
@@ -1164,7 +1167,13 @@ export function GroupDialog({ bot, onClose }: GroupDialogProps) {
   const botName = displayName(bot, botRosterMeta(bot, meta))
   // Its groups[] also live on its own machine: a change saved while that
   // machine is offline would land only here and be undone on reconnect.
-  const locked = memberMachineOffline(roster.find(row => botRosterKey(row) === botRosterKey(bot)) || bot, connectionId)
+  const row = roster.find(candidate => botRosterKey(candidate) === botRosterKey(bot)) || bot
+  const locked = memberMachineOffline(row, connectionId)
+  const [creating, setCreating] = useState<null | string>(null)
+
+  if (creating !== null) {
+    return <CreateGroupChatDialog onClose={onClose} onCreated={onCreated} open roster={roster} seed={{ bots: [row], name: creating }} />
+  }
 
   const setMembership = async (group: string, enabled: boolean) => {
     try {
@@ -1227,8 +1236,7 @@ export function GroupDialog({ bot, onClose }: GroupDialogProps) {
             const trimmed = name.trim()
 
             if (trimmed && !locked) {
-              void setMembership(trimmed, true)
-              setName('')
+              setCreating(trimmed)
             }
           }}
         >
@@ -1274,6 +1282,8 @@ interface CreateGroupChatDialogProps {
   onCreated?: (group: string, origin: CanonicalGroupOrigin) => void
   open: boolean
   roster: RosterRow[]
+  /** The bots and name a draft opens with (Manage groups' Create & join). */
+  seed?: { bots: RosterRow[]; name: string }
 }
 
 interface GroupPlanNoteProps {
@@ -1322,7 +1332,7 @@ function groupPlanProblem(reason: string | undefined, where: string, local: bool
  *  by this connection's gateway, which keeps it running with Desktop closed; bots
  *  on other computers are seated through their own gateways. When that is not
  *  possible the dialog says what is missing on which computer and offers Retry. */
-export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: CreateGroupChatDialogProps) {
+export function CreateGroupChatDialog({ open, roster, onClose, onCreated, seed }: CreateGroupChatDialogProps) {
   const { t } = useI18n()
   const b = useBots()
   const allMeta: Record<string, BotMeta> = useValue($botMeta)
@@ -1350,10 +1360,12 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       intent.current = {}
       newDraft()
       setQuery('')
-      setChecked({})
-      setName('')
+      setChecked(Object.fromEntries((seed?.bots ?? []).map(bot => [botRosterKey(bot), true])))
+      setName(seed?.name ?? '')
       setImage(null)
     }
+    // The seed is read once per open: a re-render must not wipe the person's picks.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
   // An outage placeholder or a bot the authority will not seat is never offered.
@@ -1427,6 +1439,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     refreshGatewayGroupRooms()
     onClose()
     onCreated?.(key, 'key')
+
     } catch (error) {
       const next = canonicalGroupCreateNotice(error, b.canonical)
 

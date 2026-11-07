@@ -94,14 +94,15 @@ def test_successful_retirement_leaves_the_callers_transaction_open(cjk_db):
     assert _store_snapshot(cjk_db) == before
 
 
-def test_snapshot_failure_is_reported_without_mutating_the_store(cjk_db, monkeypatch):
+def test_a_copy_the_os_refuses_is_not_reported_as_damage(cjk_db, monkeypatch):
     before = _store_snapshot(cjk_db)
 
     def fail_snapshot(*args, **kwargs):
-        raise OSError("snapshot storage unavailable")
+        raise PermissionError("snapshot storage unavailable")
 
     monkeypatch.setattr(repair, "_copy_database_snapshot", fail_snapshot)
-    assert repair._db_opens_cleanly(cjk_db) == "snapshot storage unavailable"
+    reason = repair._db_opens_cleanly(cjk_db)
+    assert isinstance(reason, repair.HealthCheckUnavailable) and "snapshot storage unavailable" in reason
     assert _store_snapshot(cjk_db) == before
 
 

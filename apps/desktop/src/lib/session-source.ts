@@ -121,6 +121,32 @@ export function handoffOriginSource(
   return id
 }
 
+/**
+ * The human on the other side of a messaging session, from the row's raw
+ * `origin_json` payload: a group chat's name, else the sender's name. Null
+ * for local sessions and for platforms that record no name.
+ */
+export function sessionOriginName(session: {
+  origin_json?: null | string
+  source?: null | string
+}): string | null {
+  const raw = session.origin_json
+
+  if (!raw || !isMessagingSource(session.source)) {
+    return null
+  }
+
+  try {
+    const origin = JSON.parse(raw) as { chat_name?: unknown; user_name?: unknown }
+    const chat = typeof origin.chat_name === 'string' ? origin.chat_name.trim() : ''
+    const user = typeof origin.user_name === 'string' ? origin.user_name.trim() : ''
+
+    return chat || user || null
+  } catch {
+    return null
+  }
+}
+
 export function sessionSourceLabel(source: null | string | undefined): string | null {
   const id = normalizeSessionSource(source)
 

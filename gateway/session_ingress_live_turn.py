@@ -5,17 +5,24 @@ a typed reply to a pending clarify / slash-confirm / ``/update`` prompt resolves
 "yes" answers a blocking command approval, and ``busy_input_mode`` steers or interrupts the running
 turn. A relay delivery is committed straight to the FIFO by ``admit_producer``, so it skipped all
 of that: the reply queued behind the very turn waiting for it, which sat out the whole clarify
-timeout before the reply ran as a new turn.
+timeout before the reply ran as a new turn. ``admit_producer`` offers it here once the delivery is
+prepared (authorized, routed), its replay check passed and ``pre_gateway_dispatch`` ran.
 """
+from collections import OrderedDict
+
+# Deliveries consumed here are never committed, so the FIFO's replay check cannot recognize a
+# relay re-send of one (an ACK lost in flight): (platform, chat, provider message id) of each.
+_consumed: OrderedDict = OrderedDict()
+_CONSUMED_MAX = 512
 
 
 def may_answer_live_turn(runner) -> bool:
     """Whether any in-flight work could consume an inbound right now: a running turn (its clarify
-    or approval prompt, busy steer/interrupt) or an idle-time prompt (slash-confirm, ``/update``).
-    Answering may send (busy ack, prompt resolution), so the relay admits such a delivery off its
-    socket reader: only that reader delivers a send's ``outbound_result``."""
-    from tools import slash_confirm
-    if runner._running_agent_items() or slash_confirm._pending:
+    or approval prompt, busy steer/interrupt), a pending clarify (an idle plugin command's
+    ``ask_choice`` registers one before any turn slot is claimed) or an idle-time prompt
+    (slash-confirm, ``/update``). A miss only means the delivery queues like any follow-up."""
+    from tools import clarify_gateway, slash_confirm
+    if runner._running_agent_items() or clarify_gateway.has_any_pending() or slash_confirm._pending:
         return True
     return any(state.persistent.update_prompt_pending for state in runner._sessions_map().values())
 
@@ -23,12 +30,33 @@ def may_answer_live_turn(runner) -> bool:
 async def answers_live_turn(runner, event) -> bool:
     """True when *event* was consumed by the chat's in-flight work (never admitted); a reply to send
     rides ``event._consumer_reply``. False: admit it as usual (an interrupt-mode follow-up too: the
-    interrupted turn ends and the FIFO runs it next). Runs inside ``producer_scope``."""
-    if event.get_command() or getattr(event, 'internal', False) or not may_answer_live_turn(runner):
+    interrupted turn ends and the FIFO runs it next). A bot peer's message is always admitted, so
+    the bot loop guard charges it at execution as before. Runs inside ``producer_scope``."""
+    if event.get_command() or getattr(event, 'internal', False) or getattr(event.source, 'is_bot', False):
         return False
+    replay = _replay_key(event)
+    consumed = await _route(runner, event)
+    if consumed and replay is not None:
+        _consumed[replay] = None
+        while len(_consumed) > _CONSUMED_MAX:
+            _consumed.popitem(last=False)
+    return consumed
+
+
+def _replay_key(event):
     source = event.source
-    if not runner._is_user_authorized_for_source(source):
-        return False  # admission refuses it with its own answer
+    return (source.platform.value, source.chat_id, event.message_id) if event.message_id else None
+
+
+def was_consumed(event) -> bool:
+    """A re-send of a delivery this module already consumed: nothing left to do, whether or not
+    the work that consumed it is still running."""
+    replay = _replay_key(event)
+    return replay is not None and replay in _consumed
+
+
+async def _route(runner, event) -> bool:
+    source = event.source
     key = runner._session_key_for_source(source)
     reply = await runner._hm_pending_reply_intercepts(event, source, key)
     if reply is not None:

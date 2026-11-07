@@ -176,7 +176,7 @@ from tools.environments.base import EnvironmentConnectionError
 # Tool description for LLM
 TERMINAL_TOOL_DESCRIPTION = """Run shell commands on the OS/shell/backend named in your environment section. The working directory, files and exported variables persist between calls: activate a virtualenv or export once, not before every command.
 
-Use read_file, search_files, patch and write_file instead of cat/head/tail, grep/find/ls, sed/awk and echo/heredoc. Output is auto-truncated with the full text saved to a file; never pipe through head/tail to shorten it.
+Prefer the dedicated tools when they fit: read_file for a known file path; search_files for unknown locations or content/name search; patch/write_file for edits; skills_list/skill_view for skill inventory and skill bodies. Use terminal ls for a shallow listing of a known directory. Avoid cat/head/tail, unbounded find, and grep when those dedicated tools apply. Output is auto-truncated with the full text saved to a file; never pipe through head/tail to shorten it.
 
 Foreground (default) returns as soon as the command finishes. To wait a fixed time, run the wait in the foreground; never background a sleep or polling loop. Background is only for commands that must keep running after this call returns; health-check a server in a separate call and manage jobs with process_manage. When a command changes directory, trust the result's "cwd" instead of prefixing later commands with cd.
 """

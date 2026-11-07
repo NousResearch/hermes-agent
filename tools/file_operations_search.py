@@ -110,7 +110,42 @@ _ADMISSION_INTERRUPTED_ERROR = (
     "File search was interrupted while waiting for another filename "
     "search on the same root. Retry when ready.")
 
+# Directory supplement (#54347) must never run unbounded ``find | sort`` over a
+# large root. Cap how many directory matches we collect before mtime merge.
+_DIR_SUPPLEMENT_SOFT_CAP = 1000
+
 _SEARCH_TIMEOUT_MARKER_RE = re.compile(r"\n?\[Command timed out after \d+s\]\s*$")
+
+
+def _should_supplement_directories(pattern: str) -> bool:
+    """Whether ``rg --files`` results should be merged with matching directories.
+
+    Pass the *user/search* pattern (before bare-name ``*`` wrapping).
+    Empty-directory discovery (#54347) stays for bare directory-ish names and
+    globs. Concrete filenames (``config.yaml``, ``SOUL.md``) skip the
+    supplement — matching directories are vanishingly rare and the old unbounded
+    ``find|sort`` dominated latency on large roots.
+    """
+    pattern = (pattern or "").strip()
+    if not pattern or pattern in {"*", "**", "**/*"}:
+        return True
+    if any(ch in pattern for ch in "*?["):
+        return True
+    # Extension-bearing concrete names with no glob metacharacters.
+    if "." in pattern:
+        return False
+    return True
+
+
+def _directory_supplement_cap(fetch_limit: int) -> int:
+    """How many directory matches to collect before mtime merge/pagination.
+
+    Oversample relative to the page size so small trees still mtime-sort
+    correctly, but hard-cap enumeration so large roots cannot run unbounded
+    ``find | sort``.
+    """
+    fetch_limit = max(int(fetch_limit), 1)
+    return min(max(fetch_limit * 20, fetch_limit), _DIR_SUPPLEMENT_SOFT_CAP)
 
 
 def _search_stdout_and_limit(result: ExecuteResult) -> tuple[str, Optional[str]]:
@@ -1023,47 +1058,37 @@ class SearchMixin:
     def _search_directories_with_find(
         self, pattern: str, path: str, fetch_limit: int
     ) -> tuple[list[str], Optional[str]]:
-        """Return matching descendant directories using find, if available.
+        """Return matching descendant directories using a bounded find, if available.
 
         ``rg --files`` and ``find -type f`` both enumerate files only, so
         directories — especially empty ones — are invisible (#54347). rg stays
         authoritative for which *files* survive ignore processing; this adds
-        the matching directory entries so the tool honours its documented
-        ls-replacement contract.
+        matching directory entries for directory-ish / glob patterns.
+
+        Enumeration is hard-capped (``head -n``) before any mtime sort. The old
+        ``find | sort -rn`` form scanned entire trees and dominated latency on
+        large roots (e.g. ``~/.hermes``, ``~/src``). Callers that need a
+        concrete filename should skip this supplement via
+        ``_should_supplement_directories``.
         """
         if fetch_limit <= 0 or not self._has_command("find"):
             return [], None
 
+        dir_cap = _directory_supplement_cap(fetch_limit)
         escaped_path = self._escape_shell_arg(path)
         escaped_pattern = self._escape_shell_arg(pattern)
         q_roots = [escaped_path]
         hidden_prune = self._hidden_prune_expr(q_roots)
+        # Discovery-order enumeration + head: never ``find | sort -rn`` the full tree.
         cmd = (
             f"find -H {escaped_path} -mindepth 1 {hidden_prune} -o -type d "
-            f"! -name '.*' -name {escaped_pattern} -printf '%T@ %p\\n' "
-            f"2>/dev/null | sort -rn"
+            f"! -name '.*' -name {escaped_pattern} -print "
+            f"2>/dev/null | head -n {dir_cap}"
         )
         result = self._exec(cmd, timeout=30)
         stdout, limit_reason = _search_stdout_and_limit(result)
 
-        if not stdout.strip() and not limit_reason:
-            # Try without -printf (BSD find compatibility -- macOS)
-            cmd_simple = (
-                f"find -H {escaped_path} -mindepth 1 {hidden_prune} -o -type d "
-                f"! -name '.*' -name {escaped_pattern} 2>/dev/null"
-            )
-            result = self._exec(cmd_simple, timeout=30)
-            stdout, limit_reason = _search_stdout_and_limit(result)
-
-        dirs = []
-        for line in stdout.strip().split('\n'):
-            if not line:
-                continue
-            parts = line.split(' ', 1)
-            if len(parts) == 2 and parts[0].replace('.', '').isdigit():
-                dirs.append(parts[1])
-            else:
-                dirs.append(line)
+        dirs = [line for line in stdout.splitlines() if line]
 
         if dirs:
             # An explicitly selected hidden root keeps its (hidden) subtree;
@@ -1071,6 +1096,10 @@ class SearchMixin:
             if self._root_under_hidden_dir(path):
                 dirs = self._filter_hidden_descendants(dirs, Path(path))
             dirs = self._filter_gitignored_paths(dirs, path)
+        # Cap hit (or find timeout) → surface truncation so callers do not treat
+        # a bounded page as a complete directory inventory of a huge tree.
+        if len(dirs) >= dir_cap and not limit_reason:
+            limit_reason = "directory_supplement_cap"
         return self._sort_paths_by_mtime(dirs)[:fetch_limit], limit_reason
 
     def _search_files(self, pattern: str, path: str | list[str], limit: int, offset: int,
@@ -1264,15 +1293,20 @@ class SearchMixin:
         # empty directories stay discoverable (#54347). Skip the extra traversal
         # when rg already timed out — partial file results must not be presented
         # as a coherent page. Only the single-root path supplements (a multi-root
-        # walk is already the merged view across roots).
-        if limit_reason != "search_timeout" and isinstance(path, str) and self._has_command("find"):
-            dirs, directory_limit_reason = self._search_directories_with_find(glob_pattern, path, fetch_limit)
+        # walk is already the merged view across roots). Concrete filenames skip
+        # the supplement entirely (see ``_should_supplement_directories``).
+        if (limit_reason != "search_timeout" and isinstance(path, str)
+                and self._has_command("find")
+                and _should_supplement_directories(pattern)):
+            dirs, directory_limit_reason = self._search_directories_with_find(
+                glob_pattern, path, fetch_limit)
             if dirs:
                 existing = set(all_files)
                 merged_entries = self._sort_paths_by_mtime(
                     all_files + [d for d in dirs if d not in existing])
                 # Under exact modified order rg is authoritative for files;
-                # the merged view keeps the newest-first contract globally.
+                # the merged view keeps the newest-first contract among the
+                # bounded directory candidates plus rg's file hits.
                 all_files = merged_entries
                 limit_reason = limit_reason or directory_limit_reason
         if permission_only and not all_files:

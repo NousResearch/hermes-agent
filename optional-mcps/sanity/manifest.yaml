@@ -1,0 +1,60 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: sanity
+description: >-
+  Content, GROQ queries, schemas, releases, and media in Sanity projects.
+source: https://www.sanity.io/docs/ai/mcp-server
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# (verified live: RFC 9728 protected-resource metadata -> AS metadata with
+# registration_endpoint https://mcp.sanity.io/register, PKCE S256, scope
+# "global"; DCR accepts client_name "Hermes Agent"). Hermes's MCP client +
+# mcp_oauth_manager handle discovery, PKCE, token exchange, and refresh.
+# Sanity sessions expire after ~7 days; Hermes re-prompts on the next 401.
+transport:
+  type: http
+  url: https://mcp.sanity.io
+
+auth:
+  type: oauth
+
+# Sanity documents ~54 tools. Excluded by default:
+# - dataset_assets_upload_from_web_chatgpt: ChatGPT-web attachment path only.
+# - media_assets_upload_from_url: deprecated no-op alias of
+#   media_library_upload_from_url.
+# - give_sanity_feedback: sends agent-written feedback to Sanity.
+# - create_project: creates a new project and mints API tokens.
+# - add_cors_origin / cors_origins_delete / update_dataset: change who can
+#   reach a project or flip a dataset between public and private.
+# Content edits (create/patch/publish/discard) stay enabled: they are the
+# point of the server and land as drafts or releases first.
+tools:
+  default_excluded:
+    - dataset_assets_upload_from_web_chatgpt
+    - media_assets_upload_from_url
+    - give_sanity_feedback
+    - create_project
+    - add_cors_origin
+    - cors_origins_delete
+    - update_dataset
+
+# Composer-suggestion triggers (desktop brand pills). Multi-word keywords on
+# purpose: bare "sanity" fires on "sanity check", and "groq" collides with the
+# Groq inference provider.
+suggest:
+  keywords:
+    - sanity cms
+    - sanity studio
+    - sanity.io
+  hosts:
+    - sanity.io
+    - sanity.studio
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with
+  Sanity (or run `hermes mcp login sanity`). Approve access,
+  then restart the session so tools load. Tools follow your
+  Sanity role in each project.

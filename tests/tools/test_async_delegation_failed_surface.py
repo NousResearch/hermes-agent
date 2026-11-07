@@ -11,6 +11,7 @@ import time
 import pytest
 
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from tests.waiting import wait_until
 from tools import async_delegation as ad
 
 
@@ -102,15 +103,51 @@ def test_a_split_unit_that_stalls_after_one_task_finished_lists_only_the_stalled
             toolsets=None, role="leaf", model="m", session_key="", origin_ui_session_id="ui-1",
             max_async_children=2, runner=runner, progress_fn=lambda: ((0, None), False))
         assert res["status"] == "dispatched"
-        deadline = time.time() + 5
-        while time.time() < deadline and not ad.failed_delegations_for_session("ui-1"):
-            time.sleep(0.05)
-        assert [(r["task_index"], r["goal"], r["status"]) for r in ad.failed_delegations_for_session("ui-1")] == [
-            (2, "C goal", "stalled")]
+        failed = wait_until(lambda: ad.failed_delegations_for_session("ui-1"), timeout=5)
+        assert [(r["task_index"], r["goal"], r["status"]) for r in failed] == [(2, "C goal", "stalled")]
     finally:
         gate.set()
         while not process_registry.completion_queue.empty():
             process_registry.completion_queue.get_nowait()
+
+
+@pytest.mark.parametrize("task_indexes, unfinished", [([1, 2], [2]), (None, [0, 2])], ids=["split-unit", "whole-batch"])
+def test_a_unit_whose_runner_raises_after_one_task_finished_lists_only_the_unfinished_tasks(task_indexes, unfinished):
+    """The runner-crash twin of the stall test: task 1's recorded result survives, only the rest surface."""
+    from tools.process_registry import process_registry
+    goals = ["A goal", "B goal", "C goal"]
+
+    def runner():
+        ad.record_unit_child("deleg_call-2", {"task_index": 1, "status": "completed", "summary": "done"})
+        raise RuntimeError("kaboom")
+
+    ad.dispatch_async_delegation_batch(
+        delegation_id="deleg_call-2", task_indexes=task_indexes, goals=goals, context=None, toolsets=None,
+        role="leaf", model="m", session_key="", origin_ui_session_id="ui-1", max_async_children=2, runner=runner)
+    evt = process_registry.completion_queue.get(timeout=10)
+
+    assert [(r["task_index"], r["status"]) for r in evt["results"]] == sorted(
+        [(1, "completed")] + [(i, "error") for i in unfinished])
+    assert [(r["task_index"], r["goal"]) for r in ad.failed_delegations_for_session("ui-1")] == [
+        (i, goals[i]) for i in unfinished]
+
+
+def test_a_unit_that_finished_reports_its_runner_results_and_drops_the_recorded_copies():
+    from tools.process_registry import process_registry
+
+    def runner():
+        ad.record_unit_child("deleg_call-2", {"task_index": 1, "status": "completed", "summary": "recorded"})
+        return {"results": [{"task_index": i, "status": "completed", "summary": "final"} for i in (1, 2)]}
+
+    ad.dispatch_async_delegation_batch(
+        delegation_id="deleg_call-2", task_indexes=[1, 2], goals=["A goal", "B goal", "C goal"], context=None,
+        toolsets=None, role="leaf", model="m", session_key="", origin_ui_session_id="ui-1", max_async_children=2,
+        runner=runner)
+    evt = process_registry.completion_queue.get(timeout=10)
+
+    assert [(r["task_index"], r["summary"]) for r in evt["results"]] == [(1, "final"), (2, "final")]
+    record = wait_until(lambda: (r := ad._records.get("deleg_call-2")) and r.get("status") == "completed" and r)
+    assert "_finished_children" not in record  # a retained completed record doesn't keep every child
 
 
 def test_the_durable_parent_id_claims_rows_after_a_reload_remints_the_ui_session():

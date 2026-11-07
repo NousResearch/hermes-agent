@@ -118,14 +118,23 @@ it('a removal another writer (the Webapp) made reaches the cleanup with the list
   })
 
   onTestFinished(stop)
-  // fs.watchFile takes its baseline stat asynchronously: a write before it lands is the baseline, not a change.
+
+  // fs.watchFile takes its baseline stat asynchronously, so a write that lands before it becomes the
+  // baseline instead of a change. Re-issue the (idempotent) outside removal until the watcher reacts;
   // main.ts registers the watcher at load, long before any outside edit.
-  await new Promise(resolve => setTimeout(resolve, 1000))
-
   const webapp = store(list('local', []))
-  webapp.write(removeConnection(webapp.read(), 'remote-a'))
+  await expect
+    .poll(
+      () => {
+        if (!jars.mirrorCleared.length) {
+          webapp.write(removeConnection(webapp.read(), 'remote-a'))
+        }
 
-  await expect.poll(() => jars.mirrorCleared.length, { interval: 100, timeout: 12_000 }).toBe(2)
+        return jars.mirrorCleared.length
+      },
+      { interval: 250, timeout: 12_000 }
+    )
+    .toBe(2)
   await cleaned
   expect(jars.names(resolveOauthPartition(URL_A, { registry: list('local', [gateway]) }))).toEqual([])
   expect(jars.names(LEGACY_OAUTH_PARTITION)).toEqual([])

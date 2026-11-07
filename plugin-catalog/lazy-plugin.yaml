@@ -1,7 +1,7 @@
 name: lazy-plugin
 repo: https://github.com/RegeneratusLabs/lazy-plugin
-sha: 74cbc00b42acaa995547bbf92cd06d04e734fd7b
-version: "0.7.3"
+sha: c6865376bbd0ebb55d269d35f6158a9d02e61bf9
+version: "0.9.0"
 title: "Lazy Plugin"
 description: >-
   A dashboard page in Hermes Desktop where you describe a plugin and watch it get built. Say
@@ -9,7 +9,7 @@ description: >-
   and your own agent drafts the plan in a chat turn you can read, the code comes from four
   fixed templates, and the page shows a receipt: plan, files, validator result, and a real
   try-out of every tool (purrs, needs a key, blocked upstream, half-built, broken — with the
-  exact failing line). Nothing installs itself; publishing is a SHA-pinned catalog PR you
+  exact failing line). Nothing installs itself, and publishing is a SHA-pinned catalog PR you
   send. Also callable as lazyplugin_create from any conversation.
 maintainer: RegeneratusLabs
 tier: community

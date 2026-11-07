@@ -286,7 +286,7 @@ def catalog_mapping(
         "link_modes": [mode for mode in dict.fromkeys(link_modes) if mode == "direct"],
         "persistent_process": persistent_process, "text": bool(text), "attachments": bool(attachments),
         "execution_policy": checked_policy.as_mapping(),
-        "endpoint": dict(local_room_link_endpoint() if endpoint is None else endpoint)}
+        "endpoint": dict(served_room_link_endpoint(profile) if endpoint is None else endpoint)}
     value["catalog_digest"] = _catalog_digest(value)
     GatewayRoomCatalog.from_mapping(value)
     return value
@@ -305,6 +305,27 @@ def local_room_link_endpoint(value: Any | None = None) -> dict[str, Any]:
     except HostedRoomPeerError:
         return {"available": False, "reason": "invalid_configuration"}
     return {"available": True, "url": url, "transport_security": transport_security}
+
+
+def served_room_link_endpoint(target_profile: str) -> dict[str, Any]:
+    """The endpoint a catalog for the served *target_profile* advertises.
+
+    A named profile that sets its own ``gateway.room_link_url`` advertises it as is. One that
+    inherits the gateway's endpoint (root config or ``HERMES_ROOM_LINK_URL``) advertises that
+    listener's ``/p/<profile>`` mirror, so every lender call runs in that profile's request scope
+    and its grant (``target_profile``) never answers on another profile's route."""
+    if target_profile == "default":
+        return local_room_link_endpoint()
+    from hermes_cli.profiles import get_profile_dir
+    override = os.getenv("HERMES_ROOM_LINK_URL")
+    if override is None and (own := _room_link_url_from_config(str(get_profile_dir(target_profile)))):
+        return local_room_link_endpoint(own)
+    from hermes_constants import get_default_hermes_root
+    inherited = str((override if override is not None
+                     else _room_link_url_from_config(str(get_default_hermes_root()))) or "").strip()
+    if not inherited:
+        return {"available": False, "reason": "not_configured"}
+    return local_room_link_endpoint(f"{inherited.rstrip('/')}/p/{target_profile}")
 
 
 @lru_cache(maxsize=16)

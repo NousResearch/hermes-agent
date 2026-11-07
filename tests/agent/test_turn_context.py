@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from agent.prompt_builder import steer_user_row
 from agent.turn_context import (
     PreflightCompressionTimedOut,
     TurnContext,
@@ -322,9 +323,19 @@ def _compaction_returning_history(history_for):
         (_PRIOR_TURN + [{"role": "user", "content": _carrier(ask="")}], None, _PREVIOUS),
         (_PRIOR_TURN + [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]},
                         {"role": "assistant", "content": "Done."}], None, ""),
+        # Gateway replay renders a timestamp prefix and drops the steer row's display_kind.
+        ([{"role": "user", "content": f"[Thu 2026-11-05 10:00:00 IST] {_PREVIOUS}"}, {"role": "assistant", "content": "Done."}],
+         None, _PREVIOUS),
+        (_PRIOR_TURN + [{"role": "user", "content": steer_user_row("use zstd")["content"]}, {"role": "assistant", "content": "Ok."}],
+         None, _PREVIOUS),
+        (_PRIOR_TURN + [{"role": "user", "content": "[Thu 2026-11-05 10:01:00 IST] " + steer_user_row("use zstd")["content"]},
+                        {"role": "assistant", "content": "Ok."}], None, _PREVIOUS),
+        (_PRIOR_TURN + [{"role": "user", "content": [{"type": "text", "text": "\n\n" + steer_user_row("use zstd")["content"]}]},
+                        {"role": "assistant", "content": "Ok."}], None, _PREVIOUS),
     ],
     ids=["no-compaction", "in-place-compaction", "rotation", "first-turn", "multimodal", "skips-scaffolding",
-         "skips-flagged-scaffolding", "compaction-carrier-ask", "skips-bare-summary", "image-only-stops-search"],
+         "skips-flagged-scaffolding", "compaction-carrier-ask", "skips-bare-summary", "image-only-stops-search",
+         "strips-gateway-timestamp", "skips-replayed-steer", "skips-timestamped-steer", "skips-steer-text-part"],
 )
 def test_providers_get_what_the_person_last_asked(history, compaction, expected, monkeypatch):
     """A resumed process must tell providers what the last turn asked: a live process may have keyed

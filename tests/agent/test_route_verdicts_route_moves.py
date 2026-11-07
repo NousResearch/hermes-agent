@@ -167,6 +167,147 @@ def test_a_rotation_to_another_endpoint_gives_its_effort_rejection_a_recovery(ro
         assert _wire_reasoning_config(agent) is None
     else:
         assert _wire_reasoning_config(agent) is None
-        assert retry.reasoning_mandatory_retry_attempted is True
+        assert retry.reasoning_mandatory_retry_endpoint is not None
         assert _recover_from(agent, retry, 400, _STRUCTURED_LEVEL_400)[0] is False
     assert agent.activated == []
+
+
+_ENC_400 = "Encrypted content for item rs_1 could not be verified. code: invalid_encrypted_content"
+_B_URL = "https://second.example/v1"
+
+
+def _spent_effort_repair(agent):
+    """A rejects ``effort: max`` and its one-shot repair runs: the retry goes out without it."""
+    from agent.chat_completion_helpers import _reasoning_config_for_wire
+    from agent.turn_retry_state import TurnRetryState
+    from tests.agent.test_reasoning_disable_recovery import _STRUCTURED_LEVEL_400
+
+    retry = TurnRetryState()
+    assert _reasoning_config_for_wire(agent) == {"enabled": True, "effort": "max"}
+    assert _recover_from(agent, retry, 400, _STRUCTURED_LEVEL_400)[0] is True
+    assert _reasoning_config_for_wire(agent) is None
+    return retry
+
+
+def _destination_effort_repaired(agent, retry, moved):
+    """On another endpoint the configured effort goes out again and its rejection gets its own repair;
+    on the same endpoint the verdict holds and the spent repair stays spent."""
+    from agent.chat_completion_helpers import _reasoning_config_for_wire
+    from tests.agent.test_reasoning_disable_recovery import _STRUCTURED_LEVEL_400
+
+    assert _reasoning_config_for_wire(agent) == ({"enabled": True, "effort": "max"} if moved else None)
+    assert _recover_from(agent, retry, 400, _STRUCTURED_LEVEL_400)[0] is moved
+    assert agent.activated == []
+
+
+def _codex_history():
+    return [{"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "x", "codex_reasoning_items": [{"id": "rs_1", "encrypted_content": "e"}]}]
+
+
+def _soft_auth_failure_refresh(agent, retry, url):
+    """An HTTP-200 Codex ``status=failed`` invalid_api_key: the real pool refresh hands back the entry,
+    now on ``url``, through the real ``_swap_credential``."""
+    from agent.agent_runtime_helpers import extract_api_error_context, recover_with_credential_pool
+    from agent.turn_response_check import retry_invalid_response
+
+    pool = MagicMock(provider="custom")
+    pool.try_refresh_matching.return_value = SimpleNamespace(runtime_api_key="fresh", runtime_base_url=url, id="a")
+    agent._credential_pool, agent._credential_pool_entry_id, agent._auth_pool_refresh_counts = pool, "a", {}
+    agent._extract_api_error_context = extract_api_error_context
+    response = SimpleNamespace(status="failed", output=[], error=SimpleNamespace(code="invalid_api_key", message="Invalid API key"))
+    with patch.object(agent, "_recover_with_credential_pool", lambda **kw: recover_with_credential_pool(agent, **kw)), \
+            patch("hermes_cli.config.load_config_readonly", return_value={}):
+        verdict = retry_invalid_response(
+            agent, response=response, error_details=["failed"], _retry=retry, thinking_spinner=None, messages=[],
+            api_messages=[], api_kwargs={}, active_system_prompt="", conversation_history=None, retry_count=0,
+            max_retries=3, compression_attempts=0, api_call_count=1, api_request_id="r", api_start_time=0,
+            api_duration=0, effective_task_id="t", turn_id="t",
+        )
+    assert verdict.action == "continue"
+    assert pool.try_refresh_matching.call_count == 1
+    assert agent.base_url == url
+
+
+@pytest.mark.parametrize("moved", [True, False])
+def test_a_codex_soft_auth_failure_refresh_onto_another_endpoint_rearms_its_effort_repair(moved):
+    agent = _rotation_agent()
+    agent.api_mode = "codex_responses"
+    retry = _spent_effort_repair(agent)
+    _soft_auth_failure_refresh(agent, retry, _B_URL if moved else agent.base_url)
+    _destination_effort_repaired(agent, retry, moved)
+
+
+@pytest.mark.parametrize("moved", [True, False])
+def test_a_codex_soft_auth_failure_refresh_onto_another_endpoint_rearms_its_replay_strip(moved):
+    """A strips its stale replay blobs once; B (after the refresh moved there) gets its own strip."""
+    from agent.error_classifier import classify_api_error
+    from agent.turn_recovery import recover_after_classification
+    from agent.turn_retry_state import TurnRetryState
+    from tests.agent.test_reasoning_disable_recovery import _FakeApiError
+
+    agent = _rotation_agent()
+    agent.api_mode = "codex_responses"
+    agent._codex_reasoning_replay_enabled, agent._codex_reasoning_replay_rejected = True, False
+    agent._disable_codex_reasoning_replay = lambda messages, keep_replay=True: {"items": 1, "messages": 1}
+    retry, err = TurnRetryState(), _FakeApiError(400, _ENC_400)
+
+    def strip():
+        history = _codex_history()
+        return recover_after_classification(
+            agent, err, classify_api_error(err, provider=agent.provider, model=agent.model), retry, status_code=400,
+            error_context={}, messages=history, api_messages=[dict(m) for m in history],
+        )[0]
+
+    assert strip() is True
+    _soft_auth_failure_refresh(agent, retry, _B_URL if moved else agent.base_url)
+    assert strip() is moved
+
+
+@pytest.mark.parametrize(("new_url", "moved"), [(_WELCOME, True), (_PAID, False)])
+def test_a_nous_401_refresh_onto_another_host_rearms_its_effort_repair(new_url, moved):
+    """Not a pool move: the Nous 401 refresh re-reads the credentials onto the other identity's host."""
+    from types import MethodType
+
+    from agent.client_lifecycle import ClientLifecycleMixin
+
+    agent = _rotation_agent()
+    agent.provider, agent.base_url = "nous", _PAID
+    agent._client_kwargs["base_url"], agent._extract_api_error_context = _PAID, lambda exc: {}
+    for name in ("_try_refresh_nous_client_credentials", "_adopt_openai_credentials"):
+        setattr(agent, name, MethodType(getattr(ClientLifecycleMixin, name), agent))
+    retry = _spent_effort_repair(agent)
+    with patch("hermes_cli.auth.resolve_nous_runtime_credentials", return_value={"api_key": "fresh", "base_url": new_url}):
+        assert _recover_from(agent, retry, 401, "invalid api key")[0] is True
+    assert agent.base_url == new_url
+    _destination_effort_repaired(agent, retry, moved)
+
+
+@pytest.mark.parametrize("moved", [True, False])
+def test_transport_recovery_onto_another_endpoint_rearms_its_effort_repair(moved):
+    """Retries ran out after A's effort repair; transport recovery reinstalls the primary."""
+    from agent.error_classifier import classify_api_error
+    from agent.route_verdicts import reset_route_verdicts_if_moved
+    from agent.turn_api_error import settle_unrecovered_error
+    from tests.agent.test_reasoning_disable_recovery import _FakeApiError
+
+    agent = _rotation_agent()
+    retry = _spent_effort_repair(agent)
+
+    def recover(api_error, retry_count, max_retries):  # what the real recovery does to the route
+        prior, agent.base_url = agent.base_url, _B_URL if moved else agent.base_url
+        reset_route_verdicts_if_moved(agent, prior)
+        return True
+
+    agent._try_recover_primary_transport = recover
+    err = _FakeApiError(503, "service unavailable")
+    with patch("agent.conversation_loop._credential_refresh_profile", lambda a: None):
+        verdict = settle_unrecovered_error(
+            agent, api_error=err, classified=classify_api_error(err, provider=agent.provider, model=agent.model),
+            _retry=retry, status_code=503, error_msg=str(err), is_context_length_error=False, is_rate_limited=False,
+            _is_zai_coding_overload=False, _provider=agent.provider, _base=agent.base_url, _model=agent.model,
+            messages=[], api_messages=[], api_kwargs={}, active_system_prompt="", conversation_history=None,
+            approx_tokens=10, retry_count=3, max_retries=3, compression_attempts=0, api_call_count=1,
+        )
+    assert verdict.action == "continue"
+    _destination_effort_repaired(agent, retry, moved)

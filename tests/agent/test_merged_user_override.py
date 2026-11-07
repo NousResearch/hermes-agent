@@ -1,6 +1,9 @@
 """A replayed merged row keeps the unanswered request and exact wire sidecar."""
 
+import pytest
+
 from agent.agent_runtime_helpers import repair_message_sequence
+from agent.message_metadata import TYPED_ASK
 from agent.session_persistence import SessionPersistenceMixin, _db_flush_row
 
 
@@ -61,3 +64,26 @@ def test_empty_gateway_timestamp_turn_preserves_all_unanswered_rows_on_live_and_
         assert _db_flush_row(agent, messages[1], True)["content"] == expected
         # A later non-empty override on the same row joins like the merge does.
         assert _db_flush_row(_agent_persisting("later"), messages[1], True)["content"] == expected + "\n\nlater"
+
+
+_STORED_IMAGE_TURN = "first ask\n[screenshot]\n\nPLUGIN NOTE"  # a reloaded stamped multimodal row
+
+
+@pytest.mark.parametrize("rows, expected", [
+    ([{"content": _STORED_IMAGE_TURN, TYPED_ASK: "first ask"}, {"content": "second ask"}], "first ask\n\nsecond ask"),
+    ([{"content": _STORED_IMAGE_TURN, TYPED_ASK: "first ask"}, {"content": ""}], "first ask"),
+    ([{"content": ""}, {"content": _STORED_IMAGE_TURN, TYPED_ASK: "first ask"}], "first ask"),
+    ([{"content": "plain ask"}, {"content": _STORED_IMAGE_TURN, TYPED_ASK: "first ask"}], "plain ask\n\nfirst ask"),
+], ids=["stamped-then-text", "stamped-then-empty", "empty-then-stamped", "unstamped-then-stamped"])
+def test_a_merged_row_keeps_the_typed_ask_of_what_it_folded(rows, expected):
+    """An unanswered stored image turn is folded with the next prompt on repair. Dropping its stamp
+    would make ``previous_message`` read the stored notes; the stamp follows the content's join."""
+    from agent.agent_runtime_helpers import _merge_consecutive_users
+    from agent.turn_context import _previous_user_message_text
+
+    history = [{"role": "user", "content": row["content"], "display_metadata": {"keep": 1, **(
+        {TYPED_ASK: row[TYPED_ASK]} if TYPED_ASK in row else {})}} for row in rows]
+    merged, _ = _merge_consecutive_users(history + [{"role": "assistant", "content": "x"}])
+
+    assert merged[0]["display_metadata"]["keep"] == 1
+    assert _previous_user_message_text(merged) == expected

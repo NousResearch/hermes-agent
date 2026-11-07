@@ -242,6 +242,10 @@ def terminal_run_status(result: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     }
     if not finished and result.get("turn_exit_reason"):
         fields["turn_exit_reason"] = str(result["turn_exit_reason"])
+    resets_at = result.get("failure_resets_at")
+    if not finished and isinstance(resets_at, (int, float)) and not isinstance(resets_at, bool):
+        # When a spent quota lifts (epoch seconds), so API clients can tell the user when to retry.
+        fields["failure_resets_at"] = float(resets_at)
     if result.get("pending_steer"):
         # Undelivered steer text rides on every terminal event/status for client replay.
         fields["pending_steer"] = result["pending_steer"]

@@ -7,6 +7,7 @@ import asyncio
 import atexit
 import contextlib
 import logging
+import math
 import threading
 import time
 import weakref
@@ -16,6 +17,44 @@ from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger("hermes_state")
 
 _TOKEN_COUNTERS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")
+_COST_COLUMNS = ("estimated_cost_usd", "actual_cost_usd")
+
+
+def finite_cost_sql(column: str) -> str:
+    """SQL reading cost ``column`` with a non-finite stored value (an inf written before the sinks
+    checked) as 0, so a reader's sum or JSON never carries inf. NULL also reads as 0."""
+    return f"(CASE WHEN ABS({column}) <= 1.7976931348623157e308 THEN {column} ELSE 0 END)"
+
+
+def finite_cost(value: Any) -> float:
+    """A stored cost as a finite float; None, a non-number or a non-finite value reads as 0."""
+    try:
+        value = float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    return value if math.isfinite(value) else 0.0
+
+
+def finite_cost_fields(row: dict[str, Any]) -> dict[str, Any]:
+    """``row`` with each non-None cost column clamped by :func:`finite_cost` (in place), so a payload
+    built from a stored row written before the sinks checked (inf) stays valid JSON. None (unknown)
+    stays None."""
+    row.update({k: finite_cost(row[k]) for k in _COST_COLUMNS if row.get(k) is not None})
+    return row
+
+
+def _drop_non_finite_costs(costs: dict[str, Any], session_id: str) -> None:
+    """Drop a non-finite cost delta (inf/NaN) before it reaches SQLite, with a warning: NaN fails the
+    NOT NULL constraint (losing the whole delta, tokens included) and inf poisons every later sum."""
+    for key in _COST_COLUMNS:
+        value = costs.get(key)
+        if isinstance(value, (int, float)) and not math.isfinite(value):
+            logger.warning("Dropping non-finite %s=%r for session %s; tokens are still recorded",
+                           key, value, session_id)
+            costs[key] = None
+
+
+_FINITE_EST, _FINITE_ACT = finite_cost_sql("estimated_cost_usd"), finite_cost_sql("actual_cost_usd")
 
 
 def _token_update_sql(delta: bool) -> str:
@@ -223,9 +262,12 @@ class SessionUsageMixin:
 
     def _coalesce_token_deltas(self, batch: list[tuple[str, dict[str, Any]]]) -> list[tuple[str, dict[str, Any]]]:
         """Merge adjacent incremental deltas with an identical route, so ordering across
-        sessions and /model switches is preserved exactly. absolute=True never merges."""
+        sessions and /model switches is preserved exactly. absolute=True never merges. A non-finite
+        cost delta is dropped first, so one inf/NaN can't wipe out the finite costs it would merge with."""
         groups: list[tuple[Optional[tuple], str, dict[str, Any]]] = []
         for session_id, kwargs in batch:
+            kwargs = dict(kwargs)
+            _drop_non_finite_costs(kwargs, session_id)
             key = None
             if not kwargs.get("absolute"):
                 key = (session_id, *(kwargs.get(f) for f in self._TOKEN_DELTA_ROUTE_FIELDS))
@@ -239,7 +281,7 @@ class SessionUsageMixin:
                         # All-None runs stay None so COALESCE keeps the stored value.
                         merged[f] = (merged.get(f) or 0.0) + value
             else:
-                groups.append((key, session_id, dict(kwargs)))
+                groups.append((key, session_id, kwargs))
         return [(sid, kw) for _, sid, kw in groups]
 
     def _stop_token_writer(self, join_timeout: float = 10.0) -> None:
@@ -300,6 +342,7 @@ class SessionUsageMixin:
         values.pop('self')
         values.pop('session_id')
         values.pop('source')
+        _drop_non_finite_costs(values, session_id)
         # Ensure the row exists: under concurrent load create_session() may have failed on
         # locking, and the UPDATE would silently affect 0 rows. When this guard is the first
         # writer it must carry the agent's real source: the turn lease treats an existing row as
@@ -393,12 +436,15 @@ class SessionUsageMixin:
         self, session_id: str, task: str, *, model: Optional[str]=None, billing_provider: Optional[str]=None,
         billing_base_url: Optional[str]=None, input_tokens: int=0, output_tokens: int=0, cache_read_tokens: int=0,
         cache_write_tokens: int=0, reasoning_tokens: int=0, estimated_cost_usd: Optional[float]=None,
-        api_call_count: int=1,
+        api_call_count: int=1, actual_cost_usd: Optional[float]=None, cost_status: Optional[str]=None,
+        cost_source: Optional[str]=None,
     ) -> None:
         """Record an auxiliary LLM call's usage (vision, compression, title generation, ...)
         as a per-(model, provider, task) delta in ``session_model_usage`` WITHOUT touching
         the ``sessions`` summary row (the gateway overwrites those counters with absolute
         main-loop totals). ``api_call_count`` may aggregate N calls. Best-effort.
+        A provider-reported amount goes in ``actual_cost_usd``, an estimate in ``estimated_cost_usd``
+        (disjoint, as on the main loop); readers sum the two.
 
         See #23270.
         Background-review forks record an aggregate of N fork API calls in one write with
@@ -407,6 +453,7 @@ class SessionUsageMixin:
         usage = {k: v for k, v in locals().items() if k in _MODEL_USAGE_FIELDS}
         if not session_id or not task:
             return
+        _drop_non_finite_costs(usage, session_id)
         usage["api_call_count"] = 1 if api_call_count is None else int(api_call_count)
         # FK to sessions.id. A missing row is inserted as the ``unknown`` placeholder, which
         # the creator upsert later replaces. An existing row keeps source and created_source,
@@ -427,7 +474,10 @@ class SessionUsageMixin:
     def auxiliary_usage_by_task(self, session_id: str) -> dict[str, dict[str, float]]:
         """Per-task auxiliary usage (``task != ''``: vision, compression, title_generation, ...) summed
         over the session's compression lineage. Aux calls bill to the id the turn STARTED with while
-        compression mints child ids mid-turn, so a single-id read misses rows (#112848)."""
+        compression mints child ids mid-turn, so a single-id read misses rows (#112848).
+        ``estimated_cost_usd`` is the task's whole spend (estimate plus provider-reported amount, the
+        same meaning as the agent's ``session_estimated_cost_usd``); ``actual_cost_usd`` is the
+        provider-reported part."""
         if not session_id:
             return {}
         chain = self._session_lineage_root_to_tip(session_id)
@@ -445,7 +495,8 @@ class SessionUsageMixin:
                        COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
                        COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
                        COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
-                       COALESCE(SUM(estimated_cost_usd), 0) AS estimated_cost_usd
+                       COALESCE(SUM({_FINITE_EST} + {_FINITE_ACT}), 0) AS estimated_cost_usd,
+                       COALESCE(SUM({_FINITE_ACT}), 0) AS actual_cost_usd
                   FROM session_model_usage
                  WHERE session_id IN ({','.join('?' * len(chain))}) AND task != ''
                  GROUP BY task""",
@@ -455,14 +506,15 @@ class SessionUsageMixin:
 
     def usage_totals(self, *, min_message_count: int = 1, include_archived: bool = False) -> dict[str, float]:
         """Tokens and spend across the whole store (one scan), so the sidebar total does not
-        shrink with paging. Spend prefers the billed figure over the estimate."""
+        shrink with paging. Spend is the provider-reported amount plus the estimate: the two
+        columns hold disjoint calls (an ``actual`` call is never also in the estimate)."""
         where = ["parent_session_id IS NULL", "message_count >= ?"]
         params: list[Any] = [min_message_count]
         if not include_archived:
             where.append("COALESCE(archived, 0) = 0")
         row = self._read_one(f"""
             SELECT COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0),
-                   COALESCE(SUM(COALESCE(actual_cost_usd, estimated_cost_usd, 0)), 0)
+                   COALESCE(SUM({_FINITE_ACT} + {_FINITE_EST}), 0)
               FROM sessions
              WHERE {' AND '.join(where)}
             """, params)

@@ -453,6 +453,8 @@ Providers may override `get_model_context_length(model)` with a qualified positi
 
 For a nonstandard cost surface, `get_usage_cost(model, usage)` may return an `agent.usage_pricing.CostResult`, or `None` for normal pricing. `usage` is a `CanonicalUsage` whose `raw_usage` retains response metadata when available. Classify native list-price totals as `estimated`, never `actual` or `included`; missing invoice information is not proof of zero charges. The default hooks return `None`, preserving existing providers.
 
+Core stores an `actual` amount in `actual_cost_usd` and any other amount in `estimated_cost_usd`; spend readers add the two.
+
 ## Hook reference examples
 
 Look at these bundled plugins for idioms:

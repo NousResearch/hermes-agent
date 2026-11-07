@@ -217,7 +217,7 @@ export const af: Translations = {
 
   models: {
     modelsUsed: "Modelle Gebruik",
-    estimatedCost: "Geskatte Koste",
+    cost: "Koste",
     tokens: "tokens",
     sessions: "sessies",
     avgPerSession: "gem./sessie",

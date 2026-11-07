@@ -131,6 +131,7 @@ from gateway.parked_route_refusal import ParkedRouteRefused
 from gateway.platforms._shared import coerce_port as _coerce_port, get_scoped_secret as _get_scoped_secret
 from gateway.platforms.tcp_site import start_tcp_site
 from hermes_state_errors import SessionActiveWriteGuardError
+from hermes_state_usage import finite_cost_fields
 
 
 logger = logging.getLogger(__name__)
@@ -2445,10 +2446,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "estimated_cost_usd",
             "actual_cost_usd", "api_call_count", "parent_session_id", "last_active", "preview",
             "_lineage_root_id", "pinned", "archived", "hidden")
-        payload = {key: session.get(key) for key in safe_keys if key in session}
+        payload = finite_cost_fields({key: session.get(key) for key in safe_keys if key in session})
         # SQLite stores the flags as 0/1.
-        payload.update(
-            {f: bool(payload[f]) for f in ("pinned", "archived", "hidden") if f in payload})
+        payload.update({f: bool(payload[f]) for f in ("pinned", "archived", "hidden") if f in payload})
         # Full system prompts / model_config never cross the client API; only their presence.
         payload["has_system_prompt"] = bool(session.get("system_prompt"))
         payload["has_model_config"] = bool(session.get("model_config"))

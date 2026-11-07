@@ -324,6 +324,8 @@ _PROJECT_TREE_EXCLUDED_SOURCES = ["cron", "kanban", "oneshot"]
 def _project_tree_row(r: dict) -> dict:
     """Project a SessionDB row to the minimal shape the sidebar renders (grouping fields +
     what ``SidebarSessionRow`` reads), minus the heavy columns."""
+    from hermes_state_usage import finite_cost_fields
+
     row = {k: r.get(k) for k in (
         "id", "_lineage_root_id", "_lineage_ids", "parent_session_id",
         "_reset_from", "_branched_from", "title", "preview")}
@@ -335,7 +337,7 @@ def _project_tree_row(r: dict) -> dict:
             "message_count", "tool_call_count", "input_tokens", "output_tokens")},
         **{k: r.get(k) for k in ("actual_cost_usd", "estimated_cost_usd", "model")},
         is_active=False, **{k: r.get(k) for k in ("cwd", "git_branch", "git_repo_root")})
-    return row
+    return finite_cost_fields(row)  # a legacy inf cost would make the frame invalid JSON
 
 
 def _project_tree_inputs(

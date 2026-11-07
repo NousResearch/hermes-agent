@@ -217,7 +217,7 @@ export const hu: Translations = {
 
   models: {
     modelsUsed: "Használt modellek",
-    estimatedCost: "Becsült költség",
+    cost: "Költség",
     tokens: "tokenek",
     sessions: "munkamenetek",
     avgPerSession: "átlag/munkamenet",

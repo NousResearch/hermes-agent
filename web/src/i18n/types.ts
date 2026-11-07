@@ -272,7 +272,7 @@ export interface Translations {
   // ── Models page ──
   models: {
     modelsUsed: string;
-    estimatedCost: string;
+    cost: string;
     tokens: string;
     sessions: string;
     avgPerSession: string;

@@ -29,6 +29,18 @@ def _agent_session_source(agent: Any) -> str:
     return session_source_for(getattr(agent, "platform", None))
 
 
+def _queue_moa_advisor_estimate(agent: Any, amount: Any) -> None:
+    """MoA advisors on a turn whose aggregator amount is provider-reported: core's own estimate of
+    the advisors goes to ``estimated_cost_usd`` in its own delta (tokens and the call are already
+    counted with the aggregator's write)."""
+    if amount is None:
+        return
+    agent._session_db.queue_token_counts(
+        agent.session_id, source=_agent_session_source(agent), estimated_cost_usd=amount,
+        billing_provider=agent.provider, billing_base_url=agent.base_url, model=agent.model,
+        task=getattr(agent, "_turn_route_task", "") or "")
+
+
 @dataclass
 class ResponseUsageOutcome:
     """``compression_attempts`` is the (possibly rearmed-to-zero) budget counter;
@@ -240,6 +252,8 @@ def record_response_usage(
     if cost_result.amount_usd is not None:
         _cost_delta = float(cost_result.amount_usd)
         agent.session_estimated_cost_usd += _cost_delta
+    from agent.usage_cost_columns import add_moa_advisor_cost, note_reported_cost
+    _moa_estimated = None  # MoA advisor spend kept apart from a provider-reported aggregator amount
     if _moa_ref_cost is not None:
         try:
             _moa_cost = float(_moa_ref_cost)
@@ -247,7 +261,8 @@ def record_response_usage(
             _moa_cost = None
         if _moa_cost is not None:
             agent.session_estimated_cost_usd += _moa_cost
-            _cost_delta = (_cost_delta or 0.0) + _moa_cost
+            _cost_delta, _moa_estimated = add_moa_advisor_cost(cost_result.status, _cost_delta, _moa_cost)
+    note_reported_cost(agent, cost_result.status, _cost_delta)
     agent.session_cost_status = cost_result.status
     agent.session_cost_source = cost_result.source
 
@@ -269,7 +284,11 @@ def record_response_usage(
                 cache_read_tokens=canonical_usage.cache_read_tokens,
                 cache_write_tokens=canonical_usage.cache_write_tokens,
                 reasoning_tokens=canonical_usage.reasoning_tokens,
-                estimated_cost_usd=_cost_delta,
+                # A provider-reported cost (status="actual") is real spend, not an
+                # estimate: accumulate it into actual_cost_usd (None keeps the
+                # stored column value untouched).
+                estimated_cost_usd=_cost_delta if cost_result.status != "actual" else None,
+                actual_cost_usd=_cost_delta if cost_result.status == "actual" else None,
                 cost_status=cost_result.status,
                 cost_source=cost_result.source,
                 billing_provider=agent.provider,
@@ -280,6 +299,7 @@ def record_response_usage(
                 api_call_count=1,
                 task=getattr(agent, "_turn_route_task", "") or "",
             )
+            _queue_moa_advisor_estimate(agent, _moa_estimated)
         except Exception as e:  # silent loss here undercounts analytics
             logger.debug(
                 "Token persistence failed (session=%s, tokens=%d): %s",

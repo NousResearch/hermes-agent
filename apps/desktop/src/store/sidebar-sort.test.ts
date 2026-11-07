@@ -26,6 +26,16 @@ describe('$sidebarSessionRankIds', () => {
     expect($sidebarSessionRankIds.get()).toEqual(['dear', 'estimated', 'cheap'])
   })
 
+  it('ranks by reported plus estimated spend (the two columns hold different calls)', () => {
+    $sessions.set([
+      session('reported-only', { actual_cost_usd: 1 }),
+      session('mixed', { actual_cost_usd: 0.5, estimated_cost_usd: 0.75 })
+    ])
+    setSidebarOrdering('cost')
+
+    expect($sidebarSessionRankIds.get()).toEqual(['mixed', 'reported-only'])
+  })
+
   it('ranks by total tokens, both halves counted', () => {
     $sessions.set([
       session('small', { input_tokens: 10, output_tokens: 10 }),

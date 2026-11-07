@@ -776,11 +776,23 @@ _USAGE_COUNTERS = (
 
 
 def _snapshot_review_usage(review_agent: Any) -> dict[str, Any]:
-    """Snapshot in-memory usage counters from a review fork (pre-close)."""
+    """Snapshot in-memory usage counters from a review fork (pre-close). ``session_estimated_cost_usd``
+    is the fork's whole spend; its provider-reported part is recorded apart, as ``actual_cost_usd``."""
+    total = getattr(review_agent, "session_estimated_cost_usd", None)
+    actual = getattr(review_agent, "session_actual_cost_usd", None)
+    estimated: Any = total
+    if isinstance(total, (int, float)) and isinstance(actual, (int, float)) and actual > 0:
+        estimated = max(0.0, total - actual)
+    else:
+        actual = None
     return {
         **{key: getattr(review_agent, key, None) for key in ("model", "provider", "base_url")},
         **{key: int(getattr(review_agent, f"session_{key}", 0) or 0) for key in _USAGE_COUNTERS},
-        "estimated_cost_usd": getattr(review_agent, "session_estimated_cost_usd", None),
+        "estimated_cost_usd": estimated, "actual_cost_usd": actual,
+        # Stamped so readers use the stored split instead of re-pricing the tokens (which would count
+        # the provider-reported part twice).
+        **{key: v if isinstance(v := getattr(review_agent, f"session_{key}", None), str) else None
+           for key in ("cost_status", "cost_source")},
     }
 
 
@@ -802,7 +814,8 @@ def _record_review_usage_to_parent(
         session_db.record_auxiliary_usage(
             session_id, task=task, model=usage.get("model"),
             billing_provider=usage.get("provider"), billing_base_url=usage.get("base_url"),
-            estimated_cost_usd=usage.get("estimated_cost_usd"),
+            estimated_cost_usd=usage.get("estimated_cost_usd"), actual_cost_usd=usage.get("actual_cost_usd"),
+            cost_status=usage.get("cost_status"), cost_source=usage.get("cost_source"),
             api_call_count=counts.pop("api_calls"), **counts,
         )
     except Exception as e:

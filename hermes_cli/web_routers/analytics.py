@@ -19,8 +19,13 @@ from hermes_cli.web_server_profiles import (
     _approval_mode_of, _aux_task_summary, _aux_usage_rows, _broadcast_gateway_session_info, _is_other_profile, _merge_aux_into_by_model,
 )
 from hermes_cli.web_models import RawConfigUpdate
+from hermes_state_usage import finite_cost_sql
 
 router = APIRouter()
+
+# Cost sums read a non-finite stored value (inf from before the sinks checked) as 0, so JSON never carries inf.
+_EST, _ACT = finite_cost_sql("estimated_cost_usd"), finite_cost_sql("actual_cost_usd")
+_U_EST, _U_ACT = finite_cost_sql("u.estimated_cost_usd"), finite_cost_sql("u.actual_cost_usd")
 
 # Late-bound so a test's monkeypatch on the owning module wins at call time.
 _open_session_db_for_profile = late("_open_session_db_for_profile", "hermes_cli.web_server_sessions")
@@ -88,25 +93,26 @@ def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
     try:
         cutoff = time.time() - (days * 86400)
         # Local calendar day, per-row (DST-correct), the same day /insights uses (agent/insights.py).
-        daily = _rows(db, """
+        daily = _rows(db, f"""
             SELECT date(started_at, 'unixepoch', 'localtime') as day,
                    SUM(input_tokens) as input_tokens,
                    SUM(output_tokens) as output_tokens,
                    SUM(cache_read_tokens) as cache_read_tokens,
                    SUM(reasoning_tokens) as reasoning_tokens,
-                   COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
-                   COALESCE(SUM(actual_cost_usd), 0) as actual_cost,
+                   COALESCE(SUM({_EST}), 0) as estimated_cost,
+                   COALESCE(SUM({_ACT}), 0) as actual_cost,
                    COUNT(*) as sessions,
                    SUM(COALESCE(api_call_count, 0)) as api_calls
             FROM sessions WHERE started_at > ?
             GROUP BY day ORDER BY day
         """, cutoff)
 
-        by_model = _rows(db, """
+        by_model = _rows(db, f"""
             SELECT model,
                    SUM(input_tokens) as input_tokens,
                    SUM(output_tokens) as output_tokens,
-                   COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
+                   COALESCE(SUM({_EST}), 0) as estimated_cost,
+                   COALESCE(SUM({_ACT}), 0) as actual_cost,
                    COUNT(*) as sessions,
                    SUM(COALESCE(api_call_count, 0)) as api_calls
             FROM sessions WHERE started_at > ? AND model IS NOT NULL
@@ -120,13 +126,13 @@ def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
         aux_rows = _aux_usage_rows(db, cutoff)
         by_model = _merge_aux_into_by_model(by_model, aux_rows)
 
-        totals = _rows(db, """
+        totals = _rows(db, f"""
             SELECT SUM(input_tokens) as total_input,
                    SUM(output_tokens) as total_output,
                    SUM(cache_read_tokens) as total_cache_read,
                    SUM(reasoning_tokens) as total_reasoning,
-                   COALESCE(SUM(estimated_cost_usd), 0) as total_estimated_cost,
-                   COALESCE(SUM(actual_cost_usd), 0) as total_actual_cost,
+                   COALESCE(SUM({_EST}), 0) as total_estimated_cost,
+                   COALESCE(SUM({_ACT}), 0) as total_actual_cost,
                    COUNT(*) as total_sessions,
                    SUM(COALESCE(api_call_count, 0)) as total_api_calls
             FROM sessions WHERE started_at > ?
@@ -225,7 +231,8 @@ def _model_capabilities(provider: str, model_name: str) -> dict:
 
 
 _AUX_SUMMED_KEYS = (
-    "input_tokens", "output_tokens", "cache_read_tokens", "reasoning_tokens", "estimated_cost", "api_calls",
+    "input_tokens", "output_tokens", "cache_read_tokens", "reasoning_tokens", "estimated_cost", "actual_cost",
+    "api_calls",
 )
 
 
@@ -248,7 +255,6 @@ def _merge_aux_into_rows(raw_rows: list[dict[str, Any]], aux_rows: list[dict[str
                 "model": key[0],
                 "billing_provider": key[1],
                 **{k: 0 for k in _AUX_SUMMED_KEYS},
-                "actual_cost": 0,
                 "sessions": aux.get("sessions") or 0,
                 "tool_calls": 0,
                 "last_used_at": None,
@@ -318,15 +324,15 @@ def _get_models_analytics(days: int = 30, profile: Optional[str] = None):
         # grouping it attributed the whole session to it (#71778). Insights
         # (_compute_model_breakdown) reads the same table.
         try:
-            cur = db._conn.execute("""
+            cur = db._conn.execute(f"""
                 SELECT u.model,
                        u.billing_provider,
                        SUM(u.input_tokens) as input_tokens,
                        SUM(u.output_tokens) as output_tokens,
                        SUM(u.cache_read_tokens) as cache_read_tokens,
                        SUM(u.reasoning_tokens) as reasoning_tokens,
-                       COALESCE(SUM(u.estimated_cost_usd), 0) as estimated_cost,
-                       COALESCE(SUM(u.actual_cost_usd), 0) as actual_cost,
+                       COALESCE(SUM({_U_EST}), 0) as estimated_cost,
+                       COALESCE(SUM({_U_ACT}), 0) as actual_cost,
                        COUNT(DISTINCT u.session_id) as sessions,
                        SUM(COALESCE(u.api_call_count, 0)) as api_calls,
                        MAX(u.last_seen) as last_used_at,
@@ -344,15 +350,15 @@ def _get_models_analytics(days: int = 30, profile: Optional[str] = None):
         if not raw_rows:
             # No per-call rows in the window (pre-table DB): fall back to the
             # sessions aggregate, which for those sessions is the only source.
-            raw_rows = _rows(db, """
+            raw_rows = _rows(db, f"""
                 SELECT model,
                        billing_provider,
                        SUM(input_tokens) as input_tokens,
                        SUM(output_tokens) as output_tokens,
                        SUM(cache_read_tokens) as cache_read_tokens,
                        SUM(reasoning_tokens) as reasoning_tokens,
-                       COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
-                       COALESCE(SUM(actual_cost_usd), 0) as actual_cost,
+                       COALESCE(SUM({_EST}), 0) as estimated_cost,
+                       COALESCE(SUM({_ACT}), 0) as actual_cost,
                        COUNT(*) as sessions,
                        SUM(COALESCE(api_call_count, 0)) as api_calls,
                        SUM(tool_call_count) as tool_calls,
@@ -390,13 +396,13 @@ def _get_models_analytics(days: int = 30, profile: Optional[str] = None):
             for row in rows
         ]
 
-        totals = _rows(db, """
+        totals = _rows(db, f"""
             SELECT SUM(input_tokens) as total_input,
                    SUM(output_tokens) as total_output,
                    SUM(cache_read_tokens) as total_cache_read,
                    SUM(reasoning_tokens) as total_reasoning,
-                   COALESCE(SUM(estimated_cost_usd), 0) as total_estimated_cost,
-                   COALESCE(SUM(actual_cost_usd), 0) as total_actual_cost,
+                   COALESCE(SUM({_EST}), 0) as total_estimated_cost,
+                   COALESCE(SUM({_ACT}), 0) as total_actual_cost,
                    COUNT(*) as total_sessions,
                    SUM(COALESCE(api_call_count, 0)) as total_api_calls
             FROM sessions WHERE started_at > ? AND model IS NOT NULL AND model != ''

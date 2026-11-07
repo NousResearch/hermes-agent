@@ -272,7 +272,8 @@ class MCPServerRunMixin:
         # routes it through Hermes' approval system.
         elicitation_config = config.get("elicitation", {})
         self._elicitation = (_sampling.ElicitationHandler(self.name, elicitation_config,
-                                                       call_context=lambda: self._pending_call_context)
+                                                       call_context=lambda: self._pending_call_context,
+                                                       call_callbacks=lambda: self._pending_call_callbacks)
                              if elicitation_config.get("enabled", True) and _core._MCP_ELICITATION_TYPES else None)
         if "url" in config and "command" in config:
             logger.warning("MCP server '%s' has both 'url' and 'command' in config. Using HTTP transport "

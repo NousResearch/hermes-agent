@@ -15,6 +15,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from hermes_platform import declaration
 from tools.registry import invalidate_check_fn_cache, tool_error
 from tools.ansi_strip import strip_unicode_tags
+from tools.thread_context import capture_thread_callbacks
 from tools.mcp_tool_common import _exc_str, _sanitize_error, mcp_field, _core
 from tools import mcp_tool_loop as _loop
 from tools.mcp_tool_content import (
@@ -721,14 +722,21 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
             if report is not None:
                 report(progress, total, message)
 
+        # Captured on THIS thread (the agent turn's): the elicitation consent hop runs on a
+        # to_thread executor that carries neither contextvars nor threading.local, so the
+        # per-thread prompt callbacks travel next to the contextvars snapshot.
+        turn_callbacks = capture_thread_callbacks()
+
         async def _call():
             async with server._rpc_lock, _track_inflight_rpc(server, server_name, op, retry_safe=read_only):
                 server._pending_call_context = contextvars.copy_context()  # for the elicitation callback
+                server._pending_call_callbacks = turn_callbacks
                 try:
                     result = await _call_tool_racing_stdio_death(
                         server, server_name, tool_name, args, _on_progress if report is not None else None)
                 finally:
                     server._pending_call_context = None
+                    server._pending_call_callbacks = ()
             if getattr(server, "_mark_session_proven", None) is not None:  # round-trip done: transport healthy
                 server._mark_session_proven()
             image_paths.clear()

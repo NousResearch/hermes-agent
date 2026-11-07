@@ -206,6 +206,18 @@ async def persist_delegation_delivery(adapter: Any, *, text: str, session_id: st
     if db is None:
         raise RuntimeError("persist_delegation_delivery: api_server SessionDB unavailable — "
                            f"cannot persist completion for session {session_id}")
+    await persist_delegation_delivery_row(db, text=text, session_id=session_id, evt=evt)
+
+
+async def persist_delegation_delivery_row(db: Any, *, text: str, session_id: str,
+                                          evt: Optional[dict] = None) -> None:
+    """Append a delegation completion to *db* as a delivery row, without running an agent turn.
+
+    Split from the adapter form above so a gateway session (whose store is the runner's own
+    ``SessionDB``) can record a completion the user cancelled with ``/stop`` without waking the
+    parent into a fresh turn that would re-dispatch the cancelled work (#146807)."""
+    if not session_id:
+        raise ValueError("persist_delegation_delivery_row: session id required")
     # #98619: the parent run may have compressed/rotated between dispatch and this detached
     # completion — the captured origin id is then a closed parent and the append below is
     # rejected with CompressionSessionClosedError forever (the watcher retries the same stale
@@ -224,8 +236,26 @@ async def persist_delegation_delivery(adapter: Any, *, text: str, session_id: st
         db.append_delegation_delivery, session_id, text, _delegation_display_metadata(evt or {}),
     )
     logger.info(
-        "async delegation completion persisted as delivery row for api_server session %s (no wake turn)", session_id
+        "async delegation completion persisted as delivery row for session %s (no wake turn)", session_id
     )
+
+
+async def persist_cancelled_delegation(db: Any, *, text: str, session_id: str, evt: dict) -> bool:
+    """Record a /stop-cancelled delegation result without waking the session (#146807).
+
+    True once stored; False when it cannot be stored now (no store or session id, or the
+    stopping turn still holds the transcript lease) so the caller retries."""
+    if db is None or not session_id:
+        logger.warning("Cancelled delegation %s has no session store to record its result in",
+                       evt.get("delegation_id"))
+        return False
+    try:
+        await persist_delegation_delivery_row(db, text=text, session_id=session_id, evt=evt)
+    except Exception:
+        logger.info("Cancelled delegation %s: result not recorded yet; retrying",
+                    evt.get("delegation_id"), exc_info=True)
+        return False
+    return True
 
 
 async def _self_post_chat_completion(adapter: Any, *, text: str, session_id: str,

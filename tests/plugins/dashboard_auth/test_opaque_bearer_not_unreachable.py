@@ -242,10 +242,10 @@ def test_gated_api_rejects_foreign_portal_jwt_bearer_with_401_not_503(gated_port
 
 def test_gated_api_foreign_portal_jwt_cookie_is_401_not_503(gated_portal, portal):
     """Cookie path: a foreign access-token cookie with no refresh token is a signed-out 401."""
-    gated_portal.cookies.set(SESSION_AT_COOKIE, _mint(portal, aud="hermes-cli:hermes-cli"))
+    gated_portal.cookies.set(f"__Host-{SESSION_AT_COOKIE}", _mint(portal, aud="hermes-cli:hermes-cli"))
     r = gated_portal.get("/api/auth/me")
     assert r.status_code == 401, r.text
-    assert "unreachable" not in r.text.lower()
+    assert r.json()["reason"] == "invalid_or_expired_session"
 
 
 def test_gated_api_refresh_minting_foreign_token_is_401_not_503(gated_portal, portal):
@@ -254,8 +254,9 @@ def test_gated_api_refresh_minting_foreign_token_is_401_not_503(gated_portal, po
     foreign = _mint(portal, aud="hermes-cli:hermes-cli")
     grant = MagicMock(status_code=200, headers={"content-type": "application/json"})
     grant.json.return_value = {"access_token": foreign, "token_type": "Bearer", "refresh_token": "rt2"}
-    gated_portal.cookies.set(SESSION_AT_COOKIE, foreign)
-    gated_portal.cookies.set(SESSION_RT_COOKIE, "rt-old")
+    # The __Host- names the server sets over HTTPS (bare names are not read there, #136772).
+    gated_portal.cookies.set(f"__Host-{SESSION_AT_COOKIE}", foreign)
+    gated_portal.cookies.set(f"__Host-{SESSION_RT_COOKIE}", "rt-old")
     with patch("plugins.dashboard_auth._shared.httpx.post", return_value=grant) as post:
         r = gated_portal.get("/api/auth/me")
     assert post.called

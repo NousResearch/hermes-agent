@@ -720,13 +720,19 @@ def _scan_plugin_skill_commands(manager, metadata: list, tag: tuple) -> dict[str
             continue
         skill_md = manager.find_plugin_skill(qualified)
         if skill_md is None or not skill_md.is_file():
+            logger.warning("Plugin skill %r skipped for the command palette: SKILL.md "
+                           "missing or not a file at %s", qualified, skill_md)
             continue
         try:
             parsed, _ = _parse_frontmatter(skill_md.read_text(encoding="utf-8-sig", errors="replace"))
-        except OSError:
+        except OSError as exc:
+            logger.warning("Plugin skill %r skipped for the command palette: could not "
+                           "read %s (%s)", qualified, skill_md, exc)
             continue
         # Offer from the file we will actually load, not registration-time hints.
         if not (skill_matches_platform(parsed) and skill_matches_environment(parsed) and skill_matches_apps(parsed)):
+            logger.warning("Plugin skill %r skipped for the command palette: "
+                           "platform/environment/app mismatch", qualified)
             continue
         key = f"/{qualified.lower()}"
         if skill_command_collision_note(qualified) is not None or key in commands:

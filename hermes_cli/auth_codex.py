@@ -610,6 +610,43 @@ def resolve_codex_runtime_credentials(
     from hermes_cli.auth import (
         _auth_store_lock, _codex_access_token_is_expiring, _probe_codex_quota_restored,
         _read_codex_tokens)
+    refresh_timeout_seconds = env_float("HERMES_CODEX_REFRESH_TIMEOUT_SECONDS", 20)
+    lock_timeout = max(float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0)
+
+    def _should_refresh(token: str) -> bool:
+        if read_only:
+            return False
+        return bool(force_refresh) or (
+            refresh_if_expiring and _codex_access_token_is_expiring(token, refresh_skew_seconds))
+
+    def _resolve_pool_runtime() -> Optional[dict[str, Any]]:
+        pool_token, pool_base, refreshable = _pool_codex_credential()
+        if pool_token and _should_refresh(pool_token) and (force_refresh or refreshable):
+            from agent.credential_pool import (
+                STATUS_DEAD, _borrowed_single_use_pool_root, _profile_owns_pool_provider, load_pool)
+            # Keep the existing profile -> root lock order. A borrowed pool's rotating grant
+            # belongs to root, so profile-local locking alone cannot serialize its consumers.
+            with _auth_store_lock(timeout_seconds=lock_timeout):
+                target = None if _profile_owns_pool_provider("openai-codex") else _borrowed_single_use_pool_root()
+                with _auth_store_lock(timeout_seconds=lock_timeout, target_path=target):
+                    # A peer may have committed a new generation while we waited. Re-read the
+                    # pool, not the absent singleton, before spending a single-use refresh token.
+                    pool_token, pool_base, refreshable = _pool_codex_credential()
+                    if pool_token and _should_refresh(pool_token) and (force_refresh or refreshable):
+                        pool = load_pool("openai-codex")
+                        refreshed = pool.try_refresh_matching(api_key_hint=pool_token)
+                        if refreshed is None:
+                            failed = next((e for e in pool.entries() if e.runtime_api_key == pool_token), None)
+                            raise _codex_err(
+                                "Codex credential pool token refresh failed.", "codex_refresh_failed",
+                                relogin=failed is None or failed.last_status == STATUS_DEAD)
+                        pool_token = refreshed.runtime_api_key
+        if not pool_token:
+            return None
+        # Keep the bearer paired with its row's route, including after a refresh (#121486).
+        return _codex_runtime_result(pool_token, source="credential_pool", last_refresh=None,
+                                     base_url=_codex_pool_route_base_url(pool_base))
+
     read_error: Optional[AuthError] = None
     data = None
     observed: Optional[str] = None
@@ -620,7 +657,7 @@ def resolve_codex_runtime_credentials(
             # make. No recovery follows a read-only read, so no observed token is needed.
             data = _read_codex_tokens(_lock=False)
         else:
-            with _auth_store_lock():
+            with _auth_store_lock(timeout_seconds=lock_timeout):
                 # Observe the singleton in the same locked snapshot the read validates, so recovery
                 # can compare-and-swap against exactly the credential it is repairing (#73667).
                 from hermes_cli.auth import _load_auth_store, _load_provider_state
@@ -637,17 +674,9 @@ def resolve_codex_runtime_credentials(
             if imported:
                 data = {"tokens": imported, "last_refresh": imported.get("last_refresh")}
     if data is None:
-        pool_token, pool_base = _pool_codex_credential()
-        if pool_token and force_refresh and not read_only:
-            # Pool-only setup: a forced refresh must rotate the pool entry, not resend its token.
-            from agent.credential_pool import load_pool
-            refreshed = load_pool("openai-codex").try_refresh_matching(api_key_hint=pool_token)
-            pool_token = refreshed.runtime_api_key if refreshed is not None else ""
-        if pool_token:
-            # Report the host this row routes to, not the ambient default: a pooled gateway key
-            # paired with chatgpt.com leaks to every consumer of this result (#121486).
-            return _codex_runtime_result(pool_token, source="credential_pool", last_refresh=None,
-                                         base_url=_codex_pool_route_base_url(pool_base))
+        pool_runtime = _resolve_pool_runtime()
+        if pool_runtime is not None:
+            return pool_runtime
         pool_rate_limit = _codex_pool_rate_limit_status()
         if pool_rate_limit:
             # Before surfacing the persisted cooldown, ask the usage endpoint whether the quota
@@ -657,11 +686,9 @@ def resolve_codex_runtime_credentials(
             if not read_only and _probe_codex_pool_entry_quota_restored(pool_rate_limit):
                 logger.info("Codex quota restored upstream — clearing stale pool cooldown(s).")
                 clear_codex_pool_quota_cooldowns()
-                pool_token, pool_base = _pool_codex_credential()
-                if pool_token:
-                    return _codex_runtime_result(
-                        pool_token, source="credential_pool", last_refresh=None,
-                        base_url=_codex_pool_route_base_url(pool_base))
+                pool_runtime = _resolve_pool_runtime()
+                if pool_runtime is not None:
+                    return pool_runtime
             reset_at = pool_rate_limit.get("reset_at")
             in_future = isinstance(reset_at, (int, float)) and reset_at > time.time()
             raise _codex_quota_exhausted_error(int(reset_at - time.time()) if in_future else None)
@@ -671,17 +698,9 @@ def resolve_codex_runtime_credentials(
                          "codex_auth_missing", relogin=True)
     tokens = dict(data["tokens"])
     access_token = _stripped(tokens.get("access_token"))
-    refresh_timeout_seconds = env_float("HERMES_CODEX_REFRESH_TIMEOUT_SECONDS", 20)
-
-    def _should_refresh(token: str) -> bool:
-        if read_only:
-            return False
-        return bool(force_refresh) or (
-            refresh_if_expiring and _codex_access_token_is_expiring(token, refresh_skew_seconds))
 
     if _should_refresh(access_token):
         # Re-read under lock to avoid racing with other Hermes processes
-        lock_timeout = max(float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0)
         with _auth_store_lock(timeout_seconds=lock_timeout):
             data = _read_codex_tokens(_lock=False)
             tokens = dict(data["tokens"])
@@ -919,10 +938,10 @@ def _pool_entries(auth_store: dict[str, Any], provider_id: str) -> Optional[list
     return entries if isinstance(entries, list) else None
 
 
-def _pool_codex_credential() -> tuple[str, str]:
-    """``(access_token, row base_url)`` of the first pool entry with a non-empty access_token that is
-    not in an exhaustion cooldown window, so the caller routes the token to the host that row belongs
-    to; ``("", "")`` when none is usable.
+def _pool_codex_credential() -> tuple[str, str, bool]:
+    """``(access_token, row base_url, refreshable)`` of the first pool entry with a non-empty
+    access_token outside its exhaustion cooldown; ``("", "", False)`` when none is usable.
+    Only an OAuth row with a refresh grant is eligible for proactive refresh, not a JWT API key.
 
     Fallback for ``resolve_codex_runtime_credentials`` when the singleton has no creds; reads
     through ``read_credential_pool`` so a profile inherits the global-root pool (#34143)."""
@@ -936,10 +955,11 @@ def _pool_codex_credential() -> tuple[str, str]:
             reset_at = _parse_absolute_timestamp(entry.get("last_error_reset_at"))
             in_cooldown = reset_at is not None and reset_at > time.time()
             if _nonempty_str(token) and not in_cooldown:
-                return token.strip(), _stripped(entry.get("base_url"))
+                refreshable = entry.get("auth_type") == "oauth" and bool(_stripped(entry.get("refresh_token")))
+                return token.strip(), _stripped(entry.get("base_url")), refreshable
     except Exception:
         logger.debug("Codex pool fallback lookup failed", exc_info=True)
-    return "", ""
+    return "", "", False
 
 
 def _login_openai_codex(args, pconfig: ProviderConfig, *, force_new_login: bool = False) -> None:

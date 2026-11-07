@@ -43,6 +43,46 @@ def _error(message: str, failure_class: str, **extra) -> dict[str, Any]:
     return {"success": False, "error": message, **extra}
 
 
+_WORD_RE = re.compile(r"\w{3,}")
+_REDUNDANCY_FLOOR = 0.5  # share of the candidate's OWN words found in the other text
+
+
+def _redundant_entries(entries: list[str], incoming: str = "", skip: Optional[int] = None,
+                       limit: int = 5) -> list[dict[str, Any]]:
+    """Entries whose words mostly reappear in another entry or in *incoming*, most redundant first.
+
+    Advisory only: a full store has no ages, so redundancy (not position or length) is the one
+    signal that an entry can go without losing a fact. Each candidate names what it overlaps.
+    """
+    words = [set(_WORD_RE.findall(e.lower())) for e in entries]
+    new_words = set(_WORD_RE.findall(incoming.lower()))
+    found = []
+    for i, mine in enumerate(words):
+        if i == skip or len(mine) < 2:
+            continue
+        best, other = 0.0, None
+        for j, theirs in [(j, w) for j, w in enumerate(words) if j not in (i, skip)] + [("new", new_words)]:
+            if theirs:
+                share = len(mine & theirs) / len(mine)  # a superset of it repeats it; a subset does not
+                if share > best:
+                    best, other = share, j
+        if best >= _REDUNDANCY_FLOOR:
+            what = "the entry being written" if other == "new" else f"entry {other}"
+            found.append((-best, i, {"index": i, "preview": entries[i][:120],
+                                     "reason": f"{round(best * 100)}% of its words also appear in {what}; "
+                                               f"merge or remove one."}))
+    return [item for *_key, item in sorted(found, key=lambda f: (f[0], f[1]))[:limit]]
+
+
+def _op_texts(op: dict[str, Any]) -> tuple[str, str]:
+    """``(content, old_text)`` a batch op applies: ``new_text`` aliases ``content``; whole-entry
+    actions strip both, a patch span keeps its whitespace ("tea " -> "coffee ")."""
+    content, old_text = op.get("content") or op.get("new_text") or "", op.get("old_text") or ""
+    if op.get("action") != "patch":
+        content, old_text = content.strip(), old_text.strip()
+    return content, old_text
+
+
 def _store_target(filename: str) -> str:
     """The memory tool target that owns a store file, for hints that show the call to make."""
     return "user" if filename == "USER.md" else "memory"
@@ -330,11 +370,22 @@ class MemoryStore:
         """A lone add over budget, legacy or one-item batch: the model has not consolidated yet,
         so the live entries come back (its prompt snapshot may predate other sessions' writes)."""
         over = len(ENTRY_DELIMITER.join(self._entries_for(target) + [content])) - limit
-        return self._failure_with_entries(target, (
+        return self._capacity_failure(target, (
             f"Memory at {self._char_count(target):,}/{limit:,} chars; adding this entry ({len(content)} chars) "
             f"would exceed the limit by {over:,} chars. Retry as ONE 'operations' batch that "
             f"removes or shortens (patch) stale entries from current_entries below to free at least "
-            f"{over:,} chars AND adds this entry — the limit is checked only on the batch result."))
+            f"{over:,} chars AND adds this entry — the limit is checked only on the batch result. "
+            f"candidates_for_eviction lists entries that repeat another entry or this one."), content)
+
+    def _capacity_failure(self, target: str, message: str, incoming: str = "",
+                          replacing: Optional[int] = None) -> dict[str, Any]:
+        """Over-budget failure plus advisory ``candidates_for_eviction``: entries that repeat another
+        entry or the incoming text. Never mutates the store; the retry budget still applies."""
+        response = self._failure_with_entries(target, message)
+        if "current_entries" in response:
+            response["candidates_for_eviction"] = _redundant_entries(
+                response["current_entries"], incoming, skip=replacing)
+        return response
 
     def _batch_failure(self, target: str, message: str, failure_class: str,
                        closest_entries: Optional[list[str]] = None) -> dict[str, Any]:
@@ -504,10 +555,11 @@ class MemoryStore:
                 return replaced, "Entry removed.", {"removed_entry": entries[idx]}
             new_total = len(ENTRY_DELIMITER.join(replaced))
             if new_total > limit:
-                return self._failure_with_entries(target, (
+                return self._capacity_failure(target, (
                     f"Replacement {_over_limit(new_total, limit)}. Shorten the new content, or retry as ONE "
                     f"'operations' batch with this replace plus removes/shortenings of other stale entries "
-                    f"(see current_entries below) — the limit is checked only on the batch result."))
+                    f"(see current_entries below) — the limit is checked only on the batch result."),
+                    new_content, replacing=idx)
             return replaced, "Entry replaced.", {"replaced_entry": entries[idx]}
         return self._mutate(target, _apply)
 
@@ -592,9 +644,7 @@ class MemoryStore:
             produced = {}  # 1-based op index -> the entry a patch produced
             for i, op in enumerate(ops):
                 act = op.get("action")
-                content, old_text = op.get("content") or op.get("new_text") or "", op.get("old_text") or ""
-                if act != "patch":  # whole-entry actions; a patch span keeps its whitespace
-                    content, old_text = content.strip(), old_text.strip()
+                content, old_text = _op_texts(op)
                 msg, previous_content, failure_class, after = self._apply_batch_op(
                     working, act, content, old_text, f"Operation {i + 1} ({act or 'unknown'})",
                     op.get("matched_entry"))
@@ -622,7 +672,7 @@ class MemoryStore:
                          or (len(ops) == 1 and working == entries))
             if grows and new_total > limit:
                 if len(ops) == 1 and ops[0].get("action") == "add":  # the advertised single add
-                    return self._add_overflow(target, (ops[0].get("content") or ops[0].get("new_text") or "").strip(), limit)
+                    return self._add_overflow(target, _op_texts(ops[0])[0], limit)
                 return self._batch_failure(target, (
                     f"Applying all {len(operations)} operations {_over_limit(new_total, limit)} more. Add "
                     f"removes or shortening patches of other stale entries to the same batch, then retry."),

@@ -110,10 +110,12 @@ def _checked_entry(authority, receipt, source, route):
 
 
 def owned_receipt(authority, sid):
-    """*sid*'s stored receipt with its LOCAL source, route and entry, once all are this owner's."""
+    """*sid*'s stored receipt with its LOCAL source, route and entry, once all are this owner's.
+
+    The receipt's ``profile_id`` is the home path that minted it, kept as stored: the session id
+    hashes it (``local_identity``), so a store that moved with its profile (another machine, a moved
+    home) still owns its rows. Its owner is this store; the route namespace binds the profile."""
     receipt = local_receipt(authority.db, sid)
-    if receipt['profile_id'] != authority.profile_id:
-        raise RuntimeStoreError('profile_mismatch')
     chat_id = (receipt['legacy_session_id'] if 'legacy_session_id' in receipt else
                local_identity(receipt['profile_id'], receipt['principal_id'], receipt['request_id']))
     if receipt['session_id'] != sid or sid != chat_id:

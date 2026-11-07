@@ -377,12 +377,13 @@ class TestMattermostMentionBehavior:
         self.adapter._bot_username = "hermes-bot"
         self.adapter.handle_message = AsyncMock()
 
-    def _make_event(self, message, channel_type="O", channel_id="chan_456"):
+    def _make_event(self, message, channel_type="O", channel_id="chan_456", post_id="post_mention", root_id=""):
         post_data = {
-            "id": "post_mention",
+            "id": post_id,
             "user_id": "user_123",
             "channel_id": channel_id,
             "message": message,
+            "root_id": root_id,
         }
         return {
             "event": "posted",
@@ -410,6 +411,53 @@ class TestMattermostMentionBehavior:
             os.environ.pop("MATTERMOST_REQUIRE_MENTION", None)
             await self.adapter._handle_ws_event(self._make_event("hello", channel_id="chan_456"))
             assert self.adapter.handle_message.called
+
+    async def _join_thread(self, root="root_1"):
+        """The bot joins a thread when it is @mentioned at its root in thread mode."""
+        self.adapter._reply_mode = "thread"
+        await self.adapter._handle_ws_event(self._make_event("@hermes-bot hi", post_id=root))
+        assert self.adapter.handle_message.await_count == 1
+        self.adapter.handle_message.reset_mock()
+
+    @pytest.mark.asyncio
+    async def test_reply_in_joined_thread_needs_no_mention(self):
+        await self._join_thread()
+        await self.adapter._handle_ws_event(self._make_event("and then?", post_id="reply_1", root_id="root_1"))
+        event = self.adapter.handle_message.await_args.args[0]
+        assert event.text == "and then?"
+        assert event.source.thread_id == "root_1"
+
+    @pytest.mark.asyncio
+    async def test_reply_in_a_thread_the_bot_never_joined_stays_gated(self):
+        await self._join_thread()
+        await self.adapter._handle_ws_event(self._make_event("unrelated", post_id="reply_2", root_id="other_root"))
+        assert not self.adapter.handle_message.called
+
+    @pytest.mark.asyncio
+    async def test_flat_reply_mode_joins_no_thread(self):
+        await self.adapter._handle_ws_event(self._make_event("@hermes-bot hi", post_id="root_1"))
+        self.adapter.handle_message.reset_mock()
+        await self.adapter._handle_ws_event(self._make_event("and then?", post_id="reply_1", root_id="root_1"))
+        assert not self.adapter.handle_message.called
+
+    @pytest.mark.asyncio
+    async def test_thread_require_mention_keeps_the_gate_in_joined_threads(self):
+        await self._join_thread()
+        with patch.dict(os.environ, {"MATTERMOST_THREAD_REQUIRE_MENTION": "true"}):
+            await self.adapter._handle_ws_event(self._make_event("and then?", post_id="reply_1", root_id="root_1"))
+            assert not self.adapter.handle_message.called
+            await self.adapter._handle_ws_event(self._make_event("@hermes-bot go", post_id="reply_2", root_id="root_1"))
+            assert self.adapter.handle_message.called
+
+    @pytest.mark.asyncio
+    async def test_oldest_joined_thread_ages_out_of_the_bounded_tracker(self):
+        from gateway.platforms.helpers import ThreadParticipationTracker
+        self.adapter._threads = ThreadParticipationTracker("mattermost", max_tracked=1)
+        await self._join_thread("old_root")
+        await self.adapter._handle_ws_event(self._make_event("@hermes-bot hi", post_id="new_root"))
+        self.adapter.handle_message.reset_mock()
+        await self.adapter._handle_ws_event(self._make_event("still there?", post_id="reply_1", root_id="old_root"))
+        assert not self.adapter.handle_message.called
 
 
 # ---------------------------------------------------------------------------

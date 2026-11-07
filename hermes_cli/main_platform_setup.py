@@ -4,6 +4,7 @@ Split out of ``hermes_cli/main.py``. Names that still live in main are imported 
 """
 
 import contextlib
+import json
 import shutil
 import subprocess
 import sys
@@ -130,6 +131,17 @@ def _whatsapp_install_bridge(bridge_dir) -> bool:
     return True
 
 
+def _whatsapp_has_paired_identity(session_dir):
+    """Baileys writes an identity only after validating the primary's pairing response."""
+    try:
+        creds = json.loads((session_dir / "creds.json").read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(creds, dict) or not isinstance(creds.get("me"), dict):
+        return False
+    return isinstance(creds["me"].get("id"), str) and bool(creds["me"]["id"])
+
+
 def cmd_whatsapp(args):
     """Set up WhatsApp: choose mode, configure, install bridge, pair via QR."""
     from hermes_cli.main import _require_tty, get_hermes_home
@@ -171,6 +183,9 @@ def cmd_whatsapp(args):
             session_dir.mkdir(parents=True, exist_ok=True)
             print("  ✓ Session cleared")
         else:
+            if not _whatsapp_has_paired_identity(session_dir):
+                print("Pairing is incomplete. Run 'hermes whatsapp' again and choose to re-pair.")
+                return
             # Older installs may have lost WHATSAPP_ENABLED; a kept pairing re-asserts it.
             if (get_env_value("WHATSAPP_ENABLED") or "").lower() != "true":
                 save_env_value("WHATSAPP_ENABLED", "true")
@@ -197,13 +212,16 @@ def cmd_whatsapp(args):
         except pm.InstallError as exc:
             print(f"  ✗ Node.js preparation failed: {exc}")
             return
-    with contextlib.suppress(KeyboardInterrupt):
-        subprocess.run(
-            [node, str(bridge_script), "--pair-only", "--session", str(session_dir)],
-            cwd=str(bridge_dir), env=with_hermes_node_path(), check=False)
+    pair_command = [node, str(bridge_script), "--pair-only", "--session", str(session_dir)]
+    if isinstance(getattr(args, "passkey_browser", None), str) and args.passkey_browser:
+        pair_command.extend(["--passkey-browser", args.passkey_browser])
+    pair_result = None
+    with contextlib.suppress(KeyboardInterrupt, subprocess.TimeoutExpired):
+        pair_result = subprocess.run(
+            pair_command, cwd=str(bridge_dir), env=with_hermes_node_path(), check=False, timeout=900)
 
     print()
-    if not (session_dir / "creds.json").exists():
+    if pair_result is None or pair_result.returncode != 0 or not _whatsapp_has_paired_identity(session_dir):
         print("⚠ Pairing may not have completed. Run 'hermes whatsapp' to try again.")
         return
     # Only enable WhatsApp now that pairing actually succeeded (see above).

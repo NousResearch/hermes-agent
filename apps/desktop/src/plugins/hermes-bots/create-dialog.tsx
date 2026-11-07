@@ -62,7 +62,6 @@ import type { GroupCreationIntent } from './canonical-groups'
 import { $botMeta, $lastRoster, botHandle, botRosterKey, filterBots, ROSTER_KEY, saveBotMeta } from './data'
 import { labeled, ResizableFrame } from './dialog-parts'
 import { GROUP_CHAT_MAX_MEMBERS, uniqueGroupChatName } from './group-chat'
-import { GroupImageControls } from './group-chat-parts'
 import { memberMachineOffline, setGroupMembership } from './group-chat-view-members'
 import {
   botGroups,
@@ -1344,7 +1343,6 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated, seed }
   const [query, setQuery] = useState('')
   const [checked, setChecked] = useState<Record<string, boolean>>({})
   const [name, setName] = useState('')
-  const [image, setImage] = useState<null | string>(null)
   const [notice, setNotice] = useState('')
   // A notice speaks for the draft that asked; a late answer must not land on a newer one.
   const draft = useRef(0)
@@ -1363,7 +1361,6 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated, seed }
       setQuery('')
       setChecked(Object.fromEntries((seed?.bots ?? []).map(bot => [botRosterKey(bot), true])))
       setName(seed?.name ?? '')
-      setImage(null)
     }
     // The seed is read once per open: a re-render must not wipe the person's picks.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1426,11 +1423,12 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated, seed }
     if (!sourceCurrent()) {throw new Error(b.canonical.driverUnavailable)}
 
     const members = durableGroupChatMembers(selected)
-    const groupName = uniqueGroupChatName(base, new Set(liveGroupChatNames()))
 
+    // Keyed on the entered name: the unique name is chosen once, inside the frozen request.
     const created = fresh.engine === 'gateway-peer'
       ? await createGroupAcrossConnections(route, base, members, freshTargets, intent.current)
-      : { ...await createCanonicalGroup(route, groupName, members, intent.current), unjoined: [] }
+      : { ...await createCanonicalGroup(route, base, members, intent.current,
+        entered => uniqueGroupChatName(entered, new Set(liveGroupChatNames()))), unjoined: [] }
 
     // Creation already succeeded; leave it on its owner without adopting a stale result.
     if (!sourceCurrent()) {return}
@@ -1561,12 +1559,6 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated, seed }
           </div>
         </div>
         <div className="grid gap-2">
-          <GroupImageControls
-            image={image}
-            onImage={setImage}
-            seedMembers={selected.map(bot => displayName(bot, botRosterMeta(bot, allMeta)))}
-            seedName={name.trim() || (selected.length ? placeholder : '')}
-          />
           <form
             onSubmit={event => {
               event.preventDefault()

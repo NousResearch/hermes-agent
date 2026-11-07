@@ -96,7 +96,7 @@ def validate_tool_calls(
         for tc in msg.get("tool_calls") or ()
     }
     agent._uniquify_tool_call_ids(tool_calls, taken=taken)
-    normalize_provider_tool_call_ids(tool_calls)
+    normalize_provider_tool_call_ids(tool_calls, getattr(assistant_message, "provider_data", None))
 
     # Repair mismatched tool names before validating (model hallucinations).
     repaired_ids = set()

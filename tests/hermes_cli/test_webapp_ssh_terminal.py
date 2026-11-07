@@ -164,6 +164,41 @@ def test_ssh_shell_cannot_be_attached_as_a_local_shell_or_another_saved_connecti
     assert len(served.shells) == 1
 
 
+def test_cold_ssh_dial_does_not_hold_up_other_new_terminals(ssh_webapp, monkeypatch):
+    """A cold connect can take minutes; it must not run under the registry's spawn lock."""
+    import threading
+
+    from hermes_cli import gateway_connections_ssh as ssh
+    from tests.hermes_cli.test_webapp_socket_tickets import _mint
+
+    dialing, release = threading.Event(), threading.Event()
+    calls = []
+
+    def cold_dial(*_args, **_kwargs):
+        calls.append(None)
+        if len(calls) == 1:
+            dialing.set()
+            release.wait(30)
+
+    monkeypatch.setattr(ssh, "ensure_tunnel", cold_dial)
+    served = ssh_webapp
+    timer = threading.Timer(10, release.set)  # unblocks the base, where the local open waits on the dial
+    timer.start()
+    try:
+        with TestClient(served.host) as client, _open(served, client) as remote:
+            assert dialing.wait(10)
+            local_ticket = _mint(served.client, "host-terminal")
+            with client.websocket_connect(f"ws://localhost/api/host-terminal?ticket={local_ticket}") as local:
+                assert metadata(local)["shell"] != "ssh"
+                assert not release.is_set(), "the local terminal waited for the SSH dial"
+            release.set()
+            assert metadata(remote)["shell"] == "ssh"
+    finally:
+        timer.cancel()
+        release.set()
+    assert len(served.shells) == 2
+
+
 @pytest.mark.parametrize("surface", ["serve", "dashboard", "gateway"])
 def test_ssh_terminal_does_not_enable_shells_on_other_surfaces(ssh_webapp, monkeypatch, surface):
     served = ssh_webapp

@@ -13,7 +13,9 @@ import re
 from typing import Any, Dict, Optional
 
 from agent.provider_projection import splice_provider_projection
-from agent.think_scrubber import THINK_TAG_NAMES
+from agent.think_scrubber import (
+    THINK_CHANNEL_CLOSE_TAGS, THINK_CHANNEL_OPEN_TAGS, THINK_CHANNEL_PAIR_RES, THINK_TAG_NAMES,
+)
 from agent.trajectory import has_incomplete_scratchpad
 from agent.turn_truncation import (
     CODEX_FALLBACK_ACTIVATED, continue_codex_incomplete, normalize_response_for_agent, partial_result,
@@ -24,7 +26,14 @@ logger = logging.getLogger("agent.conversation_loop")
 # One alternation over the shared tag list so this path tracks every tag the scrubber hides
 # (the old 3-of-9 list leaked <thinking>/<思考>/... previews), case-insensitive like the scrubber.
 _THINK_TAG_ALT = "|".join(re.escape(name) for name in THINK_TAG_NAMES)
-_REASONING_TAG_RE = re.compile(rf'</?(?:{_THINK_TAG_ALT})>', re.IGNORECASE)
+_THINK_CHANNEL_TAG_ALT = "|".join(
+    re.escape(t) for t in (*THINK_CHANNEL_OPEN_TAGS, *THINK_CHANNEL_CLOSE_TAGS)
+)
+# Channel-format thinking tokens (MiniMax/Gemma) strip from the relay text and join the
+# inline-reasoning extraction so the reasoning preview shows the hidden thinking.
+_REASONING_TAG_RE = re.compile(
+    rf'</?(?:{_THINK_TAG_ALT})>|(?:{_THINK_CHANNEL_TAG_ALT})', re.IGNORECASE
+)
 _INLINE_REASONING_RE = re.compile(
     rf'<(?:{_THINK_TAG_ALT})>(.*?)</(?:{_THINK_TAG_ALT})>',
     re.DOTALL | re.IGNORECASE,
@@ -126,8 +135,11 @@ def _reasoning_preview(agent: Any, content: str, assistant_message: Any = None) 
             return extracted.strip()
     if not content:
         return ""
+    blocks = list(_INLINE_REASONING_RE.findall(content))
+    for pattern in THINK_CHANNEL_PAIR_RES:
+        blocks.extend(pattern.findall(content))
     return "\n\n".join(
-        block.strip() for block in _INLINE_REASONING_RE.findall(content) if block and block.strip()
+        block.strip() for block in blocks if block and block.strip()
     )
 
 

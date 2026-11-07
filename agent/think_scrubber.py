@@ -13,7 +13,18 @@ from __future__ import annotations
 import re
 from typing import Tuple
 
-__all__ = ["THINK_CLOSE_TAGS", "THINK_OPEN_TAGS", "THINK_TAG_NAMES", "StreamingThinkScrubber"]
+__all__ = [
+    "THINK_CHANNEL_CLOSE_TAGS",
+    "THINK_CHANNEL_OPEN_RE",
+    "THINK_CHANNEL_OPEN_TAGS",
+    "THINK_CHANNEL_ORPHAN_CLOSE_RE",
+    "THINK_CHANNEL_PAIRS",
+    "THINK_CHANNEL_PAIR_RES",
+    "THINK_CLOSE_TAGS",
+    "THINK_OPEN_TAGS",
+    "THINK_TAG_NAMES",
+    "StreamingThinkScrubber",
+]
 
 # The one list of model reasoning tag names. Every surface that hides reasoning (this scrubber,
 # the CLI stream filter, the gateway stream filter, the final-response regex stripper) binds to
@@ -27,6 +38,39 @@ THINK_TAG_NAMES: tuple[str, ...] = (
 THINK_OPEN_TAGS: tuple[str, ...] = tuple(f"<{name.lower()}>" for name in THINK_TAG_NAMES)
 THINK_CLOSE_TAGS: tuple[str, ...] = tuple(f"</{name.lower()}>" for name in THINK_TAG_NAMES)
 
+# Asymmetric inline-thinking "channel" pairs — the open token is a tokenizer artifact and the
+# close token is NOT an XML-style ``</name>``. MiniMax-M3 streams its reasoning wrapped as
+# ``<|channel>thought\n…<channel|>`` (also seen ``<|channel|>thought``) and Gemma 4 as
+# ``<|turn|>thinking\n…<turn|>`` when an OpenAI-compatible relay (routing gateway, free-tier
+# aggregator) passes the thinking inline in ``content`` instead of ``reasoning_content`` — every
+# surface then renders the literal tokens as if they were the answer. These cannot join
+# THINK_TAG_NAMES because every consumer derives ``<name>…</name>`` shapes from that list; bind
+# the exports below instead. A single ``\n`` directly after an open token belongs to the tag.
+THINK_CHANNEL_PAIRS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("<|channel>thought", "<|channel|>thought"), "<channel|>"),  # MiniMax-M3 inline thinking
+    (("<|turn|>thinking",), "<turn|>"),                            # Gemma 4 inline thinking
+)
+THINK_CHANNEL_OPEN_TAGS: tuple[str, ...] = tuple(
+    open_tag for opens, _close in THINK_CHANNEL_PAIRS for open_tag in opens
+)
+THINK_CHANNEL_CLOSE_TAGS: tuple[str, ...] = tuple(
+    dict.fromkeys(close for _opens, close in THINK_CHANNEL_PAIRS)
+)
+# Precompiled shapes shared by the non-streaming consumers (storage stripper, reasoning
+# extractor, CLI render, TTS) so the channel format is parsed identically everywhere; group 1
+# of a pair pattern is the reasoning text between the tags.
+THINK_CHANNEL_PAIR_RES: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(rf"{re.escape(open_tag)}\n?(.*?){re.escape(close_tag)}", re.DOTALL | re.IGNORECASE)
+    for _opens, close_tag in THINK_CHANNEL_PAIRS for open_tag in _opens
+)
+THINK_CHANNEL_OPEN_RE = re.compile(
+    "|".join(re.escape(open_tag) for open_tag in THINK_CHANNEL_OPEN_TAGS), re.IGNORECASE
+)
+THINK_CHANNEL_ORPHAN_CLOSE_RE = re.compile(
+    "(?:" + "|".join(re.escape(close_tag) for close_tag in THINK_CHANNEL_CLOSE_TAGS) + r")\s*",
+    re.IGNORECASE,
+)
+
 
 class StreamingThinkScrubber:
     """Stateful scrubber for streaming reasoning/thinking blocks.
@@ -39,11 +83,19 @@ class StreamingThinkScrubber:
     # Literal tags so the hot path does string ops, not regex per feed().
     _OPEN_TAGS: tuple[str, ...] = THINK_OPEN_TAGS
     _CLOSE_TAGS: tuple[str, ...] = THINK_CLOSE_TAGS
-    _ALL_TAGS: tuple[str, ...] = _OPEN_TAGS + _CLOSE_TAGS
+    _CHANNEL_OPEN_TAGS: tuple[str, ...] = THINK_CHANNEL_OPEN_TAGS
+    _CHANNEL_CLOSE_TAGS: tuple[str, ...] = THINK_CHANNEL_CLOSE_TAGS
+    # Which close tag(s) end the block a given open tag started (XML opens: any XML close,
+    # preserving the historical behaviour; channel opens: their own pair's close token).
+    _OPEN_TO_CLOSE: dict[str, tuple[str, ...]] = {
+        open_tag: (close_tag,) for opens, close_tag in THINK_CHANNEL_PAIRS for open_tag in opens
+    }
+    _ALL_TAGS: tuple[str, ...] = _OPEN_TAGS + _CLOSE_TAGS + _CHANNEL_OPEN_TAGS + _CHANNEL_CLOSE_TAGS
     _MAX_TAG_LEN: int = max(len(tag) for tag in _ALL_TAGS)
     # Orphan close tag plus trailing whitespace (matches _strip_think_blocks case 3).
     _ORPHAN_CLOSE_RE = re.compile(
-        "(?:" + "|".join(re.escape(t) for t in _CLOSE_TAGS) + r")[ \t\n\r]*", re.IGNORECASE
+        "(?:" + "|".join(re.escape(t) for t in (_CLOSE_TAGS + _CHANNEL_CLOSE_TAGS)) + r")[ \t\n\r]*",
+        re.IGNORECASE,
     )
 
     def __init__(self) -> None:
@@ -52,6 +104,9 @@ class StreamingThinkScrubber:
     def reset(self) -> None:
         """Reset all state.  Call at the top of every new turn."""
         self._in_block: bool = False
+        # Close tags valid for the currently open block (XML close set until a channel open
+        # rebinds this to its own pair's close token).
+        self._close_tags: tuple[str, ...] = self._CLOSE_TAGS
         self._buf: str = ""
         self._last_emitted_ended_newline: bool = True
         # Reasoning text the most recent feed() stripped from inside think blocks (tags excluded).
@@ -76,10 +131,10 @@ class StreamingThinkScrubber:
 
         while buf:
             if self._in_block:
-                close_idx, close_len = self._find_first_tag(buf, self._CLOSE_TAGS)
+                close_idx, close_len = self._find_first_tag(buf, self._close_tags)
                 if close_idx == -1:
                     # No close yet: hold back a possible partial close-tag prefix; the rest is reasoning.
-                    hidden.append(self._hold_partial(buf, self._CLOSE_TAGS))
+                    hidden.append(self._hold_partial(buf, self._close_tags))
                     break
                 hidden.append(buf[:close_idx])
                 buf = buf[close_idx + close_len:]
@@ -93,14 +148,26 @@ class StreamingThinkScrubber:
             open_idx, open_len = self._find_open_at_boundary(buf, out)
             if pair is not None and (open_idx == -1 or pair[0] <= open_idx):
                 self._emit(out, buf[:pair[0]])
-                # Pair tags are exact ``<name>``/``</name>``: inner text sits between them.
-                hidden.append(buf[buf.index(">", pair[0]) + 1:buf.rindex("<", pair[0], pair[1])])
-                buf = buf[pair[1]:]
+                # pair = (start, inner_start, inner_end, end) over exact tag bounds — the
+                # inner text sits between the matched open and close tokens; a channel
+                # open's own line break is part of the token, not the reasoning.
+                inner = buf[pair[1]:pair[2]]
+                if buf[pair[0]:pair[1]].lower() in self._OPEN_TO_CLOSE and inner.startswith("\n"):
+                    inner = inner[1:]
+                hidden.append(inner)
+                buf = buf[pair[3]:]
                 continue
             if open_idx != -1:
                 self._emit(out, buf[:open_idx])
                 self._in_block = True
+                matched_open = buf[open_idx:open_idx + open_len].lower()
+                self._close_tags = self._OPEN_TO_CLOSE.get(matched_open, self._CLOSE_TAGS)
                 buf = buf[open_idx + open_len:]
+                # A channel open token swallows the single '\n' that follows it (the token's
+                # own line break), so hidden text starts clean and no blank line precedes
+                # the visible answer.
+                if matched_open in self._OPEN_TO_CLOSE and buf.startswith("\n"):
+                    buf = buf[1:]
                 continue
 
             # No resolvable tag: hold back any partial-tag prefix at the tail
@@ -138,21 +205,32 @@ class StreamingThinkScrubber:
         return min(hits) if hits else (-1, 0)
 
     def _find_earliest_closed_pair(self, buf: str):
-        """(start_idx, end_idx) of the earliest ``<tag>...</tag>`` pair (non-greedy, case-insensitive), else None."""
+        """``(start, inner_start, inner_end, end)`` of the earliest closed reasoning block —
+        an XML ``<tag>...</tag>`` pair or a channel ``<|channel>thought…<channel|>`` pair
+        (non-greedy, case-insensitive) — else ``None``."""
         buf_lower = buf.lower()
         pairs = []
         for open_tag, close_tag in zip(self._OPEN_TAGS, self._CLOSE_TAGS):
             open_idx = buf_lower.find(open_tag)
             close_idx = buf_lower.find(close_tag, open_idx + len(open_tag)) if open_idx != -1 else -1
             if close_idx != -1:
-                pairs.append((open_idx, close_idx + len(close_tag)))
+                pairs.append((open_idx, open_idx + len(open_tag), close_idx, close_idx + len(close_tag)))
+        for open_tag in self._CHANNEL_OPEN_TAGS:
+            close_tag = self._OPEN_TO_CLOSE[open_tag][0]
+            start = 0
+            while (open_idx := buf_lower.find(open_tag, start)) != -1:
+                close_idx = buf_lower.find(close_tag, open_idx + len(open_tag))
+                if close_idx != -1:
+                    pairs.append((open_idx, open_idx + len(open_tag), close_idx, close_idx + len(close_tag)))
+                    break
+                start = open_idx + 1
         return min(pairs) if pairs else None
 
     def _find_open_at_boundary(self, buf: str, already_emitted: list[str]) -> tuple[int, int]:
         """Return the earliest block-boundary open-tag (idx, len), or (-1, 0)."""
         buf_lower = buf.lower()
         hits = []
-        for tag in self._OPEN_TAGS:
+        for tag in (*self._OPEN_TAGS, *self._CHANNEL_OPEN_TAGS):
             idx = buf_lower.find(tag)
             while idx != -1 and not self._is_block_boundary(buf, idx, already_emitted):
                 idx = buf_lower.find(tag, idx + 1)
@@ -184,4 +262,6 @@ class StreamingThinkScrubber:
     @classmethod
     def _strip_orphan_close_tags(cls, text: str) -> str:
         """Remove close tags with no matching open (always noise) plus trailing whitespace."""
-        return cls._ORPHAN_CLOSE_RE.sub("", text) if "</" in text else text
+        if not ("</" in text or any(tag in text.lower() for tag in cls._CHANNEL_CLOSE_TAGS)):
+            return text
+        return cls._ORPHAN_CLOSE_RE.sub("", text)

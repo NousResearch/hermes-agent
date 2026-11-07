@@ -225,7 +225,7 @@ _REQUEST_OPTION_MISSING = object()
 # vocabulary clamping happens downstream in agent.reasoning_effort.
 _REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"})
 _RUNTIME_AGENT_OVERRIDE_KEYS = (
-    "api_key", "base_url", "provider", "api_mode", "command", "args", "credential_pool")
+    "api_key", "base_url", "provider", "api_mode", "command", "args", "credential_pool", "skip_background_review", "skip_title")
 
 
 def _clean_request_string(value: Any) -> Optional[str]:
@@ -235,7 +235,7 @@ def _clean_request_string(value: Any) -> Optional[str]:
 
 # model_options decoding lives in the topical sibling (line-cap offset);
 # re-exported here so importers are unaffected.
-from gateway.platforms.api_server_request_options import _request_reasoning_config, _request_service_tier
+from gateway.platforms.api_server_request_options import _apply_request_turn_opt_outs, _extract_request_model_options, _request_reasoning_config, _request_service_tier
 
 
 def _apply_runtime_agent_overrides(
@@ -285,9 +285,9 @@ def _request_agent_overrides(
     model = _clean_request_string(body.get("model"))
     if model and model != virtual_model and (provider or allow_bare_model):
         overrides["requested_model"] = model
-    model_options = body.get("model_options")
-    if isinstance(model_options, dict):
-        overrides["model_options"] = dict(model_options)
+    model_options = _extract_request_model_options(body)
+    if model_options:
+        overrides["model_options"] = model_options
     return overrides
 
 
@@ -2250,7 +2250,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "memory_manager": self._memory_sessions.checkout(session_id)}
         if request_service_tier is not _REQUEST_OPTION_MISSING:
             agent_kwargs["service_tier"] = request_service_tier
-        agent = AIAgent(**agent_kwargs)
+        agent = _apply_request_turn_opt_outs(AIAgent, agent_kwargs, model_options)
         route_source = (
             "session_model_lock" if confirmed_runtime_lock
             else "session_model_override" if session_override

@@ -25,6 +25,14 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
     )
     skills_subparsers = skills_parser.add_subparsers(dest="skills_action")
 
+    skills_resolve = skills_subparsers.add_parser(
+        "resolve", help="Review and resolve a pending bundled-skill update")
+    skills_resolve.add_argument("name", help="Bundled skill name")
+    skills_resolve.add_argument("--accept", choices=["merged", "local", "upstream"],
+        help="Explicitly accept a reviewed tree; without this, show review paths or prompt")
+    _flag(skills_resolve, "--refresh",
+        help="Archive the old review and recompute against current local/upstream edits")
+
     skills_trust = skills_subparsers.add_parser("trust",
         help="Trust a project so its repo-local skills (./.hermes/skills, ./.agents/skills) load")
     skills_trust.add_argument("path", nargs="?", default=None,

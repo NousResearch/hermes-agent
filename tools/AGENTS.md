@@ -72,7 +72,7 @@ Rules for tool code:
 Single `TOOLSETS` dict. Keys today: `browser, clarify, code_execution, cronjob, debugging,
 delegation, discord, discord_admin, feishu_doc, feishu_drive, file, image_gen,
 kanban, memory, messaging, moa, rl, safe, search, session_search, skills, terminal, todo,
-tts, video, vision, web, yuanbao` (don't assert the list in tests). Per-platform enable/disable via
+tts, video, vision, web` (don't assert the list in tests). Per-platform enable/disable via
 `hermes tools` (curses) or `tools.<platform>.enabled/disabled` in config.yaml. `browser_exec` is the
 one core browser tool (beside `browser_cdp` / `browser_dialog` / `browser_vault`, all CDP).
 

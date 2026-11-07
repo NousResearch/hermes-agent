@@ -76,7 +76,6 @@ def _make_resume_runner():
     runner._running_agents_ts = {}
     runner._busy_ack_ts = {}
     runner._pending_approvals = {}
-    runner._update_prompt_pending = {}
     runner._agent_cache_lock = None
     runner.session_store = MagicMock()
     runner.session_store.get_or_create_session.return_value = current_entry
@@ -107,7 +106,6 @@ def _make_branch_runner():
     runner._running_agents_ts = {}
     runner._busy_ack_ts = {}
     runner._pending_approvals = {}
-    runner._update_prompt_pending = {}
     runner._agent_cache_lock = None
     runner.session_store = MagicMock()
     runner.session_store.get_or_create_session.return_value = current_entry
@@ -132,7 +130,6 @@ def test_clear_session_boundary_security_state_is_scoped():
 
     runner = object.__new__(GatewayRunner)
     runner._pending_approvals = {}
-    runner._update_prompt_pending = {}
     runner._pending_skills_reload_notes = {}
 
     source = _make_source()
@@ -145,8 +142,8 @@ def test_clear_session_boundary_security_state_is_scoped():
     enable_session_yolo(other_key)
     runner._pending_approvals[session_key] = {"command": "rm -rf /tmp/demo"}
     runner._pending_approvals[other_key] = {"command": "rm -rf /tmp/other"}
-    runner._update_prompt_pending[session_key] = True
-    runner._update_prompt_pending[other_key] = True
+    runner._session_state(session_key).persistent.update_prompt_pending = True
+    runner._session_state(other_key).persistent.update_prompt_pending = True
     runner._pending_skills_reload_notes[session_key] = (
         "[USER INITIATED SKILLS RELOAD: target]"
     )
@@ -169,21 +166,21 @@ def test_clear_session_boundary_security_state_is_scoped():
     assert is_approved(session_key, "recursive delete") is False
     assert is_session_yolo_enabled(session_key) is False
     assert session_key not in runner._pending_approvals
-    assert session_key not in runner._update_prompt_pending
+    assert not runner._session_state(session_key).persistent.update_prompt_pending
     assert session_key not in runner._pending_skills_reload_notes
     assert slash_confirm_mod.get_pending(session_key) is None
     # Other session untouched
     assert is_approved(other_key, "recursive delete") is True
     assert is_session_yolo_enabled(other_key) is True
     assert other_key in runner._pending_approvals
-    assert other_key in runner._update_prompt_pending
+    assert runner._session_state(other_key).persistent.update_prompt_pending
     assert other_key in runner._pending_skills_reload_notes
     assert slash_confirm_mod.get_pending(other_key) is not None
 
     # Empty session_key is a no-op
     runner._clear_session_boundary_security_state("")
     assert is_approved(other_key, "recursive delete") is True
-    assert other_key in runner._update_prompt_pending
+    assert runner._session_state(other_key).persistent.update_prompt_pending
     assert other_key in runner._pending_skills_reload_notes
     assert slash_confirm_mod.get_pending(other_key) is not None
 
@@ -194,7 +191,6 @@ def test_clear_session_boundary_security_state_wakes_blocked_approvals():
 
     runner = object.__new__(GatewayRunner)
     runner._pending_approvals = {}
-    runner._update_prompt_pending = {}
 
     source = _make_source()
     session_key = build_session_key(source)

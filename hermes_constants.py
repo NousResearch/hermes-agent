@@ -989,6 +989,29 @@ def get_scratch_dir(home: str | Path | None = None, *, prune: bool = True) -> Pa
     return scratch
 
 
+def get_deliverables_dir(home: str | Path | None = None) -> Path:
+    """``<home>/deliverables`` (created, owner-only); *home* defaults to the active Hermes home.
+
+    The durable home for user-facing output — the charts, PDFs, slide decks and reports an
+    agent produces for a human. Unlike :func:`get_scratch_dir`, nothing prunes this tree:
+    scratch exists to be swept once it goes idle, and a deliverable that disappears 24 h
+    after its last write is the opposite of a deliverable (#126419).
+
+    Permissions follow :func:`apply_secure_dir_policy`, so an explicit ``HERMES_HOME_MODE``
+    or a managed/shared home is honored instead of a blanket ``0700`` (#117347).
+    """
+    base = Path(home) if home is not None else get_hermes_home()
+    deliverables = base / "deliverables"
+    try:
+        deliverables.mkdir(parents=True, exist_ok=True)
+        if sys.platform != "win32":
+            # Same rule as get_scratch_dir: the caller's home decides the policy.
+            apply_secure_dir_policy(deliverables, home=base)
+    except OSError:
+        pass
+    return deliverables
+
+
 def prune_scratch_dir(scratch: Path | None = None, max_idle_hours: float = SCRATCH_MAX_IDLE_HOURS) -> int:
     """Delete top-level scratch entries with no write anywhere in their subtree for
     *max_idle_hours*, reaping processes and git worktree registrations rooted in them

@@ -70,6 +70,16 @@ def test_draining_status_names_each_managed_worker_by_session_and_process(tmp_pa
     assert "kanban-t_1" in describe_active_work_unit(managed[0]) and "4343" in describe_active_work_unit(managed[0])
 
 
+def test_a_profile_scoped_active_work_answer_names_its_managed_workers():
+    from gateway.run_active_work_verb import _profile_units
+
+    worker = SimpleNamespace(closed=threading.Event(), process=SimpleNamespace(pid=4343), worker=(4344, 1.0))
+    authority = SimpleNamespace(_managed_workers={"kanban-t_2": worker}, _cron_cancellations={}, _side_agents={})
+    runner = SimpleNamespace(_served_profile_homes={"coder": "/h/coder"},
+                             session_authorities=SimpleNamespace(for_home=lambda home: authority))
+    assert _profile_units(runner, "coder", []) == [{"kind": "managed", "session": "kanban-t_2", "pid": 4344}]
+
+
 def test_drain_progress_reporter_prints_holder_and_config_knob(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "cron").mkdir()

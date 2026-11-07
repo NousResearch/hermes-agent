@@ -7565,10 +7565,13 @@ def _refreshed_nous_step(route: _LadderRoute, kwargs: dict[str, Any], message: s
 
 def _ladder_nous_rungs(
     first_err: aux_errors.Failure, route: _LadderRoute, kwargs: dict[str, Any], client_is_nous: bool,
+    repairs: tuple = (),
 ):
-    """Nous-only rungs: stale-model self-heal, paid-account refresh, 401 refresh.
+    """Nous-only rungs: stale-model self-heal, paid-account refresh, 401 refresh. ``kwargs`` already omit what the
+    parameter rungs stripped (``repairs``); a refreshed request failing after them is judged as after a spent rung.
     Returns ``(response, None)`` or ``(None, first_err)`` to fall through."""
     client, task, tag = route.client, route.task, route.tag
+    accept = functools.partial(aux_errors.ladder_accepts, rung_spent=bool(repairs))
     # A long-lived process can pin a Portal model since dropped from the catalog (every call
     # 404s); force a fresh Portal fetch and retry once.
     if first_err.verdict.reason is FailoverReason.model_not_found and client_is_nous:
@@ -7589,14 +7592,14 @@ def _ladder_nous_rungs(
             route, kwargs,
             "Auxiliary %s%s: refreshed Nous runtime credentials after paid account check, retrying")
         if step is not None:
-            resp, first_err = yield from _rung(step, aux_errors.ladder_accepts, route)
+            resp, first_err = yield from _rung(step, accept, route)
             if first_err is None:
                 return resp, None
     if aux_errors.auth_refresh(first_err.verdict) and client_is_nous:
         step = _refreshed_nous_step(
             route, kwargs, "Auxiliary %s%s: refreshed Nous runtime credentials after 401, retrying")
         if step is not None:
-            resp, first_err = yield from _rung(step, aux_errors.ladder_accepts, route)
+            resp, first_err = yield from _rung(step, accept, route)
             if first_err is None:
                 return resp, None
     return None, first_err
@@ -7665,7 +7668,7 @@ def _ladder_credential_rungs(
         # No backoff retry for a payment/quota error: the same exhausted key stays refused.
         if aux_errors.same_key_retry(first_err.verdict):
             from agent.auxiliary_rate_limit_backoff import rate_limit_retry_rungs
-            resp, first_err = yield from rate_limit_retry_rungs(first_err, route, kwargs)
+            resp, first_err = yield from rate_limit_retry_rungs(first_err, route, kwargs, accept)
             if first_err is None:
                 return resp, None
         if _recover_failure_pool(route, first_err):
@@ -7821,7 +7824,7 @@ def _aux_recovery_ladder(
         return resp
     client_is_nous = (resolved_provider == "nous"
                       or base_url_host_matches(base_info, "inference-api.nousresearch.com"))
-    resp, first_err = yield from _ladder_nous_rungs(first_err, route, kwargs, client_is_nous)
+    resp, first_err = yield from _ladder_nous_rungs(first_err, route, kwargs, client_is_nous, repairs)
     if first_err is None:
         return resp
     resp, first_err = yield from _ladder_credential_rungs(first_err, route, kwargs, client_is_nous, repairs)

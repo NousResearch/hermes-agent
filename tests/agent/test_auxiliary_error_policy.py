@@ -735,11 +735,12 @@ _TEMPERATURE_400 = "Unsupported parameter: 'temperature' is not supported with t
 @pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
 @pytest.mark.parametrize("third,answer", [(200, "ok"), (400, "fallback")], ids=["refreshed-request-answers",
                                                                                   "rejected-again-falls-back"])
-@pytest.mark.parametrize("second", [401, 402], ids=["refresh", "rotation"])
-def test_a_parameter_repair_survives_a_credential_refresh(is_async, third, answer, second):
-    """temperature 400 -> the repaired request 401s (refresh) or 402s (pool rotation): the rebuilt request still
-    omits temperature. If the provider rejects it anyway, that is a parameter-named 400 after a spent rung: model
-    incompatible, fall back."""
+@pytest.mark.parametrize("second,provider", [(401, "openrouter"), (402, "openrouter"), (401, "nous"), (429, "openrouter")],
+                         ids=["refresh", "rotation", "nous-refresh", "rate-limit-backoff"])
+def test_a_parameter_repair_survives_a_credential_refresh(is_async, third, answer, second, provider):
+    """temperature 400 -> the repaired request 401s (refresh, Nous refresh), 402s (pool rotation) or 429s (backoff):
+    the resent request still omits temperature. If the provider rejects it anyway, that is a parameter-named 400
+    after a spent rung: model incompatible, fall back."""
     sent, statuses = [], iter([400, second, third])
     ok = {"id": "x", "object": "chat.completion", "created": 0, "model": "fast-1", "choices": [
         {"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}]}
@@ -747,12 +748,16 @@ def test_a_parameter_repair_survives_a_credential_refresh(is_async, third, answe
     def handle(request):
         sent.append(json.loads(request.content))
         status = next(statuses)
-        message = {400: _TEMPERATURE_400, 401: "invalid api key", 402: "Insufficient credits"}.get(status)
+        message = {400: _TEMPERATURE_400, 401: "invalid api key", 402: "Insufficient credits",
+                   429: "Rate limit exceeded"}.get(status)
         return httpx.Response(status, json={"error": {"message": message}} if message else ok, request=request)
 
     client = _wire(handle, key="sk-0", is_async=is_async)
     pool = CredentialPool("openrouter", [Key("openrouter", f"k{i}", f"k{i}", "api_key", i, "manual", f"sk-{i}")
                                          for i in range(2)])
-    assert _routed_call([client] * 2, provider="openrouter", is_async=is_async, temperature=0.3,
-                        pool=pool) == answer
+    with patch.multiple("agent.auxiliary_client", _refresh_nous_auxiliary_client=lambda **_k: (client, "fast-1"),
+                        _nous_portal_account_has_fresh_paid_access=lambda: False), \
+            patch("agent.auxiliary_rate_limit_backoff.rate_limit_wait", return_value=0.0):
+        assert _routed_call([client] * 2, provider=provider, is_async=is_async, temperature=0.3,
+                            pool=pool if provider == "openrouter" else None) == answer
     assert len(sent) == 3 and ["temperature" in body for body in sent] == [True, False, False]

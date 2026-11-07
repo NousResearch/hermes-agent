@@ -26,7 +26,7 @@ def _cron_optional_text(value: Any, *, strip_trailing_slash: bool = False) -> Op
     return text or None
 
 
-def _cron_string_list(value: Any) -> Optional[list[str]]:
+def _cron_string_list(value: Any, allow_empty: bool = False) -> Optional[list[str]]:
     if isinstance(value, str):
         raw_items = re.split(r"[\n,]", value)
     elif isinstance(value, (list, tuple)):
@@ -34,6 +34,8 @@ def _cron_string_list(value: Any) -> Optional[list[str]]:
     else:
         return None
     items = [str(item).strip() for item in raw_items if str(item).strip()]
+    if allow_empty and isinstance(value, (list, tuple)):
+        return items
     return items or None
 
 
@@ -276,7 +278,7 @@ def _create_cron_job_sync(body: CronJobCreate, profile: Optional[str] = None):
             base_url=_cron_optional_text(body.base_url, strip_trailing_slash=True),
             script=script,
             context_from=context_from,
-            enabled_toolsets=_cron_string_list(body.enabled_toolsets),
+            enabled_toolsets=_cron_string_list(body.enabled_toolsets, allow_empty=True),
             workdir=_cron_optional_text(body.workdir),
             no_agent=no_agent,
             timezone=_cron_optional_text(body.timezone),

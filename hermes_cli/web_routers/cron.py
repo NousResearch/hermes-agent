@@ -74,7 +74,7 @@ def _normalize_dashboard_cron_updates(updates: dict[str, Any], profile_home: Pat
         normalized["failure_deliver"] = _cron_optional_text(normalized["failure_deliver"])
     for key in ("context_from", "enabled_toolsets"):
         if key in normalized:
-            normalized[key] = _cron_string_list(normalized[key])
+            normalized[key] = _cron_string_list(normalized[key], allow_empty=(key == "enabled_toolsets"))
     return normalized
 
 

@@ -257,6 +257,35 @@ def test_pool_recovery_reuses_the_failed_requests_verdict(monkeypatch, route_tag
 
 
 @pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize("route", ["custom", "auto"])
+def test_opencode_go_upstream_throttle_keeps_the_key_on_an_unnamed_route(monkeypatch, route, is_async):
+    """A ``custom`` or untagged auto route at the main runtime's OpenCode Go host: the one classification per request
+    is made on opencode-go, so Go's per-model upstream 429 rotates no key and the call falls back."""
+    import model_tools  # registers the bundled provider profiles
+    from agent import auxiliary_client as aux
+
+    seen, real_pool_provider = [], aux._recoverable_pool_provider
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_error_classification", lambda **kw: seen.append(kw["error"]))
+    go_url = "https://opencode.ai/zen/go/v1"
+    client = MagicMock(base_url=go_url, api_key="sk-0", _hermes_aux_effective_provider=None,
+                       _hermes_aux_backend_provider=None)
+    client.chat.completions.create = (AsyncMock if is_async else MagicMock)(
+        side_effect=[sdk(429, "Upstream request failed: Rate limit exceeded.", type="server_error")] * 3)
+    pool = CredentialPool("opencode-go", [Key("opencode-go", f"k{i}", f"k{i}", "api_key", i, "manual", f"sk-{i}")
+                                          for i in range(2)])
+    runtime = {"provider": "opencode-go", "base_url": go_url}
+
+    def call():  # the real host resolution, from the main runtime
+        with patch("agent.auxiliary_client._recoverable_pool_provider", real_pool_provider):
+            if is_async:
+                return asyncio.run(async_call_llm(messages=_MESSAGES, main_runtime=runtime))
+            return call_llm(messages=_MESSAGES, main_runtime=runtime)
+    outcome = run_ladder(None, provider=route, pool=pool, client=client, call=call, is_async=is_async)
+    assert outcome.fell_back and [k.last_status for k in pool.entries()] == [None, None]
+    assert len(seen) == outcome.attempts
+
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
 def test_observers_see_the_providers_own_error_when_its_stream_was_judged(monkeypatch, is_async):
     """A stream negotiation is classified where it failed; ``post_auxiliary_call`` still reports the provider's error."""
     from hermes_cli import plugins

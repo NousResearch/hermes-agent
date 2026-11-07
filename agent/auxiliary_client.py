@@ -4515,12 +4515,18 @@ def _effective_provider_for_client(client: Any, fallback: str) -> str:
     return str(fallback or "")
 
 
-def _classification_provider(client: Any, fallback: str) -> str:
-    """The provider a failure on ``client`` is classified on: the one discovery built it for, else its route."""
+def _classification_provider(client: Any, fallback: str, main_runtime: Optional[dict[str, Any]] = None) -> str:
+    """The provider a failure on ``client`` is classified on: the one discovery built it for, else its route. A route
+    label (``custom``, ``auto``, ``api-key``) names no profile: the pool recovery would act on stands in, so the one
+    verdict per request is already that backend's (an OpenCode Go upstream throttle keeps the key)."""
     backend = getattr(client, "_hermes_aux_backend_provider", "")
     if isinstance(backend, str) and backend:
         return backend
-    return _fallback_provider_from_label(_effective_provider_for_client(client, fallback))
+    label = _fallback_provider_from_label(_effective_provider_for_client(client, fallback))
+    if (route := _normalize_aux_provider(label)) not in {"auto", "custom", "api-key"}:
+        return label
+    return _recoverable_pool_provider("custom" if route == "custom" else "auto", client,
+                                      main_runtime=_normalize_main_runtime(main_runtime)) or label
 
 
 # Centralized Provider Router: resolve_provider_client() is the single entry point for building a configured
@@ -7407,10 +7413,10 @@ def _rung(step: _LadderStep, accept: Callable[[aux_errors.Failure], bool], route
 
 
 def _classify_failure(exc: Exception, provider: Optional[str], client: Any, model: Any,
-                      base_url: Optional[str] = None) -> aux_errors.Failure:
+                      base_url: Optional[str] = None, main_runtime: Optional[dict[str, Any]] = None) -> aux_errors.Failure:
     if isinstance(exc, _ClassifiedAttempt):
         return exc.failure
-    provider = _classification_provider(client, provider or "")
+    provider = _classification_provider(client, provider or "", main_runtime)
     verdict = aux_errors.classify_attempt(exc, provider, client, model, base_url)
     failure = aux_errors.Failure(exc, verdict, any(rung[0](exc) for rung in _parameter_rungs(client, 0)), client)
     _note_relay_auxiliary_error(exc, failure)
@@ -7423,7 +7429,8 @@ def _failure(route: "_LadderRoute", exc: Any, step: Optional[_LadderStep] = None
     client, model = route.client, route.final_model
     if step is not None and step.kind == "call":
         client, model = step.args[0], step.args[1].get("model") or model
-    return _classify_failure(exc, route.resolved_provider, client, model, route.base_info or route.resolved_base_url)
+    return _classify_failure(exc, route.resolved_provider, client, model, route.base_info or route.resolved_base_url,
+                             route.main_runtime)
 
 
 def _param_rung_accepts(failure: aux_errors.Failure) -> bool:

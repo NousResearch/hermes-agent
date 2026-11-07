@@ -633,7 +633,7 @@ function getWindowsBindingDirs(srcRoot, platform, arch) {
  * `pnpm run dev` loads get-windows from node_modules, and the install never runs its script
  * (pnpm-workspace.yaml allowBuilds), so a fresh Windows checkout has no binding there and
  * upstream's lib/windows.js hands back stubs. Fetch it once into the installed package, the way
- * stageGetWindows does for builds. Fail soft: dev runs without window enumeration rather than
+ * stageGetWindows does for builds, and restage a dist copy an earlier build left without one. Fail soft: dev runs without window enumeration rather than
  * not at all. node-pre-gyp's download has no timeout of its own, so on a network that drops
  * packets the run is bounded here instead of waiting out the OS TCP timeout on every dev start.
  */
@@ -645,15 +645,24 @@ export function ensureDevGetWindowsBinding(
     arch = process.arch,
     resolveRoot = () => resolveGetWindowsRoot(),
     install = installGetWindowsNativeBinding,
-    timeoutMs = DEV_GET_WINDOWS_TIMEOUT_MS
+    timeoutMs = DEV_GET_WINDOWS_TIMEOUT_MS,
+    staged = join(projectRoot, 'dist', 'node_modules', 'get-windows')
   } = {}
 ) {
   if (platform !== 'win32' || arch === 'arm64') return
   const srcRoot = resolveRoot()
-  if (!srcRoot || getWindowsBindingDirs(srcRoot, platform, arch).length > 0) return
-  console.log('[dev] get-windows has no win32 binding; running its native installer...')
+  if (!srcRoot) return
+  const hasBinding = (root) => getWindowsBindingDirs(root, platform, arch).length > 0
   try {
-    install(srcRoot, { timeoutMs })
+    if (!hasBinding(srcRoot)) {
+      console.log('[dev] get-windows has no win32 binding; running its native installer...')
+      install(srcRoot, { timeoutMs })
+    }
+    // window-below.ts loads the staged dist copy first, so one left without a binding by an
+    // earlier build whose fetch failed would shadow the binding node_modules now has.
+    if (existsSync(staged) && !hasBinding(staged) && hasBinding(srcRoot)) {
+      stageGetWindowsInto(srcRoot, staged, { platform, arch })
+    }
   } catch (error) {
     console.warn(
       `[dev] ${error instanceof Error ? error.message : String(error)}; ` +

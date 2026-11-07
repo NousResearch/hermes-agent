@@ -555,13 +555,32 @@ test('a Windows dev run fetches the missing binding into the installed package o
       installed.push(root)
       makeFakeNode(join(root, 'lib', 'binding', 'napi-9-win32-unknown-x64', 'node-get-windows.node'), 'win32')
     }
-    const run = (platform = 'win32', arch = 'x64') => ensureDevGetWindowsBinding({ platform, arch, resolveRoot: () => srcRoot, install })
+    const run = (platform = 'win32', arch = 'x64') => ensureDevGetWindowsBinding({ platform, arch, resolveRoot: () => srcRoot, install, staged: join(tmp, 'staged') })
     run('linux')
     run('win32', 'arm64') // no prebuilt to fetch
     assert.deepEqual(installed, [])
     run()
     run()
     assert.deepEqual(installed, [srcRoot])
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+// window-below.ts prefers dist/node_modules/get-windows, so a copy staged by a Windows build whose
+// fetch failed must not outlive the binding a later dev run fetches.
+test('a Windows dev run restages a build-staged copy that has no binding', () => {
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
+  try {
+    const srcRoot = join(tmp, 'get-windows')
+    const staged = join(tmp, 'dist', 'node_modules', 'get-windows')
+    const binding = join('lib', 'binding', 'napi-9-win32-unknown-x64', 'node-get-windows.node')
+    makeFakeGetWindows(srcRoot)
+    stageGetWindowsInto(srcRoot, staged, { platform: 'win32', arch: 'x64' })
+    assert.equal(existsSync(join(staged, binding)), false)
+    const install = root => makeFakeNode(join(root, binding), 'win32')
+    ensureDevGetWindowsBinding({ platform: 'win32', arch: 'x64', resolveRoot: () => srcRoot, install, staged })
+    assert.ok(existsSync(join(staged, binding)))
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true })
   }
@@ -576,8 +595,8 @@ test('a dev run starts without window enumeration when the binding cannot be fet
     const srcRoot = join(tmp, 'get-windows')
     makeFakeGetWindows(srcRoot)
     const install = () => { throw new Error('get-windows native installer exited with 1') }
-    ensureDevGetWindowsBinding({ platform: 'win32', arch: 'x64', resolveRoot: () => srcRoot, install })
-    ensureDevGetWindowsBinding({ platform: 'win32', arch: 'x64', resolveRoot: () => null, install })
+    ensureDevGetWindowsBinding({ platform: 'win32', arch: 'x64', resolveRoot: () => srcRoot, install, staged: join(tmp, 'staged') })
+    ensureDevGetWindowsBinding({ platform: 'win32', arch: 'x64', resolveRoot: () => null, install, staged: join(tmp, 'staged') })
     assert.equal(warnings.length, 1)
     assert.match(warnings[0], /exited with 1.*read_window_below will be unavailable/)
   } finally {
@@ -601,7 +620,7 @@ test('a dev run gives up on a hung binding fetch and starts without window enume
     const install = (root, options) =>
       installGetWindowsNativeBinding(root, { ...options, resolveInstaller: () => hang })
     const started = Date.now()
-    ensureDevGetWindowsBinding({ platform: 'win32', arch: 'x64', resolveRoot: () => srcRoot, install, timeoutMs: 500 })
+    ensureDevGetWindowsBinding({ platform: 'win32', arch: 'x64', resolveRoot: () => srcRoot, install, timeoutMs: 500, staged: join(tmp, 'staged') })
     assert.equal(warnings.length, 1)
     assert.ok(Date.now() - started < 10_000)
     assert.match(warnings[0], /timed out after 0\.5s.*read_window_below will be unavailable/)

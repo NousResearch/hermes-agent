@@ -13,22 +13,26 @@ from hermes_state_common import _RESET_CHILD_SQL, _sql_json_extract
 # Same logger the code used before extraction (record parity).
 _log = logging.getLogger("hermes_cli.web_server")
 
+# Rows of these sources are their own conversation, never a continuation of their parent.
+_NON_CONTINUATION_SOURCES = ("tool", "subagent")
+
 _DESCENDANTS_SQL = f"""
-            WITH RECURSIVE descendants(id, parent_session_id, started_at) AS (
-                SELECT id, parent_session_id, started_at FROM sessions WHERE id = ?
+            WITH RECURSIVE descendants(id, parent_session_id, started_at, source) AS (
+                SELECT id, parent_session_id, started_at, source FROM sessions WHERE id = ?
                 UNION
-                SELECT s.id, s.parent_session_id, s.started_at
+                SELECT s.id, s.parent_session_id, s.started_at, s.source
                 FROM sessions s
                 JOIN descendants d ON s.parent_session_id = d.id
                 -- Continuation edges only (same predicate as the session list's chain CTE): a subagent run,
-                -- a /branch fork, a /new reset child or a tool-owned row is its own conversation, and resuming
+                -- a /branch fork, a /new reset child or a tool-owned row (batch ``delegate_task`` rows carry only
+                -- ``source='subagent'``, no ``_delegate_from`` marker, #149237) is its own conversation, and resuming
                 -- INTO one parks the user's chat in a row the sidebar never lists (#115092).
                 WHERE {_sql_json_extract('s.model_config', '$._delegate_from')} IS NULL
                   AND {_sql_json_extract('s.model_config', '$._branched_from')} IS NULL
                   AND NOT ({_RESET_CHILD_SQL.format(a='s')})
-                  AND COALESCE(s.source, '') != 'tool'
+                  AND COALESCE(s.source, '') NOT IN ('tool', 'subagent')
             )
-            SELECT id, parent_session_id, started_at FROM descendants
+            SELECT id, parent_session_id, started_at, source FROM descendants
             """
 
 
@@ -50,7 +54,7 @@ def _session_latest_descendant(session_id: str, db):
 
     conn = getattr(db, "_conn", None)
     if conn is not None:
-        keys = ("id", "parent_session_id", "started_at")
+        keys = ("id", "parent_session_id", "started_at", "source")
         rows = [dict(zip(keys, row)) for row in conn.execute(_DESCENDANTS_SQL, (sid,)).fetchall()]
     else:
         rows = db.list_sessions_rich(limit=10000, offset=0, compact_rows=True)
@@ -59,7 +63,7 @@ def _session_latest_descendant(session_id: str, db):
     for row in rows:
         rid = row.get("id")
         parent = row.get("parent_session_id")
-        if rid and parent:
+        if rid and parent and str(row.get("source") or "") not in _NON_CONTINUATION_SOURCES:
             children.setdefault(parent, []).append(row)
 
     def started(row):

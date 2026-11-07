@@ -1148,6 +1148,24 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert resp.json()["session_id"] == "primary-cont"
 
 
+    def test_latest_descendant_skips_unmarked_subagent_children(self):
+        """#149237: batch ``delegate_task`` rows are reserved with ``source='subagent'`` and a
+        ``parent_session_id`` but no ``_delegate_from`` marker; the walk must not resume into them
+        (the chat would mount read-only)."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="batch-parent", source="tui")
+            db.create_session(session_id="batch-child", source="subagent", parent_session_id="batch-parent")
+            db.end_session("batch-parent", "ws_orphan_reap")
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/batch-parent/latest-descendant")
+        assert resp.status_code == 200
+        assert resp.json()["session_id"] == "batch-parent"
+
     def test_update_hermes_returns_docker_guidance_without_spawning(self, monkeypatch):
 
         spawned = False

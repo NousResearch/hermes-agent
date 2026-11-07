@@ -1308,6 +1308,9 @@ def build_turn_context(
         conversation_history=conversation_history, blocks=_blocks,
     )
     plugin_block_message = _blocks[0] if _blocks else ""  # first veto wins
+    # The veto precedes quota routing; an admitted turn still routes before compaction.
+    from agent.quota_preflight import prepare_quota_context
+    active_system_prompt = prepare_quota_context(agent, active_system_prompt, blocked=bool(plugin_block_message))
     compaction = CompactionOutcome(
         messages=messages, active_system_prompt=active_system_prompt,
         conversation_history=conversation_history, current_turn_user_idx=current_turn_user_idx,

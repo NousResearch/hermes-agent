@@ -11,9 +11,9 @@ import time
 from dataclasses import asdict
 from pathlib import Path
 
-from scripts.code_health import gitio
+from scripts.code_health import gitio, py_imports
 from scripts.code_health.compare import compare
-from scripts.code_health.config import in_scope
+from scripts.code_health.config import graph_scope, in_scope
 from scripts.code_health.measure import Measurer
 from scripts.code_health.report import (
     apply_allows,
@@ -72,10 +72,20 @@ def _parser() -> argparse.ArgumentParser:
     return p
 
 
+def _graph(repo: Path, tree: str | None) -> py_imports.Graph:
+    """The module-level import graph of a whole tree (product Python only)."""
+    paths = [p for p in gitio.tracked_files(repo, tree) if graph_scope(p)]
+    if tree is None:
+        paths += [p for p in gitio.untracked_files(repo) if graph_scope(p)]
+    return py_imports.scan(gitio.read_many(repo, tree, paths))
+
+
 def _report(repo: Path, head: str | None) -> int:
     paths = [p for p in gitio.tracked_files(repo, head) if in_scope(p)]
     measurer = Measurer(repo, resolve_ruff(repo), known_env=gitio.known_env_names(repo, head))
     print(summarize_tree(measurer.measure(head, paths)))
+    print()
+    print(py_imports.summary(_graph(repo, head)))
     return 0
 
 
@@ -109,6 +119,14 @@ def run(repo: Path, base: str, head: str | None, as_json: bool = False,
     base_m = measurer.measure(base, base_paths)
     head_m = measurer.measure(head, head_paths)
     findings = compare(base_m, head_m, changes)
+    if any(path.endswith(".py") for path in (*head_paths, *base_paths)):
+        head_graph = _graph(repo, head)
+        base_graph = py_imports.derive_base(
+            head_graph,
+            [p for p in head_paths if graph_scope(p)],
+            gitio.read_many(repo, base, [p for p in base_paths if graph_scope(p)]),
+        )
+        findings += py_imports.gate(base_graph, head_graph)
     apply_allows(findings, head_m)
     blocking, advisory = verdict(findings)
     failed = bool(blocking) and mode == "blocking"

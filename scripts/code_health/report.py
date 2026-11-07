@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 
-from scripts.code_health.config import ALLOW_SYNTAX, METRIC_FIX, RULES_BY_ID, TARGETS
+from scripts.code_health.config import ALLOW_SYNTAX, GRAPH_FIX, METRIC_FIX, RULES_BY_ID, TARGETS
 from scripts.code_health.model import FileMeasure, Finding
 
 _ALLOW = re.compile(r"health:\s*allow\s+([A-Za-z0-9_,\- ]+?)\s*(?:--|—|:)\s*(\S.*)$")
@@ -42,6 +42,8 @@ def apply_allows(findings: list[Finding], head: dict[str, FileMeasure]) -> None:
 
 
 def _fix_text(rule_id: str) -> str:
+    if rule_id in GRAPH_FIX:
+        return GRAPH_FIX[rule_id]
     if rule_id in METRIC_FIX:
         return METRIC_FIX[rule_id]
     return RULES_BY_ID[rule_id].fix

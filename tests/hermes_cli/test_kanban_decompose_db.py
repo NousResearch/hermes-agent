@@ -90,5 +90,31 @@ def test_decompose_records_audit_comment_and_event(kanban_home):
     assert any(ev.kind == "decomposed" for ev in events)
 
 
+def test_decompose_rejects_inherited_pathless_dir_atomically(kanban_home):
+    """Legacy pathless directory roots cannot create unspawnable children."""
+    with kbc.connect() as conn:
+        tid = _create_triage(conn)
+        conn.execute(
+            "UPDATE tasks SET workspace_kind = 'dir', workspace_path = NULL "
+            "WHERE id = ?",
+            (tid,),
+        )
+        conn.commit()
+        before = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
 
+        with pytest.raises(
+            ValueError, match="workspace_path is required for dir workspaces"
+        ):
+            decompose_triage_task(
+                conn,
+                tid,
+                root_assignee="orchestrator",
+                children=[
+                    {"title": "would otherwise inherit the invalid workspace"},
+                    {"title": "would otherwise be inserted first"},
+                ],
+                author="decomposer",
+            )
 
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == before
+        assert kb.get_task(conn, tid).status == "triage"

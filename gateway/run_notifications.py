@@ -1372,6 +1372,9 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             f"[IMPORTANT: {len(entries)} background processes completed for this session.",
             "Treat these results as one completion batch and send at most one "
             "consolidated user-facing response.",
+            "Supersession context: these processes may relate to earlier turns. "
+            "Reconcile these results with the current conversation before acting; "
+            "newer user instructions take precedence.",
         ]
         shown = entries[:10]
         for _text, evt, _future in shown:

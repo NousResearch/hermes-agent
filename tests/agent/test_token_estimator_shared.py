@@ -19,7 +19,10 @@ def test_breakdown_and_retention_use_the_canonical_estimator():
         assert _approx_tokens(text) == canonical
     # The old chars//4 shape under-counted these by ~2x; the canonical must not.
     assert _chars_to_tokens(CYRILLIC) > (len(CYRILLIC) + 3) // 4 * 1.5
-    assert _chars_to_tokens(CJK) >= len(CJK)
+    # CJK is calibrated at ~0.6 tokens/char (o200k/GLM/Qwen-family Chinese runs
+    # ~1.6-1.7 chars/token, #104806): still ~2.4x the ASCII 4-chars/token cost,
+    # but no longer charged the legacy 1.0/char that fired early compaction.
+    assert _chars_to_tokens(CJK) > (len(CJK) + 3) // 4 * 2
 
 
 def test_byte_and_ratio_consumers_share_one_constant():

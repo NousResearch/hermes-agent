@@ -13,7 +13,9 @@ from agent.model_metadata import (
 def test_message_estimate_counts_korean_content_as_token_dense():
     messages = [{"role": "user", "content": "압축 테스트 " + ("가" * 1000)}]
 
-    assert estimate_messages_tokens_rough(messages) >= 1000
+    # 1005 dense Hangul chars x 0.6 tokens/char (CJK calibration) ~= 604 —
+    # still ~2.4x the ASCII ~4-chars/token cost for the same char count.
+    assert estimate_messages_tokens_rough(messages) >= 600
 
 
 
@@ -49,8 +51,9 @@ def test_cjk_tail_does_not_expand_to_english_char_budget():
 
 
 def _reference_per_char_estimate(text: str) -> int:
-    """Per-character reference: CJK ~1 token/char, everything else UTF-8
-    bytes/4 (the byte width corrects Cyrillic/Greek/Arabic under-counting)."""
+    """Per-character reference: CJK at ceil(0.6/char) (integer 3/5 with ceiling,
+    mirroring the calibrated dense cost), everything else UTF-8 bytes/4 (the
+    byte width corrects Cyrillic/Greek/Arabic under-counting)."""
     dense = 0
     sparse_bytes = 0
     for ch in text:
@@ -58,7 +61,7 @@ def _reference_per_char_estimate(text: str) -> int:
             dense += 1
         else:
             sparse_bytes += len(ch.encode("utf-8"))
-    return dense + ((sparse_bytes + 3) // 4)
+    return (dense * 3 + 4) // 5 + ((sparse_bytes + 3) // 4)
 
 
 def test_perf_gated_estimator_matches_per_char_reference():

@@ -23,6 +23,7 @@ export interface CanonicalGroupMessages extends GroupReasonMessages {
   discardWarning: string
   discardStopPending: string
   retryBusy: string
+  retryStalled: string
   discardPeerUnreachable: string
   discardPeerUpdateRequired: string
   confirmDiscard: string
@@ -60,6 +61,8 @@ export interface CanonicalGroupMessages extends GroupReasonMessages {
   composerPlaceholder: string
   groupDetails: string
   stopGroup: string
+  stopWaitingTitle: string
+  stopWaitingDescription: string
   pendingApproval: string
   pendingRetry: string
   pendingDiscard: string
@@ -184,6 +187,7 @@ export const CANONICAL_GROUP_LOCALES = {
     discardWarning: 'Side effects may already have occurred. Discarding does not undo them. For a bot on another computer, Discard waits for that computer to confirm the turn has stopped or never started.',
     discardStopPending: '{name} has not confirmed that its turn has stopped. The turn has been kept. Try Discard again when its computer is answering.',
     retryBusy: '{name} may still be working on this turn. Try again once it has finished.',
+    retryStalled: 'Retry didn’t work. The bots still can’t start. Try again later, or stop the group.',
     discardPeerUnreachable: '{name}’s computer isn’t answering. The turn has been kept. Reconnect that computer, then try Discard again.',
     discardPeerUpdateRequired: 'Hermes on {name}’s computer is too old to confirm that this turn never started. The turn has been kept. Update Hermes on that computer, then try Discard again.',
     confirmDiscard: 'Confirm discard',
@@ -221,6 +225,8 @@ export const CANONICAL_GROUP_LOCALES = {
     composerPlaceholder: 'Message the group — @mention to assign',
     groupDetails: 'Group details',
     stopGroup: 'Stop the group',
+    stopWaitingTitle: 'Stop the group?',
+    stopWaitingDescription: 'Waiting messages won’t be answered, but a reply already on its way may still appear. This doesn’t fix why a bot couldn’t start.',
     pendingApproval: '{name} is asking for approval. You decide.',
     pendingRetry: '{name}’s turn has not finished. Retry it?',
     pendingDiscard: 'Discard {name}’s turn? Work already done will not be undone.',
@@ -342,6 +348,7 @@ export const CANONICAL_GROUP_LOCALES = {
     discardWarning: 'すでに変更が生じている場合があります。破棄しても元には戻りません。別のコンピューターのボットでは、そのコンピューターがターンの停止または未開始を確認するまで待ちます。',
     discardStopPending: '{name} はターンの停止をまだ確認していません。ターンは保持されています。そのコンピューターが応答するようになったら、もう一度破棄してください。',
     retryBusy: '{name} はまだこのターンを実行中の可能性があります。終了してからもう一度お試しください。',
+    retryStalled: '再試行できませんでした。botはまだ開始できません。後でもう一度試すか、グループを停止してください。',
     discardPeerUnreachable: '{name} のコンピューターが応答していません。ターンは保持されています。そのコンピューターに再接続してから、もう一度破棄してください。',
     discardPeerUpdateRequired: '{name} のコンピューターの Hermes が古いため、このターンが開始されていないことを確認できません。ターンは保持されています。そのコンピューターで Hermes を更新してから、もう一度破棄してください。',
     confirmDiscard: '破棄を確定',
@@ -379,6 +386,8 @@ export const CANONICAL_GROUP_LOCALES = {
     composerPlaceholder: 'グループにメッセージ — @メンションで担当を指名',
     groupDetails: 'グループの詳細',
     stopGroup: 'グループを停止',
+    stopWaitingTitle: 'グループを停止しますか？',
+    stopWaitingDescription: '待機中のメッセージには返信されません。ただし、すでに作成が始まっている返信が後から届くことはあります。botが開始できなかった原因は解決されません。',
     pendingApproval: '{name} が承認を求めています。判断してください。',
     pendingRetry: '{name} のターンはまだ完了していません。再試行しますか？',
     pendingDiscard: '{name} のターンを破棄しますか？すでに行われた作業は元に戻りません。',
@@ -500,6 +509,7 @@ export const CANONICAL_GROUP_LOCALES = {
     discardWarning: '可能已经产生了更改，丢弃不会撤销这些更改。对于其他电脑上的机器人，丢弃会等待该电脑确认回合已停止或从未开始。',
     discardStopPending: '{name} 尚未确认回合已停止。回合已保留。请在其电脑恢复响应后再次尝试丢弃。',
     retryBusy: '{name} 可能仍在处理此回合。请在其完成后重试。',
+    retryStalled: '重试失败，bot仍无法启动。请稍后再试，或停止群组。',
     discardPeerUnreachable: '{name} 所在的电脑没有响应。回合已保留。请重新连接该电脑，然后再次尝试丢弃。',
     discardPeerUpdateRequired: '{name} 所在电脑上的 Hermes 版本太旧，无法确认此回合从未开始。回合已保留。请在该电脑上更新 Hermes，然后再次尝试丢弃。',
     confirmDiscard: '确认丢弃',
@@ -537,6 +547,8 @@ export const CANONICAL_GROUP_LOCALES = {
     composerPlaceholder: '发消息给群组 — @提及以指派',
     groupDetails: '群组详情',
     stopGroup: '停止群组',
+    stopWaitingTitle: '停止群组？',
+    stopWaitingDescription: '等待中的消息不会收到回复，但已经在准备的回复仍可能稍后出现。这不会解决bot无法启动的问题。',
     pendingApproval: '{name} 正在请求批准，由你决定。',
     pendingRetry: '{name} 的回合尚未完成。要重试吗？',
     pendingDiscard: '丢弃 {name} 的回合？已经完成的工作不会被撤销。',
@@ -658,6 +670,7 @@ export const CANONICAL_GROUP_LOCALES = {
     discardWarning: '可能已經產生了變更，捨棄不會復原這些變更。對於其他電腦上的機器人，捨棄會等待該電腦確認回合已停止或從未開始。',
     discardStopPending: '{name} 尚未確認回合已停止。回合已保留。請在其電腦恢復回應後再次嘗試捨棄。',
     retryBusy: '{name} 可能仍在處理此回合。請在完成後再試一次。',
+    retryStalled: '重試失敗，bot仍無法啟動。請稍後再試，或停止群組。',
     discardPeerUnreachable: '{name} 所在的電腦沒有回應。回合已保留。請重新連線至該電腦，然後再次嘗試捨棄。',
     discardPeerUpdateRequired: '{name} 所在電腦上的 Hermes 版本太舊，無法確認此回合從未開始。回合已保留。請在該電腦上更新 Hermes，然後再次嘗試捨棄。',
     confirmDiscard: '確認捨棄',
@@ -695,6 +708,8 @@ export const CANONICAL_GROUP_LOCALES = {
     composerPlaceholder: '傳訊息給群組 — @提及以指派',
     groupDetails: '群組詳細資料',
     stopGroup: '停止群組',
+    stopWaitingTitle: '停止群組？',
+    stopWaitingDescription: '等待中的訊息不會收到回覆，但已經在準備的回覆仍可能稍後出現。這不會解決bot無法啟動的問題。',
     pendingApproval: '{name} 正在請求核准，由你決定。',
     pendingRetry: '{name} 的回合尚未完成。要重試嗎？',
     pendingDiscard: '捨棄 {name} 的回合？已完成的工作不會被復原。',
@@ -816,6 +831,7 @@ export const CANONICAL_GROUP_LOCALES = {
     discardWarning: 'ربما حدثت تغييرات بالفعل. لن يؤدي تجاهل الدور إلى التراجع عنها. بالنسبة لروبوت على جهاز آخر، ينتظر التجاهل تأكيد ذلك الجهاز أن الدور توقف أو لم يبدأ أصلًا.',
     discardStopPending: 'لم يؤكد {name} بعد أن دوره توقف. تم الاحتفاظ بالدور. حاول تجاهله مجددًا عندما يستجيب جهازه.',
     retryBusy: 'قد يكون {name} ما زال يعمل على هذا الدور. أعد المحاولة بعد انتهائه.',
+    retryStalled: 'لم تنجح إعادة المحاولة، وما زالت الروبوتات لا تستطيع البدء. أعد المحاولة لاحقًا أو أوقف المجموعة.',
     discardPeerUnreachable: 'جهاز {name} لا يستجيب. تم الاحتفاظ بالدور. أعد الاتصال بذلك الجهاز، ثم حاول تجاهل الدور مجددًا.',
     discardPeerUpdateRequired: 'إصدار Hermes على جهاز {name} قديم ولا يستطيع تأكيد أن هذا الدور لم يبدأ أصلًا. تم الاحتفاظ بالدور. حدّث Hermes على ذلك الجهاز، ثم حاول تجاهل الدور مجددًا.',
     confirmDiscard: 'تأكيد التجاهل',
@@ -853,6 +869,8 @@ export const CANONICAL_GROUP_LOCALES = {
     composerPlaceholder: 'راسل المجموعة — اذكر @بوتًا لتكليفه',
     groupDetails: 'تفاصيل المجموعة',
     stopGroup: 'إيقاف المجموعة',
+    stopWaitingTitle: 'إيقاف المجموعة؟',
+    stopWaitingDescription: 'لن يُرَدّ على الرسائل المنتظرة، لكن قد يظهر ردّ كان في طريقه بالفعل. وهذا لا يحل المشكلة التي منعت الروبوت من البدء.',
     pendingApproval: '{name} يطلب موافقة. القرار لك.',
     pendingRetry: 'لم ينتهِ دور {name} بعد. هل تعيد المحاولة؟',
     pendingDiscard: 'هل تريد تجاهل دور {name}؟ لن يتم التراجع عن العمل الذي أُنجز بالفعل.',
@@ -975,6 +993,7 @@ export const CANONICAL_GROUP_LOCALES = {
     discardWarning: 'Изменения уже могли произойти. Отмена хода не отменяет их. Для бота на другом компьютере нужно дождаться подтверждения, что ход остановлен или не начинался.',
     discardStopPending: '{name} ещё не подтвердил остановку своего хода. Ход сохранён. Попробуйте отменить его снова, когда его компьютер будет отвечать.',
     retryBusy: '{name}, возможно, ещё выполняет этот ход. Повторите попытку, когда он завершится.',
+    retryStalled: 'Повтор не помог: боты всё ещё не могут запуститься. Попробуйте позже или остановите группу.',
     discardPeerUnreachable: 'Компьютер {name} не отвечает. Ход сохранён. Восстановите подключение к этому компьютеру и попробуйте отменить ход снова.',
     discardPeerUpdateRequired: 'Версия Hermes на компьютере {name} слишком старая, чтобы подтвердить, что этот ход не начинался. Ход сохранён. Обновите Hermes на этом компьютере и попробуйте отменить ход снова.',
     confirmDiscard: 'Подтвердить отмену работы',
@@ -1014,6 +1033,8 @@ export const CANONICAL_GROUP_LOCALES = {
     composerPlaceholder: 'Сообщение группе — @упомяните, чтобы поручить',
     groupDetails: 'Сведения о группе',
     stopGroup: 'Остановить группу',
+    stopWaitingTitle: 'Остановить группу?',
+    stopWaitingDescription: 'Ожидающие сообщения останутся без ответа, но ответ, который уже в пути, ещё может появиться. Это не устранит причину, по которой бот не смог запуститься.',
     pendingApproval: '{name} просит одобрения. Решать вам.',
     pendingRetry: 'Ход {name} ещё не завершён. Повторить?',
     pendingDiscard: 'Отбросить ход {name}? Уже выполненная работа не будет отменена.',
@@ -1136,6 +1157,7 @@ export const CANONICAL_GROUP_LOCALES = {
     discardWarning: 'Des changements ont peut-être déjà eu lieu. Abandonner le tour ne les annule pas. Pour un bot sur un autre ordinateur, il faut attendre que cet ordinateur confirme que le tour est arrêté ou n’a jamais démarré.',
     discardStopPending: '{name} n’a pas encore confirmé l’arrêt de son tour. Le tour a été conservé. Réessayez de l’abandonner lorsque son ordinateur répondra.',
     retryBusy: '{name} travaille peut-être encore sur ce tour. Réessayez une fois qu’il est terminé.',
+    retryStalled: 'La nouvelle tentative n’a pas marché : les bots ne peuvent toujours pas démarrer. Réessayez plus tard ou arrêtez le groupe.',
     discardPeerUnreachable: 'L’ordinateur de {name} ne répond pas. Le tour a été conservé. Reconnectez cet ordinateur, puis réessayez d’abandonner le tour.',
     discardPeerUpdateRequired: 'Hermes sur l’ordinateur de {name} est trop ancien pour confirmer que ce tour n’a jamais démarré. Le tour a été conservé. Mettez Hermes à jour sur cet ordinateur, puis réessayez d’abandonner le tour.',
     confirmDiscard: "Confirmer l'abandon",
@@ -1174,6 +1196,8 @@ export const CANONICAL_GROUP_LOCALES = {
     composerPlaceholder: 'Message au groupe — @mentionnez pour assigner',
     groupDetails: 'Détails du groupe',
     stopGroup: 'Arrêter le groupe',
+    stopWaitingTitle: 'Arrêter le groupe ?',
+    stopWaitingDescription: 'Les messages en attente n’auront pas de réponse, mais une réponse déjà en route peut encore s’afficher. Cela ne règle pas ce qui a empêché un bot de démarrer.',
     pendingApproval: '{name} demande une approbation. À vous de décider.',
     pendingRetry: 'Le tour de {name} n’est pas terminé. Réessayer ?',
     pendingDiscard: 'Abandonner le tour de {name} ? Le travail déjà effectué ne sera pas annulé.',
@@ -1296,6 +1320,7 @@ export const CANONICAL_GROUP_LOCALES = {
     discardWarning: 'Es können bereits Änderungen erfolgt sein. Verwerfen macht sie nicht rückgängig. Bei einem Bot auf einem anderen Computer wird gewartet, bis dieser Computer bestätigt, dass der Turn gestoppt wurde oder nie begonnen hat.',
     discardStopPending: '{name} hat noch nicht bestätigt, dass der Turn gestoppt wurde. Der Turn bleibt erhalten. Versuchen Sie erneut, ihn zu verwerfen, sobald sein Computer antwortet.',
     retryBusy: '{name} arbeitet möglicherweise noch an diesem Zug. Versuchen Sie es erneut, sobald er beendet ist.',
+    retryStalled: 'Erneut versuchen hat nicht geklappt: Die Bots können noch nicht starten. Versuchen Sie es später erneut oder stoppen Sie die Gruppe.',
     discardPeerUnreachable: 'Der Computer von {name} antwortet nicht. Der Turn bleibt erhalten. Stellen Sie die Verbindung zu diesem Computer wieder her und versuchen Sie dann erneut, den Turn zu verwerfen.',
     discardPeerUpdateRequired: 'Hermes auf dem Computer von {name} ist zu alt, um zu bestätigen, dass dieser Turn nie begonnen hat. Der Turn bleibt erhalten. Aktualisieren Sie Hermes auf diesem Computer und versuchen Sie dann erneut, den Turn zu verwerfen.',
     confirmDiscard: 'Verwerfen bestätigen',
@@ -1335,6 +1360,8 @@ export const CANONICAL_GROUP_LOCALES = {
     composerPlaceholder: 'Nachricht an die Gruppe — @erwähnen, um zuzuweisen',
     groupDetails: 'Gruppendetails',
     stopGroup: 'Gruppe stoppen',
+    stopWaitingTitle: 'Gruppe stoppen?',
+    stopWaitingDescription: 'Wartende Nachrichten bekommen keine Antwort, aber eine Antwort, die schon unterwegs ist, kann noch erscheinen. Das löst nicht das Problem, das einen Bot am Starten gehindert hat.',
     pendingApproval: '{name} bittet um Freigabe. Du entscheidest.',
     pendingRetry: 'Der Turn von {name} ist noch nicht abgeschlossen. Erneut versuchen?',
     pendingDiscard: 'Den Turn von {name} verwerfen? Bereits ausgeführte Arbeit wird nicht rückgängig gemacht.',
@@ -1457,6 +1484,7 @@ export const CANONICAL_GROUP_LOCALES = {
     discardWarning: 'Es posible que ya se hayan producido cambios. Descartar no los deshace. Si el bot está en otro equipo, se espera a que ese equipo confirme que el turno se ha detenido o nunca llegó a empezar.',
     discardStopPending: '{name} aún no ha confirmado que su turno se haya detenido. El turno se ha conservado. Vuelve a intentar descartarlo cuando su equipo responda.',
     retryBusy: 'Puede que {name} siga trabajando en este turno. Inténtalo de nuevo cuando termine.',
+    retryStalled: 'El reintento no funcionó: los bots siguen sin poder empezar. Inténtalo más tarde o detén el grupo.',
     discardPeerUnreachable: 'El equipo de {name} no responde. El turno se ha conservado. Reconecta ese equipo y vuelve a intentar descartar el turno.',
     discardPeerUpdateRequired: 'La versión de Hermes en el equipo de {name} es demasiado antigua para confirmar que este turno nunca llegó a empezar. El turno se ha conservado. Actualiza Hermes en ese equipo y vuelve a intentar descartar el turno.',
     confirmDiscard: 'Confirmar descarte',
@@ -1495,6 +1523,8 @@ export const CANONICAL_GROUP_LOCALES = {
     composerPlaceholder: 'Mensaje al grupo — @menciona para asignar',
     groupDetails: 'Detalles del grupo',
     stopGroup: 'Detener el grupo',
+    stopWaitingTitle: '¿Detener el grupo?',
+    stopWaitingDescription: 'Los mensajes en espera no recibirán respuesta, pero una respuesta que ya está en camino aún puede aparecer. Esto no soluciona el problema que impidió que un bot empezara.',
     pendingApproval: '{name} pide aprobación. Tú decides.',
     pendingRetry: 'El turno de {name} no ha terminado. ¿Reintentar?',
     pendingDiscard: '¿Descartar el turno de {name}? El trabajo ya realizado no se deshará.',

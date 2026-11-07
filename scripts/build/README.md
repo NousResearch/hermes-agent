@@ -70,8 +70,8 @@ fails. The provider deduplicates the selection and runs one root
 `pnpm install --frozen-lockfile --trust-lockfile --prod=false` filtered to the
 selected workspaces and their workspace dependencies. The root project is always
 included. It includes development and optional dependencies. pnpm enforces the
-root `engines` pin; the provider enforces the exact `devEngines` pnpm version
-(`pmOnFail: ignore` keeps that pin out of the lockfile). pnpm runs dependency
+root `engines` pin; the provider enforces the exact `pm/lock.json` pnpm version
+(`pmOnFail: ignore` keeps any pnpm pin out of the lockfile). pnpm runs dependency
 build scripts only for the packages `allowBuilds` in `pnpm-workspace.yaml` names
 (`strictDepBuilds` fails the install on any other). The lockfile is trusted
 here: the `minimumReleaseAge` policy is verified in CI, where it is written.

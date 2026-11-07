@@ -300,6 +300,11 @@ def test_restored_pnpm_store_installs_offline_and_excludes_job_secrets(tmp_path)
     (source / "package.json").write_text(json.dumps(manifest), encoding="utf-8")
     (source / "pnpm-workspace.yaml").write_text("packages:\n  - editor\n", encoding="utf-8")
     (source / "editor/package.json").write_text(json.dumps({"name": "editor", "version": "1.0.0"}), encoding="utf-8")
+    # node-deps requires PM's pnpm pin; pin the pnpm this test runs.
+    pnpm_version = subprocess.run(["pnpm", "--version"], capture_output=True, text=True, encoding="utf-8",
+                                  timeout=60, check=True).stdout.strip()
+    (source / "pm").mkdir()
+    (source / "pm/lock.json").write_text(json.dumps({"packages": {"pnpm": {"version": pnpm_version}}}), encoding="utf-8")
     try:
         locked = run(source, cache, "--pnpm", "install", "--lockfile-only", offline=False)
         assert locked.returncode == 0, locked.stdout + locked.stderr
@@ -316,7 +321,7 @@ def test_restored_pnpm_store_installs_offline_and_excludes_job_secrets(tmp_path)
     description = describe_cache(source, cache, "test")
     assert not any(Path(path).is_relative_to(source) for path in description["paths"])
     restored_source, restored_cache = tmp_path / "new/source", tmp_path / "new/cache"
-    for name in ("package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "editor/package.json"):
+    for name in ("package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "editor/package.json", "pm/lock.json"):
         (restored_source / name).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source / name, restored_source / name)
     for name in description["paths"]:

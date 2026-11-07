@@ -128,8 +128,6 @@ def _pin_tool(args) -> int:
     lockfile.set_pin(args.name, args.version, artifacts)
     lockfile.save()
     print(f"pinned {args.name} {args.version} ({len(artifacts)} targets)")
-    if args.name == "pnpm":
-        _sync_pnpm_dev_engines(lockfile)
     return _regenerate_bootstrap_pins(lockfile)
 
 
@@ -657,28 +655,6 @@ def _sync_venv_step() -> bool:
     return True
 
 
-def _sync_pnpm_dev_engines(lockfile) -> None:
-    """Carry the pnpm pin into root package.json's devEngines.
-
-    scripts/build/node-deps.mjs refuses any pnpm but the devEngines one, so a
-    pnpm re-pin that left it behind would break every install. A lock outside a
-    checkout (a test fixture) has no manifest.
-    """
-    import json
-
-    manifest_path = lockfile.path.parent.parent / "package.json"
-    version = lockfile.version("pnpm")
-    if not version or not manifest_path.is_file():
-        return
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    pin = manifest.get("devEngines", {}).get("packageManager", {})
-    if pin.get("name") != "pnpm" or pin.get("version") == version:
-        return
-    pin["version"] = version
-    manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    print(f"✓ package.json devEngines pnpm → {version}")
-
-
 def _regenerate_bootstrap_pins(lockfile) -> int:
     """Splice the new uv and Windows git pins into this checkout's installers.
 
@@ -720,8 +696,6 @@ def _apply_pins(changed: list, lockfile) -> int:
         print(f"✓ {d.name} pinned {d.locked or '—'} → {d.version}")
     if pinned:
         lockfile.save()
-        if "pnpm" in pinned:
-            _sync_pnpm_dev_engines(lockfile)
         fragments = _regenerate_bootstrap_pins(lockfile)
         rc = 1 if _install_names(pinned) or not _sync_venv_step() or fragments else 0
     else:

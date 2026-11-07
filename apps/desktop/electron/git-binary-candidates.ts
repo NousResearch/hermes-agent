@@ -1,4 +1,7 @@
+import { execFileSync } from 'node:child_process'
 import path from 'node:path'
+
+import { selectRunnableBinary } from './select-runnable-binary'
 
 /** The filesystem surface the candidate builders need — injectable for tests. */
 export interface GitCandidateFs {
@@ -55,7 +58,6 @@ export function ugitGitBinaries(localAppData: string, fs: GitCandidateFs): strin
     .filter(fs.existsSync)
 }
 
-
 /**
  * Find Git installed by Hermes PM under `%LOCALAPPDATA%\hermes\tools`.
  * PM versions the tool directory, so resolve the newest available executable
@@ -102,4 +104,72 @@ export function windowsGitCandidates(env: WindowsGitEnv, fs: GitCandidateFs): st
   }
 
   return candidates
+}
+
+/**
+ * A binary can exist on disk and still be unlaunchable — on macOS an
+ * Intel-only build ahead on PATH (e.g. a pre-Rosetta-removal Homebrew)
+ * fails at spawn time with errno -86 (EBADARCH), which callers then report
+ * as an update-server/network problem. On Windows the same class of failure
+ * arrives as ERROR_ACCESS_DENIED when an update left the PM-pinned tool
+ * unlaunchable. Probing `git --version` before committing to a candidate skips
+ * such entries; the existence-only fallback keeps behaviour unchanged where
+ * the probe itself cannot run.
+ */
+export function binaryRuns(candidate: string): boolean {
+  try {
+    execFileSync(candidate, ['--version'], {
+      stdio: 'ignore',
+      timeout: 5000,
+      windowsHide: true
+    })
+
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Every PATH entry that holds `command`, in PATH order. */
+export function findPathCandidates(
+  command: string,
+  pathEntries: string,
+  fileExists: (candidate: string) => boolean
+): string[] {
+  const candidates: string[] = []
+
+  for (const entry of pathEntries.split(path.delimiter).filter(Boolean)) {
+    const candidate = path.join(entry, command)
+
+    if (fileExists(candidate)) {
+      candidates.push(candidate)
+    }
+  }
+
+  return candidates
+}
+
+/**
+ * The Windows git to spawn: the first candidate that exists AND runs, else the
+ * first that merely exists, else null.
+ *
+ * The PM-pinned git leads the list, and an update can leave it present but
+ * unlaunchable — extraction replaces the tool tree's inherited ACLs with the
+ * archive's own metadata, so the interactive user's token cannot spawn it
+ * (ERROR_ACCESS_DENIED) while a system Git further down the list works.
+ * Selecting by existence alone commits to that broken copy, and the update
+ * check then answers `head-unavailable`, which the UI reports as an unreachable
+ * update server.
+ */
+export function selectWindowsGitBinary(opts: {
+  env: WindowsGitEnv
+  fs: GitCandidateFs
+  /** Probe: does this candidate actually execute (`<binary> --version`)? */
+  binaryRuns: (candidate: string) => boolean
+}): string | null {
+  return selectRunnableBinary({
+    candidates: windowsGitCandidates(opts.env, opts.fs),
+    fileExists: opts.fs.existsSync,
+    binaryRuns: opts.binaryRuns
+  })
 }

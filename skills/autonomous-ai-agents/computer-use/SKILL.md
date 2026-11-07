@@ -139,6 +139,9 @@ Returned fields (present when the driver supports them):
   only when there's a next rung to try.
 - `code`: a structured refusal like `"background_unavailable"`,
   `"foreground_unsupported"`, or `"stale"` (re-capture, then retry by index).
+  On Windows, `"window_minimized"` means the target must be restored or brought
+  to the foreground, followed by a fresh capture, before retrying; do not bypass
+  or blindly repeat the action.
 - `verified`: `true` only on AX read-back.
 
 Walk it in order:

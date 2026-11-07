@@ -279,6 +279,7 @@ def gateway_lifecycle_block(
 
     if not _is_supervised_gateway_process():
         return None
+    from tools.environments.base import env_uses_host_filesystem
     from cron.lifecycle_guard import (
         _MAX_REFERENCED_SCRIPT_BYTES,
         HOST_INTERPRETER_KILL_REJECTION,
@@ -312,6 +313,8 @@ def gateway_lifecycle_block(
         command,
         cwd=guard_cwd,
         read_remote_script=lambda p: _read_script_for_guard(env, guard_cwd, p, _MAX_REFERENCED_SCRIPT_BYTES),
+        # env_type comes from config and a reused environment can be a remote one, so check the env too.
+        backend_shares_host_filesystem=env_type == "local" and env_uses_host_filesystem(env),
     )
     if unsafe and refusal:
         # Not a lifecycle command: a script the command EXECUTES could not be scanned (budget,

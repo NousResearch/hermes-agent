@@ -1090,9 +1090,33 @@ def _read_script_for_scanning(script_path: str) -> tuple[str, Optional[str]]:
 
 # --- recursive walk ---------------------------------------------------------------------------
 
+def _definitely_missing_on_host(path: Path) -> bool:
+    """True only when a component of *path* is reported as not existing, with no symlink before it. A
+    symlink answers False: ``/proc/self/cwd``, ``/dev/fd`` or a link to them resolve per process, so
+    what this process sees says nothing about the shell that runs the command. Any other lookup error
+    is uncertain and also answers False. Bash's emulated ``/dev/tcp`` and ``/dev/udp`` are not on disk
+    and so count as missing: at a script position ``open()`` fails there too, and skipping them keeps
+    the guard from dialing the address. Never raises: a raise ends the walk as "found nothing"."""
+    if not path.is_absolute():
+        return False
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        current = current / part
+        try:
+            mode = os.lstat(current).st_mode
+        except (FileNotFoundError, NotADirectoryError):
+            return True
+        except (OSError, ValueError):
+            return False
+        if stat.S_ISLNK(mode):
+            return False
+    return False
+
+
 def _contains_unsafe_gateway_action(
     command: str, *, cwd: Optional[str], depth: int, visited: set[Path], budget: _LifecycleScanBudget,
     read_remote_script: Optional[_ReadRemoteScriptFn] = None, executed: bool = True,
+    backend_shares_host_filesystem: bool = False,
 ) -> bool:
     """``executed=False`` means *command* is the content of a file that is only MENTIONED in inert
     (masked) text: it is still scanned for a literal lifecycle command, but "could not scan" (budget,
@@ -1109,6 +1133,7 @@ def _contains_unsafe_gateway_action(
         return _contains_unsafe_gateway_action(
             text, cwd=cwd, depth=depth + 1, visited=visited, budget=budget,
             read_remote_script=read_remote_script, executed=executed,
+            backend_shares_host_filesystem=backend_shares_host_filesystem,
         )
 
     # The walks below must see the same masked view `_direct_lifecycle_scan` sees (#110422): a
@@ -1155,7 +1180,14 @@ def _contains_unsafe_gateway_action(
             if candidate_executed:
                 return _refuse_unreadable(budget, script_path, _unreadable_reason(script_path))
             continue
-        if script_text is None and read_remote_script is not None:
+        # A path missing from the filesystem the backend itself uses has nothing to read, and must
+        # not spend the budget: source code tokenizes into many path-like strings. A file that
+        # exists but was skipped (binary magic, which bash still runs as text) reads on.
+        if (
+            script_text is None
+            and read_remote_script is not None
+            and not (backend_shares_host_filesystem and _definitely_missing_on_host(script_path))
+        ):
             # Local path missing; the remote backend's output crosses the same trust boundary as a
             # local read — sanitize identically (binary skip + size fail-closed).
             if not budget.charge_remote_read():
@@ -1184,6 +1216,7 @@ def _contains_unsafe_gateway_action(
 def scan_gateway_lifecycle(
     command: str, *, cwd: Optional[str] = None,
     read_remote_script: Optional[_ReadRemoteScriptFn] = None,
+    backend_shares_host_filesystem: bool = False,
 ) -> tuple[bool, Optional[str]]:
     """``(unsafe, refusal)``: *refusal* names a non-lifecycle reason the walk failed closed (budget,
     size, device, live SQLite, cloud) so callers can tell the model; ``None`` when the verdict is a
@@ -1203,6 +1236,7 @@ def scan_gateway_lifecycle(
         unsafe = _contains_unsafe_gateway_action(
             command, cwd=cwd, depth=0, visited=set(), budget=budget,
             read_remote_script=read_remote_script,
+            backend_shares_host_filesystem=backend_shares_host_filesystem,
         )
         return unsafe, budget.refusal if unsafe else None
     except Exception:

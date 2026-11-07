@@ -9,7 +9,6 @@ lock the tombstone + no-mkdir contract without depending on Desktop.
 from __future__ import annotations
 
 import shutil
-import tarfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -326,45 +325,29 @@ class TestNamedProfileHome:
         assert named_profile_home(worker / "logs") == worker
 
 
-class TestImportClearsDeletedTombstone:
-    """``hermes profile import`` is the third way a profile directory comes back.
+class TestRefusedImportKeepsDeletedTombstone:
+    """Only a published import may clear the marker.
 
-    ``create_profile`` clears the tombstone before it builds and ``install_distribution``
-    does too, so an import over a deleted name must not be the one publish path that leaves
-    the marker behind — a tombstoned home is invisible to every reader, so the import would
-    report success and every later command on that profile would answer "does not exist".
+    Every publish path clears the target name's tombstone (``create_profile``,
+    ``install_distribution`` and, since 7af51a75, ``import_profile`` / ``rename_profile``).
+    The clear is deliberately the LAST step of ``import_profile``: the function refuses plenty
+    of archives and targets, and clearing the marker on any of those paths would resurrect a
+    deleted name over a tree that was never published.
     """
 
-    def test_import_over_a_deleted_name_lands_live(self, profile_env, tmp_path):
+    def test_an_import_refused_over_a_stale_shell_keeps_the_tombstone(self, profile_env, tmp_path):
+        # `profile delete` leaves the marker; a stale serve/logging process then mkdirs an
+        # empty shell (the ghost this module already covers). The import is refused because
+        # the directory exists — and that ghost must stay non-live, so the marker survives.
         profile_dir = create_profile("worker", no_alias=True, no_skills=True)
         archive = export_profile("worker", str(tmp_path / "worker.tar.gz"))
-        # Exactly what `hermes profile delete` leaves behind: marker written, tree removed.
         shutil.rmtree(profile_dir)
         mark_named_profile_deleted(profile_dir)
-        assert not profile_exists("worker")
-
-        restored = import_profile(str(archive), name="worker")
-
-        assert restored.exists()
-        assert named_profile_is_live(restored)
-        assert profile_exists("worker")
-        assert "worker" in list_profile_names()
-
-    def test_a_refused_import_keeps_the_tombstone(self, profile_env, tmp_path):
-        # Nothing is published, so the deleted name must stay deleted: clearing the marker
-        # for an archive that never lands would resurrect a name over a stale tree.
-        profile_dir = create_profile("worker", no_alias=True, no_skills=True)
-        shutil.rmtree(profile_dir)
-        mark_named_profile_deleted(profile_dir)
-        two_roots = tmp_path / "two-roots.tar.gz"
-        with tarfile.open(two_roots, "w:gz") as tar:
-            for top in ("a", "b"):
-                member = tarfile.TarInfo(top)
-                member.type = tarfile.DIRTYPE
-                tar.addfile(member)
-
-        with pytest.raises(ValueError, match="exactly one top-level directory"):
-            import_profile(str(two_roots), name="worker")
-
+        profile_dir.mkdir()
         assert not named_profile_is_live(profile_dir)
+
+        with pytest.raises(FileExistsError, match="already exists"):
+            import_profile(str(archive), name="worker")
+
         assert profile_tombstone_path(profile_dir).exists()
+        assert not named_profile_is_live(profile_dir)

@@ -290,8 +290,9 @@ FROM runtime_base AS python_deps
 # ~25 MB) is baked so the microsoft-office and pdf skills work out of the box:
 # this venv is sealed and has no pip, so the agent could not add them itself.
 #
-# Source binding is created after the source copy below.
-COPY pyproject.toml uv.lock ./
+# Source binding is created after the source copy below. setup.py is copied here too: the
+# recorded selection's stamp hashes the packaging files, and must match the full tree copied below.
+COPY pyproject.toml setup.py uv.lock ./
 RUN touch ./README.md
 # --cache puts uv's cache at /opt/hermes/uv-cache, the seed path that
 # pm.packages.uv_cache_dir() merges into $HERMES_HOME/cache/uv on first use.

@@ -196,6 +196,9 @@ _pf86="$(env | sed -n 's/^ProgramFiles(x86)=//p' | head -n1)"
 #     their user profiles and the transcripts CI uploads.
 #   * HERMES_E2E_STRICT_ACCEPTANCE makes tests/e2e/core/_pending_fixes.py's
 #     known gaps hard failures in an acceptance run (workflow dispatch input).
+#   * HERMES_E2E_UPGRADE_BASE (older name HERMES_E2E_N1_REF) picks the release
+#     tests/e2e/core/upgrade starts from: a tag, a commit, or an updater
+#     generation (by-path, handoff, pre-handoff); unset, the newest release.
 #   * HERMES_TEST_SSH_HOST / _USER / _PORT / _KEY and HERMES_TEST_DOCKER_IMAGE
 #     arm the real-backend tests (tests/tools/test_ssh_environment.py,
 #     tests/tools/test_docker_backend_real.py); remote-backends.yml points them at
@@ -215,7 +218,8 @@ for _test_var in HERMES_TEST_IMAGE HERMES_TEST_WORKERS HERMES_TEST_PATHS \
   HERMES_TEST_FILE_TIMEOUT HERMES_TEST_FILE_RETRIES HERMES_TEST_SLICE HERMES_TEST_FORKSERVER \
   SSL_CERT_FILE SSL_CERT_DIR HERMES_GATEWAY_LOCK_DIR HERMES_E2E_REQUIRE_TUI CI GITHUB_ACTIONS \
   HERMES_E2E_WINDOWS_INSTALL HERMES_E2E_MACHINE_ROOT HERMES_E2E_PROFILES_ROOT HERMES_E2E_ARTIFACTS \
-  HERMES_E2E_STRICT_ACCEPTANCE HERMES_TEST_SSH_HOST HERMES_TEST_SSH_USER HERMES_TEST_SSH_PORT \
+  HERMES_E2E_STRICT_ACCEPTANCE HERMES_E2E_UPGRADE_BASE HERMES_E2E_N1_REF \
+  HERMES_TEST_SSH_HOST HERMES_TEST_SSH_USER HERMES_TEST_SSH_PORT \
   HERMES_TEST_SSH_KEY HERMES_TEST_DOCKER_IMAGE; do
   if [ -n "${!_test_var:-}" ]; then
     TEST_ENV+=("$_test_var=${!_test_var}")

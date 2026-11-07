@@ -18,6 +18,7 @@ from typing import Dict, List, Optional, Sequence
 
 
 from hermes_constants import get_hermes_home
+from hermes_state_legacy_refusal import LEGACY_REFUSAL_REPAIR_DONE, advance_legacy_refusal_repair
 from hermes_startup_watchdog import report_startup_progress
 from utils import safe_json_loads
 from hermes_state_common import (
@@ -1012,7 +1013,8 @@ class SessionSchemaMixin:
             cursor.executemany(
                 "INSERT OR IGNORE INTO state_meta (key, value) VALUES (?, ?)",
                 [("store_instance_id", str(uuid.uuid4())), ("store_created_at_utc", now_iso),
-                 (_MESSAGE_UID_BACKFILL_DONE, "1")],  # a fresh store has no legacy rows to backfill
+                 (_MESSAGE_UID_BACKFILL_DONE, "1"),  # a fresh store has no legacy rows to backfill
+                 (LEGACY_REFUSAL_REPAIR_DONE, "1")],
             )
         else:
             self._run_data_migrations(cursor, row[0], fts5_available)
@@ -1022,6 +1024,8 @@ class SessionSchemaMixin:
             self._init_fts(cursor)
             self._stamp_settled_fts_layout(cursor)
         self._conn.commit()
+        # After the commit: the repair takes its own write transaction, and only once per store.
+        advance_legacy_refusal_repair(self, self._conn)
 
     def _stamp_settled_fts_layout(self, cursor: sqlite3.Cursor) -> None:
         """Write ``fts_storage_version`` once the stored layout is exactly current and nothing is in flight.

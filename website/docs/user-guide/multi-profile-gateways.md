@@ -614,8 +614,8 @@ per-bot behaviour written in a profile's `config.yaml` (`require_mention`,
 `ignored_channels`, Matrix `session_scope`, …): a secondary profile's YAML never
 lands in the shared process environment, so it cannot become the default
 profile's policy, and the default profile's YAML never governs a secondary
-bot. The `terminal.env_passthrough` allowlist, the Yuanbao auto-designated
-home channel, and the write guards protecting each profile's own `config.yaml`
+bot. The `terminal.env_passthrough` allowlist, auto-designated
+home channels, and the write guards protecting each profile's own `config.yaml`
 are resolved per profile as well. Kanban, profile-scoped skills/memory/SOUL, and
 model routing all behave per-profile exactly as they do with separate gateways.
 

@@ -100,6 +100,7 @@ The install also ships `hermes-agent`, a minimal runner that sends one query and
 | `hermes tools` | Configure enabled tools per platform. |
 | `hermes computer-use` | Install or check the Computer Use (cua-driver) backend (macOS/Windows/Linux). |
 | `hermes pets` | Browse, install, and select [petdex](../user-guide/features/pets.md) animated pets shown across the CLI, TUI, and desktop app. Subcommands: `list`, `install`, `select`, `show`, `off`, `scale`, `remove`, `doctor`. |
+| `hermes clipboard image` | Write this machine's clipboard image to a file (`--json` for scripts). Device-local: no gateway, no session store. |
 | `hermes sessions` | Browse, export, prune, rename, and delete sessions. |
 | `hermes insights` | Show token/cost/activity analytics. |
 | `hermes claw` | OpenClaw migration (`migrate`, `cleanup`), from the [`agent-importers`](../user-guide/import-from-other-agents.md) plugin; `hermes claw migrate` is the same as `hermes import-agent openclaw`. |
@@ -317,6 +318,7 @@ Subcommands:
 |------------|-------------|
 | `run` | Run the gateway in the foreground. Recommended for WSL, Docker, and Termux. |
 | `ensure` | Discover or request a local session runtime without installing a service or replacing an existing owner. Emits JSON; see below. |
+| `attach` | Give a local client the gateway's WebSocket URL and one single-use session ticket for this profile. Emits JSON; see below. |
 | `start` | Start the installed systemd/launchd background service. |
 | `stop` | Stop the service (or foreground process). |
 | `restart` | Restart the service. |
@@ -365,6 +367,21 @@ service. Exit `0` means ready; any other code is a refusal or a deadline, never 
 to start a replacement. Service identity checks, the home-permission policy behind
 `unsafe_control_permissions`, and every exit code:
 [Gateway internals: `hermes gateway ensure`](../developer-guide/gateway-internals.md#hermes-gateway-ensure).
+
+`hermes gateway attach [--json] [--start] [--recover] [--timeout 60]` is the attach step for a
+local client that dials the gateway itself (a third-party chat UI, for example). It prints
+`ensure`'s JSON plus, once the gateway is attachable, `url` (`ws://127.0.0.1:<port>/api/ws`),
+`protocol` (`hermes-gateway-v1`), `protocols` (the WebSocket subprotocols to dial with) and
+`ticket`. The ticket is single-use, bound to the active profile, and expires 30 seconds after it
+is minted; it goes to stdout for the calling process only and is never logged. A plain call only
+discovers the gateway; `--start` starts it when none serves the profile; `--recover` discovers
+first and starts (or replaces an older Hermes's gateway) only when it is not ready. An unmanaged
+gateway that `attach` starts (no service installed) stops itself once it has been idle for a while.
+With no gateway to attach,
+the JSON carries `message` (the `gateway <state>: <reason>` lines, with the remedy when there is
+one), the same text goes to stderr, and the exit code is `ensure`'s for that verdict. The Ink TUI
+attaches through the same code. Details and the dial rules:
+[Gateway internals: `hermes gateway attach`](../developer-guide/gateway-internals.md#hermes-gateway-attach).
 
 ## `hermes lsp`
 
@@ -1751,6 +1768,42 @@ names label cursor and session state; they do not own or share the runtime.
 of the update if cua-driver is on PATH, so most users will not need to
 call `--upgrade` manually. Use it when upstream ships a fix you want
 right now without waiting for the next Hermes update.
+
+## `hermes clipboard`
+
+```bash
+hermes clipboard image --out PATH [--json]
+```
+
+Writes the clipboard image to `PATH` (created or overwritten) with the same extractor the CLI and
+TUI use for image paste: macOS `pngpaste`, then `osascript`; Windows PowerShell (`powershell`, then
+`pwsh`); Linux `powershell.exe` under WSL, then `wl-paste` on Wayland, then `xclip`. The result is a
+PNG, except that a copied image *file* (Windows/WSL file drop) is copied as it is. The command
+reads only this machine's clipboard: it needs no running gateway and reads no session store or
+profile file, so a client whose gateway runs on another machine calls it where the user is.
+Under NixOS container mode the command runs inside the managed container, like every `hermes`
+subcommand, so it cannot see the host's clipboard and `--out` is a path inside the container.
+
+| Option | Description |
+|--------|-------------|
+| `--out PATH` | File to write (required). Parent directories are created. The image is extracted into a temporary file in the same directory and then renamed onto `PATH`, so on any failure an existing `PATH` is left as it was. An existing file keeps its permission bits (a 0600 temp file stays private); a symlink at `PATH` is replaced by a regular file. |
+| `--json` | Print one JSON object on stdout. Without it, success prints the path and failure prints one stderr line. |
+
+| Exit code | `reason` | Meaning |
+|-----------|----------|---------|
+| `0` | (none, `ok: true`) | The image was written to `path`. |
+| `1` | `no_image` | The clipboard holds no image (or one that could not be converted to PNG). |
+| `3` | `no_tool` | None of this platform's clipboard tools is installed; `tools` lists them in the order tried. |
+| `4` | `write_failed` | `--out` cannot be written: its directory is not writable or cannot be created, an existing `PATH` is a directory or read-only, or the final rename failed. |
+| `2` | (no JSON) | Usage error from the argument parser. |
+
+`--json` replies (keys are stable; new keys may be added; read `path` only when `ok` is true):
+
+```json
+{"ok": true, "path": "/home/me/paste.png", "mime": "image/png", "bytes": 48213}
+{"ok": false, "reason": "no_image", "message": "the clipboard holds no image"}
+{"ok": false, "reason": "no_tool", "tools": ["wl-paste", "xclip"], "message": "no clipboard tool found; install one of: wl-paste, xclip"}
+```
 
 ## `hermes pets`
 

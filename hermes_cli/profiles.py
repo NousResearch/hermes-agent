@@ -21,7 +21,6 @@ from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_arc
 from hermes_cli import config_backend as _config_backend
 from hermes_cli.profiles_config import _migrate_profile_config_if_outdated
 from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS, SECRET_CACHE_STORES
-from hermes_cli.profiles_export_redact import _scrub_export_secrets
 from hermes_cli.profiles_remove import _rmtree_make_writable, _rmtree_with_retry, wait_profile_unowned
 from hermes_constants import (
     LOCAL_RUNTIME_ROOT_DIRS, PROFILE_ID_RE, clear_named_profile_deleted, mark_named_profile_deleted,
@@ -2110,6 +2109,51 @@ def _export_credential_entries(directory: str, contents: list) -> set:
     return {entry for entry in contents for store in _EXPORT_CREDENTIAL_PARTS
             if entry == store[-1] and parts[len(parts) + 1 - len(store):] == store[:-1]}
 
+# Text/config suffixes secret-scrubbed on export; binary DBs, images etc. are left alone.
+_EXPORT_REDACT_SUFFIXES = frozenset({
+    ".md", ".txt", ".yaml", ".yml", ".json", ".jsonl", ".toml", ".ini", ".cfg", ".conf", ".py", ".sh",
+    ".bash", ".zsh", ".js", ".ts", ".tsx", ".jsx", ".css", ".html", ".xml", ".csv",
+})
+# ``Path(".cursorrules").suffix`` is "" — name-match; ``*.env.example`` uses endswith; a hand-named
+# config copy (``config.yaml.bak-my-note``) holds config.yaml's secrets under a suffix of its own.
+_EXPORT_REDACT_NAMES = frozenset({".cursorrules"})
+
+
+def _should_redact_export_file(path: Path) -> bool:
+    name = path.name
+    return (
+        name in _EXPORT_REDACT_NAMES
+        or name.lower().endswith(".env.example")
+        or name.lower().startswith("config.yaml.")
+        or path.suffix.lower() in _EXPORT_REDACT_SUFFIXES
+    )
+
+
+def _scrub_export_secrets(staged: Path) -> None:
+    """Force-redact secret-shaped strings in a staged export tree (same pass as ``hermes
+    sessions export --redact``). Runs on the staged copy only; symlinks to text files are
+    materialized when content changes so redaction never follows a link back into the source."""
+    from agent.redact import redact_sensitive_text
+    for path in staged.rglob("*"):
+        try:
+            is_link = path.is_symlink()
+            if not path.is_file():  # broken links, symlinked dirs, non-files
+                continue
+        except OSError:
+            continue
+        if not _should_redact_export_file(path):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8-sig")
+        except (UnicodeDecodeError, OSError):
+            continue
+        redacted = redact_sensitive_text(text, force=True)
+        if redacted == text:
+            continue
+        if is_link:
+            path.unlink()
+        path.write_text(redacted, encoding="utf-8")
+
 
 def export_profile(name: str, output_path: str, extra_files: Optional[dict[str, str]] = None) -> Path:
     """Export a profile to a tar.gz archive; credential files are excluded and staged text is
@@ -2160,8 +2204,7 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
     if archive_root is None:
         raise ValueError("Profile archive must contain exactly one top-level directory.")
 
-    # Default-profile archives have "default/" at top level; importing as "default" would
-    # target ~/.hermes itself.
+    # A "default/" archive imported as "default" would target ~/.hermes itself.
     canon = _canon_valid(inferred_name)
     if canon == "default":
         raise ValueError(
@@ -2191,9 +2234,6 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
                 else:
                     child.unlink()
         shutil.move(str(final_source), str(profile_dir))
-    # The archive lands where `delete` left its marker: without this the imported tree is
-    # invisible to every reader (the same clear `create_profile` already does). Only after
-    # the move, so a refused import never resurrects the deleted name.
     clear_named_profile_deleted(profile_dir)
     return profile_dir
 
@@ -2277,10 +2317,8 @@ def rename_profile(old_name: str, new_name: str) -> Path:
             print(f"⚠ The gateway service was removed. Reinstall it with: hermes -p {old_canon} gateway install")
         raise
     print(f"✓ Renamed {old_dir.name} → {new_dir.name}")
-    # The tombstone lives at profiles/.deleted/<old_name>; old_dir is gone so nothing can
-    # resurrect it, and a future profile reusing the old name must not read as deleted.
-    if live_mux:
-        clear_named_profile_deleted(old_dir)
+    clear_named_profile_deleted(old_dir)
+    clear_named_profile_deleted(new_dir)
 
     # 2b. Record the rename so Bot Mode group chats can re-link persisted
     # member descriptors to the new slug (#110200). Best-effort: a metadata

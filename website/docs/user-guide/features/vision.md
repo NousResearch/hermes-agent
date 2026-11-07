@@ -165,6 +165,23 @@ Text can sometimes still bridge through terminal paste or OSC52, but image clipb
 
 4. **Use a messaging platform** — Send images to Hermes via Telegram, Discord, Slack, or WhatsApp. These platforms handle image upload natively and are not affected by clipboard/terminal limitations.
 
+## Local Image Paths on Hosted and Remote Installs
+
+`vision_analyze` accepts local file paths and `file://` URIs as well as HTTP(S) and base64 `data:` URLs. A path refers to the filesystem visible to Hermes, not to your laptop when Hermes runs on a remote server.
+
+With a **local terminal backend** (including a local backend running inside a hosted container), Hermes reads the image bytes from that filesystem and encodes them before sending them to the vision model. The image does **not** need a public URL, an inbound network port, or a dashboard route. Making a dashboard reachable does not automatically publish its image directory.
+
+With a **non-local terminal backend**, such as Docker or SSH, filesystem boundaries still apply: Hermes can read approved host-side media caches, while other paths are read inside the active sandbox. Put the image in the filesystem used by that backend and pass its visible path; a `file://` URI does not bypass sandbox restrictions.
+
+### Troubleshooting an Image That Cannot Be Loaded
+
+1. Confirm the exact path exists and is readable where Hermes or its terminal backend runs. Use an absolute path to rule out a working-directory mismatch.
+2. Confirm the file is an actual supported image, rather than an HTML error page saved with an image extension. If the error reports an unsupported format or corrupt image, try a valid PNG or JPEG.
+3. If the source is an HTTP(S) URL, check that it points to the image itself, not a login page or dashboard page. HTTP errors may come from downloading that source; model/API errors can also occur after the image has been read. Keep the complete error text to distinguish these cases.
+4. If a readable local image still fails, record the Hermes version, terminal backend, source type (path, URI, or URL), and complete tool error. Use a non-sensitive test image when reporting the problem; do not upload private images, configuration, or logs without checking their contents.
+
+Copying an image to a temporary directory can change which filesystem or permissions apply, but it is **not a general requirement** for hosted vision. Do not expose a private image publicly just to diagnose a local-path failure.
+
 ## Why Terminals Can't Paste Images
 
 This is a common source of confusion, so here's the technical explanation:

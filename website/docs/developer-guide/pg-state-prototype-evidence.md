@@ -776,9 +776,13 @@ fix on branch B before merge, or carry as a follow-up issue.
   never dropped; do not re-run the migration (it refuses a populated
   destination).
 - Teardown performed at run end: all prototype gateways stopped,
-  tunnel-v2 and the v1 port-forward/supervisor stopped, the intermediate
-  docker PG 17 parity container (`hermes-test-pg`, labeled dev check only)
-  removed. No orphans; the user's live `~/.hermes` was never touched.
+  tunnel-v2 and the v1 port-forward/supervisor stopped, the per-connection
+  kubectl-exec pumps gone, port 15432 unbound (verified). No process
+  orphans; the user's live `~/.hermes` was never touched. One leftover
+  requiring a user step (docker lifecycle is approval-gated on this host):
+  the intermediate docker PG 17 parity container (`hermes-test-pg`, port
+  55433, labeled dev check only) is still up — `docker stop
+  hermes-test-pg && docker rm hermes-test-pg`.
 - Scratch profile homes (`proto-pg`, `proto-sql`, `proto-sql-nc2`)
   contain `.env` files with the model key: kept in the task workspace
   (`$WS/proto/`); delete with the workspace after the round.

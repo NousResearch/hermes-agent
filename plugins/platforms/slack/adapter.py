@@ -58,11 +58,13 @@ from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 
 try:  # sibling modules; support both package and flat plugin-dir import
     from .block_kit import render_blocks, sanitize_blocks
+    from .card_blocks import card_blocks_payload
     from .adapter_slash_lane import SlashHandoffLanes
     from .adapter_slash_payload import slash_command_text, slash_thread_id
     from .adapter_reactions_context import slack_reactions_marker
 except ImportError:  # pragma: no cover - plugin loaded outside package context
     from block_kit import render_blocks, sanitize_blocks  # type: ignore
+    from card_blocks import card_blocks_payload  # type: ignore
     from adapter_slash_lane import SlashHandoffLanes  # type: ignore
     from adapter_slash_payload import slash_command_text, slash_thread_id  # type: ignore
     from adapter_reactions_context import slack_reactions_marker  # type: ignore
@@ -1696,6 +1698,7 @@ class SlackAdapter(BasePlatformAdapter):
             _plugin_handlers = []
         if self._plugin_actions_app is not self._app:
             self._plugin_actions_app, self._plugin_actions_wired = self._app, set()
+            self._card_action_patterns = []
         _plugin_handlers = [(a, cb, n) for a, cb, n in _plugin_handlers
                             if (repr(a), n) not in self._plugin_actions_wired]
         # Closure factory: slack_bolt passes ``None`` for unrecognised listener params, so loop
@@ -1719,6 +1722,8 @@ class SlackAdapter(BasePlatformAdapter):
         for _action_id, _cb, _plugin_name in _plugin_handlers:
             self._app.action(_action_id)(_make_wrapper(_cb, _plugin_name))
             self._plugin_actions_wired.add((repr(_action_id), _plugin_name))
+            # Card ``Button``s may only target ids a plugin handles (card_blocks).
+            self._card_action_patterns.append(_action_id)
             logger.debug(
                 "[Slack] Registered plugin action handler %s (from %s)", _action_id, _plugin_name)
         if _plugin_handlers:
@@ -1727,6 +1732,8 @@ class SlackAdapter(BasePlatformAdapter):
     # ``(repr(action_id), plugin)`` pairs registered on ``_plugin_actions_app``; reset per AsyncApp.
     _plugin_actions_app: Any = None
     _plugin_actions_wired: set = frozenset()
+    #: Plugin-registered action ids/regexes a card ``Button`` may target (card_blocks).
+    _card_action_patterns: list = []
 
     def rewire_plugin_handlers(self) -> None:
         """Late plugin loads carry both registries: action handlers and ``register_platform_handler``
@@ -2272,7 +2279,10 @@ class SlackAdapter(BasePlatformAdapter):
         ``reply_broadcast`` only the first chunk is also posted to the main channel."""
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         broadcast = self.config.extra.get("reply_broadcast", False)
-        blocks = self._maybe_blocks(content) if len(chunks) == 1 else None
+        # A card (``slack.extra.card_blocks``) replaces both blocks and text:
+        # the fence is stripped, the prose around it becomes the message text.
+        card = self._card_pair(content) if len(chunks) == 1 else None
+        blocks = card[2] if card else (self._maybe_blocks(content) if len(chunks) == 1 else None)
         last_result = None
         for i, chunk in enumerate(chunks):
             kwargs = {
@@ -2280,6 +2290,8 @@ class SlackAdapter(BasePlatformAdapter):
                 "mrkdwn": True, **_slack_unfurl_kwargs(self.config.extra)}
             if blocks and i == 0:
                 kwargs["blocks"] = blocks
+                if card:
+                    kwargs["text"] = self._card_text(card[0], card[1])
             if thread_ts:
                 kwargs["thread_ts"] = thread_ts
                 if broadcast and i == 0:
@@ -2392,9 +2404,14 @@ class SlackAdapter(BasePlatformAdapter):
             # Block Kit only on the FINAL edit: re-deriving a layout on every streaming flush
             # would be wasteful and jittery. ``text`` is the fallback either way.
             if finalize:
-                blocks = self._maybe_blocks(content)
-                if blocks:
-                    update_kwargs["blocks"] = blocks
+                card = self._card_pair(content)
+                if card:
+                    update_kwargs["text"] = self._card_text(card[0], card[1])
+                    update_kwargs["blocks"] = card[2]
+                else:
+                    blocks = self._maybe_blocks(content)
+                    if blocks:
+                        update_kwargs["blocks"] = blocks
             await self._call_with_block_fallback(
                 lambda: self._client_for(chat_id, metadata), "chat_update", update_kwargs, "edit")
             if finalize:
@@ -3117,14 +3134,59 @@ class SlackAdapter(BasePlatformAdapter):
             return [*blocks, self._feedback_block()]
         return blocks
 
+    def _card_pair(self, content: str) -> Optional[tuple[str, str, list]]:
+        """Render a `` ```card `` json-render spec in ``content`` into Block Kit.
+
+        Returns ``(text_without_the_fence, fallback_text, blocks)`` —
+        ``fallback_text`` is a plain mrkdwn summary of the card — or ``None``
+        when the flag is off, the content carries no card, or the spec does
+        not render; every failure mode falls back to the markdown path.
+        """
+        if not self._extra_flag("card_blocks"):
+            return None
+        payload = card_blocks_payload(content, button_allowed=self._card_button_allowed)
+        if not payload:
+            return None
+        stripped, fallback_text, blocks = payload
+        blocks = sanitize_blocks(self._append_feedback_block(blocks))
+        if not blocks:
+            return None
+        return stripped, fallback_text, blocks
+
+    def _card_button_allowed(self, action_id: str) -> bool:
+        """Whether a card ``Button`` has a click handler: only ids a plugin registered via
+        ``ctx.register_slack_action_handler`` (exact string or regex). Hermes' own ids
+        (approval, clarify, feedback, model picker) are never reachable from a card —
+        a model must not be able to compose a message that drives those flows."""
+        for pattern in getattr(self, "_card_action_patterns", ()):
+            if isinstance(pattern, str):
+                if pattern == action_id:
+                    return True
+            elif hasattr(pattern, "match") and pattern.match(action_id):
+                return True
+        return False
+
+    def _card_text(self, stripped: str, fallback_text: str) -> str:
+        """``text`` for a message whose card rendered as blocks: the prose around the
+        fence AND the card's mrkdwn summary. Slack shows ``text`` in notifications and
+        to screen readers, and ``_call_with_block_fallback`` re-posts it alone when the
+        blocks are rejected — so it must carry the card's data, not just the prose."""
+        text = self.format_message(stripped) if stripped.strip() else ""
+        parts = [part for part in (text, fallback_text) if part and part.strip()]
+        return "\n\n".join(parts) or " "
+
     def _maybe_blocks(self, content: str) -> Optional[list]:
-        """Block Kit for ``content``: ``markdown_blocks`` (native block, "platform AI" apps only,
-        12k cap) over ``rich_blocks`` (local renderer). ``None`` when disabled or declined — a
+        """Block Kit for ``content``: ``card_blocks`` (json-render spec fence) first,
+        then ``markdown_blocks`` (native block, "platform AI" apps only, 12k cap), then
+        ``rich_blocks`` (local renderer). ``None`` when disabled or declined — a
         ``text`` fallback always accompanies blocks, so ``None`` is safe at any point.
 
         1. ``markdown_blocks`` — Slack's native ``markdown`` block renders the *raw* standard markdown
         (tables, headers, code fences with syntax highlighting) with Slack doing the translation (#8552). 2.
         """
+        card = self._card_pair(content)
+        if card:
+            return card[2]
         if self._extra_flag("markdown_blocks"):
             md_blocks = self._markdown_block_payload(content)
             if md_blocks:

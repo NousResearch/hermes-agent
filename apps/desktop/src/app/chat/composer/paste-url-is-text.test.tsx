@@ -6,14 +6,23 @@ import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
-import { mainComposerScope } from '@/store/composer'
+import { clearSessionDraft, mainComposerScope } from '@/store/composer'
 
+import type { ClipboardFilePathsResult } from '../../../../electron/clipboard-files'
+
+import { markActiveComposer } from './focus'
+import { handleWindowPaste } from './paste-to-focus'
 import { composerPlainText, RICH_INPUT_SLOT } from './rich-editor'
 import type { ChatBarState } from './types'
 
 import { ChatBar } from './index'
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  mainComposerScope.clear()
+  clearSessionDraft(null)
+  markActiveComposer('main')
+})
 
 // THE INVARIANT: a pasted URL is never swallowed.
 //
@@ -46,7 +55,11 @@ const state: ChatBarState = {
   voice: { enabled: false, active: false }
 }
 
-function Harness({ onAttachPrCommentUrl }: { onAttachPrCommentUrl: (url: string) => boolean }) {
+function Harness({ onAttachPrCommentUrl, onAttachDroppedItems, onAttachImageBlob }: {
+  onAttachPrCommentUrl?: (url: string) => boolean
+  onAttachDroppedItems?: Parameters<typeof ChatBar>[0]['onAttachDroppedItems']
+  onAttachImageBlob?: Parameters<typeof ChatBar>[0]['onAttachImageBlob']
+}) {
   // The adapter's message generic infers to `never` from an empty array, so the
   // empty store is typed explicitly. The runtime itself is only here to satisfy
   // ChatBar's provider; nothing in this test reads it.
@@ -65,6 +78,8 @@ function Harness({ onAttachPrCommentUrl }: { onAttachPrCommentUrl: (url: string)
             busy={false}
             disabled={false}
             gateway={null}
+            onAttachDroppedItems={onAttachDroppedItems}
+            onAttachImageBlob={onAttachImageBlob}
             onCancel={vi.fn()}
             onSubmit={vi.fn(async () => true)}
             state={state}
@@ -77,7 +92,7 @@ function Harness({ onAttachPrCommentUrl }: { onAttachPrCommentUrl: (url: string)
 }
 
 /** Focus `editor` and fire the paste event a ⌘V into the composer produces. */
-function pasteInto(editor: HTMLElement, text: string) {
+function pasteInto(editor: HTMLElement, text: string, files: File[] = [], route: 'focused' | 'unfocused' = 'focused') {
   // jsdom does not implement isContentEditable, so the app's window-level paste
   // router would treat this target as page chrome and insert through the
   // composer bus instead of the editor's own handler. Pin it.
@@ -86,26 +101,36 @@ function pasteInto(editor: HTMLElement, text: string) {
 
   const event = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent
 
-  Object.defineProperty(event, 'clipboardData', {
-    value: {
-      getData: (type: string) => (type === 'text' || type === 'text/plain' ? text : ''),
-      files: [],
-      items: []
+  const clipboard = {
+    getData: (type: string) => (type === 'text' || type === 'text/plain' ? text : ''),
+    files: { item: (i: number) => files[i] ?? null, length: files.length },
+    items: files.map(file => ({ kind: 'file', type: file.type, getAsFile: () => file }))
+  }
+
+  Object.defineProperty(event, 'clipboardData', { value: clipboard })
+
+  act(() => {
+    if (route === 'unfocused') {
+      editor.blur()
+      editor.ownerDocument.body.addEventListener('paste', handleWindowPaste, { once: true })
+      fireEvent(editor.ownerDocument.body, event)
+    } else {
+      fireEvent(editor, event)
     }
   })
 
-  act(() => {
-    fireEvent(editor, event)
+  // The IPC reply must use the captured payload, never the expired event data.
+  Object.defineProperties(clipboard, {
+    files: { get: () => { throw new Error('DataTransfer detached') } },
+    items: { get: () => { throw new Error('DataTransfer detached') } }
   })
+
+  clipboard.getData = () => { throw new Error('DataTransfer detached') }
 
   return event
 }
 
 describe('a pasted URL survives the paste', () => {
-  afterEach(() => {
-    mainComposerScope.clear()
-  })
-
   it('keeps a GitHub PR-comment deep link in the composer and attaches nothing', () => {
     const onAttachPrCommentUrl = vi.fn(() => true)
 
@@ -122,5 +147,157 @@ describe('a pasted URL survives the paste', () => {
     // …and the interception hook was never consulted.
     expect(onAttachPrCommentUrl).not.toHaveBeenCalled()
     expect(event.defaultPrevented).toBe(true)
+  })
+})
+
+describe('a paste of OS files preserves the original paths', () => {
+  it('recovers original paths for cloned paste files and keeps screenshots on the image pipeline', async () => {
+    const onAttachDroppedItems = vi.fn(async () => true)
+    const onAttachImageBlob = vi.fn(async () => { })
+    // webUtils.getPathForFile returns '' for cloned paste File objects (#118181).
+    const getPathForFile = vi.fn(() => '')
+
+    const readClipboardFilePaths = vi.fn().mockResolvedValue({
+      status: 'files',
+      files: [{ path: 'C:/original/a.pdf', isDirectory: false }]
+    })
+
+    const originalBridge = window.hermesDesktop
+    window.hermesDesktop = {
+      ...originalBridge,
+      readClipboardFilePaths,
+      getPathForFile
+    } as typeof window.hermesDesktop
+
+    try {
+      const { container } = render(
+        <Harness onAttachDroppedItems={onAttachDroppedItems} onAttachImageBlob={onAttachImageBlob} />
+      )
+
+      const editor = container.querySelector(`[data-slot="${RICH_INPUT_SLOT}"]`) as HTMLElement
+      Object.defineProperty(editor, 'isContentEditable', { configurable: true, value: true })
+      editor.focus()
+
+      // jsdom's plain arrays lack FileList.item(); coerce so extractDroppedFiles
+      // can read .item(i) the same way a real paste does.
+      const makeFileList = (files: File[]) => {
+        const list = files as unknown as FileList & File[]
+
+        list.item = (index: number) => list[index] ?? null
+
+        return list
+      }
+
+      const pasteFile = async (file: File) => {
+        const event = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent
+
+        Object.defineProperty(event, 'clipboardData', {
+          value: {
+            getData: () => '',
+            files: makeFileList([file]),
+            items: [{ kind: 'file', type: file.type, getAsFile: () => file }]
+          }
+        })
+
+        await act(async () => {
+          fireEvent(editor, event)
+        })
+
+        // The handler claims the event — no default insertion, no leak into the editor.
+        expect(event.defaultPrevented).toBe(true)
+      }
+
+      const pdf = new File(['pdf'], 'a.pdf', { type: 'application/pdf' })
+
+      await pasteFile(pdf)
+
+      // Original path recovered via the native clipboard read, paired with the cloned File.
+      expect(onAttachDroppedItems).toHaveBeenCalledWith([
+        { file: pdf, path: 'C:/original/a.pdf', isDirectory: false }
+      ])
+      expect(readClipboardFilePaths).toHaveBeenCalled()
+
+      // A screenshot-only paste (no native paths) falls through to the image pipeline.
+      readClipboardFilePaths.mockResolvedValue({ status: 'empty', files: [] })
+
+      const screenshot = new File(['png'], 'shot.png', { type: 'image/png' })
+
+      await pasteFile(screenshot)
+      expect(onAttachImageBlob).toHaveBeenCalledWith(screenshot)
+      // The file pipeline was not invoked for the screenshot.
+      expect(onAttachDroppedItems).toHaveBeenCalledTimes(1)
+    } finally {
+      window.hermesDesktop = originalBridge
+    }
+  })
+})
+
+describe.each(['focused', 'unfocused'] as const)('%s mixed file paste waits for native resolution', route => {
+  it.each([
+    { name: 'restores image and text when no native paths exist', paths: [], accepted: true },
+    { name: 'attaches only the native file when accepted', paths: ['C:/original/shot.png'], accepted: true },
+    { name: 'restores image and text when native attachment is declined', paths: ['C:/original/shot.png'], accepted: false },
+    { name: 'keeps the snapshot when a later clipboard list has a different count', paths: ['C:/wrong/a.pdf', 'C:/wrong/b.txt'], accepted: true }
+  ])('$name', async ({ paths, accepted }) => {
+    let resolveNative!: (result: ClipboardFilePathsResult) => void
+    const nativeRead = new Promise<ClipboardFilePathsResult>(resolve => { resolveNative = resolve })
+    const readClipboardFilePaths = vi.fn(() => nativeRead)
+    const onAttachDroppedItems = vi.fn(async () => accepted)
+    const onAttachImageBlob = vi.fn(async () => {})
+    const originalBridge = window.hermesDesktop
+    window.hermesDesktop = {
+      ...originalBridge,
+      getPathForFile: () => '',
+      readClipboardFilePaths
+    } as typeof window.hermesDesktop
+
+    try {
+      const { container } = render(
+        <Harness onAttachDroppedItems={onAttachDroppedItems} onAttachImageBlob={onAttachImageBlob} />
+      )
+
+      const editor = container.querySelector<HTMLElement>(`[data-slot="${RICH_INPUT_SLOT}"]`)!
+      const file = new File(['png'], 'shot.png', { type: 'image/png' })
+      const text = 'look at https://example.com/docs and @/tmp/source.txt'
+
+      const event = pasteInto(editor, ` \n[200~${text}[201~\n `, [file], route)
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+
+      expect(event.defaultPrevented).toBe(true)
+      expect(readClipboardFilePaths).toHaveBeenCalledTimes(1)
+      expect(onAttachDroppedItems).not.toHaveBeenCalled()
+      expect(onAttachImageBlob).not.toHaveBeenCalled()
+      expect(composerPlainText(editor)).toBe('')
+
+      // Another composer can become active while IPC is pending; the fallback
+      // must still address the composer that received this paste.
+      if (route === 'unfocused') {
+        markActiveComposer('tile:other')
+      }
+
+      await act(async () => {
+        resolveNative({ status: paths.length ? 'files' : 'empty', files: paths.map(path => ({ path, isDirectory: false })) })
+        await nativeRead
+      })
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+
+      if (paths.length === 1) {
+        expect(onAttachDroppedItems).toHaveBeenCalledExactlyOnceWith([
+          { file, path: paths[0], isDirectory: false }
+        ])
+      } else {
+        expect(onAttachDroppedItems).not.toHaveBeenCalled()
+      }
+
+      if (paths.length === 1 && accepted) {
+        expect(onAttachImageBlob).not.toHaveBeenCalled()
+        expect(composerPlainText(editor)).toBe('')
+      } else {
+        expect(onAttachImageBlob).toHaveBeenCalledExactlyOnceWith(file)
+        expect(composerPlainText(editor)).toBe('look at @url:`https://example.com/docs` and @file:`/tmp/source.txt`')
+      }
+    } finally {
+      window.hermesDesktop = originalBridge
+    }
   })
 })

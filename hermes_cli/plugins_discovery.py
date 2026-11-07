@@ -29,6 +29,13 @@ logger = logging.getLogger("hermes_cli.plugins")
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
 ENTRY_POINT_CAPABILITIES_GROUP = "hermes_agent.plugin_capabilities"
 
+# Bundled top-level categories that load through their own dedicated paths, not the PluginManager
+# opt-in surface. The loader skips them (below) and the CLI listing skips them
+# (``plugins_cmd._discover_all_plugins``); both read this one set so the two copies cannot drift.
+BUNDLED_EXCLUSIVE_CATEGORIES = frozenset({
+    "memory", "context_engine", "model-providers", "cron_providers", "computer_use", "config_backends",
+})
+
 # Per-harness manifest directories plugin repos ship for OTHER agent harnesses (e.g. obra/superpowers keeps one
 # plugin.json per harness). Their plugin.json is not an Agent Plugins v1 manifest and can never validate, so
 # parsing it on every discovery pass only spams warnings (#101962).
@@ -205,8 +212,7 @@ def collect_directory_manifests() -> list[PluginManifest]:
     # (``photon-platform``) stays an accepted alias through ``gate_manifest``.
     repo_plugins = _origin.get_bundled_plugins_dir()
     logger.debug("Scanning bundled plugins: %s", repo_plugins)
-    _scan("bundled (top-level)", repo_plugins, "bundled",
-          {"memory", "context_engine", "model-providers", "cron_providers", "computer_use", "config_backends"})
+    _scan("bundled (top-level)", repo_plugins, "bundled", set(BUNDLED_EXCLUSIVE_CATEGORIES))
     user_dir = get_hermes_home() / "plugins"
     logger.debug("Scanning user plugins: %s", user_dir)
     _scan("user", user_dir, "user")

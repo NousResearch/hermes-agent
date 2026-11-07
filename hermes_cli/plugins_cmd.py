@@ -910,11 +910,13 @@ def _discover_all_plugins() -> list:
     in ``PluginManager.discover_and_load`` order: bundled, user, then entry points — which never
     displace a directory plugin of the same key (see ``PluginManager._discover_and_load_inner``)."""
     seen: dict = {}
-    # memory/, context_engine/, computer_use/, model-providers/ and config_backends/ load through dedicated
-    # paths, not the PluginManager opt-in surface, so listing them as toggleable plugins would mislead.
+    # memory/, context_engine/, computer_use/, model-providers/, config_backends/ and cron_providers/ load
+    # through dedicated paths, not the PluginManager opt-in surface, so listing them as toggleable plugins
+    # would mislead. This is the loader's own bundled top-level skip set, so the two cannot drift.
     from hermes_cli.plugins import discover_entrypoint_manifests, get_bundled_plugins_dir
+    from hermes_cli.plugins_discovery import BUNDLED_EXCLUSIVE_CATEGORIES
     for base, source, skip in (
-        (get_bundled_plugins_dir(), "bundled", {"memory", "context_engine", "computer_use", "model-providers", "config_backends"}),
+        (get_bundled_plugins_dir(), "bundled", set(BUNDLED_EXCLUSIVE_CATEGORIES)),
         (_plugins_dir(), "user", set()),
     ):
         _scan_level(base, source, skip, "", 0, seen)

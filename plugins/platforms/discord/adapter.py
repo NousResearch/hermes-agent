@@ -99,6 +99,13 @@ _REQUIRED = object()
 # Text slots hold ``platform.discord.command.*`` / ``slash.*`` catalog keys; ``_native_slash_commands()``
 # resolves them for the active language (a language change re-syncs: the fingerprint carries it).
 _NATIVE_SLASH_COMMAND_SPECS: tuple = (
+    # /start is the platform handshake ping: the gateway answers it SILENTLY (no agent turn,
+    # no session burn), so the simple-slash path used to delete the deferred "thinking..."
+    # response and leave the invoker with nothing at all. Give it a follow-up so Discord
+    # shows its own ephemeral acknowledgement ("Hermes is ready~") instead — private to the
+    # invoker, never a channel post, and the gateway still burns no turn.
+    ("start", "platform.discord.command.start.description", (), "/start",
+     "platform.discord.command.start.followup"),
     ("new", "platform.discord.command.new.description", (), "/reset", "platform.discord.command.new.followup"),
     ("reset", "platform.discord.command.reset.description", (), "/reset", "platform.discord.command.reset.followup"),
     ("model", "platform.discord.command.model.description",

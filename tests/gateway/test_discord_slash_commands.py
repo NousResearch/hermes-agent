@@ -644,3 +644,91 @@ def test_build_slash_event_routes_guild_profile_like_messages(adapter, monkeypat
     assert thread_event.source.guild_id == "1"
     assert thread_event.source.parent_chat_id == "100"
     assert thread_event.source.profile == "work"
+# ------------------------------------------------------------------
+# /start — the platform handshake ping must acknowledge visibly
+# ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_start_slash_is_registered_natively_with_a_followup(adapter):
+    """``/start`` must be a NATIVE slash command, not a COMMAND_REGISTRY auto-registration.
+
+    The gateway answers ``/start`` SILENTLY (it is a platform handshake ping: no agent
+    turn, no session burn), so the auto-registered path — which has no follow-up —
+    DELETED the deferred "thinking..." response and left the invoker with no output at
+    all. Registering it natively gives it a follow-up, so Discord replaces the deferred
+    ephemeral with a short private acknowledgement instead.
+    """
+    from plugins.platforms.discord.adapter import _NATIVE_SLASH_COMMAND_SPECS
+
+    specs = {row[0]: row for row in _NATIVE_SLASH_COMMAND_SPECS}
+    assert "start" in specs, "/start must be a native Discord slash command"
+    assert specs["start"][4] == "platform.discord.command.start.followup", (
+        "/start needs a follow-up, or the deferred ephemeral is deleted with nothing "
+        "to show"
+    )
+
+    adapter._register_slash_commands()
+
+    # Native commands are registered via tree.command(...) as bare functions; the
+    # auto-registration path installs a Command object carrying a .callback.
+    start_entry = adapter._client.tree.commands["start"]
+    assert callable(start_entry) and not hasattr(start_entry, "callback"), (
+        "/start was auto-registered from COMMAND_REGISTRY — it must be native so it "
+        "keeps its follow-up acknowledgement"
+    )
+
+
+@pytest.mark.asyncio
+async def test_start_slash_followup_is_delivered_ephemerally(adapter):
+    """Invoking ``/start`` must edit the deferred response, not delete it.
+
+    The defer is ephemeral, so editing the original response keeps the acknowledgement
+    private to the invoker — it never becomes a channel post.
+    """
+    from agent.i18n import t
+
+    adapter._run_simple_slash = AsyncMock()
+    adapter._register_slash_commands()
+
+    start_command = adapter._client.tree.commands["start"]
+    interaction = SimpleNamespace()
+
+    await start_command(interaction)
+
+    adapter._run_simple_slash.assert_awaited_once_with(
+        interaction, "/start", "platform.discord.command.start.followup"
+    )
+    # The follow-up is a catalog KEY at call time; it resolves when the command runs.
+    assert t("platform.discord.command.start.followup") != "platform.discord.command.start.followup"
+
+
+@pytest.mark.asyncio
+async def test_start_slash_acknowledges_without_a_visible_reply(adapter):
+    """The acknowledgement replaces the deferred ephemeral instead of deleting it."""
+    from agent.i18n import t
+
+    interaction = SimpleNamespace(
+        channel=_FakeTextChannel(channel_id=123, name="general"),
+        channel_id=123,
+        guild_id=456,
+        user=SimpleNamespace(id=42, name="Jezza", display_name="Jezza"),
+        response=SimpleNamespace(defer=AsyncMock()),
+        edit_original_response=AsyncMock(),
+        delete_original_response=AsyncMock(),
+    )
+    adapter.handle_message = AsyncMock()
+
+    await adapter._run_simple_slash(
+        interaction, "/start", "platform.discord.command.start.followup"
+    )
+
+    interaction.response.defer.assert_awaited_once_with(ephemeral=True)
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "/start"
+    # Ephemeral edit = the invoker sees the ack; nobody else does.
+    interaction.edit_original_response.assert_awaited_once_with(
+        content=t("platform.discord.command.start.followup")
+    )
+    interaction.delete_original_response.assert_not_awaited()

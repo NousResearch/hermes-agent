@@ -9,12 +9,14 @@
  * when Bot Mode's last chat closed; bot chats are ordinary tabs in the main
  * strip, beside session tabs.
  *
- * No persistence here by design: the remembered active-pane map is window-local
- * memory so a switch away and back can restore where the user was, without any
- * of it surviving the window.
+ * The remembered active-pane map is window-local by design, so a switch away and
+ * back can restore where the user was without any of it surviving the window.
+ * Only the owner labels persist (see `$workspaceOwnerLabels`).
  */
 
 import { atom, batch } from 'nanostores'
+
+import { readJson, writeJson } from '@/lib/storage'
 
 import type { WorkspaceMode } from '../../contrib/types'
 
@@ -46,31 +48,77 @@ export type WorkspaceNewSessionTarget =
 /** Sessions uses its established ambient behavior (`null`). */
 export const $workspaceNewSessionTarget = atom<WorkspaceNewSessionTarget | null>(null)
 
+const OWNER_LABELS_KEY = 'hermes.desktop.workspaceOwnerLabels.v1'
+
+function storedOwnerLabels(): Record<string, string> {
+  const raw = readJson<unknown>(OWNER_LABELS_KEY)
+
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return {}
+  }
+
+  return Object.fromEntries(
+    Object.entries(raw).filter((entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1] !== '')
+  )
+}
+
 /** Display name per exact owner key, published by the workspace that owns the
  *  key (Bot Mode: the roster's display name). Presentation only — never a
  *  session title, which for a canonical Bot Chat is an identity the backend
- *  resolves by name and must stay exactly as stored. */
-export const $workspaceOwnerLabels = atom<Readonly<Record<string, string>>>({})
+ *  resolves by name and must stay exactly as stored.
+ *
+ *  The last-known names persist (unlike the active-pane memory below): only the
+ *  Bots pane publishes them, so a window-local map left every restored bot tab
+ *  reading the stored "Bot Chat" after a relaunch until that pane was opened. */
+export const $workspaceOwnerLabels = atom<Readonly<Record<string, string>>>(storedOwnerLabels())
 
 export function setWorkspaceOwnerLabel(ownerKey: string, label: string): void {
   if ($workspaceOwnerLabels.get()[ownerKey] !== label) {
-    $workspaceOwnerLabels.set({ ...$workspaceOwnerLabels.get(), [ownerKey]: label })
+    const next = { ...$workspaceOwnerLabels.get(), [ownerKey]: label }
+
+    $workspaceOwnerLabels.set(next)
+    writeJson(OWNER_LABELS_KEY, next)
   }
+}
+
+/** The workspace fields a tab's caption reads — a tile, or a main tab's
+ *  remembered bot-chat scope. */
+export interface WorkspaceTabScope {
+  workspaceMode?: WorkspaceMode
+  workspaceOwnerKey?: string
+  workspaceTabTitle?: string
 }
 
 /** The caption a workspace-owned tab shows: its owner's label while the stored
  *  row still carries only the placeholder its opener registered — every bot's
  *  canonical chat is stored under the same name, so the tab reads the bot's
  *  (#99152). Any other title (a `+` side thread, a Sessions tab) is untouched. */
-export function workspaceOwnerTitle(
-  title: string,
-  scope: { workspaceMode?: WorkspaceMode; workspaceOwnerKey?: string; workspaceTabTitle?: string } | undefined
-): string {
+export function workspaceOwnerTitle(title: string, scope: WorkspaceTabScope | undefined): string {
   if (scope?.workspaceMode !== 'bots' || !scope.workspaceOwnerKey || title !== scope.workspaceTabTitle) {
     return title
   }
 
   return $workspaceOwnerLabels.get()[scope.workspaceOwnerKey] ?? title
+}
+
+/** The title a tab takes from its stored row: the row's own, else — for a bot
+ *  workspace's canonical tab only — the canonical title its opener registered.
+ *  Compression carries "Bot Chat" root -> tip only after the rotation publishes
+ *  and leaves every earlier segment untitled (hermes_state_session_list.py), so
+ *  a canonical tab can hold an untitled row for a while; the generic
+ *  preview/"Untitled session" fallback there also missed the owner caption,
+ *  which keys on the canonical title. `undefined` = use the caller's fallback. */
+export function workspaceStoredTitle(
+  rowTitle: null | string | undefined,
+  scope: WorkspaceTabScope | undefined
+): string | undefined {
+  const own = rowTitle?.trim()
+
+  if (own) {
+    return own
+  }
+
+  return scope?.workspaceMode === 'bots' && scope.workspaceTabTitle ? scope.workspaceTabTitle : undefined
 }
 
 /** May the user rename this session? A canonical Bot Chat's exact title is its

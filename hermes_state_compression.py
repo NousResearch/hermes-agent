@@ -328,10 +328,17 @@ class SessionCompressionMixin:
         """INSERT the compression child's ``sessions`` row copied from *parent*. Same contract as
         _insert_session_row's compression-fork backfill: the child stays on the parent's profile and keeps
         gateway routing/origin columns; no owner on either side -> this store's profile."""
-        from hermes_state_sessions import _parse_model_config
-        # Pin/archive and the conversation keys are compression-lineage state; canonical branch/reset
-        # verbs also publish through here, and their child is its own conversation.
+        from hermes_state_sessions import _LINEAGE_CTE_SQL, _parse_model_config
+        # Pin/archive/hidden and the conversation keys are compression-lineage state; canonical
+        # branch/reset verbs also publish through here, and their child is its own conversation.
         continuation = not any(k in (model_config or {}) for k in ("_branched_from", "_reset_from"))
+        # Hidden is read across the lineage, not off the parent: listings admit a lineage by its ROOT's
+        # flag while the canonical Bot Chat rename guard reads the TIP's, and stores written before
+        # continuations inherited it hold visible segments under a hidden root.
+        hidden = conn.execute(
+            _LINEAGE_CTE_SQL + "SELECT MAX(hidden) FROM sessions WHERE id IN (SELECT id FROM lineage)",
+            (parent_session_id, parent_session_id),
+        ).fetchone()[0] if continuation else 0
         carried = {key: value for key, value in _parse_model_config(parent["model_config"]).items()
                    if continuation and key in _CONVERSATION_MODEL_CONFIG_KEYS}
         model_config = {**carried, **(model_config or {})}
@@ -353,8 +360,8 @@ class SessionCompressionMixin:
                    parent_session_id, cwd, git_branch, git_repo_root,
                    profile_name, user_id, session_key, chat_id, chat_type,
                    thread_id, display_name, origin_json, pinned, started_at,
-                   archived, auto_archived
-                ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   archived, auto_archived, hidden
+                ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 child_session_id, source, created_source, model, json.dumps(model_config) if model_config else None,
                 system_prompt_hash, parent["tool_names"], parent_session_id, cwd or parent["cwd"], parent["git_branch"],
@@ -367,7 +374,7 @@ class SessionCompressionMixin:
                 # Inherit the lineage's archive state so a manually archived chat stays uniformly
                 # archived (a mixed lineage let the sweep re-stamp its fresh tip as auto-archived).
                 (parent["archived"] or 0) if continuation else 0,
-                (parent["auto_archived"] or 0) if continuation else 0),
+                (parent["auto_archived"] or 0) if continuation else 0, hidden or 0),
         )
 
     def publish_compression_child(

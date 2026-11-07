@@ -12,6 +12,7 @@ import { getSession } from '@/hermes'
 import { resolveDeepLinkAction } from '@/lib/deeplink-routes'
 import { pathFromHermesDeepLink, resolveHermesOpenPath } from '@/lib/hermes-open-target'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
+import { $botChatScopes } from '@/store/bot-chat-scope'
 import { announceNewSessionDraftKey } from '@/store/composer'
 import { recordAction } from '@/store/desktop-metrics'
 import { onKeptRouteOpened } from '@/store/gateway-kept-routes'
@@ -39,7 +40,7 @@ import {
   setRememberedSessionId,
   setSessionOwnerHint
 } from '@/store/session'
-import { $botChatScopes, $sessionTiles, storedSessionIdForRuntimeId } from '@/store/session-states'
+import { $sessionTiles, storedSessionIdForRuntimeId } from '@/store/session-states'
 import { onSessionsChanged } from '@/store/session-sync'
 import { requestSkillInstallFromDeepLink } from '@/store/skill-deeplink-install'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '@/store/updates'

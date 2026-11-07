@@ -18,9 +18,14 @@
 
 import { computed } from 'nanostores'
 
-import { $workspaceOwnerLabels, workspaceOwnerTitle } from '@/components/pane-shell/workspace-scope'
+import {
+  $workspaceOwnerLabels,
+  workspaceOwnerTitle,
+  workspaceStoredTitle
+} from '@/components/pane-shell/workspace-scope'
 import { hostHas } from '@/lib/host-capabilities'
 
+import { $botChatScopes } from './bot-chat-scope'
 import { $tabFlashText } from './browser-tab-attention'
 import { normalizeProfileKey } from './profile'
 import { $sessions, sessionMatchesStoredId } from './session'
@@ -51,23 +56,26 @@ export function browserTabTitle({ caption, needsInput, unread, working }: Browse
 }
 
 const $focusedCaption = computed(
-  [$focusedStoredSessionId, $sessions, $sessionTiles, $workspaceOwnerLabels],
-  (focused, sessions, tiles) => {
+  [$focusedStoredSessionId, $sessions, $sessionTiles, $botChatScopes, $workspaceOwnerLabels],
+  (focused, sessions, tiles, botChatScopes) => {
     if (!focused) {
       return ''
     }
 
     const row = sessions.find(session => sessionMatchesStoredId(session, focused))
     const tile = tiles.find(candidate => candidate.storedSessionId === focused)
-    // Hidden relationship chats (canonical Bot Chats) are absent from the list;
-    // their tab keeps a stable title, which the owner label then replaces.
-    const title = row?.title?.trim() || tile?.workspaceTabTitle || ''
+    // A Bot Chat held by main has no tile; its scope is remembered per id.
+    const scope = tile ?? botChatScopes[focused]
+    // Hidden relationship chats (canonical Bot Chats) are absent from the list
+    // or briefly untitled after a compression; their tab keeps a stable title,
+    // which the owner label then replaces.
+    const title = workspaceStoredTitle(row?.title, scope) ?? ''
 
     if (!title) {
       return ''
     }
 
-    const caption = workspaceOwnerTitle(title, tile)
+    const caption = workspaceOwnerTitle(title, scope)
     const profile = normalizeProfileKey(row?.profile ?? tile?.ownerProfile)
 
     // A bot's own name already says whose chat this is.

@@ -175,8 +175,10 @@ workspace fields `cwd` / `git_branch` / `git_repo_root`, handoff and
 compression-failure fields, `profile_name`, `transport_profile` (the multiplex
 bot that received the lane, nullable), `rewind_count`, `archived`,
 `auto_archived` (set only by the idle sweep; a resume or compression
-continuation clears a sweep-only archive, never a deliberate one), and
-`pinned`):
+continuation clears a sweep-only archive, never a deliberate one),
+`pinned`, and `hidden` (a compression continuation inherits it from its
+lineage: listings admit a lineage by its root's flag, while the canonical Bot
+Chat rename guard reads the tip's)):
 
 ```sql
 CREATE TABLE IF NOT EXISTS sessions (

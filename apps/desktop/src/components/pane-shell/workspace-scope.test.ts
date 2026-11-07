@@ -12,7 +12,8 @@ import {
   setWorkspaceOwnerLabel,
   setWorkspaceScope,
   workspaceOwnerTitle,
-  workspaceSessionRenameable
+  workspaceSessionRenameable,
+  workspaceStoredTitle
 } from './workspace-scope'
 
 afterEach(() => {
@@ -67,6 +68,32 @@ describe('workspace owner title', () => {
     expect(workspaceOwnerTitle('Bot Chat', { workspaceMode: 'sessions' })).toBe('Bot Chat')
     // No label yet (roster not loaded): the stored title stands.
     expect(workspaceOwnerTitle('Bot Chat', { ...botChat, workspaceOwnerKey: 'bot:beta' })).toBe('Bot Chat')
+  })
+})
+
+describe('workspace stored title', () => {
+  // Compression carries "Bot Chat" root -> tip only after the rotation
+  // publishes and leaves earlier segments untitled, so a canonical tab can
+  // briefly hold an untitled row. It must not read as "Untitled session".
+  const botChat = { workspaceMode: 'bots' as const, workspaceOwnerKey: 'bot:alpha', workspaceTabTitle: 'Bot Chat' }
+
+  it('names an untitled row under a canonical bot tab by the canonical title', () => {
+    setWorkspaceOwnerLabel('bot:alpha', 'Alpha')
+
+    expect(workspaceStoredTitle(null, botChat)).toBe('Bot Chat')
+    expect(workspaceStoredTitle('  ', botChat)).toBe('Bot Chat')
+    // ...which the owner caption then swaps for the bot's name.
+    expect(workspaceOwnerTitle(workspaceStoredTitle(null, botChat)!, botChat)).toBe('Alpha')
+  })
+
+  it('keeps a row title of its own, and has no opinion outside a canonical bot tab', () => {
+    expect(workspaceStoredTitle('Bot Chat', botChat)).toBe('Bot Chat')
+    expect(workspaceStoredTitle('Plan the launch', { workspaceMode: 'bots' })).toBe('Plan the launch')
+    // A `+` side thread (no canonical tab title) and a Sessions tab fall
+    // through to the caller's usual placeholder.
+    expect(workspaceStoredTitle(null, { workspaceMode: 'bots', workspaceOwnerKey: 'bot:alpha' })).toBeUndefined()
+    expect(workspaceStoredTitle(null, { workspaceMode: 'sessions', workspaceTabTitle: 'Bot Chat' })).toBeUndefined()
+    expect(workspaceStoredTitle(null, undefined)).toBeUndefined()
   })
 })
 

@@ -13,9 +13,8 @@ import itertools
 
 def validate_local_lineage(conn, receipt):
     from hermes_state_compression import _CHAIN_STEP_SQL
-    from hermes_state_keys import local_identity
-    if ('legacy_session_id' not in receipt and
-            receipt['session_id'] != local_identity(receipt['profile_id'], receipt['principal_id'], receipt['request_id'])):
+    from hermes_state_local import creation_identity
+    if 'legacy_session_id' not in receipt and receipt['session_id'] != creation_identity(receipt):
         raise RuntimeStoreError('storage_unavailable')
     from hermes_state_local_migration import legacy_lineage_root
     root = legacy_lineage_root(conn, receipt)

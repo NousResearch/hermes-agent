@@ -4,8 +4,8 @@ import { $terminalInjection, $terminalTakeover, setTerminalTakeover } from '@/ap
 import { setConnectionsRegistry } from '@/store/connections'
 import { $connection } from '@/store/session'
 
-import { openSessionInTerminalPane, tuiResumeCommand } from './open-session-tui'
-import { $activeTerminalId, $terminals } from './terminals'
+import { closeSessionTerminal, openSessionInTerminalPane, tuiResumeCommand } from './open-session-tui'
+import { $activeTerminalId, $terminals, createTerminal } from './terminals'
 
 // The in-app twin of "Open in terminal": a plugin's "chat ⇄ TUI" toggle needs
 // a fresh tab on the gateway the session lives on, the terminal taken over,
@@ -84,6 +84,21 @@ describe('openSessionInTerminalPane', () => {
     expect($terminals.get()).toEqual([])
     expect($terminalInjection.get()).toBeNull()
     expect($terminalTakeover.get()).toBe(false)
+  })
+
+  it('closes only the tabs it opened', () => {
+    const result = openSessionInTerminalPane('sess-1')
+    const foreign = createTerminal('/elsewhere')
+
+    expect(result.ok).toBe(true)
+    expect(closeSessionTerminal(foreign)).toBe(false)
+    expect($terminals.get().some(term => term.id === foreign)).toBe(true)
+
+    if (result.ok) {
+      expect(closeSessionTerminal(result.terminalId)).toBe(true)
+      expect($terminals.get().some(term => term.id === result.terminalId)).toBe(false)
+      expect(closeSessionTerminal(result.terminalId)).toBe(false)
+    }
   })
 
   it('refuses an unusable session id without touching the pane', () => {

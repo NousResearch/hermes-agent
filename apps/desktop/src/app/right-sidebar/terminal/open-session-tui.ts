@@ -22,7 +22,7 @@ import { backendProfileArg } from '../../../../electron/profile-id-guard'
 import { $terminalInjection, setTerminalTakeover } from '../store'
 
 import { defaultTerminalGateway } from './terminal-gateway'
-import { createTerminal, renameTerminal } from './terminals'
+import { closeTerminal, createTerminal, renameTerminal } from './terminals'
 
 export interface OpenSessionTuiOptions {
   /** Owner profile of the session (`host.state.focusedSessionProfile`). A
@@ -46,6 +46,10 @@ export type OpenSessionTuiResult =
     }
 
 const SESSION_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/
+
+// Tabs this door opened. `closeSessionTerminal` refuses any other id, so a
+// plugin cannot close a shell the user opened themselves.
+const openedTabs = new Set<string>()
 
 /** The shell line that resumes `sessionId` in the TUI, argv-quoted for /bin/sh.
  *  `profile` is pinned only when it is a legal slug — same guard as the
@@ -93,6 +97,7 @@ export function openSessionInTerminalPane(storedSessionId: string, opts: OpenSes
   const cwd = (opts.cwd ?? '').trim() || $currentCwd.get()
   const terminalId = createTerminal(cwd, defaultTerminalGateway())
 
+  openedTabs.add(terminalId)
   renameTerminal(terminalId, (opts.title ?? '').trim() || 'TUI')
   setTerminalTakeover(true)
   // The new tab is active; the injection flushes into it once its PTY is open
@@ -100,4 +105,17 @@ export function openSessionInTerminalPane(storedSessionId: string, opts: OpenSes
   $terminalInjection.set(command)
 
   return { ok: true, terminalId, command }
+}
+
+/** Close a tab `openSessionInTerminalPane` opened (the TUI is restarted by
+ *  opening again). Any other id is refused: false, nothing closed. */
+export function closeSessionTerminal(terminalId: string): boolean {
+  if (!openedTabs.has(terminalId)) {
+    return false
+  }
+
+  openedTabs.delete(terminalId)
+  closeTerminal(terminalId)
+
+  return true
 }

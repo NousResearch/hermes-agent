@@ -24,6 +24,11 @@ export const terminalHost = {
   openSession: (storedSessionId: string, opts?: OpenSessionTuiOptions): OpenSessionTuiResult =>
     openSessionInTerminalPane(storedSessionId, opts),
 
+  /** Close a tab `openSession` returned (`terminalId`), e.g. to restart the TUI
+   *  on a session the chat has moved on from. Refuses — false — any tab this
+   *  door did not open: a plugin never closes the user's own shells. */
+  closeSession: (terminalId: string): boolean => closeSessionTerminal(terminalId),
+
   /** Whether `openSession` can work on the active gateway right now. */
   canOpenSession: (): boolean => activeGatewayHasShell(),
 

@@ -27,7 +27,7 @@ describe('host.terminal', () => {
   })
 
   it('exposes only session-resume, takeover and its live state', () => {
-    expect(Object.keys(host.terminal).sort()).toEqual(['canOpenSession', 'openSession', 'setTakeover', 'takeover'])
+    expect(Object.keys(host.terminal).sort()).toEqual(['canOpenSession', 'closeSession', 'openSession', 'setTakeover', 'takeover'])
   })
 
   it('openSession queues the TUI resume and takes the pane over; setTakeover collapses it again', () => {

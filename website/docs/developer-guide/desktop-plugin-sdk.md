@@ -699,6 +699,9 @@ resumable from a shell this window can open — add the host as an SSH gateway),
 `'invalid-session'` means the id is unusable. `hermes` resolves through the
 interactive shell's own PATH. `setTakeover(false)` collapses the pane back to
 its rail without killing the TUI; `takeover` is the live state for a chip.
+`closeSession(terminalId)` closes a tab `openSession` returned — the way to
+restart the TUI after the chat view moved the session on (the TUI process reads
+the transcript once at resume) — and refuses any tab the door did not open.
 Feature-detect on older hosts: `host.terminal?.openSession`.
 
 ### Session rows — decorations + the session list API
@@ -1496,6 +1499,7 @@ host.terminal.openSession(storedSessionId, { profile?, cwd?, title? })  // resum
                                            //   fresh terminal tab on the active gateway and take the pane over;
                                            //   result-shaped ({ ok, terminalId, command } | { ok: false, reason })
 host.terminal.canOpenSession()             // false on a URL/token or cloud gateway (no shell on the session's host)
+host.terminal.closeSession(terminalId)     // close a tab openSession returned (restart the TUI); refuses any other tab
 host.terminal.setTakeover(active)          // expand the terminal pane (true) or collapse it to its rail (false); PTYs live on
 host.terminal.takeover                     // ReadableAtom<boolean> — the pane's live takeover state, for a mirroring chip
 host.skills.list(profile?)                 // every skill for the scope (Capabilities endpoints)

@@ -462,9 +462,9 @@ refusal.
 `npx`, `npm exec` and `npm run` keep working, so MCP servers and tools still start.
 But `engine-strict` applies anywhere in the checkout: in these folders, and through
 the root `.npmrc` in every folder without a `package.json` of its own (`agent/`,
-`tools/`, the Docker image's `/opt/hermes`). There `npx` refuses a package whose own
-`engines` the current Node does not satisfy, where it would only warn outside the
-checkout.
+`tools/`, the Docker image's `/opt/hermes`). There `npx` refuses to install a package
+when it or any non-optional dependency it pulls in declares `engines` the current Node
+or npm does not satisfy, where it would only warn outside the checkout.
 
 The website is a separate npm project: `npm ci --prefix website`, then
 `npm run build:fast --prefix website`. PM activation supplies tools, not these

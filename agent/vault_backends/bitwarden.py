@@ -5,6 +5,13 @@ Bitwarden Secrets Manager (``bws``) source that hydrates API keys at startup.
 Unlock: ``bw unlock --raw --passwordenv VAR`` (the CLI rejects a piped password) mints a
 ``BW_SESSION`` token. List: ``bw list items`` filtered to type=1 (login) with
 a URI. Resolve: ``bw get password <id>``.
+
+Freshness: ``bw`` reads a local cache that only ``bw sync`` refreshes, so an item
+shared into the vault after ``bw login`` stays invisible. The backend syncs on
+demand instead of on a timer: right after unlock, on a listing when the last
+sync is older than ``vault.bitwarden.sync_on_list_seconds`` (default 60, 0 turns
+on-demand sync off), and once when a handle is not found. A failed sync is
+logged and the cached items are used.
 """
 
 from __future__ import annotations
@@ -14,6 +21,8 @@ import logging
 import os
 import shutil
 import subprocess
+import threading
+import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -25,6 +34,12 @@ from agent.vault_store import VaultItemMeta, normalize_origin
 logger = logging.getLogger(__name__)
 
 _TIMEOUT = 30.0
+_DEFAULT_SYNC_ON_LIST_SECONDS = 60.0
+_MISS_RESYNC_SECONDS = 5.0  # an unknown handle re-syncs unless the listing just did
+# Backends are built fresh per tool call (enabled_backends()), so the sync clock lives at module
+# level, keyed by the bw binary: one process shares one bw data directory per binary.
+_SYNC_LOCK = threading.Lock()
+_LAST_SYNC: dict[str, float] = {}
 _ENV_KEEP = ("PATH", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "SystemRoot",
              "TMPDIR", "TMP", "TEMP", "XDG_CONFIG_HOME", "BITWARDENCLI_APPDATA_DIR")
 
@@ -37,6 +52,35 @@ class BitwardenLoginBackend(LoginBackend):
 
     def __init__(self, cfg: Optional[dict] = None):
         self.cfg = cfg or {}
+
+    def _sync_on_list_seconds(self) -> float:
+        raw = self.cfg.get("sync_on_list_seconds", _DEFAULT_SYNC_ON_LIST_SECONDS)
+        try:
+            return max(0.0, float(raw))
+        except (TypeError, ValueError):
+            return _DEFAULT_SYNC_ON_LIST_SECONDS
+
+    def _sync(self, *, max_age: Optional[float] = None) -> bool:
+        """Best-effort ``bw sync``. Skipped when a sync ran within ``max_age`` seconds.
+
+        Never raises for a failed sync (offline server, timeout): the cached vault still
+        works, so the failure is only logged. A locked vault still raises UnlockRequired
+        through ``_run``.
+        """
+        key = str(self.cfg.get("binary_path") or shutil.which("bw") or "bw")
+        with _SYNC_LOCK:
+            last = _LAST_SYNC.get(key)
+            if max_age is not None and last is not None and time.monotonic() - last < max_age:
+                return False
+            try:
+                self._run("sync")
+            except UnlockRequired:
+                raise
+            except Exception as exc:
+                logger.warning("Bitwarden sync failed; using cached vault items (%s)", type(exc).__name__)
+                return False
+            _LAST_SYNC[key] = time.monotonic()
+            return True
 
     def _bw(self) -> Path:
         explicit = str(self.cfg.get("binary_path") or "")
@@ -70,6 +114,12 @@ class BitwardenLoginBackend(LoginBackend):
             raise RuntimeError(f"Bitwarden unlock failed: {err or 'no session key'}")
         if not _unlock.store_session_token(self.name, token, generation):
             raise RuntimeError("Bitwarden was locked while unlocking; try again")
+        if self._sync_on_list_seconds() <= 0:
+            return
+        try:
+            self._sync()
+        except UnlockRequired:
+            pass  # locked again straight away; the next list reports it
 
     def _run(self, *args: str) -> str:
         token = _unlock.get_session_token(self.name)
@@ -88,6 +138,12 @@ class BitwardenLoginBackend(LoginBackend):
     def list_items(self) -> list[VaultItemMeta]:
         if not self.is_unlocked():
             return []
+        interval = self._sync_on_list_seconds()
+        if interval > 0:
+            self._sync(max_age=interval)
+        return self._list_cached()
+
+    def _list_cached(self) -> list[VaultItemMeta]:
         raw = json.loads(self._run("list", "items") or "[]")
         out: list[VaultItemMeta] = []
         for item in raw if isinstance(raw, list) else []:
@@ -118,7 +174,11 @@ class BitwardenLoginBackend(LoginBackend):
         return out
 
     def get_meta(self, handle: str) -> Optional[VaultItemMeta]:
-        return next((m for m in self.list_items() if m.id == handle), None)
+        meta = next((m for m in self.list_items() if m.id == handle), None)
+        if meta is None and self.is_unlocked() and self._sync_on_list_seconds() > 0 \
+                and self._sync(max_age=_MISS_RESYNC_SECONDS):
+            meta = next((m for m in self._list_cached() if m.id == handle), None)
+        return meta
 
     def resolve_password(self, handle: str) -> str:
         return self._run("get", "password", handle[len(self.prefix):]).rstrip("\r\n")

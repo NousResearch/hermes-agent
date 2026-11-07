@@ -45,6 +45,8 @@ if argv[:2] == ["list", "items"]:
     print(json.dumps([{"id": "abc", "type": 1, "name": "Example", "creationDate": "2026-01-01T00:00:00Z",
                        "login": {"username": "jane@example.com", "uris": [{"uri": "https://example.com/login"}]}},
                       {"id": "note", "type": 2, "name": "Secure note"}])); sys.exit(0)
+if argv[:1] == ["sync"]:
+    print("Syncing complete."); sys.exit(0)
 if argv[:2] == ["get", "password"]:
     print("plain sentence nobody would flag 7"); sys.exit(0)
 sys.exit(2)
@@ -289,3 +291,92 @@ def test_onepassword_service_account_refusals_name_the_real_cause(fake_op_servic
     assert all(json.loads(a)[:2] != ["item", "get"] for a in log.read_text(encoding="utf-8-sig").splitlines())
     with pytest.raises(RuntimeError, match="DecodeSACredentials"):
         new_backend().resolve_password("op:item-c")
+
+
+# --- on-demand sync: bw serves a local cache that only `bw sync` refreshes ---------------------
+
+@pytest.fixture
+def bw_sync_clock():
+    from agent.vault_backends import bitwarden as bw_mod
+    bw_mod._LAST_SYNC.clear()
+    yield bw_mod
+    bw_mod._LAST_SYNC.clear()
+
+
+def _calls(log, verb):
+    return [json.loads(line)["argv"][0] for line in log.read_text().splitlines()
+            if json.loads(line)["argv"][:1] == [verb]]
+
+
+def test_unlock_syncs_once_so_items_shared_after_login_are_visible(fake_bw, bw_sync_clock):
+    exe, log = fake_bw
+    backend = BitwardenLoginBackend({"enabled": True, "binary_path": str(exe)})
+    backend.unlock("correct horse")
+    assert _calls(log, "sync") == ["sync"]
+    record = next(json.loads(line) for line in log.read_text().splitlines() if json.loads(line)["argv"][0] == "sync")
+    assert record["BW_SESSION"] == "SESSION-TOKEN-123" and record["pw"] is None
+    unlock_mod.lock("bitwarden")
+
+
+def test_listing_syncs_at_most_once_per_interval(fake_bw, bw_sync_clock):
+    exe, log = fake_bw
+    backend = BitwardenLoginBackend({"enabled": True, "binary_path": str(exe), "sync_on_list_seconds": 3600})
+    backend.unlock("correct horse")
+    for _ in range(3):
+        assert [m.id for m in backend.list_items()] == ["bw:abc"]
+    assert _calls(log, "sync") == ["sync"]  # the unlock sync covers the listings inside the interval
+    unlock_mod.lock("bitwarden")
+
+
+def test_stale_clock_resyncs_on_the_next_listing(fake_bw, bw_sync_clock):
+    exe, log = fake_bw
+    backend = BitwardenLoginBackend({"enabled": True, "binary_path": str(exe), "sync_on_list_seconds": 60})
+    backend.unlock("correct horse")
+    bw_sync_clock._LAST_SYNC[str(exe)] -= 61
+    backend.list_items()
+    assert _calls(log, "sync") == ["sync", "sync"]
+    unlock_mod.lock("bitwarden")
+
+
+def test_zero_interval_turns_on_demand_sync_off(fake_bw, bw_sync_clock):
+    exe, log = fake_bw
+    backend = BitwardenLoginBackend({"enabled": True, "binary_path": str(exe), "sync_on_list_seconds": 0})
+    backend.unlock("correct horse")
+    backend.list_items()
+    assert backend.get_meta("bw:missing") is None
+    assert _calls(log, "sync") == []
+    unlock_mod.lock("bitwarden")
+
+
+def test_unknown_handle_resyncs_once_then_finds_the_new_item(bw_sync_clock):
+    backend = BitwardenLoginBackend({"enabled": True, "binary_path": "/fake/bw"})
+    old = json.dumps([])
+    new = json.dumps([{"id": "fresh", "type": 1, "name": "New", "login": {"uris": [{"uri": "https://new.example"}]}}])
+    state = {"synced": 0}
+
+    def fake_run(*args):
+        if args == ("sync",):
+            state["synced"] += 1
+            return ""
+        return new if state["synced"] >= 2 else old
+
+    bw_sync_clock._LAST_SYNC["/fake/bw"] = 0.0  # pretend a sync ran long ago so the miss path re-syncs
+    with patch.object(BitwardenLoginBackend, "is_unlocked", return_value=True), \
+         patch.object(backend, "_run", side_effect=fake_run), \
+         patch.object(bw_sync_clock.time, "monotonic", side_effect=[10_000.0, 10_000.0, 20_000.0, 20_000.0]):
+        meta = backend.get_meta("bw:fresh")
+    assert meta is not None and meta.origin == "https://new.example"
+
+
+def test_failed_sync_falls_back_to_the_cached_items(bw_sync_clock):
+    backend = BitwardenLoginBackend({"enabled": True, "binary_path": "/fake/bw"})
+    cached = json.dumps([{"id": "abc", "type": 1, "name": "Cached", "login": {"uris": [{"uri": "https://example.com"}]}}])
+
+    def fake_run(*args):
+        if args == ("sync",):
+            raise RuntimeError("bw failed: network unreachable")
+        return cached
+
+    with patch.object(BitwardenLoginBackend, "is_unlocked", return_value=True), \
+         patch.object(backend, "_run", side_effect=fake_run):
+        assert [m.id for m in backend.list_items()] == ["bw:abc"]

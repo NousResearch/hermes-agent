@@ -31,6 +31,12 @@ _SYSTEM_PROMPT = (
     "Respond with exactly one word: APPROVE, DENY, or ESCALATE"
 )
 _VERDICTS = {"APPROVE": "approve", "DENY": "deny"}
+# Markdown/punctuation stripped from a verdict line before the exact match, so a
+# bare markdown-wrapped verdict (``**APPROVE**``, `` `DENY` ``, ``APPROVE.``)
+# still counts as explicit. Hedged or annotated lines ("APPROVE, but...",
+# "APPROVED", "I think APPROVE") do not become exact keys after this strip and
+# keep escalating — fail-closed.
+_VERDICT_LINE_STRIP = "*`_.!\"' "
 
 
 def _strip_line_comment(line: str) -> str:
@@ -137,7 +143,17 @@ def _smart_approve(command: str, description: str) -> str:
             logger.warning("Smart approvals: guardian returned an empty answer "
                            "(finish_reason=%s), escalating", finish_reason)
             return "escalate"
-        return _VERDICTS.get(answer, "escalate")
+        # The guardian is asked for exactly one word, but some models append a
+        # justification after the verdict (often truncated at max_tokens=16 with
+        # finish_reason=="length"), so the whole reply is not an exact key and
+        # would silently escalate (#148382). Judge only the first non-empty line,
+        # and only when that entire line is a verdict once markdown/punctuation
+        # is stripped; hedged or annotated replies still escalate.
+        first_line = next((ln.strip() for ln in answer.splitlines() if ln.strip()), "")
+        if first_line != answer:
+            logger.info("Smart approvals: guardian appended trailing text after the "
+                        "verdict; judged on the first line")
+        return _VERDICTS.get(first_line.strip(_VERDICT_LINE_STRIP), "escalate")
     except Exception as e:
         # WARNING, not DEBUG: a failed/blocked guardian call is a real event
         # the operator needs to see (the hang was invisible at DEBUG).

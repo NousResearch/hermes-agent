@@ -829,7 +829,7 @@ def test_pull_requests_and_main_pushes_run_no_e2e_but_the_upgrade_shards_on_a_pu
                         event_name=event_name)
     upgrade = _consumers_reached(run, "e2e_upgrade")
     assert upgrade.pop("tests-os/install-update-e2e/install-update") is False, f"{event_name}: Windows journey ran"
-    assert all(upgrade.values()) is (event_name == "pull_request"), upgrade
+    assert all(value is (event_name == "pull_request") for value in upgrade.values()), upgrade
     for lane in ("e2e", "e2e_desktop_update"):
         assert not any(_consumers_reached(run, lane).values()), f"{event_name}: {lane} ran"
     assert "e2e-desktop-core" not in run

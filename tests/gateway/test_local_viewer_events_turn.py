@@ -112,20 +112,22 @@ def test_thinking_and_reaction_publish_and_reasoning_waits_for_the_session_flag(
     live = SimpleNamespace(tool_progress_mode=None)
     turn = _turn(Platform.LOCAL, published, live=live)
     agent = SimpleNamespace(tool_gen_callback=None, _print_fn=None, thinking_callback=None,
-                            reaction_callback=None, reasoning_callback=None)
+                            reaction_callback=None, reasoning_callback=None, steer_delivered_callback=None)
     previous = local_viewer_events.wire(turn, agent)
     agent.thinking_callback('(◕‿◕) pondering...')
     agent.thinking_callback('')
     agent.reaction_callback('vibe')
+    agent.steer_delivered_callback(['prefer B'])
     # No sink unless the viewer asked: a reasoning callback changes the provider request.
     assert agent.reasoning_callback is None
     local_viewer_events.restore(agent, previous)
-    assert (agent.thinking_callback, agent.reaction_callback) == (None, None)
+    assert (agent.thinking_callback, agent.reaction_callback, agent.steer_delivered_callback) == (None, None, None)
     live.show_reasoning = True
     local_viewer_events.wire(turn, agent)
     agent.reasoning_callback('step 1')
     assert published == [('thinking.delta', {'text': '(◕‿◕) pondering...'}), ('thinking.delta', {'text': ''}),
-                         ('reaction', {'kind': 'vibe'}), ('reasoning.delta', {'text': 'step 1'})]
+                         ('reaction', {'kind': 'vibe'}), ('steer.delivered', {'count': 1, 'texts': ['prefer B']}),
+                         ('reasoning.delta', {'text': 'step 1'})]
 
 
 @pytest.mark.parametrize('classic', [True, False])

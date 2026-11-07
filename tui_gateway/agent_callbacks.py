@@ -160,6 +160,8 @@ def _agent_cbs(sid: str) -> dict:
         "thinking_callback": lambda text: _agent_thinking_update(sid, text),
         # Affection reaction (ily / <3 / good bot) → hearts; core-detected so TUI/desktop share it.
         "reaction_callback": lambda kind: _emit("reaction", sid, {"kind": kind}),
+        # A /steer the next API call reads: Desktop seals the live reply above the steer bubble here.
+        "steer_delivered_callback": lambda texts: _emit("steer.delivered", sid, {"count": len(texts), "texts": list(texts)}),
         "reasoning_callback": lambda text: _emit_reasoning_delta(sid, text),
         "status_callback": lambda kind, text=None: _agent_status_update(sid, kind, text),
         # Credits/notice spine: AgentNotice → notification.show; recovery → notification.clear.

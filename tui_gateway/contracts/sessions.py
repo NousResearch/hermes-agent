@@ -636,6 +636,8 @@ class SessionCorrectionParams(SessionParams):
 class SessionCorrectionResult(Result):
     status: CorrectionStatus
     text: str
+    # An accepted steer whose agent emits ``steer.delivered`` when the steer joins the conversation.
+    delivery_event: bool | None = None
 
 
 method("session.steer", params=SessionCorrectionParams, result=SessionCorrectionResult,

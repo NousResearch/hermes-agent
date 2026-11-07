@@ -8,6 +8,7 @@ on it used to wait unread until the whole sub-batch finished. Pinned here:
 * yield: a steer on a helper running tools asks its tool workers to yield, so a long foreground
   command moves to the background registry instead of parking the steer;
 * receipts: every steer records queued_at / delivered_at, shown in action='list' and logged;
+* Codex app-server children: the steer goes to the active native turn (``turn/steer``);
 * tree: list/steer/stop reach descendants for an ancestor in the owning chain only.
 """
 
@@ -158,6 +159,23 @@ def test_steer_asks_a_busy_helpers_tool_workers_to_yield():
     finally:
         interrupt_mod.consume_yield(tid)
         _unregister_subagent("yield-1")
+
+
+def test_yield_is_armed_under_the_worker_lock(monkeypatch):
+    """A pooled worker that exits between a snapshot and the arm must not keep the yield for its next command."""
+    agent = _Agent(_Root())
+    agent._executing_tools = True
+    agent._tool_worker_threads.add(987_654_322)
+    held = []
+    monkeypatch.setattr("agent.interrupt_control._request_yield",
+                        lambda tid: held.append(agent._tool_worker_threads_lock.locked()))
+    _register("yield-locked", agent)
+    try:
+        assert steer_subagent("yield-locked", "wrap up") is True
+        assert agent.redirect("user note") is True
+    finally:
+        _unregister_subagent("yield-locked")
+    assert held == [True, True]
 
 
 def test_joined_helper_does_not_yield_its_own_delegate_call(tree):
@@ -352,3 +370,51 @@ def test_gateway_authority_still_gates_a_descendant(tree):
     assert leaf._pending_steer is None
     assert steer_subagent("tree-leaf", "ok", owner_session_id="ui-1", owner_transport=owner_t,
                           owner_session_record=session) is True
+
+
+# ---------------------------------------------------------------------------
+# Codex app-server children (their own turn loop never drains the Hermes queue)
+# ---------------------------------------------------------------------------
+
+
+def _codex_child(turn_id="turn-1"):
+    """A child on the codex_app_server runtime: the real native ``request_steer``, only its JSON-RPC stubbed."""
+    from agent.transports.codex_app_server_session import CodexAppServerSession
+
+    rpc = []
+    session = CodexAppServerSession.__new__(CodexAppServerSession)
+    session._active_turn_lock = threading.Lock()
+    session._active_turn_id, session._thread_id = turn_id, "thread-1"
+    session._client = type("_Rpc", (), {"request": lambda self, method, params, **kw: rpc.append((method, params))
+                                        or {"turnId": turn_id}})()
+    child = _Agent(_Root())
+    child.api_mode, child._codex_session = "codex_app_server", session
+    return child, rpc
+
+
+def test_codex_child_gets_the_steer_in_its_active_turn():
+    child, rpc = _codex_child()
+    _register("codex-1", child)
+    try:
+        assert "error" in json.loads(_handle_control_action("steer", "codex-1", "x", _Root("someone-else")))
+        assert rpc == []  # authority is checked before anything reaches the runtime
+        assert json.loads(_handle_control_action("steer", "codex-1", "use the v2 api", _Root()))["status"] == "queued"
+        assert [(m, p["input"][0]["text"], p["expectedTurnId"]) for m, p in rpc] == [
+            ("turn/steer", "use the v2 api", "turn-1")]
+        assert child._pending_steer is None  # not parked in the Hermes queue the native turn never reads
+        receipt = _entries(_Root())["codex-1"]["steers"][-1]
+        assert receipt["status"] == "delivered" and receipt["delivered_at"] >= receipt["queued_at"]
+    finally:
+        _unregister_subagent("codex-1")
+
+
+def test_codex_child_with_no_active_turn_queues_the_steer_and_reports_a_miss():
+    child, rpc = _codex_child(turn_id=None)
+    _register("codex-2", child)
+    try:
+        assert steer_subagent("codex-2", "between turns") is True
+        assert rpc == [] and child._pending_steer == "between turns"
+        assert _close_subagent_steering("codex-2", child) == "between turns"
+        assert _entries(_Root())["codex-2"]["steers"][-1]["status"] == "missed"
+    finally:
+        _unregister_subagent("codex-2")

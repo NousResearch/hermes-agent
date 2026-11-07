@@ -10,6 +10,7 @@ import time
 from functools import partial
 from typing import Any, Dict, List, Optional
 from agent.interrupt_compat import request_hard_interrupt
+from agent.interrupt_control import _ic_codex_method
 from tools.registry import tool_error
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
@@ -140,58 +141,87 @@ def steer_subagent(
     call is never cut. True iff the text was QUEUED while the child still accepted work; False for unknown/closed id,
     ownership mismatch, no live agent, or empty text. ``owner_session_id=None`` keeps the in-process helper contract;
     gateway callers must pass exact authority. Acceptance and completion are linearized by the registry lock: if
-    acceptance wins but no delivery boundary remains, the text lands in the entry as ``missed_steer``. Sub-helpers
-    that accepted a relayed copy are appended to ``relayed_to`` when given.
+    acceptance wins but no delivery boundary remains, the text lands in the entry as ``missed_steer``. A Codex
+    app-server child gets it in its active turn via native ``turn/steer`` (queued as above when no turn takes it).
+    Sub-helpers that accepted a relayed copy are appended to ``relayed_to`` when given.
     """
     if not text or not text.strip():
         return False
     queued = (_RELAY_LABEL.format(via=relayed_from) if relayed_from else "") + text.strip()
+    authority = (subagent_id, owner_session_id, owner_transport, owner_session_record)
     with _active_subagents_lock:
-        record = _active_subagents.get(subagent_id)
-        if not record or not record.get("accepting_steer", False):
-            return False
-        if owner_session_id is not None and (
-            record.get("owner_session_id") != owner_session_id
-            or owner_transport is None
-            or not _subagent_transport_matches(record, owner_transport)
-            or owner_session_record is None
-            or record.get("owner_session_record") is not owner_session_record
-        ):
-            return False
-        agent = record.get("agent")
-        if agent is None:
-            return False
-        # Publish the receipt (and the drain hook) before queueing, so a drain racing this call always finds it.
-        receipt = {"queued_at": time.time(), "delivered_at": None, "latency_s": None, "status": "queued",
-                   "relayed_from": relayed_from, "_text": queued}
-        receipts = record.setdefault("steers", [])
-        receipts.append(receipt)
-        if getattr(agent, "_steer_drain_hook", None) is None:
-            with contextlib.suppress(Exception):
-                agent._steer_drain_hook = partial(_settle_steer_receipts, record, subagent_id)
+        target = _steer_target(*authority)
+    native = _ic_codex_method(target[1], "request_steer") if target else None
+    native_at, delivered = time.time(), False
+    if native is not None and not getattr(target[1], "_interrupt_requested", False):
+        # A Codex app-server child runs its own turn loop and never drains the Hermes queue: hand the text to its
+        # active turn (`turn/steer`, as redirect() does). A JSON-RPC round trip, so outside the registry lock.
         try:
-            accepted = bool(agent.steer(queued))
-        except Exception as exc:
-            logger.debug("steer_subagent(%s) failed: %s", subagent_id, exc)
-            accepted = False
-        if not accepted:
-            receipts.remove(receipt)
-            return False
+            delivered = bool(native(queued))
+        except Exception:  # the native runtime is a subprocess boundary; fall back to the queue below
+            logger.debug("steer_subagent(%s) turn/steer failed", subagent_id, exc_info=True)
+    with _active_subagents_lock:
+        if delivered:
+            record, agent = target
+            now = time.time()
+            receipt = {"queued_at": native_at, "delivered_at": now, "latency_s": round(now - native_at, 3),
+                       "status": "delivered", "relayed_from": relayed_from, "_text": queued}
+            receipts = record.setdefault("steers", [])
+            receipts.append(receipt)
+        else:  # no native turn took it: queue it (re-checked, closing may have won meanwhile)
+            target = _steer_target(*authority)
+            if target is None:
+                return False
+            record, agent = target
+            # Publish the receipt (and the drain hook) before queueing, so a drain racing this call always finds it.
+            receipt = {"queued_at": time.time(), "delivered_at": None, "latency_s": None, "status": "queued",
+                       "relayed_from": relayed_from, "_text": queued}
+            receipts = record.setdefault("steers", [])
+            receipts.append(receipt)
+            if getattr(agent, "_steer_drain_hook", None) is None:
+                with contextlib.suppress(Exception):
+                    agent._steer_drain_hook = partial(_settle_steer_receipts, record, subagent_id)
+            try:
+                accepted = bool(agent.steer(queued))
+            except Exception:  # an agent without a working steer(): refuse the steer, keep the registry intact
+                logger.debug("steer_subagent(%s) failed", subagent_id, exc_info=True)
+                accepted = False
+            if not accepted:
+                receipts.remove(receipt)
+                return False
         del receipts[:-_RECEIPTS_CAP]
         # A helper below the top level joins its own sub-helpers synchronously, so its copy waits for the whole
         # sub-batch. Relay to them now; authority was checked on this record and passes down the spawn tree.
         sub_helpers = [sid for sid, r in _active_subagents.items()
                        if r.get("accepting_steer") and _record_parent_agent(r) is agent]
-    logger.info("steer queued for subagent %s (%d chars%s)", subagent_id, len(queued),
-                f", relayed from {relayed_from}" if relayed_from else "")
+    logger.info("steer %s subagent %s (%d chars%s)", "delivered via Codex turn/steer to" if delivered else
+                "queued for", subagent_id, len(queued), f", relayed from {relayed_from}" if relayed_from else "")
     for sid in sub_helpers:
         if steer_subagent(sid, text, relayed_from=subagent_id, relayed_to=relayed_to) and relayed_to is not None:
             relayed_to.append(sid)
-    if not sub_helpers and getattr(agent, "_executing_tools", False) is True:
+    if not delivered and not sub_helpers and getattr(agent, "_executing_tools", False) is True:
         # Same yield a user steer gets (redirect): a long foreground command moves to the background registry.
         with contextlib.suppress(Exception):
             agent.request_tool_yield()
     return True
+
+
+def _steer_target(subagent_id: str, owner_session_id: Optional[str], owner_transport: Any,
+                  owner_session_record: Any) -> Optional[tuple[dict[str, Any], Any]]:
+    """The live (record, agent) this caller may steer, else None. Registry lock held."""
+    record = _active_subagents.get(subagent_id)
+    if not record or not record.get("accepting_steer", False):
+        return None
+    if owner_session_id is not None and (
+        record.get("owner_session_id") != owner_session_id
+        or owner_transport is None
+        or not _subagent_transport_matches(record, owner_transport)
+        or owner_session_record is None
+        or record.get("owner_session_record") is not owner_session_record
+    ):
+        return None
+    agent = record.get("agent")
+    return None if agent is None else (record, agent)
 
 
 _RECEIPTS_CAP = 10
@@ -383,8 +413,8 @@ _CONTROL_OUTCOMES = {
     ),
     "steer": (
         "queued",
-        "Steering text queued. The subagent sees it appended to its next tool result — the current tool call is "
-        "never cut; a busy foreground command is moved to the background so it lands sooner. A child waiting on "
+        "Steering text queued. The subagent sees it appended to its next tool result (a Codex app-server child: "
+        "in its active turn) — the current tool call is never cut; a busy foreground command is moved to the background so it lands sooner. A child waiting on "
         "its own sub-helpers also relays it to them (relayed_to). action='list' shows each steer's delivered_at. If "
         "the child finishes before a delivery boundary remains, the text is reported back as missed_steer in its "
         "completion entry.", "Subagent '{sid}' is no longer accepting steering (finishing or "

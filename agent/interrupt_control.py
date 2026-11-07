@@ -383,14 +383,14 @@ class InterruptControlMixin:
 
     def request_tool_yield(self) -> None:
         """Ask every running tool worker to yield so a queued steer is not parked behind it (shared by
-        ``redirect()`` and ``delegate_task`` subagent steers)."""
+        ``redirect()`` and ``delegate_task`` subagent steers). Armed under the tracker lock: a pooled worker
+        that exited between a snapshot and the arm would leave the yield on its tid for the next command."""
         tracker = getattr(self, "_tool_worker_threads", None)
         tracker_lock = getattr(self, "_tool_worker_threads_lock", None)
         if tracker is not None and tracker_lock is not None:
             with tracker_lock:
-                worker_tids = list(tracker)
-            for tid in worker_tids:
-                _request_yield(tid)
+                for tid in list(tracker):
+                    _request_yield(tid)
 
     def _has_pending_redirect(self) -> bool:
         """Return whether an active-turn redirect is waiting to be applied."""

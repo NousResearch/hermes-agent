@@ -366,7 +366,7 @@ def test_admission_terminal_paths_fence_descendant(admitted_finish, action):
 
 def test_restart_recovery_fences_foreign_duplicate_stale_child(managed_finish):
     from hermes_state_lineage import SessionLineageAmbiguousError
-    local, sibling, scope, reserve = managed_finish
+    local, sibling, _scope, reserve = managed_finish
     reserve('restart-child', 1)
     sibling._conn.execute("INSERT INTO sessions(id,source,started_at) VALUES ('restart-child','cli',1)")
     sibling._conn.commit()
@@ -521,7 +521,7 @@ def test_terminal_stale_generation_precedes_foreign_descendant_discovery(admitte
 
 
 def test_restart_recovery_retires_owned_live_child(managed_finish):
-    local, sibling, scope, reserve = managed_finish
+    local, _sibling, _scope, reserve = managed_finish
     reserve('restart-child', 1)
     next_epoch = rt.begin_runtime_epoch(local, instance_id='replacement')
     assert rt.recover_session_inputs(local, epoch=next_epoch) == 0

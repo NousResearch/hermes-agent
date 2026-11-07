@@ -291,6 +291,10 @@ class SessionKernel:
         self.raw, self.stderr = _BoundedBuffer(), _BoundedBuffer()
         self.execution_count, self.last_used = 0, time.monotonic()
         self.cell_authority: Optional[CellAuthority] = None
+        # Source of settled cells (bounded): the rebuild transcript. A wedged
+        # kernel dies with its state, so the timeout/interrupt/death paths
+        # spill these to disk and name the file in the result.
+        self.cell_sources: list[str] = []
 
     def alive(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
@@ -735,6 +739,48 @@ def _with_stderr(stdout_text: str, stderr_text: str) -> str:
     return stdout_text + "\n--- stderr ---\n" + stderr_text
 
 
+_TRANSCRIPT_CELLS = 50
+_TRANSCRIPT_CELL_CHARS = 20_000
+_TRANSCRIPT_TOTAL_CHARS = 500_000
+
+
+def _record_cell_source(kernel: SessionKernel, code: str) -> None:
+    """Remember one settled cell's source for the rebuild transcript (bounded)."""
+    kernel.cell_sources.append(code[:_TRANSCRIPT_CELL_CHARS])
+    del kernel.cell_sources[:-_TRANSCRIPT_CELLS]
+
+
+def _spill_cell_transcript(owner: str, cells: list[str]) -> str:
+    """Best-effort: write settled cell sources to disk, return the path or "".
+
+    The file survives the kernel: after a timeout/interrupt/death the model
+    replays these cells in order to rebuild state instead of starting blind.
+    """
+    safe = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in (owner or "default"))[:64] or "default"
+    body = "".join(f"\n\n# ── cell {i + 1} ──\n{cell}" for i, cell in enumerate(cells))
+    body = body[:_TRANSCRIPT_TOTAL_CHARS]
+    try:
+        from hermes_constants import get_hermes_home
+        cell_dir = Path(get_hermes_home()) / "cache" / "code_cells" / safe
+        cell_dir.mkdir(parents=True, exist_ok=True)
+        path = cell_dir / f"transcript_{int(time.time())}.py"
+        path.write_text("# Rebuild transcript: re-run these cells in order with execute_code.\n" + body,
+                        encoding="utf-8")
+        return str(path)
+    except OSError:
+        return ""
+
+
+def _attach_transcript(result: dict[str, Any], kernel: SessionKernel, owner: str, message: str) -> None:
+    """Name the rebuild transcript on a kernel-death result (best-effort)."""
+    result["error"] = message
+    transcript = _spill_cell_transcript(owner, kernel.cell_sources)
+    if transcript:
+        result["transcript_path"] = transcript
+        result["error"] = (message + f" Rebuild state by re-running the {len(kernel.cell_sources)} "
+                           f"transcript cell(s) in order with execute_code (read_file {transcript!r} to page it).")
+
+
 def _cell_result(kernel: SessionKernel, key: tuple, status: str, payload: dict[str, Any], *,
                  timeout: int, sandbox_tools: frozenset, reused: bool,
                  state_reset: bool, exec_start: float) -> dict[str, Any]:
@@ -776,12 +822,14 @@ def _cell_result(kernel: SessionKernel, key: tuple, status: str, payload: dict[s
     if status == "timeout":
         message = (f"Cell timed out after {timeout}s; the session kernel was killed and its "
                    "state was lost. The next execute_code call starts a fresh kernel.")
-        result.update(exit_code=-1, error=message,
+        result.update(exit_code=-1,
                       output=(stdout_text + "\n\n⏰ " + message) if stdout_text else ("⏰ " + message))
+        _attach_transcript(result, kernel, key[0], message)
     elif status == "interrupted":
         from tools.code_execution_tool import _format_interrupted_output
-        result.update(exit_code=-1, output=_format_interrupted_output(stdout_text),
-                      error="Interrupted; the session kernel was killed and its state was lost.")
+        result.update(exit_code=-1, output=_format_interrupted_output(stdout_text))
+        _attach_transcript(result, kernel, key[0],
+                           "Interrupted; the session kernel was killed and its state was lost.")
     elif cell_status == "error":
         trace = clean(str(payload.get("traceback", "")))
         result.update(status="error", exit_code=1, error=trace or "Cell raised an exception.",
@@ -795,10 +843,18 @@ def _cell_result(kernel: SessionKernel, key: tuple, status: str, payload: dict[s
         result["kernel"]["ended"] = True
         if cell_stderr:
             result["output"] = _with_stderr(stdout_text, cell_stderr)
+        transcript = _spill_cell_transcript(key[0], kernel.cell_sources)
+        if transcript:
+            result["transcript_path"] = transcript
+            result["hint"] = (f"State was lost with the exited kernel. Rebuild it by re-running the "
+                              f"{len(kernel.cell_sources)} transcript cell(s) in order with execute_code "
+                              f"(read_file {transcript!r} to page it).")
     elif status == "error":
         _REGISTRY.discard(key, kernel)
-        result.update(exit_code=-1, error="The session kernel died while running the cell"
-                      + (": " + stderr_raw.strip() if stderr_raw.strip() else "."))
+        result.update(exit_code=-1)
+        _attach_transcript(result, kernel, key[0],
+                           "The session kernel died while running the cell"
+                           + (": " + stderr_raw.strip() if stderr_raw.strip() else "."))
     elif cell_stderr:
         result["output"] = _with_stderr(stdout_text, cell_stderr)
     return result
@@ -850,6 +906,11 @@ def _run_cell(kernel: SessionKernel, key: tuple, code: str, *, task_id: str, chi
             kernel.proc.stdin.write((json.dumps({"id": uuid.uuid4().hex, "code": code}) + "\n").encode("utf-8"))
             kernel.proc.stdin.flush()
             status, payload = _await_cell(kernel, timeout, is_interrupted)
+            if status not in ("timeout", "interrupted"):
+                # The cell settled inside a live kernel: its source rebuilds
+                # this state. A timed-out/interrupted cell never settled, so it
+                # stays out of the transcript it would poison on replay.
+                _record_cell_source(kernel, code)
             result = _cell_result(
                 kernel, key, status, payload,
                 timeout=timeout, sandbox_tools=sandbox_tools, reused=reused,

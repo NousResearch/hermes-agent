@@ -607,3 +607,45 @@ class TestStaleStagingDirSweep(unittest.TestCase):
                 self.assertFalse(old.exists())
                 self.assertTrue(young.exists())
                 self.assertTrue(bystander.exists())
+
+
+class TestCellTranscript(unittest.TestCase):
+    """A kernel that dies leaves a rebuild transcript, not a blank slate."""
+
+    def test_timeout_names_transcript_with_prior_cells(self):
+        with _kernel_config():
+            self.assertEqual(_run("transcript_marker = 41")["status"], "success")
+            with _kernel_config(timeout=1):
+                slow = _run("import time\ntime.sleep(30)")
+        self.assertEqual(slow["status"], "timeout", slow)
+        path = slow.get("transcript_path")
+        self.assertTrue(path, slow)
+        body = Path(path).read_text(encoding="utf-8")
+        self.assertIn("transcript_marker = 41", body)
+        self.assertNotIn("time.sleep(30)", body)
+        self.assertIn("state was lost", slow["error"])
+        self.assertIn("Rebuild state", slow["error"])
+
+    def test_sys_exit_names_transcript(self):
+        with _kernel_config():
+            self.assertEqual(_run("exit_marker = 7")["status"], "success")
+            done = _run("import sys\nsys.exit(0)")
+        self.assertTrue(done["kernel"].get("ended"), done)
+        path = done.get("transcript_path")
+        self.assertTrue(path, done)
+        self.assertIn("exit_marker = 7", Path(path).read_text(encoding="utf-8"))
+
+    def test_transcript_is_bounded(self):
+        from tools.code_kernel import _TRANSCRIPT_CELLS, _record_cell_source, _spill_cell_transcript
+        from tools.code_kernel import SessionKernel
+
+        kernel = SessionKernel(("owner", "mode", "py", "cwd", ()))
+        for i in range(_TRANSCRIPT_CELLS + 10):
+            _record_cell_source(kernel, f"cell_{i} = {i}\n")
+        self.assertEqual(len(kernel.cell_sources), _TRANSCRIPT_CELLS)
+        self.assertTrue(kernel.cell_sources[0].startswith("cell_10"))
+        path = _spill_cell_transcript("owner", kernel.cell_sources)
+        self.assertTrue(path)
+        body = Path(path).read_text(encoding="utf-8")
+        self.assertIn("cell_10 = 10", body)
+        self.assertIn("Rebuild transcript", body)

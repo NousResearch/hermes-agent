@@ -1,5 +1,4 @@
 import { arDelegationRouting } from './ar_delegation_routing'
-import { arGatewayRelay } from './ar_gateway_relay'
 import { arMemoryLayers } from './ar_memory_layers'
 import { arUpdateChannel } from './ar_update_channel'
 import type { TranslationOverrides } from './define-locale'
@@ -669,7 +668,6 @@ export const arSettings = {
     },
     gateway: {
       loading: 'جار تحميل إعدادات البوابة...',
-      relay: arGatewayRelay,
       unavailableTitle: 'إعدادات البوابة غير متاحة',
       unavailableDesc: 'جسر IPC في سطح المكتب لا يوفّر إعدادات البوابة.',
       webappHostTitle: 'مضيف Hermes',

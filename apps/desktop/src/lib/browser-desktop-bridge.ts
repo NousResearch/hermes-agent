@@ -9,7 +9,7 @@ import { createBrowserFilesBridge } from '@/lib/browser-files'
 import { WEBAPP_LAUNCH_REQUIRED } from '@/lib/browser-launch-session'
 import { onBrowserFocusSession, showBrowserNotification } from '@/lib/browser-notifications'
 import { createBrowserProfileBridge } from '@/lib/browser-profile'
-import { type BrowserRelays, createBrowserRelays, relayEnabled } from '@/lib/browser-relay'
+import { type BrowserSavedConnections, createBrowserSavedConnections } from '@/lib/browser-saved-connections'
 import { browserFolderBasePath, createBrowserSettings } from '@/lib/browser-settings'
 import { createBrowserTerminal } from '@/lib/browser-terminal'
 import { browserApi, type BrowserBootstrap, browserBootstrap, ticketedWebsocketUrl } from '@/lib/browser-transport'
@@ -34,6 +34,11 @@ import { tagRegistrySessionResponse } from '../../electron/profile-session-routi
  * contract onto the same-origin /api + /api/ws surface and deliberately exposes
  * only safe browser equivalents for machine-level capabilities.
  */
+/** The Webapp serves this machine's saved connections; the standalone dashboard does not. */
+function savedConnectionsServed(): boolean {
+  return (window as Window & { __HERMES_UI_SURFACE__?: string }).__HERMES_UI_SURFACE__ === 'webapp'
+}
+
 export function installBrowserDesktopBridge(): boolean {
   if (window.hermesDesktop) {
     return false
@@ -52,9 +57,10 @@ export function installBrowserDesktopBridge(): boolean {
 
   const api = <T>(request: HermesApiRequest) => browserApi<T>(bootstrap, request)
 
-  // Gateways the serving one relays to, when its relay is on: registry connections whose requests
-  // ride `/api/relay/<id>` on this origin (browser-relay.ts). Off, every route below is this origin's.
-  const relays: BrowserRelays | null = relayEnabled() ? createBrowserRelays({ api, bootstrap }) : null
+  // This machine's saved gateway connections (the list native Desktop keeps): each other gateway's
+  // requests ride `/api/relay/<id>` on this origin (browser-saved-connections.ts). A host that does
+  // not serve the list (the standalone dashboard) reaches only its own origin.
+  const relays: BrowserSavedConnections | null = savedConnectionsServed() ? createBrowserSavedConnections({ api, bootstrap }) : null
   const bootstrapFor = (connectionId?: null | string) => relays?.bootstrapFor(connectionId) ?? bootstrap
   const activeConnectionId = () => $connection.get()?.connectionId ?? LOCAL_CONNECTION_ID
 
@@ -144,7 +150,7 @@ export function installBrowserDesktopBridge(): boolean {
     ...BROWSER_BRIDGE_STUBS,
     ...createBrowserClipboardBridge({ saveBuffer: uploads.saveImageBuffer }),
     ...createBrowserConnectionBridge({ api, bootstrap, relays }),
-    ...(relays ? { connections: relays.connections, gatewayRelay: relays.bridge } : {}),
+    ...(relays ? { connections: relays.connections } : {}),
     ...files,
     ...createBrowserDesktopPluginsBridge({ api, files }),
     ...uploads,
@@ -205,7 +211,7 @@ export function installBrowserDesktopBridge(): boolean {
           return ticketedWebsocketUrl(bootstrap, '/api/host-terminal', profile)
         }
 
-        // A tab restored before this page listed its relayed gateways.
+        // A tab restored before this page read its saved connections.
         if (!relays.gateway(connectionId)) {
           await relays.gateways()
         }

@@ -339,6 +339,42 @@ def test_spawn_command_detaches_serve_and_publishes_its_pid(shell, remote_home):
         _kill(pid)
 
 
+class _LocalShell:
+    """``SshConnection.exec`` against this machine's ``sh`` with the fixture's remote HOME."""
+
+    def __init__(self, home: Path):
+        self.home = home
+
+    def exec(self, remote_command: str, *, timeout_s=None, stdin_data=None) -> str:
+        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(self.home)}
+        return subprocess.run(["sh", "-c", remote_command], env=env, input=stdin_data, capture_output=True,
+                              text=True, timeout=30, check=True).stdout
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.live_system_guard_bypass  # the serve is setsid-detached by design; the test reaps its own child
+def test_a_quote_in_the_hermes_path_still_proves_ownership_of_our_serve(tmp_path):
+    from hermes_cli.gateway_connections_ssh_remote import pid_is_our_serve
+
+    home = tmp_path / "rhome"
+    (home / ".hermes").mkdir(parents=True)
+    hermes = tmp_path / "it's bin" / "hermes"
+    hermes.parent.mkdir()
+    hermes.write_text("#!/usr/bin/env python3\nimport time\ntime.sleep(60)\n")  # keeps its serve argv
+    hermes.chmod(0o755)
+    result = _run_remote("sh", build_spawn_command(_plan(home, hermes)), home)
+    assert result.returncode == 0, result.stderr
+    pid = int(result.stdout.strip().splitlines()[-1])
+    try:
+        lock = parse_lockfile((home / lockfile_path(OID).removeprefix("~/")).read_text(), OID)
+        wait_until(lambda: NONCE.encode() in subprocess.run(["ps", "-ww", "-o", "command=", "-p", str(pid)],
+                                                            capture_output=True, check=False).stdout, timeout=10)
+        assert pid_is_our_serve(_LocalShell(home), lock, OID) is True
+        assert pid_is_our_serve(_LocalShell(home), {**lock, "spawnNonce": "0011223344556677"}, OID) is False
+    finally:
+        _kill(pid)
+
+
 @pytest.mark.platforms("posix")
 def test_spawn_command_refuses_while_an_update_marker_is_live(remote_home):
     home, hermes = remote_home

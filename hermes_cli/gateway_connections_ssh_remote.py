@@ -438,10 +438,11 @@ def pid_is_our_serve(ssh: SshConnection, lock: dict, ownership_id: str) -> bool:
     pid, nonce, hermes_path = lock.get("pid"), str(lock.get("spawnNonce") or ""), lock.get("hermesPath") or ""
     if not pid or not re.fullmatch(r"[0-9a-f]{16}", nonce) or not hermes_path:
         return False
+    # Values enter the Python source as Python literals; shell quoting wraps only the whole script.
     script = _OWNED_PY.format(
-        pid=int(pid), hermes_path=shq(hermes_path), hermes_home=shq(lock.get("hermesHome") or ""),
-        token_path=shq(spawn_token_path(ownership_id, nonce)), profile=shq(lock.get("profile") or ""),
-        nonce=shq(nonce))
+        pid=int(pid), hermes_path=repr(str(hermes_path)), hermes_home=repr(str(lock.get("hermesHome") or "")),
+        token_path=repr(spawn_token_path(ownership_id, nonce)), profile=repr(str(lock.get("profile") or "")),
+        nonce=repr(nonce))
     return exec_probe_verdict(ssh, f"python3 -c {shq(script)}", ("OWNED", "FOREIGN"),
                               "Could not verify SSH backend process ownership.") == "OWNED"
 
@@ -636,7 +637,7 @@ def spawn_remote_serve(ssh: SshConnection, *, hermes_path: str, profile: str, to
                        "protocolVersion": PROTOCOL_VERSION, "devServer": "", "startedAt": _now_iso()})
     try:
         # The token travels on stdin, never argv.
-        ssh.exec(f"python3 -c {shq(_TOKEN_UPLOAD_PY.format(path=shq(plan.token_file_path)))}", stdin_data=token)
+        ssh.exec(f"python3 -c {shq(_TOKEN_UPLOAD_PY.format(path=repr(plan.token_file_path)))}", stdin_data=token)
         # Close the marker race after the token write and immediately before process creation.
         assert_install_clear()
         out = ssh.exec(build_spawn_command(plan))

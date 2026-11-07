@@ -1,6 +1,6 @@
 import { useAui, useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import { type FC, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { type FC, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
@@ -239,7 +239,7 @@ const ActiveThreadTimeline: FC = () => {
     [cancelJump, indexedEntries, indexComplete, indexFailed, loadMore, railEntries]
   )
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const viewport = ownViewport(root.current)
 
     if (!viewport) {

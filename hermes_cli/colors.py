@@ -4,11 +4,37 @@ import os
 import sys
 
 
+def enable_windows_ansi(stream) -> bool | None:
+    """Enable ANSI on a Windows console; None means the stream has no console."""
+    import ctypes
+    from ctypes import wintypes
+    import msvcrt
+
+    try:
+        handle = msvcrt.get_osfhandle(stream.fileno())
+    except (OSError, ValueError, AttributeError):
+        return None
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.GetConsoleMode.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel.GetConsoleMode.restype = wintypes.BOOL
+    kernel.SetConsoleMode.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel.SetConsoleMode.restype = wintypes.BOOL
+    mode = wintypes.DWORD()
+    if not kernel.GetConsoleMode(handle, ctypes.byref(mode)):
+        return None
+    virtual_terminal_processing = 0x0004
+    if mode.value & virtual_terminal_processing:
+        return True
+    return bool(kernel.SetConsoleMode(handle, mode.value | virtual_terminal_processing))
+
+
 def should_use_color() -> bool:
     """Return True when colored output is appropriate."""
     if os.environ.get("NO_COLOR") is not None or os.environ.get("TERM") == "dumb":
         return False
-    return bool(sys.stdout.isatty())
+    if not sys.stdout.isatty():
+        return False
+    return bool(enable_windows_ansi(sys.stdout)) if sys.platform == "win32" else True
 
 
 class Colors:

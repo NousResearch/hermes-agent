@@ -2023,7 +2023,7 @@ def _resume_status_from_events(conn: sqlite3.Connection, task_id: str) -> str:
         "WHERE task_id = ? AND kind IN ("
         "'blocked', 'block_loop_detected', 'dependency_wait', 'gave_up', "
         "'unblocked', 'changes_requested', 'review_reopened', 'status', 'reclaimed', "
-        "'stale', 'timed_out', 'crashed', 'spawn_failed', 'rate_limited'"
+        "'stale', 'timed_out', 'crashed', 'spawn_failed', 'rate_limited', 'retry_hold_resolved'"
         ") ORDER BY id DESC LIMIT 1", (task_id,),
     ).fetchone()
     payload = _json_dict(_row_get(row, "payload"))
@@ -2056,6 +2056,10 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) 
         for row in todo_rows:
             task_id = row["id"]
             cur_status = row["status"]
+            if _retry_hold_exists(conn, task_id):
+                # A retry hold is a distinct durable authority; a stale/direct status
+                # change must not let automatic dependency recomputation release it.
+                continue
             if cur_status == "blocked" and _has_sticky_block(conn, task_id):
                 # Explicit human-intervention block; only ``unblock_task`` may exit it.
                 continue
@@ -2137,6 +2141,9 @@ def _claim_and_open_run(
          WHERE id = ?
            AND status = '{source_status}'
            AND claim_lock IS NULL
+           AND NOT EXISTS (
+               SELECT 1 FROM task_retry_holds h WHERE h.task_id = tasks.id
+           )
         """,
         (lock, expires, now, task_id),
     )
@@ -2661,6 +2668,8 @@ def complete_task(
     auditable event. Approving a card out of ``review`` stays exempt.
     """
     now = int(time.time())
+    if _retry_hold_exists(conn, task_id):
+        return False
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
     if not _parents_satisfied(conn, task_id):
         return False
@@ -2677,6 +2686,8 @@ def complete_task(
     with write_txn(conn):
         # Hard invariant even for human review approval: a parent may have
         # reopened while this task waited.
+        if _retry_hold_exists(conn, task_id):
+            return False
         if not _parents_satisfied(conn, task_id):
             return False
         if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
@@ -3143,6 +3154,8 @@ def block_task(
     if kind is not None and kind not in VALID_BLOCK_KINDS:
         raise ValueError(f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None")
     with write_txn(conn):
+        if _retry_hold_exists(conn, task_id):
+            return False
         cur_row = conn.execute(
             "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
@@ -3282,6 +3295,8 @@ def request_review(
     def _ret(ok: bool, reason: Optional[str] = None):
         return (ok, reason) if with_reason else ok
 
+    if _retry_hold_exists(conn, task_id):
+        return _ret(False, "task is protected by a protocol retry hold")
     summary = redact_review_value(summary)
     metadata = redact_review_value(metadata)
     # Declared (metadata["artifacts"]) and prose-referenced files
@@ -3294,6 +3309,8 @@ def request_review(
     staged_copies: list[Path] = []
     try:
         with write_txn(conn):
+            if _retry_hold_exists(conn, task_id):
+                return _ret(False, "task is protected by a protocol retry hold")
             if not _parents_satisfied(conn, task_id):
                 return _ret(False, "parent dependencies are not satisfied")
             trow = conn.execute(
@@ -3554,50 +3571,6 @@ def _landing_status_after_parents(conn: sqlite3.Connection, task_id: str) -> str
     return "ready" if _parents_satisfied(conn, task_id) else "todo"
 
 
-def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
-    """``blocked``/``scheduled`` -> its resumable phase (parent re-gated; ``review``
-    when that is where it left off), closing any leaked run first."""
-    now = int(time.time())
-    with write_txn(conn):
-        resume_status = (
-            _resume_status_from_events(conn, task_id)
-            if _task_status(conn, task_id) == "blocked"
-            else "ready"
-        )
-        _reclaim_dangling_run(
-            conn, task_id, statuses=("blocked", "scheduled"), now=now,
-            note="invariant recovery on unblock",
-        )
-        # Re-gate on parent completion before restoring the source phase.
-        landing_status = _landing_status_after_parents(conn, task_id)
-        new_status = (
-            "review"
-            if landing_status == "ready" and resume_status == "review"
-            else landing_status
-        )
-        # ``block_kind``/``block_recurrences`` deliberately survive the unblock:
-        # resetting them is the amnesia that let cron-unblock <-> re-block loop
-        # unbounded; only complete_task clears them. ``consecutive_failures``
-        # (the dispatcher's spawn/crash counter) IS reset — a deliberate unblock
-        # is a fresh start for the retry budget.
-        cur = conn.execute(
-            "UPDATE tasks SET status = ?, current_run_id = NULL, "
-            "consecutive_failures = 0, last_failure_error = NULL "
-            "WHERE id = ? AND status IN ('blocked', 'scheduled')", (new_status, task_id),
-        )
-        if cur.rowcount != 1:
-            return False
-        _append_event(
-            conn, task_id, "unblocked",
-            (
-                {"status": new_status, "resume_status": resume_status}
-                if new_status != "ready" or resume_status != "ready"
-                else None
-            ),
-        )
-        return True
-
-
 def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
     """``review`` -> ``ready``/``todo`` so the implementer re-runs on the new
     comments; restores the implementer from the ``review_requested`` event.
@@ -3807,6 +3780,8 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
         ).fetchone()
         if not row:
             return False
+        if _retry_hold_exists(conn, task_id):
+            return False
         was_running = row["status"] == "running"
         prev_pid, prev_lock, prev_started = row["worker_pid"], row["claim_lock"], row["worker_started_at"]
         cur = conn.execute(
@@ -3844,7 +3819,7 @@ def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
     """Hard-delete an ARCHIVED task (+ related rows); anything else must be
     archived first so data loss takes two deliberate actions."""
     with write_txn(conn):
-        if _task_status(conn, task_id) != "archived":
+        if _task_status(conn, task_id) != "archived" or _retry_hold_exists(conn, task_id):
             return False
         _delete_task_relations(conn, task_id)
         cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
@@ -3854,6 +3829,8 @@ def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
 def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
     """Hard-delete a task and its related rows in one txn; False when not found."""
     with write_txn(conn):
+        if _retry_hold_exists(conn, task_id):
+            return False
         cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         if cur.rowcount != 1:
             return False
@@ -4228,4 +4205,13 @@ from hermes_cli.kanban_db_dispatch import (
     _worker_alive,
     _worker_survived_termination,
     _worker_terminal_timeout_env,
+)
+from hermes_cli.kanban_retry_holds import (
+    _retry_hold_exists,
+    adopt_protocol_failure,
+    create_protocol_retry_hold,
+    get_retry_hold,
+    record_retry_run_provenance,
+    resolve_retry_hold,
+    unblock_task,
 )

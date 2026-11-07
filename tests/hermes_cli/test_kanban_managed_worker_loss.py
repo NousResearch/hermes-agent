@@ -26,6 +26,7 @@ from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_owner_recovery
+from hermes_cli import kanban_retry_holds as retry_holds
 
 NOW = int(time.time())
 HOST = kb._claimer_id().split(":", 1)[0]
@@ -190,7 +191,7 @@ def test_a_lost_worker_that_exited_cleanly_still_charges_the_breaker(board):
     kinds = [r[0] for r in board.conn.execute(
         "SELECT kind FROM task_events WHERE task_id='t_clean' AND run_id=?", (run_id,))]
     assert "protocol_violation" not in kinds and "crashed" in kinds
-    assert kbd._protocol_violation_streak(board.conn, "t_clean") == 0
+    assert retry_holds._protocol_violation_streak(board.conn, "t_clean") == 0
 
 
 def test_a_crash_whose_output_quotes_protocol_violation_is_not_one(board):
@@ -204,7 +205,7 @@ def test_a_crash_whose_output_quotes_protocol_violation_is_not_one(board):
     board.tick(failure_limit=5)
     run = board.run(run_id)
     assert run["outcome"] == "crashed" and "protocol violation" in run["error"]
-    assert kbd._protocol_violation_streak(board.conn, "t_quote") == 0
+    assert retry_holds._protocol_violation_streak(board.conn, "t_quote") == 0
 
 
 # --- A2: an elapsed claim lock is never "still running" after one tick ---------------------

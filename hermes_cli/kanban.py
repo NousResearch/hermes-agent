@@ -29,6 +29,7 @@ from hermes_cli.kanban_output import (
     _task_to_dict,
 )
 from hermes_cli.kanban_boards import _dispatch_boards
+from hermes_cli.kanban_holds_cli import cmd_holds
 from hermes_cli.kanban_ops import (
     _cmd_daemon, _kanban_config, _cmd_dispatch, _cmd_gc, _cmd_repair, _cmd_tail, _cmd_watch,
 )
@@ -225,7 +226,9 @@ def _is_delegated_child_cli_mutation(args: argparse.Namespace) -> bool:
     if action == "boards":
         if (getattr(args, "boards_action", None) or "list") not in _DELEGATED_CHILD_DENIED_BOARD_ACTIONS:
             return False
-    elif action not in _DELEGATED_CHILD_DENIED_ACTIONS:
+    elif action not in _DELEGATED_CHILD_DENIED_ACTIONS and not (
+        action == "holds" and getattr(args, "holds_action", None) == "resolve"
+    ):
         return False
     from agent.delegation_context import kanban_path_is_fenced
 
@@ -1028,8 +1031,14 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
     suffix = f": {reason}" if reason else ""
     with kbc.connect_closing() as conn:
         op = _commented(conn, reason, author, "UNBLOCK", lambda tid: kb.unblock_task(conn, tid))
-        return _bulk_apply(ids, op, lambda tid: f"Unblocked {tid}{suffix}",
-                           lambda tid: f"cannot unblock {tid} (not blocked/scheduled?)")
+
+        def failure_message(task_id: str) -> str:
+            if kb.get_retry_hold(conn, task_id) is not None:
+                return (f"cannot unblock {task_id}: active retry hold; use "
+                        "`hermes kanban holds resolve` with its current token")
+            return f"cannot unblock {task_id} (not blocked/scheduled?)"
+
+        return _bulk_apply(ids, op, lambda tid: f"Unblocked {tid}{suffix}", failure_message)
 
 
 def _cmd_request_review(args: argparse.Namespace) -> int:
@@ -1336,6 +1345,7 @@ _HANDLERS = {
     "assignees": _cmd_assignees, "notify-subscribe": _cmd_notify_subscribe,
     "notify-list": _cmd_notify_list, "notify-unsubscribe": _cmd_notify_unsubscribe,
     "context": _cmd_context, "specify": _cmd_specify, "decompose": _cmd_decompose,
+    "holds": cmd_holds,
     "gc": _cmd_gc,
 }
 

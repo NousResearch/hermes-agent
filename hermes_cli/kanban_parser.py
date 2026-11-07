@@ -332,6 +332,18 @@ _SPECS = [
         _reason("Optional reason/note — recorded as a comment before unblocking. Quote multi-word reasons."),
         _TASK_IDS,
     ], help="Return blocked/scheduled tasks to ready, or todo while parents remain open"),
+    _cmd("holds", children=("holds_action", [
+        _cmd("list", [_json_flag()], help="List active protocol retry holds"),
+        _cmd("resolve", [
+            _TASK_ID,
+            _arg("--action", choices=("resume", "retire"), required=True,
+                 help="Resume through the parent gate, or retire as a non-grade archive"),
+            _arg("--expected-hold-token", required=True, metavar="SHA256",
+                 help="Current snapshot token from `hermes kanban holds list`"),
+            _arg("--reason", required=True, metavar="CODE",
+                 help="Audited reason code (lowercase letters, digits, dot, underscore, hyphen, colon)"),
+        ], help="Resolve one hold with its current snapshot token"),
+    ]), help="Inspect and resolve fenced protocol retry holds"),
     _cmd("request-review", [
         _TASK_ID,
         _arg("--summary", help="What was implemented and how it was verified — shown to the reviewer."),

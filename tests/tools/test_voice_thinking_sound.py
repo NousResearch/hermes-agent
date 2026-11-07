@@ -126,7 +126,7 @@ class TestAudioOutputRefcount:
         _reset()
         seen = []
 
-        def fake_impl(path):
+        def fake_impl(path, *_):
             seen.append(vm.is_audio_output_active())
             return True
 

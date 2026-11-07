@@ -464,13 +464,7 @@ export class JsonRpcRequestChannel {
     }
   }
 
-  /**
-   * Route one inbound frame: a response settles its pending call, an
-   * `event` notification reaches `onEvent`, a server→client request reaches
-   * the `onRequest` handlers. Returns the decoded frame so the owner can act
-   * on it too (mirror it, record seq, …) or `null` when the text was not
-   * JSON or not a JSON object (`null`, a scalar).
-   */
+  /** Settle the ping or pending call this response answers; an unknown id is ignored. */
   private settleResponse(id: GatewayRequestId, frame: JsonRpcFrame): void {
     if (typeof id === 'string' && this.outstandingPings.delete(id)) {
       this.lastLivenessAt = Date.now()
@@ -500,6 +494,14 @@ export class JsonRpcRequestChannel {
     call.resolve(frame.result)
   }
 
+  /**
+   * Route one inbound frame: a response settles its pending call, an error
+   * frame with no request id reaches `onUncorrelatedError`, an `event`
+   * notification reaches `onEvent`, a server→client request reaches the
+   * `onRequest` handlers. Returns the decoded frame so the owner can act
+   * on it too (mirror it, record seq, …) or `null` when the text was not
+   * JSON or not a JSON object (`null`, a scalar).
+   */
   handleFrame(text: string): JsonRpcFrame | null {
     let frame: JsonRpcFrame
 

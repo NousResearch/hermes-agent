@@ -146,9 +146,7 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
         for task_id in list(_last_activity.keys()):
             # A workspace container is keyed by its digest, not the spawning task id: also keep it
             # while any process it hosts is still running (stopping it would kill that process).
-            if process_registry.has_active_processes(task_id) or (
-                    _is_workspace_key(task_id)
-                    and process_registry._any_running(lambda s, key=task_id: s.task_id == key)):
+            if process_registry.has_active_processes(task_id) or _hosts_running_process(process_registry, task_id):
                 _last_activity[task_id] = current_time
     except ImportError:
         pass
@@ -168,12 +166,33 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
     for task_id, env in envs_to_stop:
         if env is not None:
             _clear_file_ops_cache(task_id)
-            if _is_workspace_key(task_id) and callable(getattr(env, "stop_idle", None)):
-                # Persistent per-workspace container: stop it (state kept, restarted on next use)
-                # instead of leaving it running forever like the one profile container.
+            if _suspends_when_idle(env, task_id):
+                # Persistent per-workspace container or a hosted agent's sandbox: suspend it (state
+                # kept, resumed on next use) rather than destroy it, which only an explicit cleanup does.
                 _teardown_env(env, task_id, stop_idle=True)
             else:
                 _teardown_env(env, task_id)
+
+
+def _hosts_running_process(registry: Any, key: str) -> bool:
+    """Whether a still-running background process lives in the environment cached under *key*.
+    A workspace container is keyed by its digest and a hosted sandbox by its identity, not the
+    spawning task id, so ``has_active_processes`` (owner task ids) cannot see their processes:
+    stopping the environment would kill them."""
+    if _is_sandbox_key(key):
+        return registry._any_running(lambda s: s.sandbox_key == key)
+    return _is_workspace_key(key) and registry._any_running(lambda s: s.task_id == key)
+
+
+def _suspends_when_idle(env: Any, key: str) -> bool:
+    """A hosted sandbox is always suspended, never destroyed for idleness (``stop_idle`` is part of
+    the required hosted interface); a workspace container is when its backend can."""
+    return _is_sandbox_key(key) or (_is_workspace_key(key) and callable(getattr(env, "stop_idle", None)))
+
+
+def _is_sandbox_key(key: str) -> bool:
+    """A hosted agent's sandbox key (``tools.environments.sandbox_scope.SandboxIdentity.key``)."""
+    return str(key or "").startswith("sandbox:")
 
 
 def _is_workspace_key(key: str) -> bool:
@@ -183,9 +202,12 @@ def _is_workspace_key(key: str) -> bool:
 
 def get_active_env(task_id: str):
     """Return the active BaseEnvironment for *task_id*, or None."""
+    from tools.environments.sandbox_scope import admit_env, hosted_scope
     from tools.terminal_tool import _active_environments, _env_lock, _resolve_container_task_id
     lookup = _resolve_container_task_id(task_id)
     with _env_lock:
+        if hosted_scope() is not None:
+            return admit_env(_active_environments.get(lookup))
         return _active_environments.get(lookup) or _active_environments.get(task_id)
 
 
@@ -302,6 +324,14 @@ def cleanup_vm(task_id: str, *, force_remove: bool = False):
     directly, so persist-mode idle envs are likewise no-op'd; only the orphan
     reaper at next startup reclaims them.
     """
+    from tools.environments.sandbox_scope import current_sandbox_key
+    if sandbox := current_sandbox_key():
+        # A hosted agent's sandbox is shared by all its sessions and outlives each of them (the idle
+        # reaper and the backend's own suspend end it): a session's teardown releases nothing, and an
+        # explicit teardown reaches only this agent's sandbox, never an environment its task id names.
+        if not force_remove:
+            return
+        task_id = sandbox
     env = _unregister_env(task_id)
     _clear_file_ops_cache(task_id)
     if env is None:
@@ -318,8 +348,9 @@ def _evict_environment_for_task(task_id: Optional[str]) -> None:
     from tools.terminal_tool import (
         _active_environments, _env_lock, _last_activity, _resolve_container_task_id,
     )
+    from tools.environments.sandbox_scope import hosted_scope
     keys = {_resolve_container_task_id(task_id)}
-    if task_id:
+    if task_id and hosted_scope() is None:  # a hosted scope evicts only its own sandbox
         keys.add(task_id)
     evicted = []
     with _env_lock:

@@ -4,7 +4,8 @@ Everything funnels through :func:`resolve_image_source` so size and magic-byte c
 exactly once. Images are the default; video callers opt in via ``permitted=("video",)``.
 Security (GHSA-gpxw-6wxv-w3qq): under a non-local backend vision is confined like the file
 tools — host-read only inside a media cache (bind-mounted into the sandbox), anything else is
-exec-read *inside the sandbox*, so ``vision_analyze('/etc/passwd')`` never reads the host.
+exec-read *inside the sandbox*, so ``vision_analyze('/etc/passwd')`` never reads the host. In a
+hosted scope there are no host reads at all: every path is read in the agent's own sandbox.
 """
 from __future__ import annotations
 
@@ -176,7 +177,11 @@ async def _download_to_bytes(url: str) -> bytes:
 
 def _is_local_terminal_backend() -> bool:
     """True when the terminal backend runs directly on the host (keys off ``TERMINAL_ENV``, read
-    through the per-turn terminal scope so a routed multiplex profile sees ITS backend)."""
+    through the per-turn terminal scope so a routed multiplex profile sees ITS backend). Never in a
+    hosted scope: a hosted agent's media lives in its sandbox whatever backend is configured."""
+    from tools.environments.sandbox_scope import hosted_scope
+    if hosted_scope() is not None:
+        return False
     from tools.terminal_scope import terminal_env
     return terminal_env("TERMINAL_ENV", "local").strip().lower() in ("local", "")
 
@@ -199,8 +204,12 @@ def _permitted_host_read_target(p: Path, ctx: ResolveContext) -> Optional[Path]:
     """Host path to read, or ``None`` (caller exec-reads inside the sandbox instead).
 
     Local backend: any path. Non-local: only paths inside a media cache root (a
-    container-visible cache path is first translated back to its host mount).
+    container-visible cache path is first translated back to its host mount). Hosted scope: none —
+    the profile's media caches are not the agent's, so every path is read inside its sandbox.
     """
+    from tools.environments.sandbox_scope import hosted_scope
+    if hosted_scope() is not None:
+        return None
     if _is_local_terminal_backend():
         try:
             return p.resolve()

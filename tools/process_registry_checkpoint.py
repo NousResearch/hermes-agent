@@ -25,7 +25,9 @@ class ProcessCheckpointMixin:
             with self._lock:
                 entries = []
                 for s in self._running.values():
-                    if s.exited:
+                    # A hosted agent's process is not this host's to persist: its record (command,
+                    # cwd, owner) stays in memory, whoever triggers the write (scoped or not).
+                    if s.exited or s.sandbox_key:
                         continue
                     # Backfill the start time so recovery can detect PID recycling
                     # even for sessions spawned before this field existed.
@@ -136,7 +138,7 @@ class ProcessCheckpointMixin:
             fields.update(
                 command=entry.get("command", "unknown"),
                 owner_task_id=entry.get("owner_task_id", "") or entry.get("task_id", ""),
-                started_at=entry.get("started_at", time.time()))
+                started_at=entry.get("started_at", time.time()), sandbox_key=entry.get("sandbox_key", ""))
             # detached: no Popen handle, but can report status + kill; a worker spawn's output log
             # (and recorded exit) outlives its spawner, so tail it from the start.
             fields["output_log"] = log

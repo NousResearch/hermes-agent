@@ -699,7 +699,13 @@ def _dispatch_authorized_once(
         elif callback is not None:
             callback()
 
-    block_message, block_error_type = scope_block, "tool_scope_block"
+    # Deny-by-default for a hosted scope, before plugin hooks, guardrails or any executor: every
+    # sequential, concurrent and batched call reaches its executor (inline, memory provider, context
+    # engine, registry) only through here.
+    from tools.hosted_tool_policy import hosted_tool_refusal
+    block_message, block_error_type = hosted_tool_refusal(ref.name), "hosted_tool_refused"
+    if block_message is None:
+        block_message, block_error_type = scope_block, "tool_scope_block"
     if block_message is None:
         block_error_type = "plugin_block"
         resolve = lambda: _pre_tool_block(agent, ref)
@@ -774,6 +780,16 @@ def _run_agent_tool_execution_middleware(
 
     trace = middleware_trace if middleware_trace is not None else []
     state = _ManagedToolResult(result=None, args=function_args, middleware_trace=trace, blocked=False, dispatched=False)
+    from tools.hosted_tool_policy import hosted_tool_refusal
+    if hosted_tool_refusal(function_name) is not None:
+        # Refused in a hosted scope before Relay and every request/execution middleware: no
+        # host-side callback sees, rewrites or acts on a call that will not run.
+        state.dispatched = True
+        state.result = _dispatch_authorized_once(
+            agent, state, _ToolCallRef(function_name, function_args, effective_task_id, tool_call_id, trace),
+            execute=execute, scope_block=scope_block, display_index=display_index,
+            begin_execution=begin_execution, authorization_gate=authorization_gate)
+        return state
     dispatch_lock = threading.Lock()
 
     def _authorized_dispatch(final_args: dict[str, Any]) -> Any:

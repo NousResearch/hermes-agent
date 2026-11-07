@@ -47,6 +47,10 @@ def _result_paths():
 
 
 def save_completed_result(session) -> None:
+    """Retain *session*'s completion receipt under this profile's logs. A hosted agent's process
+    has none on this host: its command and output are the tenant's, kept in the live registry only."""
+    if session.sandbox_key:
+        return
     from agent.redact import redact_sensitive_text, redact_terminal_output
     from tools.process_registry import MAX_OUTPUT_CHARS
 
@@ -110,7 +114,8 @@ def load_completed_results(prefix: str = "") -> dict:
                 continue
             session = ProcessSession(
                 **{key: record[key] for key in _RESULT_FIELDS},
-                exited=True, output_buffer=record["output"],
+                # Receipts written before processes carried a sandbox are a local activity's.
+                sandbox_key=record.get("sandbox_key", ""), exited=True, output_buffer=record["output"],
             )
             session._completion_event.set()
             results[session.id] = session

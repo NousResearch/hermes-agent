@@ -211,7 +211,7 @@ import {
 } from './connection-registry'
 import type { RegistryConnection } from './connection-registry'
 import type { RosterProfileMetadata } from './connection-registry'
-import { removeSavedConnection } from './connection-registry-remove'
+import { forgetRemovedGlobalRoute, removeSavedConnection } from './connection-registry-remove'
 import { liveWindowState, overlayWindowState } from './connection-window-state'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
@@ -266,7 +266,7 @@ import {
 import { createFirstRunSetupGate } from './first-run-setup-gate'
 import { registerFsIpc } from './fs-ipc'
 import { directoryExists, fileExists, isGitCheckout } from './fs-probes'
-import { createGatewayConnectionsStore, readLegacyUserDataRegistry } from './gateway-connections-store'
+import { createDesktopGatewayConnectionsStore } from './gateway-connections-store'
 import { downloadViaTokenToFile as downloadViaNativeGatewayToFile } from './gateway-download-transport'
 import type {
   GatewayFileSaveContext,
@@ -1966,12 +1966,10 @@ const MAX_BOOTSTRAP_REPAIR_SOFT_ATTEMPTS = 3
 let connectionConfigCache = null
 let connectionConfigCacheMtime = null
 
-const gatewayConnectionsStore = createGatewayConnectionsStore({
+const gatewayConnectionsStore = createDesktopGatewayConnectionsStore({
   root: uiPreferencesRoot(HERMES_HOME),
   userData: app.getPath('userData'),
-  legacyRegistry: () =>
-    readLegacyUserDataRegistry(app.getPath('userData'), readDesktopConnectionConfig(), message => rememberLog(message)),
-  reconcile: registry => reconcileRegistryDrift(registry, readDesktopConnectionConfig()),
+  readV1Config: () => readDesktopConnectionConfig(),
   decrypt: secret => decryptDesktopSecret(secret),
   log: message => rememberLog(message)
 })
@@ -8438,6 +8436,21 @@ function writeDesktopConnectionConfig(config) {
 // Untyped as before: callers hand entries to looser route-source shapes.
 function readDesktopConnectionsRegistry(): any {
   return gatewayConnectionsStore.read()
+}
+
+// connection.json's app-global route outranks the list's primary at boot, so a
+// gateway removed from the list (by the Webapp, or by a build that left the route
+// behind) must leave connection.json too, or Desktop keeps dialing it.
+function forgetDesktopGlobalRouteIfRemoved() {
+  try {
+    forgetRemovedGlobalRoute(readDesktopConnectionsRegistry(), {
+      readConfig: readDesktopConnectionConfig,
+      writeConfig: writeDesktopConnectionConfig,
+      log: rememberLog
+    })
+  } catch (error) {
+    rememberLog(`[connections] could not reset a removed gateway's route: ${(error as Error).message}`)
+  }
 }
 
 function writeDesktopConnectionsRegistry(registry) {
@@ -15256,6 +15269,16 @@ ipcMain.handle('hermes:connection-config:save', async (_event, payload) => {
   const config = coerceDesktopConnectionConfig(payload)
   writeDesktopConnectionConfig(config)
 
+  // The saved list learns an app-global route when the user picks it, never on a
+  // later read: a read-time repair re-adds a gateway removed since (#142906).
+  if (!connectionScopeKey(payload?.profile)) {
+    const drift = reconcileRegistryDrift(readDesktopConnectionsRegistry(), config)
+
+    if (drift.changed) {
+      writeDesktopConnectionsRegistry(drift.registry)
+    }
+  }
+
   return sanitizeDesktopConnectionConfig(config, payload?.profile)
 })
 ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
@@ -16848,6 +16871,10 @@ registerMachineUiPreferences(HERMES_HOME)
 // Another writer (the Webapp) changed the shared list: same teardown as a local save/remove.
 gatewayConnectionsStore.watch({
   onRegistry: changes => {
+    if (changes.some(change => change.reason === 'removed')) {
+      forgetDesktopGlobalRouteIfRemoved()
+    }
+
     for (const change of changes) {
       if (change.reason !== 'saved') {
         void stopRegistryConnectionBackends(change.connectionId)
@@ -17617,6 +17644,8 @@ app.whenReady().then(() => {
   // Settings → Gateway. Must run before createWindow() and the first
   // connection resolution.
   migrateLegacyEncryptedSecretsOnce()
+  // After the store's one-time import: drop a stale route to a removed gateway.
+  forgetDesktopGlobalRouteIfRemoved()
 
   // Expose the renderer's accessibility tree to the OS (#118271, Windows
   // twin #92607): dictation tools that insert text through the accessibility

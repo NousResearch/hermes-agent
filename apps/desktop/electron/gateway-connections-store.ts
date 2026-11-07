@@ -34,7 +34,9 @@
  * merges that directory's registry (after the v1→v2 migration and the drift
  * reconcile, in memory) and its native-oauth-tokens.json into the store, by id
  * and then by the URL / SSH-target duplicate rule. An existing store is never
- * overwritten; the userData files are never written.
+ * overwritten; the userData files are never written. The import runs ONCE per
+ * directory: later reads never consult connection.json again, so a gateway
+ * removed from this list (here or in the Webapp) stays removed (#142906).
  */
 import { randomBytes } from 'node:crypto'
 import fs from 'node:fs'
@@ -84,10 +86,8 @@ export interface GatewayConnectionsStoreDeps {
   root: string
   /** Electron userData: where the pre-store connections.json / native-oauth-tokens.json live. */
   userData: string
-  /** The userData registry after main's v1→v2 migration and drift reconcile, computed in memory. */
+  /** The userData registry after main's v1→v2 migration and drift reconcile, computed in memory (import only). */
   legacyRegistry: () => ConnectionRegistry
-  /** The v1 connection.json, for the per-read drift reconcile main already runs. */
-  reconcile?: (registry: ConnectionRegistry) => { changed: boolean; registry: ConnectionRegistry }
   /** decryptDesktopSecret: '' when the envelope cannot be opened. */
   decrypt: (secret: unknown) => string
   log?: (message: string) => void
@@ -749,14 +749,7 @@ export function createGatewayConnectionsStore(deps: GatewayConnectionsStoreDeps)
       return importUserData()
     }
 
-    const registry = remember(normalizeRegistry(doc), revisionOf(doc))
-    const reconciled = deps.reconcile?.(registry)
-
-    if (reconciled?.changed) {
-      write(reconciled.registry)
-    }
-
-    return cache!
+    return remember(normalizeRegistry(doc), revisionOf(doc))
   }
 
   function read(): ConnectionRegistry {
@@ -942,4 +935,24 @@ export function createGatewayConnectionsStore(deps: GatewayConnectionsStoreDeps)
     nativeTokenIo,
     watch
   }
+}
+
+/**
+ * Desktop's store: the userData registry and connection.json feed the one-time
+ * import only. Nothing here reads connection.json after that import.
+ */
+export function createDesktopGatewayConnectionsStore(deps: {
+  root: string
+  userData: string
+  readV1Config: () => unknown
+  decrypt: (secret: unknown) => string
+  log?: (message: string) => void
+}): GatewayConnectionsStore {
+  return createGatewayConnectionsStore({
+    root: deps.root,
+    userData: deps.userData,
+    legacyRegistry: () => readLegacyUserDataRegistry(deps.userData, deps.readV1Config(), deps.log),
+    decrypt: deps.decrypt,
+    log: deps.log
+  })
 }

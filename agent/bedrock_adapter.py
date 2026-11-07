@@ -39,6 +39,11 @@ _BOTO_CONNECT_TIMEOUT_SECONDS = 60
 # Source objects serialize mint/expiry checks; the registry lock protects creation and client slots.
 _bedrock_cache_lock = threading.RLock()
 _bedrock_command_sources: dict[tuple[str, str], Any] = {}
+# Chain providers that read the launch process env, instance metadata or host-wide files instead
+# of the shared-config entry AWS_PROFILE names. A served profile whose entry has no credentials
+# would otherwise fall through to them and sign as the launch identity. (botocore already drops
+# ``env`` and the env half of web identity once a profile is set explicitly.)
+_AMBIENT_CREDENTIAL_PROVIDERS = ("env", "container-role", "iam-role", "ec2-credentials-file", "boto-config")
 
 # botocore session kwarg <- profile .env variable (the explicit sources of the default chain).
 _AWS_SCOPED_CREDENTIAL_VARS: tuple[tuple[str, str], ...] = (
@@ -175,7 +180,48 @@ def _scoped_boto3_session(bearer: str, kwargs: dict[str, str]):
         def get_scoped_config(self):
             return {} if frozen is not None else super().get_scoped_config()
 
-    return boto3.Session(botocore_session=ScopedSession(), **kwargs)
+    botocore_session = ScopedSession()
+    session = boto3.Session(botocore_session=botocore_session, **kwargs)
+    if frozen is None and kwargs.get("profile_name") and not kwargs.get("aws_access_key_id"):
+        resolver = botocore_session.get_component("credential_provider")
+        for method in _AMBIENT_CREDENTIAL_PROVIDERS:
+            resolver.remove(method)
+    return session
+
+
+def _signing_session():
+    """Fresh boto3 session per signed request (Mantle, AnthropicBedrock), so credentials are
+    re-resolved every call. Unscoped: the default chain. Served profile: only its own credentials."""
+    kwargs = scoped_aws_session_kwargs()
+    return _scoped_boto3_session("", kwargs) if kwargs else _require_boto3().Session()
+
+
+def sigv4_sign_httpx_request(request, region: str, service: str = "bedrock") -> None:
+    """SigV4-sign an httpx request in place with the active profile's AWS credentials."""
+    from botocore.auth import SigV4Auth
+    from botocore.awsrequest import AWSRequest
+    credentials = _signing_session().get_credentials()
+    if credentials is None:
+        raise RuntimeError(
+            "No AWS credentials available for Bedrock. "
+            "Configure AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, AWS_PROFILE, SSO, or an instance/task role."
+        )
+    # SigV4 must own Authorization (drop any SDK placeholder bearer). A proxy may strip
+    # ``connection``, so it stays out of the signed set.
+    headers = {str(k): str(v) for k, v in request.headers.items()
+               if str(k).lower() not in {"authorization", "x-amz-date", "x-amz-security-token", "connection"}}
+    aws_request = AWSRequest(method=request.method, url=str(request.url), data=request.read() or b"", headers=headers)
+    SigV4Auth(credentials.get_frozen_credentials(), service, region).add_auth(aws_request)
+    request.headers.update(dict(aws_request.headers.items()))
+
+
+def bedrock_runtime_base_url(region: str) -> str:
+    """Runtime URL for SDK-built clients: a served profile's own AWS_ENDPOINT_URL_BEDROCK_RUNTIME,
+    else the regional AWS host. Never the launch env's ANTHROPIC_BEDROCK_BASE_URL."""
+    from agent.secret_scope import current_secret_scope
+    scope = current_secret_scope()
+    endpoint = _scoped_bedrock_endpoint(scope, "bedrock-runtime", required=False) if scope is not None else None
+    return endpoint or f"https://bedrock-runtime.{region}.amazonaws.com"
 
 
 def _bedrock_command_token_source():
@@ -393,21 +439,7 @@ class BedrockOpenAISigV4Auth(httpx.Auth):
         self.service = service
 
     def auth_flow(self, request):  # pragma: no cover - exercised by live call
-        from botocore.auth import SigV4Auth
-        from botocore.awsrequest import AWSRequest
-        kwargs = scoped_aws_session_kwargs()
-        credentials = _require_boto3().Session(**kwargs).get_credentials()
-        if credentials is None:
-            raise RuntimeError(
-                "No AWS credentials available for Bedrock OpenAI Responses. "
-                "Configure AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, AWS_PROFILE, SSO, or an instance/task role."
-            )
-        # SigV4 must own Authorization: drop the SDK's placeholder bearer header.
-        headers = {str(k): str(v) for k, v in request.headers.items()
-                   if str(k).lower() not in {"authorization", "x-amz-date", "x-amz-security-token"}}
-        aws_request = AWSRequest(method=request.method, url=str(request.url), data=request.content or b"", headers=headers)
-        SigV4Auth(credentials.get_frozen_credentials(), self.service, self.region).add_auth(aws_request)
-        request.headers.update(dict(aws_request.headers.items()))
+        sigv4_sign_httpx_request(request, self.region, self.service)
         yield request
 
 

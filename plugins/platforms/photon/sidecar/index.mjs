@@ -333,7 +333,10 @@ const app = await Spectrum({
   projectId,
   projectSecret,
   providers: [imessage.config()],
-  options: { flattenGroups: true },
+  // Deliver a multi-part iMessage (text + photo + caption) WHOLE, as one `group`: flattened
+  // parts reached Python one by one, the text seconds before its still-downloading photo, so
+  // the agent answered the text alone. The adapter already folds a group into a single turn.
+  options: { flattenGroups: false },
   telemetry,
 });
 

@@ -513,6 +513,19 @@ FOOTGUNS: list[Footgun] = [
 ]
 
 
+def display_path(path: Path) -> str:
+    """Path for human output: repo-relative when possible, absolute otherwise.
+
+    Paths given explicitly on the command line may live outside the checkout
+    (``check-windows-footguns.py /elsewhere/file.py``), and ``relative_to``
+    raises ``ValueError`` for those.
+    """
+    try:
+        return path.relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        return str(path)
+
+
 def should_scan_file(path: Path) -> bool:
     """Return True if this file is in scope for the checker."""
     # Skip the excluded dirs
@@ -523,8 +536,13 @@ def should_scan_file(path: Path) -> bool:
     for suffix in EXCLUDED_SUFFIXES:
         if str(path).endswith(suffix):
             return False
-    # Skip self and docs that intentionally mention the patterns
-    rel = path.relative_to(REPO_ROOT).as_posix()
+    # Skip self and docs that intentionally mention the patterns. A path outside
+    # the repository has no repo-relative form and so cannot be an EXCLUDED_FILES
+    # entry — skip the lookup instead of raising.
+    try:
+        rel = path.relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        rel = None
     if rel in EXCLUDED_FILES:
         return False
     # Only scan text files (rough heuristic — .py, .md, .sh, .ps1, .yaml, etc.)
@@ -938,7 +956,7 @@ def main(argv: list[str]) -> int:
         files_scanned += 1
         matches = scan_file(path, FOOTGUNS)
         for lineno, line, fg in matches:
-            rel = path.relative_to(REPO_ROOT).as_posix()
+            rel = display_path(path)
             print(f"{rel}:{lineno}: [{fg.name}]")
             print(f"    {line.strip()}")
             print(f"    — {fg.message}")

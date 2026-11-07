@@ -54,6 +54,9 @@ function fixture(os) {
   writeFileSync(join(source, 'pnpm-workspace.yaml'), JSON.stringify({ packages: ['apps/desktop'], ...settings,
     allowBuilds: allow, supportedArchitectures: { os: [os] } }))
   execFileSync(pnpmCommand(), ['install', '--lockfile-only'], { cwd: source, env, stdio: 'pipe' })
+  // prepareNodeDependencies refuses a pnpm other than PM's pin (pm/lock.json): pin the one this test runs.
+  const pnpmVersion = execFileSync(pnpmCommand(), ['--version'], { cwd: source, env, encoding: 'utf8' }).trim()
+  json(join(source, 'pm/lock.json'), { schema: 1, packages: { pnpm: { version: pnpmVersion, artifacts: {} } } })
   return { source, env }
 }
 

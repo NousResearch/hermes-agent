@@ -342,11 +342,15 @@ class GeminiStreamer(StreamingTTSProvider):
         base_url = normalize_gemini_base_url(
             self.section.get("base_url") or get_env_value("GEMINI_BASE_URL") or DEFAULT_GEMINI_TTS_BASE_URL,
         )
+        if voice.startswith("voice_") or voice.startswith("voicekey_"):
+            voice_config = {"voice": voice}
+        else:
+            voice_config = {"prebuiltVoiceConfig": {"voiceName": voice}}
         payload = {
             "contents": [{"parts": [{"text": text}]}],
             "generationConfig": {
                 "responseModalities": ["AUDIO"],
-                "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice}}}}}
+                "speechConfig": {"voiceConfig": voice_config}}}
         url = f"{base_url}/models/{model}:streamGenerateContent"
 
         def _sse_chunks() -> Iterator[bytes]:

@@ -119,14 +119,29 @@ def test_retirement_rechecks_after_acquiring_the_write_lock(cjk_db):
     assert _cjk_residue(cjk_db) == []
 
 
-def test_a_full_temporary_volume_is_not_reported_as_damage(cjk_db, monkeypatch):
-    """The probe judges a copy of the store; a copy that does not fit says nothing about the store itself."""
+
+def test_a_full_temporary_volume_is_neither_healthy_nor_damage(cjk_db, monkeypatch, capsys):
+    """The probe judges a copy of the store; a copy that does not fit says nothing either way about the store."""
+    import argparse
+
+    import hermes_state
+    from hermes_cli import sessions_cmd
+
     before = _store_snapshot(cjk_db)
 
     def full_volume(*args, **kwargs):
         raise sqlite3.OperationalError("database or disk is full")
 
     monkeypatch.setattr(repair, "_copy_database_snapshot", full_volume)
-    assert repair._db_opens_cleanly(cjk_db) is None
-    assert _store_snapshot(cjk_db) == before
+    assert isinstance(repair._db_opens_cleanly(cjk_db), repair.HealthCheckUnavailable)
 
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", cjk_db)
+    for check_only in (True, False):
+        assert sessions_cmd._cmd_repair(argparse.Namespace(check_only=check_only, no_backup=True)) == 1
+        assert "Could not check" in capsys.readouterr().out
+
+    monkeypatch.setattr(repair, "_live_writer_holds_db", lambda _path: False)
+    report = repair.repair_state_db_schema(cjk_db, backup=False)
+    assert not report["repaired"] and report["strategy"] is None
+    assert "could not check state.db before repair" in report["error"]
+    assert _store_snapshot(cjk_db) == before

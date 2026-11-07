@@ -768,10 +768,14 @@ def state_db_has_structural_damage(db_path: Path) -> bool:
         itertools.chain.from_iterable(line.splitlines() for line in lines), master_rows)
 
 
+class HealthCheckUnavailable(str):
+    """A ``_db_opens_cleanly`` reason meaning the probe could not run, not that the store is damaged: callers
+    must neither report the store healthy nor route it to repair."""
+
+
 def _retired_cjk_snapshot_health(db_path: Path, conn: sqlite3.Connection) -> Optional[str]:
     """``_db_opens_cleanly`` for a store that still holds the retired CJK index, judged on a disposable copy
-    with the index retired. A copy that cannot be made (a full temporary volume) is not damage to the store:
-    the next open retires the index in place, so the probe reports nothing rather than routing it to repair."""
+    with the index retired. A copy that does not fit the temporary volume yields ``HealthCheckUnavailable``."""
     from hermes_state_fts import drop_retired_cjk_index
 
     try:
@@ -786,8 +790,7 @@ def _retired_cjk_snapshot_health(db_path: Path, conn: sqlite3.Connection) -> Opt
             raise
         reason = str(exc)
     if reason is not None and is_disk_full_error(reason):
-        logger.warning("state.db health check skipped (%s): the retired CJK index is removed at the next open", reason)
-        return None
+        return HealthCheckUnavailable(f"no room in {tempfile.gettempdir()} for the probe copy ({reason})")
     return reason
 
 
@@ -1030,9 +1033,12 @@ def _repair_state_db_schema_locked(
         return _repair_skip(report, "aborted", f"could not remove a stale repair snapshot before probing state.db: {cleanup_error}")
     # Re-probe under the lock: a process we queued behind may have just repaired the file; redoing surgery
     # would undo it (the repair/re-corrupt cascade).
-    if _db_opens_cleanly(db_path) is None:
+    reason = _db_opens_cleanly(db_path)
+    if reason is None:
         report["repaired"], report["strategy"] = True, "already_healthy"
         return report
+    if isinstance(reason, HealthCheckUnavailable):
+        return _repair_skip(report, "aborted", f"could not check state.db before repair: {reason}")
     if backup:
         bpath, backup_error = _backup_db_file(db_path)
         report["backup_path"] = str(bpath) if bpath else None

@@ -185,6 +185,8 @@ def kanban_command(args: argparse.Namespace) -> int:
         # "no such table: tasks" on first use from a fresh HERMES_HOME.
         try:
             kb.init_db()
+        except ValueError as exc:  # a fenced worker's --board naming another board (#142435)
+            return _err(f"kanban: {exc}")
         except Exception as exc:
             return _err(f"kanban: could not initialize database: {exc}")
 

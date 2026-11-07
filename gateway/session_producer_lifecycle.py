@@ -4,8 +4,9 @@ A chat message an adapter hands to ``handle_message`` is bracketed by
 ``BasePlatformAdapter._process_message_background``: the typing refresh, ``on_processing_start``,
 and ``on_processing_complete`` once its reply was sent. A producer delivery is only committed at
 ingress (off the transport reader, acknowledged on the commit) and the authority's drain runs it, so
-no adapter task brackets it. The executor does, for those admissions only (a messaging admission's
-own adapter task already brackets it):
+no adapter task brackets it; neither does one a messaging follow-up sent while its chat was busy
+(``dispatch_shared_busy``). The executor does, for those admissions only (any other messaging
+admission's own adapter task already brackets it):
 
 - opened when the admission starts executing, not when it commits: a delivery queued behind a
   running turn is acknowledged when it runs, as the in-band queue's are (``run_turn_followup_ack``);

@@ -144,6 +144,22 @@ def substitute_api_content(api_msg: dict[str, Any]) -> Optional[str]:
     return sidecar
 
 
+def merge_user_text_content(first: dict[str, Any], second: dict[str, Any]) -> bool:
+    """Merge adjacent plain-text user rows. Return whether their survivor's stored text changed."""
+    first_text, second_text = first.get("content", ""), second.get("content", "")
+    content = "\n\n".join(filter(None, (first_text, second_text)))
+    first_sidecar = extract_api_content_sidecar(first)
+    second_sidecar = extract_api_content_sidecar(second)
+    first["content"] = content
+    drop_stale_api_content(first)
+    if first_sidecar or second_sidecar:
+        # Each row's wire text may include an injection absent from the visible transcript.
+        wire = "\n\n".join(filter(None, (first_sidecar or first_text, second_sidecar or second_text)))
+        if wire != content:
+            first["api_content"] = wire
+    return content != first_text or first_sidecar != first.get("api_content")
+
+
 def drop_stale_api_content(msg: dict[str, Any]) -> None:
     """Drop the ``api_content`` sidecar from a message whose content was rewritten
     (replaying it would resend what the rewrite removed; cost is one cache miss)."""

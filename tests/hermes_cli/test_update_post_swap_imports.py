@@ -20,6 +20,8 @@ import sys
 
 import pytest
 
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX supervisors are faked with sh scripts")
+
 REPO = Path(__file__).resolve().parents[2]
 
 _DRIVER = r'''

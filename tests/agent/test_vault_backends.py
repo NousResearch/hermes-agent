@@ -194,6 +194,29 @@ def test_bitwarden_multi_uri_item_binds_every_saved_web_origin():
                                               "https://eu.account.amazon.com"]
 
 
+def test_bitwarden_wrapped_uri_is_unwrapped_and_bound():
+    """A URI pasted as chat-style wrapper text (@url:`https://host`) must still bind its
+    origin; a malformed wrapper or a plain non-URL must still be skipped."""
+    backend = BitwardenLoginBackend({"enabled": True})
+    items_json = json.dumps([{
+        "id": "wrapped", "type": 1, "name": "Luxury Escapes", "creationDate": "2026-01-01T00:00:00Z",
+        "login": {"username": "jane@example.com", "uris": [
+            {"uri": "@url:`https://luxuryescapes.com`", "match": None},
+        ]},
+    }, {
+        "id": "bad", "type": 1, "name": "Broken", "creationDate": "2026-01-01T00:00:00Z",
+        "login": {"username": "jane@example.com", "uris": [
+            {"uri": "@url:`not a url`"},
+        ]},
+    }])
+    with patch.object(BitwardenLoginBackend, "is_unlocked", return_value=True), \
+         patch.object(backend, "_run", return_value=items_json):
+        metas = backend.list_items()
+    assert [m.label for m in metas] == ["Luxury Escapes"]
+    assert metas[0].origin == "https://luxuryescapes.com"
+    assert list(metas[0].allowed_origins) == ["https://luxuryescapes.com"]
+
+
 def test_onepassword_multi_url_item_binds_every_saved_web_origin():
     """A 1Password login with several websites binds all of them; the app URI is kept
     out of the fill set and a single-URL item is unchanged."""

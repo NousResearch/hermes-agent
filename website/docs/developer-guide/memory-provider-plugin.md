@@ -145,8 +145,11 @@ It also receives `previous_message`: the text of the person's last message befor
 from the transcript Hermes holds (`""` on a first turn, or when that message was image-only). Known
 runtime rows in the user role are skipped (continue nudges, task-list snapshots, single
 background-process completion and watch-match notices, compaction summaries, mid-turn `/steer`
-messages), a gateway timestamp prefix is removed, and the value is secret-scrubbed like `message`. It
-is best-effort: other runtime notices a gateway replays after a restart (a cron delivery, a process
+messages), a gateway timestamp prefix is removed, and the value is secret-scrubbed like `message`.
+On a turn with an image, Hermes appends recalled memory and plugin or gateway notes to the message as
+text; `previous_message` is the turn's own text, without them. It
+is best-effort: an image turn stored by an older Hermes still carries its plugin and gateway notes, and
+other runtime notices a gateway replays after a restart (a cron delivery, a process
 heartbeat, a watch-disabled or batched-completion notice) can still come through. A process
 that resumed a session (`hermes chat --resume`, a gateway after a restart) never ran the previous
 turn's end, so a provider that prepares recall in `queue_prefetch()` can redo that work from it, even

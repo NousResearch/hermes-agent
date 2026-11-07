@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from agent.message_metadata import TYPED_ASK
 from agent.prompt_builder import steer_user_row
 from agent.turn_context import (
     PreflightCompressionTimedOut,
@@ -320,6 +321,8 @@ def _compaction_returning_history(history_for):
          None, _PREVIOUS),
         (_PRIOR_TURN + [{"role": "user", "content": _carrier()}, {"role": "assistant", "content": "Done."}],
          None, "Round-trip the ShapeIndex."),
+        (_PRIOR_TURN + [{"role": "user", "content": _carrier("[Thu 2026-11-05 10:00:00 IST] Round-trip the ShapeIndex.")},
+                        {"role": "assistant", "content": "Done."}], None, "Round-trip the ShapeIndex."),
         (_PRIOR_TURN + [{"role": "user", "content": _carrier(ask="")}], None, _PREVIOUS),
         (_PRIOR_TURN + [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]},
                         {"role": "assistant", "content": "Done."}], None, ""),
@@ -332,10 +335,19 @@ def _compaction_returning_history(history_for):
                         {"role": "assistant", "content": "Ok."}], None, _PREVIOUS),
         (_PRIOR_TURN + [{"role": "user", "content": [{"type": "text", "text": "\n\n" + steer_user_row("use zstd")["content"]}]},
                         {"role": "assistant", "content": "Ok."}], None, _PREVIOUS),
+        # A multimodal turn's injected context is flattened into the stored row with the ask.
+        ([{"role": "user", "content": f"{_PREVIOUS}\n[screenshot]\n\nPLUGIN NOTE", "display_metadata": {TYPED_ASK: _PREVIOUS}},
+          {"role": "assistant", "content": "Done."}], None, _PREVIOUS),
+        # With gateway timestamps on, the live text part (and so the stamp) carries the rendered prefix.
+        ([{"role": "user", "content": "x", "display_metadata": {TYPED_ASK: f"[Thu 2026-11-05 10:00:00 IST] {_PREVIOUS}"}},
+          {"role": "assistant", "content": "Done."}], None, _PREVIOUS),
+        ([{"role": "user", "content": f"{_PREVIOUS}\n[screenshot]\n<memory-context>\nlikes tea\n</memory-context>"},
+          {"role": "assistant", "content": "Done."}], None, f"{_PREVIOUS}\n[screenshot]"),
     ],
     ids=["no-compaction", "in-place-compaction", "rotation", "first-turn", "multimodal", "skips-scaffolding",
-         "skips-flagged-scaffolding", "compaction-carrier-ask", "skips-bare-summary", "image-only-stops-search",
-         "strips-gateway-timestamp", "skips-replayed-steer", "skips-timestamped-steer", "skips-steer-text-part"],
+         "skips-flagged-scaffolding", "compaction-carrier-ask", "carrier-ask-timestamp", "skips-bare-summary", "image-only-stops-search",
+         "strips-gateway-timestamp", "skips-replayed-steer", "skips-timestamped-steer", "skips-steer-text-part",
+         "typed-ask-stamp", "timestamped-stamp", "unstamped-row-drops-memory-fence"],
 )
 def test_providers_get_what_the_person_last_asked(history, compaction, expected, monkeypatch):
     """A resumed process must tell providers what the last turn asked: a live process may have keyed
@@ -348,6 +360,106 @@ def test_providers_get_what_the_person_last_asked(history, compaction, expected,
     _build(agent, user_message="Now decode it back.", conversation_history=history)
 
     assert mm.on_turn_start.call_args.kwargs["previous_message"] == expected
+
+
+@pytest.mark.parametrize("summary_role, force_user_leading", [("user", True), ("user", False)])
+def test_compaction_around_a_multimodal_turn_keeps_the_typed_ask(summary_role, force_user_leading):
+    """Compaction can wrap the turn before its context is appended (turn-start) or after (a later
+    pass); either way the stamp names the person's ask, never the summary or the injected notes."""
+    from agent.context_compressor import ContextCompressor
+    from agent.turn_context import (
+        _previous_user_message_text, _stamp_typed_ask_once, append_notes_to_multimodal_content,
+    )
+
+    compressor = ContextCompressor.__new__(ContextCompressor)
+    compressor._summary_has_user_turn = True
+    image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+
+    def turn():
+        return {"role": "user", "content": [{"type": "text", "text": "what is this"}, image]}
+
+    def inject(row):
+        _stamp_typed_ask_once(types.SimpleNamespace(), row)
+        append_notes_to_multimodal_content(row["content"], "PLUGIN NOTE")
+
+    def wrap(row):
+        compressor._merge_summary_into_tail_row(row, "[CONTEXT COMPACTION] old work", summary_role, force_user_leading)
+
+    before, after = turn(), turn()
+    wrap(before), inject(before)
+    inject(after), wrap(after)
+    for row in (before, after):
+        assert _previous_user_message_text([row, {"role": "assistant", "content": "x"}]) == "what is this"
+
+
+def test_gateway_notes_on_a_multimodal_turn_stamp_the_persisted_ask():
+    """Gateway notes land on the list before any memory context, and a list persist override (TUI
+    image turns) drops API-only parts the stamp must not keep either."""
+    from types import SimpleNamespace
+    from agent.turn_context import _merge_gateway_notes, _previous_user_message_text
+
+    image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+    for override, expected in ((None, "what is this"), ([{"type": "text", "text": "what is this"}, image], "what is this")):
+        row = {"role": "user", "content": [{"type": "text", "text": "what is this"},
+                                           {"type": "text", "text": "[barge-in note]"}, image] if override else
+               [{"type": "text", "text": "what is this"}, image]}
+        agent = SimpleNamespace(_gateway_turn_context_notes="GATEWAY NOTE", _persist_user_message_override=override)
+        _merge_gateway_notes(agent, [row], 0, "")
+
+        assert row["content"][-1] == {"type": "text", "text": "GATEWAY NOTE"}
+        assert _previous_user_message_text([row, {"role": "assistant", "content": "x"}]) == expected
+
+
+def test_a_todo_snapshot_folded_onto_the_turn_stays_out_of_the_typed_ask():
+    """Turn-start compaction folds the active task list onto the tail turn before context is appended;
+    a later compaction strips that block from the row, so a stamp holding it would outlive it."""
+    from tools.todo_tool import TODO_INJECTION_HEADER
+    from agent.turn_context import _stamp_typed_ask_once
+
+    image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+    row = {"role": "user", "content": [{"type": "text", "text": f"what is this\n\n{TODO_INJECTION_HEADER}\n- [ ] a"}, image]}
+    _stamp_typed_ask_once(types.SimpleNamespace(), row)
+
+    assert row["display_metadata"] == {TYPED_ASK: "what is this"}
+
+
+@pytest.mark.parametrize("vetoed", [False, True], ids=["context-backfill", "veto"])
+def test_a_row_rewrite_keeps_a_reaction_another_writer_added(tmp_path, vetoed):
+    """A TUI submit row exists before the prologue, so a reaction can land on it while the agent builds;
+    the in-place rewrite (stamp backfill or veto) must merge its metadata, not replace the row's."""
+    import threading
+    from hermes_state import SessionDB
+    from agent.turn_context import _append_multimodal_context, _withhold_blocked_prompt
+
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("s", "cli")
+    image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+    row = {"role": "user", "content": [{"type": "text", "text": "secret plan"}, image]}
+    row["_row_id"] = db.append_message("s", "user", "secret plan")
+    db.set_message_reaction("s", row["_row_id"], "👍")
+    agent = types.SimpleNamespace(_session_db=db, session_id="s", _session_persist_lock=threading.Lock(),
+                                  _persist_user_message_override=None, _last_compaction_in_place=False)
+    _append_multimodal_context(agent, row, "", "PLUGIN NOTE", preflight_compressed=False)
+    if vetoed:
+        _withhold_blocked_prompt(agent, row, row["content"])
+
+    stored = db.get_messages_as_conversation("s")[-1]["display_metadata"]
+    assert [r["emoji"] for r in stored[db.REACTIONS_METADATA_KEY]] == ["👍"]
+    assert (TYPED_ASK in stored) is not vetoed  # a veto removes the backfilled stamp from the row too
+
+
+def test_a_vetoed_turn_drops_its_typed_ask_stamp():
+    """A gateway note can stamp a multimodal turn before a ``pre_llm_call`` hook vetoes it; the vetoed
+    text must not survive in the stamp, where ``previous_message`` would hand it to memory providers."""
+    from types import SimpleNamespace
+    from agent.turn_context import _previous_user_message_text, _withhold_blocked_prompt
+
+    row = {"role": "user", "content": [{"type": "text", "text": "secret plan"}],
+           "display_metadata": {TYPED_ASK: "secret plan"}}
+    _withhold_blocked_prompt(SimpleNamespace(_session_db=None), row, row["content"])
+
+    assert TYPED_ASK not in row["display_metadata"]
+    assert "secret plan" not in _previous_user_message_text([row, {"role": "assistant", "content": "x"}])
 
 
 def test_turn_without_author_clears_previous_bot_author():

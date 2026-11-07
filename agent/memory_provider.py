@@ -182,9 +182,10 @@ class MemoryProvider(ABC):
         one): a shared session carries several participants, so a provider keying durable state on identity must read
         it per turn. ``previous_message`` is the secret-scrubbed text of the person's last message before this turn
         ("" on a first turn or an image-only one), from the transcript Hermes holds, so a resumed process can redo
-        what a live one queued at the end of that turn. Best-effort: known runtime user-role rows and /steer messages
+        what a live one queued at the end of that turn. Context Hermes appended to an image turn (recalled memory,
+        plugin and gateway notes) is not part of it. Best-effort: known runtime user-role rows and /steer messages
         are skipped, but a notice a gateway replays after a restart (cron delivery, process heartbeat, watch-disabled
-        notice) can come through."""
+        notice) can come through, and so can the notes on an image turn an older Hermes stored."""
 
     def identity_signature(self) -> dict[str, Any]:
         """Identity-mapping values that must bust a cached gateway agent when they change (writer identity, alias

@@ -1212,6 +1212,7 @@ Any service with an OpenAI-compatible API works. Some popular options:
 | [DeepSeek](https://deepseek.com) | `https://api.deepseek.com/v1` | DeepSeek models |
 | [Fireworks AI](https://fireworks.ai) | `https://api.fireworks.ai/inference/v1` | Fast open model hosting |
 | [GMI Cloud](https://www.gmicloud.ai/) | `https://api.gmi-serving.com/v1` | Managed OpenAI-compatible inference |
+| [JZSTOKEN](https://jzstoken.com) | `https://jzstoken.com/api/v1` | Multiple model families through one OpenAI-compatible API key |
 | [Actual Computer](https://actual.inc) | `https://api.actual.inc/v1` | Private relay to your own cluster; local daemon at `http://127.0.0.1:8080/v1` |
 | [Cerebras](https://cerebras.ai) | `https://api.cerebras.ai/v1` | Wafer-scale chip inference |
 | [Mistral AI](https://mistral.ai) | `https://api.mistral.ai/v1` | Mistral models |
@@ -1229,6 +1230,43 @@ model:
   base_url: https://api.together.xyz/v1
   api_key: your-together-key
 ```
+
+#### JZSTOKEN
+
+JZSTOKEN provides OpenAI-compatible Chat Completions access to models from
+OpenAI, Anthropic, Google, Kimi, DeepSeek, and other families through one API
+key. It is another custom endpoint, so no provider plugin or Hermes code change
+is required.
+
+Create a Standard key on the [JZSTOKEN API Keys
+page](https://jzstoken.com/dashboard/keys), then add it to `~/.hermes/.env`:
+
+```bash
+JZSTOKEN_API_KEY=sk-your-key-here
+```
+
+Configure a named custom provider in `~/.hermes/config.yaml`:
+
+```yaml
+providers:
+  jzstoken:
+    api: https://jzstoken.com/api/v1
+    key_env: JZSTOKEN_API_KEY
+    transport: chat_completions
+    default_model: claude-sonnet-5
+    models:
+      claude-sonnet-5:
+        context_length: 1000000
+
+model:
+  default: claude-sonnet-5
+  provider: custom:jzstoken
+```
+
+Use model IDs from the [JZSTOKEN model catalog](https://jzstoken.com/model-pricing),
+or inspect the models available to your key with
+`GET https://jzstoken.com/api/v1/models`. A key created for `jzs-max-3.0` only
+exposes that model; use a Standard key for other models.
 
 ---
 

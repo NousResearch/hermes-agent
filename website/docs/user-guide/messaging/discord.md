@@ -545,7 +545,8 @@ When enabled, the bot recovers missed channel messages on each `@mention`. With 
 Behavior by surface:
 
 - **Server channels** (with `require_mention: true`): backfill scans the channel since the bot's last response. Useful when other participants posted while the bot wasn't addressed.
-- **Threads**: backfill scans the thread only — Discord's `channel.history()` on a thread returns only that thread's messages, not the parent channel. This is the right scope because threads are usually self-contained conversations.
+- **Threads**: backfill scans the thread only — Discord's `channel.history()` on a thread returns only that thread's messages, not the parent channel. This is the right scope because threads are usually self-contained conversations. On the first scan of a thread opened from a channel message (the bot has not spoken in it yet), the message the thread was opened from is added at the top, marked `(thread starter)`, since it lives in the parent channel.
+- **Forwards and embeds**: a forwarded message is read from its forwarded copy and marked `[Forwarded]`; a message whose only content is an embed (bot alerts, CI notices) is read from the embed's title, description, fields and footer. The same applies to the message you reply to, so replying to a forward or an alert quotes its text.
 - **DMs**: skipped. Every DM message triggers the bot, so the session transcript is already complete — there's no mention gap to fill.
 - **Free-response channels** and **bot's own auto-created threads**: skipped for the same reason — no mention gating means no gap.
 

@@ -607,8 +607,14 @@ def _commit_resolved(commits: list[_Commit], file_ops: Any) -> PatchResult:
     lsp_blocks: list[str] = []
     lint_results: dict[str, dict] = {}
     writes: list[tuple] = []
+    written_sha: dict[str, Optional[str]] = {}
     for commit in commits:
         op = commit.op
+        key = _overlay_key(op.file_path, file_ops)
+        if commit.read_sha is None and written_sha.get(key):
+            # A later Update of a file this patch already wrote was planned on the earlier
+            # op's bytes; its baseline is what that earlier write produced.
+            commit = commit._replace(read_sha=written_sha[key])
         try:
             outcome, verb, bucket = _commit_one(commit, file_ops)
             ok, payload, lsp, lint, write, op_notes = outcome
@@ -620,6 +626,8 @@ def _commit_resolved(commits: list[_Commit], file_ops: Any) -> PatchResult:
             code = 'INTERNAL_ERROR' if ok is None else _io_code(payload)
             errors.append(f"{prefix} {op.file_path}: {code}")
             continue
+        if write and op.operation is OperationType.UPDATE:
+            written_sha[key] = write[2]
         is_move = op.operation is OperationType.MOVE
         files[bucket].append(f"{op.file_path} -> {op.new_path}" if is_move else op.file_path)
         all_diffs.append(payload)

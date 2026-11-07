@@ -587,6 +587,25 @@ def _correct(pattern: str, replacement: str, content: str):
 
 
 
+def _carry_indent(pieces: list[Piece], site: Site, search: list[str], added: list[str]) -> list[str]:
+    """Normalized whole-line match: copy the matched source indent onto the added lines.
+
+    Only when no search line carries leading whitespace and every nonblank matched line
+    has the same nonempty indent. Anything else writes the added lines verbatim.
+    """
+
+    if any(line[:1].isspace() for line in search):
+        return added
+    indents = {
+        piece.text[: len(piece.text) - len(piece.text.lstrip())]
+        for piece in pieces[site.start:site.end]
+        if piece.text.strip()
+    }
+    if len(indents) != 1 or not (indent := next(iter(indents))):
+        return added
+    return [indent + line if line.strip() else line for line in added]
+
+
 def apply_whole(pieces, site, hunk, added, eol, consumed, ids):
     out = list(pieces[:site.start])
     idx = site.start
@@ -855,6 +874,8 @@ def plan_hunks(content: str, hunks: list, state: PlannerState | None = None,
             )
             strategies.append("exact")
         else:
+            if decision.tier != "exact":
+                added = _carry_indent(pieces, decision.site, search, added)
             pieces = apply_whole(pieces, decision.site, hunk, added, eol, consumed, ids)
             strategies.append("exact" if decision.tier == "exact" else "whitespace_normalized")
         live = True

@@ -125,6 +125,10 @@ class HardwareBudget:
     # their prompt caches. Windows charges every GPU allocation to commit (RAM it can see plus
     # the page file), so this is the real ceiling there. None everywhere else.
     commit_room_bytes: int | None = None
+    # A unified-memory budget built from the OS's RAM figures (Apple Silicon, Linux and Windows
+    # integrated GPUs), so free RAM is what a launch can have. False for NVIDIA unified-memory
+    # devices, whose pool sits partly behind a carve-out that RAM readings cannot see.
+    ram_backed: bool = False
 
 
 def as_loaded(profile: ModelProfile, budget: HardwareBudget) -> ModelProfile:

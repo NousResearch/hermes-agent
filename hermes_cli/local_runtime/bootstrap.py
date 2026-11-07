@@ -307,7 +307,8 @@ def refit_idle_presets(sup) -> bool:
     if live is None:
         return False
     last = sup._refit_usable
-    if last is not None and abs(live.usable_vram_bytes - last) < _REFIT_STEP_BYTES:
+    step = _UMA_REFIT_STEP_BYTES if live.ram_backed else _REFIT_STEP_BYTES
+    if last is not None and abs(live.usable_vram_bytes - last) < step:
         return False
     text = render_presets(plan_presets(models_dir(), capacity, live=live, residents=sup.models_max,
                                        engine_tag=_SERVING_ENGINE.tag if _SERVING_ENGINE is not None else None))
@@ -331,6 +332,9 @@ def refit_idle_presets(sup) -> bool:
 # Smaller changes in free memory don't move a window by a ladder rung; skipping them keeps the
 # idle loop from re-reading every model header each pass.
 _REFIT_STEP_BYTES = 256 << 20
+# Free RAM drifts by hundreds of MiB between 30 s readings (page cache, compressor) where a card's
+# free memory holds still; a wider step keeps that drift from re-planning every pass.
+_UMA_REFIT_STEP_BYTES = 1 << 30
 
 
 def _any_holds_memory(sup) -> bool:

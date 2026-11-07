@@ -190,11 +190,23 @@ def fit_to_free_memory(plan: LaunchPlan, profile: ModelProfile, live: HardwareBu
     placement, and so does a card too busy to hold even the floor: moving weights to the CPU on a
     live reading is how a launch once pinned a fitting model to the CPU, because the reading still
     counted memory the outgoing server was about to free.
+
+    Memory budgeted from system RAM (``live.ram_backed``) has no CPU to fall back to: the weights
+    and the floor either fit in the RAM free now or the load fails. There a live refusal stands,
+    and the model gets no launch policy until the idle re-plan sees enough free memory.
     """
     decision = plan.decision
     if not isinstance(decision, WindowDecision) or decision.spilled:
         return plan
     now = plan_launch(profile, live, mtp_capable=mtp_capable, fixed_overhead=fixed_overhead)
+    if live.ram_backed and isinstance(now.decision, PhysicsRefusal):
+        gib = 1 << 30
+        refused = now.decision
+        return LaunchPlan(replace(refused, message=(
+            f"{profile.name}: needs ~{refused.needed_bytes / gib:.1f} GiB at the "
+            f"{FLOOR // 1024}K floor but only ~{refused.available_bytes / gib:.1f} GiB of memory "
+            "is free now; close other apps or pick a smaller model")),
+            now.mtp_prefill, now.overhead_bytes, now.profile)
     if isinstance(now.decision, WindowDecision) and not now.decision.spilled:
         if now.decision.window >= decision.window:
             return plan

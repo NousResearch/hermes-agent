@@ -28,13 +28,14 @@ def _ok():
 
 
 def run_ladder(error, *, provider="openrouter", retries=1, is_async=False, fallback_error=None, pool=None, call=None,
-               **call_kw):
+               client=None, **call_kw):
     """``call_llm`` / ``async_call_llm`` on a client whose requests raise ``error`` (a list: one per request).
     ``pool``: a real ``CredentialPool`` that recovery rotates (its ``sk-primary`` key sent the request).
     ``call``: the caller that reaches the ladder instead of a bare ``call_llm`` (a compression, say)."""
     create = AsyncMock if is_async else MagicMock
-    primary = MagicMock(base_url="https://openrouter.ai/api/v1", api_key="sk-primary")
-    primary.chat.completions.create = create(side_effect=error)
+    primary = client or MagicMock(base_url="https://openrouter.ai/api/v1", api_key="sk-primary")
+    if client is None:
+        primary.chat.completions.create = create(side_effect=error)
     fallback = MagicMock(base_url="https://api.example.com/v1")
     fallback.chat.completions.create = create(side_effect=fallback_error, return_value=_ok())
     marks, rotations, refreshes = [], [], []
@@ -66,7 +67,7 @@ def run_ladder(error, *, provider="openrouter", retries=1, is_async=False, fallb
                 result = call_llm(messages=_MESSAGES, **call_kw)
         except Exception as exc:  # the outcome under test
             result = exc
-    return SimpleNamespace(attempts=primary.chat.completions.create.call_count,
+    return SimpleNamespace(attempts=getattr(primary.chat.completions.create, "call_count", None),
                            fallback_attempts=fallback.chat.completions.create.call_count,
                            fell_back=fallback.chat.completions.create.call_count > 0,
                            unhealthy=bool(marks), rotated=bool(rotations), refreshed=refreshes, result=result)
@@ -522,3 +523,36 @@ def test_stream_watchdog_timeout_is_not_judged_by_the_error_it_cut_off():
     verdict = policy.classify_attempt(caught.value, "openrouter")
     assert policy.fallback_label(policy.Failure(caught.value, verdict)) == "request timed out"
     assert not policy.auth_refresh(verdict)
+
+
+
+_POLICY_REFUSALS = [
+    (403, {"error": {"code": "data_policy_denied", "message": "No eligible data-policy route for max_tokens=16"}}),
+    (400, {"error": {"message": "Your request was flagged by our safety system. Unsupported parameter: 'temperature'"}}),
+    None,  # an interrupted task
+]
+
+
+@pytest.mark.parametrize("stream", [False, True], ids=["plain", "streamed"])
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize("refusal", _POLICY_REFUSALS, ids=["data-policy-denied", "content-policy", "interrupted"])
+def test_a_refusal_no_resend_can_change_is_sent_once(refusal, is_async, stream):
+    """No parameter strip or non-streaming resend re-asks after a policy refusal or a cancelled task."""
+    sent = []
+
+    def handle(request):
+        sent.append(request)
+        if refusal is None:
+            raise InterruptedError("auxiliary stream interrupted")
+        return httpx.Response(refusal[0], json=refusal[1], request=request)
+
+    sdk_client, http = (openai.AsyncOpenAI, httpx.AsyncClient) if is_async else (openai.OpenAI, httpx.Client)
+    client = sdk_client(api_key="sk", base_url="https://openrouter.ai/api/v1", max_retries=0,
+                        http_client=http(transport=httpx.MockTransport(handle)))
+    if refusal is None:  # the SDK would wrap it as a connection error: raise it as the stream guard does
+        client.chat.completions.create = (AsyncMock if is_async else MagicMock)(
+            side_effect=lambda **kw: handle(None))
+    with patch("agent.auxiliary_client._aux_progress_active", return_value=stream):
+        outcome = run_ladder(None, provider="nous", is_async=is_async, client=client,
+                             max_tokens=16, temperature=0.3)
+    assert (len(sent), outcome.fell_back) == (1, False), outcome.result

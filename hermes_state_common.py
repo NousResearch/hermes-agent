@@ -375,6 +375,19 @@ def launch_stub_filter_sql(db) -> str:
     return "s.message_count > 0"
 
 
+def tui_history_filter_sql(db) -> str:
+    """A terminal's reserved identity is a draft until input is admitted or the user keeps it.
+
+    Keep named/pinned/archived chats and lineage segments; an empty compression root can still
+    represent a populated continuation. Do not trust counters alone on older imported stores.
+    """
+    return (
+        "(s.source != 'tui' OR s.parent_session_id IS NOT NULL OR s.end_reason = 'compression' "
+        "OR NULLIF(TRIM(s.title), '') IS NOT NULL OR s.pinned = 1 OR s.archived = 1 "
+        "OR EXISTS (SELECT 1 FROM messages draft_message WHERE draft_message.session_id = s.id) "
+        f"OR {launch_stub_filter_sql(db)})")
+
+
 def _source_match_clause(sources, local_created_sources=None) -> tuple[str, list]:
     """``sessions s`` source predicate. With ``local_created_sources``, a ``source='local'`` row
     matches only when ``created_source`` is one of those surfaces; the placeholder ``'unknown'``

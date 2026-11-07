@@ -834,6 +834,25 @@ class TestScheduleKnobToolSurface:
         assert created["success"] is False
         assert "timezone" in created["error"].lower()
 
+    def test_list_and_slash_list_show_the_pinned_zone(self):
+        """``cronjob list`` (the agent's view) and ``/cron list`` (chat/TUI) must say which zone
+        a pinned schedule is read in; ``0 9 * * 1-5`` alone reads as the user's 09:00."""
+        from hermes_cli.cli_cron_lines import cron_list_lines
+
+        cronjob(action="create", prompt="pinned", schedule="0 9 * * 1-5", name="pinned",
+                timezone="America/New_York")
+        cronjob(action="create", prompt="local", schedule="0 7 * * *", name="local")
+        listed = {j["name"]: j for j in json.loads(cronjob(action="list"))["jobs"]}
+        assert listed["pinned"]["timezone"] == "America/New_York"
+        assert "timezone" not in listed["local"]
+        text = "\n".join(cron_list_lines())
+        pinned, local = (block for block in text.split("ID: ")[1:]
+                         if "Name: pinned" in block or "Name: local" in block)
+        if "Name: local" in pinned:
+            pinned, local = local, pinned
+        assert "America/New_York" in pinned, pinned
+        assert "America/New_York" not in local, local
+
     def test_grace_zero_is_stored_not_dropped(self):
         cronjob(action="create", prompt="x", schedule="0 9 * * *", grace_minutes=0)
         assert self._stored()["grace_minutes"] == 0

@@ -89,6 +89,16 @@ class TestResolveDisplaySetting:
         assert resolve_display_setting(config, "whatsapp", "failed_turn_notice") is False
         assert resolve_display_setting(config, "telegram", "busy_ack_enabled") is True
 
+    def test_global_quiet_notice_settings_apply_to_every_platform(self):
+        """Global notice switches remain the fallback when a platform has no override."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"busy_ack_enabled": False, "failed_turn_notice": False}}
+
+        for platform in ("telegram", "whatsapp"):
+            assert resolve_display_setting(config, platform, "busy_ack_enabled") is False
+            assert resolve_display_setting(config, platform, "failed_turn_notice") is False
+
 # ---------------------------------------------------------------------------
 # Backward compatibility: tool_progress_overrides
 # ---------------------------------------------------------------------------

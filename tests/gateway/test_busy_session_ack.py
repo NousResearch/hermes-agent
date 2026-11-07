@@ -225,6 +225,27 @@ class TestBusySessionAck:
         adapter._send_with_retry.assert_not_awaited()
         assert runner._session_state(session_key).turn.busy_ack_ts == 0
 
+    @pytest.mark.asyncio
+    async def test_global_busy_ack_opt_out_still_interrupts_the_running_agent(self, monkeypatch):
+        """Global display quieting hides the ack without changing interrupt-mode behavior."""
+        import gateway.run as _gr
+
+        monkeypatch.delenv("HERMES_GATEWAY_BUSY_ACK_ENABLED", raising=False)
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {"display": {"busy_ack_enabled": False}})
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+        event = _make_event(text="please stop this")
+        session_key = build_session_key(event.source)
+        agent = MagicMock()
+        runner.adapters[event.source.platform] = adapter
+        runner._running_agents[session_key] = agent
+
+        assert await runner._handle_active_session_busy_message(event, session_key) is True
+
+        agent.interrupt.assert_called_once_with("please stop this")
+        adapter._send_with_retry.assert_not_awaited()
+
 
     @pytest.mark.asyncio
     async def test_steer_mode_calls_agent_steer_no_interrupt_no_queue(self, monkeypatch):

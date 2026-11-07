@@ -345,12 +345,29 @@ class GatewayTurnPersistenceMixin:
     def _hmwa_apply_failed_turn_notice(
         self, response, agent_result, source, agent_failed_early, is_context_overflow_failure,
     ):
-        """Add or suppress outbound failure copy without changing transcript persistence."""
+        """Add failure copy, or retain only model content for a quiet failed turn."""
         if not (agent_failed_early and not is_context_overflow_failure and automatic_notices_allowed(source)):
             return response
         if self._hmwa_failed_turn_notice_enabled(source):
             return self._hmwa_add_failed_turn_notice(response, self._hmwa_failed_turn_notice(agent_result))
-        return ""
+        return self._hmwa_failed_turn_partial_response(agent_result)
+
+    @staticmethod
+    def _hmwa_failed_turn_partial_response(agent_result):
+        """Return current-turn assistant text, never a gateway/provider failure envelope."""
+        if not agent_result.get("partial"):
+            return None
+        from gateway.media_repair import _current_turn_messages
+
+        messages = agent_result.get("messages", []) or []
+        current_turn = _current_turn_messages(messages, agent_result.get("history_offset", 0))
+        assistant_content = [
+            str(message.get("content") or "").strip()
+            for message in current_turn
+            if message.get("role") == "assistant" and not message.get("tool_calls")
+            and str(message.get("content") or "").strip()
+        ]
+        return "\n\n".join(assistant_content) or None
 
     async def _hmwa_close_failed_turn(self, session_id, notice):
         """Append the gateway-owned assistant boundary iff the durable tail is open (a user row, or the
@@ -806,14 +823,14 @@ class GatewayTurnPersistenceMixin:
             # The session's own route key is gone or changed: /retry repeats it, /new is the way out.
             from agent.turn_failure_copy import launch_credentials_copy
             reply = record_unexecuted_failure(launch_credentials_copy(e), 'launch_credentials_unavailable')
-            return reply if self._hmwa_failed_turn_notice_enabled(source) else None
+            return reply if source.platform == Platform.LOCAL or self._hmwa_failed_turn_notice_enabled(source) else None
         # A local client (CLI, TUI, Desktop) is the operator at this host: its result carries the
         # real cause, so its details line is not the chat apology with the log pointer cut off.
         local_error = f"{type(e).__name__}: {e}"[:500] if source.platform == Platform.LOCAL else None
         reply = record_unexecuted_failure(self._hmwa_add_failed_turn_notice(
             t("gateway.errors.generic_failed_with_hint", hint=status_hint), PARTIAL_FAILED_TURN_NOTICE,
         ), error=local_error)
-        return reply if self._hmwa_failed_turn_notice_enabled(source) else None
+        return reply if source.platform == Platform.LOCAL or self._hmwa_failed_turn_notice_enabled(source) else None
 
     def _hmwa_discard_stale_result(self, source, _quick_key, run_generation):
         """A newer run generation superseded this turn: drop its deferred post-delivery callback."""

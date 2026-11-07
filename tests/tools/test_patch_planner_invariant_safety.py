@@ -6,9 +6,9 @@ writes nothing, an unnamed file is never written, a named-file success is only
 the unique expected bytes, and diagnostics do not quote source or hint text.
 They do not choose a hint site or assume a hint window matched.
 
-Each test is one invariant or one defect class. An xfail raises
-``_KnownPlannerDefect`` only for the shape observed on this baseline, so a
-different failure stays a real error. Expected bytes are hand-computed.
+Each test is one invariant or one defect class. The known baseline shape
+fails as ``_KnownPlannerDefect``; it is not an xfail. A different failure
+stays a real error. Expected bytes are hand-computed.
 """
 
 import pytest
@@ -18,19 +18,8 @@ from tools.patch_parser import apply_v4a_operations, parse_v4a_patch
 
 NBSP = "\u00a0"
 IDEOGRAPHIC_SPACE = "\u3000"
-_FIXED = "fixed in t_6e12e276"
-
-
 class _KnownPlannerDefect(AssertionError):
     """The pinned baseline shape, and nothing else."""
-
-
-def _xfail(shape):
-    return pytest.mark.xfail(
-        strict=True,
-        raises=_KnownPlannerDefect,
-        reason=f"known V4A defect {shape}, {_FIXED}",
-    )
 
 
 class MemoryFiles:
@@ -196,7 +185,6 @@ def test_refusal_atomicity_cross_file_miss():
     _require_refusal(result, store, source, "cross-file-miss")
 
 
-@_xfail("partial-write-false-noop")
 def test_refusal_atomicity_partial_write_false_noop():
     """A swallowed later hunk must not keep an earlier edit."""
     source = {"f.py": "value=1\nkeep = hostish_d\n"}
@@ -223,7 +211,6 @@ def test_extra_write_is_not_classified_as_known_false_noop(monkeypatch):
         test_refusal_atomicity_partial_write_false_noop()
 
 
-@_xfail("cross-file-false-noop")
 def test_refusal_atomicity_cross_file_false_noop():
     """A swallowed hunk in one file must not allow another file to be written."""
     source = {"a.py": "value=1\nkeep = hostish_d\n", "b.py": "old\n"}
@@ -272,33 +259,28 @@ def test_unique_replacement_applies_exact_bytes():
     assert result.no_change is False
 
 
-@_xfail("substring-prefix-write")
 def test_no_false_success_substring_prefix_write():
     """``value = 10`` is not a successful match for ``value = 1``."""
     _prefix_false_success("value = 10\n", "substring-prefix-write")
 
 
-@_xfail("normalized-space-prefix-write")
 def test_no_false_success_normalized_space_prefix_write():
     """A spaced ``value = 10`` line is not a match for ``value = 1``."""
     _prefix_false_success("value  =  10\n", "normalized-space-prefix-write")
 
 
-@_xfail("nbsp-normalized-prefix-write")
 def test_no_false_success_nbsp_prefix_write():
     """NBSP in a longer token is not an ASCII ``value = 1`` match."""
     raw = f"value{NBSP}={NBSP}10\n"
     _prefix_false_success(raw, "nbsp-normalized-prefix-write")
 
 
-@_xfail("ideographic-space-prefix-write")
 def test_no_false_success_ideographic_space_prefix_write():
     """An ideographic space is not an ASCII ``value = 1`` match."""
     raw = f"value{IDEOGRAPHIC_SPACE}={IDEOGRAPHIC_SPACE}10\n"
     _prefix_false_success(raw, "ideographic-space-prefix-write")
 
 
-@_xfail("false-noop-swallows-refusal")
 def test_no_false_success_false_noop_swallows_refusal():
     """A replacement that already exists must not hide a missing search."""
     source = {"f.py": "keep = hostish_d\n"}
@@ -343,7 +325,6 @@ def test_eol_preserved_per_file():
     assert store.writes == [("a.py", "new\n"), ("b.py", "new\r\n")]
 
 
-@_xfail("crlf-context-window")
 def test_eol_preserved_when_hunk_has_context():
     """Context lines in a CRLF hunk must not strip CR from that window."""
     source = {"f.py": "a = 1\r\nb = 2\r\nc = 3\r\n"}
@@ -358,7 +339,6 @@ def test_eol_preserved_when_hunk_has_context():
     pytest.fail("unrelated disagreement for crlf-context-window")
 
 
-@_xfail("crlf-multiline-replacement")
 def test_eol_preserved_inside_multiline_replacement():
     """Every line of a multi-line replacement keeps CR."""
     source = {"f.py": "foo\r\nbar\r\n"}
@@ -371,7 +351,6 @@ def test_eol_preserved_inside_multiline_replacement():
     pytest.fail("unrelated disagreement for crlf-multiline-replacement")
 
 
-@_xfail("crlf-addition-only")
 def test_eol_preserved_on_addition_only():
     """An EOF insertion in a CRLF file uses that file's ending."""
     source = {"f.py": "first\r\n"}
@@ -491,7 +470,6 @@ def test_hinted_update_does_not_write_unnamed_file():
 # --- named defect classes outside the four safety invariants ---------------
 
 
-@_xfail("blank-delete-keeps-line")
 def test_defect_blank_delete_keeps_line():
     """Deleting a non-blank line removes that pair, including its ending."""
     source = {"f.py": "a\nold\nb\n"}
@@ -510,7 +488,6 @@ def test_defect_blank_delete_keeps_line():
     pytest.fail("unrelated disagreement for blank-delete-keeps-line")
 
 
-@_xfail("empty-search")
 def test_defect_empty_search_refuses_unique_blank():
     """A unique blank line is a deletion, not an empty-search refusal."""
     source = {"f.py": "a\n\nb\n"}
@@ -527,7 +504,6 @@ def test_defect_empty_search_refuses_unique_blank():
     pytest.fail("unrelated disagreement for empty-search")
 
 
-@_xfail("exact-tier-lost-to-substring")
 def test_defect_exact_tier_lost_to_substring():
     """A unique exact line wins over a longer substring decoy."""
     source = {"f.py": "value = 10\nvalue = 1\n"}

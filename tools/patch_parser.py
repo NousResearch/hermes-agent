@@ -6,7 +6,6 @@
 import contextlib
 import difflib
 import inspect
-import itertools
 import ntpath
 import posixpath
 import re
@@ -129,315 +128,8 @@ def _count_occurrences(text: str, pattern: str) -> int:
     return sum(1 for i in range(len(text) + 1) if text.startswith(pattern, i))
 
 
-def _split_hunk(hunk: Hunk) -> tuple[list[str], list[str]]:
-    """``(search_lines, replace_lines)``: context+removed vs context+added."""
-    return ([l.content for l in hunk.lines if l.prefix != '+'],
-            [l.content for l in hunk.lines if l.prefix != '-'])
-
-
-def _no_match_hint(error: Optional[str], search_pattern: str, content: str) -> str:
-    """Offer nearby line numbers without echoing potentially secret source text."""
-    with contextlib.suppress(Exception):
-        from tools.fuzzy_match import format_no_match_hint
-        hint = format_no_match_hint(error, 0, search_pattern, content)
-        lines = dict.fromkeys(re.findall(r"(?m)^\s*(\d+)\| ", hint))
-        if lines:
-            return "\n\nSimilar sections near lines " + ", ".join(lines) + "; read the file for context."
-    return ""
-
-
-def _hint_ambiguity(content: str, hint: str, tail: str = "") -> tuple[int, str]:
-    """(occurrences, error) for an addition-only hunk's context hint; error is '' when unique."""
-    n = _count_occurrences(content, hint)
-    return n, f"context hint is ambiguous ({n} occurrences){tail}" if n > 1 else ""
-
-
-# codex seek_sequence tiers: a hunk's lines match exactly, then ignoring trailing whitespace,
-# then ignoring all surrounding whitespace.
-_LINE_TIERS: tuple[Callable[[str], str], ...] = (lambda line: line, str.rstrip, str.strip)
-_HINT_WINDOW_BEFORE, _HINT_WINDOW_AFTER = 500, 2000  # chars around an @@ hint @@ it narrows to
-
-
-def _line_spans(content: str, search_lines: list[str]) -> list[list[tuple[int, int]]]:
-    """Per tier, every ``(start, end)`` char span whose lines equal ``search_lines``. The caller
-    picks the tier inside each scope it searches, so an exact match elsewhere cannot hide a
-    whitespace-equivalent one in the scope the patch's order points at."""
-    lines = content.split('\n')
-    starts = list(itertools.accumulate((len(line) + 1 for line in lines[:-1]), initial=0))
-    n = len(search_lines)
-    tiers = []
-    for tier in _LINE_TIERS:
-        wanted = [tier(line) for line in search_lines]
-        tiers.append([(starts[i], starts[i + n - 1] + len(lines[i + n - 1]))
-                      for i in range(len(lines) - n + 1)
-                      if [tier(line) for line in lines[i:i + n]] == wanted])
-    return tiers
-
-
-def _positions(content: str, needle: str) -> list[int]:
-    """Start of every (overlapping) occurrence of ``needle``."""
-    return [m.start() for m in re.finditer(f"(?={re.escape(needle)})", content)] if needle else []
-
-
-def _overlaps(a: tuple[int, int], b: tuple[int, int]) -> bool:
-    return a[0] < b[1] and b[0] < a[1]
-
-
-def _hint_windows(content: str, hint: Optional[str]) -> list[tuple[int, int]]:
-    """The window around EVERY occurrence of an @@ hint @@ (a repeated hint proves nothing)."""
-    return [(max(0, pos - _HINT_WINDOW_BEFORE), min(len(content), pos + _HINT_WINDOW_AFTER))
-            for pos in _positions(content, hint or "")]
-
-
-def _distinct(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
-    """One span per physical site: spans that overlap are the same site seen twice."""
-    sites: list[tuple[int, int]] = []
-    for span in spans:
-        if not any(_overlaps(span, site) for site in sites):
-            sites.append(span)
-    return sites
-
-
-Span = tuple[int, int]
-
-
-def _edit_ranges(content: str, span: Span, hunk: Hunk) -> list[Span]:
-    """The char ranges of ``span`` a hunk would replace (its '-' lines). Its context lines are
-    current content: text an earlier hunk wrote may anchor a later hunk, only replacing it is
-    refused. A span that is not line-aligned with the hunk counts whole; a hunk that removes
-    nothing (a context-only anchor) replaces nothing, so it has an empty range at the span."""
-    removed = [line.prefix == '-' for line in hunk.lines if line.prefix != '+']
-    parts = content[span[0]:span[1]].split('\n')
-    if len(parts) != len(removed):
-        return [span]
-    ranges, pos = [], span[0]
-    for part, gone in zip(parts, removed):
-        if gone:
-            ranges.append((pos, max(pos + len(part), pos + 1)))
-        pos += len(part) + 1
-    return ranges or [(span[0], span[0])]
-
-
-def _unwritten(content: str, span: Span, hunk: Hunk, written: Iterable[Span]) -> bool:
-    """True when what ``hunk`` would replace at ``span`` is not text an earlier hunk wrote."""
-    return not any(_overlaps(r, w) for r in _edit_ranges(content, span, hunk) if r[0] < r[1] for w in written)
-
-
-def _normalized_sites(content: str, pattern: str, free: Callable[[Span], bool]) -> list[Span]:
-    """Every site ``content`` holds under ANY non-similarity strategy of the fuzzy chain
-    (the chain itself stops at its first matching strategy, so an exact site would hide a
-    whitespace-normalized one), one per physical site."""
-    from tools.fuzzy_match import SIMILARITY_STRATEGIES, STRATEGIES
-    found = [span for name, find in STRATEGIES if name not in SIMILARITY_STRATEGIES
-             for span in find(content, pattern)]
-    return [s for s in _distinct(sorted(found)) if free(s)]
-
-
-def _fuzzy_sites(content: str, pattern: str, lo: int,
-                 free: Callable[[Span], bool]) -> tuple[list[Span], bool]:
-    """``(spans, similar)``: what the fuzzy chain's first matching strategy finds in
-    ``content[lo:]`` (outside text this patch already wrote), and whether that strategy only
-    measures similarity: a block a similarity strategy finds after the cursor is only a
-    competitor for an exact earlier site, never proof that the hunk points past it."""
-    from tools.fuzzy_match import SIMILARITY_STRATEGIES, STRATEGIES
-    for name, find in STRATEGIES:
-        if spans := find(content[lo:], pattern):
-            return ([s for s in ((lo + a, lo + b) for a, b in spans) if free(s)],
-                    name in SIMILARITY_STRATEGIES)
-    return [], False
-
-
-def _hint_pick(content: str, hunk: Hunk,
-               sites: Callable[[int, int], list[Span]]) -> tuple[list[Span], Optional[Span]]:
-    """``(windows, site)``: the windows around every occurrence of the @@ hint @@, and the one
-    site they all agree on (None when the hint is absent, names no site, or names several)."""
-    windows = _hint_windows(content, hunk.context_hint)
-    picks = [sites(lo, hi) for lo, hi in windows]
-    agreed = _distinct([p[0] for p in picks if p]) if all(len(p) <= 1 for p in picks) else []
-    return windows, agreed[0] if len(agreed) == 1 else None
-
-
-def _select_span(content: str, pattern: str, hunk: Hunk, cursor: int, *, ordered: bool,
-                 written: tuple[Span, ...] = (), successive: bool = False,
-                 removed: tuple[str, ...] = ()) -> tuple[Optional[Span], int, Optional[str]]:
-    """``(span, candidates, conflict)``: the one source site this hunk may edit, else
-    ``(None, candidates, conflict)``.
-
-    A site is a whole-line match under the first tier that matches inside the scope searched,
-    or a raw substring hit elsewhere (a raw hit overlapping a line match is that same site), so
-    neither normalization nor whole-line matching hides a competing site. Text an earlier hunk
-    of this patch wrote (``written``) is never a site. Precedence: a unique @@ hint @@ site
-    first (position in the patch never overrides it; one behind the cursor while another site
-    follows it is a conflict); then the scope after the previous hunk, across the whole matcher
-    chain before any earlier site; then order the patch states (the first of several without
-    a literal hint, or a run of identical hunks), else exactly one site. An inconclusive hint
-    cannot make an unrelated later hunk silently select its first candidate."""
-    free = lambda span: _unwritten(content, span, hunk, written)
-    tiers = [[s for s in tier if free(s)] for tier in _line_spans(content, pattern.split('\n'))]
-    raw = [s for pos in _positions(content, pattern) if free(s := (pos, pos + len(pattern)))]
-
-    if not any(tiers) and any(_consumed(line, removed) for line in pattern.split('\n') if line.strip()):
-        candidates = raw or _normalized_sites(content, pattern, free)
-        if any(content[content.rfind('\n', 0, start) + 1:start].strip() for start, _end in candidates):
-            return None, len(candidates), "its search text was consumed by an earlier hunk"
-
-    norm: list[Span] = []
-
-    def sites(lo: int, hi: int) -> list[Span]:
-        # A site is in scope when what it replaces is: its leading context may lie before ``lo``.
-        inside = lambda span: lo <= _edit_ranges(content, span, hunk)[0][0] and span[1] <= hi
-        lines = next((found for tier in tiers if (found := [s for s in tier if inside(s)])), [])
-        extra = [r for r in raw + norm if inside(r) and not any(_overlaps(r, line) for line in lines)]
-        return sorted(lines + _distinct(sorted(extra)))
-
-    if not any(tiers) and not raw:  # no literal site: the fuzzy chain decides
-        return None, 0, None
-    # Inside a bounded scope (after the previous hunk, around an @@ hint @@) a whole-line site
-    # must not shadow a site only a normalizing strategy finds, so those count there too.
-    if pattern and (cursor or _hint_windows(content, hunk.context_hint)):
-        norm = _normalized_sites(content, pattern, free)
-    whole = sites(0, len(content))
-    after = sites(cursor, len(content)) if cursor else whole
-    if cursor and not after:  # the rest of the file may still hold a normalized-only site
-        fuzzy, similar = _fuzzy_sites(content, pattern, cursor, free)
-        whole, after = (sorted(whole + fuzzy), []) if similar else (whole, fuzzy)
-    windows, hinted = _hint_pick(content, hunk, sites)
-    hint = hunk.context_hint or ''
-    hint_positions = _positions(content, hint)
-    if hint_positions and all(any(_overlaps((pos, pos + len(hint)), w) for w in written)
-                              for pos in hint_positions) and any(
-            _consumed(line, removed) for line in pattern.split('\n') if line.strip()):
-        return None, 1, "its @@ hint overlaps text an earlier hunk wrote"
-    if hinted:
-        ranges = _edit_ranges(content, hinted, hunk)
-        behind = ranges[0][0] < cursor and not (ranges == [hinted] and hinted[0] < cursor < hinted[1])
-        if cursor and behind and any(not _overlaps(hinted, site) for site in after):
-            return None, len(after) + 1, ("its @@ hint targets a site before "
-                                          "the previous hunk while another site follows it")
-        return hinted, 1, None
-    if windows and not successive:
-        hinted_sites = _distinct(sorted(s for lo, hi in windows for s in sites(lo, hi)))
-        if len(hinted_sites) > 1:
-            return None, len(hinted_sites), None
-        if cursor and not hinted_sites and after:
-            return None, len(after), "its @@ hint selects no site while another site follows the previous hunk"
-    if windows and ordered:
-        after = [s for s in after if any(lo <= s[0] and s[1] <= hi for lo, hi in windows)
-                 or any(s[0] <= pos and pos + len(hint) <= s[1] for pos in hint_positions)]
-        if not after and whole:
-            return None, len(whole), "its @@ hint selects no remaining site"
-    if len(after) == 1 or (after and ordered and any(tiers) and (not windows or successive)):
-        return after[0], len(after), None
-    pool = after or whole  # nothing after the previous hunk: a unique earlier site still counts
-    return (pool[0], 1, None) if len(pool) == 1 else (None, len(pool), None)
-
-
-def _v4a_advice(hunk: Hunk) -> str:
-    """V4A cannot set ``replace_all``; ambiguity recovery must name what the model can change."""
-    return ("include unique context lines in its search text" if hunk.context_hint else
-            "add a unique @@ hint @@ to this hunk or include unique context lines in its search text")
-
-
-def _fuzzy_chain(text: str, pattern: str) -> tuple[str, list[tuple[int, int]]]:
-    """``(strategy, spans)``: what the fuzzy chain's first matching strategy finds in ``text``."""
-    from tools.fuzzy_match import STRATEGIES
-    return next(((name, spans) for name, find in STRATEGIES if (spans := find(text, pattern))), ("", []))
-
-
-def _fuzzy_spans(text: str, pattern: str) -> list[tuple[int, int]]:
-    """The spans the fuzzy strategy chain matches (its first matching strategy), in ``text``."""
-    return _fuzzy_chain(text, pattern)[1]
-
-
-# content, (start, old_end, new_end), error, the fuzzy strategy that located the edit
-Edit = tuple[str, Optional[tuple[int, int, int]], Optional[str], Optional[str]]
-
-
-def _window_edit(content: str, lo: int, hi: int, pattern: str, replacement: str) -> Edit:
-    """Run the fuzzy chain on ``content[lo:hi]`` only (a site already chosen) -> Edit."""
-    from tools.fuzzy_match import fuzzy_find_and_replace
-    window, count, strategy, error = fuzzy_find_and_replace(content[lo:hi], pattern, replacement)
-    return (content[:lo] + window + content[hi:], (lo, hi, lo + len(window)), None, strategy) if count else (
-        content, None, error, None)
-
-
-def _consumed(pattern: str, removed: Iterable[str]) -> bool:
-    """True when an earlier hunk of this patch replaced text that ``pattern`` names (matched by
-    a non-similarity strategy): its source is gone, so a similarity match is some other line."""
-    from tools.fuzzy_match import SIMILARITY_STRATEGIES, STRATEGIES
-    return any(find(text, pattern) for text in removed for name, find in STRATEGIES
-               if name not in SIMILARITY_STRATEGIES)
-
-
-def _fuzzy_replace_hunk(content: str, hunk: Hunk, pattern: str, replacement: str,
-                        free: Callable[[Span], bool], removed: Iterable[str] = ()) -> Edit:
-    """No whole-line site: the fuzzy strategy chain over the whole file (it refuses its own
-    ambiguity), then inside the windows around the @@ hint @@, which must all agree on one
-    site. Text this patch already wrote (``free`` is False) is never a target: matching the old
-    text inside a replacement an earlier hunk wrote edits that hunk's output a second time.
-    -> Edit; the edit's end is the next cursor, never a search for the replacement (that text
-    may already exist earlier)."""
-    from tools.fuzzy_match import SIMILARITY_STRATEGIES, fuzzy_find_and_replace
-    strategy_found, spans = _fuzzy_chain(content, pattern)
-    # A similarity match is not the source: with the source consumed by an earlier hunk the match
-    # is some other line. Refuse (the caller treats a re-sent hunk as already applied).
-    consumed = (f"its search text matches text an earlier hunk of this patch replaced, and only an "
-                f"approximate match remains — {_v4a_advice(hunk)}")
-    if strategy_found in SIMILARITY_STRATEGIES and any(
-            _consumed(line, removed) for line in pattern.split('\n') if line.strip()):
-        return content, None, consumed, None
-    own = [s for s in spans if free(s)]
-    if spans and not own:
-        return content, None, ("its search text is only found inside text an earlier hunk of this "
-                               f"patch wrote — {_v4a_advice(hunk)}"), None
-    # Every other match is this patch's own output, but only when that output really contains the
-    # search text: a similarity strategy also matches an unrelated line that merely resembles it
-    # (the consumed hunk's replacement), and the one match left over is then not this hunk's site.
-    masked = [s for s in spans if not free(s)]
-    if len(own) == 1 and masked and all(pattern in content[a:b] for a, b in masked):
-        return _window_edit(content, *own[0], pattern, replacement)
-    new, count, strategy, error = fuzzy_find_and_replace(content, pattern, replacement)
-    if count:
-        start, end = spans[0]
-        return new, (start, end, len(new) - (len(content) - end)), None, strategy
-    chains = [(lo, hi, *_fuzzy_chain(content[lo:hi], pattern))
-              for lo, hi in _hint_windows(content, hunk.context_hint)] if error else []
-    if any(name in SIMILARITY_STRATEGIES for *_w, name, _found in chains) and any(
-            _consumed(line, removed) for line in pattern.split('\n') if line.strip()):
-        return content, None, consumed, None  # a window relaxes the similarity threshold
-    windows = [(lo, hi, [s for s in found if free((lo + s[0], lo + s[1]))]) for lo, hi, _name, found in chains]
-    targets = _distinct([(lo + s, lo + e) for lo, _hi, found in windows for s, e in found])
-    if len(targets) > 1 or any(len(found) > 1 for *_w, found in windows):
-        return content, None, (f"context hint selects {len(targets)} "
-                               f"different matches — {_v4a_advice(hunk)}"), None
-    if targets:
-        edited = _window_edit(content, *targets[0], pattern, replacement)
-        if edited[1]:
-            return edited
-        error = edited[2] or error
-    replace_all_advice = "Provide more context to make it unique, or use replace_all=True."
-    return content, None, error and error.replace(replace_all_advice, _v4a_advice(hunk).capitalize() + "."), None
-
-
-def _written_core(start: int, window: str, hunk: Hunk) -> Optional[Span]:
-    """Where a hunk's '+' lines landed in the ``window`` it wrote at ``start``. Its leading and
-    trailing context lines are unchanged source a neighbouring hunk may share; None when the
-    hunk added no line (a pure deletion leaves nothing to re-edit)."""
-    added = [line.prefix == '+' for line in hunk.lines if line.prefix != '-']
-    if True not in added:
-        return None
-    parts = window.split('\n')
-    if len(parts) != len(added):
-        return start, start + len(window)
-    lead, trail = added.index(True), added[::-1].index(True)
-    first = start + sum(len(p) + 1 for p in parts[:lead])
-    last = start + len(window) - sum(len(p) + 1 for p in parts[len(parts) - trail:])
-    return first, max(last, first + 1)  # a blank written line still takes one char, as in _edit_ranges
-
-
-def _shift(spans: list[Span], at: int, delta: int) -> list[Span]:
-    """``spans`` after ``delta`` chars are inserted (or removed) at offset ``at``."""
-    return [(s + delta if s >= at else s, e + delta if e > at else e) for s, e in spans]
+# Preserve the existing hint window; its boundary remains an open specification.
+_HINT_WINDOW_BEFORE, _HINT_WINDOW_AFTER = 500, 2000
 
 
 class _Plan(NamedTuple):
@@ -451,116 +143,8 @@ class _Plan(NamedTuple):
 
 
 def _plan_hunks(content: str, hunks: list[Hunk]) -> _Plan:
-    """Apply an Update's ``hunks`` in order to ``content`` -> ``_Plan``.
-
-    The ONE selection policy for an Update: validation runs it on the source it read and the
-    apply phase runs it again on the bytes it actually reads, so a source that changed between
-    the two phases is decided again (a site that became ambiguous refuses) instead of apply
-    taking a first match that validation never admitted. ``written`` holds what earlier hunks
-    added, in current-content offsets, so no later hunk can take that output for source.
-    Escape drift is corrected before selection, so every matcher sees the text the file holds."""
-    from tools.escape_drift_autocorrect import AmbiguousEscapeDriftError, maybe_correct_escape_drift
-    from tools.fuzzy_match import is_already_applied
-    errors: list[str] = []
-    notes: list[str] = []
-    strategies: list[str] = []
-    written: list[Span] = []
-    removed: list[str] = []  # source text earlier hunks replaced
-    landed: list[tuple[str, str]] = []
-    damaged_hints: set[str] = set()
-    changes = cursor = 0
-    changed_patterns = ['\n'.join(s) if s and s != r else None for s, r in map(_split_hunk, hunks)]
-    for index, hunk in enumerate(hunks, start=1):
-        search_lines, replace_lines = _split_hunk(hunk)
-        free = lambda span: _unwritten(content, span, hunk, written)
-        label = f"hunk {index} " + ("(with hint)" if hunk.context_hint else "(no hint)")
-        if hunk.context_hint in damaged_hints:
-            errors.append(f"{label} is ambiguous: its @@ hint was changed by an earlier hunk")
-            continue
-        if search_lines == replace_lines:
-            # Context-only anchor hunks (models emit these between changes) are inert; identical
-            # -/+ lines are a no-op. An anchor that selects exactly one site moves the cursor.
-            changes += any(line.prefix in '-+' for line in hunk.lines)
-            if search_lines:
-                span, _n, _conflict = _select_span(content, '\n'.join(search_lines), hunk, cursor,
-                                                   ordered=False, written=tuple(written))
-                cursor = span[1] if span else cursor
-            continue
-        changes += 1
-        replacement = '\n'.join(replace_lines)
-        if not search_lines:  # addition-only: placed after a unique context hint, else at EOF
-            if hunk.context_hint and not _count_occurrences(content, hunk.context_hint):
-                errors.append(f"addition-only hunk {index} context hint not found")
-                continue
-            new_content, error, at = _insert_addition_only(content, hunk, replacement)
-            if error:
-                errors.append(error)
-                continue
-            # The cursor and earlier edits keep marking the same sites: text inserted before
-            # them shifts them. The inserted text is this patch's output too.
-            assert new_content is not None  # successful insertion always returns content
-            delta = len(new_content) - len(content)
-            if at < cursor:
-                cursor = min(len(new_content), cursor + delta)
-            end = at + len(replacement) + 1 if hunk.context_hint and at < len(content) else len(new_content)
-            written = _shift(written, at, delta) + [(at, end)]
-            content = new_content
-            continue
-        pattern = '\n'.join(search_lines)
-        if not pattern:
-            errors.append(f"{label} has empty search text — include surrounding context lines")
-            continue
-        try:
-            pattern, replacement, correction = maybe_correct_escape_drift(pattern, replacement, content)
-        except AmbiguousEscapeDriftError as exc:
-            errors.append(f"{label}: {exc}")
-            continue
-        # Order the patch itself states: the first hunk of several starts at the top of the file,
-        # and a run of identical hunks edits successive sites.
-        current = '\n'.join(search_lines)
-        successive = ((index > 1 and changed_patterns[index - 2] == current) or
-                      (index < len(hunks) and changed_patterns[index] == current))
-        ordered = (index == 1 and len(hunks) > 1) or successive
-        span, candidates, conflict = _select_span(content, pattern, hunk, cursor, ordered=ordered,
-                                                  written=tuple(written), successive=successive, removed=tuple(removed))
-        if span is not None:
-            new_content, edit, error, strategy = _window_edit(content, *span, pattern, replacement)
-            error = error and f"{label} not found — {error}" or (None if edit else f"{label} not found")
-        elif conflict or candidates > 1:
-            errors.append(f"{label} is ambiguous: {conflict} — {_v4a_advice(hunk)}" if conflict else
-                          f"{label} is ambiguous ({candidates} matches"
-                          + (" after the previous hunk" if cursor else "") + f") — {_v4a_advice(hunk)}")
-            continue
-        else:
-            new_content, edit, error, strategy = _fuzzy_replace_hunk(content, hunk, pattern, replacement, free, removed)
-            # Already-applied hunks are a no-op; only reached when no site of the search text remains.
-            consumed_differently = any(
-                (wrote != replacement or not _consumed(pattern, [old]))
-                and any(_consumed(line, [old]) for line in pattern.split('\n') if line.strip())
-                for old, wrote in landed)
-            error = (None if not error or (not consumed_differently and is_already_applied(content, pattern, replacement)) else
-                     f"{label} not found — {error}" + _no_match_hint(error, pattern, content))
-        if error:
-            errors.append(error)
-        if edit:
-            start, old_end, cursor = edit
-            for later in hunks[index:]:
-                hint = later.context_hint or ''
-                if hint and len(_positions(new_content, hint)) < len(_positions(content, hint)) and any(
-                        _overlaps((pos, pos + len(hint)), (start, old_end)) for pos in _positions(content, hint)):
-                    damaged_hints.add(hint)
-            removed.append(content[start:old_end])
-            landed.append((content[start:old_end], replacement))
-            content = new_content
-            strategies.append(strategy)
-            notes.extend([correction] if correction else [])
-            core = _written_core(start, content[start:cursor], hunk)
-            written = _shift(written, old_end, cursor - old_end) + ([core] if core else [])
-    # Fuzzy ambiguity diagnostics include source-line excerpts. Preserve their
-    # locations but never echo arbitrary source bytes into the error result.
-    errors = [re.sub(r"(?m)^  L(\d+):[^\n]*", r"  L\1: [source omitted]", error)
-              for error in errors]
-    return _Plan(content, errors, changes, notes, strategies)
+    """Use the same provenance planner for direct callers and patch application."""
+    return _plan_file(content, hunks)
 
 
 def _overlay_key(path: str, file_ops: Any) -> str:
@@ -600,101 +184,274 @@ def _backend_is_windows(env: Any, cwd: str) -> bool:
         re.match(r"^[A-Za-z]:[\\/]", cwd))
 
 
-def _validate_operations(operations: list[PatchOperation], file_ops: Any) -> list[str]:
-    """Dry-run every operation -> error strings (empty = safe). UPDATE hunks are simulated in
-    order so later hunks see post-earlier-hunk content, exactly as apply will."""
-    errors: list[str] = []
-    real_change_count = 0
-    # Overlay so inter-op state validates (a MOVE creating the path a later UPDATE targets),
-    # keyed by _overlay_key so path aliases share one entry.
-    pending_content: dict = {}
-    removed_paths: set = set()
+class _Commit(NamedTuple):
+    """One mutation whose bytes were chosen before any write. Commit must not replan it."""
+    op: PatchOperation
+    snapshot: Optional[str]
+    content: Optional[str]
+    read_sha: Optional[str]
+    notes: tuple[str, ...]
+    strategies: tuple[str, ...]
 
-    def _read(path: str) -> tuple[Optional[str], Optional[str]]:
-        key = _overlay_key(path, file_ops)
-        if key in pending_content:
-            return pending_content[key], None
-        if key in removed_paths:
-            return None, "file not found"
-        r = file_ops.read_file_raw(path)
-        return (None, r.error) if r.error else (r.content, None)
 
-    def _occupied(path: str) -> Optional[str]:
-        """Why an Add target or Move destination is not free, or None. Only a read that reports
-        the path absent (``not_found``) frees it: a read that FAILED (no byte transport, a
-        directory, an unreadable file) says nothing about what is there, and taking it as free
-        writes over the file the check exists to protect."""
-        key = _overlay_key(path, file_ops)
-        if key in pending_content:
+class _Snap(NamedTuple):
+    """Disk observation the plan depended on. Re-read this, do not select against a new read."""
+    path: str
+    content: Optional[str]
+    absent: bool
+    sha: Optional[str]
+
+
+class _Resolution(NamedTuple):
+    errors: list[str]
+    commits: list[_Commit]
+    snaps: dict[str, _Snap]
+
+
+def _as_str_list(value: Any) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [str(item) for item in value]
+
+
+def _redact_planner_errors(errors: list) -> list[str]:
+    """Drop source excerpts an untrusted planner may echo. Keep the diagnostic shape."""
+    return [
+        re.sub(r"(?m)^  L(\d+):[^\n]*", r"  L\1: [source omitted]", str(error))
+        for error in errors
+    ]
+
+
+def _plan_file(content: Optional[str], hunks: list[Hunk], state=None, *, finalize=True) -> _Plan:
+    """Run the provenance planner once. A raised or unusable result is a refusal, not a write."""
+    from tools.v4a_planner import plan_hunks
+    if not isinstance(content, str):
+        return _Plan("", ["hunk planning failed"], 0, [], [])
+    try:
+        raw = plan_hunks(content, hunks, state, finalize=finalize)
+    except Exception:  # health: allow BLE001 -- planner boundary: fail closed with a fixed code; exception text can hold source
+        return _Plan(content, ["hunk planning failed"], 0, [], [])
+    planned = getattr(raw, "content", None)
+    errors = getattr(raw, "errors", None)
+    changes = getattr(raw, "changes", None)
+    if not isinstance(planned, str) or not isinstance(errors, list) or type(changes) is not int:
+        return _Plan(content, ["hunk planning failed"], 0, [], [])
+    return _Plan(
+        planned, _redact_planner_errors(errors), changes,
+        _as_str_list(getattr(raw, "notes", ())),
+        _as_str_list(getattr(raw, "strategies", ())))
+
+
+def _note_disk_read(snaps: dict[str, _Snap], key: str, path: str, result: Any) -> None:
+    """Record the first disk observation for ``key``. Overlay hits must not call this."""
+    if key in snaps:
+        return
+    if getattr(result, "error", None):
+        if getattr(result, "not_found", False):
+            snaps[key] = _Snap(path, None, True, None)
+        return
+    snaps[key] = _Snap(path, result.content, False, getattr(result, "_content_sha256", None))
+
+
+def _remember_update(commits: list[_Commit], op: PatchOperation, snapshot: Optional[str],
+                     sha: Optional[str], plan: _Plan) -> None:
+    """Keep a successful Update's planned bytes. A refusal is not a commit."""
+    if plan.errors or not isinstance(snapshot, str) or not isinstance(plan.content, str):
+        return
+    commits.append(_Commit(op, snapshot, plan.content, sha, tuple(plan.notes), tuple(plan.strategies)))
+
+
+def _drift_reason(snap: _Snap, again: Any) -> list[str]:
+    """Why ``again`` is not the snapshot the plan used, or empty when it still matches."""
+    if snap.absent:
+        if getattr(again, "not_found", False):
+            return []
+        if getattr(again, "error", None):
+            return [f"{snap.path}: READ_ERROR"]
+        return [f"{snap.path}: source changed after it was read"]
+    if getattr(again, "error", None):
+        return [f"{snap.path}: READ_ERROR"]
+    if again.content != snap.content:
+        return [f"{snap.path}: source changed after it was read"]
+    return []
+
+
+def _snapshot_drift(snaps: dict[str, _Snap], file_ops: Any) -> list[str]:
+    """Re-read every plan-time disk snapshot. A mismatch refuses; it does not replan."""
+    drifted: list[str] = []
+    for snap in snaps.values():
+        try:
+            again = file_ops.read_file_raw(snap.path)
+        except Exception:  # health: allow BLE001 -- re-read boundary: fail closed with a fixed code; exception text can hold paths/secrets
+            drifted.append(f"{snap.path}: could not re-read source before write")
+            continue
+        drifted.extend(_drift_reason(snap, again))
+    return drifted
+
+
+def _fail_closed(errors: list[str]) -> PatchResult:
+    detail = "\n".join(f"  • {error}" for error in errors)
+    return PatchResult(
+        success=False,
+        error="Patch validation failed (no files were modified):\n" + detail)
+
+
+class _Overlay:
+    """In-memory file state shared by one plan. Disk reads are snapshotted; nothing is written."""
+
+    def __init__(self, file_ops: Any) -> None:
+        self.file_ops = file_ops
+        self.errors: list[str] = []
+        self.commits: list[_Commit] = []
+        self.snaps: dict[str, _Snap] = {}
+        self.pending: dict = {}
+        self.removed: set = set()
+        self.planners: dict = {}
+        self.all_planners: list = []
+        self.changes = 0
+
+    def read(self, path: str) -> tuple[Optional[str], Optional[str], Optional[str]]:
+        key = _overlay_key(path, self.file_ops)
+        if key in self.pending:
+            return self.pending[key], None, None
+        if key in self.removed:
+            return None, "file not found", None
+        result = self.file_ops.read_file_raw(path)
+        _note_disk_read(self.snaps, key, path, result)
+        sha = getattr(result, "_content_sha256", None)
+        return (None, "READ_ERROR", None) if result.error else (result.content, None, sha)
+
+    def occupied(self, path: str) -> Optional[str]:
+        """Why an Add target or Move destination is not free, or None.
+
+        Only a read that reports the path absent (``not_found``) frees it. A read that
+        FAILED says nothing about what is there; treating it as free would overwrite
+        the file the check exists to protect.
+        """
+        key = _overlay_key(path, self.file_ops)
+        if key in self.pending:
             return "exists"
-        if key in removed_paths:
+        if key in self.removed:
             return None
-        r = file_ops.read_file_raw(path)
-        if not r.error:
+        result = self.file_ops.read_file_raw(path)
+        _note_disk_read(self.snaps, key, path, result)
+        if not result.error:
             return "exists"
-        return None if getattr(r, "not_found", False) else f"could not confirm the path is free — {r.error}"
+        if getattr(result, "not_found", False):
+            return None
+        return "READ_ERROR"
 
-    def _validate_update(op: PatchOperation) -> None:
-        nonlocal real_change_count
-        simulated, read_err = _read(op.file_path)
-        if read_err:
-            errors.append(f"{op.file_path}: {read_err}")
-            return
-        simulated, hunk_errors, changes, _notes, _strategies = _plan_hunks(simulated, op.hunks)
-        real_change_count += changes
-        errors.extend(f"{op.file_path}: {error}" for error in hunk_errors)
-        pending_content[_overlay_key(op.file_path, file_ops)] = simulated
+    def remove(self, path: str) -> None:
+        key = _overlay_key(path, self.file_ops)
+        self.removed.add(key)
+        self.pending.pop(key, None)
 
-    def _remove(path: str) -> None:
-        key = _overlay_key(path, file_ops)
-        removed_paths.add(key)
-        pending_content.pop(key, None)
 
+def _resolve_update(op: PatchOperation, overlay: _Overlay) -> None:
+    """Plan this Update once against the overlay. A refusal is recorded, not written."""
+    simulated, read_err, sha = overlay.read(op.file_path)
+    if read_err or not isinstance(simulated, str):
+        overlay.errors.append(f"{op.file_path}: {read_err or 'READ_ERROR'}")
+        return
+    from tools.v4a_planner import PlannerState
+
+    key = _overlay_key(op.file_path, overlay.file_ops)
+    if key not in overlay.planners:
+        state = PlannerState.from_content(simulated)
+        overlay.planners[key] = state
+        overlay.all_planners.append((op.file_path, state))
+    plan = _plan_file(simulated, op.hunks, overlay.planners[key], finalize=False)
+    overlay.changes += plan.changes
+    overlay.errors.extend(f"{op.file_path}: {error}" for error in plan.errors)
+    overlay.pending[key] = plan.content
+    _remember_update(overlay.commits, op, simulated, sha, plan)
+
+
+def _resolve_delete(op: PatchOperation, overlay: _Overlay) -> None:
+    deleted, delete_err, delete_sha = overlay.read(op.file_path)
+    if delete_err:
+        overlay.errors.append(f"{op.file_path}: file not found for deletion")
+        return
+    overlay.remove(op.file_path)
+    overlay.planners.pop(_overlay_key(op.file_path, overlay.file_ops), None)
+    overlay.commits.append(_Commit(op, deleted, None, delete_sha, (), ()))
+
+
+def _resolve_move(op: PatchOperation, overlay: _Overlay) -> None:
+    if not op.new_path:
+        overlay.errors.append(f"{op.file_path}: MOVE operation missing destination path")
+        return
+    src_content, src_err, src_sha = overlay.read(op.file_path)
+    if src_err:
+        overlay.errors.append(f"{op.file_path}: source file not found for move")
+    dst_taken = overlay.occupied(op.new_path)
+    if dst_taken == "exists":
+        overlay.errors.append(f"{op.new_path}: destination already exists — move would overwrite")
+        return
+    if dst_taken:
+        overlay.errors.append(f"{op.new_path}: {dst_taken}")
+        return
+    if src_err:  # only a cleanly-validated move updates the overlay
+        return
+    overlay.pending[_overlay_key(op.new_path, overlay.file_ops)] = src_content if src_content is not None else ""
+    src_key = _overlay_key(op.file_path, overlay.file_ops)
+    dst_key = _overlay_key(op.new_path, overlay.file_ops)
+    if src_key in overlay.planners:
+        overlay.planners[dst_key] = overlay.planners.pop(src_key)
+    overlay.remove(op.file_path)
+    overlay.commits.append(_Commit(op, src_content, None, src_sha, (), ()))
+
+
+def _added_text(op: PatchOperation) -> str:
+    return "\n".join(line.content for hunk in op.hunks for line in hunk.lines if line.prefix == "+")
+
+
+def _resolve_add(op: PatchOperation, overlay: _Overlay) -> None:
+    """An Add creates a new file. An existing target is a refusal, not a clobber.
+
+    Overlay-aware: an Add after a Delete of the same path stays legal, and the added
+    text enters the overlay so a later Update validates against it.
+    """
+    add_taken = overlay.occupied(op.file_path)
+    if add_taken == "exists":
+        overlay.errors.append(f"{op.file_path}: file already exists — use Update File, not Add File")
+        return
+    if add_taken:
+        overlay.errors.append(f"{op.file_path}: {add_taken}")
+        return
+    key = _overlay_key(op.file_path, overlay.file_ops)
+    overlay.removed.discard(key)
+    overlay.pending[key] = _added_text(op)
+    overlay.commits.append(_Commit(op, None, None, "", (), ()))
+
+
+_RESOLVE_OP = {
+    OperationType.DELETE: _resolve_delete,
+    OperationType.MOVE: _resolve_move,
+    OperationType.ADD: _resolve_add,
+}
+
+
+def _resolve_operations(operations: list[PatchOperation], file_ops: Any) -> _Resolution:
+    """Plan every op against one overlay. The planner runs once per Update; nothing is written."""
+    overlay = _Overlay(file_ops)
     for op in operations:
         if op.operation == OperationType.UPDATE:
-            _validate_update(op)
+            _resolve_update(op, overlay)
             continue
-        real_change_count += 1
-        if op.operation == OperationType.DELETE:
-            if _read(op.file_path)[1]:
-                errors.append(f"{op.file_path}: file not found for deletion")
-            else:
-                _remove(op.file_path)
-        elif op.operation == OperationType.MOVE:
-            if not op.new_path:
-                errors.append(f"{op.file_path}: MOVE operation missing destination path")
-                continue
-            src_content, src_err = _read(op.file_path)
-            if src_err:
-                errors.append(f"{op.file_path}: source file not found for move")
-            dst_taken = _occupied(op.new_path)
-            if dst_taken == "exists":
-                errors.append(f"{op.new_path}: destination already exists — move would overwrite")
-            elif dst_taken:
-                errors.append(f"{op.new_path}: {dst_taken}")
-            elif not src_err:  # only a cleanly-validated move updates the overlay
-                pending_content[_overlay_key(op.new_path, file_ops)] = src_content if src_content is not None else ""
-                _remove(op.file_path)
-        elif op.operation == OperationType.ADD:
-            # An Add must create a NEW file. If the target already exists, write_file
-            # would clobber it with only the patch's '+' lines and report success,
-            # silently destroying the original contents (models frequently confuse Add
-            # with Update). Reject it here so the two-phase contract holds, mirroring
-            # the MOVE destination guard. Overlay-aware: an Add after a Delete of the
-            # same path in this patch stays legal, and the added content enters the
-            # overlay so later hunks against it validate.
-            add_taken = _occupied(op.file_path)
-            if add_taken == "exists":
-                errors.append(f"{op.file_path}: file already exists — use Update File, not Add File")
-            elif add_taken:
-                errors.append(f"{op.file_path}: {add_taken}")
-            else:
-                removed_paths.discard(_overlay_key(op.file_path, file_ops))
-                pending_content[_overlay_key(op.file_path, file_ops)] = '\n'.join(
-                    line.content for hunk in op.hunks for line in hunk.lines if line.prefix == '+')
-    if not errors and real_change_count == 0:
-        errors.append("Patch contains no changes (only context lines were provided)")
-    return errors
+        overlay.changes += 1
+        _RESOLVE_OP[op.operation](op, overlay)
+    from tools.v4a_planner import finish_state
+
+    for path, state in overlay.all_planners:
+        try:
+            errors = _redact_planner_errors(finish_state(state))
+        except Exception:  # health: allow BLE001 -- planner boundary: fail closed with a fixed code; exception text can hold source
+            errors = ["hunk planning failed"]
+        overlay.errors.extend(f"{path}: {error}" for error in errors)
+    if not overlay.errors and overlay.changes == 0:
+        overlay.errors.append("Patch contains no changes (only context lines were provided)")
+    return _Resolution(overlay.errors, overlay.commits, overlay.snaps)
 
 
 class ApplyResult(NamedTuple):
@@ -730,53 +487,19 @@ def _unified_diff(path: str, old: str, new: Optional[str]) -> str:
 
 
 def apply_v4a_operations(operations: list[PatchOperation], file_ops: Any) -> PatchResult:
-    """Two-phase: validate everything, then apply (atomic on validation failure). A phase-2
-    failure (validate/apply race) carries a ``git diff`` note since state may be inconsistent.
-    ``file_ops`` needs read_file_raw/write_file/delete_file/move_file."""
+    """Plan every file, refuse before any write, then commit the planned bytes.
 
-    def _bullets(errs: list[str]) -> str:
-        return "\n".join(f"  • {e}" for e in errs)
-
-    if errors := _validate_operations(operations, file_ops):
-        return PatchResult(
-            success=False,
-            error="Patch validation failed (no files were modified):\n" + _bullets(errors))
-    files: dict[str, list[str]] = {"created": [], "deleted": [], "modified": []}
-    all_diffs: list[str] = []
-    notes: list[str] = []
-    # V4A bypasses write_file's WriteResult plumbing: LSP diagnostics and lint propagate per file.
-    lsp_blocks: list[str] = []
-    lint_results: dict[str, dict] = {}
-    writes: list[tuple] = []
-    for op in operations:
-        handler, verb, bucket = _APPLY_DISPATCH[op.operation]
-        try:
-            ok, payload, lsp, lint, write, op_notes = handler(op, file_ops)
-        except Exception as e:
-            ok, payload = None, str(e)
-        if not ok:
-            prefix = f"Failed to {verb}" if ok is False else "Error processing"
-            errors.append(f"{prefix} {op.file_path}: {payload}")
-            continue
-        is_move = op.operation is OperationType.MOVE
-        files[bucket].append(f"{op.file_path} -> {op.new_path}" if is_move else op.file_path)
-        all_diffs.append(payload)
-        if write:
-            writes.append(write)
-        notes.extend(op_notes)
-        if lsp:
-            lsp_blocks.append(lsp)
-        if lint:
-            lint_results[op.file_path] = lint
-    # Each LSP block carries its own <diagnostics file="..."> header; joining keeps attribution.
-    return PatchResult(
-        success=not errors,
-        error=("Apply phase failed (state may be inconsistent — run `git diff` to assess):\n"
-               + _bullets(errors)) if errors else None,
-        diff='\n'.join(all_diffs),
-        files_modified=files["modified"], files_created=files["created"], files_deleted=files["deleted"],
-        lint=lint_results or None, lsp_diagnostics="\n\n".join(lsp_blocks) or None, _writes=writes,
-        note="\n".join(dict.fromkeys(notes)) or None)
+    The provenance planner runs once per Update. A refused hunk writes nothing in any
+    file. Commit does not select or plan again: it re-reads the snapshots and writes
+    only when they still match. A later I/O error is reported, not rolled back.
+    ``file_ops`` needs read_file_raw/write_file/delete_file/move_file.
+    """
+    resolved = _resolve_operations(operations, file_ops)
+    if resolved.errors:
+        return _fail_closed(resolved.errors)
+    if drift := _snapshot_drift(resolved.snaps, file_ops):
+        return _fail_closed(drift)
+    return _commit_resolved(resolved.commits, file_ops)
 
 
 def _write_file_accepts_pre_content(file_ops: Any) -> bool:
@@ -831,55 +554,81 @@ def _apply_move(op: PatchOperation, file_ops: Any) -> ApplyResult:
         True, f"# Moved: {op.file_path} -> {op.new_path}")
 
 
-def _insert_addition_only(new_content: str, hunk: Hunk,
-                          insert_text: str) -> tuple[Optional[str], Optional[str], int]:
-    """Place an addition-only hunk after its context hint (or at EOF).
-    Returns (content, error, offset in the old content where the text went)."""
-    if hunk.context_hint:
-        occurrences, ambiguous = _hint_ambiguity(
-            new_content, hunk.context_hint, " — provide a more unique hint")
-        if ambiguous:
-            return None, f"Addition-only hunk: {ambiguous}", 0
-        if occurrences == 1:
-            eol = new_content.find('\n', new_content.find(hunk.context_hint))
-            if eol == -1:
-                return new_content + '\n' + insert_text, None, len(new_content)
-            return new_content[:eol + 1] + insert_text + '\n' + new_content[eol + 1:], None, eol + 1
-    # No hint / hint not found — append at end as a safe fallback.
-    kept = new_content.rstrip('\n')
-    return kept + '\n' + insert_text + '\n', None, len(kept)
-
-
-def _apply_update(op: PatchOperation, file_ops: Any) -> ApplyResult:
-    """Re-run validation's hunk selection on the bytes read now, then write once. A source that
-    changed since validation is decided again; a hunk that no longer selects one site fails
-    the operation before anything is written."""
+def _commit_planned_update(commit: _Commit, file_ops: Any) -> ApplyResult:
+    """Write the bytes the planner already chose. Never read the file to select a site."""
     from tools.fuzzy_match import boundary_note
-    read_result = file_ops.read_file_raw(op.file_path)  # raw: no line numbers / truncation
-    if read_result.error:
-        return _fail(f"Cannot read file: {read_result.error}")
-    current_content = read_result.content
-    plan = _plan_hunks(current_content, op.hunks)
-    if plan.errors:
-        return _fail("Could not apply hunk (file not written): " + "; ".join(plan.errors))
-    new_content, notes = plan.content, list(plan.notes)
-    # Pass pre_content to skip a redundant re-read inside write_file when supported.
-    extra = {"pre_content": current_content} if _write_file_accepts_pre_content(file_ops) else {}
-    write_result = file_ops.write_file(op.file_path, new_content, **extra)
-    result = _written(write_result, _unified_diff(op.file_path, current_content, new_content),
-                      op.file_path, getattr(read_result, "_content_sha256", None))
+    op = commit.op
+    if not isinstance(commit.snapshot, str) or not isinstance(commit.content, str):
+        return _fail("planned update is missing content")
+    # pre_content skips a redundant re-read inside write_file. It is the snapshot, not a new selection.
+    extra = {"pre_content": commit.snapshot} if _write_file_accepts_pre_content(file_ops) else {}
+    write_result = file_ops.write_file(op.file_path, commit.content, **extra)
+    result = _written(
+        write_result, _unified_diff(op.file_path, commit.snapshot, commit.content),
+        op.file_path, commit.read_sha)
     if not result.ok:
         return result
-    # A hunk found by a similarity strategy may have landed a line off; say so, per file.
-    if note := boundary_note(plan.strategies, "the hunk's", f" in {op.file_path}"):
+    notes = list(commit.notes)
+    if note := boundary_note(commit.strategies, "the hunk's", f" in {op.file_path}"):
         notes.append(note)
     return result._replace(notes=tuple(notes))
 
 
-# operation -> (handler, verb for error text, files_* bucket)
+def _commit_one(commit: _Commit, file_ops: Any) -> tuple[ApplyResult, str, str]:
+    """Dispatch a planned mutation. Update never re-enters the planner."""
+    op = commit.op
+    if op.operation is OperationType.UPDATE:
+        return _commit_planned_update(commit, file_ops), "update", "modified"
+    handler, verb, bucket = _APPLY_DISPATCH[op.operation]
+    return handler(op, file_ops), verb, bucket
+
+
+def _commit_resolved(commits: list[_Commit], file_ops: Any) -> PatchResult:
+    """Write planned bytes in order. An I/O failure is not a selection refusal and is not rolled back."""
+    errors: list[str] = []
+    files: dict[str, list[str]] = {"created": [], "deleted": [], "modified": []}
+    all_diffs: list[str] = []
+    notes: list[str] = []
+    lsp_blocks: list[str] = []
+    lint_results: dict[str, dict] = {}
+    writes: list[tuple] = []
+    for commit in commits:
+        op = commit.op
+        try:
+            outcome, verb, bucket = _commit_one(commit, file_ops)
+            ok, payload, lsp, lint, write, op_notes = outcome
+        except Exception:  # health: allow BLE001 -- commit boundary: report a fixed code; exception text can hold source or secrets
+            ok, payload, lsp, lint, write, op_notes = None, "INTERNAL_ERROR", None, None, None, ()
+            verb, bucket = "process", "modified"
+        if not ok:
+            prefix = f"Failed to {verb}" if ok is False else "Error processing"
+            errors.append(f"{prefix} {op.file_path}: {'INTERNAL_ERROR' if ok is None else 'IO_ERROR'}")
+            continue
+        is_move = op.operation is OperationType.MOVE
+        files[bucket].append(f"{op.file_path} -> {op.new_path}" if is_move else op.file_path)
+        all_diffs.append(payload)
+        if write:
+            writes.append(write)
+        notes.extend(op_notes)
+        if lsp:
+            lsp_blocks.append(lsp)
+        if lint:
+            lint_results[op.file_path] = lint
+    detail = "\n".join(f"  • {error}" for error in errors)
+    return PatchResult(
+        success=not errors,
+        error=("Apply phase failed (state may be inconsistent — run `git diff` to assess):\n"
+               + detail) if errors else None,
+        diff='\n'.join(all_diffs),
+        files_modified=files["modified"], files_created=files["created"], files_deleted=files["deleted"],
+        lint=lint_results or None, lsp_diagnostics="\n\n".join(lsp_blocks) or None, _writes=writes,
+        note="\n".join(dict.fromkeys(notes)) or None)
+
+
+# operation -> (handler, verb for error text, files_* bucket). Update is not here: commit
+# writes the planned bytes and must not select a site.
 _APPLY_DISPATCH: dict[OperationType, tuple[Callable[[PatchOperation, Any], ApplyResult], str, str]] = {
     OperationType.ADD: (_apply_add, "add", "created"),
     OperationType.DELETE: (_apply_delete, "delete", "deleted"),
     OperationType.MOVE: (_apply_move, "move", "modified"),
-    OperationType.UPDATE: (_apply_update, "update", "modified"),
 }

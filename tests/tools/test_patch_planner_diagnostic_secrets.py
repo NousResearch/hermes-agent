@@ -26,7 +26,7 @@ def test_not_found_diagnostic_does_not_echo_nearby_source():
     result = _plan_hunks(content, [hunk])
     assert result.errors
     assert secret not in str(result.errors)
-    assert 'lines 1' in str(result.errors)
+    assert 'hunk 1 (no hint) not found — Could not find a match for old_string in the file' in str(result.errors)
 
 
 def test_ambiguous_addition_does_not_echo_hint():
@@ -45,4 +45,4 @@ def test_fuzzy_ambiguous_matches_do_not_echo_source():
     result = _plan_hunks(content, [hunk])
     assert result.errors
     assert secret not in str(result.errors)
-    assert '2 matches' in str(result.errors)
+    assert 'Could not find a match for old_string in the file' in str(result.errors)

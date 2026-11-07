@@ -666,8 +666,10 @@ fi
 # volume, selected by $HERMES_HOME/installs/*/facts.json. An image upgrade
 # replaces uv.lock under that durable selection, so re-resolve it here, before
 # any supervised service boots onto a generation built for the previous image.
-# On failure (e.g. offline) PM falls back to the image's own environment and
-# keeps the extras recorded for the next boot or install. Then collect the
+# A selection the image's own environment already is boots that environment
+# instead of a rebuilt copy on the volume. On failure (e.g. offline) or when the
+# volume has no room for the rebuild, PM falls back to the image's own
+# environment and keeps the extras recorded for the next boot or install. Then collect the
 # generations nothing selects any more: no service holds a lease yet, and
 # collect_generations keeps anything younger than a day.
 s6-setuidgid hermes "$INSTALL_DIR/.venv/bin/python" -c '

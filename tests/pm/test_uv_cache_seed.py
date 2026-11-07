@@ -263,3 +263,15 @@ def test_seed_publishes_archives_before_the_links_into_them(payload_cache_with_w
 
     assert not _seeded_link(machine).is_symlink(), "a wheel link was published before its archive"
     assert not (machine / ".seeded").exists()
+
+
+def test_seed_bytes_measure_the_pending_merge_without_writing_it(payload_cache_with_wheel_link):
+    """A refresh sizes the merge before it starts it: what a seed would copy, and nothing once merged."""
+    machine = payload_cache_with_wheel_link
+
+    pending = packages.uv_cache_seed_bytes()
+    assert pending == 2 * 4096  # module.py and the .http entry, one block each; the link is no file
+    assert not machine.exists()  # measuring wrote nothing
+
+    packages.uv_cache_dir()
+    assert packages.uv_cache_seed_bytes() == 0

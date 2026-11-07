@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { HERMES_CONFIG_KEY } from '@/app/hooks/use-config-record'
+import { hermesConfigKey } from '@/app/hooks/use-config-record'
 import { queryClient } from '@/lib/query-client'
 
 import {
@@ -13,7 +13,8 @@ import {
 } from './voice-devices'
 
 function seedConfig(record: unknown) {
-  queryClient.setQueryData(HERMES_CONFIG_KEY, record)
+  // Mirrors the reader: the active gateway's slot, not the bare root key.
+  queryClient.setQueryData(hermesConfigKey(), record)
 }
 
 afterEach(() => {

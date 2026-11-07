@@ -1,4 +1,4 @@
-import { HERMES_CONFIG_KEY } from '@/app/hooks/use-config-record'
+import { hermesConfigKey } from '@/app/hooks/use-config-record'
 import { queryClient } from '@/lib/query-client'
 import type { HermesConfigRecord } from '@/types/hermes'
 
@@ -37,7 +37,10 @@ function readNested(record: unknown, path: string): string {
 
 function configRecord(): unknown {
   try {
-    return queryClient.getQueryData<HermesConfigRecord>(HERMES_CONFIG_KEY)
+    // The config record is cached per active gateway; the bare root key only works for the
+    // local/primary connection. A registry/remote gateway would otherwise read another slot
+    // (or nothing), so the picker would save an id the recorder never sees.
+    return queryClient.getQueryData<HermesConfigRecord>(hermesConfigKey())
   } catch {
     return undefined
   }

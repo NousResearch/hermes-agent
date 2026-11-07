@@ -1,6 +1,6 @@
 name: citation-guard
 repo: https://github.com/ChienNguyen23/hermes-citation-guard
-sha: 40825e81aba35c9542db1ac73bfb76191ec32145
+sha: 6916b2ae7f561765883c57b32441db049e246113
 description: 'Catches fabricated, mismatched and retracted references. Checks each DOI / PMID / arXiv
   id and each full reference entry against doi.org, Crossref, PubMed and arXiv: ids that do not exist,
   ids that point to a different paper, wrong year or first author, works found in no registry, and

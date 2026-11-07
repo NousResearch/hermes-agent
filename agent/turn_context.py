@@ -1028,16 +1028,11 @@ def _previous_user_message_text(conversation_history: Optional[list[Any]]) -> st
 
 
 def _memory_turn_start_and_prefetch(
-    agent: Any, original_user_message: Any, turn_author: Optional[dict[str, Any]] = None,
-    previous_message: str = "",
+    agent: Any, original_user_message: Any, turn_author: Optional[dict[str, Any]], previous_message: str,
 ) -> str:
     """Notify memory providers of the new turn, then prefetch external memory once
     before the tool loop (skipped on trivial prompts with no semantic signal).
-    Returns the prefetch text (``""`` when nothing was injected).
-
-    ``previous_message`` reaches providers because a process that resumes a session
-    starts mid-conversation: whatever a live process queued at the end of the last
-    turn, keyed on that turn's message, was never queued."""
+    Returns the prefetch text (``""`` when nothing was injected)."""
     if not agent._memory_manager:
         return ""
     _query = _memory_query_text(original_user_message)

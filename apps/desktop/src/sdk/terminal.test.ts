@@ -36,7 +36,7 @@ describe('host.terminal', () => {
     const result = host.terminal.openSession('20260101_120000_abc', { profile: 'default' })
 
     expect(result.ok).toBe(true)
-    expect($terminalInjection.get()).toBe("'hermes' '--profile' 'default' '--tui' '--resume' '20260101_120000_abc'")
+    expect($terminalInjection.get()?.command).toBe("'hermes' '--profile' 'default' '--tui' '--resume' '20260101_120000_abc'")
     expect(host.terminal.takeover.get()).toBe(true)
     expect($terminalTakeover.get()).toBe(true)
 

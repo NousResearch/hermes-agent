@@ -100,9 +100,10 @@ export function openSessionInTerminalPane(storedSessionId: string, opts: OpenSes
   openedTabs.add(terminalId)
   renameTerminal(terminalId, (opts.title ?? '').trim() || 'TUI')
   setTerminalTakeover(true)
-  // The new tab is active; the injection flushes into it once its PTY is open
-  // (`use-terminal-session.ts`), so ordering here does not race the spawn.
-  $terminalInjection.set(command)
+  // Pinned to the new tab: it flushes once that PTY is open
+  // (`use-terminal-session.ts`). Unpinned, the previously active tab — still
+  // mounted as active for one React tick — would type the command into itself.
+  $terminalInjection.set({ command, terminalId })
 
   return { ok: true, terminalId, command }
 }

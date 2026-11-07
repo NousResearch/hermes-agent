@@ -62,7 +62,7 @@ describe('openSessionInTerminalPane', () => {
     expect(tab).toMatchObject({ cwd: '/repo', kind: 'user', title: 'TUI', auto: false })
     expect($activeTerminalId.get()).toBe(result.terminalId)
     expect($terminalTakeover.get()).toBe(true)
-    expect($terminalInjection.get()).toBe(result.command)
+    expect($terminalInjection.get()).toEqual({ command: result.command, terminalId: result.terminalId })
     expect(result.command).toBe("'hermes' '--profile' 'work' '--tui' '--resume' '20260101_120000_abc'")
   })
 

@@ -19,8 +19,16 @@ export const setTerminalTakeover = (active: boolean) => $terminalTakeover.set(ac
 
 /** A command queued to run in the embedded terminal. The terminal pane flushes
  *  (and clears) it once its session is live, so a value set before the pane
- *  mounts still runs. Cleared after flush so a later remount can't replay it. */
-export const $terminalInjection = atom<null | string>(null)
+ *  mounts still runs. Cleared after flush so a later remount can't replay it.
+ *  `terminalId` pins it to one tab: without it the ACTIVE tab takes it, and a
+ *  tab created in the same tick as the injection is not active in React yet —
+ *  the previous tab would eat the command and leave the new one empty. */
+export interface TerminalInjection {
+  command: string
+  terminalId?: string
+}
+
+export const $terminalInjection = atom<null | TerminalInjection>(null)
 
 /** Open the terminal pane and run a command in it. Used to disconnect external
  *  (CLI-managed) providers, which Hermes can't clear via the API — the user
@@ -33,5 +41,5 @@ export const runInTerminal = (command: string) => {
   }
 
   setTerminalTakeover(true)
-  $terminalInjection.set(trimmed)
+  $terminalInjection.set({ command: trimmed })
 }

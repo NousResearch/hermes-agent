@@ -20,11 +20,56 @@ function commandLineTokens(raw: string): string[] {
     .filter(token => token.length > 0)
 }
 
-/** True when `raw` is a Hermes runtime command line: some whole argv token's basename
- *  is the Hermes executable (`hermes`, launched directly or by an interpreter such as
- *  `python …/hermes gateway run`). Exported for unit tests. */
+/** The basename of an argv token, `/`- and `\`-separated. */
+function tokenBasename(token: string): string {
+  return token.replace(/^.*[\\/]/, '')
+}
+
+/** True when the tokens carry a `gateway` subcommand (ignoring a `--profile`/`-p VALUE`
+ *  pair, whose value could itself be the word `gateway`). Mirrors the canonical matcher's
+ *  profile-flag stripping (`gateway.status._gateway_command_subcommand`). */
+function tokensNameGatewaySubcommand(tokens: string[]): boolean {
+  const filtered: string[] = []
+  let skipNext = false
+
+  for (const token of tokens) {
+    const lower = token.toLowerCase()
+
+    if (skipNext) {
+      skipNext = false
+    } else if (lower === '--profile' || lower === '-p') {
+      skipNext = true
+    } else if (!lower.startsWith('--profile=') && !lower.startsWith('-p=')) {
+      filtered.push(lower)
+    }
+  }
+
+  return filtered.includes('gateway')
+}
+
+/** True when `raw` is a Hermes runtime command line, identified by a whole argv TOKEN
+ *  (never an argv substring — root AGENTS.md HX003). Two shapes, mirroring the canonical
+ *  Python matcher `gateway.status.looks_like_gateway_command_line`:
+ *    1. a token whose basename is the Hermes executable (`hermes`, launched directly or by
+ *       an interpreter such as `python …/hermes gateway run`); or
+ *    2. a `hermes_cli.main` / `hermes_cli/main.py` module entry (`python -m hermes_cli.main
+ *       … gateway run`, the real unmanaged-gateway launch) carrying the `gateway` subcommand.
+ *  Shape 2 was missing, so `findRunningGatewayProfiles` could not see a module-launched
+ *  gateway at first launch / profile repair. Exported for unit tests. */
 export function commandLineIsHermesRuntime(raw: string): boolean {
-  return commandLineTokens(raw).some(token => HERMES_RUNTIME_BASENAME.test(token.replace(/^.*[\\/]/, '')))
+  const tokens = commandLineTokens(raw)
+
+  if (tokens.some(token => HERMES_RUNTIME_BASENAME.test(tokenBasename(token)))) {
+    return true
+  }
+
+  const hasModuleEntry = tokens.some(token => {
+    const lower = token.toLowerCase()
+
+    return lower === 'hermes_cli.main' || lower === 'hermes_cli/main.py' || lower.endsWith('/hermes_cli/main.py')
+  })
+
+  return hasModuleEntry && tokensNameGatewaySubcommand(tokens)
 }
 
 // True when the given pid belongs to a running Hermes process, identified by a whole

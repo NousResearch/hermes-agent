@@ -8,6 +8,7 @@ import errno
 import logging
 import socket
 import sys
+from contextlib import suppress
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
@@ -16,6 +17,48 @@ if TYPE_CHECKING:
 from gateway.platforms.shared_ingress import is_wildcard_host
 
 logger = logging.getLogger(__name__)
+
+
+def _tolerant_tcp_keepalive(transport) -> None:
+    """``SO_KEEPALIVE`` on an accepted socket, tolerating the OS saying no.
+
+    aiohttp calls this unguarded for every accepted connection
+    (``RequestHandler.connection_made``), so a platform that rejects the option takes the whole
+    connection down with it: on macOS an external-interface bind raised
+    ``setsockopt SO_KEEPALIVE: invalid argument`` (errno 22) and the server closed every
+    connection, so webhook deliveries failed 100% (#123327). The neighbouring ``tcp_nodelay``
+    wraps the identical call in ``suppress(OSError)``; this restores that symmetry.
+
+    Keepalive is an optimisation — a dead peer is still detected by the request timeout — so
+    losing it is strictly better than refusing the connection.
+    """
+    sock = transport.get_extra_info("socket")
+    if sock is None:
+        return
+    with suppress(OSError):
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+
+
+def install_tolerant_tcp_keepalive() -> bool:
+    """Make aiohttp's per-connection keepalive non-fatal; True when the shim was installed.
+
+    Applied where these adapters bind rather than at import: the behaviour only matters once a
+    site is being served, and aiohttp offers no supported way to disable it (there is no
+    ``TCPSite(keepalive_socket=...)`` in 3.14). Idempotent, and a no-op if aiohttp's internals
+    move — the symptom is a connection reset, not a crash, so degrading to stock aiohttp is safe.
+    """
+    try:
+        from aiohttp import web_protocol
+    except Exception:
+        return False
+    if getattr(web_protocol, "tcp_keepalive", None) is _tolerant_tcp_keepalive:
+        return True
+    if not hasattr(web_protocol, "tcp_keepalive"):
+        return False
+    with suppress(Exception):
+        web_protocol.tcp_keepalive = _tolerant_tcp_keepalive
+    return getattr(web_protocol, "tcp_keepalive", None) is _tolerant_tcp_keepalive
+
 
 def has_live_listener(host: str, port: int) -> bool:
     """Blocking probe: True when something accepts connections on ``host:port``. Refused = nobody listens;
@@ -46,6 +89,10 @@ async def start_tcp_site(runner: web.BaseRunner, host: Optional[str], port: int,
     probe), so one retry with reuse_address=True is safe. A wildcard host keeps the strict path: a
     foreign listener on a non-loopback interface could not be probed, so it must keep winning."""
     from aiohttp import web
+
+    # Applied here, at bind time: every accepted connection goes through aiohttp's unguarded
+    # keepalive, so an OS that rejects the option would otherwise close each one (#123327).
+    install_tolerant_tcp_keepalive()
 
     exclusive = sys.platform == "darwin"
     site = web.TCPSite(runner, host, port, reuse_address=False if exclusive else None)

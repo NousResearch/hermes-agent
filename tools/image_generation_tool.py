@@ -225,8 +225,9 @@ def _build_payload(model_id, prompt, aspect_ratio, seed, overrides, image_urls=N
     if aspect not in sizes:
         aspect = DEFAULT_ASPECT_RATIO
     payload: dict[str, Any] = dict(meta.get("defaults", {}))
-    payload["prompt"] = (prompt or "").strip()
-    required = {"prompt"}
+    prompt_param = (meta.get("edit_prompt_param") if edit else None) or "prompt"  # FIBO 2.0 edit: `instruction`
+    payload[prompt_param] = (prompt or "").strip()
+    required = {prompt_param}
     if edit:  # a few edit endpoints (Kling Image v3) take a singular `image_url` string instead of the list
         image_param = meta.get("edit_image_param") or "image_urls"
         payload[image_param] = next(iter(image_urls)) if image_param != "image_urls" else list(image_urls)

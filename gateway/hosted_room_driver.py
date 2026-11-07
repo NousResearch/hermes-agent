@@ -217,7 +217,7 @@ def settle_stopping_task(
     result: Any, clock: Clock) -> dict[str, Any]:
     """Commit a completion that won the race with an unacknowledged Stop."""
     _terminal_settlement_id(settlement_id, status)  # settlement errors take precedence over generation errors
-    if expected_execution_generation < 1 or expected_cancel_generation < 1:
+    if expected_execution_generation < 1 or expected_cancel_generation < 0:
         raise DriverValidationError("stopping settlement generations are invalid")
     settlement_id, now = _settlement(settlement_id, status, result, clock)
     return store.hosted_room_driver.settle_stopping_task(
@@ -327,37 +327,37 @@ def requeue_not_admitted_task(
 
 def cancel_task(
     store, identity: HostedTaskIdentity, *, placement: HostedPlacement, cancel_id: Any,
-    expected_cancel_generation: int, clock: Clock) -> dict[str, Any]:
+    expected_cancel_generation: int, clock: Clock, expected_execution_generation: int | None = None) -> dict[str, Any]:
     """Cancel a queued task before any external work was admitted."""
     cancel_id = _identifier(cancel_id, label="cancel_id")
     _cancel_generation(expected_cancel_generation)
     now = _timestamp(clock)
     return store.hosted_room_driver.cancel_task(
         identity, placement=placement, cancel_id=cancel_id, expected_cancel_generation=expected_cancel_generation,
-        now=now)
+        now=now, expected_execution_generation=expected_execution_generation)
 
 
 def begin_task_cancel(
     store, identity: HostedTaskIdentity, *, placement: HostedPlacement, cancel_id: Any,
-    expected_cancel_generation: int, clock: Clock) -> dict[str, Any]:
+    expected_cancel_generation: int, clock: Clock, expected_execution_generation: int | None = None) -> dict[str, Any]:
     """Persist a stop intent without claiming the remote run has stopped."""
     cancel_id = _identifier(cancel_id, label="cancel_id")
     _cancel_generation(expected_cancel_generation)
     now = _timestamp(clock)
     return store.hosted_room_driver.begin_task_cancel(
         identity, placement=placement, cancel_id=cancel_id, expected_cancel_generation=expected_cancel_generation,
-        now=now)
+        now=now, expected_execution_generation=expected_execution_generation)
 
 
 def complete_task_cancel(
     store, identity: HostedTaskIdentity, *, placement: HostedPlacement, cancel_id: Any,
-    expected_cancel_generation: int, clock: Clock) -> dict[str, Any]:
+    expected_cancel_generation: int, clock: Clock, expected_execution_generation: int | None = None) -> dict[str, Any]:
     """Commit cancellation only after the transport acknowledges exact Stop."""
     cancel_id = _identifier(cancel_id, label="cancel_id")
     now = _timestamp(clock)
     return store.hosted_room_driver.complete_task_cancel(
         identity, placement=placement, cancel_id=cancel_id, expected_cancel_generation=expected_cancel_generation,
-        now=now)
+        now=now, expected_execution_generation=expected_execution_generation)
 
 
 def mark_attempt_indeterminate(

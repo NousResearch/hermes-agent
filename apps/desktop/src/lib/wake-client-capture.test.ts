@@ -79,6 +79,8 @@ class FakeAudioContext {
 const TONE = 0.2 // comfortably above any silence floor
 const toneFrame = () => new Float32Array(4096).fill(TONE)
 const silentFrame = () => new Float32Array(4096) // digital zeros, like a dead capture chain
+// ~-90 dBFS: a live noise-suppressed mic (Jabra, SteelSeries Sonar) idling in a quiet room.
+const quietFrame = () => new Float32Array(4096).fill(0.00003)
 
 const flush = () => new Promise<void>(resolve => setTimeout(resolve, 0))
 
@@ -156,6 +158,22 @@ describe('startClientWakeCapture (issue #119089)', () => {
 
     for (let i = 0; i < 30; i++) {
       processor().emit(toneFrame())
+    }
+
+    await flush()
+    expect(onError).not.toHaveBeenCalled()
+    expect(handle.active).toBe(true)
+    expect(request).toHaveBeenCalled()
+  })
+
+  it('keeps listening through a noise-suppressed mic idling far below -60 dBFS', async () => {
+    const onError = vi.fn()
+    const request = vi.fn(async () => ({ fed: true }))
+    const handle = await start({ onError, request, silenceFramesThreshold: 10 })
+    handles.push(handle)
+
+    for (let i = 0; i < 30; i++) {
+      processor().emit(quietFrame())
     }
 
     await flush()

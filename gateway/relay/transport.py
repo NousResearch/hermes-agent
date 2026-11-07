@@ -26,6 +26,13 @@ InboundHandler = Callable[[MessageEvent], Awaitable[Optional["asyncio.Task[None]
 PassthroughHandler = Callable[[Any, Optional[str]], Awaitable[None]]
 
 
+class RelayCredentialsMissing(ConnectionError):
+    """The connector requires per-gateway credentials and this gateway holds none yet.
+
+    Raised by ``connect()``/``handshake()`` instead of dialing again: only provisioning
+    can change the connector's answer, and the gateway re-provisions on its own."""
+
+
 @runtime_checkable
 class RelayTransport(Protocol):
     """Full gateway<->connector transport contract."""

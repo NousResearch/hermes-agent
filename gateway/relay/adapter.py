@@ -26,6 +26,7 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.event import ProcessingOutcome
 from agent.i18n import t
+from gateway.relay.adapter_auth import RelayAuthLifecycleMixin
 from gateway.relay.adapter_discord_interaction import RelayDiscordInteractionMixin
 from gateway.relay.descriptor import CapabilityDescriptor
 from gateway.relay.egress import (
@@ -35,7 +36,7 @@ from gateway.relay.egress import (
     log_decline,
 )
 from gateway.relay.media import RelayMediaClient
-from gateway.relay.transport import RelayTransport
+from gateway.relay.transport import RelayCredentialsMissing, RelayTransport
 from datetime import UTC
 
 logger = logging.getLogger(__name__)
@@ -113,7 +114,7 @@ def _profile_from_session_key(session_key: str) -> Optional[str]:
     return None if profile == "default" else profile
 
 
-class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
+class RelayAdapter(RelayAuthLifecycleMixin, RelayDiscordInteractionMixin, BasePlatformAdapter):
     """Generic relay adapter advertising a connector-negotiated capability profile."""
 
     # Connector egress splits against negotiated max_message_length, so the
@@ -834,11 +835,16 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
             setter = getattr(self._transport, setter_name, None)
             if callable(setter):
                 setter(handler)
-        if not await self._transport.connect():
-            return False
+        try:
+            if not await self._transport.connect():
+                return False
+        except RelayCredentialsMissing as exc:
+            return self._await_relay_credentials(exc)
         # Adopt the connector-advertised descriptor in place of the placeholder.
         try:
             descriptor = await self._transport.handshake()
+        except RelayCredentialsMissing as exc:
+            return self._await_relay_credentials(exc)
         except Exception as exc:
             logger.warning("relay handshake failed: %s", exc)
             return False
@@ -847,38 +853,6 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         if hasattr(self._transport, "auth_revoked"):
             self._start_revocation_monitor()
         return True
-
-    def _start_revocation_monitor(self) -> None:
-        """Spawn (once) the task turning a transport auth-revocation into a clean
-        non-retryable 'relay disabled' fatal. Idempotent."""
-        if self._revocation_monitor is not None and not self._revocation_monitor.done():
-            return
-        try:
-            self._revocation_monitor = asyncio.create_task(
-                self._watch_for_revocation(), name="relay-revocation-monitor"
-            )
-        except RuntimeError:
-            # No running loop (a unit test calling connect() via a stub).
-            self._revocation_monitor = None
-
-    async def _watch_for_revocation(self, poll_interval_s: float = 1.0) -> None:
-        """Poll for a terminal 4401 revocation (opt-out), then surface a non-retryable
-        `relay_disabled` fatal so the adapter is cleanly removed rather than queued
-        for reconnection (the credential is dead until the instance is recreated)."""
-        transport = self._transport
-        if transport is None:
-            return
-        while not getattr(transport, "auth_revoked", False):
-            await asyncio.sleep(poll_interval_s)
-        logger.warning("relay credential revoked (opt-out) — marking the relay adapter disabled")
-        self._set_fatal_error(
-            "relay_disabled", "Relay disabled (opted out — recreate the instance to re-enable)",
-            retryable=False,
-        )
-        try:
-            await self._notify_fatal_error()
-        except Exception:
-            logger.debug("relay revocation fatal-error notify failed", exc_info=True)
 
     def _apply_descriptor(self, descriptor: CapabilityDescriptor) -> None:
         """Adopt a (re)negotiated descriptor into the live capability surface."""

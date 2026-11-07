@@ -69,6 +69,28 @@ class TestIsTimeoutError:
     def test_none_is_not_timeout(self):
         assert not _StubAdapter._is_timeout_error(None)
 
+    @pytest.mark.parametrize("error", [
+        "ReadTimeout: request timed out",
+        "WriteTimeout: write timed out",
+        "Timeout sending message to WeCom",
+        "Timeout sending media to WeCom",
+        "Timeout sending message to DingTalk",
+        "Timeout publishing to ntfy",
+    ])
+    def test_read_write_and_leading_timeout_phrasing(self, error):
+        assert _StubAdapter._is_timeout_error(error)
+
+    @pytest.mark.parametrize("error", [
+        "",
+        "httpx.ConnectTimeout",
+        "connecttimeout",
+        "ConnectError: connection refused",
+    ])
+    def test_connect_timeout_is_not_a_delivery_timeout(self, error):
+        # "connecttimeout" never connected and stays retryable. A bare "timeout"
+        # substring would steal it; only a leading "timeout" prefix counts.
+        assert not _StubAdapter._is_timeout_error(error)
+
 
 # ---------------------------------------------------------------------------
 # _is_rate_limited_error
@@ -120,6 +142,20 @@ class TestSendWithRetryNetworkRetry:
         mock_sleep.assert_not_called()
         assert not result.success
         assert len(adapter._send_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_leading_timeout_phrasing_not_retried_or_plain_text(self):
+        """WeCom/DingTalk 'Timeout sending …' may already have been delivered."""
+        adapter = _StubAdapter()
+        adapter._send_results = [
+            SendResult(success=False, error="Timeout sending message to WeCom"),
+        ]
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            result = await adapter._send_with_retry("chat1", "**bold**", max_retries=3, base_delay=0)
+        mock_sleep.assert_not_called()
+        assert not result.success
+        assert len(adapter._send_calls) == 1
+        assert result.error == "Timeout sending message to WeCom"
 
 
 # ---------------------------------------------------------------------------

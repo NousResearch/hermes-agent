@@ -63,11 +63,23 @@ def test_file_tools_refuse_a_locked_skill_and_its_record(locked_home):
     ("export D={L} && cp /etc/hosts $D/SKILL.md", True),
     ("cd {L} && python3 -c \"from pathlib import Path; Path('SKILL.md').write_text('x')\"", True),
     ("find {H}/skills -name SKILL.md -exec sed -i s/a/b/ {{}} +", True),
+    ("git -C {H} add {L}/SKILL.md", True),
+    ("git -C {H} add .", True),
+    ("git -C {H} commit -a -m all", True),
+    ("git -C {H}/skills/ops/free-skill rm {L}/SKILL.md", True),
+    ("cd {H}/skills/ops/free-skill && git mv {L}/SKILL.md {H}/moved.md", True),
+    ("git -C {H} pull --rebase", True),
+    ("git -C {H} switch main", True),
     ("cat {L}/SKILL.md", False),
     ("python3 {L}/scripts/run.py > {H}/out.log 2>&1", False),
     ("cp {L}/SKILL.md {H}/copy.md", False),
     ("echo x > {H}/skills/ops/free-skill/SKILL.md", False),
     ("git -C {L} log --oneline", False),
+    ("git -C {H} add README.md", False),
+    ("git -C {H} commit -m 'unrelated notes'", False),
+    ("git -C {H} commit -m 'release' && git -C {H} push origin main", False),
+    ("git -C {H} push", False),
+    ("git -C {H} fetch --all", False),
     ("tar xf {H}/a.tar -C {H}", False),
     ("python3 -c \"print(open('{L}/SKILL.md').read())\"", False),
     ("find {H}/skills -name SKILL.md -exec cat {{}} +", False),
@@ -79,6 +91,24 @@ def test_terminal_refuses_writes_into_a_locked_skill_but_not_reads(locked_home, 
     lock_dir = locked_home / "skills/ops/locked-skill"
     reason = command_refusal(command.format(L=lock_dir, H=locked_home), str(locked_home))
     assert (reason is not None) is blocked, reason
+
+
+def test_git_in_ancestor_repo_checks_staged_paths_and_reports_tree_refusal(locked_home):
+    import subprocess
+    from tools.skill_lock import command_refusal
+    subprocess.run(["git", "-C", str(locked_home), "init", "-q"], check=True)
+    notes = locked_home / "notes.md"
+    notes.write_text("hello\n")
+    subprocess.run(["git", "-C", str(locked_home), "add", "notes.md"], check=True)
+    assert command_refusal(f"git -C {locked_home} commit -m notes", str(locked_home)) is None
+
+    subprocess.run(["git", "-C", str(locked_home), "add", "skills/ops/locked-skill/SKILL.md"], check=True)
+    staged_refusal = command_refusal(f"git -C {locked_home} commit -m sneak", str(locked_home))
+    assert staged_refusal and "locked-skill" in staged_refusal
+
+    tree_refusal = command_refusal(f"git -C {locked_home} pull --rebase", str(locked_home))
+    assert tree_refusal and "contains locked skill 'locked-skill'" in tree_refusal
+    assert "git pull" in tree_refusal
 
 
 def test_lock_resolves_by_display_name_as_well_as_directory(locked_home):

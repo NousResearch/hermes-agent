@@ -31,8 +31,8 @@ def source_build_env(base_env: dict | None = None, *, explicit: bool = False, ve
     from pm import ensure
     from pm.environments import project_python, running_from_selected_environment
     from pm.packages import pnpm_env
+    from pm.index_config import hermes_npmrc, user_npmrc
     from pm.paths import repo_root
-    from hermes_constants import get_hermes_home
 
     # The historical update runs on store Python with the selected environment
     # activated in-process. Icon generation starts an isolated child, which needs
@@ -48,15 +48,15 @@ def source_build_env(base_env: dict | None = None, *, explicit: bool = False, ve
     if vc_runtime.is_file():
         env["HERMES_VC_RUNTIME"] = str(vc_runtime)
     env.pop("ESBUILD_BINARY_PATH", None)
-    hermes_npmrc = get_hermes_home() / "npmrc"
-    if hermes_npmrc.is_file():
-        env.setdefault("NPM_CONFIG_USERCONFIG", str(hermes_npmrc))
+    npmrc = user_npmrc(env)
+    if npmrc == hermes_npmrc():
+        env.setdefault("NPM_CONFIG_USERCONFIG", str(npmrc))
     # pnpm reads the npmrc that user_npmrc selects (an explicit userconfig, else Hermes's, else
     # ~/.npmrc) only for its registry and auth. npm also handed every other key to dependency install scripts
     # as npm_config_<key>, which is how node-pre-gyp finds a binary mirror
     # (node_get_windows_binary_host_mirror).
     inherited = {name.upper() for name in env}
-    for key, value in _npmrc_script_settings(env):
+    for key, value in _npmrc_script_settings(npmrc, env):
         name = f"npm_config_{key.replace('-', '_').lower()}"
         if name.upper() not in inherited:  # an explicit setting wins, in any case
             env[name] = value
@@ -69,13 +69,13 @@ _NPMRC_SETTING = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
 _NPMRC_SECRETS = frozenset({"otp", "key", "cert"})
 
 
-def _npmrc_script_settings(env: dict) -> list[tuple[str, str]]:
-    """The user npmrc's plain settings (``pm.index_config.read_npmrc``) that may reach install
+def _npmrc_script_settings(npmrc: Path, env: dict) -> list[tuple[str, str]]:
+    """The npmrc's plain settings (``pm.index_config.read_npmrc``) that may reach install
     scripts. Skipped: credentials (``//host/:_authToken``, ``_auth``, ``otp``, ``key``,
     ``cert``) and scoped registries (``@scope:registry``)."""
-    from pm.index_config import read_npmrc, user_npmrc
+    from pm.index_config import read_npmrc
 
-    settings = read_npmrc(user_npmrc(env), env)
+    settings = read_npmrc(npmrc, env)
     return [(key, value) for key, value in settings.items()
             if _NPMRC_SETTING.fullmatch(key) and key.lower() not in _NPMRC_SECRETS]
 

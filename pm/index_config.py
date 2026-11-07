@@ -112,17 +112,22 @@ def pip_conf_index_url(env: Mapping[str, str]) -> str | None:
 NPM_PUBLIC_REGISTRY = "https://registry.npmjs.org/"
 
 
-def user_npmrc(env: Mapping[str, str]) -> Path:
-    """The user npmrc Hermes's npm and pnpm children read: ``npm_config_userconfig`` (any case),
-    else the profile's ``$HERMES_HOME/npmrc`` when it exists (``source_build_env`` points
-    ``NPM_CONFIG_USERCONFIG`` at it), else ``~/.npmrc``."""
+def hermes_npmrc() -> Path | None:
+    """The profile's ``$HERMES_HOME/npmrc`` when it exists."""
     from hermes_constants import get_hermes_home
 
+    path = get_hermes_home() / "npmrc"
+    return path if path.is_file() else None
+
+
+def user_npmrc(env: Mapping[str, str]) -> Path:
+    """The user npmrc Hermes's npm and pnpm children read: ``npm_config_userconfig`` (any case),
+    else ``hermes_npmrc()`` (``source_build_env`` points ``NPM_CONFIG_USERCONFIG`` at it), else
+    ``~/.npmrc``. As npm's userconfig, the Hermes file replaces ``~/.npmrc``; the two never merge."""
     explicit = next((value for key, value in env.items() if key.lower() == "npm_config_userconfig" and value), "")
     if explicit:
         return Path(explicit).expanduser()
-    hermes_npmrc = get_hermes_home() / "npmrc"
-    return hermes_npmrc if hermes_npmrc.is_file() else Path.home() / ".npmrc"
+    return hermes_npmrc() or Path.home() / ".npmrc"
 
 
 # npm's line grammar (the ``ini`` package @npmcli/config parses with) and its ${VAR} / ${VAR?}

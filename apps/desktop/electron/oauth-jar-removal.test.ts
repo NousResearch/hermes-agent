@@ -6,7 +6,7 @@ import { expect, it, onTestFinished } from 'vitest'
 
 import { type ConnectionRegistry, normalizeRegistry, removeConnection } from './connection-registry'
 import { createGatewayConnectionsStore } from './gateway-connections-store'
-import { type CookieSessionLike, createRemovedConnectionCookieCleaner } from './oauth-jar-removal'
+import { connectionConfigUrls, type CookieSessionLike, createRemovedConnectionCookieCleaner } from './oauth-jar-removal'
 import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
 
 // #98242: a removed OAuth gateway's sign-in must not outlive it in any jar it rode.
@@ -18,7 +18,7 @@ interface Cookie {
 }
 
 /** Partition -> cookies, behind the slice of Electron's Session API removal uses. */
-function cookieJars() {
+function cookieJars(sharedUrls: () => unknown[] = () => ['https://portal.nousresearch.com']) {
   const jars = new Map<string, Cookie[]>()
   const mirrorCleared: string[] = []
 
@@ -46,7 +46,7 @@ function cookieJars() {
     sessionFor,
     clearMirror: (partition, url) => mirrorCleared.push(`${partition}|${url ?? '*'}`),
     v1RemoteUrl: () => undefined,
-    sharedUrls: () => ['https://portal.nousresearch.com']
+    sharedUrls
   })
 
   return { clean, mirrorCleared, names, seed }
@@ -139,3 +139,14 @@ it('a removal another writer (the Webapp) made reaches the cleanup with the list
   expect(jars.names(resolveOauthPartition(URL_A, { registry: list('local', [gateway]) }))).toEqual([])
   expect(jars.names(LEGACY_OAUTH_PARTITION)).toEqual([])
 }, 20_000)
+
+it("a connection.json per-profile route on the removed gateway's host keeps its shared-jar sign-in", async () => {
+  const config = { remote: {}, profiles: { coder: { mode: 'remote', url: 'https://gw.example.invalid:9000' } } }
+  const jars = cookieJars(() => ['https://portal.nousresearch.com', ...connectionConfigUrls(config)])
+  const secondary = { ...gateway, url: 'https://gw.example.invalid:8000' }
+  jars.seed(LEGACY_OAUTH_PARTITION, 'gw.example.invalid', 'hermes_session')
+
+  await jars.clean('remote-a', list('local', [secondary]))
+
+  expect(jars.names(LEGACY_OAUTH_PARTITION)).toEqual(['gw.example.invalid:hermes_session'])
+})

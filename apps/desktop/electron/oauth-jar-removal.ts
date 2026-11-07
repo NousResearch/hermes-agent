@@ -70,6 +70,13 @@ interface RemovedConnectionCookieCleanerDeps extends OauthJarRemovalDeps {
   sharedUrls: () => unknown[]
 }
 
+/** connection.json's routes that dial a URL: the app-global one and every per-profile override. */
+export function connectionConfigUrls(
+  config: { remote?: { url?: unknown }; profiles?: Record<string, { url?: unknown } | null> } | null | undefined
+) {
+  return [config?.remote?.url, ...Object.values(config?.profiles ?? {}).map(block => block?.url)]
+}
+
 /**
  * Removal's cookie cleanup, for Desktop's own removal and for one the watcher saw
  * another writer (the Webapp) make. `after` defaults to `before` without `id`.

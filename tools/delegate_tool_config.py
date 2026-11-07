@@ -101,6 +101,15 @@ def _get_prefix_stagger_seconds() -> float:
     )
 
 
+def _get_max_task_echo_chars() -> int:
+    """delegation.max_task_echo_chars (default 200; 0 = verbatim): cap on each goal/context the dispatch receipt and
+    completion messages repeat back to the parent, which already holds the full text in its own call."""
+    return _knob(
+        "max_task_echo_chars", None, lambda v: max(0, int(v)), 200,
+        "delegation.max_task_echo_chars=%r is not a valid integer; using default 200",
+    )
+
+
 def _get_max_concurrent_children() -> int:
     """delegation.max_concurrent_children > DELEGATION_MAX_CONCURRENT_CHILDREN env > 10.
 

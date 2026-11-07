@@ -156,7 +156,7 @@ def _notice_lines(results) -> list[str]:
     return ["", *notice] if notice else []
 
 
-def _preamble(evt: dict, title: str, intro: str, completed_at: float, *, with_goal: bool) -> list[str]:
+def _preamble(evt: dict, title: str, intro: str, completed_at: float, *, with_goal: bool, echo: int) -> list[str]:
     """Shared preamble: title, intro, blank, dispatch time, [goal], context/toolsets, role+model."""
     lines = [title, intro, ""]
     dispatched_at = evt.get("dispatched_at")
@@ -164,16 +164,16 @@ def _preamble(evt: dict, title: str, intro: str, completed_at: float, *, with_go
         ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(dispatched_at))
         lines.append(f"Dispatched: {ts} ({_format_age(completed_at - dispatched_at)} ago)")
     if with_goal:
-        lines.append(f"Original goal: {evt.get('goal', '') or ''}")
+        lines.append(f"Original goal: {_task_echo(evt.get('goal'), echo)}")
     if evt.get("context"):
-        lines.append(f"Context you provided: {evt['context']}")
+        lines.append(f"Context you provided: {_task_echo(evt['context'], echo)}")
     if evt.get("toolsets"):
         lines.append(f"Toolsets: {', '.join(evt['toolsets'])}")
     lines.append(f"Role: {evt.get('role') or 'leaf'}" + (f"   Model: {evt['model']}" if evt.get("model") else ""))
     return lines
 
 
-def _format_task_failure_notice(evt: dict, deleg_id: str) -> str:
+def _format_task_failure_notice(evt: dict, deleg_id: str, echo: int) -> str:
     """One child of a still-running fan-out failed: say which, why, and that the batch goes on."""
     (r,) = (evt.get("results") or [{}])[:1] or [{}]
     goals, idx, n = evt.get("goals") or [], r.get("task_index", 0), evt.get("n_tasks") or len(evt.get("goals") or [])
@@ -184,7 +184,8 @@ def _format_task_failure_notice(evt: dict, deleg_id: str) -> str:
         "One subagent in a background fan-out you dispatched has failed while its siblings are still running. "
         "The batch's consolidated results will still arrive when the last sibling finishes; this is an early "
         "warning so you can re-dispatch or investigate now instead of then.",
-        f"Task: {goal}" if goal else "",
+        f"Task: {_task_echo(goal, echo)}" if goal else "",
+        *_echo_pointer(deleg_id, [goal], echo),
         f"Status: {r.get('status', '?')}   Duration: {r.get('duration_seconds', '?')}s" + (f"\nError: {err}" if err else ""),
     ]
     if r.get("live_transcript"):
@@ -209,7 +210,7 @@ def _recovery_lines(evt: dict) -> list[str]:
     return lines
 
 
-def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> str:
+def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float, echo: int) -> str:
     """Consolidated block for a delegate_task fan-out that finished as one unit."""
     results, goals = evt.get("results") or [], evt.get("goals") or []
     # ``goals`` is the whole delegate_task call (task_index indexes it); ``results`` is this unit's subset.
@@ -223,8 +224,9 @@ def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> s
         "below. Any other units from the same delegate_task call report separately as they finish. You may have "
         "moved on since dispatching — act on these or re-dispatch if things have changed. If you are still waiting "
         "on siblings, end your turn after acting on this one.",
-        completed_at, with_goal=False)
+        completed_at, with_goal=False, echo=echo)
     lines[-1] += f"   Total duration: {evt.get('total_duration_seconds', evt.get('duration_seconds', '?'))}s"
+    lines += _echo_pointer(deleg_id, [evt.get("context"), *(goals[r.get("task_index", 0)] if r.get("task_index", 0) < len(goals) else r.get("goal", "") for r in results)], echo)
     lines += _recovery_lines(evt)
     if evt.get("error") and not results:
         lines += ["--- ERROR ---", f"The batch did not complete successfully: {evt['error']}"]
@@ -235,7 +237,7 @@ def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> s
     for r in sorted(results, key=lambda x: x.get("task_index", 0)):
         idx, r_truncated = r.get("task_index", 0), _is_truncated(r)
         r_status, r_summary, r_error = r.get("status", "?"), r.get("summary"), r.get("error")
-        r_goal = goals[idx] if idx < len(goals) else r.get("goal", "")
+        r_goal = _task_echo(goals[idx] if idx < len(goals) else r.get("goal", ""), echo)
         icon = "⚠" if r_truncated else ("✓" if r_status in _DONE else "✗")
         header = (f"--- {icon} TASK {idx + 1}/{n}" + (f": {r_goal}" if r_goal else "") + f"  (status={r_status}"
                   + (f", api_calls={r['api_calls']}" if r.get("api_calls") else "")
@@ -278,24 +280,27 @@ def _process_accounting_lines(r: dict) -> list:
 
 
 def _format_async_delegation(evt: dict) -> str:
-    """Self-contained re-injection for an async-delegation completion: the FULL
-    original task source (goal, context, toolsets, role, model), dispatch time, status
-    and result, so an agent deep in unrelated context can act on it or re-dispatch."""
+    """Re-injection for an async-delegation completion: the task's goal and context (one line each,
+    capped by ``delegation.max_task_echo_chars``, with a pointer to the full text when cut), toolsets,
+    role, model, dispatch time, status and result, so an agent deep in unrelated context can act on it or re-dispatch."""
     deleg_id = evt.get("delegation_id", "unknown")
     completed_at = evt.get("completed_at") or time.time()
+    from tools.delegate_tool_config import _get_max_task_echo_chars
+    echo = _get_max_task_echo_chars()
     if evt.get("task_failure_notice"):
-        return _format_task_failure_notice(evt, deleg_id)
+        return _format_task_failure_notice(evt, deleg_id, echo)
     if evt.get("is_batch") or isinstance(evt.get("results"), list):
-        return _format_batch_delegation(evt, deleg_id, completed_at)
+        return _format_batch_delegation(evt, deleg_id, completed_at, echo)
     status, summary, error = evt.get("status") or "completed", evt.get("summary"), evt.get("error")
     truncated = _is_truncated(evt)
     lines = _preamble(
         evt,
         f"[ASYNC DELEGATION COMPLETE — {deleg_id}]",
         "A background subagent you dispatched earlier has finished. You may "
-        "have moved on since dispatching it; the full task source is below so "
+        "have moved on since dispatching it; the task source is below so "
         "you can act on the result or re-dispatch if things have changed.",
-        completed_at, with_goal=True)
+        completed_at, with_goal=True, echo=echo)
+    lines += _echo_pointer(deleg_id, [evt.get("goal"), evt.get("context")], echo)
     lines += _notice_lines([evt]) + [
         f"Status: {status}" + (f"   API calls: {evt['api_calls']}" if evt.get("api_calls") is not None else "")
         + f"   Duration: {evt.get('duration_seconds', '?')}s"
@@ -345,6 +350,24 @@ def async_delegation_display_text(evt: dict) -> str:
 def _short_title(title: str) -> str:
     # A goal is free text: the card's title stays one line (and within an admission's display limit).
     return title[:197] + "..." if len(title) > 200 else title
+
+
+def _task_echo(text, limit: int) -> str:
+    """A goal or context as echoed back to the parent: one line of at most ``limit`` chars + "...", or verbatim at 0."""
+    text = str(text or "")
+    if limit <= 0:
+        return text
+    text = " ".join(text.split())
+    return text[:limit] + "..." if len(text) > limit else text
+
+
+def _echo_pointer(deleg_id: str, texts, limit: int) -> list[str]:
+    """One line naming where the full task text lives, when the cap shortened any of ``texts``."""
+    if limit <= 0 or all(len(" ".join(str(t or "").split())) <= limit for t in texts):
+        return []
+    from hermes_constants import display_hermes_home
+    return [f"Task text in this message is cut to {limit} chars; the full text is in your delegate_task call and in "
+            f"async_delegations.task_json (delegation_id {deleg_id}) in {display_hermes_home()}/state.db."]
 
 
 PROCESS_COMPLETE_DISPLAY_KIND = "process_complete"

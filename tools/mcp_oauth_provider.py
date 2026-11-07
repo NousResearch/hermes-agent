@@ -309,6 +309,7 @@ class HermesProviderMixin:
         self._coerce_client_secret_post()
         await self._hermes_acquire_refresh_fence()
         try:
+            await self._hermes_check_disk_registration()
             # Re-read under the fence: a peer may have rotated while we waited
             # for it, in which case the token we were about to POST is dead.
             # If disk already holds a different refresh token, the peer that held
@@ -372,6 +373,27 @@ class HermesProviderMixin:
         if fd is not None:
             release_refresh_fence(fd)
 
+    async def _hermes_check_disk_registration(self) -> None:
+        """A waiting old provider must not refresh a newly reauthorized grant.
+
+        Refresh rotation changes tokens, not registration. CLI authorization may
+        replace the client and discovery metadata as well: require a reconnect
+        before building any request with that new generation. Never pass it to
+        issuer enforcement against our old context, which could strip the grant.
+        """
+        from tools.mcp_oauth import HermesTokenStorage
+
+        storage = self.context.storage
+        if not isinstance(storage, HermesTokenStorage):
+            return
+        from tools.mcp_oauth_login import require_settled_publication
+        require_settled_publication(storage)
+        client = await storage.get_client_info()
+        metadata = storage.load_oauth_metadata()
+        if ((client is not None and client != self.context.client_info)
+                or (metadata is not None and metadata != self.context.oauth_metadata)):
+            raise RuntimeError("MCP OAuth registration changed on disk; reconnect the server before refreshing")
+
     async def _hermes_rotated_candidate(self):
         """The on-disk pair, if a peer rotated it past the one we hold.
 
@@ -409,14 +431,25 @@ class HermesProviderMixin:
         """Load stored state, restore persisted server metadata when the SDK has none (so the issuer
         check and any refresh see the discovered ``issuer``/``token_endpoint`` instead of SDK guesses),
         then enforce refresh-token issuer binding."""
-        await super()._initialize()
         storage = self.context.storage
         from tools.mcp_oauth import HermesTokenStorage
-        if isinstance(storage, HermesTokenStorage) and self.context.oauth_metadata is None:
-            meta = storage.load_oauth_metadata()
-            if meta is not None:
-                self.context.oauth_metadata = meta
-        enforce_refresh_token_issuer(self.context)
+        from tools.mcp_oauth_login import require_settled_publication
+
+        await self._hermes_acquire_refresh_fence()
+        try:
+            if isinstance(storage, HermesTokenStorage):
+                require_settled_publication(storage)
+                if getattr(self, "_hermes_loaded_registration", False):
+                    await self._hermes_check_disk_registration()
+            await super()._initialize()
+            if isinstance(storage, HermesTokenStorage) and self.context.oauth_metadata is None:
+                meta = storage.load_oauth_metadata()
+                if meta is not None:
+                    self.context.oauth_metadata = meta
+            enforce_refresh_token_issuer(self.context)
+            self._hermes_loaded_registration = True
+        finally:
+            await self._hermes_release_refresh_fence()
 
     async def _store_tokens(self, token_response) -> None:
         self.context.current_tokens = token_response

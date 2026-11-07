@@ -227,23 +227,37 @@ def check_systemd_timing_alignment(
 
 
 def _systemd_timeout_stop_us(unit_name: str) -> Optional[int]:
-    """``TimeoutStopUSec`` of ``unit_name`` in microseconds; ``--user`` first (hermes' usual)."""
+    """``TimeoutStopUSec`` of ``unit_name`` in microseconds; ``--user`` first (hermes' usual).
+
+    A ``--user`` query against *any* unit name succeeds (``returncode == 0``) whenever the
+    invoking user has a reachable systemd ``--user`` manager instance (e.g. ``loginctl
+    enable-linger``) — even for a unit that instance has never heard of. systemd synthesizes
+    generic ``Default*`` properties (``DefaultTimeoutStopUSec``, commonly 90s) for that
+    not-found unit object, so the call looks like a hit but is actually the manager's global
+    default, not this unit's real value. Only trust a result whose ``LoadState`` isn't
+    ``not-found``; otherwise fall through to the next attempt (plain/system ``systemctl``).
+    """
     for flag in (["--user"], []):
         try:
             result = subprocess.run(
-                ["systemctl", *flag, "show", unit_name, "--property=TimeoutStopUSec"],
+                ["systemctl", *flag, "show", unit_name,
+                 "--property=LoadState", "--property=TimeoutStopUSec"],
                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=2.0,
                 check=False,
             )
         except (subprocess.TimeoutExpired, OSError):
             continue
-        # Output: "TimeoutStopUSec=1min 30s" or "TimeoutStopUSec=90000000"
-        for line in result.stdout.splitlines() if result.returncode == 0 else ():
-            if line.startswith("TimeoutStopUSec="):
-                value = line.split("=", 1)[1].strip()
-                timeout_us = int(value) if value.isdigit() else parse_systemd_duration_to_us(value)
-                if timeout_us is not None:
-                    return timeout_us
+        if result.returncode != 0:
+            continue
+        # Output: two "Key=Value" lines, e.g. "LoadState=loaded" / "TimeoutStopUSec=1min 30s".
+        props = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+        if props.get("LoadState") == "not-found":
+            continue  # synthesized manager defaults for a unit this instance doesn't actually have
+        value = props.get("TimeoutStopUSec", "").strip()
+        if value:
+            timeout_us = int(value) if value.isdigit() else parse_systemd_duration_to_us(value)
+            if timeout_us is not None:
+                return timeout_us
     return None
 
 

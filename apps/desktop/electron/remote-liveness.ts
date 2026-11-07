@@ -8,6 +8,11 @@ export const REMOTE_LIVENESS_TIMEOUT_MS = 10_000
 // reuse the background liveness budget so a quiet-box cold-start (~6-8s) can
 // finish instead of failing the probe and kicking off a reconnect storm.
 export const POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS = REMOTE_LIVENESS_TIMEOUT_MS
+// Backoff between the first failed dispatch probe and the confirmation probe
+// (#131765). Long enough for a transient undici `socket hang up` against a
+// bound forward to clear; short enough that a genuinely dead descriptor still
+// retires well inside the power-resume holdoff.
+export const POOLED_REMOTE_DISPATCH_PROBE_RETRY_DELAY_MS = 750
 export const REMOTE_LIVENESS_FAILURE_LIMIT = 3
 // Even at the capped retry path, consecutive liveness observations are at most
 // about 48s apart (ticket mint + socket open + backoff + the next status probe).
@@ -30,6 +35,42 @@ export interface RemoteLivenessFailure {
 interface RemoteConnectionDescriptor {
   baseUrl?: null | string
   mode?: null | string
+}
+
+/**
+ * `socket hang up` says the transport died but never WHY (#131765). Node
+ * wraps the underlying errno in `error.cause` (undici) or exposes it as
+ * `error.code`; surface both alongside the message so a probe failure is
+ * diagnosable from desktop.log alone.
+ */
+export function probeFailureDescription(...errors: unknown[]): string {
+  const described = new Set<string>()
+
+  for (const error of errors) {
+    if (!(error instanceof Error)) {
+      if (error !== undefined) {
+        described.add(String(error))
+      }
+
+      continue
+    }
+
+    described.add(error.message)
+
+    const cause = (error as Error & { cause?: unknown }).cause
+
+    if (cause instanceof Error && cause.message) {
+      described.add(`cause: ${cause.message}`)
+    }
+
+    const code = (error as Error & { code?: unknown }).code
+
+    if (typeof code === 'string' && code) {
+      described.add(`errno ${code}`)
+    }
+  }
+
+  return [...described].join('; ')
 }
 
 export interface RevalidateRemoteConnectionOptions<TConnection extends RemoteConnectionDescriptor> {
@@ -80,12 +121,41 @@ export class RemoteRevalidationCoordinator {
   }
 }
 
-interface EnsureHealthyPooledRemoteBackendForDispatchOptions<TConnection extends RemoteConnectionDescriptor> {
+export interface EnsureHealthyPooledRemoteBackendForDispatchOptions<TConnection extends RemoteConnectionDescriptor> {
   connectionPromise: Promise<TConnection>
   currentConnectionPromise: () => null | Promise<TConnection>
   probe: (connection: TConnection, path: string, options: { timeoutMs: number }) => Promise<unknown>
   reconnect: () => Promise<TConnection>
   retire: (error: unknown) => Promise<void> | void
+  /** Retire-time log; receives the final failure with its cause (see probeFailureDescription). */
+  log?: (message: string) => void
+  /** Sleep between the first failed probe and the confirmation probe; default 750ms. */
+  retryDelayMs?: number
+}
+
+/**
+ * One probe of the cached descriptor: /api/health, falling back to
+ * /api/status on a backend that predates /api/health (a 404 would
+ * otherwise retire the tunnel and reconnect forever; the boot probe
+ * falls back the same way — backend-health.ts).
+ */
+async function probePooledRemoteBackend<TConnection extends RemoteConnectionDescriptor>(
+  connection: TConnection,
+  probe: EnsureHealthyPooledRemoteBackendForDispatchOptions<TConnection>['probe']
+): Promise<void> {
+  try {
+    await probe(connection, '/api/health', {
+      timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
+    })
+  } catch (healthError) {
+    if (!isMissingHealthEndpointError(healthError)) {
+      throw healthError
+    }
+
+    await probe(connection, '/api/status', {
+      timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
+    })
+  }
 }
 
 /**
@@ -95,13 +165,23 @@ interface EnsureHealthyPooledRemoteBackendForDispatchOptions<TConnection extends
  * prevent a late probe from tearing down a replacement installed by another
  * caller. The caller should single-flight this function per cached promise so
  * concurrent dispatches share one retire/reconnect sequence.
+ *
+ * One transient transport blip — undici's `socket hang up` against a bound,
+ * answering forward is the observed shape (#131765) — must not retire a
+ * healthy tunnel: after a failure the probe is re-verified once after a short
+ * backoff, and only a SECOND consecutive failure retires the descriptor. The
+ * gate stays bounded (at most two probes plus the backoff per dispatch) and
+ * a real outage still retires on the second probe, one backoff later than
+ * before.
  */
 export async function ensureHealthyPooledRemoteBackendForDispatch<TConnection extends RemoteConnectionDescriptor>({
   connectionPromise,
   currentConnectionPromise,
   probe,
   reconnect,
-  retire
+  retire,
+  log,
+  retryDelayMs = POOLED_REMOTE_DISPATCH_PROBE_RETRY_DELAY_MS
 }: EnsureHealthyPooledRemoteBackendForDispatchOptions<TConnection>): Promise<TConnection> {
   let connection: TConnection
 
@@ -113,20 +193,29 @@ export async function ensureHealthyPooledRemoteBackendForDispatch<TConnection ex
     }
 
     try {
-      await probe(connection, '/api/health', {
-        timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
-      })
-    } catch (healthError) {
-      // A remote that predates /api/health would otherwise 404 every dispatch,
-      // retire the tunnel and reconnect forever; the boot probe falls back the
-      // same way (backend-health.ts).
-      if (!isMissingHealthEndpointError(healthError)) {
-        throw healthError
+      await probePooledRemoteBackend(connection, probe)
+    } catch (firstError) {
+      // A single failure is not death. Give the transport one backoff to
+      // settle, then re-verify the SAME descriptor before retiring it; the
+      // identity check below still protects a replacement installed meanwhile.
+      await new Promise(resolve => setTimeout(resolve, retryDelayMs))
+
+      if (currentConnectionPromise() !== connectionPromise) {
+        return reconnect()
       }
 
-      await probe(connection, '/api/status', {
-        timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
-      })
+      try {
+        await probePooledRemoteBackend(connection, probe)
+      } catch (secondError) {
+        const described = probeFailureDescription(firstError, secondError)
+        log?.(`Pooled remote backend dispatch probe failed twice (${described}); retiring descriptor.`)
+        throw secondError
+      }
+
+      log?.(
+        `Pooled remote backend dispatch probe recovered after one retry ` +
+          `(${probeFailureDescription(firstError)}); keeping descriptor.`
+      )
     }
   } catch (error) {
     if (currentConnectionPromise() === connectionPromise) {

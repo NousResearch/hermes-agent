@@ -2,8 +2,11 @@ import { describe, expect, it, vi } from 'vitest'
 
 import {
   ensureHealthyPooledRemoteBackendForDispatch,
+  type EnsureHealthyPooledRemoteBackendForDispatchOptions,
+  POOLED_REMOTE_DISPATCH_PROBE_RETRY_DELAY_MS,
   POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS,
   POWER_RESUME_REVALIDATION_HOLDOFF_MS,
+  probeFailureDescription,
   REMOTE_LIVENESS_FAILURE_LIMIT,
   REMOTE_LIVENESS_FAILURE_WINDOW_MS,
   REMOTE_LIVENESS_TIMEOUT_MS,
@@ -359,6 +362,147 @@ describe('ensureHealthyPooledRemoteBackendForDispatch', () => {
     })
     expect(retire).not.toHaveBeenCalled()
     expect(reconnect).not.toHaveBeenCalled()
+  })
+
+  it('keeps a healthy descriptor when one transient hang-up clears on the confirmation probe (#131765)', async () => {
+    const healthy = { baseUrl: 'http://127.0.0.1:49525', mode: 'remote' }
+    const healthyPromise = Promise.resolve(healthy)
+    const retire = vi.fn()
+    const reconnect = vi.fn()
+    const log = vi.fn()
+
+    // The reporter's shape: the forward is bound and answering (a direct
+    // curl gets 200), but the pooled dispatch probe sees one socket hang up.
+    const hangUp = new Error('socket hang up') as Error & { code: string }
+    hangUp.code = 'ECONNRESET'
+
+    const probe = vi
+      .fn<EnsureHealthyPooledRemoteBackendForDispatchOptions<unknown>['probe']>()
+      .mockRejectedValueOnce(hangUp)
+      .mockResolvedValueOnce({ ok: true })
+
+    await expect(
+      ensureHealthyPooledRemoteBackendForDispatch({
+        connectionPromise: healthyPromise,
+        currentConnectionPromise: () => healthyPromise,
+        probe,
+        reconnect,
+        retire,
+        log,
+        retryDelayMs: 0
+      })
+    ).resolves.toBe(healthy)
+
+    expect(probe).toHaveBeenCalledTimes(2)
+    expect(retire).not.toHaveBeenCalled()
+    expect(reconnect).not.toHaveBeenCalled()
+    expect(log).toHaveBeenCalledWith(
+      expect.stringContaining('recovered after one retry')
+    )
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('errno ECONNRESET'))
+  })
+
+  it('retires the descriptor only when the confirmation probe fails too', async () => {
+    const stale = { baseUrl: 'http://127.0.0.1:49525', mode: 'remote' }
+    const replacement = { baseUrl: 'http://127.0.0.1:53968', mode: 'remote' }
+    const stalePromise = Promise.resolve(stale)
+    let currentPromise: Promise<typeof stale> | null = stalePromise
+    const log = vi.fn()
+
+    const retire = vi.fn(async () => {
+      currentPromise = null
+    })
+
+    const reconnect = vi.fn(async () => {
+      currentPromise = Promise.resolve(replacement)
+
+      return replacement
+    })
+
+    const probe = vi
+      .fn<EnsureHealthyPooledRemoteBackendForDispatchOptions<unknown>['probe']>()
+      .mockRejectedValue(new Error('connect ECONNREFUSED 127.0.0.1:49525'))
+
+    await expect(
+      ensureHealthyPooledRemoteBackendForDispatch({
+        connectionPromise: stalePromise,
+        currentConnectionPromise: () => currentPromise,
+        probe,
+        reconnect,
+        retire,
+        log,
+        retryDelayMs: 0
+      })
+    ).resolves.toBe(replacement)
+
+    // One failure re-verified before death: two probe rounds, then retire.
+    expect(probe.mock.calls.filter(([connection]) => connection === stale)).toHaveLength(2)
+    expect(retire).toHaveBeenCalledOnce()
+    expect(reconnect).toHaveBeenCalledOnce()
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('failed twice'))
+  })
+
+  it('does not touch a descriptor replaced during the retry backoff', async () => {
+    const stale = { baseUrl: 'http://127.0.0.1:49525', mode: 'remote' }
+    const replacement = { baseUrl: 'http://127.0.0.1:53968', mode: 'remote' }
+    const stalePromise = Promise.resolve(stale)
+    let currentPromise: Promise<typeof stale> | null = stalePromise
+    const retire = vi.fn()
+    const log = vi.fn()
+
+    const probe = vi
+      .fn<EnsureHealthyPooledRemoteBackendForDispatchOptions<unknown>['probe']>()
+      .mockImplementationOnce(() => {
+        currentPromise = Promise.resolve(replacement)
+
+        return Promise.reject(new Error('socket hang up'))
+      })
+
+    await expect(
+      ensureHealthyPooledRemoteBackendForDispatch({
+        connectionPromise: stalePromise,
+        currentConnectionPromise: () => currentPromise,
+        probe,
+        reconnect: () => Promise.resolve(replacement),
+        retire,
+        log,
+        retryDelayMs: 0
+      })
+    ).resolves.toBe(replacement)
+
+    expect(probe).toHaveBeenCalledTimes(1)
+    expect(retire).not.toHaveBeenCalled()
+    expect(log).not.toHaveBeenCalled()
+  })
+
+  it('keeps the retry bounded relative to the power-resume holdoff', () => {
+    expect(POOLED_REMOTE_DISPATCH_PROBE_RETRY_DELAY_MS).toBeGreaterThan(0)
+    expect(POOLED_REMOTE_DISPATCH_PROBE_RETRY_DELAY_MS).toBeLessThan(5_000)
+    // The confirmation round is bounded by the probe timeout, and the pair
+    // (probe + backoff) must stay under the resume holdoff so a wake sweep can
+    // never queue behind a dispatch gate. The probe timeout already exceeds
+    // the holdoff, so the retry's own budget is what has to fit here.
+    expect(
+      POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS + POOLED_REMOTE_DISPATCH_PROBE_RETRY_DELAY_MS
+    ).toBeLessThan(POWER_RESUME_REVALIDATION_HOLDOFF_MS)
+  })
+
+  it('describes a probe failure with its errno and cause, not only the message', () => {
+    const cause = new Error('read ECONNRESET')
+    const error = new Error('socket hang up') as Error & { cause: Error; code: string }
+    error.cause = cause
+    error.code = 'ECONNRESET'
+
+    const described = probeFailureDescription(error)
+
+    expect(described).toContain('socket hang up')
+    expect(described).toContain('errno ECONNRESET')
+    expect(described).toContain('cause: read ECONNRESET')
+
+    // Deduplicated across the pair and tolerant of non-Error values.
+    expect(probeFailureDescription(error, error)).toBe('socket hang up; cause: read ECONNRESET; errno ECONNRESET')
+    expect(probeFailureDescription('raw failure')).toBe('raw failure')
+    expect(probeFailureDescription()).toBe('')
   })
 })
 

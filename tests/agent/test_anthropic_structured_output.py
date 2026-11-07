@@ -85,15 +85,33 @@ def test_json_schema_response_format_uses_native_output_config():
     _assert_no_raw_response_format(api_kwargs)
 
 
-def test_json_object_response_format_uses_permissive_object_schema():
+def test_json_object_response_format_sends_no_output_config():
+    """#148380: a schema-less JSON mode cannot be expressed natively, so send no format at all.
+
+    Anthropic rejects any object schema that does not set ``additionalProperties: false``
+    ("For 'object' type, 'additionalProperties' must be explicitly set to false"), and the bare
+    ``{"type": "object"}`` a json_object hint can build has no properties, so closing it would
+    leave a schema that can only emit ``{}``. The plugin path parses the JSON reply itself
+    (``plugin_llm._parse_structured_text``), so the request stays unconstrained.
+    """
+    from agent.plugin_llm import _json_response_format
+
+    api_kwargs = _capture_anthropic_kwargs(
+        _json_response_format(json_mode=True, json_schema=None)
+    )
+
+    assert "output_config" not in api_kwargs
+    _assert_no_raw_response_format(api_kwargs)
+
+
+def test_json_object_response_format_keeps_adaptive_thinking_effort():
     api_kwargs = _capture_anthropic_kwargs({
+        "reasoning": {"enabled": True, "effort": "high"},
         "response_format": {"type": "json_object"},
     })
 
-    assert api_kwargs["output_config"]["format"] == {
-        "type": "json_schema",
-        "schema": {"type": "object"},
-    }
+    assert api_kwargs["output_config"] == {"effort": "high"}
+    assert api_kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
     _assert_no_raw_response_format(api_kwargs)
 
 

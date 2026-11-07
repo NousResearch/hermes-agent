@@ -197,10 +197,22 @@ async def _generate_edge_tts(text: str, output_path: str, tts_config: dict[str, 
     edge_tts = _origin()._import_edge_tts()
     edge_config = tts_config.get("edge") or {}
     speed = float(edge_config.get("speed", tts_config.get("speed", 1.0)))
-    kwargs = {"voice": edge_config.get("voice", DEFAULT_EDGE_VOICE)}
+    voice = edge_config.get("voice") or DEFAULT_EDGE_VOICE
+    is_persian = any("\u0600" <= ch <= "\u06ff" or "\ufb50" <= ch <= "\ufdff" or "\ufe70" <= ch <= "\ufeff" for ch in text)
+    if is_persian and (voice == DEFAULT_EDGE_VOICE or (not voice.startswith("fa-") and "Multilingual" not in voice)):
+        voice = "fa-IR-DilaraNeural"
+    kwargs = {"voice": voice}
     if speed != 1.0:
         kwargs["rate"] = f"{round((speed - 1.0) * 100):+d}%"
-    await edge_tts.Communicate(text, **kwargs).save(output_path)
+    try:
+        await edge_tts.Communicate(text, **kwargs).save(output_path)
+    except Exception as exc:
+        if is_persian and voice != "fa-IR-DilaraNeural":
+            logger.info("Retrying Persian TTS with fa-IR-DilaraNeural after %s failed: %s", voice, exc)
+            kwargs["voice"] = "fa-IR-DilaraNeural"
+            await edge_tts.Communicate(text, **kwargs).save(output_path)
+        else:
+            raise
     return output_path
 
 

@@ -4,6 +4,7 @@ import { QueryClient } from '@tanstack/react-query'
 import { cleanup, render, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { modelOptionsQueryKey } from '@/lib/model-options'
 import { confirm } from '@/store/confirm'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
@@ -23,6 +24,7 @@ import { deferred } from '../../../test/deferred'
 import { useModelControls } from './use-model-controls'
 
 const tile = vi.hoisted(() => ({ delegate: null as unknown }))
+const gateway = vi.hoisted(() => ({ activeConnectionId: null as null | string }))
 const notifyError = vi.fn()
 
 vi.mock('@/hermes', () => ({
@@ -39,6 +41,11 @@ vi.mock('@/store/session-states', async importOriginal => {
     sessionTileDelegate: () => tile.delegate
   }
 })
+
+vi.mock('@/store/gateway', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  activeGatewayConnectionId: () => gateway.activeConnectionId
+}))
 
 vi.mock('@/i18n', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -87,6 +94,8 @@ function resetStores() {
   setCurrentModelSource('')
   setCurrentProvider('')
   SessionStates.$sessionStates.set({})
+  SessionStates.$sessionTiles.set([])
+  gateway.activeConnectionId = null
 }
 
 describe('useModelControls stale pick ordering', () => {
@@ -151,6 +160,133 @@ describe('useModelControls stale pick ordering', () => {
     expect($currentModel.get()).toBe('gpt-6.1-luna')
     expect($currentProvider.get()).toBe('openai')
     expect(notifyError).not.toHaveBeenCalled()
+  })
+
+  it('does not roll a reused runtime id back after its profile owner changes', async () => {
+    $activeGatewayProfile.set('alpha')
+    $activeSessionId.set('shared-runtime')
+    setCurrentModel('alpha-old')
+    setCurrentProvider('alpha-provider')
+
+    const pending = deferred<never>()
+    const requestGateway = vi.fn(() => pending.promise)
+    let controls!: Controls
+
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    const pick = controls.selectModel({ model: 'alpha-new', provider: 'alpha-provider' })
+
+    $activeGatewayProfile.set('beta')
+    setCurrentModel('beta-model')
+    setCurrentProvider('beta-provider')
+
+    pending.reject(new Error('timeout'))
+    await expect(pick).resolves.toBe(false)
+
+    expect($currentModel.get()).toBe('beta-model')
+    expect($currentProvider.get()).toBe('beta-provider')
+    expect(notifyError).not.toHaveBeenCalled()
+  })
+
+  it('does not roll back a confirmed request that fails after its profile owner changes', async () => {
+    $activeGatewayProfile.set('alpha')
+    $activeSessionId.set('shared-runtime')
+    setCurrentModel('alpha-old')
+    setCurrentProvider('alpha-provider')
+    vi.mocked(confirm).mockResolvedValueOnce(true)
+
+    const confirmed = deferred<never>()
+    const later = deferred<never>()
+
+    const requestGateway = vi
+      .fn()
+      .mockResolvedValueOnce({ confirm_required: true, confirm_message: 'Expensive model' })
+      .mockReturnValueOnce(confirmed.promise)
+      .mockReturnValueOnce(later.promise)
+
+    let controls!: Controls
+
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    await expect(controls.selectModel({ model: 'alpha-new', provider: 'alpha-provider' })).resolves.toBe(false)
+    await vi.waitFor(() => expect(requestGateway).toHaveBeenCalledTimes(2))
+
+    $activeGatewayProfile.set('beta')
+    setCurrentModel('beta-model')
+    setCurrentProvider('beta-provider')
+
+    confirmed.reject(new Error('timeout'))
+
+    await confirmed.promise.catch(() => undefined)
+    await new Promise<void>(resolve => queueMicrotask(resolve))
+
+    expect($currentModel.get()).toBe('beta-model')
+    expect($currentProvider.get()).toBe('beta-provider')
+    expect(notifyError).not.toHaveBeenCalled()
+
+    $activeGatewayProfile.set('alpha')
+    setCurrentModel('alpha-old')
+    setCurrentProvider('alpha-provider')
+
+    const laterPick = controls.selectModel({ model: 'alpha-later', provider: 'alpha-provider' })
+
+    later.reject(new Error('later timeout'))
+    await expect(laterPick).resolves.toBe(false)
+
+    expect($currentModel.get()).toBe('alpha-old')
+    expect($currentProvider.get()).toBe('alpha-provider')
+  })
+
+  it('keeps a same-runtime same-target pick session-scoped when the Desktop owner differs', async () => {
+    $activeGatewayProfile.set('beta')
+    $activeSessionId.set('shared-runtime')
+    setCurrentModel('primary-model')
+    setCurrentProvider('primary-provider')
+    gateway.activeConnectionId = 'connection-b'
+    SessionStates.$sessionStates.set({
+      'shared-runtime': { model: 'beta-old', provider: 'beta-provider' }
+    } as never)
+    SessionStates.$sessionTiles.set([
+      {
+        ownerRoute: { connectionId: 'connection-b', profile: 'beta-desktop', targetProfile: 'beta' },
+        runtimeId: 'shared-runtime',
+        storedSessionId: 'stored-b'
+      }
+    ])
+
+    const updateSession = vi.fn()
+    const requestGateway = vi.fn().mockRejectedValue(new Error('timeout'))
+    tile.delegate = { updateSession }
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        cacheOwnerConnectionId: 'connection-b',
+        cacheOwnerProfile: 'beta-desktop',
+        cacheProfile: 'beta',
+        queryClient: new QueryClient(),
+        requestGateway
+      })
+    )
+
+    try {
+      await expect(
+        result.current.selectModel({ model: 'beta-new', provider: 'beta-provider', sessionId: 'shared-runtime' })
+      ).resolves.toBe(false)
+    } finally {
+      tile.delegate = null
+    }
+
+    expect($currentModel.get()).toBe('primary-model')
+    expect($currentProvider.get()).toBe('primary-provider')
+    expect(updateSession).toHaveBeenCalledTimes(2)
+    expect(updateSession.mock.lastCall?.[1]({ model: 'beta-new', provider: 'beta-provider' })).toEqual(
+      expect.objectContaining({ model: 'beta-old', provider: 'beta-provider' })
+    )
+    expect(notifyError).toHaveBeenCalledOnce()
+    expect(requestGateway).toHaveBeenCalledWith(
+      'config.set',
+      expect.objectContaining({ value: 'beta-new --provider beta-provider --session' })
+    )
   })
 
   // Two overlapping picks A then B from X: B's own pre-pick snapshot is A (painted, never applied),
@@ -251,6 +387,36 @@ describe('useModelControls stale pick ordering', () => {
     expect($currentProvider.get()).toBe('anthropic')
   })
 
+  it('reconciles a confirmed pick that applies after a newer pick', async () => {
+    $activeSessionId.set('session-1')
+    setCurrentModel('fable-5')
+    setCurrentProvider('nous')
+    vi.mocked(confirm).mockResolvedValueOnce(true)
+
+    const confirmed = deferred<unknown>()
+
+    const requestGateway = vi
+      .fn()
+      .mockResolvedValueOnce({ confirm_required: true, confirm_message: 'Expensive model' })
+      .mockReturnValueOnce(confirmed.promise)
+      .mockResolvedValueOnce({})
+
+    const queryClient = new QueryClient()
+    const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries').mockResolvedValue()
+    const { result } = renderHook(() => useModelControls({ queryClient, requestGateway }))
+
+    await expect(result.current.selectModel({ model: 'opus-9', provider: 'anthropic' })).resolves.toBe(false)
+    await vi.waitFor(() => expect(requestGateway).toHaveBeenCalledTimes(2))
+    await expect(result.current.selectModel({ model: 'gpt-6.1-luna', provider: 'openai' })).resolves.toBe(true)
+    invalidateQueries.mockClear()
+
+    confirmed.resolve({})
+    await vi.waitFor(() => expect(invalidateQueries).toHaveBeenCalledOnce())
+
+    expect($currentModel.get()).toBe('gpt-6.1-luna')
+    expect($currentProvider.get()).toBe('openai')
+  })
+
   it('rolls a failed pick back even when the reasoning effort stepped mid-switch', async () => {
     $activeSessionId.set('session-1')
     setCurrentModel('fable-5')
@@ -303,5 +469,118 @@ describe('useModelControls stale pick ordering', () => {
 
     // The older failure must not repaint the tile with its pre-pick model.
     expect(updateSession).not.toHaveBeenCalled()
+  })
+
+  it('does not roll a failed tile pick into a reused runtime owned by another gateway', async () => {
+    $activeSessionId.set('runtime-a')
+    SessionStates.$sessionStates.set({ 'runtime-b': { model: 'old-b', provider: 'provider-b' } } as never)
+    SessionStates.$sessionTiles.set([
+      {
+        ownerRoute: { connectionId: 'connection-b', profile: 'beta-desktop', targetProfile: 'beta' },
+        runtimeId: 'runtime-b',
+        storedSessionId: 'stored-b'
+      }
+    ])
+
+    const updateSession = vi.fn()
+    const pending = deferred<never>()
+    const requestGateway = vi.fn(() => pending.promise)
+    tile.delegate = { updateSession }
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        cacheOwnerConnectionId: 'connection-b',
+        cacheOwnerProfile: 'beta-desktop',
+        cacheProfile: 'beta',
+        queryClient: new QueryClient(),
+        requestGateway
+      })
+    )
+
+    const pick = result.current.selectModel({ model: 'new-b', provider: 'provider-b', sessionId: 'runtime-b' })
+
+    SessionStates.$sessionTiles.set([
+      {
+        ownerRoute: { connectionId: 'connection-c', profile: 'gamma-desktop', targetProfile: 'gamma' },
+        runtimeId: 'runtime-b',
+        storedSessionId: 'stored-c'
+      }
+    ])
+    SessionStates.$sessionStates.set({ 'runtime-b': { model: 'gamma-model', provider: 'gamma-provider' } } as never)
+    updateSession.mockClear()
+
+    try {
+      pending.reject(new Error('timeout'))
+      await expect(pick).resolves.toBe(false)
+    } finally {
+      tile.delegate = null
+    }
+
+    expect(updateSession).not.toHaveBeenCalled()
+    expect(notifyError).not.toHaveBeenCalled()
+  })
+
+  it('reconciles a confirmed tile pick only through its captured owner after runtime reuse', async () => {
+    $activeSessionId.set('runtime-a')
+    SessionStates.$sessionStates.set({ 'runtime-b': { model: 'old-b', provider: 'provider-b' } } as never)
+    SessionStates.$sessionTiles.set([
+      {
+        ownerRoute: { connectionId: 'connection-b', profile: 'beta-desktop', targetProfile: 'beta' },
+        runtimeId: 'runtime-b',
+        storedSessionId: 'stored-b'
+      }
+    ])
+    vi.mocked(confirm).mockResolvedValueOnce(true)
+
+    const updateSession = vi.fn()
+    const confirmed = deferred<unknown>()
+
+    const requestGateway = vi
+      .fn()
+      .mockResolvedValueOnce({ confirm_required: true, confirm_message: 'Expensive model' })
+      .mockReturnValueOnce(confirmed.promise)
+
+    const queryClient = new QueryClient()
+    const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries').mockResolvedValue()
+    tile.delegate = { updateSession }
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        cacheOwnerConnectionId: 'connection-b',
+        cacheOwnerProfile: 'beta-desktop',
+        cacheProfile: 'beta',
+        queryClient,
+        requestGateway
+      })
+    )
+
+    await expect(
+      result.current.selectModel({ model: 'opus-9', provider: 'anthropic', sessionId: 'runtime-b' })
+    ).resolves.toBe(false)
+    await vi.waitFor(() => expect(requestGateway).toHaveBeenCalledTimes(2))
+
+    SessionStates.$sessionTiles.set([
+      {
+        ownerRoute: { connectionId: 'connection-c', profile: 'gamma-desktop', targetProfile: 'gamma' },
+        runtimeId: 'runtime-b',
+        storedSessionId: 'stored-c'
+      }
+    ])
+    SessionStates.$sessionStates.set({ 'runtime-b': { model: 'gamma-model', provider: 'gamma-provider' } } as never)
+    updateSession.mockClear()
+    invalidateQueries.mockClear()
+
+    try {
+      confirmed.resolve({})
+      await vi.waitFor(() => expect(invalidateQueries).toHaveBeenCalledOnce())
+    } finally {
+      tile.delegate = null
+    }
+
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: modelOptionsQueryKey('beta', 'runtime-b', 'connection-b')
+    })
+    expect(updateSession).not.toHaveBeenCalled()
+    expect(notifyError).not.toHaveBeenCalled()
   })
 })

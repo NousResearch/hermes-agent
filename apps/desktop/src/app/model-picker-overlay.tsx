@@ -72,6 +72,7 @@ export function ModelPickerOverlay({
 
   const { selectModel: selectFocusedModel } = useModelControls({
     cacheOwnerConnectionId: pickerOwner.connectionId,
+    cacheOwnerProfile: pickerOwner.route?.profile,
     cacheProfile: pickerOwner.profile,
     queryClient,
     requestGateway: requestPickerGateway

@@ -45,10 +45,17 @@ def _pause(mgr, arg, render):
 
 
 def _resume(mgr, arg, render):
-    state = mgr.resume()
+    budget = int(arg) if arg else None
+    if budget is not None and budget <= 0:
+        raise ValueError("resume turns must be a positive integer")
+    state = mgr.resume(max_turns=budget) if budget is not None else mgr.resume()
     if state is None:
         return GoalCommandResult(render("gateway.goal.no_resume", "No goal to resume."))
-    return GoalCommandResult(render("gateway.goal.resumed", "▶ Goal resumed: {goal}", goal=state.goal),
+    key, default = "gateway.goal.resumed", "▶ Goal resumed: {goal}"
+    if budget is not None:
+        key = "gateway.goal.resumed_budget"
+        default = "▶ Goal resumed with a {budget}-turn budget: {goal}"  # one line, like "resumed"
+    return GoalCommandResult(render(key, default, goal=state.goal, budget=state.max_turns),
                              prompt=mgr.next_continuation_prompt())
 
 
@@ -109,6 +116,13 @@ _CONTROL_FIRST_WORDS = _BARE_CONTROL_VERBS | {"wait", "gate"}
 
 
 def _bare_control(mgr, verb, rest, render):
+    if verb in {"resume", "continue", "unpause"}:
+        try:
+            int(rest)
+        except ValueError:
+            pass  # Trailing words retain the control command's ignore note.
+        else:
+            return _resume(mgr, rest, render)
     result = _EXACT_HANDLERS[verb](mgr, "", render)
     return replace(result, output=result.output + (
         f"\n(ignored {rest!r}: a control command never sets goal text — use /goal -- <text> "
@@ -134,7 +148,7 @@ def _gate(mgr, arg, authorize_gate):
         return GoalCommandResult(f"/goal gate {operation}: {exc}", error=True)
 
 
-def _set(mgr, arg, *, drafting, last_user_message, render, progress):
+def _set(mgr, arg, *, drafting, last_user_message, render, progress, max_turns=None):
     if drafting:
         if not arg:
             return GoalCommandResult("Usage: /goal draft <objective in plain language>", error=True)
@@ -150,7 +164,7 @@ def _set(mgr, arg, *, drafting, last_user_message, render, progress):
         headline, contract = goals.parse_contract(arg)
         contract = contract if not contract.is_empty() else None
     previous = mgr.state.goal if mgr.has_goal() else ""
-    state = mgr.set(headline or arg, contract=contract)
+    state = mgr.set(headline or arg, max_turns=max_turns, contract=contract)
     output = render("gateway.goal.set", "⊙ Goal set ({budget}-turn budget): {goal}",
                     budget=state.max_turns, goal=state.goal)
     if previous and previous != state.goal:
@@ -179,6 +193,29 @@ def is_goal_control(arg: str) -> bool:
     return normalized in _EXACT_HANDLERS or first in _CONTROL_FIRST_WORDS
 
 
+def _parse_turns(arg):
+    tokens = arg.split(None, 1)
+    flag, remainder = tokens[0], tokens[1] if len(tokens) > 1 else ""
+    if flag == "--turns":
+        tokens = remainder.split(None, 1)
+        value, remainder = (tokens[0] if tokens else ""), tokens[1] if len(tokens) > 1 else ""
+    else:
+        value = flag[len("--turns="):] if flag.startswith("--turns=") else ""
+    try:
+        budget = int(value)
+        if budget <= 0:
+            raise ValueError
+    except ValueError as exc:
+        raise ValueError("--turns must be a positive integer") from exc
+    remainder = remainder.strip()
+    if not remainder:
+        raise ValueError("Usage: /goal --turns N <objective>")
+    first = remainder.split(None, 1)[0].lower()
+    if first in _EXACT_HANDLERS or first in _CONTROL_FIRST_WORDS:
+        raise ValueError("--turns requires an objective, not a control command; use -- <text> for literal text")
+    return budget, remainder
+
+
 def dispatch_goal_command(
     mgr: goals.GoalManager, arg: str, *, authorize_gate: Callable[[], str | None],
     last_user_message=None, render: Callable = _english,
@@ -194,11 +231,16 @@ def dispatch_goal_command(
     verb = tokens[0].lower() if tokens else ""
     rest = tokens[1].strip() if len(tokens) > 1 else ""
     prefix = "Invalid goal"
+    max_turns = None
     try:
+        if verb.startswith("--turns"):
+            max_turns, arg = _parse_turns(arg)
+            tokens = arg.split(None, 1)
+            verb, rest = tokens[0].lower(), tokens[1].strip() if len(tokens) > 1 else ""
         if verb == "--":
             # Verbatim goal text for goals that start with a control word (`/goal -- pause the cron`).
             return _set(mgr, rest, drafting=False, last_user_message=last_user_message,
-                        render=render, progress=progress)
+                        render=render, progress=progress, max_turns=max_turns)
         if handler := _EXACT_HANDLERS.get(arg.lower()):
             return handler(mgr, "", render)
         if verb in _BARE_CONTROL_VERBS:
@@ -211,7 +253,7 @@ def dispatch_goal_command(
             return _gate(mgr, rest, authorize_gate)
         return _set(mgr, rest if verb == "draft" else arg,
                     drafting=verb == "draft", last_user_message=last_user_message,
-                    render=render, progress=progress)
+                    render=render, progress=progress, max_turns=max_turns)
     except (RuntimeError, ValueError, IndexError) as exc:
         output = (render("gateway.goal.invalid", "Invalid goal: {error}", error=str(exc))
                   if prefix == "Invalid goal" else f"{prefix}: {exc}")

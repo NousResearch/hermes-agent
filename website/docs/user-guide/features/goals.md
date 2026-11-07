@@ -58,12 +58,13 @@ What you'll see:
 | Command | What it does |
 |---|---|
 | `/goal <text>` | Set (or replace) the standing goal. Kicks off the first turn immediately so you don't need to send a separate message. |
+| `/goal --turns N <text>` | Set this goal's turn budget (positive integer); also accepts `--turns=N`, `draft <text>`, or `-- <text>` after the budget. |
 | `/goal -- <text>` | Set goal text that starts with a control word (`/goal -- pause the nightly cron`). Without `--`, `resume`/`continue`/`unpause`/`pause`/`status`/`show`/`unwait` followed by words run the control command and ignore the rest. |
 | `/goal draft <text>` | Draft a structured completion contract from a plain-language objective, then set it. See [Completion contracts](#completion-contracts). |
 | `/goal show` | Print the active goal's completion contract. |
 | `/goal` or `/goal status` | Show the current goal, its status, and turns used. |
 | `/goal pause` | Stop the auto-continuation loop without clearing the goal. |
-| `/goal resume` | Resume the loop (resets the turn counter back to zero). |
+| `/goal resume [turns]` | Resume the loop with a fresh counter; optionally set a new positive turn budget. Aliases: `continue`, `unpause`. |
 | `/goal clear` | Drop the goal entirely. |
 | `/goal wait <pid> [reason]` | Park the loop on a background process — it stops re-poking the agent every turn while the process runs, and auto-resumes when it exits. |
 | `/goal unwait` | Drop the wait barrier and resume the loop immediately. |
@@ -197,10 +198,12 @@ If the judge errors (network blip, malformed response, unavailable aux client), 
 Default is 20 continuation turns (`goals.max_turns` in `config.yaml`). When the budget is hit, Hermes auto-pauses and tells you exactly how to proceed:
 
 ```
-⏸ Goal paused — 20/20 turns used. Use /goal resume to keep going, or /goal clear to stop.
+⏸ Goal paused — 20/20 turns used. Use /goal resume to keep going (or /goal resume <turns> for a longer window), or /goal clear to stop.
 ```
 
-`/goal resume` resets the counter to zero, so you can keep going in measured chunks.
+`/goal --turns 60 ship the thing` overrides the budget for one goal without changing `goals.max_turns`. A later goal uses the profile default again. Use `/goal -- --turns ...` when the goal text itself starts with `--turns`; control words after a budget require `--` (e.g. `/goal --turns 60 -- pause the cron`).
+
+`/goal resume` resets the counter to zero and keeps the goal's budget. `/goal resume 40` (also `continue 40` or `unpause 40`) sets a fresh 40-turn window. Budgets must be positive integers; invalid budgets leave the goal unchanged. Non-numeric or multi-word resume arguments retain the ignore note.
 
 ### User messages always preempt
 

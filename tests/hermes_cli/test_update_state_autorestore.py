@@ -203,10 +203,11 @@ def test_unreadable_live_db_without_this_updates_snapshot_keeps_transcripts(
 
     update_cmd._verify_and_restore_state_dbs_post_update(snapshot_id)
 
+    # The read-only SQLite probe proves the live DB healthy, so no restore and no alarm.
     assert _row_count(state) == 10
     out = capsys.readouterr().out
-    assert "left unchanged" in out
-    assert "cannot read header" in out
+    assert "Auto-restored" not in out
+    assert "verification failed" not in out
 
 
 def test_post_update_guard_covers_sibling_profiles(tmp_path, monkeypatch, capsys):

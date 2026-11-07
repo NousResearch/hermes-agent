@@ -7,6 +7,7 @@ Covers:
 
 from __future__ import annotations
 
+from agent.model_metadata_server_type import SERVER_TYPE_DISK_TTL_SECONDS
 from tests.agent.metadata_transport import metadata_transport
 from unittest.mock import MagicMock, patch
 
@@ -101,18 +102,22 @@ class TestDetectLocalServerTypeCache:
         model_metadata._endpoint_probe_path_cache[key] = (
             val, _time.monotonic() - model_metadata._ENDPOINT_PROBE_TTL_SECONDS - 1,
         )
-        # Age the disk L2 entry too. Its TTL (300s) is much shorter than the
-        # in-proc TTL (1h), so in real time-flow it always expires first —
-        # this test compresses both expiries into one instant.
+        # Age the disk L2 entry too. Positive server-type verdicts persist for
+        # SERVER_TYPE_DISK_TTL_SECONDS (24h); other kinds use the
+        # short 300s TTL. Age every entry past ITS OWN kind's TTL so the test
+        # compresses all expiries into one instant regardless of the constants.
         import json as _json
         _disk = model_metadata._local_probe_disk_cache_path()
         if _disk.exists():
             _data = _json.loads(_disk.read_text(encoding="utf-8"))
-            for _entry in _data.values():
+            for _k, _entry in _data.items():
                 if isinstance(_entry, dict):
-                    _entry["ts"] = (
-                        _time.time() - model_metadata._LOCAL_PROBE_DISK_TTL_SECONDS - 1
+                    _entry_ttl = (
+                        SERVER_TYPE_DISK_TTL_SECONDS
+                        if str(_k).startswith("server_type:")
+                        else model_metadata._LOCAL_PROBE_DISK_TTL_SECONDS
                     )
+                    _entry["ts"] = _time.time() - _entry_ttl - 1
             _disk.write_text(_json.dumps(_data), encoding="utf-8")
 
         lmstudio_resp = MagicMock()

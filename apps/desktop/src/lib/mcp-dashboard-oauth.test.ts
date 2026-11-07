@@ -69,8 +69,81 @@ function harness() {
 
 afterEach(() => {
   vi.resetAllMocks()
+  vi.unstubAllGlobals()
+  delete document.documentElement.dataset.hermesDesktopHost
   setApiRequestConnection(null)
   setApiRequestProfile(null)
+})
+
+function browserHarness(origin: string, callbackUri: string, basePath = '') {
+  const h = harness()
+  Object.defineProperty(window, 'hermesDesktop', {
+    configurable: true,
+    value: { api: h.api, openExternal: h.openExternal }
+  })
+  document.documentElement.dataset.hermesDesktopHost = 'browser'
+  vi.stubGlobal('__HERMES_UI_SURFACE__', 'webapp')
+  vi.stubGlobal('__HERMES_BASE_PATH__', basePath)
+  vi.stubGlobal('location', new URL(origin))
+  setApiRequestConnection('local')
+  h.rpc.mockImplementation(async (_connection, _profile, method) =>
+    method.endsWith('.start')
+      ? { ...started, auth_url: `https://idp.example/authorize?redirect_uri=${encodeURIComponent(callbackUri)}` }
+      : { ok: true, status: 'approved', tools }
+  )
+
+  return h
+}
+
+describe('Webapp MCP public callback', () => {
+  it.each(['', '/hermes'])('requests and accepts its public callback under %s', async basePath => {
+    // Python quote(..., safe='') also escapes these encodeURIComponent-safe characters.
+    const serverName = "reports !'()* / team"
+    const path = `${basePath}/api/mcp/oauth/callback/reports%20%21%27%28%29%2A%20%2F%20team`
+    const { rpc, openExternal } = browserHarness('https://agent.example', `https://agent.example${path}`, basePath)
+    const result = await completeMcpDesktopOAuth({ serverName })
+    expect(result.status).toBe('approved')
+    expect(rpc).toHaveBeenCalledWith('local', 'default', 'mcp.servers.oauth.start',
+      { name: serverName, public_callback: `https://agent.example${basePath}` }, 60_000)
+    expect(openExternal).toHaveBeenCalledOnce()
+  })
+
+  it('accepts an encoded base path and decodes only the server name', async () => {
+    const callbackUri = 'https://agent.example/team%20one/api/mcp/oauth/callback/reports'
+    const { openExternal } = browserHarness('https://agent.example', callbackUri, '/team%20one')
+    await expect(completeMcpDesktopOAuth({ serverName: 'reports' })).resolves.toMatchObject({ status: 'approved' })
+    expect(openExternal).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the loopback flow on a LAN origin when the gateway has no public URL', async () => {
+    const { rpc, openExternal } = browserHarness('http://192.168.1.20:9119', redirectUri)
+    await expect(completeMcpDesktopOAuth({ serverName: 'reports' })).resolves.toMatchObject({ status: 'approved' })
+    expect(rpc).toHaveBeenCalledWith('local', 'default', 'mcp.servers.oauth.start',
+      { name: 'reports', public_callback: 'http://192.168.1.20:9119' }, 60_000)
+    expect(openExternal).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    'https://other.example/hermes/api/mcp/oauth/callback/reports',
+    'https://agent.example/hermes/api/mcp/oauth/callback/other',
+    'https://agent.example/api/mcp/oauth/callback/reports',
+    'https://agent.example/hermes/api/mcp/oauth/callback/reports?next=/',
+    'https://agent.example/hermes/api/mcp/oauth/callback/%E0%A4%A',
+    'http://127.0.0.1:49152/other'
+  ])('rejects an unexpected public callback before opening: %s', async callbackUri => {
+    const { rpc, openExternal } = browserHarness('https://agent.example', callbackUri, '/hermes')
+    await expect(completeMcpDesktopOAuth({ serverName: 'reports' })).rejects.toThrow()
+    expect(openExternal).not.toHaveBeenCalled()
+    expect(rpc).toHaveBeenCalledWith('local', 'default', 'mcp.servers.oauth.cancel',
+      { name: 'reports', session_id: 'flow-1' }, 60_000)
+  })
+
+  it.each(['127.0.0.1', 'localhost', '[::1]'])('keeps the backend loopback callback on %s', async host => {
+    const { rpc, openExternal } = browserHarness(`http://${host}:8080`, redirectUri)
+    await expect(completeMcpDesktopOAuth({ serverName: 'reports' })).resolves.toMatchObject({ status: 'approved' })
+    expect(rpc).toHaveBeenCalledWith('local', 'default', 'mcp.servers.oauth.start', { name: 'reports' }, 60_000)
+    expect(openExternal).toHaveBeenCalledOnce()
+  })
 })
 
 describe('Desktop MCP client callback lifecycle', () => {

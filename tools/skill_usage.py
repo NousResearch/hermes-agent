@@ -495,7 +495,9 @@ def bump_view(skill_name: str) -> None:
 
 
 def bump_use(skill_name: str, *, task_id: Optional[str] = None, session_id: Optional[str] = None) -> None:
-    """Skill actively used (loaded into the prompt path / referenced from an assistant turn)."""
+    """Skill actively used (loaded into the prompt path / referenced from an assistant turn).
+    Telemetry covers any skill; the registered skill_view handler counts only foreground loads,
+    excluding background-review inspections."""
     def _apply(rec: dict[str, Any]) -> dict[str, Any]:
         uses = _non_negative_int(rec.get("use_count"))
         gen = _non_negative_int(rec.get("patch_generation"))

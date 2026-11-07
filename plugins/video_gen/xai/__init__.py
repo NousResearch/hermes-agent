@@ -158,7 +158,7 @@ class XAIVideoGenProvider(VideoGenProvider):
 
     def capabilities(self) -> dict[str, Any]:
         return {"modalities": ["text", "image"], "aspect_ratios": sorted(VALID_ASPECT_RATIOS), "resolutions": sorted(VALID_RESOLUTIONS),
-                "max_duration": 15, "min_duration": 1, "supports_audio": False, "supports_negative_prompt": False, "supports_seed": True,
+                "max_duration": 15, "min_duration": 1, "supports_audio": True, "supports_negative_prompt": False, "supports_seed": True,
                 "supports_upscale": False, "max_reference_images": MAX_REFERENCE_IMAGES}
 
     def generate(
@@ -195,9 +195,20 @@ def _run_xai_video(label: str, flow, /, **kwargs: Any) -> dict[str, Any]:
     api_key, base_url = _resolve_xai_credentials()
     if not api_key:
         return _xai_error(_AUTH_REQUIRED_MSG, "auth_required", prompt)
-    try:
+
+    def _sync_run() -> dict[str, Any]:
         with closing(asyncio.new_event_loop()) as loop:
             return loop.run_until_complete(flow(api_key=api_key, base_url=base_url, **kwargs))
+
+    try:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return _sync_run()  # thread bersih: jalan langsung
+        # Sudah ada event loop hidup di thread ini (gateway async) -> pindahkan ke worker thread
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="xai-video") as ex:
+            return ex.submit(_sync_run).result()
     except Exception as exc:
         logger.warning("xAI video %s unexpected failure: %s", label, exc, exc_info=True)
         return _xai_error(f"xAI video {label} failed: {exc}", "api_error", prompt,

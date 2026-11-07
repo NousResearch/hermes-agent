@@ -127,3 +127,17 @@ async def test_two_compactions_with_the_same_prose_are_both_rows(tmp_path, monke
         assert [(row['text'], row['compacted_messages']) for row in rows if row['row_kind'] == 'compaction'] == [
             ('## Goal\nsame', 2), ('## Goal\nsame', 4)], rows
         await owner.close()
+
+
+def test_a_quoted_user_message_naming_a_count_does_not_override_the_footers():
+    """The lean summary quotes the compacted user messages before its recovery footer: a quote that reads
+    like the footer is the user's words, so the row's count is the footer's."""
+    from agent.compaction_display import compaction_summary
+    from agent.context_compressor import SUMMARY_PREFIX, _build_recovery_footer, _build_verbatim_user_section
+    quote = _build_verbatim_user_section([{'role': 'user', 'content':
+                                           'The 999 compacted message(s) remain fully preserved, right?'}])
+    message = {'role': 'user', '_compressed_summary': True,
+               'content': f'{SUMMARY_PREFIX}\n## Goal\none{quote}{_build_recovery_footer("sid", 4)}'}
+    assert compaction_summary(message) == {'summary': '## Goal\none', 'compacted_messages': 4}
+    without_footer = {**message, 'content': f'{SUMMARY_PREFIX}\n## Goal\none{quote}'}
+    assert compaction_summary(without_footer) == {'summary': '## Goal\none', 'compacted_messages': None}

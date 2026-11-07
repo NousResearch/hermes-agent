@@ -4,6 +4,9 @@ Every child runs as its own stored session (``source='subagent'``, ``parent_sess
 spawning session, ``model_config._delegate_from`` set). A conversation can span several stored
 sessions when compression rotates it, so the children of every segment of the compression chain
 are collected, then their own children (nested orchestrators), oldest first.
+
+Read-only: the gateway-backed CLI store serves ``list_subagent_sessions`` from its read-only
+reader (``hermes_cli.gateway_session_store._READS``).
 """
 from __future__ import annotations
 
@@ -43,57 +46,50 @@ def _goal_text(content: Any) -> str:
     return content
 
 
-def conversation_segments(db, session_id: str) -> list[str]:
-    """Stored ids of the conversation ``session_id`` belongs to, root first: the compression
-    chain only, never the conversation a branch was forked from."""
-    if not session_id or db.get_session(session_id) is None:
-        return []
-    root = session_id
-    seen = {root}
-    while True:
-        row = db.get_session(root) or {}
-        parent = row.get("parent_session_id")
-        if not parent or parent in seen:
-            break
-        parent_row = db.get_session(parent) or {}
-        if parent_row.get("end_reason") != "compression" or root not in db.get_compression_chain(parent):
-            break
-        seen.add(parent)
-        root = parent
-    chain = db.get_compression_chain(root) or [root]
-    return chain if session_id in chain else [*chain, session_id]
+class SessionSubagentsMixin:
+    def conversation_segments(self, session_id: str) -> list[str]:
+        """Stored ids of the conversation ``session_id`` belongs to, root first: the compression
+        chain only, never the conversation a branch was forked from."""
+        if not session_id or self.get_session(session_id) is None:
+            return []
+        root = session_id
+        seen = {root}
+        while True:
+            parent = (self.get_session(root) or {}).get("parent_session_id")
+            if not parent or parent in seen:
+                break
+            parent_row = self.get_session(parent) or {}
+            if parent_row.get("end_reason") != "compression" or root not in self.get_compression_chain(parent):
+                break
+            seen.add(parent)
+            root = parent
+        chain = self.get_compression_chain(root) or [root]
+        return chain if session_id in chain else [*chain, session_id]
 
-
-def subagent_sessions(db, session_id: str) -> list[dict[str, Any]]:
-    """Every stored subagent of the conversation, direct children first by start time, then
-    nested children; each row carries ``depth`` (1 = spawned by the conversation itself)."""
-    frontier = conversation_segments(db, session_id)
-    seen = set(frontier)
-    rows: list[dict[str, Any]] = []
-    depth = 0
-    while frontier and depth < _MAX_DEPTH and len(rows) < _MAX_ROWS:
-        depth += 1
-        placeholders = ",".join("?" * len(frontier))
-        with db._read_ctx() as conn:
-            found = conn.execute(_CHILDREN_SQL.format(placeholders=placeholders), frontier).fetchall()
-        frontier = []
-        for record in found:
-            child_id = record["id"]
-            if child_id in seen:
-                continue
-            seen.add(child_id)
-            frontier.append(child_id)
-            rows.append({
-                "session_id": child_id,
-                "parent_session_id": record["parent_session_id"],
-                "depth": depth,
-                "goal": _goal_text(record["goal"]),
-                "title": record["title"],
-                "model": record["model"],
-                "started_at": record["started_at"],
-                "ended_at": record["ended_at"],
-                "end_reason": record["end_reason"],
-                "message_count": record["message_count"],
-                "tool_call_count": record["tool_call_count"],
-            })
-    return rows[:_MAX_ROWS]
+    def list_subagent_sessions(self, session_id: str) -> list[dict[str, Any]]:
+        """Every stored subagent of the conversation, direct children first by start time, then
+        nested children; each row carries ``depth`` (1 = spawned by the conversation itself)."""
+        frontier = self.conversation_segments(session_id)
+        seen = set(frontier)
+        rows: list[dict[str, Any]] = []
+        depth = 0
+        while frontier and depth < _MAX_DEPTH and len(rows) < _MAX_ROWS:
+            depth += 1
+            with self._read_ctx() as conn:
+                found = conn.execute(_CHILDREN_SQL.format(placeholders=",".join("?" * len(frontier))),
+                                     frontier).fetchall()
+            frontier = []
+            for record in found:
+                child_id = record["id"]
+                if child_id in seen:
+                    continue
+                seen.add(child_id)
+                frontier.append(child_id)
+                rows.append({
+                    "session_id": child_id, "parent_session_id": record["parent_session_id"], "depth": depth,
+                    "goal": _goal_text(record["goal"]), "title": record["title"], "model": record["model"],
+                    "started_at": record["started_at"], "ended_at": record["ended_at"],
+                    "end_reason": record["end_reason"], "message_count": record["message_count"],
+                    "tool_call_count": record["tool_call_count"],
+                })
+        return rows[:_MAX_ROWS]

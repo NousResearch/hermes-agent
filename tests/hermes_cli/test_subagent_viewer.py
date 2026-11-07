@@ -43,8 +43,9 @@ def setup(store, monkeypatch):
     steered = []
     child_agent = SimpleNamespace(session_id="tests-child", steer=lambda text: steered.append(text) or True,
                                   interrupt=lambda *a, **kw: steered.append("STOP") or True)
+    # depth 0 = a direct child, as delegate_tool_child_run registers it
     registry._register_subagent(dict(subagent_id="sa-tests", goal="Run the tests", owner_agent_session_id="master",
-                                     started_at=1, status="running", agent=child_agent))
+                                     started_at=1, status="running", agent=child_agent, depth=0))
     busy = []
     cli = SimpleNamespace(agent=SimpleNamespace(session_id="master"), session_id="master", _session_db=store,
                           _pending_input=queue.Queue(), _agent_running=False,
@@ -119,6 +120,14 @@ def test_a_delegation_entry_in_the_master_view_opens_that_subagent(setup):
     viewer.activate()
 
     assert viewer.current == "docs-child"
+
+
+def test_a_background_task_shows_done_once_its_subagent_has_finished(setup):
+    viewer = _viewer(setup, "master")
+
+    outcomes = {b.link: b.outcome for b in viewer.blocks if b.kind == "delegation"}
+
+    assert outcomes == {"docs-child": "completed", "tests-child": "running"}
 
 
 def test_sending_in_a_live_subagent_view_steers_that_subagent(setup):

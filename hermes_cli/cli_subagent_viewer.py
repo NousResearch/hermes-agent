@@ -126,18 +126,24 @@ class SubagentViewer:
         return changed
 
     def _link_delegations(self, blocks: list[Block]) -> None:
-        """Point each delegation task at the subagent that ran it: same goal, first unused match."""
-        rows = [r for r in self._subagent_rows() if r.get("depth", 1) == 1] or self._subagent_rows()
+        """Point each delegation task at the subagent that ran it (same goal, first unused match).
+        A background task still marked running is shown done once that subagent has finished."""
+        from hermes_cli.subagent_transcript import delegation_title
+        rows = [r for r in self._subagent_rows() if not r.get("depth")] or self._subagent_rows()  # direct children
         used: set = set()
         for block in blocks:
             if block.kind != "delegation":
                 continue
             goal = " ".join(block.goal.split())
-            match = next((self._row_key(r) for r in rows if self._row_key(r) not in used
+            match = next((r for r in rows if self._row_key(r) not in used
                           and " ".join(str(r.get("goal") or "").split()) == goal), None)
-            if match:
-                used.add(match)
-                block.link = match
+            if match is None:
+                continue
+            used.add(self._row_key(match))
+            block.link = self._row_key(match)
+            if block.outcome == "running" and match.get("kind") == "finished" and match.get("ended"):
+                block.outcome = "completed"
+                block.title = delegation_title(block.goal, block.outcome)
 
     def poll(self) -> bool:
         """The monitor's tick: re-read the view on screen when its session changed."""

@@ -234,6 +234,7 @@ class LocalSubagents:
             record = live.get(row["subagent_id"], {})
             row["started_at"], row["last_tool"] = record.get("started_at"), record.get("last_tool") or ""
             row["child_session_id"] = children.get(row["subagent_id"])
+            row["depth"] = record.get("depth")  # 0 = a direct child, as subagent.list reports it
         self._paths = {row["subagent_id"]: row.get("live_transcript") for row in entries}
         return entries
 

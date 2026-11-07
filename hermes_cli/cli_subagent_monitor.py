@@ -300,9 +300,8 @@ def finished_rows(cli, live_rows):
     db, session_id = getattr(cli, '_session_db', None), master_session_id(cli)
     if db is None or not session_id:
         return []
-    from hermes_state_subagents import subagent_sessions
     try:
-        stored = subagent_sessions(db, session_id)
+        stored = db.list_subagent_sessions(session_id)
     except Exception:  # health: allow BLE001 -- the list is a view; a locked or older store must not break the monitor
         logger.debug("stored subagent read failed", exc_info=True)
         return []
@@ -315,7 +314,8 @@ def finished_rows(cli, live_rows):
         rows.append({
             'kind': 'finished', 'key': record['session_id'], 'subagent_id': record['session_id'],
             'child_session_id': record['session_id'], 'goal': record.get('goal') or record.get('title') or '',
-            'depth': record.get('depth', 1), 'model': record.get('model'), 'ended': ended is not None,
+            # 0 = a direct child: the live registry's (and subagent.list's) convention
+            'depth': record.get('depth', 1) - 1, 'model': record.get('model'), 'ended': ended is not None,
             'elapsed': max(0, int(ended - started)) if ended and started else 0,
         })
     return rows

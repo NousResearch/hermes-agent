@@ -115,7 +115,7 @@ def _delegation_goals(args: dict) -> list[str]:
     return [_clean(args.get("goal")).strip()]
 
 
-def _delegation_title(goal: str, outcome: str) -> str:
+def delegation_title(goal: str, outcome: str) -> str:
     return t("cli.subagent_view.delegation_title", goal=" ".join(goal.split()),
              outcome=t(f"cli.subagent_view.outcome_{outcome}") if outcome in _OUTCOMES else outcome)
 
@@ -138,7 +138,7 @@ def _apply_delegation_result(tasks: list[Block], content: Any) -> None:
             task = tasks[index]
             task.outcome = str(entry.get("status") or "completed")
             task.body = _clean(entry.get("summary") or entry.get("error") or "").strip()
-            task.title = _delegation_title(task.goal, task.outcome)
+            task.title = delegation_title(task.goal, task.outcome)
 
 
 def _assistant_blocks(message: dict, pending: dict) -> list[Block]:
@@ -149,7 +149,7 @@ def _assistant_blocks(message: dict, pending: dict) -> list[Block]:
     for call in _tool_calls(message):
         call_id, name, args = _call_parts(call)
         if name == "delegate_task":
-            tasks = [Block("delegation", title=_delegation_title(goal, "running"), goal=goal, outcome="running",
+            tasks = [Block("delegation", title=delegation_title(goal, "running"), goal=goal, outcome="running",
                            collapsible=True, call_id=call_id, task_index=i)
                      for i, goal in enumerate(_delegation_goals(args))]
             pending[call_id] = tasks

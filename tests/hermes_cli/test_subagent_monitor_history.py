@@ -70,6 +70,26 @@ def test_history_is_left_out_unless_asked_for(monitor):
     assert [monitor._key(row) for row in monitor.roster] == ["sa-live"]
 
 
+def test_the_gateway_backed_cli_store_serves_finished_subagents(store, monkeypatch):
+    """The classic CLI's ``_session_db`` is the gateway session store, which only serves listed
+    read methods from its read-only reader."""
+    from hermes_cli.cli_subagent_monitor import SubagentMonitor
+    from hermes_cli.gateway_session_store import GatewaySessionStore
+    from tools import delegate_tool_registry as registry
+
+    monkeypatch.setattr(registry, "_active_subagents", {})
+    monkeypatch.setenv("HERMES_HOME", str(store.db_path.parent))
+    idle = SimpleNamespace(pending=[], queued_at={}, queued_inputs={}, pending_seq=0)  # no queued prompts
+    gateway_store = GatewaySessionStore(SimpleNamespace(final=False, state=lambda session_id: idle))
+    cli = SimpleNamespace(agent=SimpleNamespace(session_id="master"), session_id="master", _session_db=gateway_store)
+    dock = SubagentMonitor(cli)
+
+    dock.refresh(history=True)
+
+    assert {row["child_session_id"] for row in dock.finished} == {"finished-child", "live-child"}
+    gateway_store.close_reader()
+
+
 def test_no_session_store_means_live_rows_only(monkeypatch):
     from hermes_cli.cli_subagent_monitor import SubagentMonitor
     from tools import delegate_tool_registry as registry

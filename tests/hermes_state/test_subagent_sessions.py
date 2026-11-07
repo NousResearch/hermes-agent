@@ -26,13 +26,11 @@ def _set_started(db, session_id, started_at):
 
 
 def test_lists_direct_subagents_oldest_first_with_their_brief(db):
-    from hermes_state_subagents import subagent_sessions
-
     db.create_session("master", "cli")
     _child(db, "late", "master", "Second task", started_at=200.0)
     _child(db, "early", "master", "First task", started_at=100.0)
 
-    rows = subagent_sessions(db, "master")
+    rows = db.list_subagent_sessions("master")
 
     assert [r["session_id"] for r in rows] == ["early", "late"]
     assert rows[0]["goal"] == "First task"
@@ -42,18 +40,14 @@ def test_lists_direct_subagents_oldest_first_with_their_brief(db):
 
 
 def test_ignores_children_that_are_not_subagents(db):
-    from hermes_state_subagents import subagent_sessions
-
     db.create_session("master", "cli")
     db.create_session("branch", "cli", parent_session_id="master")
     _child(db, "worker", "master", "Do it", started_at=100.0)
 
-    assert [r["session_id"] for r in subagent_sessions(db, "master")] == ["worker"]
+    assert [r["session_id"] for r in db.list_subagent_sessions("master")] == ["worker"]
 
 
 def test_includes_subagents_from_earlier_compression_segments(db):
-    from hermes_state_subagents import subagent_sessions
-
     db.create_session("root", "cli")
     _set_started(db, "root", 10.0)
     _child(db, "before-rotation", "root", "Old task", started_at=20.0)
@@ -62,43 +56,37 @@ def test_includes_subagents_from_earlier_compression_segments(db):
     _set_started(db, "tip", 30.0)
     _child(db, "after-rotation", "tip", "New task", started_at=40.0)
 
-    rows = subagent_sessions(db, "tip")
+    rows = db.list_subagent_sessions("tip")
 
     assert [r["session_id"] for r in rows] == ["before-rotation", "after-rotation"]
 
 
 def test_does_not_reach_into_the_conversation_a_branch_came_from(db):
-    from hermes_state_subagents import subagent_sessions
-
     db.create_session("original", "cli")
     _child(db, "original-worker", "original", "Original task", started_at=20.0)
     db.create_session("branch", "cli", parent_session_id="original")
 
-    assert subagent_sessions(db, "branch") == []
+    assert db.list_subagent_sessions("branch") == []
 
 
 def test_includes_nested_subagents_with_their_depth(db):
-    from hermes_state_subagents import subagent_sessions
-
     db.create_session("master", "cli")
     _child(db, "orchestrator", "master", "Coordinate", started_at=100.0)
     _child(db, "leaf", "orchestrator", "Leaf work", started_at=150.0)
 
-    rows = {r["session_id"]: r for r in subagent_sessions(db, "master")}
+    rows = {r["session_id"]: r for r in db.list_subagent_sessions("master")}
 
     assert rows["leaf"]["depth"] == 2
     assert rows["leaf"]["parent_session_id"] == "orchestrator"
 
 
 def test_reports_when_a_subagent_ended(db):
-    from hermes_state_subagents import subagent_sessions
-
     db.create_session("master", "cli")
     _child(db, "done", "master", "Finish", started_at=100.0)
     _child(db, "busy", "master", "Still going", started_at=110.0)
     db.end_session("done", "agent_close")
 
-    rows = {r["session_id"]: r for r in subagent_sessions(db, "master")}
+    rows = {r["session_id"]: r for r in db.list_subagent_sessions("master")}
 
     assert rows["done"]["ended_at"] is not None
     assert rows["done"]["end_reason"] == "agent_close"
@@ -106,7 +94,5 @@ def test_reports_when_a_subagent_ended(db):
 
 
 def test_unknown_or_empty_session_has_no_subagents(db):
-    from hermes_state_subagents import subagent_sessions
-
-    assert subagent_sessions(db, "") == []
-    assert subagent_sessions(db, "missing") == []
+    assert db.list_subagent_sessions("") == []
+    assert db.list_subagent_sessions("missing") == []

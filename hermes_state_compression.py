@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import logging
-import sqlite3
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -70,7 +69,7 @@ def _claim_lease_row(conn, table: str, key_col: str, key: str, holder: str, now:
         conn.execute(f"DELETE FROM {table} WHERE {key_col} = ? AND holder = ?", (key, row["holder"]))
         reclaimed_holder = row["holder"]
     conn.execute(
-        f"INSERT OR IGNORE INTO {table} ({key_col}, holder, acquired_at, expires_at) VALUES (?, ?, ?, ?)",
+        f"INSERT INTO {table} ({key_col}, holder, acquired_at, expires_at) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
         (key, holder, now, expires_at))
     owner = conn.execute(f"SELECT holder FROM {table} WHERE {key_col} = ?", (key,)).fetchone()
     return owner is not None and owner["holder"] == holder, reclaimed_holder
@@ -119,7 +118,9 @@ _CREATED_ROW_SQL = "SELECT parent_session_id, created_source FROM sessions WHERE
 # A parent that did not end by compression (a reset or branch source) is not a chain edge, so an
 # unset row behind one does not send every write down that walk.
 # CROSS JOIN keeps ``up`` the outer loop: without ANALYZE stats SQLite otherwise scans sessions
-# and probes ``up`` for each row, a full-table read on every stamped write.
+# and probes ``up`` for each row, a full-table read on every stamped write. (PostgreSQL's
+# converter rewrites the ``CROSS JOIN ... ON`` to a plain inner join: it rejects ON there, and
+# its cost planner holds the same driving side.)
 _UNSET_ANCESTOR_SQL = """
     WITH RECURSIVE up(pid, n) AS (
         SELECT parent_session_id, 1 FROM sessions WHERE id = ?
@@ -484,10 +485,10 @@ class SessionCompressionMixin:
             self._unarchive_auto_archived_lineage(conn, child_session_id)
 
     def _write_sql_logged(self, op: str, session_id: str, sql: str, params) -> None:
-        """``_write_sql`` that logs (never raises) on ``sqlite3.Error``."""
+        """``_write_sql`` that logs (never raises) on a database error."""
         try:
             self._write_sql(sql, params)
-        except sqlite3.Error as exc:
+        except self.database_errors as exc:
             logger.warning("%s(%s) failed: %s", op, session_id, exc)
 
     def record_compression_failure_cooldown(
@@ -644,7 +645,7 @@ class SessionCompressionMixin:
             return self._write_rowcount(
                 "UPDATE compression_locks SET expires_at = ? WHERE session_id = ? AND holder = ?",
                 (expires_at, session_id, holder)) > 0
-        except sqlite3.Error as exc:
+        except self.database_errors as exc:
             logger.warning("refresh_compression_lock(%s) failed: %s", session_id, exc)
             return False
 
@@ -652,7 +653,6 @@ class SessionCompressionMixin:
         """Try to atomically acquire the compression lock for ``session_id``. ``False``: another holder owns
         a live lock and the caller MUST NOT compress (its rotation would split the lineage). Expired
         locks and structured holders whose local ``pid=`` is dead are reclaimed transparently."""
-        from hermes_state import _compression_lock_holder_process_is_dead
         if not session_id:
             return False
         now = time.time()
@@ -660,7 +660,7 @@ class SessionCompressionMixin:
         def _do(conn):
             return _claim_lease_row(
                 conn, "compression_locks", "session_id", session_id, holder, now, expires_at,
-                lambda h, e: e < now or _compression_lock_holder_process_is_dead(h))
+                lambda h, e: e < now or self._holder_process_is_dead(h))
 
         try:
             acquired, reclaimed_holder = self._execute_write(_do)
@@ -668,7 +668,7 @@ class SessionCompressionMixin:
                 logger.warning("Reclaimed stale compression lock for session=%s (holder=%s)",
                                session_id, reclaimed_holder)
             return bool(acquired)
-        except sqlite3.Error as exc:
+        except self.database_errors as exc:
             # False makes the caller skip compression — safe when the lock subsystem is broken.
             logger.warning("try_acquire_compression_lock(%s) failed: %s", session_id, exc)
             return False
@@ -722,7 +722,6 @@ class SessionCompressionMixin:
         """Atomically acquire the cross-process turn lease for a conversation (keyed by the
         lineage root). The walk, the INSERT, and reclaim of expired or dead-local-PID leases
         share one write transaction."""
-        from hermes_state import _compression_lock_holder_process_is_dead
         if not session_id or not holder:
             return False
         now = time.time()
@@ -737,7 +736,7 @@ class SessionCompressionMixin:
             conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
             return _claim_lease_row(
                 conn, "session_turn_leases", "conversation_id", conversation_id, holder, now, expires_at,
-                lambda h, e: float(e) <= now or _compression_lock_holder_process_is_dead(h),
+                lambda h, e: float(e) <= now or self._holder_process_is_dead(h),
             )[0]
         return bool(self._execute_write(_do, patience_s=patience_s))
 
@@ -770,7 +769,7 @@ class SessionCompressionMixin:
                 if self.try_acquire_session_turn_lease(
                     session_id, holder, ttl_seconds=ttl_seconds, patience_s=patience):
                     return True
-            except sqlite3.Error as exc:
+            except self.database_errors as exc:
                 # Another writer's transaction outlasted the write patience. That is not a lease
                 # holder, so no poll sleep or "another process" notice; the retry waits on the write
                 # lock itself (the poll interval moves into its patience) and wins it once free.

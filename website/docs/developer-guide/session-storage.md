@@ -601,3 +601,153 @@ wherever `HERMES_HOME` points (see [Hermes home and profile isolation](#hermes-h
 
 The database file, WAL file (`state.db-wal`), and shared-memory file
 (`state.db-shm`) are all created in the same directory.
+
+## Session database backend
+
+`SessionDB` resolves its backend from the `database:` section of the owning
+profile's `config.yaml`:
+
+```yaml
+database:
+  backend: "sqlite"  # sqlite | postgres
+  # schema: "hermes_default"
+```
+
+- `backend` selects the conversation-state store for that profile. The
+  default is `sqlite`, and existing profiles are unaffected: a config without
+  these keys (or with `backend: "sqlite"`) opens the same local `state.db`
+  as before.
+- Selection is per profile: each profile resolves its own `database:`
+  section, and a profile's settings never borrow another profile's
+  configuration or credentials.
+- PostgreSQL (opt-in, `backend: "postgres"`) takes its connection string
+  from `HERMES_DATABASE_URL` in that profile's own `.env`, never from the
+  parent process environment for named profiles.
+- `schema` names the PostgreSQL schema for the profile. When omitted, a
+  stable name is derived from the profile and a hash of the local database
+  path so stores stay isolated; an explicit schema must match
+  `[a-z_][a-z0-9_]{0,62}` and must not start with `pg_`.
+
+This section lands the config surface, the backend dispatch seam, and the
+portable-SQL groundwork for a second store. The optional PostgreSQL backend is
+described in [PostgreSQL conversation state](#postgresql-conversation-state).
+A misconfigured `backend: "postgres"` profile still fails fast at open:
+without `HERMES_DATABASE_URL` the config resolution rejects the profile
+(`PostgreSQL requires HERMES_DATABASE_URL in ...`), and with the URL set but
+no driver installed the dispatch refuses the construction with
+`PostgreSQL support requires pip install 'hermes-agent[postgres]'`.
+
+## PostgreSQL conversation state
+
+An optional backend for the conversation state store (sessions, messages,
+search, resume, usage, and Telegram topic bindings) on PostgreSQL 17 or
+later. SQLite remains the default; a profile without these config keys is
+unaffected.
+
+Install the optional driver in your Hermes environment:
+
+```bash
+uv pip install -e '.[postgres]'
+```
+
+Configure the profile's `config.yaml`:
+
+```yaml
+database:
+  backend: postgres
+  schema: hermes_personal
+```
+
+Put the connection string in that profile's `.env`:
+
+```dotenv
+HERMES_DATABASE_URL=postgresql://hermes:***@localhost:5432/hermes
+```
+
+Create the database and role beforehand. The role needs permission to create
+its schema and objects within it. Hermes initializes those objects on the
+first writable open (one transaction under a per-schema advisory lock);
+read-only opens require an initialized schema and verify its version.
+PostgreSQL errors are reported without falling back to SQLite.
+
+Each profile resolves its own configuration and credentials. Process-level
+`HERMES_DATABASE_URL` overrides apply only to the process's home profile. Set
+a distinct `database.schema` for each independent profile. If omitted, Hermes
+derives it from the profile name and absolute database path; set an explicit
+schema before moving a profile to another machine or directory. Restart
+Hermes after changing backend settings so existing shared handles can close.
+
+This backend stores sessions, messages, model usage, conversation
+generations, gateway routing and hygiene state, compression/turn leases, and
+optional Telegram topic bindings. History, resume, search, analytics, and
+profile session readers use the same `SessionDB` API and existing field
+names. Cron, Kanban, delivery/delegation ledgers, and the other application
+stores retain their existing SQLite storage. Local profile files are still
+required; this setting does not make an entire deployment stateless.
+
+The implementation uses a bounded psycopg connection pool. Each write
+callback runs in one transaction under a per-schema advisory lock, preserving
+the existing read/check/write ordering across clients and hosts; reads use
+independent read-only transactions. A process on one machine cannot probe
+holder liveness on another, so remote leases expire by TTL rather than by
+PID check.
+
+Search uses a GIN index over bounded `tsvector` columns (the `simple`
+configuration, so terms match as typed), compiled from per-phrase bound
+tsqueries that keep query text out of the query syntax. Oversized messages
+are also checked through an overflow index, so text beyond the vector limit
+remains searchable and stored content is never truncated. CJK queries and
+tool-role searches route through a case-insensitive `LIKE` fallback that
+mirrors SQLite's trigram semantics. `hermes sessions optimize` cleans the
+index's pending list on this backend, and the store's rebuild path runs a
+full `REINDEX`; PostgreSQL autovacuum manages physical storage. Use
+PostgreSQL backup tools such as `pg_dump` for this backend; the SQLite
+repair and file backup procedures above apply only to SQLite.
+
+### Copy existing SQLite history
+
+Stop writers for the source profile and the destination profile. Configure an
+empty PostgreSQL schema as above, then run from the Hermes checkout:
+
+```bash
+python scripts/migrate_sqlite_to_postgres.py /path/to/source/state.db \
+  --profile-home /path/to/destination/profile
+```
+
+The command opens SQLite read-only, checks integrity and foreign keys, then
+copies the conversation tables in batches. Message IDs, archived/rewound
+messages, usage, provenance, routing, and optional Telegram topic bindings
+are retained; message content is re-encoded for the PostgreSQL dialect;
+generated search vectors are rebuilt by the schema. Per-table row counts are
+verified before one final commit; a failed copy rolls back, a populated
+destination is refused, and the SQLite source remains unchanged. Live
+coordination state (heartbeats, compression/turn leases, runtime ledgers) is
+deliberately not copied: stale liveness would mask orphan reaping and stale
+locks would block fresh sessions. Restart the destination profile after a
+successful copy.
+
+### Test the backend
+
+The normal suite needs no PostgreSQL server. Backend integration tests opt
+in with `HERMES_TEST_POSTGRES=1`; CI supplies a disposable PostgreSQL 17
+service at `127.0.0.1:55433`, database/user `hermes_test`/`hermes`, password
+`hermes-test`. Tests create and drop uniquely named schemas. They skip (not
+fail) when the opt-in variable is unset, and fail when it is set but the
+server or driver is unavailable.
+
+```bash
+HERMES_TEST_POSTGRES=1 \
+HERMES_TEST_POSTGRES_DSN='postgresql://hermes:hermes-test@127.0.0.1:55433/hermes_test' \
+scripts/run_tests.sh \
+  tests/hermes_state/test_postgres_state.py \
+  tests/hermes_state/test_postgres_migration.py \
+  tests/hermes_state/test_postgres_search.py \
+  tests/hermes_state/test_postgres_maintenance.py \
+  tests/hermes_state/test_postgres_transactions.py \
+  tests/hermes_state/test_postgres_compression.py \
+  tests/hermes_state/test_state_backend.py \
+  tests/hermes_cli/test_postgres_session_readers.py \
+  tests/tui_gateway/test_postgres_profile_sessions.py \
+  tests/gateway/test_postgres_state_health.py \
+  tests/agent/test_postgres_insights.py
+```

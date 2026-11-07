@@ -11,6 +11,8 @@ import importlib
 import inspect
 import logging
 import os
+import platform
+import sys
 import threading
 import tomllib
 import uuid
@@ -860,6 +862,28 @@ class NoopRelayRuntime:
 RelayHost = RelayRuntime | NoopRelayRuntime
 
 
+def _is_relay_unsupported_platform() -> bool:
+    """Return True when NeMo Relay publishes no official wheel for this platform.
+
+    Supported targets (per Hermes pyproject.toml and NVIDIA NeMo Relay docs):
+      - macOS Apple Silicon (darwin/arm64)
+      - Linux x86_64, Linux aarch64
+      - Windows AMD64, Windows ARM64
+
+    Everything else (e.g. macOS Intel, 32-bit ARM, Android/Termux, FreeBSD)
+    falls back to NoopRelayRuntime by design; log at DEBUG rather than WARNING.
+    """
+    system = sys.platform
+    machine = platform.machine().lower()
+    if system == "darwin":
+        return machine != "arm64"
+    if system == "linux":
+        return machine not in ("x86_64", "aarch64")
+    if system == "win32":
+        return machine not in ("amd64", "arm64")
+    return True
+
+
 class RelayHostRegistry:
     """Own exactly one Relay host for each canonical Hermes profile."""
 
@@ -876,7 +900,14 @@ class RelayHostRegistry:
             try:
                 host = RelayRuntime(profile_key=key)
             except Exception as exc:
-                logger.warning("Hermes Relay runtime initialization failed", exc_info=True)
+                if _is_relay_unsupported_platform():
+                    logger.debug(
+                        "NeMo Relay is not supported on %s/%s; using no-op runtime. "
+                        "This is expected — no official wheel is published for this platform.",
+                        sys.platform, platform.machine(),
+                    )
+                else:
+                    logger.warning("Hermes Relay runtime initialization failed", exc_info=True)
                 host = NoopRelayRuntime(profile_key=key, reason=str(exc))
             self._hosts[key] = host
             return host

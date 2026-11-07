@@ -1,0 +1,62 @@
+name: nanlmind-hermes
+title: NaNLMind Hermes
+repo: https://github.com/shemshallah/NaNLMind_HERMES
+sha: 4bc4d278429e96127c2ec3f4ae82a2665bf66275
+description: Connect Hermes to a local NaNLMind 256-head universe for chat, explicit native training,
+  mathematical memory, and approved CLOCKED evidence plans. The plugin registers 33 tools for conversation,
+  native logic/word/sentence training, memory ingest and assessment, NaN16DE routing, NANNET identity,
+  and CLOCKED plan/execute/scratch/head-process/candidate flows. Training runs through the user's local
+  nanlm-universal executable; NANNET is the identity and authorization boundary; CLOCKED results are evidence,
+  not ground truth, and candidates cannot promote canonical state. Disclosure - runs a local native binary;
+  makes HTTPS calls to configured NANNET authority, CLOCKED gateway and head-cortex endpoints; stores
+  transcripts, corpora, scratch, encrypted installation identity and paired token under the configured
+  state directory; approved CLOCKED execution sends source text to the configured gateway while planning
+  excludes it; no telemetry, self-update or credential-store scraping.
+maintainer: shemshallah
+tier: community
+category: tools
+requires_hermes: '>=0.23.0'
+docs_url: https://github.com/shemshallah/NaNLMind_HERMES/blob/4bc4d278429e96127c2ec3f4ae82a2665bf66275/docs/DEMO.md
+version: "1.2.0"
+platforms: []
+capabilities:
+  provides_tools:
+  - nanlm_status
+  - nanlm_chat
+  - nanlm_chat_history
+  - nanlm_auth_init
+  - nanlm_auth_status
+  - nanlm_auth_pair
+  - nanlm_auth_revoke
+  - nanlm_generate_curriculum
+  - nanlm_curriculum_experiment
+  - nanlm_logic_session
+  - nanlm_word_session
+  - nanlm_sentence_session
+  - nanlm_training_pipeline
+  - nanlm_nan16de_route
+  - nanlm_generate_corpus
+  - nanlm_train
+  - nanlm_math_train
+  - nanlm_structured_relation_train
+  - nanlm_evaluate
+  - nanlm_memory_ingest
+  - nanlm_memory_reorganize
+  - nanlm_memory_cross_resolution
+  - nanlm_memory_merge
+  - nanlm_memory_query
+  - nanlm_memory_assessments
+  - nanlm_clocked_plan
+  - nanlm_clocked_execute
+  - nanlm_clocked_scratch
+  - nanlm_head_process
+  - nanlm_clocked_synthesize
+  - nanlm_head_candidate
+  - nanlm_head_candidate_evaluate
+  - nanlm_head_learn_candidate
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - CLOCKED_GATEWAY_TOKEN
+  - NANLM_DEVICE_TOKEN
+  - NANNET_MASTER_KEY

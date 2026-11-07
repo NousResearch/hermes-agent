@@ -6,6 +6,7 @@ would otherwise re-spawn ``git`` on every sidebar open, while the TTL keeps ``gi
 
 from __future__ import annotations
 
+import ntpath
 import os
 import threading
 import time
@@ -19,6 +20,27 @@ _WARM_WORKERS = 8
 _NEG_TTL = 30.0  # "not a git repo" TTL: a fresh `git init` shows within seconds
 
 
+def path_may_block(cwd: str) -> bool:
+    """Whether an unbounded host stat on ``cwd`` can hang for tens of seconds.
+
+    Windows UNC paths (``\\\\server\\share``, ``//server/share``) pay an SMB connect
+    with no userspace timeout on the first cold/dead-share stat, while the bounded
+    git probe returns in 0.05s on the same share (#135644). Pure string
+    classification via ``ntpath.splitdrive``, so it is testable and correct on any
+    host — a Linux gateway probing a Windows client's recorded UNC cwd is covered
+    too. Drive letters are classified local: a dead MAPPED drive can still stall,
+    and telling mapped from fixed needs a live ``GetDriveTypeW`` call that does not
+    exist off Windows (see PR: needs a real-host check).
+    """
+    value = (cwd or "").strip()
+    if not value:
+        return False
+    drive, _rest = ntpath.splitdrive(value)
+    # splitdrive only reports a drive for drive letters and FULL UNC shares
+    # (//server/share); a plain POSIX path (or a bare '//server') has none.
+    return bool(drive) and not (len(drive) == 2 and drive[1] == ":")
+
+
 def run_git(cwd: str, *args: str) -> str:
     """``git -C <cwd> <args>`` → stripped stdout, or ``""`` on any failure. ``bounded_git_probe``
     bounds post-kill cleanup on Windows (a killed git's suspended descendant held the pipes).
@@ -28,8 +50,11 @@ def run_git(cwd: str, *args: str) -> str:
     suspended descendant holding the pipe handles (issue #68609).
     """
     # A missing dir can only fail at the price of a fork; deleted worktrees dominate a long
-    # session history's cwds, so the stat pays off.
-    if not cwd or not os.path.isdir(cwd):
+    # session history's cwds, so the stat pays off. On Windows network paths the stat is the
+    # hazard: a dead SMB share blocks it for tens of seconds (the bounded git probe returns
+    # in 0.05s on the same share), so there the 1.5s-bounded git spawn is the cheaper probe
+    # and the unbounded guard is skipped (#135644).
+    if not cwd or (not path_may_block(cwd) and not os.path.isdir(cwd)):
         return ""
     return bounded_git_probe(["git", "-C", cwd, *args], timeout=_GIT_TIMEOUT)
 

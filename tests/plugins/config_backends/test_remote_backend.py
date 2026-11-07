@@ -1880,3 +1880,37 @@ def test_custom_endpoint_make_default_refuses_when_its_provider_entry_is_locked(
             id="new-probe", name="new-probe", base_url="https://new.example/v1", model="new-model", make_default=True))
     assert exc.value.status_code == 403, exc.value
     assert plane.profile("default")["values"].get("model") in (None, {}), plane.profile("default")
+
+
+@pytest.mark.parametrize("credential_field", ["key_env", "api_key_env"])
+@pytest.mark.parametrize("path", ["make_default", "activate"])
+def test_custom_endpoint_default_masks_inherited_key_under_either_pointer_spelling(plane, monkeypatch, path,
+                                                                                  credential_field):
+    """Make-default and activate copy the endpoint's credential pointer, spelled ``key_env`` or its
+    ``api_key_env`` alias, onto the route. Under Remote Config the inherited ``model.api_key`` must
+    then be masked (null), not dropped from the profile: it outranks ``key_env`` at runtime, so the
+    old endpoint's key would reach the new endpoint."""
+    from hermes_cli.config import read_user_config_raw
+    from hermes_cli.model_switch import ModelSwitchResult
+    from hermes_cli.web_models import CustomEndpointUpdate
+    from hermes_cli.web_routers import config_env
+    url = "https://new.example/v1"
+    plane.upper = {
+        "model": {"default": "old-model", "provider": "custom:old", "base_url": "https://old.example/v1",
+                  "api_key": "inherited-synthetic-key"},
+        "providers": {"new-probe": {"name": "new-probe", "base_url": url, "model": "new-model",
+                                    credential_field: "NEW_KEY"}},
+    }
+    monkeypatch.setattr(config_env, "_record_custom_endpoint_setup", lambda home: None)
+    monkeypatch.setattr(config_env, "_validated_main_model_selection", lambda cfg, provider, model, base_url: ModelSwitchResult(
+        success=True, new_model=model, target_provider=provider, provider_changed=True, base_url=base_url,
+        api_mode="chat_completions", is_global=True))
+    if path == "make_default":
+        config_env.upsert_custom_endpoint(CustomEndpointUpdate(
+            id="new-probe", name="new-probe", base_url=url, model="new-model", make_default=True))
+    else:
+        config_env.activate_custom_endpoint("new-probe")
+    body = plane.patches()[-1]["body"]
+    assert body["set"].get("model.api_key", "absent") is None and "model.api_key" not in body.get("unset", []), body
+    model = read_user_config_raw()["model"]
+    assert model["base_url"] == url and model.get("api_key") is None and model["key_env"] == "NEW_KEY", model

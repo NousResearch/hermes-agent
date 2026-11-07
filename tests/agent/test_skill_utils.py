@@ -4,6 +4,8 @@
 import pytest
 
 from agent.skill_utils import (
+    discover_all_skill_config_vars,
+    extract_skill_config_vars,
     get_disabled_skill_names,
     get_external_skills_dirs,
     is_excluded_skill_path,
@@ -311,6 +313,128 @@ def test_skill_config_home_vars_use_subprocess_home(tmp_path, monkeypatch):
     assert resolved["wiki.tilde"] == str(subprocess_home / "scratch")
     assert resolved["wiki.other_var"] == "/proj/cache"
     assert resolved["wiki.tilde_var"] == str(subprocess_home / "leaf")
+
+
+def _config_frontmatter(config) -> dict:
+    return {"metadata": {"hermes": {"config": config}}}
+
+
+class TestExtractSkillConfigVars:
+    """``metadata.hermes.config`` declarations feed setup prompts and the
+    skill config block injected at load time; malformed entries are skipped,
+    never raised on."""
+
+    def test_single_mapping_is_one_declaration(self):
+        fm = _config_frontmatter({"key": "wiki.path", "description": "Wiki path"})
+
+        assert extract_skill_config_vars(fm) == [
+            {"key": "wiki.path", "description": "Wiki path", "prompt": "Wiki path"}
+        ]
+
+    @pytest.mark.parametrize(
+        "frontmatter",
+        [
+            {},
+            {"metadata": "not-a-mapping"},
+            {"metadata": {"hermes": ["not", "a", "mapping"]}},
+            _config_frontmatter("wiki.path"),
+            _config_frontmatter([]),
+        ],
+    )
+    def test_malformed_metadata_yields_nothing(self, frontmatter):
+        assert extract_skill_config_vars(frontmatter) == []
+
+    def test_incomplete_and_duplicate_entries_are_skipped(self):
+        fm = _config_frontmatter(
+            [
+                "not-a-mapping",
+                {"key": "", "description": "No key"},
+                {"key": "wiki.path", "description": "   "},
+                {
+                    "key": " wiki.path ",
+                    "description": " First wins ",
+                    "default": "~/wiki",
+                },
+                {
+                    "key": "wiki.path",
+                    "description": "Second loses",
+                    "default": "/other",
+                },
+            ]
+        )
+
+        assert extract_skill_config_vars(fm) == [
+            {
+                "key": "wiki.path",
+                "description": "First wins",
+                "default": "~/wiki",
+                "prompt": "First wins",
+            }
+        ]
+
+    @pytest.mark.parametrize(
+        ("prompt", "expected"),
+        [
+            (None, "Wiki path"),
+            ("   ", "Wiki path"),
+            (42, "Wiki path"),
+            ("  Where is your wiki?  ", "Where is your wiki?"),
+        ],
+    )
+    def test_prompt_falls_back_to_description(self, prompt, expected):
+        fm = _config_frontmatter(
+            {"key": "wiki.path", "description": "Wiki path", "prompt": prompt}
+        )
+
+        assert extract_skill_config_vars(fm)[0]["prompt"] == expected
+
+    @pytest.mark.parametrize("default", [0, False, ""])
+    def test_falsy_default_is_kept(self, default):
+        fm = _config_frontmatter(
+            {"key": "wiki.depth", "description": "Depth", "default": default}
+        )
+
+        assert extract_skill_config_vars(fm)[0]["default"] == default
+
+
+def _write_config_skill(skills_dir, dirname, name, key, extra=""):
+    skill_dir = skills_dir / dirname
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: {name}\n{extra}"
+        "metadata:\n  hermes:\n    config:\n"
+        f"      - key: {key}\n        description: {name} setting\n"
+        "---\n\nBody.\n",
+        encoding="utf-8",
+    )
+
+
+def test_discover_all_skill_config_vars_attributes_and_filters(tmp_path, monkeypatch):
+    """Discovery dedups by key (local skills dir before external dirs) and
+    leaves out disabled and platform-incompatible skills."""
+    from agent import skill_utils
+
+    hermes_home = tmp_path / ".hermes"
+    local = hermes_home / "skills"
+    external = tmp_path / "external"
+    # "aaa" sorts first inside the external dir, but the local root still wins.
+    _write_config_skill(external, "aaa", "external-wiki", "wiki.path")
+    _write_config_skill(local, "wiki", "local-wiki", "wiki.path")
+    _write_config_skill(local, "notes", "notes", "notes.dir")
+    _write_config_skill(local, "off", "disabled-skill", "off.key")
+    _write_config_skill(
+        local, "other-os", "other-os", "other.key", extra="platforms: [plan9]\n"
+    )
+    (hermes_home / "config.yaml").write_text(
+        f"skills:\n  disabled:\n    - disabled-skill\n  external_dirs:\n    - {external}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    skill_utils._external_dirs_cache_clear()
+
+    found = {var["key"]: var["skill"] for var in discover_all_skill_config_vars()}
+
+    assert found == {"notes.dir": "notes", "wiki.path": "local-wiki"}
 
 
 def test_iter_skill_index_files_prunes_skill_support_dirs(tmp_path):

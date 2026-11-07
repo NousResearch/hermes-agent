@@ -48,6 +48,9 @@ _RUN: dict | None = None
 #: Runtimes the early resume already restarted on the new code: the late fleet restart in the
 #: same completion process must not restart them a second time.
 _RESTARTED: dict = {"units": set(), "labels": set(), "pids": set()}
+#: The replay environment of each paused bare gateway's home, built at the commit point: built after
+#: the move, it would import the new tree's modules into this process.
+_REPLAY_ENVS: dict[str, dict] = {}
 
 _STOP_TIMEOUT_S = 120.0
 _READY_TIMEOUT_S = 30.0
@@ -69,6 +72,7 @@ def arm_pause(*, no_gateway_restart: bool) -> dict | None:
     gateways, nothing is stopped). An adopted orphan set is recorded under this process now, so
     even an update that never moves the checkout restarts it at exit."""
     global _RUN
+    _REPLAY_ENVS.clear()
     if sys.platform == "win32" or no_gateway_restart:
         return None
     from hermes_cli import update_pause_record as pause_record
@@ -523,6 +527,8 @@ def _replay_env(home: str) -> dict:
     under that same profile, inherits the launcher's environment (an exported bot token may be its
     only credential). The multiplexing root, and any home other than the launcher's, get that home's
     own secrets and none of the launcher's (``served_profile_child_env``)."""
+    if (prepared := _REPLAY_ENVS.get(home)) is not None:
+        return dict(prepared)
     from hermes_constants import get_default_hermes_root, get_routing_process_hermes_home
     from tools.environments.local import build_subprocess_env, served_profile_child_env
     target = Path(home).resolve()
@@ -576,6 +582,12 @@ def pause_at_commit_point() -> str | None:
         return None
     if "posix_pause_verdict" not in token:
         token["posix_pause_verdict"] = _pause(token)
+    for entry in token.get("unmapped") or []:
+        if entry.get("argv") and entry["home"] not in _REPLAY_ENVS:
+            try:
+                _REPLAY_ENVS[entry["home"]] = _replay_env(entry["home"])
+            except Exception as exc:  # health: allow BLE001 -- the replay builds it again when it runs
+                print(f"  ⚠ Could not prepare the restart environment for {entry['home']}: {exc}")
     return token["posix_pause_verdict"]
 
 

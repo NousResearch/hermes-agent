@@ -29,16 +29,11 @@ from pathlib import Path
 REPO, ROOT, CASE, LABEL, CLONE = sys.argv[1:6]
 sys.path.insert(0, REPO)
 import hermes_cli.main
-from hermes_cli import update_cmd, update_cmd_commit, update_receipt
+from hermes_cli import update_cmd, update_cmd_commit, update_cmd_posix_pause, update_receipt
 import hermes_cli.update_lock  # main.py imports it before the update runs
 
 home = os.environ["HERMES_HOME"]
-# The run's own steps before its first tree move, then the commit point itself.
-from hermes_cli.update_stage import publish_stage
-publish_stage("Downloading updates")
-update_receipt.begin_update_receipt()
-update_receipt._current.get().data["pre_update"]["sha"] = "1" * 40  # the code this process started on
-update_cmd_commit.arm_commit_obligations(Path(ROOT), "")
+GONE = 2 ** 22 + 7  # a PID no process holds
 
 
 def request(token=None):
@@ -47,8 +42,9 @@ def request(token=None):
 
 
 def posix_token(*entries, bare=()):
+    # The verdict is set: the test never runs the real pause (it would stop this host's gateways).
     return {"platform": "posix", "resume_needed": True, "profiles": {}, "unmapped_pids": [],
-            "unmapped": list(bare), "posix_units": list(entries)}
+            "unmapped": list(bare), "posix_units": list(entries), "posix_pause_verdict": None}
 
 
 if CASE == "systemd_resume":
@@ -64,6 +60,16 @@ if CASE == "launchd_resume":
     plist = Path(ROOT) / "job.plist"
     plist.write_text("<plist/>")
     gateway.get_launchd_plist_path = lambda: plist
+token = None
+if CASE == "lost_completion":
+    token = posix_token(bare=[{"pid": GONE, "home": str(Path(ROOT) / "bare-home"), "argv": [sys.executable, "-c", "pass"]}])
+if CASE == "systemd_resume":
+    token = posix_token({"kind": "systemd", "scope": "system", "unit": unit_name, "pid": GONE})
+if CASE == "launchd_resume":
+    token = posix_token({"kind": "launchd", "label": LABEL, "domain": "gui/0", "plist": str(plist), "pid": GONE})
+if CASE == "dependencies_owed_windows_resume":
+    hermes_cli.main._is_windows = lambda: True
+    token = {"platform": "windows", "resume_needed": True, "profiles": {}, "unmapped": [], "services": []}
 if CASE == "shallow_count":
     import urllib.error, urllib.request
 
@@ -71,6 +77,16 @@ if CASE == "shallow_count":
         raise urllib.error.URLError("offline")
     urllib.request.urlopen = offline
     hermes_cli.main.PROJECT_ROOT = Path(CLONE)
+
+# The run's own steps before its first tree move, then the commit point (``arm_commit_point``'s order).
+from hermes_cli.update_stage import publish_stage
+publish_stage("Downloading updates")
+update_receipt.begin_update_receipt()
+update_receipt._current.get().data["pre_update"]["sha"] = "1" * 40  # the code this process started on
+if token is not None and token["platform"] == "posix":
+    update_cmd_posix_pause._RUN = token
+update_cmd_posix_pause.pause_at_commit_point()
+update_cmd_commit.arm_commit_obligations(Path(ROOT), "")
 
 found = []
 
@@ -96,23 +112,14 @@ try:
         def lost(request):
             raise OSError("completion process could not start")
         update_cmd.run_completion = lost
-        bare = {"pid": 2 ** 22 + 7, "home": str(Path(ROOT) / "bare-home"), "argv": [sys.executable, "-c", "pass"]}
-        update_cmd._complete_source_update(request(posix_token(bare=[bare])))
-    elif CASE == "systemd_resume":
-        unit = {"kind": "systemd", "scope": "system", "unit": unit_name, "pid": 2 ** 22 + 7}
-        token = posix_token(unit)
-        update_cmd._resume_paused_gateways_at_exit(token, request(token))
-    elif CASE == "launchd_resume":
-        job = {"kind": "launchd", "label": LABEL, "domain": "gui/0", "plist": str(plist), "pid": 2 ** 22 + 7}
-        token = posix_token(job)
+        update_cmd._complete_source_update(request(token))
+    elif CASE in ("systemd_resume", "launchd_resume"):
         update_cmd._resume_paused_gateways_at_exit(token, request(token))
     elif CASE == "dependencies_owed_windows_resume":
-        hermes_cli.main._is_windows = lambda: True
         data = update_receipt._current.get().data
         update_cmd.run_completion = lambda request: {
             "exit_code": 0, "windows_resume": None, "pm_receipt": None,
             "receipt": {"update_id": data["update_id"], "finished_at": "now", "outcome": "success"}}
-        token = {"platform": "windows", "resume_needed": True, "profiles": {}, "unmapped": [], "services": []}
         update_cmd._complete_source_update(request(token))
     elif CASE == "shallow_count":
         plan = update_cmd._prepare_checkout_for_update(
@@ -156,7 +163,8 @@ def _shallow_clone_behind(tmp_path: Path) -> Path:
 @pytest.mark.parametrize("case", sorted(_OUTCOMES))
 def test_post_move_path_imports_nothing_from_the_checkout(case, tmp_path, monkeypatch):
     home = tmp_path / "home"
-    (home / ".hermes").mkdir(parents=True)
+    home.mkdir()
+    (tmp_path / "hermes-home").mkdir()
     root = tmp_path / "install"
     root.mkdir()
     fake_bin = tmp_path / "bin"
@@ -164,7 +172,8 @@ def test_post_move_path_imports_nothing_from_the_checkout(case, tmp_path, monkey
     for supervisor in ("systemctl", "launchctl", "sudo"):
         (fake_bin / supervisor).write_text("#!/bin/sh\nexit 1\n")
         (fake_bin / supervisor).chmod(0o755)
-    env = {**os.environ, "HOME": str(home), "HERMES_HOME": str(home / ".hermes"),
+    # A home of its own (not the account default): the unit and job names carry its suffix.
+    env = {**os.environ, "HOME": str(home), "HERMES_HOME": str(tmp_path / "hermes-home"),
            "XDG_STATE_HOME": str(tmp_path / "state"), "XDG_CONFIG_HOME": str(tmp_path / "config"),
            "PATH": f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}", "GITHUB_TOKEN": "offline",
            "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",

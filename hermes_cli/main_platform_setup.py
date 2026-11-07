@@ -167,8 +167,13 @@ def cmd_whatsapp(args):
     if (session_dir / "creds.json").exists():
         print("✓ Existing WhatsApp session found")
         if _yes_no("\n  Re-pair? This will clear the existing session. [y/N] "):
-            shutil.rmtree(session_dir, ignore_errors=True)
-            session_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                shutil.rmtree(session_dir)
+                session_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                _err(f"  ✗ Could not clear WhatsApp session at {session_dir}: {exc}")
+                _err("  Stop the gateway using this profile, then retry 'hermes whatsapp'.")
+                raise SystemExit(1) from exc
             print("  ✓ Session cleared")
         else:
             # Older installs may have lost WHATSAPP_ENABLED; a kept pairing re-asserts it.

@@ -1757,6 +1757,8 @@ export const deOverrides = {
       probing: 'Authentifizierungsmethode dieses Gateways wird geprüft…',
       probeError:
         'Dieses Gateway ist noch nicht erreichbar. Prüfen Sie die URL – die Authentifizierungsmethode erscheint, sobald es antwortet.',
+      probeTlsError:
+        'Hermes kann das Zertifikat dieses Gateways nicht überprüfen. Prüfe die URL, die Gültigkeit des Zertifikats und ob dieser Computer dem Aussteller vertraut.',
       signedIn: 'Angemeldet',
       signIn: 'Anmelden',
       signOut: 'Abmelden',
@@ -4334,6 +4336,8 @@ export const deOverrides = {
     remoteUrlPlaceholder: 'https://gateway.example.com/hermes',
     probing: 'Gateway-Authentifizierung wird erkannt...',
     probeError: 'Dieses Hermes Gateway konnte nicht erreicht werden.',
+    probeTlsError:
+      'Hermes kann das Zertifikat dieses Gateways nicht überprüfen. Prüfe die URL, die Gültigkeit des Zertifikats und ob dieser Computer dem Aussteller vertraut.',
     probeErrorDetails: 'Details',
     identityProvider: 'Ihr Identity-Provider',
     authTitle: 'Authentifizierung',

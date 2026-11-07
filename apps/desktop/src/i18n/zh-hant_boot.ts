@@ -243,6 +243,7 @@ export const zhHantBoot = {
     remoteUrlPlaceholder: 'https://gateway.example.com/hermes',
     probing: '正在偵測閘道驗證方式...',
     probeError: '無法連線到該 Hermes 閘道。',
+    probeTlsError: 'Hermes 無法驗證此閘道的憑證。請檢查網址、憑證有效期，以及這部電腦是否信任憑證簽發者。',
     identityProvider: '您的身分提供者',
     authTitle: '驗證',
     authNeedsOauth: provider => `測試此閘道前請先使用 ${provider} 登入。`,

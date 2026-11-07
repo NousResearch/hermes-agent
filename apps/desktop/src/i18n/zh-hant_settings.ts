@@ -908,6 +908,7 @@ export const zhHantSettings = {
       remoteUrlDesc: '遠端儀表板後端的基礎 URL。支援路徑前綴，例如 /hermes。',
       probing: '正在檢查此閘道的驗證方式…',
       probeError: '暫時無法連線此閘道。請檢查 URL；閘道回應後將顯示驗證方式。',
+      probeTlsError: 'Hermes 無法驗證此閘道的憑證。請檢查網址、憑證有效期，以及這部電腦是否信任憑證簽發者。',
       signedIn: '已登入',
       signIn: '登入',
       signOut: '登出',

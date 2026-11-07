@@ -1,9 +1,11 @@
-import { act, cleanup, renderHook, type RenderHookResult } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, renderHook, type RenderHookResult, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopConnectionProbeResult } from '@/global'
+import { en } from '@/i18n/en'
 import { deferred } from '@/test/deferred'
 
+import { RemoteSetupFields } from './fields'
 import { useRemoteSetup } from './use-remote-setup'
 import type { RemoteSetupHost } from './use-remote-setup'
 
@@ -157,5 +159,97 @@ it.each<RemoteSetupHost>(['first-run', 'settings', 'registry'])(
     expect(result.current.success).toBeNull()
     expect(result.current.testing).toBe(false)
     expect(result.current.canCommit).toBe(host !== 'first-run')
+  }
+)
+
+function unreachableProbe(error: string, errorKind?: 'tls'): DesktopConnectionProbeResult {
+  return {
+    authMode: 'unknown',
+    baseUrl: 'https://a.example',
+    error,
+    errorKind,
+    providers: [],
+    reachable: false,
+    version: null
+  }
+}
+
+it('shows TLS certificate guidance when the remote probe fails verification', async () => {
+  const probeConnectionConfig = vi
+    .fn<Window['hermesDesktop']['probeConnectionConfig']>()
+    .mockResolvedValue(unreachableProbe('self-signed certificate', 'tls'))
+
+  Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { probeConnectionConfig } })
+  const { result } = renderHook(() => useRemoteSetup({ host: 'settings' }))
+
+  act(() => result.current.setUrl('https://a.example'))
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(500)
+  })
+
+  expect(result.current.probeStatus).toBe('error')
+  expect(result.current.probeErrorKind).toBe('tls')
+  expect(result.current.credentials.authMode).toBe('token')
+  expect(result.current.credentials.oauthConnected).toBe(false)
+
+  await act(async () => {
+    await result.current.test()
+  })
+
+  expect(result.current.error).toBe(en.settings.gateway.probeTlsError)
+})
+
+it('keeps non-TLS probe failures on the generic unreachable path', async () => {
+  const probeConnectionConfig = vi
+    .fn<Window['hermesDesktop']['probeConnectionConfig']>()
+    .mockResolvedValue(unreachableProbe('connect ECONNREFUSED 10.0.0.1:443'))
+
+  Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { probeConnectionConfig } })
+  const { result } = renderHook(() => useRemoteSetup({ host: 'settings' }))
+
+  act(() => result.current.setUrl('https://a.example'))
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(500)
+  })
+
+  expect(result.current.probeStatus).toBe('error')
+  expect(result.current.probeErrorKind).toBeUndefined()
+
+  await act(async () => {
+    await result.current.test()
+  })
+
+  expect(result.current.error).toBe('connect ECONNREFUSED 10.0.0.1:443')
+  expect(result.current.credentials.authMode).toBe('token')
+  expect(result.current.credentials.oauthConnected).toBe(false)
+})
+
+it.each<RemoteSetupHost>(['first-run', 'settings'])(
+  'renders certificate guidance in the %s connection editor',
+  async host => {
+    const probeConnectionConfig = vi
+      .fn<Window['hermesDesktop']['probeConnectionConfig']>()
+      .mockResolvedValue(unreachableProbe('self-signed certificate', 'tls'))
+
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { probeConnectionConfig } })
+
+    function Editor() {
+      const setup = useRemoteSetup({ host })
+
+      return <RemoteSetupFields setup={setup} />
+    }
+
+    render(<Editor />)
+    const copy = host === 'first-run' ? en.install : en.settings.gateway
+    fireEvent.change(screen.getByRole('textbox', { name: copy.remoteUrlTitle }), {
+      target: { value: 'https://a.example' }
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500)
+    })
+
+    expect(screen.getByText(copy.probeTlsError)).not.toBeNull()
+    expect(screen.queryByText(copy.probeError)).toBeNull()
+    expect(screen.queryByRole('button', { name: /sign in/i })).toBeNull()
   }
 )

@@ -43,6 +43,8 @@ export interface RemoteSetup {
   credentials: RemoteCredentials
   payload: DesktopConnectionConfigInput
   probeStatus: ProbeStatus
+  /** Failure class of the last probe ('tls' = certificate verification failed). */
+  probeErrorKind?: 'tls' | null
   authResolved: boolean
   providerLabel: string
   isPassword: boolean
@@ -190,6 +192,7 @@ export function useRemoteSetup(options: RemoteSetupOptions): RemoteSetup {
     credentials,
     payload,
     probeStatus,
+    probeErrorKind: probe?.errorKind,
     authResolved,
     providerLabel,
     isPassword,

@@ -1155,6 +1155,107 @@ function resolveAuthMode(inputAuthMode, existingAuthMode) {
 }
 
 /**
+ * Node TLS certificate-verification rejections carry an OpenSSL error `code`
+ * (self-signed, expired, untrusted chain, hostname mismatch). The probe has no
+ * HTTP status to report for them, so they are classified separately — the
+ * renderer shows certificate guidance instead of the generic unreachable copy.
+ * Verification itself is never relaxed: the fix is a valid certificate or the
+ * right URL, never a weaker check.
+ */
+const TLS_CERTIFICATE_ERROR_CODES = new Set([
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'UNABLE_TO_GET_ISSUER_CERT',
+  'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+  'CERT_HAS_EXPIRED',
+  'CERT_NOT_YET_VALID',
+  'CERT_UNTRUSTED',
+  'CERT_REJECTED',
+  'SELF_SIGNED_CERT_IN_CHAIN',
+  'DEPTH_ZERO_SELF_SIGNED_CERT',
+  'ERR_TLS_CERT_ALTNAME_INVALID',
+  'HOSTNAME_MISMATCH'
+])
+
+function remoteProbeErrorKind(error) {
+  const code = error && typeof error === 'object' ? error.code : null
+
+  return typeof code === 'string' && TLS_CERTIFICATE_ERROR_CODES.has(code) ? 'tls' : null
+}
+
+/**
+ * Determine how a remote gateway expects callers to authenticate, WITHOUT
+ * sending any credentials. ``/api/status`` is public on every Hermes
+ * gateway (it backs the portal liveness probe) and reports:
+ *   auth_required: true  → OAuth gate is engaged (cookie + ws-ticket auth)
+ *   auth_required: false → loopback/--insecure: legacy session-token auth
+ * ``/api/auth/providers`` (also public, only meaningful when gated) gives
+ * the human-facing provider name(s) for the login button label.
+ *
+ * The settings UI calls this as the user types a URL so it can render an
+ * OAuth login button vs a session-token entry box. Network/parse failures
+ * surface as ``reachable: false`` rather than throwing, so a half-typed or
+ * unreachable URL degrades to "can't tell yet" instead of a hard error.
+ * TLS certificate-verification failures additionally report
+ * ``errorKind: 'tls'`` so the renderer can show certificate guidance.
+ */
+async function probeRemoteAuthMode(rawUrl, fetchPublicJson) {
+  const baseUrl = normalizeRemoteBaseUrl(rawUrl)
+
+  let status
+
+  try {
+    status = await fetchPublicJson(`${baseUrl}/api/status`, { timeoutMs: 8_000 })
+  } catch (error) {
+    return {
+      baseUrl,
+      reachable: false,
+      authMode: 'unknown',
+      providers: [],
+      version: null,
+      error: error instanceof Error ? error.message : String(error),
+      errorKind: remoteProbeErrorKind(error)
+    }
+  }
+
+  const authRequired = authModeFromStatus(status) === 'oauth'
+  let providers = []
+
+  if (authRequired) {
+    // Best-effort: a gated gateway exposes the registered providers so the
+    // button can read "Sign in with Nous Research" instead of a generic
+    // label, and so a username/password provider can be distinguished from
+    // an OAuth-redirect one (``supports_password``). A failure here doesn't
+    // change the auth mode, so swallow it.
+    try {
+      const body = (await fetchPublicJson(`${baseUrl}/api/auth/providers`, { timeoutMs: 8_000 })) as any
+
+      if (Array.isArray(body?.providers)) {
+        providers = body.providers
+          .filter(p => p && typeof p === 'object')
+          .map(p => ({
+            name: String(p.name || ''),
+            displayName: String(p.display_name || p.name || ''),
+            supportsPassword: Boolean(p.supports_password)
+          }))
+          .filter(p => p.name)
+      }
+    } catch {
+      // Provider listing is optional metadata; the auth mode is already known.
+    }
+  }
+
+  return {
+    baseUrl,
+    reachable: true,
+    authMode: authRequired ? 'oauth' : 'token',
+    providers,
+    version: status?.version || null,
+    error: null,
+    errorKind: null
+  }
+}
+
+/**
  * True if any cookie in `cookies` is a hermes session ACCESS-token cookie
  * with a non-empty value. `cookies` is an array of {name, value} (the shape
  * Electron's session.cookies.get returns).
@@ -1219,6 +1320,7 @@ export {
   pathForRegistryBackendRequest,
   pathWithGlobalRemoteProfile,
   pathWithProfileScope,
+  probeRemoteAuthMode,
   profileHasRemoteConnection,
   profileRemoteOverride,
   profileSshOverride,

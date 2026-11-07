@@ -1755,6 +1755,8 @@ export const esOverrides = {
       probing: 'Comprobando cómo se autentica este gateway…',
       probeError:
         'Hermes no puede llegar a esa dirección. Comprueba la URL y que el otro equipo esté ejecutando Hermes; las opciones de inicio de sesión aparecen cuando responde.',
+      probeTlsError:
+        'Hermes no puede verificar el certificado de esta puerta de enlace. Comprueba la URL, la validez del certificado y si este equipo confía en su emisor.',
       signedIn: 'Sesión iniciada',
       signIn: 'Iniciar sesión',
       signOut: 'Cerrar sesión',
@@ -4323,6 +4325,8 @@ export const esOverrides = {
     probing: 'Detectando la autenticación del gateway…',
     probeError:
       'Hermes no puede llegar a esa dirección. Comprueba la URL y que el otro equipo esté ejecutando Hermes; las opciones de inicio de sesión aparecen cuando responde.',
+    probeTlsError:
+      'Hermes no puede verificar el certificado de esta puerta de enlace. Comprueba la URL, la validez del certificado y si este equipo confía en su emisor.',
     probeErrorDetails: 'Detalles',
     identityProvider: 'tu proveedor de identidad',
     authTitle: 'Autenticación',

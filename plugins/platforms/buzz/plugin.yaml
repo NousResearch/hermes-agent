@@ -22,6 +22,10 @@ requires_env:
     prompt: "Nostr private key (nsec or hex)"
     password: true
 optional_env:
+  - name: BUZZ_OBSERVER_TELEMETRY
+    description: "Publish agent-observer telemetry (kind:24200 activity frames, kind:20002 typing, kind:20001 presence) for the Desktop activity log — buzz-acp relay-observer parity. Requires BUZZ_AUTH_TAG (owner NIP-OA attestation)"
+    prompt: "Observer telemetry (true/false)"
+    password: false
   - name: BUZZ_TRANSPORT
     description: "Inbound transport: auto (WebSocket w/ poll fallback, default), websocket, or poll"
     prompt: "Transport (auto/websocket/poll)"

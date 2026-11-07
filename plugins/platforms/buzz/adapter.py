@@ -66,7 +66,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter, CachedMedia, SendResult, cache_media_bytes_async,
 )
 from gateway.platforms.helpers import cancel_task
-from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.config import Platform
 from plugins.platforms.buzz.buzz_cursors import _SEEN_CAP, BuzzCursorMixin
 
@@ -237,6 +237,8 @@ def _load_sibling_file(name: str):
 
 
 _nostr_auth = _load_sibling("nostr_auth")
+_OBSERVER_OUTCOMES = {ProcessingOutcome.SUCCESS: "ok", ProcessingOutcome.FAILURE: "error",
+                      ProcessingOutcome.CANCELLED: "cancelled"}
 
 # bech32 (BIP-173) npub <-> hex so mention detection and allow-lists accept either form.
 from gateway.authz_mixin import (
@@ -542,6 +544,10 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
         _transport_raw = _scoped_platform_setting("BUZZ_TRANSPORT", extra, "transport")
         _transport = (_transport_raw or str(extra.get("transport", "auto") or "auto")).strip().lower()
         self.transport = _transport if _transport in ("auto", "websocket", "poll") else "auto"
+        # Opt-in Desktop activity telemetry (observer.py); needs BUZZ_AUTH_TAG for the owner.
+        _ot_cfg = _setting_or("BUZZ_OBSERVER_TELEMETRY", extra, "observer_telemetry", False)
+        self.observer_telemetry = str(_ot_cfg).strip().lower() in ("true", "1", "yes", "on")
+        self._observer = None
         # Entries may be hex or npub (normalized to hex). Reaction-only identities get a 👀 on explicit tags but
         # never dispatch; allowed_users wins on overlap.
         self._allowed_pubkeys: set = _pubkey_set(_setting_or("BUZZ_ALLOWED_USERS", extra, "allowed_users", []))
@@ -700,17 +706,37 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
             transport_used, "" if transport_used == "websocket" else f", poll interval {self.poll_interval:.1f}s",
         )
         self._wire_plugin_handlers(None)
+        self._start_observer()
         return True
+
+    def _start_observer(self) -> None:
+        """Telemetry is optional: a bad config disables it (once, loudly) and never fails connect()."""
+        if not self.observer_telemetry or self._observer is not None:
+            return
+        try:
+            observer = _load_sibling("observer").ObserverPublisher(
+                private_key=self._private_key, auth_tag_json=self._auth_tag, relay_url=self.relay_url)
+        except Exception as exc:
+            self.observer_telemetry = False
+            logger.error("Buzz: observer telemetry disabled — %s (it needs a valid BUZZ_AUTH_TAG)", exc)
+            return
+        observer.start()
+        self._observer = observer
+        logger.info("Buzz: observer telemetry on (owner %s…, session %s)", observer.owner[:8], observer.session_id)
 
     async def disconnect(self) -> None:
         """Stop the inbound transport and drop runtime state."""
         self._mark_disconnected()
         with contextlib.suppress(Exception):
             self._release_platform_lock()
+        observer, self._observer = self._observer, None
         await cancel_task(self._ws_task)
         self._ws_task = None
         await cancel_task(self._poll_task)
         self._poll_task = None
+        if observer is not None:  # last, so nothing it does can leave the inbound transport running
+            with contextlib.suppress(Exception):
+                await observer.close(timeout=2.0)  # bounded; the gateway allows 5 s per disconnect
         self._channel_state = {}
         self._poll_count = 0
 
@@ -854,7 +880,23 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
         return SendResult(success=True, message_id=event_id)
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """Buzz has no typing indicator API — no-op."""
+        """kind:20002 typing indicator when observer telemetry is on; a no-op otherwise."""
+        if self._observer is not None:
+            thread_root = metadata.get("thread_id") if isinstance(metadata, dict) else None
+            self._observer.typing(chat_id, thread_root)
+
+    async def on_processing_start(self, event) -> None:
+        await super().on_processing_start(event)
+        source = event.source
+        if self._observer is not None and source.chat_id:
+            self._observer.turn_started(
+                event, channel_id=source.chat_id, message_id=event.message_id,
+                thread_root=source.thread_id, is_dm=source.chat_type == "dm")
+
+    async def on_processing_complete(self, event, outcome) -> None:
+        await super().on_processing_complete(event, outcome)
+        if self._observer is not None:
+            self._observer.turn_completed(event, _OBSERVER_OUTCOMES.get(outcome, "error"))
 
     async def send_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
         """Best-effort reaction via buzz-cli; failures are logged, never raised."""

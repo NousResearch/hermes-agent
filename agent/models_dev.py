@@ -939,7 +939,11 @@ def list_provider_models(provider: str, *, allow_network: bool = True) -> list[s
     from hermes_cli.models import normalize_provider
     provider = normalize_provider(provider) or provider
     models = _get_provider_models(provider, allow_network=allow_network)
-    return [mid for mid in models if not _should_hide_from_provider_catalog(provider, mid)] if models is not None else []
+    mdev_id = _models_dev_id(provider)
+    return [
+        mid for mid, entry in models.items()
+        if not _should_hide_from_provider_catalog(provider, mid, mdev_id=mdev_id, entry=entry)
+    ] if models is not None else []
 
 
 # Non-agentic or noise models (TTS, embedding, dated preview snapshots, live/streaming-only, image-only).
@@ -958,18 +962,50 @@ _GOOGLE_HIDDEN_MODELS = frozenset({
 })
 
 
-def _should_hide_from_provider_catalog(provider: str, model_id: str) -> bool:
-    return (provider or "").strip().lower() in {"gemini", "google"} and (model_id or "").strip().lower() in _GOOGLE_HIDDEN_MODELS
+# Providers whose "deprecated" ids the endpoint 410-retires whole — hide from EVERY catalog surface
+# (see _should_hide_from_provider_catalog; scoped to the resolved models.dev id).
+_HIDE_DEPRECATED_STATUS_PROVIDERS = frozenset({"ollama-cloud"})
+
+
+def _should_hide_from_provider_catalog(
+    provider: str, model_id: str, *, mdev_id: Optional[str] = None, entry: Any = None,
+) -> bool:
+    if (provider or "").strip().lower() in {"gemini", "google"} and (model_id or "").strip().lower() in _GOOGLE_HIDDEN_MODELS:
+        return True
+    # Providers whose "deprecated" ids the endpoint 410-retires whole ("retired on <date>").
+    # models.dev keeps listing retired ollama-cloud ids (tool_call stays True, status is the only
+    # flag), so every picker merge trusting models.dev additions keeps re-offering 410s. All six
+    # deprecated ollama-cloud ids verified HTTP 410 live against ollama.com (2026-10-22) with zero
+    # false positives; other providers' "deprecated" ids may still serve, so the rule is scoped to
+    # the RESOLVED models.dev id — a custom provider's ``catalog_provider`` alias resolves here too.
+    if mdev_id in _HIDE_DEPRECATED_STATUS_PROVIDERS and isinstance(entry, dict) \
+            and str(entry.get("status") or "").strip().lower() == "deprecated":
+        return True
+    return False
 
 
 def list_agentic_models(provider: str, *, allow_network: bool = True) -> list[str]:
-    """Model IDs suitable for agentic use: tool_call=True, minus hidden and noise models. [] on any
+    """Model IDs suitable for agentic use: tool_call=True, minus hidden, deprecated (where the
+    endpoint 410-retires them — ``_HIDE_DEPRECATED_STATUS_PROVIDERS``) and noise models. [] on any
     failure. ``allow_network`` defaults to True (called from interactive model selection)."""
     models = _get_provider_models(provider, allow_network=allow_network)
+    mdev_id = _models_dev_id(provider)
     return [
         mid for mid, entry in models.items()
-        if isinstance(entry, dict) and not _should_hide_from_provider_catalog(provider, mid) and entry.get("tool_call", False) and not _NOISE_PATTERNS.search(mid)
+        if isinstance(entry, dict) and not _should_hide_from_provider_catalog(provider, mid, mdev_id=mdev_id, entry=entry)
+        and entry.get("tool_call", False) and not _NOISE_PATTERNS.search(mid)
     ] if models is not None else []
+
+
+def list_deprecated_model_ids(provider: str, *, allow_network: bool = False) -> set[str]:
+    """Model ids models.dev marks ``status="deprecated"`` for *provider* ({} when the catalog is
+    unavailable — callers must then degrade to trusting their cached list rather than blanking it).
+    No network by default: disk/in-memory cache only."""
+    models = _get_provider_models(provider, allow_network=allow_network) or {}
+    return {
+        mid for mid, entry in models.items()
+        if isinstance(entry, dict) and str(entry.get("status") or "").strip().lower() == "deprecated"
+    }
 
 
 def _parse_model_info(model_id: str, raw: dict[str, Any], provider_id: str) -> ModelInfo:

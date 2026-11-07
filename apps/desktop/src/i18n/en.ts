@@ -2878,6 +2878,7 @@ export const en: Translations = {
     color: 'Color…',
     colorFor: 'Color',
     openInNewWindow: 'Open in new window',
+    openInNewWindowHint: 'Shift-click a gateway to open it in a new window',
     setAsDefault: 'Set as default',
     defaultProfile: 'Default profile',
     defaultSet: name => `${name} is now the default`,

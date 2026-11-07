@@ -530,6 +530,12 @@ def _decode_data_url(data_url: str) -> tuple[bytes, str]:
 
 _CHAT_IMAGE_UPLOAD_MAX_BYTES = CHAT_IMAGE_MAX_BYTES
 _CHAT_IMAGE_ALLOWED_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
+# Downscale policy applied when transcoding HEIC/HEIF to PNG on upload (see
+# _transcode_heif_to_png). Only images above _HEIF_MAX_PIXELS are shrunk, so a
+# screenshot or a cropped shot keeps every pixel; a 12 MP camera photo is capped to
+# a 2048 px long edge, cutting a ~7 MB PNG to ~2 MB with no loss of readable detail.
+_HEIF_MAX_EDGE = 2048
+_HEIF_MAX_PIXELS = 4_000_000
 _CHAT_IMAGE_MAGIC: tuple[tuple[bytes, str], ...] = (
     (b"\x89PNG\r\n\x1a\n", ".png"), (b"\xff\xd8\xff", ".jpg"),
     (b"GIF87a", ".gif"), (b"GIF89a", ".gif"), (b"BM", ".bmp"),
@@ -552,6 +558,47 @@ def _chat_image_extension(data: bytes) -> str | None:
     return None
 
 
+def _transcode_heif_to_png(data: bytes) -> bytes | None:
+    """Decode a HEIC/HEIF/AVIF payload to PNG bytes, or None when no codec is available.
+
+    A macOS clipboard paste of an iPhone photo arrives as HEIC bytes behind an
+    ``image/png`` data URL; the magic-byte check below sees no PNG signature and
+    rejects the upload with "Unsupported image type" before the image ever reaches
+    the vision pipeline. Converting here keeps the stored artifact honest: the file
+    lands with a .png suffix and PNG bytes inside it.
+    """
+    try:
+        import pillow_heif  # type: ignore
+
+        pillow_heif.register_heif_opener()
+    except Exception:
+        pass
+    try:
+        from io import BytesIO
+
+        from PIL import Image
+
+        with Image.open(BytesIO(data)) as image:
+            if image.mode not in {"RGB", "RGBA", "L"}:
+                image = image.convert("RGBA")
+            # A 12 MP iPhone photo becomes a ~7 MB PNG, five times the HEIC it came
+            # from, and downstream vision downscales to ~1568 px anyway. Capping the
+            # long edge here is safe for that case, but not for a screenshot or a
+            # crop where fine print is the whole point, so only shrink when the pixel
+            # count is genuinely camera-sized. thumbnail() keeps the aspect ratio and
+            # never upscales.
+            if image.width * image.height > _HEIF_MAX_PIXELS:
+                resample = getattr(Image, "Resampling", Image).LANCZOS  # type: ignore[attr-defined]
+                image.thumbnail((_HEIF_MAX_EDGE, _HEIF_MAX_EDGE), resample)
+            out = BytesIO()
+            image.save(out, format="PNG", optimize=False)
+            return out.getvalue() or None
+    except Exception as exc:
+        logging.getLogger("hermes_cli.web_server").info(
+            "chat image upload: could not transcode HEIF to PNG -- %s", exc)
+        return None
+
+
 def _decode_chat_image_upload(payload: ChatImageUpload) -> tuple[bytes, str, str]:
     data, mime_type = _decode_data_url(payload.data_url)
     if not mime_type.lower().startswith("image/"):
@@ -561,6 +608,22 @@ def _decode_chat_image_upload(payload: ChatImageUpload) -> tuple[bytes, str, str
         raise HTTPException(status_code=413, detail=f"Image is too large; cap is {mb} MB")
     ext = _chat_image_extension(data)
     if ext not in _CHAT_IMAGE_ALLOWED_EXTENSIONS:
+        # HEIC/HEIF/AVIF have no entry in _CHAT_IMAGE_MAGIC; sniff the ISO-BMFF brand
+        # and transcode rather than reject, so pasted iPhone photos work.
+        try:
+            from tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
+
+            heif_mime = _detect_image_mime_type_from_bytes(data[:64])
+        except Exception:
+            heif_mime = None
+        if heif_mime in {"image/heic", "image/avif"}:
+            transcoded = _transcode_heif_to_png(data)
+            if transcoded is not None:
+                return transcoded, "image/png", ".png"
+            raise HTTPException(
+                status_code=400,
+                detail=f"Could not convert {heif_mime} image; save it as PNG or JPEG first",
+            )
         raise HTTPException(status_code=400, detail="Unsupported image type")
     return data, mime_type, ext
 

@@ -210,7 +210,7 @@ _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "claim", "comment", "attach", "attach-rm", "complete", "edit", "block",
     "schedule", "unblock", "promote", "archive", "dispatch", "daemon", "repair",
     "heartbeat", "notify-subscribe", "notify-unsubscribe", "specify", "decompose",
-    "request-review", "request-changes", "reopen-review",
+    "resume-triage", "request-review", "request-changes", "reopen-review",
     "gc",
 })
 
@@ -1293,6 +1293,23 @@ def _retitled_suffix(outcome) -> str:
     return f" — retitled: {outcome.new_title!r}" if outcome.new_title else ""
 
 
+def _cmd_resume_triage(args: argparse.Namespace) -> int:
+    with kbc.connect_closing() as conn:
+        task, reason = kb.resume_triage_task(
+            conn, args.task_id, actor=_profile_author(), expected_owner=args.expected_owner,
+            expected_body_sha256=args.expected_body_sha256, reason=args.reason,
+            claim=args.claim, ttl_seconds=args.ttl,
+        )
+        if task is None:
+            return _err(f"cannot resume {args.task_id}: {reason}")
+        result = {"task_id": task.id, "status": task.status,
+                  "run_id": task.current_run_id, "claim_lock": task.claim_lock,
+                  "workspace_path": task.workspace_path}
+    if not _json_out(args, result):
+        print(f"Resumed {task.id}: {task.status} run={task.current_run_id}")
+    return 0
+
+
 def _cmd_specify(args: argparse.Namespace) -> int:
     """Spec a triage task (or all) via the auxiliary LLM, promote to todo."""
     from hermes_cli import kanban_specify as spec
@@ -1336,6 +1353,7 @@ _HANDLERS = {
     "assignees": _cmd_assignees, "notify-subscribe": _cmd_notify_subscribe,
     "notify-list": _cmd_notify_list, "notify-unsubscribe": _cmd_notify_unsubscribe,
     "context": _cmd_context, "specify": _cmd_specify, "decompose": _cmd_decompose,
+    "resume-triage": _cmd_resume_triage,
     "gc": _cmd_gc,
 }
 

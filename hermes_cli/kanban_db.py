@@ -3729,6 +3729,67 @@ def invalidate_descendants_for_parent_reopen(
     return {"invalidated": invalidated, "terminations": terminations}
 
 
+def resume_triage_task(
+    conn: sqlite3.Connection, task_id: str, *, actor: str, expected_owner: str,
+    expected_body_sha256: str, reason: str, claim: bool = False,
+    ttl_seconds: Optional[int] = None,
+) -> tuple[Optional[Task], Optional[str]]:
+    """Deterministic, target-only operator continuation; never reset guards.
+
+    Validate bindings, idle ownership and parent gates under one IMMEDIATE txn.
+    Optional claim uses the native run opener in that SAME txn; no READY window,
+    board-wide recompute, generation, workspace resolution or producer reclaim.
+    Refusals return (None, reason) without lifecycle mutation. A repeated call is
+    a refusal, not a second claim; callers must read back an ambiguous result.
+    """
+    import hashlib
+
+    if not reason.strip() or not actor or not expected_owner:
+        return None, "actor, expected owner and changed-input reason are required"
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_body_sha256):
+        return None, "expected body SHA-256 must be 64 lowercase hex characters"
+    now = int(time.time())
+    expires = now + _resolve_claim_ttl_seconds(ttl_seconds) if claim else now
+    run_id = None
+    with write_txn(conn):
+        row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if row is None:
+            return None, "task not found"
+        if row["assignee"] != expected_owner or actor != expected_owner:
+            return None, "expected owner must match assignee and acting profile"
+        if hashlib.sha256((row["body"] or "").encode("utf-8")).hexdigest() != expected_body_sha256:
+            return None, "task body changed"
+        if conn.execute(
+            "SELECT 1 FROM task_runs WHERE task_id = ? AND ended_at IS NULL LIMIT 1", (task_id,),
+        ).fetchone():
+            return None, "task has an open run (worker PID is not a liveness test)"
+        if any(row[k] is not None for k in (
+            "current_run_id", "claim_lock", "claim_expires", "worker_pid", "worker_started_at",
+        )):
+            return None, "task has active claim or producer fields"
+        if row["status"] != "triage":
+            return None, "continuation requires triage; preserve any competing producer"
+        if not _parents_satisfied(conn, task_id):
+            return None, "unsatisfied parent dependencies"
+        if claim:
+            run_id = _claim_and_open_run(
+                conn, task_id, "triage", _claimer_id(), expires, now,
+                event_extra={"source_status": "triage"},
+            )
+            if run_id is None:
+                raise RuntimeError("triage continuation lost its guarded transition")
+        else:
+            conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ? AND status = 'triage'", (task_id,))
+        _append_event(conn, task_id, "triage_resumed", {
+            "actor": actor, "reason": reason, "previous_status": "triage",
+            "body_sha256": expected_body_sha256, "claimed": claim,
+        }, run_id=run_id)
+        task = get_task(conn, task_id)
+    if claim:
+        _fire_task_hook("kanban_task_claimed", task, task_id, run_id)
+    return task, None
+
+
 def specify_triage_task(
     conn: sqlite3.Connection, task_id: str, *, title: Optional[str] = None,
     body: Optional[str] = None, assignee: Optional[str] = None, author: Optional[str] = None,

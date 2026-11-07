@@ -2275,9 +2275,9 @@ _CONVERSATION_SCOPED_STATE: tuple = (
     "_session_model_overrides",
     "_pending_model_notes",
     "_queued_events",
-    # Stall-watchdog "already notified" latch; cleared on /new so a fresh conversation can warn again.
-    # See #72016.
+    # Stall-watchdog latches; cleared on /new so a fresh conversation can warn again. See #72016.
     "_session_stall_notified",
+    "_session_stall_recovery_latched",
     # Transcript-lag streak counter (#114266); a fresh conversation starts with no lag history.
     "_transcript_lag_streaks")
 

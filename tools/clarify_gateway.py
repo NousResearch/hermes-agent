@@ -263,6 +263,12 @@ def has_pending(session_key: str) -> bool:
         return any(_entries.get(cid) is not None for cid in _session_index.get(session_key) or [])
 
 
+def has_any_pending() -> bool:
+    """True when any session has a pending clarify entry."""
+    with _lock:
+        return bool(_entries)
+
+
 def clear_session(session_key: str) -> int:
     """Drop every pending clarify for a session (``/new``, shutdown, cached-agent eviction) so
     blocked agent threads don't outlive it; returns how many were cancelled. First-writer-wins: an already-set entry was answered for

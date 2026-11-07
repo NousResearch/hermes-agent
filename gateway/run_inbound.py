@@ -428,7 +428,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             if _clarify_mod.resolve_gateway_clarify(_pending_clarify.clarify_id, _clarify_mod.CANCELLED):
                 # The user moved on: their message takes over the turn whatever busy_input_mode
                 # says (queue or steer would leave the agent carrying on without the answer).
-                event._clarify_superseded = True
+                # Bound to this turn's run generation: once it ends, the normal policy applies.
+                event._clarify_superseded = self._current_session_run_generation(_quick_key)
                 # Adapters with a persistent native card (Slack Block Kit) retire it now, before the
                 # prose is routed, so its buttons stop advertising a dead answer path. The pop inside
                 # retire_clarify_card runs before its first await, so the agent thread's own expiry
@@ -729,6 +730,11 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         # — that copy was never consumed and grew unbounded.
         running_agent.interrupt(_interrupt_text)
 
+    def _clarify_takeover(self, event: MessageEvent, _quick_key: str) -> bool:
+        """True while the turn whose clarify this message cancelled still owns the session."""
+        generation = getattr(event, "_clarify_superseded", None)
+        return generation is not None and generation == self._current_session_run_generation(_quick_key)
+
     async def _hm_busy_preempt(self, event: MessageEvent, source: SessionSource, _quick_key: str) -> bool:
         """busy_input_mode for a follow-up the durable FIFO is about to admit, through main's own busy
         resolution (voice transcribed into steer/interrupt, steer folded into the turn, busy ack).
@@ -736,7 +742,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         must NOT also be admitted as its own turn; False when the caller should admit it (queue mode,
         a demotion, or an interrupt — the ended turn lets the FIFO run the follow-up next)."""
         from gateway.run import _AGENT_PENDING_SENTINEL
-        superseded = getattr(event, "_clarify_superseded", False)
+        superseded = self._clarify_takeover(event, _quick_key)
         mode = "interrupt" if superseded else self._effective_busy_input_mode(source)
         state = self._peek_session_state(_quick_key)
         running_agent = state.turn.agent if state else None
@@ -767,7 +773,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         if _handled:
             return _result
 
-        effective_busy_input_mode = ("interrupt" if getattr(event, "_clarify_superseded", False)
+        effective_busy_input_mode = ("interrupt" if self._clarify_takeover(event, _quick_key)
                                      else self._effective_busy_input_mode(source))
         if self._hm_busy_telegram_grace_queue(event, source, _quick_key, effective_busy_input_mode):
             return None

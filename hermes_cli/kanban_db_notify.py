@@ -87,9 +87,10 @@ def add_notify_sub(
     existing row's value. ``delivery_mode``: ``None`` leaves an existing row
     untouched, an explicit valid value is last-write-wins, unknown falls back
     to ``"notify"``. ``delivery_metadata`` merges supplied routing anchors
-    into an existing row so re-subscribing never discards them. New subs start
-    caught up (``last_event_id`` =
-    ``MAX(task_events.id)``) so the notifier never replays history at boot.
+    into an existing row so re-subscribing never discards them. A new row starts
+    caught up (``last_event_id`` = ``MAX(task_events.id)``) so the notifier never
+    replays history at boot, except on a card that is blocked right now — see
+    :func:`_seed_notify_cursor`.
     """
     valid_mode = delivery_mode if delivery_mode in _NOTIFY_DELIVERY_MODES else None
     # api_server is stateless: the adapter has no send(), the wake self-post IS
@@ -107,18 +108,20 @@ def add_notify_sub(
         if delivery_metadata:
             merged_metadata.update(delivery_metadata)
         metadata_json = _encode_notify_delivery_metadata(merged_metadata) if merged_metadata else None
+        # Caught up, except on a card blocked right now: its ``blocked`` event was
+        # written before this row existed and must still be claimed.
+        seed_cursor = _seed_notify_cursor(conn, task_id)
         conn.execute(
             """
             INSERT OR IGNORE INTO kanban_notify_subs
                 (task_id, platform, chat_id, thread_id, user_id, user_id_alt,
                  chat_type, notifier_profile, delivery_mode, delivery_metadata,
                  created_at, last_event_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    COALESCE((SELECT MAX(id) FROM task_events WHERE task_id = ?), 0))
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 *key, user_id, user_id_alt, chat_type or "dm", notifier_profile,
-                insert_mode, metadata_json, int(time.time()), task_id,
+                insert_mode, metadata_json, int(time.time()), seed_cursor,
             ),
         )
         # chat_type / delivery_mode are last-write-wins; delivery metadata
@@ -317,6 +320,45 @@ def _notify_cursor(
         _sub_key(task_id, platform, chat_id, thread_id),
     ).fetchone()
     return None if row is None else int(row["last_event_id"])
+
+def _seed_notify_cursor(conn: sqlite3.Connection, task_id: str) -> int:
+    """``last_event_id`` a NEW subscription on ``task_id`` must start at.
+
+    Default: caught up to the card's newest event, so subscribing never replays
+    history at boot. One exception: a card that is ``blocked`` *right now* was
+    most likely created with ``initial_status='blocked'``, and ``create_task``
+    writes that ``blocked`` event BEFORE the origin subscribes (the explicit
+    ``add_notify_sub`` and the inherited-subscription path
+    ``kanban_db._inherit_notify_subs`` both seed here). Seeding at the newest
+    event lands the cursor ON that event, so nothing ever claims it: the one
+    ping that asks for a human is the one that never gets delivered.
+
+    For a currently-blocked card the cursor therefore starts at the event
+    *before* the newest ``blocked``, and the first notifier tick claims it.
+    Every other status still starts caught up. ``triage`` needs no case of its
+    own: being born there writes no terminal-kind event, and the only route
+    into triage (``block_loop_detected``) fires on a card that is already
+    subscribed.
+    """
+    row = conn.execute(
+        "SELECT COALESCE(MAX(id), 0) AS cursor FROM task_events WHERE task_id = ?", (task_id,),
+    ).fetchone()
+    cursor = int(row["cursor"] if row is not None else 0)
+    status_row = conn.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if ((status_row["status"] if status_row is not None else "") or "") != "blocked":
+        return cursor
+    blocked_row = conn.execute(
+        "SELECT COALESCE(MAX(id), 0) AS cursor FROM task_events WHERE task_id = ? AND kind = 'blocked'",
+        (task_id,),
+    ).fetchone()
+    blocked_id = int(blocked_row["cursor"] if blocked_row is not None else 0)
+    if blocked_id <= 0:
+        return cursor
+    before_row = conn.execute(
+        "SELECT COALESCE(MAX(id), 0) AS cursor FROM task_events WHERE task_id = ? AND id < ?",
+        (task_id, blocked_id),
+    ).fetchone()
+    return int(before_row["cursor"] if before_row is not None else 0)
 
 
 def unseen_events_for_sub(

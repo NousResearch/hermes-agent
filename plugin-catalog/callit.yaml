@@ -12,4 +12,4 @@ capabilities:
   provides_tools: [callit_make_call, callit_duel, callit_pool, callit_play, callit_join, callit_vote, callit_board, callit_referee]
   provides_hooks: []
   provides_middleware: []
-  requires_env: [CALLIT_RESOLVER_KEY]
+  requires_env: []

@@ -129,6 +129,53 @@ class TestVaultStore:
         with pytest.raises(VaultError, match="cvc"):
             store.add_item(kind="payment", label="Card", secret={k: v for k, v in _CARD.items() if k != "cvc"})
 
+    def test_any_site_is_an_explicit_opt_in_for_payment_cards_only(self, store, tmp_path):
+        meta = store.add_item(kind="payment", label="Card", secret=_CARD, origin_match="any_site")
+        reread = VaultStore(base_dir=tmp_path / "vault").get_meta(meta.id)
+        assert reread.origin is None and reread.origin_match == "any_site" and reread.any_site
+        assert reread.to_dict()["origin_match"] == "any_site"
+        with pytest.raises(VaultError):
+            store.add_item(kind="address", label="Home", secret=_ADDRESS, origin_match="any_site")
+        with pytest.raises(VaultError):
+            _login = {"identifier_type": "email", "identifier": "u@example.com", "password": "pw"}
+            store.add_item(kind="login", label="L", secret=_login, origin="https://example.com",
+                           origin_match="any_site")
+        with pytest.raises(VaultError):
+            store.add_item(kind="payment", label="Card", secret=_CARD, origin="https://shop.example",
+                           origin_match="any_site")
+        with pytest.raises(VaultError):
+            store.add_item(kind="payment", label="Card", secret=_CARD, origin_match="wildcard")
+        exact = store.add_item(kind="payment", label="Card", secret=_CARD, origin="https://shop.example")
+        assert exact.origin_match == "exact" and "origin_match" not in exact.to_dict()
+
+    def test_unknown_or_misplaced_origin_match_reads_as_exact(self, store):
+        """A record edited by hand or written by another build never widens: only a payment card marked
+        exactly ``any_site`` is one."""
+        base = {"label": "x", "origin": None, "created_at": "2026-01-01T00:00:00Z", "identifier_type": None,
+                "identifier": None, "secret": {}}
+        records = [{**base, "id": "vault_a", "kind": "payment", "origin_match": "xyz"},
+                   {**base, "id": "vault_b", "kind": "address", "origin_match": "any_site"},
+                   {**base, "id": "vault_c", "kind": "login", "origin_match": "any_site",
+                    "identifier_type": "email", "identifier": "u@example.com"},
+                   {**base, "id": "vault_d", "kind": "payment"}]
+        with store._locked():
+            store._write_all(records)
+        for meta in store.list_items():
+            assert meta.origin_match == "exact" and meta.any_site is False, meta.id
+            assert "origin_match" not in meta.to_dict()
+
+    def test_any_site_beside_a_saved_origin_reads_as_exact(self, store):
+        """``add_item`` never writes both, but a record that has them (hand edit, another build) fails closed:
+        the card stays bound to its saved origin instead of the wider mode winning."""
+        rec = {"id": "vault_e", "kind": "payment", "label": "x", "origin": "https://shop.example",
+               "origin_match": "any_site", "created_at": "2026-01-01T00:00:00Z", "identifier_type": None,
+               "identifier": None, "secret": {}}
+        with store._locked():
+            store._write_all([rec])
+        [meta] = store.list_items()
+        assert meta.origin_match == "exact" and meta.any_site is False
+        assert meta.origin == "https://shop.example" and "origin_match" not in meta.to_dict()
+
     def test_unknown_kind_rejected(self, store):
         with pytest.raises(VaultError):
             store.add_item(kind="totp", label="x", secret={})
@@ -285,6 +332,19 @@ class TestBrowserVaultTools:
         assert out["items"][0]["identifier"] == "user@example.com"
         assert out["items"][0]["identifier_type"] == "email"
         assert "s3cret-pw" not in json.dumps(out)
+
+    def test_list_marks_any_site_cards_available(self, store):
+        from tools import browser_vault_tool
+
+        anywhere = store.add_item(kind="payment", label="Anywhere", secret=_CARD, origin_match="any_site")
+        unbound = store.add_item(kind="payment", label="Unbound", secret=_CARD)
+        with patch("agent.vault_store.get_vault_store", return_value=store):
+            raw = browser_vault_tool.browser_vault_list()
+        items = {i["handle"]: i for i in json.loads(raw)["items"]}
+        assert items[anywhere.id]["available"] is True and items[anywhere.id]["origin"] is None
+        assert items[anywhere.id]["origin_match"] == "any_site"
+        assert items[unbound.id]["available"] is False and "origin_match" not in items[unbound.id]
+        assert _CARD["card_number"] not in raw and _CARD["cvc"] not in raw
 
     def test_fill_refused_on_origin_mismatch(self, store):
         from tools import browser_vault_tool

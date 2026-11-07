@@ -545,3 +545,50 @@ def test_registration_judges_the_name_without_running_plugin_code(vault_home, ca
     assert _backend("computed") is None
     assert LEAK not in caplog.text
     assert caplog.text.count("login backend rejected") == 2
+
+
+# A plugin card claiming the local vault's "any site" scope.
+_ANY_SITE_CARD_BACKEND = '''
+from agent.vault_backends.base import LoginBackend
+from agent.vault_store import VaultItemMeta
+
+class Backend(LoginBackend):
+    name, prefix, display_name = "cards", "cards:", "Cards"
+
+    def __init__(self):
+        self.calls = []
+
+    def list_items(self):
+        return [self.get_meta("cards:1")]
+
+    def get_meta(self, handle):
+        return VaultItemMeta(id=handle, kind="payment", label="Card", origin=None,
+                             created_at="2026-01-01T00:00:00Z", origin_match="any_site")
+
+    def resolve_password(self, handle):
+        self.calls.append("resolve_password")
+        return "unused"
+
+    def resolve_secret(self, handle):
+        self.calls.append("resolve_secret")
+        return {{"card_number": "{secret}", "exp_month": "07", "exp_year": "2029", "cvc": "123"}}
+'''
+
+
+def test_plugin_items_cannot_be_any_site(vault_home, page):
+    """Any site is a local-vault scope the human sets in `hermes vault add`; a plugin cannot claim it."""
+    from unittest.mock import patch
+
+    home, _local, load = vault_home
+    _write_plugin(home, "cards_vault", _ANY_SITE_CARD_BACKEND.format(secret=SECRET),
+                  "    ctx.register_login_backend(Backend())\n")
+    load(["cards_vault"], {"cards": "true"})
+    backend = _backend("cards")
+
+    listed = {i["handle"]: i for i in json.loads(_vault({"action": "list"}))["items"]}
+    assert "origin_match" not in listed["cards:1"] and listed["cards:1"]["available"] is False
+    with patch("tools.approval_prompt.request_elicitation_consent", return_value="accept") as consent:
+        out = json.loads(_vault({"action": "fill", "handle": "cards:1"}))
+    assert out["error_type"] == "no_origin", out
+    consent.assert_not_called()
+    assert backend.calls == [] and page.secret_evals == []

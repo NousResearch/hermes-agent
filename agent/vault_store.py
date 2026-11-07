@@ -40,6 +40,12 @@ logger = logging.getLogger(__name__)
 
 VAULT_KINDS = ("login", "payment", "address")
 
+# How a fill matches the page: ``exact`` (the saved origin(s), the default) or ``any_site`` (a local payment
+# card the user saved for any site; each fill names the page's origin in the card prompt and the user
+# confirms it). #116101 would add ``registrable_domain`` (logins) to this tuple.
+ANY_SITE = "any_site"
+ORIGIN_MATCH_MODES = ("exact", ANY_SITE)
+
 LOGIN_IDENTIFIER_TYPES = ("email", "phone", "username")
 
 # Canonical secret-payload fields per non-login kind. Each maps to the WHATWG autocomplete token the
@@ -184,8 +190,15 @@ class VaultItemMeta:
     has_otp: bool = False  # a TOTP seed is stored: 2FA codes can be minted without asking the user
     # Every origin the password manager bound to this item (manager backends only;
     # ``origin`` is the first/primary one). Fill matching stays exact-origin against
-    # this list — no wildcard or subdomain inference is ever derived from it.
+    # this list — no wildcard or subdomain inference is ever derived from it. The only widening is the
+    # explicit per-item ``any_site`` scope below, never inferred and confirmed by the user on every fill.
     allowed_origins: tuple = ()
+    origin_match: str = "exact"
+
+    @property
+    def any_site(self) -> bool:
+        """A card the user saved for any site: filled only on the page whose origin they confirm."""
+        return self.kind == "payment" and self.origin_match == ANY_SITE
 
     def to_dict(self) -> dict[str, Any]:
         out = {
@@ -202,6 +215,8 @@ class VaultItemMeta:
             out["has_otp"] = True
         if len(self.allowed_origins) > 1:
             out["allowed_origins"] = list(self.allowed_origins)
+        if self.origin_match != "exact":
+            out["origin_match"] = self.origin_match
         return out
 
 
@@ -550,6 +565,7 @@ class VaultStore:
         label: str,
         secret: dict[str, Any],
         origin: Optional[str] = None,
+        origin_match: str = "exact",
     ) -> VaultItemMeta:
         """Add an item. ``secret`` is the sensitive payload (encrypted at rest).
 
@@ -558,13 +574,21 @@ class VaultStore:
         identifier fields are NOT secret — they are moved into item metadata
         (the agent may see and type the identifier itself); only
         ``password`` stays in the encrypted secret payload. ``payment`` and
-        ``address`` payloads remain fully secret.
+        ``address`` payloads remain fully secret. ``origin_match='any_site'`` saves a payment card for
+        any site instead of one origin (the user confirms the page's origin at every fill).
         """
         if kind not in VAULT_KINDS:
             raise VaultError(f"unknown vault kind {kind!r} (expected one of {VAULT_KINDS})")
         label = (label or "").strip()
         if not label:
             raise VaultError("label is required")
+        origin_match = (origin_match or "exact").strip().lower()
+        if origin_match not in ORIGIN_MATCH_MODES:
+            raise VaultError(f"origin_match must be one of {ORIGIN_MATCH_MODES}")
+        if origin_match == ANY_SITE and kind != "payment":
+            raise VaultError("only payment cards can be saved for any site")
+        if origin_match == ANY_SITE and origin:
+            raise VaultError("a card saved for any site has no site origin; leave the origin empty")
         norm_origin: Optional[str] = None
         identifier: Optional[str] = None
         identifier_type: Optional[str] = None
@@ -606,6 +630,8 @@ class VaultStore:
             "identifier": identifier,
             "secret": dict(secret),
         }
+        if origin_match == ANY_SITE:
+            record["origin_match"] = ANY_SITE
         with self._locked():
             items = self._read_all()
             items.append(record)
@@ -664,7 +690,17 @@ class VaultStore:
             identifier_type=rec.get("identifier_type") if identifier else None,
             identifier=identifier or None,
             has_otp=bool((rec.get("secret") or {}).get("otp_secret")),
+            origin_match=_stored_origin_match(rec),
         )
+
+
+def _stored_origin_match(rec: dict[str, Any]) -> str:
+    """Only an origin-less payment card marked exactly ``any_site`` is one; an unknown or misplaced value, or
+    one beside a saved origin, reads as exact, so an edited or newer record never widens (an origin-less
+    card then refuses with ``no_origin``; a card with an origin stays bound to it)."""
+    if rec.get("origin_match") == ANY_SITE and rec.get("kind") == "payment" and not rec.get("origin"):
+        return ANY_SITE
+    return "exact"
 
 
 def get_vault_store() -> VaultStore:

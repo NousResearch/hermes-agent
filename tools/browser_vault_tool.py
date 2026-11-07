@@ -11,7 +11,10 @@ paid per request) and available wherever a browser is. Its actions:
   handle: the password field for logins, card fields for payment items (after
   the user confirms), address fields for address items. The secret is
   resolved locally, the page origin must EXACTLY match the item's bound
-  origin (pre-checked AND re-asserted synchronously inside the fill script),
+  origin (pre-checked AND re-asserted synchronously inside the fill script)
+  — except a card the user saved for any site, which fills only on the current
+  tab (never another open tab), whose origin the user confirms for that fill;
+  the re-assert pins that origin —
   the field is chosen by the ported login-control classifier, injection runs
   exclusively over the supervisor CDP WebSocket (never argv) — or, for a plugin browser with no CDP
   endpoint, through its registered ``BrowserPageBackend`` (Camofox's REST evaluate) — and the tool
@@ -235,12 +238,48 @@ def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
     return (origin or focused.get("url")) if focused.get("ok") else None
 
 
+def _secure_checkout_origin(origin: str) -> bool:
+    """https, or http on a loopback host (a secure context in browsers): where an any-site card may go."""
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(origin)
+    return parts.scheme == "https" or (parts.scheme == "http" and parts.hostname in ("localhost", "127.0.0.1", "::1"))
+
+
+def _any_site_page_origin(task_id: str) -> str | dict[str, Any]:
+    """The page a card saved for any site may go to: the CURRENT tab of the one page session that will also
+    write (a plugin page backend's page, else the CDP supervisor's tab). It never searches or switches tabs
+    (a background tab another page opened must not become the checkout). Refused before the user is asked
+    when there is no page session, the page is not https, or the current tab has no card form. The caller's
+    payment confirmation names this origin."""
+    if _page_backend(task_id) is None and _ensure_supervisor(task_id) is None:
+        return {"success": False, "error_type": "supervisor_required",
+                "error": "No browser page session for this task. Open the checkout page with the browser first."}
+    origin = _current_page_origin(task_id)
+    if not origin:
+        return {"success": False,
+                "error": "Could not determine the current page origin. Open the checkout page first."}
+    if not _secure_checkout_origin(origin):
+        return {"success": False, "error_type": "insecure_origin",
+                "error": f"Refused: {origin} is not an https page. A card saved for any site is filled only on "
+                         "https checkouts."}
+    if not _parse_json_result(_eval_js(task_id, _TAB_PROBES["payment"]).get("result")):
+        return {"success": False, "error_type": "no_card_form_on_current_tab",
+                "error": f"Refused: the current tab ({origin}) has no card form. A card saved for any site is "
+                         "filled only on the current tab; navigate to or activate the checkout tab first."}
+    return origin
+
+
 def _bound_page_origin(task_id: str, meta: Any, probe_kind: str) -> str | dict[str, Any]:
     """The origin guard every fill of a stored secret (password, one-time code, card, address) passes
     BEFORE the backend resolves any value: the page origin when it is one of the item's saved origins,
     else the refusal to return. Manager items may bind several websites; matching is exact and
     nothing wildcard or parent-domain is inferred. The caller hands the returned origin to ``build_fill_js``,
-    which re-asserts it inside the page immediately before the write (navigation between check and fill)."""
+    which re-asserts it inside the page immediately before the write (navigation between check and fill).
+    The one exception is a card the user saved for any site, and only for the card fill itself
+    (``probe_kind == "payment"``): see ``_any_site_page_origin``. Every other kind takes the exact path."""
+    if meta.any_site and probe_kind == "payment":
+        return _any_site_page_origin(task_id)
     allowed = saved_origins(meta)
     if not allowed:
         return {"success": False, "error_type": "no_origin",
@@ -285,7 +324,9 @@ def browser_vault_list() -> str:
             continue
         for meta in metas:
             entry = {"handle": meta.id, "backend": backend.name, "label": meta.label, "kind": meta.kind,
-                     "origin": meta.origin, "available": meta.kind == "login" or bool(meta.origin)}
+                     "origin": meta.origin, "available": meta.kind == "login" or bool(meta.origin) or meta.any_site}
+            if meta.any_site:
+                entry["origin_match"] = "any_site"
             if len(meta.allowed_origins) > 1:
                 entry["allowed_origins"] = list(meta.allowed_origins)
             if meta.has_otp or backend.needs_unlock:
@@ -498,10 +539,11 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
         )
     # Origin binding pre-check (the authoritative re-check runs inside the fill script), before the user is
     # asked to confirm a card, before the backend's fill_context is entered and before any value is resolved.
+    # For a card saved for any site the confirmation below is the check on where it goes.
     page_origin = _bound_page_origin(effective_task_id, meta, meta.kind)
     if isinstance(page_origin, dict):
         return json.dumps(page_origin)
-    if meta.kind == "payment" and not _confirm_payment_fill(meta.label, page_origin):
+    if meta.kind == "payment" and not _confirm_payment_fill(meta.label, page_origin, any_site=meta.any_site):
         return json.dumps({"success": False, "error_type": "payment_declined",
                            "error": "The user did not confirm filling this payment card. Do not retry; ask them instead."})
 
@@ -619,7 +661,7 @@ def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, eff
     return json.dumps(out)
 
 
-def _confirm_payment_fill(label: str, origin: str) -> bool:
+def _confirm_payment_fill(label: str, origin: str, *, any_site: bool = False) -> bool:
     """Human confirmation before a card is written into a page: a prompt injection that reaches a checkout
     must not be able to spend. Routes through the approval surface of the active session (gateway button
     round-trip or CLI panel); headless sessions cannot confirm and the fill is refused."""
@@ -628,7 +670,9 @@ def _confirm_payment_fill(label: str, origin: str) -> bool:
     return request_elicitation_consent(
         f"Fill payment card '{label}' on {origin}",
         "The agent wants to enter your saved card details into this checkout page. The card number and "
-        "CVC never enter the conversation. Approve only if you intend to pay here.",
+        "CVC never enter the conversation. Approve only if you intend to pay here."
+        + (" This card is saved for any site, so this prompt is the only check on where it goes. Approve only "
+           "if this is the shop you mean to pay." if any_site else ""),
         surface="vault-payment", title="Confirm payment card fill?") == "accept"
 
 
@@ -644,7 +688,8 @@ BROWSER_VAULT_SCHEMA = {
         "Actions: list (call first: saved logins/cards/addresses as handles; logins carry the identifier you type "
         "yourself with the browser's input tool; locked password managers appear under `locked`); fill (handle: "
         "the password for a login, card fields after the user confirms, address fields; refused unless the page "
-        "origin matches the item); save_login (nothing saved for this site: the user enters it in a masked prompt, "
+        "origin matches the item, or, for a card the user saved for any site, the user confirms this page's "
+        "origin); save_login (nothing saved for this site: the user enters it in a masked prompt, "
         "Hermes saves and fills it); enter_code (a one-time/2FA code after the password: generated from a saved "
         "authenticator key or asked of the user; no_code_field means approve on their device); unlock (backend: "
         "ask the user to unlock 1Password/Bitwarden). Never type, ask for or repeat a password, card number, CVC "

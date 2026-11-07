@@ -5,6 +5,9 @@ whose origin is not one the item was saved for, the tool refuses BEFORE the back
 value and before anything is written into the page; on a saved origin the fill goes ahead and the
 in-page write is pinned to that origin.
 
+The one explicit exception is a payment card the user saved for any site: it is filled only on the https
+page whose exact origin the user confirms for that fill, and the in-page write is pinned to that origin.
+
 The page is a stand-in for the CDP supervisor (current URL + inspected controls; it records every
 secret-bearing evaluation). Secrets are dummy values in a temporary local vault.
 """
@@ -43,12 +46,46 @@ _ADDRESS_CONTROLS = [
 ]
 
 
+def _payment_probe() -> str:
+    from tools.browser_vault_tool import _TAB_PROBES
+
+    return _TAB_PROBES["payment"]
+
+
+_PAYMENT_PROBE = _payment_probe()
+
+
+class _TwoTabBrowser:
+    """A supervisor over several open tabs, like the real one: its page session is bound to one tab (the
+    current one), ``focus_page`` re-binds it the way ``CDPSupervisor.focus_page`` does (``origin=""`` = any
+    http(s) tab, first one whose ``accept`` probe is truthy), and every evaluation runs on the bound tab."""
+
+    def __init__(self, *tabs: _FakePage):
+        self.tabs, self.current, self.focused = list(tabs), tabs[0], []
+
+    def focus_page(self, origin: str, accept=None) -> dict:
+        for tab in self.tabs:
+            if not tab.href.startswith(("http://", "https://")):
+                continue
+            if origin and normalize_origin(tab.href) != origin:
+                continue
+            if accept and not tab.evaluate_runtime(accept).get("result"):
+                continue
+            self.current = tab
+            self.focused.append(tab.href)
+            return {"ok": True, "url": tab.href}
+        return {"ok": False, "error": "no open page"}
+
+    def evaluate_runtime(self, expression: str) -> dict:
+        return self.current.evaluate_runtime(expression)
+
+
 class _FakePage:
     """The supervisor's view of one open tab: answers origin reads and input inspection, and records every
     secret-bearing fill script as a write."""
 
-    def __init__(self, href: str, controls: list[dict]):
-        self.href, self.controls, self.writes = href, controls, []
+    def __init__(self, href: str, controls: list[dict], card_form: bool = True):
+        self.href, self.controls, self.writes, self.card_form = href, controls, [], card_form
 
     def focus_page(self, origin: str, accept=None) -> dict:
         return {"ok": bool(origin) and normalize_origin(self.href) == origin, "url": self.href}
@@ -56,6 +93,8 @@ class _FakePage:
     def evaluate_runtime(self, expression: str) -> dict:
         if expression.strip() == "window.location.href":
             return {"ok": True, "result": self.href}
+        if expression == _PAYMENT_PROBE:  # "does this tab hold a card form?"
+            return {"ok": True, "result": self.card_form}
         if "expectedOrigin" in expression:  # the fill script (build_fill_js)
             self.writes.append(expression)
             return {"ok": True, "result": json.dumps({"filled": 1})}
@@ -208,3 +247,186 @@ class TestFill:
             out = json.loads(browser_vault_tool.browser_vault_save_login(task_id="t"))
         assert [m.origin for m in store.list_items()] == ["https://bank.example"]
         _refused_before_resolution(out["fill"], backend, page)
+
+
+def _any_site_card(store):
+    return store.add_item(kind="payment", label="Card", secret=_CARD, origin_match="any_site")
+
+
+def _consent(answer="accept", page=None, navigate_to=None):
+    """The card prompt, answering ``answer``; ``navigate_to`` moves the page while the user is asked."""
+    def ask(message, description, **kwargs):
+        if navigate_to:
+            page.href = navigate_to
+        return answer
+
+    return patch("tools.approval_prompt.request_elicitation_consent", side_effect=ask)
+
+
+class TestAnySiteCard:
+    def test_any_site_card_fills_only_the_confirmed_page(self, vault):
+        from tools import browser_vault_tool
+
+        store, backend, _ = vault
+        meta = _any_site_card(store)
+        page = _FakePage("https://shop.example/checkout", _CARD_CONTROLS)
+        with _on_page(page), _consent() as consent:
+            raw = browser_vault_tool.browser_vault_fill(meta.id, task_id="t")
+        out = json.loads(raw)
+        assert out["success"] is True and out["origin"] == "https://shop.example"
+        [call] = consent.call_args_list
+        assert call.args[0] == "Fill payment card 'Card' on https://shop.example"
+        assert call.kwargs["surface"] == "vault-payment"
+        [write] = page.writes
+        assert '"https://shop.example"' in write  # the in-page assert names the confirmed origin
+        assert backend.resolved == ["secret"]
+        assert _CARD["card_number"] not in raw and _CARD["cvc"] not in raw
+
+
+    def test_any_site_card_never_switches_to_a_background_tab_with_a_card_form(self, vault):
+        """The agent is on the shop's checkout (its card fields live in a hosted iframe, so the top document
+        has none); a background tab on another https site holds a card input. The card is refused on the
+        current tab before the user is asked: no tab switch, no prompt, nothing resolved or written."""
+        from tools import browser_vault_tool
+
+        store, backend, _ = vault
+        meta = _any_site_card(store)
+        shop = _FakePage("https://legit-shop.example/checkout", [], card_form=False)
+        evil = _FakePage("https://evil.example/pay", _CARD_CONTROLS)
+        browser = _TwoTabBrowser(shop, evil)
+        with _on_page(browser), _consent() as consent:
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id, task_id="t"))
+        assert out["success"] is False and out["error_type"] == "no_card_form_on_current_tab"
+        assert "legit-shop.example" in out["error"] and "evil.example" not in out["error"]
+        consent.assert_not_called()
+        assert backend.resolved == [] and shop.writes == [] and evil.writes == []
+        assert browser.focused == [] and browser.current is shop
+
+    def test_any_site_card_with_no_card_form_on_the_only_tab_is_refused_before_asking(self, vault):
+        from tools import browser_vault_tool
+
+        store, backend, _ = vault
+        meta = _any_site_card(store)
+        page = _FakePage("https://shop.example/cart", [], card_form=False)
+        with _on_page(page), _consent() as consent:
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id, task_id="t"))
+        assert out["success"] is False and out["error_type"] == "no_card_form_on_current_tab"
+        consent.assert_not_called()
+        assert backend.resolved == [] and page.writes == []
+
+    def test_any_site_card_handle_does_not_pass_the_one_time_code_guard(self, vault):
+        """Only the card fill (which asks the user) may take the any-site path: enter_code with a card
+        handle is refused like any origin-less item, before anything is resolved, asked or written."""
+        from tools import browser_vault_tool
+
+        store, backend, asked = vault
+        meta = _any_site_card(store)
+        page = _FakePage("https://shop.example/verify", _OTP_CONTROLS)
+        with _on_page(page):
+            out = json.loads(browser_vault_tool.browser_vault_enter_code(meta.id, task_id="t"))
+        assert out["success"] is False and out["error_type"] == "no_origin"
+        assert backend.resolved == [] and page.writes == [] and asked == []
+
+    @pytest.mark.parametrize("probe_kind", ["otp", "login", "address"])
+    def test_any_site_path_is_for_the_card_fill_only(self, vault, probe_kind):
+        from tools import browser_vault_tool
+
+        store, _, _ = vault
+        meta = _any_site_card(store)
+        page = _FakePage("https://shop.example/checkout", _CARD_CONTROLS)
+        with _on_page(page):
+            out = browser_vault_tool._bound_page_origin("t", meta, probe_kind)
+        assert isinstance(out, dict) and out["error_type"] == "no_origin"
+        with _on_page(page):
+            assert browser_vault_tool._bound_page_origin("t", meta, "payment") == "https://shop.example"
+
+    def test_any_site_card_declined_resolves_and_writes_nothing(self, vault):
+        from tools import browser_vault_tool
+
+        store, backend, _ = vault
+        meta = _any_site_card(store)
+        page = _FakePage("https://shop.example/checkout", _CARD_CONTROLS)
+        with _on_page(page), _consent("decline"):
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id, task_id="t"))
+        assert out["success"] is False and out["error_type"] == "payment_declined"
+        assert backend.resolved == [] and page.writes == []
+
+    @pytest.mark.parametrize("env", ["HERMES_SINGLE_QUERY_SESSION", "HERMES_CRON_SESSION"])
+    def test_any_site_card_is_refused_when_nobody_can_confirm(self, vault, monkeypatch, env):
+        """Real consent routing, no mock: a -q or cron session has nobody to ask, so the fill is refused."""
+        from tools import browser_vault_tool
+
+        monkeypatch.setenv(env, "1")
+        store, backend, _ = vault
+        meta = _any_site_card(store)
+        page = _FakePage("https://shop.example/checkout", _CARD_CONTROLS)
+        with _on_page(page):
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id, task_id="t"))
+        assert out["success"] is False and out["error_type"] == "payment_declined"
+        assert backend.resolved == [] and page.writes == []
+
+    @pytest.mark.parametrize("href", ["http://shop.example/checkout", "chrome://settings",
+                                      "file:///x/checkout.html"])
+    def test_any_site_card_refuses_a_non_https_page_before_asking(self, vault, href):
+        from tools import browser_vault_tool
+
+        store, backend, _ = vault
+        meta = _any_site_card(store)
+        page = _FakePage(href, _CARD_CONTROLS)
+        with _on_page(page), _consent() as consent:
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id, task_id="t"))
+        assert out["success"] is False
+        if not href.startswith("file:"):
+            assert out["error_type"] == "insecure_origin"
+        consent.assert_not_called()
+        assert backend.resolved == [] and page.writes == []
+
+    def test_any_site_card_allows_a_loopback_http_checkout(self, vault):
+        from tools import browser_vault_tool
+
+        store, _, _ = vault
+        meta = _any_site_card(store)
+        page = _FakePage("http://127.0.0.1:8765/checkout", _CARD_CONTROLS)
+        with _on_page(page), _consent() as consent:
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id, task_id="t"))
+        assert out["success"] is True
+        assert consent.call_args.args[0] == "Fill payment card 'Card' on http://127.0.0.1:8765"
+        [write] = page.writes
+        assert '"http://127.0.0.1:8765"' in write
+
+    def test_navigation_after_confirm_keeps_the_confirmed_origin_pinned(self, vault):
+        """The page moves while the user is asked: the write still carries the origin the user confirmed,
+        so the in-page assert refuses on the new page."""
+        from tools import browser_vault_tool
+
+        store, _, _ = vault
+        meta = _any_site_card(store)
+        page = _FakePage("https://shop.example/checkout", _CARD_CONTROLS)
+        with _on_page(page), _consent(page=page, navigate_to="https://evil.example/pay"):
+            browser_vault_tool.browser_vault_fill(meta.id, task_id="t")
+        for write in page.writes:
+            assert '"https://shop.example"' in write and "evil.example" not in write
+
+    def test_any_site_card_without_a_supervisor_is_refused_before_asking(self, vault):
+        from tools import browser_vault_tool
+
+        store, backend, _ = vault
+        meta = _any_site_card(store)
+        with patch.object(browser_vault_tool, "_ensure_supervisor", return_value=None), _consent() as consent:
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id, task_id="t"))
+        assert out["success"] is False and out["error_type"] == "supervisor_required"
+        consent.assert_not_called()
+        assert backend.resolved == []
+
+    def test_card_saved_without_a_site_is_still_refused(self, vault):
+        """A blank origin is not an opt-in: such a card stays unfillable and nobody is asked."""
+        from tools import browser_vault_tool
+
+        store, backend, _ = vault
+        meta = store.add_item(kind="payment", label="Card", secret=_CARD, origin=None)
+        page = _FakePage("https://shop.example/checkout", _CARD_CONTROLS)
+        with _on_page(page), _consent() as consent:
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id, task_id="t"))
+        assert out["success"] is False and out["error_type"] == "no_origin"
+        consent.assert_not_called()
+        assert backend.resolved == [] and page.writes == []

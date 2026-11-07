@@ -82,9 +82,20 @@ class TestFirecrawlClientConfig:
                     mock_fc.assert_called_once_with(
                         api_key="nous-token",
                         api_url="https://firecrawl-gateway.nousresearch.com",
+                        timeout=60.0,
                     )
                     assert result is mock_fc.return_value
 
+
+    def test_keyed_sdk_client_bounds_every_http_request(self):
+        """The keyed/self-hosted SDK client must carry a per-request HTTP timeout: the SDK default is
+        ``None``, so a socket that accepts and then stalls held web tools until the 420s dispatch
+        deadline (#136720)."""
+        with patch.dict(os.environ, {"FIRECRAWL_API_KEY": "fc-test", "FIRECRAWL_API_URL": "http://fc.local"}):
+            with patch("plugins.web.firecrawl.provider.Firecrawl") as mock_fc:
+                from plugins.web.firecrawl.provider import _get_firecrawl_client
+                _get_firecrawl_client()
+        mock_fc.assert_called_once_with(api_key="fc-test", api_url="http://fc.local", timeout=60.0)
 
     # ── Singleton caching ────────────────────────────────────────────
 

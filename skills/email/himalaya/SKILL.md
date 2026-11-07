@@ -102,7 +102,7 @@ folder.aliases.trash = "Trash"
 ## Hermes Integration Notes
 
 - **Reading, listing, searching, moving, deleting** all work directly through the terminal tool
-- **Composing/replying/forwarding** — piped input (`cat << EOF | himalaya template send`) is recommended for reliability. Interactive `$EDITOR` mode works with `pty=true` + background + process tool, but requires knowing the editor and its commands
+- **Composing/replying/forwarding** — piped input is recommended for reliability. On 1.x that is `cat << EOF | himalaya template send`; 2.x renamed it to `himalaya message send` and stopped expanding MML (see “Attachments on 2.x” below). Interactive `$EDITOR` mode works with `pty=true` + background + process tool, but requires knowing the editor and its commands
 - Use `--output json` for structured output that's easier to parse programmatically
 - The `himalaya account configure` wizard requires interactive input — use PTY mode: `terminal(command="himalaya account configure", pty=true)`
 
@@ -296,9 +296,41 @@ Full trace with backtrace:
 RUST_LOG=trace RUST_BACKTRACE=1 himalaya envelope list
 ```
 
+## Attachments on 2.x: build the MIME yourself
+
+himalaya 2.x does not expand MML. `message send` transmits the headers and body verbatim, so an MML directive such as `<#part filename=/tmp/book.epub><#/part>` is mailed as literal text: the recipient gets a plain-text message with the tag in the body and **no attachment**. A Send to Kindle attempt failed exactly this way, with `E009 - No Attachment` coming back from the delivery service. `himalaya message --help` states the boundary directly: "Multipart MIME, MML directives, signing and editor-driven workflows belong to a standalone composer such as mml, piped into `message send` or `message add`."
+
+Build the multipart message with the standard library and pipe it in:
+
+```python
+from email.message import EmailMessage
+from email.utils import formatdate
+
+msg = EmailMessage()
+msg["From"] = "me@example.com"
+msg["To"] = "you@example.com"
+msg["Subject"] = "Books"
+msg["Date"] = formatdate(localtime=True)
+msg.set_content("Two EPUBs attached.\n")
+for path, name in [("/tmp/a.epub", "a.epub"), ("/tmp/b.epub", "b.epub")]:
+    msg.add_attachment(
+        open(path, "rb").read(),
+        maintype="application",
+        subtype="epub+zip",
+        filename=name,
+    )
+open("msg.eml", "wb").write(msg.as_bytes())
+```
+
+```bash
+cat msg.eml | himalaya message send --no-save
+```
+
+A positional path is rejected (`himalaya message send msg.eml` fails with `unexpected argument 'msg.eml' found`), so pipe the message in on stdin.
+
 ## Tips
 
 - Use `himalaya --help` or `himalaya <command> --help` for detailed usage.
 - Message IDs are relative to the current folder; re-list after folder changes.
-- For composing rich emails with attachments, use MML syntax (see `references/message-composition.md`).
+- For composing rich emails with attachments, use MML syntax on 1.x (see `references/message-composition.md`). On 2.x MML is not expanded; build the MIME yourself (see “Attachments on 2.x” above).
 - Store passwords securely using `pass`, system keyring, or a command that outputs the password.

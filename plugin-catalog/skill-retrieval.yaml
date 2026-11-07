@@ -1,6 +1,6 @@
 name: skill-retrieval
 repo: https://github.com/moonlight-lupin/agent-skills
-sha: 79801c69e797f5f8efd619f8f451ca89d18c7240
+sha: 86a8aceefb98204a3483c5a6544e9c41824f51c4
 subdir: plugins/skill-retrieval
 description: >-
   BM25-based skill retrieval for large skill libraries. An llm_request middleware rewrites
@@ -9,7 +9,9 @@ description: >-
   skill descriptions to the current user message. Uses public plugin surfaces only
   (register_middleware, register_hook); reads SKILL.md frontmatter from the profile's skill
   roots and imports a few agent.prompt_builder / agent.skill_utils helpers read-only.
-  pyyaml is the only dependency. Disclosure — optional Jev rerank, off by default: with
+  pyyaml is declared via pip_dependencies in plugin.yaml, so the installer
+  installs it. On CPython 3.14 the host's hermes_yaml facade is used when
+  PyYAML is unavailable. Disclosure — optional Jev rerank, off by default: with
   SKILL_RETRIEVAL_RERANK=jev and TYPESAFE_API_KEY set (read from the environment only), each
   turn POSTs the user message (injection patterns stripped, capped at 2000 chars) and up to
   12 shortlisted skill descriptions (400 chars each) to api.typesafe.ai (3 s timeout, no
@@ -20,7 +22,7 @@ maintainer: moonlight-lupin
 tier: community
 category: tools
 requires_hermes: ">=0.21.1"
-version: "0.6.0"
+version: "0.8.1"
 capabilities:
   provides_tools: []
   provides_hooks:

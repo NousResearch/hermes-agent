@@ -1,0 +1,25 @@
+name: ferry
+repo: https://github.com/teal-sea/ferry
+sha: 1dc7b99d7efbd53032f221063fdf1cb2823a22b6
+title: Ferry
+description: "Store-and-forward job exchange between Hermes instances over a git repo. One instance sends a job; another picks it up whenever it next wakes, claims it (first push wins), does the work in its own session and replies with a verdict. No inbound ports, no daemon, no live peer needed, so it works with hosted scale-to-zero instances, laptops and boxes behind NAT; the git history is the audit trail, senders are verified against commit authors, and secret-shaped attachments are refused. Disclosure — shells out to the git CLI (clone/pull/commit/push) against only the bus remotes the user configures; bus checkouts and job/result bodies (plaintext, like anything in git) live under the profile's plugin-data/ferry directory and in that remote, so the bus repo should be private; on session start it fast-forward pulls each bus (15s timeout, failures swallowed) and, unless announce_on_start is off, injects one line into the first turn when jobs are waiting; a job is never executed by the plugin, it is read by the receiving agent in its own session under its own approvals; no telemetry and no background processes."
+maintainer: Thomas Lince
+tier: community
+category: automation
+docs_url: https://github.com/teal-sea/ferry/tree/1dc7b99d7efbd53032f221063fdf1cb2823a22b6#readme
+version: "0.1.0"
+requires_hermes: ">=0.23.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - ferry_buses
+    - ferry_send
+    - ferry_inbox
+    - ferry_claim
+    - ferry_reply
+    - ferry_status
+  provides_hooks:
+    - on_session_start
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

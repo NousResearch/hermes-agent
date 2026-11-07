@@ -551,6 +551,87 @@ def test_respawn_guard_ignores_auth_words_in_crashed_worker_output(kanban_home):
         assert kbd.check_respawn_guard(conn, spawn_failed_id) == "blocker_auth"
 
 
+_QUOTA_STAMP = "pid 1 exited rate-limited (quota wall) — requeued without counting a failure"
+
+
+@pytest.mark.parametrize(
+    "latest_outcome, expected",
+    [
+        # A newer forward-progress run supersedes the write-once stamp (#119070):
+        # the guard used to honor the stale quota text against every newer
+        # non-crashed outcome, parking ready cards in blocker_auth for hundreds
+        # of consecutive ticks behind the shared spawn budget.
+        ("changes_requested", None),
+        ("review_requested", None),
+        # A plain crash rewrites the failure picture — its persisted text is
+        # worker output, not a diagnosis (#117097).
+        ("crashed", None),
+        # Same failure family as the stamp — still guarded.
+        ("spawn_failed", "blocker_auth"),
+    ],
+)
+def test_respawn_guard_stale_quota_stamp_superseded_by_newer_run(
+    kanban_home, monkeypatch, latest_outcome, expected,
+):
+    """A quota-wall ``last_failure_error`` stamp must not trap a card whose
+    newest run already moved past it."""
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "0")
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="stale-stamp", assignee="a")
+        kb.claim_task(conn, tid)
+        task = kb.get_task(conn, tid)
+        assert task is not None and task.current_run_id is not None
+        run_id = task.current_run_id
+        conn.execute(
+            "UPDATE task_runs SET outcome=?, status=?, ended_at=? WHERE id=?",
+            (latest_outcome, latest_outcome, 5_000_000, run_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='ready', current_run_id=NULL, "
+            "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+            "last_failure_error=? WHERE id=?",
+            (_QUOTA_STAMP, tid),
+        )
+        conn.commit()
+        assert kbd.check_respawn_guard(conn, tid) == expected
+
+
+def test_respawn_guard_quota_stamp_without_runs_still_blocks(kanban_home, monkeypatch):
+    """No runs at all — the stamp IS the newest known state, so it still guards."""
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "0")
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="stamp-no-runs", assignee="a")
+        conn.execute(
+            "UPDATE tasks SET last_failure_error=? WHERE id=?", (_QUOTA_STAMP, tid),
+        )
+        conn.commit()
+        assert kbd.check_respawn_guard(conn, tid) == "blocker_auth"
+
+
+def test_forward_progress_run_end_clears_stale_failure_stamp(kanban_home):
+    """The write side of #119070: ending a run with a forward-progress outcome
+    clears the stamp in the same transaction, so a later dispatch never even
+    sees the stale quota text."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="stamp-clear", assignee="a")
+        conn.execute(
+            "UPDATE tasks SET last_failure_error=? WHERE id=?", (_QUOTA_STAMP, tid),
+        )
+        conn.commit()
+
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None and claimed.current_run_id is not None
+        assert kb.request_review(
+            conn, tid, summary="ready for review", reviewer="r",
+            expected_run_id=claimed.current_run_id,
+        )
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.last_failure_error is None
+
+
 def test_infrastructure_spawn_refusal_never_charges_the_card(
     kanban_home, monkeypatch, all_assignees_spawnable,
 ):

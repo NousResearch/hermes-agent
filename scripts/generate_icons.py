@@ -52,7 +52,7 @@ Dependencies:
     Pillow and resvg-py are core runtime dependencies; run this file with a
     Hermes runtime interpreter (scripts/generate-icons.mjs uses HERMES_PYTHON).
 
-Outputs (99 files):
+Outputs (101 files):
   assets/icon-master.svg                              generated light master
   assets/icon-master-dark.svg                         generated dark master
   apps/desktop/assets/icon.png                        1024x1024 squircle (light)
@@ -70,6 +70,8 @@ Outputs (99 files):
   apps/desktop/assets/appx/Square44x44Logo.targetsize-N[_altform-(light)unplated].png
                                                       taskbar/Start bitmaps 16..256; unplated = dark tile
   apps/desktop/public/apple-touch-icon.png            1024x1024 squircle
+  apps/desktop/public/pwa-192.png                     192x192 squircle (Webapp install manifest)
+  apps/desktop/public/pwa-512.png                     512x512 squircle (Webapp install manifest)
   apps/desktop/public/nous-girl.png                   256x256 squircle, black girl (light mark)
   apps/desktop/public/nous-girl-dark.png              256x256 squircle, white girl (dark mark)
   apps/bootstrap-installer/src-tauri/icons/32x32.png       32x32
@@ -227,6 +229,8 @@ CHECK_SIZES: dict[str, tuple[str, tuple[int, int]]] = {
     "apps/desktop/assets/icon.icon/Assets/art-light.png": ("PNG", (1024, 1024)),
     "apps/desktop/assets/icon.icon/Assets/art-dark.png": ("PNG", (1024, 1024)),
     "apps/desktop/public/apple-touch-icon.png": ("PNG", (1024, 1024)),
+    "apps/desktop/public/pwa-192.png": ("PNG", (192, 192)),
+    "apps/desktop/public/pwa-512.png": ("PNG", (512, 512)),
     "apps/desktop/public/nous-girl.png": ("PNG", (256, 256)),
     "apps/desktop/public/nous-girl-dark.png": ("PNG", (256, 256)),
     "apps/bootstrap-installer/src-tauri/icons/32x32.png": ("PNG", (32, 32)),
@@ -263,6 +267,9 @@ TARGETS: list[tuple[str, str, object]] = [
     ("apps/desktop/assets/icon.icon/Assets/mono.png", "icon_mono", None),
     *APPX_TARGETS,
     ("apps/desktop/public/apple-touch-icon.png", "png", 1024),
+    # The Webapp's install manifest (apps/desktop/public/manifest.webmanifest).
+    ("apps/desktop/public/pwa-192.png", "png", 192),
+    ("apps/desktop/public/pwa-512.png", "png", 512),
     # The dev-run Dock icon (app.dock.setIcon): same mac grid as the icns.
     ("apps/desktop/assets/icon-mac.png", "png_mac", 1024),
     ("apps/desktop/public/nous-girl.png", "girl_light", 256),
@@ -949,6 +956,8 @@ def cmd_check(source: Path, out: Path) -> int:
         "apps/desktop/public/nous-girl.png",
         "apps/desktop/public/nous-girl-dark.png",
         "apps/desktop/public/apple-touch-icon.png",
+        "apps/desktop/public/pwa-192.png",
+        "apps/desktop/public/pwa-512.png",
     ):
         path = out / rel
         if not path.exists():

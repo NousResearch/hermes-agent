@@ -12,7 +12,8 @@ from types import SimpleNamespace
 import pytest
 
 from gateway import run_idle_exit
-from gateway.config import Platform
+from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import BasePlatformAdapter
 from gateway.runtime_bootstrap import TicketStore
 from gateway.session_authorities import SessionAuthorities
 from hermes_state import SessionDB
@@ -148,4 +149,67 @@ def test_secondary_local_session_adapter_does_not_count_as_messaging(tmp_path, m
         assert "telegram" in run_idle_exit.busy_reason(runner, window=0.2)
     finally:
         secondary_db.close()
+        db.close()
+
+
+class _Adapter(BasePlatformAdapter):
+    def __init__(self, platform):
+        super().__init__(PlatformConfig(enabled=True), platform)
+
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        return True
+
+    async def disconnect(self) -> None:
+        return None
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None):
+        raise NotImplementedError
+
+    async def get_chat_info(self, chat_id):
+        return {}
+
+
+class _LoopbackBridge(_Adapter):
+    keeps_gateway_up = False
+
+
+def test_an_adapter_that_opts_out_does_not_hold_an_idle_gateway(tmp_path, monkeypatch):
+    """A bridge adapter with ``keeps_gateway_up = False`` is enabled, connected and then
+    reconnecting, with no work: the gateway may idle-exit. A running turn still holds it."""
+    runner, _home, db, _stops = _runner(tmp_path, monkeypatch)
+    bridge = Platform("irc")  # stands in for a third-party plugin platform
+    try:
+        runner.config.platforms[bridge] = SimpleNamespace(enabled=True)
+        runner.adapters[bridge] = _LoopbackBridge(bridge)
+        assert run_idle_exit.busy_reason(runner, window=0.2) is None
+
+        runner._active_work_count = lambda: 1
+        assert run_idle_exit.busy_reason(runner, window=0.2) == "agent work in flight"
+        runner._active_work_count = lambda: 0
+
+        runner._failed_platforms[bridge] = {"predecessor": runner.adapters.pop(bridge)}
+        assert run_idle_exit.busy_reason(runner, window=0.2) is None
+    finally:
+        db.close()
+
+
+def test_adapters_keep_holding_the_gateway_by_default(tmp_path, monkeypatch):
+    """Adapters that do not opt out are unchanged, and one that does not opt out holds the gateway
+    for its platform even when another adapter of that platform opts out."""
+    runner, _home, db, _stops = _runner(tmp_path, monkeypatch)
+    bridge = Platform("irc")
+    try:
+        runner.adapters[Platform.TELEGRAM] = _Adapter(Platform.TELEGRAM)
+        runner.adapters[bridge] = _LoopbackBridge(bridge)
+        assert run_idle_exit.busy_reason(runner, window=0.2) == "messaging ['telegram']"
+
+        del runner.adapters[Platform.TELEGRAM]
+        runner._profile_adapters["secondary"] = {bridge: _Adapter(bridge)}
+        assert run_idle_exit.busy_reason(runner, window=0.2) == "messaging ['irc']"
+
+        runner._profile_adapters.clear()
+        runner._failed_platforms[bridge] = {"predecessor": None}  # the adapter was never built
+        del runner.adapters[bridge]
+        assert run_idle_exit.busy_reason(runner, window=0.2) == "messaging ['irc']"
+    finally:
         db.close()

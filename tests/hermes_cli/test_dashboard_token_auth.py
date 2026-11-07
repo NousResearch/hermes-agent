@@ -235,3 +235,106 @@ def test_seam_rejects_wrong_token_401():
     assert resp.status_code == 401
 
 
+# --------------------------------------------------------------------------
+# Prefix registration
+# --------------------------------------------------------------------------
+
+
+def test_prefix_route_matches_parameterised_paths():
+    register_provider(_TokenProvider(secret="good", scopes=("kanban",)))
+    token_auth.register_token_route_prefix("/api/plugins/kanban/")
+    for path in (
+        "/api/plugins/kanban/tasks",
+        "/api/plugins/kanban/tasks/t_abc123/complete",
+    ):
+        assert token_auth.is_token_route(path)
+        req = _FakeRequest(path=path, headers={"authorization": "Bearer good"})
+        resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
+        assert resp.status_code == 200
+        assert req.state.token_authenticated is True
+
+
+def test_prefix_route_does_not_match_outside_prefix():
+    token_auth.register_token_route_prefix("/api/plugins/kanban/")
+    # Sibling plugin and the bare prefix root are untouched pass-throughs.
+    for path in ("/api/plugins/other/tasks", "/api/plugins/kanban"):
+        assert not token_auth.is_token_route(path)
+        req = _FakeRequest(path=path)
+        resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
+        assert resp.status_code == 200
+        assert getattr(req.state, "token_authenticated", False) is False
+
+
+def test_clear_token_routes_drops_prefixes():
+    token_auth.register_token_route_prefix("/api/plugins/kanban/")
+    token_auth.clear_token_routes()
+    assert not token_auth.is_token_route("/api/plugins/kanban/tasks")
+
+
+# --------------------------------------------------------------------------
+# Scope enforcement
+# --------------------------------------------------------------------------
+
+
+def test_scoped_route_accepts_principal_with_scope():
+    register_provider(_TokenProvider(secret="good", scopes=("drain",)))
+    token_auth.register_token_route("/api/gateway/drain", scope="drain")
+    req = _FakeRequest(
+        path="/api/gateway/drain", headers={"authorization": "Bearer good"}
+    )
+    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
+    assert resp.status_code == 200
+    assert req.state.token_authenticated is True
+
+
+def test_scoped_route_rejects_principal_without_scope_403():
+    # A valid credential for ANOTHER surface must not open this one: the
+    # kanban-scoped secret authenticates but lacks the drain capability.
+    register_provider(_TokenProvider(secret="good", scopes=("kanban",)))
+    token_auth.register_token_route("/api/gateway/drain", scope="drain")
+    req = _FakeRequest(
+        path="/api/gateway/drain", headers={"authorization": "Bearer good"}
+    )
+    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
+    assert resp.status_code == 403
+    assert getattr(req.state, "token_authenticated", False) is False
+
+
+def test_scoped_prefix_rejects_foreign_credential_403():
+    register_provider(_TokenProvider(secret="drain-secret", scopes=("drain",)))
+    token_auth.register_token_route_prefix("/api/plugins/kanban/", scope="kanban")
+    req = _FakeRequest(
+        path="/api/plugins/kanban/tasks",
+        headers={"authorization": "Bearer drain-secret"},
+    )
+    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
+    assert resp.status_code == 403
+
+
+@pytest.mark.parametrize("broad_first", [True, False])
+def test_longest_prefix_scope_wins_regardless_of_registration_order(broad_first):
+    # A broad unscoped prefix must not shadow a narrower scoped one: the
+    # scope boundary cannot depend on plugin load order.
+    register_provider(_TokenProvider(secret="drain-secret", scopes=("drain",)))
+    registrations = [("/api/plugins/", None), ("/api/plugins/kanban/v1/", "kanban")]
+    for prefix, scope in registrations if broad_first else reversed(registrations):
+        token_auth.register_token_route_prefix(prefix, scope=scope)
+
+    def status(path):
+        req = _FakeRequest(path=path, headers={"authorization": "Bearer drain-secret"})
+        return _run(token_auth.token_auth_middleware(req, _call_next_ok)).status_code
+
+    assert status("/api/plugins/kanban/v1/tasks") == 403
+    assert status("/api/plugins/other/tasks") == 200
+
+
+def test_unscoped_route_accepts_any_verified_principal():
+    # Backward compatibility: no scope requirement → any verified principal
+    # passes, exactly the pre-scope behaviour.
+    register_provider(_TokenProvider(secret="good", scopes=()))
+    token_auth.register_token_route("/api/gateway/drain")
+    req = _FakeRequest(
+        path="/api/gateway/drain", headers={"authorization": "Bearer good"}
+    )
+    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
+    assert resp.status_code == 200

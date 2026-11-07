@@ -87,6 +87,21 @@ class TestSandboxRequirements(unittest.TestCase):
         if sys.platform != "win32":
             self.assertTrue(check_sandbox_requirements())
 
+    def test_remote_backend_checks_terminal_requirements(self):
+        with patch("tools.terminal_tool._get_env_config", return_value={"env_type": "docker"}), \
+             patch("tools.terminal_tool.check_terminal_requirements", return_value=True):
+            self.assertTrue(check_sandbox_requirements())
+
+        with patch("tools.terminal_tool._get_env_config", return_value={"env_type": "docker"}), \
+             patch("tools.terminal_tool.check_terminal_requirements", return_value=False):
+            self.assertFalse(check_sandbox_requirements())
+
+    def test_local_backend_does_not_require_terminal_backend(self):
+        with patch("tools.terminal_tool._get_env_config", return_value={"env_type": "local"}), \
+             patch("tools.terminal_tool.check_terminal_requirements", return_value=False):
+            if sys.platform != "win32":
+                self.assertTrue(check_sandbox_requirements())
+
 
 
 class TestInterruptedOutput(unittest.TestCase):

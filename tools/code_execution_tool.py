@@ -103,17 +103,18 @@ def _spill_full_stdout(stdout_text: str) -> Optional[str]:
 
 
 def check_sandbox_requirements() -> bool:
-    """check_fn: available unless the vercel_sandbox backend fails its own checks."""
+    """check_fn: available if local, or if the configured remote terminal backend satisfies its checks."""
     if not SANDBOX_AVAILABLE:
         return False
     try:
-        from tools.terminal_tool import _get_env_config
-        from tools.terminal_tool_backends import _check_vercel_sandbox_requirements
+        from tools.terminal_tool import _get_env_config, check_terminal_requirements
         config = _get_env_config()
+        if config.get("env_type") == "local":
+            return True
+        return check_terminal_requirements()
     except Exception:
         logger.debug("Could not resolve terminal config for execute_code availability", exc_info=True)
         return False
-    return config.get("env_type") != "vercel_sandbox" or _check_vercel_sandbox_requirements(config)
 
 
 # ---- hermes_tools.py code generator ----

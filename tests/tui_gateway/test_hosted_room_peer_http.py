@@ -1004,3 +1004,43 @@ def test_grant_refresh_retries_old_grant_after_response_loss():
     assert first["grant"] == "replacement-one"
     assert second["grant"] == "replacement-two"
     assert first["catalog"] == second["catalog"] == raw_catalog
+
+
+@pytest.mark.parametrize("peer_state", ["cancelled", "interrupted", "failed"])
+def test_peer_run_ended_without_completing_yields_a_failed_terminal_receipt(peer_state):
+    """A peer run that ends without completing must settle the host task.
+
+    The host driver settles a peer task only from ``history()``. A member gateway reports a
+    turn interrupted on its side (graceful shutdown, local interrupt) as ``cancelled``; if
+    ``history()`` drops that terminal state the host task stays running forever and every
+    later turn in the room queues behind it.
+    """
+    from gateway.hosted_room_driver import TaskIdentity
+    from tui_gateway.hosted_room_driver import _find_terminal_receipt
+
+    client = PeerRunsHTTPClient(base_url="https://peer.example.test", api_key="")
+    client._runs[("task-1", 1)] = {
+        "run_id": "run-1",
+        "session_id": "roomlink-session",
+        "room_id": "room-1",
+        "member_id": "member-reviewer",
+        "task_id": "task-1",
+        "execution_generation": 1,
+        "target_install_id": "install-peer",
+        "target_profile": "reviewer",
+    }
+    client.bind_observation(task_id="task-1", execution_generation=1)
+    client._request = lambda path, **_kwargs: {
+        "run_id": "run-1", "status": peer_state, "error": "member gateway shut down"}
+    scope = {"room_id": "room-1", "profile": "reviewer", "session_id": "roomlink-session",
+             "grant": "signed.room.grant"}
+
+    assert client.status(**scope)["active"] is False
+    receipt = _find_terminal_receipt(
+        client.history(**scope),
+        TaskIdentity(room_id="room-1", task_id="task-1", thread_id="thread-1", turn_id="turn-1"),
+        1)
+
+    assert receipt is not None
+    assert receipt.status == "failed"
+    assert receipt.settlement_id == "peer-run:run-1"

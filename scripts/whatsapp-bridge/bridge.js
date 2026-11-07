@@ -19,7 +19,7 @@
  *   node bridge.js --port 3000 --session ~/.hermes/whatsapp/session
  */
 
-import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage, getAggregateVotesInPollMessage, decryptPollVote, getKeyAuthor, jidNormalizedUser } from '@whiskeysockets/baileys';
+import { makeWASocket, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage, getAggregateVotesInPollMessage, decryptPollVote, getKeyAuthor, jidNormalizedUser } from '@whiskeysockets/baileys';
 import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
@@ -31,6 +31,7 @@ import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedSender, matchesAllowedUser, matchesInboundWhatsAppGroup, parseAllowedUsers } from './allowlist.js';
+import { createCredsSaver, exitAfterCredsDrain, useAtomicMultiFileAuthState } from './auth_state.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
 import {
@@ -391,6 +392,15 @@ function enqueueDeliveryStatus(args) {
 
 let sock = null;
 let connectionState = 'disconnected';
+// The current socket's creds saver: SIGTERM/SIGINT drain an accepted save
+// before exiting, bounded so a wedged disk cannot hold the stop past the
+// adapter's grace.
+let activeCredsSaver = null;
+const SHUTDOWN_DRAIN_TIMEOUT_MS = 3000;
+const shutdown = exitAfterCredsDrain({
+  getSaver: () => activeCredsSaver,
+  timeoutMs: SHUTDOWN_DRAIN_TIMEOUT_MS,
+});
 
 function emitPairEvent(event) {
   if (!PAIR_JSON) return;
@@ -399,11 +409,26 @@ function emitPairEvent(event) {
   } catch {}
 }
 
-const scheduleReconnect = createReconnectScheduler(() => startSocket());
+const scheduleReconnect = createReconnectScheduler(() => (shutdown.started() ? undefined : startSocket()));
 const getWAVersion = createVersionResolver(fetchLatestBaileysVersion);
 
 async function startSocket() {
-  const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
+  let state;
+  let saveCreds;
+  try {
+    ({ state, saveCreds } = await useAtomicMultiFileAuthState(SESSION_DIR));
+  } catch (err) {
+    // Damaged (not missing) credentials. Baileys' default would quietly mint a
+    // new identity here and sit on a QR screen — that is exactly how the
+    // 2026-08-09 disk-full outage stayed invisible for 17 hours. Say what is
+    // wrong, in the operator's face, and stop.
+    console.error('\n❌ WhatsApp auth state is unusable — refusing to start.\n');
+    console.error(`   ${err.message}\n`);
+    console.error('   The paired session was NOT discarded. Restore the file');
+    console.error('   from a backup, or delete it deliberately to re-pair.\n');
+    emitPairEvent({ event: 'auth_state_corrupt', session: SESSION_DIR, error: err.message });
+    process.exit(1);
+  }
   const version = await getWAVersion();
 
   sock = makeWASocket({
@@ -423,7 +448,21 @@ async function startSocket() {
     },
   });
 
-  sock.ev.on('creds.update', () => { saveCreds(); lidToPhone = buildLidMap(); });
+  // The atomic writer rejects on a failed save (ENOSPC, EIO, ...). The save
+  // runs from an event handler, so route the failure to the log instead of
+  // letting an unhandled rejection kill the bridge; creds.json keeps its last
+  // good contents and the next creds.update retries.
+  const credsSaver = createCredsSaver(saveCreds, {
+    onFailure: (err, message) => {
+      console.error(`⚠️  ${message}`);
+      emitPairEvent({ event: 'auth_state_save_failed', session: SESSION_DIR, error: message });
+    },
+  });
+  activeCredsSaver = credsSaver;
+  sock.ev.on('creds.update', () => {
+    credsSaver.save();
+    lidToPhone = buildLidMap();
+  });
 
   sock.ev.on('connection.update', (update) => {
     const { connection, lastDisconnect, qr } = update;
@@ -474,11 +513,19 @@ async function startSocket() {
         console.log('✅ WhatsApp connected!');
       }
       if (PAIR_ONLY) {
-        if (!PAIR_JSON) {
-          console.log('✅ Pairing complete. Credentials saved.');
-        }
-        // Give Baileys a moment to flush creds, then exit cleanly
-        setTimeout(() => process.exit(0), 2000);
+        // Give Baileys a moment to emit its last creds.update, then report
+        // whether that save actually reached disk.
+        setTimeout(async () => {
+          if (!(await credsSaver.settled())) {
+            emitPairEvent({ event: 'error', error: 'Paired, but the WhatsApp credentials could not be saved.' });
+            console.error('❌ Paired, but the credentials could not be saved; pairing again is required.');
+            process.exit(1);
+          }
+          if (!PAIR_JSON) {
+            console.log('✅ Pairing complete. Credentials saved.');
+          }
+          process.exit(0);
+        }, 2000);
       }
     }
   });

@@ -20,6 +20,7 @@ import threading
 import time
 from collections import deque
 from contextlib import contextmanager
+from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional, TypeVar
@@ -400,9 +401,22 @@ class PostgresRow(dict):
         return iter(self._values)
 
 
+def _normalize_scalar(value):
+    """Map psycopg ``numeric`` (returned as ``Decimal``) to the SQLite-equivalent scalar the
+    shared readers expect: ``int`` for whole values, ``float`` otherwise. PostgreSQL's
+    aggregate/numeric types otherwise leak ``Decimal`` into rows (e.g. ``SUM(int8)`` is
+    ``numeric``), which the JSON encoders and int-typed readers assume are plain scalars."""
+    if isinstance(value, Decimal):
+        whole = value.to_integral_value()
+        if whole == value:
+            return int(whole)
+        return float(value)
+    return value
+
+
 def _row_factory(cursor):
     columns = [column.name for column in cursor.description] if cursor.description else []
-    return lambda values: PostgresRow(columns, values)
+    return lambda values: PostgresRow(columns, tuple(_normalize_scalar(v) for v in values))
 
 
 class PostgresCursor:

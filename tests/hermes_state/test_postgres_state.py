@@ -568,3 +568,24 @@ def test_moved_receipts_scan_and_boot_heal_are_dialect_parity(state_db):
             "SELECT 1 FROM state_meta WHERE key = ?", (POLICY_PREFIX + "owner-malformed",)).fetchone()
     assert kept == [POLICY_PREFIX + "owner-same"]
     assert malformed is not None
+
+
+def test_auxiliary_usage_by_task_returns_native_scalars(state_db):
+    """The turn result JSON-encodes the aggregated aux-usage dict at settlement. PostgreSQL's
+    ``SUM(int8)`` returns ``numeric`` (psycopg ``Decimal``) where SQLite's ``SUM`` returns
+    ``int``; the PG store boundary must normalize to the SQLite-equivalent scalars or every
+    PG-backed turn that ran an auxiliary model call fails settlement (DEFECT-2)."""
+    session_id = "aux-scalars"
+    state_db.create_session(session_id, "cli", model="test-model")
+    state_db.record_auxiliary_usage(
+        session_id, "title_generation", input_tokens=268, output_tokens=17)
+
+    counters = state_db.auxiliary_usage_by_task(session_id)["title_generation"]
+    assert counters["api_calls"] == 1
+    assert counters["input_tokens"] == 268
+    assert counters["output_tokens"] == 17
+    assert counters["estimated_cost_usd"] == 0.0
+    for key in ("api_calls", "input_tokens", "output_tokens", "cache_read_tokens",
+                "cache_write_tokens", "reasoning_tokens"):
+        assert type(counters[key]) is int, key
+    assert type(counters["estimated_cost_usd"]) is float

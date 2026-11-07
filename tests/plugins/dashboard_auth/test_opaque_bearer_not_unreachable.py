@@ -19,17 +19,17 @@ and the real gated web_server app for the HTTP-level assertion.
 from __future__ import annotations
 
 import json
-import threading
-import base64
 import logging
+import threading
 import time
 from contextlib import contextmanager
-from unittest.mock import MagicMock, patch
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from unittest.mock import MagicMock, patch
 
 import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
+from jwt.algorithms import RSAAlgorithm
 from starlette.testclient import TestClient
 
 from hermes_cli import web_server
@@ -86,7 +86,7 @@ def empty_jwks_server():
 def portal():
     """A reachable Portal JWKS publishing one signing key; yields ``(url, private_key)``."""
     private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    jwk = {**json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(private.public_key())),
+    jwk = {**json.loads(RSAAlgorithm.to_jwk(private.public_key())),
            "kid": _KID, "use": "sig", "alg": "RS256"}
     with _serve_jwks([jwk]) as url:
         yield url, private
@@ -267,10 +267,7 @@ def test_forged_alg_with_published_kid_is_rejected_without_a_drift_warning(porta
     """The drift WARNING is reserved for aud/iss mismatches, which PyJWT reports only after the
     signature verified. A forged token naming the published kid with another alg is rejected
     before any signature check: a 401, and no attacker-sized log line."""
-    def b64(obj):
-        return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
-
-    forged = ".".join((b64({"alg": "HS256", "kid": _KID}), b64({"iss": "x" * 4000, "aud": "y"}), "c2ln"))
+    forged = jwt.encode({"iss": "x" * 4000, "aud": "y"}, "k" * 32, algorithm="HS256", headers={"kid": _KID})
     provider = _nous(portal[0])
     with caplog.at_level(logging.WARNING, logger="plugins.dashboard_auth._shared"):
         assert provider.verify_session(access_token=forged) is None

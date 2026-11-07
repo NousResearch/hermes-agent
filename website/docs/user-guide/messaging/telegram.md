@@ -272,6 +272,38 @@ TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES=true
 
 This requires Telegram to deliver ordinary group messages to the gateway, so disable BotFather privacy mode or promote the bot to group admin as described above.
 
+### Distinguish forum topic anchors from replies
+
+Telegram can attach a topic-creation service message as `reply_to_message` on
+ordinary posts in a forum topic. If the bot created that topic, the legacy
+reply classifier treats those posts as replies to the bot, bypassing
+`require_mention`. To keep ordinary chatter quiet while allowing genuine
+replies, opt in for this Telegram profile:
+
+```yaml
+telegram:
+  require_mention: true
+  allowed_chats: ["-1001234567890"]
+  group_allowed_chats: ["-1001234567890"]
+  extra:
+    ignore_forum_topic_anchors: true
+```
+
+The option defaults to `false` (omitting it preserves existing behavior).
+Use the YAML boolean `true`, then restart the gateway. It is also supported
+under `platforms.telegram.extra`. With it enabled, a group-topic reply target
+marked `forum_topic_created` whose message ID equals the current topic ID
+is not considered a reply to the bot. Genuine replies and explicit mentions
+continue to trigger normally. With observation enabled, unmentioned topic
+posts remain eligible for observed context without waking the agent.
+
+This is not an authorization grant or a new trigger: existing user, chat and
+topic restrictions still apply. A group must be in `allowed_chats` if that
+list is nonempty; `guest_mode` still permits only explicit mentions outside
+that list. Do not add the group to `free_response_chats`/`free_response_topics`
+if ordinary chatter should stay quiet. Free-response exceptions, disabled
+mention requirements, configured wake words and DMs keep their behavior.
+
 ## Step 4: Find Your User ID
 
 Hermes Agent uses numeric Telegram user IDs to control access. Your user ID is **not** your username — it's a number like `123456789`.

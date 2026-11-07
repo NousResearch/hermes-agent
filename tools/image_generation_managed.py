@@ -40,9 +40,10 @@ _FAL_KREA_PREFIX = "fal-ai/krea/"
 def managed_backend_for_model(model_id: Optional[str]) -> str:
     """Gateway that serves ``model_id`` under the managed selection (unset → FAL default)."""
     from plugins.image_gen.krea import KREA_MODEL_IDS
-    from tools.image_generation_catalog import FAL_MODELS
+    from tools.image_generation_catalog import FAL_MODELS, RETIRED_FAL_MODELS
 
     candidate = model_id.strip() if isinstance(model_id, str) else ""
+    candidate = RETIRED_FAL_MODELS.get(candidate, candidate)
     if not candidate or candidate in FAL_MODELS:
         return FAL
     if candidate in KREA_MODEL_IDS:

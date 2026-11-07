@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -684,3 +685,26 @@ def test_a_rebuilt_retry_benches_only_the_key_that_sent_it(is_async, retry_url, 
     assert sent == ["openrouter.ai", httpx.URL(retry_url).host]
     assert (sorted(k0.model_cooldowns or {}), k1.last_error_code) == (["fast-1"], benched)
 
+
+_TEMPERATURE_400 = "Unsupported parameter: 'temperature' is not supported with this model."
+
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize("third,answer", [(200, "ok"), (400, "fallback")], ids=["refreshed-request-answers",
+                                                                                  "rejected-again-falls-back"])
+def test_a_parameter_repair_survives_a_credential_refresh(is_async, third, answer):
+    """temperature 400 -> the repaired request 401s -> refresh: the rebuilt request still omits temperature. If the
+    provider rejects it anyway, that is a parameter-named 400 after a spent rung: model incompatible, fall back."""
+    sent, statuses = [], iter([400, 401, third])
+    ok = {"id": "x", "object": "chat.completion", "created": 0, "model": "fast-1", "choices": [
+        {"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}]}
+
+    def handle(request):
+        sent.append(json.loads(request.content))
+        status = next(statuses)
+        message = {400: _TEMPERATURE_400, 401: "invalid api key"}.get(status)
+        return httpx.Response(status, json={"error": {"message": message}} if message else ok, request=request)
+
+    client = _wire(handle, key="sk-0", is_async=is_async)
+    assert _routed_call([client] * 2, provider="openrouter", is_async=is_async, temperature=0.3) == answer
+    assert len(sent) == 3 and ["temperature" in body for body in sent] == [True, False, False]

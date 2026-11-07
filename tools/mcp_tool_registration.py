@@ -49,6 +49,15 @@ def _normalize_server_trust(value: Any) -> str:
     return _core._TRUST_UNTRUSTED
 
 
+def _server_trust_tier(config: Optional[dict]) -> str:
+    """Recorded tier for a server entry: ``approve_every_call`` (present and not false) -> ``every_call``,
+    whatever ``trust`` says; otherwise ``trust`` normalized."""
+    config = config or {}
+    if "approve_every_call" in config and _parse_boolish(config["approve_every_call"], default=True):
+        return _core._TRUST_EVERY_CALL
+    return _normalize_server_trust(config.get("trust"))
+
+
 def _annotation_read_only_hint(mcp_tool: Any) -> bool:
     """True only when annotations (SDK object or cache dict) carry an exact ``True`` read-only hint;
     unknown = write-capable. mcp 2.x exposes the attribute as ``read_only_hint`` (camelCase is only a
@@ -81,7 +90,7 @@ def _record_tool_trust_metadata(server_name: str, config: dict, tools: list[Any]
     with _core._lock:
         if key is None:
             key = _server_key(server_name)
-        _core._server_trust_levels[key] = _normalize_server_trust((config or {}).get("trust"))
+        _core._server_trust_levels[key] = _server_trust_tier(config)
         _record_cost_policy(server_name, config, key)
         hints = _core._tool_read_only_hints.setdefault(key, {})
         hints.update({t.name: _annotation_read_only_hint(t) for t in tools if getattr(t, "name", None)})
@@ -103,7 +112,7 @@ def _record_scope_trust(server_name: str, config: dict, scope: str) -> None:
     write-capable call."""
     with _core._lock:
         key = _server_key(server_name, scope, current=False)
-        _core._server_trust_levels[key] = _normalize_server_trust((config or {}).get("trust"))
+        _core._server_trust_levels[key] = _server_trust_tier(config)
         _record_cost_policy(server_name, config, key)
 
 

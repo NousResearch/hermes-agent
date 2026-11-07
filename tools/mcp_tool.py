@@ -523,13 +523,15 @@ _CIRCUIT_BREAKER_THRESHOLD, _CIRCUIT_BREAKER_COOLDOWN_SEC = 3, 60.0
 # mutation, prompt cache intact. ``_server_trust_levels`` is keyed by the CONSUMING profile's own
 # key (its policy for the name, even when it adopted another profile's connection);
 # ``_tool_read_only_hints`` by the connection key (the server's own tool annotations).
+# ``approve_every_call`` records the stricter ``every_call`` tier: untrusted, with no remembered
+# grant and no YOLO / ``approvals.mode: off`` bypass.
 _server_trust_levels: dict[Any, str] = {}
 _tool_read_only_hints: dict[Any, dict[str, bool]] = {}
 # Declared per-tool costs + per-chat spend limit (``tools.mcp_tool_costs.CostPolicy``), keyed like
 # ``_server_trust_levels``: the consuming profile's policy. Absent = no costs, behaviour unchanged.
 _server_cost_policies: dict[Any, Any] = {}
 
-_TRUST_FULL, _TRUST_UNTRUSTED = "full", "untrusted"
+_TRUST_FULL, _TRUST_UNTRUSTED, _TRUST_EVERY_CALL = "full", "untrusted", "every_call"
 
 
 def _bump_server_error(server_name: str, *, application: bool = False) -> None:

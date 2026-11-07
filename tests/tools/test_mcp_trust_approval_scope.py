@@ -13,6 +13,7 @@ from gateway.session_context import clear_session_vars, set_session_vars
 from hermes_cli.config import load_config
 from tools import approval, approval_prompt, mcp_tool
 from tools import mcp_tool_handlers as handlers
+from tools import mcp_tool_registration as registration
 from tools.approval_context import reset_current_session_key, set_current_session_key
 
 
@@ -68,6 +69,22 @@ def test_session_and_always_answers_stop_the_next_prompt_for_that_tool_only(choi
     else:
         assert blocked is None and other.cards == []
         assert "mcp:srv/write" in allowlist
+
+
+@pytest.mark.parametrize("config", [{"trust": "untrusted", "approve_every_call": True},
+                                    {"approve_every_call": True}])
+@pytest.mark.parametrize("choice", ["session", "always"])
+def test_approve_every_call_asks_for_every_call_and_remembers_nothing(config, choice):
+    """``approve_every_call``: each call gets its own Once / Deny card, a stale broader answer covers
+    that call only, and nothing reaches the session or the allowlist. On its own it still gates."""
+    registration._record_tool_trust_metadata("srv", config, [])
+    with _Chat("tg:chat-a", choice) as chat:
+        assert handlers._trust_gate_check("srv", "write") is None
+        assert handlers._trust_gate_check("srv", "write") is None
+    assert len(chat.cards) == 2
+    assert all(card["allow_session"] is False and card["allow_permanent"] is False for card in chat.cards)
+    assert approval._session_approved == {}
+    assert "mcp:srv/write" not in (load_config().get("command_allowlist") or [])
 
 
 def test_consent_without_an_identity_offers_and_records_only_once(monkeypatch):

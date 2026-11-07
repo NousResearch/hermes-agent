@@ -693,11 +693,14 @@ class HostedRoomService:
     def _publish_terminal_tasks(self, room: Mapping[str, Any]) -> bool:
         changed, room_id, local_profiles = False, str(room["room_id"]), self.room_profiles(room)
         cursor = int(room["latest_seq"])
+        outcomes = self.policy_checkpoint.published_outcomes(room_id=room_id)
+        terminal_ids = {task_id for task_id, kind, _ in outcomes
+                        if kind in {"turn.settled", "turn.failed", "turn.cancelled"}}
         for task in self._list_tasks(room_id, _TERMINAL_STATUSES):
             status, execution_generation = task["status"], int(task["execution_generation"])
-            if self.policy_checkpoint.publication_exists(
-                room_id=room_id, task_id=task["identity"].task_id, status=status,
-                execution_generation=execution_generation):
+            task_id = task["identity"].task_id
+            if ((task_id, "turn.deferred", execution_generation) in outcomes
+                    if status == "deferred" else task_id in terminal_ids):
                 continue
             task_events = self.policy_checkpoint.events_for_task(
                 room_id=room_id, source_event_seq=int(task["payload"]["source_event_seq"]),

@@ -404,6 +404,15 @@ class HostedRoomPolicyCheckpoint:
             through_seq=through_seq, stopped_through_seq=stopped_through_seq, events=tuple(events),
             watermarks={(thread_id, str(row["member_id"])): int(row["seen_through_seq"]) for row in watermark_rows})
 
+    def published_outcomes(self, *, room_id: str) -> set[tuple[str, str, int]]:
+        """Read a room's publication receipts once for a terminal-task scan."""
+        with self._transaction() as conn:
+            rows = conn.execute(
+                """SELECT task_id, kind, execution_generation
+                   FROM hosted_room_policy_publications WHERE room_id=?""", (room_id,)
+            ).fetchall()
+        return {(str(row["task_id"]), str(row["kind"]), int(row["execution_generation"])) for row in rows}
+
     def publication_exists(self, *, room_id: str, task_id: str, status: str, execution_generation: int) -> bool:
         """Return whether one exact driver outcome is already in the room log."""
         sql, params = (

@@ -26,9 +26,9 @@ def _make_runner() -> GatewayRunner:
     return runner
 
 
-def _source() -> SessionSource:
+def _source(platform=Platform.TELEGRAM) -> SessionSource:
     return SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=platform,
         chat_id="123",
         chat_name="DM",
         chat_type="private",
@@ -152,3 +152,25 @@ async def test_reply_prefix_still_injected_when_text_in_history():
     assert result.endswith("What's the best time to go?")
 
 
+@pytest.mark.asyncio
+async def test_reply_target_note_is_platform_neutral_without_quoted_text():
+    """A reply target whose quoted text is absent gets a platform-neutral pointer."""
+    source = _source(platform=Platform.SIGNAL)
+    event = MessageEvent(text="Follow up", source=source, reply_to_message_id="14303")
+
+    result = await _make_runner()._prepare_inbound_message_text(event=event, source=source, history=[])
+
+    assert result == "[Reply target message_id: 14303]\n\nFollow up"
+
+
+@pytest.mark.asyncio
+async def test_quoted_reply_uses_replying_prefix_without_extra_note():
+    """Quoted text present: the existing `[Replying to:` path runs, no second note."""
+    source = _source(platform=Platform.SIGNAL)
+    event = MessageEvent(
+        text="Follow up", source=source, reply_to_message_id="14303", reply_to_text="Earlier quoted words",
+    )
+
+    result = await _make_runner()._prepare_inbound_message_text(event=event, source=source, history=[])
+
+    assert result == '[Replying to: "Earlier quoted words"]\n\nFollow up'

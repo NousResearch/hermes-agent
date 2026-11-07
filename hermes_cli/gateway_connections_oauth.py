@@ -221,13 +221,18 @@ def cancel_sign_in(connection_id: str) -> None:
             _flights.pop(state, None)
 
 
-def complete_sign_in(*, code: str, state: str, error: str = "", error_description: str = "") -> dict:
+def complete_sign_in(*, code: str, state: str, error: str = "", error_description: str = "",
+                     connection_id: str = "") -> dict:
     """Finish the flight *state* names: redeem *code* with its verifier and store the tokens.
 
     The flight is consumed on every path (one try per state, as the remote's one-time code), and an
-    unknown state is refused before anything else is read (RFC 6749 §10.12)."""
+    unknown state is refused before anything else is read (RFC 6749 §10.12). With *connection_id*,
+    a flight started for another connection is refused before its code is redeemed, and left alone."""
     with _flights_lock:
         _gc_flights_locked(time.time())
+        flight = _flights.get(state) if state else None
+        if flight is not None and connection_id and flight.connection_id != connection_id:
+            raise store.ConnectionStoreError("That redirect belongs to another connection's sign-in.")
         flight = _flights.pop(state, None) if state else None
     if flight is None:
         raise OAuthSignInError("This sign-in is unknown or expired. Start it again from Settings → Gateways.")
@@ -249,15 +254,17 @@ def complete_sign_in(*, code: str, state: str, error: str = "", error_descriptio
     return {"connectionId": flight.connection_id, "provider": tokens["provider"], "userId": tokens["userId"]}
 
 
-def complete_from_url(callback_url: str) -> dict:
+def complete_from_url(callback_url: str, *, connection_id: str = "") -> dict:
     """Finish a flight from the address its redirect reached (pasted when that was another
-    machine's loopback). Only this gateway's own callback path is read."""
+    machine's loopback). Only this gateway's own callback path is read; with *connection_id*, only
+    a flight that connection started."""
     parsed = urlparse(str(callback_url or "").strip())
     if parsed.path.rstrip("/") != CALLBACK_PATH:
         raise OAuthSignInError("That address is not a Hermes gateway sign-in redirect.")
     query = {k: v[0] for k, v in parse_qs(parsed.query).items() if v}
     return complete_sign_in(code=query.get("code", ""), state=query.get("state", ""),
-                            error=query.get("error", ""), error_description=query.get("error_description", ""))
+                            error=query.get("error", ""), error_description=query.get("error_description", ""),
+                            connection_id=connection_id)
 
 
 def _store_tokens(connection_id: str, base_url: str, tokens: dict) -> None:

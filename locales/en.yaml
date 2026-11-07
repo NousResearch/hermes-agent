@@ -2365,6 +2365,7 @@ cli:
 
   subagents:
     cannot_steer_process: "Background processes cannot be steered; stop them or read the log."
+    finished_cannot_control: "This subagent has finished; there is nothing to steer or stop."
     count_live: "{count} live"
     count_done: "{count} done"
     count_running: "{count} running"

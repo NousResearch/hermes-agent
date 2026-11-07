@@ -33,6 +33,7 @@ class SubagentMonitor:
     def __init__(self, cli):
         self.cli = cli
         self.entries = []
+        self.finished = []  # stored subagents of this conversation that are no longer live (list only)
         self.processes = []
         self.goal = ''
         self.loop = ''
@@ -53,8 +54,9 @@ class SubagentMonitor:
 
     @property
     def roster(self):
-        """Agents first, then processes — the order the dock and the full-height monitor paint."""
-        return [*self.entries, *self.processes]
+        """Live agents, then finished ones, then processes — the full-height monitor's order (the
+        dock paints only the live rows)."""
+        return [*self.entries, *self.finished, *self.processes]
 
     @staticmethod
     def _key(row):
@@ -80,23 +82,29 @@ class SubagentMonitor:
             self._local = LocalSubagents(self.cli)
         return self._local
 
-    def refresh(self, now=None):
+    def refresh(self, now=None, *, history=None):
+        """Re-read the live rows; ``history`` also reads this conversation's finished subagents from
+        the session store (the full-height monitor's list; the dock never paints them). By default
+        they are read only while the full-height monitor is open."""
         now = time.time() if now is None else now
+        history = self.app is not None if history is None else history
         entries = self.subagents().subagent_rows(busy=bool(getattr(self.cli, '_agent_running', False)))
         for row in entries:
             row['elapsed'] = max(0, int(now - (row.get('started_at') or now)))
             row['last_tool'] = row.get('last_tool') or ''
             row['key'] = row['subagent_id']
             row.pop('running_seconds', None)
+        finished = finished_rows(self.cli, entries) if history else []
         processes = procs.process_rows(now)
         session_rows.sync_automation(self.cli)
         goal = session_rows.goal_line(self.cli)
         loop_badge, loop, loop_prompt = session_rows.loop_row(self.cli, now)
         queued = session_rows.queued_prompts(self.cli)
-        signature = json.dumps([entries, processes, goal, loop, queued], sort_keys=True, default=str)
+        signature = json.dumps([entries, finished, processes, goal, loop, queued], sort_keys=True, default=str)
         changed = signature != self._signature
         self._signature = signature
         self.entries = entries
+        self.finished = finished
         self.processes = processes
         self.goal = goal
         self.loop = loop
@@ -157,6 +165,8 @@ class SubagentMonitor:
 
     def control(self, action, message=None, *, target=None):
         target = target or self.selected_id
+        if any(r['key'] == target for r in self.finished):
+            return {'error': t('cli.subagents.finished_cannot_control')}
         if any(r['key'] == target for r in self.processes):
             if action != 'stop':
                 return {'error': t('cli.subagents.cannot_steer_process')}
@@ -274,6 +284,38 @@ class SubagentMonitor:
             if len(self.queued) > shown:
                 lines.append(_clip('  ' + t('cli.subagents.more_queued', count=len(self.queued) - shown), columns))
         return '\n'.join(' ' + line for line in lines)
+
+
+def master_session_id(cli):
+    """The stored id of the conversation the CLI shows (the agent's follows compression rotations)."""
+    return getattr(getattr(cli, 'agent', None), 'session_id', None) or getattr(cli, 'session_id', None)
+
+
+def finished_rows(cli, live_rows):
+    """This conversation's stored subagents that are not live (oldest first), as list rows keyed
+    by their stored session id. Empty without a session store; a store error reads as none."""
+    db, session_id = getattr(cli, '_session_db', None), master_session_id(cli)
+    if db is None or not session_id:
+        return []
+    from hermes_state_subagents import subagent_sessions
+    try:
+        stored = subagent_sessions(db, session_id)
+    except Exception:  # health: allow BLE001 -- the list is a view; a locked or older store must not break the monitor
+        logger.debug("stored subagent read failed", exc_info=True)
+        return []
+    live = {row.get('child_session_id') for row in live_rows if row.get('child_session_id')}
+    rows = []
+    for record in stored:
+        if record['session_id'] in live:
+            continue
+        ended, started = record.get('ended_at'), record.get('started_at')
+        rows.append({
+            'kind': 'finished', 'key': record['session_id'], 'subagent_id': record['session_id'],
+            'child_session_id': record['session_id'], 'goal': record.get('goal') or record.get('title') or '',
+            'depth': record.get('depth', 1), 'model': record.get('model'), 'ended': ended is not None,
+            'elapsed': max(0, int(ended - started)) if ended and started else 0,
+        })
+    return rows
 
 
 def read_tail(path):

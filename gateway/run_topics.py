@@ -84,17 +84,23 @@ class GatewayTopicThreadsMixin:
             and str(source.thread_id or "") in self._TELEGRAM_GENERAL_TOPIC_IDS
         )
 
-    def _is_telegram_topic_lane(self, source: SessionSource) -> bool:
-        """True for a user-created Telegram private-chat topic lane. Never a conversation its chat
-        moved past (gateway/session_detached.py): its turns neither heal nor rewrite the topic's
-        binding, nor rename the topic, which belong to the chat's current conversation."""
+    def _is_telegram_dm_topic_thread(self, source: SessionSource) -> bool:
+        """A non-General Telegram DM topic, independent of Hermes topic mode.
+
+        Client-created topics can mirror session titles without topic-mode routing. Detached
+        conversations must never rename the chat's current topic (gateway/session_detached.py).
+        """
         from gateway.session_detached import detached_route_of
         tid = str(source.thread_id or "")
         return (
             detached_route_of(source) is None
-            and self._is_telegram_dm(source) and self._telegram_topic_mode_enabled(source)
+            and self._is_telegram_dm(source)
             and bool(tid) and tid not in self._TELEGRAM_GENERAL_TOPIC_IDS
         )
+
+    def _is_telegram_topic_lane(self, source: SessionSource) -> bool:
+        """True when Hermes topic mode routes a Telegram DM topic as a session lane."""
+        return self._is_telegram_dm_topic_thread(source) and self._telegram_topic_mode_enabled(source)
 
     def _telegram_topic_cooldown_key(self, source: SessionSource) -> Optional[str]:
         """Cooldown key (profile, chat_id): profiles sharing a Telegram private chat_id under
@@ -524,7 +530,7 @@ class GatewayTopicThreadsMixin:
 
     def _schedule_telegram_topic_title_rename(self, source: SessionSource, session_id: str, title: str) -> None:
         """Schedule a topic rename from the auto-title background thread."""
-        if not title or not self._is_telegram_topic_lane(source) or self._telegram_topic_auto_rename_disabled(source):
+        if not title or not self._is_telegram_dm_topic_thread(source) or self._telegram_topic_auto_rename_disabled(source):
             return
         self._schedule_rename_from_title_thread(
             source,
@@ -542,7 +548,7 @@ class GatewayTopicThreadsMixin:
 
     async def _rename_telegram_topic_for_session_title(self, source: SessionSource, session_id: str, title: str) -> None:
         """Best-effort rename of a Telegram DM topic when Hermes auto-titles a session."""
-        if not await asyncio.to_thread(self._is_telegram_topic_lane, source) or not source.chat_id or not source.thread_id:
+        if not self._is_telegram_dm_topic_thread(source) or not source.chat_id or not source.thread_id:
             return
         # Operator kill-switch, e.g. user-managed topics (ad-hoc Threaded Mode) that auto-rename
         # would keep overwriting.

@@ -27,7 +27,7 @@ def _attach(lane):
     source = types.SimpleNamespace(platform=Platform.DISCORD, chat_id="chan-1")
 
     runner = types.SimpleNamespace(
-        _is_telegram_topic_lane=lambda src: lane == "telegram",
+        _is_telegram_dm_topic_thread=lambda src: lane == "telegram",
         _is_discord_auto_thread_lane=lambda src: lane == "discord",
         _is_relay_discord_channel_lane=lambda src: False,
         _recover_discord_auto_thread_source=lambda src, key: src,
@@ -83,7 +83,7 @@ def _attach_in_thread(current, entry_origin, row_origin=None, get_session=None):
         session_store=types.SimpleNamespace(
             lookup_by_session_key={"key-1": entry}.get, _db_for_key={"key-1": db}.get,
         ),
-        _is_telegram_topic_lane=lambda src: False,
+        _is_telegram_dm_topic_thread=lambda src: False,
         _is_relay_discord_channel_lane=lambda src: False,
         _schedule_discord_semantic_thread_rename=lambda src, sid, title: scheduled.append((src, sid, title)),
     )

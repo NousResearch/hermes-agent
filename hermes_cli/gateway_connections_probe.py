@@ -4,15 +4,19 @@
 The HTTP leg is the one Desktop runs first: ``GET <url>/api/status`` with the credential the entry
 saves (``X-Hermes-Session-Token`` for a token-mode remote, ``Authorization: Bearer`` for an
 oauth-mode sign-in in ``gateway-connection-tokens.json``) plus its extra headers. ``local`` is the
-serving gateway itself. SSH entries are reached through a tunnel this module does not open; the
-SSH reach module answers them once it is present.
+serving gateway itself. SSH entries use the shared reach module's managed tunnel and its
+session token, then run the same authenticated HTTP probe.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from starlette.concurrency import run_in_threadpool
+
 from hermes_cli import gateway_connections as store
+from hermes_cli import gateway_connections_reach as reach
+from hermes_cli.gateway_connections_ssh_transport import SshReachError
 
 _TIMEOUT_S = 8.0
 
@@ -68,7 +72,8 @@ async def probe_connection(connection_id: str) -> dict[str, Any]:
 
             return {"ok": True, "baseUrl": None, "version": __version__}
         if entry["kind"] == "ssh":
-            raise store.ConnectionStoreError("Testing an SSH connection from the Webapp is not available yet.")
+            target = await run_in_threadpool(reach.resolve_target, connection_id)
+            return await _probe(*target)
         return await _probe(*_credential_headers(entry["id"]))
     except store.NoSuchConnection as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -76,3 +81,5 @@ async def probe_connection(connection_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except store.ConnectionStoreBusy as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except SshReachError as exc:
+        raise HTTPException(status_code=502, detail={"message": str(exc), "kind": exc.kind}) from exc

@@ -20,7 +20,7 @@ import hermes_yaml as yaml
 from agent import model_metadata_http
 from agent.model_metadata_cache import _write_context_cache, locked_context_cache
 from agent.context_default_record import mark_context_defaulted, records_context_defaults
-from agent.model_metadata_llamacpp import llamacpp_context
+from agent.model_metadata_llamacpp import _apply_llamacpp_props, llamacpp_context
 from agent.model_metadata_memo_bounds import MEMO_LOCK, bound_codex_caches, remember_endpoint_models as _remember_endpoint_models
 
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname
@@ -974,38 +974,6 @@ def _lmstudio_native_models(normalized: str, headers: dict[str, str]) -> dict[st
         if isinstance(alt_id, str) and alt_id and alt_id != model_id:
             _add_model_aliases(cache, alt_id, entry)
     return cache
-
-
-def _apply_llamacpp_props(cache: dict[str, dict[str, Any]], request_candidate: str, headers: dict[str, str], verify) -> None:
-    """Overwrite ``context_length`` with llama.cpp's allocated ``n_ctx`` from /props (``/v1/props``, then
-    ``/props`` for older builds). In router mode the bare endpoint 400s, so each LOADED child is read
-    via ``/props?model=``; unloaded children are skipped — probing could autoload them."""
-    base = request_candidate.rstrip("/").replace("/v1", "")
-    def _props(params=None):
-        resp = model_metadata_http.get(base + "/v1/props", params=params, headers=headers, timeout=5, verify=verify)
-        if resp.is_error:
-            resp = model_metadata_http.get(base + "/props", params=params, headers=headers, timeout=5, verify=verify)
-        return resp
-    def _n_ctx(props: dict[str, Any]) -> Any:
-        return (props.get("default_generation_settings") or {}).get("n_ctx")
-    props_resp = _props()
-    if not props_resp.is_error:
-        props = props_resp.json()
-        n_ctx, model_alias = _n_ctx(props), props.get("model_alias", "")
-        if n_ctx and model_alias and model_alias in cache:
-            cache[model_alias]["context_length"] = n_ctx
-        return
-    native = model_metadata_http.get(base + "/models", headers=headers, timeout=5, verify=verify)
-    if native.is_error:
-        return
-    for child in (native.json() or {}).get("data", [])[:16]:
-        child_id = child.get("id") if isinstance(child, dict) else None
-        if not child_id or child_id not in cache or (child.get("status") or {}).get("value") not in ("loaded", "ready"):
-            continue
-        pr = _props({"model": child_id, "autoload": "false"})  # it may have unloaded since /models
-        child_ctx = _n_ctx(pr.json()) if not pr.is_error else None
-        if child_ctx:
-            cache[child_id]["context_length"] = child_ctx
 
 
 def _endpoint_memo_key(normalized: str, api_key: object) -> tuple[str, str]:

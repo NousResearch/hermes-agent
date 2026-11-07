@@ -6,6 +6,7 @@ import { BUILTIN_PERSONALITIES, normalizePersonalityValue, personalityNamesFromC
 import { composerServiceTier } from '@/lib/model-status-label'
 import { normalize } from '@/lib/text'
 import { $busyInputConfig, busyInputOwnerKey, normalizeBusyInputMode } from '@/store/busy-input-mode'
+import { applyComposerPrefsFromConfig } from '@/store/composer-prefs'
 import { setDisplayTimestampsFromConfig } from '@/store/display-timestamps'
 import { $activeGatewayProfile } from '@/store/profile'
 import { localShowReasoning, setShowReasoningFromConfig } from '@/store/reasoning-disclosure'
@@ -167,6 +168,7 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
         }
 
         applyAutoSpeakFromConfig(config)
+        applyComposerPrefsFromConfig(config)
         applyVoiceStopPhraseFromConfig(config, defaults)
         applyBargeInEnabledFromConfig(config)
         applyBargeInThresholdFromConfig(config)

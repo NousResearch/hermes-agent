@@ -15,12 +15,14 @@ def _bound(profile, subject='owner'):
 
 def test_binding_follows_its_store_after_the_home_moved(tmp_path):
     departed, home = tmp_path / 'mac' / 'home', tmp_path / 'cloud'
-    assert binding_names(_bound(departed), str(home), 'owner')
+    assert binding_names(_bound(departed), 'owner')
     assert _bindings_agree(_bound(departed), _bound(home))
 
 
 def test_binding_still_names_only_its_owner(tmp_path):
     departed, home = tmp_path / 'mac' / 'home', tmp_path / 'cloud'
-    assert not binding_names(_bound(departed), str(home), 'someone-else')
+    assert not binding_names(_bound(departed), 'someone-else')
     assert not _bindings_agree(_bound(departed), _bound(home, 'someone-else'))
-    assert not binding_names('not json', str(home), 'owner')
+    assert not binding_names('not json', 'owner')
+    assert not binding_names(json.dumps([None, 'owner']), 'owner')
+    assert not _bindings_agree(_bound(departed), 'not json')

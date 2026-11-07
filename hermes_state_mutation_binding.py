@@ -36,37 +36,34 @@ def _login_label(subject):
     return None if label.startswith('auth:') else label
 
 
-def binding_names(saved, profile_id, subject):
-    """Whether a stored ``[profile_id, subject]`` binding names *subject* in *profile_id*: same profile,
-    and the same owner (a binding a Webapp login stored belongs to the machine owner,
-    gateway.owner_identity.same_owner). Every reader of a binding asks this, never a string compare.
+def _binding_owner(saved):
+    """The owner half of a stored ``[profile_id, subject]`` binding, or None when unreadable.
 
-    The binding lives in *profile_id*'s own store, so its stored profile is the home path that wrote
-    it, never another profile's: a store that moved with its profile keeps its bindings. Only the
-    owner is compared; an unreadable binding still names nobody."""
+    The profile half is the home path that wrote the binding into this profile's own store, so it
+    never names another profile; a store that moved with its profile keeps its bindings."""
     try:
-        saved_profile, saved_subject = json.loads(saved)
+        profile, subject = json.loads(saved)
     except (TypeError, ValueError):
-        return False
+        return None
+    return subject if isinstance(profile, str) else None
+
+
+def binding_names(saved, subject):
+    """Whether a stored binding names *subject*: the same owner (a binding a Webapp login stored
+    belongs to the machine owner, gateway.owner_identity.same_owner). Every reader of a binding asks
+    this, never a string compare."""
     from gateway.owner_identity import same_owner
-    return isinstance(saved_profile, str) and bool(profile_id) and same_owner(saved_subject, subject)
-
-
-def _bound_to(saved, actor):
-    return binding_names(saved, actor.profile_id, actor.subject)
+    owner = _binding_owner(saved)
+    return owner is not None and same_owner(owner, subject)
 
 
 def _bindings_agree(first, second):
     """Two stored bindings name the same owner (both absent agrees; one absent does not)."""
     if first == second or first is None or second is None:
         return first == second
-    try:
-        (first_profile, first_subject), (profile_id, subject) = json.loads(first), json.loads(second)
-    except (TypeError, ValueError):
-        return False
     from gateway.owner_identity import owners_agree
-    # Both live in one store, so the profile halves differ only across a move (``binding_names``).
-    return isinstance(first_profile, str) and isinstance(profile_id, str) and owners_agree(first_subject, subject)
+    first_owner, second_owner = _binding_owner(first), _binding_owner(second)
+    return first_owner is not None and second_owner is not None and owners_agree(first_owner, second_owner)
 
 
 def import_history_control(conn, actor, session_ids):
@@ -88,7 +85,7 @@ def authorize_history(conn, actor, session_id, *, claim=False):
     binding = json.dumps([actor.profile_id, actor.subject], separators=(',', ':'))
     saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()
     if saved is not None:
-        if not _bound_to(saved[0], actor):
+        if not binding_names(saved[0], actor.subject):
             raise RuntimeStoreError('permission_denied')
         return True
     if not _history_row(row):

@@ -371,10 +371,16 @@ def _model_level_key_env(provider_id: str) -> str:
 
 def _resolve_api_key_provider_secret(provider_id: str, pconfig: ProviderConfig) -> tuple[str, str]:
     """Resolve an API-key provider's token and indicate where it came from."""
+    return _resolve_api_key_provider_secret_and_url(provider_id, pconfig)[:2]
+
+
+def _resolve_api_key_provider_secret_and_url(provider_id: str, pconfig: ProviderConfig) -> tuple[str, str, str]:
+    """``(token, source, base_url)``: *base_url* is the endpoint stored on the credential-pool
+    entry that supplied the token, "" for every other source (#42269)."""
     profile = _credential_profile(provider_id)
     owned = profile.resolve_api_key_secret() if profile else None
     if owned is not None:  # provider-owned resolution (token validation / exchange) is final
-        return owned
+        return (*owned, "")
 
     # Prefer ~/.hermes/.env over os.environ so a deliberate key rotation in .env isn't shadowed by
     # a stale shell export inherited from a parent process (Codex CLI, test runners, etc.).
@@ -388,38 +394,19 @@ def _resolve_api_key_provider_secret(provider_id: str, pconfig: ProviderConfig) 
     if key_env:
         val = _usable_declared_secret(provider_id, get_env_value_prefer_dotenv(key_env), key_env)
         if val:
-            return val, key_env
+            return val, key_env, ""
 
     for env_var in pconfig.api_key_env_vars:
         val = _usable_declared_secret(provider_id, get_env_value_prefer_dotenv(env_var), env_var)
         if val:
             # A provably malformed key (declared prefix mismatch) must not shadow a valid credential-pool
             # entry (#93593). Warn and keep looking instead of returning it.
-            return val, env_var
+            return val, env_var, ""
 
-    # Fallback: credential pool (e.g. zai key stored via auth.json). Prefer the pool's own
-    # selection (peek) but try the rest too so one malformed entry doesn't block a valid one.
-    pool_source = f"credential_pool:{provider_id}"
-    try:
-        from agent.credential_pool import load_pool
-        pool = load_pool(provider_id)
-        if pool and pool.has_credentials():
-            entry = pool.peek()
-            candidates = [entry] if entry is not None else []
-            try:
-                for extra in pool.entries():
-                    if extra is not None and all(extra is not c for c in candidates):
-                        candidates.append(extra)
-            except Exception:
-                pass
-            for entry in candidates:
-                key = getattr(entry, "access_token", "") or getattr(entry, "runtime_api_key", "")
-                val = _usable_declared_secret(provider_id, key, pool_source)
-                if val:
-                    return val, pool_source
-    except Exception:
-        pass
-    return "", ""
+    # Fallback: credential pool (e.g. zai key stored via auth.json), key and endpoint from one entry.
+    from hermes_cli.auth_pool_key import pool_key_and_endpoint
+    key, base_url = pool_key_and_endpoint(provider_id)
+    return (key, f"credential_pool:{provider_id}", base_url) if key else ("", "", "")
 
 
 # ── Error formatting (AuthError itself lives in auth_constants) ─────────────────────────────────────
@@ -2040,12 +2027,13 @@ def get_api_key_provider_status(provider_id: str) -> dict[str, Any]:
     pconfig = _registry_lookup(provider_id)
     if not pconfig or pconfig.auth_type != "api_key":
         return {"configured": False}
-    api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
+    api_key, key_source, pool_url = _resolve_api_key_provider_secret_and_url(provider_id, pconfig)
     env_url = _provider_env_base_url(pconfig)
+    default_url = pool_url or pconfig.inference_base_url
     if provider_id in {"kimi-coding", "kimi-coding-cn"}:
-        base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
+        base_url = _resolve_kimi_base_url(api_key, default_url, env_url)
     else:
-        base_url = env_url or pconfig.inference_base_url
+        base_url = env_url or default_url
     actual_local_noauth = False
     if provider_id == "actual":
         base_url = normalize_actual_base_url(base_url)
@@ -2223,7 +2211,7 @@ def resolve_api_key_provider_credentials(provider_id: str) -> dict[str, Any]:
             f"Provider '{provider_id}' is not an API-key provider.",
             provider=provider_id, code="invalid_provider")
 
-    api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
+    api_key, key_source, pool_url = _resolve_api_key_provider_secret_and_url(provider_id, pconfig)
     # No-auth LM Studio: a placeholder so runtime / auxiliary_client see the local server as
     # configured. doctor still reports unconfigured because the status path uses the raw secret.
     if not api_key and provider_id == "lmstudio":
@@ -2231,15 +2219,17 @@ def resolve_api_key_provider_credentials(provider_id: str) -> dict[str, Any]:
         key_source = key_source or "default"
 
     env_url = _provider_env_base_url(pconfig)
+    # A pooled key keeps the endpoint stored on its entry (#42269); an env override still wins.
+    default_url = pool_url or pconfig.inference_base_url
     resolve_url = _API_KEY_BASE_URL_RESOLVERS.get(provider_id, _default_api_key_base_url)
     profile = _credential_profile(provider_id)
-    base_url = (profile.runtime_base_url(api_key=api_key, default=pconfig.inference_base_url, env_url=env_url)
+    base_url = (profile.runtime_base_url(api_key=api_key, default=default_url, env_url=env_url)
                 if profile else None)
-    base_url = resolve_url(api_key, pconfig.inference_base_url, env_url) if base_url is None else base_url
+    base_url = resolve_url(api_key, default_url, env_url) if base_url is None else base_url
     # An API-key provider must never hand back an empty base URL (a set-but-empty
     # <PROVIDER>_BASE_URL env override otherwise wedges chat inference).
     if not _nonempty_str(base_url):
-        base_url = pconfig.inference_base_url
+        base_url = default_url
 
     if not api_key and provider_id == "actual" and is_actual_local_base_url(base_url):
         api_key = ACTUAL_LOCAL_NOAUTH_PLACEHOLDER

@@ -17,19 +17,25 @@ Covers all three compressor summarization sites:
 its guard is covered by site 1.)
 """
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from agent.context_compressor import (
     ContextCompressor,
+    _classify_summary_failure,
     _is_summary_refusal,
     _response_finish_reason,
+    _short_error_text,
 )
+from gateway.platforms.base import Platform
+from gateway.run import _prepare_gateway_status_message
 
 
 def _mock_response(content="a perfectly fine summary", finish_reason="stop"):
     resp = MagicMock()
+    resp.usage = None
     choice = MagicMock()
     choice.message.content = content
     choice.finish_reason = finish_reason
@@ -92,6 +98,103 @@ class TestSummaryRefusalGuard:
 
 
 class TestGenerateSummaryTruncationGuard:
+    def test_length_stop_logs_object_usage(self, caplog):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+        response = _mock_response("partial", "length")
+        response.usage = SimpleNamespace(
+            prompt_tokens=62000, completion_tokens=14000, total_tokens=76000,
+            completion_tokens_details=SimpleNamespace(reasoning_tokens=1200),
+        )
+        with patch("agent.context_compressor.call_llm", return_value=response), caplog.at_level("WARNING"):
+            with pytest.raises(RuntimeError, match="finish_reason=length"):
+                c._call_summary_llm("prompt", 0.0)
+        assert len([record for record in caplog.records if record.levelname == "WARNING"]) == 1
+        assert "completion_tokens=14000" in caplog.text
+        assert "prompt_tokens=62000" in caplog.text
+
+    def test_length_stop_logs_dict_usage(self, caplog):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+        response = {
+            "choices": [{"message": {"content": "partial"}, "finish_reason": "length"}],
+            "usage": {"prompt_tokens": 62000, "completion_tokens": 14000, "total_tokens": 76000},
+        }
+        with patch("agent.context_compressor.call_llm", return_value=response), caplog.at_level("WARNING"):
+            with pytest.raises(RuntimeError, match="finish_reason=length"):
+                c._call_summary_llm("prompt", 0.0)
+        assert len([record for record in caplog.records if record.levelname == "WARNING"]) == 1
+        assert "completion_tokens=14000" in caplog.text
+        assert "prompt_tokens=62000" in caplog.text
+
+    def test_length_stop_logs_none_for_missing_usage(self, caplog):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+        with patch("agent.context_compressor.call_llm", return_value=_mock_response("partial", "length")):
+            with caplog.at_level("WARNING"):
+                with pytest.raises(RuntimeError, match="finish_reason=length"):
+                    c._call_summary_llm("prompt", 0.0)
+        assert len([record for record in caplog.records if record.levelname == "WARNING"]) == 1
+        assert "prompt_tokens=None" in caplog.text
+        assert "completion_tokens=None" in caplog.text
+        assert "total_tokens=None" in caplog.text
+
+    def test_truncated_message_carries_usage_counts(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+        response = _mock_response("partial", "length")
+        response.usage = SimpleNamespace(
+            prompt_tokens=62000, completion_tokens=14000, total_tokens=76000,
+            completion_tokens_details=SimpleNamespace(reasoning_tokens=1200),
+        )
+        with patch("agent.context_compressor.call_llm", return_value=response):
+            with pytest.raises(RuntimeError) as exc_info:
+                c._call_summary_llm("prompt", 0.0)
+        assert "completion_tokens=14,000" in str(exc_info.value)
+        assert "finish_reason=length" in str(exc_info.value)
+
+    def test_truncated_message_counts_survive_short_error_text(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+        response = _mock_response("partial", "length")
+        response.usage = SimpleNamespace(
+            prompt_tokens=62000, completion_tokens=14000, total_tokens=76000,
+            completion_tokens_details=SimpleNamespace(reasoning_tokens=1200),
+        )
+        with patch("agent.context_compressor.call_llm", return_value=response):
+            with pytest.raises(RuntimeError) as exc_info:
+                c._call_summary_llm("prompt", 0.0)
+        assert "completion_tokens=14,000" in _short_error_text(exc_info.value)
+
+    def test_truncated_abort_line_reaches_chat_unfiltered(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+        response = _mock_response("partial", "length")
+        response.usage = SimpleNamespace(
+            prompt_tokens=62000, completion_tokens=14000, total_tokens=76000,
+            completion_tokens_details=SimpleNamespace(reasoning_tokens=1200),
+        )
+        with patch("agent.context_compressor.call_llm", return_value=response):
+            with pytest.raises(RuntimeError) as exc_info:
+                c._call_summary_llm("prompt", 0.0)
+        warning = (
+            f"⚠ Compression aborted: {_short_error_text(exc_info.value)}. No messages were dropped — "
+            "conversation continues unchanged. Run /compress to retry, or /new to start a fresh session."
+        )
+        delivered = _prepare_gateway_status_message(Platform.FEISHU, "status", warning)
+        assert delivered is not None
+        assert "completion_tokens=14,000" in delivered
+
+    def test_truncated_classification_unchanged(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+        response = _mock_response("partial", "length")
+        response.usage = SimpleNamespace(completion_tokens=14000)
+        with patch("agent.context_compressor.call_llm", return_value=response):
+            with pytest.raises(RuntimeError) as exc_info:
+                c._call_summary_llm("prompt", 0.0)
+        assert _classify_summary_failure(exc_info.value).truncated is True
+
     def test_length_stop_is_rejected_and_aborts(self):
         """A length-stopped summary must not become a checkpoint; with no
         distinct aux model to fall back from, compression ABORTS and the

@@ -1,18 +1,19 @@
+import { sessionTitle } from '@/lib/chat-runtime'
 import type { SessionInfo } from '@/types/hermes'
 
 /**
- * Index sessions by every id a pin might be stored under.
+ * index sessions by every id a pin might be stored under.
  *
- * The sidebar fetches three independent slices — recents, cron, and messaging
- * — and renders the latter two in self-managed sections. Any of them can be
- * pinned, so all three must be indexed here or the Pinned section can't
- * resolve the pin to a row. A pinned session is also filtered out of its own
- * section, so failing to index it doesn't merely misplace the row: it removes
+ * the sidebar fetches three independent slices - recents, cron, and messaging
+ * - and renders the latter two in self-managed sections. any of them can be
+ * pinned, so all three must be indexed here or the pinned section cannot
+ * resolve the pin to a row. a pinned session is also filtered out of its own
+ * section, so failing to index it does not merely misplace the row: it removes
  * the session from the sidebar entirely.
  *
- * Each session is keyed under both its live id and its lineage root, so a pin
+ * each session is keyed under both its live id and its lineage root, so a pin
  * stored before an auto-compression still resolves to the live continuation
- * tip. Recents are indexed last and win a direct id collision.
+ * tip. recents are indexed last and win a direct id collision.
  */
 export function buildSessionByAnyId(
   visibleSessions: SessionInfo[],
@@ -33,9 +34,31 @@ export function buildSessionByAnyId(
 }
 
 /**
- * Resolve the Pinned section's rows: the locally stored pin ids first (in the
- * user's hand-picked order), then any row the SERVER flags `pinned` that the
- * local set doesn't know about yet.
+ * compare session rows alphabetically by displayed title.
+ *
+ * uses case-insensitive, accent-insensitive natural ordering (portuguese/multilingual-aware,
+ * numeric: true so "session 2" precedes "session 10"). ties fall back to case-sensitive natural
+ * ordering, and finally the session id for a deterministic total ordering.
+ */
+export function compareSessionTitles(a: SessionInfo, b: SessionInfo): number {
+  const titleA = sessionTitle(a)
+  const titleB = sessionTitle(b)
+
+  const primary = titleA.localeCompare(titleB, undefined, { numeric: true, sensitivity: 'base' })
+  if (primary !== 0) {
+    return primary
+  }
+
+  const secondary = titleA.localeCompare(titleB, undefined, { numeric: true })
+  if (secondary !== 0) {
+    return secondary
+  }
+
+  return a.id.localeCompare(b.id)
+}
+
+/**
+ * Resolve the pinned section's rows, sorted by displayed conversation title.
  *
  * The local set (`$pinnedSessionIds` in localStorage) is a UI-ordering hint,
  * not the source of truth — `sessions.pinned` in the backend's state.db is.
@@ -80,7 +103,7 @@ export function resolvePinnedSessions(
       continue
     }
 
-    // A pin write of ours the row predates — under either identity, since the
+    // a pin write of ours the row predates - under either identity, since the
     // fence is keyed on the durable id and the row may surface as its tip.
     if (
       unconfirmedPinWrites.has(session.id) ||
@@ -93,5 +116,5 @@ export function resolvePinnedSessions(
     out.push(session)
   }
 
-  return out
+  return out.sort(compareSessionTitles)
 }

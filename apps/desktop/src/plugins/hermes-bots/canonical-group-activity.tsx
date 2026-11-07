@@ -19,6 +19,8 @@ export interface CanonicalDriverStatus<Action extends { kind: string } = { kind:
   blocked?: boolean
   counts?: Record<string, number>
   pending_actions?: Action[]
+  /** Each member of another gateway with a registered route, and its status (`ready` once joined). */
+  peer_routes?: { member_id: string; status: string }[]
 }
 
 export interface CanonicalActivityLabels extends RoomStatusLabels {
@@ -54,8 +56,9 @@ const PHASE: Partial<Record<MemberStatus['kind'], string>> = { working: 'working
 const statusOf = (statuses: Map<string, MemberStatus>, member: CanonicalRoomMember): MemberStatus =>
   statuses.get(member.member_id) ?? { kind: 'idle' }
 
-export function CanonicalGroupRoster({ members = [], label, labels, statuses }: {
+export function CanonicalGroupRoster({ members = [], label, labels, statuses, peerBadges }: {
   members?: CanonicalRoomMember[]; label: string; labels: RoomStatusLabels & { lead: string }; statuses: Map<string, MemberStatus>
+  peerBadges?: ReadonlyMap<string, string | undefined>
 }) {
   if (!members.length) {return null}
 
@@ -64,7 +67,7 @@ export function CanonicalGroupRoster({ members = [], label, labels, statuses }: 
       const status = statusOf(statuses, member)
 
       return <MemberStatusChip avatar={<RoomBotAvatar name={avatarName(member)} size={18} />}
-        badge={(member as { lead?: unknown }).lead ? labels.lead : undefined} key={member.member_id}
+        badge={[(member as { lead?: unknown }).lead && labels.lead, peerBadges?.get(member.member_id)].filter(Boolean).join(' · ') || undefined} key={member.member_id}
         labels={labels} name={canonicalMemberName(member)} phase={PHASE[status.kind] ?? 'idle'} status={status} />
     })}
   </ul>
@@ -108,7 +111,7 @@ export function CanonicalGroupCycle({ cycle, driver, members = [], labels, statu
 
 /** Every member's status, the room's cycle and whether it works, from one poll's state + log. Outcomes are
  *  read per thread; the round comes from the live tasks' own thread (`replyThread`'s when it has work). */
-export function useCanonicalRoomLive(events: CanonicalGroupEvent[], driver: CanonicalDriverActivity | undefined, members: CanonicalRoomMember[], replyThread?: string) {
+export function useCanonicalRoomLive(events: CanonicalGroupEvent[], driver: CanonicalDriverStatus | undefined, members: CanonicalRoomMember[], replyThread?: string) {
   const activity = driver?.member_activity
   const anyLive = !!activity?.some(row => row.status !== 'queued')
   const now = useNowSeconds(anyLive)
@@ -116,8 +119,15 @@ export function useCanonicalRoomLive(events: CanonicalGroupEvent[], driver: Cano
   const focus = focusThread(log, replyThread)
   const outcomes = memberOutcomes(log)
 
+  const stopConfirmed = !!driver?.counts && driver.working === false && activity?.length === 0 &&
+    driver.pending_actions?.length === 0 && Object.entries(driver.counts).every(([status, count]) =>
+      count === 0 || ['settled', 'cancelled', 'failed'].includes(status))
+
+  const cycle = roomCycle(log, activity, driver?.max_rounds, focus, stopConfirmed)
+
   return {
-    cycle: roomCycle(log, activity, driver?.max_rounds, focus),
+    // "Settled" isn't true while a turn waits on a person: its Retry and Discard say what's next.
+    cycle: cycle?.kind === 'settled' && driver?.pending_actions?.length ? null : cycle,
     statuses: new Map(members.map(member => [member.member_id, memberStatus(member.member_id, activity, outcomes, now)])),
     working: !!driver?.working || !!activity?.length
   }
@@ -168,7 +178,7 @@ export function CanonicalGroupNotices({ readError, error, journalError, notice, 
 }) {
   return <>
     {readError && <div className="px-3 py-1.5 text-xs text-destructive" role="alert">{readError}<Button onClick={onRefresh}>{labels.refresh}</Button></div>}
-    {error && <div className="px-3 py-1.5 text-xs text-destructive" role="alert">{error}</div>}
+    {error && <div className="px-4 py-1.5"><div className="mx-auto w-full max-w-3xl text-xs text-destructive" role="alert">{error}</div></div>}
     {journalError && <div className="px-3 py-1.5 text-xs text-destructive" role="alert">
       <p>{labels.journalLoadFailed}</p>
       <Button onClick={onJournalReload}>{labels.journalReload}</Button>

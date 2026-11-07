@@ -228,7 +228,8 @@ it('keeps positive classifications working: legacy renders and creates locally, 
   const { onCreated } = await submitDialog()
   expect(onCreated).toHaveBeenCalledOnce()
   expect(Object.values($canonicalGroupBindings.get())).toHaveLength(1)
-  expect(updateGroupChat).toHaveBeenCalledOnce()
+  expect(updateGroupChat).toHaveBeenCalledTimes(2)
+  expect(vi.mocked(updateGroupChat).mock.calls[1][1]({ log: [], watermarks: {} }).engine).toMatchObject({ kind: 'gateway', connectionId: 'local' })
   expect(request.mock.calls.filter(call => call[1] === 'groups.create')).toHaveLength(1)
 })
 
@@ -487,7 +488,7 @@ function classicRoom(group: string, members: RosterRow[], room: Record<string, u
 // path separately, including mixed-connection rooms saved before the update.
 it.each([
   ['Bots that can form a gateway group here', roster, 'legacyRoom', '', true],
-  ['Bots on another connection', mini, 'legacyRoomElsewhere', 'Bots on other connections: Mini', false],
+  ['Bots on another connection', mini, 'legacyRoomElsewhere', 'bots on other connections: Mini', false],
   ['Bots here that cannot form a gateway group as they are', [roster[0]], 'legacyRoomBlocked', CANONICAL_GROUP_LOCALES.en.createGroupSize, false]
 ] as const)('keeps a classic room with %s on the gate and says what to do', async (_case, members, message, problem, start) => {
   classicRoom('Classic', [...members])

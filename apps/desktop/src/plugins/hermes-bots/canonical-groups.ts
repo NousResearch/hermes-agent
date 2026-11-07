@@ -1,6 +1,7 @@
 import { host, randomUuid } from '@hermes/plugin-sdk'
 
 import { canonicalApprovalPreview } from './canonical-group-approval'
+import type { CanonicalGroupMessages } from './canonical-group-locales'
 import type { GroupMember } from './types'
 
 export interface CanonicalGroupRoute {
@@ -38,6 +39,8 @@ export interface CanonicalRoom {
   room_id: string
   name: string
   members: CanonicalRoomMember[]
+  authority_gateway_id?: string
+  authority_epoch?: number
   disbanded_at?: number | null
   /** Seconds; the last change to the room (`groups.list` orders by it). */
   updated_at?: number
@@ -77,6 +80,33 @@ export async function canonicalGroupRequest<T>(
     targetProfile: route.profile,
     mode: route.connectionId === 'local' ? 'local' : 'remote'
   }, method, { ...params, profile: route.profile })
+}
+
+/** A resolved RPC alone does not prove this room ended; only its matching tombstone does. */
+export async function disbandCanonicalGroup(binding: CanonicalGroupBinding, labels: CanonicalGroupMessages, keptMessage = labels.disbandKept): Promise<boolean> {
+  const answer = await canonicalGroupRequest<{ tombstone?: { room_id?: unknown; disbanded_at?: unknown } }>(binding, 'groups.disband', {
+    room_id: binding.roomId, cancel_id: randomUuid()
+  }).catch(error => {
+    // These two refusal reasons come from revoking access, after Disband's acknowledged Stop.
+    // Other failures (including untyped errors) do not prove that work stopped.
+    const reasons = new Map([
+      ['peer_unreachable', labels.disbandPeerUnreachable],
+      ['room_stop_pending', labels.disbandStopPending],
+      ['member_home_unknown', labels.disbandMemberHomeUnknown],
+      ['room_disbanding_retry', labels.disbandInProgress],
+      ['peer_revoke_unsupported', labels.disbandRevokeUnsupported],
+      ['runtime_coordination_required', labels.disbandServiceRequired]
+    ])
+
+    const reason = reasons.get(error?.data?.reason) ??
+      (typeof error?.message === 'string' && error.message.includes('still stopping') ? labels.disbandStopPending : labels.disbandUnconfirmed)
+
+    throw new Error(keptMessage.replace('{reason}', reason))
+  })
+
+  const tombstone = answer?.tombstone
+
+  return tombstone?.room_id === binding.roomId && typeof tombstone.disbanded_at === 'number' && Number.isFinite(tombstone.disbanded_at)
 }
 
 export async function discoverCanonicalGroups(
@@ -123,41 +153,119 @@ export function onCanonicalConnection(route: CanonicalGroupRoute, member: GroupM
     (connectionId === undefined && member.remoteSource))
 }
 
-/** The members `groups.create` would receive, or why these Bots cannot form a gateway group. */
+/** The gateway a Bot from another connection joins through, as `groups.capabilities` there names
+ *  it (canonical-group-peers.ts `peerTargetState`): the room pins the member to it. */
+export interface CanonicalPeerPin {
+  installationId: string
+  catalogDigest: string
+}
+
+/** A member on another connection the room seats as a peer, and the Bot it came from. */
+export interface CanonicalPeerSeat {
+  member: CanonicalRoomMember
+  source: GroupMember
+}
+
+/** A Bot's own connection name as a handle suffix (`hermes` on "Mac Mini" joins as `hermes-mac-mini`). */
+const slug = (value: unknown) => String(value ?? '').toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '')
+
+/** A short, stable digest (FNV-1a) of a connection id: the last resort for telling two apart. */
+function digest(value: string) {
+  let hash = 0x811c9dc5
+
+  for (const char of value) {hash = Math.imul(hash ^ char.codePointAt(0)!, 0x01000193) >>> 0}
+
+  return `c${hash.toString(36)}`
+}
+
+/** What tells a Bot's connection apart from its rivals' (members with the same handle), in order:
+ *  its name, its id, a digest of its id. A rung is used only when it is set and no rival has the same
+ *  one, so connections named in any script, or whose names read alike, still get distinct handles. */
+function connectionSuffix(member: GroupMember, rivals: GroupMember[]) {
+  const ladder = (bot: GroupMember) => {
+    const id = String(bot.route?.connectionId || bot.connectionId || '')
+
+    return [slug(bot.connectionLabel), slug(id), digest(id)]
+  }
+
+  const mine = ladder(member)
+  const rung = mine.findIndex((suffix, index) => suffix && !rivals.some(rival => ladder(rival)[index] === suffix))
+
+  return mine[rung < 0 ? 2 : rung]
+}
+
+/** A Bot's own name: its title, else its name (a default profile reads "Hermes"). */
+const botLabel = (member: GroupMember) => String(member.title || member.display_name || '').trim() ||
+  (member.name.trim().toLowerCase() === 'default' ? 'Hermes' : member.name)
+
+/** A peer's name in the room: its own, then the connection it runs on, so two computers' default
+ *  Bots never read alike. */
+function peerLabel(member: GroupMember) {
+  return member.connectionLabel ? `${botLabel(member)} · ${member.connectionLabel}` : botLabel(member)
+}
+
+const baseHandle = (member: GroupMember) => member.handle ?? member.route?.targetProfile ?? member.targetProfile ?? member.name
+
+/** One member as `groups.create` takes it: a Bot here as its own profile, a pinned peer as its
+ *  gateway's default profile under its handle, or handle-connection when another member has that
+ *  handle. */
+function rosterEntry(member: GroupMember, members: GroupMember[], pin: CanonicalPeerPin | null, mixed: boolean): CanonicalRoomMember {
+  const base = baseHandle(member)
+  const rivals = members.filter(other => other !== member && baseHandle(other).toLowerCase() === base.toLowerCase())
+
+  if (!pin) {
+    const profile = member.route?.targetProfile ?? member.targetProfile ?? member.name
+    // Saved on the gateway and read from any computer: "This device" would be wrong elsewhere.
+    const display = member.display_name || (mixed && profile === 'default' && base !== 'hermes' ? botLabel(member) : undefined)
+
+    return { member_id: profile, profile, handle: base, target: { kind: 'local', profile },
+      ...(display ? { display_name: display } : {}) }
+  }
+
+  const handle = rivals.length ? `${base}-${connectionSuffix(member, rivals)}` : base
+
+  return { member_id: handle, profile: 'default', handle, display_name: peerLabel(member), target: {
+    kind: 'peer', peer_id: pin.installationId, installation_id: pin.installationId, profile: 'default', capability_digest: pin.catalogDigest } }
+}
+
+/** The members `groups.create` would receive, or why these Bots cannot form a gateway group. A Bot on
+ *  another connection is seated only when `peer` pins it to its own gateway (`rosterEntry`). Local
+ *  profiles, handles (with the reserved `@all` and `@everyone`) and member ids are unique. */
 export function canonicalGroupRoster(
   route: CanonicalGroupRoute,
-  members: GroupMember[]
-): { roster: CanonicalRoomMember[] } | { problem: CanonicalRosterProblem } {
+  members: GroupMember[],
+  peer?: (member: GroupMember) => CanonicalPeerPin | undefined
+): { roster: CanonicalRoomMember[]; peers: CanonicalPeerSeat[] } | { problem: CanonicalRosterProblem } {
   if (members.length < 2 || members.length > 6) {
     return { problem: 'groupSize' }
   }
 
-  const profiles = new Set<string>()
-  const handles = new Set(['all', 'everyone'])
+  const seen = new Set(['handle:all', 'handle:everyone'])
   const roster: CanonicalRoomMember[] = []
+  const peers: CanonicalPeerSeat[] = []
+  const mixed = members.some(member => !onCanonicalConnection(route, member))
 
   for (const member of members) {
-    if (!onCanonicalConnection(route, member)) {
+    const pin = onCanonicalConnection(route, member) ? null : peer?.(member)
+
+    if (pin === undefined) {
       return { problem: 'otherConnection' }
     }
 
-    const profile = member.route?.targetProfile ?? member.targetProfile ?? member.name
-    const handle = member.handle ?? profile
+    const entry = rosterEntry(member, members, pin, mixed)
+    const keys = [`handle:${entry.handle}`, `id:${entry.member_id}`, ...(pin ? [] : [`profile:${entry.profile}`])].map(key => key.toLowerCase())
 
-    if (!profile.trim() || !handle.trim() || profiles.has(profile.toLowerCase()) || handles.has(handle.toLowerCase())) {
+    if (!entry.profile.trim() || !entry.handle.trim() || keys.some(key => seen.has(key))) {
       return { problem: 'duplicateMember' }
     }
 
-    profiles.add(profile.toLowerCase())
-    handles.add(handle.toLowerCase())
-    roster.push({
-      member_id: profile, profile, handle,
-      target: { kind: 'local', profile },
-      ...(member.display_name ? { display_name: member.display_name } : {})
-    })
+    keys.forEach(key => seen.add(key))
+    roster.push(entry)
+
+    if (pin) {peers.push({ member: entry, source: member })}
   }
 
-  return { roster }
+  return { roster, peers }
 }
 
 export async function createCanonicalGroup(

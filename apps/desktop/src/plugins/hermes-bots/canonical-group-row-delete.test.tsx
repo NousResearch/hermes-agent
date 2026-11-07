@@ -55,7 +55,7 @@ beforeEach(() => {
 
       rooms = rooms.filter(r => r.room_id !== params.room_id)
 
-      return { tombstone: { room_id: params.room_id } }
+      return { tombstone: { room_id: params.room_id, disbanded_at: 1 } }
     }
 
     return {}
@@ -101,13 +101,13 @@ it('deletes a gateway group from its row menu: confirm, disband on its gateway, 
   expect(onOpen).not.toHaveBeenCalled()
 })
 
-it('keeps the row and shows the gateway refusal when the disband fails', async () => {
+it('keeps the row and explains that the group chat was kept when disband fails', async () => {
   refuse = 'room is busy'
   renderGatewayRooms()
   const dialog = await openDeleteConfirm()
   fireEvent.click(dialog.getByRole('button', { name: 'Disband' }))
 
-  expect(await dialog.findByText(/room is busy/)).toBeTruthy()
+  expect(await dialog.findByText(/The group chat has been kept/)).toBeTruthy()
   expect(screen.getByRole('button', { hidden: true, name: 'Launch crew' })).toBeTruthy()
   expect(notify).not.toHaveBeenCalledWith(expect.objectContaining({ kind: 'success' }))
 })

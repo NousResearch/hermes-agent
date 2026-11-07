@@ -30,6 +30,8 @@ from hermes_cli.web_routers._common import (
 from hermes_state import is_malformed_db_error
 from hermes_state_errors import SessionActiveWriteGuardError, StateDbReplacedError, is_transient_sqlite_error
 from hermes_state_health import STORAGE_CORRUPT, note_storage_error, storage_state
+from hermes_state_local_lineage import local_physical_target
+from hermes_state_runtime import RuntimeStoreError
 
 list_router = APIRouter()
 search_router = APIRouter()
@@ -743,6 +745,23 @@ def _project_for_display(messages: list, *, home=None, inline_images: bool = Tru
     return project_history_commentary(projected_messages, home=home)
 
 
+def _bound_local_target(db, sid: str) -> Optional[str]:
+    """The physical transcript a bound local owner currently reads, else None.
+
+    Reset rotation ends the logical id's row and moves the runtime to a child, which
+    the generic resume resolver deliberately does not follow. Unbound ids have no
+    receipt and keep that behaviour. An invalid receipt is an error, never a fallback
+    to the ended parent's older history.
+    """
+    try:
+        with db._read_ctx() as conn:
+            target = local_physical_target(conn, sid)
+    except (RuntimeStoreError, ValueError, KeyError, TypeError) as exc:
+        _log.warning("invalid local-owner receipt for session %s: %s", sid, exc)
+        raise HTTPException(status_code=503, detail="storage_unavailable") from exc
+    return target if target != sid else None
+
+
 @manage_router.get("/api/sessions/{session_id}/messages")
 async def get_session_messages(
     session_id: str, profile: Optional[str] = None, limit: Optional[int] = Query(None, ge=0),
@@ -755,7 +774,10 @@ async def get_session_messages(
         sid = _resolve_session_id(db, session_id)
         if not sid:
             return None
-        sid = db.resolve_resume_session_id(sid)
+        # A bound local owner answers under its logical id but reads its current target.
+        read_sid = _bound_local_target(db, sid)
+        if read_sid is None:
+            sid = read_sid = db.resolve_resume_session_id(sid)
         # Always page (an omitted limit used to load whole transcripts). Explicit
         # pagination anchors at the start; the default view is the latest page.
         default_page = limit is None
@@ -768,7 +790,7 @@ async def get_session_messages(
         # compression rotation, hiding the pre-compaction transcript
         # (#51058).
         return sid, _limit, db.get_messages(
-            sid, limit=_limit, offset=offset, latest=latest_page,
+            read_sid, limit=_limit, offset=offset, latest=latest_page,
             include_compacted=include_compacted, include_ancestors=True)
 
     result = await asyncio.to_thread(_with_db, profile, _read, read_only=True)
@@ -790,7 +812,8 @@ async def get_session_messages(
             "returned": len(projected_messages)}}
 
 
-def _timeline_session_id(db, session_id: str, owner: str) -> str:
+def _timeline_session_id(db, session_id: str, owner: str) -> tuple[str, str]:
+    """``(id to report, id to read)``; they differ for a bound local owner."""
     # Durable jump addresses are exact ids, never title/prefix guesses. A NULL
     # legacy owner belongs to this profile's store, just like /messages pages.
     def owned(sid):
@@ -799,10 +822,15 @@ def _timeline_session_id(db, session_id: str, owner: str) -> str:
 
     if not owned(session_id):
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
+    target = _bound_local_target(db, session_id)
+    if target is not None:
+        if not owned(target):
+            raise HTTPException(status_code=404, detail=_NOT_FOUND)
+        return session_id, target
     sid = db.resolve_resume_session_id(session_id)
     if not owned(sid):
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
-    return sid
+    return sid, sid
 
 
 @manage_router.get("/api/sessions/{session_id}/timeline")
@@ -820,9 +848,9 @@ async def get_session_timeline(
     owner = _serving_profile(profile)
 
     def _read(db):
-        sid = _timeline_session_id(db, session_id, owner)
+        sid, read_sid = _timeline_session_id(db, session_id, owner)
         return {"session_id": sid, "profile": owner,
-                **read_timeline(db, sid, limit=limit, after_row_id=after_row_id)}
+                **read_timeline(db, read_sid, limit=limit, after_row_id=after_row_id)}
 
     return await asyncio.to_thread(_with_db, profile, _read, read_only=True)
 
@@ -838,8 +866,8 @@ async def get_session_messages_around(
     owner = _serving_profile(profile)
 
     def _read(db):
-        sid = _timeline_session_id(db, session_id, owner)
-        page = read_around(db, sid, row_id, limit=limit)
+        sid, read_sid = _timeline_session_id(db, session_id, owner)
+        page = read_around(db, read_sid, row_id, limit=limit)
         if page is None:
             raise HTTPException(status_code=404, detail="Prompt not found")
         return {"session_id": sid, "profile": owner, **page}

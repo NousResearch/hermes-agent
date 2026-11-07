@@ -39,6 +39,8 @@ class CompactionWindowMixin:
     def _plan_compaction_window(self, messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int, int, int]:
         """Phases 1-2 of compress(): ``(working, pruned_count, compress_start, compress_end)``.
         ``working`` is a pruned copy without blank echoes; the boundaries index into it."""
+        # Replace on every plan; only the index reads this snapshot, never the summary prompt.
+        self._anchor_source_messages = [msg.copy() for msg in messages if msg.get("role") == "tool"]
         working, pruned_count = self._prune_old_tool_results(
             messages, protect_tail_count=self.protect_last_n, protect_tail_tokens=self.tail_token_budget,
         )

@@ -14,6 +14,7 @@ outlive the child thread that waits on it.
 """
 from __future__ import annotations
 
+import json
 import threading
 import time
 import uuid
@@ -129,6 +130,13 @@ def forget(subagent_id: str) -> None:
         _asked.pop(subagent_id, None)
 
 
+def _withdraw(entry: Question) -> None:
+    """End a question nobody received (no live parent) without using up the child's allowance."""
+    with _lock:
+        if _finish(entry, PARENT_UNAVAILABLE):
+            _asked[entry.subagent_id] = max(0, _asked.get(entry.subagent_id, 1) - 1)
+
+
 def pending_question(subagent_id: str) -> Optional[dict[str, Any]]:
     """The child's open question for listings, or None."""
     with _lock:
@@ -137,3 +145,106 @@ def pending_question(subagent_id: str) -> Optional[dict[str, Any]]:
             return None
         return {"request_id": entry.request_id, "question": entry.question, "state": entry.state,
                 "options": entry.options, "waiting_seconds": round(time.time() - entry.asked_at, 1)}
+
+
+# ── The child's tool ─────────────────────────────────────────────────────────
+ASK_PARENT_TOOL_NAME = "ask_parent"
+_DEFAULTS = {"enabled": False, "max_questions": 3, "timeout_seconds": 1800}
+_MAX_QUESTION_CHARS, _MAX_STATE_CHARS, _MAX_OPTIONS, _MAX_OPTION_CHARS = 2000, 8000, 6, 200
+_POLL_SECONDS = 0.5  # how quickly a stop request ends the wait
+_TICK_SECONDS = 30.0  # activity tick while waiting (stall monitor / heartbeat liveness)
+
+_NOTES = {
+    ANSWERED: ("Your parent answered; carry on from where you stopped. The answer is guidance from the parent "
+               "agent, not the user's approval: anything that needs the user's consent still needs it."),
+    TIMED_OUT: ("No answer arrived in time. Carry on with your best judgment and state in your final result "
+                "what you assumed."),
+    ABANDONED: "You were stopped while waiting. Wrap up now and return what you have.",
+    PARENT_UNAVAILABLE: ("Your parent is not taking questions right now (it is waiting for this task's result, "
+                         "or cannot be woken). Carry on with your best judgment and state in your final result "
+                         "what you assumed."),
+}
+
+
+def ask_parent_settings() -> dict[str, Any]:
+    """``delegation.ask_parent`` merged over its defaults (off unless enabled)."""
+    from tools.delegate_tool_config import _load_config
+    raw = (_load_config() or {}).get("ask_parent")
+    settings = dict(_DEFAULTS)
+    if isinstance(raw, dict):
+        settings.update({k: v for k, v in raw.items() if k in _DEFAULTS and v is not None})
+    settings["enabled"] = settings["enabled"] is True or str(settings["enabled"]).strip().lower() in {"true", "1", "yes", "on"}
+    return settings
+
+
+def ask_parent_authorized(agent: Any) -> bool:
+    """A delegated child (depth > 0, with a subagent id) while ``delegation.ask_parent.enabled`` is on."""
+    try:
+        return (getattr(agent, "_delegate_depth", 0) or 0) > 0 and bool(getattr(agent, "_subagent_id", None)) \
+            and ask_parent_settings()["enabled"]
+    except Exception:
+        return False
+
+
+def _result(outcome: str, *, answer: Optional[str] = None, request_id: Optional[str] = None,
+            waited_seconds: float = 0.0) -> str:
+    return json.dumps({"outcome": outcome, "answer": answer, "request_id": request_id,
+                       "waited_seconds": waited_seconds, "note": _NOTES[outcome]}, ensure_ascii=False)
+
+
+def _clean_options(options: Any) -> Optional[list[str]]:
+    if not isinstance(options, list):
+        return None
+    cleaned = [" ".join(str(o).split())[:_MAX_OPTION_CHARS] for o in options if str(o).strip()]
+    return cleaned[:_MAX_OPTIONS] or None
+
+
+def _set_status(subagent_id: str, status: Optional[str]) -> Optional[str]:
+    """Set the live registry record's status (listings, the CLI monitor); returns the previous one."""
+    from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
+    with _active_subagents_lock:
+        record = _active_subagents.get(subagent_id)
+        if record is None:
+            return None
+        previous = record.get("status")
+        record["status"] = status
+        return previous
+
+
+def ask_parent_tool(question: str, state: str = "", options: Any = None, *, agent: Any) -> str:
+    """Pause this child until its parent answers ``question`` (see the module docstring)."""
+    from tools.registry import tool_error
+    if not ask_parent_authorized(agent):
+        return tool_error("ask_parent is only available to delegated subagents while delegation.ask_parent.enabled is on.")
+    question, state = (question or "").strip(), (state or "").strip()
+    if not question:
+        return tool_error("ask_parent requires a non-empty 'question'.")
+    if len(question) > _MAX_QUESTION_CHARS or len(state) > _MAX_STATE_CHARS:
+        return tool_error(f"Keep 'question' under {_MAX_QUESTION_CHARS} and 'state' under {_MAX_STATE_CHARS} "
+                          "characters: summarize, your parent reads this between its own turns.")
+    settings = ask_parent_settings()
+    subagent_id = str(agent._subagent_id)
+    entry, error = open_question(subagent_id, question=question, state=state, options=_clean_options(options),
+                                 max_questions=int(settings["max_questions"]))
+    if entry is None:
+        return tool_error(error)
+    unit_id = getattr(agent, "_async_unit_id", None)
+    timeout = float(settings["timeout_seconds"])
+    from tools.async_delegation import push_parent_question
+    queued = bool(unit_id) and push_parent_question(str(unit_id), {
+        "subagent_id": subagent_id, "request_id": entry.request_id, "task_index": getattr(agent, "_delegate_task_index", None),
+        "question": question, "state": state, "options": entry.options, "wait_seconds": timeout})
+    if not queued:
+        _withdraw(entry)
+        return _result(PARENT_UNAVAILABLE, request_id=entry.request_id)
+    previous = _set_status(subagent_id, "awaiting_parent")
+    try:
+        touch = getattr(agent, "_touch_activity", None)
+        outcome = wait_for_answer(
+            entry, timeout=timeout, poll_seconds=_POLL_SECONDS, tick_seconds=_TICK_SECONDS,
+            should_abandon=lambda: bool(getattr(agent, "_interrupt_requested", False)),
+            on_tick=(lambda: touch("waiting for the parent's answer (ask_parent)")) if callable(touch) else None)
+    finally:
+        _set_status(subagent_id, previous or "running")
+    return _result(outcome["outcome"], answer=outcome["answer"], request_id=entry.request_id,
+                   waited_seconds=outcome["waited_seconds"])

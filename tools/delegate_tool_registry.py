@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import json
+from contextlib import suppress
 import threading
 import time
 from typing import Any, Dict, List, Optional
@@ -62,6 +63,9 @@ def _unregister_subagent(subagent_id: str, *, agent: Any = None) -> None:
         if record is None or not (agent is None or record.get("agent") is agent):
             return
         _active_subagents.pop(subagent_id, None)
+        with suppress(Exception):
+            from tools.ask_parent import forget
+            forget(subagent_id)  # an open question ends as abandoned; its allowance is dropped
         sid = record.get("subagent_id")
         if not sid:
             return

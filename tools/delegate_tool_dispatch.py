@@ -456,6 +456,7 @@ def _restore_parent_cancellation(unit: _Batch) -> None:
     arrived while async admission had them detached)."""
     for _, _, child in unit.children:
         _attach_child(unit.parent_agent, child)
+        child._async_unit_id = None  # runs joined now: its parent is not waiting for questions
 
 def _dispatch_background(batch: _Batch) -> str:
     """Dispatch the call as independent async units (see ``_units_of``) and return the tool result JSON. Every unit
@@ -489,8 +490,10 @@ def _dispatch_background(batch: _Batch) -> str:
         unit.unit_id = unit_id = unit_id or _new_delegation_id()  # fixed before the runner can start
         # The worker can start before admission returns. Detach only this unit:
         # unsubmitted units must still receive parent stops while a fallback runs.
-        for _, _, child in unit.children:
+        for index, _, child in unit.children:
             _detach_child(parent_agent, child)
+            # ask_parent: the unit a question rides to the parent (tools.async_delegation.push_parent_question).
+            child._async_unit_id, child._delegate_task_index = unit_id, index
         dispatch = _dispatch_unit(unit, unit_id, slot_key, routing)
         if dispatch.get("status") == "dispatched":
             slot_key = slot_key or dispatch["delegation_id"]

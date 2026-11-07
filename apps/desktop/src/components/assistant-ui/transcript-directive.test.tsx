@@ -10,23 +10,7 @@ import { TRANSCRIPT_DIRECTIVE_AREA, type TranscriptDirectiveContribution } from 
 import { composerHost } from '@/sdk/composer'
 import { $selectedStoredSessionId, setActiveSessionId } from '@/store/session'
 
-import { paragraphPlainText, TranscriptDirectiveLeaf, useResolvedParagraph } from './transcript-directive'
-
-describe('paragraphPlainText', () => {
-  it('passes through a plain string', () => {
-    expect(paragraphPlainText('::tasks')).toBe('::tasks')
-  })
-
-  it('joins an all-string child array (streamed text chunks)', () => {
-    expect(paragraphPlainText(['::preview{file=', '"a.html"}'])).toBe('::preview{file="a.html"}')
-  })
-
-  it('disqualifies paragraphs with element children', () => {
-    expect(paragraphPlainText(['::tasks ', <b key="x">bold</b>])).toBeNull()
-    expect(paragraphPlainText(null)).toBeNull()
-    expect(paragraphPlainText([])).toBeNull()
-  })
-})
+import { TranscriptDirectiveLeaf, TranscriptDirectiveText, useResolvedParagraph } from './transcript-directive'
 
 describe('TranscriptDirectiveLeaf', () => {
   afterEach(cleanup)
@@ -153,7 +137,9 @@ describe('TranscriptDirectiveLeaf', () => {
 })
 
 describe('useResolvedParagraph', () => {
-  it('lifts a claimed directive out of the sentence around it', () => {
+  const directive = (source: string) => <TranscriptDirectiveText key={source} source={source} />
+
+  const withInline = (run: () => void) => {
     const dispose = registry.register({
       id: 'test:inline',
       area: TRANSCRIPT_DIRECTIVE_AREA,
@@ -162,15 +148,56 @@ describe('useResolvedParagraph', () => {
     })
 
     try {
-      const { result } = renderHook(() => useResolvedParagraph('See ::inline{x="1"} and ::other here'))
-
-      expect(result.current).toEqual([
-        { kind: 'prose', text: 'See ' },
-        { kind: 'directive', source: '::inline{x="1"}' },
-        { kind: 'prose', text: ' and ::other here' }
-      ])
+      run()
     } finally {
       dispose()
     }
+  }
+
+  it('lifts a claimed directive out of the sentence around it, keeping unclaimed ones as prose', () => {
+    withInline(() => {
+      const other = directive('::other')
+
+      const { result } = renderHook(() =>
+        useResolvedParagraph(['See ', directive('::inline{x="1"}'), ' and ', other, ' here'])
+      )
+
+      expect(result.current?.map(segment => segment.kind)).toEqual(['prose', 'directive', 'prose'])
+      expect(result.current?.[1]).toEqual({ kind: 'directive', source: '::inline{x="1"}' })
+      expect(result.current?.[0]).toEqual({ kind: 'prose', children: ['See'] })
+      expect(result.current?.[2]).toMatchObject({ kind: 'prose', children: ['and ', expect.anything(), ' here'] })
+    })
+  })
+
+  it('keeps line breaks and inline markup in the prose, dropping only the seams around a card', () => {
+    withInline(() => {
+      const bold = <b key="b">bold</b>
+
+      const { result } = renderHook(() =>
+        useResolvedParagraph([
+          directive('::inline{x="1"}'),
+          <br key="1" />,
+          directive('::inline{x="2"}'),
+          <br key="2" />,
+          'Some ',
+          bold,
+          <br key="3" />,
+          'text'
+        ])
+      )
+
+      expect(result.current?.map(segment => segment.kind)).toEqual(['directive', 'directive', 'prose'])
+
+      const prose = result.current?.[2]
+
+      expect(prose?.kind === 'prose' && prose.children.length).toBe(4)
+    })
+  })
+
+  it('is null without a claimed directive, or when disabled', () => {
+    withInline(() => {
+      expect(renderHook(() => useResolvedParagraph(['plain ', directive('::other')])).result.current).toBeNull()
+      expect(renderHook(() => useResolvedParagraph([directive('::inline')], false)).result.current).toBeNull()
+    })
   })
 })

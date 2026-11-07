@@ -80,9 +80,13 @@ describe('preprocessMarkdown / directive attributes holding URLs', () => {
     const processor = unified().use(remarkParse).use(remarkGfm).use(remarkTranscriptDirectives)
 
     return processor.runSync(processor.parse(preprocessMarkdown(markdown))) as unknown as {
-      children: { children?: { type: string; url?: string; value?: string }[] }[]
+      children: { children?: MdChild[] }[]
     }
   }
+
+  // The directive the plugin lifted out of a paragraph's children.
+  const lifted = (children: MdChild[]) =>
+    children.find(child => child.type === 'transcriptDirective')?.data?.hProperties?.source ?? ''
 
   it.each([
     `::meshy-model{url="${url}" title="Fox_v2" task="01a"}`,
@@ -90,8 +94,8 @@ describe('preprocessMarkdown / directive attributes holding URLs', () => {
   ])('reaches the directive parser exactly as written: %s', line => {
     const children = rendered(line).children[0]?.children ?? []
 
-    expect(children.map(child => child.type)).toEqual(['text'])
-    expect(directiveAttrs(children[0]?.value ?? '')).toEqual({ url, title: 'Fox_v2', task: '01a' })
+    expect(children.filter(child => child.type !== 'text').map(child => child.type)).toEqual(['transcriptDirective'])
+    expect(directiveAttrs(lifted(children))).toEqual({ url, title: 'Fox_v2', task: '01a' })
   })
 
   it('still autolinks a URL in the prose around it', () => {
@@ -101,7 +105,7 @@ describe('preprocessMarkdown / directive attributes holding URLs', () => {
       'https://example.com/a_b',
       'https://ex.com/d'
     ])
-    expect(directiveAttrs(tree.children[1]?.children?.[0]?.value ?? '')).toEqual({ url })
+    expect(directiveAttrs(lifted(tree.children[1]?.children ?? []))).toEqual({ url })
   })
 
   it('keeps an explicit markdown link inside directive-like text clickable', () => {
@@ -110,6 +114,13 @@ describe('preprocessMarkdown / directive attributes holding URLs', () => {
     expect(children.filter(child => child.type === 'link').map(child => child.url)).toEqual(['https://example.com'])
   })
 })
+
+interface MdChild {
+  data?: { hProperties?: { source?: string } }
+  type: string
+  url?: string
+  value?: string
+}
 
 function directiveAttrs(text: string) {
   const segment = segmentTranscriptDirectives(text)?.find(part => part.kind === 'directive')

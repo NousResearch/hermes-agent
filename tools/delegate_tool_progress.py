@@ -366,7 +366,7 @@ class _ChildProgressRelay:
             parent = self.parent_scope
             render_notification(
                 lambda: self._tree_line(format_subagent_failure_line(
-                    self.goal_label, kwargs.get("status"), error=kwargs.get("summary") or preview,
+                    self.goal_label, kwargs.get("status"), error=kwargs.get("error", kwargs.get("summary") or preview),
                     duration_seconds=kwargs.get("duration_seconds"), failure_reason=kwargs.get("failure_reason"),
                 )),
                 platform=getattr(parent, "_notification_platform", getattr(parent, "platform", "cli")),

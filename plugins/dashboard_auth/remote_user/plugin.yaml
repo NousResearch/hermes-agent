@@ -1,0 +1,21 @@
+name: remote-user
+version: 1.0.0
+description: >
+  Dashboard auth provider — trust an authenticated reverse proxy via the
+  X-Remote-User / REMOTE_USER pattern (Apache pwauth/htpasswd, nginx
+  auth_basic/auth_request, or an SSO front-end). Auto-activates when at least
+  one trusted proxy is configured (dashboard.remote_user.trusted_proxies in
+  config.yaml, or HERMES_DASHBOARD_REMOTE_USER_TRUSTED_PROXIES in env). The
+  proxy performs the real auth and sets the identity header (configurable;
+  default X-Remote-User, or X-Forwarded-User for nginx); this provider honors
+  it ONLY from a trusted proxy peer (IP/CIDR allowlist) and optionally also
+  requires a shared-secret header, then vouches for the user so the dashboard
+  never prompts a second login. It deliberately derives trust from the socket
+  peer, never X-Forwarded-For, and fails closed: it registers only when a
+  trusted proxy is allowlisted, and declines any request whose peer is not
+  allowlisted. This is the reference implementation of the
+  DashboardAuthProvider.supports_request_auth capability.
+author: Sean French (for Ryan)
+kind: backend
+requires_env:
+  - HERMES_DASHBOARD_REMOTE_USER_TRUSTED_PROXIES

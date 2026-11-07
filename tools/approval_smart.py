@@ -57,13 +57,7 @@ def _strip_line_comment(line: str) -> str:
 
 
 def _strip_shell_comments(command: str) -> str:
-    """Strip unquoted ``# ...`` comments before LLM assessment. Not a POSIX parser
-    — quoted ``#`` is preserved by a simple state machine; the goal is removing the
-    low-hanging injection surface, not full shell parsing.
-
-    Shell only: interpreter text (``python -c '…'``, heredocs) is source, and the caller
-    passes it through untouched instead of guessing where the shell part ends.
-    """
+    """Strip unquoted shell comments. Interpreter text is source — the caller passes that through."""
     cleaned: list[str] = []
     for line in command.split("\n"):
         stripped = _strip_line_comment(line)
@@ -73,22 +67,10 @@ def _strip_shell_comments(command: str) -> str:
 
 
 def _strip_python_comments(code: str) -> str:
-    """Drop real Python ``COMMENT`` tokens before LLM assessment.
+    """Drop real comments only: strings survive, unreadable source is returned unchanged.
 
-    Applying the shell stripper to Python deletes everything after a ``#`` on the
-    line, and Python's ``#`` also appears inside string literals::
-
-        y = '''
-        notes # '''; import shutil; shutil.rmtree('/home/x')
-
-    The shell lexer sees a comment on line 2 and hands the guardian a two-line
-    program that does nothing while Python runs the delete. :mod:`tokenize` knows
-    which ``#`` is a comment, so string and docstring bodies survive intact.
-
-    Line splitting matches :mod:`tokenize` exactly (``io.StringIO.readlines``), so a
-    ``\\x85``/``\\u2028``/``\\x0c`` inside a string cannot shift a later removal onto a
-    different line. Source that cannot be read is passed through unchanged — better a
-    noisier prompt than an assessment of code that differs from what executes.
+    Lines come from ``io.StringIO`` because ``str.splitlines`` breaks on more characters than
+    ``tokenize`` does, and a shifted cut deletes a statement.
     """
     if "#" not in code:
         return code
@@ -122,11 +104,7 @@ _FENCE_CLOSE = re.compile(r"</\s*(command|code)\s*>?", re.IGNORECASE)
 
 
 def _fence_escape(text: str) -> str:
-    """Neutralise XML-style closing tags so untrusted text cannot end its own fence.
-
-    Case-insensitive and tolerant of whitespace: a model reads ``</CODE>`` as a close
-    tag even though it is not the exact byte sequence this module emits.
-    """
+    """Escape close tags so untrusted text cannot end its own fence (case/space tolerant)."""
     return _FENCE_CLOSE.sub(lambda match: "<\\/" + match.group(1), text)
 
 

@@ -282,7 +282,7 @@ class TestPrimaryMessageRuntimeScope:
         from agent import secret_scope
         from gateway import run as run_mod
         from gateway.run import GatewayRunner
-        from gateway.session import SessionSource
+        from plugins.platforms.signal.adapter import SignalAdapter
 
         home = tmp_path / "home"
         home.mkdir()
@@ -301,6 +301,11 @@ class TestPrimaryMessageRuntimeScope:
 
         runner = GatewayRunner.__new__(GatewayRunner)
         runner.config = GatewayConfig(multiplex_profiles=True)
+        runner._profile_name_for_source = lambda *_args, **_kwargs: "sharik"
+        adapter = object.__new__(SignalAdapter)
+        adapter.platform = Platform.SIGNAL
+        adapter.gateway_runner = runner
+        runner.adapters = {Platform.SIGNAL: adapter}
         runner._resolve_profile_home_for_source = lambda _source: sharik  # type: ignore[method-assign]
         runner._session_key_for_source = lambda source: f"agent:{source.profile}:signal:dm:{source.chat_id}"  # type: ignore[method-assign]
         runner._is_user_authorized_for_source = GatewayRunner._is_user_authorized_for_source.__get__(runner)  # type: ignore[method-assign]
@@ -313,13 +318,11 @@ class TestPrimaryMessageRuntimeScope:
         runner._handle_active_session_busy_message = _busy  # type: ignore[method-assign]
         handler = runner._primary_busy_session_handler()
         event = SimpleNamespace(
-            source=SessionSource(
-                platform=Platform.SIGNAL,
+            source=adapter.build_source(
                 chat_id="+15550001111",
                 chat_type="dm",
                 user_id="+15550001111",
                 user_name="Remi",
-                profile="sharik",
             )
         )
 

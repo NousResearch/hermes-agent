@@ -197,6 +197,7 @@ def test_primary_route_keeps_transport_authorization_scope(multiplex_homes):
     """
     from agent.secret_scope import is_multiplex_active, set_multiplex_active
     from gateway.run import GatewayRunner
+    from plugins.platforms.discord.adapter import DiscordAdapter
 
     root, profile = multiplex_homes
     (root / ".env").write_text("DISCORD_ALLOWED_USERS=user-1\n", encoding="utf-8")
@@ -205,7 +206,11 @@ def test_primary_route_keeps_transport_authorization_scope(multiplex_homes):
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(multiplex_profiles=True)
-    runner.adapters = {}
+    runner._profile_name_for_source = lambda *_args, **_kwargs: "fitness"
+    adapter = object.__new__(DiscordAdapter)
+    adapter.platform = Platform.DISCORD
+    adapter.gateway_runner = runner
+    runner.adapters = {Platform.DISCORD: adapter}
     runner._profile_adapters = {}
     runner.pairing_store = MagicMock()
     runner.pairing_store.is_approved.return_value = False
@@ -223,12 +228,10 @@ def test_primary_route_keeps_transport_authorization_scope(multiplex_homes):
     runner._handle_message = capture_scope_and_auth
     event = MessageEvent(
         text="hello from the shared bot",
-        source=SessionSource(
-            platform=Platform.DISCORD,
+        source=adapter.build_source(
             chat_id="routed-channel",
             user_id="user-1",
             chat_type="group",
-            profile="fitness",
         ),
     )
 

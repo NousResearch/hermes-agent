@@ -4,7 +4,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { TimelineRail } from './timeline-rail'
 
-vi.mock('@/components/ui/tooltip', () => ({ Tip: ({ children }: { children: ReactNode }) => children }))
+vi.mock('@/components/ui/tooltip', () => ({
+  Tip: ({ children, label }: { children: ReactNode; label: ReactNode }) => (
+    <>
+      {children}
+      <div data-slot="tip-label">{label}</div>
+    </>
+  )
+}))
 
 beforeEach(() => {
   vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
@@ -47,5 +54,15 @@ describe('TimelineRail', () => {
     expect(active.getAttribute('aria-current')).toBe('location')
     fireEvent.click(active)
     expect(onJump).toHaveBeenCalledWith('message-0')
+  })
+
+  it('lets each tooltip preview take its own text direction', () => {
+    const mixed = [{ id: 'fa', preview: 'سلام، can you check the build?' }]
+    const view = render(<TimelineRail activeIndex={0} entries={mixed} loadingId={null} onJump={vi.fn()} />)
+
+    const label = view.container.querySelector('[data-slot="tip-label"] [dir]')
+
+    expect(label?.getAttribute('dir')).toBe('auto')
+    expect(label?.textContent).toBe('سلام، can you check the build?')
   })
 })

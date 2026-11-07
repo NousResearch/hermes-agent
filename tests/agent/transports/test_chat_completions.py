@@ -138,6 +138,75 @@ class TestChatCompletionsBasic:
         # Original list untouched (deepcopy-on-demand)
         assert msgs[0]["timestamp"] == 1781976577.0
 
+    def test_convert_messages_strips_replayed_session_metadata(self, transport):
+        """Session metadata rehydrated from SQLite must not reach the wire.
+
+        ``_rows_to_conversation`` restores the durable columns onto the message dicts it
+        replays, so a gateway turn served from the store carries keys that are not part of
+        the Chat Completions schema — and a strict validator (Fireworks' ``ChatMessage`` is
+        ``additionalProperties: false``) rejects the whole request with a non-retryable 400:
+
+            Extra inputs are not permitted, field: 'messages[N].message_id'
+
+        Because the offending rows stay in context, that 400 repeats on every turn of the
+        conversation. Three carriers are involved (#48523): ``message_id`` (the
+        JSONL-transcript alias of ``platform_message_id``), ``observed`` and
+        ``finish_reason``.
+        """
+        msgs = [
+            {
+                "role": "user",
+                "content": "hi",
+                "message_id": "7515969557947007112",
+                "platform_message_id": "7515969557947007112",
+                "observed": True,
+            },
+            {
+                "role": "assistant",
+                "content": "hello",
+                "finish_reason": "stop",
+                "observed": True,
+            },
+        ]
+
+        result = transport.convert_messages(msgs)
+
+        assert set(result[0]) == {"role", "content"}
+        assert set(result[1]) == {"role", "content"}
+        assert result[1]["content"] == "hello"
+        # Durable history keeps every carrier: persistence and JSONL export read the live dict.
+        assert msgs[0]["message_id"] == "7515969557947007112"
+        assert msgs[1]["finish_reason"] == "stop"
+        assert msgs[1]["observed"] is True
+
+    def test_convert_messages_strips_every_persistence_only_field(self, transport):
+        """The wire strip list derives from the persistence-only set, so the two cannot drift.
+
+        ``auxiliary_wire.prepare_chat_messages`` hands messages to this ``convert_messages``
+        without passing ``turn_context``'s pop, so a carrier this transport fails to list leaks
+        on the auxiliary/MoA path — ``display_kind`` and ``display_metadata`` were the two it
+        missed (#48523).
+        """
+        from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS
+        from agent.transports.chat_completions import _STRIP_MSG_KEYS
+
+        assert PERSISTENCE_ONLY_MESSAGE_FIELDS <= set(_STRIP_MSG_KEYS), (
+            "a persistence-only carrier is missing from the transport's wire strip list"
+        )
+
+        msg = {
+            "role": "user",
+            "content": "hi",
+            "display_kind": "edit",
+            "display_metadata": {"inline_diff": "-a\n+b\n"},
+        }
+        msg.update({name: "carrier" for name in PERSISTENCE_ONLY_MESSAGE_FIELDS})
+
+        result = transport.convert_messages([msg])
+
+        assert set(result[0]) == {"role", "content"}
+        assert result[0]["content"] == "hi"
+
     def test_convert_messages_strips_provider_replay_sidecars(self, transport):
         """Native-provider replay channels must not cross a provider boundary.
 

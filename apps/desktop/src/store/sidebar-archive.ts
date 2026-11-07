@@ -66,7 +66,8 @@ export async function listEveryArchivedSession(): Promise<SessionInfo[]> {
       archivedCount >= page.total ||
       (offset >= page.total && archivedCount === archivedBefore)
     ) {
-      return sessions
+      // Both archive views consume this result; live pins are pagination input only.
+      return sessions.filter(session => session.archived)
     }
   }
 }

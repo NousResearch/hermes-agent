@@ -45,12 +45,8 @@ from hermes_cli.backup_restore import (
     _set_config_path_value,
     _validate_backup_zip,
 )
-from hermes_cli.backup_integrity import (
-    DEFAULT_INTEGRITY_CHECK_MAX_BYTES,
-    _SQLITE_HEADER,
-    _query_ro_sqlite,
-    verify_sqlite_integrity,
-)
+# Historical updater import (tests/compat/old_updater_surface.json). In-tree callers use the owner.
+from hermes_cli.backup_integrity import verify_sqlite_integrity
 
 logger = logging.getLogger(__name__)
 
@@ -390,8 +386,6 @@ def is_zeroed_sqlite_file(path: Path, *, probe_bytes: int = 100, force: bool = F
     # Empty or all-NUL header => zeroed; a real header (or unreadable) => not.
     return head is not None and not head.startswith(b"SQLite format 3") and not any(head)
 
-
-# --- SQLite integrity verification: see backup_integrity (re-exported above) ---
 
 def _discard_failed_zip_members(zf: zipfile.ZipFile, filelist_len: int) -> None:
     """Drop the member(s) created by a failed write, both from the central directory and the file.

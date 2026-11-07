@@ -101,7 +101,7 @@ def test_torn_restore_is_what_the_guard_prevents(live_db_with_hot_wal, snapshot_
     that reports ``integrity_check`` clean — so the CLI's ``_restored_ok`` test
     passes and it prints success — while serving the OLD row set.
     """
-    from hermes_cli.backup import verify_sqlite_integrity
+    from hermes_cli.backup_integrity import verify_sqlite_integrity
 
     shutil.copy2(snapshot_db, live_db_with_hot_wal)  # no sidecar clearing
 
@@ -409,7 +409,7 @@ def test_post_restore_success_despite_unreadable_header(tmp_path, monkeypatch, c
 @pytest.mark.parametrize("max_bytes", [1, 2 << 30])
 def test_integrity_probe_treats_an_exclusive_lock_as_indeterminate(tmp_path, max_bytes):
     """A busy schema probe or full PRAGMA cannot establish corruption."""
-    from hermes_cli.backup import verify_sqlite_integrity
+    from hermes_cli.backup_integrity import verify_sqlite_integrity
 
     db = tmp_path / "state.db"
     _make_valid_db(db, 3)
@@ -468,7 +468,7 @@ def test_unreadable_header_and_unopenable_db_is_indeterminate(tmp_path, monkeypa
     """A Windows sharing lock can refuse BOTH the raw read and SQLite's open (CANTOPEN):
     with no NOTADB/CORRUPT evidence the verdict is None, never "corrupt" (#147938)."""
     from hermes_cli import sqlite_safe_read
-    from hermes_cli.backup import verify_sqlite_integrity
+    from hermes_cli.backup_integrity import verify_sqlite_integrity
 
     db = tmp_path / "state.db"
     _make_valid_db(db, 3)

@@ -417,7 +417,7 @@ def _restore_state_db_from_snapshot(state_path: Path, snap_state: Path) -> bool:
     """
     from datetime import UTC, datetime
 
-    from hermes_cli.backup import verify_sqlite_integrity
+    from hermes_cli.backup_integrity import verify_sqlite_integrity
     from hermes_cli.backup_restore import _safe_restore_db
 
     snap_state.stat()  # Preserve the caller's OSError reporting for missing snapshots.
@@ -460,7 +460,8 @@ def _verify_and_restore_one_state_db(
     ``valid`` is tri-state — only a definite False may accuse the database (#147938).
     """
     try:
-        from hermes_cli.backup import quick_snapshot_dir, verify_sqlite_integrity
+        from hermes_cli.backup import quick_snapshot_dir
+        from hermes_cli.backup_integrity import verify_sqlite_integrity
         state_path = home / "state.db"
         if not state_path.exists():
             return
@@ -689,7 +690,8 @@ def _resolve_pre_update_backup_mode(args) -> str:
 def _verify_state_db_after_snapshot(snapshot_id: str) -> None:
     """Verify live state.db after the snapshot: a concurrent process (antivirus, killed
     gateway, Windows filter driver) can corrupt it and we'd otherwise exit 0 silently."""
-    from hermes_cli.backup import _quick_snapshot_root, verify_sqlite_integrity
+    from hermes_cli.backup import _quick_snapshot_root
+    from hermes_cli.backup_integrity import verify_sqlite_integrity
     from hermes_cli.config import get_hermes_home
     _src_path = get_hermes_home() / "state.db"
     if not _src_path.exists():

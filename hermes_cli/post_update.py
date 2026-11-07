@@ -143,7 +143,7 @@ def step_state_db_guard() -> dict:
     search. Read-only, idempotent.
     """
     from hermes_constants import get_hermes_home
-    from hermes_cli.backup import verify_sqlite_integrity
+    from hermes_cli.backup_integrity import verify_sqlite_integrity
 
     state_path = get_hermes_home() / "state.db"
     if not state_path.exists():

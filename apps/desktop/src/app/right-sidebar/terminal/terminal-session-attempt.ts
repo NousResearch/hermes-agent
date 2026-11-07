@@ -12,6 +12,9 @@ type TerminalApi = Window['hermesDesktop']['terminal']
 
 export type TerminalStatus = 'closed' | 'open' | 'starting' | 'reconnecting'
 
+/** Columns and rows of a PTY or of the xterm viewport it should match. */
+export type TerminalSize = { cols: number; rows: number }
+
 // Status line written when a persistent PTY stream ends, keyed by exit signal.
 const TERMINAL_EXIT_MESSAGES: Record<string, string> = {
   disconnected: 'Terminal disconnected. Press Enter to reconnect to the same shell.',
@@ -51,8 +54,8 @@ interface SessionAttemptOptions {
   isDisposed: () => boolean
   /** True while restored local history is parsing; its query replies must not reach the shell. */
   isReplayingHistory: () => boolean
-  /** The attempt adopted a live session: seed size, shell name and selection. */
-  onStarted: (session: HermesTerminalSession) => void
+  /** The attempt adopted a live session: shell name and selection, plus the size its PTY was spawned at. */
+  onStarted: (session: HermesTerminalSession, spawnedSize: TerminalSize) => void
   /** Cwd for the next shell; read at each start so a retry follows a `cd`. */
   resolveCwd: () => string
   /** Runs once start metadata says whether the server replays history itself. */
@@ -158,9 +161,20 @@ export function createSessionAttemptController(
       adoptTerminalGateway(id, gateway)
     }
 
+    // The PTY is created at this size, so it is the size the terminal knows the
+    // shell has — not whatever xterm measures by the time start() answers.
+    const spawnedSize: TerminalSize = { cols: term.cols, rows: term.rows }
+
     void terminalApi
       // Prefer the last observed cwd so retry/relaunch stays in the same directory.
-      .start({ cols: term.cols, cwd: resolveCwd(), restoreKey: id, resumeOnly, rows: term.rows, ...gateway })
+      .start({
+        cols: spawnedSize.cols,
+        cwd: resolveCwd(),
+        restoreKey: id,
+        resumeOnly,
+        rows: spawnedSize.rows,
+        ...gateway
+      })
       .then(async session => {
         // No registry to pick from (Webapp, early boot): main routed it.
         if (!gateway && session.connectionId) {
@@ -193,7 +207,7 @@ export function createSessionAttemptController(
         restoreHistory()
         attemptSessionId = session.id
         sessionIdRef.current = session.id
-        onStarted(session)
+        onStarted(session, spawnedSize)
 
         subscriptions.push(
           terminalApi.onData(session.id, (data, options) => {

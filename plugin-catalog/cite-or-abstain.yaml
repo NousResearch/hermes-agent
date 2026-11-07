@@ -1,0 +1,45 @@
+name: cite-or-abstain
+repo: https://github.com/zvporter-ops/cite-or-abstain
+sha: "e7fe2ab2f827df9148af4eaa0692abbf72834e4a"
+title: Cite or Abstain
+description: >-
+  Evidence-gated answering with a provenance hierarchy, for any local AI deployment.
+  Material you feed it (internal: transcripts, contracts, code, spreadsheets, PDFs, emails)
+  is retrieved first and cited first; public reference material is used only when internal
+  material does not cover the question, and every answer that leans on it is labelled as
+  public; when nothing covers the question the reply is refused instead of invented. Every
+  reply is then checked mechanically against the passages that turn actually retrieved --
+  quoted spans must be verbatim, and figures, dates, URLs and identifiers must appear in a
+  retrieved passage (line and passage references are masked so citations are not mistaken
+  for claims); prose paraphrase is reported but never blocked. No model is asked to grade its
+  own answer. `/trust` runs a battery against the configured deployment and scores it:
+  invented quote and invented figure must be caught, verbatim quote and paraphrase must
+  pass, and the pipeline must abstain on questions the corpus cannot answer. Ships an agent
+  half (2 hooks, 3 tools, 1 command, 1 skill) and a Desktop half (evidence pane, status-bar
+  chip, mode switch, audit button) over the plugin's own `/api/plugins/` backend. Stdlib
+  only -- no embeddings, no third-party dependency, no model call for retrieval.
+  Disclosure -- reads only the directories configured in `corpus_roots` / `public_roots`
+  plus its own index under `$HERMES_HOME/plugin-data/cite-or-abstain/`; makes model calls
+  through Hermes's configured model or the OpenAI-compatible `endpoint` the user sets;
+  shells out to `pdftotext` and `tesseract` only when present and only for the user's own
+  files; optional `COA_API_KEY` is read through Hermes's secret scope, never from a file; no
+  telemetry, no self-update. Enabling the plugin holds the reply until the gate has run, so
+  token-by-token streaming is off while it is enabled.
+maintainer: zvporter-ops
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/zvporter-ops/cite-or-abstain#readme
+version: "0.2.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - corpus_ask
+    - evidence_report
+    - corpus_audit
+  provides_hooks:
+    - pre_llm_call
+    - transform_llm_output
+  provides_middleware: []
+  requires_env: []

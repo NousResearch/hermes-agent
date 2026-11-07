@@ -132,6 +132,8 @@ BEHAVIOUR = [
      dict(attempts=1, fell_back=False)),
     ("data-policy-denied-quota-words", sdk(403, "quota exceeded", code="data_policy_denied"), "nous",
      dict(attempts=1, fell_back=False, unhealthy=False, rotated=False)),
+    ("content-policy-quota-words", sdk(403, "Your request was flagged by our safety system. Quota exceeded."),
+     "openrouter", dict(attempts=1, fell_back=False, unhealthy=False, rotated=False)),
     ("statusless-sse-404-body", openai.APIError("Not Found", _REQ, body={"code": 404, "message": "Not Found"}),
      "openrouter", dict(attempts=1, fell_back=True)),
     ("response-ended-prematurely", _Plain("RemoteProtocolError: response ended prematurely"), "openrouter",

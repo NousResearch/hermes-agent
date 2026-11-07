@@ -6,6 +6,8 @@ helpers) is read through ``_core`` so ``mock.patch("tools.mcp_tool.X")`` keeps w
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import threading
 import time
@@ -322,6 +324,120 @@ def _get_connected_server_for_call(server_name: str) -> Optional[_core.MCPServer
         return server
     with _core._lock:
         return _core._servers.get(key)
+
+
+def _probe_identity(config: dict) -> str:
+    """Connection identity a status probe must match before reusing a live server.
+
+    ``mcp_schema_cache.config_fingerprint`` keys the *tool catalog* and deliberately ignores env;
+    reuse needs the transport identity instead: a stdio server's env carries its data home
+    (``X_USE_HOME``), and two different homes are two independent servers while two identical
+    ones cannot coexist.
+    """
+    env = config.get("env") or {}
+    headers = config.get("headers") or {}
+    payload = {
+        "command": config.get("command"),
+        "args": [str(a) for a in (config.get("args") or [])],
+        "url": config.get("url"),
+        "transport": config.get("transport"),
+        "cwd": config.get("cwd"),
+        "env": {str(k): "" if v is None else str(v) for k, v in env.items()},
+        "headers": {str(k): "" if v is None else str(v) for k, v in headers.items()},
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _rendered_probe_identity(config: dict) -> str:
+    """Probe identity after ``${VAR}`` rendering, so a live server (started rendered) and a probe
+    config still holding placeholders compare equal."""
+
+    try:
+        return _probe_identity(_config._interpolate_env_vars(config))
+    except Exception:
+        return _probe_identity(config)
+
+
+def find_live_server_for_probe(name: str, config: dict) -> Optional[_core.MCPServerTask]:
+    """The already-connected server a status probe may reuse instead of spawning a second one.
+
+    Reading only (no awaits): call on the MCP loop. A probe that opens a second transport for a
+    server which already owns its data home fails by design (the child refuses to start and the
+    probe reports the generic ``Connection closed``), so reuse is the correct answer whenever the
+    identity matches.
+    """
+    with _core._lock:
+        key = _resolve_server_key(name)
+        server = _core._servers.get(key)
+    if server is None or server.session is None or not server._ready.is_set():
+        return None
+    live_config = getattr(server, "_config", None) or {}
+    if not live_config:
+        return None
+    return server if _rendered_probe_identity(live_config) == _rendered_probe_identity(config) else None
+
+
+_PROBE_SPAWN_LOCKS: dict = {}
+
+
+def probe_spawn_lock(name: str) -> asyncio.Lock:
+    """Per-server lock serialising probe spawns (loop-side), so two concurrent status requests
+    cannot both open a transport for the same server."""
+    with _core._lock:
+        key = _resolve_server_key(name)
+    lock = _PROBE_SPAWN_LOCKS.get(key)
+    if lock is None:
+        lock = _PROBE_SPAWN_LOCKS[key] = asyncio.Lock()
+    return lock
+
+
+async def probe_reuse_target(
+    name: str, config: dict, *, stdio: bool, wait_seconds: float,
+) -> tuple[Optional[_core.MCPServerTask], Optional[str]]:
+    """Decide how a probe should proceed. Returns ``(server, blocked_reason)``.
+
+    * ``(server, None)``  — same-identity connection is live: reuse it.
+    * ``(None, reason)``  — a stdio server is already held by this runtime but is not serving
+      (parked / mid-reconnect), so a second transport cannot start. Report instead of spawning.
+    * ``(None, None)``    — nothing to reuse: spawn the usual throwaway probe transport.
+    """
+    deadline = time.monotonic() + max(0.0, wait_seconds)
+    while True:
+        server = find_live_server_for_probe(name, config)
+        if server is not None:
+            return server, None
+        with _core._lock:
+            key = _resolve_server_key(name)
+            entry = _core._servers.get(key)
+            connecting = key in _core._server_connecting
+            lazy = key in _core._lazy_server_configs
+        live_config = getattr(entry, "_config", None) or {}
+        held = (
+            entry is not None and not lazy and live_config
+            and _rendered_probe_identity(live_config) == _rendered_probe_identity(config)
+        )
+        if held and not connecting and getattr(entry, "session", None) is None:
+            if not stdio:
+                return None, None  # HTTP: a second transport is harmless
+            reason = (getattr(entry, "_park_reason", None) or "").strip()
+            return None, (
+                f"MCP server '{name}' is already owned by this Hermes runtime and is not serving "
+                f"right now{f' ({reason})' if reason else ''}; it cannot start a second transport "
+                "for the same data home, so the probe was not attempted"
+            )
+        if not (connecting or held):
+            return None, None
+        if time.monotonic() >= deadline:
+            # Still mid-connect: spawning now would open the duplicate transport this exists to
+            # prevent, so report the in-flight state instead (HTTP keeps probing — no child process).
+            if stdio:
+                return None, (
+                    f"MCP server '{name}' is still connecting in this Hermes runtime; a second "
+                    "transport for the same data home cannot start, so the probe was not attempted"
+                )
+            return None, None
+        await asyncio.sleep(0.1)
 
 
 async def _discover_and_register_server(name: str, config: dict) -> list[str]:

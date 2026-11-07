@@ -447,70 +447,98 @@ def _probe_single_server(
 
     _ensure_mcp_loop()
     tools_found: list[tuple[str, str]] = []
+    is_stdio = "url" not in config
+
+    async def _collect(server) -> None:
+        """Fill ``tools_found``/``details`` from *server*, live or freshly spawned."""
+        for t in server._tools:
+            desc = getattr(t, "description", "") or ""
+            if len(desc) > 80:
+                desc = desc[:77] + "..."
+            tools_found.append((t.name, desc))
+        if details is None:
+            return
+        # Per-tool registry-schema sizes (the SAME converted schema the agent registers) so
+        # the desktop can estimate per-call token cost. Best-effort, absent on failure.
+        try:
+            import json as _json
+            from tools.mcp_tool_schema import _convert_mcp_schema
+
+            details["schema_chars"] = {
+                t.name: len(_json.dumps(_convert_mcp_schema(name, t), separators=(",", ":"), default=str))
+                for t in server._tools
+            }
+        except Exception:  # pragma: no cover — display-only extra
+            pass
+        # Gate capability probes like runtime registration (_select_utility_schemas):
+        # honour tools.prompts / tools.resources config AND only call a family the server
+        # advertises — some servers hard-error on unknown prompts/list.
+        tools_filter = config.get("tools") or {}
+        advertised_caps = getattr(getattr(server, "initialize_result", None), "capabilities", None)
+
+        def _wanted(cap: str) -> bool:
+            # No capability info captured (legacy fixtures / older servers) => always try.
+            if not _parse_boolish(tools_filter.get(cap), default=True):
+                return False
+            return advertised_caps is None or getattr(advertised_caps, cap, None) is not None
+
+        # A REUSED server shares its JSON-RPC stream with live agent calls: take the per-server
+        # RPC lock so a status probe cannot interleave with a tool call.
+        rpc_lock = getattr(server, "_rpc_lock", None)
+        # Best-effort: servers without the capability raise, which just means "0".
+        if _wanted("prompts"):
+            try:
+                async with (rpc_lock if rpc_lock is not None else contextlib.nullcontext()):
+                    details["prompts"] = len((await server.session.list_prompts()).prompts)
+            except Exception:
+                pass
+        if _wanted("resources"):
+            try:
+                async with (rpc_lock if rpc_lock is not None else contextlib.nullcontext()):
+                    details["resources"] = len((await server.session.list_resources()).resources)
+            except Exception:
+                pass
 
     async def _probe():
         from tools import mcp_tool as _core
+        from tools import mcp_tool_discovery as _discovery
 
-        claimed = []
-        claim_token = _core._connect_server_claim.set(claimed.append)
         if details is not None:
             details["initialized"] = False
-        try:
-            server = await asyncio.wait_for(_connect_server(name, config), timeout=connect_timeout)
-        except TimeoutError:
-            # str(TimeoutError()) is '' — printed verbatim it was a blank "Authentication failed:".
-            raise TimeoutError(
-                f"Connecting to MCP server '{name}' timed out after {float(connect_timeout):.0f}s "
-                "(bounded by connect_timeout; an OAuth login also by oauth.timeout)"
-            ) from None
-        finally:
-            _core._connect_server_claim.reset(claim_token)
-            if details is not None and claimed:
-                details["initialized"] = claimed[0].initialize_result is not None
-        try:
-            for t in server._tools:
-                desc = getattr(t, "description", "") or ""
-                if len(desc) > 80:
-                    desc = desc[:77] + "..."
-                tools_found.append((t.name, desc))
-            if details is not None:
-                # Per-tool registry-schema sizes (the SAME converted schema the agent registers) so
-                # the desktop can estimate per-call token cost. Best-effort, absent on failure.
-                try:
-                    import json as _json
-                    from tools.mcp_tool_schema import _convert_mcp_schema
-
-                    details["schema_chars"] = {
-                        t.name: len(_json.dumps(_convert_mcp_schema(name, t), separators=(",", ":"), default=str))
-                        for t in server._tools
-                    }
-                except Exception:  # pragma: no cover — display-only extra
-                    pass
-                # Gate capability probes like runtime registration (_select_utility_schemas):
-                # honour tools.prompts / tools.resources config AND only call a family the server
-                # advertises — some servers hard-error on unknown prompts/list.
-                tools_filter = config.get("tools") or {}
-                advertised_caps = getattr(getattr(server, "initialize_result", None), "capabilities", None)
-
-                def _wanted(cap: str) -> bool:
-                    # No capability info captured (legacy fixtures / older servers) => always try.
-                    if not _parse_boolish(tools_filter.get(cap), default=True):
-                        return False
-                    return advertised_caps is None or getattr(advertised_caps, cap, None) is not None
-
-                # Best-effort: servers without the capability raise, which just means "0".
-                if _wanted("prompts"):
-                    try:
-                        details["prompts"] = len((await server.session.list_prompts()).prompts)
-                    except Exception:
-                        pass
-                if _wanted("resources"):
-                    try:
-                        details["resources"] = len((await server.session.list_resources()).resources)
-                    except Exception:
-                        pass
-        finally:
-            await server.shutdown()
+        # One probe per server at a time: two concurrent status requests must not both spawn.
+        async with _discovery.probe_spawn_lock(name):
+            # A server that already owns its data home cannot start a second transport (the child
+            # refuses and the client only sees "Connection closed"), so reuse the live connection —
+            # its session already answers exactly what the probe asks.
+            live, blocked = await _discovery.probe_reuse_target(
+                name, config, stdio=is_stdio, wait_seconds=min(float(connect_timeout), 15.0)
+            )
+            if blocked:
+                raise RuntimeError(blocked)
+            if live is not None:
+                if details is not None:
+                    details["reused"] = True
+                    details["initialized"] = getattr(live, "initialize_result", None) is not None
+                await _collect(live)
+                return
+            claimed = []
+            claim_token = _core._connect_server_claim.set(claimed.append)
+            try:
+                server = await asyncio.wait_for(_connect_server(name, config), timeout=connect_timeout)
+            except TimeoutError:
+                # str(TimeoutError()) is '' — printed verbatim it was a blank "Authentication failed:".
+                raise TimeoutError(
+                    f"Connecting to MCP server '{name}' timed out after {float(connect_timeout):.0f}s "
+                    "(bounded by connect_timeout; an OAuth login also by oauth.timeout)"
+                ) from None
+            finally:
+                _core._connect_server_claim.reset(claim_token)
+                if details is not None and claimed:
+                    details["initialized"] = claimed[0].initialize_result is not None
+            try:
+                await _collect(server)
+            finally:
+                await server.shutdown()
 
     try:
         _run_on_mcp_loop(_probe(), timeout=connect_timeout + 10)

@@ -23,7 +23,7 @@ def _validate(model, staged=("Qwen3-4B-Q4_K_M",), live=("other-model",), **kw):
             },
         ),
         patch(
-            "hermes_cli.local_runtime.bootstrap.staged_model_ids",
+            "plugins.local_models.bootstrap.staged_model_ids",
             return_value=list(staged),
         ),
     ):

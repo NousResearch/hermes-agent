@@ -23,14 +23,14 @@ from __future__ import annotations
 
 import pytest
 
-from hermes_cli.local_runtime.catalog import (
+from plugins.local_models.catalog import (
     CATALOG,
     PLEASANT_FLOOR_TOK_S,
     predicted_decode_tok_s,
     recommended_entry,
     select_variant,
 )
-from hermes_cli.local_runtime.estimator import HardwareBudget
+from plugins.local_models.estimator import HardwareBudget
 
 _GIB = 1 << 30
 
@@ -132,7 +132,7 @@ def test_measured_n1x_profile_changes_speed_eligibility_not_fit_or_quality(monke
     import subprocess
     import urllib.request
 
-    from hermes_cli.local_runtime import catalog
+    from plugins.local_models import catalog
 
     def no_io(*args, **kwargs):
         raise AssertionError("calibration must use shipped data, not a runtime benchmark")

@@ -3,8 +3,8 @@
 import json
 import struct
 
-from hermes_cli.local_runtime import bootstrap, catalog, presets
-from hermes_cli.local_runtime.estimator import HardwareBudget
+from plugins.local_models import bootstrap, catalog, presets
+from plugins.local_models.estimator import HardwareBudget
 
 
 def _stage_header(path):

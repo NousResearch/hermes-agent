@@ -9,8 +9,8 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from hermes_cli.local_runtime.estimator import HardwareBudget
-from hermes_cli.local_runtime.hf_browse import (
+from plugins.local_models.estimator import HardwareBudget
+from plugins.local_models.hf_browse import (
     HFFileGroup,
     HFModelHit,
     repo_files,
@@ -45,7 +45,7 @@ def test_search_parses_hf_hits(monkeypatch):
         {"id": "bartowski/whatever-GGUF", "downloads": 5, "likes": 0,
          "lastModified": "2026-01-01", "gated": "auto"},
     ]
-    monkeypatch.setattr("hermes_cli.local_runtime.hf_browse._get_json",
+    monkeypatch.setattr("plugins.local_models.hf_browse._get_json",
                         lambda url: canned)
     hits = search_models("qwen")
     assert hits[0].repo == "unsloth/Qwen3.8-27B-GGUF"
@@ -62,7 +62,7 @@ def test_repo_files_groups_splits_and_excludes_companions(monkeypatch):
         {"path": "README.md", "size": 1000},
         {"path": "dspark-draft-Q8_0.gguf", "size": 9 * GIB},
     ]
-    monkeypatch.setattr("hermes_cli.local_runtime.hf_browse._get_json",
+    monkeypatch.setattr("plugins.local_models.hf_browse._get_json",
                         lambda url: canned)
     groups = repo_files("any/repo")
     labels = {g.label: g for g in groups}
@@ -92,7 +92,7 @@ def test_search_route_requires_query_and_maps_errors(client, monkeypatch):
     def boom(q, limit):
         raise RuntimeError("HF down")
 
-    monkeypatch.setattr("hermes_cli.local_runtime.hf_browse.search_models", boom)
+    monkeypatch.setattr("plugins.local_models.hf_browse.search_models", boom)
     r = client.get("/api/local-models/search", params={"q": "qwen"})
     assert r.status_code == 502
 
@@ -107,7 +107,7 @@ def test_browsed_download_stages_and_bounces(client, tmp_path, monkeypatch):
     monkeypatch.setattr("pm.downloader._OPENER", _FakeRangeOpener(body))
     bounced = {}
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.bootstrap.refresh_local_runtime",
+        "plugins.local_models.bootstrap.refresh_local_runtime",
         lambda: bounced.setdefault("yes", True))
 
     r = client.post("/api/local-models/download-browsed",
@@ -127,7 +127,7 @@ def test_browsed_download_stages_and_bounces(client, tmp_path, monkeypatch):
         _time.sleep(0.05)
     assert status["status"] == "done", status.get("error")
 
-    from hermes_cli.local_runtime.bootstrap import models_dir
+    from plugins.local_models.bootstrap import models_dir
 
     assert (models_dir() / "Some-Model-Q4_K_M.gguf").exists()
     assert bounced.get("yes") is True
@@ -144,14 +144,14 @@ def test_sideload_links_and_bounces(client, tmp_path, monkeypatch):
     src.write_bytes(b"GGUF" + b"\x00" * 32)
     bounced = {}
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.bootstrap.refresh_local_runtime",
+        "plugins.local_models.bootstrap.refresh_local_runtime",
         lambda: bounced.setdefault("yes", True))
 
     r = client.post("/api/local-models/sideload", json={"path": str(src)})
     assert r.status_code == 200
     assert r.json()["model_id"] == "My-Local-Model-Q5_K_M"
 
-    from hermes_cli.local_runtime.bootstrap import models_dir
+    from plugins.local_models.bootstrap import models_dir
 
     dest = models_dir() / src.name
     assert dest.exists()

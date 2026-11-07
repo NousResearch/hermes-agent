@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any, Optional, Tuple
 
-from hermes_cli.local_runtime.endpoint import LLAMACPP_ALIASES
+from plugins.local_models.endpoint import LLAMACPP_ALIASES
 
 
 def bare_llamacpp_endpoint(provider: Optional[str], base_url: Optional[str],
@@ -26,7 +26,7 @@ def bare_llamacpp_endpoint(provider: Optional[str], base_url: Optional[str],
     if alias not in LLAMACPP_ALIASES or base_url:
         return None
     from hermes_cli.config import load_config
-    from hermes_cli.local_runtime.endpoint import resolve_llamacpp_endpoint
+    from plugins.local_models.endpoint import resolve_llamacpp_endpoint
     from hermes_cli.runtime_provider import _get_named_custom_provider
     if _get_named_custom_provider(alias):
         return None

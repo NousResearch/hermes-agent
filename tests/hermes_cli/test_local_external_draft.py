@@ -13,9 +13,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli.local_runtime import bootstrap, catalog, presets
-from hermes_cli.local_runtime.catalog import AssetFile, CatalogEntry, QuantVariant
-from hermes_cli.local_runtime.estimator import HardwareBudget
+from plugins.local_models import bootstrap, catalog, presets
+from plugins.local_models.catalog import AssetFile, CatalogEntry, QuantVariant
+from plugins.local_models.estimator import HardwareBudget
 from tests.hermes_cli import test_local_download_jobs
 from tests.hermes_cli.test_local_download_jobs import poll
 
@@ -130,7 +130,7 @@ def test_on_windows_unified_memory_the_draft_keeps_the_smallest_prompt_cache(mod
     """On one slot a title or other side request takes the chat's slot, and llama-server's prompt
     cache is what brings the chat back. Where free commit sizes that cache, the draft runs only
     with the smallest useful cache beside it."""
-    from hermes_cli.local_runtime import hardware
+    from plugins.local_models import hardware
 
     gguf, _, _ = model
     capacity = HardwareBudget(usable_vram_bytes=48 * GIB, total_device_bytes=48 * GIB,
@@ -177,7 +177,7 @@ def test_each_draft_position_prices_a_copy_of_the_recurrent_state(model):
 def test_growth_counts_the_outgoing_draft_as_freed_memory(model, monkeypatch):
     """The grown instance loads after the drafting one exits, so all of that instance's memory,
     draft included, counts as free when growth fits the next window."""
-    from hermes_cli.local_runtime import estimator, gguf as gguf_module, growth, hardware
+    from plugins.local_models import estimator, gguf as gguf_module, growth, hardware
 
     path, _, _ = model
     budget = _discrete(28)

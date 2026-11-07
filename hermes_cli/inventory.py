@@ -1020,7 +1020,7 @@ def _local_runtime_row(ctx: ConfigContext) -> dict | None:
     the provider registry's own definition, never a local literal: a row the resolver can't resolve is
     the bug this row's offline-first contract depends on not having."""
     try:
-        from hermes_cli.local_runtime.bootstrap import staged_model_ids
+        from plugins.local_models.bootstrap import staged_model_ids
         from hermes_cli.providers import LLAMACPP_ALIASES, LLAMACPP_PROVIDER_ID
 
         staged = staged_model_ids()
@@ -1031,7 +1031,7 @@ def _local_runtime_row(ctx: ConfigContext) -> dict | None:
             # A LIVE session on the managed server reports provider "custom" with the managed base_url;
             # match on the endpoint so the session being chatted in still shows a selection.
             try:
-                from hermes_cli.local_runtime.endpoint import _state_endpoint
+                from plugins.local_models.endpoint import _state_endpoint
 
                 managed = _state_endpoint()
                 current = bool(managed and (ctx.current_base_url or "").strip().rstrip("/")

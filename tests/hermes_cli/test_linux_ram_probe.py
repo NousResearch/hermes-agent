@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import ctypes
 
-import hermes_cli.local_runtime.hardware as hw
+import plugins.local_models.hardware as hw
 
 GIB = 1 << 30
 

@@ -89,7 +89,7 @@ def test_bounded_git_probe_fast_path_spawn_contract_windows(monkeypatch):
     Popen cannot provide.
     """
     from hermes_cli import _subprocess_compat
-    from hermes_cli.local_runtime import processes
+    from plugins.local_models import processes
 
     spawns = []
     fake_popen = _make_fake_popen(spawns, stdout="main\n")
@@ -580,7 +580,7 @@ def test_safe_directory_git_config_probes_hide_console_window(monkeypatch):
 def test_cached_nvidia_gpu_query_hides_console_window_and_caches(monkeypatch):
     """One hidden nvidia-smi spawn serves the budget probe, the endpoint and
     the vendor detector within the TTL; the second caller must not spawn."""
-    from hermes_cli.local_runtime import bootstrap, hardware
+    from plugins.local_models import bootstrap, hardware
     from hermes_cli.web_routers import local_models
 
     captured = []
@@ -609,7 +609,7 @@ def test_cached_nvidia_gpu_query_hides_console_window_and_caches(monkeypatch):
 
 def test_cached_nvidia_gpu_query_failure_is_cached(monkeypatch):
     """A missing/failed smi must not re-spawn per poll either."""
-    from hermes_cli.local_runtime import hardware
+    from plugins.local_models import hardware
 
     captured = []
 

@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import hermes_cli.local_runtime.catalog as cat
+import plugins.local_models.catalog as cat
 
 # The never-refreshed state a freshly started backend has (nothing calls refresh at import).
 _NEVER_REFRESHED = cat._last_refresh_attempt
@@ -34,7 +34,7 @@ def _doc_from(entries):
     """A fetchable catalog document built by mutating the packaged JSON."""
     from importlib.resources import files
 
-    doc = json.loads(files("hermes_cli.local_runtime")
+    doc = json.loads(files("plugins.local_models")
                      .joinpath("catalog.json").read_text(encoding="utf-8"))
     doc["models"] = entries(doc["models"])
     return doc
@@ -71,7 +71,7 @@ def test_refresh_swaps_in_memory_only(monkeypatch, tmp_path):
     disk is untouched (checkout stays clean)."""
     from importlib.resources import files
 
-    packaged_path = files("hermes_cli.local_runtime").joinpath("catalog.json")
+    packaged_path = files("plugins.local_models").joinpath("catalog.json")
     before = packaged_path.read_text(encoding="utf-8")
 
     def add_day0(models):
@@ -116,10 +116,10 @@ def test_loader_ignores_unknown_fields():
 def test_min_engine_gate(monkeypatch):
     from hermes_cli.web_routers.local_models import _engine_too_old
 
-    from hermes_cli.local_runtime.binaries import Engine
+    from plugins.local_models.binaries import Engine
     from pathlib import Path
 
-    monkeypatch.setattr("hermes_cli.local_runtime.binaries.installed_engine",
+    monkeypatch.setattr("plugins.local_models.binaries.installed_engine",
                         lambda *args, **kwargs: Engine("cpu", "b10362", Path("unused")))
     assert _engine_too_old("") is False, "no requirement, no gate"
     assert _engine_too_old("b10000") is False, "installed engine suffices"

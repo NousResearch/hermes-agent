@@ -445,7 +445,7 @@ def _maybe_grow_local_window(agent: Any, compressor: Any,
     ):
         return None
     try:
-        from hermes_cli.local_runtime.growth import maybe_grow_window
+        from plugins.local_models.growth import maybe_grow_window
         current_window = int(getattr(compressor, "context_length", 0) or 0)
         if current_window <= 0:
             return None

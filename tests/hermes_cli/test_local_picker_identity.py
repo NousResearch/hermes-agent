@@ -24,9 +24,9 @@ def ctx(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     import hermes_cli.inventory as inv
 
-    monkeypatch.setattr("hermes_cli.local_runtime.bootstrap.staged_model_ids",
+    monkeypatch.setattr("plugins.local_models.bootstrap.staged_model_ids",
                         lambda: set(STAGED))
-    monkeypatch.setattr("hermes_cli.local_runtime.endpoint._state_endpoint",
+    monkeypatch.setattr("plugins.local_models.endpoint._state_endpoint",
                         lambda: dict(MANAGED))
     context = inv.load_picker_context()
     return inv, context

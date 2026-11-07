@@ -45,7 +45,7 @@ def _forget_rejected_routes():
     _TEMPERATURE_REJECTED_ROUTES.clear()
 
 
-@pytest.mark.parametrize("model", ["gpt-5.5", "openai/gpt-5.5-pro", "gpt-5.1-2026-01-01", "gpt-5-codex", "o3-mini", "o4-mini"])
+@pytest.mark.parametrize("model", ["gpt-5.5", "openai/gpt-5.5-pro", "gpt-5.1-2026-01-01", "gpt-5-codex", "gpt-6-luna", "openai/gpt-6.1-sol", "o3-mini", "o4-mini"])
 def test_openai_default_only_families_omit_temperature_up_front(model):
     """#51083: OpenAI reasoning families 400 on temperature != 1, so the first request already omits
     it instead of paying a rejected round-trip; gpt-5-chat and gpt-4.1 still get the caller's value."""

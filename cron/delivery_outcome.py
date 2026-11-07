@@ -37,9 +37,13 @@ def _settle_job_record(job_id: str, execution_id: str, delivery_error: Optional[
         return False
 
     def apply(jobs, _i, job):
-        completions = job.get("canonical_completions") or []
-        if not completions or completions[-1] != execution_id:
-            return False
+        # no_agent runs never record the execution id in canonical_completions (mark_job_run is
+        # called without it by design), so the latest-attempt fence above is their only guard
+        # against overwriting a newer run's status.
+        if not job.get("no_agent"):
+            completions = job.get("canonical_completions") or []
+            if not completions or completions[-1] != execution_id:
+                return False
         status = job.get("last_status")
         if status == "delivery_queued":
             status = "delivery_failed" if delivery_error else "ok"

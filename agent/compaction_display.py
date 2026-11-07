@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 
 from typing import Any, Dict, Optional
@@ -67,25 +68,51 @@ def project_compaction_message_for_display(message: dict[str, Any]) -> Optional[
     projected.pop("display_kind", None)
     # The compressor merges the summary into the tail row when no standalone summary row can
     # alternate. When that tail was a producer notice, its ``display_kind`` sidecar never reached the
-    # carrier, and the unwrapped envelope would paint as a user message: name its kind again.
-    notice = producer_notice_display(flatten_message_text(projected.get("content")))
+    # carrier, and the unwrapped envelope would paint as a user message: name its kind again. A
+    # carrier stored ``hidden`` (a suppressed delivery) stays hidden rather than becoming a card.
+    notice = (producer_notice_display(flatten_message_text(projected.get("content")))
+              if projected.get("role") == "user" else None)
     if notice is not None:
+        if kind == "hidden":
+            projected["display_kind"] = kind
+            return projected
         projected["display_kind"], label = notice
-        metadata = projected.get("display_metadata")
-        projected["display_metadata"] = {**(metadata if isinstance(metadata, dict) else {}), **label}
+        projected["display_metadata"] = {**_metadata_dict(projected.get("display_metadata")), **label}
     return projected
 
 
-# The envelopes ``tools.process_registry_notifications`` writes. ``hermes_state_timeline._SYNTHETIC_PROMPT``
-# and the Desktop's ``asyncResultBody`` key on the same leading tags.
+# The envelopes ``tools.process_registry_notifications`` writes, matched on their whole title line and
+# fixed intro so a user's own text that merely starts with a producer tag stays a user row.
+_DELEGATION_TITLE = re.compile(
+    r"\[ASYNC DELEGATION (BATCH COMPLETE|COMPLETE|TASK FAILED) — ([^\]\n]*)\]\n"
+    r"(?:A background fan-out unit you dispatched earlier — (?:group '(.*)' \((\d+)|(\d+)) subagent\(s\)\)? — "
+    r"|A background subagent you dispatched earlier has finished\."
+    r"|One subagent in a background fan-out you dispatched has failed )")
 _DELEGATION_TASK_HEADER = re.compile(
     r"^--- [✓✗⚠] TASK (\d+)/\d+(?:: ([\s\S]*?))?  \(status=([^,)\n]*)([^\n]*)\) ---$", re.MULTILINE)
-_DELEGATION_GOAL = re.compile(r"^(?:Original goal|Task): (.*)$", re.MULTILINE)
-_DELEGATION_STATUS = re.compile(r"^Status: (\S+)", re.MULTILINE)
-_PROCESS_COMPLETION_HEADER = re.compile(
-    r"^\[IMPORTANT: Background process \S+ (.+?) \(exit code (-?\d+|\?)", re.MULTILINE)
-_PROCESS_BATCH_HEADER = re.compile(r"\[IMPORTANT: \d+ background processes completed\.")
-_PROCESS_COMMAND = re.compile(r"^Command: (.*)$", re.MULTILINE)
+# Goal and context are caller text and come first; the batch's role line and a single task's status line
+# are the producer's own, with a shape free text does not take, so parsing starts there.
+_DELEGATION_GOAL = re.compile(r"^(?:Original goal|Task): ([\s\S]*?)\n(?=Context you provided: |Toolsets: |Role: |Status: )",
+                              re.MULTILINE)
+_BATCH_ROLE_LINE = re.compile(r"^Role: [^\n]*   Total duration: \S+s$", re.MULTILINE)
+_DELEGATION_STATUS = re.compile(
+    r"^Status: (\S+)(?:   API calls: \S+)?   Duration: \S+s( \[TRUNCATED: hit max_iterations[^\n]*)?$", re.MULTILINE)
+_PROCESS_COMPLETION = re.compile(
+    r"\[IMPORTANT: Background process \S+ (.+?) \(exit code ([^,)\n]+)(?:, SIGTERM)?\)\.\n"
+    r"(?:[\s\S]*?\n)?Command: ([\s\S]*?)\nOutput:\n[\s\S]*\]\s*\Z")
+_PROCESS_BATCH = re.compile(
+    r"\[IMPORTANT: (\d+) background processes completed\. Treat these results as one batch and give one consolidated "
+    r"response; preserve failures and actionable results\.\]\n\n\[IMPORTANT: Background process [\s\S]*\]\s*\Z")
+
+
+def _metadata_dict(metadata: Any) -> dict[str, Any]:
+    """A row's display metadata as a dict; stored rows may still carry it as JSON text."""
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except ValueError:
+            return {}
+    return metadata if isinstance(metadata, dict) else {}
 
 
 def producer_notice_display(text: str) -> Optional[tuple[str, dict[str, Any]]]:
@@ -96,39 +123,49 @@ def producer_notice_display(text: str) -> Optional[tuple[str, dict[str, Any]]]:
     """
     from tools.process_registry_notifications import (
         PROCESS_COMPLETE_DISPLAY_KIND, async_delegation_display_text, process_completion_display_text)
-    if text.startswith("[ASYNC DELEGATION "):
-        event = _delegation_event(text)
-        return "async_delegation_complete", {
-            "display_text": async_delegation_display_text(event), "task_count": len(event.get("results") or [event])}
-    if text.startswith("[IMPORTANT: Background process ") or _PROCESS_BATCH_HEADER.match(text):
-        events = _process_events(text)
-        if events:
-            return PROCESS_COMPLETE_DISPLAY_KIND, {"display_text": process_completion_display_text(events)}
+    if title := _DELEGATION_TITLE.match(text):
+        event = _delegation_event(text, title)
+        results = event.get("results") or [event]
+        failed = sum(1 for r in results if r.get("status") in {"failed", "error"})
+        metadata = {"display_text": async_delegation_display_text(event), "delegation_id": title.group(2).split(",")[0],
+                    "task_count": len(results), "completed_count": len(results) - failed, "failed_count": failed}
+        if title.group(1) == "TASK FAILED":  # an early warning, as ``gateway.wake`` files it
+            metadata["notification_category"] = "diagnostic"
+        return "async_delegation_complete", metadata
+    if batch := _PROCESS_BATCH.match(text):
+        # Several completions are labelled by their count alone (``process_completion_display_text``).
+        return PROCESS_COMPLETE_DISPLAY_KIND, {"display_text": process_completion_display_text([{}] * int(batch.group(1)))}
+    if completion := _PROCESS_COMPLETION.match(text):
+        return PROCESS_COMPLETE_DISPLAY_KIND, {"display_text": process_completion_display_text([_process_event(completion)])}
     return None
 
 
-def _delegation_event(text: str) -> dict[str, Any]:
-    tasks = _DELEGATION_TASK_HEADER.findall(text)
-    if tasks:
-        return {"results": [
-            {"task_index": int(index) - 1, "goal": goal, "status": status, "truncated": "TRUNCATED" in rest}
-            for index, goal, status, rest in tasks]}
-    goal, status = _DELEGATION_GOAL.search(text), _DELEGATION_STATUS.search(text)
-    return {"goal": goal.group(1) if goal else "", "status": status.group(1) if status else "completed",
-            "truncated": "[TRUNCATED: hit max_iterations" in text}
+def _delegation_event(text: str, title: re.Match) -> dict[str, Any]:
+    group, group_size, size = title.group(3), title.group(4), title.group(5)
+    if title.group(1) == "BATCH COMPLETE":
+        # A child's summary can quote a task header: take only as many as the intro names.
+        unit, role_line = int(group_size or size or 0), _BATCH_ROLE_LINE.search(text, title.end())
+        tasks = _DELEGATION_TASK_HEADER.findall(text, role_line.end())[:unit] if unit and role_line else []
+        results = [{"task_index": int(index) - 1, "goal": goal, "status": status, "truncated": "TRUNCATED" in rest}
+                   for index, goal, status, rest in tasks]
+        if results:
+            return {"results": results, **({"group": group} if group is not None else {})}
+        # A batch that failed before any child reported writes only an ERROR section.
+        return {"status": "failed" if "\n--- ERROR ---\n" in text else "completed",
+                **({"group": group} if group is not None else {})}
+    goal, status = _DELEGATION_GOAL.search(text, title.end()), _DELEGATION_STATUS.search(text, title.end())
+    return {"goal": goal.group(1) if goal else "",
+            "status": status.group(1) if status else ("failed" if title.group(1) == "TASK FAILED" else "completed"),
+            "truncated": bool(status and status.group(2))}
 
 
-def _process_events(text: str) -> list[dict[str, Any]]:
+def _process_event(completion: re.Match) -> dict[str, Any]:
     from tools.process_registry_notifications import _REASON_STATUS
-    events = []
-    for header in _PROCESS_COMPLETION_HEADER.finditer(text):
-        status, exit_code = header.groups()
-        reason = "killed" if status.startswith("terminated by ") else next(
-            (key for key, value in _REASON_STATUS.items() if value == status), "exited")
-        command = _PROCESS_COMMAND.search(text, header.end())
-        events.append({"completion_reason": reason, "exit_code": int(exit_code) if exit_code != "?" else "?",
-                       "command": command.group(1) if command else ""})
-    return events
+    status, exit_code, command = completion.groups()
+    reason = "killed" if status.startswith("terminated by ") else next(
+        (key for key, value in _REASON_STATUS.items() if value == status), "exited")
+    return {"completion_reason": reason, "exit_code": int(exit_code) if exit_code.lstrip("-").isdigit() else exit_code,
+            "command": command}
 
 
 

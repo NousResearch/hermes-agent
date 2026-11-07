@@ -202,7 +202,13 @@ def _run_execution_chain(kind: str, terminal_call: Callable[[Any], Any], **kwarg
         try:
             return callback(**PluginDispatchMixin._hook_callback_kwargs(callback, call_kwargs))  # narrow signatures, as hooks
         except _DownstreamExecutionError as exc:
-            raise exc.original
+            # Raising inside this handler rebinds original.__context__ to the wrapper, hiding the
+            # implicit chain the error classifier walks for status/body (#149091); restore it.
+            original, context = exc.original, exc.original.__context__
+            try:
+                raise original
+            finally:
+                original.__context__ = context
         except Exception as exc:
             # Runs once per tool/LLM call: a mis-declared callback fails identically every time,
             # so it goes through the manager's warn-once reporter (#111922).
@@ -211,6 +217,7 @@ def _run_execution_chain(kind: str, terminal_call: Callable[[Any], Any], **kwarg
                 return next_result
             if next_called:
                 raise
-            return call_at(index + 1, payload)
+        # Skip the failed frame outside the handler, so a downstream error is not chained to it.
+        return call_at(index + 1, payload)
 
     return call_at(0, kwargs[payload_key])

@@ -1,7 +1,7 @@
 name: nanlmind-hermes
 title: NaNLMind Hermes
 repo: https://github.com/shemshallah/NaNLMind_HERMES
-sha: 4bc4d278429e96127c2ec3f4ae82a2665bf66275
+sha: 645090b6e6551b26c0a78e293b2b863fbbf44d95
 description: Connect Hermes to a local NaNLMind 256-head universe for chat, explicit native training,
   mathematical memory, and approved CLOCKED evidence plans. The plugin registers 33 tools for conversation,
   native logic/word/sentence training, memory ingest and assessment, NaN16DE routing, NANNET identity,
@@ -16,8 +16,8 @@ maintainer: shemshallah
 tier: community
 category: tools
 requires_hermes: '>=0.23.0'
-docs_url: https://github.com/shemshallah/NaNLMind_HERMES/blob/4bc4d278429e96127c2ec3f4ae82a2665bf66275/docs/DEMO.md
-version: "1.2.0"
+docs_url: https://github.com/shemshallah/NaNLMind_HERMES/blob/645090b6e6551b26c0a78e293b2b863fbbf44d95/docs/DEMO.md
+version: "1.2.1"
 platforms: []
 capabilities:
   provides_tools:

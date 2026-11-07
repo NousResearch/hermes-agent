@@ -89,7 +89,6 @@ def test_no_secret_form_reaches_the_result(secret, case):
     text = repr(result)
     for form in _forms(secret):
         assert form not in text
-    if case not in {"write_error"}:
-        assert not result.success
+    assert not result.success
     if case != "write_error":
         assert store.writes == []

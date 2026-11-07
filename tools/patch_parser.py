@@ -305,6 +305,7 @@ class _Overlay:
         self.commits: list[_Commit] = []
         self.snaps: dict[str, _Snap] = {}
         self.pending: dict = {}
+        self.shas: dict = {}
         self.removed: set = set()
         self.planners: dict = {}
         self.all_planners: list = []
@@ -313,7 +314,7 @@ class _Overlay:
     def read(self, path: str) -> tuple[Optional[str], Optional[str], Optional[str]]:
         key = _overlay_key(path, self.file_ops)
         if key in self.pending:
-            return self.pending[key], None, None
+            return self.pending[key], None, self.shas.get(key)
         if key in self.removed:
             return None, "file not found", None
         result = self.file_ops.read_file_raw(path)
@@ -364,6 +365,7 @@ def _resolve_update(op: PatchOperation, overlay: _Overlay) -> None:
     overlay.changes += plan.changes
     overlay.errors.extend(f"{op.file_path}: {error}" for error in plan.errors)
     overlay.pending[key] = plan.content
+    overlay.shas.pop(key, None)
     _remember_update(overlay.commits, op, simulated, sha, plan)
 
 
@@ -396,6 +398,7 @@ def _resolve_move(op: PatchOperation, overlay: _Overlay) -> None:
     overlay.pending[_overlay_key(op.new_path, overlay.file_ops)] = src_content if src_content is not None else ""
     src_key = _overlay_key(op.file_path, overlay.file_ops)
     dst_key = _overlay_key(op.new_path, overlay.file_ops)
+    overlay.shas[dst_key] = overlay.shas.pop(src_key, src_sha)
     if src_key in overlay.planners:
         overlay.planners[dst_key] = overlay.planners.pop(src_key)
     overlay.remove(op.file_path)
@@ -628,6 +631,8 @@ def _commit_resolved(commits: list[_Commit], file_ops: Any) -> PatchResult:
             continue
         if write and op.operation is OperationType.UPDATE:
             written_sha[key] = write[2]
+        if op.operation is OperationType.MOVE and op.new_path:
+            written_sha[_overlay_key(op.new_path, file_ops)] = written_sha.pop(key, None)
         is_move = op.operation is OperationType.MOVE
         files[bucket].append(f"{op.file_path} -> {op.new_path}" if is_move else op.file_path)
         all_diffs.append(payload)

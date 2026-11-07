@@ -119,7 +119,8 @@ def test_untrusted_checkout_starts_only_allowlisted_servers_pinned_to_hermes_cod
     trusted = {sid: init for (sid, root), init in handed.items() if root == str(launch)}
     assert set(trusted) == set(_SERVERS)
     assert is_inside_workspace(trusted["pyright"]["python"]["pythonPath"], str(launch / ".venv"))
-    assert all(trusted[sid] == {} for sid in ("typescript", "svelte-language-server", "rust-analyzer"))
+    assert all(trusted[sid] == {} for sid in ("svelte-language-server", "rust-analyzer"))
+    assert "path" not in trusted["typescript"]["tsserver"]  # the workspace's own SDK, not Hermes's pin
 
 
 def test_only_operator_workspaces_and_listed_directories_are_trusted(tmp_path, monkeypatch):

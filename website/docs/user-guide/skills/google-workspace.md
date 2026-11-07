@@ -125,6 +125,11 @@ $GAPI calendar create --summary "Lunch" \
 
 # Delete event
 $GAPI calendar delete EVENT_ID
+
+# Free/busy for scheduling across people: one call, up to 50 emails/calendar IDs.
+# Returns only busy blocks per calendar (no titles); a calendar you cannot see
+# comes back with an "error" (e.g. notFound) — never read that as "free".
+$GAPI calendar freebusy --people "alice@co.com,bob@co.com,primary" --start 2026-03-02T09:00:00-06:00 --end 2026-03-02T17:00:00-06:00
 ```
 
 :::warning
@@ -176,6 +181,7 @@ All commands return JSON. Key fields per service:
 | `gmail send/reply` | `status`, `id`, `threadId` |
 | `calendar list` | `id`, `summary`, `start`, `end`, `location`, `description`, `htmlLink` |
 | `calendar create` | `status`, `id`, `summary`, `htmlLink` |
+| `calendar freebusy` | per calendar: `calendar`, `busy` (`start`/`end` blocks), `error` when Google could not read it |
 | `drive search` | `id`, `name`, `mimeType`, `modifiedTime`, `webViewLink` |
 | `contacts list` | `name`, `emails`, `phones` |
 | `sheets get` | 2D array of cell values |

@@ -136,6 +136,38 @@ def test_api_calendar_list_uses_events_list(api_module):
     assert params["calendarId"] == "primary"
 
 
+def test_calendar_freebusy_never_reports_an_unreadable_calendar_as_free(api_module, capsys):
+    """One freeBusy.query for every person; a calendar Google could not read
+    (errors, or missing from the response) carries an error, not an empty busy list."""
+    captured = {}
+    response = {"calendars": {
+        "alice@co.com": {"busy": [{"start": "2026-03-02T15:00:00Z", "end": "2026-03-02T16:00:00Z"}]},
+        "bob@co.com": {"busy": [], "errors": [{"domain": "calendar", "reason": "notFound"}]},
+    }}
+
+    def capture_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return MagicMock(returncode=0, stdout=json.dumps(response), stderr="")
+
+    args = api_module.argparse.Namespace(
+        people="alice@co.com, bob@co.com,carol@co.com,alice@co.com",
+        start="2026-03-02T09:00:00-06:00", end="2026-03-02T17:00:00-06:00", timezone="",
+    )
+    with patch.object(api_module.subprocess, "run", side_effect=capture_run):
+        api_module.calendar_freebusy(args)
+
+    cmd = captured["cmd"]
+    assert cmd[1:4] == ["calendar", "freebusy", "query"]
+    body = json.loads(cmd[cmd.index("--json") + 1])
+    assert body["items"] == [{"id": "alice@co.com"}, {"id": "bob@co.com"}, {"id": "carol@co.com"}]
+    rows = json.loads(capsys.readouterr().out)
+    assert [r["calendar"] for r in rows] == ["alice@co.com", "bob@co.com", "carol@co.com"]
+    assert rows[0] == {"calendar": "alice@co.com", "busy": [
+        {"start": "2026-03-02T15:00:00Z", "end": "2026-03-02T16:00:00Z"}]}
+    assert rows[1]["error"] == "notFound"
+    assert rows[2]["error"] == "notFound"
+
+
 
 
 

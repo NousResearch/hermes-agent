@@ -41,6 +41,7 @@ import {
   noteBrowserPage,
   popOutBrowserTab,
   type PreviewRenderMode,
+  previewTabOwnerProfile,
   type PreviewTarget,
   setPreviewRenderMode
 } from '@/store/preview'
@@ -284,9 +285,15 @@ function PreviewDocumentBody(props: ComponentProps<typeof LocalFilePreview>) {
 
 /** The in-app browser cookie jar for the tab owned by `sessionId`: its owning profile's partition,
  *  resolved through compression rotations. Per-profile so one profile's sign-ins never land in
- *  another's jar (#150283 P1-3). Module-level so it reads the live stores at webview creation. */
-function previewPartitionForTab(sessionId: null | string | undefined): string {
-  return previewPartitionForProfile(knownSessionProfile(ownerLookupSessionRows(), currentSessionId(sessionId)))
+ *  another's jar (#150283 P1-3). Module-level so it reads the live stores at webview creation.
+ *
+ *  A session-less DRAFT tab has no row to resolve a profile from, so it falls back to the tab's own
+ *  workspace bucket (#150283 F2) — never the shared default jar, which would expose the default
+ *  profile's sign-ins to a named profile's draft workspace. */
+function previewPartitionForTab(sessionId: null | string | undefined, tabId?: null | string): string {
+  const sessionProfile = knownSessionProfile(ownerLookupSessionRows(), currentSessionId(sessionId))
+
+  return previewPartitionForProfile(sessionProfile ?? previewTabOwnerProfile(tabId))
 }
 
 export function PreviewPane({
@@ -1115,7 +1122,7 @@ export function PreviewPane({
     // A page with no background of its own shows white, as in a browser and the remote HTML frame below.
     webview.className = 'flex h-full w-full flex-1 bg-white'
     // Per-profile cookie jar so one profile's in-app sign-ins never land in another's jar (#150283 P1-3).
-    webview.setAttribute('partition', previewPartitionForTab(ownerSessionIdRef.current))
+    webview.setAttribute('partition', previewPartitionForTab(ownerSessionIdRef.current, tabId))
     webview.setAttribute('src', initialUrl)
     webview.setAttribute('webpreferences', 'contextIsolation=yes,nodeIntegration=no,sandbox=yes')
 

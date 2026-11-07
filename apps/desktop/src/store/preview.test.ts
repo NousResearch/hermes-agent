@@ -30,6 +30,7 @@ import {
   openPreview,
   previewTabId,
   previewTabIdsVisibleTo,
+  previewTabOwnerProfile,
   previewTabsFor,
   type PreviewTarget,
   progressPreviewServerRestart,
@@ -533,6 +534,31 @@ describe('preview session scoping (#73890)', () => {
       expect(drop).toHaveBeenCalledTimes(1)
     } finally {
       desktopWindow.hermesDesktop = previous
+    }
+  })
+
+  // F2 (SECURITY): a session-less DRAFT tab in a named profile's workspace is owned by THAT profile,
+  // not defaulted to `default` — otherwise its webview rides the shared default jar and the named
+  // profile's draft workspace sees the default profile's sign-ins.
+  it('owns a draft tab by its workspace profile, never defaulting a named profile to the shared jar', () => {
+    try {
+      setPreviewScope('work')
+      newBrowserTab()
+      const workTabId = $previewTabs.get().at(-1)!.id
+      expect($previewTabs.get().at(-1)!.sessionId).toBeUndefined() // a true draft tab
+      expect(previewTabOwnerProfile(workTabId)).toBe('work')
+
+      setPreviewScope('default')
+      newBrowserTab()
+      const defaultTabId = $previewTabs.get().at(-1)!.id
+      expect(previewTabOwnerProfile(defaultTabId)).toBe('default')
+
+      // A tab not in any bucket resolves to the workspace on screen, never 'default' unconditionally.
+      setPreviewScope('work')
+      expect(previewTabOwnerProfile('url:never-stored')).toBe('work')
+    } finally {
+      setPreviewScope('default')
+      dropPreviewTabsForProfile('work')
     }
   })
 

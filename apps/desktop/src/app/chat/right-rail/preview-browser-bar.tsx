@@ -24,6 +24,9 @@ import { useI18n } from '@/i18n'
 import { isSubmitEnter } from '@/lib/ime'
 import { ANNOTATE_BLUE } from '@/lib/preview-annotate'
 import { cn } from '@/lib/utils'
+import { canOpenBrowserWindow, isBrowserWindow } from '@/store/windows'
+
+import { PreviewVaultButton } from './preview-vault-picker'
 
 interface PreviewBrowserBarProps {
   annotateMode?: boolean
@@ -46,6 +49,8 @@ interface PreviewBrowserBarProps {
   onToggleAnnotate?: () => void
   onToggleConsole: () => void
   onToggleDevTools: () => void
+  /** The Browser tab this bar drives; set = offer the saved-login key button. */
+  tabId?: string
   /** The page's CURRENT address (it moves as the user navigates), not the
    *  target the tab was opened with. */
   url: string
@@ -96,6 +101,11 @@ export function normalizePreviewAddress(value: string): null | string {
   }
 }
 
+/** "Open in browser" for a window that can neither pop out nor pop in. */
+export function externalOpenerFor(url: string): (() => void) | undefined {
+  return !isBrowserWindow() && !canOpenBrowserWindow() ? () => void window.hermesDesktop?.openExternal(url) : undefined
+}
+
 export function PreviewBrowserBar({
   annotateMode = false,
   canGoBack,
@@ -116,6 +126,7 @@ export function PreviewBrowserBar({
   onToggleAnnotate,
   onToggleConsole,
   onToggleDevTools,
+  tabId,
   url
 }: PreviewBrowserBarProps) {
   const { t } = useI18n()
@@ -219,6 +230,7 @@ export function PreviewBrowserBar({
           text={url}
         />
       </div>
+      {tabId ? <PreviewVaultButton tabId={tabId} url={url} /> : null}
       {onToggleAnnotate ? (
         <PaneStripGlyph
           active={annotateMode}

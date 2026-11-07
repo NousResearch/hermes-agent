@@ -290,8 +290,9 @@ FROM runtime_base AS python_deps
 # ~25 MB) is baked so the microsoft-office and pdf skills work out of the box:
 # this venv is sealed and has no pip, so the agent could not add them itself.
 #
-# Source binding is created after the source copy below.
-COPY pyproject.toml uv.lock ./
+# Source binding is created after the source copy below. setup.py is copied here too: the
+# recorded selection's stamp hashes the packaging files, and must match the full tree copied below.
+COPY pyproject.toml setup.py uv.lock ./
 RUN touch ./README.md
 # --cache puts uv's cache at /opt/hermes/uv-cache, the seed path that
 # pm.packages.uv_cache_dir() merges into $HERMES_HOME/cache/uv on first use.
@@ -314,14 +315,21 @@ RUN /opt/hermes/.venv/bin/python -I scripts/generate_icons.py --source /opt/herm
 
 # Frontend dependencies never enter the runtime layers.
 FROM runtime_base AS frontend_build
-COPY package.json package-lock.json ./
+# pnpm installs the workspaces; nothing in the runtime image runs it, so only
+# the build stages (this one and webapp_build) stage it.
+RUN python3 -c 'from pathlib import Path; from pm import ensure, installed_package; ensure("pnpm", explicit=True); Path("/usr/local/bin/pnpm").symlink_to(installed_package("pnpm").binary)' && \
+    pnpm --version
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY web/package.json web/
 COPY ui-tui/package.json ui-tui/
 COPY ui-tui/packages/hermes-ink/ ui-tui/packages/hermes-ink/
 COPY apps/shared/ apps/shared/
-COPY scripts/build/node-deps.mjs scripts/build/electron-runtime.mjs scripts/build/
-ENV npm_config_install_links=false
-RUN node scripts/build/node-deps.mjs --source /opt/hermes --workspace ui-tui --workspace web
+COPY scripts/build/node-deps.mjs scripts/build/electron-runtime.mjs scripts/build/pnpm-lock.mjs scripts/build/
+# Root node_modules/typescript is a link into pnpm's virtual store, which never
+# reaches the runtime image: stage a dereferenced copy for it.
+RUN node scripts/build/node-deps.mjs --source /opt/hermes --workspace ui-tui --workspace web && \
+    mkdir -p /opt/products && \
+    cp -RL node_modules/typescript /opt/products/typescript
 
 COPY pyproject.toml uv.lock ./
 COPY web/ web/
@@ -337,12 +345,13 @@ RUN node scripts/build/tui.mjs --source /opt/hermes --out /opt/products/tui && \
 # which installs Desktop's dependencies in a private workspace. A stage of its
 # own so Desktop changes leave the TUI and dashboard layers cached.
 FROM runtime_base AS webapp_build
-COPY package.json package-lock.json .npmrc ./
+RUN python3 -c 'from pathlib import Path; from pm import ensure, installed_package; ensure("pnpm", explicit=True); Path("/usr/local/bin/pnpm").symlink_to(installed_package("pnpm").binary)' && \
+    pnpm --version
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/desktop/package.json apps/desktop/
 COPY apps/desktop/scripts/build-webapp.mjs apps/desktop/scripts/
 COPY apps/shared/package.json apps/shared/
 COPY scripts/build/*.mjs scripts/build/
-ENV npm_config_install_links=false
 # Dependencies first, keyed only by the manifests and the recipe, so a source
 # change reuses this layer and the build below reuses its install.
 RUN node apps/desktop/scripts/build-webapp.mjs --deps-only
@@ -351,7 +360,7 @@ RUN node apps/desktop/scripts/build-webapp.mjs
 
 FROM python_deps AS runtime
 # Standalone TypeScript linting is a runtime feature; Vite/esbuild are not.
-COPY --from=frontend_build /opt/hermes/node_modules/typescript /opt/hermes/node_modules/typescript
+COPY --from=frontend_build /opt/products/typescript /opt/hermes/node_modules/typescript
 RUN mkdir -p /opt/hermes/node_modules/.bin && \
     ln -s ../typescript/bin/tsc /opt/hermes/node_modules/.bin/tsc
 
@@ -473,22 +482,21 @@ COPY --chmod=0755 docker/cont-init.d/02-reconcile-profiles /etc/cont-init.d/02-r
 
 # ---------- Runtime ----------
 ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
-# Point the TUI launcher at the prebuilt bundle baked at build time (Layer 8:
-# `ui-tui && npm run build`). This makes _make_tui_argv take the prebuilt-bundle
-# fast path (`node --expose-gc /opt/hermes/ui-tui/dist/entry.js`) and skip the
-# _tui_need_npm_install / runtime `npm install` branch entirely — exactly the
-# nix/packaged-release path the launcher was designed for.
+# Point the TUI launcher at the prebuilt bundle baked at build time (the
+# frontend_build stage's scripts/build/tui.mjs product). This makes
+# _make_tui_argv take the prebuilt-bundle fast path
+# (`node --expose-gc /opt/hermes/ui-tui/dist/entry.js`) and skip source
+# dependency preparation (scripts/build/node-deps.mjs, a pnpm install)
+# entirely — exactly the nix/packaged-release path the launcher was designed for.
 #
-# Why this is required (not just an optimization): the root package-lock.json
-# describes the WHOLE monorepo workspace set (root + web + ui-tui + apps/*),
-# but the image only installs root/web/ui-tui (apps/* — the desktop app — is
-# never `npm install`ed here). So the actualized node_modules permanently
-# disagrees with the canonical lock, _tui_need_npm_install() returns True on
-# every launch, and the runtime `npm install` it triggers (a) can never
-# converge against the partial monorepo and (b) races itself across concurrent
-# embedded-chat (/api/pty) connections → ENOTEMPTY → the chat tab dies with a
-# 502 / "[session ended]". Pointing at the prebuilt bundle sidesteps the whole
-# check. (A separate launcher hardening is tracked independently.)
+# Why this is required (not just an optimization): the runtime image carries
+# no workspace node_modules (frontend dependencies stay in frontend_build; only
+# a TypeScript copy ships) and no pnpm. So the launcher's install check fails on
+# every launch, and the install it triggers (a) can never converge here and
+# (b) races itself across concurrent embedded-chat (/api/pty) connections →
+# ENOTEMPTY → the chat tab dies with a 502 / "[session ended]". Pointing at the
+# prebuilt bundle sidesteps the whole check. (A separate launcher hardening is
+# tracked independently.)
 ENV HERMES_TUI_DIR=/opt/hermes/ui-tui
 ENV HERMES_HOME=/opt/data
 ENV HERMES_WRITE_SAFE_ROOT=/opt/data

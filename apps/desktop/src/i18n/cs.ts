@@ -1928,6 +1928,14 @@ export const csOverrides = {
       localDesc: 'Spustí soukromý backend Hermes na tomto počítači. Jde o výchozí režim, který funguje i offline.',
       remoteTitle: 'Vzdálená brána',
       remoteDesc: 'Připojí tuto desktopovou aplikaci ke vzdálenému backendu Hermes.',
+      webappOauthPaste: {
+        title: 'Dokončení přihlášení',
+        description:
+          'Pokud přihlašovací karta skončila na adrese, která se nenačetla (tento prohlížeč není na počítači brány), vložte sem tuto adresu.',
+        placeholder: 'http://127.0.0.1:…/webapp/gateway-connections/oauth/callback?…',
+        finish: 'Dokončit',
+        failed: 'Přihlášení se nepodařilo dokončit'
+      },
       remoteAuthHint:
         'Hostované brány používají OAuth nebo uživatelské jméno a heslo; vlastní servery mohou používat token relace.',
       cloudTitle: 'Hermes Cloud',
@@ -2996,6 +3004,12 @@ export const csOverrides = {
         disabledTitle: 'Prohlížení se skutečným profilem vypnuto',
         disabledMessage: 'Snímek profilu bude vymazán; nové relace používají čistý prohlížeč.',
         failedSave: 'Nelze uložit nastavení reálného profilu',
+        reimportSignins: 'Znovu načíst přihlášení',
+        signinsImportedTitle: 'Přihlášení v prohlížeči aplikace',
+        signinsImported: count =>
+          `Prohlížeč aplikace byl přihlášen pomocí ${count} ${count === 1 ? 'souboru' : 'souborů'} cookie z vašeho profilu prohlížeče.`,
+        signinsRemote: 'Tento backend běží na jiném počítači, takže se jeho profil prohlížeče do prohlížeče aplikace neimportuje.',
+        signinsFailed: 'Přihlášení se nepodařilo importovat do prohlížeče aplikace',
         prompt: {
           title: 'Zůstaňte přihlášeni na svých stránkách',
           body: 'Umožněte Hermesu procházet web pomocí snímku profilu vašeho výchozího prohlížeče, aby na webech bylo vaše přihlášení už aktivní.',
@@ -5745,6 +5759,16 @@ export const csOverrides = {
       restartFailed: 'Restart serveru selhal',
       hideConsole: 'Skrýt konzoli náhledu',
       showConsole: 'Zobrazit konzoli náhledu',
+      vaultFill: 'Vyplnit uložené přihlášení',
+      vaultTitle: site => `Uložená přihlášení pro ${site}`,
+      vaultLoading: 'Načítání uložených přihlášení…',
+      vaultEmpty: 'Pro tento web není uložené žádné přihlášení',
+      vaultUnlock: name => `Odemknout ${name}`,
+      vaultOpenSettings: 'Otevřít nastavení trezoru přihlašovacích údajů',
+      vaultFilled: label => `Vyplněno ${label}. Zkontrolujte formulář a poté se přihlaste.`,
+      vaultFillFailed: 'Přihlášení se nepodařilo vyplnit',
+      vaultLoadFailed: 'Uložená přihlášení se nepodařilo načíst',
+      vaultPageNotReady: 'Stránka se stále načítá. Zkuste to znovu, až se dokončí.',
       hideDevTools: 'Skrýt DevTools náhledu',
       openDevTools: 'Otevřít DevTools náhledu',
       goBack: 'Zpět',
@@ -5899,6 +5923,7 @@ export const csOverrides = {
       react: 'Reagovat',
       dismissError: 'Skrýt chybu',
       responseStopped: 'Odpověď zastavena',
+      contentRefusedNotice: 'Tuto zprávu odmítl bezpečnostní filtr modelu — zkuste jiný dotaz.',
       errorLayers: {
         auth: 'Problém s přihlášením',
         billing: 'Nedostatek kreditů',

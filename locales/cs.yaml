@@ -975,9 +975,6 @@ platform:
     approved: '✅ Schváleno.'
     denied: '❌ Zamítnuto.'
     approval_expired: '⌛ Platnost schválení vypršela — příkaz nebyl spuštěn (již vypršel časový limit nebo bylo rozhodnuto jinde).'
-  yuanbao:
-    slow_response_notice: 'Tento úkol je trochu složitější — stále na něm pracuji, prosím vydržte...'
-    owner_command_denied: '⚠️ {command} je k dispozici pouze tvůrci v režimu soukromého chatu'
   shared:
     truncated_suffix: "\n...(zkráceno)"
     unknown: 'neznámé'
@@ -1713,8 +1710,8 @@ cli:
   backtrack:
     title: '↺ Zpět — vyberte dřívější zadání'
     keys_hint: '↑/↓ výběr · Enter upravit a odeslat · f odbočit odsud · Esc zavřít'
-    preview_label: 'Zadání {number} z {total}:'
-    more_lines: '… (dalších {count} řádků)'
+    prime_hint: 'stiskněte esc znovu pro úpravu předchozí zprávy'
+    no_previous: 'Žádná předchozí zpráva k úpravě.'
     editing_hint: '↺ Úprava zadání {number} — Enter se vrátí sem a odešle · Esc Esc zruší'
     edit_cancelled: '↺ Vrácení zrušeno; nic nebylo odstraněno.'
     rewound: '↺ Vráceno k zadání {number} ({count} zpráv archivováno); odesílám úpravu.'
@@ -3980,3 +3977,9 @@ plan_usage:
   then_wait: 'do té doby jen modely zdarma'
   then_wait_large: 'velké modely pozastaveny do té doby'
 
+
+shared:
+  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  undo_rollback:
+    list: '↶ Soubory změněné ve vrácených krocích: {files}. Spusťte /rollback pro zobrazení kontrolních bodů a jejich obnovení.'
+    more: '+{count} dalších'

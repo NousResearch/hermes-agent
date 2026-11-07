@@ -1608,19 +1608,17 @@ def _would_cycle(conn: sqlite3.Connection, parent_id: str, child_id: str) -> boo
     return False
 
 
-def unlink_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> bool:
-    with write_txn(conn):
-        cur = conn.execute(
-            "DELETE FROM task_links WHERE parent_id = ? AND child_id = ?", (parent_id, child_id),
-        )
-        removed = cur.rowcount > 0
-        if removed:
-            _append_event(conn, child_id, "unlinked", {"parent": parent_id, "child": child_id})
-    if removed:
-        # Re-gate the child now (as complete_task/unblock_task do) instead of
-        # leaving it in todo until the next tick.
-        recompute_ready(conn)
-    return removed
+def unlink_tasks(
+    conn: sqlite3.Connection, parent_id: str, child_id: str, *, actor: Optional[str] = None,
+    expected_child_run_id: Optional[int] = None, worker_task_id: Optional[str] = None,
+    deny_foreign_live_child: bool = False,
+) -> bool:
+    """Remove an edge through the atomic worker-fenced security helper."""
+    from hermes_cli.kanban_db_security import unlink_tasks as _unlink_tasks
+    return _unlink_tasks(
+        conn, parent_id, child_id, actor=actor, expected_child_run_id=expected_child_run_id,
+        worker_task_id=worker_task_id, deny_foreign_live_child=deny_foreign_live_child,
+    )
 
 
 def _linked_ids(conn: sqlite3.Connection, want: str, where: str, task_id: str) -> list[str]:
@@ -3554,48 +3552,16 @@ def _landing_status_after_parents(conn: sqlite3.Connection, task_id: str) -> str
     return "ready" if _parents_satisfied(conn, task_id) else "todo"
 
 
-def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
-    """``blocked``/``scheduled`` -> its resumable phase (parent re-gated; ``review``
-    when that is where it left off), closing any leaked run first."""
-    now = int(time.time())
-    with write_txn(conn):
-        resume_status = (
-            _resume_status_from_events(conn, task_id)
-            if _task_status(conn, task_id) == "blocked"
-            else "ready"
-        )
-        _reclaim_dangling_run(
-            conn, task_id, statuses=("blocked", "scheduled"), now=now,
-            note="invariant recovery on unblock",
-        )
-        # Re-gate on parent completion before restoring the source phase.
-        landing_status = _landing_status_after_parents(conn, task_id)
-        new_status = (
-            "review"
-            if landing_status == "ready" and resume_status == "review"
-            else landing_status
-        )
-        # ``block_kind``/``block_recurrences`` deliberately survive the unblock:
-        # resetting them is the amnesia that let cron-unblock <-> re-block loop
-        # unbounded; only complete_task clears them. ``consecutive_failures``
-        # (the dispatcher's spawn/crash counter) IS reset — a deliberate unblock
-        # is a fresh start for the retry budget.
-        cur = conn.execute(
-            "UPDATE tasks SET status = ?, current_run_id = NULL, "
-            "consecutive_failures = 0, last_failure_error = NULL "
-            "WHERE id = ? AND status IN ('blocked', 'scheduled')", (new_status, task_id),
-        )
-        if cur.rowcount != 1:
-            return False
-        _append_event(
-            conn, task_id, "unblocked",
-            (
-                {"status": new_status, "resume_status": resume_status}
-                if new_status != "ready" or resume_status != "ready"
-                else None
-            ),
-        )
-        return True
+def unblock_task(
+    conn: sqlite3.Connection, task_id: str, *, actor: Optional[str] = None,
+    expected_run_id: Optional[int] = None, worker_task_id: Optional[str] = None,
+) -> bool:
+    """Unblock through the atomic worker-fenced security helper."""
+    from hermes_cli.kanban_db_security import unblock_task as _unblock_task
+    return _unblock_task(
+        conn, task_id, actor=actor, expected_run_id=expected_run_id,
+        worker_task_id=worker_task_id,
+    )
 
 
 def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:

@@ -534,14 +534,28 @@ KANBAN_UNBLOCK_SCHEMA = _schema(
     "kanban_unblock",
     (
         "Unblock a Kanban task. It moves to ready when all parents are done, "
-        "or todo while any parent remains open. Orchestrator-only — only "
-        "profiles with the kanban toolset can unblock routed work; "
-        "dispatcher-spawned task workers never see this tool."
+        "or todo while any parent remains open. Operators may unblock any "
+        "task; a dispatcher worker may only self-unblock a live transient or "
+        "dependency run, never needs_input or an ended/stale run."
     ),
     {
         "task_id": _prop("string", "Blocked task id to move to ready or parent-gated todo."),
     },
     ["task_id"],
+)
+
+KANBAN_UNLINK_SCHEMA = _schema(
+    "kanban_unlink",
+    (
+        "Remove a parent→child dependency edge. Operators may remove any "
+        "existing edge, but a worker may only remove an edge whose child is "
+        "its own live current run; foreign live children are refused."
+    ),
+    {
+        "parent_id": {"type": "string", "description": "Parent task id."},
+        "child_id": {"type": "string", "description": "Child task id."},
+    },
+    ["parent_id", "child_id"],
 )
 
 KANBAN_SPECIFY_SCHEMA = _schema(

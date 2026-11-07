@@ -16,16 +16,21 @@ def test_worker_create_keeps_durable_origin(tmp_path, monkeypatch, linked, expli
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     kb.init_db()
     with kbc.connect_closing() as conn:
-        owner = kb.create_task(conn, title="owner", session_id="durable")
+        owner = kb.create_task(
+            conn, title="owner", session_id="durable", assignee="default",
+        )
         kn.add_notify_sub(conn, task_id=owner, platform="discord", chat_id="chat",
                           user_id="user", notifier_profile="default", delivery_mode="notify",
                           delivery_metadata={"scope_id": "guild", "parent_chat_id": "forum"})
+        kb.claim_task(conn, owner)
         expected = kn.list_notify_subs(conn, owner)[0]
+        run_id = kb.get_task(conn, owner).current_run_id
     if explicit:
         state = SessionDB(db_path=tmp_path / "state.db")
         state.create_session(explicit, source="cli")
         state.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", owner)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
     monkeypatch.setenv("HERMES_SESSION_ID", "ephemeral")
     monkeypatch.setattr(async_delegation, "_current_origin_session_id", lambda: "api-origin")
     # Even a matching current channel must not upgrade an inherited passive policy.

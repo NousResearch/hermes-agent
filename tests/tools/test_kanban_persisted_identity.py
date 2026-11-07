@@ -67,6 +67,10 @@ def test_a_served_profiles_tick_authors_board_records_as_that_profile(board_env,
     ``HERMES_PROFILE`` pin does not re-label a served profile's writes."""
     from tools import kanban_tools as kt
     root, tid = board_env
+    # This is a served-profile/orchestrator tick, not a dispatcher worker.  A
+    # worker task token would now correctly fail closed on the profile board.
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_RUN_ID", raising=False)
     monkeypatch.setenv("HERMES_PROFILE", "launch-host")  # the launch process's own pin
 
     for name in ("alpha", "beta", "alpha"):
@@ -99,3 +103,17 @@ def test_a_dispatched_worker_keeps_its_pinned_identity_and_an_unnamed_caller_sta
     monkeypatch.setattr(profiles, "get_active_profile_name", lambda: "")
     assert json.loads(kt._handle_comment({"task_id": tid, "body": "anon"}))["ok"]
     assert _last_comment_author(tid) == "worker"
+
+
+def test_worker_context_never_falls_back_on_invisible_task(board_env, monkeypatch):
+    """An absent worker task fails closed for create and specify."""
+    from tools import kanban_tools as kt
+
+    monkeypatch.setenv("HERMES_PROFILE", "spoofed-actor")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_missing_from_selected_board")
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "1")
+
+    create = json.loads(kt._handle_create({"title": "must not land", "assignee": "peer"}))
+    specify = json.loads(kt._handle_specify({"task_id": "t_missing_from_selected_board"}))
+    assert not create.get("ok"), create
+    assert not specify.get("ok"), specify

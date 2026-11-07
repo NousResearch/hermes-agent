@@ -84,13 +84,24 @@ def test_creator_reaches_ready_when_all_parents_done(board_env):
 def test_worker_can_specify_different_card_it_created(board_env, monkeypatch):
     worker_task = _task("worker task")
     target = _task("worker-created target")
+    from hermes_cli import kanban_db as kb
+    from hermes_cli.kanban_db_connect import connect
+    with connect() as conn:
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status = 'ready', assignee = 'creator' WHERE id = ?",
+                (worker_task,),
+            )
+        kb.claim_task(conn, worker_task)
+        run_id = kb.get_task(conn, worker_task).current_run_id
     monkeypatch.setenv("HERMES_KANBAN_TASK", worker_task)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
 
     out = _dispatch({"task_id": target})
 
     assert out.get("ok"), out
     assert _read(target)[0].status == "ready"
-    assert _read(worker_task)[0].status == "triage"
+    assert _read(worker_task)[0].status == "running"
 
 
 

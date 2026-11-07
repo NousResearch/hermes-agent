@@ -1192,6 +1192,9 @@ def _run_repair_strategies(db_path: Path, report: dict[str, Any]) -> dict[str, A
             reason = str(exc)
             if failure_msg is not None:
                 logger.warning(failure_msg, exc)
+        if isinstance(reason, HealthCheckUnavailable):
+            report["_repair_attempted"] = False
+            return _repair_skip(report, "aborted", f"could not check repaired snapshot: {reason}")
         if reason is None:
             report["repaired"], report["strategy"] = True, name
             logger.warning(success_msg, db_path)

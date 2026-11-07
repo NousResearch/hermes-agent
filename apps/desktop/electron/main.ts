@@ -312,6 +312,7 @@ import {
   tightenSecretFileMode,
   writeSecretFileAtomic
 } from './hardening'
+import { isHermesProcess } from './hermes-process'
 import { assertNotPassiveSpawn } from './host-backend-singleton'
 import { HERMES_HUB_FALLBACK_ORIGIN, HERMES_HUB_ORIGIN, isHermesHubClipboardWrite } from './hub-iframe-policy'
 import { requestHudClose } from './hud-close'
@@ -442,6 +443,7 @@ import { registerPreviewGuestIpc } from './preview-guest-ipc'
 import { commandFocusedGuest } from './preview-guest-offscreen'
 import { applyPreviewGuestAttachPrefs } from './preview-guest-throttle'
 import { PreviewReachRegistry } from './preview-reach'
+import { registerPreviewSignins, runSigninExport } from './preview-signins'
 import { previewHttpUrlTarget } from './preview-url-target'
 import { FirstRunSetupResetError, runPrimaryBackendStartup } from './primary-backend-startup'
 import { joinPrimaryBoot, primaryBootRequest, primaryDialClaimKey, primaryProfileRestorable } from './primary-boot-join'
@@ -794,7 +796,7 @@ let f12Blocked = false
 
 // Preload must be plain JS — Electron's sandbox can't run .ts, and tsx's
 // ESM loader is broken on Electron 40's Node (ERR_INVALID_RETURN_PROPERTY_VALUE).
-// Dev (`npm run dev`) and prod both load the esbuild output from dist/.
+// Dev (`pnpm run dev`) and prod both load the esbuild output from dist/.
 const PRELOAD_PATH = path.join(APP_ROOT, 'dist', 'electron-preload.js')
 const PREVIEW_GUEST_PRELOAD_PATH = path.join(APP_ROOT, 'dist', 'preview-guest-preload.js')
 
@@ -867,7 +869,7 @@ if (IS_WINDOWS) {
   }
 }
 
-// Renderer debugging port. On for dev-server runs (`hgui` / `npm run dev`) so
+// Renderer debugging port. On for dev-server runs (`hgui` / `pnpm run dev`) so
 // the CDP tooling in scripts/ can attach; never for a packaged build — see
 // electron/dev-cdp.ts. Must run before app `ready` like the switches above;
 // Chromium binds it at launch.
@@ -4853,7 +4855,7 @@ async function resolveHermesBackend(backendArgs: string[]): Promise<ResolvedHerm
     }
   }
 
-  // 2. Development source -- when running `npm run dev` from a checkout, the
+  // 2. Development source -- when running `pnpm run dev` from a checkout, the
   //    cloned repo at SOURCE_REPO_ROOT takes precedence over ACTIVE and any
   //    installed `hermes` on PATH so local Python edits are actually exercised.
   //    (In dev with no checkout, SOURCE_REPO_ROOT won't pass isHermesSourceRoot.)
@@ -8726,36 +8728,6 @@ function writeActiveDesktopProfile(name: string | null): string | null {
   return desktopProfilePreferences.remember(name)
 }
 
-// True when the given pid belongs to a running process whose command line
-// contains "hermes", avoiding false positives from stale gateway.pid files
-// whose PID was recycled by the OS to an unrelated process.
-function isHermesProcess(pid) {
-  try {
-    process.kill(pid, 0) // signal 0 = existence check, no signal sent
-  } catch {
-    return false
-  }
-
-  // On macOS / Linux, check the command line to avoid PID recycling false positives.
-  try {
-    const cmdline = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8')
-
-    return cmdline.includes('hermes')
-  } catch {
-    // /proc not available (macOS) — fall back to ps. Use -o args= to inspect
-    // the full command line, not just the process name.  -o comm= would return
-    // "python3" for any Python process, creating false positives.
-    try {
-      const { execSync } = require('child_process')
-      const out = execSync(`ps -p ${pid} -o args=`, { encoding: 'utf8', timeout: 2000 })
-
-      return out.includes('hermes')
-    } catch {
-      return false
-    }
-  }
-}
-
 // Seed active-profile.json from the best available signal when the file does
 // not yet exist.  Runs exactly once (no-op once the file exists).  Priority:
 //   1. Legacy ~/.hermes/active_profile (explicit CLI choice via hermes profile use)
@@ -12178,7 +12150,9 @@ function installPreviewGuestPreload() {
     }
 
     contents.on('will-attach-webview', (_attachEvent, webPreferences, params) => {
-      applyPreviewGuestAttachPrefs(webPreferences, params.partition, PREVIEW_GUEST_PRELOAD_PATH)
+      applyPreviewGuestAttachPrefs(webPreferences, params.partition, PREVIEW_GUEST_PRELOAD_PATH, p =>
+        session.fromPartition(p)
+      )
     })
   })
 }
@@ -15505,6 +15479,19 @@ ipcMain.on('hermes:previewShortcutActive', (_event, active) => {
 })
 
 registerPreviewGuestIpc(owner => streamThrottle.holdWindow(owner))
+// The in-app browser's real-profile sign-ins: main decides "local" from the route's own connection.
+registerPreviewSignins({
+  userData: app.getPath('userData'),
+  log: rememberLog,
+  resolveRoute: async (sender, profile, connectionId) => {
+    const source = windowConnectionRoutes.get(sender.id) ?? null
+    const route = connectionId ? { connectionId, profile: profile || 'default' } : resolveDesktopConnectionRequest(profile, source, primaryProfileKey())
+    const connection = await connectDesktopProfileRoute(route, sender, !connectionId && desktopConnectionRequestInheritsPrimary(profile, source))
+
+    return { profile: route.profile, local: connection.mode !== 'remote' }
+  },
+  exportSignins: async profile => runSigninExport(await ensureRuntime(await resolveHermesBackend(['--profile', profile, 'browser', 'export-signins', '--json']), () => undefined), resolveHermesCwd(), HERMES_HOME, profileBackendParentEnv({ hermesHome: HERMES_HOME, profile }))
+})
 
 ipcMain.on('hermes:f12ShortcutActive', (event, active) => {
   if (active) {
@@ -17135,7 +17122,7 @@ ipcMain.handle('hermes:version', async (_event, scope?: { connectionId?: string;
     // True when the bundle on disk is not the one this process loaded — a
     // plain app restart (no rebuild, no installer) clears the skew above.
     // Packaged only: a dev `--build-only` rewrites build/install-stamp.json
-    // under a running `npm start`, which is a rebuild the developer asked for,
+    // under a running `pnpm start`, which is a rebuild the developer asked for,
     // not a torn install to offer a restart for.
     bundleSwapPending: IS_PACKAGED && detectBundleSwap(INSTALL_STAMP, readBundleSwapStamp(process.resourcesPath))
   }

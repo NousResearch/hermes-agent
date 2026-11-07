@@ -337,7 +337,7 @@ def _validate_auxiliary_config(config_path, issues: list) -> None:
 
 @doctor_check()
 def _check_config_file(should_fix: bool, f: Finding) -> None:
-    """config.yaml presence (project cli-config.yaml as fallback); model/provider validation."""
+    """config.yaml presence; model/provider validation."""
     from hermes_cli.config_backend import config_exists, get_config_backend
     from hermes_cli.doctor import HERMES_HOME, PROJECT_ROOT, _DHH
     config_path = HERMES_HOME / 'config.yaml'
@@ -351,8 +351,6 @@ def _check_config_file(should_fix: bool, f: Finding) -> None:
             _validate_model_config(config_path, f.issues)
         with warn_on_error("Could not validate auxiliary task routing"):
             _validate_auxiliary_config(config_path, f.issues)
-    elif (PROJECT_ROOT / 'cli-config.yaml').exists():
-        check_ok("cli-config.yaml exists (in project directory)")
     elif should_fix:
         from hermes_cli.config import seed_config_file
         from_template = seed_config_file(config_path, PROJECT_ROOT / 'cli-config.yaml.example')

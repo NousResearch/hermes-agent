@@ -80,14 +80,12 @@ function associate(doc: TranscriptDocument): { labels: Array<string | undefined>
   return { labels, owners }
 }
 
-/** Presentation labels only; never mutates or reorders the stored projection. */
-export function transcriptAssociations(doc: TranscriptDocument): Array<string | undefined> {
-  return associate(doc).labels
-}
-
-/** Only consume a contiguous run whose verified association points to this turn. */
-export function transcriptActivityGroups(doc: TranscriptDocument): Array<{ index: number; results: number[] }> {
-  const { owners } = associate(doc)
+/** Labels and contiguous activity groups share one association pass; stored order is unchanged. */
+export function transcriptLayout(doc: TranscriptDocument): {
+  associations: Array<string | undefined>
+  groups: Array<{ index: number; results: number[] }>
+} {
+  const { labels, owners } = associate(doc)
   const groups: Array<{ index: number; results: number[] }> = []
 
   for (let index = 0; index < doc.messages.length; index++) {
@@ -106,5 +104,5 @@ export function transcriptActivityGroups(doc: TranscriptDocument): Array<{ index
     index += results.length
   }
 
-  return groups
+  return { associations: labels, groups }
 }

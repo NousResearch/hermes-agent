@@ -1,4 +1,4 @@
-import { transcriptActivityGroups, transcriptAssociations } from './transcript-association'
+import { transcriptLayout } from './transcript-association'
 import type { TranscriptAttachment, TranscriptDocument, TranscriptTurn } from './transcript-document'
 import { escapeTranscriptXml as esc, transcriptBase64, transcriptImage } from './transcript-media'
 import { safeTranscriptLink, transcriptTextParts } from './transcript-text'
@@ -56,7 +56,7 @@ function turn(m: TranscriptTurn, doc: TranscriptDocument, association?: string, 
 
 export function renderHtml(doc: TranscriptDocument): string {
   const metadata = `Session: ${esc(doc.session_id)} · Exported: ${esc(doc.exported_at)}${doc.model ? ` · Model: ${esc(doc.model)}` : ''}`
-  const associations = transcriptAssociations(doc)
+  const { associations, groups } = transcriptLayout(doc)
 
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><title>${esc(doc.title)}</title><style>${style}</style></head><body><main><header><h1>${esc(doc.title)}</h1><p class="meta">${metadata}</p></header>${doc.warnings.map(w => `<p class="warning">Warning: ${esc(w)}</p>`).join('')}${transcriptActivityGroups(doc).map(({ index, results }) => turn(doc.messages[index], doc, associations[index], results.map(i => turn(doc.messages[i], doc, associations[i])).join(''))).join('')}</main></body></html>`
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><title>${esc(doc.title)}</title><style>${style}</style></head><body><main><header><h1>${esc(doc.title)}</h1><p class="meta">${metadata}</p></header>${doc.warnings.map(w => `<p class="warning">Warning: ${esc(w)}</p>`).join('')}${groups.map(({ index, results }) => turn(doc.messages[index], doc, associations[index], results.map(i => turn(doc.messages[i], doc, associations[i])).join(''))).join('')}</main></body></html>`
 }

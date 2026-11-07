@@ -1,4 +1,4 @@
-import { transcriptActivityGroups, transcriptAssociations } from './transcript-association'
+import { transcriptLayout } from './transcript-association'
 import type { TranscriptAttachment, TranscriptDocument, TranscriptTurn } from './transcript-document'
 import { markdownProse } from './transcript-markdown-prose'
 import { escapeTranscriptXml as esc, transcriptBase64, transcriptImage } from './transcript-media'
@@ -87,7 +87,7 @@ function turn(m: TranscriptTurn, doc: TranscriptDocument, association?: string):
 }
 
 export function renderMarkdown(doc: TranscriptDocument): string {
-  const associations = transcriptAssociations(doc)
+  const { associations, groups } = transcriptLayout(doc)
 
   return (
     [
@@ -95,7 +95,7 @@ export function renderMarkdown(doc: TranscriptDocument): string {
       `Session: ${plain(doc.session_id)} · Exported: ${plain(doc.exported_at)}${doc.model ? ` · Model: ${plain(doc.model)}` : ''}`,
       'Technical details are shown inline; inline image support varies by Markdown viewer.',
       ...doc.warnings.map(w => `Warning: ${plain(w)}`),
-      ...transcriptActivityGroups(doc).map(({ index, results }) => [
+      ...groups.map(({ index, results }) => [
         turn(doc.messages[index], doc, associations[index]),
         ...results.map(i => turn(doc.messages[i], doc, associations[i]).replace(/^## /, '**').replace(/\n/, '**\n').split('\n').map(line => `> ${line}`).join('\n'))
       ].join('\n\n'))

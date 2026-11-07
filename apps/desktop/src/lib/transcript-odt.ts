@@ -1,8 +1,8 @@
 import { strToU8, zipSync } from 'fflate'
 
-import { transcriptActivityGroups, transcriptAssociations } from './transcript-association'
+import { transcriptLayout } from './transcript-association'
 import type { TranscriptDocument } from './transcript-document'
-import { image } from './transcript-odt-image'
+import { transcriptBase64, transcriptImage } from './transcript-media'
 import { transcriptTextParts } from './transcript-text'
 
 const mime = 'application/vnd.oasis.opendocument.text'
@@ -25,8 +25,7 @@ const namespaces =
   'xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0" xmlns:xlink="http://www.w3.org/1999/xlink"'
 
 function renderBody(doc: TranscriptDocument, media: Record<string, Uint8Array>, entries: string[]): string {
-  const associations = transcriptAssociations(doc)
-  const groups = transcriptActivityGroups(doc)
+  const { associations, groups } = transcriptLayout(doc)
   const grouped = new Set(groups.flatMap(group => group.results))
   const activity = new Set(groups.filter(group => group.results.length).map(group => group.index))
 
@@ -69,13 +68,13 @@ function renderBody(doc: TranscriptDocument, media: Record<string, Uint8Array>, 
       ...(activity.has(index) ? [h('Tool activity', 3)] : []),
       ...(m.tool_calls ?? []).flatMap((c, i) => [h(`Tool: ${c.name}${c.id || c.call_id || c.uid ? ` · Call ${i + 1}` : ''}`, activity.has(index) ? 4 : 3), p(c.arguments, true, 'Code', true)]),
       ...(m.attachments ?? []).map(a => {
-        const img = a.kind === 'image' && a.data_url ? image(a.data_url) : undefined
+        const img = a.kind === 'image' ? transcriptImage(a.data_url, 'odt') : undefined
         let drawing = ''
 
-        if (img) {
-          const name = `Pictures/image${entries.length + 1}.${img.ext}`
+        if (img?.width && img.height) {
+          const name = `Pictures/image${entries.length + 1}.${img.extension}`
           media[name] = img.bytes
-          entries.push(`<manifest:file-entry manifest:full-path="${name}" manifest:media-type="${img.type}"/>`)
+          entries.push(`<manifest:file-entry manifest:full-path="${name}" manifest:media-type="${img.mime}"/>`)
           const scale = Math.min(12 / img.width, 10 / img.height, 0.0264583)
           const width = Math.max(0.1, img.width * scale).toFixed(3)
           const height = Math.max(0.1, img.height * scale).toFixed(3)
@@ -118,11 +117,5 @@ export function renderOdt(doc: TranscriptDocument): string {
     ...media
   })
 
-  let binary = ''
-
-  for (let i = 0; i < bytes.length; i += 8192) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + 8192))
-  }
-
-  return btoa(binary)
+  return transcriptBase64(bytes)
 }

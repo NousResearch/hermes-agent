@@ -3,7 +3,6 @@ import { expect, it } from 'vitest'
 
 import { DEFAULT_TRANSCRIPT_OPTIONS, type TranscriptDocument } from './transcript-document'
 import { escapeTranscriptXml, transcriptBase64, transcriptImage } from './transcript-media'
-import { image as odtImage } from './transcript-odt-image'
 import { renderTranscript } from './transcript-render'
 
 const png =
@@ -32,20 +31,20 @@ it.each(['docx', 'odt'] as const)('rejects the reported corrupt PNG in the actua
 
 it('checks every PNG chunk CRC and framing without changing valid bytes', () => {
   expect(transcriptImage(png)?.bytes).toEqual(validBytes)
-  expect(odtImage(png)?.bytes).toEqual(validBytes)
+  expect(transcriptImage(png, 'odt')?.bytes).toEqual(validBytes)
 
   for (const offset of [29, 41, 65]) { // IHDR CRC, IDAT data, IEND CRC
     const bad = validBytes.slice()
     bad[offset] ^= 1
     const data = `data:image/png;base64,${transcriptBase64(bad)}`
     expect(transcriptImage(data)).toBeUndefined()
-    expect(odtImage(data)).toBeUndefined()
+    expect(transcriptImage(data, 'odt')).toBeUndefined()
   }
 
   for (const bad of [validBytes.subarray(0, validBytes.length - 1), Uint8Array.from([...validBytes, 0])]) {
     const data = `data:image/png;base64,${transcriptBase64(bad)}`
     expect(transcriptImage(data)).toBeUndefined()
-    expect(odtImage(data)).toBeUndefined()
+    expect(transcriptImage(data, 'odt')).toBeUndefined()
   }
 })
 

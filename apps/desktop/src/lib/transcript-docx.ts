@@ -1,6 +1,6 @@
 import { strToU8, zipSync } from 'fflate'
 
-import { transcriptActivityGroups, transcriptAssociations } from './transcript-association'
+import { transcriptLayout } from './transcript-association'
 import type { TranscriptAttachment, TranscriptDocument, TranscriptTurn } from './transcript-document'
 import { DOCX_FOOTER, DOCX_SETTINGS, DOCX_STYLES } from './transcript-docx-styles'
 import { transcriptBase64, transcriptImage, escapeTranscriptXml as x } from './transcript-media'
@@ -107,7 +107,7 @@ function turn(message: TranscriptTurn, state: PackageState, collapse: boolean, a
 }
 
 export function renderDocx(doc: TranscriptDocument): string {
-  const associations = transcriptAssociations(doc)
+  const { associations, groups } = transcriptLayout(doc)
 
   const state: PackageState = {
     files: {},
@@ -123,7 +123,7 @@ export function renderDocx(doc: TranscriptDocument): string {
     paragraph(`Session: ${doc.session_id} · Exported: ${doc.exported_at}`, '<w:pStyle w:val="Metadata"/>'),
     ...(doc.model ? [paragraph(`Model: ${doc.model}`, '<w:pStyle w:val="Metadata"/>')] : []),
     ...doc.warnings.map(warning => paragraph(`Note: ${warning}`, '<w:pStyle w:val="Warning"/>')),
-    ...transcriptActivityGroups(doc).flatMap(({ index, results }) => [
+    ...groups.flatMap(({ index, results }) => [
       turn(doc.messages[index], state, doc.options.collapse_details, associations[index], false, results.length > 0),
       ...results.map(i => turn(doc.messages[i], state, doc.options.collapse_details, associations[i], true))
     ])

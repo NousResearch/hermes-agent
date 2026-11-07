@@ -13,7 +13,7 @@ import {
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import { useI18n } from '@/i18n'
 import { exportSessionFile, type ExportSessionFileTarget } from '@/lib/session-export'
-import type { TranscriptOptions } from '@/lib/transcript-document'
+import { DEFAULT_TRANSCRIPT_OPTIONS, type TranscriptOptions } from '@/lib/transcript-document'
 import { notify, notifyError } from '@/store/notifications'
 
 import { SessionExportOptions } from './session-export-options'
@@ -34,16 +34,7 @@ function ExportSessionForm({ target, onClose }: { target: ExportTarget; onClose:
   const [format, setFormat] = useState<ExportSessionFileTarget['format']>('md')
   const [redact, setRedact] = useState(false)
 
-  const [options, setOptions] = useState<TranscriptOptions>({
-    include_tools: false,
-    include_reasoning: false,
-    include_images: true,
-    include_videos: true,
-    include_files: true,
-    include_links: true,
-    include_asides: true,
-    collapse_details: true
-  })
+  const [options, setOptions] = useState<TranscriptOptions>({ ...DEFAULT_TRANSCRIPT_OPTIONS })
 
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')

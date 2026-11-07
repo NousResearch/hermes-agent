@@ -1,7 +1,7 @@
 import { strFromU8, unzipSync } from 'fflate'
 import { expect, it } from 'vitest'
 
-import { transcriptAssociations } from './transcript-association'
+import { transcriptLayout } from './transcript-association'
 import { DEFAULT_TRANSCRIPT_OPTIONS, type TranscriptDocument } from './transcript-document'
 import type { TranscriptTurn } from './transcript-document'
 import { renderDocx } from './transcript-docx'
@@ -53,7 +53,7 @@ it('rejects duplicate and conflicting identities, including cross-lineage collis
   ]
   for (const [messages, expected] of cases) {
     const doc: TranscriptDocument = { version: 1, session_id: 's', title: 't', exported_at: 'now', warnings: [], options: { ...DEFAULT_TRANSCRIPT_OPTIONS, include_tools: true }, messages }
-    expect(transcriptAssociations(doc).filter((_, i) => messages[i].role === 'tool')).toEqual(expected)
+    expect(transcriptLayout(doc).associations.filter((_, i) => messages[i].role === 'tool')).toEqual(expected)
   }
 })
 

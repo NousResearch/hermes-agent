@@ -71,6 +71,37 @@ function jpegSize(bytes: Uint8Array): [number, number] | undefined {
   return undefined
 }
 
+// Preserve ODT's existing baseline/progressive JPEG and scan-header requirements.
+function odtJpegSize(bytes: Uint8Array): number[] | undefined {
+  if (bytes.length < 32 || bytes[0] !== 255 || bytes[1] !== 216 ||
+    bytes[bytes.length - 2] !== 255 || bytes[bytes.length - 1] !== 217) { return undefined }
+
+  let p = 2,
+    hasFrame = false,
+    hasScan = false,
+    width = 0,
+    height = 0
+
+  while (p + 4 < bytes.length && bytes[p] === 255) {
+    const marker = bytes[p + 1],
+      len = bytes[p + 2] * 256 + bytes[p + 3]
+
+    if (len < 2 || p + 2 + len > bytes.length) { break }
+    if ([0xc0, 0xc1, 0xc2].includes(marker) && len >= 8) {
+      height = bytes[p + 5] * 256 + bytes[p + 6]
+      width = bytes[p + 7] * 256 + bytes[p + 8]
+      hasFrame = true
+    }
+    if (marker === 0xda) {
+      hasScan = true
+      break
+    }
+    p += 2 + len
+  }
+
+  return hasFrame && hasScan ? [width, height] : undefined
+}
+
 function pngSize(bytes: Uint8Array): number[] | undefined {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
 
@@ -162,7 +193,7 @@ const IMAGE_SIZES: Record<string, (bytes: Uint8Array) => number[] | undefined> =
 }
 
 /** Read only bounded inline raster bytes. Never fetch a URL or open a local path. */
-export function transcriptImage(value?: string): TranscriptImage | undefined {
+export function transcriptImage(value?: string, format?: 'odt'): TranscriptImage | undefined {
   if (!value || value.length > TRANSCRIPT_IMAGE_MAX_BASE64 + 64) {
     return undefined
   }
@@ -185,13 +216,15 @@ export function transcriptImage(value?: string): TranscriptImage | undefined {
     return undefined
   }
 
-  const size = IMAGE_SIZES[match[2]](bytes)
+  const size = format === 'odt' && match[2] === 'jpeg' ? odtJpegSize(bytes) : IMAGE_SIZES[match[2]](bytes)
 
   if (size === undefined) {
     return undefined
   }
 
-  if (size.length && (!size[0] || !size[1] || size[0] > 16384 || size[1] > 16384 || size[0] * size[1] > 16_000_000)) {
+  const maxDimension = format === 'odt' ? 8192 : 16384
+
+  if (size.length && (!size[0] || !size[1] || size[0] > maxDimension || size[1] > maxDimension || size[0] * size[1] > 16_000_000)) {
     return undefined
   }
 

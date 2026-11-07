@@ -17,6 +17,7 @@ from acp.schema import (
 from hermes_cli.gateway_client import GatewayClientError, connect_gateway
 from hermes_constants import get_hermes_home
 from acp_adapter.gateway_reply import GatewayReplyMixin, _text
+from acp_adapter.gateway_errors import gateway_errors, request_error
 from acp_adapter.session import _translate_acp_cwd, _normalize_cwd_for_compare
 
 logger = logging.getLogger(__name__)
@@ -137,6 +138,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             from acp_adapter.elicitation import client_supports_form_elicitation
             self._form_elicitation = client_supports_form_elicitation(message.get("params"))
 
+    @gateway_errors
     async def initialize(self, **kwargs):
         from hermes_cli import __version__
         from acp_adapter.auth import build_auth_methods
@@ -148,6 +150,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
                                                          resume=SessionResumeCapabilities())),
             auth_methods=build_auth_methods())
 
+    @gateway_errors
     async def authenticate(self, method_id, **kwargs):
         from acp_adapter.server import HermesACPAgent
         return await HermesACPAgent.authenticate(self, method_id, **kwargs)
@@ -268,6 +271,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             self._failure = None
             self._changed.notify_all()
 
+    @gateway_errors
     async def new_session(self, cwd, mcp_servers=None, **kwargs):
         client = await self._client()
         descriptor = await client.rpc("runtime.describe")
@@ -413,9 +417,11 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         await self._mutations.apply(client, session_id, 'editor_mcp', editor)
         self._mutations.acknowledge(session_id, 'editor_mcp', editor)
 
+    @gateway_errors
     async def load_session(self, cwd, session_id, mcp_servers=None, **kwargs):
         return LoadSessionResponse(**await self._resume(cwd, session_id, mcp_servers))
 
+    @gateway_errors
     async def resume_session(self, cwd, session_id, mcp_servers=None, **kwargs):
         return ResumeSessionResponse(**await self._resume(cwd, session_id, mcp_servers))
 
@@ -445,6 +451,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
                 if settled["status"] != "terminal":
                     raise
 
+    @gateway_errors
     async def cancel(self, session_id, **kwargs):
         session_id = self._aliases.get(session_id, session_id)
         if session_id not in self._snapshots:
@@ -456,6 +463,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             return
         await self._cancel_admission(session_id, admission_id)
 
+    @gateway_errors
     async def fork_session(self, cwd, session_id, mcp_servers=None, **kwargs):
         from acp.schema import ForkSessionResponse
         session_id = self._aliases.get(session_id, session_id)
@@ -477,6 +485,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         await self._request_live_reasoning(client, child)
         return ForkSessionResponse(session_id=child, **await self._session_fields(child, info, child))
 
+    @gateway_errors
     async def set_session_model(self, model_id, session_id, **kwargs):
         from acp.schema import SetSessionModelResponse
         session_id = self._aliases.get(session_id, session_id)
@@ -570,6 +579,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             raise GatewayClientError("not_found")
         return session_id
 
+    @gateway_errors
     async def set_session_mode(self, mode_id, session_id, **kwargs):
         """Main's Default / Accept Edits / Don't Ask: the session's edit approval policy on the owner."""
         from acp.schema import SetSessionModeResponse
@@ -579,6 +589,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         await self._set_edit_policy(self._held_session(session_id), MODE_TO_EDIT_APPROVAL_POLICY[mode_id])
         return SetSessionModeResponse()
 
+    @gateway_errors
     async def set_config_option(self, config_id, session_id, value=None, **kwargs):
         """The pickers ``config_options`` advertises: the edit mode is the modes select's owner setting,
         the model ``set_session_model``'s pick, the effort the owner's ``reasoning`` mutation (``default``
@@ -637,11 +648,13 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
                     if str(exc) == "session_busy" else f"{label} changes wait for the lost turn: "
                     + self._unknown_recovery(session_id, submitted=False).removeprefix("unknown_execution: "))
             if self._conn:
-                await self._conn.session_update(session_id=self._editor_id(session_id),
-                                                update=acp.update_agent_message_text(text + "\n"))
-            raise acp.RequestError(-32603, text) from exc
+                with suppress(Exception):
+                    await self._conn.session_update(session_id=self._editor_id(session_id),
+                                                    update=acp.update_agent_message_text(text + "\n"))
+            raise request_error(exc, session_id, recovery=text) from exc
         self._mutations.acknowledge(session_id, operation, payload)
 
+    @gateway_errors
     async def list_sessions(self, cursor=None, cwd=None, **kwargs):
         from acp.schema import ListSessionsResponse, SessionInfo
         from acp_adapter.catalog import catalog_sessions
@@ -653,6 +666,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
                             updated_at=row.get("updated_at")) for row in rows[:50]]
         return ListSessionsResponse(sessions=page, next_cursor=page[-1].session_id if len(rows) > 50 else None)
 
+    @gateway_errors
     async def prompt(self, prompt, session_id, **kwargs):
         held_id, session_id = session_id, self._aliases.get(session_id, session_id)
         if session_id not in self._snapshots:

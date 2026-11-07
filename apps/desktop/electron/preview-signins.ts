@@ -364,9 +364,14 @@ export async function applyImportedSignins(
   }
 
   // Reconcile: the claim is now exactly what landed plus anything we failed to remove from the old set.
+  // `retained` includes each previous identity still ours but KEPT (its key is in `current`): that is
+  // the OLD record for a cookie whose value just changed, carrying the stale valueHash. `now` must win
+  // the dedupe so the claim records the freshly-installed hash — otherwise a later consent-off's
+  // `stillOurs` compares the live (new) value against the old hash, rejects its own import, and drops
+  // the claim without removing the cookie (installed-but-unowned). Freshly-imported records last.
   const current = new Set(now.map(identityKey))
   const { retained } = await removeIdentities(jar, previous, current)
-  store.write({ ...store.read(), [profile]: dedupeById([...now, ...retained]) })
+  store.write({ ...store.read(), [profile]: dedupeById([...retained, ...now]) })
 
   return { imported: now.length, failed }
 }
@@ -499,6 +504,10 @@ export async function migratePreviewSigninsForProfile(
           ...(id.hostOnly ? {} : { domain: id.domain }),
           secure: Boolean(match.secure),
           httpOnly: Boolean(match.httpOnly),
+          // Carry the cross-site restriction (F6): dropping it reverts a `Strict`/`Lax`
+          // cookie to Electron's default, changing whether embedded sign-in requests send
+          // it. Electron's Cookie.sameSite is already in cookies.set's lowercase enum.
+          ...(match.sameSite ? { sameSite: match.sameSite } : {}),
           ...(typeof match.expirationDate === 'number' ? { expirationDate: match.expirationDate } : {})
         })
         moved.push(id)

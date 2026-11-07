@@ -34,6 +34,7 @@ function fakeJar() {
       hostOnly: !d.domain,
       secure: Boolean(d.secure),
       httpOnly: Boolean(d.httpOnly),
+      sameSite: d.sameSite,
       expirationDate: d.expirationDate
     }) as unknown as Cookie
 
@@ -249,6 +250,24 @@ describe('syncPreviewSignins', () => {
 
     expect([...jar.keys()]).toEqual(['app.test/|sid'])
   })
+
+  // F3 (SECURITY): a re-import whose cookie value CHANGED must record the FRESH value's hash, or a
+  // later consent-off's `stillOurs` compares the live (new) value against the stale hash, rejects its
+  // own import and drops the claim WITHOUT removing the cookie — leaving it installed but unowned.
+  it('consent-off removes a cookie whose value changed and was re-imported', async () => {
+    const { deps, jar } = rig({ status: 'ok', cookies: [SESSION] })
+    await syncPreviewSignins(deps, sender, { connectionId: null, enabled: true, profile: null })
+
+    // The real-profile cookie value rotated; a re-import installs the new value under the same identity.
+    deps.exportSignins.mockResolvedValueOnce({ status: 'ok', cookies: [{ ...SESSION, value: 'rotated-value' }] })
+    await syncPreviewSignins(deps, sender, { connectionId: null, enabled: true, profile: null })
+    expect(jar.get('app.test/|sid')?.value).toBe('rotated-value')
+
+    const off = await syncPreviewSignins(deps, sender, { connectionId: null, enabled: false, profile: null })
+
+    expect(off).toMatchObject({ status: 'cleared', cleared: 1 })
+    expect(jar.has('app.test/|sid')).toBe(false)
+  })
 })
 
 // P2-7: the per-profile record + jar follow a profile rename/delete.
@@ -264,6 +283,20 @@ describe('profile rename/delete hooks (P2-7)', () => {
     expect(record.job?.length).toBe(1)
     expect(jarFor('work').jar.has('app.test/|sid')).toBe(false)
     expect(jarFor('job').jar.get('app.test/|sid')?.value).toBe('secret-value')
+  })
+
+  // F6 (SECURITY): rename copies the cookie's cross-site restriction. Dropping `sameSite` reverts a
+  // Strict cookie to Electron's default ('unspecified'), changing whether embedded sign-in requests
+  // carry it. Initial import preserves it (cookieSetDetails maps Strict→'strict'), so rename must too.
+  it('rename preserves a cookie sameSite restriction', async () => {
+    const strict = { ...SESSION, domain: '.app.test', sameSite: 'Strict' as const }
+    const { deps, jarFor } = rig({ status: 'ok', cookies: [strict] })
+    await syncPreviewSignins(deps, sender, { connectionId: null, enabled: true, profile: 'work' })
+    expect(jarFor('work').jar.get('app.test/|sid')?.sameSite).toBe('strict')
+
+    await migratePreviewSigninsForProfile(deps, 'work', 'job')
+
+    expect(jarFor('job').jar.get('app.test/|sid')?.sameSite).toBe('strict')
   })
 
   it('delete drops the record and clears the jar', async () => {

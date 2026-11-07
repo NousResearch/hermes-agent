@@ -433,9 +433,19 @@ export interface ComposerActions {
   /** Attach several images in order to the destination current at the call; stops on any change. */
   attachImagePaths: (paths: readonly string[], options?: { followTyping?: boolean }) => Promise<void>
   clearIn: () => void
-  stage?: (text: string, display?: string, destination?: SubmissionDestination, attachments?: QueueItem['attachments']) => QueueItem
+  stage?: (
+    text: string,
+    display?: string,
+    destination?: SubmissionDestination,
+    attachments?: QueueItem['attachments']
+  ) => QueueItem
   dequeue: (retry?: boolean) => QueueItem | undefined
-  enqueue: (text: string, display?: string, destination?: SubmissionDestination, attachments?: QueueItem['attachments']) => QueueItem | void
+  enqueue: (
+    text: string,
+    display?: string,
+    destination?: SubmissionDestination,
+    attachments?: QueueItem['attachments']
+  ) => QueueItem | void
   handleTextPaste: (event: PasteEvent) => MaybePromise<ComposerPasteResult | null>
   openEditor: () => Promise<void>
   prependQueue: (item: QueueItem, destination?: SubmissionDestination) => void
@@ -629,15 +639,20 @@ export interface SlashHandlerContext {
     newLiveSession: (msg?: string, title?: string) => void
     newSession: (msg?: string, title?: string) => Promise<unknown> | void
     resetVisibleHistory: (info?: null | SessionInfo) => void
-    resumeById: (id: string) => Promise<void> | void
+    resumeById: (id: string, resolveId?: () => Promise<null | string>) => Promise<void> | void
     setSessionStartedAt: StateSetter<number>
   }
   slashFlightRef: MutableRefObject<number>
   transcript: {
     page: (text: string, title?: string) => void
     panel: (title: string, sections: PanelSection[]) => void
-    send: (text: string, showUserMessage?: boolean, displayText?: string, expandOverride?: (value: string) => string,
-      submitOpts?: { attachments?: Array<{ path: string; mime: string }> }) => void
+    send: (
+      text: string,
+      showUserMessage?: boolean,
+      displayText?: string,
+      expandOverride?: (value: string) => string,
+      submitOpts?: { attachments?: Array<{ path: string; mime: string }> }
+    ) => void
     setHistoryItems: StateSetter<Msg[]>
     sys: (text: string) => void
     trimLastExchange: (items: Msg[]) => Msg[]

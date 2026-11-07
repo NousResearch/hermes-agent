@@ -104,6 +104,7 @@ def test_the_paused_gateway_starts_under_the_unit_generated_after_the_node_depen
 def test_one_failed_launch_file_is_a_followup_and_the_other_profiles_are_still_rewritten(
         tmp_path, monkeypatch, capsys):
     from hermes_cli import update_launch_files
+    from hermes_cli.config_backend import ConfigBackendUnavailable
 
     homes = [("default", tmp_path / "default"), ("work", tmp_path / "work"), ("lab", tmp_path / "lab")]
     seen: list[str] = []
@@ -112,7 +113,7 @@ def test_one_failed_launch_file_is_a_followup_and_the_other_profiles_are_still_r
         home = Path(gateway_cli.get_hermes_home())
         seen.append(home.name)
         if home.name == "work":
-            raise PermissionError("unit directory is read-only")
+            raise ConfigBackendUnavailable("the remote config backend is unreachable")
 
     monkeypatch.setattr("hermes_cli.update_receipt._profile_homes", lambda: homes)
     monkeypatch.setattr(update_launch_files, "_refreshers", lambda: [("systemd user unit", refresh)])

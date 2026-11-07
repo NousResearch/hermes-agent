@@ -109,6 +109,57 @@ async def cancel_task(task: Optional[asyncio.Task]) -> None:
             await task
 
 
+def _author_ids(event: MessageEvent) -> set:
+    return {uid for uid in (event.source.user_id, event.source.user_id_alt) if uid}
+
+
+def batch_authors_match(existing: MessageEvent, event: MessageEvent) -> bool:
+    """True when two text-batch events come from the same author.
+
+    Batches key on the SESSION, and a shared group session (``group_sessions_per_user: false``)
+    covers the whole group, so rapid messages from different people collide on one key. Merging
+    them keeps only the first sender's ``source`` and the gateway then attributes every line to
+    that one person (seen live in a WhatsApp group: B's interjection ingested as A's turn). Ids
+    match when ``user_id``/``user_id_alt`` overlap; ``user_name`` decides only when neither event
+    carries an id, and events with no identity at all match (legacy single-user behaviour).
+    """
+    existing_ids, event_ids = _author_ids(existing), _author_ids(event)
+    if existing_ids or event_ids:
+        return bool(existing_ids & event_ids)
+    return existing.source.user_name == event.source.user_name
+
+
+async def dispatch_flushed_text_batch(adapter: Any, key: str, event: MessageEvent) -> None:
+    """Hand a flushed text batch to ``adapter._dispatch_text_batch``; a failure is logged.
+
+    Every text-batch flush (quiet-period timer, immediate flush, author change) dispatches through
+    here. Flushes run as their own tasks, so without this boundary a raising handler surfaces only
+    as an unretrieved-task-exception warning, with no adapter or batch key attached.
+    """
+    try:
+        await adapter._dispatch_text_batch(event)
+    except Exception:
+        logger.exception("[%s] Text batch dispatch failed for %s", adapter.name, key)
+
+
+def flush_pending_if_author_changed(adapter: Any, key: str, event: MessageEvent) -> Optional[MessageEvent]:
+    """Return the pending text batch ``event`` may merge into, or None.
+
+    When the pending batch for ``key`` belongs to another author (``batch_authors_match``), it is
+    popped and dispatched now as its own turn and None is returned, so the caller starts a fresh
+    batch for ``event``. The caller re-arms the quiet-period timer, which supersedes the popped
+    batch's timer; the earlier author's turn is dispatched first.
+    """
+    pending = adapter._pending_text_batches.get(key)
+    if pending is None or batch_authors_match(pending, event):
+        return pending
+    flushed = adapter._pop_text_batch(key)
+    task = asyncio.create_task(dispatch_flushed_text_batch(adapter, key, flushed))
+    adapter._background_tasks.add(task)  # strong ref + cancelled with the adapter's other tasks
+    task.add_done_callback(adapter._background_tasks.discard)
+    return None
+
+
 def bounded_put(store: MutableMapping[str, Any], key: str, value: Any, cap: int) -> None:
     """Insert into an insertion-ordered mapping with a hard size bound, evicting the oldest keys. A
     re-put moves the key to the newest position so live entries outlast stale ones."""

@@ -92,6 +92,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes_async, cache_image_from_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from gateway.platforms.helpers import batch_authors_match
 from plugins.platforms.feishu.adapter_choice_cards import FeishuChoiceCardsMixin
 from gateway.status import acquire_scoped_lock
 from gateway.status_scoped_locks import release_scoped_lock
@@ -2968,10 +2969,10 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
     # --- Text batching ---
     @staticmethod
     def _text_batch_is_compatible(existing: MessageEvent, incoming: MessageEvent) -> bool:
-        """Only merge text events when reply/thread context is identical."""
+        """Only merge text events from one author when reply/thread context is identical."""
         return (
-            existing.reply_to_message_id == incoming.reply_to_message_id
-            and existing.reply_to_text == incoming.reply_to_text
+            batch_authors_match(existing, incoming)
+            and existing.reply_to_message_id == incoming.reply_to_message_id and existing.reply_to_text == incoming.reply_to_text
             and existing.source.thread_id == incoming.source.thread_id
         )
 

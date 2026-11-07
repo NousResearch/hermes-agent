@@ -1,6 +1,6 @@
 name: signal-dog
 repo: https://github.com/scottleimroth/signal-dog
-sha: 1ae4d6953b1087aefbf38216a39747e413ca1638
+sha: 2ddea62200e7a9dff18eb91667d55218ea63d043
 title: Signal Dog
 description: >-
   Listens through the microphone for household sounds (a door knock, an appliance beeping, a smoke alarm
@@ -27,7 +27,7 @@ maintainer: scottleimroth
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
-docs_url: https://github.com/scottleimroth/signal-dog/blob/1ae4d6953b1087aefbf38216a39747e413ca1638/README.md
+docs_url: https://github.com/scottleimroth/signal-dog/blob/2ddea62200e7a9dff18eb91667d55218ea63d043/README.md
 version: "0.1.0"
 platforms:
   - linux

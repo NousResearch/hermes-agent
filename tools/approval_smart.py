@@ -36,13 +36,10 @@ _SYSTEM_PROMPT = (
 _VERDICTS = {"APPROVE": "approve", "DENY": "deny"}
 
 
-def _strip_line_comment_stateful(line: str, in_single: bool, in_double: bool) -> tuple[str, bool, bool]:
-    """``_strip_line_comment`` that carries quote state across lines.
-
-    Shell quotes span lines, and Python's ``-c '…'`` payload is one long single-quoted
-    word with real newlines inside it: resetting the state per line makes the second
-    line's ``#`` look like a comment and deletes the rest of that line.
-    """
+def _strip_line_comment(line: str) -> str:
+    """Remove a trailing ``# comment`` from one shell line, quote-aware
+    (``echo "hello # world"`` survives)."""
+    in_single = in_double = False
     i = 0
     while i < len(line):
         ch = line[i]
@@ -54,125 +51,33 @@ def _strip_line_comment_stateful(line: str, in_single: bool, in_double: bool) ->
         elif ch == '"' and not in_single:
             in_double = not in_double
         elif ch == "#" and not in_single and not in_double:
-            return line[:i].rstrip(), in_single, in_double
+            return line[:i].rstrip()
         i += 1
-    return line, in_single, in_double
-
-
-def _strip_line_comment(line: str) -> str:
-    """Remove a trailing ``# comment`` from one shell line, quote-aware
-    (``echo "hello # world"`` survives)."""
-    return _strip_line_comment_stateful(line, False, False)[0]
-
-
-def _heredocs_on_line(line: str, later: list[str]) -> list[tuple[str, bool]] | None:
-    """``(terminator, strip_tabs)`` for each heredoc *opened* on this line.
-
-    ``None`` means the line could not be parsed confidently — the caller then hands the
-    whole command to the guardian verbatim rather than risk revising it.
-
-    A heredoc counts only when a matching terminator line actually appears later, which
-    keeps ``$((1<<SHIFT))`` and other ``<<`` operators from being mistaken for one.
-    """
-    starts: list[tuple[str, bool]] = []
-    in_single = in_double = False
-    i, n = 0, len(line)
-    while i < n:
-        ch = line[i]
-        if ch == "\\" and not in_single:
-            i += 2
-            continue
-        if ch == "'" and not in_double:
-            in_single = not in_single
-        elif ch == '"' and not in_single:
-            in_double = not in_double
-        elif ch == "#" and not in_single and not in_double:
-            break  # the rest of the line is a comment
-        elif line.startswith("<<<", i) and not in_single and not in_double:
-            i += 3  # here-string: no body
-            continue
-        elif line.startswith("<<", i) and not in_single and not in_double:
-            j = i + 2
-            strip_tabs = j < n and line[j] == "-"
-            if strip_tabs:
-                j += 1
-            while j < n and line[j] in " \t":
-                j += 1
-            term = ""
-            if j < n and line[j] in "'\"":
-                quote = line[j]
-                close = line.find(quote, j + 1)
-                if close == -1:
-                    return None  # unterminated quote: do not guess
-                term, j = line[j + 1:close], close + 1
-            elif j < n and line[j] == "\\":
-                # ``<<\PY`` quotes only the first character, which suppresses expansion;
-                # the terminator is still the whole word.
-                k = j + 1
-                while k < n and line[k] not in " \t;|&<>()":
-                    k += 1
-                term, j = line[j + 1:k], k
-            else:
-                k = j
-                while k < n and line[k] not in " \t;|&<>()":
-                    k += 1
-                term, j = line[j:k], k
-            if not term:
-                return None
-            later_ok = any(
-                (candidate.lstrip("\t") if strip_tabs else candidate) == term
-                for candidate in later
-            )
-            if later_ok:
-                starts.append((term, strip_tabs))
-            i = j
-            continue
-        i += 1
-    if in_single or in_double:
-        return None
-    return starts
+    return line
 
 
 def _strip_shell_comments(command: str) -> str:
     """Strip unquoted ``# ...`` comments before LLM assessment. Not a POSIX parser
-    — the goal is removing the low-hanging injection surface, not full shell parsing.
+    — quoted ``#`` is preserved by a simple state machine; the goal is removing the
+    low-hanging injection surface, not full shell parsing.
 
-    Heredoc bodies are kept verbatim: their content is *program source*
-    (``python3 - <<'PY'``) or literal data, never shell comments. Stripping ``#``
-    lines out of it handed the guardian a program different from the one that
-    runs (a statement hidden behind a ``#`` inside a triple-quoted string was
-    executed but never assessed).
-
-    Anything this cannot parse confidently — an unterminated quote, a heredoc whose
-    terminator never appears — is returned untouched: assessing the exact bytes that
-    will run beats assessing a tidier guess at them.
+    Only for commands that really are shell. ``python -c '…'`` and heredoc bodies are
+    source: a ``#`` there can sit inside a string literal, so the caller passes those
+    through untouched (:func:`_is_program_body`) rather than guessing where the shell
+    part ends and rewriting the program the guardian is supposed to review.
     """
-    lines = command.split("\n")
-    opened: list[list[tuple[str, bool]] | None] = [
-        _heredocs_on_line(line, lines[index + 1:]) for index, line in enumerate(lines)
-    ]
-    if any(starts is None for starts in opened):
-        return command
     cleaned: list[str] = []
-    pending: list[tuple[str, bool]] = []
-    in_single = in_double = False
-    for index, line in enumerate(lines):
-        if pending:
-            cleaned.append(line)
-            term, strip_tabs = pending[0]
-            if (line.lstrip("\t") if strip_tabs else line) == term:
-                pending.pop(0)
-            continue
-        stripped, in_single, in_double = _strip_line_comment_stateful(line, in_single, in_double)
-        # A heredoc opener may sit after a ``#`` on the same line — it cannot, the
-        # comment swallowed it — or before it; either way the detected openers on this
-        # line still describe the body that follows.
-        pending.extend(opened[index] or [])
+    for line in command.split("\n"):
+        stripped = _strip_line_comment(line)
         if stripped or not cleaned:
             cleaned.append(stripped)
-    if pending:
-        return command  # unterminated in practice: do not revise the command
     return "\n".join(cleaned).rstrip()
+
+
+def _is_program_body(description: str) -> bool:
+    """True when the flagged command is an interpreter invocation, i.e. its text is source."""
+    return description.startswith("script execution via")
+
 
 
 def _strip_python_comments(code: str) -> str:
@@ -294,9 +199,10 @@ def _smart_approve(command: str, description: str, *, code: str | None = None) -
                 "Respond with exactly one word: APPROVE, DENY, or ESCALATE"
             )
         else:
+            body = command if _is_program_body(description) else _strip_shell_comments(command)
             user_prompt = (
                 f"The following command was flagged as: {description}\n\n"
-                f"<command>\n{_fence_escape(_strip_shell_comments(command))}\n</command>\n\n"
+                f"<command>\n{_fence_escape(body)}\n</command>\n\n"
                 "Assess the ACTUAL risk of the shell operations in this command. "
                 "Many flagged commands are false positives — for example, "
                 '`python -c "print(\'hello\')"` is flagged as "script execution '

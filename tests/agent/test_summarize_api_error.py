@@ -93,3 +93,46 @@ def test_unread_streaming_response_does_not_crash_and_falls_back_to_exception_me
     summary = AIAgent._summarize_api_error(err)
     assert "HTTP 429" in summary
     assert "Gemini HTTP 429: quota exceeded" in summary
+
+
+
+def test_provider_request_id_reaches_failure_line_but_not_summary():
+    """A rejected call names the provider's request id (OpenAI ``x-request-id``, Anthropic
+    ``request-id``) on the user-facing failure line so a support ticket can cite it, while the
+    result's ``error`` summary stays id-free: cron incident signing hashes it, and a per-request id
+    would mint a new incident per failure."""
+    from agent.error_classifier import classify_api_error
+    from agent.turn_recovery import nonretryable_client_error_result
+
+    class _Agent:
+        log_prefix, verbose = "", False
+        _summarize_api_error = staticmethod(AIAgent._summarize_api_error)
+
+        def __init__(self):
+            self.status_lines = []
+
+        def _emit_diagnostic_status(self, line):
+            self.status_lines.append(line)
+
+        def __getattr__(self, name):  # persist/print helpers the terminal path also calls
+            return lambda *args, **kwargs: None
+
+    for header in ("x-request-id", "request-id"):
+        body = {"error": {"message": "Incorrect API key provided"}}
+        response = httpx.Response(
+            401, headers={header: "req_abc123"}, json=body,
+            request=httpx.Request("POST", "https://api.example.test/v1/chat/completions"),
+        )
+        err = Exception("HTTP 401: Incorrect API key provided")
+        err.status_code, err.response, err.body = 401, response, body
+        wrapped = RuntimeError("retry exhausted")
+        wrapped.__cause__ = err  # the id is found through the exception chain too
+        for error in (err, wrapped):
+            agent = _Agent()
+            result = nonretryable_client_error_result(
+                agent, error, classify_api_error(err, provider="custom", model="m"), status_code=401,
+                api_kwargs=None, api_messages=[], messages=[], conversation_history=None, api_call_count=1,
+                approx_tokens=10, provider="custom", base_url="https://api.example.test/v1", model="m",
+            )
+            assert any(line.endswith("(provider request id: req_abc123)") for line in agent.status_lines)
+            assert "req_abc123" not in result["error"]

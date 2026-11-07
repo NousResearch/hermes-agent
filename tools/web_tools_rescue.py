@@ -124,6 +124,34 @@ def _policy_blocked_result(result: dict) -> bool:
     return bool(result.get("blocked_by_policy")) or "blocked by website policy" in error
 
 
+def _rate_limited_extract_indices(results: list, requested: list) -> list:
+    """Indices of unambiguous throttle failures in a batch the backend partly served.
+
+    ``_backend_failed_whole_batch`` only fires when EVERY entry failed, so the throttled members of a
+    mixed batch (some pages served, some rate-limited) are lost. Rescue only entries whose error is a
+    free-tier throttle AND whose requested URL maps back unambiguously: providers omit failed URLs or
+    return successes out of request order, so a list position is not a URL. Two identical requested
+    URLs (or a reported URL seen more than once) stay untouched — no safe key to merge on. Policy
+    refusals and genuine page errors (404/410/...) are never rate-limitish, so they never match.
+    """
+    from plugins.web.keyless_mcp import _is_rate_limitish
+
+    reported = []
+    for result in results:
+        meta = result.get("metadata")
+        source = meta.get("sourceURL") if isinstance(meta, dict) else None
+        reported.append(next((url for url in (result.get("url"), source) if url in requested), None))
+    return [
+        index
+        for index, (result, url) in enumerate(zip(results, reported))
+        if url is not None
+        and requested.count(url) == reported.count(url) == 1
+        and result.get("error")
+        and not _policy_blocked_result(result)
+        and _is_rate_limitish(str(result.get("error") or ""))
+    ]
+
+
 def _rescue_extract(provider_name: str, urls: list, results: list) -> list:
     """Rescue a whole-batch extract failure via the ring.
 

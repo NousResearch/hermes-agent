@@ -36,13 +36,14 @@ def _read_controls(messages, pause, fd):
 
 
 def main():
-    import truststore
-
-    truststore.inject_into_ssl()
     # Capture the protocol FD before redirecting even native/subprocess stdout.
     wire = os.fdopen(os.dup(sys.stdout.fileno()), "w", encoding="utf-8", buffering=1)
     os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    # Point the process at the OS trust store before any HTTPS client is built.
+    # Degrades gracefully when truststore is unavailable instead of killing the worker.
+    from agent.ssl_verify import install_truststore
+    install_truststore()
     # A pending read on inherited control stdin can block child Python startup
     # on Windows. Keep the protocol private and give every ordinary child EOF.
     controls = os.dup(0)

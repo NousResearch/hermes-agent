@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 # identity/value pair. Call reset_cache() after in-place config changes.
 _cache_lock = threading.Lock()
 _tz_cache: dict[tuple[str, str], tuple[str, Optional[ZoneInfo]]] = {}
+_cache_generation = 0
 
 _SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
 # ASCII plus surrogateescape'd bytes only: the shape of native text decoded with the wrong codec.
@@ -109,22 +110,24 @@ def _resolve_timezone_name() -> str:
 
 def _timezone_entry() -> tuple[str, Optional[ZoneInfo]]:
     """Cached ``(configured name, ZoneInfo | None)`` for the active profile."""
-    cache_identity = _timezone_cache_identity()
-    with _cache_lock:
-        entry = _tz_cache.get(cache_identity)
-        if entry is not None:
-            return entry
-    # Resolve outside the lock (config file I/O); first writer wins so concurrent resolvers of the
-    # same identity converge on one ZoneInfo object.
-    name = _resolve_timezone_name()
-    tz = None
-    if name:
-        try:
-            tz = ZoneInfo(name)
-        except Exception as exc:
-            logger.warning("Invalid timezone '%s': %s. Falling back to server local time.", name, exc)
-    with _cache_lock:
-        return _tz_cache.setdefault(cache_identity, (name, tz))
+    while True:
+        cache_identity = _timezone_cache_identity()
+        with _cache_lock:
+            entry = _tz_cache.get(cache_identity)
+            if entry is not None:
+                return entry
+            generation = _cache_generation
+        # Config I/O stays outside the lock, but a reset invalidates any read already in flight.
+        name = _resolve_timezone_name()
+        tz = None
+        if name:
+            try:
+                tz = ZoneInfo(name)
+            except Exception as exc:
+                logger.warning("Invalid timezone '%s': %s. Falling back to server local time.", name, exc)
+        with _cache_lock:
+            if generation == _cache_generation:
+                return _tz_cache.setdefault(cache_identity, (name, tz))
 
 
 def get_timezone() -> Optional[ZoneInfo]:
@@ -140,7 +143,9 @@ def get_timezone_name() -> str:
 
 def reset_cache() -> None:
     """Clear the cached timezone so the next call re-resolves it (after config/env changes)."""
+    global _cache_generation
     with _cache_lock:
+        _cache_generation += 1
         _tz_cache.clear()
 
 

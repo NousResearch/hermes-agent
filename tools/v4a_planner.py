@@ -230,15 +230,18 @@ def whole_line_sites(
 def _edge_ok(line: str, start: int, end: int, search: str, *, check_start: bool, check_end: bool) -> bool:
     """A raw fragment of a different token is not a partial site.
 
-    A search that already ends in whitespace is a deliberate mid-line edit
-    (``prefix ``). Otherwise the checked edges must be a token boundary so
-    ``value = 1`` cannot land inside ``value = 10`` nor ``name`` inside ``rename``.
+    Word characters are alphanumerics and ``_``. A search that already ends in whitespace
+    is a deliberate mid-line edit (``prefix ``), so only its END edge is exempt. Otherwise
+    the checked edges must be a token boundary so ``value = 1`` cannot land inside
+    ``value = 10`` or ``old_value = 1``, nor ``name`` inside ``rename`` or ``my_name``.
     """
 
-    if search.endswith((" ", "\t", "\n")):
-        return True
-    before_ok = not check_start or start == 0 or not line[start - 1].isalnum()
-    after_ok = not check_end or end == len(line) or not line[end].isalnum()
+    def word(char: str) -> bool:
+        return char.isalnum() or char == "_"
+
+    before_ok = not check_start or start == 0 or not word(line[start - 1])
+    open_end = search.endswith((" ", "\t", "\n"))
+    after_ok = not check_end or open_end or end == len(line) or not word(line[end])
     return before_ok and after_ok
 
 
@@ -735,8 +738,7 @@ def _resolve(pieces, hunk, consumed, original, floor, floor_explicit, index):
         decision = choose_tier(
             parts, pieces, search, removed, consumed, hint, floor, floor_explicit, index, content,
         )
-        if isinstance(decision, Resolved) or not isinstance(decision, Refused) or decision.code != "not_found":
-            return decision, note, search, added, replacement
+        return decision, note, search, added, replacement
     if _written_only(pieces, search, removed, consumed):
         return Refused("written", f"{label} not found — {_WRITTEN} — {_advice(hint)}"), note, search, added, replacement
     if _hint_replay(pieces, search, added, hint):

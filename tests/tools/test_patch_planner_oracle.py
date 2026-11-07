@@ -12,7 +12,7 @@ Generated similar-section rows and grammar-pin classes fail on that known
 planner shape, so a seed or count that does not generate them (including 0)
 passes. They are not xfail marks. Site comparison unavailable is a
 SITE_UNAVAILABLE count, not a pass, xfail, or failure; the default fuzz
-fails if that count grows above 59.
+fails if that count grows above 60.
 """
 from __future__ import annotations
 

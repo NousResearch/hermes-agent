@@ -40,4 +40,3 @@ capabilities:
     - pre_tool_call
   provides_middleware: []
   requires_env: []
-

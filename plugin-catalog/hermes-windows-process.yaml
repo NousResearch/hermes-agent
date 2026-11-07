@@ -1,6 +1,6 @@
 name: hermes-windows-process
 repo: https://github.com/Yicheng-Mark/hermes-windows-plugins
-sha: b26b92760b2bfc36a91c280af96b0171c4d00267
+sha: 5bad3fb2baf04ce6befecfefce6d14f4c9c98934
 subdir: windows-process
 description: >-
   Answer "what is still running, and who started it" on Windows: win_process_table reads the

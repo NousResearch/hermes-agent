@@ -12,10 +12,18 @@ import {
   connectionScopeSuffix,
   rescopeConnectionScopedStores
 } from '@/lib/connection-scoped'
-import { isBrowserHostedDesktop } from '@/lib/platform'
+import { hostHas } from '@/lib/host-capabilities'
 import { isMessagingSource } from '@/lib/session-source'
 import type { TileSessionFocusStamp } from '@/lib/session-timer-since'
-import { persistBoolean, persistString, readJson, storedBoolean, storedString, writeJson } from '@/lib/storage'
+import {
+  arraysEqual,
+  persistBoolean,
+  persistString,
+  readJson,
+  storedBoolean,
+  storedString,
+  writeJson
+} from '@/lib/storage'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
 import { $removedSessionIds, isSessionRemovalPending, tombstoneRowIds } from './session-removal'
@@ -881,6 +889,13 @@ export function keepFailedProfileMeta<T>(
   return next
 }
 
+/** Whether the last recents scan left `profile` unread: it failed, alone or as part of a failed
+ *  unified read. Its rows may be carried forward, but an empty section for it would claim
+ *  "No sessions yet" about a store nobody could read. */
+export function isSessionProfileUnread(failed: readonly string[], profile: string): boolean {
+  return failed.includes(ALL_PROFILES_SCAN) || failed.includes(profileKeyOf(profile))
+}
+
 /** Raise a session in recents on user send (before stream / turn resolve). */
 export function touchSessionActivity(
   sessionId: string | null | undefined,
@@ -1125,6 +1140,9 @@ export interface ProfileUsage {
 
 export const $sessionProfilesUsage = atom<Record<string, ProfileUsage>>({})
 
+/** Profiles named in the last recents scan's errors (see isSessionProfileUnread). */
+export const $sessionProfilesFailed = atom<string[]>([])
+
 /** Profiles whose state.db the backend reports as structurally corrupt (the list
  *  endpoints' `storage` map, #72046). An empty or partial list for one of these
  *  is a damaged store, not deleted history, and the sidebar says so. */
@@ -1167,6 +1185,12 @@ export const $awaitingResponse = atom(false)
 // resume on the next render/focus/reconnect instead of stranding the window.
 // Null whenever the active route has a healthy (or in-flight) resume.
 export const $resumeFailedSessionId = atom<string | null>(null)
+// Stored-session id whose last resume RPC failed while the REST fallback still
+// painted its history: readable, but bound to no runtime, so a turn running
+// there never streams its reply in. use-resume-reattach re-attempts the resume
+// quietly. Unlike $resumeFailedSessionId it never ends in the exhausted
+// overlay, which would cover the history the window can already show.
+export const $resumeReattachSessionId = atom<string | null>(null)
 export interface SessionResumeRequest {
   authoritativeSnapshot?: boolean
   ownerRoute?: SessionOwnerRoute
@@ -1501,6 +1525,16 @@ export const setSessionProfilesTruncated = (next: Updater<Record<string, boolean
   updateAtom($sessionProfilesTruncated, next)
 export const setSessionProfilesUsage = (next: Updater<Record<string, ProfileUsage>>) =>
   updateAtom($sessionProfilesUsage, next)
+
+/** Publish the profiles a recents scan reported as failed; unchanged keeps the array identity. */
+export function setSessionProfilesFailed(errors: Array<{ profile?: string }> | undefined | null): void {
+  const next = [...new Set((errors ?? []).map(error => profileKeyOf(error.profile)))].sort()
+
+  if (!arraysEqual($sessionProfilesFailed.get(), next)) {
+    $sessionProfilesFailed.set(next)
+  }
+}
+
 export const setSessionsLoading = (next: Updater<boolean>) => updateAtom($sessionsLoading, next)
 export const setSessionsLoadError = (next: Updater<boolean>) => updateAtom($sessionsLoadError, next)
 
@@ -1614,6 +1648,7 @@ export const setFreshDraftReady = (next: Updater<boolean>) => updateAtom($freshD
 export { $freshDraftKey, rotateFreshDraftKey } from './composer'
 
 export const setResumeFailedSessionId = (next: Updater<string | null>) => updateAtom($resumeFailedSessionId, next)
+export const setResumeReattachSessionId = (next: Updater<string | null>) => updateAtom($resumeReattachSessionId, next)
 
 export const requestSessionResume = (
   sessionId: string,
@@ -1874,7 +1909,7 @@ export const workspaceCwdForNewSession = (profile?: string): string => {
   // chat reads its own profile's key and stays detached when it never chose one.
   const owner = profile?.trim()
 
-  if (owner && isBrowserHostedDesktop()) {
+  if (owner && hostHas('originScopedPrefs')) {
     return readBrowserDefaultProjectDir(browserPageBasePath(), owner)
   }
 

@@ -27,8 +27,16 @@ export const frGatewayHost: GatewayHostTranslations = {
     unavailableDetail: reason => `La passerelle n'a pas pu servir l'application web : ${reason}`,
     restartBusy: "Enregistré. Une conversation est en cours, la passerelle n'a donc pas redémarré. Choisissez « Redémarrer la passerelle » une fois qu'elle est terminée.",
     restartFailed: "Enregistré, mais la passerelle n'a pas pu redémarrer. Choisissez « Redémarrer la passerelle » pour réessayer.",
+    restartFailedBecause: reason => `La passerelle n'a pas pu redémarrer : ${reason}`,
     startTimedOut: "La passerelle n'a pas servi l'application web en 90 secondes.",
     stopTimedOut: "La passerelle n'a pas cessé de servir l'application web en 90 secondes.",
+    startStages: {
+      preparing: "Préparation de l'application web. Sa compilation peut prendre quelques minutes.",
+      building: "Compilation de l'application web. Cela peut prendre quelques minutes.",
+      registering: 'Configuration de la connexion Nous pour cette adresse.',
+      restarting: "Redémarrage de la passerelle pour servir l'application web."
+    },
+    startElapsed: time => `Temps écoulé : ${time}`,
     start: 'Démarrer',
     stop: 'Arrêter',
     restartGateway: 'Redémarrer la passerelle',

@@ -1,13 +1,13 @@
 name: antigravity-subscription-directsdk
 repo: https://github.com/soyelmismo/hermes-antigravity-subscription
-sha: 4cbb0563a670d318dfc81bb5e7813b86621e71b5
-description: "Run Hermes on an Antigravity subscription via the official agy CLI (DirectSDK path). Streams tokens progressively, persists multi-turn trajectories via agy --conversation (up to 239k tokens), discovers models dynamically per account, maps thinking effort, reports quota in /usage, and aborts reported native tools. Disclosure — routes inference and /usage quota reads through Google's official agy CLI under your subscription (usage counts against it); links (symlink, else hardlink/copy) the antigravity-oauth-token into a per-session private temp HOME deleted on close; probes OS keyring presence (Linux Secret Service, macOS Keychain, Windows Credential Manager) without reading secrets; on macOS symlinks ~/Library/Keychains for CLI session reuse; never writes to vendor credential stores; strips credential-looking environment variables before spawning agy (name heuristic; ANTIGRAVITY_ENV_STRICT for an allow-list). Disclosure — the opt-in ANTIGRAVITY_DEBUG_PROMPT_DIR env var writes every outgoing prompt (full conversation text) to that directory."
+sha: 0d5a3160f69f0c3302e3f49d9d2820093a544116
+description: "Runs Hermes on an Antigravity subscription via the agy CLI. Streams progressively and opts into host streaming when the profile declares it; persists trajectories via agy --conversation (239k); discovers models per account; maps effort; reports /usage quota; aborts native tool steps. Windows console children spawn with CREATE_NO_WINDOW. Inference and /usage reads count against your subscription; links the antigravity-oauth-token into a private temp HOME deleted on close; probes keyring presence (Secret Service, Keychain, Credential Manager), reading no secrets; symlinks ~/Library/Keychains on macOS; never writes vendor credential stores; strips credential-looking env vars before spawning agy (ANTIGRAVITY_ENV_STRICT allow-list); ANTIGRAVITY_DEBUG_PROMPT_DIR writes every prompt to disk. Disclosure — routes inference and /usage quota reads through Google's official agy CLI under your subscription (usage counts against it); links (symlink, else hardlink/copy) the antigravity-oauth-token into a per-session private temp HOME deleted on close; probes OS keyring presence (Linux Secret Service, macOS Keychain, Windows Credential Manager) without reading secrets; on macOS symlinks ~/Library/Keychains for CLI session reuse; never writes to vendor credential stores; strips credential-looking environment variables before spawning agy (name heuristic; ANTIGRAVITY_ENV_STRICT for an allow-list) and disables agy's background auto-updater in its child environment. Disclosure — the opt-in ANTIGRAVITY_DEBUG_PROMPT_DIR env var writes every outgoing prompt (full conversation text) to that directory."
 maintainer: soyelmismo
 tier: community
 category: models
 requires_hermes: ">=0.21.4"
 docs_url: https://github.com/soyelmismo/hermes-antigravity-subscription#readme
-version: "1.0.21"
+version: "1.0.23"
 readme: true
 platforms:
   - linux

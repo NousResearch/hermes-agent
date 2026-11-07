@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { errorRecoveryPlan } from '@/lib/error-surface'
+import { errorCardOffers } from '@/lib/error-surface'
 import { requestGatewayForAgent } from '@/store/gateway'
 
 import { $activeSessionId, $selectedStoredSessionId, $unreadFinishedSessionIds } from './session'
@@ -100,6 +100,6 @@ describe('settling a deliberately interrupted live turn', () => {
     const failed = card('rt-gone')
     expect($workingSessionIds.get()).not.toContain('s-gone')
     expect(failed?.errorSurface?.code).toBe('no_reply')
-    expect(errorRecoveryPlan(failed?.errorSurface).retry).toBe(true)
+    expect(errorCardOffers(failed?.errorSurface, 'retry')).toBe(true)
   })
 })

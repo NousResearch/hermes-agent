@@ -316,6 +316,30 @@ def test_turn_author_reaches_the_agent_through_the_real_facade(monkeypatch):
     assert agent._turn_author is None
 
 
+# ── on_turn_start model kwarg ────────────────────────────────────────────────
+# The prologue (the only on_turn_start caller) passes model=agent.model.
+
+
+def test_on_turn_start_forwards_model_kwarg():
+    agent, mm = _agent_with_memory_manager()
+    _build(agent, user_message="what did we decide about the deploy pipeline?")
+    mm.on_turn_start.assert_called_once()
+    _args, kwargs = mm.on_turn_start.call_args
+    assert kwargs.get("model") == agent.model == "test/model"
+
+
+def test_on_turn_start_model_kwarg_defaults_to_empty_string_when_absent():
+    """Agents whose `model` attribute is falsy (e.g. unset during subagent
+    scaffolding) must not raise — the call site falls back to "" rather
+    than propagating None into the memory-provider contract."""
+    agent, mm = _agent_with_memory_manager()
+    agent.model = None
+    _build(agent, user_message="what did we decide about the deploy pipeline?")
+    mm.on_turn_start.assert_called_once()
+    _args, kwargs = mm.on_turn_start.call_args
+    assert kwargs.get("model") == ""
+
+
 def test_turn_start_replaces_stale_parent_history_with_compression_child():
     agent = _FakeAgent()
     stale_history = [{"role": "user", "content": "stale parent"}]

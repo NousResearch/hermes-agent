@@ -64,9 +64,9 @@ async def test_old_stored_history_opens_read_only_for_its_owner(tmp_path, monkey
 @pytest.mark.asyncio
 async def test_a_caller_that_is_not_the_owner_still_finds_nothing(tmp_path, monkeypatch):
     """A remote login is not evidence of ownership, before or after the owner opened the row."""
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     conn, ref = await _connect(tmp_path, monkeypatch, 'cron_job1_20261001_120000')
-    login = Principal('basic:alice', ref.profile_id, frozenset({'session:read'}), 'web-socket')
+    login = SessionActor('basic:alice', ref.profile_id, frozenset({'session:read'}), 'web-socket')
     with pytest.raises(RuntimeStoreError, match='not_found'):
         conn.authority.authorize(login, ref, 'session:read')
     assert ref.session_id not in conn.authority.sessions
@@ -179,7 +179,7 @@ async def test_an_api_chat_opened_read_only_still_continues_through_the_api(tmp_
     assert bind_api_session(conn.authority, 'api-1', caller_key='agent:main:api_server:dm:api-1') == ref
 
     live = conn.authority.sessions['api-1']
-    assert live.source.platform == Platform.API_SERVER and not live.superseded
+    assert live.source.platform == Platform.API_SERVER and not live.detached
     live.event_stream.publish('api-1', {'text': 'bound'})
     frame = await asyncio.to_thread(frames.get, True, 5)
     assert frame['params']['payload'] == {'text': 'bound'}

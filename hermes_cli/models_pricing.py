@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 import urllib.request
 from typing import Any, Optional
@@ -29,19 +30,23 @@ _pricing_provider_cache_keys: dict[tuple[str, str], str] = {}
 _FAILED_CATALOG_TTL_SECONDS = 120.0
 
 _pricing_cache_retry_after: dict[str, float] = {}
+# Guards a catalog and its deadline as one unit: expiring one key (reader or sweep) pops two tables, and a
+# refresh landing between the pops would otherwise keep its catalog without its deadline, forever.
+_pricing_cache_lock = threading.Lock()
 
 
 def _cached_catalog(cache_key: str) -> Optional[dict[str, dict[str, Any]]]:
     """The cached catalog for *cache_key*, or None to go fetch it."""
-    cached = _pricing_cache.get(cache_key)
-    if cached is None:
-        return None
-    retry_after = _pricing_cache_retry_after.get(cache_key)
-    if retry_after is not None and time.monotonic() >= retry_after:
-        _pricing_cache.pop(cache_key, None)
-        _pricing_cache_retry_after.pop(cache_key, None)
-        return None
-    return cached
+    with _pricing_cache_lock:
+        cached = _pricing_cache.get(cache_key)
+        if cached is None:
+            return None
+        retry_after = _pricing_cache_retry_after.get(cache_key)
+        if retry_after is not None and time.monotonic() >= retry_after:
+            _pricing_cache.pop(cache_key, None)
+            _pricing_cache_retry_after.pop(cache_key, None)
+            return None
+        return cached
 
 
 def _cache_catalog(
@@ -51,14 +56,22 @@ def _cache_catalog(
 ) -> dict[str, dict[str, Any]]:
     """Cache a catalog result, giving an empty one an expiry. *ttl_seconds* expires a non-empty
     result too — only for a catalog whose contents depend on server-side state the client cannot
-    observe (an org's model policy can change while a long-lived process holds the entry)."""
-    _pricing_cache[cache_key] = result
-    if not result:
-        _pricing_cache_retry_after[cache_key] = time.monotonic() + _FAILED_CATALOG_TTL_SECONDS
-    elif ttl_seconds:
-        _pricing_cache_retry_after[cache_key] = time.monotonic() + ttl_seconds
-    else:
-        _pricing_cache_retry_after.pop(cache_key, None)
+    observe (an org's model policy can change while a long-lived process holds the entry).
+    Entries past their deadline are dropped here as the reader would: a rotated credential's
+    catalog is otherwise never read again and stays resident for the life of the process."""
+    with _pricing_cache_lock:
+        now = time.monotonic()
+        for key, deadline in list(_pricing_cache_retry_after.items()):
+            if now >= deadline:
+                _pricing_cache.pop(key, None)
+                _pricing_cache_retry_after.pop(key, None)
+        _pricing_cache[cache_key] = result
+        if not result:
+            _pricing_cache_retry_after[cache_key] = now + _FAILED_CATALOG_TTL_SECONDS
+        elif ttl_seconds:
+            _pricing_cache_retry_after[cache_key] = now + ttl_seconds
+        else:
+            _pricing_cache_retry_after.pop(cache_key, None)
     return result
 
 

@@ -376,7 +376,8 @@ def test_skipped_completion_retry_only_changes_interpreters_once(tmp_path, monke
     assert attempts.read_text(encoding="utf-8") == f"{attempt_count}\n"
 
 
-def test_failed_dependency_sync_backs_off_only_for_the_same_inputs(tmp_path, monkeypatch):
+@pytest.mark.parametrize("corrected", ["uv.lock", "setup.py"])
+def test_failed_dependency_sync_backs_off_only_for_the_same_inputs(tmp_path, monkeypatch, corrected):
     """A failed launch sync counts toward the retry bound, so relaunches stop redoing the same
     failing repair (#139952); a corrected source update is a different repair and runs."""
     import pm
@@ -400,7 +401,7 @@ def test_failed_dependency_sync_backs_off_only_for_the_same_inputs(tmp_path, mon
     assert venv_sync.prepare_launch(root, []) is None, "a backed-off stale launch must not relaunch"
     assert len(syncs) == venv_sync.COMPLETION_RETRY_BACKOFF_ATTEMPTS, "the same failing repair re-ran"
 
-    (root / "uv.lock").write_text("# corrected source update\n", encoding="utf-8")
+    (root / corrected).write_text("# corrected source update\n", encoding="utf-8")
     with pytest.raises(RuntimeError, match="sync failed"):
         venv_sync.prepare_launch(root, [])
     assert len(syncs) == venv_sync.COMPLETION_RETRY_BACKOFF_ATTEMPTS + 1, "changed inputs were not retried"

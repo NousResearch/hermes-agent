@@ -92,6 +92,14 @@ export const ja: Translations = {
     webUi: "Web UI",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "有効なメモリプロバイダー",
+    noProvider: "なし — 組み込みのみ",
+    builtinLayer: "組み込みレイヤー",
+    builtinNote: "MEMORY.md と USER.md は外部プロバイダーとは別の Hermes 自身のメモリです。どちらも既定でセッションに読み込まれ、設定の切り替え (memory.memory_enabled / memory.user_profile_enabled) でそれぞれオフにできます。外部プロバイダーはこれに追加されるもので、置き換えることはありません。",
+  },
+
   status: {
     actionFailed: "アクションが失敗しました",
     actionFinished: "完了",
@@ -361,6 +369,13 @@ export const ja: Translations = {
     authRequired: "認証が必要",
     authRequiredHint: "認証するには次のコマンドを実行してください:",
     updateGit: "Git pull",
+    updateAll: "すべて更新",
+    updatingAll: "プラグインを更新中…",
+    updateAllDone: (updated: number, needsReview: number, failed: number) =>
+      `更新 ${updated}、要確認 ${needsReview}、失敗 ${failed}`,
+    autoUpdate: "自動更新",
+    autoUpdateDesc: (hours: number) =>
+      `ゲートウェイのチェック時（${hours} 時間ごと）にプラグインの更新を自動適用します。更新されたコードは新しいセッションで読み込まれます。`,
     versionBadge: "バージョン",
     showInSidebar: "サイドバーに表示",
     hideFromSidebar: "サイドバーから非表示",

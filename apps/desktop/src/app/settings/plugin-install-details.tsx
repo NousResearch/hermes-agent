@@ -14,7 +14,8 @@ import {
   desktopHalfFromPackage,
   installComponents,
   type InstallModalCopy,
-  type ProbeResult
+  type ProbeResult,
+  skipsDesktopHalf
 } from './plugin-install-run'
 
 const CAPTION = 'text-[length:var(--conversation-caption-font-size)]'
@@ -42,6 +43,8 @@ interface PluginInstallDetailsProps {
   pin: PinState
   force: boolean
   onForceChange: (value: boolean) => void
+  /** Offer Force for a catalog pick too: a partial install proceeds only by replacing both halves. */
+  offerForce?: boolean
 }
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
@@ -130,6 +133,10 @@ function ContentsRow({
     components.desktop && {
       title: [copy.desktopLabel, fromPackage ? null : probe.desktopName].filter(Boolean).join(' · '),
       hint: fromPackage ? copy.desktopTargetFromPackage : copy.desktopTarget
+    },
+    skipsDesktopHalf(request, probe) && {
+      title: [copy.desktopLabel, probe.desktopName].filter(Boolean).join(' · '),
+      hint: copy.desktopUnavailable
     }
   ].filter(line => line !== false)
 
@@ -173,7 +180,7 @@ export function PluginInstallDetails(props: PluginInstallDetailsProps) {
           </SelectContent>
         </Select>
       </Row>
-      {!request.catalogName && (
+      {(!request.catalogName || props.offerForce) && (
         <div>
           <label className={cn(CAPTION, 'flex items-center justify-between gap-3 text-foreground')}>
             <span>{copy.forceReinstall}</span>

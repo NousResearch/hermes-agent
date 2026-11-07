@@ -66,6 +66,9 @@ gateway:
     usage_switch_model: "`/model <name>` — 모델 전환"
     usage_switch_provider: "`/model <name> --provider <slug>` — 제공자 전환"
     usage_persist: "`/model <name> --global` — 영구 저장"
+    usage_reset: "`/model reset` — 이 세션의 오버라이드 해제"
+    reset_done: "세션 모델 오버라이드가 해제되었습니다 — 이제 `{model}`(채널/전역 기본값)을 사용합니다. 대화 기록은 유지됩니다."
+    reset_none: "이 세션에 활성화된 모델 오버라이드가 없습니다 — 이미 `{model}`(채널/전역 기본값)을 사용 중입니다."
     err_skew: "이 게이트웨이는 {boot_rev} 코드로 실행 중인데 디스크의 체크아웃은 현재 {disk_rev}이에요. 지금 모델을 전환하면 오래된 모듈 때문에 충돌할 수 있어요. 새 코드를 불러오려면 게이트웨이를 재시작하세요: hermes gateway restart"
     err_switch_failed: "{model}(으)로 모델 전환에 실패했어요({error}). {current}을(를) 계속 사용해요."
     err_config_not_updated: "config.yaml이 업데이트되지 않았어요({error})"
@@ -971,9 +974,6 @@ platform:
     approved: "✅ 승인됨."
     denied: "❌ 거부됨."
     approval_expired: "⌛ 승인이 만료되어 명령이 실행되지 않았어요 (이미 시간 초과되었거나 다른 곳에서 처리됨)."
-  yuanbao:
-    slow_response_notice: "이 작업은 조금 복잡해서 아직 진행 중이에요. 잠시만 기다려 주세요..."
-    owner_command_denied: "⚠️ {command}은(는) 비공개 채팅 모드에서 생성자만 사용할 수 있어요"
   shared:
     truncated_suffix: "\n...(잘림)"
     unknown: "알 수 없음"
@@ -1005,6 +1005,8 @@ platform:
       confirm_title: "확인"
       already_resolved: "이 승인은 이미 처리되었어요~"
       expired: "⌛ 승인이 만료되어 명령이 실행되지 않았어요 (이미 시간 초과되었거나 다른 곳에서 처리됨)"
+      no_longer_pending: "⌛ 이 승인은 더 이상 대기 중이 아니에요 (만료되었거나 다른 곳에서 응답됨)"
+      click_failed: "⚠️ 선택을 기록하지 못했어요. 다시 클릭하거나 /approve 또는 /deny로 답해 주세요."
       by_user: "{user}: {label}"
       resolved_once: "한 번 승인됨"
       resolved_session: "세션 동안 승인됨"
@@ -1366,6 +1368,12 @@ platform:
       unauthorized: "권한이 있는 Matrix 사용자만 이 컨트롤을 사용할 수 있어요."
       not_requester: "이 작업을 요청한 사용자만 이 컨트롤을 사용할 수 있어요."
   feishu:
+    clarify:
+      title: "Hermes가 입력을 기다리고 있어요"
+      other: "✏️ 기타 (직접 입력)"
+      awaiting_typed: "{user}의 직접 입력을 기다리고 있어요…"
+    picker:
+      apply_error: "선택 적용 오류: {error}"
     approval:
       action_session: "세션"
       action_always: "항상"
@@ -1469,6 +1477,8 @@ platform:
     prompt_other: "✏️ 기타 (직접 입력)"
     prompt_expired: ⌛ 이 프롬프트는 더 이상 답변을 기다리지 않아요. 일반 메시지로 답변을 보내 주세요.
 slash:
+  rewind:
+    description: "이전 프롬프트로 되감아 편집 후 다시 보내거나, 그 지점에서 분기 (Esc Esc)"
   approve:
     description: "대기 중인 위험 명령 승인"
   bg:
@@ -1696,6 +1706,20 @@ slash:
   quit:
     description: "CLI 종료 (--delete를 붙이면 세션 기록도 삭제)"
 cli:
+  backtrack:
+    title: "↺ 대화 기록 — 편집할 프롬프트 선택"
+    keys_hint: "대화 기록 탐색 중 · ↑↓/jk 스크롤 · ←→/hl 프롬프트 · ↵ 편집 · f 분기 · esc 뒤로"
+    prime_hint: "esc를 한 번 더 누르면 이전 메시지를 편집합니다"
+    no_previous: "편집할 이전 메시지가 없습니다."
+    editing_hint: "↺ 프롬프트 {number} 편집 중 — Enter를 누르면 여기로 되감고 전송 · Esc Esc 취소"
+    edit_cancelled: "↺ 되감기가 취소되었습니다. 아무것도 제거되지 않았습니다."
+    rewound: "↺ 프롬프트 {number}(으)로 되감았습니다({count}개 메시지 보관됨). 편집 내용을 전송합니다."
+    forked: "⑂ 프롬프트 {number} 이전에서 분기했습니다. 원래 세션 {parent}은(는) 변경되지 않았습니다. 아래 프롬프트를 편집하고 Enter를 눌러 전송하세요."
+    nothing: "(._.) 되감을 이전 프롬프트가 없습니다."
+    target_changed: "(x_x) 프롬프트 {number}을(를) 선택한 이후 세션이 변경되었습니다. 아무것도 제거되지 않았습니다. 편집 내용이 입력창으로 돌아왔습니다."
+    invalid: "(._.) 프롬프트 {value}이(가) 없습니다 — 1부터 {total} 사이에서 선택하세요."
+    usage: "사용법: /rewind [N | fork N]"
+    rewind_failed: "(x_x) 되감기에 실패했습니다. 기록은 변경되지 않았습니다: {error}"
   modern:
     thought_for: "{seconds}초 동안 생각함"
     thought: "생각함"
@@ -2007,6 +2031,8 @@ cli:
     usage_switch_reasoning: "전환하고 추론 강도 설정"
     usage_switch_provider: "제공자 전환"
     usage_refresh: "실시간 모델 목록 다시 가져오기"
+    reset_none: "이미 설정된 기본값({model})을 사용 중입니다 — 재설정할 것이 없습니다."
+    reset_no_default: "config.yaml에 model.default가 없습니다 — 되돌릴 대상이 없습니다."
     choice_switch_anyway: "그래도 전환"
     desc_switch_anyway: "현재 Hermes 세션에서 이 모델을 사용해요."
     choice_cancel: "취소"
@@ -2157,6 +2183,7 @@ cli:
     images_attached_other: "📎 이미지 {count}개 첨부됨"
     command_interrupted: "명령이 중단됐어요."
     welcome: "Hermes Agent에 오신 것을 환영해요! 메시지를 입력하거나 /help로 명령을 확인하세요."
+    vscode_images_hint: "VS Code에서 여기에 이미지를 원본 해상도로 표시할 수 있어요. 설정에서 terminal.integrated.enableImages을(를) 켜세요."
     activated_skills_label: "활성화된 스킬:"
     redaction_disabled_title: "⚠  시크릿 마스킹이 비활성화됨"
     redaction_disabled_body: "(HERMES_REDACT_SECRETS={value}). API 키와 토큰이 채팅 출력, 세션 JSON, 로그에 그대로 노출될 수 있어요. 다시 활성화하려면 config.yaml에서 {setting}을(를) 설정하세요."
@@ -2611,6 +2638,7 @@ cli:
     goal_turns: "⊙ 목표 {used}/{max}"
     goal: "⊙ 목표"
     ctx_pinned: " 고정됨"
+    ctx_fallback: " 기본값"
     ctx_unknown: "ctx --"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 스태시 ({count}개 항목)"
@@ -3950,3 +3978,8 @@ plan_usage:
   large_notice_limit: "대형 모델: {name} 한도에 도달했습니다({resets})."
   large_notice_limit_stops: "대형 모델: {name} 한도에 도달했습니다({resets}). 그때까지 실행되지 않습니다."
   large_notice_percent: "대형 모델: 메시지당 플랜 사용량을 더 많이 씁니다. 대형 모델 월간 한도: {percent} 사용."
+shared:
+  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  undo_rollback:
+    list: "↶ 취소한 턴에서 변경된 파일: {files}. /rollback 으로 체크포인트 목록을 보고 하나를 복원하세요."
+    more: "외 {count}개"

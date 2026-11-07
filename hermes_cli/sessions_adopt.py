@@ -24,17 +24,23 @@ def adoptable_sessions(path) -> list[dict]:
     count a dry run reports is what an adoption run attempts. A row the owner already bound is not
     offered again, which makes a second run a no-op."""
     from hermes_state import SessionDB
+    from gateway.owner_identity import host_owner_subject
     from hermes_state_local import POLICY_PREFIX
-    from hermes_state_local_migration import LEGACY_LOCAL_SOURCES, LEGACY_PREFIX, validate_legacy_row
+    from hermes_state_local_migration import LEGACY_LOCAL_SOURCES, LEGACY_PREFIX, not_client_labels, validate_legacy_row
     from hermes_state_runtime import RuntimeStoreError
 
     db = SessionDB(db_path=path, read_only=True)
     try:
-        sources = tuple(sorted(LEGACY_LOCAL_SOURCES))
+        # Local surfaces' labels, or any label a client app chose (not a platform, automation or
+        # foreign writer): validate_legacy_row judges each row; the filter keeps cron/subagent bulk out.
+        local = tuple(sorted(LEGACY_LOCAL_SOURCES))
+        refused = tuple(sorted(not_client_labels()))
         with db._read_ctx() as conn:
             ids = [row[0] for row in conn.execute(
-                f"SELECT id FROM sessions WHERE source IN ({','.join('?' * len(sources))}) ORDER BY started_at, id",
-                sources)]
+                f"SELECT id FROM sessions WHERE source IN ({','.join('?' * len(local))})"
+                f" OR (source NOT IN ({','.join('?' * len(refused))}) AND ifnull(session_key,'')=''"
+                " AND ifnull(chat_id,'')='' AND ifnull(origin_json,'')='') ORDER BY started_at, id",
+                local + refused)]
             bound = {row[0] for row in conn.execute(
                 'SELECT key FROM state_meta WHERE key LIKE ? OR key LIKE ?', (POLICY_PREFIX + '%', LEGACY_PREFIX + '%'))}
         found, seen = [], set()
@@ -48,7 +54,9 @@ def adoptable_sessions(path) -> list[dict]:
             if tip is None or POLICY_PREFIX + key in bound or LEGACY_PREFIX + key in bound:
                 continue
             try:
-                validate_legacy_row(db, tip)
+                # The host runs this command: judge each row for the owner the adoption resumes as, so a
+                # chat a phone app stored under the dashboard login (``basic:admin``) is offered too.
+                validate_legacy_row(db, tip, subject=host_owner_subject())
             except RuntimeStoreError:
                 continue
             found.append(tip)

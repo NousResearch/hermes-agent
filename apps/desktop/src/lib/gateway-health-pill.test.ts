@@ -66,4 +66,15 @@ describe('statusBarGatewayHealth', () => {
     expect(discordDown.detail).toBe(copy.messagingDegraded('discord'))
     expect(discordDown.degraded).toBe(true)
   })
+
+  it("names the owning profile when another profile's platform is the one down", () => {
+    const pill = statusBarGatewayHealth({
+      ...openReady,
+      messagingRunning: true,
+      messagingState: 'running',
+      platforms: { telegram: { state: 'connected' }, 'workhorse:whatsapp': { state: 'fatal' } }
+    })
+
+    expect(pill.detail).toBe(copy.messagingDegraded('workhorse:whatsapp'))
+  })
 })

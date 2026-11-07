@@ -126,8 +126,10 @@ def _resolve_preset_cached(preset_name: str) -> tuple[dict[str, Any], Any]:
     (skips resolve_moa_preset's full validation of the moa block on every create())."""
     from hermes_cli.config import get_config_path, load_config
     from hermes_cli.moa_config import resolve_moa_preset
-    from hermes_cli.config_backend import config_version_or_none
-    cfg_stamp = config_version_or_none(get_config_path())
+    from hermes_cli.config_backend import config_cache_version_or_none
+    from agent.safe_worker_policy import worker_config_snapshot
+    # A safe worker's config is its frozen snapshot: never open the profile file (uncached there).
+    cfg_stamp = None if worker_config_snapshot() is not None else config_cache_version_or_none(get_config_path())
     moa_raw = load_config().get("moa") or {}
     key = (cfg_stamp, preset_name)
     with _preset_cache_lock:

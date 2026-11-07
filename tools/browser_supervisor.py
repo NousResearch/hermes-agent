@@ -440,7 +440,10 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
     async def _attach_initial_page(self) -> None:
         """Find (or create) a page target, attach flattened, enable domains, install dialog bridge."""
         targets = (await self._cdp("Target.getTargets")).get("result", {}).get("targetInfos", [])
-        page_target = next((t for t in targets if t.get("type") == "page"), None)
+        # Extension popups may not answer Page.enable. Start on an ordinary
+        # page; vault tools focus their exact-origin login form afterwards.
+        page_target = next((t for t in targets if t.get("type") == "page"
+                            and not str(t.get("url") or "").startswith("chrome-extension://")), None)
         if page_target is None:
             page_target = (await self._cdp("Target.createTarget", {"url": "about:blank"}))["result"]
         attach = await self._cdp("Target.attachToTarget", {"targetId": page_target["targetId"], "flatten": True})

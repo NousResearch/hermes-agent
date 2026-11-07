@@ -18,6 +18,7 @@ afterEach(() => {
   Reflect.deleteProperty(win, 'hermesDesktop')
   clearWebappSession()
   document.documentElement.style.removeProperty('zoom')
+  document.documentElement.style.removeProperty('--browser-ui-scale')
   delete document.documentElement.dataset.hermesDesktopHost
   localStorage.clear()
   vi.unstubAllGlobals()

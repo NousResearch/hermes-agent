@@ -2007,9 +2007,9 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         self._running_agents_ts.clear()
         self._pending_messages.clear()
         self._pending_approvals.clear()
-        for _attr in ("_active_session_leases", "_busy_ack_ts"):  # absent on bare shutdown-path doubles
-            if hasattr(self, _attr):
-                getattr(self, _attr).clear()
+        for _state in list((self.__dict__.get("_sessions") or {}).values()):
+            _state.turn.lease = None
+        getattr(self, "_busy_ack_ts", {}).clear()  # absent on bare shutdown-path doubles
         self._shutdown_event.set()
         # Global catch-all subprocess kill (safe to repeat) for the graceful path and late respawns.
         # Off-loop: same blocking sweep as the post-interrupt kill (#116327).

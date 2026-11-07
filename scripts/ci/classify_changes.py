@@ -29,7 +29,8 @@ Lanes:
 * ``uv_lock``     — ``PM lock check``. Re-resolves the whole graph against
   PyPI, so a diff that touches neither ``pyproject.toml`` nor ``uv.lock``
   must not run it.
-* ``npm_lock``    — semantic package-lock.json diff PR comment.
+* ``npm_lock``    — semantic JS lockfile diff PR comment (pnpm-lock.yaml and
+  the standalone npm projects' package-lock.json).
 * ``bootstrap``   — the bootstrap installer lane: install.sh sandbox install,
   pin-fragment drift check, and shipped version-stamp verification.
 * ``desktop_updater`` — the Windows desktop-update hand-off script and the
@@ -93,13 +94,15 @@ import subprocess
 import sys
 
 _FRONTEND = ("ui-tui/", "web/", "apps/")  # TS typecheck-matrix packages
-# Shipped page outside those packages, exercised by the desktop Electron suite.
-_FRONTEND_FILES = {"scripts/desktop-update/ui.html"}
+# Shipped page outside those packages, exercised by the desktop Electron suite. The desktop cache
+# key owner is checked by tests-js/desktop-build-cache-inputs.test.mjs against the Node graph.
+_FRONTEND_FILES = {"scripts/desktop-update/ui.html", "scripts/ci/desktop_build_cache.py"}
 # The WhatsApp bridge's ``node --test`` suites run in the JS & TS job, so a
 # change to the bridge or to the Python adapter that speaks its protocol
 # selects ``frontend``.
 _WHATSAPP_BRIDGE = ("scripts/whatsapp-bridge/", "plugins/platforms/whatsapp/")
-_ROOT_NPM = {"package.json", "package-lock.json"}  # shifts every package's tree
+# Shift every package's tree (pnpm-workspace.yaml carries the overrides).
+_ROOT_NPM = {"package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"}
 _DOCKER_META = ("docker/", ".hadolint.yaml", "Dockerfile", ".dockerignore") # docker setup
 _NIX_PATHS = ("nix/",) # nix files
 _NIX_FILES = {"flake.nix", "flake.lock"} # base nix files
@@ -129,12 +132,16 @@ _PY_RELEVANT_CONTRACT_FILES = {
     # tests/tui_gateway/contracts/test_generated.py (rendered from tui_gateway/contracts)
     "apps/shared/src/gateway-contract.generated.ts",
     "apps/shared/src/gateway-contract.openrpc.json",
+    # tests/gateway/test_control_socket_vectors.py (the public control-socket contract)
+    "apps/shared/src/node/control-socket.vectors.json",
     # tests/hermes_cli/test_desktop_slash_registry.py
     "apps/desktop/src/lib/desktop-slash-registry.json",
     # tests/tui_gateway/test_show_reasoning_display_gate.py (card-tool names vs the gateway lifecycle set)
     "apps/desktop/src/lib/tool-render-class.ts",
     # tests/website/test_catalog_rules_mirror.py (docs page mirrors the canonical rules)
     "plugin-catalog/README.md",
+    # tests/hermes_cli/test_plugin_docs_public_imports.py (its examples import only the plugin API)
+    "plugins/AGENTS.md",
 }
 
 # Catalog entry data: read by the catalog tests and the Plugin Catalog CI
@@ -228,7 +235,7 @@ _REMOTE_BACKEND_PATHS = (
 # suite itself, its harness, and the product code the suite exists to guard.
 # Everything else reaches these lanes on the next push to main.
 _DEP_MANIFESTS = ("pyproject.toml", "uv.lock", "setup.py")
-_NPM_MANIFESTS = ("package.json", "package-lock.json")
+_NPM_MANIFESTS = ("package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml")
 # Shared pytest harness: a bad edit here can break every Python E2E suite.
 _PY_TEST_HARNESS = (
     "tests/conftest.py",
@@ -344,6 +351,8 @@ _UPDATE_DEPENDENCIES = (
     "agent/memory_provider.py",
     "pm/plugins_state.py",
     "pm/install.py",  # also sealed()/lazy_installs_allowed(): every update's default-tool install
+    "pm/packages.py",  # source_build's pnpm environment (pnpm_env)
+    "pm/index_config.py",  # source_build's npmrc bridge (read_npmrc, user_npmrc, hermes_npmrc)
     "hermes_cli/desktop_build_lock.py",
     "hermes_cli/desktop_build_reuse.py",  # source_build keeps the packaged app when no input changed
     "hermes_cli/desktop_release_holders.py",  # main_desktop names/closes a holder of release/ on a failed swap
@@ -641,7 +650,7 @@ def classify(files: list[str], run_e2e: bool = False) -> dict[str, bool]:
         for f in files
     )
     deps = any(f == "pyproject.toml" for f in files)
-    npm_lock = any(f.split("/")[-1] == "package-lock.json" for f in files)
+    npm_lock = any(f.split("/")[-1] in ("pnpm-lock.yaml", "package-lock.json") for f in files)
     docker_meta = any(f.startswith(_DOCKER_META) for f in files)
     
     ret = {

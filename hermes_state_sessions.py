@@ -955,11 +955,15 @@ class SessionSessionsMixin:
         This is the DELIBERATE archive (user, CLI, API): it clears the ``auto_archived``
         provenance, so re-activation never un-hides it on the user's behalf. A real
         unarchived -> archived flip fires ``on_session_delete`` (``reason="archive"``) after commit;
-        ``notify=False`` is for housekeeping that hides a row whose session lives on elsewhere."""
+        ``notify=False`` is for housekeeping that hides a row whose session lives on elsewhere.
+        Archiving the canonical Bot Chat retires its name in the same write
+        (:meth:`_retire_canonical_bot_chat_in_transaction`)."""
         def _do(conn):
             row = conn.execute("SELECT archived FROM sessions WHERE id = ?", (session_id,)).fetchone()
             ids = self._set_lineage_column_in_transaction(
                 conn, "archived", session_id, int(archived), extra_set_sql=", auto_archived = 0")
+            if archived and ids:
+                self._retire_canonical_bot_chat_in_transaction(conn, session_id)
             return ids, bool(archived and ids and row is not None and not row[0])
         ids, newly_archived = self._execute_write(_do)
         if newly_archived and notify:

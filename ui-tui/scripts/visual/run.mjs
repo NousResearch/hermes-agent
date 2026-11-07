@@ -1,4 +1,4 @@
-// Zero-dependency launcher for the visual harness (`npm run visual`).
+// Zero-dependency launcher for the visual harness (`pnpm run visual`).
 //
 // - Sets FORCE_COLOR/COLORTERM itself instead of POSIX `VAR=x cmd` shell
 //   assignments (which break under the Windows npm command shell) — no
@@ -38,7 +38,7 @@ if (!electronBin) {
   } catch {
     console.error(
       'electron is not installed in this tree — the visual harness borrows it from the\n' +
-        'desktop workspace. Run `npm install` at the repo root, or point ELECTRON_BIN at a binary.'
+        'desktop workspace. Run `pnpm install --frozen-lockfile` at the repo root, or point ELECTRON_BIN at a binary.'
     )
     process.exit(1)
   }

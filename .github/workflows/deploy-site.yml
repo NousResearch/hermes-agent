@@ -74,6 +74,7 @@ jobs:
         with:
           toolchain: all
           extras: '[]'
+          node-package-manager: npm
           node-cache-dependency-path: website/package-lock.json
 
       - name: Install ruamel.yaml for skill extraction

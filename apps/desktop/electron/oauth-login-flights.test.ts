@@ -7,6 +7,8 @@ import {
   loginFlightKey,
   LoginJoinTimeoutError,
   OauthLoginFlights,
+  originFromFlightKey,
+  SilentLoginExhaustedError,
   SilentLoginSuppressedError
 } from './oauth-login-flights'
 
@@ -93,7 +95,16 @@ test('a failed background login is held until its cooldown expires', async () =>
 
 test('the backoff doubles per consecutive failure, stops at the ceiling, and clears on success', async () => {
   const clock = fakeClock()
-  const flights = new OauthLoginFlights({ now: clock.now, baseDelayMs: 5_000, maxDelayMs: 20_000 })
+
+  // Exhaustion is configured out of the way: this test's subject is the delay
+  // ladder itself, which keeps doubling up to its ceiling.
+  const flights = new OauthLoginFlights({
+    now: clock.now,
+    baseDelayMs: 5_000,
+    maxDelayMs: 20_000,
+    maxConsecutiveFailures: 100
+  })
+
   const fail = fakeWindows(() => Promise.reject(new Error('nope')))
   const delays: number[] = []
 
@@ -107,6 +118,122 @@ test('the backoff doubles per consecutive failure, stops at the ceiling, and cle
 
   await expect(flights.run(KEY, 'background', fakeWindows(async () => 'ok').start)).resolves.toBe('ok')
   expect(flights.cooldownRemainingMs(KEY)).toBe(0)
+})
+
+test('the default backoff ceiling is five minutes', async () => {
+  const clock = fakeClock()
+  const flights = new OauthLoginFlights({ now: clock.now, maxConsecutiveFailures: 100 })
+  const fail = fakeWindows(() => Promise.reject(new Error('nope')))
+  const delays: number[] = []
+
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    await expect(flights.run(KEY, 'background', fail.start)).rejects.toThrow(/nope/)
+    delays.push(flights.cooldownRemainingMs(KEY))
+    clock.advance(flights.cooldownRemainingMs(KEY))
+  }
+
+  expect(delays).toEqual([5_000, 10_000, 20_000, 40_000, 80_000, 160_000, 300_000, 300_000])
+})
+
+test('three consecutive failures exhaust background logins: no fourth window, ever', async () => {
+  const clock = fakeClock()
+  const exhausted = vi.fn()
+  const flights = new OauthLoginFlights({ now: clock.now, onExhausted: exhausted })
+  const windows = fakeWindows(() => Promise.reject(new Error('Login window closed before authentication completed.')))
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await expect(flights.run(KEY, 'background', windows.start)).rejects.toThrow(/Login window closed/)
+    clock.advance(flights.cooldownRemainingMs(KEY))
+  }
+
+  expect(windows.stats.opened).toBe(3)
+  expect(exhausted).toHaveBeenCalledTimes(1)
+  expect(exhausted).toHaveBeenCalledWith(KEY)
+
+  // Days later, with the credential still dead, a background caller is
+  // refused outright — the guard is a count, not a delay.
+  clock.advance(24 * 60 * 60 * 1_000)
+
+  const refused = await flights.run(KEY, 'background', windows.start).catch(error => error)
+
+  expect(refused).toBeInstanceOf(SilentLoginExhaustedError)
+  expect((refused as SilentLoginExhaustedError).consecutiveFailures).toBe(3)
+  expect(windows.stats.opened).toBe(3)
+})
+
+test('a manual sign-in is never refused by exhaustion, and its success clears the ledger', async () => {
+  const clock = fakeClock()
+  const onLoginRecovered = vi.fn()
+  const flights = new OauthLoginFlights({ now: clock.now, onLoginRecovered })
+  const fail = fakeWindows(() => Promise.reject(new Error('nope')))
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await expect(flights.run(KEY, 'background', fail.start)).rejects.toThrow(/nope/)
+    clock.advance(flights.cooldownRemainingMs(KEY))
+  }
+
+  expect(flights.cooldownRemainingMs(KEY)).toBe(0)
+
+  // The user's click IS the way back: it opens a window while background
+  // callers are already refused, and a successful one restores the flow.
+  const manual = fakeWindows(async () => 'ok')
+
+  await expect(flights.run(KEY, 'foreground', manual.start)).resolves.toBe('ok')
+  expect(manual.stats.opened).toBe(1)
+  expect(onLoginRecovered).toHaveBeenCalledTimes(1)
+  expect(onLoginRecovered).toHaveBeenCalledWith(KEY)
+
+  const automatic = fakeWindows(async () => 'ok')
+
+  await expect(flights.run(KEY, 'background', automatic.start)).resolves.toBe('ok')
+  expect(automatic.stats.opened).toBe(1)
+  // A routine success after a clean episode is not a "recovery" event.
+  expect(onLoginRecovered).toHaveBeenCalledTimes(1)
+})
+
+test('a foreground failure counts toward exhaustion but a later click still opens a window', async () => {
+  const clock = fakeClock()
+  const flights = new OauthLoginFlights({ now: clock.now })
+  const fail = fakeWindows(() => Promise.reject(new Error('nope')))
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await expect(flights.run(KEY, 'foreground', fail.start)).rejects.toThrow(/nope/)
+    clock.advance(flights.cooldownRemainingMs(KEY))
+  }
+
+  await expect(flights.run(KEY, 'background', fakeWindows(async () => 'ok').start)).rejects.toBeInstanceOf(
+    SilentLoginExhaustedError
+  )
+
+  // The click path is never suppressed by the count.
+  const manual = fakeWindows(async () => 'ok')
+
+  await expect(flights.run(KEY, 'foreground', manual.start)).resolves.toBe('ok')
+  expect(manual.stats.opened).toBe(1)
+})
+
+test('a burst of background 401s while exhausted opens no window at all', async () => {
+  const clock = fakeClock()
+  const flights = new OauthLoginFlights({ now: clock.now })
+  const windows = fakeWindows(() => Promise.reject(new Error('nope')))
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await expect(flights.run(KEY, 'background', windows.start)).rejects.toThrow(/nope/)
+    clock.advance(flights.cooldownRemainingMs(KEY))
+  }
+
+  const burst = await Promise.allSettled(
+    Array.from({ length: 20 }, () => flights.run(KEY, 'background', windows.start))
+  )
+
+  expect(burst.every(outcome => outcome.status === 'rejected')).toBe(true)
+  expect(
+    burst.every(
+      outcome =>
+        outcome.status === 'rejected' && outcome.reason instanceof SilentLoginExhaustedError
+    )
+  ).toBe(true)
+  expect(windows.stats.opened).toBe(3)
 })
 
 test('a click while a hidden attempt runs reveals that window instead of opening a second', async () => {
@@ -185,6 +312,8 @@ test('the flight key is the jar plus the gateway origin', () => {
   expect(loginFlightKey(JAR, `${GATEWAY}/api/status`)).toBe(KEY)
   expect(loginFlightKey(JAR, 'https://other.example.test')).not.toBe(KEY)
   expect(loginFlightKey(`${JAR}-conn-x`, GATEWAY)).not.toBe(KEY)
+  // The reported origin round-trips back out of the key for the UI push.
+  expect(originFromFlightKey(loginFlightKey(JAR, `${GATEWAY}/api/status`))).toBe(GATEWAY)
 })
 
 // main.ts is not importable under vitest; pin which callers count as unattended.

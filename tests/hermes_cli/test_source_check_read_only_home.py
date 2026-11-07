@@ -61,3 +61,38 @@ def test_check_for_updates_does_not_seed_the_home(tmp_path):
     # The config loader's known-good snapshot (backups/config/config.yaml.good.*) is its own
     # behavior and may appear; it is not home initialization.
     assert set(payload["entries"]) <= {"config.yaml", "backups"}, payload["entries"]
+
+
+def test_read_only_window_is_per_thread_not_process_wide(tmp_path, monkeypatch):
+    """A concurrent *real* init on another thread must not be downgraded by the probe's window.
+
+    The probe runs through ``asyncio.to_thread`` (``web_routers/actions.py``) and on startup
+    threads, so a process-wide depth counter silently turned an unrelated real initialization
+    into "create the home dir only, record nothing" — and the work was lost rather than
+    deferred, because the read-only path returns before the memo.
+    """
+    import threading
+
+    from hermes_cli.config_home import initialize_home, read_only_home
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_MANAGED", raising=False)
+    real_ensured: set = set()
+    done = threading.Event()
+
+    def real_init() -> None:
+        try:
+            initialize_home(home, ("skills", "memories"), real_ensured)
+        finally:
+            done.set()
+
+    with read_only_home():
+        thread = threading.Thread(target=real_init)
+        thread.start()
+        assert done.wait(timeout=30), "the sibling init never finished"
+        thread.join(timeout=30)
+
+    assert (home / "SOUL.md").is_file(), "a real init on another thread was suppressed by the probe"
+    assert (home / "skills").is_dir()
+    assert real_ensured, "the real init's memo was lost to the read-only window"

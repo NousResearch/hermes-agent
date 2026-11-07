@@ -974,9 +974,6 @@ platform:
     approved: "✅ تمت الموافقة."
     denied: "❌ تم الرفض."
     approval_expired: "⌛ انتهت صلاحية الموافقة — لم يُنفَّذ الأمر (انتهت مهلته أو حُسم في مكان آخر)."
-  yuanbao:
-    slow_response_notice: "هذه المهمة معقّدة قليلًا — ما زلت أعمل عليها، يُرجى الانتظار..."
-    owner_command_denied: "⚠️ الأمر {command} متاح للمُنشئ فقط في وضع المحادثة الخاصة"
   shared:
     truncated_suffix: "\n...(مقتطع)"
     unknown: "غير معروف"

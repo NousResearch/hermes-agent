@@ -142,6 +142,75 @@ listener keeps working.
   CLI/TUI/GUI history. This read-only feed uses the native legacy-resume ownership checks,
   excludes hidden/archived/internal and foreign-owned rows, and never adopts a session merely
   by listing it. Explicit resume performs adoption; the default live feed is unchanged.
+  Both scopes take `workspace`: only conversations whose first row is in that folder, by
+  `hermes -c`'s rule (`hermes_state_sessions.workspace_key`): the row's git repo root equals it, or
+  (no root recorded) its cwd is the folder or under it. Pass the caller's repo root (else its cwd).
+  With `picker: true` each row also carries what a picker shows (`gateway/session_picker_fields.py`):
+  `cwd` and `workspace` from the same first row the filter reads, and from the conversation's current
+  segment (the compression tip, as the stored listing projects it) `preview` (the first prompt
+  there), `last_reply` (its newest reply, shortened as `preview` is; a pure compaction handoff is no
+  reply, a carrier shows the reply it wraps), `git_branch`, `last_active_at` and `pinned`. Off by
+  default, so the 1.5 s live-list poll pays nothing; on, a page is one batched store read.
+- `session.transcript({session_id, subagent_id?, cursor?, limit?, order?, inline_images?})` reads a
+  conversation without attaching to it (`gateway/session_stored_reads.py`). It is authorized as
+  `session.resume`'s read (`SessionAuthority.authorize`, `session:read`: profile, owner or operator).
+  Like `session.info` that check publishes the conversation's route entry in `authority.sessions`
+  when it is not there; it builds no agent, subscribes nobody, and an ended local conversation stays
+  out of the live list. An old CLI/TUI/GUI row (no receipt or route) is judged at its compression tip
+  by the stored feed's own rule, whichever lineage id is asked, and never adopted. It runs on the
+  socket's concurrent read lane, so a prompt or interrupt never queues behind it. Runtimes that serve
+  it advertise `session-transcript-v1` (and `session-list-picker-v1` for the `session.list` options
+  above) in `runtime.describe.capabilities`.
+  It returns `{session_id, rows, next_cursor, reset}`: display rows across the compression lineage
+  (live and compaction-archived, each logical message once), oldest first within a page. Every row
+  carries `row_kind` (`gateway/session_transcript_rows.py`): `"message"` is `session.resume`'s
+  `display_messages` row; `"compaction"` is a compaction handoff at its position, with `role:
+  "system"`, `text` the summary a reader sees (without the preamble, end marker, re-quoted user
+  messages, recovery footer and ranking line written for the model), `compacted_messages` (the count
+  the footer named, else null), `timestamp` and the stored `row_id`. A later compaction that carries,
+  re-wraps or unwraps a summary carrier still shows the older handoff, each once, before the first row
+  in the whole transcript that holds it, wherever a page starts.
+  A page holds at most `limit` (1-500, default 100) rows, compaction rows included, plus up to 64 tool
+  results of the call at its edge (a row's handoffs and the row itself can fall on two pages, each sent
+  once), and at most 2 MiB of JSON, cut between tool groups (a tool result whose call sits on another
+  page is still labelled from it); a single larger row keeps only its role, kind, time, ids and the
+  head of its text and carries `truncated: true`. Images read `[image]` unless `inline_images: true`.
+  The cursor is opaque and bound to the session, the child and the order.
+  `order: "oldest"` (the default) is also the poll: `next_cursor` is never null; read until a page is
+  empty, then keep that cursor and pass it again for the rows written since. The cursor holds the
+  segment it read and `SessionDB.transcript_cursor_state` of the rows it covered (the segment's live
+  rows up to the newest row read plus every live row of its earlier segments, the lineage's inactive
+  rows, its summed `transcript_revision`). While both hold only appends happened, and the page
+  continues after the cursor (`reset: false`). Anything else (an in-place compaction, a rotation to a
+  new segment, a rewind, a rewrite or deletion of a covered row or of an earlier segment's row,
+  including rows appended and compacted between two polls) answers `reset: true` from the first page:
+  the caller replaces what it holds. The check, the page and the state the next cursor holds are read
+  in one read transaction (`SessionDB.transcript_read_snapshot`), so a cursor vouches for exactly the
+  rows its page holds. A store without a pooled reader (not WAL, read-only, or at the pool's ceiling)
+  holds no transaction across the reads: there the read counts only when no write landed in the
+  database meanwhile, else it is read once more; when that read also overlaps a write, the reply is
+  `reset: true` from the first page with a cursor whose next poll resets again. A reply without a cursor
+  is `reset: true` too.
+  `order: "latest"` starts at the newest rows and pages older until `next_cursor` is null; its cursor
+  is keyed by each message's first durable row, so a page boundary holds across later compactions.
+  A single-segment conversation is paged in SQL on its display index, in one read transaction, with
+  the resume's conversation normalization (only the page's bodies are read, and a read backfills that
+  index outside the transaction when a row lacks its slot, as REST `/messages` does, then reads again);
+  a rotated lineage is deduplicated whole, and past `sessions.max_resume_messages` only its current
+  segment is paged. A cursor also holds which of the two its page read: when appends take the lineage
+  past that guard, a reply in either order is `reset: true` from its first page. A newest-first cursor
+  of that current segment also holds the segment: once a compaction rotates it to a new one, the next
+  reply is `reset: true` from the newest page.
+  With `subagent_id` it reads a delegated child of `session_id` instead
+  (`gateway/session_transcript_subagent.py`); the reply adds `subagent_id`, `available`, `running`
+  and `child_session_id`. The session must be live on this owner (else `not_found`) and readable by
+  the caller. A running child must be in the parent's live roster (the `subagent.list` rule, nested
+  children included). A finished child is found through the `_subagent_id` stamped on its row at
+  spawn, and only when its `parent_session_id` chain reaches this conversation through delegate-child
+  or compression-continuation hops; a branch of the conversation does not lend its children. A
+  foreign or unknown child answers `available: false`, `rows: []`, `next_cursor: null`,
+  `reset: true`. A child's lineage is its own (a queued child never shows its delegator's rows), and
+  every read uses the owning profile's own store under `owner_scope`.
   `session.info({session_id})` is a lightweight,
   authorized view of source, current model, lazy-agent status, and profile ID.
 - `ping({})` returns `{pong: true}`. `runtime.describe({})` exposes only authority identity,

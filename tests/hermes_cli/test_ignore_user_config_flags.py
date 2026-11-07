@@ -40,17 +40,10 @@ class TestIgnoreUserConfigEnvGate:
     """``load_cli_config()`` must honour ``HERMES_IGNORE_USER_CONFIG=1``.
 
     When the env var is set, user config at ``<hermes_home>/config.yaml`` is
-    skipped even if present — the function returns only the built-in defaults
-    (merged with the project-level ``cli-config.yaml`` fallback).
+    skipped even if present — the function returns only the built-in defaults.
     """
 
     def _write_user_config(self, tmp_path, model_default):
-        # NOTE: the model value is a sentinel that can never appear in a real
-        # config. With HERMES_IGNORE_USER_CONFIG=1, load_cli_config() falls
-        # back to the repo-root ``cli-config.yaml`` (untracked, gitignored) —
-        # on a dev machine that file can legitimately set the same popular
-        # model this test previously used ("anthropic/claude-sonnet-4.6"),
-        # making the != assertion flip locally while passing on CI.
         config_yaml = textwrap.dedent(
             f"""
             model:
@@ -108,3 +101,24 @@ class TestIgnoreUserConfigEnvGate:
 
         # "true" != "1", so user config IS loaded
         assert cfg["model"]["default"] == "test-vendor/ignore-user-config-sentinel"
+
+    @pytest.mark.parametrize("flag", [True, False], ids=["ignore-user-config", "no-user-config"])
+    def test_a_project_cli_config_at_the_install_root_is_never_read(self, tmp_path, monkeypatch, flag):
+        """``--ignore-user-config`` and a missing user config both mean built-in defaults, as documented:
+        a developer's gitignored ``cli-config.yaml`` at the checkout root is not a config source."""
+        home, root = tmp_path / "home", tmp_path / "install"
+        home.mkdir()
+        root.mkdir()
+        if flag:
+            self._write_user_config(home, "test-vendor/user-sentinel")
+            monkeypatch.setenv("HERMES_IGNORE_USER_CONFIG", "1")
+        package = root / "hermes_cli"
+        package.mkdir()
+        for where in (root, package):  # the install root, and beside the loader where the fallback looked
+            (where / "cli-config.yaml").write_text("model:\n  default: test-vendor/project-sentinel\n")
+        monkeypatch.setattr("hermes_cli.config.get_project_root", lambda: root)
+        monkeypatch.setattr("hermes_cli.cli_config_load.__file__", str(package / "cli_config_load.py"))
+
+        cfg = self._reload_cli(monkeypatch, home)()
+
+        assert cfg["model"].get("default", "") not in ("test-vendor/project-sentinel", "test-vendor/user-sentinel")

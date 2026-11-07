@@ -974,9 +974,6 @@ platform:
     approved: "✅ Ceadaithe."
     denied: "❌ Diúltaithe."
     approval_expired: "⌛ Tá an cead imithe in éag — níor ritheadh an t-ordú (chuaigh sé thar am cheana nó réitíodh é in áit eile)."
-  yuanbao:
-    slow_response_notice: "Tá an tasc seo beagán casta — táim fós ag obair air, fan go fóill le do thoil..."
-    owner_command_denied: "⚠️ Níl {command} ar fáil ach don chruthaitheoir i mód comhrá phríobháidigh"
   shared:
     truncated_suffix: "\n...(giorraithe)"
     unknown: "anaithnid"

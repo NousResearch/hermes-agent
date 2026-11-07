@@ -988,9 +988,6 @@ platform:
     approved: "✅ Jóváhagyva."
     denied: "❌ Elutasítva."
     approval_expired: "⌛ A jóváhagyás lejárt — a parancs nem futott le (időtúllépés, vagy máshol már eldőlt)."
-  yuanbao:
-    slow_response_notice: "Ez a feladat kicsit összetettebb — még dolgozom rajta, kis türelmet..."
-    owner_command_denied: "⚠️ A(z) {command} privát csevegés módban csak a létrehozó számára érhető el"
   shared:
     truncated_suffix: "\n...(csonkolva)"
     unknown: "ismeretlen"

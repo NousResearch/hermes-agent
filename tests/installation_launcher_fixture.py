@@ -7,7 +7,7 @@ import sys
 from hermes_cli._launchers import mint_launcher
 
 
-def publish_fixture_launcher(root: Path, main_source: str) -> Path:
+def publish_fixture_launcher(root: Path, main_source: str, interpreter: Path | None = None) -> Path:
     repository = Path(__file__).resolve().parents[1]
     package = root / "hermes_cli"
     package.mkdir(parents=True, exist_ok=True)
@@ -21,7 +21,7 @@ def publish_fixture_launcher(root: Path, main_source: str) -> Path:
         shutil.copyfile(repository / relative, root / relative)
     out = root / ".hermes" / "bin"
     out.mkdir(parents=True)
-    launcher = mint_launcher("hermes", root, out, Path(sys.executable), None)
+    launcher = mint_launcher("hermes", root, out, interpreter or Path(sys.executable), None)
     assert launcher is not None
     assert not (root / "venv").exists()
     return launcher

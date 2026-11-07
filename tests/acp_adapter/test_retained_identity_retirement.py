@@ -103,7 +103,7 @@ async def _settled(owner, count):
 def _surface(name, owner):
     """(model control, prompt) verbs for one surface; each awaits its own outcome."""
     async def acp_model(agent, model):
-        await asyncio.wait_for(agent.set_session_model(model_id=model, session_id=owner.sid), 5)
+        await asyncio.wait_for(agent.set_config_option(config_id="model", value=model, session_id=owner.sid), 5)
 
     async def acp_slash(agent, model):
         await asyncio.wait_for(agent.prompt([acp.text_block(f'/model {model}')], owner.sid), 5)
@@ -160,7 +160,7 @@ async def test_a_repeated_control_after_other_work_is_new_work(owner, surface, b
 @pytest.mark.asyncio
 @pytest.mark.parametrize('between', ['set-model', 'fork'])
 async def test_a_repeated_prompt_after_a_control_is_new_work(owner, tmp_path, between):
-    """An un-acked prompt's input_id is retired by an ACP control (set_session_model, fork)."""
+    """An un-acked prompt's input_id is retired by an ACP control (set_config_option, fork)."""
     agent = await _acp(owner)
     try:
         owner.wire.lose = ('prompt.submit', lambda params: True, 'after')
@@ -168,7 +168,7 @@ async def test_a_repeated_prompt_after_a_control_is_new_work(owner, tmp_path, be
             await agent.prompt([acp.text_block('yes')], owner.sid)
         await _settled(owner, 1)
         if between == 'set-model':
-            await asyncio.wait_for(agent.set_session_model(model_id='model-b', session_id=owner.sid), 5)
+            await asyncio.wait_for(agent.set_config_option(config_id='model', value='model-b', session_id=owner.sid), 5)
         else:
             await asyncio.wait_for(agent.fork_session(cwd=str(tmp_path), session_id=owner.sid), 5)
         response = await asyncio.wait_for(agent.prompt([acp.text_block('yes')], owner.sid), 5)

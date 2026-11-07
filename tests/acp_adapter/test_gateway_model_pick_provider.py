@@ -1,4 +1,4 @@
-"""ACP ``session/set_model`` on the gateway path: the advertised ``provider:model`` id switches the
+"""ACP ``session/set_config_option`` on the gateway path: the advertised ``provider:model`` id switches the
 session's provider too (#139165, #134889 MP-10), over the real ACP stdio wire and a real gateway."""
 import asyncio
 import json
@@ -21,7 +21,7 @@ def _second_on_peer(daemon, model_peer):
     (home / 'config.yaml').write_text(json.dumps(config))
 
 
-@pytest.mark.platforms('linux')
+@pytest.mark.platforms('posix')
 @pytest.mark.asyncio
 @pytest.mark.parametrize('daemon', [_SECOND], indirect=True)
 async def test_cross_provider_pick_switches_provider_and_runs_the_next_turn_there(daemon, tmp_path, model_peer):
@@ -31,7 +31,7 @@ async def test_cross_provider_pick_switches_provider_and_runs_the_next_turn_ther
         async with editor(daemon, tmp_path) as acp:
             await acp.rpc('initialize', protocolVersion=1, clientCapabilities={})
             assert 'result' in await acp.rpc('session/load', cwd=str(tmp_path), sessionId=sid, mcpServers=[])
-            picked = await acp.rpc('session/set_model', sessionId=sid, modelId='custom:second:second-model')
+            picked = await acp.rpc('session/set_config_option', sessionId=sid, configId='model', value='custom:second:second-model')
             assert 'result' in picked, picked
             info = await ws.rpc('session.info', session_id=sid)
             assert (info.get('provider'), info.get('model')) == ('custom:second', 'second-model'), info
@@ -52,12 +52,12 @@ async def _pick_during_a_turn(acp, sid, model_peer):
                                           prompt=[{'type': 'text', 'text': 'WS_SHARED BLOCK_FIFO'}]))
     await asyncio.to_thread(model_peer.blocked.wait, 30)
     start = len(acp.frames)
-    picked = await acp.rpc('session/set_model', sessionId=sid, modelId='custom:second:second-model')
+    picked = await acp.rpc('session/set_config_option', sessionId=sid, configId='model', value='custom:second:second-model')
     assert 'result' in picked, picked
     return running, start
 
 
-@pytest.mark.platforms('linux')
+@pytest.mark.platforms('posix')
 @pytest.mark.asyncio
 @pytest.mark.parametrize('daemon', [_SECOND], indirect=True)
 async def test_pick_during_a_turn_says_it_applies_next_and_lands_there(daemon, tmp_path, model_peer):
@@ -77,7 +77,7 @@ async def test_pick_during_a_turn_says_it_applies_next_and_lands_there(daemon, t
             assert model_peer.requests[-1]['model'] == 'second-model', model_peer.requests[-1]
 
 
-@pytest.mark.platforms('linux')
+@pytest.mark.platforms('posix')
 @pytest.mark.asyncio
 @pytest.mark.parametrize('daemon', [_SECOND], indirect=True)
 async def test_deferred_pick_that_no_longer_resolves_is_named_to_the_editor(daemon, tmp_path, model_peer):
@@ -131,7 +131,7 @@ def _measured(model_peer):
     model_peer.RequestHandlerClass = Measured
 
 
-@pytest.mark.platforms('linux')
+@pytest.mark.platforms('posix')
 @pytest.mark.asyncio
 @pytest.mark.parametrize('daemon', [_GUARDED], indirect=True)
 async def test_guarded_deferred_pick_asks_the_editor_at_the_boundary_and_lands_on_yes(daemon, tmp_path, model_peer):

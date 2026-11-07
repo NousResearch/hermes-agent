@@ -100,6 +100,7 @@ def _setup_bridge_dir(tmp_path: Path) -> Path:
     bridge_dir.mkdir()
     (bridge_dir / "bridge.js").write_text("// current bridge code\n", encoding="utf-8")
     (bridge_dir / "package.json").write_text('{"name": "bridge"}\n', encoding="utf-8")
+    (bridge_dir / "package-lock.json").write_text('{"lockfileVersion": 3}\n', encoding="utf-8")
     session_path = tmp_path / "session"
     session_path.mkdir()
     (session_path / "creds.json").write_text("{}", encoding="utf-8")
@@ -107,14 +108,12 @@ def _setup_bridge_dir(tmp_path: Path) -> Path:
 
 
 def _fresh_node_modules(bridge_dir: Path) -> None:
-    """Create node_modules with a stamp matching the current package.json."""
-    from plugins.platforms.whatsapp.adapter import _file_content_hash
+    """Prepare dependencies matching both manifests before exercising bridge ownership."""
+    from gateway.platforms.whatsapp_common import record_whatsapp_bridge_dependency_fingerprint
 
     nm = bridge_dir / "node_modules"
     nm.mkdir()
-    (nm / ".hermes-pkg-hash").write_text(
-        _file_content_hash(bridge_dir / "package.json")
-    )
+    assert record_whatsapp_bridge_dependency_fingerprint(bridge_dir)
 
 
 

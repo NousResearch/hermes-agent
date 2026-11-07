@@ -109,6 +109,15 @@ describe('applyDisplay', () => {
     expect(s.sections).toEqual({})
   })
 
+  it('keeps terminal progress on unless display.terminal_progress is explicitly false', () => {
+    applyDisplay({ config: { display: { terminal_progress: false } } }, vi.fn())
+    expect($uiState.get().terminalProgress).toBe(false)
+
+    // The gateway sends the user's file without defaults: an absent key means on.
+    applyDisplay({ config: { display: {} } }, vi.fn())
+    expect($uiState.get().terminalProgress).toBe(true)
+  })
+
   it('parses display.sections into per-section overrides', () => {
     const setBell = vi.fn()
 

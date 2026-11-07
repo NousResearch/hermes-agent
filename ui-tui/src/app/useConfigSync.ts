@@ -366,6 +366,7 @@ export const applyDisplay = (
     statusBar: normalizeStatusBar(d.tui_statusbar),
     statusBarFields: normalizeStatusBarFields(d.status_bar?.fields),
     streaming: d.streaming !== false,
+    terminalProgress: d.terminal_progress !== false,
     // The SAME key that stamps [HH:MM] on classic-CLI labels (#41531) —
     // no separate TUI knob.
     timestamps: d.timestamps === true

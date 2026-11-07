@@ -159,6 +159,8 @@ export interface ConfigDisplayConfig {
    *  Raw YAML: callers must runtime-validate entries. */
   status_bar?: { fields?: unknown }
   streaming?: boolean
+  /** OSC 9;4 tab progress while a turn runs (Ghostty 1.2+, iTerm2 3.6.6+, ConEmu). Default true. */
+  terminal_progress?: boolean
   thinking_mode?: string
   /** Show [HH:MM] timestamps on transcript rows — same key the classic CLI
    *  honors on its user/assistant labels (#41531). */

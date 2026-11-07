@@ -365,8 +365,9 @@ class TestSearchPathValidation:
 
 
 class TestSearchFilesIncludesDirectories:
-    """``search_files(target='files')`` is documented as an ls replacement and must
-    list matching directories, not just files — empty directories included (#54347)."""
+    """``search_files(target='files')`` must list matching directories for
+    directory-ish / glob patterns, not just files — empty directories included
+    (#54347). Concrete filenames skip directory supplementation."""
 
     @pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep not installed")
     def test_rg_target_files_includes_matching_empty_directory(self, tmp_path):

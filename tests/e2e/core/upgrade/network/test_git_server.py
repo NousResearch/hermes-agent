@@ -29,7 +29,14 @@ def test_blobless_checkout_fetches_its_blobs_in_one_gzipped_request(tmp_path):
     bare.parent.mkdir(parents=True)
     _git("clone", "-q", "--bare", str(src), str(bare), cwd=tmp_path)
     _git("config", "uploadpack.allowFilter", "true", cwd=bare)
-    site = N.HttpSite(N.git_app(tmp_path / "forge"))
+    git_app = N.git_app(tmp_path / "forge")
+    encodings = []
+
+    def recording_app(req):
+        encodings.append(req.headers.get("content-encoding", ""))
+        return git_app(req)
+
+    site = N.HttpSite(recording_app)
     try:
         cp = subprocess.run(["git", "clone", "-q", "--filter=blob:none", f"{site.url}/NousResearch/hermes-agent.git",
                              str(tmp_path / "checkout")], capture_output=True, text=True, timeout=300, check=False)
@@ -37,4 +44,5 @@ def test_blobless_checkout_fetches_its_blobs_in_one_gzipped_request(tmp_path):
         site.close()
     failed = [str(h) for h in site.hits if h.status != 200]
     assert cp.returncode == 0 and not failed, f"{cp.stderr}\n{failed}"
+    assert "gzip" in encodings, f"git sent no gzipped request, so this test does not cover that path: {encodings}"
     assert (tmp_path / "checkout" / "f2999.txt").read_text(encoding="utf-8") == "2999\n"

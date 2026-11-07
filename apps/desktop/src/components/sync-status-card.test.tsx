@@ -117,6 +117,29 @@ it.each(cases)(
   }
 )
 
+it('paints the stash detail line only when local changes were parked', async (): Promise<void> => {
+  const parked: DesktopSyncReceipt = {
+    pm_steps: [{ name: 'local_changes_stash', ok: false, detail: 'parked: abc1234 (--keep-stash)' }]
+  }
+
+  vi.stubGlobal('hermesDesktop', {
+    getSyncStatus: async (): Promise<DesktopSyncReceipt | null> => parked
+  } satisfies Pick<Window['hermesDesktop'], 'getSyncStatus'>)
+  await act(async (): Promise<void> => {
+    render(<SyncStatusCard />)
+  })
+  expect(screen.getByTestId('stash-outcome-line').textContent).toContain('git stash apply abc1234')
+
+  cleanup()
+  vi.stubGlobal('hermesDesktop', {
+    getSyncStatus: async (): Promise<DesktopSyncReceipt | null> => null
+  } satisfies Pick<Window['hermesDesktop'], 'getSyncStatus'>)
+  await act(async (): Promise<void> => {
+    render(<SyncStatusCard />)
+  })
+  expect(screen.queryByTestId('stash-outcome-line')).toBeNull()
+})
+
 it('a rejected bridge leaves the overlay usable', async (): Promise<void> => {
   vi.stubGlobal('hermesDesktop', {
     getSyncStatus: async (): Promise<never> => {

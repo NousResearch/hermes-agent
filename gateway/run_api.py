@@ -332,6 +332,14 @@ def _embedded_chat_enabled() -> bool:
     return True if web is None else bool(getattr(web, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True))
 
 
+def _not_ready_response(scope, state):
+    """The drain's refusal: JSON for API callers, a self-reloading page for a browser's page load."""
+    from gateway.webapp_restart_page import document_refusal
+    from starlette.responses import JSONResponse
+    return (document_refusal(scope, "restarting")
+            or JSONResponse({'error': 'gateway_not_ready', 'state': state}, status_code=503))
+
+
 def _restart_wait_read(runner, scope) -> bool:
     from gateway.drain_control import restart_wait_read
     return scope['type'] == 'http' and restart_wait_read(runner, scope.get('method'), scope.get('path'))
@@ -392,9 +400,7 @@ class GatewayRuntimeAPI:
             if scope['type'] == 'websocket':
                 await send({'type': 'websocket.close', 'code': 1013})
             else:
-                from starlette.responses import JSONResponse
-                await JSONResponse({'error': 'gateway_not_ready', 'state': descriptor['state']},
-                                   status_code=503)(scope, receive, send)
+                await _not_ready_response(scope, descriptor['state'])(scope, receive, send)
             return
         # Capture before Uvicorn's proxy middleware rewrites scope.client (native grants, both kinds).
         scope['hermes.gateway_socket_peer'] = scope.get('client')

@@ -80,6 +80,7 @@ vi.mock('@/i18n', () => ({
         save: 'Save'
       },
       errors: { genericFailure: 'Something went wrong' },
+      fileMenu: { copyPath: 'Copy path', revealFileManager: 'Open containing folder' },
       sidebar: {
         messageCount: (count: number) => `${count} messages`,
         projects: {

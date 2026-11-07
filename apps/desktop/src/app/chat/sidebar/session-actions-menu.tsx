@@ -31,6 +31,7 @@ import { ArchiveOff } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
 import { PROFILE_SWATCHES } from '@/lib/profile-color'
 import { exportSession } from '@/lib/session-export'
+import { copyFilePath, revealFile, shouldOfferLocalReveal } from '@/store/file-actions'
 import { activeGateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import {
@@ -256,6 +257,46 @@ function MoveToProjectItems({ kit, sessionId, profile }: { kit: MenuKit; session
       ))}
     </>
   )
+}
+
+// The session's workspace folder — copy its path, or open it in the OS file
+// manager — so a tab (or row) answers "which project is this?" without
+// focusing it first; the statusbar's workspace item only covers the focused
+// chat. Its own component so only an OPEN menu subscribes to $sessions (same
+// reasoning as SessionColorSwatches). Reveal follows the statusbar's rule: only
+// for a workspace on this computer.
+function SessionFolderItems({ kit, sessionId }: { kit: MenuKit; sessionId: string }) {
+  const { t } = useI18n()
+  const fileMenu = t.fileMenu
+  const session = useStore($sessions).find(s => sessionMatchesStoredId(s, sessionId))
+  const cwd = session?.cwd?.trim() || ''
+
+  const items: ActionItemSpec[] = [
+    ...(shouldOfferLocalReveal(session?.connection_id)
+      ? [
+          {
+            disabled: !cwd,
+            icon: 'folder-opened',
+            label: fileMenu.revealFileManager,
+            onSelect: () => {
+              triggerHaptic('selection')
+              void revealFile(cwd)
+            }
+          } satisfies ActionItemSpec
+        ]
+      : []),
+    {
+      disabled: !cwd,
+      icon: 'copy',
+      label: fileMenu.copyPath,
+      onSelect: () => {
+        triggerHaptic('selection')
+        void copyFilePath(cwd)
+      }
+    }
+  ]
+
+  return <>{items.map(item => renderActionItem(kit, item))}</>
 }
 
 function useSessionActions({
@@ -553,7 +594,8 @@ function useSessionActions({
   const renderItems = (kit: MenuKit) => (
     <>
       {openItems.map(item => renderActionItem(kit, item))}
-      {openItems.length > 0 && <kit.Separator />}
+      <SessionFolderItems kit={kit} sessionId={sessionId} />
+      <kit.Separator />
       {identityItems.map(item => renderActionItem(kit, item))}
       <kit.Sub>
         <kit.SubTrigger disabled={!sessionId}>

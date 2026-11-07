@@ -38,13 +38,19 @@ def _entry(connection_id: str) -> dict:
 
 
 def _remote_target(entry: dict, rejected_token: str) -> tuple[str, dict[str, str]]:
-    secret = store.connection_secret(entry["id"])
-    headers = dict(secret["headers"])
     if entry.get("authMode") == "oauth":
-        headers["Authorization"] = f"Bearer {oauth.ensure_access_token(entry['id'], rejected_token=rejected_token)}"
-    elif secret["token"]:
-        headers[SESSION_TOKEN_HEADER] = secret["token"]
-    return str(entry["url"]).rstrip("/"), headers
+        # The token comes back with the address it was issued by and that read's extra headers:
+        # one snapshot, never this entry's (possibly older) URL paired with a newer sign-in.
+        grant = oauth.ensure_access_token(entry["id"], rejected_token=rejected_token)
+        return grant.base_url, {**grant.headers, "Authorization": f"Bearer {grant.access_token}"}
+    snap = store.dial_snapshot(entry["id"])
+    if snap["url"] is None or snap["entry"].get("kind") not in ("remote", "cloud") \
+            or snap["entry"].get("authMode") == "oauth":
+        raise store.ConnectionStoreError(f'"{entry.get("label")}" changed while connecting; try again.')
+    headers = dict(snap["headers"])
+    if snap["token"]:
+        headers[SESSION_TOKEN_HEADER] = snap["token"]
+    return snap["url"], headers
 
 
 def _ssh_target(entry: dict, _rejected_token: str) -> tuple[str, dict[str, str]]:
@@ -78,17 +84,21 @@ def _post_ticket(base_url: str, headers: dict[str, str]) -> httpx.Response:
         return client.post(f"{base_url}/api/auth/ws-ticket", headers=headers)
 
 
-def mint_ws_ticket(connection_id: str) -> Optional[str]:
+def mint_ws_ticket(connection_id: str, *, for_base_url: Optional[str] = None) -> Optional[str]:
     """The remote's one-use socket ticket for an oauth-mode *connection_id*; ``None`` for the auth
-    modes whose socket carries the session token instead. One forced rotation on a 401."""
+    modes whose socket carries the session token instead. One forced rotation on a 401.
+
+    With *for_base_url* (the address the socket will dial), a ticket is minted only by that
+    gateway: an entry re-pointed meanwhile is refused rather than handing one host's ticket to
+    another."""
     entry = _entry(connection_id)
     if entry.get("kind") not in ("remote", "cloud") or entry.get("authMode") != "oauth":
         return None
-    base_url, headers = resolve_target(connection_id)
+    base_url, headers = _ticket_target(connection_id, "", for_base_url)
     response = _post_ticket(base_url, headers)
     if response.status_code == 401:
         rejected = headers["Authorization"].removeprefix("Bearer ")
-        base_url, headers = resolve_target(connection_id, rejected_token=rejected)
+        base_url, headers = _ticket_target(connection_id, rejected, for_base_url or base_url)
         response = _post_ticket(base_url, headers)
     if response.status_code != 200:
         raise oauth.OAuthSignInError(f"{base_url} refused a socket ticket ({response.status_code}).")
@@ -96,6 +106,13 @@ def mint_ws_ticket(connection_id: str) -> Optional[str]:
     if not isinstance(ticket, str) or not ticket:
         raise oauth.OAuthSignInError(f"{base_url} did not return a socket ticket.")
     return ticket
+
+
+def _ticket_target(connection_id: str, rejected_token: str, for_base_url: Optional[str]) -> tuple[str, dict[str, str]]:
+    base_url, headers = resolve_target(connection_id, rejected_token=rejected_token)
+    if for_base_url is not None and base_url != for_base_url.rstrip("/"):
+        raise oauth.OAuthSignInError("The connection changed address while connecting; try again.")
+    return base_url, headers
 
 
 def forget(connection_id: str) -> None:

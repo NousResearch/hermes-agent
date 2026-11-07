@@ -97,7 +97,7 @@ def test_a_refresh_answered_after_the_entry_was_re_pointed_is_not_bound_to_the_n
             return {"access_token": "AT-A-rotated", "refresh_token": "RT-A2", "expires_at": time.time() + 3600}
 
     monkeypatch.setattr(oauth, "_post_json", lambda *_args, **_kw: Rotated)
-    real_read, reads = store.read_tokens, []
+    real_read, reads = store.dial_snapshot, []
 
     def read_then_re_point(connection_id):
         found = real_read(connection_id)
@@ -107,9 +107,68 @@ def test_a_refresh_answered_after_the_entry_was_re_pointed_is_not_bound_to_the_n
                                    "url": "https://b.example", "authMode": "oauth"})
         return found
 
-    monkeypatch.setattr(store, "read_tokens", read_then_re_point)
+    monkeypatch.setattr(store, "dial_snapshot", read_then_re_point)
     with pytest.raises(oauth.NotSignedIn):
         oauth.ensure_access_token(saved["id"])
-    monkeypatch.setattr(store, "read_tokens", real_read)
+    monkeypatch.setattr(store, "dial_snapshot", real_read)
     assert store.read_tokens(saved["id"]) is None
     assert "AT-A-rotated" not in store.tokens_path().read_text()
+
+
+@pytest.fixture
+def listener():
+    """Real HTTP listeners recording the credentials each one receives."""
+    servers = []
+
+    def start():
+        received: list[dict] = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                received.append(dict(self.headers))
+                self.send_response(200)
+                self.end_headers()
+
+            def log_message(self, *_args):
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        servers.append(server)
+        return f"http://127.0.0.1:{server.server_address[1]}", received
+
+    yield start
+    for server in servers:
+        server.shutdown()
+
+
+@pytest.mark.parametrize("auth_mode", ["oauth", "token"])
+def test_a_re_point_during_resolution_never_sends_the_new_hosts_credential_to_the_old_one(
+        home, listener, monkeypatch, auth_mode):
+    import httpx
+
+    url_a, at_a = listener()
+    url_b, at_b = listener()
+    fields = {"authMode": "oauth"} if auth_mode == "oauth" else {"token": "TOKEN_A"}
+    saved = store.save_connection({"kind": "remote", "label": "Box", "url": url_a, **fields})[0]
+    if auth_mode == "oauth":
+        store.write_tokens(saved["id"], {"accessToken": "TOKEN_A", "refreshToken": "R",
+                                         "expiresAt": int(time.time()) + 3600}, issued_by=url_a)
+    real_entry = reach._entry
+
+    def read_then_re_point(connection_id):
+        found = real_entry(connection_id)
+        # Another writer re-points the id at B and stores B's credential before reach reads it.
+        store.save_connection({"id": connection_id, "kind": "remote", "label": "Box", "url": url_b,
+                               **({"authMode": "oauth"} if auth_mode == "oauth" else {"token": "TOKEN_B"})})
+        if auth_mode == "oauth":
+            store.write_tokens(connection_id, {"accessToken": "TOKEN_B", "refreshToken": "R",
+                                               "expiresAt": int(time.time()) + 3600}, issued_by=url_b)
+        return found
+
+    monkeypatch.setattr(reach, "_entry", read_then_re_point)
+    base_url, headers = reach.resolve_target(saved["id"])
+    httpx.get(f"{base_url}/api/sessions", headers=headers, trust_env=False)
+
+    assert not any("TOKEN_B" in " ".join(h.values()) for h in at_a)
+    assert (base_url, len(at_b)) == (url_b, 1)

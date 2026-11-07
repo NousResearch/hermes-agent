@@ -80,7 +80,7 @@ def _socket_credential(target: Target, path: str) -> tuple[str, str]:
             raise Unreachable(f"{target.label} did not issue a {own} ticket ({response.status_code}).")
         return "ticket", ticket
     try:
-        ticket = reach.mint_ws_ticket(target.connection_id)
+        ticket = reach.mint_ws_ticket(target.connection_id, for_base_url=target.base_url)
     except _REACH_ERRORS as exc:
         raise Unreachable(str(exc)) from exc
     if ticket:

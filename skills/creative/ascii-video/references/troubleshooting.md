@@ -110,33 +110,56 @@ _pickle.PicklingError: Can't pickle <function <lambda> at 0x...>
 
 **Fix**: Define all scene functions at module top level. Lambdas used inside `_render_vf()` as val_fn/hue_fn are fine because they execute within the worker process — they're not pickled across process boundaries.
 
-### macOS spawn vs Linux fork
+### Start Methods: Python Version, Platform, and Context
 
-On macOS, `multiprocessing` defaults to `spawn` (full serialization). On Linux, it defaults to `fork` (copy-on-write). This means:
+Do not infer a pool's start method from the OS alone. These are CPython defaults when the application has not selected a different context:
 
-- **macOS**: Feature arrays are serialized per worker (~57KB for 30s video, but scales with duration). Each worker re-imports the entire module.
-- **Linux**: Feature arrays are shared via COW. Workers inherit the parent's memory.
+- **Windows**: `spawn`.
+- **macOS**: `spawn` since Python 3.8; older versions defaulted to `fork`. Forking on macOS is unsafe when system libraries start threads.
+- **Linux and other supported POSIX systems**: before Python 3.14, generally `fork` (except macOS since 3.8); Python 3.14 changed the default to `forkserver` on POSIX platforms that support it. The current 3.14 documentation also records a Python 3.14.9 fallback to `spawn` when no writable temporary directory is available; earlier 3.14 releases instead failed to start `forkserver` in that condition. `fork` is no longer the default on any platform in 3.14. Check availability and the actual context on the target interpreter rather than assuming every POSIX build or patch release behaves identically.
 
-**Impact**: On macOS, module-level code (like `detect_hardware()`) runs in every worker process. If it has side effects (e.g., subprocess calls), those happen N+1 times.
+An explicit context or pool configuration can override these defaults. Inspect the context actually passed to the pool; this diagnostic reports the application's current default only:
+
+```python
+import multiprocessing as mp
+import sys
+
+ctx = mp.get_context()
+print(sys.version.split()[0], sys.platform, ctx.get_start_method())
+```
+
+If a pool uses `ProcessPoolExecutor(mp_context=chosen_ctx)`, inspect `chosen_ctx`, not an unrelated default context. Executor options such as `max_tasks_per_child` can select `spawn` when `mp_context` is omitted. Do not call global `set_start_method()` just to follow this reference.
+
+- **`spawn`**: Starts a fresh interpreter; required process state/arguments must be transferable. Importable main-module code may run again. Keep process creation under `if __name__ == "__main__":` and keep imports free of side effects.
+- **`fork`**: Initially inherits the parent's address space using OS copy-on-write. Writes can create private pages; this is not mutable shared memory or a guarantee of zero-copy feature delivery. Pool task arguments are still pickled, even under `fork`.
+- **`forkserver`**: Workers fork from a separate server, not the rendering parent; do not assume they inherit the parent's dynamically created feature arrays. Keep main-module imports safe here too.
+
+**Memory and side effects**: Serialized size and per-worker memory depend on array shape/dtype, duration, task transport, caches, and worker count; there is no fixed ~57KB or guaranteed per-worker cost. Measure the actual workload/context. Initialization/import side effects can repeat under fresh-interpreter startup; counts depend on imports, server preloading, worker creation/replacement, and task submission, not a universal N+1 rule. These are CPU process semantics, not GPU measurements.
+
+Sources: [Python 3.13 multiprocessing](https://docs.python.org/3.13/library/multiprocessing.html#contexts-and-start-methods), [Python 3.14 multiprocessing](https://docs.python.org/3.14/library/multiprocessing.html#contexts-and-start-methods), and [ProcessPoolExecutor](https://docs.python.org/3.14/library/concurrent.futures.html#concurrent.futures.ProcessPoolExecutor). Verify other platforms/versions on their actual runtime; documentation evidence is not a cross-platform run.
 
 ### Per-Worker State Isolation
 
 Each worker creates its own:
 - `Renderer` instance (with fresh grid cache)
 - `FeedbackBuffer` (feedback doesn't cross scene boundaries)
-- Random seed (`random.seed(hash(seg_id) + 42)`)
+- Random seed (use the stable segment seed below; `random.seed(seed)` only seeds the standard-library RNG)
 
 This means:
 - Particle state doesn't carry between scenes (expected)
 - Feedback trails reset at scene cuts (expected)
 - `np.random` state is NOT seeded by `random.seed()` — they use separate RNGs
 
-**Fix for deterministic noise**: Use `np.random.RandomState(seed)` explicitly:
+**Fix for deterministic noise**: Use `np.random.RandomState(seed)` explicitly. The built-in string `hash()` varies across interpreter runs and can be negative or outside the uint32 seed range. Derive the seed from a stable string segment ID with SHA-256 instead (do not use unstable object representations):
 
 ```python
-rng = np.random.RandomState(hash(seg_id) + 42)
+import hashlib
+seed = int.from_bytes(hashlib.sha256(str(seg_id).encode("utf-8")).digest()[:4], "big")
+rng = np.random.RandomState(seed)
 noise = rng.random((rows, cols))
 ```
+
+The first four digest bytes, interpreted as an unsigned big-endian integer, give `0 <= seed < 2**32`. The same string ID yields the same seed regardless of `PYTHONHASHSEED`; integer `1` and string `"1"` intentionally map to the same seed via `str()`. Different IDs can collide in 32 bits: this is deterministic variation, not a uniqueness or cryptographic-isolation guarantee. This only seeds this RNG; it does not make the whole rendering pipeline deterministic.
 
 ---
 
@@ -306,15 +329,15 @@ def fx_scene(r, f, t, S):
 
 Use the `S` parameter for clarity. The explicit parameter makes it obvious that the function has persistent state.
 
-### Forgetting to Handle Empty Feature Values
+### Distinguishing Missing Features from Measured Silence
 
-Audio features default to 0.0 if the audio is silent. Use `.get()` with sensible defaults:
+A measured audio feature can legitimately be `0.0` during silence. A missing key means the feature was not supplied, not that nonzero audio was measured. `.get()` uses its fallback only for a missing key; it preserves an existing `0.0`:
 
 ```python
-energy = f.get("bass", 0.3)  # default to 0.3, not 0
+energy = f.get("bass", 0.3)  # 0.3 only if the key is missing; measured silence stays 0.0
 ```
 
-If you default to 0, effects go blank during silence.
+Here `0.3` is an explicit fallback for missing data, not an input measurement or a replacement for silence. Present `None` or other invalid values are not handled by `.get()`; validate them separately under the input contract. If a scene should remain visible during silence, configure a separate artistic baseline/bias in the effect (as in the brightness guidance below); keep the measured feature at `0.0` and do not relabel that bias as audio energy.
 
 ### Writing New Files Instead of Editing Existing State
 
@@ -354,7 +377,7 @@ The `_render_vf()` helper clips automatically, but if you're building custom sce
 - Bloom threshold 130 (not 170) so more pixels contribute to glow
 - Use `screen` blend mode (not `overlay`) for dark ASCII layers — overlay squares dark values: `2 * 0.12 * 0.12 = 0.03`
 - FeedbackBuffer decay minimum 0.5 — below that, feedback disappears too fast to see
-- Value field floor: `vf * 0.8 + 0.05` ensures no cell is truly zero
+- Artistic value field floor: `vf * 0.8 + 0.05` ensures no cell is truly zero; this is a visual bias, not measured audio energy
 - Per-scene gamma overrides: default 0.75, solarize 0.55, posterize 0.50, bright scenes 0.85
 - Test frames early: render single frames at key timestamps before committing to full render
 

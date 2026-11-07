@@ -406,6 +406,10 @@ from their root base tokens; do not multiply the global tokens or nest CSS zoom.
   horizontal code/output boundaries may remain contained. Thinking previews
   follow new tokens only while near the bottom, preserving the user's reading
   position until they scroll back down.
+- On touch browsers, the transcript scroll viewport ends above its own measured
+  composer dock, including the status card. A message action scrolled into view
+  must be tappable without another scroll. A detached composer leaves the full
+  transcript height available.
 - Composer status groups start collapsed except todos. Progress updates and queue
   pause/resume preserve the user's disclosure choice. Error banners meet the
   stack's top edge without a blank padding strip. File and preview links remain

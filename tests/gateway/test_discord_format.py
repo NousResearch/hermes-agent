@@ -120,3 +120,30 @@ class TestDiscordToolPreviewFormatting:
         out = adapter.format_tool_preview(ToolPreview(visible, truncated=True))
 
         assert out == visible
+
+
+class TestDiscordToolNameFormatting:
+    """MCP tool names (``mcp_<server>_<tool>``) reached Discord raw, so ``_`` pairs rendered as
+    italic/underline markdown and were eaten from the progress line."""
+
+    def test_underscored_tool_name_renders_as_inline_code(self):
+        adapter = _make_discord_adapter()
+
+        assert adapter.format_tool_name("mcp_github_create_pull_request") == "`mcp_github_create_pull_request`"
+
+    def test_backtick_in_name_cannot_break_out_of_a_code_span(self):
+        adapter = _make_discord_adapter()
+
+        assert adapter.format_tool_name("mcp_x`**y**`_z") == r"mcp\_x\`\*\*y\*\*\`\_z"
+
+    def test_structured_tool_event_keeps_mcp_name_literal(self):
+        from gateway.stream_events import ToolCallChunk
+
+        adapter = _make_discord_adapter()
+        name = "mcp__ssh_manager__ssh_execute"
+
+        pending = adapter.format_tool_event(ToolCallChunk(name), mode="all")
+        verbose = adapter.format_tool_event(ToolCallChunk(name, args={"cmd": "ls"}), mode="verbose")
+
+        assert pending is not None and f"`{name}`..." in pending
+        assert verbose is not None and f"`{name}`(['cmd'])" in verbose

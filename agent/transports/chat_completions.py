@@ -417,6 +417,22 @@ def _finish_kwargs(api_kwargs: dict[str, Any], sanitized: list, params: dict, *,
     return api_kwargs
 
 
+def _apply_request_overrides(api_kwargs: dict[str, Any], extra_body: dict[str, Any], request_overrides: Any) -> None:
+    """Apply ``request_overrides`` with the per-key merge both build paths share.
+
+    A dict ``extra_body`` override merges into the transport-built ``extra_body``
+    so engine/provider extensions (reasoning payloads, provider routing, sampler
+    extensions) survive; same-key collisions go to the caller. Everything else
+    applies top-level. The caller's ``extra_body`` mapping is never mutated
+    or returned directly; nested payload values retain existing shallow-merge semantics.
+    """
+    for k, v in (request_overrides or {}).items():
+        if k == "extra_body" and isinstance(v, dict):
+            extra_body.update(v)
+        else:
+            api_kwargs[k] = v
+
+
 # Mistral's validator accepts only ``^[A-Za-z0-9]{9}$`` ("Tool call id was ... but must be a-z,
 # A-Z, 0-9, with a length of 9"); ``call_`` + 12 hex from a split tool_call batch or another
 # provider's id is rejected on replay. Ids are mapped on the wire copy only: stored history stays
@@ -639,10 +655,9 @@ class ChatCompletionsTransport(ProviderTransport):
 
         if params.get("extra_body_additions"):
             extra_body.update(params["extra_body_additions"])
+        _apply_request_overrides(api_kwargs, extra_body, params.get("request_overrides"))
         if extra_body:
             api_kwargs["extra_body"] = extra_body
-        if params.get("request_overrides"):
-            api_kwargs.update(params["request_overrides"])
         return _finish_kwargs(
             api_kwargs, sanitized, params,
             supports_prompt_cache_key=bool(params.get("supports_prompt_cache_key")) or _is_openai_api_base_url(base_url),
@@ -678,11 +693,7 @@ class ChatCompletionsTransport(ProviderTransport):
         for part in (profile_body, extra_body_from_profile, params.get("extra_body_additions")):
             if part:
                 extra_body.update(part)
-        for k, v in (params.get("request_overrides") or {}).items():
-            if k == "extra_body" and isinstance(v, dict):
-                extra_body.update(v)
-            else:
-                api_kwargs[k] = v
+        _apply_request_overrides(api_kwargs, extra_body, params.get("request_overrides"))
 
         if extra_body:
             # Native Gemini speaks Google's REST schema: OpenAI-style extra_body

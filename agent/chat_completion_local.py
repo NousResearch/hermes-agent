@@ -36,6 +36,89 @@ def stale_giveup() -> int:
     return env_int("HERMES_STREAM_STALE_GIVEUP", 5)
 
 
+def merge_native_local_settings(agent, request_overrides: dict | None) -> dict:
+    """Merge the staged artifact's saved native settings into request overrides.
+
+    Applies only when this agent's chat request targets the managed llama.cpp
+    server with a staged model AND the profile already has a settings store.
+    Only values the user chose contribute (explicit request + saved settings);
+    publisher/catalog defaults remain llama-server's own launch defaults, so a
+    hand-edited ``presets.ini`` keeps working.
+
+    Standard OpenAI fields fill in WITHOUT overriding explicit per-request
+    values; llama.cpp engine extensions merge into ``extra_body`` PER KEY
+    (existing entries win, unrelated extensions survive — never a blind
+    update). The caller's dict is never mutated; a merged copy comes back.
+
+    Settings-domain trouble on OUR side (unknown model, corrupt store, torn
+    artifact) must never break inference: the request returns unchanged and
+    the reason is logged. The only errors that surface are the native schema
+    refusing the caller's own explicit per-request payload.
+    """
+    overrides = dict(request_overrides or {})
+    model_id = str(getattr(agent, "model", "") or "")
+    if not model_id or getattr(agent, "api_mode", "") not in ("", "chat_completions"):
+        return overrides
+    from hermes_cli.local_runtime.capabilities import is_managed_provider
+
+    if not is_managed_provider(str(getattr(agent, "provider", "") or ""),
+                               str(getattr(agent, "base_url", "") or "")):
+        return overrides
+
+    from hermes_cli.local_runtime import native_model_settings as nms
+    from hermes_cli.local_runtime.model_settings import (
+        InvalidSettingValueError,
+        ModelSettingsStore,
+        UnknownSettingError,
+    )
+    from hermes_constants import get_hermes_home
+
+    # Nothing the user saved can exist before the profile has a settings
+    # store: skip, and never hash a multi-GB GGUF on a hot path for users who
+    # have not touched model settings. (Explicit payloads are validated by the
+    # transport's own path in that case.)
+    if not ModelSettingsStore(get_hermes_home()).path.exists():
+        return overrides
+
+    # The settings-domain slice of the request: schema-named keys riding
+    # top-level or inside extra_body. Everything else (speed, routing,
+    # reasoning payloads, engine keys the schema never owned) is not ours.
+    keys = set(nms.NATIVE_CHAT_SCHEMA.keys())
+    explicit = {k: v for k, v in overrides.items() if k in keys}
+    existing_extra = overrides.get("extra_body")
+    if isinstance(existing_extra, dict):
+        for key, value in existing_extra.items():
+            if key in keys and key not in explicit:
+                explicit[key] = value
+
+    try:
+        standard, extra = nms.resolve_native_request_settings(
+            model_id, explicit or None, inherited=False)
+    except (UnknownSettingError, InvalidSettingValueError):
+        # The resolver validates BOTH the caller's payload and the saved row, with the same exception types, so the type says nothing about
+        # whose fault it is. Resolve the saved side alone: if THAT is refused, the saved row is the broken one (an older build, tightened
+        # bounds, a hand edit) and breaking every chat request for the model over our own data would be wrong. If it resolves fine, the
+        # caller's explicit payload is what was refused: surface it.
+        try:
+            nms.resolve_native_request_settings(model_id, None, inherited=False)
+        except Exception as saved_exc:  # a broken saved row of any kind must not break chat; the message names the setting, the traceback is attached
+            logger.warning("saved native model settings for %s are invalid and were ignored: %s", model_id, saved_exc, exc_info=True)
+            return overrides
+        raise
+    except Exception:  # settings are optional: any failure here must leave the request exactly as it was
+        logger.debug("native model settings for %s unavailable", model_id, exc_info=True)
+        return overrides
+
+    for key, value in standard.items():
+        overrides.setdefault(key, value)
+    if extra:
+        merged = dict(existing_extra) if isinstance(existing_extra, dict) else {}
+        for key, value in extra.items():
+            merged.setdefault(key, value)
+        overrides["extra_body"] = merged
+    return overrides
+
+
 def _local_server_answers(agent) -> bool:
     """True when the llama-server behind *agent* answers ``/health`` within a few seconds."""
     parts = urlsplit(str(getattr(agent, "base_url", "") or ""))

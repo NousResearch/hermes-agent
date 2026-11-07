@@ -134,3 +134,24 @@ def test_a_second_fallback_hop_does_not_restamp_the_first_fallbacks_verdicts_as_
     with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
         assert agent._restore_primary_runtime() is True
     assert not any(_verdicts(agent).values())
+
+
+def test_gated_once_restore_onto_a_fallback_sharing_the_primarys_url_keeps_the_primarys_verdicts_off_it():
+    """``/model X --once`` taken while on F1, which shares the primary's URL; the gated restore switches
+    back to F1, and the primary's endpoint-stamped verdicts must not land on F1."""
+    from tui_gateway import server
+    agent = _make_agent()
+    agent._reasoning_effort_rejected = True  # P's
+    f1 = {"provider": "custom", "model": "f1-model"}
+    agent._fallback_chain, agent._fallback_index, agent._fallback_model = [f1], 0, f1
+    with patch("agent.auxiliary_client.resolve_provider_client",
+               return_value=(_mock_resolve(base_url=agent._primary_runtime["base_url"]), None)):
+        assert agent._try_activate_fallback() is True
+    snapshot = server._snapshot_agent_model_runtime(agent)
+    _switch(agent, "x-model", "https://x.example/v1")
+
+    with patch("agent.agent_runtime_helpers._primary_reset_gate_blocks", return_value=(True, None, False)), \
+            patch("agent.model_metadata.get_model_context_length", return_value=131_072):
+        _once_restore(agent, snapshot)
+    assert agent.model == "f1-model"
+    assert not any(_verdicts(agent).values())

@@ -285,8 +285,32 @@ def _undeclared_error(provider: DelegationProvider, index: int, names: list[str]
             f"{listed}; if this session's delegate_task tool offers {listed}, {fix}.")
 
 
+#: Core-owned names no backend reads from a task: a child's route comes from the backend (its named routes, or the
+#: ``delegation`` section) and its tools from the parent, so a task carrying one would run on a route or with tools
+#: nobody asked for.
+_RAW_TASK_FIELDS = frozenset({"model", "provider", "base_url", "api_key", "api_mode", "toolsets"})
+
+
+def _raw_field_error(provider: DelegationProvider, declared: Mapping[str, Any], index: int, names: list[str]) -> str:
+    """Addressed to the model, which cannot edit config: the fix is a field it can send, or one the user sets up."""
+    listed = ", ".join(f"'{name}'" for name in names)
+    head = f"Task {index}: delegate_task has no per-task {listed} field, so this task was not started"
+    if names == ["toolsets"]:
+        return f"{head}: every subagent gets the parent's toolsets. Resend it without 'toolsets'."
+    if declared:
+        params = ", ".join(f"'{name}'" for name in declared)
+        return (f"{head}. The '{provider.name}' delegation backend picks each child's route through {params}: "
+                f"resend it with that instead of {listed}.")
+    return (f"{head} (it would have run on the '{provider.name}' delegation backend's route, not the one asked for). "
+            f"Resend it without {listed}. A per-task model choice is a named route the user sets up (the model_map "
+            f"backend's 'option', via `hermes delegation config` or `/delegation`).")
+
+
 def _route_one(provider: DelegationProvider, declared: dict[str, dict[str, Any]], index: int,
                task: Mapping[str, Any], config: Mapping[str, Any]) -> dict[str, Any]:
+    raw = sorted(name for name in _RAW_TASK_FIELDS if task.get(name) is not None)
+    if raw:
+        raise DelegationRouteError(_raw_field_error(provider, declared, index, raw))
     undeclared = sorted(name for name, value in task.items()
                         if value is not None and name not in declared and name not in RESERVED_TASK_PARAMETERS)
     if undeclared:

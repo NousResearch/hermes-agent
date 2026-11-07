@@ -32,7 +32,7 @@ def test_legacy_submit_refuses_while_canonical_ledger_holds_work(monkeypatch, tm
     monkeypatch.setattr(server.threading, "Thread", _InlineThread)
     created = server.handle_request({"id": "c", "method": "session.create", "params": {"source": "desktop"}})
     sid, key = created["result"]["session_id"], created["result"]["stored_session_id"]
-    db.create_session(key, "cli")
+    assert server._ensure_session_db_row(server._sessions[sid])
     first = begin_runtime_epoch(db, instance_id="gateway-1")
     admit_session_input(db, epoch=first, principal_id="owner", session_id=key, request_id="r1",
                         payload={"text": "lost?"})

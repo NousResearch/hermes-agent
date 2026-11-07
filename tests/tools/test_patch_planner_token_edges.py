@@ -40,3 +40,36 @@ def test_update_after_move_keeps_the_source_sha_baseline():
     assert not resolved.errors, resolved.errors
     updates = [c for c in resolved.commits if c.op.file_path == "g"]
     assert updates and updates[0].read_sha == "SHA-F"
+
+
+@pytest.mark.parametrize("source, body", [
+    ("timeout = 1.5\n", "-timeout = 1\n+timeout = 2\n"),
+    ("x = 1.0\n", "-x = 1\n+x = 2\n"),
+])
+def test_decimal_continuation_is_refused(source, body):
+    result, store = _apply(source, body)
+    assert not result.success
+    assert store.files["f"] == source and store.writes == []
+
+
+@pytest.mark.parametrize("source, body, expected", [
+    ("items.append(x)\n", "-.append(x)\n+.extend(x)\n", "items.extend(x)\n"),
+    ("foo(bar)\n", "-(bar)\n+(baz)\n", "foo(baz)\n"),
+    ("v = 1 + 2.5\n", "-1 +\n+3 +\n", "v = 3 + 2.5\n"),
+])
+def test_punctuation_edged_needles_may_sit_inside_a_line(source, body, expected):
+    result, store = _apply(source, body)
+    assert result.success, result.error
+    assert store.files["f"] == expected
+
+
+def test_crlf_mid_line_edit_keeps_crlf():
+    result, store = _apply("a = 1\r\nvalue = old\r\nz = 2\r\n", "-= old\n+= new\n")
+    assert result.success, result.error
+    assert store.files["f"] == "a = 1\r\nvalue = new\r\nz = 2\r\n"
+
+
+def test_nfkc_and_unicode_space_equivalences_match_whole_lines():
+    result, store = _apply("x\u00a0=\u30001\n", "-x = 1\n+x = 2\n")
+    assert result.success, result.error
+    assert store.files["f"] == "x = 2\n"

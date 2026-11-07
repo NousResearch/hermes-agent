@@ -228,22 +228,46 @@ def whole_line_sites(
     return found
 
 
+def _word(char: str) -> bool:
+    return char.isalnum() or char == "_"
+
+
+def _joins_before(line: str, start: int, first: str) -> bool:
+    """The source character before the match continues the token the needle starts."""
+
+    if start == 0:
+        return False
+    prev = line[start - 1]
+    if _word(first) and _word(prev):
+        return True
+    return prev == "." and first.isdigit() and start >= 2 and line[start - 2].isdigit()
+
+
+def _joins_after(line: str, end: int, last: str) -> bool:
+    """The source character after the match continues the token the needle ends."""
+
+    if end >= len(line):
+        return False
+    nxt = line[end]
+    if _word(last) and _word(nxt):
+        return True
+    return nxt == "." and last.isdigit() and end + 1 < len(line) and line[end + 1].isdigit()
+
+
 def _edge_ok(line: str, start: int, end: int, search: str, *, check_start: bool, check_end: bool) -> bool:
     """A raw fragment of a different token is not a partial site.
 
-    Word characters are alphanumerics and ``_``. A search that already ends in whitespace
-    is a deliberate mid-line edit (``prefix ``), so only its END edge is exempt. Otherwise
-    the checked edges must be a token boundary so ``value = 1`` cannot land inside
-    ``value = 10`` or ``old_value = 1``, nor ``name`` inside ``rename`` or ``my_name``.
+    Tokens are identifiers (alphanumerics and ``_``) and decimal numbers. A boundary is
+    required only where the needle's own edge character is part of a token, so
+    ``.append(x)`` may follow ``items`` while ``name`` may not sit inside ``rename`` or
+    ``my_name``, ``value = 1`` not inside ``value = 10`` or ``value = 1.5``. A search that
+    ends in whitespace is a deliberate mid-line edit (``prefix ``): its END edge is exempt.
     """
 
-    def word(char: str) -> bool:
-        return char.isalnum() or char == "_"
-
-    before_ok = not check_start or start == 0 or not word(line[start - 1])
     open_end = search.endswith((" ", "\t", "\n"))
-    after_ok = not check_end or open_end or end == len(line) or not word(line[end])
-    return before_ok and after_ok
+    if check_start and search and _joins_before(line, start, search[0]):
+        return False
+    return not (check_end and not open_end and search and _joins_after(line, end, search[-1]))
 
 
 def partial_sites(
@@ -368,19 +392,6 @@ def _after(sites: list[Site], floor: int | None) -> list[Site]:
     return [site for site in sites if site.edit_piece >= floor]
 
 
-def _lower_after(pieces, search, removed, consumed, floor, strict: list[Site]) -> bool:
-    if floor is None:
-        return False
-    norm = [
-        site for site in whole_line_sites(pieces, search, removed, consumed, "canon")
-        if site.edit_piece >= floor and not any(site.start == keep.start for keep in strict)
-    ]
-    if norm:
-        return True
-    eol = file_eol(pieces)
-    return any(site.edit_piece >= floor for site in partial_sites(pieces, search, consumed, eol))
-
-
 def choose_tier(
     sites: list[Site],
     pieces: list[Piece],
@@ -389,7 +400,6 @@ def choose_tier(
     consumed: set[int],
     hint: str | None,
     floor: int | None,
-    floor_explicit: bool,
     index: int,
     content: str,
 ) -> Resolved | Refused:
@@ -416,11 +426,8 @@ def choose_tier(
         tail = "after the previous hunk" if floor is not None else ""
         return Refused("ambiguous", _ambiguous(index, hint, len(narrowed), tail))
     if floor is not None and sites:
-        if _lower_after(pieces, search, removed, consumed, floor, sites) or floor_explicit:
-            return Refused("inconsistent", _ambiguous(index, hint, len(sites)))
-        if len(sites) == 1:
-            return Resolved(sites[0], sites[0].tier)
-        return Refused("ambiguous", _ambiguous(index, hint, len(sites)))
+        # Every site lies behind the previous anchor or hunk: never guess backwards.
+        return Refused("inconsistent", _ambiguous(index, hint, len(sites)))
     if len(sites) == 1:
         return Resolved(sites[0], sites[0].tier)
     if sites:
@@ -704,7 +711,7 @@ def _damage(before, after, hints, damaged):
             damaged.add(hint)
 
 
-def _resolve(pieces, hunk, consumed, original, floor, floor_explicit, index):
+def _resolve(pieces, hunk, consumed, original, floor, index):
     hint = hunk.context_hint or None
     label = _label(index, hint)
     search, removed, added = _split(hunk)
@@ -733,7 +740,7 @@ def _resolve(pieces, hunk, consumed, original, floor, floor_explicit, index):
     tier = exact or normalized
     if tier:
         decision = choose_tier(
-            tier, pieces, search, removed, consumed, hint, floor, floor_explicit, index, content,
+            tier, pieces, search, removed, consumed, hint, floor, index, content,
         )
         return decision, note, search, added, replacement
     if _search_consumed(search, removed, original, consumed):
@@ -743,7 +750,7 @@ def _resolve(pieces, hunk, consumed, original, floor, floor_explicit, index):
     parts = partial_sites(pieces, search, consumed, file_eol(pieces))
     if parts:
         decision = choose_tier(
-            parts, pieces, search, removed, consumed, hint, floor, floor_explicit, index, content,
+            parts, pieces, search, removed, consumed, hint, floor, index, content,
         )
         return decision, note, search, added, replacement
     if _written_only(pieces, search, removed, consumed):
@@ -806,7 +813,6 @@ class PlannerState:
 
     damaged: set[str]
     floor: int | None
-    floor_explicit: bool
     ids: object
     live: bool
     deferred: list
@@ -815,7 +821,7 @@ class PlannerState:
     @classmethod
     def from_content(cls, content: str) -> PlannerState:
         original = tuple(split_pieces(content))
-        return cls(original, list(original), set(), set(), None, False,
+        return cls(original, list(original), set(), set(), None,
                    itertools.count(1), False, [])
 
 
@@ -840,7 +846,6 @@ def plan_hunks(content: str, hunks: list, state: PlannerState | None = None,
     strategies: list[str] = []
     damaged = state.damaged
     floor = state.floor
-    floor_explicit = state.floor_explicit
     ids = state.ids
     changes = 0
     live = state.live
@@ -861,7 +866,7 @@ def plan_hunks(content: str, hunks: list, state: PlannerState | None = None,
             if search:
                 moved = _anchor_floor(pieces, hunk, consumed)
                 if moved is not None:
-                    floor, floor_explicit = moved, True
+                    floor = moved
             continue
         before = render(pieces)
         prior = pieces
@@ -880,7 +885,7 @@ def plan_hunks(content: str, hunks: list, state: PlannerState | None = None,
             live = True
             continue
         resolved = _resolve(
-            pieces, hunk, consumed, state.original, floor, floor_explicit, index,
+            pieces, hunk, consumed, state.original, floor, index,
         )
         decision, note, search, added, replacement = resolved
         if isinstance(decision, _Unproven):
@@ -912,7 +917,6 @@ def plan_hunks(content: str, hunks: list, state: PlannerState | None = None,
         _damage(before, after, later, damaged)
     state.pieces = pieces
     state.floor = floor
-    state.floor_explicit = floor_explicit
     state.live = live
     if finalize and deferred:
         errors.extend(finish_state(state))

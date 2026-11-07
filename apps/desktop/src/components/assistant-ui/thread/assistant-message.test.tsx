@@ -11,6 +11,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { en } from '@/i18n/en'
 import type { ErrorCardCopy } from '@/i18n/types'
+import { toChatMessages } from '@/lib/chat-messages'
+import { toRuntimeMessage } from '@/lib/chat-runtime'
 import { $touchPointer } from '@/lib/touch-interaction'
 import { $displayTimestamps } from '@/store/display-timestamps'
 import { $activeSessionId } from '@/store/session'
@@ -193,6 +195,7 @@ function LocationProbe() {
 
 function Harness({
   assistant = assistantMessage(),
+  messages,
   onBranchInNewChat,
   onCancel,
   onDismissError,
@@ -202,6 +205,7 @@ function Harness({
   isDisabled = false
 }: {
   assistant?: ThreadMessage
+  messages?: ThreadMessage[]
   onBranchInNewChat?: (messageId: string) => void
   onCancel?: () => void
   onDismissError?: (messageId: string) => void
@@ -211,7 +215,7 @@ function Harness({
   isDisabled?: boolean
 }) {
   const runtime = useExternalStoreRuntime<ThreadMessage>({
-    messages: [userMessage(), assistant],
+    messages: messages ?? [userMessage(), assistant],
     isRunning,
     isDisabled,
     onNew: async () => {},
@@ -608,6 +612,87 @@ describe('scheduled retry at the usage-limit reset (#98852)', () => {
 
   afterEach(() => {
     vi.useRealTimers()
+  })
+
+  it('offers and executes Retry at reset after a restored failed-turn system notice', async () => {
+    const resetsAt = Math.floor(Date.now() / 1000) + 600
+    const onReload = vi.fn(async () => {})
+    const restored = toChatMessages([
+      { role: 'user', content: 'finish the task', timestamp: 1 },
+      {
+        role: 'assistant',
+        content: 'Your request was not processed. Send it again if you still want me to carry it out.',
+        display_kind: 'failed_turn',
+        display_metadata: {
+          error: 'HTTP 429: The usage limit has been reached',
+          error_surface: {
+            code: 'rate_limit',
+            layer: 'provider',
+            provider: 'openai-codex',
+            provider_label: 'ChatGPT or Codex Subscription',
+            resets_at: resetsAt,
+            retryable: true
+          }
+        },
+        timestamp: 2
+      }
+    ])
+
+    // Hydration must retain this order: the ordinal/rewind planner treats
+    // the assistant error immediately after the user's failed request specially.
+    expect(restored.map(message => message.role)).toEqual(['user', 'assistant', 'system'])
+    expect(restored[1]?.errorSurface?.resetsAt).toBe(resetsAt)
+
+    render(<Harness messages={restored.map(toRuntimeMessage)} onReload={onReload} />)
+
+    const arm = await screen.findByRole('button', { name: /^Retry at \d\d:\d\d$/ })
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
+
+    vi.useFakeTimers()
+    fireEvent.click(arm)
+    await act(async () => vi.advanceTimersByTime(resetsAt * 1000 - Date.now()))
+
+    expect(onReload).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not offer scheduled retry on an older error once a newer user turn exists', async () => {
+    const resetsAt = Math.floor(Date.now() / 1000) + 600
+    render(
+      <Harness
+        messages={[
+          userMessage(),
+          rateLimited(resetsAt),
+          { ...userMessage(), id: 'user-later' },
+          { ...assistantMessage(), id: 'assistant-later' }
+        ]}
+        onReload={vi.fn(async () => {})}
+      />
+    )
+
+    expect(await screen.findByText(copy(codes.rate_limit.title, 'openai'))).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /^Retry at / })).toBeNull()
+  })
+
+  it('does not offer scheduled retry after an unrelated system notice', async () => {
+    const resetsAt = Math.floor(Date.now() / 1000) + 600
+    const unrelatedNotice = {
+      id: 'system-notice-unrelated',
+      role: 'system',
+      content: [{ type: 'text', text: 'Settings changed' }],
+      createdAt
+    } as ThreadMessage
+
+    render(
+      <Harness
+        messages={[userMessage(), rateLimited(resetsAt), unrelatedNotice]}
+        onReload={vi.fn(async () => {})}
+      />
+    )
+
+    expect(await screen.findByText(copy(codes.rate_limit.title, 'openai'))).toBeTruthy()
+    expect(screen.getByText('Settings changed')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /^Retry at / })).toBeNull()
   })
 
   it('fires the same reload as Retry exactly once, at resets_at and not before', async () => {

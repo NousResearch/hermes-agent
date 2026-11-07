@@ -825,10 +825,30 @@ const ScheduledRetryAction: FC<{ className: string; resetsAt: number }> = ({ cla
   const [fireAt, setFireAt] = useState<null | number>(null)
   const [now, setNow] = useState(() => Date.now())
 
-  // A manual Retry, a new message, or a later turn all make firing wrong: the
-  // reload would regenerate a message that is no longer the tail. Same gate
-  // `useActionBarReload` applies to the Retry button itself.
-  const stale = useAuiState(s => s.thread.isRunning || s.thread.isDisabled || !s.message.isLast)
+  // Keep the ordinary tail-only guard, except for a failure card hydrated
+  // immediately before its own Hermes-authored failed_turn notice. Both rows
+  // use the same stored timestamp/index prefix (chat-messages/hydration.ts).
+  // Do not ignore other system notices: they may reflect later user actions.
+  const stale = useAuiState(s => {
+    if (s.thread.isRunning || s.thread.isDisabled) {
+      return true
+    }
+
+    if (s.message.isLast) {
+      return false
+    }
+
+    const suffix = '-failed-turn-error'
+    const noticeIndex = s.message.index + 1
+    const notice = s.thread.messages[noticeIndex]
+
+    return !(
+      noticeIndex === s.thread.messages.length - 1 &&
+      s.message.id.endsWith(suffix) &&
+      notice?.role === 'system' &&
+      notice.id === `${s.message.id.slice(0, -suffix.length)}-system`
+    )
+  })
 
   useEffect(() => {
     if (fireAt === null || stale) {

@@ -18,9 +18,15 @@ class TestSendMediaVoiceFlag:
     @staticmethod
     def _run_with_loop(adapter, chat_id, media_files, metadata, job):
         def fake_run_coro(coro, _loop):
-            coro.close()
+            try:
+                coro.send(None)
+            except StopIteration as done:
+                value = done.value
+            else:
+                coro.close()
+                value = None
             completed = Future()
-            completed.set_result(MagicMock(success=True))
+            completed.set_result(value or MagicMock(success=True))
             return completed
 
         with patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):

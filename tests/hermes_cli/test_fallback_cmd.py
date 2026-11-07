@@ -70,6 +70,108 @@ class TestExtractFallback:
         from hermes_cli.fallback_cmd import _extract_fallback_from_model_cfg
         assert _extract_fallback_from_model_cfg({"provider": "openrouter"}) is None
 
+
+class TestExtractFallbackNamedIdentity:
+    """A legacy list-form ``custom_providers:`` entry loses its name in the picker (no
+    ``provider_key`` → bare ``custom``), which then also loses the key: bare custom looks for
+    ``OPENAI_API_KEY`` or a base_url matching the primary's and finds neither. The entry must keep
+    the configured identity so the key resolves through that provider's own entry."""
+
+    def _home(self, isolated_home, providers):
+        _write_config(isolated_home, {
+            "model": {"provider": "custom", "default": "primary-model",
+                      "base_url": "https://primary.example/v1", "api_key": "sk-primary"},
+            "custom_providers": providers,
+        })
+
+    def test_bare_custom_pick_recovers_the_configured_name(self, isolated_home):
+        from hermes_cli.fallback_cmd import _extract_fallback_from_model_cfg
+        self._home(isolated_home, [{
+            "name": "hetune", "base_url": "https://cf.example/v1",
+            "api_key": "sk-hetune", "model": "deepseek-v4.1-flash",
+        }])
+        assert _extract_fallback_from_model_cfg({
+            "provider": "custom", "default": "deepseek-v4.1-flash",
+            "base_url": "https://cf.example/v1", "api_key": "sk-hetune",
+        }) == {
+            "provider": "custom:hetune", "model": "deepseek-v4.1-flash",
+            "base_url": "https://cf.example/v1",
+        }
+
+    def test_route_match_ignores_trailing_slash_and_case(self, isolated_home):
+        from hermes_cli.fallback_cmd import _extract_fallback_from_model_cfg
+        self._home(isolated_home, [{"name": "Hetune", "base_url": "https://cf.example/v1"}])
+        assert _extract_fallback_from_model_cfg({
+            "provider": "custom", "default": "m", "base_url": "https://CF.example/v1/",
+        })["provider"] == "custom:hetune"
+
+    def test_dict_form_providers_entry_uses_its_config_key(self, isolated_home):
+        from hermes_cli.fallback_cmd import _extract_fallback_from_model_cfg
+        _write_config(isolated_home, {
+            "model": {"provider": "custom", "default": "primary-model",
+                      "base_url": "https://primary.example/v1"},
+            "providers": {"litellm": {"name": "LiteLLM Proxy", "base_url": "https://litellm.example/v1"}},
+        })
+        assert _extract_fallback_from_model_cfg({
+            "provider": "custom", "default": "m", "base_url": "https://litellm.example/v1",
+        })["provider"] == "custom:litellm"
+
+    def test_ambiguous_route_keeps_bare_custom(self, isolated_home):
+        """Two endpoints on one base_url: guessing one would send its key to the other's config."""
+        from hermes_cli.fallback_cmd import _extract_fallback_from_model_cfg
+        self._home(isolated_home, [
+            {"name": "alpha", "base_url": "https://shared.example/v1", "api_key": "sk-a"},
+            {"name": "beta", "base_url": "https://shared.example/v1", "api_key": "sk-b"},
+        ])
+        assert _extract_fallback_from_model_cfg({
+            "provider": "custom", "default": "m", "base_url": "https://shared.example/v1",
+        })["provider"] == "custom"
+
+    def test_unmatched_or_missing_base_url_keeps_bare_custom(self, isolated_home):
+        from hermes_cli.fallback_cmd import _extract_fallback_from_model_cfg
+        self._home(isolated_home, [{"name": "hetune", "base_url": "https://cf.example/v1"}])
+        assert _extract_fallback_from_model_cfg(
+            {"provider": "custom", "default": "m", "base_url": "https://other.example/v1"}
+        )["provider"] == "custom"
+        assert _extract_fallback_from_model_cfg(
+            {"provider": "custom", "default": "m"}
+        )["provider"] == "custom"
+
+    def test_named_and_builtin_providers_are_not_rewritten(self, isolated_home):
+        from hermes_cli.fallback_cmd import _extract_fallback_from_model_cfg
+        self._home(isolated_home, [{"name": "hetune", "base_url": "https://cf.example/v1"}])
+        assert _extract_fallback_from_model_cfg(
+            {"provider": "custom:wb2api", "default": "m", "base_url": "https://cf.example/v1"}
+        )["provider"] == "custom:wb2api"
+        assert _extract_fallback_from_model_cfg(
+            {"provider": "openrouter", "default": "m"}
+        )["provider"] == "openrouter"
+
+    def test_generated_entry_authenticates_with_the_configured_key(self, isolated_home):
+        """End to end: bare custom sends the placeholder, the named identity resolves the key."""
+        from hermes_cli.fallback_cmd import _extract_fallback_from_model_cfg
+        from agent.auxiliary_client import resolve_provider_client
+        self._home(isolated_home, [{
+            "name": "hetune", "base_url": "https://cf.example/v1",
+            "api_key": "sk-configured", "model": "m",
+        }])
+        entry = _extract_fallback_from_model_cfg({
+            "provider": "custom", "default": "m", "base_url": "https://cf.example/v1",
+        })
+        assert entry is not None
+        # Exactly how agent/route_binding.py binds a chain entry: the entry's own credential hint
+        # (absent here) plus the entry's provider identity and base_url.
+        client, _ = resolve_provider_client(
+            entry["provider"], model=entry["model"], raw_codex=True,
+            explicit_base_url=entry["base_url"], explicit_api_key=None)
+        assert str(getattr(client, "api_key", "")) == "sk-configured"
+        # The bare class the picker would otherwise store falls back to the placeholder.
+        bare, _ = resolve_provider_client(
+            "custom", model="m", raw_codex=True,
+            explicit_base_url="https://cf.example/v1", explicit_api_key=None)
+        assert str(getattr(bare, "api_key", "")) == "no-key-required"
+
+
 # ---------------------------------------------------------------------------
 # cmd_fallback_list
 # ---------------------------------------------------------------------------

@@ -34,6 +34,35 @@ def _format_entry(entry: dict[str, Any]) -> str:
     return f"{entry.get('model', '?')}  (via {entry.get('provider', '?')}){f'  [{base}]' if base else ''}"
 
 
+def _named_identity_for_route(base_url: str) -> str:
+    """``custom:<name>`` for the one configured custom endpoint serving *base_url*, else "".
+
+    A fallback entry carrying the bare ``custom`` class loses the provider's identity: bare custom
+    resolves credentials from ``OPENAI_API_KEY`` or from a base_url that matches the primary's, and
+    neither is the case for a chain entry pointing at a *different* configured endpoint — so the
+    key is dropped and the request goes out with the ``no-key-required`` placeholder (401). The
+    named identity resolves the key through the provider's own entry instead.
+
+    Ambiguous routes (two configured endpoints share one base_url) deliberately return "" rather
+    than guess one. A config-read failure is already swallowed by ``_entries_for_route`` (it treats
+    an unreadable config as "no entries"), so entry extraction never aborts the add.
+    """
+    if not base_url:
+        return ""
+    from hermes_cli.config_providers import _entries_for_route
+    from hermes_cli.providers import custom_provider_slug
+    matches = [e for e in _entries_for_route(base_url, None, None) if isinstance(e, dict)]
+    identities = {
+        (str(e.get("name") or "").strip(), str(e.get("provider_key") or "").strip())
+        for e in matches
+        if str(e.get("name") or "").strip()
+    }
+    if len(identities) != 1:
+        return ""
+    name, provider_key = identities.pop()
+    return custom_provider_slug(name, provider_key)
+
+
 def _extract_fallback_from_model_cfg(model_cfg: Any) -> Optional[dict[str, Any]]:
     """Pull the ``{provider, model, base_url?, api_mode?}`` dict from a ``config["model"]`` snapshot."""
     if not isinstance(model_cfg, dict):
@@ -44,6 +73,12 @@ def _extract_fallback_from_model_cfg(model_cfg: Any) -> Optional[dict[str, Any]]
         return None
     entry: dict[str, Any] = {"provider": provider, "model": model}
     entry.update({key: value for key in ("base_url", "api_mode") if (value := (model_cfg.get(key) or "").strip())})
+    # The custom-endpoint picker writes a bare ``custom`` for a legacy list-form ``custom_providers:``
+    # entry (no ``provider_key``), so the name never reaches the chain. Restore it from the route;
+    # see ``_named_identity_for_route``. Already-named and built-in providers pass through untouched.
+    if provider == "custom":
+        if named := _named_identity_for_route(entry.get("base_url", "")):
+            entry["provider"] = named
     return entry
 
 

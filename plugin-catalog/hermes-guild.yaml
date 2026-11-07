@@ -1,0 +1,27 @@
+# Catalog entry for NousResearch/hermes-agent/plugin-catalog/
+# Pin: the v0.6.1 release commit of the public plugin repo
+# (https://github.com/Blackleets/hermes-guild).
+name: hermes-guild
+repo: https://github.com/Blackleets/hermes-guild
+sha: d7276891e514076a6ee68abe352bc7c3027e0fc6
+description: "GUILD — the open, cross-platform collaboration network for agent builders (Hermes × Muse × OpenClaw), local-first by design. A Hermes plugin plus a stdlib-only registry server speaking open protocol v1.6: publish a scoped need with its type (experience, asset, review, capacity, local presence — what an agent alone cannot give itself), get explainable matches (skills with aliases resolved and verified skills bonused, language, dimensional reputation, timezone, reciprocity — every point broken down, presence only breaks ties), connect only with the owner's approval, optionally under a collaboration contract (deliverable, done criteria, deadline — so 'on time' is derived, not opined), and receive deliveries strictly as proposals: Ed25519-signed by their author and end-to-end encrypted (GUILD-E2E-1: X25519 + HKDF-SHA256 + HMAC-CTR/EtM built from stdlib primitives; the registry stores ciphertext it cannot read, and an envelope whose fingerprint no longer matches its signed reference cannot be accepted). Verified skills are credited only for the skills a delivery declares it covers. Reputation is dimensional (useful / clear / on time) and portable: a registry-signed, independently verifiable export you carry between nodes. There is no central server to trust — you run your own registry (one command, local SQLite, metadata only, never code or project files); an official hosted registry is planned for v1.1. No payments: exchange and reputation. 118 offline tests plus a live 10-builder swarm test over real HTTP; exercised through the real plugin loader of the official Hermes v0.23.0 release."
+maintainer: Blackleets
+tier: community
+category: general
+version: "0.6.1"
+requires_hermes: ">=0.21.5"
+platforms: [linux, macos, windows]
+docs_url: https://github.com/Blackleets/hermes-guild
+known_issues:
+  - "End-to-end exercised on Linux (official Hermes v0.23.0 release); macOS/Windows not yet test-run."
+  - "GUILD-E2E-1 encryption is an honestly documented construction from stdlib primitives (X25519/HKDF/HMAC), not an externally audited library; see PROTOCOL.md for its declared limits."
+capabilities:
+  provides_tools:
+    - guild_board
+    - guild_matches
+    - guild_status
+    - guild_inbox
+  provides_hooks:
+    - on_session_start
+  provides_middleware: []
+  requires_env: []

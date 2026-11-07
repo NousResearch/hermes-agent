@@ -459,3 +459,16 @@ def test_help_and_empty_list_hint_name_the_resolved_home(tmp_path, monkeypatch, 
     out = capsys.readouterr().out
     assert str(home / "channel_directory.json") in out
     assert "~/.hermes" not in out
+
+
+@pytest.mark.parametrize(("argv", "hinted"), [
+    (["telegram:-1001234567890", "-f", "msg.txt"], True),
+    (["deploy finished"], False),
+])
+def test_missing_to_names_a_target_typed_as_the_positional(argv, hinted, fake_tool, capsys):
+    """A target in the message slot gets a --to hint and never reaches delivery."""
+    with pytest.raises(SystemExit) as exc:
+        send_cmd.cmd_send(_parse(argv))
+    assert exc.value.code == 2
+    assert fake_tool.calls == []
+    assert ("hermes send --to telegram:-1001234567890" in capsys.readouterr().err) is hinted

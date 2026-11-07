@@ -133,7 +133,7 @@ cronjob(
 Or target a specific contact via the cron job's `deliver:` field, or from a shell script with the [`hermes send` CLI](../../guides/pipe-script-output.md):
 
 ```bash
-hermes send simplex:<contact-id> "Done!"
+hermes send --to simplex:<contact-id> "Done!"
 ```
 
 ## Privacy notes

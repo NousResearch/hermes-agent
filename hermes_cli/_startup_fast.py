@@ -256,5 +256,10 @@ def try_fast_version(argv: list[str] | None = None) -> bool:
     if container_mode_may_be_active():
         return False
 
-    print_fast_version_info()
+    # Installation discovery and ``--version`` are health probes, not update commands.
+    # Keep remote release checks out of this path: a missing release commit in a
+    # blobless partial clone must never delay or prevent a caller from learning
+    # which installation it found. Interactive ``/version`` retains the optional
+    # update status through ``print_fast_version_info(check_updates=True)``.
+    print_fast_version_info(check_updates=False)
     return True

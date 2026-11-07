@@ -61,7 +61,11 @@ try:  # sibling modules; support both package and flat plugin-dir import
     from .adapter_slash_lane import SlashHandoffLanes
     from .adapter_slash_payload import slash_command_text, slash_thread_id
     from .adapter_reactions_context import slack_reactions_marker
+    from .adapter_forwarded import (
+        append_forwards, files_with_forwarded, forward_section, is_forward, slack_file_marker as _slack_file_marker)
 except ImportError:  # pragma: no cover - plugin loaded outside package context
+    from adapter_forwarded import (  # type: ignore
+        append_forwards, files_with_forwarded, forward_section, is_forward, slack_file_marker as _slack_file_marker)
     from block_kit import render_blocks, sanitize_blocks  # type: ignore
     from adapter_slash_lane import SlashHandoffLanes  # type: ignore
     from adapter_slash_payload import slash_command_text, slash_thread_id  # type: ignore
@@ -153,18 +157,6 @@ _SLACK_SPECIAL_MENTION_RE = re.compile(r"<!(?:everyone|channel|here)(?:\|[^>\n]*
 # Thread-root images delivered on a mid-thread cold start; other messages' files
 # are text markers only (the root is usually the artifact the mention is about).
 _THREAD_ROOT_IMAGE_MAX = 4
-
-
-def _slack_file_marker(file_obj: dict[str, Any]) -> str:
-    """Render a compact text marker for a Slack file so text-only context shows attachments. Name is
-    sanitized (newlines/brackets stripped) so a hostile filename can't fake context structure."""
-    name = str(file_obj.get("name") or file_obj.get("title") or file_obj.get("id") or "file")
-    name = re.sub(r"[\r\n\[\]]+", " ", name).strip() or "file"
-    mimetype = str(file_obj.get("mimetype") or "")
-    for kind in ("image", "video", "audio"):
-        if mimetype.startswith(kind + "/"):
-            return f"[{kind}: {name}]"
-    return f"[file: {name} ({mimetype})]" if mimetype else f"[file: {name}]"
 
 
 # GFM tables: Slack mrkdwn shows pipe tables as literal pipes, so they are wrapped in ```
@@ -627,10 +619,10 @@ def _extract_text_from_slack_attachments(attachments: list) -> str:
         return ""
     lines: list[str] = []
     for att in attachments:
-        if not isinstance(att, dict):
-            continue
+        if is_forward(att):  # a forward IS content: render it, never skip it as an unfurl
+            lines.append(forward_section(att, _extract_text_from_slack_blocks))
         # Permalink unfurls repeat a message the agent already reads (inbound path skips them too).
-        if att.get("is_msg_unfurl"):
+        if not isinstance(att, dict) or att.get("is_msg_unfurl") or is_forward(att):
             continue
         got: list[str] = [str(att[key]) for key in ("pretext", "title", "text") if att.get(key)]
         for field in att.get("fields", []) or []:
@@ -4244,7 +4236,7 @@ class SlackAdapter(BasePlatformAdapter):
             att_text = att.get("text", "")
             att_footer = att.get("footer", "")
             att_fallback = att.get("fallback", "")
-            if att.get("is_msg_unfurl"):
+            if att.get("is_msg_unfurl") or is_forward(att):  # forwards: append_forwards
                 continue
             if att_title and att_url:
                 header = f"📎 [{att_title}]({att_url})"
@@ -4577,6 +4569,8 @@ class SlackAdapter(BasePlatformAdapter):
         if blocks and not is_command_text:
             text = self._append_block_text(
                 text, blocks, self._team_bot_user_ids.get(dedup_team_id, self._bot_user_id) or "")
+        # Forwards (``is_share``) carry the content the user is pointing at; unfurls are previews.
+        text = append_forwards(text, event.get("attachments"), _extract_text_from_slack_blocks)
         text = self._append_link_unfurls(text, event.get("attachments") or [])
         ts = event.get("ts", "")
         outer_team_id = dedup_team_id
@@ -4845,7 +4839,7 @@ class SlackAdapter(BasePlatformAdapter):
         media_types = list(thread_root_media_types)
         media_text_inlined: list[bool] = [False] * len(media_urls)
         notices: list[str] = []
-        for f in event.get("files", []):
+        for f in files_with_forwarded(event.get("files"), event.get("attachments")):
             if f.get("file_access") == "check_file_info":
                 f = await self._resolve_file_stub(f, channel_id, team_id, notices)
                 if f is None:
@@ -6017,8 +6011,8 @@ class SlackAdapter(BasePlatformAdapter):
             cached = self._thread_context_cache.get(
                 self._thread_cache_key(channel_id, thread_ts, team_id))
             root = self._thread_root_message(cached.messages, thread_ts) if cached else None
-            files = root.get("files") if root else None
-            if not isinstance(files, list):
+            files = files_with_forwarded(root.get("files"), root.get("attachments")) if root else []
+            if not files:
                 return media_urls, media_types
             for f in files:
                 if len(media_urls) >= _THREAD_ROOT_IMAGE_MAX:

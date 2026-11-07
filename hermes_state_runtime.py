@@ -87,18 +87,34 @@ def _admission(conn, admission_id):
     return row
 
 
+def _admission_workers(conn, row, owner_epoch):
+    """Exact worker selector used by both ownership discovery and retirement."""
+    lineage = json.loads(row['lineage_json'])
+    targets = list({row['target_session_id'], lineage[-1] if lineage else row['target_session_id']})
+    return conn.execute(
+        f"SELECT execution_id,session_id FROM worker_executions WHERE session_id IN ({','.join('?' * len(targets))}) "
+        "AND generation=? AND owner_epoch=? AND status!='terminal'",
+        (*targets, row['generation'], owner_epoch)).fetchall()
+
+
+def _admission_retirement_ids(conn, row, owner_epoch, include_terminal_target=False):
+    from hermes_state_runtime_workers import terminal_execution_session_ids
+    ids = {row['target_session_id']}
+    for execution_id, _worker_session_id in _admission_workers(conn, row, owner_epoch):
+        ids.update(terminal_execution_session_ids(conn, execution_id))
+    if include_terminal_target:
+        from hermes_state_local_lineage import local_physical_target
+        ids.add(_canonical_chain(conn, local_physical_target(conn, row['target_session_id']))[-1])
+    return ids
+
+
 def _retire_admission_workers(conn, row, owner_epoch):
-    """Retire the worker rows this admission's generation owns on BOTH the logical
-    FIFO owner and its current physical transcript (reset/compression move the private
-    worker assignment to the child while target_session_id stays the logical ID)."""
+    from hermes_state_runtime_workers import compact_terminal_receipts
+    for execution_id, _session_id in _admission_workers(conn, row, owner_epoch):
+        compact_terminal_receipts(conn, execution_id)
     lineage = json.loads(row['lineage_json'])
     targets = list({row['target_session_id'], lineage[-1] if lineage else row['target_session_id']})
     scope = f"session_id IN ({','.join('?' * len(targets))}) AND generation=? AND owner_epoch=?"
-    # Settlement closes an execution that never wrote execution.finish: its read copies go too.
-    from hermes_state_runtime_workers import compact_terminal_receipts
-    for (execution_id,) in conn.execute(f"SELECT execution_id FROM worker_executions WHERE {scope} "
-                                        "AND status!='terminal'", (*targets, row['generation'], owner_epoch)).fetchall():
-        compact_terminal_receipts(conn, execution_id)
     conn.execute(f"UPDATE worker_executions SET status='terminal' WHERE {scope}",
                  (*targets, row['generation'], owner_epoch))
 
@@ -272,7 +288,16 @@ def settle_session_input(db, *, epoch: int, admission_id: str, generation: int, 
         settle_steer_transfers(conn, epoch=epoch, generation=generation, transfers=_transfers, outcome=outcome)
         conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (row['target_session_id'],))
         return _row(_admission(conn, admission_id))
-    return db._execute_write(write)
+    from hermes_state_lineage import guarded_discovered_session_write
+    def discover(conn):
+        _epoch(conn, epoch)
+        row = _admission(conn, admission_id)
+        session = _session(conn, row['target_session_id'])
+        if (row['status'] != 'started' or row['owner_epoch'] != epoch or type(generation) is not int
+                or row['generation'] != generation or session['runtime_generation'] != generation):
+            return set()
+        return _admission_retirement_ids(conn, row, epoch, include_terminal_target=_terminal_write is not None)
+    return guarded_discovered_session_write(db, (), discover, write)
 
 
 _CANCEL_QUEUED = "UPDATE session_admissions SET status='terminal',outcome='cancelled' WHERE admission_id=?"
@@ -462,7 +487,12 @@ def recover_session_inputs(db, *, epoch: int) -> int:
         conn.execute("UPDATE session_admissions SET outcome='interrupted' WHERE status='terminal' AND outcome=? "
                      "AND owner_epoch!=?", (STEERING, epoch))
         return conn.execute("UPDATE session_admissions SET status='unknown' WHERE status='started' AND owner_epoch!=?", (epoch,)).rowcount
-    return db._execute_write(write)
+    from hermes_state_lineage import guarded_discovered_session_write
+    from hermes_state_runtime_workers import live_session_ids, stale_child_executions
+    def discover(conn):
+        _epoch(conn, epoch)
+        return live_session_ids(conn, stale_child_executions(conn, epoch))
+    return guarded_discovered_session_write(db, (), discover, write)
 
 
 def mutation_receipt_key(principal_id, session_id, request_id, *, operation, payload, expected_revision,
@@ -733,7 +763,32 @@ def resolve_unknown_session_input(db, *, epoch: int, admission_id: str, generati
                      (outcome, admission_id))
         conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (row['target_session_id'],))
         return _row(_admission(conn, admission_id))
-    return db._execute_write(write)
+    def cached_result():
+        with db._read_ctx() as conn:
+            _epoch(conn, epoch)
+            row = _admission(conn, admission_id)
+            if (type(generation) is int and row['generation'] == generation and row['status'] == 'terminal'
+                    and (row['outcome'] == 'interrupted' or conn.execute(
+                        'SELECT 1 FROM state_meta WHERE key=?', (RESULT_PREFIX + admission_id,)).fetchone())):
+                return _row(row)
+        return None
+    cached = cached_result()
+    if cached is not None:
+        return cached
+    from hermes_state_lineage import SessionLineageError, guarded_discovered_session_write
+    def discover(conn):
+        _epoch(conn, epoch)
+        row = _admission(conn, admission_id)
+        if type(generation) is not int or row['status'] != 'unknown' or row['generation'] != generation:
+            return set()
+        return _admission_retirement_ids(conn, row, row['owner_epoch'], include_terminal_target=_terminal_write is not None)
+    try:
+        return guarded_discovered_session_write(db, (), discover, write)
+    except SessionLineageError:
+        cached = cached_result()
+        if cached is not None:
+            return cached
+        raise
 
 
 def _worker_public(row):
@@ -1087,7 +1142,7 @@ def apply_worker_receipt(db, *, epoch, execution_id, session_id, generation, seq
     try:
         return guarded_discovered_session_write(
             db, (session_id, *lineage_ids),
-            lambda conn: worker_receipt_write_ids(db, conn, session_id, operation, json.loads(encoded)),
+            lambda conn: worker_receipt_write_ids(db, conn, session_id, operation, json.loads(encoded), execution_id),
             write, patience_s=db._TRANSCRIPT_WRITE_PATIENCE_S)
     except SessionLineageError:
         found, result = cached_receipt()

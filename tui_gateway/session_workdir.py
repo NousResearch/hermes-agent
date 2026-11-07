@@ -599,6 +599,8 @@ def _ensure_session_db_row(session: dict) -> bool:
     """
     if not (key := session.get("session_key")):
         return
+    if session.get("_seed_compensation_unverified"):
+        return False
     # Persist into the session's own profile db (global remote mode), not the launch profile's — otherwise the unified
     # list mis-tags the row and resume 404s ("session not found").
     profile_home = session.get("profile_home")

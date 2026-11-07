@@ -99,8 +99,12 @@ def _workspace_ids(db, conn, session_id, target, payload, prepared, reserved):
 
 
 def _reset_ids(db, conn, session_id, target, payload, prepared, reserved):
-    from hermes_state_runtime_workers import runtime_lineage
-    return {*runtime_lineage(conn, session_id), reserved['child']}
+    from hermes_state_runtime_workers import runtime_lineage, reset_orphan_executions, terminal_execution_session_ids
+    lineage = runtime_lineage(conn, session_id)
+    ids = {*lineage, reserved['child']}
+    for (execution_id,) in reset_orphan_executions(conn, lineage):
+        ids.update(terminal_execution_session_ids(conn, execution_id))
+    return ids
 
 
 def _branch_ids(db, conn, session_id, target, payload, prepared, reserved):
@@ -151,7 +155,7 @@ def mutation_write_ids(db, conn, session_id, operation, payload, *, prepared=Non
                            if handler else set())
 
 
-def worker_receipt_write_ids(db, conn, session_id, operation, payload):
+def worker_receipt_write_ids(db, conn, session_id, operation, payload, execution_id):
     """Secondary IDs changed by a registered worker's receipt handler."""
     ids = {session_id}
     if operation == 'session.title' and isinstance(payload, dict):
@@ -166,6 +170,9 @@ def worker_receipt_write_ids(db, conn, session_id, operation, payload):
         child = payload.get('child_session_id') if isinstance(payload, dict) else None
         if isinstance(child, str) and 0 < len(child) <= 1024:
             ids.update(compression_publication_ids(conn, session_id, child))
+    elif operation == 'execution.finish':
+        from hermes_state_runtime_workers import terminal_execution_session_ids
+        ids.update(terminal_execution_session_ids(conn, execution_id))
     elif operation in {'usage.main', 'usage.auxiliary'}:
         ids.update(_compression_lineage(conn, session_id))
     elif operation in {'turn.cleanup', 'compression.cleanup'} and isinstance(payload, dict):

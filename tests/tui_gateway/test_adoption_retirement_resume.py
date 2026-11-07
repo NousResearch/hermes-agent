@@ -357,3 +357,59 @@ def test_fresh_draft_failed_birth_does_not_continue_as_ensured(gateway, monkeypa
     assert mod._ensure_session_db_row(record) is False
     assert record['_fresh_generated_key'] is True
     assert db.get_session('failure-draft') is None
+
+
+@pytest.mark.parametrize('mode', ['retry', 'local_collision', 'foreign_collision', 'discard_false', 'discard_unknown'])
+def test_seed_compensation_preserves_fresh_retry_intent(gateway, monkeypatch, mode):
+    from tests.tui_gateway.test_protocol import _stub_session_create_dependencies
+    mod, db, _ = gateway
+    ensure, seed, persist = mod._ensure_session_db_row, mod._seed_row, mod._persist_branch_seed
+    _stub_session_create_dependencies(mod, monkeypatch)
+    monkeypatch.setattr(mod, '_ensure_session_db_row', ensure)
+    monkeypatch.setattr(mod, '_seed_row', seed)
+    monkeypatch.setattr(mod, '_persist_branch_seed', persist)
+    monkeypatch.setattr(mod, '_new_session_key', lambda: 'seed-compensation-id')
+    append = db.append_messages_batch
+    discard = db.discard_unadmitted_session
+    def fail_seed(*args, **kwargs):
+        raise RuntimeError('seed fault')
+    monkeypatch.setattr(db, 'append_messages_batch', fail_seed)
+    if mode == 'discard_false':
+        monkeypatch.setattr(db, 'discard_unadmitted_session', lambda key: False)
+    if mode == 'discard_unknown':
+        def unknown(key):
+            discard(key)
+            raise RuntimeError('discard acknowledgment lost')
+        monkeypatch.setattr(db, 'discard_unadmitted_session', unknown)
+    created = mod.handle_request({'id': 'seed-create', 'method': 'session.create', 'params': {
+        'source': 'desktop', 'messages': [{'role': 'user', 'content': 'seed'}]}})
+    assert not created.get('error'), created
+    record = mod._sessions[created['result']['session_id']]
+    monkeypatch.setattr(db, 'append_messages_batch', append)
+    sibling = None
+    try:
+        if mode == 'local_collision':
+            db.create_session('seed-compensation-id', 'cli')
+            db.append_message('seed-compensation-id', 'user', 'unrelated')
+        elif mode == 'foreign_collision':
+            profile = db.db_path.parent / 'profiles' / 'science'
+            profile.mkdir(parents=True, exist_ok=True)
+            sibling = SessionDB(profile / 'state.db')
+            sibling.create_session('seed-compensation-id', 'cli')
+            sibling.append_message('seed-compensation-id', 'user', 'foreign')
+        stores = (db,) if sibling is None else (db, sibling)
+        def snapshot():
+            return [[tuple(row) for row in store._conn.execute('SELECT * FROM ' + table + ' ORDER BY rowid')]
+                    for store in stores for table in ('sessions', 'messages', 'state_meta')]
+        before = snapshot()
+        reply = mod._persist_session_row_for_submit('submit', record, 'followup')
+        if mode == 'retry':
+            assert reply is None
+            assert [m['content'] for m in db.get_messages('seed-compensation-id')] == ['seed', 'followup']
+            assert record['_branch_seed_persisted']
+        else:
+            assert reply and reply.get('error'), reply
+            assert snapshot() == before
+    finally:
+        if sibling is not None:
+            sibling.close()

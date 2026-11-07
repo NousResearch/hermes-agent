@@ -306,6 +306,7 @@ def _seed_row(record: dict) -> None:
     ``_persist_branch`` applies to branch children) rather than left to be duplicated."""
     from hermes_state_lineage import FreshSessionCollision
     key = record.get("session_key")
+    was_fresh = bool(record.get("_fresh_generated_key"))
     try:
         if _ensure_session_db_row(record) is False:
             return
@@ -315,9 +316,18 @@ def _seed_row(record: dict) -> None:
     except Exception:
         logger.warning("seeded-session persistence failed for %s; falling back to lazy row creation", key, exc_info=True)
     if not record.get("_branch_seed_persisted"):
-        with contextlib.suppress(Exception), _session_db(record) as db:
-            if db is not None:
-                db.discard_unadmitted_session(key)
+        compensated = False
+        try:
+            with _session_db(record) as db:
+                if db is not None:
+                    compensated = db.discard_unadmitted_session(key) is True
+        except Exception:
+            logger.warning("seed compensation could not be verified for %s", key, exc_info=True)
+        if was_fresh:
+            if compensated:
+                record["_fresh_generated_key"] = True
+            else:
+                record["_seed_compensation_unverified"] = True
         return
     try:
         if title := record.get("pending_title"):

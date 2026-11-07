@@ -36,12 +36,35 @@ def discard_orphan_workers_on_reset(conn, session_ids):
     Admission-linked work still requires its own Discard receipt. A running/registered worker
     remains a hard reset refusal, and transaction rollback preserves all fences on refusal.
     """
-    for sid in session_ids:
-        orphans = conn.execute("SELECT execution_id FROM worker_executions WHERE session_id=? AND status='unknown' "
-                               "AND execution_id NOT LIKE 'admission-worker:%'", (sid,)).fetchall()
-        for (execution_id,) in orphans:
-            conn.execute("UPDATE worker_executions SET status='terminal' WHERE execution_id=?", (execution_id,))
-            compact_terminal_receipts(conn, execution_id)
+    for (execution_id,) in reset_orphan_executions(conn, session_ids):
+        conn.execute("UPDATE worker_executions SET status='terminal' WHERE execution_id=?", (execution_id,))
+        compact_terminal_receipts(conn, execution_id)
+
+
+def reset_orphan_executions(conn, session_ids):
+    return [row for sid in session_ids for row in conn.execute(
+        "SELECT execution_id FROM worker_executions WHERE session_id=? AND status='unknown' "
+        "AND execution_id NOT LIKE 'admission-worker:%'", (sid,)).fetchall()]
+
+
+def live_session_ids(conn, rows):
+    """Only local session rows that an ended_at-guarded retirement can update."""
+    ids = sorted({row['session_id'] for row in rows})
+    if not ids:
+        return set()
+    return {row[0] for row in conn.execute(
+        "SELECT id FROM sessions WHERE ended_at IS NULL AND id IN (SELECT value FROM json_each(?))",
+        (json.dumps(ids),))}
+
+
+def terminal_execution_session_ids(conn, execution_id):
+    """Session rows touched when compacting this execution and its live descendants."""
+    rows = list(active_descendant_executions(conn, execution_id))
+    if CHILD_SEPARATOR in execution_id:
+        row = conn.execute("SELECT session_id FROM worker_executions WHERE execution_id=?", (execution_id,)).fetchone()
+        if row is not None:
+            rows.append(row)
+    return live_session_ids(conn, rows)
 
 
 RETIRED_RECEIPT = {'retired': True}
@@ -54,9 +77,14 @@ def retire_child_executions(conn, execution_id):
     """A child never outlives the execution that reserved it: every live descendant goes terminal
     with it, its read receipts shrink and its open session row is ended. A late child write is
     then refused ``stale_generation`` like any write after retirement."""
-    _retire_children(conn, conn.execute("SELECT execution_id,session_id FROM worker_executions "
-                                        "WHERE execution_id>=? AND execution_id<? AND status!='terminal'",
-                                        descendant_range(execution_id)).fetchall())
+    _retire_children(conn, active_descendant_executions(conn, execution_id))
+
+
+def active_descendant_executions(conn, execution_id):
+    """The exact live descendant rows whose sessions retirement can end."""
+    return conn.execute("SELECT execution_id,session_id FROM worker_executions "
+                        "WHERE execution_id>=? AND execution_id<? AND status!='terminal'",
+                        descendant_range(execution_id)).fetchall()
 
 
 def descendant_range(execution_id):
@@ -68,8 +96,12 @@ def descendant_range(execution_id):
 def retire_stale_children(conn, epoch):
     """Owner restart: a child dies with its worker, which dies with its owner, so it is never
     adoptable; only its root execution can be recovered as ``unknown``."""
-    _retire_children(conn, conn.execute("SELECT execution_id,session_id FROM worker_executions WHERE kind='child' "
-                                        "AND status!='terminal' AND owner_epoch!=?", (epoch,)).fetchall())
+    _retire_children(conn, stale_child_executions(conn, epoch))
+
+
+def stale_child_executions(conn, epoch):
+    return conn.execute("SELECT execution_id,session_id FROM worker_executions WHERE kind='child' "
+                        "AND status!='terminal' AND owner_epoch!=?", (epoch,)).fetchall()
 
 
 def _retire_children(conn, rows):

@@ -37,6 +37,7 @@ def test_service_gateway_boot_adopts_its_user_bus(monkeypatch):
         "_guard_named_profile_under_multiplexer",
         "_guard_supervised_gateway_conflict",
         "_guard_existing_gateway_process_conflict",
+        "_claim_gateway_runtime_lock_before_boot",
         "_apply_startup_watchdog_config",
     ):
         monkeypatch.setattr(gw, guard, lambda *_a, **_kw: None)

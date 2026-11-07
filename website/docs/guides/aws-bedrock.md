@@ -78,6 +78,44 @@ Set the AWS region in any of these ways (highest priority first):
 3. `AWS_DEFAULT_REGION` environment variable
 4. Default: `us-east-1`
 
+### Ultrafast on Mantle
+
+For **GPT-6.1 Sol on Mantle in `us-east-1`**, the CLI and messaging gateway
+turn builders support the existing `agent.service_tier: ultrafast` setting:
+
+```yaml
+model:
+  provider: bedrock
+  default: openai.gpt-6.1-sol
+bedrock:
+  region: us-east-1
+agent:
+  service_tier: ultrafast
+```
+
+This sends `service_tier: "ultrafast"` through the existing Responses route at
+`https://bedrock-mantle.us-east-1.api.aws/openai/v1`. The CLI also accepts
+`/fast ultrafast` on this resolved route. Set `agent.service_tier: normal` (or
+omit it) for the default tier. Existing bearer-token and IAM signing paths are
+unchanged. Ultrafast is a paid opt-in, not the meaning of plain `/fast fast`.
+
+- **Exact scope:** only `openai.gpt-6.1-sol` on this Mantle endpoint is enabled.
+  Priority, Flex, Reserved, and auto/cold fast windows are not enabled for it.
+- **Runtime profiles:** AWS also documents Ultrafast over Responses for
+  `us.openai.gpt-6.1-sol` and `global.openai.gpt-6.1-sol`. Hermes still routes
+  those IDs through Converse. This setting does not enable their Ultrafast
+  path, switch their API, or translate Ultrafast to Converse `serviceTier`.
+- **Other entrypoints:** this does not add Bedrock Ultrafast to speed pickers
+  or the gateway `/fast` command. Constructors that set only `service_tier`
+  without building `request_overrides` retain their existing limitation.
+- **Service behavior:** the requested tier is not proof of the served tier or
+  account access. Check the provider response. No live AWS inference was used
+  to validate this integration.
+
+See the [AWS Sol service-tier documentation](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-6-1-sol.html#model-card-openai-gpt-6-1-sol-tiers)
+for pricing and availability. Mantle Responses does not apply Guardrails.
+Do not switch a guardrail-dependent workload from Converse just to request a tier.
+
 ### Guardrails
 
 To apply [Amazon Bedrock Guardrails](https://docs.aws.amazon.com/bedrock/latest/userguide/guardrails.html) to all model invocations:

@@ -3,6 +3,12 @@ import { useStore } from '@nanostores/react'
 import { type FC, type ReactNode, useEffect, useMemo, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
+import {
+  formatTurnTokens,
+  latestReasoningStatus,
+  pickSpinnerLabel,
+  todoStatus
+} from '@/components/assistant-ui/thread/spinner-label'
 import { activitySignature, toolNarratesWait, TURN_QUIET_S } from '@/components/assistant-ui/thread/turn-activity'
 import { toolPresentVerb } from '@/components/assistant-ui/tool/run-summary'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
@@ -13,6 +19,7 @@ import { Loader } from '@/components/ui/loader'
 import { StatusPulse } from '@/components/ui/status-pulse'
 import { getLocalModelsStatus } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { sessionBackgroundResume } from '@/store/background-delegation'
 import { sessionCompacting } from '@/store/compaction'
@@ -21,6 +28,8 @@ import { sessionAwaitingInput } from '@/store/prompts'
 import { parseModelLoadWait, sessionProviderWait } from '@/store/provider-wait'
 import { $showReasoning } from '@/store/reasoning-disclosure'
 import { $currentModel, $currentProvider } from '@/store/session'
+import { $sessionStates } from '@/store/session-states'
+import { $todosBySession } from '@/store/todos'
 import { type DraftingTool, sessionDraftingTool } from '@/store/tool-drafting'
 import type { LocalModelLoadProgress } from '@/types/hermes'
 
@@ -182,6 +191,7 @@ function useThreadSessionStatus() {
     compacting,
     drafting,
     providerWait,
+    sessionId,
     // Epoch ms this surface's turn began, or undefined between turns. The
     // origin for anything measuring the WHOLE turn rather than one phase of
     // it — including the first seconds of a brand-new chat, where the value is
@@ -193,6 +203,71 @@ function useThreadSessionStatus() {
 // Long enough that a tool whose arguments arrive in a few frames never gets to
 // strobe a label, short enough that a real wait is named almost immediately.
 const DRAFTING_REVEAL_MS = 200
+
+// Session output tokens when each turn began, keyed `${sessionId}:${turnStartedAt}`.
+// Module-level on purpose: the tail row unmounts and remounts across every quiet
+// gap, and a per-mount baseline would restart the count at each one. First
+// sighting wins — it lands at the turn's placeholder row, before any API call of
+// the turn has reported usage.
+const turnTokenBaselines = new Map<string, number>()
+const TURN_TOKEN_BASELINE_CAP = 64
+
+/**
+ * Tokens spent since `turnKey` was first seen. Lives OUTSIDE the hook and takes
+ * `output` as an argument on purpose: React Compiler memoizes a hook body's
+ * reads by their inputs, so a bare `map.get(turnKey)` inside the hook was cached
+ * at its first (empty) value and re-baselined on every render — the count stuck
+ * at zero. With `output` an input, a cached result is only ever reused for the
+ * same (turn, output) pair, for which the answer cannot change.
+ */
+function turnTokensSince(turnKey: string, output: number): number {
+  let baseline = turnTokenBaselines.get(turnKey)
+
+  if (baseline === undefined) {
+    baseline = output
+    turnTokenBaselines.set(turnKey, baseline)
+
+    if (turnTokenBaselines.size > TURN_TOKEN_BASELINE_CAP) {
+      const oldest = turnTokenBaselines.keys().next().value
+
+      if (oldest !== undefined) {
+        turnTokenBaselines.delete(oldest)
+      }
+    }
+  }
+
+  return Math.max(0, output - baseline)
+}
+
+/** Output tokens this turn has spent so far, from the live `session.usage`
+ *  ticks (one per finished API call, so the count steps rather than streams —
+ *  the reasoning shown is a summary, so streamed length would undercount). */
+function useTurnTokens(sessionId: null | string, turnStartedAt: number | undefined): number {
+  const output = useStoreSelector($sessionStates, states => (sessionId ? (states[sessionId]?.usage?.output ?? 0) : 0))
+
+  return sessionId && turnStartedAt !== undefined ? turnTokensSince(`${sessionId}:${turnStartedAt}`, output) : 0
+}
+
+/** The Claude Code-style words for the row when nothing more specific (a
+ *  compaction, a provider wait, a tool being drafted) owns it: the newest
+ *  reasoning sentence, else the in-progress todo, else a per-turn verb. */
+function useSpinnerLine(sessionId: null | string, turnStartedAt: number | undefined, reasoningLabel: string) {
+  const todo = useStoreSelector($todosBySession, bySession => (sessionId ? todoStatus(bySession[sessionId]) : ''))
+  const tokens = formatTurnTokens(useTurnTokens(sessionId, turnStartedAt))
+
+  return { label: pickSpinnerLabel(reasoningLabel, todo, turnStartedAt), tokens }
+}
+
+const TurnTokensText: FC<{ tokens: string }> = ({ tokens }) =>
+  tokens ? (
+    <span
+      aria-hidden="true"
+      className="shrink-0 text-[0.56rem] leading-none tracking-[0.02em] tabular-nums text-midground/55"
+      data-slot="aui_turn-tokens"
+    >
+      · {tokens}
+    </span>
+  ) : null
 
 /**
  * What to call the wait, if it deserves a name. Compaction outranks a draft —
@@ -246,11 +321,15 @@ export const CenteredThreadSpinner: FC = () => {
   )
 }
 
-export const ResponseLoadingIndicator: FC = () => {
+/** `reasoningLabel` comes from the message that mounted the row (hidden
+ *  reasoning streaming before the first visible token); the standalone
+ *  placeholder has no message yet and falls back to the todo / verb. */
+export const ResponseLoadingIndicator: FC<{ reasoningLabel?: string }> = ({ reasoningLabel = '' }) => {
   const { t } = useI18n()
-  const { compacting, drafting, providerWait, turnStartedAt } = useThreadSessionStatus()
+  const { compacting, drafting, providerWait, sessionId, turnStartedAt } = useThreadSessionStatus()
   const elapsed = useElapsedSeconds(true, undefined, turnStartedAt)
   const hint = useStatusHint(compacting, drafting, providerWait)
+  const line = useSpinnerLine(sessionId, turnStartedAt, reasoningLabel)
   // Renderer-synthesized load bar: covers loads the backend's wait loop
   // can't narrate (gateway still initializing, or an auxiliary call — not
   // the main request — triggered the autoload). A real wait frame wins.
@@ -267,8 +346,11 @@ export const ResponseLoadingIndicator: FC = () => {
         <WaitHint hint={hint} />
       ) : localLoad ? (
         <ProgressHint label={t.assistant.thread.loadingLocalModel(localLoad.model)} percent={localLoad.percent} />
-      ) : null}
+      ) : (
+        <HintText>{`${line.label}…`}</HintText>
+      )}
       <ActivityTimerText aria-hidden={true} seconds={elapsed} />
+      <TurnTokensText tokens={line.tokens} />
     </StatusRow>
   )
 }
@@ -319,10 +401,11 @@ interface TurnActivityRowProps {
   active: boolean
   elapsed: number
   hint: string
+  line: { label: string; tokens: string }
   localLoad: ReturnType<typeof useLocalModelLoad>
 }
 
-const TurnActivityRow: FC<TurnActivityRowProps> = ({ active, elapsed, hint, localLoad }) => {
+const TurnActivityRow: FC<TurnActivityRowProps> = ({ active, elapsed, hint, line, localLoad }) => {
   const { t } = useI18n()
 
   return (
@@ -343,8 +426,11 @@ const TurnActivityRow: FC<TurnActivityRowProps> = ({ active, elapsed, hint, loca
             <WaitHint hint={hint} />
           ) : localLoad ? (
             <ProgressHint label={t.assistant.thread.loadingLocalModel(localLoad.model)} percent={localLoad.percent} />
-          ) : null}
+          ) : (
+            <HintText>{`${line.label}…`}</HintText>
+          )}
           <ActivityTimerText aria-hidden={true} seconds={elapsed} />
+          <TurnTokensText tokens={line.tokens} />
         </>
       )}
     </StatusRow>
@@ -376,8 +462,12 @@ export const TurnActivityIndicator: FC<{ thinking?: boolean }> = ({ thinking = f
   // timer read "quiet for 12s" rather than the age of this component, which is
   // the whole turn so far.
   const [quietSince, setQuietSince] = useState<number | undefined>(undefined)
-  const { awaitingInput, busy, compacting, drafting, providerWait, turnStartedAt } = useThreadSessionStatus()
+  const { awaitingInput, busy, compacting, drafting, providerWait, sessionId, turnStartedAt } = useThreadSessionStatus()
   const hint = useStatusHint(compacting, drafting, providerWait)
+  // A string selector, so a reasoning token that leaves the newest finished
+  // sentence unchanged re-renders nothing.
+  const reasoningLabel = useAuiState(s => latestReasoningStatus(s.message.content))
+  const line = useSpinnerLine(sessionId, turnStartedAt, reasoningLabel)
 
   // A tool run at the tail already narrates the wait — its summary counts the
   // calls, its ticker names the current one, and it carries its own timer. A
@@ -444,12 +534,12 @@ export const TurnActivityIndicator: FC<{ thinking?: boolean }> = ({ thinking = f
   // A reply that has only thought so far, with the thinking not drawn, has
   // still put nothing on screen: it keeps the pre-first-token row.
   if (thinking && !showReasoning) {
-    return <ResponseLoadingIndicator />
+    return <ResponseLoadingIndicator reasoningLabel={reasoningLabel} />
   }
 
   if (!active && !everActive) {
     return null
   }
 
-  return <TurnActivityRow active={active} elapsed={elapsed} hint={hint} localLoad={localLoad} />
+  return <TurnActivityRow active={active} elapsed={elapsed} hint={hint} line={line} localLoad={localLoad} />
 }

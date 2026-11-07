@@ -714,6 +714,12 @@ _DB_CONNSTR_RE = re.compile(
     r"((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|rediss?|amqps?)://[^:\s]*+:)((?:[^@\s:]++|:(?!//))++)(@)",
     re.IGNORECASE,
 )
+# The same DB URLs (and their ``jdbc:`` forms) also take the password as a query parameter:
+# ``postgresql://db/app?user=app&password=…``. Unlike web-URL queries these are never round-trip tokens.
+_DB_URL_QUERY_RE = re.compile(
+    r"(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|rediss?|amqps?)://(?:[^\s?#:]|:(?!//))*+\?[^\s#]+",
+    re.IGNORECASE)  # the authority/path run stops at the next ``://``: linear on repeated schemes
+_QUERY_PW_PARAM_RE = re.compile(r"([?&;](?:password|pwd)=)([^&;#\s\"'<>]+)", re.IGNORECASE)
 
 # Bare-token URL credential ``scheme://TOKEN@host`` (``git remote set-url
 # https://PASSWORD@github.com/...``): unambiguously a secret, since round-trip
@@ -1430,6 +1436,8 @@ def _redact_url_credentials(text: str, code_file: bool) -> str:
             return m.group(0)
         return f"{m.group(1)}***{m.group(3)}"
     text = _DB_CONNSTR_RE.sub(_redact_db, text)
+    text = _DB_URL_QUERY_RE.sub(lambda u: _QUERY_PW_PARAM_RE.sub(
+        lambda m: m.group(0) if _is_userinfo_placeholder(m.group(2)) else f"{m.group(1)}***", u.group(0)), text)
     text = _URL_BARE_TOKEN_RE.sub(lambda m: f"{m.group(1)}{_mask_token(m.group(2))}{m.group(3)}", text)
     return _redact_userinfo_passwords(text)
 

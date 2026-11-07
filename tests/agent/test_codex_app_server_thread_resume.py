@@ -32,6 +32,9 @@ class _WireClient:
     def initialize(self, **kwargs):
         return {}
 
+    def is_alive(self):
+        return True
+
     def request(self, method, params=None, timeout=30.0):
         params = params or {}
         self.requests.append((method, params))

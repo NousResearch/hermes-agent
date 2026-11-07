@@ -59,6 +59,7 @@ class ServerRequest:
         "id",
         "locked",
         "method",
+        "observation",
         "on_result",
         "params",
         "qids",
@@ -92,6 +93,7 @@ class ServerRequest:
         # Published but frame not yet written; a cancel in that gap parks its reason in ``withdrawn`` for _register.
         self.writing = False
         self.withdrawn: str | None = None
+        self.observation = None
 
     def frame(self) -> dict:
         return {"jsonrpc": "2.0", "id": self.id, "method": self.method,
@@ -125,6 +127,31 @@ _answerable: Callable[[str], bool] = lambda sid: True
 # ``clients(sid)``: the attached client transports that answer server→client requests — the set whose
 # unanimous NOT_SHOWN_CODE decline settles a window-owned request (session_transports.py).
 _clients: Callable[[str], list] = lambda sid: []
+_observation_owner: Callable[[str], Any] = lambda sid: None
+
+# Only actual human questions. Desktop read/act and tour bridges are technical RPCs.
+_HUMAN_REQUEST_KINDS = {"clarify": "question", "setup_beat": "question", "theme.pick": "question",
+                        "approval": "approval", "sudo": "approval",
+                        "secret": "question", "vault.unlock_prompt": "question",
+                        "vault.save_login": "question", "vault.code": "question"}
+
+
+def observation_owner_for_agent(agent):
+    db = getattr(agent, "_session_db", None)
+    turn_id = getattr(agent, "_observation_turn_id", None)
+    holder = getattr(agent, "_active_session_turn_lease_holder", None)
+    return (db, agent.session_id, turn_id, holder) if db is not None and turn_id and holder else None
+
+
+def _settle_observation(req):
+    if req.observation is None:
+        return
+    db, sid, turn_id, holder = req.observation
+    try:
+        db.resolve_session_attention(sid, turn_id, req.id, holder=holder)
+    except Exception as exc:
+        logger.warning("Request observation settlement unavailable (%s)", type(exc).__name__, exc_info=True)
+
 
 # Error code a client answers when none of its windows shows the request's session, and the refusal the
 # tool reports once every attached client said so. Mirrored in apps/desktop server-requests.ts.
@@ -138,11 +165,13 @@ _answering_clients: set = set()
 
 
 def bind_sinks(write_json: Callable[[dict], Any], emit: Callable[[str, str, dict], Any],
-               answerable: Callable[[str], bool], clients: Callable[[str], list] | None = None) -> None:
-    global _write, _emit, _answerable, _clients
+               answerable: Callable[[str], bool], clients: Callable[[str], list] | None = None,
+               observation_owner: Callable[[str], Any] | None = None) -> None:
+    global _write, _emit, _answerable, _clients, _observation_owner
     _write, _emit, _answerable = write_json, emit, answerable
     if clients is not None:
         _clients = clients
+    _observation_owner = observation_owner or (lambda sid: None)
 
 
 def advertise(transport: Any, server_requests: bool) -> None:
@@ -174,6 +203,7 @@ def _unanswerable(method: str, sid: str) -> bool:
 
 
 def _emit_cancel(req: ServerRequest, reason: str) -> None:
+    _settle_observation(req)
     _emit("request.cancel", req.sid, {"id": req.id, "method": req.method, "reason": reason})
 
 
@@ -194,8 +224,23 @@ def _register(req: ServerRequest) -> None:
     with _lock:
         req.writing = True
         _open[req.id] = req
+        kind = _HUMAN_REQUEST_KINDS.get(req.method)
+        if kind is not None:
+            try:
+                owner = _observation_owner(req.sid)
+                if owner is not None:
+                    db, sid, turn_id, holder = owner
+                    if db.open_session_attention(sid, turn_id, kind, request_id=req.id, holder=holder):
+                        req.observation = owner
+            except Exception as exc:
+                logger.warning("Request observation unavailable (%s)", type(exc).__name__, exc_info=True)
     try:
         (req.transport.write if req.transport is not None else _write)(frame)
+    except BaseException:
+        with _lock:
+            _open.pop(req.id, None)
+        _settle_observation(req)
+        raise
     finally:
         with _lock:
             req.writing = False
@@ -293,6 +338,7 @@ def _decline(rid: str, transport: Any) -> bool:
         _open.pop(rid, None)
         req.result = {"value": json.dumps({"success": False, "error": NOT_SHOWN_MESSAGE})}
         req.answered = True
+    _settle_observation(req)
     if req.on_result is not None:
         req.on_result(req.result)
     req.event.set()
@@ -339,6 +385,7 @@ def resolve_response(frame: dict, transport: Any = None) -> bool:
         error = frame["error"] if isinstance(frame["error"], dict) else {}
         logger.warning("server request %s (%s) answered with error %s: %s",
                        rid, req.method, error.get("code"), error.get("message"))
+    _settle_observation(req)
     if req.on_result is not None:
         req.on_result(req.result)
     req.event.set()
@@ -361,6 +408,7 @@ def lock_answer(request_id: str, question_id: str, answer: str | None) -> list[s
             req.result, req.answered = settle_batch(req.locked, ended="submitted"), True
             _open.pop(request_id, None)
     if not remaining:
+        _settle_observation(req)
         req.event.set()
     return remaining
 

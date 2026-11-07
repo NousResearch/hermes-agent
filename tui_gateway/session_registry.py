@@ -72,25 +72,25 @@ def _wait_agent_for_prompt(session: dict, rid: str, sid: str) -> dict | None:
     return _err(rid, 5032, err) if (err := session.get("agent_error")) else None
 
 
-def _bind_build_profile_scopes(profile_home: str | None) -> _TurnScopes | None:
-    """Bind a session profile's HERMES_HOME / secret / terminal scopes for an agent build. ``None`` is the
-    launch profile: its own launch-env secret scope (live env while single-profile, frozen once
-    multiplexing is active — a hosted-room turn for a default member otherwise died at build with
-    ``UnscopedSecretError`` because the launch profile was treated as "no scope"). Fail-open per scope (the build must not die on
-    a scope helper); the terminal installer itself fails closed (malformed policy → refusal scope) so
-    _make_agent's terminal probing / cwd hints resolve the routed profile."""
-    scopes = _TurnScopes()
+def _bind_build_profile_scopes(profile_home: str | None):
+    """Bind a session profile's HERMES_HOME / secret / terminal scopes for an agent build, as one change;
+    returns its token. ``None`` is the launch profile: its own launch-env secret scope (live env while
+    single-profile, frozen once multiplexing is active — a hosted-room turn for a default member
+    otherwise died at build with ``UnscopedSecretError`` because the launch profile was treated as
+    "no scope"). Fail-open (the build must not die on a scope helper): if the secrets cannot be built,
+    the profile is still bound with an empty secret scope, so its home and terminal policy (a
+    malformed one is a refusal scope) apply and the launch profile's secrets never do."""
     with contextlib.suppress(Exception):
         return _profile_runtime_scope_tokens(profile_home)
-    if profile_home:  # secret/terminal helper failed: keep at least the home + terminal refusal scope
-        scopes.home = set_hermes_home_override(profile_home)
-        with contextlib.suppress(Exception):
-            from tools.terminal_scope import install_profile_terminal_scope
-            scopes.terminal = install_profile_terminal_scope(Path(profile_home))
-    return scopes
+    if not profile_home:
+        return None
+    from agent.runtime_scope import bind_state, scope_for_profile
+    with contextlib.suppress(Exception):
+        return bind_state(scope_for_profile(profile_home), secrets={})
+    return None
 
 
-def _release_build_profile_scopes(scopes: _TurnScopes | None) -> None:
+def _release_build_profile_scopes(scopes) -> None:
     with contextlib.suppress(Exception):
         _release_profile_runtime_scope_tokens(scopes)
 

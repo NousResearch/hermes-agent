@@ -190,12 +190,30 @@ def _validate_native(runner, event, provenance=None, fresh_roles=False):
 def snapshot_native(runner, event):
     from gateway.session_ingress_context import capture_provenance
     provenance = capture_provenance(runner, event)
-    return _snapshot_native(runner, _adapter_event(event), provenance)
+    return _snapshot_native(runner, _adapter_event(event), provenance, voice_stt=_snapshot_voice_stt(event))
+
+
+def _snapshot_voice_stt(event):
+    if not hasattr(event, '_gateway_pending_stt_text'):
+        return None
+    return {'text': event._gateway_pending_stt_text,
+            'transcripts': list(event._gateway_pending_stt_transcripts),
+            'echoed': getattr(event, '_gateway_pending_stt_echoed', 0)}
+
+
+def _retained_voice_stt(voice_stt, paths, references):
+    from tools.credential_files import to_agent_visible_cache_path
+    retained = deepcopy(voice_stt)
+    for path, reference in zip(paths, references):
+        retained['text'] = retained['text'].replace(
+            to_agent_visible_cache_path(path), to_agent_visible_cache_path(reference['path']))
+    return retained
 
 
 async def prepare_native(runner, event):
     from gateway.session_ingress_context import capture_provenance, reauthorize_roles
     provenance = capture_provenance(runner, event)
+    voice_stt = _snapshot_voice_stt(event)
     # Freeze caller-owned identity and content before the first network yield.
     # Preserve dynamic trust fields too: validation must reject forged ones,
     # not silently discard them while freezing the caller's source identity.
@@ -228,10 +246,10 @@ async def prepare_native(runner, event):
         except BaseException:
             await abandon_capture(scope)
             raise
-    return _snapshot_native(runner, frozen, provenance, fresh_roles, encoded_source, media)
+    return _snapshot_native(runner, frozen, provenance, fresh_roles, encoded_source, media, voice_stt=voice_stt)
 
 
-def _snapshot_native(runner, event, provenance, fresh_roles=False, encoded_source=None, media=None):
+def _snapshot_native(runner, event, provenance, fresh_roles=False, encoded_source=None, media=None, *, voice_stt=None):
     if encoded_source is None:
         encoded_source = _validate_native(runner, event, provenance, fresh_roles)
     envelope = {'source': encoded_source,
@@ -269,6 +287,8 @@ def _snapshot_native(runner, event, provenance, fresh_roles=False, encoded_sourc
             envelope['event']['media_filenames'] = list(event.media_filenames)
     # Keep the private dispatch key so previously committed text-only rows recover
     # under the same authority; optional media/context fields extend that envelope.
+    if voice_stt is not None:
+        envelope['voice_stt'] = _retained_voice_stt(voice_stt, event.media_urls, envelope.get('media', []))
     payload = {'text': event.text, 'native_text_v1': envelope}
     # Only an exact persisted legacy retry retains its old fingerprint. New
     # ordinary admissions must bind homes too, including execution after restart.
@@ -314,6 +334,10 @@ def restore_native(payload, runner=None):
                         message_type=MessageType(envelope.get('message_type', 'text')),
                         media_urls=restore_native_media(envelope.get('media', [])),
                         **deepcopy(envelope['event']))
+    if (voice_stt := envelope.get('voice_stt')) is not None:
+        event._gateway_pending_stt_text = voice_stt['text']
+        event._gateway_pending_stt_transcripts = list(voice_stt['transcripts'])
+        event._gateway_pending_stt_echoed = voice_stt['echoed']
     if 'automation' in envelope:
         event.internal = True
         if envelope['automation'].get('heartbeat'):

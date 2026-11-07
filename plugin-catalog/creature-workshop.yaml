@@ -1,7 +1,7 @@
 # Catalog entry for NousResearch/hermes-agent: plugin-catalog/creature-workshop.yaml
 # Pinned to the plugin's current commit; bump sha and version together.
 name: creature-workshop
-repo: https://gitlab.creature-workshop.com/ksoft/hermes/creature-workshop-plugin
+repo: https://github.com/creature-workshop/creature-workshop-plugin
 sha: 513a13907d1acf58cadcd8cf2a889860c0a7744f
 title: Creature Workshop
 description: |
@@ -15,7 +15,7 @@ tier: community
 category: tools
 requires_hermes: ">=0.23.0"
 version: "0.1.0-dev.7"
-docs_url: https://gitlab.creature-workshop.com/ksoft/hermes/creature-workshop-plugin/-/blob/main/README.md
+docs_url: https://github.com/creature-workshop/creature-workshop-plugin/blob/main/README.md
 platforms:
   - linux
   - macos

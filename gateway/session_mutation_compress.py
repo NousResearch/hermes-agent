@@ -29,6 +29,59 @@ def compress_request(payload):
     return request
 
 
+def command_payload(arg: str) -> dict:
+    """``/compress <arg>`` → the ``session.mutate compress`` payload the native surfaces send.
+
+    Parsed by the shared core, so ``--preview`` stays a read-only report and ``here [N]`` stays a
+    boundary. ``--aggressive`` has no canonical implementation (refused by the message surfaces too).
+    """
+    from agent.conversation_compression_manual import parse_compress_args
+    request = parse_compress_args(arg or '')
+    if request.aggressive:
+        raise RuntimeStoreError('unsupported_compress_options')
+    payload: dict[str, object] = {'focus': request.focus_topic} if request.focus_topic else {}
+    if request.preview:
+        payload['preview'] = True
+    if request.partial:
+        payload.update(partial=True, keep_last=request.keep_last)
+    return payload
+
+
+def command_reply(result) -> str:
+    """The report main's ``/compress`` prints, from a committed or read-only mutation result."""
+    if result.get('status') == 'preview':
+        return '\n'.join(result.get('lines') or [])
+    summary = result.get('summary') or {}
+    text = '\n'.join(filter(None, (summary.get('headline'), summary.get('token_line'), summary.get('note'))))
+    return text or ('No changes from compression.' if result.get('status') == 'noop' else 'Context compressed.')
+
+
+async def commit_compress_command(authority, actor, ref, arg):
+    """A LOCAL session's ``/compact``: the canonical ``session.mutate compress`` (``slash.exec``).
+
+    Bot Mode rewrites ``/new`` into ``/compact``, so this is that chat's only way to shrink its
+    context — the command has to reach the mutation that commits the rewrite, not the messaging
+    handler whose own store path would rotate the transcript without a receipt (#148272). The fences
+    are read here, like ``commit_reasoning_command``: another viewer's mutation landing in between is
+    no verdict on this command. Returns the reply text, or None for a chat whose transcript another
+    store owns (a messaging chat keeps its ``/compress`` handler).
+    """
+    import uuid
+    from gateway.config import Platform
+    from gateway.session_mutations import mutate_session
+    live = authority.sessions[ref.session_id]
+    if live.source.platform != Platform.LOCAL:
+        return None
+    row = await asyncio.to_thread(authority.db.get_session, ref.session_id)
+    if row is None:
+        raise RuntimeStoreError('not_found')
+    result = await mutate_session(authority, actor, ref, {
+        'session_id': ref.session_id, 'request_id': 'compress-command:' + uuid.uuid4().hex,
+        'expected_revision': row['runtime_revision'], 'expected_generation': row['runtime_generation'],
+        'operation': 'compress', 'payload': command_payload(arg)})
+    return command_reply(result)
+
+
 async def prepare_compress(authority, live, payload, prepared):
     from gateway.session_policy import restore_policy, policy_scope
     from agent.context_compressor import ContextCompressor

@@ -266,16 +266,22 @@ def _lookup_server(
     return None
 
 
-def _remove_mcp_server(name: str) -> bool:
-    """Remove a server from config.yaml.  Returns True if it existed."""
+def _remove_mcp_server(name: str, *, report=logger.info) -> bool:
+    """Remove a server from config.yaml and sign it out (stored OAuth state deleted, tokens revoked
+    at the server when it advertises a revocation endpoint). Returns True if it existed; *report*
+    receives the one-line sign-out outcome."""
     config = load_config()
     servers = config.get("mcp_servers") or {}
     if name not in servers:
         return False
-    del servers[name]
+    removed = servers.pop(name)
     if not servers:
         config.pop("mcp_servers", None)
     save_config(config)
+    from tools.mcp_oauth_revoke import forget_server_oauth
+    url = removed.get("url") if isinstance(removed, dict) else None
+    if outcome := forget_server_oauth(name, url if isinstance(url, str) else None):
+        report(f"OAuth sign-out for '{name}': {outcome}")
     return True
 
 
@@ -729,16 +735,8 @@ def cmd_mcp_remove(args):
     if not _confirm(f"Remove server '{name}'?", default=True):
         _info("Cancelled.")
         return
-    _remove_mcp_server(name)
+    _remove_mcp_server(name, report=_info)
     _success(f"Removed '{name}' from config")
-    # Route OAuth cleanup through MCPOAuthManager so any provider cached in this process (e.g. from
-    # an earlier `hermes mcp test`) is evicted too.
-    try:
-        from tools.mcp_oauth_manager import get_manager
-        get_manager().remove(name)
-        _success("Cleaned up OAuth tokens")
-    except Exception:
-        pass
 
 
 def cmd_mcp_list(args=None):

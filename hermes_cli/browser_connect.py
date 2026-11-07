@@ -1025,8 +1025,8 @@ def local_port_in_use(port: int, timeout: float = 0.5) -> bool:
 
 
 def find_free_debug_port(preferred: int = DEFAULT_BROWSER_CDP_PORT, attempts: int = 10) -> int:
-    """First port after ``preferred`` bindable on both loopbacks; ``preferred + 1`` if none binds
-    (the launch then fails with a clear browser-side error instead of silently doing nothing)."""
+    """First port after ``preferred`` bindable on every loopback the host has (no ``::1`` without IPv6);
+    ``preferred + 1`` if none binds (the launch then fails with a clear browser-side error)."""
     def bindable(family, host, port) -> bool:
         try:
             with socket.socket(family, socket.SOCK_STREAM) as sock:
@@ -1035,7 +1035,7 @@ def find_free_debug_port(preferred: int = DEFAULT_BROWSER_CDP_PORT, attempts: in
             return True
         except OSError:
             return False
-    loopbacks = ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1"))
+    loopbacks = [lb for lb in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")) if bindable(*lb, 0)]
     ports = range(preferred + 1, preferred + 1 + attempts)
     return next((p for p in ports if all(bindable(f, h, p) for f, h in loopbacks)), preferred + 1)
 

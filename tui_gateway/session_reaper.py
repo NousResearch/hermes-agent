@@ -128,7 +128,7 @@ def _stop_turns_before_exit(budget_s: float | None = None) -> None:
     threads = []
     for sid, session in running:
         with contextlib.suppress(Exception):
-            _interrupt_session_turn(sid, session)
+            _interrupt_session_turn(sid, session, tool_reason="gateway shutting down")
         if (t := session.get("_run_thread")) is not None and t is not threading.current_thread():
             threads.append(t)
     budget = _EXIT_TURN_SETTLE_S if budget_s is None else max(0.0, budget_s)

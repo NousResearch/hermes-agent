@@ -48,7 +48,14 @@ import { type Translations, useI18n } from '@/i18n'
 import { AlertTriangle } from '@/lib/icons'
 import { requestModelOptions } from '@/lib/model-options'
 import { asText } from '@/lib/text'
-import { $cronFocusJobId, $cronJobs, invalidateCronJobsRequests, setCronFocusJobId } from '@/store/cron'
+import {
+  $cronFocusJobId,
+  $cronJobs,
+  $cronJobsFailedScope,
+  $cronJobsSnapshotScope,
+  invalidateCronJobsRequests,
+  setCronFocusJobId
+} from '@/store/cron'
 import { $changeEventsAvailable, $cronChangeTick } from '@/store/live-sync'
 import { notify, notifyError } from '@/store/notifications'
 import { $profileScope, ALL_PROFILES } from '@/store/profile'
@@ -75,7 +82,7 @@ import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
 import { BlueprintSlotControl, blueprintSlotHelp, cleanBlueprintFieldError, initialBlueprintValues } from './blueprints'
 import { CatchUpField } from './catch-up-field'
-import { mutateAndRefreshCronJobs, refreshCronJobs, triggerAndRefreshCronJobs } from './cron-actions'
+import { cronRequestScope, mutateAndRefreshCronJobs, refreshCronJobs, triggerAndRefreshCronJobs } from './cron-actions'
 import {
   cronEditorUpdates,
   cronModelChoiceValue,
@@ -316,9 +323,12 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
   const c = t.cron
   // Source of truth is the shared atom (also fed by the controller poll), so the
   // sidebar and this overlay never drift — a delete here clears the sidebar row
-  // immediately. `loading` only gates the first paint before the atom is filled.
+  // immediately. The loader waits for a list (or a failure) published for this
+  // scope by any surface: the sidebar poll or the run-stop refresh can supersede
+  // this view's own request, and a superseded request must not leave it up.
   const jobs = useStore($cronJobs)
-  const [loading, setLoading] = useState(jobs.length === 0)
+  const snapshotScope = useStore($cronJobsSnapshotScope)
+  const failedScope = useStore($cronJobsFailedScope)
   const [query, setQuery] = useState('')
   const [busyJobTokens, setBusyJobTokens] = useState<ReadonlyMap<string, symbol>>(() => new Map())
   const [triggeringJobKeys, setTriggeringJobKeys] = useState<ReadonlySet<string>>(() => new Set())
@@ -373,19 +383,16 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
   // and the sidebar (which share the $cronJobs atom) agree on what's shown.
   const profileScope = useStore($profileScope)
   const profile = cronProfileForScope(profileScope)
+  const requestScope = cronRequestScope(profile)
+  const loadFailed = failedScope === requestScope
+  const loading = snapshotScope !== requestScope && !loadFailed
 
   const refresh = useCallback(async () => {
     const { refreshError, stale } = await refreshCronJobs(profile)
 
-    if (stale) {
-      return
-    }
-
-    if (refreshError) {
+    if (!stale && refreshError) {
       notifyError(refreshError, c.failedLoad)
     }
-
-    setLoading(false)
   }, [c, profile])
 
   useRefreshHotkey(refresh)
@@ -716,6 +723,16 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
 
       {loading && jobs.length === 0 ? (
         <PageLoader label={c.loading} />
+      ) : loadFailed && jobs.length === 0 ? (
+        <PanelEmpty
+          action={
+            <Button onClick={() => void refresh()} size="sm">
+              {t.common.retry}
+            </Button>
+          }
+          icon="error"
+          title={c.failedLoad}
+        />
       ) : totalCount === 0 && visibleBlueprints.length === 0 ? (
         <PanelEmpty
           action={

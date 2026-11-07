@@ -43,6 +43,7 @@ import { isBackfilledFacePng } from './avatar-image'
 import { AvatarPicker } from './avatar-picker'
 import { $selectedBot } from './bot-state'
 import { createCanonicalChat } from './canonical-chat'
+import { canonicalMemberName } from './canonical-group-activity'
 import {
   botOnConnection,
   connectionName,
@@ -1440,6 +1441,11 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated, seed }
     onClose()
     onCreated?.(key, 'key')
 
+    // The room is made either way; say who is missing so a seat that failed is never silent.
+    if (created.unjoined.length) {
+      host.notify({ kind: 'warning', message: b.canonical.createdNotJoined
+        .replace('{names}', created.unjoined.map(({ member }) => canonicalMemberName(member)).join(', ')) })
+    }
     } catch (error) {
       const next = canonicalGroupCreateNotice(error, b.canonical)
 

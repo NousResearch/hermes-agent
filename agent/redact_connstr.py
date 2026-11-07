@@ -47,6 +47,15 @@ _KV_SEMICOLON_FIELD_RE = re.compile(
 _FORMAT_SLOT_RE = re.compile(r"\{\s*+(?:[A-Za-z0-9_](?:[^;{}@$&#!]|![rsa](?=\s*+[:}]))*+)?\}")
 
 
+# A quote inside an unquoted value is literal (``Password=it's-secret``) unless it closes the
+# string that wraps the connection string: then end of line or a delimiter follows it.
+_WRAPPER_CLOSE_FOLLOWERS = frozenset(" \t\r\n,;)]}>/")
+
+
+def _closes_wrapper(line: str, j: int) -> bool:
+    return j + 1 >= len(line) or line[j + 1] in _WRAPPER_CLOSE_FOLLOWERS
+
+
 def _kv_value_end(line: str, i: int, semicolon: bool) -> int:
     """End index of the value starting at ``line[i]``; the scan never backtracks."""
     n = len(line)
@@ -75,7 +84,7 @@ def _kv_value_end(line: str, i: int, semicolon: bool) -> int:
                 j += 1
             return n
         j = i
-        while j < n and line[j] not in ";\"'\r\n":
+        while j < n and line[j] not in ";\r\n" and not (line[j] in "\"'" and _closes_wrapper(line, j)):
             j += 1
         while j > i and line[j - 1] in " \t":  # trailing padding stays visible
             j -= 1
@@ -96,7 +105,8 @@ def _kv_value_end(line: str, i: int, semicolon: bool) -> int:
         if line[j] == "\\":
             j += 2
             continue
-        if line[j] in " \t\r\n\"'":  # quotes: the shell quoting that wraps the conninfo
+        # A closing quote is the shell quoting that wraps the conninfo.
+        if line[j] in " \t\r\n" or (line[j] in "\"'" and _closes_wrapper(line, j)):
             break
         j += 1
     return min(j, n)

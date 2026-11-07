@@ -274,8 +274,13 @@ def _resolve_base_dir(
             return _resolve_ssh_path(".", task_id)
         container_paths = _uses_container_paths(task_id)
     root = _authoritative_workspace_root(task_id) or (_container_default_cwd(task_id) if container_paths else None)
-    # A backend's relative cwd is anchored to the process cwd once, here.
-    return _anchor(_host_text(root or os.getcwd(), container_paths), os.getcwd, container_paths)
+    # A backend's relative cwd is anchored to the process cwd once, here; a deleted process
+    # cwd (removed worktree) falls back to home, like the terminal tool's _safe_getcwd.
+    from agent.runtime_cwd import process_cwd
+
+    def _cwd() -> str:
+        return process_cwd() or os.path.expanduser("~")
+    return _anchor(_host_text(root or _cwd(), container_paths), _cwd, container_paths)
 
 
 def _container_default_cwd(task_id: str = "default") -> str | None:

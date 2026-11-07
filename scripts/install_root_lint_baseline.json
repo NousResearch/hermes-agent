@@ -26,6 +26,7 @@
     "hermes_cli/gateway_windows.py": 3,
     "hermes_cli/git_commit_graph.py": 1,
     "hermes_cli/kanban_db_dispatch.py": 1,
+    "hermes_cli/left_core_migration.py": 1,
     "hermes_cli/linux_desktop_entry.py": 1,
     "hermes_cli/macos_tcc_anchor.py": 1,
     "hermes_cli/main.py": 1,

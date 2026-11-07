@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, Tuple
 
-from tools.tts_tool_delivery import _finalize_wav_output, _origin, _section, _wav_sidecar_path
+from tools.tts_tool_delivery import _finalize_wav_output, _origin, _remove_quietly, _section, _wav_sidecar_path
 
 logger = logging.getLogger("tools.tts_tool")
 
@@ -165,6 +165,14 @@ def _generate_piper_tts(text: str, output_path: str, tts_config: dict[str, Any])
             voice.synthesize_wav(text, wav_file, syn_config=syn_config)
         else:
             voice.synthesize_wav(text, wav_file)
+        synthesized_any = wav_file.getnframes() > 0
+        if not synthesized_any:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(22050)
+    if not synthesized_any:
+        _remove_quietly(wav_path)
+        return output_path
     return _finalize_wav_output(wav_path, output_path)
 
 

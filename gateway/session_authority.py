@@ -273,6 +273,11 @@ class SessionAuthority:
     def register(self, source):
         return self._publish_route(source, *self._reserve_route(source))
 
+    async def register_async(self, source):
+        """``register`` with the durable half off the owner loop (``tracked_write``)."""
+        from gateway.session_runtime_workers import tracked_write
+        return self._publish_route(source, *await tracked_write(self, partial(self._reserve_route, source)))
+
     def _reserve_route(self, source):
         """The durable half of ``register`` (routing entry + reserved row): thread-safe, so async
         callers run it off the owner loop and publish the live entry on the loop."""
@@ -583,7 +588,7 @@ class SessionAuthority:
         self._require_admission_open()
         source = restore_native_source(payload)  # no re-hash of the just-captured media on the loop
         from gateway.session_runtime_workers import tracked_write
-        ref = self._publish_route(source, *await tracked_write(self, partial(self._reserve_route, source)))
+        ref = await self.register_async(source)
         identity = json.dumps([source.profile, source.platform.value, source.chat_id,
                                source.thread_id, source.user_id], separators=(',', ':'))
         request_id = str(payload['native_text_v1']['event']['message_id'] or uuid.uuid4().hex)

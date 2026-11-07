@@ -65,7 +65,8 @@ class GatewayPluginInjectionMixin:
                                                                     plugin_id=plugin_id):
                 return False
             target = f"origin={source.platform.value}/{source.chat_id}"
-            coro = self._dispatch_plugin_origin_injection(source=source, content=content, plugin_id=plugin_id)
+            coro = self._dispatch_plugin_origin_injection(source=source, content=content, plugin_id=plugin_id,
+                                                          plugin_home=plugin_home)
         else:
             if not self._plugin_session_key_admissible(session_key, plugin_home=plugin_home, plugin_id=plugin_id):
                 return False
@@ -304,8 +305,9 @@ class GatewayPluginInjectionMixin:
     def _plugin_origin_admissible(self, source: SessionSource, *, plugin_home: Optional[Path], plugin_id: str) -> bool:
         """Under the session authority a plugin turn borrows the connector provenance of a human
         message already committed in that chat, and the gateway never mints it for a chat the
-        platform did not deliver: refuse such an origin here, so the plugin gets ``False`` instead of
-        a ``True`` for a turn the dispatch then drops. Dispatch rechecks."""
+        platform did not deliver, unless the plugin's operator listed that chat in ``open_chats``:
+        refuse any other origin here, so the plugin gets ``False`` instead of a ``True`` for a turn
+        the dispatch then drops. Dispatch rechecks."""
         from gateway.session_authorities import authority_for_home
         from gateway.session_automation import committed_route_envelope
         authority = authority_for_home(self, plugin_home) if plugin_home is not None else None
@@ -314,13 +316,35 @@ class GatewayPluginInjectionMixin:
         entry = self.session_store.lookup_by_session_key(self._session_key_for_source(source))
         if entry is not None and committed_route_envelope(authority, entry) is not None:
             return True
+        if self._plugin_may_open_chat(source, plugin_home=plugin_home, plugin_id=plugin_id):
+            return True
         logger.warning("Plugin message injection refused: plugin=%s origin=%s/%s has no human message admitted "
-                       "yet; a plugin can continue a chat, not open one", plugin_id, source.platform.value,
-                       source.chat_id)
+                       "yet; a plugin can continue a chat, not open one unless plugins.entries.%s.open_chats "
+                       "lists it", plugin_id, source.platform.value, source.chat_id, plugin_id)
         return False
 
+    def _plugin_may_open_chat(self, source: SessionSource, *, plugin_home: Optional[Path], plugin_id: str) -> bool:
+        """Whether the plugin's operator listed *source*'s chat in ``plugins.entries.<id>.open_chats``
+        (read from the plugin's own profile config, never from the plugin's call) and the chat's live
+        connector binds an opening turn, checked before anything is reserved for it."""
+        if plugin_home is None:
+            return False
+        from hermes_cli.plugins_injection import open_chat_listed, plugin_open_chats
+        if not open_chat_listed(plugin_open_chats(plugin_home, plugin_id), source):
+            return False
+        from gateway.session_ingress_context import opening_provenance
+        from hermes_state_runtime import RuntimeStoreError
+        try:
+            opening_provenance(self, source)
+        except RuntimeStoreError as exc:
+            logger.warning("Plugin message injection refused: plugin=%s origin=%s/%s is in open_chats but its "
+                           "connector cannot bind an opening turn (%s)", plugin_id, source.platform.value,
+                           source.chat_id, exc.reason)
+            return False
+        return True
+
     async def _dispatch_plugin_origin_injection(
-        self, *, source: SessionSource, content: str, plugin_id: str
+        self, *, source: SessionSource, content: str, plugin_id: str, plugin_home: Optional[Path] = None,
     ) -> bool:
         """Start (or continue) the session at a plugin-supplied origin through the adapter's normal
         message path: ``get_or_create_session`` creates it, the reply goes back to that chat."""
@@ -337,17 +361,8 @@ class GatewayPluginInjectionMixin:
         async with self._plugin_injection_scope(source):
             from gateway.session_authorities import active_authority
             if active_authority(self) is not None:
-                # The FIFO admits a producer turn only into a session that already holds a
-                # committed human turn (its connector provenance is borrowed, never minted), so
-                # an origin with no session yet is refused rather than run outside the FIFO.
-                entry = await self.async_session_store.lookup_by_session_key(session_key)
-                if entry is None:
-                    logger.warning("Plugin message injection refused: plugin=%s %s has no session under "
-                                   "the session authority yet", plugin_id, target)
-                    return False
-                return await self._admit_plugin_injection(
-                    adapter, source, session_key=session_key, session_id=entry.session_id,
-                    content=content, plugin_id=plugin_id)
+                return await self._admit_plugin_origin(adapter, source, session_key=session_key, content=content,
+                                                       plugin_id=plugin_id, plugin_home=plugin_home)
             await adapter.handle_message(MessageEvent(
                 text=content, message_type=MessageType.TEXT, source=source, internal=True,
                 allow_gateway_control=False,
@@ -360,14 +375,37 @@ class GatewayPluginInjectionMixin:
         logger.info("Plugin message injection dispatched: plugin=%s %s session=%s", plugin_id, target, session_key)
         return True
 
+    async def _admit_plugin_origin(self, adapter, source: SessionSource, *, session_key: str, content: str,
+                                   plugin_id: str, plugin_home: Optional[Path]) -> bool:
+        """The FIFO admits a producer turn into a chat that holds a committed turn (its connector
+        provenance is borrowed, never minted) or, when the plugin's operator listed it in
+        ``open_chats``, into a chat that holds none yet: that chat is opened with the binding a
+        human message there would record. Any other origin is refused rather than run outside the
+        FIFO."""
+        from gateway.session_authorities import active_authority
+        from gateway.session_automation import committed_route_envelope
+        authority = active_authority(self)
+        entry = await self.async_session_store.lookup_by_session_key(session_key)
+        opens = entry is None or await asyncio.to_thread(committed_route_envelope, authority, entry) is None
+        if opens and not self._plugin_may_open_chat(source, plugin_home=plugin_home, plugin_id=plugin_id):
+            logger.warning("Plugin message injection refused: plugin=%s origin=%s/%s has no human message "
+                           "admitted under the session authority yet", plugin_id, source.platform.value,
+                           source.chat_id)
+            return False
+        return await self._admit_plugin_injection(
+            adapter, source, session_key=session_key, session_id=entry.session_id if entry is not None else None,
+            content=content, plugin_id=plugin_id, opens=opens)
+
     async def _admit_plugin_injection(
-        self, adapter, source: SessionSource, *, session_key: str, session_id: str, content: str,
-        plugin_id: str,
+        self, adapter, source: SessionSource, *, session_key: str, session_id: Optional[str], content: str,
+        plugin_id: str, opens: bool = False,
     ) -> Optional[bool]:
         """Under a session authority, commit the plugin turn into the session's durable FIFO as a
         trusted producer admission (the heartbeat / completion seam) instead of running it on the
-        in-process lane beside an admitted turn. ``None`` means no authority serves this scope and
-        the caller keeps the standalone adapter path; a refused admission is ``False``, logged."""
+        in-process lane beside an admitted turn. ``opens``: a chat its operator listed for this
+        plugin, with no committed turn yet; its route is reserved first, as a first inbound message
+        reserves it. ``None`` means no authority serves this scope and the caller keeps the
+        standalone adapter path; a refused admission is ``False``, logged."""
         from gateway.session_authorities import active_authority
         authority = active_authority(self)
         if authority is None:
@@ -376,12 +414,19 @@ class GatewayPluginInjectionMixin:
         import uuid
         from hermes_state_runtime import RuntimeStoreError
         identity = json.dumps(["plugin", plugin_id, session_key, uuid.uuid4().hex], separators=(",", ":"))
-        event = MessageEvent(
-            text=content, message_type=MessageType.TEXT, source=source, internal=True,
-            allow_gateway_control=False, message_id=identity,
-            metadata={"gateway_session_key": session_key, "gateway_session_id": session_id},
-        )
         try:
+            if opens:
+                await authority.register_async(source)
+                entry = await self.async_session_store.lookup_by_session_key(session_key)
+                if entry is None:
+                    raise RuntimeStoreError('not_found')
+                session_id = entry.session_id
+            event = MessageEvent(
+                text=content, message_type=MessageType.TEXT, source=source, internal=True,
+                allow_gateway_control=False, message_id=identity,
+                metadata={"gateway_session_key": session_key, "gateway_session_id": session_id},
+            )
+            event._opens_route = opens
             await authority.admit_automation(adapter, event, identity)
         except RuntimeStoreError as exc:
             logger.warning("Plugin message injection refused by the session authority: plugin=%s session=%s (%s)",

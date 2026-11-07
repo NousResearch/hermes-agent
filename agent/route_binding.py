@@ -10,9 +10,39 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional, Tuple
 
-from utils import base_url_host_matches
+from utils import base_url_host_matches, base_url_hostname
 
 logger = logging.getLogger(__name__)
+
+
+def _fallback_api_mode_resolved(agent, fb_provider: str, fb_model: str, fb_base_url: str) -> str:
+    """Re-detect the wire for a resolved fallback that has no explicit transport pin."""
+    if fb_provider == "openai-codex":
+        return "codex_responses"
+    from hermes_cli.models import opencode_model_api_mode
+    from hermes_cli.runtime_provider_custom import _opencode_family_for_custom
+    opencode_family = _opencode_family_for_custom(fb_provider, fb_base_url)
+    if opencode_family is not None:
+        return opencode_model_api_mode(opencode_family, fb_model)
+    if fb_provider in {"nous", "nous-portal", "nousresearch"}:
+        from hermes_cli.providers import nous_api_mode
+        return nous_api_mode(fb_model)
+    from agent.chat_completion_helpers import _is_anthropic_wire_url
+    if _is_anthropic_wire_url(fb_base_url):
+        return "anthropic_messages"
+    if fb_provider == "azure-foundry":
+        # A project's services.ai.azure.com URL does not match the Azure OpenAI
+        # host check. Share the primary route's per-model table instead.
+        from hermes_cli.models import azure_foundry_model_api_mode
+        return azure_foundry_model_api_mode(fb_model) or "chat_completions"
+    if agent._is_azure_openai_url(fb_base_url):
+        return "chat_completions"
+    if agent._is_direct_openai_url(fb_base_url) or agent._provider_model_requires_responses_api(fb_model, provider=fb_provider):
+        return "codex_responses"
+    host = base_url_hostname(fb_base_url)
+    if fb_provider == "bedrock" or (host.startswith("bedrock-runtime.") and base_url_host_matches(fb_base_url, "amazonaws.com")):
+        return "bedrock_converse"
+    return "chat_completions"
 
 
 def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: str) -> Optional[tuple[str, str]]:
@@ -21,7 +51,7 @@ def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: st
     so the next turn's ``restore_primary_runtime`` reverts it; raises on a failed swap."""
     from agent.auxiliary_client import resolve_provider_client
     from agent.chat_completion_helpers import (
-        _fallback_api_mode_hint, _fallback_api_mode_resolved, _rebind_fallback_credential_pool,
+        _fallback_api_mode_hint, _rebind_fallback_credential_pool,
         _reresolve_fallback_reasoning_config, _rescope_fallback_extra_body, _update_fallback_context_compressor,
     )
     from hermes_cli.fallback_config import resolve_entry_api_key

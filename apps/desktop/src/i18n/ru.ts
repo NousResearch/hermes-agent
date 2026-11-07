@@ -2415,6 +2415,7 @@ export const ruOverrides = {
       tokens: 'Токены',
       cost: 'Стоимость',
       manual: 'Вручную',
+      name: 'Имя',
       preview: 'Превью',
       pr: 'PR',
       open: 'Открыт',

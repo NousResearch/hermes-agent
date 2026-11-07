@@ -2,7 +2,7 @@ import { useCallback } from 'react'
 
 import { requestComposerFocus, requestComposerInsert, requestComposerInsertRefs } from '@/app/chat/composer/focus'
 import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
-import { LARGE_PASTE_TITLE_PREVIEW_CHARS, pasteSizeLabel } from '@/app/chat/composer/large-paste'
+import { pasteSizeLabel, pasteTitlePreview } from '@/app/chat/composer/large-paste'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { useI18n } from '@/i18n'
 import { attachmentPathNeedsUpload } from '@/lib/attachment-upload-policy'
@@ -776,7 +776,7 @@ export function useComposerActions({
           detail: contextPath(savedPath, currentCwd),
           refText: `@file:${formatRefValue(savedPath)}`,
           path: savedPath,
-          titlePreview: text.slice(0, LARGE_PASTE_TITLE_PREVIEW_CHARS)
+          titlePreview: pasteTitlePreview(text)
         })
 
         return true

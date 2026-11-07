@@ -1,6 +1,6 @@
 import { runtimeTranslations } from '@/i18n/runtime'
 import { chatMessageText, toChatMessages } from '@/lib/chat-messages'
-import { isMissingRpcMethod } from '@/lib/gateway-rpc'
+import { saveTranscript } from '@/lib/save-transcript'
 import { openCommandPalette } from '@/store/command-palette'
 import { $displayTimestamps, setDisplayTimestampsWindowOverride } from '@/store/display-timestamps'
 import { runExportProfileFlow, runImportProfileFlow } from '@/store/profile-share'
@@ -58,12 +58,6 @@ const SAVE_FORMATS: Record<string, 'html' | 'json' | 'md'> = {
   markdown: 'md',
   md: 'md',
   snapshot: 'json'
-}
-
-const SAVE_FILTERS: Record<string, { extensions: string[]; name: string }> = {
-  html: { extensions: ['html'], name: 'HTML' },
-  json: { extensions: ['json'], name: 'JSON' },
-  md: { extensions: ['md'], name: 'Markdown' }
 }
 
 /** `/save` words → format, optional filename and redact flag (main's `/save` grammar); null = usage. */
@@ -410,21 +404,15 @@ export function desktopReadCommandHandlers<C extends { arg: string }>(env: Deskt
         return out.render(copy().saveUsage)
       }
 
-      let file: { content?: string; filename?: string; format?: string } | null
+      const outcome = await saveTranscript({
+        ...request,
+        requestGateway,
+        sessionId: out.sessionId,
+        title: copy().saveDialogTitle
+      })
 
-      try {
-        file = await requestGateway('session.export', {
-          session_id: out.sessionId,
-          format: request.format,
-          ...(request.redact ? { redact: true } : {})
-        })
-      } catch (err) {
-        if (!isMissingRpcMethod(err)) {
-          return out.render(errorText(err))
-        }
-
-        // An older gateway without session.export: its session.save writes default-named, unredacted
-        // JSON on the gateway host, so only a plain /save may fall back to it.
+      if (outcome.kind === 'missing-export') {
+        // Only plain /save can fall back to an older gateway's host-side JSON save.
         if (request.redact || request.format !== 'json' || request.filename) {
           return out.render(copy().saveLegacyRefused)
         }
@@ -433,29 +421,20 @@ export function desktopReadCommandHandlers<C extends { arg: string }>(env: Deskt
           const saved = await requestGateway<{ file?: string }>('session.save', { session_id: out.sessionId })
 
           return out.render(copy().savedOnHost(saved?.file ?? copy().unknownPath))
-        } catch (fallbackErr) {
-          return out.render(errorText(fallbackErr))
+        } catch (error) {
+          return out.render(errorText(error))
         }
       }
 
-      const save = window.hermesDesktop?.saveTextFileAs
-
-      if (typeof file?.content !== 'string' || !save) {
-        return out.render(copy().saveUnsupported)
+      if (outcome.kind === 'saved') {
+        return out.render(copy().savedTo(outcome.path))
       }
 
-      try {
-        const result = await save({
-          content: file.content,
-          defaultPath: request.filename || file.filename,
-          filters: [SAVE_FILTERS[request.format]],
-          title: copy().saveDialogTitle
-        })
-
-        out.render(result?.saved && result.path ? copy().savedTo(result.path) : copy().saveCancelled)
-      } catch (err) {
-        out.render(errorText(err))
+      if (outcome.kind === 'canceled') {
+        return out.render(copy().saveCancelled)
       }
+
+      out.render(outcome.kind === 'unsupported' ? copy().saveUnsupported : errorText(outcome.error))
     },
     export: async (ctx: C) => {
       if (isRemoteGateway()) {

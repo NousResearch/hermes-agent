@@ -175,6 +175,22 @@ async def test_reset_completes_when_cleanup_raises(caplog):
 
 
 @pytest.mark.asyncio
+async def test_gateway_new_transfers_the_old_sessions_pending_handoff(tmp_path, monkeypatch):
+    from tools.next_session_handoff import (
+        next_session_handoff_prompt, queue_next_session_handoffs)
+
+    monkeypatch.setattr("tools.next_session_handoff._handoff_dir", lambda: tmp_path / "handoffs")
+    runner = _make_runner_with_cached_agent(lambda: None)
+    queue_next_session_handoffs(
+        ["TASK for next session: continue gateway work"], source_session_id="sess-old")
+
+    await runner._handle_reset_command(_make_event("/new"))
+
+    assert "continue gateway work" in next_session_handoff_prompt("sess-new")
+    assert next_session_handoff_prompt("sess-old") is None
+
+
+@pytest.mark.asyncio
 async def test_reset_completes_when_cleanup_times_out(caplog):
     """#35994: if cleanup exceeds the bounded timeout, the reset still completes
     (graceful degradation) and the timeout warning fires."""

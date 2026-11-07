@@ -240,6 +240,15 @@ class GatewaySessionCommandsMixin:
         else:  # no existing session: create one
             new_entry = await self.async_session_store.get_or_create_session(source, force_new=True)
             default_header = t("gateway.reset.header_new")
+        if new_entry is not None:
+            try:
+                from tools.next_session_handoff import transfer_next_session_handoff
+                await asyncio.to_thread(
+                    transfer_next_session_handoff, _old_sid or "", new_entry.session_id)
+            except Exception as exc:
+                # The pending source record remains available for a later retry.
+                logger.warning(
+                    "Could not transfer next-session handoff during gateway /new: %s", exc, exc_info=True)
         header = await asyncio.to_thread(self._telegram_topic_new_header, source) or default_header
         _title_arg = event.get_command_args().strip()
         if _title_arg and self._session_db and new_entry:

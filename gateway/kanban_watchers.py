@@ -209,9 +209,9 @@ class GatewayKanbanWatchersMixin:
     def _kanban_dispatcher_boot(self) -> Optional[tuple]:
         """Resolve config, kanban_db and the singleton lock; None when the dispatcher must not run.
 
-        Config is read once at boot (restart to apply), except the auto-decompose
-        toggle which is re-read every tick. The env var is an escape hatch to
-        disable without editing YAML.
+        ``dispatch_in_gateway`` is read once at boot (restart to apply); the other
+        ``kanban.*`` settings are re-read every tick. The env var is an escape
+        hatch to disable without editing YAML.
         """
         try:
             from hermes_cli.config import load_config as _load_config
@@ -279,7 +279,7 @@ class GatewayKanbanWatchersMixin:
         bad_ticks = 0
         last_warn_at = 0
         results: Optional[list] = None
-        dispatcher = _KanbanDispatcher(_kb, settings)
+        dispatcher = _KanbanDispatcher(_kb, settings, kanban_cfg)
 
         logger.info("kanban dispatcher: embedded in gateway (interval=%.1fs)", interval)
         while self._running:
@@ -294,6 +294,9 @@ class GatewayKanbanWatchersMixin:
                 logger.exception("kanban dispatcher: zombie reaper failed")
 
             try:
+                # `hermes config set kanban.*` applies on this tick, not on restart.
+                dispatcher.refresh_settings(_load_config)
+                interval = dispatcher.settings.interval
                 # Emergency stop (`hermes pause`): no auto-decompose or
                 # dispatch while paused; running workers finish naturally.
                 if not _kanban_dispatch_allowed():

@@ -1,0 +1,25 @@
+name: precedent-log
+repo: https://github.com/quotumorg/precedent-log
+sha: 1eb5c1bd85fbe8bc2ff22528c36fab66ec34330c
+description: "Saved board rulings in worker prompts, with a syntactic block check. Disclosure: local profile/board state and core board/task reads; enforce mode defaults on, advisory is configurable. Store writers supply trusted prompt text; write restrictions are cooperative. No plugin runtime network, shell, background processes, secret reads or stored credentials. Opt-in demo harness only: subprocesses, loopback in fake mode, network to the user-selected provider in real mode; not plugin runtime."
+maintainer: quotumorg
+tier: community
+category: memory
+requires_hermes: ">=0.23.0"
+version: "0.2.1"
+docs_url: https://github.com/quotumorg/precedent-log/blob/1eb5c1bd85fbe8bc2ff22528c36fab66ec34330c/README.md
+image: https://raw.githubusercontent.com/quotumorg/precedent-log/1eb5c1bd85fbe8bc2ff22528c36fab66ec34330c/docs/catalog-1200x600.png
+readme: true
+platforms: [linux, macos]
+known_issues:
+  - "Four private board/execution-identity helpers require catalog rule 9 review; catalog/CORE-ISSUE.md is an unsubmitted request. No core overrides."
+  - "In-process mode only; the host does not supply the tested execution context or CLI path."
+  - "Default enforce mode can leave a no-edit worker's card running after veto (B2). Core recovery/retry settings apply; no deadline. Advisory avoids this veto path."
+  - "Tested only on Hermes v0.23.0 at 2bd378ed1b8d6bf2192cb26e0a55ff3091e6bd19; the floor does not establish later compatibility."
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_tool_call, kanban_task_blocked, pre_verify, post_tool_call, on_session_end]
+  provides_middleware: []
+  requires_env: []
+# No catalog keys for commands/sections: slash ruling, rulings; CLI precedent;
+# prompt section precedent-log.board (after_memory, max_chars=4000).

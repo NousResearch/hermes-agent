@@ -2111,6 +2111,19 @@ def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgen
                 "Job '%s': abnormal empty turn (%s) — suppressing explainer for cron delivery",
                 job_id, turn_exit_reason)
             final_response = ""
+    # A cron run is a fresh session, so every returned message belongs to this fire. Mirror the
+    # gateway: when the model forgets to repeat a producer tool's (TTS / image_generate) MEDIA tag,
+    # append it so the attachment is not silently dropped. Delivery still validates the files.
+    if "MEDIA:" not in final_response:
+        # Imported lazily (as gateway.run_turn_runner does): gateway.run is heavy and also reaches back into cron.
+        from gateway.run import _collect_auto_append_media_tags
+
+        media_tags, has_voice_directive = _collect_auto_append_media_tags(
+            result.get("messages") or [], history_offset=0)
+        if media_tags:
+            directives = (["[[audio_as_voice]]"] if has_voice_directive else []) + list(
+                dict.fromkeys(media_tags))
+            final_response = "\n".join(part for part in (final_response.rstrip(), *directives) if part)
     return final_response
 
 

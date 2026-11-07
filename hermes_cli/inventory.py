@@ -1020,10 +1020,10 @@ def _local_runtime_row(ctx: ConfigContext) -> dict | None:
     the provider registry's own definition, never a local literal: a row the resolver can't resolve is
     the bug this row's offline-first contract depends on not having."""
     try:
-        from hermes_cli.local_runtime.bootstrap import staged_model_ids
+        from hermes_cli.local_runtime.implementation import get_runtime
         from hermes_cli.providers import LLAMACPP_ALIASES, LLAMACPP_PROVIDER_ID
 
-        staged = staged_model_ids()
+        staged = get_runtime().staged_model_ids()
         if not staged:
             return None
         current = (ctx.current_provider or "").strip().lower() in LLAMACPP_ALIASES

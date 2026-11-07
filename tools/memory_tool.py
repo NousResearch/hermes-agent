@@ -5,8 +5,10 @@ mid-session writes hit disk but never change the prompt (prefix cache intact).
 Single `memory` tool: add/patch/remove or a batch `operations` list."""
 
 import copy
+import hashlib
 import json
 import logging
+import re
 from contextvars import ContextVar
 from pathlib import Path
 from hermes_constants import get_hermes_home
@@ -41,24 +43,69 @@ def get_memory_dir() -> Path:
 
 
 from tools.memory_tool_store import (
-    ENTRY_DELIMITER, FAILURE_CLASS, MEMORY_BLOCK_HEADERS, PATCH_DROP_HINT, MemoryStore, _scan_memory_content)
+    ENTRY_DELIMITER, FAILURE_CLASS, MEMORY_BLOCK_HEADERS, PATCH_DROP_HINT, USER_SCOPE_RE, MemoryStore,
+    _scan_memory_content)
+
+# Identity the control socket gives a local caller on this machine (TUI, CLI one-shots): the
+# operator, who keeps the shared USER.md (gateway/control_socket.py, session_worker_reservation.py).
+_LOCAL_OPERATOR_PREFIX = "uid:"
+_SAFE_ID_RE = re.compile(r"[a-z0-9_-]{1,64}")
 
 
-def load_on_disk_store() -> MemoryStore:
+def _scope_component(raw: str) -> str:
+    """One lowercase path-safe component. A value that is already safe is kept verbatim;
+    anything else (uppercase, separators, unicode, overlong) keeps a readable slug plus a
+    hash of the exact original, so distinct ids never collide — not even ``U1`` vs ``u1``
+    on a case-insensitive filesystem."""
+    if _SAFE_ID_RE.fullmatch(raw):
+        return raw
+    slug = re.sub(r"[^a-z0-9_-]+", "-", raw.lower()).strip("-_")[:40] or "id"
+    return f"{slug}-{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:12]}"
+
+
+def resolve_user_scope(platform: Optional[str], user_id: Optional[str],
+                       mem_config: Optional[dict[str, Any]] = None) -> Optional[str]:
+    """USER.md scope for this speaker, or None for the shared ``memories/USER.md``.
+
+    None unless ``memory.per_user_profiles`` is on. Also None with no authenticated
+    ``user_id`` (CLI, cron, scripts) and for a local operator (``uid:<n>``). Otherwise
+    ``<platform>-<user_id>``, each part made path-safe: platform-qualified, so the same id
+    on two platforms never shares a profile."""
+    if not is_truthy_value((mem_config or {}).get("per_user_profiles"), default=False):
+        return None
+    uid = str(user_id or "").strip()
+    if not uid or uid.startswith(_LOCAL_OPERATOR_PREFIX):
+        return None
+    return f"{_scope_component(str(platform or 'unknown').strip() or 'unknown')}-{_scope_component(uid)}"
+
+
+def load_on_disk_store(user_scope: Optional[str] = None) -> MemoryStore:
     """Fresh on-disk MemoryStore with configured limits/flags for contexts with no live
     agent (gateway, Desktop, ``/memory``) so approvals enforce the SAME caps as
-    ``agent_init``. Falls back to defaults if config can't load; never raises."""
+    ``agent_init``. ``user_scope`` selects a per-user USER.md (``resolve_user_scope``).
+    Falls back to defaults if config can't load; an invalid ``user_scope`` raises."""
     try:
         from hermes_cli.config import load_config
         config = load_config() or {}
         mem_cfg = get_builtin_memory_config(config)
         memory_enabled, user_profile_enabled = get_builtin_memory_store_flags(config)
-        store = MemoryStore(int(mem_cfg.get("memory_char_limit", 2200)), int(mem_cfg.get("user_char_limit", 1375)),
-                            memory_enabled=memory_enabled, user_profile_enabled=user_profile_enabled)
+        limits = (int(mem_cfg.get("memory_char_limit", 2200)), int(mem_cfg.get("user_char_limit", 1375)))
     except Exception:
-        store = MemoryStore()  # config optional — fall back to defaults rather than break /memory
+        # config optional — fall back to defaults rather than break /memory
+        limits, memory_enabled, user_profile_enabled = (2200, 1375), True, True
+    store = MemoryStore(*limits, memory_enabled=memory_enabled, user_profile_enabled=user_profile_enabled,
+                        user_scope=user_scope)
     store.load_from_disk()
     return store
+
+
+def _record_scope(store: MemoryStore, payload: dict[str, Any]) -> dict[str, Any]:
+    """Stamp the writer's USER.md scope on a payload about to be staged, so approving it later
+    (from /memory, the Desktop or another chat, with an unscoped store) lands the write in the
+    same file the writer was editing."""
+    if getattr(store, "user_scope", None):
+        payload["user_scope"] = store.user_scope
+    return payload
 
 
 def _pin_matched_entries(store: MemoryStore, payload: dict[str, Any]) -> Optional[str]:
@@ -97,7 +144,8 @@ def _gate_or_stage(store: MemoryStore, summary: str, detail: str, payload: dict[
     if (unmatched := _pin_matched_entries(store, payload)) is not None:
         return unmatched
     FAILURE_CLASS.set("staged")
-    record = wa.stage_write(wa.MEMORY, payload, summary=f"{summary}: {detail[:120]}", origin=wa.current_origin())
+    record = wa.stage_write(wa.MEMORY, _record_scope(store, payload), summary=f"{summary}: {detail[:120]}",
+                            origin=wa.current_origin())
     return json.dumps({"success": True, "staged": True, "pending_id": record["id"], "message": decision.message},
                       ensure_ascii=False)
 
@@ -201,7 +249,7 @@ def _background_delete_gate(store, action, operations, target="memory", content=
         from tools import write_approval as wa
         FAILURE_CLASS.set("staged")
         record = wa.stage_write(
-            wa.MEMORY, payload,
+            wa.MEMORY, _record_scope(store, payload),
             summary=(f"background review consolidation ({'batch' if operations is not None else action} "
                      f"on {target}): {detail}")[:200],
             origin=wa.current_origin())
@@ -354,8 +402,16 @@ def apply_memory_pending(payload: dict[str, Any], store: MemoryStore) -> dict[st
     """Replay a staged write against the store, bypassing the gate (/memory approve). A
     replace/remove applies to exactly its pinned ``matched_entry`` or is refused; a record
     staged before pinning has no verifiable target, so it is refused rather than replayed by
-    old_text (which could hit a newer entry the approver never saw)."""
+    old_text (which could hit a newer entry the approver never saw). A write staged by a
+    per-user scope (``payload["user_scope"]``) is replayed against THAT user's USER.md, never
+    the approver's store."""
     action, target = payload.get("action"), payload.get("target")
+    scope = payload.get("user_scope")
+    if scope is not None and (not isinstance(scope, str) or not USER_SCOPE_RE.fullmatch(scope)):
+        return {"success": False, "error": "This pending write names an invalid user profile scope; "
+                                           "nothing was applied."}
+    if scope != getattr(store, "user_scope", None):
+        store = load_on_disk_store(user_scope=scope)
     target_error = _memory_target_error(store, target, payload.get("operations"))
     if target_error is not None:
         return target_error

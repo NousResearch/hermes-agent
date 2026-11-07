@@ -91,10 +91,9 @@ async def oauth_start(connection_id: str, request: Request, body: dict = Body(de
 @router.post("/api/gateway-connections/{connection_id}/oauth/complete")
 async def oauth_complete(connection_id: str, body: dict = Body(...)) -> dict:
     url = str(body.get("url") or "") if isinstance(body, dict) else ""
-    done = await _call(lambda: oauth.complete_from_url(url))
-    if done["connectionId"] != connection_id:
-        raise HTTPException(status_code=400, detail="That redirect belongs to another connection's sign-in.")
-    return {"ok": True, **done}
+    # The flight is matched to this connection before its code is redeemed (a mismatch is a 400
+    # that leaves the other connection's flight usable).
+    return {"ok": True, **await _call(lambda: oauth.complete_from_url(url, connection_id=connection_id))}
 
 
 @router.delete("/api/gateway-connections/{connection_id}/oauth")

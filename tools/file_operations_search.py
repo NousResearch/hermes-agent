@@ -418,6 +418,26 @@ _MATCH_LINE_RE = re.compile(r'^([A-Za-z]:)?(.*?):(\d+):(.*)$')
 _OUTPUT_MODE_FLAGS = {"files_only": "-l", "count": "-c"}
 
 
+def _page_search_matches(entries: list[SearchMatch], limit: int, offset: int, context: int) -> list[SearchMatch]:
+    """The ``offset``/``limit`` page counted in real matches, with the context lines
+    around its first and last match. Rows stay contiguous, so a context line shared
+    with a match on the neighbouring page appears on both pages."""
+    positions = [i for i, entry in enumerate(entries) if not entry.is_context]
+    page = positions[offset:offset + limit]
+    if not page:
+        return []
+
+    def _surrounds(entry: SearchMatch, match: SearchMatch) -> bool:
+        return entry.is_context and entry.path == match.path and abs(entry.line_number - match.line_number) <= context
+
+    start, end = page[0], page[-1]
+    while start > 0 and _surrounds(entries[start - 1], entries[page[0]]):
+        start -= 1
+    while end + 1 < len(entries) and _surrounds(entries[end + 1], entries[page[-1]]):
+        end += 1
+    return entries[start:end + 1]
+
+
 def _parse_search_output(result, output_mode: str, limit: int, offset: int,
                          context: int, warning: Optional[str] = None) -> SearchResult:
     """Parse rg/grep ``| head`` output into a SearchResult (shared by both engines).
@@ -488,10 +508,10 @@ def _parse_search_output(result, output_mode: str, limit: int, offset: int,
         if context > 0:
             parsed = _parse_search_context_line(line)
             if parsed:
-                matches.append(SearchMatch(path=parsed[0], line_number=parsed[1], content=parsed[2][:500]))
-    total = len(matches)
+                matches.append(SearchMatch(path=parsed[0], line_number=parsed[1], content=parsed[2][:500], is_context=True))
+    total = sum(not match.is_context for match in matches)
     return SearchResult(
-        matches=matches[offset:offset + limit], total_count=total,
+        matches=_page_search_matches(matches, limit, offset, context), total_count=total,
         truncated=total > offset + limit or bool(limit_reason), limit_reason=limit_reason, warning=warning,
         **skip,
     )
@@ -848,7 +868,7 @@ class SearchMixin:
                 merged.counts.update(sub.counts)
                 merged.total_count += sub.total_count
                 merged.truncated = merged.truncated or sub.truncated
-            merged.matches = merged.matches[:limit]
+            merged.matches = _page_search_matches(merged.matches, limit, 0, context)
             merged.files = merged.files[:limit]
         note = f"path contained {len(parts)} entries; searched {len(existing)} that exist"
         if missing:
@@ -1314,13 +1334,14 @@ class SearchMixin:
                              offset: int, context: int, warning: Optional[str] = None,
                              line_cap: bool = False) -> SearchResult:
         """Run ``cmd_parts | head -n <fetch_limit>`` under pipefail and parse. Extra
-        rows report the true total (context mode also emits "--" separators, so
-        grab 200 more). pipefail keeps the engine's exit 2 alive across ``| head``
+        rows report the true total (context mode spends up to 2*context + 2 rows per
+        match on its context lines and "--" separator, and needs one match past the
+        page to report truncation). pipefail keeps the engine's exit 2 alive across ``| head``
         (a truncating head makes rg exit 0 / grep 141, which the ==2 guard ignores).
         ``line_cap`` appends ``| cut -c1-2000`` for engines without --max-columns
         (grep): bounds giant single-line matches at the pipe layer; skipped for
         files_only/count where lines are paths/counts."""
-        fetch_limit = limit + offset + (200 if context > 0 else 0)
+        fetch_limit = (limit + offset + 1) * (2 * context + 2) if context > 0 else limit + offset
         if line_cap:  # grep/find pipelines: shell only, with the column cap
             parts = cmd_parts + ["|", "head", "-n", str(fetch_limit)]
             if output_mode not in ("files_only", "count"):

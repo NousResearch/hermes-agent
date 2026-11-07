@@ -1982,6 +1982,17 @@ body.guest-pointer-lock :is(webview, iframe) {
   overflow-anchor: auto;
 }
 
+/* The native composer overlays the scroll viewport. A nearest-edge reveal
+   (notably Approval needed) must treat that covered area as outside its useful
+   view, even when the target already has a browser-visible box. Scroll padding
+   preserves the overlay and scroll extent while revealing actionable content
+   above the whole dock. The gap covers its 8px measurement rounding buckets. */
+:where(html:not([data-hermes-desktop-host='browser']))
+  :where([data-chat-surface]:has([data-slot='composer-dock']:not([data-popped-out])))
+  [data-slot='aui_thread-viewport'] {
+  scroll-padding-block-end: calc(var(--composer-measured-height) + min(0.5rem, var(--composer-measured-height)));
+}
+
 [data-slot='aui_thread-content'] {
   max-width: var(--composer-width);
   padding-inline: 1.5rem;
@@ -3363,6 +3374,8 @@ button[data-slot='aui_msg-reactions'] svg {
    consulted, which is why raising the value changed nothing on screen. Masking
    the viewport puts the ramp where the clipping actually happens. */
 [data-hud-shell] [data-slot='aui_thread-viewport'] {
+  /* The HUD's separate transcript band already ends at the composer. */
+  scroll-padding-block-end: 0;
   -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 var(--hud-top-fade, 3.5rem));
   mask-image: linear-gradient(to bottom, transparent 0, #000 var(--hud-top-fade, 3.5rem));
 }

@@ -428,6 +428,10 @@ from their root base tokens; do not multiply the global tokens or nest CSS zoom.
   it is open hands the caret back to the pane composer.
   Active dictation or voice conversation pins the recipient until capture ends,
   keeping the microphone's stop controls and shortcut attached to its owner.
+- Native transcript reveals account for the whole docked composer as a covered
+  scroll area, so jumping to a pending approval exposes its controls. Keep the
+  overlay and ordinary bottom-follow extent; HUD bands and detached composers
+  do not reserve that reveal inset.
 - Status-stack rows use `StatusRow` with a leading `dismiss` action, a state
   icon and optional trailing actions. `StatusDismissButton` owns the Codicon
   close button for previews, background tasks and queued prompts; do not swap

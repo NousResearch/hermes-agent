@@ -37,6 +37,48 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
+it('labels aliases with the model id while leaving unaliased models unchanged', async () => {
+  getGlobalModelOptions.mockResolvedValue({
+    providers: [
+      {
+        model_aliases: { 'aliased-model': 'quick-alias', 'injected-model': 'extra-alias' },
+        models: ['aliased-model', 'plain-model', 'injected-model'],
+        name: 'Picker Local',
+        slug: 'picker-local'
+      }
+    ]
+  })
+  renderMenu()
+
+  const alias = await screen.findByText('quick-alias')
+  expect(alias.closest('[role="menuitem"]')?.textContent).toContain('quick-alias (aliased-model)')
+  expect(screen.getByText('extra-alias').closest('[role="menuitem"]')?.textContent).toContain(
+    'extra-alias (injected-model)'
+  )
+  expect(screen.getByText('Plain Model')).toBeDefined()
+})
+
+it('finds an aliased model by alias and still selects its canonical id', async () => {
+  getGlobalModelOptions.mockResolvedValue({
+    providers: [
+      {
+        model_aliases: { 'aliased-model': 'quick-alias' },
+        models: ['aliased-model', 'plain-model'],
+        name: 'Picker Local',
+        slug: 'picker-local'
+      }
+    ]
+  })
+  const select = renderMenu()
+  await screen.findByText('Plain Model')
+
+  fireEvent.change(screen.getByRole('textbox', { name: 'Search models' }), { target: { value: 'quick-alias' } })
+  const alias = await screen.findByText('quick-alias', { selector: 'mark' })
+  expect(screen.queryByText('Plain Model')).toBeNull()
+  fireEvent.click(alias.closest('[role="menuitem"]')!)
+  expect(select).toHaveBeenCalledWith('aliased-model', 'picker-local')
+})
+
 function renderMenu() {
   const controller: ModelMenuController = {
     applyPreset: vi.fn(),
@@ -57,6 +99,8 @@ function renderMenu() {
       </DropdownMenu>
     </QueryClientProvider>
   )
+
+  return controller.select
 }
 
 it('matches and highlights separator-equivalent queries without revealing unrelated models', async () => {

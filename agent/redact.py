@@ -536,7 +536,7 @@ _KEY_QUALIFIED_NAME = (
 )
 _JSON_KEY_NAMES = (
     r"(?:api_?[Kk]ey|token|secret|password|pgpassword|mysql_pwd|sshpass|access_token|refresh_token|auth_token|bearer"
-    r"|secret_value|raw_secret|secret_input|key_material|client[_.\-]?key[_.\-]?data"
+    r"|authorization|secret_value|raw_secret|secret_input|key_material|client[_.\-]?key[_.\-]?data"
     rf"|{_KEY_QUALIFIED_NAME})"
 )
 _JSON_FIELD_RE = re.compile(rf'("{_JSON_KEY_NAMES}")\s*:\s*"([^"]+)"', re.IGNORECASE)

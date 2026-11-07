@@ -789,6 +789,8 @@ A running messaging gateway (`hermes gateway run`) also watches `config.yaml` on
 
 **Expired OAuth tokens in the background.** The gateway, `/reload-mcp`, and the periodic self-probe of a parked server never open a browser — nobody is there to complete the flow. When a refresh token dies, the server parks with a warning in `gateway.log` and you re-authorize once with `hermes mcp login <server>` (or the Desktop/dashboard *Authorize* button); the parked server picks the new token up on its next probe. Until the token files change, starting new sessions does not retry the rejected token: only the timed self-probe does, so a dead grant cannot hammer the provider's token endpoint.
 
+**Rejected header credentials.** A remote server that authenticates with a configured header (a static `Authorization: Bearer …` in `headers`, no `auth: oauth`) and answers 401 or 403 while connecting parks at once, with `credentials rejected (HTTP 401)` in the log, and stops retrying: neither the periodic self-probe nor new sessions resend a header that was already refused. Put the new token into `config.yaml` (or the `.env` variable the header references); the parked server reconnects on its next probe, within five minutes, or immediately on `/reload-mcp`.
+
 ### Toolsets
 
 Each configured MCP server also creates a runtime toolset when it contributes at least one registered tool:

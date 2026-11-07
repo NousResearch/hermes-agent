@@ -71,6 +71,16 @@ class NonMcpEndpointError(ConnectionError):
     so broad catches still see a connection problem."""
 
 
+class McpCredentialsRejectedError(ConnectionError):
+    """An HTTP MCP server answered 401/403 to a connect carrying the credentials Hermes sends as
+    configured headers (no ``auth: oauth``). Every attempt with the same headers gets the same
+    answer, so the server parks until they change."""
+
+    def __init__(self, message: str, status: int):
+        super().__init__(message)
+        self.status = status
+
+
 # Streamable-HTTP rejection statuses an SSE-only server (or its load balancer) produces for the
 # chunked ``initialize`` POST: Bad Request, Method Not Allowed, Not Acceptable, Length Required.
 _STREAMABLE_REJECT_STATUSES = (400, 405, 406, 411)
@@ -133,6 +143,19 @@ def _describe_http_failure(exc: BaseException, rejection: dict) -> str:
     return f"{text} ({detail})"
 
 
+def _credentials_rejected_error(server_name: str, rejection: dict) -> Optional[McpCredentialsRejectedError]:
+    """The error for a 401/403 the recorder saw on a header-authenticated connect, else None. Header
+    values never reach the text."""
+    status = rejection.get("status")
+    if status not in (401, 403):
+        return None
+    method, url, body = rejection["method"], rejection["url"], rejection["body"]
+    return McpCredentialsRejectedError(
+        f"MCP server '{server_name}': credentials rejected (HTTP {status} from {method} {url}"
+        f"{': ' + body if body else ''}); update the Authorization header or token for this server in "
+        "config.yaml or .env, then run /reload-mcp", status=status)
+
+
 def _unwrap_exception_group(exc: BaseException) -> BaseException:
     """Root-cause leaf of anyio ``(Base)ExceptionGroup`` wrappers (group ``str()`` is opaque). A
     ``KeyboardInterrupt``/``SystemExit`` leaf anywhere is re-raised, never flattened into a loggable
@@ -176,11 +199,12 @@ def _mcp_call_failed_message(exc: BaseException) -> str:
 
 def _classify_mcp_failure(exc: BaseException) -> str:
     """``'permanent'`` (``run()`` parks instead of burning the retry ladder: auth 401/403,
-    NonMcpEndpointError, InvalidMcpUrlError, missing stdio command, native addon built for another
-    Node) or ``'transient'`` (backoff retry)."""
+    HTTP credentials rejected, NonMcpEndpointError, InvalidMcpUrlError, missing stdio command, native
+    addon built for another Node) or ``'transient'`` (backoff retry)."""
     root = _unwrap_exception_group(exc)
     permanent = (_is_auth_error(root)
-                 or isinstance(root, (NonMcpEndpointError, InvalidMcpUrlError, FileNotFoundError, NodeAbiMismatchError))
+                 or isinstance(root, (NonMcpEndpointError, McpCredentialsRejectedError, InvalidMcpUrlError,
+                                      FileNotFoundError, NodeAbiMismatchError))
                  or (isinstance(root, OSError) and getattr(root, "errno", None) == errno.ENOENT)
                  # 401/403 HTTPStatusError that _is_auth_error's type-gate missed (auth types not importable here)
                  or getattr(getattr(root, "response", None), "status_code", None) in (401, 403))

@@ -320,6 +320,7 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         "_elicitation",
         "_error",
         "_ever_connected",
+        "_header_auth_park",
         "_idle_timeout_seconds",
         "_inflight_tasks",
         "_last_park_line",
@@ -398,6 +399,9 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         self._last_park_line: Optional[str] = None  # last park WARNING text; identical re-parks log at DEBUG
         # (token storage, credential stamp) while parked on an OAuth failure; see _arm_auth_park.
         self._auth_park: Optional[tuple] = None
+        # Digest of the connection inputs a header-authenticated HTTP server got 401/403 with; while set,
+        # unattended park wakes are skipped as long as the inputs on disk are unchanged (see _arm_header_auth_park).
+        self._header_auth_park: Optional[str] = None
         # Digest of the resolved inputs the transport last connected with; a cross-profile adopter
         # must resolve the same digest in its own scope. None until the transport publishes it.
         self._resolved_identity: Optional[str] = None

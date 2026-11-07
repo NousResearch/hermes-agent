@@ -674,22 +674,80 @@ def _handle_show(args: dict, **kw) -> str:
                 "task to show by default. Call kanban_list to see task ids on "
                 "the board, then kanban_show(task_id=<id>) for full state."),
         })
+    full = _parse_bool_arg(args, "full")
     with _board(args.get("board")) as (kb, conn):
         task = _existing_task(kb, conn, tid)
-        return json.dumps({
-            "task": _fields(task, _TASK_FIELDS),
+        comments = kb.list_comments(conn, tid)
+        runs = kb.list_runs(conn, tid)
+        events = kb.list_events(conn, tid)
+        task_row = _fields(task, _TASK_FIELDS)
+        if not full:
+            # worker_context already renders the body, comments and closed runs;
+            # only keep the raw copy where its caps would cut something off.
+            from hermes_cli import kanban_db_context as ctx
+            if not _ctx_truncates(task.body, ctx._CTX_MAX_BODY_BYTES):
+                task_row.pop("body", None)
+            comments = _ctx_cut_comments(ctx, comments)
+            runs = _ctx_cut_runs(ctx, runs, task.current_run_id)
+        out = {
+            "task": task_row,
             "parents": kb.parent_ids(conn, tid),
             # Non-terminal parents; on a running card this means the dependency
             # gate is not holding it and kanban_complete will refuse.
             "unsatisfied_parents": [
                 {"id": pid, "status": status} for pid, status in kb.unsatisfied_parents(conn, tid)],
             "children": kb.child_ids(conn, tid),
-            "comments": [_fields(c, _COMMENT_FIELDS) for c in kb.list_comments(conn, tid)],
-            # Capped; full log via CLI.
-            "events": [_fields(e, _EVENT_FIELDS) for e in kb.list_events(conn, tid)[-50:]],
-            "runs": [_fields(r, _RUN_FIELDS) for r in kb.list_runs(conn, tid)],
-            # Same string build_worker_context hands the dispatcher at spawn time.
-            "worker_context": kb.build_worker_context(conn, tid)})
+        }
+        if full or comments:
+            out["comments"] = [_fields(c, _COMMENT_FIELDS) for c in comments]
+        # Capped; full log via CLI. The lean view keeps the latest few.
+        out["events"] = [_fields(e, _EVENT_FIELDS) for e in events[-(50 if full else 3):]]
+        if full or runs:
+            out["runs"] = [_fields(r, _RUN_FIELDS) for r in runs]
+        if not full:
+            out["note"] = ("Lean view: body, comments and runs are in worker_context; "
+                           "raw copies appear above only where worker_context cuts them. "
+                           "Pass full=true for the raw comments, runs and last 50 events.")
+        # Same string build_worker_context hands the dispatcher at spawn time.
+        out["worker_context"] = kb.build_worker_context(conn, tid)
+        return json.dumps(out)
+
+
+def _ctx_truncates(text: Optional[str], limit: int) -> bool:
+    """True when build_worker_context's ``_ctx_cap`` would cut ``text``."""
+    return bool(text) and len(text.strip()) > limit
+
+
+def _ctx_cut_comments(ctx: Any, comments: list) -> list:
+    """Comments that worker_context omits (older than its tail) or truncates."""
+    keep_from = max(0, len(comments) - ctx._CTX_MAX_COMMENTS)
+    return [c for i, c in enumerate(comments)
+            if i < keep_from or _ctx_truncates(c.body, ctx._CTX_MAX_COMMENT_BYTES)]
+
+
+def _ctx_cut_runs(ctx: Any, runs: list, current_run_id: Optional[int]) -> list:
+    """Runs that worker_context omits or whose fields it truncates.
+
+    worker_context renders only closed runs (the newest
+    ``_CTX_MAX_PRIOR_ATTEMPTS``). The open run that is this worker's own
+    (``current_run_id``) is left out; any other open run, e.g. an orphaned
+    one, is kept raw rather than silently dropped."""
+    closed = [r for r in runs if r.ended_at is not None]
+    shown = {r.id for r in closed[max(0, len(closed) - ctx._CTX_MAX_PRIOR_ATTEMPTS):]}
+    limit = ctx._CTX_MAX_FIELD_BYTES
+
+    def cut(run: Any) -> bool:
+        meta = ""
+        if run.metadata:
+            try:
+                meta = json.dumps(run.metadata, ensure_ascii=False, sort_keys=True)
+            except Exception:
+                return True  # worker_context drops metadata it cannot serialise
+        return any(_ctx_truncates(v, limit) for v in (run.summary, run.error, meta))
+
+    return [r for r in runs
+            if not (r.ended_at is None and r.id == current_run_id)
+            and (r.id not in shown or cut(r))]
 
 
 @_kanban_handler("kanban_list")

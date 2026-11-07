@@ -216,9 +216,10 @@ def apply_attempt_note(conn, task_id, pid, dead) -> None:
     """Fold the owner's own record of how the attempt ended into ONE dead worker's booking.
 
     A bound interpreter whose ``worker_result`` says exit 0 after its managed execution was
-    lost reads as a protocol violation. The owner's ``worker_lost`` evidence outranks it: the
-    turn never finished, so it books as a crash and charges the breaker, and the
-    protocol-violation streak (which reads the persisted payload) does not count it.
+    lost reads as a protocol violation, or as a route failure when no heartbeat was recorded.
+    The owner's ``worker_lost`` evidence outranks both: the turn never finished, so it books
+    as a crash and charges the breaker, and neither streak (both read the persisted payload)
+    counts it.
     """
     lost = _latest_run_event(conn, task_id, "worker_lost")
     note = owner_attempt_note(conn, task_id, lost)
@@ -227,15 +228,18 @@ def apply_attempt_note(conn, task_id, pid, dead) -> None:
     dead.event_payload["attempt_note"] = note
     if lost:
         dead.event_payload["worker_lost"] = lost
-        if dead.protocol_violation:
-            from hermes_cli.kanban_db_dispatch import _PROTOCOL_VIOLATION_ERROR
+        if dead.protocol_violation or dead.route_failure:
+            from hermes_cli.kanban_db_dispatch import _PROTOCOL_VIOLATION_ERROR, _ROUTE_FAILURE_ERROR
+            clean_exit_error = _ROUTE_FAILURE_ERROR if dead.route_failure else _PROTOCOL_VIOLATION_ERROR
             dead.protocol_violation = False
-            dead.event_payload.pop("protocol_violation", None)
+            dead.route_failure = False
+            for marker in ("protocol_violation", "route_failure", "exit_signal", "elapsed"):
+                dead.event_payload.pop(marker, None)
             dead.event_payload["exit_kind"] = dead.kind
             dead.event_kind = "crashed"
             # Keep the worker's last output that _classify_dead_worker appended.
             dead.error_text = (f"pid {pid} exited cleanly after its managed worker was lost."
-                               + dead.error_text.removeprefix(_PROTOCOL_VIOLATION_ERROR))
+                               + dead.error_text.removeprefix(clean_exit_error))
     # Before the worker's own output: the stored error is capped, and the output may be long.
     from hermes_cli.kanban_db_dispatch import WORKER_OUTPUT_SEP
     head, sep, output = dead.error_text.partition(WORKER_OUTPUT_SEP)

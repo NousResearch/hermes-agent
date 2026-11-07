@@ -1,6 +1,6 @@
 name: no-cap
 repo: https://github.com/jedbrnth-eng/no-cap
-sha: 285b72f3137451b453e78ae1cf987a371c0c445a
+sha: dfcbe3412ba6a5e8e4b216140e2096c3305b8b71
 version: "0.2.0"
 title: "No Cap"
 description: >-
@@ -30,7 +30,7 @@ description: >-
   `metrics --file` write only the file you name (0600, atomic; CSV cells that could start a formula are quoted). Commands it runs: read-only git as argument lists,
   no shell, in the session's working directory, hardened against an untrusted repo (GIT_CONFIG_NOSYSTEM=1,
   GIT_CONFIG_GLOBAL=/dev/null, core.hooksPath=/dev/null, core.fsmonitor=false, protocol.allow=never, no pager, no lazy
-  fetch, credential helper off, inherited GIT_* dropped): at reply time, only for a claimed SHA or branch no tool call
+  fetch, credential helper off, minimal env: only PATH, HOME, LANG, LC_ALL, SYSTEMROOT inherited, never provider keys): at reply time, only for a claimed SHA or branch no tool call
   backs (verify_artifacts, at most 8 calls, 3 s each) `rev-parse --is-inside-work-tree --is-shallow-repository`,
   `config --get-regexp`, `cat-file -e`, `for-each-ref`; during /cap `cat-file -t <sha>` and `rev-parse --verify <ref>`
   (5 s). It lists the run's project read-only to tell a file-scoped test run from the full suite (bounded, no symlinks)
@@ -57,14 +57,14 @@ tier: community
 category: tools
 requires_hermes: ">=0.22.5"
 docs_url: https://github.com/jedbrnth-eng/no-cap#readme
-image: https://raw.githubusercontent.com/jedbrnth-eng/no-cap/285b72f3137451b453e78ae1cf987a371c0c445a/docs/brand/social-preview-1280x640.png
+image: https://raw.githubusercontent.com/jedbrnth-eng/no-cap/dfcbe3412ba6a5e8e4b216140e2096c3305b8b71/docs/brand/social-preview-1280x640.png
 screenshots:
-  - https://raw.githubusercontent.com/jedbrnth-eng/no-cap/285b72f3137451b453e78ae1cf987a371c0c445a/docs/media/demo-run/01-turnA-lies.png
-  - https://raw.githubusercontent.com/jedbrnth-eng/no-cap/285b72f3137451b453e78ae1cf987a371c0c445a/docs/media/demo-run/02-cap-rescore.png
-  - https://raw.githubusercontent.com/jedbrnth-eng/no-cap/285b72f3137451b453e78ae1cf987a371c0c445a/docs/media/board-run/01-board.png
-  - https://raw.githubusercontent.com/jedbrnth-eng/no-cap/285b72f3137451b453e78ae1cf987a371c0c445a/docs/media/install-run/04-chip-open.png
-  - https://raw.githubusercontent.com/jedbrnth-eng/no-cap/285b72f3137451b453e78ae1cf987a371c0c445a/docs/media/demo-run/03-strict.png
-  - https://raw.githubusercontent.com/jedbrnth-eng/no-cap/285b72f3137451b453e78ae1cf987a371c0c445a/docs/media/real-model-run/04-real-after-cap.png
+  - https://raw.githubusercontent.com/jedbrnth-eng/no-cap/dfcbe3412ba6a5e8e4b216140e2096c3305b8b71/docs/media/demo-run/01-turnA-lies.png
+  - https://raw.githubusercontent.com/jedbrnth-eng/no-cap/dfcbe3412ba6a5e8e4b216140e2096c3305b8b71/docs/media/demo-run/02-cap-rescore.png
+  - https://raw.githubusercontent.com/jedbrnth-eng/no-cap/dfcbe3412ba6a5e8e4b216140e2096c3305b8b71/docs/media/board-run/01-board.png
+  - https://raw.githubusercontent.com/jedbrnth-eng/no-cap/dfcbe3412ba6a5e8e4b216140e2096c3305b8b71/docs/media/install-run/04-chip-open.png
+  - https://raw.githubusercontent.com/jedbrnth-eng/no-cap/dfcbe3412ba6a5e8e4b216140e2096c3305b8b71/docs/media/demo-run/03-strict.png
+  - https://raw.githubusercontent.com/jedbrnth-eng/no-cap/dfcbe3412ba6a5e8e4b216140e2096c3305b8b71/docs/media/real-model-run/04-real-after-cap.png
 readme: true
 platforms: []
 known_issues:

@@ -109,6 +109,8 @@ export interface RosterRow {
    *  Set by `claimDefaultHandles`. */
   hermesHandleTaken?: boolean
   has_avatar?: boolean
+  /** Server avatar revision (asset mtime in ms). Changes whenever the avatar file is replaced. */
+  avatar_rev?: number
   /** The connection's backend identity (/api/status `install_id`) when the
    *  roster source has seen it — stable across Desktops, unlike `connectionId`
    *  / `connectionLabel`, which are THIS Desktop's names for the connection. */

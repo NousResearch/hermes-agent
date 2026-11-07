@@ -65,6 +65,18 @@ class TestHelperFunctions(unittest.TestCase):
         result = _decode_header_value(encoded)
         self.assertEqual(result, "Merhaba")
 
+    def test_decode_header_mixed_words_keep_original_spacing(self):
+        """An encoded-word next to plain text used to gain an extra space on each side."""
+        from email.header import decode_header, make_header
+        from plugins.platforms.email.adapter import _decode_header_value
+        for raw, expected in (
+            ("Re: =?UTF-8?B?w5x6w7xt?= and more", "Re: Üzüm and more"),
+            ("=?utf-8?q?Hello?= world", "Hello world"),
+            ("=?ISO-8859-1?Q?Caf=E9?= =?UTF-8?B?IOKCrA==?=", "Café €"),
+        ):
+            self.assertEqual(_decode_header_value(raw), expected)
+            self.assertEqual(_decode_header_value(raw), str(make_header(decode_header(raw))))
+
     def test_extract_email_address_with_name(self):
         from plugins.platforms.email.adapter import _extract_email_address
         self.assertEqual(

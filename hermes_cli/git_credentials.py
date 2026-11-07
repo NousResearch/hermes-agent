@@ -189,6 +189,37 @@ def is_credential_required_error(result: subprocess.CompletedProcess) -> bool:
     return _CREDENTIAL_REQUIRED_RE.search("\n".join(parts)) is not None
 
 
+def _run_git(argv: list[str], env: Mapping[str, str], run_kwargs: Mapping) -> subprocess.CompletedProcess:
+    """``subprocess.run(argv, env=env, **run_kwargs)`` for one network git attempt, except that git
+    never opens a console window (console-less callers: the gateway, the desktop backend) and a
+    timeout ends git's whole process tree. ``run()`` kills only ``git.exe``, and on Windows then
+    waits for the captured pipes that ``git-remote-https`` still holds; the gateway's update check
+    runs in the housekeeping thread every other chore waits on."""
+    from hermes_cli._subprocess_compat import IS_WINDOWS, kill_and_drain, kill_process_tree
+
+    kwargs = dict(run_kwargs)
+    timeout = kwargs.pop("timeout", None)
+    check = kwargs.pop("check", False)
+    if kwargs.pop("capture_output", False):
+        kwargs["stdout"] = kwargs["stderr"] = subprocess.PIPE
+    kwargs.setdefault("creationflags", windows_hide_flags())
+    if not IS_WINDOWS:
+        kwargs.setdefault("process_group", 0)  # so kill_process_tree reaches git's descendants
+    proc = subprocess.Popen(argv, env=env, **kwargs)
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        stdout, stderr = kill_and_drain(proc, 1) or (None, None)
+        raise subprocess.TimeoutExpired(argv, timeout, output=stdout, stderr=stderr) from None
+    except BaseException:
+        kill_process_tree(proc)
+        raise
+    result = subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
+    if check:
+        result.check_returncode()
+    return result
+
+
 def run_git_with_credential_fallback(
     argv: list[str], url: str, *, env: Mapping[str, str], **run_kwargs,
 ) -> subprocess.CompletedProcess:
@@ -204,13 +235,13 @@ def run_git_with_credential_fallback(
     # Username", and the refusal below is never classified. Same drop _credential_fill does.
     env.pop("GIT_ASKPASS", None)
     env.pop("SSH_ASKPASS", None)
-    result = subprocess.run(argv, env=env, **run_kwargs)  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **kwargs (check may arrive through it); an explicit check=False would raise TypeError
+    result = _run_git(argv, env, run_kwargs)
     if result.returncode == 0 or not url or not is_credential_required_error(result):
         return result
     auth_env = with_git_auth(env, url)
     if auth_env == env:
         return result
-    result = subprocess.run(argv, env=auth_env, **run_kwargs)  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **kwargs (check may arrive through it); an explicit check=False would raise TypeError
+    result = _run_git(argv, auth_env, run_kwargs)
     sent = _auth_headers(auth_env)
     rejected: list[str] = []
     # The first credential (typically GITHUB_TOKEN from .env) was refused too: it is stale or
@@ -226,7 +257,7 @@ def run_git_with_credential_fallback(
         sent |= headers
         logger.warning("%s rejected the credential from %s; retrying with %s",
                        _https_origin(url), ", ".join(rejected) or "the stored credential", source)
-        result = subprocess.run(argv, env=candidate_env, **run_kwargs)  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **kwargs (check may arrive through it); an explicit check=False would raise TypeError
+        result = _run_git(argv, candidate_env, run_kwargs)
         if result.returncode != 0 and is_credential_required_error(result):
             rejected.append(source)
     if result.returncode != 0 and "GITHUB_TOKEN/GH_TOKEN" in rejected and isinstance(result.stderr, str):

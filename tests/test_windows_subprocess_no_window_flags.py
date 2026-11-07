@@ -624,3 +624,22 @@ def test_cached_nvidia_gpu_query_failure_is_cached(monkeypatch):
     assert hardware._nvidia_vram() is None
     assert hardware._cached_nvidia_gpu_query() is None  # TTL hit, no second spawn
     assert len(captured) == 1, captured
+
+
+def test_plugin_origin_probe_hides_console_window(monkeypatch, tmp_path):
+    """The gateway's scheduled plugin update check reads every self-cloned plugin's origin."""
+    from hermes_cli import plugins_cmd, plugins_provenance
+
+    captured = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append((list(cmd), kwargs))
+        return _Completed(stdout="https://git.example.test/acme/plugin.git\n")
+
+    _patch_hide_flags(monkeypatch)
+    monkeypatch.setattr(plugins_cmd, "_resolve_git_executable", lambda: "git")
+    monkeypatch.setattr(plugins_provenance.subprocess, "run", fake_run)
+
+    assert plugins_provenance._git_origin_url(tmp_path) == "https://git.example.test/acme/plugin.git"
+    [(_cmd, kwargs)] = _spawns(captured, "remote", "get-url")
+    assert kwargs.get("creationflags") == _CREATE_NO_WINDOW

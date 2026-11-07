@@ -153,6 +153,7 @@ def test_plugins_disabled_naming_the_bundled_adapter_is_not_use_and_still_disabl
     assert lcm.yuanbao_in_use(home) is False
     manifest = PluginManifest(name="yuanbao", source="user", path=str(home / "plugins" / "yuanbao"), key="yuanbao")
     assert gate_manifest(manifest, {name}, None).error == "disabled via config"
+    assert lcm.legacy_plugin_alias(name) == "yuanbao"  # `hermes plugins <verb> <name>` names the catalog plugin
     # Installed and enabled (before the update, or by hand): core's old disable still wins.
     assert gate_manifest(manifest, {name}, {"yuanbao"}).error == \
         "listed in both plugins.enabled and plugins.disabled — disabled wins"
@@ -183,6 +184,14 @@ def test_a_bare_yuanbao_in_plugins_disabled_is_still_use(tmp_path):
         assert lcm.migrate_home(home, install=install, say=said.append) == ["yuanbao"]
         assert (sentence in said[0]) is (not lifted)
         assert ("yuanbao" in (read_user_config_raw(home / "config.yaml")["plugins"].get("disabled") or [])) is (not lifted)
+
+    # A failed install leaves the entry, but the install command it names lifts it: no sentence there either.
+    (home / "config.yaml").write_text("plugins:\n  disabled: [yuanbao]\n", encoding="utf-8")
+    shutil.rmtree(home / "plugins", ignore_errors=True)
+    lcm._attempted.clear()
+    said = []
+    assert lcm.migrate_home(home, install=lambda name: {"ok": False, "error": "offline"}, say=said.append) == []
+    assert said and sentence not in said[-1]
 
 
 def test_every_platform_core_knows_but_yuanbao_keeps_the_yb_tools_off():

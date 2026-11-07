@@ -75,7 +75,7 @@ Hermes has two separate compression layers that operate independently:
                                    │
                                    ▼
                      ┌──────────────────────────┐
-                     │   Agent ContextCompressor │  Fires at 50% of context (default)
+                     │   Agent ContextCompressor │  Fires at 50% of context (default; 75% below 512K)
                      │   (in-loop, real tokens)  │  Normal context management
                      └──────────────────────────┘
 ```
@@ -98,7 +98,7 @@ The gateway hygiene threshold is intentionally higher than the agent's compresso
 Setting it at 50% (same as the agent) caused premature compression on every turn
 in long gateway sessions.
 
-### 2. Agent ContextCompressor (50% threshold, configurable)
+### 2. Agent ContextCompressor (50% threshold, 75% floor below 512K, configurable)
 
 Located in `agent/context_compressor.py`. This is the **primary compression
 system** that runs inside the agent's tool loop with access to accurate,
@@ -413,8 +413,8 @@ map.
 
 The ChatGPT Codex OAuth backend hard-caps gpt-5.4/5.5/5.6 and gpt-6 Astra at a **272K** context window
 (the same slug exposes 1.05M on OpenAI's direct API and OpenRouter, and smaller
-windows through some resellers). At the default 50% trigger, compaction would fire at ~136K —
-half the window the model can actually use. When the active route is Codex
+windows through some resellers). At the default trigger (50%, floored at 75% below 512K),
+compaction would fire at ~204K with a quarter of the usable window still free. When the active route is Codex
 OAuth (`provider: openai-codex`) and the model is one of those families (Astra
 matches any slug containing `astra`; the opt-in `-900k` picker variants are
 excluded because they already unlock the wider window), Hermes raises the
@@ -528,22 +528,21 @@ usable local trigger exists, automatic mode uses 200,000. The provider minimum
 is 1,024 tokens, so an unusually small local trigger at or below that floor
 cannot preserve strict native first ordering.
 
-### Computed Values (for a 200K context model at defaults)
+### Computed Values (for a 200K context model at defaults, no output reservation)
 
 ```
 context_length       = 200,000
-threshold_tokens     = 200,000 × 0.50 = 100,000
-tail_token_budget    = 100,000 × 0.20 = 20,000
-max_summary_tokens   = min(200,000 × 0.05, 12,000) = 10,000
+threshold_tokens     = 200,000 × 0.75 = 150,000   # default 0.50, floored at 0.75 below 512K
+tail_token_budget    = max(10,000, min(25,000, 200,000 × 0.025)) = 10,000   # lean mode
+max_summary_tokens   = min(200,000 × 0.05, 10,000) = 10,000
 ```
 
 :::note Threshold is derived from the MAIN model's context window
 `threshold_tokens` is `threshold × context_length` (then capped by `compression.threshold_tokens` when set), where `context_length`
 is the **main agent model's** context window — never the auxiliary/summary
-model's. On a 262,144-token model at the default `0.50`, the threshold is
-`262,144 × 0.50 = 131,072`. That number being close to a common "128K context"
-is a coincidence of the percentage, not a sign that the auxiliary model's window
-is the trigger. The auxiliary model's context window is a separate concern — see
+model's. On a 262,144-token model the default `0.50` is floored to `0.75`, so the
+threshold is `262,144 × 0.75 = 196,608`, whatever the auxiliary model's window.
+The auxiliary model's context window is a separate concern — see
 the "Summary model context length" warning below for how it affects whether a
 summary can be produced, not when compression fires.
 :::
@@ -869,4 +868,4 @@ The CLI shows caching status at startup:
 
 ## Context Pressure Warnings
 
-Intermediate context-pressure warnings have been removed (see the iteration-budget block in `agent/turn_iteration_prep.py`, which notes: "No intermediate pressure warnings — they caused models to 'give up' prematurely on complex tasks"). Compression fires when prompt tokens reach the configured `compression.threshold` (default 50%) with no prior warning step; gateway session hygiene fires as the secondary safety net at 85% of the model's context window.
+Intermediate context-pressure warnings have been removed (see the iteration-budget block in `agent/turn_iteration_prep.py`, which notes: "No intermediate pressure warnings — they caused models to 'give up' prematurely on complex tasks"). Compression fires when prompt tokens reach the configured `compression.threshold` (default 50%, floored at 75% below 512K windows) with no prior warning step; gateway session hygiene fires as the secondary safety net at 85% of the model's context window.

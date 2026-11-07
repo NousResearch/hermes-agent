@@ -493,6 +493,7 @@ def _kb_poll_board(_kb, slug: str, session_key: str) -> list:
                 text = _format_kanban_event_text(sub, task, ev, slug)
                 if text:
                     texts.append(DiagnosticText(text) if diagnostic_event(ev) else text)
+            _kbn.advance_notify_cursor(conn, new_cursor=_new, **sub_ident)
             # Unsubscribe only on archive: ``done`` is reversible in review/controller flows, so keeping the sub lets a
             # later reopen notify the same session. The claimed cursor prevents replay.
             if task and getattr(task, "status", "") == "archived":

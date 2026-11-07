@@ -98,6 +98,9 @@ def add_notify_sub(
     insert_mode = valid_mode or ("notify+wake" if platform == "api_server" else "notify")
     key = _sub_key(task_id, platform, chat_id, thread_id)
     with _kb.write_txn(conn):
+        from hermes_cli.kanban_notification_owner import sync_task_notification_owner
+        if sync_task_notification_owner(conn, task_id):
+            return
         existing = conn.execute(
             "SELECT delivery_metadata FROM kanban_notify_subs " + _SUB_KEY_WHERE,
             key,
@@ -112,13 +115,14 @@ def add_notify_sub(
             INSERT OR IGNORE INTO kanban_notify_subs
                 (task_id, platform, chat_id, thread_id, user_id, user_id_alt,
                  chat_type, notifier_profile, delivery_mode, delivery_metadata,
-                 created_at, last_event_id)
+                 created_at, last_event_id, last_delivered_event_id)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    COALESCE((SELECT MAX(id) FROM task_events WHERE task_id = ?), 0),
                     COALESCE((SELECT MAX(id) FROM task_events WHERE task_id = ?), 0))
             """,
             (
                 *key, user_id, user_id_alt, chat_type or "dm", notifier_profile,
-                insert_mode, metadata_json, int(time.time()), task_id,
+                insert_mode, metadata_json, int(time.time()), task_id, task_id,
             ),
         )
         # chat_type / delivery_mode are last-write-wins; delivery metadata
@@ -377,6 +381,9 @@ def claim_unseen_events_for_sub(
         )
         if not events:
             return old_cursor, old_cursor, []
+        # Preserve the acknowledged position separately from the in-flight claim.
+        conn.execute("UPDATE kanban_notify_subs SET last_delivered_event_id = COALESCE(last_delivered_event_id, ?) "
+                     + _SUB_KEY_WHERE, (old_cursor, *_sub_key(task_id, platform, chat_id, thread_id)))
         _cas_cursor(conn, _sub_key(task_id, platform, chat_id, thread_id), new_cursor, old_cursor)
         return old_cursor, new_cursor, events
 
@@ -400,8 +407,8 @@ def advance_notify_cursor(
 ) -> None:
     with _kb.write_txn(conn):
         conn.execute(
-            "UPDATE kanban_notify_subs SET last_event_id = ? " + _SUB_KEY_WHERE,
-            (int(new_cursor), *_sub_key(task_id, platform, chat_id, thread_id)),
+            "UPDATE kanban_notify_subs SET last_event_id = ?, last_delivered_event_id = ? " + _SUB_KEY_WHERE,
+            (int(new_cursor), int(new_cursor), *_sub_key(task_id, platform, chat_id, thread_id)),
         )
 
 

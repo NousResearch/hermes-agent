@@ -127,6 +127,18 @@ def installed_engine(backend: str = "auto", *, allow_outdated: bool = True) -> E
     return engine
 
 
+def configured_engine(path: str | None) -> Engine | None:
+    """Return an explicitly configured llama-server binary without consulting PM."""
+    if not path:
+        return None
+    binary = Path(path).expanduser()
+    if not binary.is_absolute():
+        raise BinaryResolutionError("local_runtime.binary must be an absolute path to llama-server")
+    if not binary.is_file() or not os.access(binary, os.X_OK):
+        raise BinaryResolutionError(f"local_runtime.binary is not an executable file: {binary}")
+    return Engine("custom", "custom", binary)
+
+
 # Before PM owned binaries, Hermes installed each engine to runtimes/llamacpp/b<tag>/<backend>/
 # and wrote a manifest.json with the archive digests and the llama-server --version it saw.
 _SHA256 = re.compile(r"[0-9a-f]{64}")

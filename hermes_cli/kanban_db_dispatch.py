@@ -41,12 +41,6 @@ DEFAULT_FAILURE_LIMIT = 2
 # before max_runtime_seconds kills it.
 KANBAN_TERMINAL_TIMEOUT_GRACE_SECONDS = 30
 
-# A healthy worker is still alive for a while after kanban_complete /
-# kanban_request_review returns (final assistant turn, session persistence), so
-# a run's retained worker is only reaped once ended_at is at least this old
-# (two default dispatch ticks).
-TERMINAL_WORKER_REAP_GRACE_SECONDS = 120
-
 # ---------------------------------------------------------------------------
 # Respawn guard constants
 # ---------------------------------------------------------------------------
@@ -108,6 +102,10 @@ class DispatchResult:
     reaped_terminal_workers: list[str] = field(default_factory=list)
     """Task ids whose worker outlived its closed run and was terminated by
     :func:`reap_terminal_workers`."""
+    reaped_worker_scopes: list[str] = field(default_factory=list)
+    """Scope names whose leaked descendant processes were reaped by
+    :func:`reap_orphaned_worker_scopes` (a dead run's worker scope still held a
+    live child — typically a background server the worker left behind)."""
     spawned: list[tuple[str, str, str]] = field(default_factory=list)
     """``(task_id, assignee, workspace_path)`` triples."""
     skipped_unassigned: list[str] = field(default_factory=list)
@@ -355,12 +353,6 @@ def _pid_alive(pid: Optional[int]) -> bool:
     return True
 
 
-# ``worker_started_at`` value for a spawn whose fingerprint could not be captured. Distinct from the
-# NULL legacy row (pre-fingerprint spawn): such a worker is held (its claim is never released beside
-# the live PID) but NEVER signalled — missing process identity is refusal, not permission (#99558).
-UNVERIFIED_WORKER_FINGERPRINT = "unverified"
-
-
 def _process_fingerprint(pid: int) -> Optional[str]:
     """Restart-stable identity of a live process: ``"<instantiation epoch>|<start time>"``. The start
     time alone (``/proc/<pid>/stat`` field 22 on Linux) is clock ticks since THIS boot, so a row that
@@ -494,64 +486,6 @@ def _terminate_reclaimed_worker(
         info["sigkill"] = True
     info["terminated"] = not _worker_alive(pid, started_at)
     return info
-
-
-def reap_terminal_workers(conn: sqlite3.Connection, *, signal_fn=None) -> list[str]:
-    """End host-local workers that outlived their run (issue #111791) — a worker
-    that called ``kanban_complete`` and then hung keeps its ``state.db`` sidecar
-    fds open and no ``running``-only sweep can see it once ``tasks.worker_pid`` is
-    cleared. Keys on the closed ``task_runs`` row's retained pid + spawn
-    fingerprint: a legacy row (NULL fingerprint) or a recycled PID is never
-    signalled; a pid that is simply gone just has its evidence cleared. A run
-    that ended less than ``TERMINAL_WORKER_REAP_GRACE_SECONDS`` ago is left
-    alone so a worker still finalising after its own transition is not killed.
-    One row's failure (signal, /proc probe) is logged and skips only that row.
-    Returns the task ids whose worker was terminated."""
-    rows = conn.execute(
-        "SELECT id, task_id, worker_pid, worker_started_at, claim_lock FROM task_runs "
-        "WHERE ended_at IS NOT NULL AND ended_at <= ? "
-        "AND worker_pid IS NOT NULL AND worker_started_at IS NOT NULL",
-        (int(time.time()) - TERMINAL_WORKER_REAP_GRACE_SECONDS,),
-    ).fetchall()
-    host_prefix = _kb._host_prefix()
-    reaped: list[str] = []
-    for row in rows:
-        try:
-            _reap_terminal_worker_row(conn, row, host_prefix, signal_fn, reaped)
-        except Exception:
-            _kb._log.debug(
-                "kanban dispatch: terminal worker reap failed for run %s (task %s)",
-                row["id"], row["task_id"], exc_info=True,
-            )
-    return reaped
-
-
-def _reap_terminal_worker_row(conn, row, host_prefix: str, signal_fn, reaped: list[str]) -> None:
-    pid, fingerprint = int(row["worker_pid"]), row["worker_started_at"]
-    if pid == os.getpid() or not str(row["claim_lock"] or "").startswith(host_prefix):
-        return
-    if fingerprint == UNVERIFIED_WORKER_FINGERPRINT and _kb._pid_alive(pid):
-        return  # unproven identity: never signalled; its evidence is cleared once the pid is gone
-    alive = _worker_alive(pid, fingerprint)
-    termination = None
-    if alive:
-        termination = _terminate_reclaimed_worker(
-            pid, row["claim_lock"], signal_fn=signal_fn, started_at=fingerprint)
-        if not termination["terminated"]:
-            return  # still alive: try again next tick
-    with _kb.write_txn(conn):
-        conn.execute(
-            "UPDATE task_runs SET worker_pid = NULL, worker_started_at = NULL "
-            "WHERE id = ? AND worker_pid = ? AND worker_started_at = ?",
-            (row["id"], pid, fingerprint),
-        )
-        if alive:
-            _kb._append_event(
-                conn, row["task_id"], "terminal_worker_reaped",
-                {"pid": pid, "worker_started_at": fingerprint, **termination}, run_id=row["id"],
-            )
-    if alive:
-        reaped.append(row["task_id"])
 
 
 def _worker_survived_termination(termination: dict) -> bool:
@@ -2219,6 +2153,9 @@ def _run_reclaim_phase(
     """Reclaim stale/orphaned/crashed/timed-out running tasks, then promote."""
     reap_worker_zombies()
     result.reaped_terminal_workers = reap_terminal_workers(conn)
+    # Ordered after reap_terminal_workers: that sweep clears the closed run's pid
+    # evidence, this one stops the scope the worker's *surviving children* still hold.
+    result.reaped_worker_scopes = reap_orphaned_worker_scopes(conn)
     result.reclaimed = _kb.release_stale_claims(conn, failure_limit=failure_limit)
     if reconcile_orphans:
         result.reconciled_orphans = reconcile_orphaned_running(conn)
@@ -2956,6 +2893,15 @@ def run_daemon(
             traceback.print_exc()
         stop_event.wait(timeout=interval)
 
+
+# Worker reaping lives in a topical sibling (this facade is at its FILE_LINES cap).
+# Imported LAST, like the origin namespace below, so the sibling's own late-bound
+# ``kanban_db`` import resolves against a fully populated dispatcher; the names stay
+# reachable as ``kanban_db_dispatch.reap_terminal_workers`` for callers and tests.
+from hermes_cli.kanban_worker_reaping import reap_orphaned_worker_scopes
+from hermes_cli.kanban_worker_reaping import reap_terminal_workers
+from hermes_cli.kanban_worker_reaping import TERMINAL_WORKER_REAP_GRACE_SECONDS
+from hermes_cli.kanban_worker_reaping import UNVERIFIED_WORKER_FINGERPRINT
 
 # Late-bound origin namespace (see module docstring); imported LAST so this
 # module is fully populated before ``kanban_db`` imports from it.

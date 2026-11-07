@@ -699,7 +699,7 @@ def _resolve_media_to_data_urls(text: str) -> str:
     server paths); non-image/unreadable paths stay untouched. Security: the shared
     ``MEDIA_TAG_CLEANUP_RE`` anchor + ``validate_media_delivery_path`` denylist — a bare-token
     match would let a traversal path in the reply exfiltrate any readable image."""
-    if not text or "MEDIA:" not in text:
+    if not text or ("MEDIA:" not in text and "FILE:" not in text):
         return text
     import base64
 

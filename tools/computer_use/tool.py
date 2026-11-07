@@ -24,6 +24,7 @@ from hermes_dir_acl import make_user_dir
 
 from agent.image_eviction_policy import image_dimensions_from_bytes
 from tools.computer_use.backend import ActionResult, CaptureResult, ComputerUseBackend, UIElement
+from tools.computer_use.verification import valid_verification_expect
 
 logger = logging.getLogger(__name__)
 
@@ -313,6 +314,7 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
     type_text, key, set_value = _noop_stub("type", "text"), _noop_stub("key", "keys"), _noop_stub("set_value", "value", "element")
     list_apps, list_windows = _noop_stub("list_apps", result=[]), _noop_stub("list_windows", result=[])
     focus_app = _noop_stub("focus_app", "app", "raise_window")
+    verify_state = _noop_stub("verify_state", "expect", "pid", "window_id")
 
 # ── Dispatch ────────────────────────────────────────────────────────────────
 def handle_computer_use(args: dict[str, Any], **kwargs) -> Any:
@@ -482,6 +484,9 @@ _ACTIONS: dict[str, _ActionSpec] = {
     "wait": _ActionSpec(lambda backend, action, args, **_: _text_response(backend.wait(float(args.get("seconds", 1.0))))),
     "list_apps": _ActionSpec(partial(_do_listing, key="apps")),
     "list_windows": _ActionSpec(partial(_do_listing, key="windows")),
+    "verify_state": _ActionSpec(lambda backend, action, args, **_: backend.verify_state(
+        expect=args["expect"], pid=args.get("pid"), window_id=args.get("window_id"))
+        if valid_verification_expect(args.get("expect")) else json.dumps({"error": "verify_state requires 1–8 valid element/window `expect` predicates"})),
 }
 # Native input actions deliver to the backend's sticky target; `app=` is NOT a targeting parameter (guard in _dispatch).
 _INPUT_ACTIONS = frozenset(a for a, s in _ACTIONS.items() if s.input)

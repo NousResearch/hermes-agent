@@ -30,10 +30,9 @@ def _family(display: str, speed: str, tier: str, strengths: str, text: Optional[
 
 
 _SIX_ASPECTS = ("21:9", "16:9", "4:3", "1:1", "3:4", "9:16")
-# MiniMax H3 uses capitalized/2K-style resolution enums; aliases map the tool's usual values. Max tops out at 768P.
-_H3_ALIASES = {"480p": "768P", "540p": "768P", "720p": "768P", "768p": "768P", "1080p": "2K", "2k": "2K", "4k": "4K", "2160p": "4K"}
-_H3_MAX_ALIASES = {"480p": "480P", "540p": "480P", "720p": "768P", "768p": "768P", "1080p": "768P", "2k": "768P", "4k": "768P", "2160p": "768P"}
-_H3_MAX_TURBO_ALIASES = {"480p": "480P", "540p": "480P", "720p": "768P", "768p": "768P", "1080p": "1080P", "2k": "1080P", "4k": "1080P", "2160p": "1080P"}
+# MiniMax H3 uses capitalized/2K-style resolution enums; aliases map the tool's usual values. Max and Max Turbo top out at 1080P.
+_H3_ALIASES = {"480p": "480P", "540p": "480P", "720p": "768P", "768p": "768P", "1080p": "2K", "2k": "2K", "4k": "4K", "2160p": "4K"}
+_H3_MAX_ALIASES = {"480p": "480P", "540p": "480P", "720p": "768P", "768p": "768P", "1080p": "1080P", "2k": "1080P", "4k": "1080P", "2160p": "1080P"}
 
 FAL_FAMILIES: dict[str, dict[str, Any]] = {
     # ─── Cheap / fast tier ─────────────────────────────────────────────
@@ -55,24 +54,24 @@ FAL_FAMILIES: dict[str, dict[str, Any]] = {
                       duration_suffix="s", audio=True, negative=True, seed=True),  # wants "4s" not "4"
     "seedance-2.0": _family("Seedance 2.0", "~60-120s", "premium", "ByteDance. Cinematic, synchronized audio + lip-sync, 4-15s.",  # no "auto" aspect, no `seed`
                             "bytedance/seedance-2.0/text-to-video", "bytedance/seedance-2.0/image-to-video", aspect_ratios=_SIX_ASPECTS,
-                            resolutions=("480p", "720p", "1080p"), durations=(4, 15), audio=True),
+                            resolutions=("480p", "720p", "1080p", "4k"), durations=(4, 15), audio=True),
     "seedance-2.5": _family("Seedance 2.5", "~60-180s", "premium", "ByteDance flagship. Native 30s single-pass, audio in the same latent space, lip-sync.",
                             "bytedance/seedance-2.5/text-to-video", "bytedance/seedance-2.5/image-to-video", aspect_ratios=_SIX_ASPECTS,
-                            image_drop_keys=("aspect_ratio",), resolutions=("480p", "720p"), durations=(4, 30), audio=True),  # i2v aspect is "auto" only
+                            image_drop_keys=("aspect_ratio",), resolutions=("480p", "720p", "1080p"), durations=(4, 30), audio=True),  # i2v aspect is "auto" only
     "minimax-h3": _family("MiniMax H3", "~60-180s", "premium", "MiniMax frontier. Native 2K (up to 4K), 5-15s, seven aspect ratios.",
                           "minimax/h3/text-to-video", "minimax/h3/image-to-video", duration_int=True, image_drop_keys=("aspect_ratio",),  # i2v follows image
-                          aspect_ratios=_SIX_ASPECTS, resolutions=("768P", "2K", "4K"), resolution_aliases=_H3_ALIASES, durations=(5, 15), audio_native=True),
+                          aspect_ratios=_SIX_ASPECTS, resolutions=("480P", "768P", "2K", "4K"), resolution_aliases=_H3_ALIASES, durations=(5, 15), audio_native=True),
     # i2v schema doesn't declare aspect_ratio; unlike base H3, Max declares `seed` on both endpoints; static key is in the schema's required array.
     "minimax-h3-max": _family("MiniMax H3 Max (fal post-train)", "~5-30s", "premium", "fal's post-trained MiniMax H3. Top-ranked quality/prompt "
-                              "adherence/aesthetics, 768p in seconds, 5-15s.", "minimax/h3-max/text-to-video", "minimax/h3-max/image-to-video",
-                              duration_int=True, image_drop_keys=("aspect_ratio",), aspect_ratios=_SIX_ASPECTS, resolutions=("480P", "768P"),
+                              "adherence/aesthetics, 768p in seconds, up to 1080P, 5-15s.", "minimax/h3-max/text-to-video", "minimax/h3-max/image-to-video",
+                              duration_int=True, image_drop_keys=("aspect_ratio",), aspect_ratios=_SIX_ASPECTS, resolutions=("480P", "768P", "1080P"),
                               resolution_aliases=_H3_MAX_ALIASES, durations=(5, 15), static_payload={"prompt_expansion_mode": "balanced"}, audio_native=True, seed=True),
-    # Same schema shape as Max (required prompt_expansion_mode, no i2v aspect_ratio) but adds a 1080P tier and an end_image_url
+    # Same schema shape as Max (required prompt_expansion_mode, no i2v aspect_ratio, 480P-1080P) plus an end_image_url
     # the tool surface doesn't expose; throughput-tuned so it's the fastest premium H3 tier ($0.025-0.08/s list).
     "minimax-h3-max-turbo": _family("MiniMax H3 Max Turbo (fal post-train)", "~5-20s", "premium", "fal's throughput-tuned H3 Max variant. Near-Max "
                                     "quality at a fraction of the price/latency, 480P-1080P, 5-15s.", "minimax/h3-max-turbo/text-to-video",
                                     "minimax/h3-max-turbo/image-to-video", duration_int=True, image_drop_keys=("aspect_ratio",), aspect_ratios=_SIX_ASPECTS,
-                                    resolutions=("480P", "768P", "1080P"), resolution_aliases=_H3_MAX_TURBO_ALIASES, durations=(5, 15),
+                                    resolutions=("480P", "768P", "1080P"), resolution_aliases=_H3_MAX_ALIASES, durations=(5, 15),
                                     static_payload={"prompt_expansion_mode": "balanced"}, audio_native=True, seed=True),
     "flux-3": _family("FLUX 3 (via FAL)", "~60-120s", "premium", "Black Forest Labs frontier video. Native audio, 5-20s, 8 aspect ratios.",
                       "blackforestlabs/flux-3/text-to-video", "blackforestlabs/flux-3/image-to-video", duration_int=True,  # enum "auto" | 5..20 ints

@@ -75,7 +75,7 @@ def _egress_proxy_args_for_docker() -> tuple[list[str], dict[str, str], list[str
             "corrupt.  Re-run `hermes egress setup` to mint provider "
             "tokens before starting a sandbox.")
 
-    volume_args = ["-v", f"{status.ca_cert_path}:{_CONTAINER_CA}:ro"]
+    volume_args = ["-v", f"{status.ca_cert_path}:{_CONTAINER_CA}:ro,z"]
 
     # tunnel_port serves CONNECT (HTTPS); the plain-HTTP forward listener is on +1.
     proxy_url = f"http://host.docker.internal:{status.tunnel_port}"

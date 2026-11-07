@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "exclude": [
+    "e2e",
+    "electron",
+    "playwright.config.ts",
+    "**/*.test.ts",
+    "**/*.test.tsx"
+  ]
+}

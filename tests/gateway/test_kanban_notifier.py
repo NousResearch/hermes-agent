@@ -82,6 +82,35 @@ def _unseen_terminal_events(tid):
         conn.close()
 
 
+def test_failure_only_subscription_skips_completion_and_delivers_one_block(tmp_path, monkeypatch):
+    """A failure-only allowlist stays quiet until progress stops."""
+    db_path = tmp_path / "failure-only.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="needs attention", assignee="edi")
+        kbn.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="chat-1",
+            event_kinds=kbn.FAILURE_ALERT_EVENT_KINDS,
+        )
+        kb._append_event(conn, tid, "completed", {"summary": "quiet completion"})
+        kb._append_event(conn, tid, "status", {"status": "ready"})
+        kb._append_event(conn, tid, "blocked", {"reason": "waiting for approval"})
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    message = adapter.sent[0]["text"]
+    for detail in (tid, "@edi", "waiting for approval"):
+        assert detail in message
+
+    runner._running = True
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+    assert len(adapter.sent) == 1
+
+
 def test_kanban_notifier_replays_telegram_dm_topic_delivery_metadata(tmp_path, monkeypatch):
     db_path = tmp_path / "dm-topic-metadata.db"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))

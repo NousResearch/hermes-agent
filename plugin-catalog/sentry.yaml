@@ -1,7 +1,7 @@
 name: sentry
 title: Sentry
 repo: https://github.com/YAN-XBT/hermes-sentry
-sha: 671c3e565ab76fd353d80704e055d24698832107
+sha: 014793f0ed180d8fb634e64fddc21c27674ed987
 version: "0.1.0"
 description: >-
   Provenance and taint tracking for tool results. Every tool result is stamped with where it came
@@ -13,8 +13,8 @@ description: >-
   workspace go to Hermes's approval gate. Deterministic enforcement at the tool boundary — a prompt
   or a skill can ask a model to ignore injected instructions, this refuses the follow-through. A call
   is evaluated as the call it really makes: tool_call, execute_code and process_manage are unwrapped
-  to what they actually run, and taint is copied into subagents.
-  Eight rules, each tunable to allow/monitor/escalate/block; a receipts ledger; a `hermes sentry`
+  to what they actually run, taint is copied into subagents, an encoded payload is decoded and judged by what it decodes to, and a script that names a credential and sends data is gated before it is ever run.
+  Ten rules, each tunable to allow/monitor/escalate/block; a receipts ledger; a `hermes sentry`
   CLI with a dry-run policy tester. Ships a Desktop half in the same package: a pane, a status-bar
   chip and ⌘K commands showing live taint state, the receipt feed and per-rule actions, backed by
   `/api/plugins/sentry/`. The pane changes a rule on the user's click; a tool call that tries the

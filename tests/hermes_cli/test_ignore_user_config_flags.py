@@ -112,8 +112,12 @@ class TestIgnoreUserConfigEnvGate:
         if flag:
             self._write_user_config(home, "test-vendor/user-sentinel")
             monkeypatch.setenv("HERMES_IGNORE_USER_CONFIG", "1")
-        (root / "cli-config.yaml").write_text("model:\n  default: test-vendor/project-sentinel\n")
+        package = root / "hermes_cli"
+        package.mkdir()
+        for where in (root, package):  # the install root, and beside the loader where the fallback looked
+            (where / "cli-config.yaml").write_text("model:\n  default: test-vendor/project-sentinel\n")
         monkeypatch.setattr("hermes_cli.config.get_project_root", lambda: root)
+        monkeypatch.setattr("hermes_cli.cli_config_load.__file__", str(package / "cli_config_load.py"))
 
         cfg = self._reload_cli(monkeypatch, home)()
 

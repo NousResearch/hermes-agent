@@ -426,3 +426,115 @@ def test_read_login_metadata_sees_committed_wal_changes(tmp_path):
     urls = {r["origin_url"] for r in rows}
     assert "https://new.example/login" in urls, "committed WAL change was not seen (immutable=1 regression)"
     assert "https://old.example/login" in urls
+
+
+# ── finding 5: a '#' (or '?'/space) in the DB path must not truncate the sqlite URI ──────────────
+
+def test_read_login_metadata_with_hash_in_path(tmp_path):
+    """The DB path is interpolated into a ``file:`` SQLite URI. A directory component containing '#'
+    (common in cloned Chrome profiles, synced folders) makes a bare ``f"file:{db}?mode=ro"`` truncate
+    at the '#' fragment, so SQLite opens the wrong/empty path and EVERY login silently drops. Building
+    the URI with ``Path.as_uri`` percent-escapes the '#', so the real logins are read."""
+    from tools.browser_real_profile_logins import read_login_metadata
+
+    base = tmp_path / "Profile #1 (work)" / "copy"
+    default = base / "Default"
+    default.mkdir(parents=True)
+    con = sqlite3.connect(default / "Login Data")
+    con.execute("CREATE TABLE logins (origin_url TEXT, username_value TEXT, password_value BLOB, "
+                "blacklisted_by_user INTEGER DEFAULT 0)")
+    con.execute("INSERT INTO logins VALUES ('https://example.com/login', 'jane', X'00', 0)")
+    con.commit()
+    con.close()
+    rows = read_login_metadata(str(base))
+    assert [r["origin_url"] for r in rows] == ["https://example.com/login"], (
+        "logins under a '#'-containing path were dropped (unescaped sqlite URI)")
+
+
+# ── finding 4: listing refreshes when the snapshot's source profile no longer matches the pin ────
+
+def _write_snapshot(copy_dir: Path, *, source: str, origin: str, username: str) -> None:
+    """A completed snapshot dir: Default/Login Data with one row + the done marker naming its source
+    profile (what ``snapshot_real_profile`` writes)."""
+    from hermes_cli.browser_connect import _SNAPSHOT_DONE_MARKER
+    default = copy_dir / "Default"
+    default.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(default / "Login Data")
+    con.execute("CREATE TABLE logins (origin_url TEXT, username_value TEXT, password_value BLOB, "
+                "blacklisted_by_user INTEGER DEFAULT 0)")
+    con.execute("INSERT INTO logins VALUES (?, ?, X'00', 0)", (origin, username))
+    con.commit()
+    con.close()
+    (copy_dir / _SNAPSHOT_DONE_MARKER).write_text(source, encoding="utf-8")
+
+
+def test_list_refreshes_when_pin_changed_to_another_profile(tmp_path, monkeypatch):
+    """A snapshot exists for source profile 'Default' (alice). The user changes ``browser.real_profile_pin``
+    to 'Profile 2' (bob). The base trusted the snapshot by file existence and skipped the source-profile
+    lifecycle, so a new backend still listed ALICE. The fix validates the snapshot's source against the
+    currently-selected pin and refreshes through the lifecycle when they differ — listing BOB.
+
+    Real sqlite + real config reads; only the live-profile root resolution and the lifecycle's snapshot
+    *rebuild* step are stubbed (no real Chrome needed for this bug, which is in the trust check)."""
+    from agent.vault_backends import enabled_backends
+
+    live_root = tmp_path / "chrome-data"           # the real browser's user-data dir
+    (live_root / "Default").mkdir(parents=True)
+    (live_root / "Profile 2").mkdir(parents=True)
+    copy_dir = tmp_path / ".hermes" / "browser-profile" / "chrome"
+    # Existing snapshot was taken from 'Default' and lists alice.
+    _write_snapshot(copy_dir, source="Default", origin="https://alice.example/login", username="alice")
+
+    # Config pins the source to 'Profile 2' now.
+    monkeypatch.setattr("hermes_cli.browser_connect._real_profile_pin", lambda: "Profile 2")
+
+    def refresh():
+        # The lifecycle rebuild: re-snapshot from the pinned 'Profile 2' (bob) and re-stamp the marker.
+        import shutil
+        shutil.rmtree(copy_dir, ignore_errors=True)
+        _write_snapshot(copy_dir, source="Profile 2", origin="https://bob.example/login", username="bob")
+        return ("ws://x", None)
+
+    refreshed = {"n": 0}
+
+    def counted():
+        refreshed["n"] += 1
+        return refresh()
+
+    with patch("agent.vault_backends.base._browser_profile_enabled", return_value=True), \
+         patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
+         patch("hermes_cli.browser_connect.real_profile_copy_dir", return_value=str(copy_dir)), \
+         patch("hermes_cli.browser_connect.real_profile_data_dir", return_value=str(live_root)), \
+         patch("tools.browser_session_real_profile.real_profile_cdp", side_effect=counted):
+        backend = next(b for b in enabled_backends() if b.name == "browser")
+        items = backend.list_items()
+
+    assert refreshed["n"] == 1, "listing did not refresh a snapshot whose source profile no longer matches the pin"
+    origins = {m.origin for m in items}
+    assert origins == {"https://bob.example"}, f"listed the stale profile's logins: {origins}"
+
+
+def test_list_does_not_refresh_when_snapshot_source_still_matches(tmp_path, monkeypatch):
+    """Control for finding 4: when the snapshot's source profile still matches the current pin, the
+    backend serves it WITHOUT re-running the lifecycle (no needless refresh on every list)."""
+    from agent.vault_backends import enabled_backends
+
+    live_root = tmp_path / "chrome-data"
+    (live_root / "Default").mkdir(parents=True)
+    copy_dir = tmp_path / ".hermes" / "browser-profile" / "chrome"
+    _write_snapshot(copy_dir, source="Default", origin="https://alice.example/login", username="alice")
+
+    monkeypatch.setattr("hermes_cli.browser_connect._real_profile_pin", lambda: "Default")
+    refreshed = {"n": 0}
+
+    with patch("agent.vault_backends.base._browser_profile_enabled", return_value=True), \
+         patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
+         patch("hermes_cli.browser_connect.real_profile_copy_dir", return_value=str(copy_dir)), \
+         patch("hermes_cli.browser_connect.real_profile_data_dir", return_value=str(live_root)), \
+         patch("tools.browser_session_real_profile.real_profile_cdp",
+               side_effect=lambda: refreshed.__setitem__("n", refreshed["n"] + 1) or ("ws://x", None)):
+        backend = next(b for b in enabled_backends() if b.name == "browser")
+        items = backend.list_items()
+
+    assert refreshed["n"] == 0, "listing needlessly refreshed a snapshot whose source still matches"
+    assert {m.origin for m in items} == {"https://alice.example"}

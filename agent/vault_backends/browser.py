@@ -24,6 +24,7 @@ browser — it only makes the saved logins visible and fillable.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Optional
 
 from agent.vault_backends.base import LoginBackend
@@ -62,21 +63,26 @@ class BrowserProfileLoginBackend(LoginBackend):
         return real_profile_copy_dir(browser)
 
     def _ensure_snapshot(self) -> Optional[str]:
-        """The snapshot copy dir with a populated ``Login Data``, preparing it first when needed.
+        """The snapshot copy dir with a populated ``Login Data`` for the CURRENTLY-selected source
+        profile, preparing or refreshing it first when needed.
 
         A freshly-enabled source on a profile that has had no prior browser session has no snapshot
         yet, so a bare read would list empty and the user could never select a login to initialise it.
-        Prepare the consented snapshot through the SAME lifecycle a fill uses (``real_profile_cdp()``,
-        which snapshots then launches/attaches the real-profile browser) before reading. The launch is
+        A snapshot that exists but was taken from a DIFFERENT source profile (the user changed
+        ``browser.real_profile_pin`` since) must not be trusted by file existence alone — it still
+        holds the OLD identity's logins. In both cases, prepare/refresh the consented snapshot through
+        the SAME lifecycle a fill uses (``real_profile_cdp()``, which re-syncs when the pinned source
+        changed, then launches/attaches the real-profile browser) before reading. The launch is
         idempotent and shared per profile, so listing reuses an already-running browser. Returns
         ``None`` when consent is off or the snapshot still cannot be produced (listing stays empty, but
         only because there is genuinely nothing to show)."""
         copy_dir = self._copy_dir()
-        if copy_dir and self._login_data_present(copy_dir):
+        if copy_dir and self._login_data_present(copy_dir) and self._snapshot_matches_source(copy_dir):
             return copy_dir
-        # No usable snapshot yet: drive the real-profile lifecycle to create one. Failure (consent
-        # off, unsupported browser, locked profile) is non-fatal here — fall back to whatever the copy
-        # dir holds (usually nothing), so listing degrades to empty rather than raising.
+        # No usable/current snapshot: drive the real-profile lifecycle to create or refresh one.
+        # Failure (consent off, unsupported browser, locked profile) is non-fatal here — fall back to
+        # whatever the copy dir holds (usually nothing), so listing degrades to empty rather than
+        # raising.
         try:
             from tools.browser_session_real_profile import real_profile_cdp
             real_profile_cdp()
@@ -84,6 +90,38 @@ class BrowserProfileLoginBackend(LoginBackend):
             logger.debug("real-profile logins: snapshot preparation failed: %s", exc)
         copy_dir = self._copy_dir()
         return copy_dir if copy_dir and self._login_data_present(copy_dir) else None
+
+    def _snapshot_matches_source(self, copy_dir: str) -> bool:
+        """False only when the existing snapshot POSITIVELY came from a DIFFERENT profile than the one
+        the config currently selects — the case the caller must refresh for.
+
+        The snapshot's completion marker records the source profile it was built from. After the user
+        changes ``browser.real_profile_pin`` to another profile, the on-disk snapshot still carries
+        the OLD profile's ``Login Data`` and its marker still names the old source, so trusting it by
+        file existence alone would list a different identity's saved logins. We return ``False`` (force
+        a refresh) ONLY when a marker names a source that differs from the currently-selected one;
+        every ambiguous case (no marker, unresolvable live-profile root or pin) serves the snapshot as
+        before, so this never forces a needless refresh that would wipe/rebuild a valid snapshot."""
+        browser = self._browser_name()
+        if not browser:
+            return True
+        try:
+            from hermes_cli.browser_connect import (
+                _SNAPSHOT_DONE_MARKER, _resolve_source_profile, _snapshot_source,
+                real_profile_data_dir)
+            snap_source = _snapshot_source(os.path.join(copy_dir, _SNAPSHOT_DONE_MARKER))
+            if snap_source is None:
+                return True  # no completion marker: ambiguous, serve as before (no forced refresh)
+            src = real_profile_data_dir(browser)
+            if not src:
+                return True  # cannot resolve the live profile root; don't force a pointless refresh
+            current_source, err = _resolve_source_profile(src)
+            if err or not current_source:
+                return True
+            return snap_source == current_source
+        except Exception as exc:  # health: allow BLE001 -- validation must never raise; serve as before
+            logger.debug("real-profile logins: snapshot source validation failed: %s", exc)
+            return True
 
     @staticmethod
     def _login_data_present(copy_dir: str) -> bool:
@@ -119,15 +157,21 @@ class BrowserProfileLoginBackend(LoginBackend):
                 continue
             if not origin or not origin.startswith(("http://", "https://")):
                 continue  # fill targets are web pages; app/extension origins never widen the set
-            username = row["username"].strip() or None
+            # The RAW saved username (whitespace preserved) is what the browser autofills and what
+            # resolve must match against, so the handle carries it verbatim. Stripping it here (then
+            # matching exactly on resolve) would turn a saved ' bob ' into 'bob' and never match the
+            # autofilled ' bob '. A stripped copy is used only for the human-facing label/identifier.
+            raw_username = row["username"]
+            display_username = raw_username.strip() or None
             out.append(VaultItemMeta(
                 # The handle carries the full saved URL (path preserved) so resolution opens the exact
-                # sign-in page, while ``origin``/``allowed_origins`` stay the normalized origin the
-                # fill tool's exact-origin guard checks against.
-                id=self._handle(nav_url, username or ""), kind="login",
-                label=f"{origin.split('://', 1)[-1]}" + (f" ({username})" if username else ""),
+                # sign-in page AND the raw saved username for the resolve-time account match, while
+                # ``origin``/``allowed_origins`` stay the normalized origin the fill tool's
+                # exact-origin guard checks against.
+                id=self._handle(nav_url, raw_username), kind="login",
+                label=f"{origin.split('://', 1)[-1]}" + (f" ({display_username})" if display_username else ""),
                 origin=origin, created_at="",
-                identifier_type="username" if username else None, identifier=username,
+                identifier_type="username" if display_username else None, identifier=display_username,
                 allowed_origins=(origin,)))
         return out
 

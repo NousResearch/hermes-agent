@@ -1,0 +1,22 @@
+name: recall-vault
+repo: https://github.com/tydavid5/recall-vault
+sha: 85ab5e0f1021b9b03a3034f96bb80835f55193ba
+description: A policy vault and memory for agent money. The agent remembers its spending rules, per-transaction cap, daily cap, confirm threshold, and allowlist, and Recall Vault blocks over-cap payments, refuses unknown recipients, and escalates over-threshold payments to human approval before any tool runs. Dry-run only, no money moves.
+maintainer: tydavid5
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "0.1.0"
+capabilities:
+  provides_tools:
+    - recall_vault_check
+    - recall_vault_policy
+    - recall_vault_set_policy
+    - recall_vault_ledger
+    - recall_vault_remember
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

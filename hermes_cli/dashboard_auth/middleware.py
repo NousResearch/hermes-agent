@@ -45,6 +45,8 @@ _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
     "/auth/login", "/auth/callback", "/auth/native/authorize", "/auth/native/token",
     "/auth/native/refresh", "/auth/password-login", "/auth/logout", "/login",
     "/api/auth/providers", "/api/mcp/oauth/callback/",
+    # A saved gateway's sign-in redirect: its one-use state is the credential (gateway_connections_oauth).
+    "/webapp/gateway-connections/oauth/callback",
     "/assets/", "/dashboard-plugins/", "/favicon.ico", "/ds-assets/", "/fonts/", "/fonts-terminal/")
 
 # Page icons, matched exactly. Browsers fetch them without cookies (the Webapp's page icon and

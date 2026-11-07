@@ -22,7 +22,30 @@ from cron.jobs import (
     rearm_oneshot,
     JOBS_FILE,
 )
-from cron.scheduler import tick
+
+
+def __getattr__(name: str):
+    """Resolve ``tick`` on first access instead of importing ``cron.scheduler`` here.
+
+    ``python -m cron.scheduler`` executes this package first, so a module-level
+    ``from cron.scheduler import tick`` puts the target module in ``sys.modules`` before
+    runpy executes it, emitting
+
+        RuntimeWarning: 'cron.scheduler' found in sys.modules after import of package
+        'cron', but prior to execution of 'cron.scheduler'; this may result in
+        unpredictable behaviour
+
+    on every external cron worker start. The warning is harmless, but it is the first
+    line of worker stderr, so it reads like the cause in cron failure notifications.
+    Deferring the import keeps ``cron.tick`` available to callers while leaving
+    ``sys.modules`` clean during runpy execution.
+    """
+    if name == "tick":
+        from cron.scheduler import tick
+
+        return tick
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "JOBS_FILE",

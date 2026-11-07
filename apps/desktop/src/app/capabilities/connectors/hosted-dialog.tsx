@@ -6,8 +6,6 @@ import { translateNow } from '@/i18n'
 import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
 import { notify } from '@/store/notifications'
 
-import type { McpServersController } from '../mcp/use-mcp-servers'
-
 import { type AccountEdit, AccountsSection, type AccountsSectionProps } from './accounts-section'
 import { ConnectElement } from './connect-element'
 import { ConnectorDialog } from './connector-dialog'
@@ -22,29 +20,18 @@ import {
 import type { WriteOutcome } from './data/mutations'
 import { openConnectorsAdmin } from './data/portal'
 import { type HostedConnectorsView, useConnectorTools } from './data/queries'
-import { localServerName } from './derive'
 import { ConnectorDialogMenu } from './dialog-menu'
-import { localCost } from './local-dialog'
-import type { InstallField } from './local-server-control'
-import { LocalAdvanced } from './local-slots'
-import { HostedToolsPanel, LocalToolsPanel, orgDisabledCount } from './tools-panel'
+import { HostedToolsPanel, orgDisabledCount } from './tools-panel'
 import type { AccountRow, ConnectorCardModel } from './types'
-import { type WayChoice, wayInUse } from './ways-section'
 
 export interface HostedConnectorDialogProps {
   accountActions: HostedAccountActions
   card: ConnectorCardModel
-  controller: McpServersController
   hosted: HostedConnectorsView
-  installFields?: readonly InstallField[]
-  installing?: boolean
   onClose: () => void
-  onConnect: () => void
   onDisconnect: () => void
   onGiveUp: (opId: string) => void
-  onInstall: (env: Record<string, string>) => void
   onReconnect: () => void
-  onRemoveServer: () => void
   onToggleForMe: (next: boolean) => void
   onVerb: () => void
   profile: ProfileScope
@@ -88,17 +75,11 @@ export interface HostedAccountActions {
 export function HostedConnectorDialog({
   accountActions,
   card,
-  controller,
   hosted,
-  installFields,
-  installing,
   onClose,
-  onConnect,
   onDisconnect,
   onGiveUp,
-  onInstall,
   onReconnect,
-  onRemoveServer,
   onToggleForMe,
   onVerb,
   profile,
@@ -106,15 +87,6 @@ export function HostedConnectorDialog({
 }: HostedConnectorDialogProps) {
   const tools = useConnectorTools(profile, card.slug, hosted.listSlugs.has(card.slug))
   const operation = accountOperationFor(useStore($accountOperations), card.slug, profile)
-  const inUse = wayInUse(card.ways)
-  const [way, setWay] = useState<WayChoice>(inUse ?? 'hosted')
-
-  useEffect(() => {
-    if (inUse) {
-      setWay(inUse)
-    }
-  }, [inUse])
-
   const accounts = card.ways.hosted?.accounts ?? []
 
   const accountList = useAccountList(
@@ -124,10 +96,6 @@ export function HostedConnectorDialog({
     operation !== null && !operation.settled,
     retryableAccount(operation)
   )
-
-  const local = card.ways.local
-  const serverName = localServerName(card)
-  const installed = local?.installed === true && card.plugin === undefined
 
   const hostedPanel = (
     <HostedToolsPanel
@@ -156,14 +124,8 @@ export function HostedConnectorDialog({
   return (
     <ConnectorDialog
       accounts={<AccountsSection {...accountList.props} />}
-      advanced={
-        installed ? <LocalAdvanced controller={controller} name={serverName} onRemove={onRemoveServer} /> : undefined
-      }
       card={card}
       connectElement={element}
-      cost={installed ? localCost(controller, serverName) : undefined}
-      installFields={installFields}
-      installing={installing}
       menu={
         <ConnectorDialogMenu
           onDisconnect={card.ways.hosted?.connected === true && accounts.length === 0 ? onDisconnect : undefined}
@@ -171,11 +133,8 @@ export function HostedConnectorDialog({
           onRefreshTools={tools.refresh}
         />
       }
-      onAuthenticate={() => void controller.authenticate(localServerName(card))}
-      onConnect={onConnect}
       onDisconnect={onDisconnect}
       onEscape={accountList.cancelEdit}
-      onInstall={onInstall}
       onOpenAdmin={() => void openConnectorsAdmin()}
       onOpenChange={next => {
         if (!next) {
@@ -186,23 +145,13 @@ export function HostedConnectorDialog({
           onClose()
         }
       }}
-      onReconnect={onReconnect}
-      onServerToggle={next => void controller.setServerEnabled(serverName, next)}
       onToggleForMe={onToggleForMe}
       onVerb={onVerb}
-      onWayChange={local ? setWay : undefined}
       open
       orgDisabledCount={orgDisabledCount(hosted.policy, card.slug, tools.tools)}
       rulesReadOnly={hosted.rulesFailed}
       togglePending={togglePending}
-      tools={
-        way === 'local' && local?.installed === true ? (
-          <LocalToolsPanel card={card} controller={controller} onRemove={onRemoveServer} />
-        ) : (
-          hostedPanel
-        )
-      }
-      way={way}
+      tools={hostedPanel}
     />
   )
 }

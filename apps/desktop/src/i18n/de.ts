@@ -55,12 +55,9 @@ export const deOverrides = {
     },
     card: {
       kindManaged: 'Verwaltet',
-      kindCatalog: 'MCP · Katalog',
       kindCustom: 'MCP · Benutzerdefiniert',
       kindPlugin: (plugin: string) => `MCP · Plugin ${plugin}`,
       inCatalog: 'Im Hermes-Katalog',
-      hostedTwin: 'Verwaltete Version verfügbar',
-      alsoLocal: 'Läuft auch auf diesem Gerät',
       open: (name: string) => `${name} öffnen`,
       turnServerOn: (name: string) => `${name} einschalten`,
       turnServerOff: (name: string) => `${name} ausschalten`,
@@ -89,7 +86,6 @@ export const deOverrides = {
       verb: {
         authenticate: 'Authentifizieren',
         connect: 'Verbinden',
-        install: 'Installieren',
         openLogs: 'Logs öffnen',
         reconnect: 'Neu verbinden',
         stopWaiting: 'Warten beenden',
@@ -169,11 +165,6 @@ export const deOverrides = {
       removeServerTitle: (name: string) => `${name} entfernen?`,
       removeServerBody: 'Der Eintrag wird aus mcp.json auf diesem Computer entfernt. Sonst wird nichts gelöscht.',
       appSwitch: (name: string) => `Hermes darf ${name} verwenden`,
-      waysTitle: (name: string) => `Wo ${name} läuft`,
-      wayNotConnected: (name: string) => `Noch nicht verbunden. Melden Sie sich im Browser bei ${name} an.`,
-      wayHosted: 'Verwaltet',
-      bothOn: (name: string) => `Beide sind an, daher sieht Hermes jedes ${name}-Tool doppelt.`,
-      turnOffLocal: 'Lokalen Server ausschalten',
       providedByPlugin: (plugin: string) => `Bereitgestellt vom Plugin ${plugin}`,
       openPlugins: 'Tab „Plugins“ öffnen',
       nousLine: 'Nous-Apps folgen Ihrem Konto, nicht dem Profil.',
@@ -194,7 +185,6 @@ export const deOverrides = {
 
     tools: {
       title: 'Tools',
-      notInstalledBody: 'Installieren Sie ihn auf diesem Gerät, um seine Tools zu sehen.',
       summaryTitle: (name: string) => `Was Hermes mit ${name} tun darf`,
       summaryPreviewTitle: (name: string) => `Was Hermes mit ${name} tun könnte, sobald Sie verbunden sind`,
       summaryCount: (count: number) => `${count} Tool${count === 1 ? '' : 's'}`,
@@ -1880,9 +1870,6 @@ export const deOverrides = {
       serverJson: 'Server-JSON',
       remove: 'Entfernen',
       test: 'Verbindung testen',
-      catalogLoading: 'MCP-Katalog wird geladen…',
-      catalogInstallFailed: name => `${name} konnte nicht installiert werden`,
-      catalogEnvRequired: 'Füllen Sie die erforderlichen Werte aus, bevor Sie installieren.',
       capabilitySummary: (tools, prompts, resources) =>
         `${[`${tools} Tools`, ...(prompts ? [`${prompts} Prompts`] : []), ...(resources ? [`${resources} Ressourcen`] : [])].join(', ')} aktiviert`,
       costTokens: tokens => `~${tokens} Tok/Aufruf`,

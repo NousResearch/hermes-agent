@@ -51,8 +51,6 @@ export type BotsMessages = {
     newerGateway: string
     emptySkillsHint: string
     defaultToolsHint: string
-    catalog: string
-    catalogInstalled: string
     mcpHint: string
     creating: string
     createBot: string
@@ -309,21 +307,6 @@ export type BotsMessages = {
     installFailed: (name: string) => string
     searchHint: string
     resizeHint: string
-    addServerFailed: string
-    noTarget: string
-    setKeyFailed: (name: string) => string
-    configured: (name: string) => string
-    authenticated: (name: string) => string
-    testFailed: string
-    completeSignIn: string
-    needsSetup: (name: string) => string
-    setUpDone: string
-    saveTest: string
-    authorizing: string
-    working: string
-    setupFailed: string
-    signIn: string
-    setUp: string
     skillsHub: string
     filterSkills: string
     searchHub: string

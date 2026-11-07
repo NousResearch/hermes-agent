@@ -2121,6 +2121,28 @@ def unsatisfied_parents(conn: sqlite3.Connection, task_id: str) -> list[tuple[st
     return [(row["id"], row["status"]) for row in rows]
 
 
+def _ready_children(conn: sqlite3.Connection, task_id: str) -> list[tuple[str, str]]:
+    """``(child_id, status)`` for every DIRECT child still ``ready``, in id order.
+
+    A parent must not complete while a child is ``ready``: the dispatcher would
+    spawn queued work beneath a card that has already declared itself done.
+    Every other non-terminal child state is upstream-supported and must NOT
+    block, or this gate deadlocks the board it protects: ``todo`` (the
+    dependency gate has not released the child yet — completing the parent is
+    exactly what promotes it), ``blocked`` (parked for a human, including
+    ``initial_status="blocked"``), and ``running``/``review`` (already released
+    and in flight; their claim/review already passed dependency admission).
+    Empty for a leaf card. Read-only.
+    """
+    rows = conn.execute(
+        "SELECT c.id, c.status FROM task_links l "
+        "JOIN tasks c ON c.id = l.child_id "
+        "WHERE l.parent_id = ? AND c.status = 'ready' "
+        "ORDER BY c.id", (task_id,),
+    ).fetchall()
+    return [(row["id"], row["status"]) for row in rows]
+
+
 def _claim_and_open_run(
     conn: sqlite3.Connection, task_id: str, source_status: str, lock: str, expires: int, now: int,
     *, event_extra: Optional[dict] = None,
@@ -2604,6 +2626,23 @@ class EmptyCompletionError(ValueError):
         )
 
 
+class ChildrenNotTerminalError(ValueError):
+    """``complete_task`` refused: a direct child is still ``ready``.
+
+    A ``ValueError`` so tool error handlers treat it as recoverable — nothing
+    was mutated and no run was closed.
+    """
+
+    def __init__(self, task_id: str, ready_children: list[tuple[str, str]]):
+        self.task_id = task_id
+        self.ready_children = list(ready_children)
+        named = ", ".join(f"{cid} ({status})" for cid, status in ready_children)
+        super().__init__(
+            f"completion blocked: {task_id} has {len(ready_children)} ready "
+            f"direct child(ren): {named}; complete, block or archive them first"
+        )
+
+
 class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
@@ -2664,6 +2703,12 @@ def complete_task(
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
     if not _parents_satisfied(conn, task_id):
         return False
+    # A ``ready`` direct child means dispatchable work is queued under a card
+    # that is about to declare itself done. Pre-check only names the blockers;
+    # the authoritative check is the one inside the write txn below.
+    ready_children = _ready_children(conn, task_id)
+    if ready_children:
+        raise ChildrenNotTerminalError(task_id, ready_children)
     from hermes_cli.kanban_pr_acceptance_store import prepare_acceptance, record_acceptance
     verified_cards = _gate_created_cards(conn, task_id, created_cards, summary or result)
     _gate_empty_completion(conn, task_id, result=result, summary=summary)
@@ -2679,6 +2724,12 @@ def complete_task(
         # reopened while this task waited.
         if not _parents_satisfied(conn, task_id):
             return False
+        # Same invariant as the pre-check, and the authoritative one: BEGIN
+        # IMMEDIATE serializes writers, so a child that became ``ready`` between
+        # the pre-check and here is visible and cannot slip through.
+        ready_children = _ready_children(conn, task_id)
+        if ready_children:
+            raise ChildrenNotTerminalError(task_id, ready_children)
         if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
             return False
         trow = conn.execute(

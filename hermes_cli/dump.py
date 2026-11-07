@@ -103,9 +103,11 @@ def _gateway_status() -> str:
     """Return a short gateway status string."""
     try:
         from hermes_cli.gateway import get_gateway_runtime_snapshot
+        from hermes_cli.gateway_status_notes import gateway_manager_label
+
         snapshot = get_gateway_runtime_snapshot()
         if snapshot.running:
-            mode = "manual" if snapshot.has_process_service_mismatch else snapshot.manager
+            mode = gateway_manager_label(snapshot)
             # A supervised gateway may have no scannable PID (s6 `python -c` launcher, #125390).
             pid = f", pid {snapshot.gateway_pids[0]}" if snapshot.gateway_pids else ""
             return f"running ({mode}{pid})"

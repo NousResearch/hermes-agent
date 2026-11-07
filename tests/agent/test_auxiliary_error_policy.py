@@ -125,6 +125,11 @@ BEHAVIOUR = [
     ("openrouter-upstream-429", sdk(429, "Provider returned error", wrapped=True, code=429,
                                     metadata={"raw": "rate-limited upstream", "provider_name": "DeepInfra"}),
      "openrouter", dict(attempts=1, fell_back=True, rotated=False)),
+    # An upstream's quota wording does not bench the healthy OpenRouter key's provider.
+    ("openrouter-upstream-quota", openai.APIError("Provider returned error", _REQ, body={"error": {
+        "message": "Provider returned error", "code": 429,
+        "metadata": {"raw": '{"error": {"message": "Quota exceeded for this model"}}', "provider_name": "DeepInfra"}}}),
+     "openrouter", dict(fell_back=True, unhealthy=False, rotated=False)),
     # A safety refusal is of the content itself: it is never resent to another provider.
     ("gemini-prompt-blocked", _gemini_prompt_block(), "gemini", dict(attempts=1, fell_back=False)),
     ("400-content-policy", sdk(400, "Your request was flagged by our safety system"), "openrouter",

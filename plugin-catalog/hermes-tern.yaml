@@ -1,0 +1,39 @@
+name: hermes-tern
+repo: https://github.com/alt-glitch/hermes-tern
+sha: 1cbc240514f9f08994bba4418892547411ca5573
+description: >-
+  Hermes in the Tern terminal, drawn natively: `hermes tern` runs `hermes chat --tui` with a
+  frontend that describes the chat to Tern over its Surface Protocol, so the transcript, tool
+  cards, approvals, subagents, a live todo list and pull requests are Tern UI (Markdown, folds,
+  diffs, sheets, asides, keys). Outside Tern it starts the regular TUI. Adds tools to link the PRs
+  a conversation works on, a docked PR view (checks, files, merge/close after a confirm), and live
+  charts of background processes whose rules the auxiliary model writes once per process.
+  Disclosure — network: GitHub's API with the GITHUB_TOKEN Hermes provides (optional_env), and the
+  user's own auxiliary model (task `tern_charts`) with a background command and samples of its
+  output redacted by Hermes; no telemetry. Commands: a tool_request middleware puts
+  `export TERN_PANE=…` (the chat's Tern pane) before the agent's terminal commands in sessions a
+  Tern pane shows. Reads outside its data: Hermes' session DB read-only (compression lineage,
+  subagent parents), the session's background-process output and the log files their commands
+  write. Runs the `tern` CLI to open files and splits beside the chat. Private Hermes imports
+  where no public seam exists: launching the TUI in-process (hermes_cli.main), the managed
+  connector client for connect results, and the auxiliary call in a helper process.
+maintainer: alt-glitch
+tier: community
+category: general
+requires_hermes: ">=0.22.2"
+docs_url: https://github.com/alt-glitch/hermes-tern#readme
+version: "0.1.0"
+title: Hermes for Tern
+screenshots:
+  - https://raw.githubusercontent.com/alt-glitch/hermes-tern/1cbc240514f9f08994bba4418892547411ca5573/docs/images/hero-light.png
+  - https://raw.githubusercontent.com/alt-glitch/hermes-tern/1cbc240514f9f08994bba4418892547411ca5573/docs/images/transcript.png
+  - https://raw.githubusercontent.com/alt-glitch/hermes-tern/1cbc240514f9f08994bba4418892547411ca5573/docs/images/approval.png
+  - https://raw.githubusercontent.com/alt-glitch/hermes-tern/1cbc240514f9f08994bba4418892547411ca5573/docs/images/subagents.png
+  - https://raw.githubusercontent.com/alt-glitch/hermes-tern/1cbc240514f9f08994bba4418892547411ca5573/docs/images/pr-tray.png
+  - https://raw.githubusercontent.com/alt-glitch/hermes-tern/1cbc240514f9f08994bba4418892547411ca5573/docs/images/job-chart.png
+platforms: [macos, linux]
+capabilities:
+  provides_tools: [link_pull_request, unlink_pull_request, list_pull_requests]
+  provides_hooks: [transform_tool_result]
+  provides_middleware: [tool_request]
+  requires_env: []

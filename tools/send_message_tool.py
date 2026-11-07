@@ -103,11 +103,8 @@ def _authorize_relay_target(platform_name: str, chat_id, thread_id=None, *,
         # an unattributable FAULT — never proof that there is no relay here.
         # I previously admitted the nameless case to protect the CLI/cron path;
         # that reasoning was wrong, because that path does not produce one.
-        _missing = getattr(exc, "name", None)
-        if not isinstance(exc, ModuleNotFoundError) or _missing not in (
-            "gateway",
-            "gateway.relay",
-            "gateway.relay.egress",
+        if not isinstance(exc, ModuleNotFoundError) or (
+            exc.name != "gateway.relay.egress" and not "gateway.relay.egress".startswith(f"{exc.name}.")
         ):
             logger.exception(
                 "relay egress module failed to import for %s — refusing the send",
@@ -683,7 +680,7 @@ _CHUNKED_ROUTES = {
     "slack": (False, [], _via_adapter_route),
     "wecom": (True, None, _via_adapter_route)}
 
-_MEDIA_PLATFORMS_NOTE = "telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp, slack and qqbot"
+_MEDIA_PLATFORMS_NOTE = "telegram, discord, matrix, weixin, signal, feishu, whatsapp, slack and qqbot"
 
 
 async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None,

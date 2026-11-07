@@ -42,6 +42,7 @@ import {
   buildLocationPayload,
   buildTextSendPayload,
   createBoundedMessageStore,
+  createMentionNameResolver,
   createQuotedMediaCache,
   deliveryStatusEvent,
   extractBridgeEvent,
@@ -273,6 +274,9 @@ const messageStore = createBoundedMessageStore(512);
 // file — see createQuotedMediaCache's doc comment in bridge_helpers.js.
 const quotedMediaCache = createQuotedMediaCache(512);
 
+// Mention id -> display label, learned from inbound pushNames (see createMentionNameResolver).
+const mentionNames = createMentionNameResolver({ fetchGroupMetadata: (chatId) => sock.groupMetadata(chatId) });
+
 function normalizePollUpdateOptions(aggregation, pollUpdateMessage, meId) {
   const selected = [];
   for (const option of aggregation || []) {
@@ -358,6 +362,7 @@ function enqueuePollUpdateEvent({ key, update, selectedOptions, aggregation }) {
     },
     mediaUrls: [],
     mentionedIds: [],
+    mentionedNames: {},
     quotedMessageId: pollId,
     quotedParticipant: '',
     quotedRemoteJid: chatId,
@@ -551,6 +556,8 @@ async function startSocket() {
 
     for (const msg of messages) {
       if (!msg.message) continue;
+      // Before any filtering: a sender's name is needed whenever someone else mentions them later.
+      mentionNames.learnMessage(msg);
 
       const chatId = msg.key.remoteJid;
       const senderId = msg.key.participant || chatId;
@@ -759,6 +766,7 @@ async function startSocket() {
           audio: AUDIO_CACHE_DIR,
         },
         lookupQuotedMedia: (quotedChatId, quotedMessageId) => quotedMediaCache.get(quotedChatId, quotedMessageId),
+        resolveMentionNames: mentionNames.resolve,
       });
       event.fromOwner = fromOwner;
 

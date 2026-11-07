@@ -5,7 +5,7 @@ be installed lazily after the adapter module is imported.
 """
 import asyncio
 import logging
-from typing import Optional
+from typing import Callable, Optional
 
 from agent.i18n import t
 from plugins.platforms.discord.adapter_config_readers import _read_discord_prompt_timeout
@@ -23,10 +23,10 @@ def build_exec_approval_view(discord, base, *, unauthorized):
             self, session_key: str, allowed_user_ids: set, allowed_role_ids: Optional[set] = None,
             require_admin: bool = False, admin_user_ids: Optional[set] = None,
             allow_permanent: bool = True, allow_session: bool = True, smart_denied: bool = False,
-            request_id: Optional[str] = None,
+            request_id: Optional[str] = None, on_resolved: Optional[Callable[[], None]] = None,
         ):
             super().__init__(allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout())
-            self.session_key = session_key
+            self.session_key, self.on_resolved = session_key, on_resolved
             self.request_id = request_id
             self.pending_retire: Optional[str] = None  # settle reason that arrived before the card was sent
             self._backend_settled = False
@@ -102,7 +102,8 @@ def build_exec_approval_view(discord, base, *, unauthorized):
             # wait timed out (count == 0) must not claim "Approved".
             try:
                 from tools.approval import resolve_gateway_approval
-                count = resolve_gateway_approval(self.session_key, choice, request_id=self.request_id)
+                count = resolve_gateway_approval(
+                    self.session_key, choice, request_id=self.request_id, before_wake=self.on_resolved)
                 logger.info(
                     "Discord button resolved %d approval(s) for session %s (choice=%s, user=%s)",
                     count, self.session_key, choice, interaction.user.display_name,

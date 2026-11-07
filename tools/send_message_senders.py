@@ -105,20 +105,34 @@ def _is_telegram_thread_not_found(error: Exception) -> bool:
     return "thread not found" in str(error).lower()
 
 
+def _telegram_request_timeouts():
+    """Same HERMES_TELEGRAM_HTTP_* timeouts (and defaults) the gateway adapter uses, so the
+    standalone lane doesn't silently fall back to PTB's 5s/1s defaults."""
+    from utils import env_float
+    return {
+        "connect_timeout": env_float("HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT", 10.0),
+        "read_timeout": env_float("HERMES_TELEGRAM_HTTP_READ_TIMEOUT", 20.0),
+        "write_timeout": env_float("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0),
+        "pool_timeout": env_float("HERMES_TELEGRAM_HTTP_POOL_TIMEOUT", 8.0),
+    }
+
+
 def _telegram_bot(token):
     """Bot honouring TELEGRAM_PROXY (standalone sends time out where api.telegram.org is
-    blocked); falls back to a direct connection."""
+    blocked) and the HERMES_TELEGRAM_HTTP_* timeouts; falls back to a direct connection."""
     from telegram import Bot
     try:
+        from telegram.request import HTTPXRequest
+        timeouts = _telegram_request_timeouts()
         from gateway.platforms.base import resolve_proxy_url
         proxy = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=["api.telegram.org"])
         if not proxy:
-            return Bot(token=token)
-        from telegram.request import HTTPXRequest
+            return Bot(token=token, request=HTTPXRequest(**timeouts))
         logger.info("send_message: standalone Telegram send routed through proxy %s", proxy)
-        return Bot(token=token, request=HTTPXRequest(proxy=proxy), get_updates_request=HTTPXRequest(proxy=proxy))
+        return Bot(token=token, request=HTTPXRequest(proxy=proxy, **timeouts),
+                   get_updates_request=HTTPXRequest(proxy=proxy, **timeouts))
     except Exception as proxy_err:
-        logger.warning("send_message: failed to attach Telegram proxy (%s), falling back to direct connection", proxy_err)
+        logger.warning("send_message: failed to configure Telegram request (%s), falling back to defaults", proxy_err)
     return Bot(token=token)
 
 

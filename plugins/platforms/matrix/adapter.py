@@ -707,12 +707,8 @@ def _redact_url_for_log(url: str) -> str:
 
 
 def _pre_sanitize_matrix_markdown(text: str) -> str:
-    """Remove unsafe raw HTML before Markdown conversion can escape it."""
-    result = re.sub(r"(?is)<\s*(script|style)\b[^>]*>.*?<\s*/\s*\1\s*>", "", text or "")
-    result = re.sub(r"""(?is)\s+on[a-z0-9_-]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)""", "", result)
-    return re.sub(
-        r"""(?is)\s+(href|src)\s*=\s*("[^"]*(?:javascript|data|vbscript):[^"]*"|'[^']*(?:javascript|data|vbscript):[^']*'|[^\s>]*(?:javascript|data|vbscript):[^\s>]*)""",
-        "", result)
+    """Remove unsafe raw script/style blocks before Markdown conversion can escape them."""
+    return re.sub(r"(?is)<\s*(script|style)\b[^>]*>.*?<\s*/\s*\1\s*>", "", text or "")
 
 
 def matrix_deps_present() -> bool:

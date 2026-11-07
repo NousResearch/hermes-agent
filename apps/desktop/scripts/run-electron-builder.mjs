@@ -102,7 +102,7 @@ function runSourceBuilds(args, nativeDeps, spawn) {
     const arch = flag.slice(2)
     const target = `${platform}-${arch}`
     const out = path.join(app, 'build/packager', target)
-    const native = nativeDeps || path.join(app, requested.length ? `build/native-deps-${target}` : 'build/native-deps')
+    const native = nativeDeps || path.join(app, requested.length ? `build/products/native-deps-${target}` : 'build/native-deps')
     const commands = []
     if (!nativeDeps && (requested.length || platform !== process.platform || !fs.existsSync(`${native}.prepared.json`))) {
       commands.push([path.join(import.meta.dirname, 'stage-native-deps.mjs'), '--source', source,

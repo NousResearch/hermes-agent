@@ -68,6 +68,27 @@ class TestResolveDisplaySetting:
         assert resolve_display_setting(config, "slack", "tool_progress") == "off"
         assert resolve_display_setting(config, "telegram", "tool_progress") == "all"
 
+    def test_quiet_notice_defaults_and_platform_overrides(self):
+        """Audience-facing notice switches are enabled unless that platform opts out."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "platforms": {
+                    "whatsapp": {
+                        "busy_ack_enabled": False,
+                        "failed_turn_notice": "no",
+                    },
+                },
+            },
+        }
+
+        assert resolve_display_setting({}, "telegram", "busy_ack_enabled") is True
+        assert resolve_display_setting({}, "telegram", "failed_turn_notice") is True
+        assert resolve_display_setting(config, "whatsapp", "busy_ack_enabled") is False
+        assert resolve_display_setting(config, "whatsapp", "failed_turn_notice") is False
+        assert resolve_display_setting(config, "telegram", "busy_ack_enabled") is True
+
 # ---------------------------------------------------------------------------
 # Backward compatibility: tool_progress_overrides
 # ---------------------------------------------------------------------------

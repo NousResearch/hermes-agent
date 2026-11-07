@@ -61,6 +61,7 @@ def test_check_uses_real_pm_selection_and_keeps_invalid_evidence(admission_env, 
 
     # A recorded extra only counts while the tree still declares it.
     pyproject = core / 'pyproject.toml'
+    old_pyproject = pyproject.read_bytes()
     pyproject.write_text(pyproject.read_text(encoding='utf-8')
                          + '[project.optional-dependencies]\nchanged-extra = []\n', encoding='utf-8')
     altered = json.loads(pristine)
@@ -69,6 +70,10 @@ def test_check_uses_real_pm_selection_and_keeps_invalid_evidence(admission_env, 
     check('would-sync')
     assert any(problem.startswith('venv:') for problem in ensure.check())
     facts_path.write_bytes(pristine)
+    # The packaging files are part of the stamp: an edited pyproject is not the synced environment.
+    check('would-sync')
+    pyproject.write_bytes(old_pyproject)
+    check('current')
 
     pins.set_pin('python', '1.0', {'any': {'url': 'https://example.invalid/python', 'sha256': 'b' * 64}})
     pins.save()

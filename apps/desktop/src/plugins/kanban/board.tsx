@@ -106,6 +106,7 @@ import {
   useKanban,
   useOrchestration
 } from './ui'
+import { useCardWindow, useScrollerElement, VIRTUALIZE_AT } from './virtual-cards'
 
 // ── optimistic board edits (reconciled by the follow-up refresh) ─────────────
 
@@ -286,6 +287,7 @@ function Card({
             selected && 'border-(--dt-composer-ring) bg-[color-mix(in_srgb,var(--dt-composer-ring)_7%,transparent)]',
             dragging && 'opacity-40'
           )}
+          data-kanban-card={task.id}
           draggable
           onClick={event => (event.metaKey || event.ctrlKey ? onToggleSelect(task.id) : onOpen(task.id))}
           onDragEnd={() => setDragging(false)}
@@ -345,6 +347,64 @@ function Card({
   )
 }
 
+// ── virtualized card list ────────────────────────────────────────────────────
+
+/**
+ * A long column's cards: a scroll area sized for every one of them, mounting only the rows near the
+ * viewport (see virtual-cards.tsx). Every card stays reachable; nothing is capped. The CARDS themselves
+ * are mounted here rather than handed in as render callbacks, so their hooks belong to this component
+ * and not to the list's.
+ */
+function VirtualCards({
+  columns,
+  onDelete,
+  onMove,
+  onOpen,
+  onToggleSelect,
+  scroller,
+  selected,
+  tasks,
+  tenants
+}: {
+  columns: string[]
+  onDelete: (id: string) => void
+  onMove: (id: string, status: string) => void
+  onOpen: (id: string) => void
+  onToggleSelect: (id: string) => void
+  scroller: HTMLElement | null
+  selected: ReadonlySet<string>
+  tasks: KanbanTask[]
+  tenants: readonly string[]
+}) {
+  const { slots, totalSize } = useCardWindow(tasks, scroller)
+
+  return (
+    <div className="relative w-full shrink-0" data-kanban-sizer="" style={{ height: `${totalSize}px` }}>
+      {slots.map(slot => (
+        <div
+          className="absolute top-0 left-0 w-full"
+          data-index={slot.index}
+          data-kanban-row=""
+          key={slot.item.id}
+          ref={slot.measure}
+          style={slot.style}
+        >
+          <Card
+            columns={columns}
+            onDelete={onDelete}
+            onMove={onMove}
+            onOpen={onOpen}
+            onToggleSelect={onToggleSelect}
+            selected={selected.has(slot.item.id)}
+            task={tasks[slot.index]}
+            tenants={tenants}
+          />
+        </div>
+      ))}
+    </div>
+  )
+}
+
 // ── column ───────────────────────────────────────────────────────────────────
 
 function Column({
@@ -380,6 +440,11 @@ function Column({
   const label = columnLabel(k, column.name)
   const locked = isLockedTarget(column.name)
   const byProfile = useValue($lanesByProfile)
+  const [attachScroller, scrollerEl] = useScrollerElement()
+
+  // The done column is a board's whole history; past VIRTUALIZE_AT rows a column mounts only what is
+  // near the viewport instead of every card (see virtual-cards.tsx). Nothing is capped or hidden.
+  const virtual = !byProfile && column.tasks.length > VIRTUALIZE_AT
 
   // The dashboard's "lanes by profile": sub-group Running by assignee so a
   // fleet's in-flight work reads per-worker. Null = flat (off, or trivial).
@@ -477,43 +542,61 @@ function Column({
           <Codicon name="chevron-left" size="0.75rem" />
         </button>
       </header>
-      <div className="relative flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto">
-        {lanes
-          ? lanes.map(([assignee, tasks]) => (
-              <div className="flex flex-col gap-2" key={assignee}>
-                <div className="flex items-center gap-1.5 px-1 pt-1 text-[0.625rem] text-(--ui-text-quaternary)">
-                  {assignee !== UNASSIGNED_LANE && <Avatar name={assignee} size="0.875rem" />}
-                  {assignee}
-                  <span className="tabular-nums">{tasks.length}</span>
-                </div>
-                {tasks.map(task => (
-                  <Card
-                    columns={columns}
-                    key={task.id}
-                    onDelete={onDelete}
-                    onMove={onMove}
-                    onOpen={onOpen}
-                    onToggleSelect={onToggleSelect}
-                    selected={selected.has(task.id)}
-                    task={task}
-                    tenants={tenants}
-                  />
-                ))}
+      <div
+        className="relative flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto"
+        data-kanban-scroller={column.name}
+        ref={attachScroller}
+      >
+        {lanes ? (
+          lanes.map(([assignee, tasks]) => (
+            <div className="flex flex-col gap-2" key={assignee}>
+              <div className="flex items-center gap-1.5 px-1 pt-1 text-[0.625rem] text-(--ui-text-quaternary)">
+                {assignee !== UNASSIGNED_LANE && <Avatar name={assignee} size="0.875rem" />}
+                {assignee}
+                <span className="tabular-nums">{tasks.length}</span>
               </div>
-            ))
-          : column.tasks.map(task => (
-              <Card
-                columns={columns}
-                key={task.id}
-                onDelete={onDelete}
-                onMove={onMove}
-                onOpen={onOpen}
-                onToggleSelect={onToggleSelect}
-                selected={selected.has(task.id)}
-                task={task}
-                tenants={tenants}
-              />
-            ))}
+              {tasks.map(task => (
+                <Card
+                  columns={columns}
+                  key={task.id}
+                  onDelete={onDelete}
+                  onMove={onMove}
+                  onOpen={onOpen}
+                  onToggleSelect={onToggleSelect}
+                  selected={selected.has(task.id)}
+                  task={task}
+                  tenants={tenants}
+                />
+              ))}
+            </div>
+          ))
+        ) : virtual ? (
+          <VirtualCards
+            columns={columns}
+            onDelete={onDelete}
+            onMove={onMove}
+            onOpen={onOpen}
+            onToggleSelect={onToggleSelect}
+            scroller={scrollerEl}
+            selected={selected}
+            tasks={column.tasks}
+            tenants={tenants}
+          />
+        ) : (
+          column.tasks.map(task => (
+            <Card
+              columns={columns}
+              key={task.id}
+              onDelete={onDelete}
+              onMove={onMove}
+              onOpen={onOpen}
+              onToggleSelect={onToggleSelect}
+              selected={selected.has(task.id)}
+              task={task}
+              tenants={tenants}
+            />
+          ))
+        )}
         {/* Jira-style lane add — dashed, faded in on lane hover. Opacity (not
             display) so it always holds its slot and never thrashes layout.
             Locked lanes get none: you can't create into a system state. */}
@@ -1108,8 +1191,10 @@ export function KanbanBoardPage() {
 
   // Live updates ride the events socket (bindApi); this interval is only the
   // slow heartbeat for socketless paths (OAuth remotes, dropped connections).
+  // fetchBoard reads the board this key already holds and asks for a delta against it; a full snapshot
+  // only when there is nothing trustworthy to diff from (see board-delta.ts).
   const { data: board, error } = useQuery({
-    queryFn: () => fetchBoard(archived),
+    queryFn: () => fetchBoard(archived, scope, slug),
     queryKey: boardKey(scope, slug, archived),
     refetchInterval: 60_000
   })
@@ -1195,6 +1280,11 @@ export function KanbanBoardPage() {
     }
 
     const q = search.trim().toLowerCase()
+
+    // Unfiltered, hand the board straight back: a poll must not rebuild every column for nothing.
+    if (!q && !tenant && !assignee) {
+      return board
+    }
 
     const keep = (task: KanbanTask) =>
       (!q || `${task.title} ${task.body ?? ''} ${task.id}`.toLowerCase().includes(q)) &&

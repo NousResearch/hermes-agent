@@ -1,0 +1,18 @@
+name: wazoo
+repo: https://github.com/wazootech/wazoo-hermes
+sha: 2d4447f73ced14a5002be920f274ec1f39b0577e
+version: "1.0.0"
+description: Wazoo world-model memory provider — typed memories (decision, preference, person, project,
+  finding, correction) in an RDF graph with retraction provenance, background recall prefetch, hybrid
+  search, and SPARQL for structural questions. Works against the hosted Wazoo cloud (provisions a world
+  automatically from a platform token) or a self-hosted worlds endpoint with a locally minted key.
+maintainer: wazootech
+tier: community
+category: memory
+docs_url: https://github.com/wazootech/wazoo-hermes#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - WORLDS_TOKEN

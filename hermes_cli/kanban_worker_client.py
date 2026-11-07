@@ -146,10 +146,24 @@ async def _await_receipt(client, params, board_db, claim):
 
 def _exit_code(receipt, params, board_db):
     from hermes_cli.gateway_client import GatewayClientError
-    if receipt['status'] == 'unknown':
-        raise GatewayClientError('Kanban execution unknown; retained by owner')
     from gateway.session_kanban import worker_result
+    # The admission is the ledger of ONE owner epoch; the run's own result is the attempt's
+    # outcome and it outlives the epoch that carried it. An owner that fences an attempt which
+    # already reported (epoch bump on restart: ``recover_session_inputs`` marks the previous
+    # epoch's admissions ``unknown``) must not erase that work, so the result recorded under
+    # this exact claim is read first and outranks an ``unknown`` admission. ``worker_result``
+    # returns {} unless run_id AND claim_lock match, so no other attempt's result is adopted.
     result = worker_result(board_db, params)
+    if receipt['status'] == 'unknown':
+        if result:
+            if result.get('last_output'):
+                print(result['last_output'])
+            return result.get('exit_code', 1)
+        # Nothing was delivered and the owner will not take one now: say so in words, so the
+        # run's crash note explains WHY instead of showing a bare exit code.
+        print('Kanban execution unknown: the owner fenced this attempt (runtime epoch bump) '
+              'before it reported, so no handoff was delivered.', file=sys.stderr)
+        raise GatewayClientError('Kanban execution unknown; retained by owner')
     # The attempt's reply ends the log, as a one-shot worker's did: crash diagnostics quote it.
     if result.get('last_output'):
         print(result['last_output'])

@@ -26,6 +26,10 @@ from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_owner_recovery
+# Module-level (not inside the tests): this is an entry point, so importing it runs
+# ``hermes_bootstrap``; the home-I/O guard refuses that read mid-test, while at collection time
+# the sibling worker tests import it the same way.
+from hermes_cli import kanban_worker_client
 
 NOW = int(time.time())
 HOST = kb._claimer_id().split(":", 1)[0]
@@ -310,3 +314,48 @@ def test_a_loss_recorded_against_a_superseded_run_is_dropped(board):
     board.conn.commit()
     record_worker_loss(policy, "managed_worker_failed", pid=1234, bound=False)
     assert count() == 1
+
+# --- D2: an epoch bump may not erase an attempt that already reported ---------------------
+# ``recover_session_inputs`` marks the previous epoch's admissions ``unknown`` at every owner
+# start. A submitter that had already finished writes its ``worker_result`` on the run first;
+# the receipt used to win and a finished attempt was booked as a crash (rc=1 on close). The
+# run's own result is the attempt's outcome; the admission is only the delivery ledger of one
+# epoch, so it must not outrank it.
+
+def _fenced_attempt(board, tid):
+    """A running card whose admission the owner has already fenced ``unknown``."""
+    run_id = board.running(tid, claim_expires_in=900, heartbeat_age=30)
+    return {"task_id": tid, "run_id": run_id, "claim_lock": board.state(tid)["claim_lock"]}
+
+
+def test_a_fenced_attempt_keeps_the_result_it_already_delivered(board, capsys):
+    params = _fenced_attempt(board, "t_fenced")
+    board.event(params["task_id"], params["run_id"], "worker_result",
+                {"claim_lock": params["claim_lock"], "exit_code": 0,
+                 "last_output": "handoff: PR #812 open"}, NOW)
+    board.conn.commit()
+
+    rc = kanban_worker_client._exit_code({"status": "unknown"}, params, str(kb.kanban_db_path()))
+
+    assert rc == 0
+    assert "handoff: PR #812 open" in capsys.readouterr().out
+
+
+def test_a_fenced_attempt_that_never_reported_still_refuses(board):
+    from hermes_cli.gateway_client import GatewayClientError
+    params = _fenced_attempt(board, "t_fenced_bare")
+
+    with pytest.raises(GatewayClientError, match="unknown"):
+        kanban_worker_client._exit_code({"status": "unknown"}, params, str(kb.kanban_db_path()))
+
+
+def test_a_result_from_another_claim_is_never_adopted(board):
+    """No replay: only this attempt's own result may outrank an unknown admission."""
+    from hermes_cli.gateway_client import GatewayClientError
+    params = _fenced_attempt(board, "t_fenced_other")
+    board.event(params["task_id"], params["run_id"], "worker_result",
+                {"claim_lock": "another-host:1", "exit_code": 0, "last_output": "not mine"}, NOW)
+    board.conn.commit()
+
+    with pytest.raises(GatewayClientError, match="unknown"):
+        kanban_worker_client._exit_code({"status": "unknown"}, params, str(kb.kanban_db_path()))

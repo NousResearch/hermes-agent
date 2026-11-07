@@ -71,7 +71,7 @@ class TestParsePackageFromArgs:
         assert ver == "1.0"
 
     def test_pypi_skips_flags(self):
-        name, ver = _parse_package_from_args(["--from", "mcp[cli]"], "PyPI")
+        name, _ver = _parse_package_from_args(["--from", "mcp[cli]"], "PyPI")
         # --from is a flag, mcp[cli] is the package
         # Actually --from is a flag so it gets skipped, mcp[cli] is found
         assert name == "mcp"
@@ -221,7 +221,7 @@ class TestCheckPackageForMalware:
         mock_response.__enter__ = lambda s: s
         mock_response.__exit__ = MagicMock(return_value=False)
 
-        with patch("tools.osv_check.urllib.request.urlopen", return_value=mock_response) as mock_url:
+        with patch("tools.osv_check.urllib.request.urlopen", return_value=mock_response):
             check_package_for_malware("uvx", ["mcp-server-persist"])
 
         cache_file = tmp_path / "cache" / "osv_check.json"

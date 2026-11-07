@@ -28,7 +28,7 @@ def session(db):
 
 def test_conversation_rows_carry_durable_row_id(session, db):
     """Every projected message exposes its messages.id — reactions key off it."""
-    key, rows = session
+    _key, rows = session
 
     assert all(isinstance(r, int) for r in rows)
     assert rows == sorted(rows), "row ids must follow insertion order"

@@ -44,7 +44,9 @@ def _agent_args(**overrides) -> Namespace:
     return Namespace(**base)
 
 
-def test_prepare_agent_startup_backgrounds_blocking_mcp_for_chat(monkeypatch):
+def test_prepare_agent_startup_backgrounds_blocking_mcp_for_rl(monkeypatch):
+    """``hermes rl`` builds its agent in this process: discovery runs off-thread, never blocking.
+    (Chat turns run in the gateway; see the next test.)"""
     stop = threading.Event()
     calls = {"mcp": 0}
 
@@ -62,7 +64,7 @@ def test_prepare_agent_startup_backgrounds_blocking_mcp_for_chat(monkeypatch):
         "hermes_cli.config",
         types.SimpleNamespace(
             read_raw_config=lambda: {"mcp_servers": {"demo": {"transport": "stdio"}}},
-            load_config=lambda: {},
+            load_config=dict,
         ),
     )
     monkeypatch.setitem(
@@ -88,7 +90,7 @@ def test_prepare_agent_startup_backgrounds_blocking_mcp_for_chat(monkeypatch):
 
     try:
         start = time.monotonic()
-        main_mod._prepare_agent_startup(_agent_args())
+        main_mod._prepare_agent_startup(_agent_args(command="rl"))
         elapsed = time.monotonic() - start
         assert elapsed < 2.0
         deadline = time.monotonic() + 3.0
@@ -100,6 +102,22 @@ def test_prepare_agent_startup_backgrounds_blocking_mcp_for_chat(monkeypatch):
         assert thread.is_alive()
     finally:
         stop.set()
+
+
+@pytest.mark.parametrize("command", [None, "chat"])
+def test_chat_client_never_spawns_mcp_servers_the_gateway_owns(monkeypatch, command):
+    """A chat/`-q` client only proxies turns to the gateway: spawning every MCP server here doubled
+    them and held the discovery lock the cold-starting gateway waited on before READY."""
+    calls = {"background": 0, "inline": 0}
+    monkeypatch.setattr(main_mod, "_resolve_use_tui", lambda _args: False)
+    monkeypatch.setattr(mcp_startup, "start_background_mcp_discovery",
+                        lambda **_kwargs: calls.__setitem__("background", calls["background"] + 1))
+    monkeypatch.setitem(sys.modules, "hermes_cli.plugins", types.SimpleNamespace(
+        discover_plugins=lambda: None, start_background_plugin_discovery=lambda: None))
+    monkeypatch.setitem(sys.modules, "tools.mcp_tool_discovery", types.SimpleNamespace(
+        discover_mcp_tools=lambda **_k: calls.__setitem__("inline", calls["inline"] + 1)))
+    main_mod._prepare_agent_startup(_agent_args(command=command))
+    assert calls == {"background": 0, "inline": 0}
 
 
 def test_prepare_agent_startup_skips_discovery_when_chat_resolves_to_tui(
@@ -129,7 +147,7 @@ def test_prepare_agent_startup_skips_discovery_when_chat_resolves_to_tui(
         "hermes_cli.config",
         types.SimpleNamespace(
             read_raw_config=lambda: {"mcp_servers": {"demo": {"transport": "stdio"}}},
-            load_config=lambda: {},
+            load_config=dict,
         ),
     )
     monkeypatch.setitem(
@@ -150,46 +168,6 @@ def test_prepare_agent_startup_skips_discovery_when_chat_resolves_to_tui(
     assert calls["background"] == 0
     assert calls["inline"] == 0
     assert mcp_startup._current_home_thread() is None
-
-
-def test_prepare_agent_startup_keeps_discovery_for_non_chat_commands(
-    monkeypatch,
-):
-    """Non-chat commands never launch the TUI, so they must keep their own
-    MCP discovery even when the ambient display config resolves to TUI —
-    ``_is_tui_chat_launch`` must not consult ``_resolve_use_tui`` there."""
-    calls = {"inline": 0}
-
-    monkeypatch.setattr(main_mod, "_resolve_use_tui", lambda _args: True)
-    monkeypatch.setitem(
-        sys.modules,
-        "hermes_cli.plugins",
-        types.SimpleNamespace(discover_plugins=lambda: None),
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "hermes_cli.config",
-        types.SimpleNamespace(
-            read_raw_config=lambda: {"mcp_servers": {"demo": {"transport": "stdio"}}},
-            load_config=lambda: {},
-        ),
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "agent.shell_hooks",
-        types.SimpleNamespace(register_from_config=lambda *_a, **_k: None),
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "tools.mcp_tool_discovery",
-        types.SimpleNamespace(
-            discover_mcp_tools=lambda: calls.__setitem__("inline", calls["inline"] + 1),
-        ),
-    )
-
-    main_mod._prepare_agent_startup(_agent_args(command="mcp", mcp_action="serve"))
-
-    assert calls["inline"] == 1
 
 
 def test_background_mcp_discovery_suppresses_interactive_oauth(monkeypatch):
@@ -282,7 +260,7 @@ def test_portable_only_mcp_configuration_opens_startup_gate(monkeypatch):
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.config",
-        types.SimpleNamespace(read_raw_config=lambda: {}),
+        types.SimpleNamespace(read_raw_config=dict),
     )
     monkeypatch.setitem(
         sys.modules,
@@ -436,7 +414,6 @@ def test_prepare_agent_startup_installs_server_filter(monkeypatch, _reset_mcp_se
         types.SimpleNamespace(discover_plugins=lambda: None),
     )
     monkeypatch.setattr(main_mod, "_should_background_mcp_startup", lambda args: False)
-    monkeypatch.setattr(main_mod, "_command_has_dedicated_mcp_startup", lambda args: True)
     main_mod._prepare_agent_startup(_agent_args(toolsets="terminal,code-mcp"))
     assert mcp_startup.get_mcp_server_filter() == ["terminal", "code-mcp"]
 

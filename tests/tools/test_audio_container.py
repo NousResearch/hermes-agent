@@ -107,7 +107,7 @@ class TestInboundCacheUsesSniffer:
     @pytest.mark.asyncio
     async def test_cache_audio_from_url_sniffs_too(self, tmp_path, monkeypatch):
         """The URL download path routes through the same sniffer."""
-        import gateway.platforms.base as base
+        from gateway.platforms import base
 
         monkeypatch.setattr(base, "AUDIO_CACHE_DIR", tmp_path)
 
@@ -152,6 +152,6 @@ class TestSignalDelegatesToCentralSniffer:
     """signal._guess_extension audio branches delegate to the shared module."""
 
     def test_signal_uses_shared_sniffer(self):
-        from gateway.platforms import signal as signal_mod
+        from plugins.platforms.signal import adapter as signal_mod
 
         assert signal_mod._guess_extension(M4A) == ".m4a"

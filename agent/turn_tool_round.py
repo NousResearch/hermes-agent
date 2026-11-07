@@ -13,7 +13,7 @@ import logging
 from typing import Any, Dict, Optional, Tuple
 
 from agent.message_metadata import append_message
-from agent.message_sanitization import coalesce_tool_call_id
+from agent.message_sanitization import coalesce_tool_call_id, normalize_provider_tool_call_ids
 from agent.turn_preflight import compress_after_tool_results
 from agent.turn_tool_validation import validate_tool_calls
 
@@ -21,6 +21,9 @@ logger = logging.getLogger("agent.conversation_loop")
 
 # Post-response housekeeping tools: a round made only of these mutes tool progress.
 _HOUSEKEEPING_TOOLS = frozenset({"memory", "todo_list", "skill_manage", "session_search"})
+# Rounds whose visible line is the turn's reply if the follow-up is empty (no empty-response nudge):
+# housekeeping, and setup_beat, whose card already blocked for the user's answer.
+_LINE_IS_REPLY_TOOLS = _HOUSEKEEPING_TOOLS | {"setup_beat"}
 
 
 @dataclass
@@ -40,7 +43,7 @@ class ToolRoundVerdict:
     _turn_exit_reason: Any
     truncated_tool_call_retries: Any
     current_turn_user_idx: Any
-    result: Optional[Dict[str, Any]] = None
+    result: Optional[dict[str, Any]] = None
 
 
 def run_tool_round(
@@ -56,7 +59,7 @@ def run_tool_round(
     process-only state."""
     from agent.conversation_loop import _invalid_tool_name_error_content
 
-    def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> ToolRoundVerdict:
+    def _verdict(action: str, result: Optional[dict[str, Any]] = None) -> ToolRoundVerdict:
         return ToolRoundVerdict(
             action=action, messages=messages, conversation_history=conversation_history,
             active_system_prompt=active_system_prompt, compression_attempts=compression_attempts,
@@ -84,10 +87,19 @@ def run_tool_round(
     if _tvv.action == "continue":
         return _verdict("continue")
 
+    # Normalize only this unpersisted turn. Each local bridge entry must pass
+    # through the same scope, approvals, state and scheduling as a singleton.
+    from agent.tool_call_batches import expand_local_tool_batches
+    assistant_message.tool_calls = expand_local_tool_batches(
+        assistant_message.tool_calls, provider_data=getattr(assistant_message, "provider_data", None))
+
     # Post-call guardrails.
     assistant_message.tool_calls = agent._deduplicate_tool_calls(
         agent._cap_delegate_task_calls(assistant_message.tool_calls)
     )
+    # Filtering can turn a mixed batch into an all-provider one; re-check the final batch
+    # before it is staged (idempotent for already-normalized ids).
+    normalize_provider_tool_call_ids(assistant_message.tool_calls)
 
     # Mixed batch: the assistant message keeps EVERY emitted call (each tool_call needs a
     # matching result) while only valid ones dispatch.
@@ -151,6 +163,11 @@ def run_tool_round(
         with suppress(Exception):
             agent.stream_delta_callback(None)
 
+    # Opt-in (compression.prepare_ahead): when this response put the session near the trigger,
+    # write the next compaction summary while the tools run. No-op otherwise; never raises.
+    from agent.prepared_compaction import maybe_prepare
+    maybe_prepare(agent, messages, origin="tool-batch")
+
     agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
     from hermes_cli.observability.shared_metrics_harness import finish_tool_round
 
@@ -171,10 +188,10 @@ def run_tool_round(
         agent._emit_diagnostic_status(f"⚠️ Tool guardrail halted {decision.tool_name}: {decision.code}")
         append_message(messages, {"role": "assistant", "content": final_response})
         # Emit the halt so it isn't mistaken for a crash; the stream callback is still
-        # alive, so SSE/TUI clients see the explanation.
+        # alive, so SSE/TUI clients see the explanation. A held turn shows it as the final only.
         if final_response:
             agent._safe_print(f"\n{final_response}\n")
-            if agent.stream_delta_callback:
+            if agent.stream_delta_callback and not getattr(agent, "_hold_stream", False):
                 with suppress(Exception):
                     agent.stream_delta_callback(final_response)
                     agent.stream_delta_callback(None)
@@ -223,7 +240,7 @@ def run_tool_round(
 
 def stage_tool_call_message(
     agent: Any, *, assistant_message: Any, finish_reason: Any, messages: Any
-) -> Tuple[Dict[str, Any], bool]:
+) -> tuple[dict[str, Any], bool]:
     """Build the assistant tool-call row and update the per-turn fallback/mute state.
 
     Drops a bare bracketed marker beside a call (#78148), classifies housekeeping-only
@@ -254,6 +271,8 @@ def stage_tool_call_message(
     _all_housekeeping = all(
         tc.function.name in _HOUSEKEEPING_TOOLS for tc in assistant_message.tool_calls
     )
+    # The line written with a blocking card is the reply when the follow-up comes back empty.
+    _line_is_reply = all(tc.function.name in _LINE_IS_REPLY_TOOLS for tc in assistant_message.tool_calls)
     if assistant_message.tool_calls and not _all_housekeeping:
         agent._last_content_with_tools = None
         agent._last_content_tools_all_housekeeping = False
@@ -264,10 +283,10 @@ def stage_tool_call_message(
     # post-response housekeeping; substantive tools keep output on.
     if turn_content and agent._has_content_after_think_block(turn_content):
         agent._last_content_with_tools = turn_content
-        agent._last_content_tools_all_housekeeping = _all_housekeeping
+        agent._last_content_tools_all_housekeeping = _line_is_reply
         if _all_housekeeping and agent._has_stream_consumers():
             agent._mute_post_response = True
-        elif agent._should_emit_quiet_tool_messages():
+        elif agent._should_emit_quiet_tool_messages() and not getattr(agent, "_hold_stream", False):
             clean = agent._strip_think_blocks(turn_content).strip()
             if clean:
                 agent._vprint(f"  ┊ 💬 {clean}")

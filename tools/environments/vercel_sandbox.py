@@ -23,7 +23,7 @@ import httpx
 
 from hermes_cli.config_defaults import DEFAULT_VERCEL_IMAGE
 from hermes_constants import get_hermes_home
-from tools.environments.base import BaseEnvironment, _load_json_store, _save_json_store
+from tools.environments.base import BaseEnvironment, _load_json_store, _update_json_store
 from tools.environments.base_output import _ThreadedProcessHandle
 from tools.environments.file_sync import FileSyncManager, iter_sync_files, quoted_rm_command
 
@@ -80,6 +80,21 @@ def _extract_status_code(exc: BaseException) -> int | None:
             return value
     return None
 
+@cache
+def _transport_error_types() -> tuple[type[BaseException], ...]:
+    """Network exceptions of every HTTP stack the SDK may raise from.
+
+    vercel >= 0.12 moved the sandbox client from httpx to httpx2, a separate
+    distribution whose exceptions do not subclass httpx's.
+    """
+    types: list[type[BaseException]] = [httpx.NetworkError, httpx.ProtocolError, httpx.ReadError]
+    try:
+        import httpx2
+    except ImportError:
+        return tuple(types)
+    return (*types, httpx2.NetworkError, httpx2.ProtocolError, httpx2.ReadError)
+
+
 def _is_transient_vercel_error(exc: BaseException) -> bool:
     """True when any exception in the cause/context chain looks retryable."""
     seen: set[int] = set()
@@ -90,7 +105,7 @@ def _is_transient_vercel_error(exc: BaseException) -> bool:
         status = next((c for c in codes if isinstance(c, int)), None)
         name = type(error).__name__.lower()
         if (status in _TRANSIENT_STATUS_CODES
-                or isinstance(error, (httpx.NetworkError, httpx.ProtocolError, httpx.ReadError))
+                or isinstance(error, _transport_error_types())
                 or "ratelimit" in name or "servererror" in name):
             return True
         error = error.__cause__ or error.__context__
@@ -130,15 +145,16 @@ def _load_snapshots() -> dict:
 
 def _store_snapshot(task_id: str, snapshot_id: str) -> None:
     if task_id and snapshot_id:
-        _save_json_store(_snapshot_store(), {**_load_snapshots(), task_id: snapshot_id})
+        _update_json_store(_snapshot_store(), lambda snapshots: snapshots.update({task_id: snapshot_id}))
 
 
 def _delete_snapshot(task_id: str, snapshot_id: str) -> None:
     """Drop the stored id for ``task_id`` only if it still equals ``snapshot_id``."""
-    snapshots = _load_snapshots()
-    if task_id and snapshots.get(task_id) == snapshot_id:
-        snapshots.pop(task_id)
-        _save_json_store(_snapshot_store(), snapshots)
+    def update(snapshots: dict) -> None:
+        if task_id and snapshots.get(task_id) == snapshot_id:
+            snapshots.pop(task_id)
+
+    _update_json_store(_snapshot_store(), update)
 
 
 def _extract_snapshot_id(snapshot: Any) -> str | None:

@@ -30,7 +30,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.releases.authors import resolve_author  # noqa: E402
+from scripts.releases.authors import resolve_author
 
 # ---------------------------------------------------------------------------
 # AI assistants, bots, and machine accounts to exclude from contributor lists
@@ -105,6 +105,7 @@ def git(*args, cwd=None):
         capture_output=True,
         text=True, encoding='utf-8', errors='replace',
         cwd=cwd or str(REPO_ROOT),
+        check=False,
     )
     if result.returncode != 0:
         print(f"  [warn] git {' '.join(args)} failed: {result.stderr.strip()}", file=sys.stderr)
@@ -130,6 +131,7 @@ def gh_pr_list():
             capture_output=True,
             text=True, encoding='utf-8', errors='replace',
             timeout=60,
+            check=False,
         )
         if result.returncode != 0:
             print(f"  [warn] gh pr list failed: {result.stderr.strip()}", file=sys.stderr)
@@ -289,8 +291,6 @@ def collect_salvaged_contributors(since_tag, until="HEAD"):
         pr_number = pr.get("number", "?")
 
         # Also credit the PR author
-        pr_author = pr.get("author", {})
-        pr_author_login = pr_author.get("login", "") if isinstance(pr_author, dict) else ""
 
         for pattern in SALVAGE_PATTERNS:
             for match in pattern.finditer(body):

@@ -52,8 +52,7 @@ def parse_connector_name(name: object) -> Optional[ConnectorName]:
 
 def format_connector_name(connector: str, tool: str) -> str:
     prefix = f"{connector.upper()}_"
-    if tool.startswith(prefix):
-        tool = tool[len(prefix):]
+    tool = tool.removeprefix(prefix)
     return f"{CONNECTOR_NAME_PREFIX}{connector}__{tool}"
 
 

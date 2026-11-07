@@ -223,7 +223,6 @@ class TestGatewayCleanupWiring:
         runner._restart_drain_timeout = 0.1
         runner._voice_mode = {}
         runner._session_model_overrides = {}
-        runner._update_prompt_pending = {}
         runner._busy_input_mode = "interrupt"
         runner._agent_cache = {}
         runner._agent_cache_lock = threading.Lock()
@@ -242,7 +241,7 @@ class TestGatewayCleanupWiring:
             with patch("gateway.status.remove_pid_file"), \
                  patch("gateway.status.write_runtime_status"), \
                  patch("tools.terminal_tool.cleanup_all_environments"), \
-                 patch("tools.browser_tool_lifecycle.cleanup_all_browsers"):
+                 patch("tools.browser_session_lifecycle.cleanup_all_browsers"):
                 loop.run_until_complete(GatewayRunner.stop(runner))
         finally:
             loop.close()
@@ -393,7 +392,7 @@ class TestDelegationCleanup:
                 child_started.wait(timeout=5)
                 return super().wait(timeout)
 
-        import tools.delegate_tool as delegate_tool
+        from tools import delegate_tool
 
         real_start_heartbeat = delegate_tool._start_heartbeat
 

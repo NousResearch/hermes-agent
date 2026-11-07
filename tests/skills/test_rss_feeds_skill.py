@@ -9,7 +9,7 @@ import pytest
 SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "optional-skills" / "research" / "rss-feeds" / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-import feed  # noqa: E402
+import feed
 
 RSS = b"""<?xml version="1.0"?><rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/">
 <channel><title>Blog &amp; Notes</title>

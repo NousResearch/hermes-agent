@@ -23,14 +23,9 @@ import { $autoSpeakReplies, $bargeInEnabled, $bargeInThresholdMultiplier, $voice
 import { useComposerScope } from '../scope'
 
 import { useMicRecorder } from './use-mic-recorder'
+import { feedVoiceConversationSpeech, type PendingVoiceResponse } from './voice-conversation-speech'
 
 export type ConversationStatus = 'idle' | 'listening' | 'transcribing' | 'thinking' | 'speaking'
-
-interface PendingVoiceResponse {
-  id: string
-  pending: boolean
-  text: string
-}
 
 interface VoiceConversationOptions {
   busy: boolean
@@ -44,6 +39,11 @@ interface VoiceConversationOptions {
   onTranscribeAudio?: (audio: Blob, owner?: ResolvedOwner) => Promise<string>
   pendingResponse: () => PendingVoiceResponse | null
   consumePendingResponse: () => void
+  /** Surface a transcript that cannot be delivered as a turn (live busy never
+   *  settled): park it in the composer input and focus it, so a spoken
+   *  interruption is never silently dropped (#123357). */
+  parkText?: (text: string) => void
+  focusInput?: () => void
   /** Awaited right before the mic is opened. Used to let the wake-word listener
    *  fully release the capture device first, so the two never contend. */
   beforeMicOpen?: () => Promise<void> | void
@@ -83,6 +83,8 @@ export function useVoiceConversation({
   onTranscribeAudio,
   pendingResponse,
   consumePendingResponse,
+  parkText,
+  focusInput,
   beforeMicOpen
 }: VoiceConversationOptions) {
   const { t } = useI18n()
@@ -123,11 +125,22 @@ export function useVoiceConversation({
   const wasEnabledRef = useRef(enabled)
   const onStopWordRef = useRef(onStopWord)
   const onInterruptRef = useRef(onInterrupt)
+  // `submitVoiceTurn` (the composer's real `onSubmit`) re-creates per render
+  // and its busy guard captures THAT render's state; the barge monitor arms
+  // once per turn, so `submitCapturedUtterance` can outlive the render that
+  // created it and would otherwise hold that stale submit forever. Read the
+  // latest callback at call time, mirroring `onInterruptRef` (#123357).
+  const onSubmitRef = useRef(onSubmit)
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     onInterruptRef.current = onInterrupt
   }, [onInterrupt])
+
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
+  useEffect(() => {
+    onSubmitRef.current = onSubmit
+  }, [onSubmit])
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
@@ -334,8 +347,9 @@ export function useVoiceConversation({
 
   const startListening = useCallback(async () => {
     pendingStartRef.current = false
+    const conversation = conversationRef.current
 
-    if (!enabledRef.current || mutedRef.current || busyRef.current) {
+    if (!conversation || !enabledRef.current || mutedRef.current || busyRef.current) {
       return
     }
 
@@ -347,6 +361,8 @@ export function useVoiceConversation({
       return
     }
 
+    const current = () => conversationRef.current === conversation && enabledRef.current && !mutedRef.current
+
     // Let the wake-word listener fully release the capture device before we
     // open ours — opening the mic while wake still holds it makes getUserMedia
     // fail (the "clicked voice but it never starts listening" bug).
@@ -357,9 +373,7 @@ export function useVoiceConversation({
     }
 
     // enabled/muted/busy or an interleaved turn may have changed while we waited.
-    const conversation = conversationRef.current
-
-    if (!conversation || !enabledRef.current || mutedRef.current || busyRef.current || statusRef.current !== 'idle') {
+    if (!current() || busyRef.current || statusRef.current !== 'idle') {
       return
     }
 
@@ -380,6 +394,18 @@ export function useVoiceConversation({
         onMeterFailure: () => void handleTurn(),
         onSilence: () => void handleTurn()
       })
+
+      if (!current()) {
+        return
+      }
+
+      if (busyRef.current) {
+        handle.cancel()
+        pendingStartRef.current = true
+
+        return
+      }
+
       setStatus('listening')
       // Same warm-up as push-to-talk dictation: a cold local model loads while
       // the user speaks instead of inside the transcription timeout (#105955).
@@ -396,6 +422,10 @@ export function useVoiceConversation({
       clearTurnTimeout()
       turnTimeoutRef.current = window.setTimeout(() => void handleTurn(), 60_000)
     } catch (error) {
+      if (!current() || (error instanceof DOMException && error.name === 'AbortError')) {
+        return
+      }
+
       notifyError(error, voiceCopy.couldNotStartSession)
       pendingStartRef.current = false
       setStatus('idle')
@@ -405,7 +435,11 @@ export function useVoiceConversation({
 
   const settleAfterSpeech = useCallback(
     (barged: boolean, stoppedDuringSetup = false) => {
-      if (barged || !awaitingSpokenResponseRef.current) {
+      const stoppedExternally =
+        stoppedDuringSetup ||
+        (speechStartSequenceRef.current > 0 && $voicePlayback.get().sequence > speechStartSequenceRef.current)
+
+      if (barged || stoppedExternally || !awaitingSpokenResponseRef.current) {
         awaitingSpokenResponseRef.current = false
         consumePendingResponse()
       }
@@ -424,16 +458,13 @@ export function useVoiceConversation({
 
       dropSpeechSession()
 
-      // If stopVoicePlayback() was called externally (Stop button, end), the
-      // voice-playback sequence has advanced past what we captured at speech
-      // start — don't auto-start the next sentence, the user chose to stop.
-      const stoppedByUser =
-        stoppedDuringSetup ||
-        (speechStartSequenceRef.current > 0 && $voicePlayback.get().sequence > speechStartSequenceRef.current)
-
+      // An external stopVoicePlayback() (Stop/Esc) silences the current reply;
+      // it does not end hands-free conversation mode. end() owns that path and
+      // clears pendingStartRef before disabling the loop. While still enabled,
+      // always re-arm so the user can speak immediately after cutting TTS.
       speechStartSequenceRef.current = 0
 
-      if (enabledRef.current && !stoppedByUser) {
+      if (enabledRef.current) {
         pendingStartRef.current = true
       }
 
@@ -533,10 +564,23 @@ export function useVoiceConversation({
           return
         }
 
+        // Live busy never settled: submitting would be refused by the
+        // composer's live-busy guard and the spoken interruption would be
+        // lost. Park the transcript in the composer input instead — visible,
+        // editable, one Enter away from sending — and resume listening.
+        // Never drop a transcribed turn without a trace (#123357).
+        if (busyRef.current) {
+          parkText?.(transcript)
+          focusInput?.()
+          resumeListening()
+
+          return
+        }
+
         awaitingSpokenResponseRef.current = true
         dropSpeechSession()
         consumePendingResponse()
-        await onSubmit(transcript)
+        await onSubmitRef.current(transcript)
 
         if (live()) {
           setStatus('thinking')
@@ -548,7 +592,7 @@ export function useVoiceConversation({
         }
       }
     },
-    [consumePendingResponse, onSubmit, onTranscribeAudio, voiceCopy.transcriptionFailed]
+    [consumePendingResponse, focusInput, onTranscribeAudio, parkText, voiceCopy.transcriptionFailed]
   )
 
   /**
@@ -579,10 +623,10 @@ export function useVoiceConversation({
     stopBargeMonitorRef.current = monitorSpeechDuringPlayback({
       isPlaying: () => $voicePlayback.get().status === 'speaking',
       thresholdMultiplier: $bargeInThresholdMultiplier.get(),
-      onSpeech: () => {
-        // Snapshot before playback is cut: the reply may be consumed by the
-        // time the capture is transcribed.
-        bargeEchoTextRef.current = $voicePlayback.get().status === 'speaking' ? (pendingResponse()?.text ?? '') : ''
+      onSpeech: duringPlayback => {
+        // Capture-time provenance survives a sentence gap before queued audio
+        // is delivered; snapshot the reply before playback is cut or consumed.
+        bargeEchoTextRef.current = duringPlayback ? (pendingResponse()?.text ?? '') : ''
         bargeCapturePendingRef.current = true
         bargedRef.current = true
         markVoicePlaybackInterrupted()
@@ -602,37 +646,48 @@ export function useVoiceConversation({
     })
   }, [pendingResponse, submitCapturedUtterance])
 
-  /** Push any new reply text into the live session; finish when complete. */
-  const feedSpeechSession = useCallback(
-    (responseId: string) => {
-      const session = speechSessionRef.current
-
-      if (!session || responseIdRef.current !== responseId) {
+  // `voice.barge_in` flipping off MID-TURN disarms the live monitor too: the
+  // gate above only covers creation, so a config refresh that says barge-in is
+  // off must also stop a monitor that already armed, or the rest of the turn
+  // keeps interrupting on speech while the pref says off. A capture that was
+  // mid-flight is dropped (the pref changed under it) and the loop resumes
+  // normal listening the way a failed capture does.
+  // eslint-disable-next-line no-restricted-syntax -- atom-edge CLEANUP of the live monitor handle, not a mirror: nothing copies atom state into a ref
+  useEffect(() => {
+    const unsubscribe = $bargeInEnabled.subscribe(enabled => {
+      if (enabled) {
         return
       }
 
-      const response = pendingResponse()
+      stopBargeMonitorRef.current?.()
+      stopBargeMonitorRef.current = null
 
-      if (response && response.id === responseId) {
-        if (response.text.length > spokenSourceLengthRef.current) {
-          session.append(response.text.slice(spokenSourceLengthRef.current))
-          spokenSourceLengthRef.current = response.text.length
+      if (bargeCapturePendingRef.current) {
+        bargeCapturePendingRef.current = false
+        bargedRef.current = false
+        bargeEchoTextRef.current = ''
+
+        if (enabledRef.current && !mutedRef.current) {
+          pendingStartRef.current = true
         }
 
-        if (!response.pending) {
-          // A sealed interim is a committed boundary even while its tool runs.
-          // Keep the session open for the next bubble, but speak this tail now.
-          if (busyRef.current) {
-            session.flush?.()
-          } else {
-            session.finish()
-          }
-        }
-      } else if (!busyRef.current) {
-        // Reply consumed/vanished while we were speaking — close out the turn.
-        session.finish()
+        setStatus('idle')
       }
-    },
+    })
+
+    return unsubscribe
+  }, [])
+
+  const feedSpeechSession = useCallback(
+    (responseId: string) =>
+      feedVoiceConversationSpeech(
+        speechSessionRef,
+        responseIdRef,
+        responseId,
+        pendingResponse,
+        spokenSourceLengthRef,
+        busyRef
+      ),
     [pendingResponse]
   )
 

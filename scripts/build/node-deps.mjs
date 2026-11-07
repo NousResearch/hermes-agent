@@ -146,16 +146,28 @@ const timer = setInterval(() => {
 // Every removal of the lock (a release, or breaking a dead one) runs under a guard held for a
 // few syscalls and checks the content it removes under it, so it can never remove a lock another
 // run has just created; creating needs no guard (an exclusive create cannot replace a lock). A
-// guard left by a killed remover is cleared after a minute.
+// guard left by a killed remover is judged like the lock, never by its mtime against this clock (a
+// network filesystem's server clock, or a clock stepped back, can date it in the future): one this
+// process has seen unchanged for twice the stale limit is removed. The wait is bounded too.
 function underGuard(lock, fn) {
   const guard = `${lock}.guard`
+  const started = performance.now()
+  let seen
   for (;;) {
     let fd
     try {
       fd = openSync(guard, 'wx')
     } catch (error) {
       if (error.code !== 'EEXIST') throw error
-      if (Date.now() - (mtimeOf(guard) ?? Date.now()) > 60_000) rmSync(guard, { force: true })
+      const now = performance.now()
+      const id = identityOf(guard)
+      if (id === undefined || seen?.id !== id) {
+        seen = { id, since: now }
+      } else if (now - seen.since > 2 * lockTiming.stale) {
+        if (identityOf(guard) === id) rmSync(guard, { force: true })
+        seen = undefined
+      }
+      if (now - started > lockTiming.wait) throw new Error(`node-deps: ${guard} has been held for too long; delete it if no other install is running`)
       sleep(20)
       continue
     }
@@ -165,6 +177,16 @@ function underGuard(lock, fn) {
       closeSync(fd)
       rmSync(guard, { force: true })
     }
+  }
+}
+
+function identityOf(path) {
+  try {
+    const { ino, mtimeMs } = statSync(path)
+    return `${ino}:${mtimeMs}`
+  } catch (error) {
+    if (error.code === 'ENOENT') return undefined
+    throw error
   }
 }
 

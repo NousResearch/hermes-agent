@@ -1,5 +1,5 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { hostname, tmpdir } from 'node:os'
 import { delimiter, dirname, join, resolve } from 'node:path'
@@ -532,6 +532,26 @@ test.skipIf(process.platform === 'win32')('a transient heartbeat error does not 
     process.kill(-install.pid, 'SIGKILL')
   }
 }, 60000)
+
+// A guard left by a killed remover is judged by whether it changes, not by its mtime: one dated
+// in the future (a network filesystem's clock ahead, or this clock stepped back) still ages out.
+test('a leaked lock guard dated in the future does not block forever', () => {
+  const { source, env } = fixture()
+  mkdirSync(join(source, '.cache'), { recursive: true })
+  writeFileSync(join(source, '.cache/node-deps.lock'), JSON.stringify({ pid: 4242, host: 'gone' }))
+  writeFileSync(join(source, '.cache/node-deps.lock.guard'), '')
+  const future = new Date(Date.now() + 10 * 60_000)
+  utimesSync(join(source, '.cache/node-deps.lock.guard'), future, future)
+  const timing = { ...lockTiming }
+  Object.assign(lockTiming, { stale: 500, wait: 20_000 })
+  try {
+    prepareNodeDependencies({ source, workspaces: ['web'], reuse: true, env })
+  } finally {
+    Object.assign(lockTiming, timing)
+  }
+  expect(createRequire(join(source, 'web/package.json'))('web-only')).toBe('web-only')
+  expect(readdirSync(join(source, '.cache'))).toEqual([])
+}, 30000)
 
 // The record of a moved set is renamed into place: a run killed while writing it (or out of
 // space) leaves nothing a later run fails to parse.

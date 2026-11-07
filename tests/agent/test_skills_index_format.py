@@ -4,7 +4,12 @@ import re
 import pytest
 
 from agent.prompt_builder import build_skills_system_prompt, clear_skills_system_prompt_cache
-from agent.skill_utils import SKILL_PROMPT_DESC_LIMIT, clip_skill_description
+from agent.skill_utils import (
+    SKILL_PROMPT_DESC_LIMIT,
+    clip_skill_description,
+    get_skill_desc_limit,
+    is_skill_description_truncated_for_prompt,
+)
 from agent.skills_index_delta import index_entries
 
 LONG = "Use when cutting, publishing, or abandoning a hermes-agent release and its notes."
@@ -55,3 +60,41 @@ def test_clip_cuts_at_any_whitespace_never_inside_a_word(sep):
     shown = clip_skill_description(desc)
     assert len(shown) <= SKILL_PROMPT_DESC_LIMIT and shown.endswith("...")
     assert set(shown[:-3].split(sep)) == {"alpha", "bravo"}  # whole words only, no "bra..."
+
+
+def test_get_skill_desc_limit_defaults_to_60(monkeypatch):
+    monkeypatch.delenv("HERMES_SKILLS_INDEX_DESC_LIMIT", raising=False)
+    assert get_skill_desc_limit() == SKILL_PROMPT_DESC_LIMIT == 60
+
+
+def test_get_skill_desc_limit_from_env(monkeypatch):
+    monkeypatch.setenv("HERMES_SKILLS_INDEX_DESC_LIMIT", "120")
+    assert get_skill_desc_limit() == 120
+
+
+def test_clip_skill_description_respects_custom_limit(monkeypatch):
+    desc = "Use when deploying, provisioning, or orchestrating microservices across hybrid clusters."
+    assert len(desc) == 88
+    # Default clips to <= 60
+    default_clipped = clip_skill_description(desc, limit=60)
+    assert len(default_clipped) <= 60 and default_clipped.endswith("...")
+    # Raising to 100 retains the full 87 characters without clipping
+    custom_clipped = clip_skill_description(desc, limit=100)
+    assert custom_clipped == desc
+
+
+def test_custom_desc_limit_in_skills_config(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_SKILLS_INDEX_DESC_LIMIT", raising=False)
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text("skills:\n  index_desc_limit: 150\n", encoding="utf-8")
+
+    assert get_skill_desc_limit() == 150
+    skills = tmp_path / "skills"
+    _skill(skills, "github/hermes-release", LONG)  # LONG is 79 chars
+
+    prompt = build_skills_system_prompt()
+    block = re.search(r"<available_skills>\n(.*?)\n</available_skills>", prompt, re.DOTALL).group(1)
+    release_line = next(line for line in block.splitlines() if "hermes-release" in line)
+    # With index_desc_limit 150, LONG (79 chars) fits entirely without trailing "..."
+    assert release_line == f"  - hermes-release: {LONG}"

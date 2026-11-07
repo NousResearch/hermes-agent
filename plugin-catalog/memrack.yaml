@@ -1,0 +1,27 @@
+name: memrack
+repo: https://github.com/Kesuek/memrack
+sha: fc5dfee8854ab4ebda6b5dda71dc094b3e07f99c
+description: "memrack is one memory provider that hosts a RACK of dockable backend engines with agent-side routing: each backend advertises a card (best_for / limits / search modes) injected into the system prompt, memrack_write(content, backend=?) writes where the AGENT chooses (deterministic source-rules only as the fallback; no LLM judge at write and none at read — no auto mode), and memrack_search fans out over every enabled backend and search mode, merging with reciprocal rank fusion (RRF k=60), per-target collapse and a deterministic tiebreak (score, heat, freshness). Ships with three backends: base-db (the stdlib SQLite floor — one atomic fact per row, FTS5 bm25 ranking, hash-dedupe idempotence, per-entry heat counters feeding a heat report), wiki (read-only whole-page search over an existing markdown wiki via a stdlib mtime index with AND-semantics), and state-episodic (READ-ONLY search over the canonical Hermes session history in state.db, default on — turns are never copied). An optional vec engine (sqlite-vec + Ollama embeddings) can upgrade base-db with a memory mode and degrades honestly to fts/pointers with a visible gap note. Tools: memrack_search, memrack_write, memrack_status, memrack_import, plus `hermes memrack status|report|export|import` (surfaces only while the provider is active). Config: desktop panel via a declared config_schema (rack membership, force-backend override, top_k, vec group, auto-enable-at-activation toggle default OFF) and config.yaml plugins.memrack — both stores converge through a dual-store save/read bridge. Disclosure — all plugin state lives locally under <HERMES_HOME>/plugin-data/memrack/ (SQLite facts store, route_log.jsonl); no content leaves the machine by default. Disclosure — the only optional network call is an Ollama embedding request to the configured host (default http://127.0.0.1:11434) when the vec memory mode is used; queries and content are sent there as plain text, while base-db/wiki/state-episodic fts never touch the network. Disclosure — the route log records routing decisions only (tool, kind, target reference, backend, session id, timestamp), never content or query text, and searches are not logged. Disclosure — state.db is opened strictly READ-ONLY (mode=ro) by the episodic backend; memrack never writes session data. Disclosure — activation is `memory.provider: memrack`; the basis case (fresh HERMES_HOME, only base-db, zero docking) is proven by the test suite (97 tests green, including the degradation ladder: missing engines answer with honest mode errors, never silent empty results)."
+maintainer: Kesuek
+tier: community
+category: memory
+requires_hermes: ">=0.22.7"
+version: "0.5.0"
+docs_url: https://github.com/Kesuek/memrack#readme
+readme: true
+known_issues:
+- "Hybrid retrieval is provided by architecture (per-backend engines + RRF merge); the wiki page engine uses a deterministic AND-gate scorer rather than bm25 (facts and session history rank with bm25)."
+- "vec mode needs sqlite-vec plus an Ollama host; without them the backend degrades to fts/pointers with a visible gap note in memrack_status."
+- "Auto-enable at activation defaults OFF — no storage backend gets enabled without an explicit toggle."
+- "memrack_import is a one-shot migration job per profile (idempotent via hash-dedupe), not a standing cron."
+capabilities:
+  provides_tools:
+  - memrack_search
+  - memrack_write
+  - memrack_status
+  - memrack_import
+  provides_hooks:
+  - on_session_end
+  - on_memory_write
+  provides_middleware: []
+  requires_env: []

@@ -55,12 +55,14 @@ hermes status [--full]      Component summary (--full: every section)
 hermes tools [list|enable NAME|disable NAME]   Per-platform toolsets (curses UI with no args)
 
 hermes skills list|browse|search QUERY|inspect ID
-hermes skills install ID    Hub identifier OR a direct https://…/SKILL.md URL
+hermes skills install ID --yes  Hub identifier OR a direct https://…/SKILL.md URL
 hermes skills config        Enable/disable skills per platform
 hermes skills check|update|uninstall|publish PATH
 hermes skills tap add REPO  Add a GitHub repo as a skill source
 hermes bundles              Skill bundles (one /<name> alias loads several skills)
 ```
+
+Skill/plugin installs and enable/trust operations run through `terminal` ask for approval under the current policy; `--yes` skips only the interactive confirmation, keeping the security scan.
 
 ### MCP Servers
 

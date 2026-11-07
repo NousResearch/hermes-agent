@@ -117,6 +117,19 @@ need more than their docs page. For everything else Hermes ships, fetch
 
 Two theming rules that hold even without loading the reference: **you apply skins yourself** (`hermes config set display.skin <name>` — every surface repaints live within ~a second; don't tell the user to run `/skin`), and **to tweak one color, edit the ACTIVE skin** (`hermes skin set <key> <hex>`) — never fork `default`, which drops the palette and resets the background.
 
+## Installing a skill or plugin the user asked for
+
+On the desktop app, prefer `manage_catalog`. Otherwise use `terminal`:
+
+- Skills: `hermes skills search QUERY` → `hermes skills inspect ID` → `hermes skills install ID --yes`.
+  The user is asked to approve under the current approval policy; `--yes` skips only the interactive confirmation.
+  Never add `--force` unless the user asks after seeing the scan result; a dangerous verdict cannot be forced.
+  Then call `skill_view(name)` to load it in this session; the system-prompt index stays fixed until compaction or a new session.
+- Plugins: `hermes plugins install NAME --enable --yes-deps` also requires approval under that policy.
+  New declared capabilities stay ungranted until the user runs `hermes plugins enable NAME` interactively.
+  Follow the activation output: supported parts can go live now; deferred tools/prompts need `/new`.
+  Restart only when the output says the running gateway or backend needs it.
+
 ## Spawning Additional Hermes Instances
 
 Run additional Hermes processes as fully independent subprocesses — separate sessions, tools, and environments.

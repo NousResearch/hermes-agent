@@ -1,0 +1,30 @@
+name: hermes-colab
+repo: https://github.com/PietrangeloManco/hermes-colab
+sha: 6292f4943ae2d9983ee276566e9458ce811c2ed0
+description: "Run Python scripts and Jupyter notebooks on Google Colab GPUs (T4 free tier, L4, A100, H100, TPU) from chat: Hermes assigns the runtime, uploads the code, keeps it alive, streams progress and GPU use, syncs outputs and checkpoints home while the job runs, resumes on a fresh runtime from the last checkpoint when Colab reclaims one, and reports back to the chat that started it; a Desktop page shows live runs with cancel and resume. Disclosure — needs the user's own Google Cloud OAuth client (Desktop app, Colaboratory scope) signed in with hermes auth add hermes-colab:google; Hermes attaches the token to colab.research.google.com only. Uploads the run's files (hidden folders, virtualenvs and common credential files excluded) to the user's Colab runtime and executes them there with a small stdlib runner that pip-installs the run's requirements; runtimes consume the account's Colab compute units and are released when a run ends; a daemon thread supervises active runs (one per profile, lease-protected; with no active run it only reads the run store every 30 s); run records live in the profile's plugin data directory; a pre_llm_call hook adds a finished run's one-line summary to the starting chat's next turn."
+maintainer: PietrangeloManco
+tier: community
+category: tools
+requires_hermes: ">=0.22.7"
+version: "0.1.0"
+docs_url: https://github.com/PietrangeloManco/hermes-colab#readme
+platforms: [linux, macos, windows]
+image: "https://raw.githubusercontent.com/PietrangeloManco/hermes-colab/6292f4943ae2d9983ee276566e9458ce811c2ed0/docs/banner.png"
+screenshots:
+  - "https://raw.githubusercontent.com/PietrangeloManco/hermes-colab/6292f4943ae2d9983ee276566e9458ce811c2ed0/docs/colab-run.gif"
+  - "https://raw.githubusercontent.com/PietrangeloManco/hermes-colab/6292f4943ae2d9983ee276566e9458ce811c2ed0/docs/colab-running.png"
+  - "https://raw.githubusercontent.com/PietrangeloManco/hermes-colab/6292f4943ae2d9983ee276566e9458ce811c2ed0/docs/colab-resumed.png"
+capabilities:
+  provides_tools:
+    - colab_doctor
+    - colab_run
+    - colab_status
+    - colab_logs
+    - colab_cancel
+    - colab_resume
+    - colab_runtimes
+    - colab_release_runtime
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

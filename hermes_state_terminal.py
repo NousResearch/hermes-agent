@@ -6,6 +6,7 @@ Worker receipt reads additionally require the original private adoption proof.
 """
 import hmac
 import json
+import time
 
 from hermes_state_runtime import ADMITTED_REQUEST_CONFLICT, RuntimeStoreError, _epoch, _json, _row, _secret_digest, _text, admission_fingerprint
 
@@ -104,6 +105,52 @@ def load_result(text):
 def identity_key(principal_id, session_id, request_id):
     return IDENTITY_PREFIX + admission_fingerprint(canonical_target=session_id,
         payload={'principal': principal_id, 'request': request_id})
+
+
+# A settled turn's stored result answers one exact re-send of that turn (an API Idempotency-Key
+# retry, a bot/cron delivery, a recovery that re-reads its own settlement). It is a retry cache,
+# not history: the newest this many per session survive, and nothing for a session that has been
+# quiet past the retry horizon. Only-written-up rows stayed forever — 45.5 MB of one store.
+ADMISSION_RESULT_KEEP = 16
+
+
+def reclaim_admission_results(conn, *, older_than=None):
+    """Bound the per-turn result cache the same way the tombstones are bounded.
+
+    Three reclaimed classes: a result with no settled admission and no tombstone still inside the
+    horizon (nothing will ever read it), one whose session has been inactive past ``older_than``
+    (no retry is left to answer; default: the tombstone's own ``RETRY_HORIZON_S``), and every
+    result past the newest ``ADMISSION_RESULT_KEEP`` of its session. The newest results are
+    untouched, so an in-flight retry still resolves byte-exact. A retired session keeps its
+    compacted copy here until ``prune_retired_tombstones`` closes the horizon — that is the delete
+    path's exact-retry answer, not this cache.
+    """
+    from hermes_state_mutation_retirement import RETRY_HORIZON_S
+    prefix, cut = RESULT_PREFIX, len(RESULT_PREFIX) + 1
+    cutoff = time.time() - float(RETRY_HORIZON_S if older_than is None else older_than)
+
+    conn.execute(
+        "DELETE FROM state_meta WHERE key GLOB ? AND NOT EXISTS ("
+        " SELECT 1 FROM session_admissions a WHERE a.status='terminal' AND a.admission_id=substr(state_meta.key,?))"
+        " AND NOT EXISTS (SELECT 1 FROM state_meta t WHERE t.key=? || substr(state_meta.key,?)"
+        "  AND CASE WHEN json_valid(t.value)"
+        "           THEN COALESCE(json_extract(t.value,'$.retired_at') >= ?, 1) ELSE 1 END)",
+        (prefix + '*', cut, ADMISSION_PREFIX, cut, cutoff))
+    from hermes_state_common import _sql_session_last_active_by_id
+    active = _sql_session_last_active_by_id('a.target_session_id')
+    conn.execute(
+        f"DELETE FROM state_meta WHERE key GLOB ? AND key IN ("
+        f" SELECT m.key FROM state_meta m JOIN session_admissions a ON a.admission_id=substr(m.key,?)"
+        f" WHERE a.status='terminal' AND COALESCE({active}, 0) < ?)", (prefix + '*', cut, cutoff))
+    seen, victims = {}, []
+    for key, session_id in conn.execute(
+            "SELECT m.key, a.target_session_id FROM state_meta m JOIN session_admissions a"
+            " ON a.admission_id=substr(m.key,?) WHERE m.key GLOB ? AND a.status='terminal'"
+            " ORDER BY a.target_session_id, a.seq DESC", (cut, prefix + '*')).fetchall():
+        seen[session_id] = seen.get(session_id, 0) + 1
+        if seen[session_id] > ADMISSION_RESULT_KEEP:
+            victims.append((key,))
+    conn.executemany('DELETE FROM state_meta WHERE key=?', victims)
 
 
 def terminal_api_admissions(conn, request_id):

@@ -4,26 +4,18 @@ Complete guide for managing the PR lifecycle. Each section shows the `gh` way fi
 
 ## Prerequisites
 
-- Authenticated with GitHub (see `github-auth` skill)
+- Authenticated with GitHub (see `references/auth.md`)
 - Inside a git repository with a GitHub remote
 
 ### Quick Auth Detection
 
 ```bash
 # Determine which method to use throughout this workflow
-if command -v gh &>/dev/null && gh auth status &>/dev/null; then
-  AUTH="gh"
-else
-  AUTH="git"
-  # Ensure we have a token for API calls
-  if [ -z "$GITHUB_TOKEN" ]; then
-    if _hermes_env="${HERMES_HOME:-$HOME/.hermes}/.env"; [ -f "$_hermes_env" ] && grep -q "^GITHUB_TOKEN=" "$_hermes_env"; then
-      GITHUB_TOKEN=$(grep "^GITHUB_TOKEN=" "$_hermes_env" | head -1 | cut -d= -f2 | tr -d '\n\r')
-    elif grep -q "github.com" ~/.git-credentials 2>/dev/null; then
-      GITHUB_TOKEN=$(uv run python "${HERMES_HOME:-$HOME/.hermes}/skills/github/github-auth/scripts/git-credential-token.py")
-    fi
-  fi
-fi
+# Ask the shipped helper. It probes gh, $GITHUB_TOKEN, the Hermes .env and git's own
+# credential chain for this directory, and reports where the credential came from.
+# POSIX-sh clean; an authenticated gh wins (see references/auth.md).
+source "${HERMES_HOME:-$HOME/.hermes}/skills/software-development/github/scripts/gh-env.sh"
+if [ "$GH_AUTH_METHOD" = "gh" ]; then AUTH=gh; else AUTH=git; fi
 echo "Using: $AUTH"
 ```
 

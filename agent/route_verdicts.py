@@ -27,6 +27,15 @@ def reset_route_verdicts(agent: Any) -> None:
     reset_codex_reasoning_replay(agent)
 
 
+def reset_route_verdicts_if_moved(agent: Any, prior_base_url: Any) -> None:
+    """``reset_route_verdicts`` when ``agent.base_url`` now names another endpoint than
+    ``prior_base_url``: for code that assigns a refreshed ``base_url`` directly. A refresh that
+    keeps the endpoint keeps its verdicts."""
+    from hermes_cli.route_identity import normalize_route_base_url
+    if normalize_route_base_url(prior_base_url or "") != _endpoint(agent):
+        reset_route_verdicts(agent)
+
+
 # The primary's verdicts ride in its ``_primary_runtime`` snapshot, so a ``/model`` switch (which
 # rebuilds that snapshot) can never hand one primary's verdicts to the next. They are stamped with
 # the endpoint that earned them: a pool rotation can move the primary to another base URL.

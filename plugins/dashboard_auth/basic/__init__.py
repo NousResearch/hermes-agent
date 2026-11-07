@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import secrets
+import sys
 import time
 from typing import Optional
 
@@ -169,12 +170,15 @@ class BasicAuthProvider(NonInteractiveMixin, DashboardAuthProvider):
     # ---- internals ---------------------------------------------------------
 
     def _mint_session(self, user_id: str) -> Session:
+        # ``jti`` gives every session its own tokens, even two minted in one second: a listener that
+        # drops a session's tokens (the Webapp's sign-out) must not get them back from a later login.
         now = int(time.time())
         exp = now + self._ttl
+        jti = secrets.token_urlsafe(16)
         return self._session(
             user_id, exp,
-            _sign({"sub": user_id, "kind": "access", "exp": exp}, self._secret),
-            _sign({"sub": user_id, "kind": "refresh", "exp": now + _REFRESH_TTL_SECONDS}, self._secret))
+            _sign({"sub": user_id, "kind": "access", "exp": exp, "jti": jti}, self._secret),
+            _sign({"sub": user_id, "kind": "refresh", "exp": now + _REFRESH_TTL_SECONDS, "jti": jti}, self._secret))
 
     def _session(self, user_id: str, exp: int, access_token: str, refresh_token: str) -> Session:
         return Session(
@@ -188,10 +192,22 @@ def _load_config_basic_auth_section() -> dict:
     return load_config_section(logger, _TAG, "dashboard", "basic_auth")
 
 
+# Shell syntax that was written to .env/config without being run, e.g. a
+# ``$(openssl rand -base64 32)`` line inside a quoted heredoc, or the command (or a doc
+# placeholder naming it) pasted in place of its output. Base64 and hex never contain
+# these (nor a space), and everyone who copied the same line would share the same key.
+_UNEXPANDED_SHELL_MARKERS = ("$(", "`", "openssl rand")
+
+# The error above only reaches the log files, not the console of ``hermes serve`` /
+# ``hermes dashboard``; one stderr line per process makes it visible there too.
+_shell_text_secret_reported = False
+
+
 def _resolve_secret(cfg_section: dict) -> bytes:
     """Resolve the token-signing secret (base64, hex, or raw text). When unset, generates
     a random per-process secret (sessions then don't survive a restart or span multiple
-    workers — logged at INFO)."""
+    workers — logged at INFO). A value holding unexpanded shell text is never used as the
+    key: it is logged as an error and replaced by a random per-process secret."""
     raw = resolve_env_or_cfg("HERMES_DASHBOARD_BASIC_AUTH_SECRET", cfg_section.get("secret"))
     if not raw:
         logger.info(
@@ -199,6 +215,22 @@ def _resolve_secret(cfg_section: dict) -> bytes:
             "per-process signing key. Sessions will not survive a restart or span "
             "multiple workers. Set dashboard.basic_auth.secret (or "
             "HERMES_DASHBOARD_BASIC_AUTH_SECRET) for stable sessions.")
+        return secrets.token_bytes(32)
+    if any(marker in raw for marker in _UNEXPANDED_SHELL_MARKERS):
+        logger.error(
+            "dashboard-auth-basic: the configured signing secret contains unexpanded shell "
+            "text (such as '$(openssl rand -base64 32)') instead of a random value, so it "
+            "is ignored and a random per-process signing key is used. Set "
+            "HERMES_DASHBOARD_BASIC_AUTH_SECRET (or dashboard.basic_auth.secret) to the "
+            "output of 'openssl rand -base64 32' to keep sessions across restarts.")
+        global _shell_text_secret_reported
+        if not _shell_text_secret_reported:
+            _shell_text_secret_reported = True
+            print(
+                "hermes: dashboard login: HERMES_DASHBOARD_BASIC_AUTH_SECRET (or "
+                "dashboard.basic_auth.secret) holds shell text instead of a random value; "
+                "using a per-process key, so sessions end on restart. Replace it with the "
+                "output of: openssl rand -base64 32", file=sys.stderr, flush=True)
         return secrets.token_bytes(32)
     for decoder in (base64.b64decode, bytes.fromhex):
         try:
@@ -261,26 +293,3 @@ def register(ctx) -> None:
     kwargs, LAST_SKIP_REASON = register_provider(ctx, logger, _TAG, BasicAuthProvider, _settings)
     if kwargs is not None:
         logger.info("dashboard-auth-basic: registered password provider (username=%s)", kwargs["username"])
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Any  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'LoginStart': ('hermes_cli.dashboard_auth', 'LoginStart'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

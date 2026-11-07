@@ -10,7 +10,6 @@ from __future__ import annotations
 import logging
 from types import SimpleNamespace
 
-
 def test_primary_client_ignores_stale_auxiliary_router(monkeypatch):
     from agent import agent_runtime_helpers, auxiliary_client
 
@@ -50,5 +49,3 @@ def test_primary_client_ignores_stale_auxiliary_router(monkeypatch):
     )
 
     assert captured["default_headers"]["originator"] == "hermes-agent"
-
-

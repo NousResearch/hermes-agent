@@ -15,7 +15,6 @@ import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
-
 SKILL_DIR = (
     Path(__file__).resolve().parents[2]
     / "optional-skills"
@@ -23,7 +22,6 @@ SKILL_DIR = (
     / "mcp-oauth-remote-gateway"
 )
 SCRIPT_PATH = SKILL_DIR / "scripts" / "diagnose-oauth-mcp.py"
-
 
 def load_module():
     spec = importlib.util.spec_from_file_location("diagnose_oauth_mcp", SCRIPT_PATH)
@@ -33,7 +31,6 @@ def load_module():
     spec.loader.exec_module(module)
     return module
 
-
 class FakeResponse:
     def __init__(self, status=200, body=b"{}", headers=None):
         self.status = status
@@ -42,7 +39,6 @@ class FakeResponse:
 
     def read(self):
         return self._body
-
 
 def _write_token_files(tokens_dir: Path, server="stripe", resource="https://mcp.example.com",
                        refresh_token="rt-1"):
@@ -63,7 +59,6 @@ def _write_token_files(tokens_dir: Path, server="stripe", resource="https://mcp.
         json.dumps({"client_id": "cid-1", "token_endpoint_auth_method": "none"})
     )
     return tok
-
 
 def _run_main(mod, tokens_dir, argv, responses):
     """Run mod.main() with urlopen mocked; returns captured stdout.
@@ -91,18 +86,15 @@ def _run_main(mod, tokens_dir, argv, responses):
                 mod.main()
     return buf.getvalue(), calls
 
-
 def _init_ok_body():
     return json.dumps({"jsonrpc": "2.0", "id": 1,
                        "result": {"serverInfo": {"name": "x"}, "capabilities": {}}}).encode()
-
 
 def _init_revoked_error(code=401):
     body = json.dumps({"error": {"code": -32002, "message": "Session expired. Please re-authenticate."}}).encode()
     return urllib.error.HTTPError("https://mcp.example.com", code, "Unauthorized",
                                   {"WWW-Authenticate": 'Bearer error="invalid_token"'},
                                   io.BytesIO(body))
-
 
 def test_token_ok_branch(tmp_path):
     mod = load_module()
@@ -112,24 +104,12 @@ def test_token_ok_branch(tmp_path):
     assert "BRANCH=TOKEN_OK" in out
     assert len(calls) == 1  # never touched the token endpoint
 
-
 def test_refresh_dead_no_refresh_token(tmp_path):
     mod = load_module()
     tokens_dir = tmp_path / "mcp-tokens"
     _write_token_files(tokens_dir, refresh_token=None)
     out, _ = _run_main(mod, tokens_dir, ["stripe"], [_init_revoked_error()])
     assert "BRANCH=REFRESH_DEAD" in out
-
-
-
-
-
-
-
-
-
-
-
 
 def test_requests_send_httpx_user_agent(tmp_path):
     """Cloudflare 403s bare urllib UAs — every request must carry the httpx UA."""
@@ -139,5 +119,3 @@ def test_requests_send_httpx_user_agent(tmp_path):
     _, calls = _run_main(mod, tokens_dir, ["stripe"], [FakeResponse(200, _init_ok_body())])
     for req in calls:
         assert req.get_header("User-agent") == mod.UA
-
-

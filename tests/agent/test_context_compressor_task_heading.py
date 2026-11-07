@@ -5,6 +5,7 @@ one heading. A leftover ``## Active Task`` section is not disclaimed by SUMMARY_
 so grounding must replace it (and any duplicate task section) rather than prepend a second one.
 """
 
+from unittest.mock import patch
 
 from agent.context_compressor import ContextCompressor, HISTORICAL_TASK_HEADING
 
@@ -35,3 +36,30 @@ def test_grounding_collapses_alias_and_duplicate_task_sections():
     assert headings[1:] == ["## Goal", "## Constraints & Preferences"]
     assert "fresh ask" in grounded
     assert "stale" not in grounded
+
+
+def test_long_user_request_is_not_quoted_by_summary_model():
+    """Long quotes stall Codex output; the postprocessor preserves source wording."""
+    with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        compressor = ContextCompressor(model="test", quiet_mode=True)
+    section = compressor._build_summary_prompt(
+        "A long user request", 500, None, "", True
+    )
+    assert "summarize it in your own words rather than copying long" in section
+    for removed_directive in (
+        "input verbatim — the exact words",
+        "<exact latest user request>",
+        "write the reverse signal verbatim",
+    ):
+        assert removed_directive not in section
+
+    latest_request = "Please check this issue carefully. " * 20
+    generated = (
+        f"{HISTORICAL_TASK_HEADING}\nUser asked for an issue check\n\n"
+        "## Goal\nCheck an issue"
+    )
+    grounded = ContextCompressor._ground_historical_task_snapshot(
+        generated, [{"role": "user", "content": latest_request}]
+    )
+    assert latest_request.strip() in grounded
+    assert "## Goal\nCheck an issue" in grounded

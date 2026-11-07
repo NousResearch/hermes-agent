@@ -10,6 +10,8 @@ import sys
 
 import pytest
 
+from hermes_constants import get_hermes_home
+
 
 @pytest.fixture
 def host_lock_dir(tmp_path, monkeypatch):
@@ -34,7 +36,7 @@ def _hold_host_lock_from_another_description(hr):
     return handle
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="flock-based contention setup")
+@pytest.mark.platforms("posix")  # flock-based contention setup
 def test_second_host_gateway_is_refused_with_75_naming_the_owner_and_the_migrate_command(
     host_lock_dir, capsys,
 ):
@@ -43,7 +45,7 @@ def test_second_host_gateway_is_refused_with_75_naming_the_owner_and_the_migrate
     from gateway.run import _claim_host_gateway_role
     from hermes_cli.gateway_migrate import MIGRATE_COMMAND
 
-    hr.publish_record(hr.ROLE_GATEWAY, profiles=("default", "coder"), home=str(host_lock_dir))
+    hr.publish_record(hr.ROLE_GATEWAY, profiles=("default", "coder"), home=str(get_hermes_home()))
     owner = hr.read_record(hr.ROLE_GATEWAY, include_stale=True)
     assert owner is not None
     handle = _hold_host_lock_from_another_description(hr)
@@ -61,7 +63,7 @@ def test_second_host_gateway_is_refused_with_75_naming_the_owner_and_the_migrate
     assert "--force" in out and "--replace" in out
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="flock-based contention setup")
+@pytest.mark.platforms("posix")  # flock-based contention setup
 def test_force_still_starts_a_second_gateway_and_an_unusable_lock_dir_is_not_a_refusal(
     host_lock_dir, monkeypatch,
 ):
@@ -71,7 +73,7 @@ def test_force_still_starts_a_second_gateway_and_an_unusable_lock_dir_is_not_a_r
     from gateway import host_rendezvous as hr
     from gateway.run import _claim_host_gateway_role
 
-    hr.publish_record(hr.ROLE_GATEWAY, profiles=(), home=str(host_lock_dir))
+    hr.publish_record(hr.ROLE_GATEWAY, profiles=(), home=str(get_hermes_home()))
     handle = _hold_host_lock_from_another_description(hr)
     try:
         _claim_host_gateway_role(force=True)  # no SystemExit
@@ -85,7 +87,7 @@ def test_force_still_starts_a_second_gateway_and_an_unusable_lock_dir_is_not_a_r
     _claim_host_gateway_role()  # no SystemExit
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="flock-based contention setup")
+@pytest.mark.platforms("posix")  # flock-based contention setup
 def test_an_unmigrated_standalone_fleet_starts_beside_the_owner_instead_of_spinning(
     host_lock_dir, monkeypatch, caplog,
 ):
@@ -104,7 +106,7 @@ def test_an_unmigrated_standalone_fleet_starts_beside_the_owner_instead_of_spinn
     from gateway import host_rendezvous as hr
     from gateway.run import _claim_host_gateway_role
 
-    hr.publish_record(hr.ROLE_GATEWAY, profiles=("default",), home=str(host_lock_dir))
+    hr.publish_record(hr.ROLE_GATEWAY, profiles=("default",), home=str(get_hermes_home()))
     owner = hr.read_record(hr.ROLE_GATEWAY, include_stale=True)
     assert owner is not None
     # The owner answers the rescan the way a STANDALONE gateway does: "I do not multiplex."
@@ -131,7 +133,7 @@ def test_an_unmigrated_standalone_fleet_starts_beside_the_owner_instead_of_spinn
     assert MIGRATE_COMMAND in logged, "the bounded outcome must name the command that converges"
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="flock-based contention setup")
+@pytest.mark.platforms("posix")  # flock-based contention setup
 def test_a_multiplexing_owner_is_still_refused(host_lock_dir, monkeypatch):
     """The carve-out is scoped to an unmigrated fleet: losing the race to a MULTIPLEXER is still
     the second-gateway shape, and an owner we cannot interrogate is treated as one."""
@@ -139,7 +141,16 @@ def test_a_multiplexing_owner_is_still_refused(host_lock_dir, monkeypatch):
     from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
     from gateway.run import _claim_host_gateway_role
 
-    hr.publish_record(hr.ROLE_GATEWAY, profiles=("default", "coder"), home=str(host_lock_dir))
+    hr.publish_record(hr.ROLE_GATEWAY, profiles=("default", "coder"), home=str(get_hermes_home()))
+    owner = hr.read_record(hr.ROLE_GATEWAY, include_stale=True)
+    assert owner is not None
+    # Another process holds the record (our own pid would short-circuit _owner_is_standalone before
+    # the wire is asked), and it never answers the rescan: an owner we cannot interrogate is a
+    # multiplexer.
+    from gateway.host_attach import HostGateway
+    silent_owner = HostGateway(pid=owner.pid + 1, home=host_lock_dir, profiles=(),
+                               served_known=False)
+    monkeypatch.setattr("gateway.host_attach.host_gateway", lambda **kw: silent_owner)
     monkeypatch.setattr("gateway.host_attach.request_serve_profile",
                         lambda profile, owner=None: None)  # owner never answers
     handle = _hold_host_lock_from_another_description(hr)
@@ -149,6 +160,32 @@ def test_a_multiplexing_owner_is_still_refused(host_lock_dir, monkeypatch):
     finally:
         handle.close()
     assert exc.value.code == GATEWAY_SERVICE_RESTART_EXIT_CODE
+
+
+@pytest.mark.platforms("posix")
+def test_standalone_lock_loss_uses_profile_discovery_when_host_probe_is_empty(
+    host_lock_dir, monkeypatch
+):
+    """A transiently unavailable owner channel must not erase standalone coexistence."""
+    from gateway import host_rendezvous as hr
+    from gateway.host_attach import HostAttachDecision, START
+    from gateway.run import _claim_host_gateway_role
+
+    calls = []
+
+    def standalone_decision(home, owner):
+        calls.append(owner)
+        return HostAttachDecision(START, "")
+
+    monkeypatch.setattr("gateway.host_attach.standalone_attach_decision", standalone_decision)
+    monkeypatch.setattr("hermes_cli.profiles.profile_is_standalone", lambda home: True)
+    monkeypatch.setattr("gateway.host_attach.host_gateway", lambda **kw: None)
+    handle = _hold_host_lock_from_another_description(hr)
+    try:
+        _claim_host_gateway_role()
+    finally:
+        handle.close()
+    assert calls == [None, None]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="flock-based contention setup")
@@ -189,10 +226,12 @@ async def test_a_replace_unit_that_replaced_nothing_is_still_refused_when_it_los
     monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
     monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
     monkeypatch.setattr("gateway.run.GatewayRunner", _RunnerMustNotStart)
-    monkeypatch.setattr("gateway.host_attach.request_serve_profile",
-                        lambda profile, owner=None: None)  # a multiplexer, not a standalone owner
+    # The lock holder is a multiplexer: the standalone start-beside carve-out must not rescue a
+    # --replace unit. Patched where _claim_host_gateway_role reads it; the request_serve_profile
+    # patch this used to carry was unreachable (_owner_is_standalone short-circuits on our own pid).
+    monkeypatch.setattr("gateway.run._owner_is_standalone", lambda: False)
 
-    hr.publish_record(hr.ROLE_GATEWAY, profiles=("default",), home=str(host_lock_dir))
+    hr.publish_record(hr.ROLE_GATEWAY, profiles=("default",), home=str(get_hermes_home()))
     handle = _hold_host_lock_from_another_description(hr)
     try:
         with pytest.raises(SystemExit) as exc:

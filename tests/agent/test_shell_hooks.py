@@ -9,6 +9,7 @@ covered in ``test_shell_hooks_consent.py``.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -112,6 +113,7 @@ class TestMatcher:
 # ── End-to-end subprocess behaviour ───────────────────────────────────────
 
 
+@pytest.mark.platforms("linux")
 class TestCallbackSubprocess:
 
 
@@ -552,6 +554,14 @@ class TestEvaluateResult:
         assert r["action"] == "block"
         assert "unparseable stdout" in r["message"]
 
+    def test_nonzero_exit_without_directive_fail_closed_blocks(self):
+        r = shell_hooks._evaluate_result(
+            self._spec(fail_closed=True),
+            _spawn_result(returncode=1, stderr="Traceback: hook crashed"),
+        )
+        assert r["action"] == "block"
+        assert "hook exited 1 with no directive" in r["message"]
+
     def test_unparseable_stdout_fails_open_by_default(self):
         r = shell_hooks._evaluate_result(
             self._spec(),
@@ -586,6 +596,21 @@ class TestEvaluateResult:
 
 
 class TestFailSemanticsEndToEnd:
+    def test_fail_closed_crashed_process_blocks(self, tmp_path):
+        script = _write_script(
+            tmp_path, "crash.py", 'raise RuntimeError("hook crashed")\n',
+        )
+        spec = shell_hooks.ShellHookSpec(
+            event="pre_tool_call",
+            command=f'"{sys.executable}" "{script}"',
+            fail_closed=True,
+        )
+        cb = shell_hooks._make_callback(spec)
+        result = cb(tool_name="terminal", args={"command": "rm -rf /"})
+        assert result is not None and result["action"] == "block"
+        assert "hook exited 1 with no directive" in result["message"]
+
+    @pytest.mark.platforms("linux")
     def test_exit_2_script_blocks(self, tmp_path):
         script = _write_script(
             tmp_path, "exit2.sh",
@@ -613,6 +638,7 @@ class TestFailSemanticsEndToEnd:
         assert result is not None and result["action"] == "block"
         assert "failed closed" in result["message"]
 
+    @pytest.mark.platforms("linux")
     def test_run_once_reflects_exit_2_block(self, tmp_path):
         """hermes hooks test must mirror production semantics."""
         script = _write_script(
@@ -630,12 +656,29 @@ class TestFailSemanticsEndToEnd:
         assert result["returncode"] == 2
         assert result["parsed"] == {"action": "block", "message": "denied"}
 
+    @pytest.mark.platforms("linux")
+    def test_run_once_reflects_fail_closed_timeout(self, tmp_path):
+        script = _write_script(
+            tmp_path, "sleepy.sh",
+            "#!/usr/bin/env bash\nsleep 5\n",
+        )
+        spec = shell_hooks.ShellHookSpec(
+            event="pre_tool_call", command=str(script),
+            timeout=1, fail_closed=True,
+        )
+        result = shell_hooks.run_once(
+            spec, {"tool_name": "terminal", "args": {"command": "ls"}},
+        )
+        assert result["timed_out"] is True
+        assert result["parsed"]["action"] == "block"
+        assert "failed closed" in result["parsed"]["message"]
+
 
 # ── multiplexed profiles ──────────────────────────────────────────────────
 
 
 class TestRoutedProfileEnv:
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_hook_child_sees_routed_profile_home_and_no_default_secrets(self, tmp_path, monkeypatch):
         """Under multiplexing the child gets the ROUTED HERMES_HOME, the default profile's secrets
         stay out of its env, and the payload names the firing profile."""
@@ -670,7 +713,7 @@ class TestRoutedProfileEnv:
 # faking ``sys.platform``.
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_bare_script_hook_path_executes_on_windows(tmp_path):
     """A hook whose command is a bare script path — the shape every example in
     ``website/docs/user-guide/features/hooks.md`` uses — must run. POSIX gets there through the
@@ -691,7 +734,7 @@ def test_bare_script_hook_path_executes_on_windows(tmp_path):
     assert missing["error"] == "command not found"
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_unroutable_script_hook_names_the_remediation(tmp_path):
     """A suffix we deliberately do not route still fails, but the diagnostic has to say what to do:
     the raw WinError text is localized, so a non-English Windows install could not act on it."""
@@ -702,3 +745,52 @@ def test_unroutable_script_hook_names_the_remediation(tmp_path):
 
     assert result["returncode"] is None
     assert "interpreter" in result["error"] and "bash" in result["error"]
+
+
+@pytest.mark.platforms("posix")
+def test_real_tool_hooks_receive_only_the_owning_workers_identity(tmp_path, monkeypatch):
+    import shlex
+    import sys
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    from agent.delegation_context import delegated_child_context, non_dispatcher_owned_context
+    from agent.agent_runtime_helpers import _pre_tool_block_message
+    from agent.inline_tool_executors import emit_terminal_post_tool_call
+    from hermes_cli import plugins
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_owner")
+    monkeypatch.delenv("HERMES_DELEGATED_CHILD_CONTEXT", raising=False)
+    monkeypatch.setattr(plugins, "_plugin_manager", plugins.PluginManager())
+    capture = tmp_path / "captured.json"
+    script = tmp_path / "gate.py"
+    script.write_text(
+        "import json, os, sys\nfrom pathlib import Path\n"
+        "payload=json.load(sys.stdin)\n"
+        "payload['worker_env']=os.environ.get('HERMES_KANBAN_TASK')\n"
+        f"Path({str(capture)!r}).write_text(json.dumps(payload))\n"
+        "print(json.dumps({'action':'block', 'message':'verified gate fired'}))\n"
+    )
+    command = f"{shlex.quote(sys.executable)} {shlex.quote(str(script))}"
+    shell_hooks.register_from_config({"hooks": {
+        event: [{"matcher": "kanban_complete", "command": command}]
+        for event in ("pre_tool_call", "post_tool_call")
+    }}, accept_hooks=True)
+    agent = SimpleNamespace(session_id="session-id")
+    for scope, expected in ((nullcontext, "t_owner"), (delegated_child_context, ""),
+                            (non_dispatcher_owned_context, ""), (nullcontext, "t_owner")):
+        with scope():
+            message, _ = _pre_tool_block_message(agent, "kanban_complete", {}, "turn-id", "call-id", [])
+            assert message == "verified gate fired"
+            payload = json.loads(capture.read_text())
+            assert payload["extra"]["kanban_task_id"] == expected
+            assert payload["extra"]["task_id"] == "turn-id"
+            assert payload["session_id"] == "session-id"
+            assert payload["worker_env"] is None
+            capture.unlink()
+            emit_terminal_post_tool_call(agent, function_name="kanban_complete", function_args={},
+                                         result="{}", effective_task_id="turn-id", tool_call_id="call-id")
+            payload = json.loads(capture.read_text())
+            assert payload["hook_event_name"] == "post_tool_call"
+            assert payload["extra"]["kanban_task_id"] == expected

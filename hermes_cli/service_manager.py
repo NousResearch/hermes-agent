@@ -6,7 +6,9 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Literal, Protocol, runtime_checkable
@@ -55,8 +57,10 @@ class ServiceManager(Protocol):
 def detect_service_manager() -> ServiceManagerKind:
     """Return "s6" (s6-svscan is PID 1), "windows", "launchd", "systemd" (working bus) or "none".
 
-    Does NOT replace ``supports_systemd_services()`` for host call sites; it exists for
-    backend-agnostic code (profile hooks, the s6 dispatch in ``hermes gateway``).
+    This function does NOT replace ``supports_systemd_services()`` —
+    host call sites continue to use that. It exists for new backend-
+    agnostic code (profile create/delete hooks, the s6 dispatch path
+    in ``hermes gateway start/stop/restart``).
     """
     # Deferred so importing this module (Protocol type, validate_profile_name) doesn't drag in
     # the whole gateway dependency graph.
@@ -220,15 +224,18 @@ def get_service_manager() -> ServiceManager:
 # /etc/s6-overlay/s6-rc.d/ as part of the image and are NOT managed here.
 # ---------------------------------------------------------------------------
 
-# s6-overlay's dynamic scandir (tmpfs) that s6-svscan watches; writes here trigger supervision
-# on the next rescan.
-S6_DYNAMIC_SCANDIR = Path("/run/service")
+# s6-overlay's root scandir, watched by the PID-1 s6-svscan: every slot in it runs under a root
+# s6-supervise, so it stays root-owned and holds only the image's static s6-rc services.
+S6_STATIC_SCANDIR = Path("/run/service")
+# Per-profile gateway scandir (tmpfs), watched by a nested s6-svscan running as hermes (the
+# ``profile-gateways`` s6-rc service); writes here trigger supervision on the next rescan.
+S6_DYNAMIC_SCANDIR = Path("/run/hermes-service")
 S6_SERVICE_PREFIX = "gateway-"
 
 
 def _profile_from_service(name: str) -> str:
     """Strip the ``gateway-`` prefix back off (matches what the user typed via ``-p``)."""
-    return name[len(S6_SERVICE_PREFIX):] if name.startswith(S6_SERVICE_PREFIX) else name
+    return name.removeprefix(S6_SERVICE_PREFIX)
 
 
 def _profile_dir_for_gateway_service(name: str) -> Path:
@@ -256,7 +263,7 @@ def _write_gateway_desired_state(name: str, desired_state: str) -> None:
         if not profile_dir.exists():
             return
         try:
-            data = json.loads(state_file.read_text(encoding="utf-8")) if state_file.exists() else {}
+            data = json.loads(state_file.read_text(encoding="utf-8-sig")) if state_file.exists() else {}
             if not isinstance(data, dict):
                 data = {}
         except (OSError, json.JSONDecodeError):
@@ -275,7 +282,7 @@ def register_unregistered_profile_gateway(mgr: ServiceManager, profile: str) -> 
 
     `hermes profile create` can only register a slot when it runs inside the container; created
     from the host against a bind-mounted home, the directory lands where the container reads it
-    but no ``/run/service/gateway-<name>`` exists, and the boot reconciler only notices on the
+    but no ``/run/hermes-service/gateway-<name>`` exists, and the boot reconciler only notices on the
     next container restart. Returns False without touching anything unless the directory carries
     ``SOUL.md`` — the reconciler's own "real profile" marker — so a mistyped ``-p`` name cannot
     mint a phantom slot. ``start_now=False``: the caller's ordinary ``start`` stays the single
@@ -304,27 +311,79 @@ def _s6_run(cmd: str, *args: str, timeout: float = 5, check: bool = False):
     )
 
 
-# UID/GID of the in-image ``hermes`` user; hardcoded to match what ``stage2-hook.sh`` enforces
-# (tests/docker/test_uid_remap.py). s6-supervise starts as root and drops via ``s6-setuidgid``.
-_HERMES_UID = 10000
-_HERMES_GID = 10000
+def s6_service_up(service_dir: Path) -> bool:
+    """``s6-svstat -o up`` for any s6 service directory; False on any failure."""
+    try:
+        result = _s6_run("s6-svstat", "-o", "up", str(service_dir))
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0 and result.stdout.split() == ["true"]
+
+
+def _root_hermes_account():
+    """The current (possibly remapped) hermes account when running as root, else None."""
+    if not hasattr(os, "geteuid") or os.geteuid() != 0:
+        return None
+    import pwd
+
+    try:
+        return pwd.getpwnam("hermes")
+    except KeyError:
+        # Outside the image there may be no hermes account; retain the existing owner.
+        return None
 
 
 def _chown_hermes(path: Path) -> None:
+    """Root-created slot entries belong to the current, possibly remapped hermes account."""
+    account = _root_hermes_account()
+    if account is not None:
+        os.chown(path, account.pw_uid, account.pw_gid, follow_symlinks=False)
+
+
+def _require_root_controlled(path: Path, *, private: bool) -> os.stat_result:
+    """lstat ``path`` and refuse it unless only root can rename or modify it.
+
+    ``private`` additionally requires a 0700-style directory that nobody else can traverse.
+    """
+    st = os.lstat(path)
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != 0:
+        raise RuntimeError(f"{path} must be a root-owned directory, not a symlink")
+    if private and st.st_mode & 0o077:
+        raise RuntimeError(f"{path} must not be accessible to group or others")
+    if st.st_mode & 0o022 and not st.st_mode & stat.S_ISVTX:
+        raise RuntimeError(f"{path} must not be writable by group or others")
+    return st
+
+
+def _root_staging_dir(scandir: Path) -> Path:
+    """Root-private build area beside ``scandir``, on the same filesystem.
+
+    The gateway scandir is hermes-owned, so anything root builds inside it can be renamed and
+    swapped for a symlink mid-build, redirecting root's chmod/chown/writes. Root therefore builds
+    slots in ``.<scandir>.staging`` (root, 0700) and publishes them with one atomic rename. Every
+    ancestor must be root-controlled, or an unprivileged user could rename the staging dir away.
+    """
+    parent = scandir.parent
+    for ancestor in (parent, *parent.parents):
+        _require_root_controlled(ancestor, private=False)
+    staging = parent / f".{scandir.name}.staging"
     try:
-        os.chown(path, _HERMES_UID, _HERMES_GID)
-    except PermissionError:
-        # Already running as hermes → the dir is hermes-owned by default; swallowing keeps root
-        # and unprivileged callers on one code path.
+        os.mkdir(staging, 0o700)
+    except FileExistsError:
         pass
+    st = _require_root_controlled(staging, private=True)
+    if os.stat(scandir).st_dev != st.st_dev:
+        raise RuntimeError(f"{staging} and {scandir} must share a filesystem for an atomic publish")
+    return staging
 
 
 def _seed_supervise_skeleton(svc_dir: Path) -> None:
     """Pre-create hermes-owned ``supervise/`` and top-level ``event/`` inside a service directory.
 
-    s6-supervise (root) creates ``event/``/``supervise/`` 0700 and the control FIFO 0600, so the
-    hermes user gets EACCES on every ``s6-svc``/``s6-svstat``. s6 treats EEXIST as success and skips
-    its chown/chmod fix-up, so seeding before ``s6-svscanctl -a`` makes s6-supervise inherit our
+    s6-supervise creates ``event/``/``supervise/`` 0700 and the control FIFO 0600. Root
+    registration must seed these for the current hermes account before its unprivileged
+    supervisor starts. s6 treats EEXIST as success and skips its chown/chmod fix-up, so
+    seeding before ``s6-svscanctl -a`` makes s6-supervise inherit our
     ownership. ``log/`` gets the same skeleton (its own supervise instance) or unregister teardown
     EACCESes on the logger. Idempotent: existing entries (possibly live FIFOs) are left untouched.
 
@@ -412,6 +471,18 @@ class S6ServiceManager:
     def __init__(self, scandir: Path = S6_DYNAMIC_SCANDIR) -> None:
         self.scandir = scandir
 
+    @staticmethod
+    def _s6(cmd: str, *args: str, timeout: float = 5, check: bool = False):
+        """Run an s6 tool against the hermes-owned tree, as hermes when called as root.
+
+        s6-svc/s6-svscanctl/s6-svwait open FIFOs and fifodirs inside that tree; as root they would
+        follow a hermes-planted symlink and write to or create entries in any root-owned path.
+        """
+        if _root_hermes_account() is not None:
+            return _s6_run("s6-setuidgid", "hermes", f"{_S6_BIN_DIR}/{cmd}", *args,
+                           timeout=timeout, check=check)
+        return _s6_run(cmd, *args, timeout=timeout, check=check)
+
     def _service_dir(self, profile: str) -> Path:
         validate_profile_name(profile)
         return self.scandir / f"{S6_SERVICE_PREFIX}{profile}"
@@ -444,7 +515,6 @@ class S6ServiceManager:
             "set -e",
             "export HOME=/opt/data",
             "cd /opt/data",
-            ". /opt/hermes/.venv/bin/activate",
         ]
         for k, v in sorted(extra_env.items()):
             lines.append(f"export {k}={shlex.quote(v)}")
@@ -538,7 +608,7 @@ class S6ServiceManager:
         if not service_dir.is_dir():
             raise GatewayNotRegisteredError(_profile_from_service(name))
         try:
-            _s6_run("s6-svc", action_flag, str(service_dir), check=True)
+            self._s6("s6-svc", action_flag, str(service_dir), check=True)
         except subprocess.CalledProcessError as exc:
             raise S6CommandError(
                 service=name, action=action_label, returncode=exc.returncode, stderr=exc.stderr or ""
@@ -548,16 +618,27 @@ class S6ServiceManager:
         self._run_svc("-u", "start", name)
         _write_gateway_desired_state(name, "running")
 
-    def _supervised_pid(self, name: str) -> int | None:
-        """PID of the supervised gateway per ``s6-svstat``, or None on any failure."""
-        try:
-            result = _s6_run("s6-svstat", str(self.scandir / name))
-        except (OSError, subprocess.SubprocessError):
-            return None
+    def _svstat_fields(self, name: str, *fields: str) -> list[str] | None:
+        """``s6-svstat -o <fields>`` values for ``name``, or None on a nonzero rc or a count mismatch.
+
+        Never parse the human status line: s6 2.15 prints ``up (pid N pgid N) Ss``, which the old
+        ``(pid N)`` regex never matched, so the planned-stop marker was silently skipped.
+        """
+        result = self._s6("s6-svstat", "-o", ",".join(fields), str(self.scandir / name))
         if result.returncode != 0:
             return None
-        m = re.search(r"\(pid (\d+)\)", result.stdout)
-        return int(m.group(1)) if m else None
+        values = result.stdout.split()
+        return values if len(values) == len(fields) else None
+
+    def _supervised_pid(self, name: str) -> int | None:
+        """PID of the supervised gateway per ``s6-svstat -o pid`` (``-1`` when down), or None on any
+        failure."""
+        try:
+            values = self._svstat_fields(name, "pid")
+            pid = int(values[0]) if values else 0
+        except (OSError, subprocess.SubprocessError, ValueError):
+            return None
+        return pid if pid > 0 else None
 
     def stop(self, name: str) -> None:
         """``s6-svc -d``, after writing a planned-stop marker for the supervised PID so the gateway's
@@ -579,8 +660,8 @@ class S6ServiceManager:
         _write_gateway_desired_state(name, "running")
 
     def is_running(self, name: str) -> bool:
-        result = _s6_run("s6-svstat", str(self.scandir / name))
-        return result.returncode == 0 and "up " in result.stdout
+        values = self._svstat_fields(name, "up")
+        return values == ["true"]
 
     # -- runtime registration ---------------------------------------------
 
@@ -597,7 +678,7 @@ class S6ServiceManager:
         if ``s6-svscanctl`` fails.
         """
         svc_dir = self._service_dir(profile)
-        if svc_dir.exists():
+        if os.path.lexists(svc_dir):
             raise ValueError(f"profile gateway {profile!r} already registered at {svc_dir}")
         # Build atomically in a DOT-PREFIXED sibling (``.gateway-<profile>.tmp``) then rename:
         # s6-svscan skips dot entries, so a concurrent rescan (cont-init reconciler, sibling
@@ -605,10 +686,18 @@ class S6ServiceManager:
         # ROOT on the ``.tmp`` (it already has ``type``/``run``), mkdir ``supervise/`` root-owned
         # 0700, and our ``_seed_supervise_skeleton`` would EACCES on ``supervise/event`` — the
         # arm64-only CI flake on test_s6_unregister_removes_service_dir_in_live_container.
-        tmp_dir = svc_dir.with_name("." + svc_dir.name + ".tmp")
-        if tmp_dir.exists():
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-        tmp_dir.mkdir(parents=True)
+        #
+        # Root never builds inside the hermes-owned scandir: hermes could swap the dot dir for a
+        # symlink mid-build and redirect root's writes, chmods and chowns. Root builds in a
+        # root-private staging dir instead and publishes with a single rename.
+        if _root_hermes_account() is not None:
+            tmp_dir = Path(tempfile.mkdtemp(prefix=f"{svc_dir.name}.",
+                                            dir=_root_staging_dir(self.scandir)))
+        else:
+            tmp_dir = svc_dir.with_name("." + svc_dir.name + ".tmp")
+            if tmp_dir.exists():
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+            tmp_dir.mkdir(parents=True)
 
         def _write_script(path: Path, text: str) -> None:
             path.write_text(text, encoding="utf-8")
@@ -626,11 +715,18 @@ class S6ServiceManager:
             # Mirrors container_boot._register_gateway_slot when start=False.
             if not start_now:
                 (tmp_dir / "down").touch()
-            tmp_dir.rename(svc_dir)
+            # Publish a fully hermes-owned slot, not just its control skeleton. Explicit
+            # directory modes keep root's restrictive umask from hiding run/log/run.
+            for path in [tmp_dir, *tmp_dir.rglob("*")]:
+                if path.is_dir() and path in (tmp_dir, tmp_dir / "log"):
+                    path.chmod(0o755)
+                _chown_hermes(path)
+            # rename(2) never follows a symlink at svc_dir and refuses a non-empty directory.
+            os.rename(tmp_dir, svc_dir)
         except Exception:
             shutil.rmtree(tmp_dir, ignore_errors=True)
             raise
-        result = _s6_run("s6-svscanctl", "-a", str(self.scandir))
+        result = self._s6("s6-svscanctl", "-a", str(self.scandir))
         if result.returncode != 0:
             # No supervisor is watching it — leaving the directory would be confusing.
             shutil.rmtree(svc_dir, ignore_errors=True)
@@ -648,9 +744,9 @@ class S6ServiceManager:
         svc_dir = self._service_dir(profile)
         if not svc_dir.exists():
             return
-        _s6_run("s6-svc", "-d", str(svc_dir))
-        _s6_run("s6-svwait", "-D", "-t", "10000", str(svc_dir), timeout=15)
-        _s6_run("s6-svscanctl", "-an", str(self.scandir))
+        self._s6("s6-svc", "-d", str(svc_dir))
+        self._s6("s6-svwait", "-D", "-t", "10000", str(svc_dir), timeout=15)
+        self._s6("s6-svscanctl", "-an", str(self.scandir))
         # No synchronous "scan completed" handshake — -a/-n just set a flag s6-svscan reads on its
         # next loop; 200ms is comfortably above that resolution.
         time.sleep(0.2)

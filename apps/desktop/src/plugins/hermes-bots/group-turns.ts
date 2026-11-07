@@ -6,7 +6,7 @@
  * Room-level sequencing lives in group-rounds.ts, which drives these.
  */
 
-import { host } from '@hermes/plugin-sdk'
+import { APPROVAL_RESPOND_TIMEOUT_MS, host, randomUuid } from '@hermes/plugin-sdk'
 
 import { noteBotAttention } from './data'
 import { groupFailureReason, recordGroupActivity } from './group-activity'
@@ -26,7 +26,11 @@ import {
   groupSessionOwner,
   hasThreadScopedGroupSession
 } from './group-membership'
-import { GROUP_PROMPT_HEADER_PREFIX } from './group-round-prompt'
+import {
+  addFreshThreadRoomContext,
+  formatFreshThreadRoomContext,
+  GROUP_PROMPT_HEADER_PREFIX
+} from './group-round-prompt'
 import { botConnectionRoute, requestForBot } from './routing'
 import type { Attachment, GroupMember, GroupPrompt, GroupPromptQuestion, ProfileRoute } from './types'
 
@@ -155,9 +159,6 @@ function pickStrandedGroupTurnReply(messages: GroupTurnTranscriptMessage[], befo
 /** A clarify question blocking inside a member's session, as `session.resume`
  *  reports it. Older backends omit the field entirely. */
 interface GroupPendingClarify {
-  choices?: string[]
-  multi_select?: unknown
-  question?: unknown
   questions?: GroupPromptQuestion[]
   request_id?: string
 }
@@ -262,6 +263,8 @@ interface GroupMemberSessionHandle {
   runtime: null | string
   /** Durable id persisted in `room.sessions`; `true` is the legacy sentinel. */
   stored?: null | string | true
+  /** True only when this call minted a genuinely new thread session. */
+  fresh?: boolean
 }
 
 /** Ensure the member's session FOR THIS THREAD exists and return a LIVE
@@ -368,17 +371,18 @@ export async function ensureGroupChatSession(
 
           return {
             runtime: res.session_id,
-            stored
+            stored,
+            fresh: false
           }
         }
       } catch (error: any) {
-        if (error?.code !== 4007) {
+        if (!isSessionAbsentError(error)) {
           const detail = error instanceof Error && error.message ? ` (${error.message})` : ''
           throw new Error(
             `Could not check ${member?.name || 'member'}'s group session${detail} — not starting a new one`
           )
         }
-        /* genuinely doesn't exist (4007) — try the next target / fall through to create */
+        /* genuinely doesn't exist — try the next target / fall through to create */
       }
     }
 
@@ -427,7 +431,8 @@ export async function ensureGroupChatSession(
 
     return {
       runtime: created?.session_id || null,
-      stored
+      stored,
+      fresh: true
     }
   } finally {
     binding.dispose()
@@ -516,6 +521,21 @@ interface GatewayErrorLike {
   code?: number
   data?: { reason?: unknown }
   message?: unknown
+}
+
+/** "This session does not exist" from either backend: 4007 from a `hermes serve`
+ *  socket, a 4001 refusal whose reason is `not_found` from the gateway that owns
+ *  local sessions (gateway/session_controls.py). Only this answer may lead to
+ *  minting a fresh member session; every other failure fails closed. The
+ *  gateway also answers `not_found` for a row this caller may not read
+ *  (gateway/session_local_title.py folds permission_denied into it); treating that as
+ *  absent is safe, since such a row could not be resumed by this caller anyway. */
+export function isSessionAbsentError(error: GatewayErrorLike | null | undefined): boolean {
+  if (error?.code === 4007) {
+    return true
+  }
+
+  return error?.code === 4001 && (error.data?.reason === 'not_found' || error.message === 'not_found')
 }
 
 /** 4001-class "the runtime session was reaped" failure. Distinct from 4007
@@ -700,12 +720,9 @@ export function syncGroupClarify(
       ? {
           ...base,
           kind: 'clarify',
-          question: typeof clarify.question === 'string' ? clarify.question : '',
-          choices: Array.isArray(clarify.choices) ? clarify.choices.filter(c => typeof c === 'string' && c) : [],
-          multiSelect: Boolean(clarify.multi_select),
           // Batch clarifies carry `questions`; the room card answers them
           // one wire call per question, mirroring the 1:1 batch contract.
-          questions: Array.isArray(clarify.questions) ? clarify.questions : null
+          questions: Array.isArray(clarify.questions) ? clarify.questions : []
         }
       : {
           ...base,
@@ -717,9 +734,7 @@ export function syncGroupClarify(
           choices:
             Array.isArray(approval.choices) && approval.choices.length
               ? approval.choices.filter(c => typeof c === 'string' && c)
-              : ['once', 'deny'],
-          multiSelect: false,
-          questions: null
+              : ['once', 'deny']
         }
   })
 
@@ -799,14 +814,13 @@ export function renameGroupClarify(oldName: string, newName: string) {
  *  to the member's OWN source (requestForBot), so cross-connection members work.
  *  - clarify: `clarify.lock` per question, sequentially — the LAST lock
  *    resolves the blocked server request (same contract as the 1:1 batch
- *    card). A single question answers the open request by id through
- *    `request.answer` (the cross-socket proxy for a response frame).
+ *    card).
  *  - approval: `approval.respond` with the choice (once/session/always/deny),
  *    keyed by session + request_id — the queue-level wire every surface shares. */
 export async function answerGroupClarify(
   entry: GroupPrompt,
   member: GroupMember,
-  answers: Record<string, string> | string | undefined
+  answers: Record<string, null | string> | string | undefined
 ) {
   let group = entry.group
 
@@ -816,27 +830,26 @@ export async function answerGroupClarify(
 
   try {
     if (entry.kind === 'approval') {
-      await requestForBot(member, 'approval.respond', {
-        session_id: entry.sessionId || undefined,
-        request_id: entry.requestId,
-        choice: typeof answers === 'string' && answers ? answers : 'deny'
-      })
-    } else if (entry.questions && entry.questions.length) {
+      // Ride the backend's approvals.timeout (300s default), not the generic
+      // request timeout — the user owns the full approval window (#60654).
+      await requestForBot(
+        member,
+        'approval.respond',
+        {
+          session_id: entry.sessionId || undefined,
+          request_id: entry.requestId,
+          choice: typeof answers === 'string' && answers ? answers : 'deny'
+        },
+        { timeoutMs: APPROVAL_RESPOND_TIMEOUT_MS }
+      )
+    } else {
       for (const question of entry.questions) {
-        // Question ids are opaque on the wire (`GroupPrompt.questions` types
-        // them `unknown`); the batch card keys its answer bag by exactly them.
-        const qid = (question?.qid ?? question?.id) as string
         await requestForBot(member, 'clarify.lock', {
           request_id: entry.requestId,
-          question_id: qid,
-          answer: (answers as Record<string, string>)?.[qid] ?? ''
+          question_id: question.qid,
+          answer: (answers as Record<string, null | string>)?.[question.qid] ?? null
         })
       }
-    } else {
-      await requestForBot(member, 'request.answer', {
-        id: entry.requestId,
-        result: { answer: typeof answers === 'string' ? answers : '' }
-      })
     }
 
     if (!binding.isLive()) {
@@ -1201,7 +1214,7 @@ async function runGroupChatMemberTurnLeased(
   })
 
   try {
-    const { runtime, stored } = await ensureGroupChatSession(group, member, thread)
+    const { runtime, stored, fresh } = await ensureGroupChatSession(group, member, thread)
 
     if (!runtime || !binding.isLive()) {
       return null
@@ -1233,8 +1246,14 @@ async function runGroupChatMemberTurnLeased(
       return null
     }
 
+    const roomContext = fresh
+      ? formatFreshThreadRoomContext($groupChats.get()[group]?.log || [], member, thread, group)
+      : []
+
+    const contextualPrompt = addFreshThreadRoomContext(prompt, roomContext)
     const staged = groupTurnAttachmentSuffix(fileRefs, failed)
-    const turnText = staged ? `${prompt}\n\n${staged}` : prompt
+
+    const turnText = staged ? `${contextualPrompt}\n\n${staged}` : contextualPrompt
 
     // #93602: one-shot recovery when the runtime session was reaped between
     // minting and submitting. Tracks the runtime id the submit landed on so
@@ -1248,7 +1267,7 @@ async function runGroupChatMemberTurnLeased(
     runtimeIds.add(liveRuntime)
 
     // A UUID, not a clock+random suffix: a marker persisted by a previous process must never equal a token this one mints.
-    const turn = `${liveRuntime}:${crypto.randomUUID()}`
+    const turn = `${liveRuntime}:${randomUuid()}`
     liveGroupTurns.add(turn)
     markGroupTurnInFlight(group, member, {
       before,
@@ -1333,7 +1352,7 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
     } catch (error: any) {
       // A session that genuinely no longer exists has nothing to harvest, and a marker that can
       // never resolve would keep the member out of every round; only unreachability keeps it.
-      if (error?.code === 4007) {
+      if (isSessionAbsentError(error)) {
         updateGroupChat(group, (r: GroupChatRoom) => {
           const next = {
             ...(r.stranded || {})

@@ -5,6 +5,7 @@ import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { type I18nContextValue, I18nProvider, useI18n } from '@/i18n'
+import { $freeTierSignIn } from '@/store/free-tier-sign-in'
 
 import { formatMoney } from './billing-amounts'
 import {
@@ -31,7 +32,8 @@ const apiMocks = vi.hoisted(() => ({
   resumeSubscription: vi.fn(),
   scheduleSubscriptionChange: vi.fn(),
   stepUp: vi.fn(),
-  updateAutoReload: vi.fn()
+  updateAutoReload: vi.fn(),
+  updateKeepGoingOnCredits: vi.fn()
 }))
 
 vi.mock('./api', () => ({
@@ -46,7 +48,8 @@ vi.mock('./api', () => ({
     resumeSubscription: apiMocks.resumeSubscription,
     scheduleSubscriptionChange: apiMocks.scheduleSubscriptionChange,
     stepUp: apiMocks.stepUp,
-    updateAutoReload: apiMocks.updateAutoReload
+    updateAutoReload: apiMocks.updateAutoReload,
+    updateKeepGoingOnCredits: apiMocks.updateKeepGoingOnCredits
   })
 }))
 
@@ -203,6 +206,25 @@ describe('BillingSettings', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
     expect(apiMocks.updateAutoReload).not.toHaveBeenCalled()
+  })
+
+  it('shows "Keep going on credits" only on window plans and flips it', async () => {
+    renderBilling()
+    await screen.findByRole('button', { name: 'Manage' })
+    expect(screen.queryByRole('switch', { name: 'Keep going on credits' })).toBeNull()
+    cleanup()
+
+    apiMocks.fetchBillingState.mockResolvedValue(okBilling({ ...todayBillingState, keep_going_on_credits: false }))
+    apiMocks.updateKeepGoingOnCredits.mockResolvedValue({ data: { ok: true }, ok: true })
+    const client = renderBilling()
+    const invalidate = vi.spyOn(client, 'invalidateQueries')
+
+    const toggle = await screen.findByRole('switch', { name: 'Keep going on credits' })
+    expect(toggle.getAttribute('aria-checked')).toBe('false')
+    fireEvent.click(toggle)
+
+    await waitFor(() => expect(apiMocks.updateKeepGoingOnCredits).toHaveBeenCalledWith(true))
+    await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['billing', 'state'] }))
   })
 
   it('renders the enabled auto-refill row without crashing when the card is null', async () => {
@@ -595,13 +617,18 @@ describe('BillingSettings', () => {
     )
   })
 
-  it('renders logged-out as a connect card without normal account rows', async () => {
+  it('renders logged-out as a connect card whose sign-in opens the shared dialog', async () => {
     apiMocks.fetchBillingState.mockResolvedValue(okBilling(loggedOutBillingState))
     apiMocks.fetchSubscriptionState.mockResolvedValue(okSubscription(loggedOutSubscriptionState))
+    $freeTierSignIn.set({ status: 'closed' })
 
     renderBilling()
 
     expect(await screen.findByText('Connect your Nous account')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
+    expect($freeTierSignIn.get()).toEqual({ status: 'requested' })
+    expect(apiMocks.openExternal).not.toHaveBeenCalled()
+    $freeTierSignIn.set({ status: 'closed' })
     expect(screen.queryByText('Payment method')).toBeNull()
     expect(screen.queryByText('Usage')).toBeNull()
   })

@@ -3,6 +3,7 @@ from hermes_state import AsyncSessionDB, SessionDB
 
 from datetime import datetime
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -57,7 +58,6 @@ def _make_runner(session_entry: SessionEntry, *, platform: Platform = Platform.T
     runner.session_store.rewrite_transcript = MagicMock()
     runner.session_store.update_session = MagicMock()
     runner._running_agents = {}
-    runner._session_run_generation = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
     runner._session_db = AsyncSessionDB(MagicMock())
@@ -292,14 +292,20 @@ async def test_status_command_resolves_window_of_session_only_model_switch():
 async def test_status_command_keeps_occupancy_only_for_unknown_model_window():
     """A model the resolver cannot size falls to DEFAULT_FALLBACK_CONTEXT; /status must not present
     that invented number as the window (a catalog-listed model of the same size still counts)."""
+    from agent.context_default_record import mark_context_defaulted, records_context_defaults
     from agent.model_metadata import DEFAULT_FALLBACK_CONTEXT
+
+    @records_context_defaults  # the resolver records that it defaulted; a catalog 256K below does not
+    def _unsized(model, base_url="", **_kwargs):
+        mark_context_defaulted()
+        return DEFAULT_FALLBACK_CONTEXT
 
     runner = _runner_with_session_override(
         {"model": "proxy-mystery-model", "provider": "custom:proxy", "base_url": "http://127.0.0.1:1/v1"},
         last_prompt_tokens=4_321,
     )
     with patch("gateway.run._load_gateway_config", return_value={}), patch(
-        "agent.model_metadata.get_model_context_length", return_value=DEFAULT_FALLBACK_CONTEXT
+        "agent.model_metadata.get_model_context_length", _unsized
     ):
         result = await runner._handle_message(_make_event("/status"))
     assert "**Context:** ~4,321 tokens" in result
@@ -509,7 +515,7 @@ async def test_handle_message_stale_result_keeps_newer_generation_callback(monke
 
     async def _stale_result(**kwargs):
         # Simulate a newer run claiming the callback slot before the stale run unwinds.
-        runner._session_run_generation[session_key] = 2
+        runner._session_state(session_key).persistent.run_generation = 2
         adapter._post_delivery_callbacks[session_key] = (2, lambda: None)
         return {
             "final_response": "late reply",

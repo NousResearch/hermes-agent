@@ -11,7 +11,15 @@ vi.mock('@/app/open-session', () => ({ openSession: vi.fn() }))
 vi.mock('@/components/pane-shell/tree/store', async () => {
   const { atom } = await import('nanostores')
 
-  return { $narrowViewport: atom(false) }
+  // session-focus.ts (reached via the preview store) and the layout store
+  // read these at import time; a mock without them crashes before any test.
+  return {
+    $activeTreeGroup: atom(null),
+    $collapsedTreeSides: atom(new Set()),
+    $hiddenTreePanes: atom(new Set()),
+    $layoutTree: atom(null),
+    $narrowViewport: atom(false)
+  }
 })
 vi.mock('@/contrib/events', () => ({ onGatewayEvent: vi.fn() }))
 vi.mock('@/hermes', () => ({ deleteProfile: vi.fn(), getLogs: vi.fn(), getStatus: vi.fn(), hermesApi: vi.fn() }))
@@ -45,6 +53,13 @@ vi.mock('@/store/session', async () => {
     setResumeExhaustedSessionId: vi.fn()
   }
 })
+// The focused session is driven directly; everything else in session-focus
+// stays real.
+vi.mock('@/store/session-focus', async importOriginal => {
+  const { atom } = await import('nanostores')
+
+  return { ...(await importOriginal<Record<string, unknown>>()), $focusedStoredSessionId: atom(null) }
+})
 vi.mock('@/store/session-states', async () => {
   const { atom } = await import('nanostores')
 
@@ -53,7 +68,6 @@ vi.mock('@/store/session-states', async () => {
     $draftSessionIds: atom([]),
     $focusedRuntimeId: atom(null),
     $focusedSessionState: atom(null),
-    $focusedStoredSessionId: atom(null),
     $sessionTiles: atom([]),
     $sessionStates: atom({}),
     $stalledSessionIds: atom([]),
@@ -147,14 +161,10 @@ const {
   setShowAllProfiles
 } = await import('@/store/profile')
 
-const {
-  $focusedRuntimeId,
-  $focusedSessionState,
-  $focusedStoredSessionId,
-  $sessionStates,
-  $sessionTiles,
-  sessionTileDelegate
-} = await import('@/store/session-states')
+const { $focusedRuntimeId, $focusedSessionState, $sessionStates, $sessionTiles, sessionTileDelegate } =
+  await import('@/store/session-states')
+
+const { $focusedStoredSessionId } = await import('@/store/session-focus')
 
 const { dropTilesForProfile } = await import('@/store/session-states')
 
@@ -162,6 +172,7 @@ const { setWorkspaceScope } = await import('@/components/pane-shell/workspace-sc
 
 const {
   $activeSessionId,
+  $connection,
   $messages,
   $selectedStoredSessionId,
   requestSessionResume,
@@ -182,9 +193,11 @@ const profile = (name: string): ProfileInfo => ({
 })
 
 afterEach(() => {
+  vi.restoreAllMocks()
   vi.clearAllMocks()
   vi.mocked(sessionTileDelegate).mockReturnValue(null)
   vi.mocked(activeGatewayConnectionId).mockReturnValue('local')
+  $connection.set(null)
   $activeGatewayProfile.set('remote-worker')
   $gatewaySwapTarget.set(null)
   setMockAtom($hydrationSyncProfile, null)
@@ -314,6 +327,7 @@ describe('connection-aware plugin host APIs', () => {
 
     vi.mocked(hermesApi)
       .mockResolvedValueOnce({ sessions: [{ id: 'bot-chat', profile: 'backend-worker', title: 'Bot Chat' }] })
+      .mockResolvedValueOnce({ exists: true, runtime_revision: 31, runtime_generation: 5 })
       .mockResolvedValueOnce({ ok: true, hidden: true })
 
     await expect(host.listPersistedSessions(route, { profile: 'backend-worker', limit: 200 })).resolves.toMatchObject({
@@ -332,13 +346,33 @@ describe('connection-aware plugin host APIs', () => {
     )
     expect(hermesApi).toHaveBeenNthCalledWith(2, {
       connectionId: 'source-a',
+      path: '/api/sessions/bot-chat/mutation-snapshot?profile=backend-worker'
+    })
+    expect(hermesApi).toHaveBeenNthCalledWith(3, {
+      connectionId: 'source-a',
       path: '/api/sessions/bot-chat',
       method: 'PATCH',
-      body: { hidden: true, profile: 'backend-worker' }
+      body: {
+        hidden: true,
+        profile: 'backend-worker',
+        expected_revision: 31,
+        expected_generation: 5,
+        request_id: expect.any(String)
+      }
     })
     expect(vi.mocked(hermesApi).mock.calls.every(([request]) => !('profile' in request))).toBe(true)
     expect(requestGatewayForAgent).not.toHaveBeenCalled()
     expect(requestGatewayForProfile).not.toHaveBeenCalled()
+  })
+
+  it('keeps an unrouted persisted-session edit on the window primary instead of pinning it to this device', async () => {
+    vi.mocked(hermesApi)
+      .mockResolvedValueOnce({ exists: true, runtime_revision: 2, runtime_generation: 1 })
+      .mockResolvedValueOnce({ ok: true, hidden: true })
+
+    await host.setPersistedSessionHidden(null, { sessionId: 'remote-chat', profile: 'default', hidden: true })
+
+    expect(vi.mocked(hermesApi).mock.calls.map(([request]) => request.connectionId)).toEqual([null, null])
   })
 
   it('forwards an explicit timeout so long-running methods outlive the generic deadline', async () => {
@@ -547,6 +581,51 @@ describe('connection-aware plugin host APIs', () => {
 })
 
 describe('profile-aware plugin session opens', () => {
+  it('does not stamp mode local when a profile open has no owner route and the live connection is remote', async () => {
+    $connection.set({
+      baseUrl: 'http://127.0.0.1:9',
+      connectionId: 'ssh-vps',
+      isFullscreen: false,
+      logs: [],
+      mode: 'remote',
+      nativeOverlayWidth: 0,
+      token: 'token',
+      windowButtonPosition: null,
+      wsUrl: 'ws://127.0.0.1:9'
+    })
+    vi.mocked(activeGatewayConnectionId).mockReturnValue('ssh-vps')
+
+    await host.openSession('remote-session', { profile: 'publisher' })
+
+    expect(setSessionOwnerHint).toHaveBeenCalledWith(
+      'remote-session',
+      expect.objectContaining({ connectionId: 'ssh-vps', mode: 'remote', profile: 'publisher' })
+    )
+    expect(vi.mocked(setSessionOwnerHint).mock.calls.some(call => call[1]?.mode === 'local')).toBe(false)
+  })
+
+  it('still stamps mode local when a profile open has no owner route and the live connection is local', async () => {
+    $connection.set({
+      baseUrl: 'http://127.0.0.1:9',
+      connectionId: 'local',
+      isFullscreen: false,
+      logs: [],
+      mode: 'local',
+      nativeOverlayWidth: 0,
+      token: 'token',
+      windowButtonPosition: null,
+      wsUrl: 'ws://127.0.0.1:9'
+    })
+    vi.mocked(activeGatewayConnectionId).mockReturnValue('local')
+
+    await host.openSession('local-session', { profile: 'worker' })
+
+    expect(setSessionOwnerHint).toHaveBeenCalledWith(
+      'local-session',
+      expect.objectContaining({ connectionId: 'local', mode: 'local', profile: 'worker' })
+    )
+  })
+
   it('captures the full owner route before opening a remote session', async () => {
     const route = {
       connectionId: 'source-a',
@@ -955,6 +1034,8 @@ describe('profile-aware plugin session opens', () => {
   })
 
   it('retries a Bot Chat hydration timeout once without ever arming the Retry surface (#89617)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
     $activeGatewayProfile.set('hyoseob')
 
     // First attempt: leave the surface unhealthy so the hydration wait below
@@ -987,9 +1068,12 @@ describe('profile-aware plugin session opens', () => {
     // call clears it for the currently-routed session.
     expect(setResumeExhaustedSessionId).not.toHaveBeenCalled()
     expect($gatewaySwapTarget.get()).toBeNull()
+    expect(warn).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('[bot-wake] hydration timed out, retrying '))
   })
 
   it('still arms the Retry surface when a retried Bot Chat hydration times out twice', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
     $activeGatewayProfile.set('hyoseob')
 
     await expect(
@@ -1005,6 +1089,26 @@ describe('profile-aware plugin session opens', () => {
     expect(openSessionCore).toHaveBeenCalledTimes(2)
     expect(setResumeExhaustedSessionId).toHaveBeenCalledWith('stranded-bot-chat')
     expect($gatewaySwapTarget.get()).toBeNull()
+    expect(warn).toHaveBeenCalledTimes(2)
+
+    const [retry, failure] = warn.mock.calls
+
+    expect(retry).toHaveLength(1)
+    expect(failure).toHaveLength(1)
+    expect(JSON.parse(String(retry![0]).split('retrying ')[1]!)).toMatchObject({
+      attempt: 1,
+      profile: 'hyoseob',
+      storedSessionId: 'stranded-bot-chat'
+    })
+    expect(JSON.parse(String(failure![0]).split('timed out ')[1]!)).toMatchObject({
+      attempts: 2,
+      phase: 'hydration',
+      profile: 'hyoseob',
+      runtimeBound: false,
+      selectionSettled: false,
+      storedSessionId: 'stranded-bot-chat',
+      transcriptPainted: false
+    })
   })
 
   it('lets the latest rapid bot selection win and cancels the older hydration wait', async () => {
@@ -1118,6 +1222,8 @@ describe('profile-aware plugin session opens', () => {
   })
 
   it('surfaces a wedged profile activation instead of waiting on it forever (#89556)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
     // The dial the store is waiting on never settles - a backend that accepts
     // the socket and then never completes the handshake. Before this was
     // bounded, openSession's await sat here for the life of the window and the
@@ -1144,6 +1250,18 @@ describe('profile-aware plugin session opens', () => {
     // retry, not a frozen pane.
     expect(setResumeExhaustedSessionId).toHaveBeenCalledWith('wedged-chat')
     expect($gatewaySwapTarget.get()).toBeNull()
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(warn.mock.calls[0]).toHaveLength(1)
+    expect(JSON.parse(String(warn.mock.calls[0]![0]).split('timed out ')[1]!)).toMatchObject({
+      attempts: 1,
+      hydrationWaitMs: 0,
+      phase: 'activation',
+      profile: 'medicina',
+      runtimeBound: true,
+      selectionSettled: true,
+      storedSessionId: 'wedged-chat',
+      transcriptPainted: true
+    })
   })
 
   it('gives hydration its own full budget after a slow but successful activation', async () => {

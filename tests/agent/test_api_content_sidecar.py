@@ -28,6 +28,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from agent.message_metadata import TYPED_ASK
 from agent.turn_context import (
     _memory_query_text,
     build_turn_context,
@@ -392,7 +393,7 @@ class _MockHandler(BaseHTTPRequestHandler):
     captured_requests: list = []
     response_queue: list = []
 
-    def do_POST(self):  # noqa: N802 (http.server API)
+    def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
         req = json.loads(self.rfile.read(length).decode())
         type(self).captured_requests.append(req)
@@ -606,6 +607,31 @@ class TestWireInvariant:
         replayed = _user_messages(_chat_requests(handler)[0])[0]["content"]
         assert replayed == history[0]["content"]
 
+    @staticmethod
+    def _stored_multimodal_turn(wire_env):
+        from run_agent import AIAgent
+        make_agent, handler, db, sid = wire_env
+        image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+        with patch.object(AIAgent, "_model_supports_vision", return_value=True):
+            make_agent().run_conversation([{"type": "text", "text": "what is this"}, image],
+                                          conversation_history=[], task_id="t1")
+        assert "display_metadata" not in _user_messages(_chat_requests(handler)[0])[0]  # never on the wire
+        history = db.get_messages_as_conversation(sid)
+        assert "PLUGIN-CTX" in history[0]["content"]  # flattened into the stored row with the ask
+        return history
+
+    def test_previous_message_after_a_reloaded_multimodal_turn_is_the_ask(self, wire_env):
+        """A resumed process must read ``previous_message`` from the typed-ask stamp, or memory
+        providers re-key recall on the plugin context and recalled memory."""
+        from agent.turn_context import _previous_user_message_text
+        assert _previous_user_message_text(self._stored_multimodal_turn(wire_env)) == "what is this"
+
+    def test_previous_message_after_a_gateway_replayed_multimodal_turn_is_the_ask(self, wire_env):
+        from agent.turn_context import _previous_user_message_text
+        from gateway.run import _build_gateway_agent_history
+        replayed = _build_gateway_agent_history(self._stored_multimodal_turn(wire_env))[0]
+        assert _previous_user_message_text(replayed) == "what is this"
+
 
 # ---------------------------------------------------------------------------
 # Review fixes: re-anchoring, MoA, in-place compaction backfill, override
@@ -652,7 +678,7 @@ class TestPrologueMoaAndInPlaceBackfill:
             get_active_compression_failure_cooldown=lambda: None,
         )
 
-        def _compress(messages, _system, approx_tokens=None, task_id=None):
+        def _compress(messages, _system, approx_tokens=None, task_id=None, trigger=None):
             # Emulate compress_context in in_place mode: archive_and_compact
             # already inserted these rows (api_content=NULL — the stamp has
             # not happened yet), fresh copies replace the live dicts.
@@ -844,7 +870,7 @@ class TestFlushSanitizeDivergenceCapture:
         """get_messages_as_conversation strips <memory-context> fences on
         load; the sent bytes must survive in the sidecar so a reloaded
         session replays what was actually on the wire."""
-        from agent.memory_manager import sanitize_context
+        from agent.memory_context import sanitize_context
 
         db = SessionDB(db_path=tmp_path / "state.db")
         sid = "sess-fence"
@@ -922,7 +948,7 @@ class TestMaxIterationsSummaryReplay:
             {"role": "assistant", "content": "a1"},
         ]
         with patch.object(
-            agent, "_ensure_primary_openai_client", return_value=client
+            agent, "_create_request_openai_client", return_value=client
         ):
             out = handle_max_iterations(agent, messages, 5)
 
@@ -1058,6 +1084,7 @@ class TestSessionRowExistsBeforePreflightCompaction:
             # Reload: the durable row carries the same parts the model saw.
             reloaded = [m for m in db.get_messages_as_conversation(sid) if m["role"] == "user"]
             assert reloaded[-1]["content"] == live
+            assert reloaded[-1]["display_metadata"][TYPED_ASK] == "what is this"  # backfilled with the part
         finally:
             db.close()
 
@@ -1098,6 +1125,7 @@ class TestStaleConfirmationRedactionDropsSidecar:
                 "role": "user",
                 "content": "confirm forced restart",
                 "api_content": "confirm forced restart\n\nPLUGIN-CTX",
+                "display_metadata": {TYPED_ASK: "confirm forced restart"},
                 "timestamp": 1000.0,
             }
         ]
@@ -1106,3 +1134,4 @@ class TestStaleConfirmationRedactionDropsSidecar:
         )
         assert cleaned[0]["content"] != "confirm forced restart"
         assert "api_content" not in cleaned[0]
+        assert TYPED_ASK not in cleaned[0]["display_metadata"]  # previous_message would hand it back

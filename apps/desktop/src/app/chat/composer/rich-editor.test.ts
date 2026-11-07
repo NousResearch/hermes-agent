@@ -1,10 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { rememberDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
 
 import { insertInlineRefsIntoEditor } from './inline-refs'
 import {
   caretOffsetInEditor,
+  caretRevealScrollTop,
   composerPlainText,
   deleteSelectionInEditor,
   insertComposerContentsAtCaret,
@@ -568,5 +569,71 @@ describe('normalizeComposerEditorDom — caret preservation', () => {
     expect(caretOffsetInEditor(editor)).toBe(offsetBefore)
 
     editor.remove()
+  })
+})
+
+describe('caretRevealScrollTop', () => {
+  const viewport = { top: 100, bottom: 200 }
+
+  it('leaves a visible caret alone', () => {
+    expect(caretRevealScrollTop({ top: 120, bottom: 140 }, viewport, 50)).toBeNull()
+  })
+
+  it('scrolls down just far enough to show a caret below the viewport', () => {
+    expect(caretRevealScrollTop({ top: 400, bottom: 420 }, viewport, 50)).toBe(270)
+  })
+
+  it('scrolls up just far enough to show a caret above the viewport', () => {
+    expect(caretRevealScrollTop({ top: 60, bottom: 80 }, viewport, 50)).toBe(10)
+  })
+})
+
+describe('caret reveal after programmatic inserts', () => {
+  // jsdom has no layout: give the editor a 100px viewport and put every other
+  // element (the caret probe) at `caretTop`, as a long insert would.
+  function overflowingEditor(caretTop: number) {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    document.body.append(editor)
+
+    Object.defineProperty(editor, 'clientHeight', { configurable: true, value: 100 })
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const [top, bottom] = this === editor ? [0, 100] : [caretTop, caretTop + 20]
+
+      return { bottom, height: bottom - top, left: 0, right: 0, top, width: 0, x: 0, y: top, toJSON: () => ({}) }
+    })
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => {
+      callback(0)
+
+      return 0
+    })
+
+    return editor
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    document.body.replaceChildren()
+  })
+
+  it('scrolls a long paste so the caret after it is visible', () => {
+    const editor = overflowingEditor(480)
+    placeCaretAtEnd(editor)
+
+    insertComposerContentsAtCaret(editor, Array.from({ length: 30 }, (_, i) => `line ${i}`).join('\n'))
+
+    expect(editor.scrollTop).toBe(400)
+    expect(editor.querySelectorAll('span').length).toBe(0)
+    expect(composerPlainText(editor)).toContain('line 29')
+  })
+
+  it('scrolls to the caret when a repaint parks it at the end (voice transcript)', () => {
+    const editor = overflowingEditor(300)
+
+    renderComposerContents(editor, Array.from({ length: 30 }, (_, i) => `said ${i}`).join('\n'))
+    placeCaretEnd(editor)
+
+    expect(editor.scrollTop).toBe(220)
+    expect(composerPlainText(editor)).toContain('said 29')
   })
 })

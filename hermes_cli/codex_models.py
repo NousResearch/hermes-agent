@@ -8,7 +8,10 @@ import os
 from pathlib import Path
 from typing import List, Optional
 
+from hermes_cli.route_identity import normalize_route_base_url
+
 logger = logging.getLogger(__name__)
+
 
 # Curated offline fallback (first-run, transient API failure). Only slugs the ChatGPT Codex
 # OAuth backend actually accepts: the public API's "-pro" variants and the retired
@@ -16,7 +19,7 @@ logger = logging.getLogger(__name__)
 # ("not supported when using Codex with a ChatGPT account"), so listing them leaked dead picker
 # choices (#52492). If OpenAI re-enables any, live discovery (_fetch_models_from_api) picks them
 # up automatically.
-DEFAULT_CODEX_MODELS: List[str] = [
+DEFAULT_CODEX_MODELS: list[str] = [
     "gpt-6-sol",
     "gpt-6-luna",
     "gpt-5.6-sol",
@@ -39,7 +42,7 @@ DEFAULT_CODEX_MODELS: List[str] = [
 # paths below intentionally do not filter on it. PR #12994 removed this entry on the assumption it was
 # unsupported — that was wrong; restored here. Keep it in the curated fallback so Pro users still see Spark
 # in `/model` when live discovery is unavailable (offline first run, transient API failure).
-_FORWARD_COMPAT_TEMPLATE_MODELS: List[tuple[str, tuple[str, ...]]] = [
+_FORWARD_COMPAT_TEMPLATE_MODELS: list[tuple[str, tuple[str, ...]]] = [
     ("gpt-6-sol", ("gpt-5.6-sol", "gpt-5.5")),
     ("gpt-6-luna", ("gpt-5.6-luna", "gpt-5.5")),
     ("gpt-5.6-sol", ("gpt-5.5", "gpt-5.4")),
@@ -51,12 +54,12 @@ _FORWARD_COMPAT_TEMPLATE_MODELS: List[tuple[str, tuple[str, ...]]] = [
     ("gpt-5.3-codex-spark", ("gpt-5.4", "gpt-5.5"))]
 
 
-def _dedupe(model_ids) -> List[str]:
+def _dedupe(model_ids) -> list[str]:
     """Order-preserving dedupe."""
     return list(dict.fromkeys(model_ids))
 
 
-def _add_forward_compat_models(model_ids: List[str]) -> List[str]:
+def _add_forward_compat_models(model_ids: list[str]) -> list[str]:
     """Surface newer Codex slugs missing from live discovery when an older compatible template is
     present (Clawdbot-style synthetic forward-compat catalog)."""
     ordered = _dedupe(model_ids)
@@ -68,7 +71,7 @@ def _add_forward_compat_models(model_ids: List[str]) -> List[str]:
     return ordered
 
 
-def _add_context_variants(model_ids: List[str]) -> List[str]:
+def _add_context_variants(model_ids: list[str]) -> list[str]:
     """Insert ``<slug>-900k`` large-context picker variants after eligible base slugs.
 
     Base slugs keep the cheaper advertised 272K limit; the variant opts into the large window.
@@ -77,7 +80,7 @@ def _add_context_variants(model_ids: List[str]) -> List[str]:
     """
     from agent.model_metadata import CODEX_CONTEXT_VARIANT_SUFFIX, has_codex_context_variant
 
-    out: List[str] = []
+    out: list[str] = []
     present = set(model_ids)
     for model_id in model_ids:
         out.append(model_id)
@@ -89,12 +92,12 @@ def _add_context_variants(model_ids: List[str]) -> List[str]:
     return out
 
 
-def _finalize_codex_models(model_ids: List[str]) -> List[str]:
+def _finalize_codex_models(model_ids: list[str]) -> list[str]:
     """Forward-compat synthesis + large-context variant synthesis."""
     return _add_context_variants(_add_forward_compat_models(model_ids))
 
 
-def _drop_undiscovered_astra(model_ids: List[str]) -> List[str]:
+def _drop_undiscovered_astra(model_ids: list[str]) -> list[str]:
     """Astra is account-gated: only the live account-scoped catalog may advertise it. A stale
     ``models_cache.json`` or a ``config.toml`` default is a compatibility hint, not entitlement."""
     from agent.reasoning_effort import is_astra_model
@@ -106,28 +109,31 @@ def codex_catalog_credential_identity() -> str:
     """Identity of the credential live discovery would use right now, for the catalog cache key.
 
     Access/refresh tokens rotate in place while the account-scoped catalog stays authoritative for
-    the same ChatGPT principal, so the key is ``(chatgpt_account_id, sub)``, not the token. An
-    expired token is its own state: ``_codex_catalog`` serves the static fallback for it, and that
-    fallback must not outlive the refresh under the healthy principal's key. Opaque non-JWT tokens
+    the same ChatGPT principal and route, so the key includes the principal and resolved base URL,
+    not the rotating token. An expired token is its own state (per route): ``_codex_catalog`` serves
+    the static fallback for it, and that fallback must not outlive the refresh under the healthy
+    principal's key. Opaque non-JWT tokens
     fall back to the token itself (the caller hashes every part before anything is persisted).
     """
     from hermes_cli.auth import _codex_access_token_is_expiring, resolve_codex_runtime_credentials
 
     try:
-        token = str(resolve_codex_runtime_credentials(read_only=True).get("api_key") or "")
+        creds = resolve_codex_runtime_credentials(read_only=True)
+        token = str(creds.get("api_key") or "")
+        route = normalize_route_base_url(str(creds.get("base_url") or "").strip())
     except Exception:  # AuthError (no/exhausted creds) or the pytest seat belt: no live catalog either way
         token = ""
     if not token:
         return "missing"
     if _codex_access_token_is_expiring(token, 0):
-        return "expired"
+        return "expired\n" + route
     from agent.credential_pool import _codex_principal_identity
 
     principal = _codex_principal_identity(token)
-    return "/".join(principal) if principal else token
+    return ("/".join(principal) if principal else token) + "\n" + route
 
 
-def _ranked_slugs(entries: object) -> List[str]:
+def _ranked_slugs(entries: object) -> list[str]:
     """Visible slugs from a Codex catalog ``models`` list, sorted by (priority, slug), deduped.
 
     Does not filter on ``supported_in_api``: that flag describes the public OpenAI API, while the
@@ -151,16 +157,26 @@ def _ranked_slugs(entries: object) -> List[str]:
     return _dedupe(slug for _, slug in sortable)
 
 
-def _fetch_models_from_api(access_token: str) -> List[str]:
-    """Fetch available models from the Codex API. Returns visible models sorted by priority."""
+def _fetch_models_from_api(access_token: str, base_url: Optional[str] = None) -> list[str]:
+    """Fetch available models from the Codex API. Returns visible models sorted by priority.
+
+    ``base_url`` is the host the credential is routed to (resolved together with it); the
+    catalog is fetched there, never from a host the credential does not belong to (#121486).
+    """
     try:
+        from agent.model_metadata import _codex_catalog_probe_allowed
+        from hermes_cli.auth_codex import _codex_base_url
+        catalog_base = (base_url or "").strip().rstrip("/") or _codex_base_url()
+        if not _codex_catalog_probe_allowed(access_token, catalog_base):
+            return []
         import httpx
         # The per-account catalog needs ChatGPT-Account-ID (else ``{"models":[]}`` with HTTP 200
         # masquerades as "no models") and, for residency-enforced workspaces, the residency header.
         from agent.codex_headers import codex_account_headers
         headers = {"Authorization": f"Bearer {access_token}", **codex_account_headers(access_token)}
         from agent.model_metadata import fetch_codex_catalog_entries
-        entries, _status = fetch_codex_catalog_entries(lambda url: httpx.get(url, headers=headers, timeout=10))
+        entries, _status = fetch_codex_catalog_entries(
+            lambda url: httpx.get(url, headers=headers, timeout=10), base_url=catalog_base)
     except Exception as exc:
         logger.debug("Failed to fetch Codex models from API: %s", exc)
         return []
@@ -174,19 +190,20 @@ def _read_default_model(codex_home: Path) -> Optional[str]:
         return None
     try:
         import tomllib
-        payload = tomllib.loads(config_path.read_text(encoding="utf-8"))
+        import tomllib
+        payload = tomllib.loads(config_path.read_text(encoding="utf-8-sig"))
     except Exception:
         return None
     model = payload.get("model") if isinstance(payload, dict) else None
     return model.strip() if isinstance(model, str) and model.strip() else None
 
 
-def _read_cache_models(codex_home: Path) -> List[str]:
+def _read_cache_models(codex_home: Path) -> list[str]:
     cache_path = codex_home / "models_cache.json"
     if not cache_path.exists():
         return []
     try:
-        raw = json.loads(cache_path.read_text(encoding="utf-8"))
+        raw = json.loads(cache_path.read_text(encoding="utf-8-sig"))
     except Exception:
         return []
 
@@ -194,14 +211,22 @@ def _read_cache_models(codex_home: Path) -> List[str]:
     return _ranked_slugs(entries if isinstance(entries, list) else [])
 
 
-def get_codex_model_ids(access_token: Optional[str] = None) -> List[str]:
-    """Available Codex model IDs: live API (if token) > config.toml default > local cache > defaults."""
+def get_codex_model_ids(access_token: Optional[str] = None, base_url: Optional[str] = None) -> list[str]:
+    """Available Codex model IDs: live API (if token) > config.toml default > local cache > defaults.
+
+    Pass the ``base_url`` resolved together with ``access_token`` (runtime/pool route) so live
+    discovery asks the credential's own host. Without a live answer the result is
+    ``CuratedFallbackModels``: a cache placeholder that never replaces a verified catalog, since
+    account-gated rows such as Astra are absent from the offline hints."""
     codex_home = Path(os.getenv("CODEX_HOME", "").strip() or str(Path.home() / ".codex")).expanduser()
     if access_token:
-        api_models = _fetch_models_from_api(access_token)
+        api_models = _fetch_models_from_api(access_token, base_url=base_url)
         if api_models:
             return _finalize_codex_models(api_models)
+    # Late: models_catalog_static builds its codex table from this module at import time.
+    from hermes_cli.models_catalog_static import CuratedFallbackModels
+
     default_model = _read_default_model(codex_home)
-    return _finalize_codex_models(_drop_undiscovered_astra(_dedupe([
+    return CuratedFallbackModels(_finalize_codex_models(_drop_undiscovered_astra(_dedupe([
         *([default_model] if default_model else []), *_read_cache_models(codex_home),
-        *DEFAULT_CODEX_MODELS])))
+        *DEFAULT_CODEX_MODELS]))))

@@ -580,6 +580,34 @@ class TestFinalResponseDeliveryGuard:
             "wrongly suppress its fallback delivery (#10748)"
         )
 
+    @pytest.mark.asyncio
+    async def test_failed_head_send_yields_the_loop_instead_of_spinning(self):
+        """While the overflowing buffer waits for the fallback final after a head send failed,
+        the run loop must still sleep between passes: the buffer stays over the debounce
+        threshold, so re-entering the split on every pass without a yield starves every other
+        task on the loop (WS fan-out, timers) for the rest of the turn."""
+        adapter = MagicMock()
+
+        async def failing_send(**_kw):
+            await asyncio.sleep(0)  # a real transport yields; without it the test could only hang
+            return SimpleNamespace(success=False, error="network down")
+
+        adapter.send = AsyncMock(side_effect=failing_send)
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.MAX_MESSAGE_LENGTH = 100
+        adapter.truncate_message = MagicMock(side_effect=lambda text, limit: [text[:limit], text[limit:]])
+
+        consumer = GatewayStreamConsumer(adapter, "chat_123", StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5))
+        consumer.on_delta("x" * 1200)  # past the 500-codepoint floor of the safe limit
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.3)  # health: allow HX013 -- the window is the measurement: passes per 0.3s tell a yielding loop from a spinning one
+        passes = adapter.send.await_count
+        consumer.finish()
+        await task
+
+        # ~6 loop passes fit in 0.3s at the 50ms cadence; a spinning loop makes thousands.
+        assert passes < 50, f"stream consumer spun {passes} head-send attempts in 0.3s without yielding"
+
 
     @pytest.mark.asyncio
     async def test_failed_first_send_leaves_no_uneditable_partial_preview(self):
@@ -737,7 +765,7 @@ class TestInitialOverflowRollingEdit:
             return_value=SimpleNamespace(success=True, message_id="msg_3"),
         )
         raw_limit = 700
-        setattr(adapter, "MAX_MESSAGE_LENGTH", raw_limit)
+        adapter.MAX_MESSAGE_LENGTH = raw_limit
         splitter = MagicMock(side_effect=adapter.truncate_message)
         adapter.truncate_message = splitter
 
@@ -1145,15 +1173,17 @@ class TestOnNewMessageCallback:
             on_new_message=lambda: events.append("reset"),
         )
 
-        consumer.on_delta("A")
+        consumer.on_delta("First preamble")
         consumer.on_delta(None)
-        consumer.on_delta("B")
+        consumer.on_delta("Second preamble")
         consumer.on_delta(None)
-        consumer.on_delta("C")
+        consumer.on_delta("Final answer")
         consumer.finish()
         await consumer.run()
 
-        # Three content bubbles ⇒ three reset notifications
+        # Three content bubbles ⇒ three reset notifications. (Segment text
+        # must clear the sub-floor standalone-message guard — a 1-2 token
+        # preamble is intentionally held back now, see #99026.)
         assert events == ["reset", "reset", "reset"]
 
 

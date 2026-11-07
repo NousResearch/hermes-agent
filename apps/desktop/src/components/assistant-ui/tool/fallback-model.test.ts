@@ -7,9 +7,12 @@ import {
   clampForDisplay,
   countDiffLineStats,
   inlineDiffFromResult,
+  isPreviewableTarget,
   MAX_TOOL_RENDER_CHARS,
   prettyJson,
-  type ToolPart
+  toolCallFailed,
+  type ToolPart,
+  toolPreviewOutcome
 } from './fallback-model'
 
 const part = (overrides: Partial<ToolPart>): ToolPart => ({
@@ -105,6 +108,14 @@ describe('buildToolView error confidence', () => {
       [{ result: { meta: { error: 'a previous attempt' }, data: { count: 1 } } }, 'success'],
       [{ toolName: 'read_file', result: { error: 'Permission denied reading /repo/private.ts' } }, 'error'],
       [{ toolName: 'patch', result: { error: 'File not found: /repo/session-view.ts' } }, 'error'],
+      [
+        {
+          toolName: 'skill_manage',
+          result: { success: false, error: 'SKILL.md content is over the limit', file_preview: 'ROLLBACK FAILED notes' }
+        },
+        'notice'
+      ],
+      [{ toolName: 'skill_manage', result: { success: false, error: "batch aborted, ROLLBACK FAILED for 'demo'" } }, 'error'],
       [{ result: { success: false, result: { output: { error: { message: 'Connection refused' } } } } }, 'error']
     ]
 
@@ -447,6 +458,27 @@ describe('buildToolView title actions', () => {
     expect(view.detail).toBe('')
   })
 
+  it('does not double the action verb when the context already starts with it', () => {
+    // A model-authored `context` that opens with the same verb the template
+    // prepends ("Running grep …") otherwise renders as "Running Running grep …".
+    const view = buildToolView(
+      part({
+        args: { context: 'Running grep -rn -i "bedrock" ~/.hermes/' },
+        result: undefined,
+        toolName: 'terminal'
+      }),
+      ''
+    )
+
+    expect(view.title.startsWith('Running Running')).toBe(false)
+    expect(view.title).toBe('Running grep -rn -i "bedrock" ~/.hermes/')
+    expect(view.titleAction).toEqual({
+      prefix: '',
+      text: 'Running',
+      suffix: ' grep -rn -i "bedrock" ~/.hermes/'
+    })
+  })
+
   it('uses the runtime locale for title text and action placement', () => {
     setRuntimeI18nLocale('ja')
 
@@ -461,6 +493,27 @@ describe('buildToolView title actions', () => {
     expect(read.titleAction).toEqual({ prefix: 'demo.txt を', text: '読み取り中', suffix: '' })
     expect(web.title).toBe('example.com/docs を読み取り中')
     expect(web.titleAction).toEqual({ prefix: 'example.com/docs を', text: '読み取り中', suffix: '' })
+  })
+})
+
+// #85132: Windows agents write `C:\\...` / UNC paths; those must get the same
+// artifact preview tag a POSIX `/Users/...` path gets.
+describe('Windows absolute preview targets', () => {
+  it.each(['C:\\Users\\me\\report.html', 'D:/work/report.htm', '\\\\server\\share\\report.html'])(
+    'tags a written %s as a previewable artifact',
+    path => {
+      const outcome = toolPreviewOutcome(
+        part({ args: { content: '<h1>hi</h1>', path }, result: { bytes_written: 11 }, toolName: 'write_file' })
+      )
+
+      expect(outcome.previewTarget).toBe(path)
+      expect(isPreviewableTarget(outcome.previewTarget)).toBe(true)
+    }
+  )
+
+  it('keeps non-HTML Windows files out of the preview tag, like POSIX ones', () => {
+    expect(isPreviewableTarget('C:\\Users\\me\\notes.txt')).toBe(isPreviewableTarget('/Users/me/notes.txt'))
+    expect(isPreviewableTarget('C:\\Users\\me\\notes.txt')).toBe(false)
   })
 })
 
@@ -530,5 +583,34 @@ describe('buildToolView memory status', () => {
 
     expect(view.status).toBe('warning')
     expect(view.subtitle).toContain('Memory is full')
+  })
+})
+
+// The delegate card asks `toolCallFailed` before it decides to list children,
+// so the shapes the delegate tool answers with have to stay distinct here: a
+// batch it rejected never dispatched, while a dispatched batch or a settled
+// batch with a failed child must keep its card.
+describe('toolCallFailed on delegate_task result shapes', () => {
+  it('reads a whole-call rejection as failed', () => {
+    expect(
+      toolCallFailed({
+        result: {
+          error:
+            "Task 0 goal contains an unexpanded template marker ('{http_code}'). Substitute the real value before calling delegate_task."
+        }
+      })
+    ).toBe(true)
+  })
+
+  it('leaves a dispatched batch and its goals alone', () => {
+    expect(
+      toolCallFailed({
+        result: { count: 2, goals: ['A', 'B'], mode: 'background', status: 'dispatched' }
+      })
+    ).toBe(false)
+  })
+
+  it('leaves a settled batch whose child failed alone', () => {
+    expect(toolCallFailed({ result: { results: [{ status: 'failed', error: 'boom' }] } })).toBe(false)
   })
 })

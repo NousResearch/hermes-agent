@@ -16,7 +16,10 @@ The client entrypoint is `src/entry.tsx`. It exits early if `stdin` is not a TTY
 python -m tui_gateway.entry
 ```
 
-Interpreter resolution order is: `HERMES_PYTHON` → `PYTHON` → `$VIRTUAL_ENV/bin/python` → `./.venv/bin/python` → `./venv/bin/python` → `python3` (or `python` on Windows).
+Interpreter resolution uses `HERMES_PYTHON`, supplied by the CLI launcher or
+Nix wrapper. Direct development runs without that value use `python3` on PATH,
+or `python` on Windows. The TUI does not search `PYTHON`, `VIRTUAL_ENV`, or
+checkout venv directories for a different interpreter.
 
 The transport is newline-delimited JSON-RPC over stdio:
 
@@ -41,29 +44,29 @@ From the repo root, the normal path is:
 hermes --tui
 ```
 
-The CLI expects `ui-tui/dist/entry.js` to exist, or the whole source code available in which to run `npm install` and `npm run dev`.
+The CLI expects `ui-tui/dist/entry.js` to exist, or the whole source code available in which to run `pnpm install` and `pnpm run dev`.
 
 ```bash
 cd ui-tui
-npm install
+pnpm install
 ```
 
 Local package commands:
 
 ```bash
-npm run dev
-npm start
-npm run build
-npm run lint
-npm run fmt
-npm run fix
+pnpm run dev
+pnpm start
+pnpm run build
+pnpm run lint
+pnpm run fmt
+pnpm run fix
 ```
 
 Tests use vitest:
 
 ```bash
-npm test         # single run
-npm run test:watch
+pnpm test         # single run
+pnpm run test:watch
 ```
 
 ## Live agents
@@ -187,10 +190,12 @@ Notes:
 | approval prompt             | `Up/Down`, `Enter`  | Move and confirm the selected approval choice     |
 | approval prompt             | `o`, `s`, `a`, `d`  | Quick-pick `once`, `session`, `always`, `deny`    |
 | approval prompt             | `Esc`, `Ctrl+C`     | Deny                                              |
-| clarify prompt with choices | `Up/Down`, `Enter`  | Move and confirm the selected choice              |
+| clarify prompt with choices | `Up/Down`, `Enter`  | Move and lock the selected choice                 |
 | clarify prompt with choices | single-digit number | Quick-pick the matching numbered choice           |
 | clarify prompt with choices | `Enter` on "Other"  | Switch into free-text entry                       |
-| clarify free-text mode      | `Enter`             | Submit typed answer                               |
+| clarify free-text mode      | `Enter`             | Lock typed answer (empty skips the question)      |
+| clarify prompt              | `Tab`, `Shift+Tab`  | Switch question                                   |
+| clarify prompt              | `Esc`, `Ctrl+C`     | Cancel the remaining questions                    |
 | sudo / secret prompt        | `Enter`             | Submit typed value                                |
 | sudo / secret prompt        | `Ctrl+C`            | Cancel by sending an empty response               |
 | resume picker               | `Up/Down`, `Enter`  | Move and resume the selected session              |
@@ -201,7 +206,7 @@ Notes:
 
 - Clarify free-text mode and masked prompts use `ink-text-input`, so text editing there follows the library's default bindings rather than `components/textInput.tsx`.
 - When a blocking prompt is open, the main chat input hotkeys are suspended.
-- Clarify mode has no dedicated cancel shortcut in the current client. Sudo and secret prompts only expose `Ctrl+C` cancellation from the app-level blocked handler.
+- Sudo and secret prompts only expose `Ctrl+C` cancellation from the app-level blocked handler.
 
 ### Interaction rules
 
@@ -234,7 +239,7 @@ The Python gateway can pause the main loop and ask the client a question. These 
 `createServerRequestHandler.ts`), not events:
 
 - `approval`: allow once, allow for session, allow always, or deny → `{ choice }`
-- `clarify`: pick from choices or type a custom answer → `{ answer }` (batch: `{ answers }`)
+- `clarify`: one or more questions; each answer is locked with the `clarify.lock` RPC, cancel → `{}`
 - `sudo`: masked password entry → `{ value }`
 - `secret`: masked value entry for a named env var → `{ value }`
 - `session.list`: used by `SessionPicker` for `/resume`
@@ -352,8 +357,9 @@ ui-tui/
   src/
     entry.tsx            TTY gate + render()
     app.tsx              top-level Ink tree, composes src/app/*
-    gatewayClient.ts     child process + JSON-RPC bridge
-    gatewayTypes.ts      gateway event and RPC response type definitions
+    gatewayClient.ts     Ink's wiring of @hermes/shared/gateway-client (bootstrap, env, i18n)
+    launchOptions.ts     `hermes --tui` launch env as session.create options
+    localGatewayBootstrap.ts  runs scripts/gateway_bootstrap.py for the URL + ticket
     theme.ts             theme colors and skin merge
     banner.ts            ASCII art renderer (parses Rich color tags)
     types.ts             shared client-side types (ActiveTool, Msg, etc.)
@@ -420,7 +426,7 @@ ui-tui/
       todoPanel.tsx              todo list panel
 
     config/
-      env.ts                     environment variable resolution and Termux/mouse defaults
+      env.ts                     environment variable resolution and mouse defaults
       limits.ts                  paste size, live-render and history limits
       timing.ts                  streaming batch and debounce timing constants
 
@@ -438,9 +444,7 @@ ui-tui/
       details.ts                 details visibility mode resolution (hidden/collapsed/expanded)
       messages.ts                message formatting and transcript helpers
       paths.ts                   cwd shortening and path display helpers
-      providers.ts               provider display name helpers
       roles.ts                   message role color and label helpers
-      slash.ts                   slash command parsing and TUI session model flag
       usage.ts                   token usage zero value and helpers
       viewport.ts                viewport height estimation helpers
 
@@ -452,7 +456,6 @@ ui-tui/
       useVirtualHistory.ts       virtual list scroll and height tracking
 
     lib/
-      circularBuffer.ts          fixed-size generic ring buffer
       clipboard.ts               clipboard read / write via child_process
       editor.ts                  $EDITOR launch, PATH resolution, and Ink suspend
       emoji.ts                   emoji and variation selector width helpers
@@ -462,7 +465,6 @@ ui-tui/
       fpsStore.ts                Ink frame FPS tracker nanostore
       fuzzy.ts                   lightweight fuzzy subsequence scorer
       gracefulExit.ts            clean shutdown with failsafe timeout
-      history.ts                 persistent input history (read/append to disk)
       inputMetrics.ts            input width and wrap metrics
       liveProgress.ts            todo helpers and tool-shelf message assembly
       mathUnicode.ts             best-effort LaTeX → Unicode for inline math
@@ -475,7 +477,7 @@ ui-tui/
       perfPane.tsx               FPS / render perf overlay pane
       platform.ts                platform-aware keybinding and SSH detection helpers
       precisionWheel.ts          high-precision scroll wheel with sticky-frame budget
-      prompt.ts                  composer prompt text helpers (Termux-safe)
+      prompt.ts                  composer prompt text helpers
       reasoning.ts               reasoning tag detection and split helpers
       rpc.ts                     JSON-RPC result and command dispatch helpers
       subagentTree.ts            subagent tree flattening and aggregate helpers
@@ -483,7 +485,6 @@ ui-tui/
       terminalModes.ts           terminal mode reset sequences (kitty, mouse, etc.)
       terminalParity.ts          VSCode-like terminal detection and hint helpers
       terminalSetup.ts           IDE keybinding config file install helpers
-      termux.ts                  Termux platform detection helpers
       text.ts                    text helpers, ANSI detection, tool trail builders
       todo.ts                    todo item tone and display helpers
       viewportStore.ts           viewport height nanostore via ScrollBoxHandle
@@ -491,7 +492,6 @@ ui-tui/
       wheelAccel.ts              scroll wheel acceleration state machine
 
     protocol/
-      interpolation.ts           {!cmd} inline shell interpolation regex and helpers
       paste.ts                   bracketed paste snippet token regex
 
     types/

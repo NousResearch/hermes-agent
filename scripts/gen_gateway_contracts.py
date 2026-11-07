@@ -1,3 +1,4 @@
+#!/usr/bin/env -S bash -c 'exec "$BASH" "$(dirname "$0")/run-in-hermes-env" python3 "$0" "$@"'
 """Render ``tui_gateway/contracts`` into TypeScript and OpenRPC.
 
 Python-only (the Python CI lane has no Node): Pydantic's ``model_json_schema()`` output is walked
@@ -25,19 +26,19 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tui_gateway import contracts  # noqa: E402,F401  (imports every topic module → fills the tables)
-from tui_gateway.contracts.connectors import (  # noqa: E402
+from tui_gateway import contracts
+from tui_gateway.contracts.connectors import (
     ConnectorAccountStatus,
     ConnectorErrorReason,
     ConnectorToolFacet,
     ConnectorToolsSource,
 )
-from tui_gateway.contracts.connectors_operation import ConnectionSettleReason, ConnectionTargetState  # noqa: E402
-from tui_gateway.contracts.registry import EVENTS, METHODS, SERVER_REQUESTS  # noqa: E402
-from tools.connectors.contract import SettleReason, TargetState  # noqa: E402
-from tools.connectors.gateway.wire import ConnectionStatus  # noqa: E402
-from tools.connectors.portal.tools_cache import ToolsRead  # noqa: E402
-from tools.connectors.portal.wire import ConnectorTool  # noqa: E402
+from tui_gateway.contracts.connectors_operation import ConnectionSettleReason, ConnectionTargetState
+from tui_gateway.contracts.registry import CANONICAL_METHODS, CANONICAL_NAMESPACES, EVENTS, METHODS, SERVER_REQUESTS
+from tools.connectors.contract import SettleReason, TargetState
+from tools.connectors.gateway.wire import ConnectionStatus
+from tools.connectors.portal.tools_cache import ToolsRead
+from tools.connectors.portal.wire import ConnectorTool
 
 TS_OUT = ROOT / "apps" / "shared" / "src" / "gateway-contract.generated.ts"
 OPENRPC_OUT = ROOT / "apps" / "shared" / "src" / "gateway-contract.openrpc.json"
@@ -210,8 +211,9 @@ def _check_enum_parity() -> None:
 def render_ts() -> str:
     _check_enum_parity()
     models: list[type] = []
-    for m in METHODS.values():
+    for m in (*METHODS.values(), *CANONICAL_METHODS.values()):
         models += [m.params, m.result]
+    models += [n.params for n in CANONICAL_NAMESPACES.values()]
     for r in SERVER_REQUESTS.values():
         models += [r.params, r.result]
     for e in EVENTS.values():
@@ -244,6 +246,25 @@ def render_ts() -> str:
     out.append("}\n")
     out.append("export type RpcMethod = keyof RpcMethods\n")
     out.append("export const RPC_METHODS = [\n" + _const_items(sorted(METHODS)) + "] as const satisfies readonly RpcMethod[]\n")
+
+    out.append("\n// ── Canonical (hermes-gateway-v1) methods only the session authority serves ──\n")
+    out.append("export interface CanonicalRpcMethods {\n")
+    for m in sorted(CANONICAL_METHODS.values(), key=lambda x: x.name):
+        out.append(_doc(m.doc, "  "))
+        out.append(f"  {_prop(m.name)}: {{ params: {name_of[m.params]}; result: {name_of[m.result]} }}\n")
+    out.append("}\n")
+    out.append("export type CanonicalRpcMethod = keyof CanonicalRpcMethods\n")
+    out.append("export const CANONICAL_RPC_METHODS = [\n" + _const_items(sorted(CANONICAL_METHODS))
+               + "] as const satisfies readonly CanonicalRpcMethod[]\n")
+
+    out.append("\n// ── Canonical method namespaces: member names exist only at runtime (gate on `capability`) ──\n")
+    out.append("export interface CanonicalRpcNamespaces {\n")
+    for n in sorted(CANONICAL_NAMESPACES.values(), key=lambda x: x.name):
+        out.append(_doc(n.doc, "  "))
+        out.append(f"  {_prop(n.name)}: {{ method: `{n.prefix}${{string}}`; capability: {_lit(n.capability)}; "
+                   f"params: {name_of[n.params]}; result: unknown }}\n")
+    out.append("}\n")
+    out.append("export type CanonicalRpcNamespace = keyof CanonicalRpcNamespaces\n")
 
     out.append("\n// ── Server→client requests ──\n")
     out.append("export interface ServerRequestMap {\n")
@@ -286,8 +307,9 @@ def render_openrpc() -> str:
     _check_enum_parity()
     components: dict[str, dict] = {}
     all_models: list[type] = []
-    for m in METHODS.values():
+    for m in (*METHODS.values(), *CANONICAL_METHODS.values()):
         all_models += [m.params, m.result]
+    all_models += [n.params for n in CANONICAL_NAMESPACES.values()]
     for r in SERVER_REQUESTS.values():
         all_models += [r.params, r.result]
     for e in EVENTS.values():
@@ -322,6 +344,18 @@ def render_openrpc() -> str:
             for m in sorted(METHODS.values(), key=lambda x: x.name)
         ],
         "components": {"schemas": components},
+        "x-canonical-methods": [
+            {"name": m.name, "summary": " ".join(m.doc.split()),
+             "params": [{"name": "params", "schema": ref(m.params)}],
+             "result": {"name": "result", "schema": ref(m.result)}}
+            for m in sorted(CANONICAL_METHODS.values(), key=lambda x: x.name)
+        ],
+        "x-canonical-namespaces": [
+            {"name": n.name, "summary": " ".join(n.doc.split()), "x-prefix": n.prefix, "x-capability": n.capability,
+             "params": [{"name": "params", "schema": ref(n.params)}],
+             "result": {"name": "result", "schema": {}}}
+            for n in sorted(CANONICAL_NAMESPACES.values(), key=lambda x: x.name)
+        ],
         "x-server-requests": [
             {"name": s.name, "summary": " ".join(s.doc.split()),
              "params": [{"name": "params", "schema": ref(s.params)}],
@@ -347,7 +381,7 @@ def main(argv: list[str] | None = None) -> int:
     check = "--check" in args
     stale = []
     for path, text in render_all().items():
-        current = path.read_text(encoding="utf-8") if path.exists() else None
+        current = path.read_text(encoding="utf-8-sig") if path.exists() else None
         if current == text:
             continue
         if check:

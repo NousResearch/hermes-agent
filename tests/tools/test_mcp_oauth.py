@@ -97,7 +97,7 @@ class TestHermesTokenStorage:
         data = json.loads(token_path.read_text())
         assert data["access_token"] == "abc123"
 
-    @pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX mode bits not enforced on Windows")
+    @pytest.mark.platforms("posix")  # POSIX mode bits not enforced on Windows
     def test_token_file_created_with_0o600(self, tmp_path, monkeypatch):
         """Tokens must land on disk at 0o600 with no umask-default exposure window.
 
@@ -1101,6 +1101,37 @@ def test_humanize_non_registration_403_passthrough():
             "linear",
             RuntimeError("HTTP 403: insufficient_scope"),
             server_url="https://mcp.linear.app/mcp",
+        )
+        is None
+    )
+
+
+def test_humanize_404_registration_error_guidance():
+    """A 404 on the registration endpoint surfaces pre-registered-client
+    guidance instead of the raw SDK traceback (GH#78190 — Google's hosted
+    Gmail/Drive MCP servers answer the SDK's guessed /register with 404)."""
+    from tools.mcp_oauth import humanize_oauth_registration_error
+
+    msg = humanize_oauth_registration_error(
+        "gmail",
+        "Registration failed: 404 <html>Error 404 (Not Found)!!1</html>",
+        server_url="https://gmailmcp.googleapis.com/mcp/v1",
+    )
+    assert msg is not None
+    assert "does not support automatic client registration" in msg
+    assert "client_id" in msg
+    assert "hermes mcp login gmail" in msg
+
+
+def test_humanize_404_non_registration_passthrough():
+    """A 404 that has nothing to do with registration stays raw."""
+    from tools.mcp_oauth import humanize_oauth_registration_error
+
+    assert (
+        humanize_oauth_registration_error(
+            "srv",
+            RuntimeError("HTTP 404: no such tool"),
+            server_url="https://example.com/mcp",
         )
         is None
     )

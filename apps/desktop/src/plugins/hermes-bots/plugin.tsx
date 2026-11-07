@@ -47,6 +47,7 @@ import {
   botMentionTag,
   botSelectionKey,
   cachedUnionRoster,
+  claimDefaultHandles,
   isActiveRosterBot,
   migrateBotMeta,
   primeRoster,
@@ -65,9 +66,10 @@ import {
   sweepGroupChatMembersForRemovedConnection,
   updateGroupChat
 } from './group-chat'
+import { stickyGroupEngine } from './group-engine'
 import { groupWorkspaceOwnerKey } from './group-membership'
 import { annotateOrphanedGroupChatMembers } from './hygiene'
-import { BOTS_LOCALES } from './i18n'
+import { BOTS_LOCALES, botsText } from './i18n'
 import { displayName } from './labels'
 import { startBotRelay, stopBotRelay } from './relay'
 import { $activityToasts } from './roster-actions'
@@ -93,6 +95,11 @@ interface MentionCompletionItem {
   display: string
   insert: string
   meta: string
+  /** Handles that resolve to this same bot — the raw profile name and the
+   *  roster handle — so the popover can drop the gateway's own row for that
+   *  name instead of listing the bot twice (once under its title slug,
+   *  once under the raw name). */
+  handles?: string[]
 }
 
 /** The draft a `composer.middleware` handler rewrites, passes through, or
@@ -170,7 +177,7 @@ export default {
 
           for (const profile of offered) {
             const handle = botHandle(profile.name, profile)
-            const display = displayName(profile, $botMeta.get()[profile.name])
+            const display = displayName(profile, botRosterMeta(profile, $botMeta.get()))
             // Renamed bots complete on their friendly name — the tag is the
             // renamed slug when one exists, the profile handle otherwise.
             const tag = botMentionTag(profile)
@@ -190,7 +197,12 @@ export default {
             items.push({
               insert,
               display: insert,
-              meta: `Bot · ${display}${source}`
+              meta: `Bot · ${display}${source}`,
+              // The live gateway's own `@` rows list this backend's profiles
+              // by raw name; claim ours so the popover drops that twin row.
+              // Remote rows are NOT ours to claim — the local gateway's
+              // same-named row resolves locally, not to the remote bot.
+              ...(profile.remoteSource ? {} : { handles: [`@${profile.name}`] })
             })
           }
 
@@ -286,6 +298,7 @@ export default {
                     room.externalCursors && typeof room.externalCursors === 'object' ? room.externalCursors : {},
                   members: Array.isArray(room.members) ? room.members : [],
                   roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
+                  ...stickyGroupEngine(room),
                   image: typeof room.image === 'string' && room.image ? room.image : null,
                   rosterOrder: Number.isFinite(room.rosterOrder) ? room.rosterOrder : undefined,
                   pinned: Boolean(room.pinned),
@@ -582,7 +595,7 @@ export default {
             setBotsWorkspaceOwner(
               groupWorkspaceOwnerKey(group),
               null,
-              'New group conversations start in the group composer.'
+              botsText().group.startInComposer()
             )
           } else if (selected) {
             setBotsWorkspaceOwner(botWorkspaceOwnerKey(selected), selected)
@@ -635,6 +648,11 @@ export default {
       // a failed re-resume (backend still down) leaves the lazy recovery on
       // next send as the backstop. Feature-detected — older shells have no
       // host.onEvent.
+      //
+      // This is a BACKGROUND wake: it refreshes in place (refreshInPlace
+      // through openBotCanonicalChat) and never navigates, so a user
+      // reading the Kanban board — or any other route — keeps their view
+      // (issue 121874).
       const stopReclaimSync =
         typeof host.onEvent === 'function'
           ? host.onEvent('session.reclaimed', event => {
@@ -667,7 +685,7 @@ export default {
               }
 
               const generation = getBotOpenGeneration()
-              void openBotCanonicalChat(bot)
+              void openBotCanonicalChat(bot, { background: true })
                 .then(opened => {
                   // A user action while the re-resume ran owns the center now.
                   if (!opened || generation !== getBotOpenGeneration()) {
@@ -722,7 +740,7 @@ export default {
       area: PALETTE_AREA,
       data: {
         id: `${ID}.new-agent`,
-        label: 'New Bot…',
+        label: 'New bot…',
         keywords: ['bot', 'agent', 'profile', 'teammate', 'create'],
         run: () => {
           host.notify({
@@ -815,7 +833,9 @@ export default {
 
               // Same resolver as the cached path — renamed bots (display_name
               // / ui_meta title) stay taggable when the roster cache is cold.
-              mentionedBots = resolveRosterMentions(text, res?.profiles ?? [], live).map(bot => ({
+              // The same handle claim the pane applies: a real 'hermes'
+              // profile keeps @hermes, so the default must not answer it too.
+              mentionedBots = resolveRosterMentions(text, claimDefaultHandles(res?.profiles ?? []), live).map(bot => ({
                 ...bot,
                 remoteSource: false
               }))
@@ -845,8 +865,12 @@ export default {
             // local path a bare profile name or 'hermes'. botHandle() prefers
             // the row's source-qualified UI alias ('default-vera'), which
             // neither resolver accepts — annotate the canonical form instead.
+            // The default's canonical form is 'hermes' only while no real
+            // 'hermes' profile holds it; then it is 'default' itself.
             const target =
-              bot.remoteSource && bot.connectionId ? `${bot.name}@${bot.connectionId}` : botHandle(bot.name)
+              bot.remoteSource && bot.connectionId
+                ? `${bot.name}@${bot.connectionId}`
+                : botHandle(bot.name, { hermesHandleTaken: bot.hermesHandleTaken })
 
             // Local rows get the same annotation whenever their UI alias
             // ('default-this-device') differs from the resolvable handle —

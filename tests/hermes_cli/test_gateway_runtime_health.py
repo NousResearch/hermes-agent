@@ -1,11 +1,11 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 
 from hermes_cli.gateway import _runtime_health_lines
 
 
 def _iso_age(seconds_ago: float) -> str:
     """ISO-8601 UTC timestamp ``seconds_ago`` in the past (drives _marker_is_stale)."""
-    return (datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)).isoformat()
+    return (datetime.now(UTC) - timedelta(seconds=seconds_ago)).isoformat()
 
 
 _STALE_LINE_PREFIX = "⚠ Stale gateway_state.json:"
@@ -114,6 +114,9 @@ def test_runtime_status_running_pid_validates_live_gateway_record(monkeypatch):
     monkeypatch.setattr(status_mod, "_pid_exists", lambda pid: pid == 12345)
     monkeypatch.setattr(status_mod, "_get_process_start_time", lambda pid: None)
     monkeypatch.setattr(status_mod, "_looks_like_gateway_process", lambda pid: False)
+    # PID 12345 is fake but can be a real process on the host (a busy CI runner): its live command
+    # line would then win over the record, so pin the unreadable-cmdline path this test exercises.
+    monkeypatch.setattr(status_mod, "_read_process_cmdline", lambda pid: None)
 
     assert status_mod.get_runtime_status_running_pid(runtime) == 12345
 

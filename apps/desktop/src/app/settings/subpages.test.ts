@@ -44,6 +44,38 @@ describe('settings subpage routing', () => {
     }
   })
 
+  // The Webapp's Gateways page is one view of its serving host: no native-only
+  // child page to land on and no search hit that would scroll to nothing.
+  it('gives the Webapp Gateways page no native-only children or search rows', () => {
+    const nativeChildren = settingsSubpages('gateway').length
+    window.document.documentElement.dataset.hermesDesktopHost = 'browser'
+
+    try {
+      expect(settingsSubpages('gateway')).toEqual([])
+      expect(resolveSettingsSubpage('gateway', new URLSearchParams({ page: 'devices' }))).toBeUndefined()
+      expect(settingSearchTargets(TRANSLATIONS.en).filter(target => target.view === 'gateway')).toEqual([])
+    } finally {
+      window.document.documentElement.removeAttribute('data-hermes-desktop-host')
+    }
+
+    expect(settingsSubpages('gateway')).toHaveLength(nativeChildren)
+    expect(nativeChildren).toBeGreaterThan(0)
+  })
+
+  it('gives every settings group its own nav label in every locale', () => {
+    for (const locale of Object.values(TRANSLATIONS)) {
+      const nav: Record<string, string> = locale.settings.nav
+
+      for (const view of Object.keys(OTHER_SUBPAGES)) {
+        expect(nav[view]).toBeTruthy()
+      }
+
+      // Sessions also holds the default project folder, so it can't wear the
+      // label of the palette row that lands on its archive page.
+      expect(nav.sessions).not.toBe(nav.archivedChats)
+    }
+  })
+
   it('routes every curated field and legacy target to its owning child before consuming the target', () => {
     for (const section of SECTIONS.filter(section => section.keys.length)) {
       for (const field of section.keys) {
@@ -111,7 +143,7 @@ describe('settings subpage routing', () => {
         'Guided Tours',
         'Keep computer awake',
         'Auto-archive stale chats',
-        'Automatic updates'
+        TRANSLATIONS.en.settings.about.updates
       ])
     )
   })

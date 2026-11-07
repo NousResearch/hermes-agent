@@ -27,10 +27,10 @@ function GestureHarness({ onPopOut }: { onPopOut: () => void }) {
   )
 }
 
-function dragUp(target: Element) {
+function dragUp(target: Element, deltaY = 64) {
   fireEvent.pointerDown(target, { button: 0, clientX: 100, clientY: 100, pointerId: 7 })
-  fireEvent.pointerMove(window, { clientX: 100, clientY: 60, pointerId: 7 })
-  fireEvent.pointerUp(window, { clientX: 100, clientY: 60, pointerId: 7 })
+  fireEvent.pointerMove(window, { clientX: 100, clientY: 100 - deltaY, pointerId: 7 })
+  fireEvent.pointerUp(window, { clientX: 100, clientY: 100 - deltaY, pointerId: 7 })
 }
 
 afterEach(cleanup)
@@ -61,5 +61,16 @@ describe('useComposerPopoutGestures', () => {
     dragUp(screen.getByTestId('drag-region'))
 
     expect(onPopOut).toHaveBeenCalledOnce()
+  })
+
+  // #101318: a stray click-drag on the grab ring undocked the composer.
+  it('does not peel out on a short brush of the drag region', () => {
+    const onPopOut = vi.fn()
+    render(<GestureHarness onPopOut={onPopOut} />)
+
+    dragUp(screen.getByTestId('drag-region'), 16)
+    dragUp(screen.getByTestId('drag-region'), 40)
+
+    expect(onPopOut).not.toHaveBeenCalled()
   })
 })

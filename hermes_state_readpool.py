@@ -57,7 +57,7 @@ _FD_HEADROOM_RESERVE = 64
 
 # The fd count is a directory listing; cache it briefly so a read burst isn't a
 # syscall per query (staleness lets through at most the ceiling's worth of opens).
-_FD_USAGE_CACHE_SECONDS = 0.25
+_FD_USAGE_CACHE_SECONDS = 2.0
 
 _process_read_permits = threading.BoundedSemaphore(_READ_POOL_PROCESS_MAX)
 
@@ -119,10 +119,8 @@ def _fd_headroom_ok() -> bool:
     now = time.monotonic()
     with _fd_usage_lock:
         stamp, cached = _fd_usage_cache
-        fresh = cached is not None and (now - stamp) < _FD_USAGE_CACHE_SECONDS
-    if not fresh:
-        cached = _open_fd_count()
-        with _fd_usage_lock:
+        if cached is None or (now - stamp) >= _FD_USAGE_CACHE_SECONDS:
+            cached = _open_fd_count()
             _fd_usage_cache = (now, cached)
     if cached is None:
         return True

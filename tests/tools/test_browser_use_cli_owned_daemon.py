@@ -130,6 +130,21 @@ def test_stopping_the_daemons_releases_their_groups(monkeypatch, registered):
     assert browser_use_cli._owned_daemon_groups == {}
 
 
+@pytest.mark.parametrize("returncode", [0, 1])
+def test_managed_reload_releases_only_a_successfully_stopped_daemon(tmp_path, registered, monkeypatch, returncode):
+    env = {"BH_RUNTIME_DIR": str(tmp_path), "BU_NAME": "managed"}
+    daemon = browser_use_cli.daemon_identity(env)
+    browser_use_cli._owned_daemon_groups[daemon] = 4242
+    monkeypatch.setattr(browser_use_cli, "_run_cli_killing_process_group",
+                        lambda *args: subprocess.CompletedProcess([], returncode, "", ""))
+    state = {"cmd": ("browser-use",), "env": env, "session": "managed"}
+
+    assert browser_use_cli._stop_browser_use_state(state) is (returncode == 0)
+
+    assert registered == ([("unregister", [4242])] if returncode == 0 else [])
+    assert browser_use_cli._owned_daemon_groups == ({} if returncode == 0 else {daemon: 4242})
+
+
 def _shared_runtime(tmp_path) -> tuple[Path, dict]:
     """A runtime dir shared between names (``bu-<BU_NAME>.pid``) and the env naming it, so a daemon
     identity built from that env carries the dir."""
@@ -226,7 +241,7 @@ def test_a_long_first_browser_exec_owns_its_daemon_before_the_call_returns(monke
         return subprocess.CompletedProcess([], 0, "ok", "")
 
     monkeypatch.setattr(browser_use_cli, "_find_cli", lambda: ["browser-use"])
-    monkeypatch.setattr(browser_use_cli, "_base_subprocess_env", dict)
+    monkeypatch.setattr(browser_use_cli, "_base_subprocess_env", lambda **_kwargs: {})
     monkeypatch.setattr(browser_use_cli, "_route_exec_current",
                         lambda env, *_a: ({**env, "BU_CDP_URL": "http://127.0.0.1:9222"}, None, False, 0))
     monkeypatch.setattr(browser_use_cli, "_run_cli_killing_process_group", run_cli)

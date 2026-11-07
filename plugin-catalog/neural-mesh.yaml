@@ -1,6 +1,6 @@
 name: neural-mesh
 repo: https://github.com/D0xedDevi0/hermes-neural-mesh
-sha: 876ffd090d82b1f99e733f61fb6b452b48dd36bd
+sha: 26abb610f3cbdd4215fbb898d4a2478317dfc5e5
 description: "Bi-temporal long-term memory for Hermes: point-in-time recall (mesh_asof answers what was true on a date, not only what is true now), supersession instead of overwrite so a corrected fact keeps its history, hybrid dense + lexical retrieval, a poisoning quarantine, and an injection floor measured on a 15-family ablation. Disclosure — this is a Hermes MemoryProvider, selected with memory.provider: neural-mesh; it stores everything in a local SQLite file inside the Hermes profile, makes no network calls, needs no API key, does not read credential stores, and ships no compiled binary (the upstream Rust resonance extension is deliberately not vendored under catalog rule 17, so retrieval runs the pure-Python path and mesh_stats reports resonance_backend: python); the store is unencrypted on disk, so it is not a place for credentials; automatic context injection uses a 0.25 score floor and an explicit mesh_recall uses 0.05, both reproducible with scripts/calibrate_floor.py."
 maintainer: D0xedDevi0
 tier: community
@@ -8,12 +8,12 @@ category: memory
 docs_url: https://github.com/D0xedDevi0/hermes-neural-mesh
 requires_hermes: ">=0.22.0"
 version: "0.39.0"
-image: https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/876ffd090d82b1f99e733f61fb6b452b48dd36bd/docs/screenshots/the-difference.png
+image: https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/26abb610f3cbdd4215fbb898d4a2478317dfc5e5/docs/screenshots/the-difference.png
 screenshots:
-  - https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/876ffd090d82b1f99e733f61fb6b452b48dd36bd/docs/screenshots/the-difference.png
-  - https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/876ffd090d82b1f99e733f61fb6b452b48dd36bd/docs/screenshots/cold-recall.png
-  - https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/876ffd090d82b1f99e733f61fb6b452b48dd36bd/docs/screenshots/point-in-time.png
-  - https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/876ffd090d82b1f99e733f61fb6b452b48dd36bd/docs/screenshots/measured.png
+  - https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/26abb610f3cbdd4215fbb898d4a2478317dfc5e5/docs/screenshots/the-difference.png
+  - https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/26abb610f3cbdd4215fbb898d4a2478317dfc5e5/docs/screenshots/cold-recall.png
+  - https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/26abb610f3cbdd4215fbb898d4a2478317dfc5e5/docs/screenshots/point-in-time.png
+  - https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/26abb610f3cbdd4215fbb898d4a2478317dfc5e5/docs/screenshots/measured.png
 readme: true
 title: "NEURAL_MESH"
 known_issues:

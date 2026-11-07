@@ -128,6 +128,12 @@ matters more than it sounds: leaving them in place stacks near-duplicate copies
 of the same text, each with its own heading and end-marker scaffolding, and the
 transcript grows on every turn instead of shrinking.
 
+A batch compaction marker can instead be merged into a live row (a user or
+assistant message, or a tool call with its results after it). Superseding that
+marker removes only the summary part: the row itself stays, unmarked and
+flagged `display_metadata.model_only` when its archived original is already the
+display copy.
+
 Dropping a marker leaves the user turns on either side of it adjacent, so they
 are joined into one user message for the model. That joined row is flagged
 `display_metadata.model_only`: the originals stay in display history as compacted
@@ -140,7 +146,7 @@ Merge into a summary often enough and it gets baggy — repetitive, and larger
 than the material justifies. When the running summary crosses a token threshold
 (2000 by default), the next pass **defrags**: one auxiliary call re-summarizes
 the running summary *itself* into a fresh compact version, and the summary
-marker in the transcript is rewritten in place.
+marker in the transcript is rewritten in place. When that marker was merged into a live row, the row keeps its own content and only the summary part is replaced.
 
 Defrag never touches the transcript's structure — no messages are absorbed or
 spliced, the cursor doesn't move, and user turns are untouched. It processes

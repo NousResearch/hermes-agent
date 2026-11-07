@@ -37,13 +37,17 @@ describe('PluginPageAccess', () => {
     expect(screen.queryByText('https://mail.example.com')).toBeNull()
 
     let settled = false
-    void ensurePreviewScriptConsent('page-reader', 'Page Reader', 'https://mail.example.com').then(() => (settled = true))
+    void ensurePreviewScriptConsent('page-reader', 'Page Reader', 'https://mail.example.com').then(
+      () => (settled = true)
+    )
     await Promise.resolve()
     expect(settled).toBe(false)
   })
 
   it('says it will ask when the plugin declared the door but holds no grant', () => {
-    render(<PluginPageAccess plugin={{ capabilities: ['preview.executeJavaScript'], id: 'fresh' }} pluginName="Fresh" />)
+    render(
+      <PluginPageAccess plugin={{ capabilities: ['preview.executeJavaScript'], id: 'fresh' }} pluginName="Fresh" />
+    )
 
     expect(screen.getByText('Asks before running scripts on a page')).toBeTruthy()
   })

@@ -50,10 +50,14 @@ function createDial(generation: number, ready: boolean): Dial {
 export function remainingRequestBudget(deadline: number, signal?: AbortSignal): number {
   signal?.throwIfAborted()
 
-  if (deadline === Number.POSITIVE_INFINITY) { return 0 }
+  if (deadline === Number.POSITIVE_INFINITY) {
+    return 0
+  }
   const remaining = deadline - Date.now()
 
-  if (remaining <= 0) { throw new Error('Hermes gateway request timed out') }
+  if (remaining <= 0) {
+    throw new Error('Hermes gateway request timed out')
+  }
 
   return remaining
 }
@@ -81,7 +85,10 @@ export class DialReadiness {
     this.dial = dial
 
     if (!dial.settled) {
-      dial.timer = setTimeout(() => this.settle(dial, new TimeoutError('Hermes gateway protocol readiness timed out')), GATEWAY_READINESS_TIMEOUT_MS)
+      dial.timer = setTimeout(
+        () => this.settle(dial, new TimeoutError('Hermes gateway protocol readiness timed out')),
+        GATEWAY_READINESS_TIMEOUT_MS
+      )
     }
 
     return dial.promise
@@ -92,7 +99,9 @@ export class DialReadiness {
   adoptReady(generation: number, select: () => void): void {
     const dial = this.dial
 
-    if (dial.settled || dial.generation !== generation) { return }
+    if (dial.settled || dial.generation !== generation) {
+      return
+    }
     select()
     this.settle(dial)
   }
@@ -100,9 +109,13 @@ export class DialReadiness {
   /** Every transport transition, seen before any subscriber, so a subscriber's redial from its
    *  `closed` handler starts after the old dial has failed. */
   trackTransport(state: ConnectionState): void {
-    if (state === 'open') { this.dial.opened = true }
+    if (state === 'open') {
+      this.dial.opened = true
+    }
 
-    if (state === 'closed' || state === 'error') { this.fail() }
+    if (state === 'closed' || state === 'error') {
+      this.fail()
+    }
   }
 
   /** Fail the current dial with one text whoever closed the socket; it names the closed
@@ -110,12 +123,19 @@ export class DialReadiness {
   fail(): void {
     const dial = this.dial
 
-    this.settle(dial, new Error(dial.opened ? 'Hermes gateway connection closed before protocol readiness' : GATEWAY_NOT_CONNECTED_MESSAGE))
+    this.settle(
+      dial,
+      new Error(
+        dial.opened ? 'Hermes gateway connection closed before protocol readiness' : GATEWAY_NOT_CONNECTED_MESSAGE
+      )
+    )
   }
 
   /** Fail the dial `promise` belongs to (a connect() whose transport rejected). */
   failDial(promise: Promise<void>, error: Error): void {
-    if (this.dial.promise === promise) { this.settle(this.dial, error) }
+    if (this.dial.promise === promise) {
+      this.settle(this.dial, error)
+    }
   }
 
   /** Wrap a state subscriber so it hears `open` only once the current dial is ready. */
@@ -131,7 +151,9 @@ export class DialReadiness {
         this.held.delete(handler)
         handler(state)
       },
-      release: () => { this.held.delete(handler) }
+      release: () => {
+        this.held.delete(handler)
+      }
     }
   }
 
@@ -155,13 +177,23 @@ export class DialReadiness {
       }
     })
 
-    const ready = this.dial.promise.catch(() => { throw new Error(GATEWAY_NOT_CONNECTED_MESSAGE) })
+    const ready = this.dial.promise.catch(() => {
+      throw new Error(GATEWAY_NOT_CONNECTED_MESSAGE)
+    })
 
-    try { await Promise.race([ready, exits]) } finally { for (const stop of stops) { stop() } }
+    try {
+      await Promise.race([ready, exits])
+    } finally {
+      for (const stop of stops) {
+        stop()
+      }
+    }
   }
 
   private settle(dial: Dial, error?: Error): void {
-    if (dial.settled) { return }
+    if (dial.settled) {
+      return
+    }
     dial.settled = true
     clearTimeout(dial.timer)
 
@@ -178,9 +210,13 @@ export class DialReadiness {
     // Rechecked per handler: an earlier one may unsubscribe a later one, or close or redial the
     // client. A handler that already heard `closed` has left the held set.
     for (const handler of [...this.held]) {
-      if (this.dial !== dial || !this.transportOpen()) { return }
+      if (this.dial !== dial || !this.transportOpen()) {
+        return
+      }
 
-      if (this.held.delete(handler)) { handler('open') }
+      if (this.held.delete(handler)) {
+        handler('open')
+      }
     }
   }
 }

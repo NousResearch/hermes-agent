@@ -63,12 +63,22 @@ async function editTwoImagePrompt() {
   }
 
   const stdout = Object.assign(new PassThrough(), { columns: 80, isTTY: false, rows: 24 })
-  const instance = renderSync(<Harness />, { patchConsole: false, stdin: new PassThrough() as any, stdout: stdout as any })
+  const instance = renderSync(<Harness />, {
+    patchConsole: false,
+    stdin: new PassThrough() as any,
+    stdout: stdout as any
+  })
 
   unmount = () => instance.unmount()
 
   openRewindPicker({
-    composer: { appendPaste: (t: string) => composer.actions.appendPaste(t), appendText: (t: string) => composer.actions.appendText(t), attachImagePath: (p: string) => composer.actions.attachImagePath(p), attachImagePaths: (p: string[], o?: any) => composer.actions.attachImagePaths(p, o), setInput: (v: any) => composer.actions.setInput(v) },
+    composer: {
+      appendPaste: (t: string) => composer.actions.appendPaste(t),
+      appendText: (t: string) => composer.actions.appendText(t),
+      attachImagePath: (p: string) => composer.actions.attachImagePath(p),
+      attachImagePaths: (p: string[], o?: any) => composer.actions.attachImagePaths(p, o),
+      setInput: (v: any) => composer.actions.setInput(v)
+    },
     gateway: { gw },
     guardedErr: () => {},
     sid: 'A',
@@ -86,7 +96,8 @@ async function editTwoImagePrompt() {
   return { composer: () => composer, releases, sys }
 }
 
-const calls = () => vi.mocked(stageImagePath).mock.calls.map(([path, , destination]) => ({ path, sid: destination.sid }))
+const calls = () =>
+  vi.mocked(stageImagePath).mock.calls.map(([path, , destination]) => ({ path, sid: destination.sid }))
 
 describe('restoring the images of an edited prompt', () => {
   it('attaches both images in order, the second only after the first landed', async () => {

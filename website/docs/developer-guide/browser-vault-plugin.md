@@ -116,8 +116,8 @@ a model-facing tool that returns a password: it would bypass every rule above.
 ## Browser page backends
 
 A plugin browser that has no CDP endpoint (Camofox talks to its own REST server) cannot be reached by
-the vault's supervisor, so `browser_vault` would refuse every fill with "Could not determine the
-current page origin". Such a plugin registers an `agent.browser_page_backend.BrowserPageBackend`:
+the vault's supervisor, so `browser_vault` would refuse every fill with `no_bound_tab` (no open tab on the
+item's saved origin). Such a plugin registers an `agent.browser_page_backend.BrowserPageBackend`:
 
 ```python
 from agent.browser_page_backend import BrowserPageBackend

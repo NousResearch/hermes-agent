@@ -774,10 +774,13 @@ class HostedRoomService:
             # The snapshot holds one active discussion; its latest user message opened it.
             source_seq = max(
                 (int(event["seq"]) for event in snapshot.events if event.get("kind") == "message.user"), default=None)
+            # Stop can settle the discussion without repairing an unavailable member's roster.
+            if source_seq is None:
+                return
             decision = discussion.plan_next_task(
                 room, list(snapshot.events), local_profiles=self.room_profiles(room),
                 initial_watermarks=snapshot.watermarks, freeze_input_context=True, limits=self.discussion_limits,
-                room_context=None if source_seq is None else room_context(
+                room_context=room_context(
                     self.db_path, room_id=binding.room_id, before_seq=source_seq))
             if decision.status == "task" and decision.task is not None:
                 existing = driver.get_task_for_turn(self.db_path, decision.task.identity)
@@ -896,16 +899,20 @@ class HostedRoomService:
     def _prepare_tracked(self, binding: HostedRoomBinding, *, retry_stalled: bool = False) -> None:
         """``prepare_room`` with its failures counted per room: a stalled room is skipped (not retried)
         until the next Send or Retry, and is reported once in the room (hosted_room_prepare_stall)."""
-        stalls = self._prepare_stalls
-        if stalls.stalled(binding.room_id) and not retry_stalled:
-            return
-        try:
-            self.prepare_room(binding)
-        except Exception as exc:
-            if stalls.failed(binding.room_id, exc):
-                prepare_stall.report_stall(self.db_path, binding.room_id, exc)
-            raise
-        stalls.clear(binding.room_id)
+        # Keep a late preparation failure from restoring the stall after Stop clears it.
+        with self._policy_lock:
+            stalls = self._prepare_stalls
+            if stalls.stalled(binding.room_id) and not retry_stalled:
+                return
+            try:
+                self.prepare_room(binding)
+            except Exception as exc:
+                if retry_stalled:
+                    stalls.stall(binding.room_id, exc)
+                elif stalls.failed(binding.room_id, exc):
+                    prepare_stall.report_stall(self.db_path, binding.room_id, exc)
+                raise
+            stalls.clear(binding.room_id)
 
     def publish_terminal(self, binding: HostedRoomBinding, task: Mapping[str, Any]) -> None:
         # A deferred peer still owns this generation; Retry resumes its existing run.
@@ -984,6 +991,10 @@ class HostedRoomService:
             expected_epoch=epoch)
         pending, unconfirmed = 0, []
         with self._policy_lock:
+            # A replay must leave a newer message's preparation stall available for Retry; a later
+            # rename or member change is not newer work.
+            if not hosted_rooms.has_user_message_after(self.db_path, room_id=room_id, seq=fence["seq"]):
+                self._prepare_stalls.clear(room_id)
             tasks = {
                 (task["identity"].room_id, task["identity"].task_id): task
                 for task in self._list_tasks(room_id, _STOPPABLE_STATUSES)
@@ -1100,11 +1111,7 @@ class HostedRoomService:
         if (binding is None or task_id != f"{prepare_stall.RETRY_TASK_PREFIX}{room_id}"
                 or not self._prepare_stalls.stalled(room_id)):
             raise driver.InvalidTaskTransitionError("no retryable room task matches task_id")
-        try:
-            self._prepare_tracked(binding, retry_stalled=True)
-        except Exception as exc:
-            self._prepare_stalls.stall(room_id, exc)
-            raise
+        self._prepare_tracked(binding, retry_stalled=True)
         self.runtime.wakeup()
         return {"identity": driver.TaskIdentity(room_id=room_id, task_id=task_id, thread_id=task_id, turn_id=task_id),
                 "status": "prepared", "execution_generation": 1, "cancel_generation": 0}

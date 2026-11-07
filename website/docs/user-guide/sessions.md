@@ -10,6 +10,28 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 
 Hermes Agent automatically saves every conversation as a session. Sessions enable conversation resume, cross-session search, and full conversation history management.
 
+## Replace a retired compression model in an existing chat
+
+Local chats save their auxiliary compression settings. Changing the profile's
+`auxiliary.compression` configuration alone does not replace a route already saved
+in an older chat. To use the profile's current settings without starting a new chat:
+
+```bash
+hermes sessions list
+hermes sessions reset-compression SESSION_ID
+```
+
+Configure the replacement under `auxiliary.compression` first. To restore automatic
+selection, remove that task's override or set its provider to `auto` and clear its
+model. For a named profile, run the command with the same `hermes -p PROFILE` prefix
+you use for that chat.
+
+The command uses the owning gateway and refuses active or unresolved work rather
+than interrupting it. It changes only this chat's compression settings, keeps its
+history and main model, and survives resuming the chat and restarting the gateway.
+Other auxiliary tasks keep their saved settings. It does not run compression or
+test a provider request. A bypass session continues to ignore user configuration.
+
 ## How Sessions Work
 
 Every conversation — whether from the CLI, Telegram, Discord, Slack, WhatsApp, Signal, Matrix, Teams, or any other messaging platform — is stored as a session with full message history. Sessions are tracked in:

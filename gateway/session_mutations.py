@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 _METADATA = frozenset({'rename', 'archive', 'sidebar'})
 # Prepared off the commit like model, then published as a new frozen policy.
-_POLICY = frozenset({'model', 'reasoning', 'workspace', 'editor_mcp', 'edit_policy'})
+_POLICY = frozenset({'model', 'reasoning', 'workspace', 'editor_mcp', 'edit_policy', 'compression_model'})
 # Controls that leave the transcript alone authorize on the lineage owner (see ``_owner_ref``).
 _OWNER_AUTHORIZED = _METADATA | {'delete'}
 _FIELDS = frozenset({'session_id', 'request_id', 'expected_revision', 'operation', 'payload'})
@@ -340,8 +340,11 @@ def _project_committed(authority, ref, operation, result):
     """Publish a committed receipt's runtime projections (safe to repeat on exact retry)."""
     if operation in _POLICY:
         from gateway.session_local import publish_local_policy
-        # The edit policy is read per edit, never by the built agent: it keeps its agent (and prompt cache).
-        publish_local_policy(authority, ref.session_id, evict=operation != 'edit_policy')
+        # These controls are read per edit/call, so keep the agent and its cached prompt.
+        if operation == 'compression_model':
+            from gateway.session_mutation_compression_model import publish_compression_model
+            publish_compression_model(authority, ref)
+        publish_local_policy(authority, ref.session_id, evict=operation not in {'edit_policy', 'compression_model'})
         # A drain that ran while the receipt committed off-loop saw the new stored policy beside
         # the old live one and paused; with both now equal, queued input must run, not wait for
         # the next submit or restart.

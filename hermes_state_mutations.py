@@ -37,7 +37,7 @@ def validate_action(operation, payload):
         return
     if operation == 'compress' and _valid_compress_payload(payload):
         return
-    if operation in {'delete', 'reset'} and not payload:
+    if operation in {'delete', 'reset', 'compression_model'} and not payload:
         return
     if operation == 'import' and set(payload) == {'sessions'} and isinstance(payload['sessions'], list):
         return
@@ -90,7 +90,7 @@ def apply_action(db, conn, session_id, operation, payload, *, prepared=None):
     if operation == 'compress':
         from hermes_state_mutation_compress import compress_in_transaction
         return compress_in_transaction(db, conn, session_id, payload, prepared)
-    if operation in {'model', 'reasoning', 'workspace', 'editor_mcp', 'edit_policy'}:
+    if operation in {'model', 'reasoning', 'workspace', 'editor_mcp', 'edit_policy', 'compression_model'}:
         from hermes_state_mutation_prepared import POLICY_HANDLERS
         return POLICY_HANDLERS[operation](db, conn, session_id, payload, prepared)
     if operation == 'branch':

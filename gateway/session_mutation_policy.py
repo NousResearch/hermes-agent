@@ -8,6 +8,7 @@ import json
 from dataclasses import asdict, replace
 
 from hermes_state_runtime import RuntimeStoreError
+from gateway.session_mutation_compression_model import prepare_compression_model
 
 
 def _rebind(authority, prepared, old, policy, **extra):
@@ -68,4 +69,5 @@ async def prepare_edit_policy(authority, live, payload, prepared):
     return _rebind(authority, prepared, old, replace(old, edit_approval_policy=payload['policy']))
 
 
-PREPARE = {'reasoning': prepare_reasoning, 'workspace': prepare_workspace, 'edit_policy': prepare_edit_policy}
+PREPARE = {'reasoning': prepare_reasoning, 'workspace': prepare_workspace, 'edit_policy': prepare_edit_policy,
+           'compression_model': prepare_compression_model}

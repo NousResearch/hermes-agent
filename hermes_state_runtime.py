@@ -504,7 +504,7 @@ def mutate_runtime_session(db, *, epoch: int, principal_id: str, session_id: str
     validate_action(operation, payload)
     if expected_generation is not None and (type(expected_generation) is not int or expected_generation < 0):
         raise RuntimeStoreError('invalid_params')
-    if operation in {'delete', 'rewind', 'reset', 'branch', 'model', 'compress'} and expected_generation is None:
+    if operation in {'delete', 'rewind', 'reset', 'branch', 'model', 'compress', 'compression_model'} and expected_generation is None:
         raise RuntimeStoreError('invalid_params')
     # Snapshot caller data before waiting for the writer lock.
     payload = json.loads(_json(payload))

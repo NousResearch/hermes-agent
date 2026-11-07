@@ -27,6 +27,12 @@ def _accepts_keyword_argument(callable_obj: Any, name: str) -> bool:
 
 
 class SummaryDispatchMixin:
+    def reset_summary_route(self) -> None:
+        """An explicit route reset keeps history and budgets, but releases the old fallback pin."""
+        self.summary_model = ''
+        self._summary_model_fallen_back = False
+        self._last_aux_model_failure_error = self._last_aux_model_failure_model = ''
+
     def _apply_summary_route(self, call_kwargs: dict, pinned: Optional[dict[str, Any]] = None) -> None:
         """Pin the summary route onto ``call_kwargs`` for both compression entry points.
 

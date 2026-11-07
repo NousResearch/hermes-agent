@@ -574,6 +574,48 @@ describe('DesktopInstallOverlay first-run setup', () => {
       expect(screen.queryByText('Installation failed')).toBeNull()
     })
   })
+
+  // The failed state is PAINTED one commit before the Escape effect (keyed on
+  // Boolean(state.error)) has attached its keydown listener. A keypress in
+  // that window used to be dropped, so the overlay stayed up until the test's
+  // 12 s budget expired (UI tests shard 2/3 under load, 2026-10-03). Resolve
+  // the instant the heading commits -- MutationObserver, not waitFor's timer,
+  // which would already have let the effect run -- and press Escape right
+  // there.
+  it('dismisses a failed install on an Escape pressed the instant it paints', async () => {
+    installDesktopMock(bootstrapState({ error: 'cancelled by user' }))
+
+    render(<DesktopInstallOverlay />)
+
+    await whenPresent('Installation failed')
+    fireEvent.keyDown(window, { key: 'Escape' })
+
+    await waitFor(() => expect(screen.queryByText('Installation failed')).toBeNull())
+  })
+
+  // The initial getBootstrapState() snapshot can resolve AFTER the user has
+  // already dismissed the failed install via a live event; it must not
+  // resurrect the overlay.
+  it('a late initial snapshot does not resurrect a dismissed failed install', async () => {
+    const failed = bootstrapState({ error: 'cancelled by user' })
+    const desktop = installDesktopMock(failed)
+    let resolveSnapshot: (s: DesktopBootstrapState) => void = () => {}
+    desktop.getBootstrapState.mockReturnValue(
+      new Promise<DesktopBootstrapState>(resolve => {
+        resolveSnapshot = resolve
+      })
+    )
+
+    render(<DesktopInstallOverlay />)
+
+    act(() => desktop.emitBootstrapEvent({ type: 'dismissed' } as DesktopBootstrapEvent))
+    await act(async () => {
+      resolveSnapshot(failed)
+      await Promise.resolve()
+    })
+
+    expect(screen.queryByText('Installation failed')).toBeNull()
+  })
 })
 
 it.each([

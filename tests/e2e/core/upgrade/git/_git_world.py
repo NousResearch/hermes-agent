@@ -54,17 +54,17 @@ def reported_success(cp: subprocess.CompletedProcess) -> bool:
     return cp.returncode == 0 or SUCCESS in output(cp)
 
 
-def n1_tag() -> str:
-    """The start version's ref (``_install_helpers.upgrade_base``): N-1 unless overridden."""
-    base = I.upgrade_base()
+def n1_tag(generation: str | None = None) -> str:
+    """The start version's ref (``_install_helpers.upgrade_base``): N-1, or ``generation``'s newest release."""
+    base = I.upgrade_base(generation)
     if base is None:
         pytest.skip("no release tag reachable before HEAD (fetch tags)")
     return base.ref
 
 
-def n1_base() -> str:
+def n1_base(generation: str | None = None) -> str:
     """The commit an N-1 install sits on."""
-    return commit_of(n1_tag())
+    return commit_of(n1_tag(generation))
 
 
 def commit_of(ref: str) -> str:

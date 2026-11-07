@@ -73,7 +73,9 @@ def updater_generation(tag: str) -> str:
 
 
 def release_tags(ref: str = "HEAD") -> list[str]:
-    """Release tags reachable from ``ref``, newest first."""
+    """Release tags reachable from ``ref``, newest first; none when ``ref`` is absent (a depth-1 checkout)."""
+    if git("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}", cwd=H.WORKTREE, check=False) == "":
+        return []
     out = git("tag", "--merged", ref, "--sort=-creatordate", "--list", "v[0-9]*", cwd=H.WORKTREE)
     return [t for t in out.split() if not any(Path(t).match(p) for p in _RELEASE_TAG_EXCLUDES)]
 
@@ -86,14 +88,15 @@ class UpgradeBase:
 
 
 @functools.cache
-def upgrade_base() -> UpgradeBase | None:
+def upgrade_base(generation: str | None = None) -> UpgradeBase | None:
     """The start version of the upgrade suites; None when no release is reachable (a tagless checkout).
 
     ``HERMES_E2E_UPGRADE_BASE`` picks it: a tag, a commit, or an updater generation name
     (``by-path``, ``handoff``, ``pre-handoff``: the newest release that ships that updater). Unset, it
-    is N-1, the newest release before HEAD. ``HERMES_E2E_N1_REF`` is an older name for the same knob.
+    is ``generation``'s newest release when a scenario only exists for that updater, else N-1, the
+    newest release before HEAD. ``HERMES_E2E_N1_REF`` is an older name for the same knob.
     """
-    chosen = os.environ.get("HERMES_E2E_UPGRADE_BASE") or os.environ.get("HERMES_E2E_N1_REF") or ""
+    chosen = os.environ.get("HERMES_E2E_UPGRADE_BASE") or os.environ.get("HERMES_E2E_N1_REF") or generation or ""
     generations = {name for name, _ in UPDATER_GENERATIONS}
     if chosen and chosen not in generations:
         return UpgradeBase(chosen, git("rev-parse", f"{chosen}^{{commit}}", cwd=H.WORKTREE))

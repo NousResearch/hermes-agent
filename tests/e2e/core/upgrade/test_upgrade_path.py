@@ -50,6 +50,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import sqlite3
 import subprocess
 import time
@@ -298,12 +299,12 @@ _KILLED_RUN_PREFIX = ["/bin/sh", "-c", '"$0" "$@"; exit $?']
 _RETRY_PREFIX = ["/bin/sh", "-c", 'true; exec "$0" "$@"']
 
 
-def _make_origin(root: Path) -> Path:
+def _make_origin(root: Path, base: str) -> Path:
     origin = root / "origin.git"
     _git("clone", "-q", "--bare", "--shared", "--no-tags", str(H.WORKTREE), str(origin), cwd=root)
-    _git("update-ref", "refs/heads/main", _refs().base, cwd=origin)
+    _git("update-ref", "refs/heads/main", base, cwd=origin)
     _git("symbolic-ref", "HEAD", "refs/heads/main", cwd=origin)
-    _git("tag", "-f", "e2e-upgrade-base", _refs().base, cwd=origin)
+    _git("tag", "-f", "e2e-upgrade-base", base, cwd=origin)
     return origin
 
 
@@ -351,12 +352,19 @@ def _write_wrappers(leg_root: Path, install: Path, hermes_home: Path) -> Path:
     return wrap
 
 
-def make_leg(root: Path, template_home: Path | None) -> Leg:
+def _sockets(directory: str, names: list[str]) -> list[str]:
+    """Unix sockets a release's CLI leaves in the home (``gateway.sock``): copytree cannot copy them."""
+    return [n for n in names if stat.S_ISSOCK(os.lstat(os.path.join(directory, n)).st_mode)]
+
+
+def make_leg(root: Path, template_home: Path | None, base: str | None = None) -> Leg:
+    """An install of ``base`` (default: the suite's start version) with its own venv and origin."""
+    base = base or _refs().base
     root.mkdir(parents=True, exist_ok=True)
-    origin = _make_origin(root)
+    origin = _make_origin(root, base)
     install = root / "install"
     _git("clone", "-q", "--shared", "-b", "main", str(origin), str(install), cwd=root)
-    assert _git("rev-parse", "HEAD", cwd=install) == _refs().base
+    assert _git("rev-parse", "HEAD", cwd=install) == base
     # Look like a normal (non-fork) install: origin is the official URL, rewritten in this repo's
     # own config to the local store, so the updater takes the common path and never hits the network.
     _git("remote", "set-url", "origin", OFFICIAL_URL, cwd=install)
@@ -380,7 +388,7 @@ def make_leg(root: Path, template_home: Path | None) -> Leg:
     hermes_home = Path(env_probe["HERMES_HOME"])
     if template_home is not None:
         shutil.rmtree(hermes_home)
-        shutil.copytree(template_home, hermes_home, symlinks=True)
+        shutil.copytree(template_home, hermes_home, symlinks=True, ignore=_sockets)
     wrap = _write_wrappers(root, install, hermes_home)
     env = H.isolated_env(root, extra_path=[wrap])
     return Leg(root=root, origin=origin, install=install, env=env, hermes_home=hermes_home, wrap_dir=wrap)
@@ -570,7 +578,7 @@ def template_home(tmp_path_factory, provider) -> Path:
     (seed.hermes_home / "config.yaml").write_text(cfg, encoding="utf-8")
     (work / "config.yaml").write_text(cfg, encoding="utf-8")
     template = seed.root / "template-home"
-    shutil.copytree(seed.hermes_home, template, symlinks=True)
+    shutil.copytree(seed.hermes_home, template, symlinks=True, ignore=_sockets)
     return template
 
 

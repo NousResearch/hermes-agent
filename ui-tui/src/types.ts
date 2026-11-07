@@ -132,6 +132,8 @@ export interface ClarifyReq {
   /** Answers already locked server-side (qid → answer): seeded from the
    *  reconnect replay, updated as the user locks each question. */
   answers?: Record<string, string>
+  /** a batch answer is waiting for the server to confirm the lock. */
+  answerPending?: boolean
 }
 
 /** A collapsed paste in a sent user message: the chip shown and the text the model got. */

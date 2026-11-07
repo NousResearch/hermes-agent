@@ -45,20 +45,45 @@ def _make_provider(slug, name=None, models=None, *, is_current=False,
     return entry
 
 
+def test_cap_models_reserves_slots_for_curated_models(monkeypatch):
+    """A bounded picker keeps curated models even when they sit in the live tail."""
+    live = [f"vendor/model-{index}" for index in range(6)]
+    curated = [live[5], live[3]]
+    build = model_switch_providers._PickerBuild(
+        current_provider="",
+        current_base_url="",
+        current_model="",
+        max_models=4,
+        for_picker=True,
+        force_fresh_nous_tier=False,
+        probe_custom_providers=False,
+        probe_current_custom_provider=False,
+        refresh=False,
+        excluded=set(),
+        curated={"nvidia": curated},
+    )
+    monkeypatch.setattr(build, "record_builtin_endpoint", lambda _slug: None)
+
+    build.add_builtin_row(
+        "nvidia",
+        "NVIDIA NIM",
+        False,
+        live,
+        "canonical",
+    )
+
+    assert build.results[0]["models"] == [live[5], live[3], live[0], live[1]]
+    assert build.results[0]["total_models"] == 6
 
 
-
-
-
-
-
-
-
-
-
-
-
-
+def test_cap_models_deduplicates_curated_ids_in_order():
+    """Repeated curated IDs occupy one picker slot without changing priority."""
+    assert model_switch_providers._cap_models(
+        ["model-a", "model-b", "model-c"],
+        3,
+        "provider",
+        ["model-b", "model-b", "model-a"],
+    ) == ["model-b", "model-a", "model-c"]
 
 
 def test_passthrough_kwargs_to_base(monkeypatch):

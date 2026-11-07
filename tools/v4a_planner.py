@@ -636,6 +636,10 @@ def apply_whole(pieces, site, hunk, added, eol, consumed, ids):
                 last = out[-1]
                 out[-1] = Piece(last.kind, last.text, eol, last.origin, last.ins_id)
             out.append(Piece("ins", text, this_eol, None, next(ids)))
+    if removed_eols and removed_eols[-1] == "" and idx == len(pieces) and out[-1].kind == "ins":
+        # The removed run ended an unterminated file: the last added line ends it too.
+        last = out[-1]
+        out[-1] = Piece(last.kind, last.text, "", last.origin, last.ins_id)
     out.extend(pieces[idx:])
     return out
 
@@ -767,6 +771,22 @@ def _anchor_floor(pieces, hunk, consumed):
     return sites[0].start
 
 
+def _remap_floor(before: list[Piece], after: list[Piece], floor: int | None) -> int | None:
+    """Follow the anchor cursor across an edit by piece identity, never by raw index."""
+
+    if floor is None:
+        return None
+
+    def key(piece: Piece):
+        return ("o", piece.origin) if piece.kind == "orig" else ("i", piece.ins_id)
+
+    where = {key(piece): at for at, piece in enumerate(after)}
+    for piece in before[floor:]:
+        if key(piece) in where:
+            return where[key(piece)]
+    return len(after)
+
+
 @dataclass
 class PlannerState:
     """One logical file's original line provenance across Update operations."""
@@ -835,6 +855,7 @@ def plan_hunks(content: str, hunks: list, state: PlannerState | None = None,
                     floor, floor_explicit = moved, True
             continue
         before = render(pieces)
+        prior = pieces
         if not search:
             decision = _resolve_addition(pieces, hunk, hint, index, added, before)
             if isinstance(decision, Refused):
@@ -846,6 +867,7 @@ def plan_hunks(content: str, hunks: list, state: PlannerState | None = None,
                 pieces, at, lines, eol, ids,
             )
 
+            floor = _remap_floor(prior, pieces, floor)
             live = True
             continue
         resolved = _resolve(
@@ -871,6 +893,7 @@ def plan_hunks(content: str, hunks: list, state: PlannerState | None = None,
                 added = _carry_indent(pieces, decision.site, search, added)
             pieces = apply_whole(pieces, decision.site, hunk, added, eol, consumed, ids)
             strategies.append("exact" if decision.tier == "exact" else "whitespace_normalized")
+        floor = _remap_floor(prior, pieces, floor)
         live = True
         if note:
             notes.append(note)

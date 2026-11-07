@@ -938,7 +938,10 @@ def _enforce_site_unavailable_ceiling(seed: int, count: int, observed: int) -> N
 
 
 def _finish_strict(rows, key, kind) -> None:
+    seen = len(rows)
     rows = [row for row in rows if row.sig != "site-unavailable-bytes-ok"]
+    if seen and not rows:
+        pytest.fail(f"{_class_id(key)}: every row is SITE_UNAVAILABLE; nothing verified")
     if rows and all(row.sig == "agree" or _matches_pin(kind, row) for row in rows) and any(
         _matches_pin(kind, row) for row in rows
     ):

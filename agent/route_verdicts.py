@@ -40,7 +40,7 @@ def reset_route_verdicts_if_moved(agent: Any, prior_base_url: Any) -> None:
     ``prior_base_url``: for code that assigns a refreshed ``base_url`` directly. A refresh that
     keeps the endpoint keeps its verdicts."""
     from hermes_cli.route_identity import normalize_route_base_url
-    if normalize_route_base_url(prior_base_url or "") != _endpoint(agent):
+    if normalize_route_base_url(prior_base_url or "") != route_endpoint(agent):
         reset_route_verdicts(agent)
 
 
@@ -60,7 +60,8 @@ def apply_route_verdicts(agent: Any, values: dict[str, Any]) -> None:
         setattr(agent, name, value)
 
 
-def _endpoint(agent: Any) -> str:
+def route_endpoint(agent: Any) -> str:
+    """``agent.base_url`` normalized: the key a route verdict and a one-shot repair are bound to."""
     from hermes_cli.route_identity import normalize_route_base_url
     return normalize_route_base_url(getattr(agent, "base_url", "") or "")
 
@@ -68,7 +69,7 @@ def _endpoint(agent: Any) -> str:
 def _stamp_primary_verdicts(agent: Any, rt: Any) -> Any:
     """Record the live verdicts in ``rt`` when the agent is on its primary right now."""
     if isinstance(rt, dict) and not getattr(agent, "_fallback_activated", False):
-        rt[PRIMARY_VERDICTS_KEY] = {"base_url": _endpoint(agent), "values": snapshot_route_verdicts(agent)}
+        rt[PRIMARY_VERDICTS_KEY] = {"base_url": route_endpoint(agent), "values": snapshot_route_verdicts(agent)}
     return rt
 
 
@@ -82,7 +83,7 @@ def restore_primary_route_verdicts(agent: Any, rt: dict[str, Any]) -> None:
     """Put back what ``save_primary_route_verdicts`` kept in ``rt``, once the primary (and its
     credential pool entry) is reinstalled, and only on the endpoint that earned them."""
     saved = rt.get(PRIMARY_VERDICTS_KEY)
-    if saved and saved.get("base_url") == _endpoint(agent):
+    if saved and saved.get("base_url") == route_endpoint(agent):
         apply_route_verdicts(agent, saved.get("values") or {})
     rt.pop(PRIMARY_VERDICTS_KEY, None)
 

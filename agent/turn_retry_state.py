@@ -31,7 +31,7 @@ class TurnRetryState:
 
     # Format / payload recovery guards
     thinking_sig_retry_attempted: bool = False
-    # Route-scoped one-shot repairs: the endpoint (``route_verdicts._endpoint``) each was spent on.
+    # Route-scoped one-shot repairs: the endpoint (``route_verdicts.route_endpoint``) each was spent on.
     # A move to another endpoint re-arms them, since its verdicts were reset too.
     invalid_encrypted_content_retry_endpoint: str | None = None
     native_compaction_reject_retry_attempted: bool = False

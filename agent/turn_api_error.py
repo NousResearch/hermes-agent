@@ -17,7 +17,7 @@ from typing import Any, Dict, Optional
 
 from agent.api_error_summary import is_provider_stream_parse_error
 from agent.error_classifier import RETRYABLE_CLIENT_REASONS, FailoverReason, classify_api_error
-from agent.route_verdicts import _endpoint as _route_endpoint
+from agent.route_verdicts import route_endpoint
 from agent.turn_overflow import recover_from_overflow
 from agent.turn_recovery import (
     _NONRETRYABLE_LABELS, abort_turn_on_interrupt, compute_error_backoff, free_tier_cooldown_ends_turn,
@@ -304,7 +304,7 @@ def settle_unrecovered_error(
     # replaying the identical request ``max_retries`` times (#114460).
     reasoning_spent = (
         classified.reason == FailoverReason.reasoning_mandatory
-        and getattr(_retry, "reasoning_mandatory_retry_endpoint", None) == _route_endpoint(agent)
+        and getattr(_retry, "reasoning_mandatory_retry_endpoint", None) == route_endpoint(agent)
     )
     is_client_error = (
         is_local_validation_error

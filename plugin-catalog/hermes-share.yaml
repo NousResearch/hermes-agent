@@ -1,0 +1,24 @@
+name: hermes-share
+repo: https://github.com/Sahil-SS9/hermes-share
+sha: "b389b21effd25953b32ca1f1b886e52d42b27a6e"
+subdir: ""
+title: "Session Share"
+version: "0.2.0"
+description: "Share one or several sessions as a redacted, revocable secret GitHub gist with /share, and import a shared bundle back with /share import. A bundle is up to three kinds of file in one gist, every one of them rendered by the public `hermes sessions export` CLI: the importable jsonl, a readable Markdown transcript, and a standalone HTML page per session. The preview lists every session with its redaction counts and file sizes; nothing is uploaded until /share confirm. Credentials become non-reusable sentinels (never a head/tail mask), home paths become ~, and the account and host names are replaced; redaction cannot be switched off. /share import reads a gist or file, detects the format from content (Hermes export, Claude Code transcript, Codex rollout), shows what is inside, and imports only on /share import confirm. Disclosure — reads the sessions you name through the public `hermes sessions export` CLI and the session index through hermes_state; writes the bundle, a 50-row share ledger, capped previews/imports and a pending record under plugin-data; network writes are only gh gist create and gh gist delete, both after confirm, never --public, and it holds no token of its own because authentication is whatever the gh CLI already has; a gist import is read with gh gist view, a public URL over plain HTTPS, capped at 8 MB, and nothing downloaded is executed; child processes get an allowlisted environment (gh: HOME/PATH/GH_CONFIG_DIR/locale; hermes: the same plus HERMES_HOME), never the session's, which holds every provider key on the machine. Hermes-to-Hermes import needs a host with `hermes sessions import --from hermes` (upstream #87988) and is feature-detected from the CLI's own help; without it that part refuses by name and Claude Code and Codex imports still work. Import from a chat platform is off until the owner sets allow_gateway_import."
+maintainer: Sahil-SS9
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/Sahil-SS9/hermes-share#readme
+readme: true
+platforms: [linux, macos, windows]
+known_issues:
+  - "Needs `ctx.redact_text()` on the host (NousResearch/hermes-agent#150220). On a Hermes without it, /share refuses by name instead of importing an internal module."
+  - "Hermes-to-Hermes import needs `hermes sessions import --from hermes` (NousResearch/hermes-agent#87988); until a host has it that path refuses by name. Claude Code and Codex imports work today."
+  - "Import from a chat platform is refused until `plugins.entries.hermes-share.settings.allow_gateway_import` is true, because an import writes into that Hermes's own store. Sharing and /unshare work on chat platforms without it."
+  - "A gist is secret, not private: unlisted and not searchable, but readable by anyone with the URL."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

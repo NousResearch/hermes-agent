@@ -129,6 +129,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             extra["mention_patterns"] if "mention_patterns" in extra else _get_scoped_secret("BLUEBUBBLES_MENTION_PATTERNS"))
         self.client: Optional[httpx.AsyncClient] = None
         self._runner = None
+        # Outbound-only callers never own inbound webhook registration.
+        # Distinct from _runner: shared-ingress secondaries also leave _runner
+        # None after publishing onto the multiplex listener, but they DID register.
+        self._send_only = False
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: OrderedDict[str, str] = OrderedDict()
@@ -193,7 +197,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
     # --- Lifecycle ---
 
-    async def connect(self, *, is_reconnect: bool = False) -> bool:
+    async def connect(self, *, is_reconnect: bool = False, send_only: bool = False) -> bool:
         if not self.server_url or not self.password:
             logger.error("[bluebubbles] BLUEBUBBLES_SERVER_URL and BLUEBUBBLES_PASSWORD are required")
             return False
@@ -214,6 +218,16 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             logger.error("[bluebubbles] cannot reach server at %s: %s", self.server_url, exc)
             await self._close_client()
             return False
+
+        # send_only skips the local webhook server. Standalone cron / send_message
+        # callers must not bind webhook_port (the gateway already holds it —
+        # EADDRINUSE aborts the send) and must not write gateway runtime status
+        # or register a webhook. disconnect() gates cleanup on _send_only, not
+        # _runner: a multiplex secondary also leaves _runner None but did register.
+        if send_only:
+            self._send_only = True
+            return True
+
         # client_max_size makes aiohttp enforce the cap on every read path, incl. chunked requests
         # with no Content-Length.
         # Explicit body cap: BlueBubbles webhook events are small JSON (or form-encoded) payloads.
@@ -243,6 +257,13 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             self.client = None
 
     async def disconnect(self) -> None:
+        # Send-only adapters share the gateway webhook URL. They must not
+        # unregister it or overwrite runtime status. Shared-ingress secondaries
+        # also have _runner is None, but they registered a profile callback —
+        # ownership is _send_only, not _runner. Gateway path order is unchanged.
+        if self._send_only:
+            await self._close_client()
+            return
         await self._unregister_webhook()
         await self._close_client()
         if self._runner:
@@ -637,7 +658,7 @@ async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Op
         return send_error("BlueBubbles requirements not met (need aiohttp + httpx).")
     try:
         adapter = BlueBubblesAdapter(PlatformConfig(extra=dict(getattr(pconfig, "extra", None) or {})))
-        if not await adapter.connect():
+        if not await adapter.connect(send_only=True):
             return send_error("BlueBubbles: failed to connect to server")
         try:
             result = await adapter.send(chat_id, message)

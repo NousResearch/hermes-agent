@@ -625,3 +625,109 @@ class TestBlueBubblesPluginRegistration:
         assert policy is None or not policy.text_direct
         assert not hasattr(senders, "_send_bluebubbles")
         assert all(p["key"] != "bluebubbles" for p in wiz._PLATFORMS)
+
+
+class TestBlueBubblesConnectSendOnly:
+    async def _stub_ping(self, adapter):
+        async def fake_api_get(path):
+            if path.endswith("/ping"):
+                return {"status": 200}
+            if path.endswith("/server/info"):
+                return {"data": {"private_api": False, "helper_connected": False}}
+            return {}
+
+        adapter._api_get = fake_api_get
+
+    @pytest.mark.asyncio
+    async def test_connect_send_only_skips_webhook_bind(self, monkeypatch):
+        import gateway.platforms.shared_ingress as si
+
+        adapter = _make_adapter(monkeypatch)
+        await self._stub_ping(adapter)
+
+        bind_calls = []
+
+        async def fake_bind(*_a, **_k):
+            bind_calls.append(True)
+            return object()
+
+        monkeypatch.setattr(si, "bind_listener", fake_bind)
+        mark_calls = []
+        adapter._mark_connected = lambda: mark_calls.append(True)
+        adapter._register_webhook = AsyncMock(return_value=None)
+
+        ok = await adapter.connect(send_only=True)
+        assert ok is True
+        assert adapter._runner is None
+        assert adapter._send_only is True
+        assert bind_calls == []
+        assert mark_calls == []
+        adapter._register_webhook.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_connect_default_still_binds_webhook(self, monkeypatch):
+        import gateway.platforms.shared_ingress as si
+
+        adapter = _make_adapter(monkeypatch)
+        await self._stub_ping(adapter)
+
+        runner = object()
+
+        async def fake_bind(*_a, **_k):
+            return runner
+
+        monkeypatch.setattr(si, "bind_listener", fake_bind)
+        mark_calls = []
+        adapter._mark_connected = lambda: mark_calls.append(True)
+        adapter._register_webhook = AsyncMock(return_value=None)
+        adapter._wire_plugin_handlers = lambda _x: None
+
+        ok = await adapter.connect()
+        assert ok is True
+        assert adapter._runner is runner
+        assert adapter._send_only is False
+        assert mark_calls == [True]
+        adapter._register_webhook.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_disconnect_send_only_leaves_gateway_state(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        await self._stub_ping(adapter)
+        adapter._unregister_webhook = AsyncMock()
+        mark_disc = []
+        adapter._mark_disconnected = lambda: mark_disc.append(True)
+
+        assert await adapter.connect(send_only=True) is True
+        assert adapter._runner is None
+        assert adapter._send_only is True
+        await adapter.disconnect()
+        adapter._unregister_webhook.assert_not_awaited()
+        assert mark_disc == []
+
+    @pytest.mark.asyncio
+    async def test_disconnect_shared_ingress_unregisters_without_runner(self, monkeypatch):
+        """Multiplex secondary: bind_listener returns None, but the profile callback was registered."""
+        import gateway.platforms.shared_ingress as si
+
+        adapter = _make_adapter(monkeypatch)
+        await self._stub_ping(adapter)
+
+        async def fake_bind(*_a, **_k):
+            adapter._shared_ingress_url = "http://127.0.0.1:8645/p/secondary/bluebubbles-webhook"
+
+        monkeypatch.setattr(si, "bind_listener", fake_bind)
+        adapter._mark_connected = lambda: None
+        adapter._register_webhook = AsyncMock(return_value=True)
+        adapter._unregister_webhook = AsyncMock(return_value=True)
+        adapter._wire_plugin_handlers = lambda _x: None
+        mark_disc = []
+        adapter._mark_disconnected = lambda: mark_disc.append(True)
+
+        assert await adapter.connect() is True
+        assert adapter._runner is None
+        assert adapter._send_only is False
+        adapter._register_webhook.assert_awaited_once()
+
+        await adapter.disconnect()
+        adapter._unregister_webhook.assert_awaited_once()
+        assert mark_disc == [True]

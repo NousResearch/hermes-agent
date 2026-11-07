@@ -27,6 +27,7 @@ autofilled username must match it (a site with several saved accounts autofills 
 from __future__ import annotations
 
 import contextlib
+import itertools
 import json
 import logging
 import sqlite3
@@ -37,8 +38,13 @@ from typing import Any, Iterator, Optional
 logger = logging.getLogger(__name__)
 
 _CDP_TIMEOUT_S = 20.0
-# Chrome fills the password only after a real gesture lands on the form; give its agent a moment.
-_AUTOFILL_SETTLE_S = 2.0
+# Bounded wait for a usable sign-in form to render: some pages mount their form a second or two
+# after navigation (SPA hydration, late JS), so a single fixed sleep + one inspection misses them.
+_FORM_WAIT_S = 6.0
+# Bounded wait for Chrome's PasswordAutofillAgent to fill the field after the trusted gesture.
+_AUTOFILL_WAIT_S = 6.0
+# Poll cadence while waiting for the form / autofill.
+_POLL_INTERVAL_S = 0.15
 
 
 # ── list: plaintext metadata from the snapshot's Login Data (no decryption) ───────────────────────
@@ -69,7 +75,10 @@ def read_login_metadata(copy_dir: str) -> list[dict[str, str]]:
             # mode=ro WITHOUT immutable=1: the real browser mutating its own store commits changes
             # into a WAL file first, and immutable=1 tells SQLite to ignore the WAL, so logins saved
             # or changed this session would read back stale/missing. Read-only still prevents writes.
-            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+            # Build the file: URI from the path with pathlib so a '#', '?' or space in any directory
+            # component is percent-escaped — a bare f"file:{db}" truncates at the first '#' and the
+            # query string, silently opening the wrong (or an empty) database.
+            con = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True)
         except sqlite3.Error as exc:
             logger.debug("real-profile logins: cannot open %s: %s", db, exc)
             continue
@@ -133,28 +142,56 @@ def _page_target(cdp_url: str, target_url: str) -> Iterator[str]:
                 logger.debug("real-profile logins: could not close autofill tab %s: %s", target_id, exc)
 
 
-# JS that returns the viewport-centre coordinates of the sign-in form's username/password control, so
-# the resolver can land a TRUSTED CDP mouse click on it. Chrome's PasswordAutofillAgent fills saved
-# credentials only on a trusted interaction (synthetic DOM events are ignored), so the click must come
-# over Input.dispatchMouseEvent, not a scripted MouseEvent.
+# Shared JS: locate the sign-in form's password field and the username field TIED to it, rather than
+# guessing the username by a name heuristic (a plain <input type=text name=login> that Chrome fills
+# correctly is otherwise invisible). The username is the nearest "texty" input that PRECEDES the
+# autofilled password field inside the same form (Chrome's own pairing), falling back to the last
+# texty input before it in the document, or the first filled texty input.
+_FORM_JS_HELPER = (
+    "const texty = el => {"
+    "  if (!el || el.tagName !== 'INPUT') return false;"
+    "  const t = (el.type || 'text').toLowerCase();"
+    "  return !['password','hidden','submit','button','checkbox','radio','image','file','range','color'].includes(t);"
+    "};"
+    "const pwFields = Array.from(document.querySelectorAll('input[type=password]'))"
+    "  .filter(p => p.offsetParent !== null || p.getClientRects().length);"
+    "const pw = pwFields.find(p => p.value) || pwFields[0] || null;"
+    "const usernameFor = p => {"
+    "  if (!p) return null;"
+    "  const form = p.form;"
+    "  const scope = form ? Array.from(form.elements) : Array.from(document.querySelectorAll('input'));"
+    "  const idx = scope.indexOf(p);"
+    "  const before = scope.slice(0, idx < 0 ? scope.length : idx).filter(texty);"
+    "  if (before.length) return before[before.length - 1];"
+    "  const filled = scope.filter(e => texty(e) && e.value);"
+    "  if (filled.length) return filled[0];"
+    "  const any = scope.filter(texty);"
+    "  return any.length ? any[0] : null;"
+    "};"
+)
+
+# JS that returns the viewport-centre coordinates of the field to click (the username field tied to
+# the sign-in form when present, else the password field), so the resolver can land a TRUSTED CDP
+# mouse click that makes Chrome's PasswordAutofillAgent offer+fill the saved credential. Returns ''
+# while no password field has rendered yet, so the resolver can POLL for a late-mounting form.
 _FIELD_POINT_JS = (
     "(() => {"
-    " const el = document.querySelector("
-    "   'input[autocomplete=username], input[type=email], input[name*=user i], input[name*=email i]')"
-    "   || document.querySelector('input[type=password]');"
-    " if (!el) return '';"
-    " const r = el.getBoundingClientRect();"
+    + _FORM_JS_HELPER +
+    " if (!pw) return '';"
+    " const target = usernameFor(pw) || pw;"
+    " const r = target.getBoundingClientRect();"
     " return JSON.stringify({x: r.x + r.width / 2, y: r.y + r.height / 2});"
     "})()"
 )
 
-# Reads the autofilled values AND the page's own origin in ONE evaluate, so the origin that guards
-# the read is the SAME page the value came from (no redirect can slip in between two calls).
+# Reads the autofilled password AND the username TIED to its form AND the page's own origin in ONE
+# evaluate, so the origin that guards the read is the SAME page the value came from (no redirect can
+# slip in between two calls).
 _READ_PASSWORD_VALUE_JS = (
-    "(() => { const p = document.querySelector('input[type=password]');"
-    " const u = document.querySelector("
-    "   'input[autocomplete=username], input[type=email], input[name*=user i], input[name*=email i]');"
-    " return JSON.stringify({password: p ? String(p.value || '') : '',"
+    "(() => {"
+    + _FORM_JS_HELPER +
+    " const u = usernameFor(pw);"
+    " return JSON.stringify({password: pw ? String(pw.value || '') : '',"
     "   username: u ? String(u.value || '') : '', origin: String(location.origin || '')}); })()"
 )
 
@@ -173,55 +210,102 @@ def resolve_login_password(cdp_url: str, nav_url: str, origin: str, username: st
     """Return the saved password for the login by letting the real-profile browser autofill it and
     reading the field value over CDP. ``nav_url`` is the exact saved sign-in URL to open (path
     preserved); ``origin`` is the handle's normalized origin the final page must still be on;
-    ``username`` is the saved account. ``None`` when nothing autofills, the final page drifted to a
-    different origin, or the filled account does not match. The browser decrypts its own store; this
-    code never decrypts.
+    ``username`` is the saved account (may be the empty string for a blank-username credential).
+    ``None`` when nothing autofills, the final page drifted to a different origin, or the filled
+    account cannot be positively tied to the handle's identity. The browser decrypts its own store;
+    this code never decrypts.
 
-    Two refusals protect against the wrong secret coming back:
+    Three refusals protect against the wrong secret coming back:
 
     - **origin recheck** — the page is read together with its ``location.origin``; if the saved URL
       redirected to a different site (which may have its own saved login), the origin no longer
       matches ``origin`` and we refuse, so another site's password can never be returned for this
       handle.
-    - **account match** — when the handle carries a username, the autofilled username must equal it;
-      a site with several saved accounts autofills its preferred one, so an empty or different filled
-      username is refused rather than returning a DIFFERENT account's password.
+    - **account match (named handle)** — when the handle carries a username, the autofilled username
+      must equal it; a site with several saved accounts autofills its preferred one, so an empty or
+      different filled username is refused rather than returning a DIFFERENT account's password.
+    - **account match (blank handle)** — an EMPTY saved username is a real identity, not a wildcard.
+      Chrome, resolving a blank-username login on an origin that also has a named account, may
+      autofill the NAMED account's password instead. We therefore require the autofilled username to
+      be empty too; any non-empty filled username means Chrome handed back a different (named)
+      account, and we refuse rather than leak it.
+
+    Both the form discovery and the autofill read are POLLED up to bounded deadlines, so a form that
+    mounts a second or two after navigation (SPA hydration) and a fill that lands slightly after the
+    trusted click still resolve, instead of a single fixed sleep missing them.
     """
     from websockets.sync.client import connect
 
     from agent.proxy_bypass import loopback_connect_kwargs
+    ids = itertools.count(1)
     with _page_target(cdp_url, nav_url) as page_url:
         with connect(page_url, open_timeout=_CDP_TIMEOUT_S, close_timeout=2, max_size=None,
                      **loopback_connect_kwargs(page_url)) as ws:
-            _cdp_call(ws, 1, "Page.enable")
-            _cdp_call(ws, 2, "Runtime.enable")
-            time.sleep(1.0)  # let the navigated page settle before touching the form
-            point = _cdp_call(ws, 3, "Runtime.evaluate", {
-                "expression": _FIELD_POINT_JS, "returnByValue": True}).get("result", {}).get("value")
-            if not point:
+            _cdp_call(ws, next(ids), "Page.enable")
+            _cdp_call(ws, next(ids), "Runtime.enable")
+            # Poll for a usable sign-in form (password field present) up to _FORM_WAIT_S: late-mounting
+            # forms would be missed by a single fixed sleep + one inspection.
+            xy = _wait_for_field_point(ws, ids)
+            if xy is None:
                 return None
-            xy = json.loads(point)
             # A TRUSTED click (not a scripted DOM event) is what makes Chrome offer+fill the credential.
             for ev in ("mousePressed", "mouseReleased"):
-                _cdp_call(ws, 4, "Input.dispatchMouseEvent",
+                _cdp_call(ws, next(ids), "Input.dispatchMouseEvent",
                           {"type": ev, "x": xy["x"], "y": xy["y"], "button": "left", "clickCount": 1})
-            time.sleep(_AUTOFILL_SETTLE_S)
-            read = _cdp_call(ws, 5, "Runtime.evaluate",
-                             {"expression": _READ_PASSWORD_VALUE_JS, "returnByValue": True})
-    raw = read.get("result", {}).get("value")
-    if not isinstance(raw, str):
-        return None
-    try:
-        filled = json.loads(raw)
-    except (json.JSONDecodeError, ValueError):
+            # Poll for autofill completion (a filled password) up to _AUTOFILL_WAIT_S.
+            filled = _wait_for_autofill(ws, ids)
+    if not isinstance(filled, dict):
         return None
     password = filled.get("password")
     if not password:
         return None
+    filled_username = str(filled.get("username") or "")
     # Refuse if the saved URL redirected off its origin: another site's autofill is not this login's.
     if not _same_origin(str(filled.get("origin") or ""), origin):
         return None
-    # Refuse a multi-account origin that autofilled a different (or no) account than the handle names.
-    if username and filled.get("username") != username:
+    # Account match: the autofilled identity must be POSITIVELY the handle's. An empty saved username
+    # is a real identity (not a wildcard), so a blank handle requires an empty filled username too —
+    # a non-empty one means a multi-account origin handed back a NAMED account's password.
+    if filled_username != username:
         return None
     return password
+
+
+def _wait_for_field_point(ws, ids: itertools.count) -> Optional[dict]:
+    """Poll the page until a sign-in form's clickable field has rendered (bounded by _FORM_WAIT_S),
+    returning its viewport-centre point, or None if none appears in time."""
+    deadline = time.monotonic() + _FORM_WAIT_S
+    while True:
+        point = _cdp_call(ws, next(ids), "Runtime.evaluate", {
+            "expression": _FIELD_POINT_JS, "returnByValue": True}).get("result", {}).get("value")
+        if point:
+            try:
+                return json.loads(point)
+            except (json.JSONDecodeError, ValueError):
+                return None
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(_POLL_INTERVAL_S)
+
+
+def _wait_for_autofill(ws, ids: itertools.count) -> Optional[dict]:
+    """Poll the page until Chrome has autofilled a password (bounded by _AUTOFILL_WAIT_S), returning
+    the parsed {password, username, origin} record. Returns the LAST read (which may have an empty
+    password) so the caller's refusals still run; None only on an unreadable/invalid read."""
+    deadline = time.monotonic() + _AUTOFILL_WAIT_S
+    last: Optional[dict] = None
+    while True:
+        read = _cdp_call(ws, next(ids), "Runtime.evaluate",
+                         {"expression": _READ_PASSWORD_VALUE_JS, "returnByValue": True})
+        raw = read.get("result", {}).get("value")
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                return None
+            last = parsed
+            if isinstance(parsed, dict) and parsed.get("password"):
+                return parsed
+        if time.monotonic() >= deadline:
+            return last
+        time.sleep(_POLL_INTERVAL_S)

@@ -323,6 +323,21 @@ def resolve_task_routes(task_list: list[dict[str, Any]], config: Mapping[str, An
     cache: dict[str, TaskRoute] = {}
     routes: list[TaskRoute] = []
     for i, task in enumerate(task_list):
+        # LLM convenience alias: various field names → "goal"/"context".
+        if isinstance(task, dict):
+            for alias in ("instructions", "task", "prompt", "query", "question", "description", "objective", "assignment"):
+                if alias in task and task.get(alias) is not None:
+                    task = dict(task)
+                    val = task.pop(alias)
+                    goal_val = task.get("goal")
+                    goal_empty = not (isinstance(goal_val, str) and goal_val.strip())
+                    ctx_val = task.get("context")
+                    ctx_empty = not (isinstance(ctx_val, str) and ctx_val.strip())
+                    if goal_empty:
+                        task["goal"] = val
+                    elif ctx_empty:
+                        task["context"] = val
+                    break
         try:
             route = _route_one(provider, declared, i, task, config)
             _check_backend_effort(i, route, config)

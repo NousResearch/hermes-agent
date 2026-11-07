@@ -564,7 +564,7 @@ def _oneshot_spawn_budget(parent_agent: Any, requested: int) -> Optional[str]:
 
 
 def delegate_task(
-    goal: Optional[str] = None, context: Optional[str] = None, tasks: Optional[list[dict[str, Any]]] = None,
+    goal: Optional[str] = None, context: Optional[str] = None, instructions: Optional[str] = None, tasks: Optional[list[dict[str, Any]]] = None,
     max_iterations: Optional[int] = None, role: Optional[str] = None, background: Optional[bool] = None,
     output_schema: Optional[dict[str, Any]] = None, images: Optional[list[str]] = None, action: Optional[str] = None,
     subagent_id: Optional[str] = None, message: Optional[str] = None, parent_agent=None,
@@ -614,6 +614,8 @@ def delegate_task(
             max_iterations, default_max_iter,
         )
     max_children = _get_max_concurrent_children()
+    if instructions and not goal:
+        goal = instructions
     task_list, err = _normalize_task_list(goal, context, tasks, output_schema, top_role, max_children)
     if not err:
         task_schemas, err = _coerce_task_schemas(task_list, output_schema)
@@ -820,6 +822,11 @@ DELEGATE_TASK_SCHEMA = {
                             "string",
                             "Background THIS child needs: file paths, error messages, constraints. Each child "
                             "sees only its own context — repeat shared background in every task that needs it.",
+                        ),
+                        "instructions": _p(
+                            "string",
+                            "Alias for 'context'/'goal'. Background instructions for the subagent. "
+                            "Mapped automatically to the correct field.",
                         ),
                         "output_schema": _p(
                             "object",

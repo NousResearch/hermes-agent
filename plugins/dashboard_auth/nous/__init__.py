@@ -14,16 +14,21 @@ Webapp instead of the configured one (``hermes_cli.dashboard_auth.listener_clien
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Callable, Optional
+
+import httpx
 
 from hermes_cli.dashboard_auth import (
     InvalidCodeError, LoginStart, ProviderError, Session, TokenPrincipal, listener_client)
 from plugins.dashboard_auth._shared import (
     DEFAULT_TOKEN_LEEWAY_SECONDS,
+    JSON_HEADERS,
     JwtOAuthProvider,
     SkipRegistration,
     exchange_token,
     load_config_section,
+    parse_json_body,
     parse_leeway,
     pkce_login_start,
     refresh_token_from,
@@ -39,6 +44,18 @@ _TAG = "dashboard-auth-nous"
 _DEFAULT_PORTAL_URL = "https://portal.nousresearch.com"
 _SCOPE = "agent_dashboard:access"  # contract C3
 _EXPECTED_CONTRACT_VERSION = 1  # contract C11
+
+# Human-readable identity enrichment (display/attribution only — never auth).
+# The Portal has no OIDC discovery doc, but its account endpoint (the same call
+# the CLI makes, ``hermes_cli/nous_account._fetch_nous_account_info``) answers
+# with ``user.email`` for a Bearer access token. Enrichment is POST-verification:
+# the JWT checks above stay the sole gate, and any enrichment failure — network,
+# 401, unexpected shape — leaves the session exactly as it was before.
+_ACCOUNT_PATH = "/api/oauth/account"
+_ACCOUNT_TIMEOUT_SEC = 4.0
+_IDENTITY_TTL_SECONDS = 900.0  # success cache, further bounded by the token's exp
+_IDENTITY_FAILURE_TTL_SECONDS = 60.0  # a down/rejecting Portal is not hammered per request
+_IDENTITY_CACHE_MAX = 256
 
 LAST_SKIP_REASON: str = ""  # cleared on every register() so restarts don't leak stale reasons
 
@@ -64,6 +81,10 @@ class NousDashboardAuthProvider(JwtOAuthProvider):
         self._authorize_url = f"{self._portal_url}/oauth/authorize"
         self._token_url = f"{self._portal_url}/api/oauth/token"
         self._jwks_client: Any = None  # lazily built (crypto import cost)
+        # jti -> (monotonic expiry, (display_name, email)). verify_session rebuilds a
+        # Session on EVERY gated request; the cache keeps enrichment at one Portal
+        # call per token per window instead of one per click.
+        self._identity_cache: dict[str, tuple[float, tuple[str, str]]] = {}
 
     def start_login(self, *, redirect_uri: str) -> LoginStart:
         validate_redirect_uri(redirect_uri)
@@ -144,9 +165,62 @@ class NousDashboardAuthProvider(JwtOAuthProvider):
 
 
     def _session(self, access_token: str, refresh_token: str, claims: dict[str, Any]) -> Session:
-        # Contract C4: no email / display_name in tokens.
+        # Contract C4: today's dashboard tokens carry no email / display_name, so the
+        # author of a comment would fall back to the raw ``sub``. Claim mapping stays
+        # forward-compatible (a contract extension that adds email/name is used with
+        # no extra HTTP), and otherwise the Portal account endpoint supplies a
+        # human-readable identity POST-VERIFICATION only: ``user_id`` stays the raw
+        # ``sub``, and any enrichment failure degrades to exactly the pre-enrichment
+        # session — login and comments never depend on it.
+        display_name = str(claims.get("name") or claims.get("display_name") or "")
+        email = str(claims.get("email") or "")
+        if not (display_name or email):
+            display_name, email = self._account_identity(access_token, claims)
         return session_from_claims(
-            self.name, claims, access_token=access_token, refresh_token=refresh_token, org_id=str(claims.get("org_id") or ""))
+            self.name, claims, access_token=access_token, refresh_token=refresh_token, email=email,
+            display_name=display_name, org_id=str(claims.get("org_id") or ""))
+
+    def _account_identity(self, access_token: str, claims: dict[str, Any]) -> tuple[str, str]:
+        """``(display_name, email)`` from the Portal account endpoint, cached per ``jti``.
+
+        Failures are swallowed to ``("", "")`` and cached briefly so a rejecting or
+        unreachable Portal costs one retry per minute, not one per click. The success
+        cache never outlives the access token itself.
+        """
+        key = str(claims.get("jti") or claims.get("sid") or "")
+        now = time.monotonic()
+        if key:
+            hit = self._identity_cache.get(key)
+            if hit is not None and hit[0] > now:
+                return hit[1]
+        identity: tuple[str, str] = ("", "")
+        try:
+            response = httpx.get(
+                f"{self._portal_url}{_ACCOUNT_PATH}",
+                headers={**JSON_HEADERS, "Authorization": f"Bearer {access_token}",
+                         "User-Agent": "HermesAgent/1.0"},
+                timeout=_ACCOUNT_TIMEOUT_SEC)
+            if response.status_code == 200:
+                user = parse_json_body(response).get("user")
+                if isinstance(user, dict):
+                    identity = (
+                        str(user.get("name") or user.get("full_name") or user.get("display_name") or ""),
+                        str(user.get("email") or ""))
+            else:
+                logger.debug("dashboard-auth-nous: account enrichment got %s; session keeps raw sub",
+                             response.status_code)
+        except Exception as exc:  # enrichment must never break a session
+            logger.debug("dashboard-auth-nous: account enrichment unavailable (%s); session keeps raw sub", exc)
+        if key:
+            ttl = _IDENTITY_FAILURE_TTL_SECONDS if not any(identity) else _IDENTITY_TTL_SECONDS
+            if any(identity):
+                exp = claims.get("exp")
+                if isinstance(exp, (int, float)):
+                    ttl = max(1.0, min(ttl, float(exp) - time.time()))
+            if len(self._identity_cache) >= _IDENTITY_CACHE_MAX:
+                self._identity_cache.clear()
+            self._identity_cache[key] = (time.monotonic() + ttl, identity)
+        return identity
 
 
 def _scopes(claims: dict[str, Any]) -> set[str]:

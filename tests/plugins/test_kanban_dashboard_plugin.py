@@ -1325,3 +1325,47 @@ def test_ws_events_for_archived_board_does_not_recreate_it(tmp_path, monkeypatch
         "/api/plugins/kanban/events?token=secret-xyz&board=alive"
     ) as ws:
         assert ws is not None
+
+# ---------------------------------------------------------------------------
+# GET /me — author hint for clients (the desktop app posts with it)
+# ---------------------------------------------------------------------------
+
+def test_me_loopback_uses_local_portal_account(client, monkeypatch):
+    from types import SimpleNamespace
+    import hermes_cli.nous_account as na
+
+    monkeypatch.setattr(
+        na, "get_nous_portal_account_info",
+        lambda: SimpleNamespace(logged_in=True, email="mani@example.com", org_name="Mani C's account"))
+    assert client.get("/api/plugins/kanban/me").json() == {"author": "Mani C's account"}
+
+    monkeypatch.setattr(
+        na, "get_nous_portal_account_info",
+        lambda: SimpleNamespace(logged_in=True, email="mani@example.com", org_name=""))
+    assert client.get("/api/plugins/kanban/me").json() == {"author": "mani@example.com"}
+
+
+def test_me_loopback_logged_out_is_empty(client, monkeypatch):
+    import hermes_cli.nous_account as na
+
+    monkeypatch.setattr(
+        na, "get_nous_portal_account_info",
+        lambda: SimpleNamespace(logged_in=False, email=None, org_name=None))
+    assert client.get("/api/plugins/kanban/me").json() == {"author": ""}
+
+
+def test_me_loopback_never_reveals_raw_nas_ids(client, monkeypatch):
+    from types import SimpleNamespace
+    import hermes_cli.nous_account as na
+
+    monkeypatch.setattr(
+        na, "get_nous_portal_account_info",
+        lambda: SimpleNamespace(logged_in=True, email="nas_user:deadbeef", org_name="nas_organisation:x"))
+    assert client.get("/api/plugins/kanban/me").json() == {"author": ""}
+
+
+def test_me_gated_returns_verified_session_label(kanban_home):
+    from types import SimpleNamespace
+    client = _client_with_session(SimpleNamespace(
+        display_name="", email="mani@example.com", user_id="nas_user:u", provider="nous", issuer=""))
+    assert client.get("/api/plugins/kanban/me").json() == {"author": "mani@example.com"}

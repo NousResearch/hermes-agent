@@ -46,6 +46,9 @@ function fixture() {
   writeFileSync(join(source, 'pnpm-workspace.yaml'), 'packages:\n  - web\n')
   json(join(source, 'web/package.json'), { name: 'web', version: '1.0.0', dependencies: { 'web-only': 'file:../vendor/web-only' } })
   execFileSync(pnpmCommand(), ['install', '--lockfile-only'], { cwd: source, env, stdio: 'pipe' })
+  // PM's pnpm pin, the one node-deps requires.
+  const version = execFileSync(pnpmCommand(), ['--version'], { cwd: source, env, encoding: 'utf8' }).trim()
+  json(join(source, 'pm/lock.json'), { schema: 1, packages: { pnpm: { version, artifacts: {} } } })
   return { source, env }
 }
 

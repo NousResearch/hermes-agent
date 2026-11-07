@@ -132,8 +132,28 @@ def _read_until(proc: subprocess.Popen, token: str, timeout: float = 120.0):
 
     t = threading.Thread(target=_pump, daemon=True)
     t.start()
-    hit.wait(timeout)
+    t.join(timeout)  # the pump returns on the token or at EOF (the child exited)
     return hit.is_set(), lines
+
+
+def _serve_on_free_explicit_port(tmp_path: Path, token: str, merge_stderr: bool = True):
+    """Boot serve on an explicit free port and read until ``token`` (``{port}`` is filled in).
+
+    The port is picked, closed, then bound by the child, so another process on a busy runner can
+    take it in between; the child then rightly exits 75 (main 38231969440). That is the conflict
+    path, not the one these tests pin, so pick a fresh port and boot again.
+    """
+    for _attempt in range(5):
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+        probe.close()
+        proc = _spawn_serve(port, tmp_path, merge_stderr=merge_stderr)
+        ready, lines = _read_until(proc, token.format(port=port))
+        if ready or proc.poll() != 75:
+            return proc, port, ready, lines
+        proc.wait(timeout=30)
+    pytest.fail("every picked port was taken before serve could bind it")
 
 
 def test_conflict_emits_sentinel_and_exit_75(tmp_path):
@@ -195,15 +215,9 @@ def test_ready_sentinel_arrives_on_stdout_not_stderr(tmp_path):
     The other E2E tests here merge stderr into stdout, which is exactly how
     the regression slipped past CI — this test keeps the streams separate.
     """
-    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    probe.bind(("127.0.0.1", 0))
-    port = probe.getsockname()[1]
-    probe.close()
-
-    proc = _spawn_serve(port, tmp_path, merge_stderr=False)
+    # stdout only: the sentinel MUST arrive here (desktop watches this pipe)
+    proc, port, ready, lines = _serve_on_free_explicit_port(tmp_path, "HERMES_BACKEND_READY", merge_stderr=False)
     try:
-        # stdout only: the sentinel MUST arrive here (desktop watches this pipe)
-        ready, lines = _read_until(proc, "HERMES_BACKEND_READY")
         out = "".join(lines)
         assert ready, (
             f"READY sentinel not on stdout (desktop boot would time out); "
@@ -229,17 +243,11 @@ def test_headless_serve_announces_both_ready_tokens(tmp_path):
     artifact-skew signature in #60772. The neutral token must come first so
     current parsers match it before the legacy one.
     """
-    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    probe.bind(("127.0.0.1", 0))
-    port = probe.getsockname()[1]
-    probe.close()
-
-    proc = _spawn_serve(port, tmp_path)
+    # Read past the NEUTRAL token to the legacy one: _read_until stops at
+    # its token, so waiting for the legacy line proves BOTH were written
+    # (the neutral one precedes it) without a timing race.
+    proc, port, ready, lines = _serve_on_free_explicit_port(tmp_path, "HERMES_DASHBOARD_READY port={port}")
     try:
-        # Read past the NEUTRAL token to the legacy one: _read_until stops at
-        # its token, so waiting for the legacy line proves BOTH were written
-        # (the neutral one precedes it) without a timing race.
-        ready, lines = _read_until(proc, f"HERMES_DASHBOARD_READY port={port}")
         out = "".join(lines)
         assert ready, (
             f"legacy token missing (a stale packaged Desktop would time out); output:\n{out}"

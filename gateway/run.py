@@ -681,7 +681,11 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
     body = str(text).strip()
     if len(body) > 400 or body.count("\n") > 4:
         return False
-    return bool(_GATEWAY_PROVIDER_ERROR_SHAPE_RE.search(body))
+    if _GATEWAY_PROVIDER_ERROR_SHAPE_RE.search(body):
+        return True
+    # Billing / "retrying won't help" diagnostics start with prose after ❌ (#143940).
+    from gateway.api_error_echo import looks_like_terminal_nonretryable_diagnostic
+    return looks_like_terminal_nonretryable_diagnostic(body)
 
 
 def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
@@ -737,28 +741,20 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
         _gateway_compression_progress_notices_enabled() and _COMPRESSION_PROGRESS_STATUS_RE.search(text)
     ):
         return None
+    # Terminal non-retryable diagnostics must not land in the chat: they re-admit as user turns
+    # and burn tokens (#143940). The turn's final_response still carries the user-facing notice.
+    from gateway.api_error_echo import looks_like_terminal_nonretryable_diagnostic
+    if looks_like_terminal_nonretryable_diagnostic(text):
+        return None
     if _looks_like_gateway_provider_error(text):
         return _gateway_provider_error_reply(text)
     return text
 
 
-def render_notice_line(notice) -> str:
-    """Render an AgentNotice to a single plaintext line (messaging has no status bar: one-shot push).
-
-    The level glyph is already baked into the text (prepending would DOUBLE it); malformed/empty -> ""."""
-    return str(getattr(notice, "text", "") or "").strip()
+from gateway.warning_notifications import render_notice_line
 
 
-async def _send_or_update_status_coro(adapter, chat_id, status_key, content, metadata):
-    """Route a status through adapter.send_or_update_status when supported (edits the previous
-    bubble for the same status_key instead of appending); otherwise fall back to plain send.
-
-    See #30045.
-    """
-    sender = getattr(adapter, "send_or_update_status", None)
-    if callable(sender):
-        return await sender(chat_id, status_key, content, metadata=metadata)
-    return await adapter.send(chat_id, content, metadata=metadata)
+from gateway.status_delivery import _send_or_update_status_coro
 
 
 def _approval_send_outcome(future, timeout: float) -> str:

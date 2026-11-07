@@ -8,11 +8,11 @@
     "start": "node bridge.js"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "file:../../../baileys",
+    "@whiskeysockets/baileys": "https://codeload.github.com/helix4u/Baileys/tar.gz/e5125258c920bf06448cf9f25fda32671aac5d3b",
     "express": "^4.21.0",
-    "qrcode-terminal": "^0.12.0",
     "pino": "^9.0.0",
-    "playwright-core": "1.64.0"
+    "playwright-core": "1.64.0",
+    "qrcode-terminal": "^0.12.0"
   },
   "overrides": {
     "protobufjs": "^7.5.5",

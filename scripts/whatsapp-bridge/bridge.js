@@ -31,7 +31,6 @@ import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { createInterface } from 'node:readline/promises';
-import { createBrowserPasskeySigner } from './passkey_browser.js';
 import { matchesAllowedSender, matchesAllowedUser, matchesInboundWhatsAppGroup, parseAllowedUsers } from './allowlist.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
@@ -123,7 +122,9 @@ try {
 const PAIR_ONLY = args.includes('--pair-only');
 const PAIR_JSON = args.includes('--pair-json');
 const PASSKEY_BROWSER = getArg('passkey-browser', '');
-const passkeySigner = PASSKEY_BROWSER ? createBrowserPasskeySigner(PASSKEY_BROWSER) : undefined;
+const passkeySigner = PASSKEY_BROWSER
+  ? (await import('./passkey_browser.js')).createBrowserPasskeySigner(PASSKEY_BROWSER)
+  : undefined;
 if (PASSKEY_BROWSER && (!PAIR_ONLY || PAIR_JSON || !process.stdin.isTTY)) {
   console.error('--passkey-browser requires interactive --pair-only setup.');
   process.exit(1);

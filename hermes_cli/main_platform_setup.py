@@ -94,10 +94,31 @@ def _whatsapp_allowed_users(wa_mode: str, get_env_value, save_env_value) -> None
         print("  ⚠ No allowlist — the agent will respond to ALL incoming messages")
 
 
+def _whatsapp_bridge_dependencies_current(bridge_dir) -> bool:
+    """An existing node_modules directory can still contain the previous bridge build."""
+    try:
+        desired = json.loads((bridge_dir / "package-lock.json").read_text(encoding="utf-8-sig"))
+        installed = json.loads((bridge_dir / "node_modules" / ".package-lock.json").read_text(encoding="utf-8-sig"))
+        packages = desired["packages"]
+        actual = installed["packages"]
+        dependencies = packages[""]["dependencies"]
+        for name in dependencies:
+            key = "node_modules/" + name
+            expected = packages[key]
+            present = actual.get(key, {})
+            if any(present.get(field) != expected.get(field) for field in ("version", "resolved", "integrity")):
+                return False
+            if not (bridge_dir / key / "package.json").is_file():
+                return False
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return False
+    return True
+
+
 def _whatsapp_install_bridge(bridge_dir) -> bool:
     """Step 4 of ``hermes whatsapp``: ``npm install`` the bridge when needed. False = stop."""
     from hermes_constants import find_node_executable, with_hermes_node_path
-    if (bridge_dir / "node_modules").exists():
+    if _whatsapp_bridge_dependencies_current(bridge_dir):
         print("✓ Bridge dependencies already installed")
         return True
     print("\n→ Installing WhatsApp bridge dependencies (this can take a few minutes)...")
@@ -114,9 +135,9 @@ def _whatsapp_install_bridge(bridge_dir) -> bool:
             npm = str(installed.binary)
         result = subprocess.run(
             [npm, "install", "--no-fund", "--no-audit", "--progress=false"],
-            cwd=str(bridge_dir), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+            cwd=str(bridge_dir), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, timeout=300,
             encoding="utf-8", errors="replace", env=env, check=False)
-    except (pm.InstallError, OSError) as exc:
+    except (pm.InstallError, OSError, subprocess.TimeoutExpired) as exc:
         print(f"  ✗ Bridge dependency preparation failed: {exc}")
         return False
     except KeyboardInterrupt:

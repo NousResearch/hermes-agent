@@ -493,13 +493,119 @@ def _update_owes_fleet_restart(*, receipt: dict | None = None, pending_manual: l
     return not _live_fleet_covers_receipt(_current_checkout_sha(), receipt, owed)
 
 
-def _warn_pending_fleet_restart(*, startup: bool = False) -> None:
-    """Print the specific interrupted-update fleet-restart warning."""
+def _warn_pending_fleet_restart(*, startup: bool = False, stale_rows: list[dict] | None = None) -> None:
+    """Print the specific interrupted-update fleet-restart warning.
+
+    ``stale_rows`` (when supplied) lists live gateway rows surfaced as ``stale`` /
+    ``unknown`` / ``down`` by ``collect_fleet_versions``. Each row enriches the
+    banner with the profile name + PID + the exact restart command that clears
+    exactly this row — instead of repeating a generic "Run `hermes update`"
+    forever (#148719 part 2: Gateway restart lifecycle).
+    """
     stream = sys.stderr if startup else sys.stdout
     print("⚠ A previous `hermes update` pulled new code but did not restart running gateways.", file=stream)
     print("  Gateways may still be serving pre-update modules (mixed sys.modules).", file=stream)
-    if startup:
+    if startup and stale_rows:
+        # Name the stale rows so the operator knows which gateway ``hermes gateway
+        # restart`` actually clears. ``stale`` / ``unknown`` / ``down`` are all the
+        # warning's evidence; the receipt's owed set (when known) further narrows which
+        # rows are actually the update's responsibility, so lead with those.
+        for row in stale_rows:
+            profile = row.get("profile") or "(unknown profile)"
+            pid = row.get("pid")
+            state = row.get("state") or "stale"
+            pid_label = f"PID {pid}" if pid else "no live PID"
+            print(
+                f"  profile `{profile}` — {pid_label} is {state}. "
+                f"Run `hermes gateway restart --profile {profile}` to clear it.",
+                file=stream,
+            )
+        # Keep the tried-and-tested fallback so log scrapers that match on the generic
+        # message (e2e tests, #148719 part-1 host expectation) keep passing.
+        print("  Or run `hermes update` to bring every profile to the pulled code.", file=stream)
+    elif startup:
         print("  Run `hermes update` or `hermes gateway restart`.", file=stream)
+
+
+# States the pending-restart banner is meant to diagnose: a live gateway still on
+# pre-update code that this update's per-profile ``hermes gateway restart`` will clear.
+# ``external`` is a separate checkout this update did not touch, and ``restart_pending``
+# is a deferred self-restart the gateway already accepted — neither is cleared by this
+# update's restart, so naming either as "owed" misattributes it (#148719 part 2 review).
+_STALE_DIAGNOSTIC_STATES = frozenset({"stale", "unknown", "down"})
+
+
+def _owed_gateways_for_banner(
+    receipt: dict, pending_manual: list[dict] | None,
+) -> set[tuple[str, str]] | None:
+    """The owed ``(gateway, profile)`` identities this banner should constrain rows to.
+
+    A marker-armed startup uses the marker's own inventory — the host obligation owns its
+    inventory, and a ``latest.json`` receipt from a different update cannot narrow a
+    host-scoped obligation. ``_obligation_fields()`` exposes the marker fields and
+    ``_marker_owed_gateways()`` converts its recorded ``runtimes`` into the same
+    ``(gateway, profile)`` identities as the receipt path (#148719 part 2 review).
+
+    Returns ``None`` for an inventory-less (legacy) or malformed marker, and for a receipt
+    whose coverage is unverified — in every such case the banner fails closed on
+    per-profile attribution (no specific gateway named) rather than attributing arbitrary
+    fleet rows to this update.
+    """
+    if _fleet_restart_obligation_armed():
+        fields = _obligation_fields()
+        if not fields:
+            return None  # nothing armed, or a malformed record: fail closed
+        inventory_raw = fields.get("inventory")
+        if not inventory_raw:
+            return None  # inventory-less (legacy) marker: fail closed
+        try:
+            inventory = json.loads(inventory_raw)
+        except (ValueError, TypeError):
+            return None  # malformed inventory JSON: fail closed
+        try:
+            return _marker_owed_gateways(inventory)
+        except ValueError:
+            return None  # unsupported inventory shape: fail closed
+    with suppress(Exception):
+        return _receipt_owed_gateways(receipt, pending_manual or [])
+    return None
+
+
+def _collect_stale_fleet_rows(owed: set[tuple[str, str]] | None = None) -> list[dict]:
+    """Live fleet rows this banner should name: ``stale`` / ``unknown`` / ``down`` only.
+
+    Bounded by the existing probe: ``_update_owes_fleet_restart`` already ran the same call
+    to decide whether to warn at all, so this only adds a second probe when the warning
+    _is_ firing. Returns ``[]`` on any probe failure so the banner still prints via the
+    fallback.
+
+    ``external`` (a separate checkout) and ``restart_pending`` (a deferred self-restart the
+    gateway already accepted) are excluded — a per-profile ``hermes gateway restart`` from
+    this update clears neither of them.
+
+    ``owed`` constrains the rows to the profiles this update actually owes (a multiplexer
+    row that serves an owed profile is kept even under another profile's name). An empty or
+    ``None`` ``owed`` (unverified coverage, an inventory-less/malformed marker, or a receipt
+    that owes no gateway) fails closed: no per-profile rows are emitted, and the generic
+    fallback carries the banner — arbitrary fleet rows are never attributed to this update.
+    """
+    try:
+        from hermes_cli.update_receipt import collect_fleet_versions
+        fleet = collect_fleet_versions() or []
+    except Exception as exc:
+        logger.debug("Pending fleet restart: stale-row probe failed: %s", exc)
+        return []
+    rows = [row for row in fleet if row.get("state") in _STALE_DIAGNOSTIC_STATES]
+    if not owed:
+        return []
+    owed_profiles = {profile for kind, profile in owed if kind == "gateway"}
+    if not owed_profiles:
+        return []
+    return [
+        row for row in rows
+        if row.get("profile") in owed_profiles
+        or any(served in owed_profiles for served in (row.get("served_profiles") or []))
+    ]
 
 
 def _warn_pending_fleet_restart_on_startup() -> None:
@@ -513,7 +619,9 @@ def _warn_pending_fleet_restart_on_startup() -> None:
         pending_manual = retain_receipt_manual_serves(receipt)
     with suppress(Exception):
         if _update_owes_fleet_restart(receipt=receipt, pending_manual=pending_manual):
-            _warn_pending_fleet_restart(startup=True)
+            owed = _owed_gateways_for_banner(receipt, pending_manual)
+            stale_rows = _collect_stale_fleet_rows(owed=owed)
+            _warn_pending_fleet_restart(startup=True, stale_rows=stale_rows)
     with suppress(Exception):
         warn_pending_manual_serves(startup=True, pending_manual=pending_manual)
 

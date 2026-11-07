@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import json
 import threading
 import time
+from functools import partial
 from typing import Any, Dict, List, Optional
 from agent.interrupt_compat import request_hard_interrupt
 from tools.registry import tool_error
@@ -79,14 +81,21 @@ def _close_subagent_steering(subagent_id: str, agent: Any) -> Optional[str]:
         if record is None or record.get("agent") is not agent:
             return None
         record["accepting_steer"] = False
+        pending = None
         drain = getattr(agent, "_drain_pending_steer", None)
-        if not callable(drain):
-            return None
-        try:
-            pending = drain()
-        except Exception as exc:
-            logger.debug("final steer drain for %s failed: %s", subagent_id, exc)
-            return None
+        if callable(drain):
+            try:
+                pending = drain()
+            except Exception as exc:
+                logger.debug("final steer drain for %s failed: %s", subagent_id, exc)
+        # Whatever no drain delivered by now (this one, or the turn finalizer's leftover handoff) was missed.
+        for receipt in record.get("steers") or ():
+            if receipt["status"] == "queued":
+                receipt["status"] = "missed"
+                logger.info("steer missed by subagent %s (it finished first)", subagent_id)
+        if record.get("steers"):
+            with contextlib.suppress(Exception):
+                agent._steer_drain_hook = None  # drop the agent -> hook -> record cycle
         return pending if isinstance(pending, str) and pending.strip() else None
 
 def interrupt_subagent(subagent_id: str) -> bool:
@@ -123,18 +132,20 @@ def _subagent_transport_matches(record, transport) -> bool:
 
 def steer_subagent(
     subagent_id: str, text: str, *, owner_session_id: Optional[str] = None, owner_transport: Any = None,
-    owner_session_record: Any = None,
+    owner_session_record: Any = None, relayed_from: Optional[str] = None, relayed_to: Optional[list[str]] = None,
 ) -> bool:
-    """Queue steering text into a running subagent without stopping it.
+    """Queue steering text into a running subagent without stopping it (and, labelled, into its live sub-helpers).
 
     AIAgent.steer() appends the text to the child's last tool result at its next iteration boundary — the current tool
     call is never cut. True iff the text was QUEUED while the child still accepted work; False for unknown/closed id,
     ownership mismatch, no live agent, or empty text. ``owner_session_id=None`` keeps the in-process helper contract;
     gateway callers must pass exact authority. Acceptance and completion are linearized by the registry lock: if
-    acceptance wins but no delivery boundary remains, the text lands in the entry as ``missed_steer``.
+    acceptance wins but no delivery boundary remains, the text lands in the entry as ``missed_steer``. Sub-helpers
+    that accepted a relayed copy are appended to ``relayed_to`` when given.
     """
     if not text or not text.strip():
         return False
+    queued = (_RELAY_LABEL.format(via=relayed_from) if relayed_from else "") + text.strip()
     with _active_subagents_lock:
         record = _active_subagents.get(subagent_id)
         if not record or not record.get("accepting_steer", False):
@@ -150,11 +161,67 @@ def steer_subagent(
         agent = record.get("agent")
         if agent is None:
             return False
+        # Publish the receipt (and the drain hook) before queueing, so a drain racing this call always finds it.
+        receipt = {"queued_at": time.time(), "delivered_at": None, "latency_s": None, "status": "queued",
+                   "relayed_from": relayed_from, "_text": queued}
+        receipts = record.setdefault("steers", [])
+        receipts.append(receipt)
+        if getattr(agent, "_steer_drain_hook", None) is None:
+            with contextlib.suppress(Exception):
+                agent._steer_drain_hook = partial(_settle_steer_receipts, record, subagent_id)
         try:
-            return bool(agent.steer(text))
+            accepted = bool(agent.steer(queued))
         except Exception as exc:
             logger.debug("steer_subagent(%s) failed: %s", subagent_id, exc)
+            accepted = False
+        if not accepted:
+            receipts.remove(receipt)
             return False
+        del receipts[:-_RECEIPTS_CAP]
+        # A helper below the top level joins its own sub-helpers synchronously, so its copy waits for the whole
+        # sub-batch. Relay to them now; authority was checked on this record and passes down the spawn tree.
+        sub_helpers = [sid for sid, r in _active_subagents.items()
+                       if r.get("accepting_steer") and _record_parent_agent(r) is agent]
+    logger.info("steer queued for subagent %s (%d chars%s)", subagent_id, len(queued),
+                f", relayed from {relayed_from}" if relayed_from else "")
+    for sid in sub_helpers:
+        if steer_subagent(sid, text, relayed_from=subagent_id, relayed_to=relayed_to) and relayed_to is not None:
+            relayed_to.append(sid)
+    if not sub_helpers and getattr(agent, "_executing_tools", False) is True:
+        # Same yield a user steer gets (redirect): a long foreground command moves to the background registry.
+        with contextlib.suppress(Exception):
+            agent.request_tool_yield()
+    return True
+
+
+_RECEIPTS_CAP = 10
+_RELAY_LABEL = ("[Steer relayed from above: your parent helper {via} was steered while it waits on you. "
+                "Act on it if it concerns your task; {via} also gets it when you finish.]\n")
+
+
+def _record_parent_agent(record: dict[str, Any]) -> Any:
+    ref = getattr(record.get("agent"), "_delegate_parent_ref", None)
+    return ref() if callable(ref) else None
+
+
+def _settle_steer_receipts(record: dict[str, Any], subagent_id: str, drained: list[str], requeued: bool = False) -> None:
+    """The child's steer-drain hook (its own thread): each drained part settles the oldest queued receipt with exactly
+    its text; a requeue (the drain found no tool result to attach to) reopens the newest delivered one. Never takes
+    the registry lock (``_close_subagent_steering`` holds it while draining); a drain after steering closed is that
+    final one, and closing marks what is left as missed."""
+    if not record.get("accepting_steer", False):
+        return
+    now, parts = time.time(), list(drained)
+    receipts = list(record.get("steers") or ())
+    for r in reversed(receipts) if requeued else receipts:
+        if r["status"] == ("delivered" if requeued else "queued") and r["_text"] in parts:
+            parts.remove(r["_text"])
+            if requeued:
+                r.update(status="queued", delivered_at=None, latency_s=None)
+                logger.info("steer for subagent %s requeued (no tool result to attach to yet)", subagent_id)
+            else:
+                r.update(status="delivered", delivered_at=now, latency_s=round(now - r["queued_at"], 3))
+                logger.info("steer delivered to subagent %s after %.2fs", subagent_id, now - r["queued_at"])
 
 def _capture_gateway_steer_authority(owner_session_id: Optional[str]) -> tuple[Any, Any]:
     """Exact request transport + live session generation, if any — an in-process
@@ -168,7 +235,8 @@ def _capture_gateway_steer_authority(owner_session_id: Optional[str]) -> tuple[A
         return None, None
 
 # Registry record fields never exposed to the TUI/RPC snapshot.
-_PRIVATE_RECORD_KEYS = frozenset({"agent", "owner_session_id", "owner_transport", "owner_session_record", "accepting_steer"})
+_PRIVATE_RECORD_KEYS = frozenset({
+    "agent", "owner_session_id", "owner_transport", "owner_session_record", "accepting_steer", "steers"})
 
 def list_active_subagents() -> list[dict[str, Any]]:
     """Copy of the running subagent tree ({subagent_id, parent_id, depth, goal, model,
@@ -221,18 +289,26 @@ def _owns_subagent_record(record: dict[str, Any], parent_agent: Any) -> bool:
     the CLI sets ``self.agent = None`` mid-session (route change, credential
     refresh, /model, MoA one-shots) and builds a NEW AIAgent while the child keeps
     a weakref to the old one. Delivery routes by durable session id; control must
-    use the same spine or running children go invisible/unsteerable.
+    use the same spine or running children go invisible/unsteerable. Tier 3: a
+    sub-helper whose own parent helper is owned (its owner id names that helper).
     """
-    if _is_descendant_of(record.get("agent"), parent_agent):
-        return True
-    owner_sid = str(record.get("owner_agent_session_id") or "")
     parent_sid = str(getattr(parent_agent, "session_id", "") or "")
-    if not owner_sid or not parent_sid:
-        return False
-    if owner_sid == parent_sid:
-        return True
-    # Compression rotation on either side: compare lineage tips.
-    return _resolve_session_lineage(owner_sid, parent_agent) in {parent_sid, _resolve_session_lineage(parent_sid, parent_agent)}
+    current: Optional[dict[str, Any]] = record
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if _is_descendant_of(current.get("agent"), parent_agent):
+            return True
+        owner_sid = str(current.get("owner_agent_session_id") or "")
+        if owner_sid and parent_sid and (owner_sid == parent_sid or _resolve_session_lineage(owner_sid, parent_agent) in {
+                parent_sid, _resolve_session_lineage(parent_sid, parent_agent)}):  # compression rotation: lineage tips
+            return True
+        # Tier 3: climb to the live helper that spawned this one (its durable owner id names that helper).
+        above_agent = _record_parent_agent(current)
+        with _active_subagents_lock:
+            current = next((r for r in _active_subagents.values()
+                           if above_agent is not None and r.get("agent") is above_agent), None)
+    return False
 
 def _list_payload(parent_agent: Any) -> dict[str, Any]:
     with _active_subagents_lock:
@@ -245,12 +321,14 @@ def _list_payload(parent_agent: Any) -> dict[str, Any]:
         entries.append({
             "subagent_id": r.get("subagent_id"),
             "parent_id": r.get("parent_id"),
+            "depth": r.get("depth"),
             "goal": r.get("goal"),
             "model": r.get("model"),
             "status": r.get("status"),
             "running_seconds": round(time.time() - started, 1) if isinstance(started, (int, float)) else None,
             "accepting_steer": bool(r.get("accepting_steer", False)),
             "live_transcript": getattr(r.get("agent"), "_live_transcript_path", None),
+            "steers": [{k: v for k, v in s.items() if not k.startswith("_")} for s in (r.get("steers") or [])[-5:]],
         })
     payload: dict[str, Any] = {"action": "list", "count": len(entries), "subagents": entries}
     if not entries:
@@ -285,9 +363,13 @@ def _handle_control_action(action: str, subagent_id: Optional[str], message: Opt
     if outcome is None:
         return tool_error(f"Unknown action '{action}'. Use spawn, list, steer, or stop.")
     status, note, failure = outcome
-    ok = interrupt_subagent(sid) if action == "stop" else steer_subagent(sid, message.strip())
+    relayed: list[str] = []
+    ok = interrupt_subagent(sid) if action == "stop" else steer_subagent(sid, message.strip(), relayed_to=relayed)
     if ok:
-        return json.dumps({"action": action, "subagent_id": sid, "status": status, "note": note}, ensure_ascii=False)
+        out: dict[str, Any] = {"action": action, "subagent_id": sid, "status": status, "note": note}
+        if action == "steer":
+            out["relayed_to"] = relayed
+        return json.dumps(out, ensure_ascii=False)
     return tool_error(failure.format(sid=sid))
 
 # action -> (success status, success note, failure error template)
@@ -302,8 +384,10 @@ _CONTROL_OUTCOMES = {
     "steer": (
         "queued",
         "Steering text queued. The subagent sees it appended to its next tool result — the current tool call is "
-        "never cut. If the child finishes before a delivery boundary remains, the text is reported back as "
-        "missed_steer in its completion entry.", "Subagent '{sid}' is no longer accepting steering (finishing or "
+        "never cut; a busy foreground command is moved to the background so it lands sooner. A child waiting on "
+        "its own sub-helpers also relays it to them (relayed_to). action='list' shows each steer's delivered_at. If "
+        "the child finishes before a delivery boundary remains, the text is reported back as missed_steer in its "
+        "completion entry.", "Subagent '{sid}' is no longer accepting steering (finishing or "
         "already finished). Its result arrives as a normal completion "
         "message; re-delegate a follow-up task if more work is needed.",
     ),

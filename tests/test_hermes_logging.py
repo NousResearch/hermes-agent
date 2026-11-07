@@ -1,4 +1,5 @@
 """Tests for hermes_logging — centralized logging setup."""
+import errno
 import importlib.util
 import io
 import logging
@@ -925,6 +926,46 @@ def test_eio_after_successful_reopen_still_names_the_path_once(tmp_path, capsys)
         assert err.count(str(path)) == 1
     finally:
         handler.close()
+
+
+@pytest.mark.platforms("posix")
+def test_enospc_from_queued_rollover_check_names_path_without_traceback(
+    hermes_home, capsys,
+):
+    """A full disk at the production QueueListener boundary degrades file logging once."""
+    profile_home = hermes_home / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    hermes_logging.setup_logging(hermes_home=hermes_home)
+    assert hermes_logging.enable_profile_log_routing([hermes_home, profile_home]) is True
+    logger = logging.getLogger("gateway.run.enospc-test")
+    logger.info("open routed agent log")
+    hermes_logging.flush_log_queue()
+
+    router = next(
+        handler for handler in hermes_logging._queued_file_handlers
+        if isinstance(handler, hermes_logging._ProfileRoutingFileHandler)
+        and Path(handler.baseFilename).name == "agent.log"
+    )
+    handler = router._profile_handlers[hermes_home.resolve()]
+    original_stream = handler.stream
+
+    class _FullDiskStream(io.StringIO):
+        def tell(self):
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+    full_disk = _FullDiskStream()
+    try:
+        handler.__dict__["stream"] = full_disk
+        logger.info("disk full record")
+        hermes_logging.flush_log_queue()
+
+        err = capsys.readouterr().err
+        assert "--- Logging error ---" not in err
+        assert err.count(str(hermes_home / "logs" / "agent.log")) == 1
+        assert "No space left on device" in err
+    finally:
+        full_disk.close()
+        handler.__dict__["stream"] = original_stream
 
 
 class TestSafeStderr:

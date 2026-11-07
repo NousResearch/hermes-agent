@@ -30,7 +30,7 @@ import { markOnboardingDecided, ONBOARDING_DECIDE_OFFER_MS, setOnboardingSurface
 import { $onboardingSession } from './onboarding-session'
 import { ensureGatewayProfile, newSessionInProfile } from './profile'
 import { $connection, $gatewayState, $selectedStoredSessionId } from './session'
-import { requestForOwnedSession } from './session-states'
+import { $sessionStates, $sessionTiles, requestForOwnedSession, storedSessionIdForRuntimeId } from './session-states'
 import { dropSetupBeat } from './setup-beat'
 
 export type OnboardingRequest = <T = unknown>(
@@ -316,6 +316,47 @@ export async function skipOnboarding(request: OnboardingRequest, runtimeId: stri
   // The run's chat may belong to a non-launch profile; only its owner can end it.
   await requestForOwnedSession(runtimeId, request, 'onboarding.skip', { session_id: runtimeId })
   leaveSkipped()
+}
+
+let regularChatSkip: { runId: string; task: Promise<void> } | null = null
+
+/** An admitted user message in another chat means the user has chosen to use Hermes normally. */
+export function finishOnboardingAfterRegularSubmit(request: OnboardingRequest, submittedRuntimeId: string): void {
+  const session = $onboardingSession.get()
+
+  if (
+    !session ||
+    $onboardingPhase.get() !== 'shown' ||
+    regularChatSkip?.runId === session.runId ||
+    submittedRuntimeId === session.runtimeId ||
+    storedSessionIdForRuntimeId(submittedRuntimeId) === session.storedId
+  ) {
+    return
+  }
+
+  // Reattaching the setup chat can replace its runtime id. The stored id remains the durable identity.
+  const runtimeId =
+    $sessionTiles.get().find(tile => tile.storedSessionId === session.storedId)?.runtimeId ??
+    Object.entries($sessionStates.get())
+      .reverse()
+      .find(([, state]) => state.storedSessionId === session.storedId)?.[0] ??
+    session.runtimeId
+  const task = requestForOwnedSession<{ skipped: boolean }>(runtimeId, request, 'onboarding.skip', {
+    session_id: runtimeId
+  })
+    .then(result => {
+      if (result.skipped && $onboardingSession.get() === session) {
+        dropSetupBeat(runtimeId)
+        endOnboarding('skipped')
+      }
+    })
+    .catch(error => console.warn('[onboarding] could not end after a regular chat submit', error))
+    .finally(() => {
+      if (regularChatSkip?.task === task) {
+        regularChatSkip = null
+      }
+    })
+  regularChatSkip = { runId: session.runId, task }
 }
 
 /** `onboarding.ended` from the backend, sent to every window: the run this window shows ended (the

@@ -515,6 +515,27 @@ describe('preview session scoping (#73890)', () => {
     }
   })
 
+  // F4 (SECURITY): the cookie jar lives in LOCAL userData. A LOCAL profile delete clears it; a REMOTE
+  // profile delete (which shares only the NAME with a same-named local profile) must NOT, or deleting
+  // a remote profile wipes the local profile's imported sign-ins.
+  it('clears the local cookie jar for a local delete but not a remote one', () => {
+    const drop = vi.fn(() => Promise.resolve({ ok: true }))
+    const desktopWindow = window as unknown as { hermesDesktop?: { dropPreviewSigninsForProfile?: typeof drop } }
+    const previous = desktopWindow.hermesDesktop
+    desktopWindow.hermesDesktop = { dropPreviewSigninsForProfile: drop }
+
+    try {
+      dropPreviewTabsForProfile('shared-name', false) // remote delete
+      expect(drop).not.toHaveBeenCalled()
+
+      dropPreviewTabsForProfile('shared-name', true) // local delete
+      expect(drop).toHaveBeenCalledWith({ profile: 'shared-name' })
+      expect(drop).toHaveBeenCalledTimes(1)
+    } finally {
+      desktopWindow.hermesDesktop = previous
+    }
+  })
+
   it('keeps a draft tabs in the draft until that draft itself gets its stored id', () => {
     openPreview(fileTarget('/work/draft.html'))
     newBrowserTab()

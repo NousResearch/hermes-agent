@@ -317,8 +317,11 @@ function applyPreviewScope(next: string) {
 }
 
 /** Drop one profile's rail. Delete counterpart of the tiles store's
- *  `dropTilesForProfile`, which profile deletion calls. */
-export function dropPreviewTabsForProfile(profile: string) {
+ *  `dropTilesForProfile`, which profile deletion calls. `local` (default true)
+ *  is false for a REMOTE profile deletion: the tab list is memory/renderer
+ *  state, but the cookie jar lives in LOCAL userData, so only a local delete
+ *  may clear it (F4). */
+export function dropPreviewTabsForProfile(profile: string, local = true) {
   const key = normalizeProfileKey(profile)
 
   delete tabsByProfile[key]
@@ -333,7 +336,12 @@ export function dropPreviewTabsForProfile(profile: string) {
   // P2-7 (#150283): the imported real-profile sign-ins record + per-profile cookie jar live in
   // Electron main (userData); signal main to drop them so a later same-named profile does not
   // inherit the cookies. Called from a profile-delete handler, never at module load.
-  void window.hermesDesktop?.dropPreviewSigninsForProfile?.({ profile: key })?.catch(() => undefined)
+  //
+  // F4: a REMOTE profile's jar lives on another machine — deleting it must never clear the
+  // same-named LOCAL profile's jar. Only a local deletion touches local userData.
+  if (local) {
+    void window.hermesDesktop?.dropPreviewSigninsForProfile?.({ profile: key })?.catch(() => undefined)
+  }
 }
 
 /** Move one profile's rail to another. Rename counterpart of the tiles store's

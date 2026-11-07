@@ -101,9 +101,10 @@ async def test_a_worker_cut_by_a_restart_wait_waits_outside_it(monkeypatch, tmp_
     owner = _RestartingOwner()
     monkeypatch.setattr(gateway_client, "connect_gateway", owner.connect())
 
-    # The worker waits for the next owner without reading anything from the restarting one, and an
-    # owner that never comes back still fails it at OWNER_WAIT_S (which ends the turn it held).
-    with pytest.raises(gateway_client.GatewayClientError, match="owner silent"):
+    # The worker waits for the next owner without reading anything from the restarting one. An
+    # owner that never comes back still ends the attempt — bounded by the card's FENCE budget
+    # (the restart wait is the owner's own answer), which _submit books as drain infrastructure.
+    with pytest.raises(kanban_worker_client.OwnerFenceTimeout, match="owner draining"):
         await kanban_worker_client.run({"task_id": "t1"}, str(tmp_path / "kanban.db"))
     assert owner.receipts_in_wait == 0
     assert owner.dials > 2

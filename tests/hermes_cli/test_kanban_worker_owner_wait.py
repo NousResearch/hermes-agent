@@ -67,6 +67,30 @@ def _fenced_owner(states, submitted):
     return connect
 
 
+def _post_wave_owner(states, submitted):
+    """A connect_gateway that walks *states*: fence verdicts, 'oserror' (a plain
+    restartable cut, not a fence), then a live owner."""
+    @asynccontextmanager
+    async def connect():
+        state = states.pop(0) if states else None
+        if state == "oserror":
+            raise OSError("connection reset post-wave")
+        if state:
+            unavailable = getattr(gateway_client, "GatewayUnavailableError", None)
+            raise unavailable(f"Gateway {state}: update_paused", state)
+
+        class _Client:
+            events = asyncio.Queue()
+
+            async def rpc(self, method, **params):
+                submitted.append(method)
+                return {"session_id": "s1", "receipt": {"status": "terminal", "admission_id": "a1"}}
+
+        yield _Client()
+
+    return connect
+
+
 @pytest.mark.asyncio
 async def test_worker_waits_out_a_draining_owner_and_submits_once(monkeypatch, tmp_path):
     submitted = []
@@ -169,6 +193,38 @@ def test_fence_budget_is_the_cards_max_runtime_never_below_the_silent_wait(tmp_p
     assert kanban_worker_client._fence_budget_s("t_limited", str(db)) == 600.0
     assert kanban_worker_client._fence_budget_s("t_unlimited", str(db)) == (
         kanban_worker_client.OWNER_FENCE_DEFAULT_S)
+
+
+@pytest.mark.asyncio
+async def test_first_post_wave_nonfence_error_never_fails_instant_silence(monkeypatch, tmp_path):
+    """Every fence answer refreshes the silent window: a plain post-wave error (the owner's
+    own restart cutting the socket the moment it came back) is judged age < ``OWNER_WAIT_S``
+    from the LAST fence answer, not from the anchor of the whole fence stretch."""
+    clock = {'t': 1000.0}
+
+    async def _clocked_sleep(_seconds):
+        clock['t'] += 30.0  # each backoff cycle advances the fake wall clock 30s
+
+    async def _no_sleep(_seconds):
+        return None
+
+    submitted = []
+    monkeypatch.setattr(kanban_worker_client.time, 'monotonic', lambda: clock['t'])
+    monkeypatch.setattr(kanban_worker_client.asyncio, 'sleep', _clocked_sleep)
+    monkeypatch.setattr(kanban_worker_client, 'OWNER_WAIT_S', 180.0)
+    monkeypatch.setattr(kanban_worker_client, '_fence_budget_s', lambda *_: 100000.0)
+    # 7 fence answers (210s of wave on the fake by the 8th cycle), then the non-fence cut,
+    # then the fence again and finally the owner back: the OLD anchor froze claim.answered at
+    # the stretch start and failed the worker 'owner silent for 210s' on that exact cut.
+    monkeypatch.setattr(
+        gateway_client, 'connect_gateway',
+        _post_wave_owner(['draining'] * 7 + ['oserror'] + ['draining'] * 3 + [None], submitted))
+    from gateway import session_kanban
+    monkeypatch.setattr(session_kanban, 'worker_result', lambda *_: {'exit_code': 0, 'last_output': 'ok'})
+    monkeypatch.delenv('HERMES_TUI_GATEWAY_URL', raising=False)
+
+    assert await kanban_worker_client.run({'task_id': 't1'}, str(tmp_path / 'kanban.db')) == 0
+    assert submitted == ['kanban.run']
 
 
 @pytest.mark.asyncio

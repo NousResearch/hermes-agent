@@ -155,13 +155,17 @@ async def run(params, board_db):
                 f' (HTTP {status})' if status else '')
             if _fence(exc) is not None:
                 # A fence verdict or refusal is an owner answer (it proves the owner lives and
-                # names WHY it cannot serve this attempt): refresh the silent window and let
-                # this stretch wait out the card's fence budget. The budget is resolved once
-                # per stretch; when the fence stops being advertised (owner back, or the wave
-                # turned into plain silence by losing its connect path) the silent-owner rule
-                # takes over again.
+                # names WHY it cannot serve this attempt): refresh the silent window to THIS
+                # answer and let this stretch wait out the card's fence budget. The budget is
+                # resolved once per stretch and anchored to the fence's START (fenced_since),
+                # so the stretch ends when the wave outlasts it even as every answer keeps the
+                # silent window fresh. When the fence stops being advertised (owner back, or
+                # the wave turned into plain silence by losing its connect path) the
+                # silent-owner rule takes over from the LAST fence answer — the first
+                # post-wave non-fence error must never be judged against an age the fence
+                # answers kept clearing.
                 fenced_since = fenced_since if fenced_since is not None else time.monotonic()
-                claim.answered = fenced_since
+                claim.answered = time.monotonic()
                 if fence_budget is None:
                     fence_budget = _fence_budget_s(params['task_id'], board_db)
                 if time.monotonic() - fenced_since >= fence_budget:

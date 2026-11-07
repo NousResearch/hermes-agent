@@ -651,8 +651,12 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
 
     SIGTERM, short grace, then SIGKILL. Emits ``timed_out`` and restores the
     task's source phase so the next tick re-spawns the same kind of worker —
-    unless the circuit breaker already gave up, leaving it blocked. Host-local
-    only (same reasoning as ``detect_crashed_workers``). ``signal_fn`` is a test hook.
+    unless the circuit breaker already gave up, leaving it blocked. A kill of
+    an attempt its owner's update fence held (or one whose run never bound a
+    worker: it was still waiting on its owner and never spent the card's
+    budget) books as ``drained`` infrastructure instead — no failure increment;
+    the breaker can't trip. Host-local only (same reasoning as
+    ``detect_crashed_workers``). ``signal_fn`` is a test hook.
     """
     timed_out: list[str] = []
     now = int(time.time())
@@ -677,7 +681,8 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
             continue
         # Runtime is per attempt: ``tasks.started_at`` records the FIRST start,
         # so retries must be measured from the active task_runs row.
-        elapsed = now - (_kb._to_epoch(row["active_started_at"]) or now)  # unreadable clock: never kill
+        started_epoch = _kb._to_epoch(row["active_started_at"])
+        elapsed = now - (started_epoch or now)  # unreadable clock: never kill
         limit = int(row["max_runtime_seconds"])
         if elapsed < limit:
             continue
@@ -710,6 +715,13 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
             # meanwhile is invisible to the pid/claim CAS below. Host-local by the filter above.
             if owner_reclaim_blocked_after_kill(conn, tid, signalled=True):
                 continue
+            # A per-limit kill of an attempt its owner's update FENCE held (still fencing at
+            # kill time, or a fence this dispatcher observed inside the attempt's life) books
+            # as the wave's infrastructure — the same rule the dead-worker sweep applies. A
+            # run that never bound a worker at all is also infrastructure: the attempt was
+            # still waiting on its owner, the card never spent any budget. Never a card
+            # failure: two wave-length attempts must not reach the breaker.
+            fenced = _attempt_fenced_out(started_epoch) or _run_never_bound(conn, tid)
             retry_status = _kb._retry_status_for_run(conn, tid)
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
@@ -720,6 +732,7 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
                 (retry_status, tid, pid, row["claim_lock"]),
             )
             if cur.rowcount == 1:
+                outcome = "drained" if fenced else "timed_out"
                 payload = {
                     "pid": pid,
                     "elapsed_seconds": int(elapsed),
@@ -727,24 +740,43 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
                     "sigkill": killed,
                     "retry_status": retry_status,
                 }
+                if fenced:
+                    payload["owner_drain"] = True
+                    payload["infrastructure"] = True
                 run_id = _kb._end_run(
-                    conn, tid, outcome="timed_out", status="timed_out",
+                    conn, tid, outcome=outcome, status=outcome,
                     error=error, metadata=payload,
                 )
-                _kb._append_event(conn, tid, "timed_out", payload, run_id=run_id)
+                _kb._append_event(conn, tid, outcome, payload, run_id=run_id)
                 timed_out.append(tid)
         # Outside the write_txn above because ``_record_task_failure`` opens its
-        # own. If the breaker trips this flips the task to ``blocked`` and emits
-        # ``gave_up`` on top of the ``timed_out`` already emitted.
+        # own. A fence-shaped kill records the infrastructure vehicle (no
+        # ``consecutive_failures`` increment, breaker never consulted); a plain
+        # overslow run still counts, and if the breaker trips this flips the
+        # task to ``blocked`` and emits ``gave_up`` on top of the ``timed_out``.
         if cur.rowcount == 1:
-            _record_task_failure(
-                conn, tid,
-                error=error,
-                outcome="timed_out",
-                release_claim=False,
-                end_run=False,
-                event_payload_extra={"pid": pid, "sigkill": killed, "retry_status": retry_status},
-            )
+            if fenced:
+                _record_task_failure(
+                    conn, tid,
+                    error=error,
+                    outcome="drained",
+                    release_claim=False,
+                    end_run=False,
+                    event_payload_extra={
+                        "pid": pid, "sigkill": killed, "retry_status": retry_status,
+                        "owner_drain": True, "infrastructure": True,
+                    },
+                    infrastructure=True,
+                )
+            else:
+                _record_task_failure(
+                    conn, tid,
+                    error=error,
+                    outcome="timed_out",
+                    release_claim=False,
+                    end_run=False,
+                    event_payload_extra={"pid": pid, "sigkill": killed, "retry_status": retry_status},
+                )
     return timed_out
 
 
@@ -1240,6 +1272,40 @@ def _owner_update_fenced() -> bool:
     if fenced:
         _note_owner_fence()
     return fenced
+
+
+def _attempt_fenced_out(started_at: Optional[int]) -> bool:
+    """True when an attempt was waiting out its owner's update fence, not working.
+
+    Used by ``enforce_max_runtime`` to shape a per-limit kill: an attempt the wave held
+    (its owner still fenced now, or a fence the dispatcher already observed inside the
+    attempt's life window) was waiting out infrastructure, so the kill must never be
+    counted against the card — the same ``cost of trusting a stale memory`` reasoning as
+    ``_drain_correlated``: a genuinely overslow card re-proves itself on a later,
+    fence-free death. An unreadable attempt clock is never fenced."""
+    if started_at is None:
+        return False
+    _prune_owner_fences()
+    if _owner_update_fenced():  # the wave holds the owner right now
+        return True
+    return any(observed >= started_at for observed in _owner_fences_seen)
+
+
+def _run_never_bound(conn: sqlite3.Connection, task_id: str) -> bool:
+    """True when the task's active run never recorded a bound owner interpreter.
+
+    A ``worker_bound`` is written when the run's work actually starts; a run without
+    one was still waiting on its owner when the enforcement clock ran out — the card
+    never spent any of its budget, so the kill is the launcher's infrastructure (the
+    same reasoning as ``detect_stale_running``, which deliberately not-counts a
+    missing heartbeat). A fence that only lasted a second between ticks is covered
+    here without any memory at all."""
+    row = conn.execute(
+        "SELECT 1 FROM task_events e JOIN tasks t ON t.current_run_id = e.run_id "
+        "WHERE t.id = ? AND e.task_id = t.id AND e.kind = 'worker_bound' LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    return row is None
 
 
 def _drain_correlated(kind: str, code: Optional[int]) -> bool:

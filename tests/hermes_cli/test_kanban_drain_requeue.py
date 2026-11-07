@@ -150,3 +150,174 @@ def test_recent_fence_rebooks_only_kill_shaped_deaths(kanban_home, monkeypatch):
         _dead_worker_with_log(conn, tid_plain, 70023, 1)
         assert kbd.detect_crashed_workers(conn) == [tid_plain]
         assert _last_run_and_event(conn, tid_plain)[0]["kind"] == "crashed"
+
+
+# --- enforce_max_runtime: a per-limit kill of a still-fencing attempt (G2) ---------------
+
+import signal
+import subprocess  # module-level local: only these tests need a live worker PID
+
+
+def _claimed_sleeper(conn, tid: str, sleeper: subprocess.Popen, started_at: int) -> None:
+    """Claim ``tid`` to the LIVE sleeper process with an attempt started ``started_at``."""
+    host = kb._claimer_id().split(":", 1)[0]
+    kb.claim_task(conn, tid, claimer=f"{host}:w{sleeper.pid}")
+    if conn.execute("SELECT id FROM task_runs WHERE task_id=?", (tid,)).fetchone():
+        conn.execute("UPDATE task_runs SET started_at=? WHERE task_id=?", (started_at, tid))
+    conn.execute(
+        "UPDATE tasks SET status='running', max_runtime_seconds=600, worker_pid=?, "
+        "worker_started_at=?, started_at=? WHERE id=?",
+        (sleeper.pid, kbd._process_fingerprint(sleeper.pid), started_at, tid),
+    )
+    conn.commit()
+
+
+def _bound(conn, tid: str, sleeper: subprocess.Popen) -> None:
+    """Record the run's ``worker_bound`` event: the attempt's working turn actually started."""
+    lock_row = conn.execute(
+        "SELECT claim_lock, current_run_id FROM tasks WHERE id=?", (tid,)).fetchone()
+    kb._append_event(
+        conn, tid, "worker_bound",
+        {"pid": sleeper.pid, "claim_lock": lock_row[0]},
+        run_id=lock_row[1],
+    )
+
+
+def test_enforcement_kill_of_a_fenced_attempt_is_infrastructure(kanban_home, monkeypatch):
+    """A card WITH max_runtime_seconds whose owner is still fenced when the enforcement clock
+    runs out: the kill books as the wave's ``drained`` infrastructure — no failure increment
+    (a wave longer than a wave-sized budget must not spend the card's failure budget)."""
+    monkeypatch.setattr(kbd, "_owner_update_fenced", lambda: True)
+    started = int(time.time()) - 700
+    sleeper = subprocess.Popen(["sleep", "120"])
+    try:
+        sigterms = []
+        with kbc.connect() as conn:
+            tid = kb.create_task(conn, title="fenced", assignee="a")
+            _claimed_sleeper(conn, tid, sleeper, started)
+            assert kbd.enforce_max_runtime(conn, signal_fn=lambda p, s: sigterms.append((p, s))) == [tid]
+            assert sigterms and sigterms[0][1] == signal.SIGTERM  # graceful first
+            ev = conn.execute(
+                "SELECT kind FROM task_events WHERE task_id=? ORDER BY id DESC LIMIT 1",
+                (tid,)).fetchone()
+            run = conn.execute(
+                "SELECT outcome, metadata FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1",
+                (tid,)).fetchone()
+            task = kb.get_task(conn, tid)
+        assert ev["kind"] == "drained" and run["outcome"] == "drained"
+        metadata = kb._json_dict(run["metadata"])
+        assert metadata.get("infrastructure") is True and metadata.get("owner_drain") is True
+        assert metadata.get("limit_seconds") == 600
+        assert task.consecutive_failures == 0
+        assert task.status == "ready"
+        assert kbd.check_respawn_guard(conn, tid) == "infrastructure_cooldown"
+    finally:
+        sleeper.kill()
+        sleeper.wait()
+
+
+def test_two_fenced_enforcement_waves_never_reach_the_breaker(kanban_home, monkeypatch):
+    """Two wave-length attempts under the same card (failure_limit=2) leave it ready: the
+    enforcement path can't be the breaker's third accounting lane for a card that never ran."""
+    monkeypatch.setattr(kbd, "_owner_update_fenced", lambda: True)
+    started = int(time.time()) - 700
+    sleeper = subprocess.Popen(["sleep", "180"])
+    try:
+        with kbc.connect() as conn:
+            tid = kb.create_task(conn, title="waves", assignee="a")
+        for _ in range(3):
+            with kbc.connect() as conn:
+                _claimed_sleeper(conn, tid, sleeper, started)
+                assert kbd.enforce_max_runtime(conn, signal_fn=lambda *_: None) == [tid]
+            with kbc.connect() as conn:
+                kb.recompute_ready(conn, failure_limit=2)
+        task = kb.get_task(conn, tid)
+        assert task.status == "ready"
+        assert task.consecutive_failures == 0
+    finally:
+        sleeper.kill()
+        sleeper.wait()
+
+
+def test_enforcement_kill_of_a_counted_bound_attempt_without_fenced_evidence(kanban_home, monkeypatch):
+    """Controls: an overslow BOUND attempt (its working turn really started) with NO fence live
+    and no remembered fence inside the attempt's life is booked ``timed_out`` — a card failure
+    the breaker hears about (a slow card can never be excused by a wave it predates)."""
+    monkeypatch.setattr(kbd, "_owner_update_fenced", lambda: False)
+    started = int(time.time()) - 700
+    sleeper = subprocess.Popen(["sleep", "120"])
+    try:
+        with kbc.connect() as conn:
+            tid = kb.create_task(conn, title="slow", assignee="a")
+            _claimed_sleeper(conn, tid, sleeper, started)
+            _bound(conn, tid, sleeper)
+            assert kbd.enforce_max_runtime(conn, signal_fn=lambda *_: None) == [tid]
+            run = conn.execute(
+                "SELECT outcome FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1",
+                (tid,)).fetchone()
+            assert run["outcome"] == "timed_out"
+            assert kb.get_task(conn, tid).consecutive_failures == 1
+
+        # A remembered fence OLDER than the attempt began never excuses the attempt either.
+        with kbc.connect() as conn:
+            tid2 = kb.create_task(conn, title="slow2", assignee="a")
+            kbd._owner_fences_seen[:] = [started - 50]  # observed before this attempt existed
+            _claimed_sleeper(conn, tid2, sleeper, started)
+            _bound(conn, tid2, sleeper)
+            assert kbd.enforce_max_runtime(conn, signal_fn=lambda *_: None) == [tid2]
+            run2 = conn.execute(
+                "SELECT outcome FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1",
+                (tid2,)).fetchone()
+            assert run2["outcome"] == "timed_out"
+            assert kb.get_task(conn, tid2).consecutive_failures == 1
+    finally:
+        sleeper.kill()
+        sleeper.wait()
+
+
+def test_enforcement_never_bound_attempt_is_infrastructure_without_fences(kanban_home, monkeypatch):
+    """A run that never recorded a ``worker_bound`` was still waiting on its owner when the
+    enforcement clock ran out: the card never spent any of its budget, so the kill books as
+    the wave's infrastructure with NO fence evidence at all."""""
+    monkeypatch.setattr(kbd, "_owner_update_fenced", lambda: False)
+    kbd._owner_fences_seen.clear()
+    started = int(time.time()) - 700
+    sleeper = subprocess.Popen(["sleep", "120"])
+    try:
+        with kbc.connect() as conn:
+            tid = kb.create_task(conn, title="unbound", assignee="a")
+            _claimed_sleeper(conn, tid, sleeper, started)
+            assert kbd.enforce_max_runtime(conn, signal_fn=lambda *_: None) == [tid]
+            run = conn.execute(
+                "SELECT outcome, metadata FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1",
+                (tid,)).fetchone()
+        assert run["outcome"] == "drained"
+        assert kb._json_dict(run["metadata"]).get("infrastructure") is True
+        assert kb.get_task(conn, tid).consecutive_failures == 0
+    finally:
+        sleeper.kill()
+        sleeper.wait()
+
+
+def test_enforcement_excuses_on_fence_memory_inside_the_attempt(kanban_home, monkeypatch):
+    """The sweep is not running (its live probe goes quiet between ticks); a fence this same
+    dispatcher already observed inside the attempt's life is enough to shape the kill."""
+    monkeypatch.setattr(kbd, "_owner_update_fenced", lambda: False)
+    started = int(time.time()) - 700
+    sleeper = subprocess.Popen(["sleep", "120"])
+    try:
+        with kbc.connect() as conn:
+            tid = kb.create_task(conn, title="memorized", assignee="a")
+            _owner_fences_seen = [started + 10]  # the wave started 10s into this attempt
+            kbd._owner_fences_seen[:] = _owner_fences_seen
+            _claimed_sleeper(conn, tid, sleeper, started)
+            assert kbd.enforce_max_runtime(conn, signal_fn=lambda *_: None) == [tid]
+            run = conn.execute(
+                "SELECT outcome, metadata FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1",
+                (tid,)).fetchone()
+        assert run["outcome"] == "drained"
+        assert kb._json_dict(run["metadata"]).get("infrastructure") is True
+        assert kb.get_task(conn, tid).consecutive_failures == 0
+    finally:
+        sleeper.kill()
+        sleeper.wait()

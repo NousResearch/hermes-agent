@@ -202,12 +202,11 @@ async def test_connecting_is_not_an_answer(monkeypatch, _worker_env, clock):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("fault", [
     gateway_client.GatewayClientError("Gateway connection failed; no local fallback"),
-    GUE("Gateway starting: deadline", "starting", "deadline"),
     GUE("Gateway inaccessible: invalid_control_peer", "inaccessible", "invalid_control_peer"),
-    gateway_client.GatewayRPCError("runtime_draining"),
-], ids=["refused", "starting", "control-reset", "draining"])
+], ids=["refused", "control-reset"])
 async def test_an_owner_silent_for_the_whole_budget_fails_the_worker(monkeypatch, _worker_env, clock, fault):
-    # Every restart shape still ends at OWNER_WAIT_S when it never clears.
+    # SILENCE still ends at OWNER_WAIT_S when it never clears: a lost transport or a garbled
+    # control answer is no admission to extend a wait with.
     owner = _Owner(connects=[None], receipts=["pending", _disconnect()], after=fault)
 
     with pytest.raises(gateway_client.GatewayClientError, match=rf"owner silent for 1[89]\ds: {fault}"):
@@ -215,6 +214,26 @@ async def test_an_owner_silent_for_the_whole_budget_fails_the_worker(monkeypatch
     assert clock.now >= kanban_worker_client.OWNER_WAIT_S
     # Jittered exponential backoff (capped at 8-16 s) between dials, not one dial a second.
     assert 3 < owner.dials < 40 and owner.calls.count("kanban.run") == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fault", [
+    GUE("Gateway starting: deadline", "starting", "deadline"),
+    gateway_client.GatewayRPCError("runtime_draining"),
+], ids=["starting", "draining"])
+async def test_an_owner_fenced_for_its_whole_budget_ends_the_attempt_as_infrastructure(
+        monkeypatch, _worker_env, clock, fault):
+    # A FENCE is the owner's own answer: the wait is bounded by the card's fence budget instead
+    # of OWNER_WAIT_S, and the bound converts to the drain sentinel (74) in _submit — the sweep
+    # books it as infrastructure, never as this card's failure.
+    monkeypatch.setattr(kanban_worker_client, "_fence_budget_s", lambda *_: 200.0)
+    owner = _Owner(connects=[None], receipts=["pending", _disconnect()], after=fault)
+
+    with pytest.raises(kanban_worker_client.OwnerFenceTimeout, match=r"owner draining for 2\d\ds"):
+        await _run(owner, monkeypatch, _worker_env)
+    assert clock.now >= 200.0
+    # Still bounded: the wave never lifting must not hold the attempt open past its budget.
+    assert owner.calls.count("kanban.run") == 1
 
 
 @pytest.mark.asyncio

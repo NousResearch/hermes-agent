@@ -171,12 +171,49 @@ def _make_valid_snapshot(home: Path, snap_id: str, rows: int) -> None:
     _make_valid_db(snap_dir / "state.db", rows)
 
 
+@pytest.mark.parametrize("partial_snapshot", [False, True], ids=["no-snapshot", "no-db-in-snapshot"])
+def test_unreadable_live_db_without_this_updates_snapshot_keeps_transcripts(
+    tmp_path, monkeypatch, capsys, partial_snapshot,
+):
+    """#147938: a failed header read must not fall back to an older database image."""
+    from hermes_cli import backup, sqlite_safe_read, update_cmd
+
+    state = tmp_path / "state.db"
+    _make_valid_db(state, 2)
+    assert backup.create_quick_snapshot(label="pre-update", hermes_home=tmp_path)
+    _make_valid_db(tmp_path / "newer.db", 10)
+    (tmp_path / "newer.db").replace(state)
+    snapshot_id = None
+    if partial_snapshot:
+        (tmp_path / "config.yaml").write_text("{}\n", encoding="utf-8")
+        snapshot_id = backup.create_quick_snapshot(
+            label="pre-update", hermes_home=tmp_path, max_file_size=100,
+        )
+        assert snapshot_id
+    read_header = sqlite_safe_read.read_header_bytes_preopen
+
+    def temporarily_unreadable(path, **kwargs):
+        if path == state:
+            return None
+        return read_header(path, **kwargs)
+
+    monkeypatch.setattr(sqlite_safe_read, "read_header_bytes_preopen", temporarily_unreadable)
+    monkeypatch.setattr(update_cmd, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(backup, "_sibling_profile_homes", lambda home: [])
+
+    update_cmd._verify_and_restore_state_dbs_post_update(snapshot_id)
+
+    assert _row_count(state) == 10
+    out = capsys.readouterr().out
+    assert "left unchanged" in out
+    assert "cannot read header" in out
+
+
 def test_post_update_guard_covers_sibling_profiles(tmp_path, monkeypatch, capsys):
     """#97994: the guard must verify + auto-restore EVERY profile's state.db,
     not just the root home's. Pre-update snapshots already cover siblings
     (#66140); the guard was the missing half."""
-    from hermes_cli import update_cmd
-    from hermes_cli.backup import _sibling_profile_homes
+    from hermes_cli import backup, update_cmd
 
     root_home = tmp_path / "default-home"
     root_home.mkdir()
@@ -188,9 +225,11 @@ def test_post_update_guard_covers_sibling_profiles(tmp_path, monkeypatch, capsys
     root_before = (root_home / "state.db").read_bytes()
 
     # Corrupt only the sessions B-tree; the canonical epoch must remain readable.
-    _make_valid_snapshot(sibling_home, "20260901-pre-update", 25)
     state = sibling_home / "state.db"
-    _make_valid_db(state, 3)
+    _make_valid_db(state, 25)
+    snapshot_id = backup.create_quick_snapshot(label="pre-update", hermes_home=sibling_home)
+    assert snapshot_id
+    _make_valid_snapshot(sibling_home, "99999999-other-snapshot", 50)
     with sqlite3.connect(state) as conn:
         page = conn.execute("SELECT rootpage FROM sqlite_master WHERE name='sessions'").fetchone()[0]
         page_size = conn.execute("PRAGMA page_size").fetchone()[0]
@@ -205,7 +244,7 @@ def test_post_update_guard_covers_sibling_profiles(tmp_path, monkeypatch, capsys
         lambda invoking_home: [("work", sibling_home)],
     )
 
-    update_cmd._verify_and_restore_state_dbs_post_update()
+    update_cmd._verify_and_restore_state_dbs_post_update(sibling_snapshots={"work": snapshot_id})
 
     # Sibling restored from ITS snapshot (snap rows, not zeroed bytes).
     assert _row_count(sibling_home / "state.db") == 25
@@ -241,7 +280,7 @@ def test_post_update_guard_leaves_valid_sibling_dbs_alone(tmp_path, monkeypatch,
 
     assert (sibling_home / "state.db").read_bytes() == sibling_before
     out = capsys.readouterr().out
-    assert "corrupted" not in out
+    assert "verification failed" not in out
 
 
 def test_post_update_guard_survives_missing_sibling_snapshot(tmp_path, monkeypatch, capsys):
@@ -267,6 +306,6 @@ def test_post_update_guard_survives_missing_sibling_snapshot(tmp_path, monkeypat
     update_cmd._verify_and_restore_state_dbs_post_update()
 
     out = capsys.readouterr().out
-    assert "corrupted" in out
+    assert "verification failed" in out
     # Still corrupt (no snapshot) — but the guard completed cleanly.
     assert (sibling_home / "state.db").read_bytes() == b"\x00" * 4096

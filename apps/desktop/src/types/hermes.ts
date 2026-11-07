@@ -1559,6 +1559,9 @@ export interface LocalModelsStatus {
   runtime_backend: string | null
   server_running: boolean
   server_base_url: string | null
+  /** `id` of the LocalEngine answering the endpoint (types/local-engine.ts). */
+  active_engine_id?: string
+  active_engine_name?: string
   active_model_id: string | null
   loaded_models: Record<string, string>
   /** Models loading into memory right now: real per-tensor load percent. */

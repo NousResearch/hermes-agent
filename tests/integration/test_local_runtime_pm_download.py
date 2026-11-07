@@ -19,6 +19,7 @@ from pm import paths
 from pm.lock import Facts, Lockfile
 
 
+@pytest.mark.allow_network  # downloads the real pinned engine and Python toolchain on purpose
 @pytest.mark.platforms("windows", arch="arm64")
 def test_live_pinned_cuda_download_pause_resume_and_execute(tmp_path, monkeypatch, record_property):
     home = tmp_path / "home"
@@ -97,7 +98,7 @@ def test_live_pinned_cuda_download_pause_resume_and_execute(tmp_path, monkeypatc
                "artifacts": pinned, "binary": str(engine.binary), "commands": {}}
     for argument in ("--version", "--list-devices"):
         run = subprocess.run([str(engine.binary), argument], cwd=engine.binary.parent,
-                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60, check=False)
         assert run.returncode == 0, run.stdout + run.stderr
         receipt["commands"][argument] = run.stdout + run.stderr
     dlls = sorted(engine.binary.parent.glob("*.dll"))

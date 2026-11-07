@@ -38,10 +38,12 @@ import {
   buildPollPayload,
   createReconnectScheduler,
   createVersionResolver,
+  installConsoleStamps,
   buildLocationPayload,
   buildTextSendPayload,
   createBoundedMessageStore,
   createQuotedMediaCache,
+  deliveryStatusEvent,
   extractBridgeEvent,
   getMessageContent,
   inboundReadReceiptKeys,
@@ -50,7 +52,11 @@ import {
   normalizeWhatsAppId,
   pollCreationMessageFromPayload,
   pollUpdateForAggregation,
+  writeJsonLine,
 } from './bridge_helpers.js';
+
+// First statement: helpers capture console.log as a default at call time below.
+installConsoleStamps();
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -224,7 +230,7 @@ function redactWhatsAppId(value) {
 function emitDebugEvent(payload) {
   if (!WHATSAPP_DEBUG) return;
   try {
-    console.log(JSON.stringify({ event: 'debug', ...payload }));
+    writeJsonLine({ event: 'debug', ...payload });
   } catch {}
 }
 
@@ -293,7 +299,7 @@ function pollAggregationSummary(aggregation) {
 function logPollUpdateDiagnostic({ sourcePath, pollId, pollCreation, pollUpdates, selectedOptions, aggregation }) {
   const firstUpdate = pollUpdates?.[0] || {};
   try {
-    console.log(JSON.stringify({
+    writeJsonLine({
       event: 'poll_update_decode',
       sourcePath,
       pollId: pollId || '',
@@ -302,7 +308,7 @@ function logPollUpdateDiagnostic({ sourcePath, pollId, pollCreation, pollUpdates
       hasVote: !!firstUpdate.vote,
       selectedOptionsLength: selectedOptions?.length || 0,
       aggregation: pollAggregationSummary(aggregation),
-    }));
+    });
   } catch {}
 }
 
@@ -322,7 +328,7 @@ function enqueuePollUpdateEvent({ key, update, selectedOptions, aggregation }) {
   // inject agent-visible messages on every vote.
   if (!pollId || !recentlySentIds.has(pollId)) {
     if (WHATSAPP_DEBUG) {
-      try { console.log(JSON.stringify({ event: 'ignored', reason: 'foreign_poll_update', pollId })); } catch {}
+      try { writeJsonLine({ event: 'ignored', reason: 'foreign_poll_update', pollId }); } catch {}
     }
     return;
   }
@@ -370,13 +376,26 @@ function rememberSentId(id) {
   recentlySentIds.remember(id);
 }
 
+// Receipts get their own bound: one reply to a large group brings a receipt per member, and in the
+// shared queue that burst evicted inbound messages still waiting for the next poll.
+const deliveryQueue = [];
+
+function enqueueDeliveryStatus(args) {
+  const event = deliveryStatusEvent({ ...args, isOwnSend: id => recentlySentIds.has(id) });
+  if (!event) return;
+  deliveryQueue.push(event);
+  if (deliveryQueue.length > MAX_QUEUE_SIZE) {
+    deliveryQueue.shift();
+  }
+}
+
 let sock = null;
 let connectionState = 'disconnected';
 
 function emitPairEvent(event) {
   if (!PAIR_JSON) return;
   try {
-    console.log(JSON.stringify({ ts: Date.now(), ...event }));
+    writeJsonLine({ ts: Date.now(), ...event });
   } catch {}
 }
 
@@ -414,7 +433,8 @@ async function startSocket() {
         emitPairEvent({ event: 'qr', qr });
       } else {
         console.log('\n📱 Scan this QR code with WhatsApp on your phone:\n');
-        qrcode.generate(qr, { small: true });
+        // The QR block is multi-line art; a stamp on its first row would skew it.
+        qrcode.generate(qr, { small: true }, (code) => process.stdout.write(`${code}\n`));
         console.log('\nWaiting for scan...\n');
       }
     }
@@ -463,8 +483,13 @@ async function startSocket() {
     }
   });
 
+  sock.ev.on('message-receipt.update', (receipts) => {
+    for (const { key, receipt } of receipts || []) enqueueDeliveryStatus({ key, receipt });
+  });
+
   sock.ev.on('messages.update', async (updates) => {
     for (const { key, update } of updates || []) {
+      if (update?.status !== undefined) enqueueDeliveryStatus({ key, update });
       if (!update?.pollUpdates) continue;
       const pollCreationId = key?.id || update.pollUpdates?.[0]?.pollCreationMessageKey?.id;
       const pollCreation = messageStore.get(pollCreationId);
@@ -582,12 +607,12 @@ async function startSocket() {
           if (decision.action === 'drop_disabled') continue;
           if (decision.action === 'drop_allowlist') {
             try {
-              console.log(JSON.stringify({
+              writeJsonLine({
                 event: 'ignored',
                 reason: 'allowlist_mismatch_owner_chat',
                 chatId,
                 senderId,
-              }));
+              });
             } catch {}
             continue;
           }
@@ -628,12 +653,12 @@ async function startSocket() {
       if (!msg.key.fromMe) {
         if (WHATSAPP_MODE === 'self-chat') {
           try {
-            console.log(JSON.stringify({
+            writeJsonLine({
               event: 'ignored',
               reason: 'self_chat_mode_rejects_non_self',
               chatId,
               senderId,
-            }));
+            });
           } catch {}
           continue;
         }
@@ -648,13 +673,13 @@ async function startSocket() {
             || matchesAllowedSender(senderId, senderAltId, ALLOWED_USERS, SESSION_DIR);
         if (!intakeAllowed) {
           try {
-            console.log(JSON.stringify({
+            writeJsonLine({
               event: 'ignored',
               reason: isGroup ? 'group_policy_rejected' : 'allowlist_mismatch',
               chatId,
               senderId,
               senderAltId,
-            }));
+            });
           } catch {}
           continue;
         }
@@ -827,7 +852,7 @@ app.use((req, res, next) => {
 
 // Poll for new messages (long-poll style)
 app.get('/messages', (req, res) => {
-  const msgs = messageQueue.splice(0, messageQueue.length);
+  const msgs = messageQueue.splice(0, messageQueue.length).concat(deliveryQueue.splice(0, deliveryQueue.length));
   res.json(msgs);
 });
 
@@ -1126,6 +1151,8 @@ app.get('/health', (req, res) => {
     uptime: process.uptime(),
     scriptHash: SCRIPT_HASH,
     sendReadReceipts: SEND_READ_RECEIPTS,
+    // path.resolve, not realpath: the adapter compares against os.path.abspath, which keeps symlinks.
+    session: path.resolve(SESSION_DIR),
     capabilities: { outboundMentions: true },
   });
 });
@@ -1148,7 +1175,7 @@ if (PAIR_ONLY) {
     process.exit(1);
   });
 } else {
-  app.listen(PORT, '127.0.0.1', () => {
+  const server = app.listen(PORT, '127.0.0.1', () => {
     console.log(`🌉 WhatsApp bridge listening on port ${PORT} (mode: ${WHATSAPP_MODE})`);
     console.log(`📁 Session stored in: ${SESSION_DIR}`);
     if (ALLOWED_USERS.size > 0) {
@@ -1167,5 +1194,15 @@ if (PAIR_ONLY) {
     }
     console.log();
     scheduleReconnect(0);
+  });
+  // Without this handler an EADDRINUSE (an old bridge that has not released the port yet) crashes
+  // with a bare stack trace; the adapter's reconnect loop retried blind. Fail loudly and fast.
+  server.on('error', (err) => {
+    if (err && err.code === 'EADDRINUSE') {
+      console.error(`FATAL: port ${PORT} already in use on 127.0.0.1 — another bridge or process is listening there.`);
+    } else {
+      console.error(`FATAL: bridge HTTP server error: ${err && err.message ? err.message : err}`);
+    }
+    process.exit(1);
   });
 }

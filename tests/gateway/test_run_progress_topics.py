@@ -396,6 +396,9 @@ class DelayedProgressAgent:
         }
 
 
+_ACTIVE_ADAPTER: dict = {}  # the adapter of the run in flight, for agents that pace on its sends
+
+
 class ManyProgressLinesAgent:
     """Emits enough tool-progress lines to exceed a single platform bubble."""
 
@@ -410,7 +413,14 @@ class ManyProgressLinesAgent:
         # Let the progress task create the first editable bubble, then enqueue
         # the rest quickly.  The cancellation drain must roll them into fresh
         # editable bubbles instead of trying to edit the first one past limit.
-        time.sleep(0.35)
+        # Wait for the bubble itself, not a fixed interval: on a loaded CI runner
+        # 0.35s is not always enough and every line then lands before the first
+        # send, so nothing is ever edited.
+        adapter = _ACTIVE_ADAPTER.get("adapter")
+        deadline = time.monotonic() + 5.0
+        while adapter is not None and not adapter.sent and time.monotonic() < deadline:
+            time.sleep(0.02)
+        time.sleep(0.05)
         for idx in range(1, 8):
             cb("tool.started", "terminal", f"overflow-line-{idx}-" + "x" * 45, {})
         time.sleep(0.1)
@@ -452,7 +462,6 @@ def _make_runner(adapter):
     runner._fallback_model = None
     runner._session_db = None
     runner._running_agents = {}
-    runner._session_run_generation = {}
     runner.session_store = SimpleNamespace(_entries={}, _save=lambda: None)
     runner.hooks = SimpleNamespace(loaded_hooks=False)
     runner.config = SimpleNamespace(
@@ -1090,6 +1099,7 @@ async def _run_with_agent(
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
 
     adapter = adapter_cls(platform=platform)
+    _ACTIVE_ADAPTER["adapter"] = adapter
     runner = _make_runner(adapter)
     gateway_run = importlib.import_module("gateway.run")
     if config_data and "streaming" in config_data:
@@ -1816,7 +1826,7 @@ async def test_run_agent_drops_tool_progress_after_generation_invalidation(monke
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = DelayedProgressAgent
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
-    import tools.terminal_tool  # noqa: F401 - register terminal tool metadata
+    import tools.terminal_tool
 
     adapter = ProgressCaptureAdapter(platform=Platform.DISCORD)
     runner = _make_runner(adapter)
@@ -1831,7 +1841,7 @@ async def test_run_agent_drops_tool_progress_after_generation_invalidation(monke
         thread_id=None,
     )
     session_key = "agent:main:discord:dm:dm-1"
-    runner._session_run_generation[session_key] = 1
+    runner._session_state(session_key).persistent.run_generation = 1
 
     original_send = adapter.send
     invalidated = {"done": False}
@@ -1892,7 +1902,7 @@ async def test_run_agent_drops_interim_commentary_after_generation_invalidation(
         thread_id=None,
     )
     session_key = "agent:main:discord:dm:dm-2"
-    runner._session_run_generation[session_key] = 1
+    runner._session_state(session_key).persistent.run_generation = 1
 
     original_send = adapter.send
     invalidated = {"done": False}
@@ -2014,7 +2024,7 @@ async def test_terminal_progress_renders_fenced_code_block(monkeypatch, tmp_path
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = TerminalCommandAgent
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
-    import tools.terminal_tool  # noqa: F401 - register terminal emoji
+    import tools.terminal_tool
 
     adapter = CodeBlockProgressAdapter(platform=Platform.TELEGRAM)
     runner = _make_runner(adapter)
@@ -2067,7 +2077,7 @@ async def test_terminal_progress_verbose_shows_full_command(monkeypatch, tmp_pat
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = TerminalCommandAgent
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
-    import tools.terminal_tool  # noqa: F401 - register terminal emoji
+    import tools.terminal_tool
 
     adapter = CodeBlockProgressAdapter(platform=Platform.TELEGRAM)
     runner = _make_runner(adapter)

@@ -6,6 +6,7 @@ import { useRemoteSetup } from '@/components/remote-setup/use-remote-setup'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
+import { Loader } from '@/components/ui/loader'
 import type {
   DesktopConnectionKind,
   DesktopConnectionsRegistry,
@@ -517,6 +518,10 @@ export function ConnectionsRegistrySection() {
           notify({ title: row.label, message: row.detail || s.updateAllDone })
         } else if (row.skipped && row.reason === 'cloud-managed') {
           notify({ title: row.label, message: s.updateSkippedCloud })
+        } else if (row.skipped && row.reason === 'darwin-drain-unsupported' && row.detail) {
+          // A deliberate per-row skip (e.g. a macOS SSH remote whose running
+          // serve Desktop cannot safely stop) — informational, not a failure.
+          notify({ title: row.label, message: row.detail })
         } else {
           notifyError(new Error(row.error || row.detail || row.reason || row.label), s.updateAllFailed)
         }
@@ -604,9 +609,7 @@ export function ConnectionsRegistrySection() {
       )}
 
       {loading ? (
-        <div className="flex items-center gap-2 py-3 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-          <Loader2 className="size-4 animate-spin" />
-        </div>
+        <Loader className="mx-auto my-2 size-6 text-(--ui-text-tertiary)" label={t.common.loading} type="rose-curve" />
       ) : !registry || registry.connections.length === 0 ? (
         <EmptyState title={s.empty} />
       ) : displayedConnections.length === 0 ? (
@@ -641,7 +644,7 @@ export function ConnectionsRegistrySection() {
                     size="sm"
                     variant="outline"
                   >
-                    {testingId === conn.id ? <Loader2 className="size-3.5 animate-spin" /> : s.testConnection}
+                    {testingId === conn.id ? <Loader2 className="animate-spin" /> : s.testConnection}
                   </Button>
                   {!isPrimary && (
                     <Button disabled={busy} onClick={() => void makePrimary(conn.id)} size="sm" variant="outline">
@@ -665,7 +668,7 @@ export function ConnectionsRegistrySection() {
                         size="icon-sm"
                         variant="ghost"
                       >
-                        {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
+                        {busy ? <Loader2 className="animate-spin" /> : <Trash2 />}
                       </Button>
                     </>
                   )}
@@ -754,7 +757,7 @@ export function ConnectionsRegistrySection() {
                     onClick={() => void remote.signIn()}
                     size="sm"
                   >
-                    {remote.signingIn ? <Loader2 className="size-4 animate-spin" /> : null}
+                    {remote.signingIn ? <Loader2 className="animate-spin" /> : null}
                     {remote.isPassword
                       ? t.settings.gateway.signIn
                       : t.settings.gateway.signInWith(remote.providerLabel)}
@@ -892,11 +895,11 @@ export function ConnectionsRegistrySection() {
             >
               {updatingAll ? (
                 <>
-                  <Loader2 className="size-3.5 animate-spin" /> {s.updateAllRunning}
+                  <Loader2 className="animate-spin" /> {s.updateAllRunning}
                 </>
               ) : (
                 <>
-                  <RefreshCw className="size-3.5" /> {s.updateAll}
+                  <RefreshCw /> {s.updateAll}
                 </>
               )}
             </Button>

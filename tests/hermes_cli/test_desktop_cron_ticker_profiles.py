@@ -114,7 +114,13 @@ def test_enumeration_failure_fails_open(monkeypatch, _providers):
 
     ws._start_desktop_cron_ticker(threading.Event(), interval=11)
 
-    assert builtin.start_kwargs == {"interval": 11}
+    from hermes_constants import get_hermes_home
+
+    # This backend's own store only, behind the per-tick gateway gate (see the stand-down tests).
+    assert set(builtin.start_kwargs) == {"interval", "profile_homes", "profile_gate"}
+    assert builtin.start_kwargs["interval"] == 11
+    [(_name, home)] = builtin.start_kwargs["profile_homes"]()
+    assert home == Path(get_hermes_home())
 
 
 def test_external_provider_never_gets_profile_homes(monkeypatch, tmp_path):

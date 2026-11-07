@@ -9,8 +9,8 @@ imports in the generation selected after it:
 * an extra the user installed with the documented command (``hermes pm install --extra telegram``);
 * the MCP client (an HTTP MCP server in config.yaml must still connect: ``hermes mcp test``
   against a real local streamable-HTTP server);
-* a gateway platform enabled in config.yaml (Discord) — gated on #124228: PM never reads
-  ``platforms:`` from config, so the rebuilt environment has no SDK and the updater only warns;
+* a gateway platform enabled in config.yaml (Discord): the update installs the platform's extra
+  instead of only warning that the SDK is missing (#124228);
 * extras a main-era venv carried (``[all]`` plus ``[messaging]``) across the
   legacy-venv migration to the first PM generation.
 
@@ -28,7 +28,6 @@ from pathlib import Path
 
 import pytest
 
-from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core.mcp_plugins._helpers import HttpMcpServer
 from tests.e2e.core.upgrade import _helpers as H
 from tests.e2e.core.upgrade import _install_helpers as I
@@ -120,11 +119,9 @@ def test_repair_keeps_installed_extra_and_mcp(rebuilt):
 def test_configured_gateway_platform_has_its_sdk_after_update(rebuilt):
     sb, up, after = rebuilt["sb"], rebuilt["update"], rebuilt["after_update"]
     assert up.returncode == 0, P.diagnostics(sb, up)
-    with known_failure(r"configured discord platform has no SDK after `hermes update`: ModuleNotFoundError",
-                       "gated on #124228: PM builds ignore configured gateway platforms"):
-        assert after["imports"]["discord"] == "ok", (
-            f"configured discord platform has no SDK after `hermes update`: {after['imports']['discord']}\n"
-            + P.diagnostics(sb, up))
+    assert after["imports"]["discord"] == "ok", (
+        f"configured discord platform has no SDK after `hermes update`: {after['imports']['discord']}\n"
+        + P.diagnostics(sb, up))
 
 
 # ---------------------------------------------------------------------------
@@ -148,7 +145,7 @@ def migrated(tmp_path_factory, provider):
     assert uv is not None
     cp = subprocess.run([uv, "sync", "-q", "--locked", "--extra", "all", "--extra", "messaging",
                          "--python", str(leg.install / "venv" / "bin" / "python")],
-                        cwd=str(leg.install), env=uv_env, capture_output=True, text=True, timeout=1800)
+                        cwd=str(leg.install), env=uv_env, capture_output=True, text=True, timeout=1800, check=False)
     assert cp.returncode == 0, f"harness: messaging install into the N-1 venv failed:\n{cp.stderr[-4000:]}"
     with (leg.install / "pyproject.toml").open("rb") as fh:
         assert "messaging" in tomllib.load(fh)["project"]["optional-dependencies"], "harness: N-1 has no messaging extra"

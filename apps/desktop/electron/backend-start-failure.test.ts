@@ -7,11 +7,14 @@ import {
   isHostKeyChangedBootFailure,
   isRetryableRemoteBootFailure,
   isSshAuthFailedBootFailure,
+  isSshClientFailedBootFailure,
   shouldHoldBootProgressForReauth,
   shouldLatchBackendStartFailure,
   shouldLatchHostKeyChangedFailure,
   shouldLatchRemoteReauthFailure,
-  shouldLatchSshAuthFailure
+  shouldLatchSshAuthFailure,
+  shouldLatchSshClientFailure,
+  sshClientFailedError
 } from './backend-start-failure'
 import { SshConnection } from './ssh-connection'
 
@@ -210,4 +213,43 @@ test('FIX #95701: with no reauth latch every boot-progress update flows as befor
     assert.equal(shouldHoldBootProgressForReauth(latch, {}), false)
     assert.equal(shouldHoldBootProgressForReauth(latch, { error: 'Desktop boot failed: spawn ENOENT' }), false)
   }
+})
+
+test('FIX #103288: a failed local `ssh -G` probe latches and is never auto-retried', () => {
+  const error = sshClientFailedError(
+    'C:\\Windows\\System32\\OpenSSH\\ssh.exe',
+    new Error('Command failed: ssh.exe -G -- box'),
+    'win32'
+  )
+
+  assert.equal(isSshClientFailedBootFailure(error), true)
+  assert.match(error.message, /System32\\OpenSSH\\ssh\.exe/)
+  assert.match(error.message, /Command failed/)
+  assert.match(error.message, /desktop\.ssh_path/)
+
+  const context = { attemptedRemote: true, isReauth: false, isSshClientFailed: true }
+
+  assert.equal(shouldLatchSshClientFailure(context), true)
+  assert.equal(isRetryableRemoteBootFailure(context), false)
+
+  // Ordinary remote faults keep retrying; local boots never take this latch.
+  const unreachable = new Error('ssh: connect to host box port 22: Connection timed out')
+
+  assert.equal(isSshClientFailedBootFailure(unreachable), false)
+  assert.equal(
+    isRetryableRemoteBootFailure({
+      attemptedRemote: true,
+      isReauth: false,
+      isSshClientFailed: isSshClientFailedBootFailure(unreachable)
+    }),
+    true
+  )
+  assert.equal(shouldLatchSshClientFailure({ attemptedRemote: false, isReauth: false, isSshClientFailed: true }), false)
+})
+
+test('FIX #103288: the desktop.ssh_path hint is Windows-only', () => {
+  const error = sshClientFailedError('ssh', new Error('boom'), 'darwin')
+
+  assert.equal(isSshClientFailedBootFailure(error), true)
+  assert.doesNotMatch(error.message, /ssh_path/)
 })

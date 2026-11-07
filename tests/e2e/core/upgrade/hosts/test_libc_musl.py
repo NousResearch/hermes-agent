@@ -21,7 +21,6 @@ from pathlib import Path
 
 import pytest
 
-from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core.upgrade import _helpers as H
 from tests.e2e.core.upgrade import _install_helpers as I
 from tests.e2e.core.upgrade.hosts import _hosts as X
@@ -34,7 +33,7 @@ def _docker_reason() -> str | None:
     if exe is None:
         return "docker CLI not installed; the musl host shape runs in an Alpine container"
     try:
-        cp = subprocess.run([exe, "info", "--format", "{{.ServerVersion}}"], capture_output=True, text=True, timeout=30)
+        cp = subprocess.run([exe, "info", "--format", "{{.ServerVersion}}"], capture_output=True, text=True, timeout=30, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return f"docker daemon unreachable ({exc})"
     if cp.returncode != 0:
@@ -79,12 +78,12 @@ def alpine_install(tmp_path_factory):
     shutil.copy(H.WORKTREE / "scripts" / "install.sh", work / "install.sh")
     # The --shared origin borrows objects from this checkout's object store: mount it too.
     objects = Path(I.git("rev-parse", "--path-format=absolute", "--git-common-dir", cwd=H.WORKTREE)) / "objects"
-    pull = subprocess.run(["docker", "pull", "-q", IMAGE], capture_output=True, text=True, timeout=600)
+    pull = subprocess.run(["docker", "pull", "-q", IMAGE], capture_output=True, text=True, timeout=600, check=False)
     assert pull.returncode == 0, f"docker pull {IMAGE} failed (network?):\n{pull.stderr[-2000:]}"
-    argv = ["docker", "run", "--rm", "-e", f"ORIGIN={origin}",
+    argv = ["docker", "run", "--rm", "-e", f"ORIGIN={origin}", "-e", "HERMES_INSTALL_CHANNEL=main",
             "-v", f"{origin}:{origin}:ro", "-v", f"{objects}:{objects}:ro", "-v", f"{work}:/work:ro",
             IMAGE, "sh", "-c", SCRIPT]
-    cp = subprocess.run(argv, capture_output=True, text=True, timeout=1800)
+    cp = subprocess.run(argv, capture_output=True, text=True, timeout=1800, check=False)
     assert cp.returncode != 90, "harness: apk could not install bash/git/curl in the container:\n" + I.describe(cp)
     return cp
 
@@ -114,13 +113,11 @@ def test_musl_host_gets_runnable_tools_or_a_refusal_naming_musl(alpine_install):
     install_log = after_banner.partition("\n")[2] + cp.stderr
     assert I.TRACEBACK not in install_log, "install.sh crashed with a traceback on musl:\n" + I.describe(cp)
     dead = [f"{path} (rc={code})" for code, path in probes if code != 0]
-    with known_failure(r"musl host: (installer failed without naming musl|published tool binaries that cannot execute)",
-                       "gated on #123682: no musl detection, so PM stages glibc uv/Python/Node on musl hosts"):
-        if rc != 0:
-            assert "musl" in install_log.lower(), (
-                f"musl host: installer failed without naming musl as the reason (rc={rc}):\n" + I.describe(cp))
-        assert not dead, ("musl host: published tool binaries that cannot execute: " + ", ".join(dead)
-                          + "\n" + I.describe(cp))
+    if rc != 0:
+        assert "musl" in install_log.lower(), (
+            f"musl host: installer failed without naming musl as the reason (rc={rc}):\n" + I.describe(cp))
+    assert not dead, ("musl host: published tool binaries that cannot execute: " + ", ".join(dead)
+                      + "\n" + I.describe(cp))
     if rc == 0:
         hermes = [p for code, p in probes if p.endswith("/.local/bin/hermes")]
         assert hermes, "musl host: install exited 0 but published no hermes command:\n" + I.describe(cp)

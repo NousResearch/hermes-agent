@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
@@ -24,7 +25,7 @@ logger = logging.getLogger(__name__)
 class GatewayPluginRewireMixin:
     """Subscribe once per plugin manager; re-wire that profile's adapters on every loaded event."""
 
-    _plugin_rewire_unsubscribe: Optional[Dict[str, Callable[[], None]]] = None
+    _plugin_rewire_unsubscribe: Optional[dict[str, Callable[[], None]]] = None
 
     def _subscribe_plugin_rewire(self, manager: Any, profile_name: Optional[str] = None,
                                  profile_home: Optional[Path] = None) -> None:
@@ -89,7 +90,7 @@ def reload_plugins_verb(runner: Any, loop: asyncio.AbstractEventLoop) -> Callabl
     def _handler(params: Optional[dict] = None) -> dict:
         from hermes_constants import get_hermes_home, hermes_home_key
         from hermes_cli.plugins import discover_plugins, get_plugin_manager
-        from hermes_cli.plugins_activation import activation_summaries
+        from hermes_cli.plugins_activation import activation_summaries, dependency_blocked_summaries
         from gateway.run import _profile_runtime_scope
         params = params or {}
         gateway_home = Path(get_hermes_home())
@@ -108,7 +109,11 @@ def reload_plugins_verb(runner: Any, loop: asyncio.AbstractEventLoop) -> Callabl
         with scope:
             discover_plugins(force=True)
             manager = get_plugin_manager()
-            names, activations = sorted(manager._plugins), activation_summaries(manager)
+            # A plugin that failed on a dependency this gateway booted without rides along, so the
+            # enabling caller asks for the restart that loads it.
+            names = sorted(manager._plugins)
+            activations = activation_summaries(manager) + dependency_blocked_summaries(manager)
+        _reconcile_plugin_mcp_servers(runner, requested)
         try:
             rewired = asyncio.run_coroutine_threadsafe(_count_adapters(runner, profile_name), loop).result(timeout=5.0)
         except Exception:
@@ -117,6 +122,41 @@ def reload_plugins_verb(runner: Any, loop: asyncio.AbstractEventLoop) -> Callabl
                 "adapters_rewired": rewired}
 
     return _handler
+
+
+# Long enough for a local stdio server to connect, short enough to stay well inside the caller's
+# 30 s socket timeout: a slow server keeps connecting in the background after the answer goes out.
+_MCP_CONNECT_WAIT_S = 10.0
+
+
+def _reconcile_plugin_mcp_servers(runner: Any, home: Path) -> None:
+    """Connect the MCP servers a just-enabled plugin declares (and drop a disabled one's) now, so the
+    next session's tool list has them. The forced re-discovery only registers their configs; until
+    this, the housekeeping reconcile connected them up to a minute later, and every session started in
+    that window came up without the plugin's tools. Runs under the same profile scope that chore binds,
+    on its own thread so a slow server delays the answer by at most ``_MCP_CONNECT_WAIT_S``."""
+    from gateway.run import _profile_runtime_scope
+    from gateway.run_turn import GatewayTurnMixin
+
+    multiplex = bool(getattr(getattr(runner, "config", None), "multiplex_profiles", False))
+
+    def _reconcile() -> None:
+        from tools.mcp_oauth import suppress_interactive_oauth
+        from tools.mcp_tool_discovery import reconcile_mcp_servers_with_config
+        scope = _profile_runtime_scope(home) if multiplex else GatewayTurnMixin._standalone_launch_scope()
+        try:
+            with scope, suppress_interactive_oauth():
+                result = reconcile_mcp_servers_with_config()
+        except Exception:
+            logger.warning("MCP reconcile after reload-plugins failed for %s", home, exc_info=True)
+            return
+        if result["removed"] or result["added"]:
+            logger.info("MCP servers reconciled after reload-plugins (%s): removed=%s added=%s",
+                        home, result["removed"], result["added"])
+
+    thread = threading.Thread(target=_reconcile, name="reload-plugins-mcp", daemon=True)
+    thread.start()
+    thread.join(timeout=_MCP_CONNECT_WAIT_S)
 
 
 async def _count_adapters(runner: Any, profile_name: Optional[str]) -> int:

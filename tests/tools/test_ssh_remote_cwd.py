@@ -12,8 +12,8 @@ import pytest
 
 import tools.file_tools_paths as paths
 import tools.file_tools_write_guards as write_guards
-import tools.terminal_tool as terminal_tool
-import tools.file_tools as file_tools
+from tools import terminal_tool
+from tools import file_tools
 from tools.file_tools_write_guards import _check_sensitive_path
 from tools.terminal_tool_config import coerce_ssh_remote_cwd
 

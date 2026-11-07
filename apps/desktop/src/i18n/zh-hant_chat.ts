@@ -232,6 +232,8 @@ export const zhHantChat = {
     stop: '停止',
     dismiss: '關閉',
     exit: code => `結束碼 ${code}`,
+    quietFor: duration => `${duration} 無輸出`,
+    runningFor: duration => `已執行 ${duration}`,
     control: {
       goalActiveTurns: (turn, maxTurns) => `第 ${turn}/${maxTurns} 輪`,
       goalDoneTurns: turns => `共 ${turns} 輪`,

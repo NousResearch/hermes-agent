@@ -588,6 +588,7 @@ class ProcessSession:
     watch_patterns: list[str] = field(default_factory=list)
     heartbeat_seconds: int = 0                  # 0 = off; else a "heartbeat" event every N s while running
     total_output_chars: int = 0                 # Chars ever ingested (the buffer is a rolling tail)
+    last_output_at: float = 0.0                 # time.time() of the newest output chunk (0 = none yet)
     _heartbeat_last: float = field(default=0.0, repr=False)          # time of the last heartbeat (or spawn)
     _heartbeat_total_at_last: int = field(default=0, repr=False)     # total_output_chars at that moment
     _heartbeat_seq: int = field(default=0, repr=False)
@@ -636,6 +637,8 @@ class ProcessSession:
     def _append_locked(self, text: str) -> None:
         self.output_buffer += text
         self.total_output_chars += len(text)
+        if text:
+            self.last_output_at = time.time()
         if len(self.output_buffer) > self.max_output_chars:
             self.output_buffer = self.output_buffer[-self.max_output_chars:]
 
@@ -1451,9 +1454,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                     with session._lock:
                         if session.exited:
                             return
-                        session.output_buffer += delta
-                        if len(session.output_buffer) > session.max_output_chars:
-                            session.output_buffer = session.output_buffer[-session.max_output_chars:]
+                        session._append_locked(delta)
                     self._check_watch_patterns(session, delta)
                     self._emit_output(session, delta)
 
@@ -2396,6 +2397,11 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 "status": "exited" if s.exited else "running",
                 "output_preview": s.output_buffer[-200:] if s.output_buffer else "",
             }
+            # Seconds since the process last printed, so a status surface can tell a quiet
+            # leftover (idle preview server, read hung on a dead mount) from live work. A
+            # detached session has no pipe to observe, so it reports nothing.
+            if not s.exited and not s.detached and s.started_at:
+                entry["idle_seconds"] = int(time.time() - (s.last_output_at or s.started_at))
             # Flag processes surfaced only because they share the gateway session (not the current task) —
             # these are the long-lived background processes a user may have forgotten about (#29177).
             if task_id and session_key and s.owner_task_id != task_id and s.session_key == session_key:

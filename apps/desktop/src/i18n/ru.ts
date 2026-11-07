@@ -2775,6 +2775,8 @@ export const ruOverrides = {
     stop: 'Стоп',
     dismiss: 'Скрыть',
     exit: code => `exit ${code}`,
+    quietFor: duration => `нет вывода ${duration}`,
+    runningFor: duration => `работает ${duration}`,
     control: {
       goalActiveTurns: (turn, maxTurns) => `Ход ${turn}/${maxTurns}`,
       goalDoneTurns: turns => `${turns} ходов`,

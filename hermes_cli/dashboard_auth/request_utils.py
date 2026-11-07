@@ -77,7 +77,10 @@ def cookie_origin_is_allowed(request: Request) -> bool:
         request.headers.get("host", ""), bound_host,
         getattr(request.app.state, "trusted_public_hosts", frozenset()),
     ):
-        return False
+        from hermes_cli.tailnet_identity import connection_login
+
+        if not connection_login(request, request.app.state):
+            return False
     origins = request.headers.getlist("origin")
     fetch_sites = request.headers.getlist("sec-fetch-site")
     if not origins:

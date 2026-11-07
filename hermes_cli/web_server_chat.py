@@ -240,7 +240,16 @@ def _ws_auth_reason(ws: WebSocket, *, allow_internal: bool = False,
     from hermes_cli.web_server import _SESSION_TOKEN, app
     from hermes_cli.browser_credential import generation_of
     from hermes_cli.web_session_sockets import OWN_TICKET_SOCKETS, track
+    from hermes_cli.tailnet_identity import connection_login
     auth_required = bool(getattr(app.state, "auth_required", False))
+    if (HEADER not in ws.headers and ws.headers.get("tailscale-user-login")
+            and connection_login(ws, app.state)):
+        # A listed tailnet login proxied by tailscale serve (webapp.tailscale_logins) is the owner, like
+        # the page it already signs in: native clients (the iOS app) have no page to read a token from.
+        offered = [p.strip() for p in str(ws.headers.get("sec-websocket-protocol", "") or "").split(",")]
+        if _GATEWAY_WS_PROTOCOL in offered:  # a browser that offered the protocol needs it echoed back
+            ws._hermes_ws_subprotocol = _GATEWAY_WS_PROTOCOL
+        return None, "tailnet"
     # The Webapp's own rules (socket tickets on the loopback gate, the server's credential only where
     # its spawned clients dial) apply on its listener; the standalone dashboard and serve keep main's.
     webapp = getattr(app.state, "ui_surface", None) == "webapp"

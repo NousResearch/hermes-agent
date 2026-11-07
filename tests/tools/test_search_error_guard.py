@@ -85,6 +85,16 @@ class TestSearchErrorGuard:
         assert "Search failed" in res.error
         assert not res.matches
 
+    def test_leading_dash_regex_is_not_parsed_as_an_option(self, method, match_tree):
+        (match_tree / "flag.txt").write_text("--plan configured\n")
+
+        res = _search(_ops(match_tree), method, r"--plan( |$)", match_tree)
+
+        assert res.error is None
+        assert [(match.path, match.line_number, match.content) for match in res.matches] == [
+            (str(match_tree / "flag.txt"), 1, "--plan configured"),
+        ]
+
 
     def test_count_mode_with_partial_error(self, method, partial_error_tree):
         res = _search(_ops(partial_error_tree), method, "needle",

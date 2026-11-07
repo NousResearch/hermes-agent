@@ -2497,6 +2497,11 @@ def _event_media_is_stt_input(event, index: int) -> bool:
     message_type = getattr(event, "message_type", None)
     if message_type in {MessageType.AUDIO, MessageType.DOCUMENT}:
         return False
+    # Audio quoted from the bot's own message (user replying to the bot's voice
+    # note) is context, not user speech; transcribing it back as user input is
+    # the #150824 failure. Human-replied audio stays STT-eligible.
+    if getattr(event, "reply_to_is_own_message", False):
+        return False
     return message_type == MessageType.VOICE or _event_media_type_at(event, index).startswith("audio/")
 
 

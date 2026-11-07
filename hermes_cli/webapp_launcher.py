@@ -85,7 +85,7 @@ def _control(home, verb: str, params: dict | None = None) -> dict:
     from hermes_cli.gateway_client import private_control_query
     request = json.dumps({"protocol": 1, "id": 1, "verb": verb, "params": params or {}}).encode() + b"\n"
     try:
-        data = private_control_query(Path(home), request)
+        data = private_control_query(Path(home).resolve(), request)
         return json.loads(data.split(b"\n", 1)[0])
     except Exception as exc:  # no socket, a refused peer, a timeout or a garbled answer
         raise GatewayUnreachable(str(exc)) from exc

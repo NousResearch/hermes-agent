@@ -4521,6 +4521,7 @@
     }
    ],
    "model": "deepseek/deepseek-v4-pro",
+   "reasoning_effort": "off",
    "timeout": 1800.0,
    "tools": [
     {

@@ -52,6 +52,82 @@ return result.text
 and in `result.audit` so operators can see which plugin made which
 call. Optional but recommended for anything that fires often.
 
+## Incremental async output
+
+`astream()` is an **async context manager**, not an awaitable completion. It
+currently supports in-process, turn-less consumers using host-resolved **Chat
+Completions** SDK transports. The synchronous `stream()` API is not implemented.
+Native Anthropic, Responses/Codex, Bedrock, native Gemini and subprocess adapters
+are explicitly refused before inference: their current auxiliary wrappers can
+aggregate internally. No completed response is split into pretend deltas.
+
+```python
+# In register(ctx): give this consumer an independent model-picker slot.
+ctx.register_auxiliary_task(
+    "realtime", display_name="Realtime responses",
+    description="Low-latency text generation for this plugin",
+)
+
+# In an async consumer outside an agent turn:
+async with ctx.llm.astream(
+    messages=[{"role": "user", "content": "Give a short greeting."}],
+    task="realtime", max_tokens=128, timeout=15,
+    max_output_chars=4096, purpose="realtime.greeting",
+) as stream:
+    async for event in stream:
+        if event.type == "text_delta":
+            await send_text(event.text)
+        elif event.type == "end":
+            record_usage(event.usage, event.provider, event.model, event.finish_reason)
+```
+
+The operator configures `auxiliary.realtime.provider/model` through Hermes's
+existing auxiliary model picker. The plugin owns the slot, so `task="realtime"`
+does not require permission to override a provider or model. Without a pinned
+slot, routing follows the active host model. All provider/model/profile/agent-id
+overrides and foreign or built-in task slots use the existing completion trust
+gates. There are no credential, endpoint, HTTP-client or arbitrary request-body
+arguments on this API. Each call uses only the supplied messages, copied at
+creation; it never loads memory, appends private history, or executes tools.
+
+`PluginLlmStreamEvent` and `PluginLlmStreamError` are exported from
+`agent.plugin_llm`. Events contain only normalized text or an `end` result.
+Reasoning and tool payloads are not exposed. The terminal result carries the
+provider's actual finish reason (including `length` and `tool_calls`), final
+usage including usage-only tails, routing attribution and plugin audit metadata.
+Missing finish reasons raise `PluginLlmStreamError`; the API does not invent
+`stop`. A tool finish reason is information, never a request to execute tools.
+
+The consumer must use `async with`, even when breaking out early. `aclose()`
+interrupts a pending open/read and closes only that request's stream, never the
+shared host client. Cancellation propagates as `asyncio.CancelledError`; the
+overall deadline raises `TimeoutError`. The deadline includes routing, opening,
+iteration and consumer pauses, and closes abandoned streams even without another
+pull. Stream cleanup has a separate two-second bound. Pull-based iteration has
+no producer queue. Blocking host resolution is limited to four admitted workers;
+a stuck resolver retains its admission until it exits, so repeated timeouts
+cannot create unbounded queued work. Saturated resolution fails explicitly.
+A profile switch between creation and opening or consumption fails closed.
+`timeout` (including its configured default) must be a positive finite number;
+`max_tokens`, when supplied, and `max_output_chars` must be positive integers.
+Booleans are not accepted as numeric bounds. Invalid bounds fail before host
+planning or provider dispatch; `max_tokens=None` retains host defaults.
+
+This initial API has **no fallback or retry**, either before or after a visible
+delta. Provider readiness and unsupported streaming errors propagate rather than
+silently routing elsewhere or buffering. A successful exhaustion emits one audit
+line and reports usage once; it does not add another billing ledger entry.
+
+**Isolation/agent limitations:** request/response plugin-host IPC cannot carry
+this iterator; `plugins.isolation: host` explicitly raises `PluginHostUnsupported`
+before dispatch. Calls inside a managed agent/Relay turn are also explicitly
+refused rather than bypassing managed request policy/accounting. Use the existing
+completion methods in those contexts. This is not a claim that all providers,
+agent hooks, or isolated plugin processes support live streaming. Native-wire,
+managed-stream accounting/observer parity and synchronous streaming remain
+follow-up work. Tests use synthetic SSE over an SDK mock HTTP transport and do
+not spend provider credits; no live voice-service integration is implied.
+
 ## Structured output
 
 When the plugin needs a typed answer, switch to the structured lane:
@@ -86,9 +162,9 @@ model couldn't produce valid JSON, `result.parsed` is `None` and
   credential pool, per-task aux overrides — every credential
   concept Hermes already has applies. The plugin never sees a
   token; the host attributes the call back through `result.audit`.
-* **Bounded.** Single sync or async call. No streaming, no tool
-  loops, no conversation state to manage. State the input, get the
-  result, return.
+* **Bounded.** Single sync or async completion, or an incremental async
+  stream on supported transports. No tool loops or private conversation state.
+  State the input, get the result, return.
 * **Fail-closed trust.** A plugin you've never configured cannot
   pick its own provider, model, agent, or stored credential. The
   default posture is "use what the user is using." Operators opt in

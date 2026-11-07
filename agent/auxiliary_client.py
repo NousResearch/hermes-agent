@@ -7279,11 +7279,11 @@ def _resolve_call_client(
     api_key: Optional[str], resolved_provider: str, resolved_model: Optional[str],
     resolved_base_url: Optional[str], resolved_api_key: Optional[str],
     resolved_api_mode: Optional[str], main_runtime: Optional[dict[str, Any]], async_mode: bool,
+    strict_resolution: bool = False,
 ) -> _ResolvedAuxRoute:
-    """Resolve the client for one aux call: vision chain, or cached text client with the
-    explicit-provider fallback_chain / auto-chain rescue; RuntimeError when nothing is configured."""
+    """Resolve a host client; strict_resolution disables unavailable-provider rescue (default unchanged)."""
     effective_provider = resolved_provider
-    if task == "vision":
+    if task == "vision" and not strict_resolution:
         effective_provider, client, final_model = resolve_vision_provider_client(
             provider=resolved_provider if resolved_provider != "auto" else provider,
             model=resolved_model or model, base_url=resolved_base_url or base_url,
@@ -7303,6 +7303,8 @@ def _resolve_call_client(
             api_key=resolved_api_key, api_mode=resolved_api_mode, main_runtime=main_runtime,
             task=task)
         effective_provider = _effective_provider_for_client(client, resolved_provider)
+        if client is None and strict_resolution:
+            raise AuxiliaryClientUnavailable(f"Selected provider {resolved_provider} unavailable for task={task}; strict resolution forbids fallback")
         if client is None:
             # Explicit provider with no credentials: honor the task fallback_chain before
             # raising (fallback entries may use OAuth / credential-pool auth).
@@ -7356,10 +7358,9 @@ def _prepare_aux_request(
     timeout: Optional[float], extra_body: Optional[dict], reasoning_config: Optional[dict],
     extra_headers: Optional[dict[str, str]], api_mode: Optional[str],
     route_info: Optional[dict[str, str]], async_mode: bool,
+    strict_resolution: bool = False,
 ) -> _PreparedAuxRequest:
-    """Shared head of call_llm/async_call_llm: resolve route + client, publish it, build request kwargs.
-    Sync-only: compression fast lane, per-request ``extra_headers``, and ``base_info`` falling
-    back to the resolved base_url when the client exposes none."""
+    """Resolve/publish the host route and build kwargs; strict_resolution opts out of rescue."""
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
     if api_mode:
@@ -7371,10 +7372,10 @@ def _prepare_aux_request(
         resolved_provider=resolved_provider, resolved_model=resolved_model,
         resolved_base_url=resolved_base_url, resolved_api_key=resolved_api_key,
         resolved_api_mode=resolved_api_mode, main_runtime=main_runtime, async_mode=async_mode,
+        **({'strict_resolution': True} if strict_resolution else {}),
     )
     effective_timeout = _effective_aux_timeout(task, timeout)
-    # Codex-Responses-only: real SDK clients reject an unrecognized ``no_progress_timeout``
-    # kwarg, so only resolve/forward it when the route is actually a Codex stream (#108104).
+    # Only Codex accepts no_progress_timeout; real SDK clients reject it (#108104).
     no_progress_timeout = (
         _get_task_no_progress_timeout(task)
         if isinstance(client, (CodexAuxiliaryClient, AsyncCodexAuxiliaryClient)) else None
@@ -7972,11 +7973,9 @@ def _plan_aux_call(
     timeout: Optional[float], extra_body: Optional[dict], reasoning_config: Optional[dict],
     extra_headers: Optional[dict[str, str]], api_mode: Optional[str],
     route_info: Optional[dict[str, str]],
+    strict_resolution: bool = False,
 ) -> tuple[_PreparedAuxRequest, dict[str, Any], dict[str, Any]]:
-    """Shared head of both call impls: prepare the request and bundle the kwargs the recovery
-    drivers pass to ``_retry_same_provider_*`` / ``_call_fallback_candidate_*``. One immutable
-    runtime snapshot for keying/resolution/retries/fallbacks, so a concurrent /model switch
-    can't mix key and client from different runtimes."""
+    """Plan request/recovery kwargs from one runtime snapshot; strict_resolution disables route rescue."""
     main_runtime = _normalize_main_runtime(main_runtime)
     req = _prepare_aux_request(
         task, provider=provider, model=model, base_url=base_url, api_key=api_key,
@@ -7984,6 +7983,7 @@ def _plan_aux_call(
         max_tokens=max_tokens, tools=tools, timeout=timeout, extra_body=extra_body,
         reasoning_config=reasoning_config, extra_headers=extra_headers,
         api_mode=api_mode, route_info=route_info, async_mode=async_mode,
+        **({'strict_resolution': True} if strict_resolution else {}),
     )
     candidate_kwargs = dict(
         task=task, messages=messages, temperature=temperature, max_tokens=max_tokens,

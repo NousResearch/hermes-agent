@@ -1,6 +1,7 @@
 """Retirement is atomic across connections and health checks leave writers free."""
 
 import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -158,3 +159,27 @@ def test_no_usable_temporary_directory_is_not_reported_as_damage(cjk_db, monkeyp
     monkeypatch.setattr(tempfile, "gettempdir", no_tempdir)
     reason = repair._db_opens_cleanly(cjk_db)
     assert isinstance(reason, repair.HealthCheckUnavailable) and "No usable temporary directory" in reason
+
+
+def test_a_copy_sqlite_cannot_write_is_not_reported_as_damage(cjk_db, monkeypatch, tmp_path):
+    import os
+    import tempfile
+
+    unwritable = tmp_path / "unwritable"
+    unwritable.mkdir()
+    real = tempfile.TemporaryDirectory
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", lambda **kw: real(dir=unwritable, **kw))
+    real_conn = repair._repair_conn
+
+    def readonly_destination(path, *args, **kwargs):
+        if Path(path).parent.parent == unwritable:
+            os.chmod(Path(path).parent, 0o500)
+        return real_conn(path, *args, **kwargs)
+
+    monkeypatch.setattr(repair, "_repair_conn", readonly_destination)
+    try:
+        reason = repair._db_opens_cleanly(cjk_db)
+    finally:
+        for child in unwritable.iterdir():
+            os.chmod(child, 0o700)
+    assert isinstance(reason, repair.HealthCheckUnavailable), reason

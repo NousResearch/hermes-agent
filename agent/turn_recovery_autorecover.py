@@ -71,6 +71,29 @@ def ladder_notice(agent: Any, *, wait_s: float, cycle: int, total: int) -> str:
     return f"{text}; {hint}" if hint else text
 
 
+def auto_recovery_progress_enabled(agent: Any) -> bool:
+    """Presentation-only opt-out on WhatsApp, using the owning turn's config.
+
+    Defaults to visible progress. Interrupts, retries and the final exhausted
+    diagnostic are unaffected; other surfaces keep their current behavior.
+    """
+    if str(getattr(agent, "platform", "") or "").lower() != "whatsapp":
+        return True
+    value = getattr(agent, "_notification_config", None)
+    for key in ("display", "platforms", "whatsapp"):
+        if not isinstance(value, dict):
+            return True
+        value = value.get(key)
+    if not isinstance(value, dict):
+        return True
+    value = value.get("auto_recovery_progress")
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.strip().lower() in {"false", "0", "no", "off"}:
+        return False
+    return True
+
+
 def auto_recover_after_exhaustion(
     agent: Any, api_error: Any, classified: Any, _retry: Any, *, messages: Any,
     conversation_history: Any, api_call_count: int,
@@ -96,8 +119,9 @@ def auto_recover_after_exhaustion(
     notice = ladder_notice(agent, wait_s=wait_s, cycle=cycle, total=total)
     # Durable line on every surface (CLI print, TUI status.update, gateway bubble, api_server SSE)
     # plus the live wait line (spinner / thinking.delta / activity heartbeat).
-    agent._emit_diagnostic_status(notice)
-    agent._emit_diagnostic_wait(notice)
+    if auto_recovery_progress_enabled(agent):
+        agent._emit_diagnostic_status(notice)
+        agent._emit_diagnostic_wait(notice)
     logger.warning(
         "%sProvider unavailable (%s) — auto-recovery cycle %d/%d, retrying in %.0fs %s",
         agent.log_prefix, classified.reason.value, cycle, total, wait_s, agent._client_log_context(),

@@ -52,6 +52,23 @@ def test_gpt61_sol_takes_astra_ladder_without_astra_gating():
     assert "none" in codex_supported_efforts("gpt-6-sol")
 
 
+def test_gpt61_terra_gets_the_graded_ladder_up_to_max():
+    """``gpt-6.1-terra`` is live (2026-11): ``max`` is its top tier and ``none`` still disables it.
+
+    Regression pin for both halves of the ladder: dropping the prefix silently clamps ``max`` down to
+    ``xhigh`` (the old legacy vocabulary), and mistaking it for a no-disable model would send ``none``
+    differently on the wire.
+    """
+    from agent.reasoning_effort import CODEX_ASTRA_EFFORTS, route_supported_efforts
+
+    for slug in ("gpt-6.1-terra", "openai/gpt-6.1-terra", "gpt-6.1-terra-2026-10-01",
+                 "gpt-6.1-terra-pro", "gpt-6.1-terra-900k"):
+        assert codex_supported_efforts(slug) == CODEX_GPT56_EFFORTS, slug
+        assert "max" in route_supported_efforts("openai-codex", slug), slug
+    assert "none" in codex_supported_efforts("gpt-6.1-terra")
+    assert codex_supported_efforts("gpt-6.1-sol") == CODEX_ASTRA_EFFORTS
+
+
 def test_openrouter_omits_disable_the_openai_ladder_rejects(monkeypatch):
     """OpenRouter's catalog advertises ``none`` for both Sol generations; only 6.1 must omit the disable."""
     import hermes_cli.models_reasoning_caps as caps_mod

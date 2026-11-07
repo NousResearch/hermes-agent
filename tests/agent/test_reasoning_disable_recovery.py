@@ -54,7 +54,7 @@ class _Agent:
 
 
 def _settle(disable_drop_attempted):
-    from agent.route_verdicts import _endpoint as _route_ep
+    from agent.route_verdicts import route_endpoint
     from agent.turn_api_error import settle_unrecovered_error
 
     agent = _Agent()
@@ -62,7 +62,7 @@ def _settle(disable_drop_attempted):
     classified = classify_api_error(err, provider="custom", model=agent.model)
     assert classified.reason == FailoverReason.reasoning_mandatory
     retry = SimpleNamespace(
-        reasoning_mandatory_retry_endpoint=_route_ep(agent) if disable_drop_attempted else None, image_shrink_retry_attempted=False,
+        reasoning_mandatory_retry_endpoint=route_endpoint(agent) if disable_drop_attempted else None, image_shrink_retry_attempted=False,
         provider_stale_refresh_attempted=False, primary_recovery_attempted=False,
         restart_with_redirected_messages=False,
     )

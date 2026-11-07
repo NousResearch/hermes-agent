@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shlex
 import threading
 import time
 from dataclasses import dataclass
@@ -32,6 +33,7 @@ from hermes_cli.gateway_connections_ssh_transport import (
     SshConnection,
     SshEndpoint,
     SshReachError,
+    build_exec_args,
     control_socket_path,
     default_control_dir,
     pick_local_port,
@@ -210,6 +212,23 @@ def disconnect(connection_id: str) -> bool:
             return False
         _teardown(tunnel)
         return True
+
+
+def interactive_shell_argv(connection: dict, cwd: str, *, root: Path) -> list[str]:
+    """The saved gateway's login shell over its existing SSH master, never remote HTTP serve.
+
+    Like native Desktop's terminal, the remote shell uses the SSH login environment. The
+    browser's profile is an attachment scope, not a profile directory on the serving machine.
+    """
+    ensure_tunnel(connection, root=root)
+    with _connection_lock(connection["id"]):
+        tunnel = _tunnels.get(connection["id"])
+        if tunnel is None or tunnel.fingerprint != _fingerprint(connection):
+            raise SshReachError("unknown", "The SSH connection changed while starting the terminal; retry.")
+        command = 'exec "$SHELL" -l'
+        if cwd:
+            command = f"cd {shlex.quote(cwd)} 2>/dev/null; {command}"
+        return [tunnel.ssh.ssh_binary, "-tt", *build_exec_args(tunnel.ssh.endpoint, command)]
 
 
 def close_all() -> None:

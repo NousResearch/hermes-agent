@@ -201,6 +201,14 @@ Detached shells are kept for **15 minutes** while the gateway runs, up to **16 h
 including detached ones. A gateway restart or update ends them. Reconnecting replays up to **1 MiB** of
 recent output; full-screen programs may need their own redraw command.
 
+A terminal opened on a saved SSH gateway runs a login shell over that connection's SSH
+transport, like the native app. The serving Webapp retains the SSH terminal across browser
+disconnects; its selected gateway and profile remain the attachment scope. The shell uses the
+remote SSH login environment, not a same-named profile on the Webapp host. Removing or
+re-pointing the saved connection ends its terminals. The remote `serve --isolated` does not
+need Webapp enabled. For an HTTP gateway connection, the remote must itself provide the
+Webapp host-terminal service; a plain `serve` or gateway listener does not expose host shells.
+
 The bundle's npm dependencies install into `.build/webapp-workspace` in the checkout, separately from
 the native Desktop, and reinstall only when the lockfile changes. With lazy installs disabled, a plain
 `hermes webapp` does not install them; `--build-only` or `--force-build` does.

@@ -78,6 +78,59 @@ _API_EXC_MODULE_PREFIXES = (
     "grpc", "requests", "aiohttp", "ssl", "socket", "urllib",
 )
 
+# Creation-time resolver evidence, not a string classifier or retry permission.
+# Unknown AuthError codes remain unclassified rather than becoming wire text.
+_RESOLUTION_AUTH_CODES = frozenset({
+    "codex_auth_missing", "codex_auth_missing_access_token",
+    "codex_auth_missing_refresh_token", "codex_auth_invalid_shape",
+    "missing_api_key", "invalid_provider", "no_provider_configured",
+})
+RESOLUTION_FAILURE_CODES = _RESOLUTION_AUTH_CODES | frozenset({
+    "codex_rate_limited", "launch_credentials_unavailable",
+    "local_runtime_unavailable", "host_error", "unclassified",
+})
+
+
+def resolution_failure_context(exc: BaseException) -> dict[str, str]:
+    """Bounded typed evidence captured before the resolver's exception is rendered.
+
+    Preserve the existing reply/retry verdict. No message, arbitrary class name,
+    credential, provider or model belongs in this additional diagnostic context.
+    """
+    code = "unclassified"
+    try:
+        from hermes_cli.auth import is_rate_limited_auth_error
+        from hermes_cli.auth_constants import AuthError
+        from hermes_cli.runtime_provider_custom import LocalRuntimeUnavailableError
+        from hermes_state_runtime import RuntimeStoreError
+
+        seen: set[int] = set()
+        link: BaseException | None = exc
+        host_error = False
+        while link is not None and id(link) not in seen and len(seen) < 8:
+            seen.add(id(link))
+            if isinstance(link, AuthError):
+                if is_rate_limited_auth_error(link):
+                    code = "codex_rate_limited"
+                elif isinstance(link.code, str) and link.code in _RESOLUTION_AUTH_CODES:
+                    code = link.code
+                break
+            if isinstance(link, LocalRuntimeUnavailableError):
+                code = "local_runtime_unavailable"
+                break
+            if isinstance(link, RuntimeStoreError) and link.reason == "launch_credentials_unavailable":
+                code = "launch_credentials_unavailable"
+                break
+            host_error = host_error or isinstance(link, OSError)
+            link = link.__cause__ or link.__context__
+        else:
+            if host_error and link is None:
+                code = "host_error"
+    except Exception:  # health: allow BLE001 -- Capture must preserve the original failure without logging private exception data.
+        # A broken resolver dependency must not replace the original failure.
+        logger.debug("Resolution failure context unavailable")
+    return {"stage": "runtime_resolution", "source": "typed_exception_chain", "code": code}
+
 
 def _is_custom_endpoint(provider: Optional[str]) -> bool:
     p = (provider or "").strip().lower()
@@ -209,6 +262,12 @@ def build_error_surface_from_result(result: Any, provider: str = "", model: str 
         # next to Retry instead of leaving the user to guess (#98852). Epoch seconds.
         if isinstance(resets_at := result.get("failure_resets_at"), (int, float)) and not isinstance(resets_at, bool):
             surface["resets_at"] = float(resets_at)
+        context = result.get("failure_context")
+        if (type(context) is dict and context.keys() == {"stage", "source", "code"}
+                and context["stage"] == "runtime_resolution"
+                and context["source"] == "typed_exception_chain"
+                and isinstance(context["code"], str) and context["code"] in RESOLUTION_FAILURE_CODES):
+            surface["failure_context"] = dict(context)
         return surface
     except Exception:  # pragma: no cover — never break the error path
         logger.debug("error_surface: result classification failed", exc_info=True)

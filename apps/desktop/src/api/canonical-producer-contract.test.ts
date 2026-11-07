@@ -166,12 +166,13 @@ const SITES: Array<[string, string, Record<string, unknown>, string[] | RegExp]>
     ['session.mutate', 'prompt.submit']
   ],
   [
-    'use-prompt-actions /handoff',
+    'use-prompt-actions /handoff request',
     'handoff.request',
     { session_id: 's', platform: 'telegram' },
-    /handoff\.request is not available/
+    ['handoff.request']
   ],
-  ['use-prompt-actions handoff poll', 'handoff.state', { session_id: 's' }, /handoff\.state is not available/],
+  ['use-prompt-actions handoff poll', 'handoff.state', { session_id: 's' }, ['handoff.state']],
+  ['use-prompt-actions handoff timeout cleanup', 'handoff.fail', { session_id: 's', error: 'timed out' }, ['handoff.fail']],
   [
     'use-preview-routing restart',
     'preview.restart',

@@ -26,7 +26,61 @@ _RUNTIME_KEYS = ('api_key', 'base_url', 'provider', 'requested_provider', 'api_m
 
 def handlers(connection):
     return {'prompt.background': partial(background, connection), 'prompt.btw': partial(btw, connection),
-            'preview.restart': partial(preview_restart, connection)}
+            'preview.restart': partial(preview_restart, connection),
+            'handoff.request': partial(handoff_request, connection), 'handoff.state': partial(handoff_state, connection),
+            'handoff.fail': partial(handoff_fail, connection)}
+
+
+async def handoff_request(connection, ref, params):
+    """Queue the canonical session row for the existing gateway handoff watcher."""
+    authority = connection.authority
+    authorize(connection, ref, params, 'session:control')
+    live = authority.sessions[ref.session_id]
+    platform_name = str(params.get('platform') or '').strip().lower()
+    if not platform_name:
+        raise RuntimeStoreError('invalid_params', field='platform', detail='platform required')
+    from gateway.config import Platform, load_gateway_config
+    try:
+        platform = Platform(platform_name)
+    except ValueError:
+        raise RuntimeStoreError('invalid_params', field='platform', detail=f"unknown platform '{platform_name}'") from None
+    try:
+        config = load_gateway_config()
+    except Exception as exc:
+        raise RuntimeStoreError('configuration_unavailable', field='platform',
+                                detail='could not load gateway config') from exc
+    if not getattr(config.platforms.get(platform), 'enabled', False):
+        raise RuntimeStoreError('platform_not_configured', field='platform',
+                                detail=f"platform '{platform_name}' is not configured/enabled in the gateway")
+    if not (home := config.get_home_channel(platform)) or not home.chat_id:
+        raise RuntimeStoreError('handoff_home_unavailable', field='platform',
+                                detail=f'no home channel configured for {platform_name}')
+    async with live.mutation_lock:
+        with live.event_stream.lock:
+            if authority._pending_rows(ref):
+                raise RuntimeStoreError('session_busy', field='session_id',
+                                        detail='wait for the current turn to finish, then retry the handoff')
+        if not await asyncio.to_thread(authority.db.request_handoff, ref.session_id, platform_name):
+            raise RuntimeStoreError('handoff_in_flight', field='session_id',
+                                    detail='session is already in flight for handoff; wait for it to settle, then retry')
+    return {'queued': True, 'session_key': ref.session_id, 'platform': platform_name, 'home_name': home.name or ''}
+
+
+async def handoff_state(connection, ref, params):
+    """Poll the owner store row the gateway watcher claims and re-binds."""
+    authorize(connection, ref, params, 'session:read')
+    record = await asyncio.to_thread(connection.authority.db.get_handoff_state, ref.session_id) or {}
+    return {field: record.get(field) or '' for field in ('state', 'platform', 'error')}
+
+
+async def handoff_fail(connection, ref, params):
+    """Let the Desktop timeout fail only an unclaimed request; the watcher owns ``running``."""
+    authorize(connection, ref, params, 'session:control')
+    db = connection.authority.db
+    reason = str(params.get('error') or 'handoff failed').strip()[:500]
+    failed = await asyncio.to_thread(db.fail_handoff, ref.session_id, reason, only_states=('pending',))
+    record = {} if failed else await asyncio.to_thread(db.get_handoff_state, ref.session_id) or {}
+    return {'failed': bool(failed), 'state': 'failed' if failed else record.get('state') or ''}
 
 
 def _admit(connection, ref, params, prefix, required='text', optional=()):

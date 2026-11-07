@@ -596,3 +596,190 @@ def test_lineage_parent_trust_accepts_root_owner_and_refuses_other_owner():
     other = SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_uid=os.geteuid() + 1)
     with pytest.raises(lineage.SessionLineageInventoryError, match='owner'):
         lineage._validate_lineage_parent(Path('/synthetic'), other)
+
+
+@pytest.fixture
+def legacy_barrier_store(tmp_path, monkeypatch):
+    root = tmp_path / 'hermes'
+    profile = root / 'profiles' / 'science'
+    profile.mkdir(parents=True)
+    monkeypatch.setenv('HERMES_HOME', str(root))
+    db = SessionDB(profile / 'state.db')
+    db.create_session('legacy-barrier', 'cli')
+    yield db, root
+    if db._conn is not None:
+        db.close()
+
+
+def _legacy_marker(db, root):
+    _, prefix = db._token_marker_prefix()
+    directory = root / '.session-lineage-locks' / 'accounting'
+    directory.mkdir(parents=True, exist_ok=True)
+    marker = directory / (prefix + 'fixture.lock')
+    marker.write_bytes(b'legacy pending')
+    return marker
+
+
+@pytest.mark.parametrize('writer_state', ['closed', 'stopped', 'failed_worker'])
+def test_closed_queue_refuses_matching_legacy_marker(legacy_barrier_store, writer_state):
+    import sqlite3
+    db, root = legacy_barrier_store
+    _, prefix = db._token_marker_prefix()
+    if writer_state == 'closed':
+        db.close()
+    elif writer_state == 'stopped':
+        db._token_writer_stop = True
+    else:
+        db._token_writer_thread = SimpleNamespace(is_alive=lambda: False)
+    directory = root / '.session-lineage-locks' / 'accounting'
+    directory.mkdir(parents=True)
+    marker = directory / (prefix + 'fixture.lock')
+    marker.write_bytes(b'legacy pending')
+    before = marker.stat().st_mtime_ns
+    with pytest.raises(lineage.SessionLineageInventoryError, match='legacy'):
+        db.queue_token_counts('legacy-barrier', input_tokens=3)
+    with sqlite3.connect(db.db_path) as conn:
+        assert conn.execute("SELECT input_tokens FROM sessions WHERE id='legacy-barrier'").fetchone()[0] == 0
+    assert marker.read_bytes() == b'legacy pending' and marker.stat().st_mtime_ns == before
+
+
+@pytest.mark.platforms('posix')
+@pytest.mark.parametrize('component,mode', [('root', 0o775), ('root', 0o757), ('accounting', 0o775), ('accounting', 0o757)])
+def test_untrusted_empty_legacy_directory_blocks_queue(legacy_barrier_store, monkeypatch, component, mode):
+    db, root = legacy_barrier_store
+    legacy_root = root / '.session-lineage-locks'
+    directory = legacy_root / 'accounting'
+    directory.mkdir(parents=True)
+    selected = legacy_root if component == 'root' else directory
+    selected.chmod(mode)
+    monkeypatch.setattr(db, '_token_writer_loop', lambda: None)
+    with pytest.raises(lineage.SessionLineageInventoryError):
+        db.queue_token_counts('legacy-barrier', input_tokens=3)
+    assert db.has_pending_token_counts()
+    assert not db._token_queue and not db._token_writer_uncertain
+    assert selected.stat().st_mode & 0o777 == mode
+    assert db._conn.execute("SELECT input_tokens FROM sessions WHERE id='legacy-barrier'").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize('operation', ['update', 'auxiliary'])
+def test_direct_usage_refuses_legacy_marker(legacy_barrier_store, operation):
+    db, root = legacy_barrier_store
+    marker = _legacy_marker(db, root)
+    before = marker.read_bytes(), marker.stat().st_mtime_ns
+    with pytest.raises(lineage.SessionLineageInventoryError, match='legacy'):
+        if operation == 'update':
+            db.update_token_counts('legacy-barrier', input_tokens=3)
+        else:
+            db.record_auxiliary_usage('legacy-barrier', 'vision', input_tokens=3)
+    assert db._conn.execute("SELECT input_tokens FROM sessions WHERE id='legacy-barrier'").fetchone()[0] == 0
+    assert db._conn.execute("SELECT COUNT(*) FROM session_model_usage").fetchone()[0] == 0
+    assert (marker.read_bytes(), marker.stat().st_mtime_ns) == before
+
+
+def test_unreadable_legacy_inventory_reports_pending_and_refuses(legacy_barrier_store, monkeypatch):
+    db, root = legacy_barrier_store
+    directory = root / '.session-lineage-locks' / 'accounting'
+    directory.mkdir(parents=True)
+    original = os.scandir
+    def deny(path):
+        if Path(path) == directory:
+            raise PermissionError('injected legacy inventory failure')
+        return original(path)
+    monkeypatch.setattr(os, 'scandir', deny)
+    with pytest.raises(lineage.SessionLineageInventoryError):
+        db.queue_token_counts('legacy-barrier', input_tokens=3)
+    assert db.has_pending_token_counts()
+    assert not db._token_queue and not db._token_writer_uncertain
+    assert db._conn.execute("SELECT input_tokens FROM sessions WHERE id='legacy-barrier'").fetchone()[0] == 0
+
+
+@pytest.mark.platforms('posix')
+def test_trusted_empty_legacy_directories_allow_usage_without_changing_modes(legacy_barrier_store, monkeypatch):
+    db, root = legacy_barrier_store
+    legacy_root = root / '.session-lineage-locks'
+    directory = legacy_root / 'accounting'
+    directory.mkdir(parents=True)
+    legacy_root.chmod(0o755)
+    directory.chmod(0o755)
+    monkeypatch.setattr(db, '_token_writer_loop', lambda: None)
+    db.queue_token_counts('legacy-barrier', input_tokens=3)
+    db._token_writer_thread.join(5)
+    assert db.flush_token_counts()
+    db.update_token_counts('legacy-barrier', input_tokens=2)
+    assert db.get_session('legacy-barrier')['input_tokens'] == 5
+    assert legacy_root.stat().st_mode & 0o777 == 0o755
+    assert directory.stat().st_mode & 0o777 == 0o755
+    assert not list(directory.iterdir())
+
+
+def test_previously_accepted_batch_is_not_replayed_or_dropped_when_legacy_marker_appears(legacy_barrier_store, monkeypatch):
+    db, root = legacy_barrier_store
+    monkeypatch.setattr(db, '_token_writer_loop', lambda: None)
+    db.queue_token_counts('legacy-barrier', input_tokens=3)
+    db._token_writer_thread.join(5)
+    marker = _legacy_marker(db, root)
+    assert db.flush_token_counts()
+    assert db._conn.execute("SELECT input_tokens FROM sessions WHERE id='legacy-barrier'").fetchone()[0] == 3
+    assert db.has_pending_token_counts()
+    with pytest.raises(lineage.SessionLineageInventoryError, match='legacy'):
+        db.queue_token_counts('legacy-barrier', input_tokens=7)
+    assert db._conn.execute("SELECT input_tokens FROM sessions WHERE id='legacy-barrier'").fetchone()[0] == 3
+    assert marker.read_bytes() == b'legacy pending'
+
+
+def test_closed_queue_noop_without_legacy_inventory_remains_supported(legacy_barrier_store):
+    import sqlite3
+    db, root = legacy_barrier_store
+    db.close()
+    db.queue_token_counts('legacy-barrier', input_tokens=0)
+    with sqlite3.connect(db.db_path) as conn:
+        assert conn.execute("SELECT input_tokens FROM sessions WHERE id='legacy-barrier'").fetchone()[0] == 0
+        assert conn.execute('SELECT count(*) FROM session_model_usage').fetchone()[0] == 0
+    assert not (root / '.session-lineage-locks').exists()
+
+
+@pytest.mark.parametrize('component', ['root', 'accounting'])
+def test_malformed_legacy_directory_fails_closed_without_mutation(legacy_barrier_store, component):
+    db, root = legacy_barrier_store
+    legacy_root = root / '.session-lineage-locks'
+    if component == 'root':
+        path = legacy_root
+    else:
+        legacy_root.mkdir()
+        path = legacy_root / 'accounting'
+    path.write_bytes(b'not a directory')
+    before = path.stat().st_mtime_ns
+    with pytest.raises(lineage.SessionLineageInventoryError):
+        db.queue_token_counts('legacy-barrier', input_tokens=3)
+    assert db.has_pending_token_counts()
+    assert path.read_bytes() == b'not a directory' and path.stat().st_mtime_ns == before
+    assert not db._token_queue
+
+
+def test_auxiliary_noop_stays_noop_with_legacy_marker(legacy_barrier_store):
+    db, root = legacy_barrier_store
+    marker = _legacy_marker(db, root)
+    assert db.record_auxiliary_usage('legacy-barrier', '', input_tokens=3) is None
+    assert marker.read_bytes() == b'legacy pending'
+    assert db._conn.execute('SELECT count(*) FROM session_model_usage').fetchone()[0] == 0
+
+
+def test_standalone_synchronous_usage_does_not_initialize_marker_identity(tmp_path, monkeypatch):
+    import hermes_state_usage as usage
+
+    managed_root = tmp_path / 'managed'
+    managed_root.mkdir()
+    monkeypatch.setenv('HERMES_HOME', str(managed_root))
+    outside = tmp_path / 'outside'
+    outside.mkdir()
+    with SessionDB(outside / 'state.db') as db:
+        db.create_session('standalone', 'cli')
+        def unexpected_identity(_db):
+            raise AssertionError('standalone direct usage must not inspect marker identity')
+        monkeypatch.setattr(usage, '_accounting_marker_identity', unexpected_identity)
+        db.update_token_counts('standalone', input_tokens=3)
+        db.record_auxiliary_usage('standalone', 'vision', input_tokens=2)
+        assert db._conn.execute("SELECT input_tokens FROM sessions WHERE id='standalone'").fetchone()[0] == 3
+        assert db._conn.execute("SELECT input_tokens FROM session_model_usage WHERE task='vision'").fetchone()[0] == 2
+        assert not (outside / '.session-lineage-locks').exists()
+        assert not (managed_root / '.session-lineage-locks').exists()

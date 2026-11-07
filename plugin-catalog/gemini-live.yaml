@@ -1,7 +1,7 @@
 name: gemini-live
 title: Gemini Live for Hermes
 repo: https://github.com/cineglobe/hermes-gemini-live
-sha: 187650f0b90ec8f19dba5928b3a4caf093d5aa80
+sha: 747aeb97dca1d174c21fbdf45b8968213c3f6e82
 description: >-
   Full-duplex Gemini Live voice calls in Hermes Desktop and the web dashboard. The voice takes the
   profile's name and hands real work to your Hermes agent while you keep talking. It can steer
@@ -11,7 +11,8 @@ description: >-
   local commands need three
   layers to agree: hard rules, a safety review and a contained run. Secret files are refused on
   every route. When a job needs approval, the voice says so and Approve and Deny buttons appear;
-  the voice model can never answer one, and spoken approval is opt-in. Disclosure — pressing Start captures microphone audio and streams it from the
+  the voice model can never answer one, and spoken approval is opt-in. With the AirPods
+  Approvals plugin, a nod or shake answers it too. Disclosure — pressing Start captures microphone audio and streams it from the
   client to generativelanguage.googleapis.com on a single-use ephemeral token; the Gemini key stays
   on the Hermes backend, read through Hermes' secret scope. Gemini also receives the voice's
   instructions, tool results, and, unless share_chat_context is off, the open chat's title and
@@ -26,11 +27,11 @@ tier: community
 category: voice
 requires_hermes: ">=0.22.5"
 docs_url: https://github.com/cineglobe/hermes-gemini-live#readme
-version: "1.1.0"
-image: https://raw.githubusercontent.com/cineglobe/hermes-gemini-live/187650f0b90ec8f19dba5928b3a4caf093d5aa80/docs/assets/banner.png
+version: "1.2.0"
+image: https://raw.githubusercontent.com/cineglobe/hermes-gemini-live/747aeb97dca1d174c21fbdf45b8968213c3f6e82/docs/assets/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/cineglobe/hermes-gemini-live/187650f0b90ec8f19dba5928b3a4caf093d5aa80/docs/assets/approval.png
-  - https://raw.githubusercontent.com/cineglobe/hermes-gemini-live/187650f0b90ec8f19dba5928b3a4caf093d5aa80/docs/assets/transcript.png
+  - https://raw.githubusercontent.com/cineglobe/hermes-gemini-live/747aeb97dca1d174c21fbdf45b8968213c3f6e82/docs/assets/approval.png
+  - https://raw.githubusercontent.com/cineglobe/hermes-gemini-live/747aeb97dca1d174c21fbdf45b8968213c3f6e82/docs/assets/transcript.png
 platforms: []
 capabilities:
   provides_tools: []

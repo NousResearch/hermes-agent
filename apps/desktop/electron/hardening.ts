@@ -370,6 +370,56 @@ function rejectUnsafePathSyntax(filePath, purpose = 'File read') {
   return raw
 }
 
+/** Strip chat markdown / @url: wrappers before handing a path to the OS (#95713). */
+function looksLikePathTarget(value: string): boolean {
+  return /[./:\\]/.test(value)
+}
+
+function stripPathOpenAnnotations(value: string): string {
+  if (typeof value !== 'string') {
+    return value
+  }
+
+  let raw = value.trim()
+  if (!raw) {
+    return raw
+  }
+
+  if (/^@url:/i.test(raw)) {
+    raw = raw.slice(raw.indexOf(':') + 1).trim()
+    if (raw.startsWith('`') && raw.endsWith('`') && raw.length >= 2) {
+      raw = raw.slice(1, -1).trim()
+    }
+  }
+
+  for (;;) {
+    let next = raw
+    if (next.startsWith('**') && next.endsWith('**') && next.length > 4) {
+      const inner = next.slice(2, -2).trim()
+      if (inner) {
+        next = inner
+      }
+    } else if (next.startsWith('__') && next.endsWith('__') && next.length > 4) {
+      const inner = next.slice(2, -2).trim()
+      // Keep dunder names (`__pycache__`, `__init__`). Only unwrap underline
+      // when the inner text looks like a filesystem target.
+      if (inner && looksLikePathTarget(inner)) {
+        next = inner
+      }
+    } else if (next.endsWith('**') && next.length > 2) {
+      next = next.slice(0, -2).trim()
+    } else if (/\.[A-Za-z0-9]{1,16}__$/.test(next)) {
+      next = next.slice(0, -2).trim()
+    }
+    if (next === raw) {
+      break
+    }
+    raw = next
+  }
+
+  return raw
+}
+
 /**
  * Stat a resolved path before handing an `open` to the OS. The OS gives the
  * miss and the unclaimable file the SAME answer (macOS LaunchServices returns
@@ -400,7 +450,8 @@ function assertExistingPathForOpen(resolvedPath: string, purpose = 'Open file') 
 
 function resolveRequestedPathForIpc(filePath, options: { purpose?: string; baseDir?: fs.PathOrFileDescriptor } = {}) {
   const purpose = String(options.purpose || 'File read')
-  let raw = rejectUnsafePathSyntax(filePath, purpose)
+  const annotated = typeof filePath === 'string' ? stripPathOpenAnnotations(filePath) : filePath
+  let raw = rejectUnsafePathSyntax(annotated, purpose)
 
   // Gateway-reported cwds (config `terminal.cwd`, remote sessions) routinely
   // arrive as `~/...`. Node's fs has no shell — without expansion the path
@@ -651,6 +702,7 @@ export {
   SAFE_STORAGE_ENCODING,
   SECRET_FILE_MODE,
   sensitiveFileBlockReason,
+  stripPathOpenAnnotations,
   TEXT_PREVIEW_SOURCE_MAX_BYTES,
   tightenSecretFileMode,
   writeSecretFileAtomic

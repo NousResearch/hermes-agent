@@ -4,9 +4,15 @@ import path from 'node:path'
 
 import { expect, it, onTestFinished } from 'vitest'
 
-import { type ConnectionRegistry, normalizeRegistry, reconcileRegistryDrift } from './connection-registry'
+import {
+  type ConnectionRegistry,
+  normalizeRegistry,
+  reconcileAppliedGlobalConnection,
+  reconcileRegistryDrift
+} from './connection-registry'
 import { registerGlobalRoute, removeSavedConnection } from './connection-registry-remove'
 import { writeSecretFileAtomic } from './hardening'
+import { appliedPrimaryWindowRoute } from './window-connection-route'
 
 function fixture(kind: 'cloud' | 'remote' | 'ssh', primary = 'saved-ssh') {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-connection-removal-'))
@@ -224,4 +230,29 @@ it('saving a corrected key or Hermes path updates the matching SSH entry in plac
 
   const cleared = registerGlobalRoute(fixed, { mode: 'ssh', remote: route }).connections.find(c => c.id === 'coder')
   expect([cleared?.keyPath, cleared?.remoteHermesPath]).toEqual([undefined, undefined])
+})
+
+it('Apply routes the window to each applied SSH profile, back to one already saved; Save never re-picks', () => {
+  let registry = normalizeRegistry({ connections: [{ id: 'local', kind: 'local', label: 'This device' }] })
+  const route = (remoteProfile: string) => ({
+    mode: 'ssh',
+    remote: { host: 'box.example.invalid', user: 'hermes', remoteProfile }
+  })
+
+  const routedProfile = (r: ConnectionRegistry) => {
+    const { connectionId } = appliedPrimaryWindowRoute(r, 'default')
+
+    return r.connections.find(c => c.id === connectionId)?.remoteProfile
+  }
+
+  // The connection-config:apply handler's registry step, then the window route it records.
+  for (const profile of ['coder', 'writer', 'coder']) {
+    const config = route(profile)
+    registry = registerGlobalRoute(reconcileAppliedGlobalConnection(registry, config), config, { select: true })
+    expect(routedProfile(registry)).toBe(profile)
+    expect(registry.lastUsed).toBe(registry.primary)
+  }
+
+  // Save (no select) of the saved writer route persists it without moving the primary off coder.
+  expect(routedProfile(registerGlobalRoute(registry, route('writer')))).toBe('coder')
 })

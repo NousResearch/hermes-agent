@@ -64,8 +64,18 @@ export function globalRouteRemoved(registry: ConnectionRegistry, config: Record<
  * unless an entry with the same user, host, port AND remote profile exists. The
  * migration repair (reconcileRegistryDrift) instead realigns a same-host entry, which
  * here would overwrite another saved profile on that host.
+ *
+ * A route new to the list becomes primary either way (what the read-time repair did
+ * for an unregistered route before this list was the authority). `select` is Apply:
+ * the window is routed to the list's primary, so a route that matches an existing
+ * entry must become primary too, or Apply coder -> writer -> coder stays on writer.
+ * Save omits it: Save is persistence-only and leaves a registered route's primary as is.
  */
-export function registerGlobalRoute(registry: ConnectionRegistry, config: Record<string, any>): ConnectionRegistry {
+export function registerGlobalRoute(
+  registry: ConnectionRegistry,
+  config: Record<string, any>,
+  { select = false }: { select?: boolean } = {}
+): ConnectionRegistry {
   if (config?.mode !== 'ssh') {
     return reconcileRegistryDrift(registry, config).registry
   }
@@ -88,8 +98,9 @@ export function registerGlobalRoute(registry: ConnectionRegistry, config: Record
     delete aligned.remoteHermesPath
     const { host: _host, user: _user, port: _port, remoteProfile: _profile, ...paths } = sshFields
     Object.assign(aligned, paths)
+    const next = upsertConnection(registry, aligned)
 
-    return upsertConnection(registry, aligned)
+    return select ? { ...next, primary: aligned.id, lastUsed: aligned.id } : next
   }
 
   const label = uniqueLabel(

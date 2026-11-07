@@ -1724,9 +1724,9 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
                     # read must serve content again, not an "unchanged" stub (#32106).
                     # Without a task id the reset would clear every task's caches.
                     if task_id := getattr(agent, "_current_task_id", None):
-                        from agent.conversation_compression import _reset_read_dedup_caches
+                        from agent.conversation_compression import note_context_boundary
 
-                        _reset_read_dedup_caches(task_id, session_id=getattr(agent, "session_id", None) or "")
+                        note_context_boundary(agent, task_id)
 
     from agent.reasoning_carriers import carrier_record
     if record := carrier_record(assistant_message):

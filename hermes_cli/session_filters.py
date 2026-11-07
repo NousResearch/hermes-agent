@@ -82,6 +82,7 @@ _ARG_FILTERS = (
     ("provider", "provider", "provider '{v}'"),
     ("user_id", "user", "user '{v}'"),
     ("chat_id", "chat_id", "chat '{v}'"),
+    ("session_id", "session_id", "session '{v}'"),
     ("chat_type", "chat_type", "chat type '{v}'"),
     ("branch_like", "branch", "git branch contains '{v}'"),
     ("min_tokens", "min_tokens", ">= {v} tokens"),

@@ -64,6 +64,7 @@ _PRUNE_FILTERS = (
     ("provider", "truthy", _one("LOWER(COALESCE(s.billing_provider, '')) = ?", str.lower)),
     ("user_id", "truthy", _one("s.user_id = ?")),
     ("chat_id", "truthy", _one("s.chat_id = ?")),
+    ("session_id", "truthy", _one("s.id = ?")),
     ("chat_type", "truthy", _one("s.chat_type = ?")),
     ("branch_like", "truthy", _one("LOWER(COALESCE(s.git_branch, '')) LIKE ? ESCAPE '\\'", _like)),
     ("min_tokens", "notnone", _one(_TOKENS_SQL + " >= ?")),

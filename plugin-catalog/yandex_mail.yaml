@@ -1,9 +1,9 @@
 name: yandex_mail
 repo: https://github.com/akinfold/hermes-yandex-mail
-sha: 82822aa5e30caf1f554a65867ccb92453772f6e7
+sha: f44cf3aff9393d4dc3d420879469d1ebe4735c66
 subdir: hermes_yandex_mail
 title: "Yandex Mail"
-image: https://raw.githubusercontent.com/akinfold/hermes-yandex-mail/82822aa5e30caf1f554a65867ccb92453772f6e7/docs/banner.png
+image: https://raw.githubusercontent.com/akinfold/hermes-yandex-mail/f44cf3aff9393d4dc3d420879469d1ebe4735c66/docs/banner.png
 description: "Search and read Yandex Mail, organize messages, save attachments, and send replies. Read-only access is configurable; saving attachments and sending require explicit opt-in."
 maintainer: akinfold
 tier: community

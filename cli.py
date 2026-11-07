@@ -32,6 +32,7 @@ os.environ["HERMES_QUIET"] = "1"  # suppress our modules' startup chatter
 
 
 from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
+from hermes_cli import program_status
 from hermes_cli.cli_commands_mixin import CLICommandsMixin
 from hermes_cli.cli_billing_mixin import CLIBillingMixin
 from hermes_cli.cli_loops_mixin import CLILoopsMixin
@@ -1409,6 +1410,7 @@ class HermesCLI(CLIBacktrackMixin, CLIInitMixin, CLITuiRuntimeMixin, CLIProcessN
         if not self._claim_active_session("cli"):
             return
 
+        program_status.idle()
         self._tui_print_startup()
         self._tui_init_run_state()
         kb = self._tui_build_key_bindings()

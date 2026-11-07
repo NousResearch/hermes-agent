@@ -481,6 +481,12 @@ def _run_job_script(
         # env itself — no raw copy at the spawn site (test_subprocess_env_guard).
         env = build_subprocess_env(strip_launch_profile=True)
         env.update(env_overlay)
+        # Mark a real cron run. Fire-once-then-disarm watchdogs delete their state file when they
+        # alert; run by hand to check on them, they consumed the pending alert (printed to the
+        # operator's terminal, never delivered) or armed a dedup file that muted the next real one.
+        # Scripts gate state mutation on this: set = scheduled/cron-dispatched run, absent = manual.
+        # Runner->child signal on this env only (like HERMES_HOME), never os.environ or config.
+        env["HERMES_CRON_RUN"] = "1"
         # Subprocess cwd only (default: scripts-dir parent). NEVER os.chdir() the process.
         # Use the job's workdir as the subprocess cwd when configured, otherwise default to the scripts-dir
         # parent (back-compat). NEVER mutate the Python process cwd — that would leak into concurrent

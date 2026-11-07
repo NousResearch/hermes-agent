@@ -35,7 +35,14 @@ class CatalogEntry:
     _tokens: list[str] = field(default_factory=list)  # pre-tokenized for BM25
 
 
-_TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
+# ASCII alphanumeric runs, plus individual CJK characters: Chinese, Japanese and Korean don't put
+# spaces between words, so each character is its own token — the lightweight approach for BM25
+# without a segmentation dependency (#78985).
+_CJK_CHAR = (r"[\u4e00-\u9fff\u3400-\u4dbf"   # CJK Unified Ideographs (+ Ext A)
+             r"\u3040-\u309f\u30a0-\u30ff"     # Hiragana + Katakana
+             r"\uac00-\ud7af]")                 # Hangul Syllables
+_TOKEN_RE = re.compile(r"[A-Za-z0-9]+|" + _CJK_CHAR)
+_CJK_CHAR_RE = re.compile(_CJK_CHAR)
 _thread_local = threading.local()
 
 
@@ -188,7 +195,12 @@ def search_catalog(catalog: list[CatalogEntry], query: str, limit: int = 5, *,
         return []
     corpus_stats = corpus_stats or _corpus_stats(catalog)
     doc_freq = corpus_stats[2]
-    gate = _gate_token(query_tokens, doc_freq, corpus_stats[3])
+    # A CJK character is a piece of a word, not a word: one no tool carries ("创建 github issue"
+    # against English descriptions) says nothing about the intent, so it never becomes the gate.
+    gate_candidates = [t for t in query_tokens if doc_freq.get(t) or not _CJK_CHAR_RE.fullmatch(t)]
+    if not gate_candidates:
+        return []
+    gate = _gate_token(gate_candidates, doc_freq, corpus_stats[3])
     answerable = {t for t in query_tokens if doc_freq.get(t, 0) > 0}
     required_terms = _required_term_coverage(len(answerable))
     exact_name = query.strip().lower()

@@ -28,7 +28,10 @@ _HANDOFF_ROW_SQL = (" g.role IN ('user', 'assistant') AND (g._compressed_summary
                     " OR instr(g.content, '[CONTEXT COMPACTION') > 0 OR instr(g.content, '[CONTEXT SUMMARY]') > 0)")
 _SHOWN_ROWS_SQL = (
     "SELECT g.id AS _shown_id, g.message_uid AS _shown_uid, g.session_id IN (SELECT value FROM json_each(:segments))"
-    " AND" + _HANDOFF_ROW_SQL + " AS _holds, g.* FROM messages g WHERE g.id IN (SELECT value FROM json_each(:shown))")
+    " AND" + _HANDOFF_ROW_SQL + " AS _holds FROM messages g WHERE g.id IN (SELECT value FROM json_each(:shown))")
+# The full rows of the shown rows that can hold a handoff themselves; every other shown row is read for its
+# id, uid and flag only, so an ordinary page never loads its bodies (images, tool results) a second time.
+_HOLDER_ROWS_SQL = "SELECT g.* FROM messages g WHERE g.id IN (SELECT value FROM json_each(:ids))"
 _HANDOFF_COPIES_SQL = " UNION ALL ".join(
     f"SELECT g.* FROM messages g{index} WHERE g.session_id IN (SELECT value FROM json_each(:segments)) AND {active}"
     " AND g.message_uid IN (SELECT value FROM json_each(:uids)) AND g.id < :below AND" + _HANDOFF_ROW_SQL
@@ -260,17 +263,19 @@ class SessionStoredReadsMixin:
             copies = conn.execute(_HANDOFF_COPIES_SQL, {
                 'segments': segments, 'uids': json.dumps(sorted(uids)),
                 'below': max(row['_shown_id'] for row in shown)}).fetchall() if uids else []
+            holder_ids = sorted(int(row['_shown_id']) for row in shown if row['_holds'])
+            holders = {int(row['id']): row for row in conn.execute(
+                _HOLDER_ROWS_SQL, {'ids': json.dumps(holder_ids)}).fetchall()} if holder_ids else {}
         by_uid: dict[str, list[Any]] = {}
         for row in sorted(copies, key=lambda row: row['id']):
             by_uid.setdefault(row['message_uid'], []).append(row)
         found: dict[int, list[dict[str, Any]]] = {}
         for row in sorted(shown, key=lambda row: row['_shown_id']):
             held = [copy for copy in by_uid.get(row['_shown_uid'], ()) if copy['id'] < row['_shown_id']] if row['_shown_uid'] else []
-            held += [row] if row['_holds'] else []
+            holder = holders.get(int(row['_shown_id'])) if row['_holds'] else None
+            held += [holder] if holder is not None else []
             for copy in held:
                 message = self._row_to_message_dict(copy, warn_context='session.transcript', summary_flag=True)
-                for key in ('_shown_id', '_shown_uid', '_holds'):
-                    message.pop(key, None)
                 found.setdefault(int(row['_shown_id']), []).append(message)
         return found
 

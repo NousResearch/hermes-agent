@@ -74,3 +74,28 @@ def test_the_handoff_lookup_finds_what_one_join_over_the_shown_rows_found(tmp_pa
         assert [m['id'] for m in db.transcript_handoff_rows([ids[3]], ['root', 'tip'])[ids[3]]] == [ids[1], ids[2]]
     finally:
         db.close()
+
+
+def test_an_ordinary_shown_row_is_read_for_its_id_uid_and_flag_only(tmp_path):
+    """Only a shown row that can hold a handoff itself is read whole; every other shown row (a large image or
+    tool result included) is read for its id, uid and flag, so its body is not loaded a second time."""
+    db = SessionDB(db_path=tmp_path / 'state.db')
+    try:
+        db.create_session('s', source='cli')
+        plain = [db.append_message('s', 'user', 'x' * 200_000), db.append_message('s', 'assistant', 'answer')]
+        carrier = db.append_message('s', 'user', SUMMARY_PREFIX + ' what came before')
+        statements = []
+        with db.transcript_read_snapshot():
+            conn = db._pinned_read_conn()
+            conn.set_trace_callback(statements.append)
+            try:
+                found = db.transcript_handoff_rows([*plain, carrier], ['s'])
+            finally:
+                conn.set_trace_callback(None)
+        assert list(found) == [carrier] and [message['id'] for message in found[carrier]] == [carrier]
+        by_id = [sql for sql in statements if 'WHERE g.id IN' in sql]
+        # The shown rows' read carries no bodies; the one whole-row read by id names the carrier alone.
+        assert [sql for sql in by_id if 'g.*' not in sql] and [sql for sql in by_id if 'g.*' in sql], statements
+        assert all(f"json_each('{json.dumps([carrier])}')" in sql for sql in by_id if 'g.*' in sql), by_id
+    finally:
+        db.close()

@@ -1,0 +1,17 @@
+name: hermes-quote-to-chat
+repo: https://github.com/ivanvanes18/hermes-quote-to-chat
+sha: cb11d9c6d9bed2d06cd5f20695ba1dbc8bf0e703
+title: "Quote to Chat"
+description: 'Codex-style quote cards for Hermes Desktop: select text outside an input and press Add to chat; the excerpt becomes a removable card above the composer while your question stays a separate draft. On send the quotes are prepended once as Markdown blockquotes (composer.middleware). Quotes are scoped per chat, several can be collected and removed one by one, a busy-agent send goes through host.composer.submit with the quote attached, and a rejected send gives the quote back. Desktop-only (desktop/plugin.js inside the plugin SDK surface): no agent tools, hooks, Python middleware or env vars. Disclosure — reads window.getSelection() and the selection rectangle; adds its own button element to document.body; reads the live draft through host.composer.getDraft; keeps quotes in memory only. No network calls, no credentials, no files, no telemetry.'
+maintainer: ivanvanes18
+tier: community
+category: desktop
+version: "1.0.0"
+docs_url: https://github.com/ivanvanes18/hermes-quote-to-chat#readme
+requires_hermes: ">=0.22.5"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -491,7 +491,7 @@ The classic CLI, TUI, and Desktop automatically show live subagents above the co
 
 | Surface | Expand and inspect | Control a selected worker |
 |---|---|---|
-| Classic CLI | **Ctrl+T** (or **F6**) opens the full-screen live roster; arrows select, **Enter** opens the transcript tail, **PgUp/PgDn** scroll | **s** opens a separate steering input; **x**, then **y** requests stop |
+| Classic CLI | **Ctrl+T** (or **F6**) opens the full-screen roster of live and finished subagents; arrows select, **Enter** opens the [subagent viewer](#reading-a-subagents-run-classic-cli), **t** the raw live tail, **m** the master view | **s** opens a separate steering input (or type in the viewer); **x**, then **y** requests stop |
 | TUI | **Ctrl+T** or `/agents` opens the full-height tree; **Enter/t** opens the live transcript tail; **d** opens rich detail (archived/replay Enter still opens detail) | **e** opens steering; **x** stops the selected worker; **X** stops its subtree |
 | Desktop | Expand **Subagents** above the composer, then select a worker to inspect its activity and details | **Steer** queues guidance; **Stop** requests interruption for that worker |
 
@@ -501,7 +501,23 @@ Closing the terminal monitor returns to your existing composer draft. Steering u
 
 Press **Ctrl+R** in the Classic CLI or TUI composer to toggle the dock between its multi-row preview and a single shaded summary line. **F7** remains an optional alias when the terminal forwards function keys. The summary retains the live count and expand/restore hints, adding activity when space permits. Typing and sending remain available; opening and closing the monitor preserves your draft and insertion point. This is a local presentation choice, not a saved config change.
 
-The live transcript tail is a bounded recent excerpt, not an unlimited conversation browser. A child leaving the live registry leaves the dock; completion messages and the TUI/Desktop history views remain the place to review finished work. Latest activity is an observation, not a percentage-complete estimate.
+The live transcript tail (**t**) is a bounded recent excerpt. A child leaving the live registry leaves the dock, but the Classic CLI monitor keeps it in its list as a finished row (**✓**), which you can open in the viewer but no longer steer or stop. Latest activity is an observation, not a percentage-complete estimate.
+
+### Reading a subagent's run (Classic CLI)
+
+In the **Ctrl+T** monitor, **Enter** on a subagent opens its whole run as a readable conversation: the **Brief** it was given, its replies, one line per tool call (**Enter** on it shows the call's result), any steering you sent, and its final **Result**. The run is read from the session store, so it works the same for a running subagent, a finished one, and the subagents of a conversation you resumed with `hermes -r`, including children of subagents (nested orchestrators) and runs that span context compression.
+
+| Key | Action |
+|---|---|
+| **Tab** / **Shift+Tab** (or **Alt+→** / **Alt+←**) | Next / previous view: **Master**, then each subagent in the order they started |
+| **↑** / **↓** | Select an entry; **PgUp** / **PgDn** scroll |
+| **Enter** | Open or close the selected entry; on a delegation in the master view, jump to the subagent that ran it. With text typed, send it |
+| **Ctrl+X** | Stop the running subagent on screen (confirm with **y**) |
+| **Esc** | Back to the list |
+
+The tab strip at the top marks each subagent as running (**●**) or finished (**✓**). Each view remembers its own selection and scroll, and a view whose last entry is selected follows new steps as they arrive.
+
+The input line at the bottom sends to the view on screen: in a running subagent's view it steers that subagent (the same queued guidance as **s**); in the **Master** view it is sent to the main conversation exactly as if typed in the composer. A finished subagent cannot be steered.
 
 The classic CLI's `/agents` and `/tasks` commands still print a text summary; **Ctrl+T** (or **F6**) is the immediate interactive monitor, including while the parent is busy. See [TUI — Slash commands](../tui.md#slash-commands).
 

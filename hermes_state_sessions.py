@@ -16,6 +16,7 @@ from agent.session_activity import (
 )
 from hermes_state_errors import SessionActiveWriteGuardError
 from hermes_state_lineage import SessionLineageInventoryError, session_lineage_guard
+from hermes_state_fresh_birth import FreshSessionMixin
 from hermes_state_sessions_clauses import (
     _cwd_prefix_clause, _inherit_col_sql, _where_sql, _workspace_key_clause,
 )
@@ -302,7 +303,7 @@ _INHERIT_PARENT_ROUTING_SQL = (
 )
 
 
-class SessionSessionsMixin:
+class SessionSessionsMixin(FreshSessionMixin):
     """Session rows: create/inherit, lifecycle flags, model_config, listing, deletion."""
 
     def _own_profile_name(self) -> Optional[str]:

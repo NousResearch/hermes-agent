@@ -53,6 +53,9 @@ def test_profile_home_resolution_stamps_default_rows(tmp_path, monkeypatch):
         def create_session(self, _key, **kwargs):
             self.profile_name = kwargs["profile_name"]
 
+        def _create_fresh_session(self, key, **kwargs):
+            return self.create_session(key, **kwargs)
+
         def append_messages_batch(self, _key, _messages, *, chunk_rows):
             assert chunk_rows == 500
 

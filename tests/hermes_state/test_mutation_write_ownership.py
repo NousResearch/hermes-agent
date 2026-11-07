@@ -387,3 +387,114 @@ def test_mutation_fences_resolved_physical_target(local_owner, operation, payloa
                 expected_revision=expected_revision, expected_generation=expected_generation,
                 operation=operation, payload=payload, _prepared=prepared)
         assert (snapshot(local), snapshot(sibling)) == before
+
+
+def test_worker_title_receipt_refuses_foreign_owned_ghost(stores):
+    from hermes_state_runtime import mutate_worker_execution, register_worker_execution
+
+    local, sibling = stores
+    local.create_session("owned", "cli")
+    local._conn.execute("INSERT INTO sessions(id,source,started_at,ended_at,end_reason,title,title_source) "
+                        "VALUES ('ghost','cli',1,2,'done','Wanted','user')")
+    local._conn.commit()
+    foreign(sibling, "ghost")
+    scope = dict(epoch=begin_runtime_epoch(local, instance_id="title-fixture"),
+                 execution_id="worker", session_id="owned", generation=0)
+    register_worker_execution(local, **scope, kind="compute", adoption_secret="fixture")
+    before = snapshot(local), snapshot(sibling)
+    with pytest.raises(SessionIdOwnedElsewhereError):
+        mutate_worker_execution(local, **scope, sequence=1, operation="session.title",
+                                payload={"title": " Wanted ", "source": "user"})
+    assert (snapshot(local), snapshot(sibling)) == before
+
+
+def test_worker_title_late_discovery_refuses_foreign_ghost(stores, monkeypatch):
+    from hermes_state_runtime import mutate_worker_execution, register_worker_execution
+
+    local, sibling = stores
+    local.create_session("owned", "cli")
+    foreign(sibling, "ghost")
+    scope = dict(epoch=begin_runtime_epoch(local, instance_id="late-title"),
+                 execution_id="worker", session_id="owned", generation=0)
+    register_worker_execution(local, **scope, kind="compute", adoption_secret="fixture")
+    original = local._execute_write
+    calls = []
+    def introduce_conflict(fn, **kwargs):
+        if not calls:
+            local._conn.execute("INSERT INTO sessions(id,source,started_at,ended_at,end_reason,title,title_source) "
+                                "VALUES ('ghost','cli',1,2,'done','Wanted','user')")
+            local._conn.commit()
+        calls.append(True)
+        return original(fn, **kwargs)
+    monkeypatch.setattr(local, "_execute_write", introduce_conflict)
+    before_sibling = snapshot(sibling)
+    with pytest.raises(SessionIdOwnedElsewhereError):
+        mutate_worker_execution(local, **scope, sequence=1, operation="session.title",
+                                payload={"title": "Wanted", "source": "user"})
+    assert local.get_session("owned")["title"] is None
+    assert local.get_session("ghost")["title"] == "Wanted"
+    assert not local._conn.execute("SELECT * FROM worker_receipts").fetchall()
+    assert snapshot(sibling) == before_sibling
+
+
+def test_worker_title_receipt_clears_local_ghost_and_replays(stores):
+    from hermes_state_runtime import mutate_worker_execution, register_worker_execution
+
+    local, sibling = stores
+    local.create_session("owned", "cli")
+    local._conn.execute("INSERT INTO sessions(id,source,started_at,ended_at,end_reason,title,title_source) "
+                        "VALUES ('ghost','cli',1,2,'done','Wanted','user')")
+    local._conn.commit()
+    scope = dict(epoch=begin_runtime_epoch(local, instance_id="title-ok"),
+                 execution_id="worker", session_id="owned", generation=0)
+    register_worker_execution(local, **scope, kind="compute", adoption_secret="fixture")
+    args = dict(scope, sequence=1, operation="session.title", payload={"title": " Wanted ", "source": "user"})
+    assert mutate_worker_execution(local, **args)["value"] is True
+    assert local.get_session("ghost")["title"] is None
+    # A later foreign owner must not make an already-committed receipt rediscover IDs.
+    foreign(sibling, "ghost")
+    before = snapshot(local), snapshot(sibling)
+    # Exact replay must not rediscover title ownership or create another receipt.
+    assert mutate_worker_execution(local, **args)["value"] is True
+    assert (snapshot(local), snapshot(sibling)) == before
+
+
+def test_worker_title_transfers_local_compression_ancestor(stores):
+    from hermes_state_runtime import mutate_worker_execution, register_worker_execution
+    from tests.hermes_state.test_adoption_transfer_records import _seed_compression_lineage
+
+    local, sibling = stores
+    _seed_compression_lineage(local, 'title-root', 'title-tip')
+    local._conn.execute("UPDATE sessions SET title='Inherited', title_source='user' WHERE id='title-root'")
+    local._conn.commit()
+    scope = dict(epoch=begin_runtime_epoch(local, instance_id='ancestor-title'),
+                 execution_id='worker', session_id='title-tip', generation=0)
+    register_worker_execution(local, **scope, kind='compute', adoption_secret='fixture')
+    args = dict(scope, sequence=1, operation='session.title', payload={'title': 'Inherited', 'source': 'user'})
+    assert mutate_worker_execution(local, **args)['value'] is True
+    assert local.get_session('title-root')['title'] is None
+    assert local.get_session('title-tip')['title'] == 'Inherited'
+    before = snapshot(local), snapshot(sibling)
+    assert mutate_worker_execution(local, **args)['value'] is True
+    assert (snapshot(local), snapshot(sibling)) == before
+
+
+def test_worker_title_rolls_back_ghost_clear_and_receipt_on_sql_failure(stores):
+    import sqlite3
+    from hermes_state_runtime import mutate_worker_execution, register_worker_execution
+
+    local, sibling = stores
+    local.create_session('owned', 'cli')
+    local._conn.execute("INSERT INTO sessions(id,source,started_at,ended_at,end_reason,title,title_source) "
+                        "VALUES ('ghost','cli',1,2,'done','Wanted','user')")
+    local._conn.execute("CREATE TRIGGER reject_owned_title BEFORE UPDATE OF title ON sessions "
+                        "WHEN NEW.id='owned' BEGIN SELECT RAISE(ABORT, 'injected title fault'); END")
+    local._conn.commit()
+    scope = dict(epoch=begin_runtime_epoch(local, instance_id='title-rollback'),
+                 execution_id='worker', session_id='owned', generation=0)
+    register_worker_execution(local, **scope, kind='compute', adoption_secret='fixture')
+    before = snapshot(local), snapshot(sibling)
+    with pytest.raises(sqlite3.IntegrityError, match='injected title fault'):
+        mutate_worker_execution(local, **scope, sequence=1, operation='session.title',
+                                payload={'title': 'Wanted', 'source': 'user'})
+    assert (snapshot(local), snapshot(sibling)) == before

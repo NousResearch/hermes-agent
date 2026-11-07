@@ -613,7 +613,8 @@ def _ensure_session_db_row(session: dict) -> bool:
             return _db_error is None
         row_model, model_config = _workdir_row_model_config(session)
         try:
-            db.create_session(
+            create = db._create_fresh_session if session.get("_fresh_generated_key") else db.create_session
+            create(
                 key, source=_session_source(session), model=row_model, model_config=model_config or None,
                 parent_session_id=session.get("parent_session_id") or None, cwd=_persisted_session_cwd(session),
                 # The login this session was opened under, in the same ``<provider>:<id>`` form the agent is
@@ -628,6 +629,7 @@ def _ensure_session_db_row(session: dict) -> bool:
                 # backfill ran stayed NULL forever: profile-keyed matching then drops them from the sidebar
                 # and deep links can't resolve them (#99222).
                 profile_name=profile_name_for_home(profile_home) or _current_profile_name())
+            session["_fresh_generated_key"] = False
             # Born hidden (session.create hidden=true, or set_hidden before the row existed): apply the deferred intent.
             if session.get("pending_hidden"):
                 try:
@@ -644,9 +646,14 @@ def _ensure_session_db_row(session: dict) -> bool:
                     logger.debug("failed to apply pending archived flag", exc_info=True)
             _schedule_row_git_meta(session, key, db)
         except Exception as exc:
+            from hermes_state_lineage import FreshSessionCollision
+            if isinstance(exc, FreshSessionCollision):
+                raise
             # Disk-full is not a soft failure: swallowed here, prompt.submit returns {"status":"streaming"} and the
             # message vanishes silently.
             _workdir_reraise_disk_full(exc, "failed to persist desktop session row")
+            if session.get("_fresh_generated_key"):
+                return False
     return True
 
 

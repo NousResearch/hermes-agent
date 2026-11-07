@@ -5,7 +5,6 @@ helpers (``_sessions``, ``_ok``, ``_err``, ...) bare; module-level helpers are p
 server.py the same way (tests monkeypatching ``server.X`` still intercept)."""
 
 import contextlib
-
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
@@ -246,9 +245,9 @@ def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list
         parent_prompt = (db.get_session(parent_key) or {}).get("system_prompt")
     except Exception:
         logger.debug("branch: parent system prompt read failed for %s", parent_key, exc_info=True)
-    db.create_session(new_key, source=source, model=model, model_config={"_branched_from": parent_key},
-                      parent_session_id=parent_key, cwd=cwd, profile_name=profile_name, user_id=user_id,
-                      system_prompt=parent_prompt or None)
+    db._create_fresh_session(new_key, source=source, model=model, model_config={"_branched_from": parent_key},
+                             parent_session_id=parent_key, cwd=cwd, profile_name=profile_name, user_id=user_id,
+                             system_prompt=parent_prompt or None)
     try:
         # Compensation guard (#93959 review): if the transcript copy or title write fails AFTER the row
         # committed, the durable-but-empty row would defeat the lazy first-prompt fallback
@@ -279,6 +278,7 @@ def _seed_branch_row(record: dict, key: str, parent_session_id: str, history: li
     """Persist a seeded desktop branch child NOW (the one session.create exception to lazy rows): the
     renderer's post-create resume re-fetches it via REST/defer_history, so an unpersisted child 404s and
     the fail-latch spins forever. Best-effort — on failure the lazy first-prompt path is the fallback."""
+    from hermes_state_lineage import FreshSessionCollision
     try:
         with _session_db(record) as db:
             if db is None:
@@ -290,6 +290,9 @@ def _seed_branch_row(record: dict, key: str, parent_session_id: str, history: li
             record["pending_title"] = None
             # The first submit's _persist_branch_seed is the fallback for a failed seed, not a second copy.
             record["_branch_seed_persisted"] = True
+            record["_fresh_generated_key"] = False
+    except FreshSessionCollision:
+        raise
     except Exception:
         logger.warning("seeded-branch persistence failed for %s; falling back to lazy row creation", key,
                        exc_info=True)
@@ -301,11 +304,14 @@ def _seed_row(record: dict) -> None:
     lands with the row so a restart before the first prompt keeps it. Best-effort — the first-prompt path is
     the fallback, and it re-copies the WHOLE seed, so a partial copy is rolled back here (the compensation
     ``_persist_branch`` applies to branch children) rather than left to be duplicated."""
+    from hermes_state_lineage import FreshSessionCollision
     key = record.get("session_key")
     try:
         if _ensure_session_db_row(record) is False:
             return
         _persist_branch_seed(record)
+    except FreshSessionCollision:
+        raise
     except Exception:
         logger.warning("seeded-session persistence failed for %s; falling back to lazy row creation", key, exc_info=True)
     if not record.get("_branch_seed_persisted"):
@@ -369,7 +375,11 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
                 # The session was closed between the original create and the retry —
                 # fall through and create a fresh one under the same key.
                 _idempotency_keys.pop(idem_key, None)
+    from hermes_state_lineage import FreshSessionCollision
+    from .session_fresh_birth import fresh_key_collision, forget_failed_birth
     (sid, source), key = _new_runtime_ids(params), _new_session_key()
+    if fresh_key_collision(_profile_db, params, key):
+        return _err(rid, 4008, "Generated session ID already exists; retry creation")
     history = _coerce_seed_history(params.get("messages"))
     # Branch: links back so list_sessions_rich keeps it visible and the sidebar nests it.
     parent_session_id = _str_param(params, "parent_session_id") or None
@@ -415,6 +425,7 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
             "explicit_cwd": explicit_cwd,
             "history": history, "history_lock": threading.Lock(), "history_version": 0, "image_counter": 0,
             "seeded": bool(history),  # gates _persist_branch_seed: only create-time history is unpersisted
+            "_fresh_generated_key": True,
             "cwd": session_cwd, "inflight_turn": None, "last_active": now,
             "model_override": session_model_override,
             "composer_override_profile": composer_override_profile,
@@ -453,15 +464,16 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
     # The same holds for a seeded session WITHOUT a parent (a client opening a chat with its first turns
     # already written): the transcript exists only in memory, so a restart before the first prompt lost it
     # and the post-create resume 404'd. Persist it up front too; only empty drafts stay lazy.
-    if parent_session_id and history:
-        _seed_branch_row(_sessions[sid], key, parent_session_id, history, source, profile_home)
-    elif history:
-        _seed_row(_sessions[sid])
-    elif explicit_cwd and remote_cwd:
-        # A remote project session persists its row now: the per-profile gateway that runs the first turn mints
-        # the row itself (AIAgent INSERT-OR-IGNORE) with cwd=None, and the sidebar then drops it to Home. Local
-        # project drafts stay lazy — their cwd reaches the row on the first prompt (no "Untitled" litter).
-        _ensure_session_db_row(_sessions[sid])
+    try:
+        if parent_session_id and history:
+            _seed_branch_row(_sessions[sid], key, parent_session_id, history, source, profile_home)
+        elif history:
+            _seed_row(_sessions[sid])
+        elif explicit_cwd and remote_cwd:
+            _ensure_session_db_row(_sessions[sid])
+    except FreshSessionCollision:
+        forget_failed_birth(_sessions, _sessions_lock, _idempotency_keys, idem_key, sid)
+        return _err(rid, 4008, "Generated session ID already exists; retry creation")
     # Return immediately so Ink can paint; the AIAgent builds right after the flush.
     _schedule_agent_build(sid)
     _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap

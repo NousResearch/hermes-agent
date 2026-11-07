@@ -48,6 +48,12 @@ class SessionIdOwnedElsewhereError(SessionLineageError):
     code = "session_id_owned_elsewhere"
 
 
+class FreshSessionCollision(SessionLineageError):
+    """A generated fresh identity already belongs to persisted state."""
+
+    code = "fresh_session_collision"
+
+
 @dataclass(frozen=True)
 class SessionStoreRow:
     store_path: Path

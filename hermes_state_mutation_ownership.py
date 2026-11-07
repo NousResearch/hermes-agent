@@ -151,10 +151,18 @@ def mutation_write_ids(db, conn, session_id, operation, payload, *, prepared=Non
                            if handler else set())
 
 
-def worker_receipt_write_ids(conn, session_id, operation, payload):
+def worker_receipt_write_ids(db, conn, session_id, operation, payload):
     """Secondary IDs changed by a registered worker's receipt handler."""
     ids = {session_id}
-    if operation == 'compression.publish':
+    if operation == 'session.title' and isinstance(payload, dict):
+        title = payload.get('title')
+        if title is None or isinstance(title, str):
+            try:
+                ids.update(_title_conflict(db, conn, title, session_id))
+            except ValueError:
+                # The title handler receipts invalid overlong titles as before.
+                return ids
+    elif operation == 'compression.publish':
         child = payload.get('child_session_id') if isinstance(payload, dict) else None
         if isinstance(child, str) and 0 < len(child) <= 1024:
             ids.update(compression_publication_ids(conn, session_id, child))

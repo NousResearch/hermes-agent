@@ -186,3 +186,22 @@ def test_a_child_store_closed_before_any_turn_finishes_its_execution_and_ends_it
         assert db.get_session(child.reserved_session_id)['end_reason'] == 'agent_close'
     finally:
         parent.close()
+
+
+def test_fresh_child_reservation_refuses_existing_local_history(ledger):
+    db, epoch = ledger
+    db.append_message('other', 'user', 'preserve unrelated history')
+    before = [tuple(row) for row in db._conn.execute("SELECT * FROM sessions WHERE id='other'")]
+    messages = [tuple(row) for row in db._conn.execute("SELECT * FROM messages WHERE session_id='other'")]
+    handler = partial(reserve_child_execution, epoch=epoch, execution_id='worker',
+                      identity={'profile_id': 'home', 'pid': os.getpid(), 'birth': worker_birth(psutil.Process())},
+                      principal='local', limits=(2, 1), refused=None, reserved_session_id='other')
+    args = dict(epoch=epoch, execution_id='worker', session_id='parent', generation=0,
+                sequence=1, operation='child.reserve', payload={'secret': 'child-secret-00000001'},
+                handlers={'child.reserve': handler}, lineage_ids=('other',))
+    result = rt.apply_worker_receipt(db, **args)
+    assert result == {'refused': 'session_id_collision'}
+    assert rt.apply_worker_receipt(db, **args) == result
+    assert [tuple(row) for row in db._conn.execute("SELECT * FROM sessions WHERE id='other'")] == before
+    assert [tuple(row) for row in db._conn.execute("SELECT * FROM messages WHERE session_id='other'")] == messages
+    assert db._conn.execute("SELECT COUNT(*) FROM worker_executions WHERE kind='child'").fetchone()[0] == 0

@@ -222,3 +222,138 @@ def test_resume_refuses_corrupt_pending_component_without_mutation(gateway, monk
         assert not donor.get_session(tip)["archived"]
     finally:
         target.close()
+
+
+def test_branch_stored_collision_preserves_existing_local_conversation(gateway, monkeypatch):
+    from tests.tui_gateway.test_protocol import _stub_session_create_dependencies
+    mod, db, _ = gateway
+    db.create_session("branch-parent", "cli")
+    db.append_message("branch-parent", "user", "parent history")
+    db.create_session("branch-existing", "cli")
+    db.append_message("branch-existing", "user", "unrelated history")
+    before = [[tuple(row) for row in db._conn.execute("SELECT * FROM " + table + " ORDER BY rowid")]
+              for table in ("sessions", "messages")]
+    real_seed = mod._seed_branch_row
+    _stub_session_create_dependencies(mod, monkeypatch)
+    monkeypatch.setattr(mod, "_seed_branch_row", real_seed)
+    monkeypatch.setattr(mod, "_new_session_key", lambda: "branch-existing")
+    response = mod.handle_request({"id": "branch-collision", "method": "session.branch_stored",
+                                   "params": {"parent_session_id": "branch-parent", "source": "desktop"}})
+    after = [[tuple(row) for row in db._conn.execute("SELECT * FROM " + table + " ORDER BY rowid")]
+             for table in ("sessions", "messages")]
+    assert after == before
+    assert response.get("error"), response
+
+
+def test_branch_stored_fresh_id_and_cached_replay(gateway, monkeypatch):
+    from tests.tui_gateway.test_protocol import _stub_session_create_dependencies
+    mod, db, _ = gateway
+    db.create_session('fresh-parent', 'cli')
+    db.append_message('fresh-parent', 'user', 'parent history')
+    real_seed = mod._seed_branch_row
+    _stub_session_create_dependencies(mod, monkeypatch)
+    monkeypatch.setattr(mod, '_seed_branch_row', real_seed)
+    monkeypatch.setattr(mod, '_new_session_key', lambda: 'fresh-branch')
+    params = {'parent_session_id': 'fresh-parent', 'source': 'desktop', 'idempotency_key': 'branch-fresh-replay'}
+    first = mod.handle_request({'id': 'branch-first', 'method': 'session.branch_stored', 'params': params})
+    assert not first.get('error'), first
+    assert first['result']['stored_session_id'] == 'fresh-branch'
+    assert [row['content'] for row in db.get_messages('fresh-branch')] == ['parent history']
+    before = [[tuple(row) for row in db._conn.execute('SELECT * FROM ' + table + ' ORDER BY rowid')]
+              for table in ('sessions', 'messages')]
+    retry = mod.handle_request({'id': 'branch-retry', 'method': 'session.branch_stored', 'params': params})
+    assert retry['result']['session_id'] == first['result']['session_id']
+    assert [[tuple(row) for row in db._conn.execute('SELECT * FROM ' + table + ' ORDER BY rowid')]
+            for table in ('sessions', 'messages')] == before
+
+
+def test_branch_copy_failure_compensates_only_new_child(gateway, monkeypatch):
+    mod, db, _ = gateway
+    db.create_session('comp-parent', 'cli')
+    db.create_session('unrelated', 'cli')
+    db.append_message('unrelated', 'user', 'untouched')
+    before = [tuple(row) for row in db._conn.execute("SELECT * FROM messages WHERE session_id='unrelated'")]
+    def fail_copy(*args, **kwargs):
+        raise RuntimeError('injected branch copy failure')
+    monkeypatch.setattr(db, 'append_messages_batch', fail_copy)
+    with pytest.raises(RuntimeError, match='injected branch copy failure'):
+        mod._persist_branch(db, 'new-child', 'comp-parent', 'Branch', [{'role': 'user', 'content': 'seed'}],
+                            source='desktop', cwd=None, profile_name='default', model='m', compensate=True)
+    assert db.get_session('new-child') is None
+    assert [tuple(row) for row in db._conn.execute("SELECT * FROM messages WHERE session_id='unrelated'")] == before
+
+
+@pytest.mark.parametrize('seeded', [False, True])
+def test_session_create_generated_collision_refuses_existing(gateway, monkeypatch, seeded):
+    from tests.tui_gateway.test_protocol import _stub_session_create_dependencies
+    mod, db, _ = gateway
+    db.create_session('existing-create', 'cli')
+    db.append_message('existing-create', 'user', 'unrelated history')
+    before = [[tuple(row) for row in db._conn.execute('SELECT * FROM ' + table + ' ORDER BY rowid')]
+              for table in ('sessions', 'messages')]
+    seed, ensure = mod._seed_row, mod._ensure_session_db_row
+    _stub_session_create_dependencies(mod, monkeypatch)
+    monkeypatch.setattr(mod, '_seed_row', seed)
+    monkeypatch.setattr(mod, '_ensure_session_db_row', ensure)
+    monkeypatch.setattr(mod, '_new_session_key', lambda: 'existing-create')
+    params = {'source': 'desktop', 'idempotency_key': 'collision-create'}
+    if seeded:
+        params['messages'] = [{'role': 'user', 'content': 'new seed'}]
+    response = mod.handle_request({'id': 'create-collision', 'method': 'session.create', 'params': params})
+    after = [[tuple(row) for row in db._conn.execute('SELECT * FROM ' + table + ' ORDER BY rowid')]
+             for table in ('sessions', 'messages')]
+    assert after == before
+    assert response.get('error'), response
+
+
+@pytest.mark.parametrize('late_collision', [False, True])
+def test_fresh_draft_first_persist_refuses_late_collision_or_reuses_own_row(gateway, monkeypatch, late_collision):
+    from hermes_state_lineage import FreshSessionCollision
+    from tests.tui_gateway.test_protocol import _stub_session_create_dependencies
+
+    mod, db, _ = gateway
+    ensure = mod._ensure_session_db_row
+    _stub_session_create_dependencies(mod, monkeypatch)
+    monkeypatch.setattr(mod, '_ensure_session_db_row', ensure)
+    monkeypatch.setattr(mod, '_new_session_key', lambda: 'fresh-draft')
+    first = mod.handle_request({'id': 'draft-first', 'method': 'session.create',
+                                'params': {'source': 'desktop', 'idempotency_key': 'fresh-draft-replay'}})
+    assert not first.get('error'), first
+    record = mod._sessions[first['result']['session_id']]
+    assert record['_fresh_generated_key'] is True
+    if late_collision:
+        db.create_session('fresh-draft', 'cli')
+        db.append_message('fresh-draft', 'user', 'unrelated')
+        before = [[tuple(row) for row in db._conn.execute('SELECT * FROM ' + table + ' ORDER BY rowid')]
+                  for table in ('sessions', 'messages')]
+        with pytest.raises(FreshSessionCollision):
+            mod._ensure_session_db_row(record)
+        assert [[tuple(row) for row in db._conn.execute('SELECT * FROM ' + table + ' ORDER BY rowid')]
+                for table in ('sessions', 'messages')] == before
+        assert record['_fresh_generated_key'] is True
+    else:
+        assert mod._ensure_session_db_row(record) is True
+        assert record['_fresh_generated_key'] is False
+        assert mod._ensure_session_db_row(record) is True
+        retry = mod.handle_request({'id': 'draft-retry', 'method': 'session.create',
+                                    'params': {'source': 'desktop', 'idempotency_key': 'fresh-draft-replay'}})
+        assert retry['result']['session_id'] == first['result']['session_id']
+
+
+def test_fresh_draft_failed_birth_does_not_continue_as_ensured(gateway, monkeypatch):
+    from tests.tui_gateway.test_protocol import _stub_session_create_dependencies
+
+    mod, db, _ = gateway
+    ensure = mod._ensure_session_db_row
+    _stub_session_create_dependencies(mod, monkeypatch)
+    monkeypatch.setattr(mod, '_ensure_session_db_row', ensure)
+    monkeypatch.setattr(mod, '_new_session_key', lambda: 'failure-draft')
+    first = mod.handle_request({'id': 'draft', 'method': 'session.create', 'params': {'source': 'desktop'}})
+    assert not first.get('error'), first
+    record = mod._sessions[first['result']['session_id']]
+    def fail_birth(*args, **kwargs):
+        raise RuntimeError('injected birth failure')
+    monkeypatch.setattr(db, '_create_fresh_session', fail_birth)
+    assert mod._ensure_session_db_row(record) is False
+    assert record['_fresh_generated_key'] is True
+    assert db.get_session('failure-draft') is None

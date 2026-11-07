@@ -1087,7 +1087,7 @@ def apply_worker_receipt(db, *, epoch, execution_id, session_id, generation, seq
     try:
         return guarded_discovered_session_write(
             db, (session_id, *lineage_ids),
-            lambda conn: worker_receipt_write_ids(conn, session_id, operation, json.loads(encoded)),
+            lambda conn: worker_receipt_write_ids(db, conn, session_id, operation, json.loads(encoded)),
             write, patience_s=db._TRANSCRIPT_WRITE_PATIENCE_S)
     except SessionLineageError:
         found, result = cached_receipt()

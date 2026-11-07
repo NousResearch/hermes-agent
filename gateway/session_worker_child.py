@@ -63,6 +63,8 @@ def reserve_child_execution(db, conn, session_id, payload, *, epoch, execution_i
         from hermes_state_ids import new_session_id
         reserved_session_id = new_session_id()
     child_sid, child_eid = reserved_session_id, prefix + secrets.token_hex(8)
+    if conn.execute("SELECT 1 FROM sessions WHERE id=?", (child_sid,)).fetchone():
+        return {'refused': 'session_id_collision'}
     insert_session_row_in_transaction(db, conn, child_sid, 'subagent', model_config={'_delegate_from': session_id},
                                       parent_session_id=session_id, profile_name=parent['profile_name'])
     scope = dict(identity, session_id=child_sid, execution_id=child_eid, generation=0, secret=secret)

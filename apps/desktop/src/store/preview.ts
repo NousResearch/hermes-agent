@@ -503,21 +503,24 @@ export function rekeyPreviewTabsSession(previousId: string, nextId: string): voi
   }
 }
 
-/** The owning profile of a tab for partition resolution (#150283 F2): the profile
- *  bucket the tab is stored under, or — for a tab not yet in any bucket (a draft
- *  just being created) — the workspace on screen (`viewKey`). A session-less draft
- *  tab in a named profile's workspace must ride that profile's jar, never default
- *  the shared `persist:hermes-preview` jar and expose the default profile's
- *  sign-ins to that workspace. */
+/** The owning profile of a tab for partition resolution (#150283 F2): the
+ *  workspace the tab is being rendered in — the `viewKey` bucket the caller
+ *  (the preview pane) already shows — never a global first-match-by-id search.
+ *  A session-less draft tab in a named profile's workspace must ride that
+ *  profile's jar, never default the shared `persist:hermes-preview` jar and
+ *  expose the default profile's sign-ins to that workspace.
+ *
+ *  G1 (#150283, security): a draft FILE tab derives its id from the file URL
+ *  alone (no profile, no session), so the SAME html file opened as a draft under
+ *  two profiles collides on one id. A global first-match search returned whichever
+ *  bucket happened to iterate first, so a `default` draft of a file also open in
+ *  `work` resolved to `work`'s cookie jar — regressing the per-profile isolation.
+ *  The preview pane renders the tab it holds for the view on screen, so the tab's
+ *  owner is that view (`viewKey`): resolve from the viewed bucket, not a scan of
+ *  every profile's. (A popped-out renderer force-re-homes `viewKey` onto the
+ *  bucket the persisted tab lives in via `adoptPersistedBrowserTab` before this
+ *  is read, so `viewKey` is the authoritative owner there too.) */
 export function previewTabOwnerProfile(tabId: string | null | undefined): string {
-  if (tabId) {
-    for (const [key, tabs] of Object.entries(tabsByProfile)) {
-      if (tabs.some(tab => tab.id === tabId)) {
-        return key
-      }
-    }
-  }
-
   return viewKey
 }
 

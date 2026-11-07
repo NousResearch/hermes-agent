@@ -562,6 +562,38 @@ describe('preview session scoping (#73890)', () => {
     }
   })
 
+  // G1 (#150283, security): a draft FILE tab's id derives from the file URL alone (no profile,
+  // no session), so the SAME html file opened as a draft under two profiles collides on one id.
+  // Resolving the owner by a GLOBAL first-match-by-id search returned whichever bucket iterated
+  // first, so the `default` draft resolved to `work`'s cookie jar and navigating from its Browser
+  // bar used `work`'s sign-ins — regressing per-profile isolation. Each view must resolve to ITS
+  // OWN workspace. (Red on base: the `default` draft resolves to `work`.)
+  it('resolves a draft file tab shared across profiles to the viewed workspace, never a colliding bucket', () => {
+    try {
+      // Open the same html file as a draft under `work` first (so its bucket is stored first).
+      setPreviewScope('work')
+      openPreview(fileTarget('/shared/collide.html'))
+      const workTabId = $previewTabs.get().at(-1)!.id
+      expect($previewTabs.get().at(-1)!.sessionId).toBeUndefined() // a true draft tab
+
+      // Open the SAME file as a draft under `default`: same derived id, different workspace.
+      setPreviewScope('default')
+      openPreview(fileTarget('/shared/collide.html'))
+      const defaultTabId = $previewTabs.get().at(-1)!.id
+      expect(defaultTabId).toBe(workTabId) // the collision the fix must tolerate
+
+      // Viewing under `default`, the tab is `default`'s — NOT `work`'s (the first-stored bucket).
+      expect(previewTabOwnerProfile(defaultTabId)).toBe('default')
+
+      // And back under `work`, the same id resolves to `work`.
+      setPreviewScope('work')
+      expect(previewTabOwnerProfile(workTabId)).toBe('work')
+    } finally {
+      setPreviewScope('default')
+      dropPreviewTabsForProfile('work')
+    }
+  })
+
   it('keeps a draft tabs in the draft until that draft itself gets its stored id', () => {
     openPreview(fileTarget('/work/draft.html'))
     newBrowserTab()

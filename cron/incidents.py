@@ -6,13 +6,15 @@ operator every run once acknowledged. Lifecycle: ``detected`` → ``alerted`` �
 job + same normalized error resolves to the SAME incident id, so a closed incident stays closed
 until the error text changes and mints a new one. ``alerted`` means a failure ping actually reached
 the operator (``alerted_at`` = when the latest one did; the scheduler withholds repeats until
-``cron.failure_repeat_alert_hours`` have passed). Incidents share ``cron/executions.db`` with
+``cron.failure_repeat_alert_hours`` have passed, growing by ``cron.failure_repeat_alert_backoff``
+per ping already sent). Incidents share ``cron/executions.db`` with
 ``cron.executions`` (one ledger file).
 """
 
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 import sqlite3
 import threading
@@ -46,6 +48,10 @@ _MAX_SIGNATURE_ERROR_CHARS = 200
 _DURATION_RE = re.compile(
     r"\b\d+(?:\.\d+)?\s*(?:ms|s|secs?|seconds?|m|mins?|minutes?|h|hrs?|hours?)\b"
 )
+
+# Escalated reminders never go quieter than one per week: a job still broken a month later keeps
+# surfacing until someone acks it (``hermes cron incidents ack``).
+MAX_REMINDER_COOLDOWN_HOURS = 168.0
 
 _lock = threading.RLock()
 
@@ -86,6 +92,7 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
              last_seen_at  TEXT NOT NULL,
              acked_at      TEXT,
              alerted_at    TEXT,
+             alert_count   INTEGER NOT NULL DEFAULT 0,
              closed_at     TEXT,
              error         TEXT NOT NULL,
              output_file   TEXT
@@ -93,6 +100,9 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     )
     # Ledgers created before the alert-once gate lack ``alerted_at``; add it in place.
     add_column_if_missing(conn, "cron_incidents", "alerted_at", "alerted_at TEXT")
+    # Pings delivered for this incident; drives the escalating reminder cooldown.
+    add_column_if_missing(
+        conn, "cron_incidents", "alert_count", "alert_count INTEGER NOT NULL DEFAULT 0")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_cron_incidents_job "
         "ON cron_incidents(job_id)"
@@ -181,6 +191,7 @@ def upsert_incident(
                    SET last_seen_at=?, error=?, output_file=?,
                        state=CASE WHEN state='resolved' THEN 'detected' ELSE state END,
                        alerted_at=CASE WHEN state='resolved' THEN NULL ELSE alerted_at END,
+                       alert_count=CASE WHEN state='resolved' THEN 0 ELSE alert_count END,
                        closed_at=CASE WHEN state='resolved' THEN NULL ELSE closed_at END
                    WHERE id=?""",
                 (now, stored_error, output_file, incident_id),
@@ -200,8 +211,9 @@ def upsert_incident(
 def set_incident_state(incident_id: str, state: str) -> bool:
     """Transition an incident's lifecycle state; return whether it changed. ``closed`` is terminal
     for that signature (re-open happens by a changed error minting a NEW incident). Unknown states
-    are rejected (no-op, ``False``). ``alerted`` also stamps ``alerted_at`` — every time, so the
-    cooldown reminder (see ``cron.scheduler._upsert_incident_for_failure``) restarts its window."""
+    are rejected (no-op, ``False``). ``alerted`` also stamps ``alerted_at`` and bumps
+    ``alert_count`` — every time, so the cooldown reminder (see
+    ``cron.scheduler._upsert_incident_for_failure``) restarts its window and escalates."""
     if state not in INCIDENT_STATES:
         return False
     now = _hermes_now().isoformat()
@@ -213,7 +225,8 @@ def set_incident_state(incident_id: str, state: str) -> bool:
             return False
         if state == "alerted":
             conn.execute(
-                "UPDATE cron_incidents SET state='alerted', alerted_at=? WHERE id=?",
+                "UPDATE cron_incidents SET state='alerted', alerted_at=?, "
+                "alert_count=COALESCE(alert_count, 0) + 1 WHERE id=?",
                 (now, incident_id),
             )
             return True
@@ -232,6 +245,43 @@ def set_incident_state(incident_id: str, state: str) -> bool:
                 (state, incident_id),
             )
         return True
+
+
+def repeat_alert_backoff() -> float:
+    """``cron.failure_repeat_alert_backoff``: factor applied to the reminder cooldown per ping the
+    incident already sent. ``1`` (default) is a flat cooldown; ``3`` spaces reminders like the
+    1st/3rd/9th... failure-notification backoff of Poke/Devin automations (docs.devin.ai release
+    notes, 2026-10-09). Values below 1 read as 1."""
+    from cron.jobs import _cron_config_number
+
+    return max(1.0, _cron_config_number("failure_repeat_alert_backoff", 1.0, float))
+
+
+def reminder_cooldown_hours(incident: dict[str, Any], base_hours: float) -> float:
+    """``base * backoff^(pings sent - 1)``, capped at a week (never below a larger configured base)."""
+    cap = max(base_hours, MAX_REMINDER_COOLDOWN_HOURS)
+    sent = max(1, int(incident.get("alert_count") or 0))
+    backoff = repeat_alert_backoff()
+    # Compare in log space first: backoff ** (sent - 1) overflows a float for a long-running
+    # incident, and the caller would then deliver every ping instead of capping.
+    if backoff > 1 and (sent - 1) * math.log(backoff) >= math.log(cap / base_hours):
+        return cap
+    return min(base_hours * backoff ** (sent - 1), cap)
+
+
+def alerted_within(incident: dict[str, Any], hours: float) -> bool:
+    """Whether the incident's last ping is younger than *hours*. A missing/unparseable
+    ``alerted_at`` (ledger written before the column existed) reads as False, so the caller
+    delivers rather than swallowing an alert."""
+    from datetime import datetime
+
+    from cron.jobs import _elapsed_seconds, _ensure_aware
+
+    try:
+        last = _ensure_aware(datetime.fromisoformat(str(incident.get("alerted_at") or "")))
+    except (TypeError, ValueError):
+        return False
+    return _elapsed_seconds(_hermes_now(), last) < hours * 3600
 
 
 def ack_incident(incident_id: str) -> bool:

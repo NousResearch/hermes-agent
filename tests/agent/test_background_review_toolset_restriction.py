@@ -265,3 +265,44 @@ def test_background_review_whitelist_includes_configured_extra_tools(
     assert "propose_shared_memory" in captured["review_prompt"]
 
 
+def test_extra_tools_admits_session_search(tmp_path, monkeypatch):
+    """`extra_tools` admits read-only `session_search` recall into the review fork.
+
+    A review fork only sees the conversation it reviews, so it cannot tell a
+    one-off failure from a recurring one; `session_search` queries past
+    sessions in the session database with no model calls. The whitelist must
+    admit it exactly as configured — and stay denied without the opt-in.
+    """
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "auxiliary:\n"
+        "  background_review:\n"
+        "    extra_tools:\n"
+        "      - session_search\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    from agent.background_review import _review_tool_whitelist, _task_block
+    from hermes_cli import config as config_module
+    from hermes_cli.config import load_config_readonly
+
+    config_module._LOAD_CONFIG_CACHE.clear()
+    config_module._RAW_CONFIG_CACHE.clear()
+
+    class _StubReviewAgent:
+        _memory_enabled = True
+        _user_profile_enabled = False
+
+    cfg = _task_block(load_config_readonly())
+    whitelist, extra = _review_tool_whitelist(_StubReviewAgent(), cfg, False)
+    assert "session_search" in whitelist
+    assert extra == {"session_search"}
+    # Without an opt-in the tool stays denied: extra_tools only admits, never
+    # widens the default read-only set.
+    whitelist_none, extra_none = _review_tool_whitelist(_StubReviewAgent(), {}, False)
+    assert "session_search" not in whitelist_none
+    assert extra_none == set()
+
+

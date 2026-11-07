@@ -64,6 +64,11 @@ _SECRET_SOURCE_WRITES_BY_HOME: dict[str, dict[str, tuple[str, str, str | None]]]
 # several hot modules, so without this the Bitwarden status line prints 3-5x per startup and the config
 # re-parse + ASCII sweep re-run each time (Bitwarden's own cache only saves the network call).
 _APPLIED_HOMES: set[str] = set()
+# Per home: the ``(mtime_ns, size)`` of the ``.env`` the applied snapshot was built from. A ``.env`` line
+# shadows a source-supplied name for a source whose ``override_existing`` is off, so editing that file
+# changes the answer this home's snapshot must serve — without the stamp a live gateway kept resolving the
+# pre-edit value, and a removed shadow line left the name unresolved until restart (#150583).
+_SECRET_SOURCE_ENV_STAMP: dict[str, tuple[int, int] | None] = {}
 _SECRET_SOURCE_CACHE_LOCK = threading.RLock()
 
 # What THIS process has published from dotenv files, per variable: (value before our first publish, or
@@ -94,6 +99,16 @@ _SPAWN_CREDENTIAL_KEYS: frozenset[str] = frozenset({"HERMES_DASHBOARD_SESSION_TO
 _PROFILE_MANAGED_ENV_KEYS: frozenset[str] = frozenset({
     "HERMES_ACP_AUTH_METHOD", "HERMES_ACP_AUTO_APPROVE",
 }) | profile_env_names()
+
+
+def _dotenv_stamp(home: Path) -> tuple[int, int] | None:
+    """``(mtime_ns, size)`` of ``home/.env``: the freshness key for this home's secret snapshot. None when
+    the file is absent, so a later creation also invalidates the entry."""
+    try:
+        stat = (home / ".env").stat()
+    except OSError:
+        return None
+    return stat.st_mtime_ns, stat.st_size
 
 
 def _env_keys_defined_in_dotenv(path: Path) -> set[str]:
@@ -193,8 +208,13 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
     if worker_config_snapshot() is not None:
         return {}
     home_key = str(home.resolve())
+    env_stamp = _dotenv_stamp(home)
     if home_key in _APPLIED_HOMES:
-        return get_secret_source_values(home)
+        if _SECRET_SOURCE_ENV_STAMP.get(home_key, env_stamp) == env_stamp:
+            return get_secret_source_values(home)
+        # ``.env`` changed under a live snapshot: a shadowed name may now resolve from the source (or the
+        # other way round), so drop the entry and re-hydrate instead of serving the pre-edit answer.
+        _APPLIED_HOMES.discard(home_key)
 
     # A retry must not keep serving a partial result after the source is removed, disabled, or can no
     # longer be evaluated. Publish only the snapshot established by this attempt.
@@ -244,6 +264,7 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
     # mixed report are still snapshotted below and can be used while the failed source recovers.
     if all(src.result.ok for src in report.sources):
         _APPLIED_HOMES.add(home_key)
+        _SECRET_SOURCE_ENV_STAMP[home_key] = env_stamp
     # Same ownership bookkeeping as the process-global path: a name this profile's source supplied — applied,
     # or skipped because the private mapping already had it — is a source-owned name the routed-child scrub
     # must know about, or a sibling still inherits the launch value for it (review on f5f88d5058).
@@ -268,6 +289,7 @@ def reset_secret_source_cache(hermes_home: str | os.PathLike | None = None) -> N
     (#102041)."""
     if hermes_home is None:
         _APPLIED_HOMES.clear()
+        _SECRET_SOURCE_ENV_STAMP.clear()
         _SECRET_SOURCES.clear()
         _SOURCE_SUPPLIED_NAMES.clear()
         _SECRET_SOURCE_VALUES_BY_HOME.clear()
@@ -276,6 +298,7 @@ def reset_secret_source_cache(hermes_home: str | os.PathLike | None = None) -> N
         return
     home_key = str(Path(hermes_home).resolve())
     _APPLIED_HOMES.discard(home_key)
+    _SECRET_SOURCE_ENV_STAMP.pop(home_key, None)
     _SECRET_SOURCE_VALUES_BY_HOME.pop(home_key, None)
     _SECRET_SOURCE_RESTORE_BY_HOME.pop(home_key, None)
 

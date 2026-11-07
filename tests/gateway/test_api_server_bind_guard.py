@@ -10,7 +10,13 @@ from unittest.mock import patch
 import pytest
 
 from gateway.config import PlatformConfig
-from gateway.platforms.api_server import APIServerAdapter
+from gateway.platforms.api_server import (
+    DEFAULT_HOST,
+    DEFAULT_PORT,
+    APIServerAdapter,
+    listen_address,
+)
+from gateway.platforms.shared_ingress import is_wildcard_host
 from gateway.platforms.base import is_network_accessible
 
 
@@ -57,6 +63,46 @@ class TestIsNetworkAccessible:
         ]
         with patch("gateway.platforms.base._socket.getaddrinfo", return_value=mixed_result):
             assert is_network_accessible("dual-host.local") is True
+
+
+# ---------------------------------------------------------------------------
+# Unit tests: listen_address()
+# ---------------------------------------------------------------------------
+
+
+class TestListenAddress:
+    """``platforms.api_server`` wins over the env fallbacks, and a valueless key is not a value.
+
+    YAML parses a bare ``host:`` as None. ``dict.get(key, default)`` only returns the default
+    for a MISSING key, so a present-but-null host used to skip both ``API_SERVER_HOST`` and
+    ``DEFAULT_HOST`` and hand aiohttp None -- which binds every interface.
+    """
+
+    def test_absent_host_falls_back_to_env_then_default(self, monkeypatch):
+        monkeypatch.delenv("API_SERVER_HOST", raising=False)
+        assert listen_address({})[0] == DEFAULT_HOST
+        monkeypatch.setenv("API_SERVER_HOST", "10.0.0.5")
+        assert listen_address({})[0] == "10.0.0.5"
+
+    def test_valueless_host_key_falls_back_the_same_way(self, monkeypatch):
+        monkeypatch.setenv("API_SERVER_HOST", "10.0.0.5")
+        assert listen_address({"host": None})[0] == "10.0.0.5"
+        monkeypatch.delenv("API_SERVER_HOST", raising=False)
+        assert listen_address({"host": None})[0] == DEFAULT_HOST
+        # The port branch already handled this; the two must not drift apart again.
+        monkeypatch.delenv("API_SERVER_PORT", raising=False)
+        assert listen_address({"host": None, "port": None}) == (DEFAULT_HOST, DEFAULT_PORT)
+
+    def test_a_configured_host_still_wins_over_the_env(self, monkeypatch):
+        monkeypatch.setenv("API_SERVER_HOST", "10.0.0.5")
+        assert listen_address({"host": "192.168.1.9"})[0] == "192.168.1.9"
+        # An explicit empty string is a deliberate wildcard, not an absent value.
+        assert listen_address({"host": ""})[0] == ""
+
+    def test_the_resolved_host_is_never_a_wildcard_by_accident(self, monkeypatch):
+        monkeypatch.delenv("API_SERVER_HOST", raising=False)
+        for extra in ({}, {"host": None}, {"port": 8642}, {"host": None, "port": None}):
+            assert not is_wildcard_host(listen_address(extra)[0]), extra
 
 
 # ---------------------------------------------------------------------------

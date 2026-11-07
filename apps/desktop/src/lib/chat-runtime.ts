@@ -70,6 +70,18 @@ export function sessionTitle(session: SessionInfo): string {
  *  has been typed into, which is the only thing that can name it earlier. */
 export const NEW_SESSION_TITLE = 'New session'
 
+/** A stored row with nothing in it yet — no title, no preview, no messages —
+ *  is a new session that merely has a backend row: an unlisted tab draft's
+ *  owner stub (#102792), or that draft probed back after a relaunch. It reads
+ *  as one ("New session", the composer's live name, the new-session intro),
+ *  never as "Untitled session", which names a real conversation without a
+ *  title. */
+export function isBlankSessionRow(session: SessionInfo | undefined): session is SessionInfo {
+  return Boolean(
+    session && !session.title?.trim() && !session.preview?.trim() && !((session.message_count ?? 0) > 0)
+  )
+}
+
 export function coerceGatewayText(value: unknown): string {
   if (typeof value === 'string') {
     return value

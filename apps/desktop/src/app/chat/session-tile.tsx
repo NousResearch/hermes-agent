@@ -40,7 +40,7 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { type ResolvedOwner, transcribeAudio } from '@/hermes'
 import { useI18n } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
-import { NEW_SESSION_TITLE, sessionTitle } from '@/lib/chat-runtime'
+import { isBlankSessionRow, NEW_SESSION_TITLE, sessionTitle } from '@/lib/chat-runtime'
 import { transcribeAudioClientDirect } from '@/lib/voice-client-direct'
 import { createComposerAttachmentScope, draftTitleFor, takeSessionDraft } from '@/store/composer'
 import { $gatewaySwitching } from '@/store/gateway-switch'
@@ -624,6 +624,16 @@ export function tileStoredRow(storedSessionId: string): SessionInfo | undefined 
   )
 }
 
+/** The row a tab takes its NAME from. A blank row (`isBlankSessionRow`) names
+ *  nothing: a "+" draft has one from the moment it is created — the owner stub
+ *  that routes its resume (#102792) — and reading it labelled every new tab
+ *  "Untitled session" instead of the composer's live "New session". */
+function tileNamedRow(storedSessionId: string): SessionInfo | undefined {
+  const row = tileStoredRow(storedSessionId)
+
+  return isBlankSessionRow(row) ? undefined : row
+}
+
 /** One-shot by-id title fill for restored tiles that never mount (#94167).
  *  A restored background tab has no runtimeId and does not mount its pane, so
  *  the resolution effect above never runs; when its row is outside the recents
@@ -722,7 +732,7 @@ export function startTileBackendIdentityGuard(activeConnection = () => $connecti
  *  would let the registered name already match the row that lands on send —
  *  skipping the re-register that hands the tab back to this string. */
 function tileTitle(storedSessionId: string): string {
-  const stored = tileStoredRow(storedSessionId)
+  const stored = tileNamedRow(storedSessionId)
   const explicit = $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)?.workspaceTabTitle
 
   return stored ? sessionTitle(stored) : explicit || NEW_SESSION_TITLE
@@ -740,7 +750,7 @@ function tileWorkspaceScope(storedSessionId: string): Parameters<typeof workspac
 
 /** The tab's CAPTION: a bot chat's owner name over the canonical stored title
  *  (#99152). The menu keeps `tileTitle` — rename/delete show the real row. */
-function tileCaption(storedSessionId: string): string {
+export function tileCaption(storedSessionId: string): string {
   return workspaceOwnerTitle(
     tileTitle(storedSessionId),
     $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)
@@ -751,10 +761,11 @@ function tileCaption(storedSessionId: string): string {
  *  Resolved at drag time, so an unsent tab drags under its draft name. */
 function tileDragPayload(storedSessionId: string): SessionDragPayload {
   const stored = tileStoredRow(storedSessionId)
+  const named = tileNamedRow(storedSessionId)
   const tile = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
 
-  const title = stored
-    ? sessionTitle(stored)
+  const title = named
+    ? sessionTitle(named)
     : tile?.workspaceTabTitle || draftTitleFor(storedSessionId) || NEW_SESSION_TITLE
 
   return { id: storedSessionId, profile: stored?.profile ?? '', title: workspaceOwnerTitle(title, tile) }
@@ -1004,7 +1015,7 @@ export const watchSessionTiles = paneMirror<SessionTile>({
   // Until the first turn lists a row there is no title to register, so the tab
   // takes its name from the composer instead — live, without re-registering.
   tabTitle: storedSessionId =>
-    tileStoredRow(storedSessionId) ||
+    tileNamedRow(storedSessionId) ||
     $sessionTiles.get().some(tile => tile.storedSessionId === storedSessionId && tile.workspaceTabTitle) ? null : (
       <SessionDraftTitle scope={storedSessionId} />
     ),

@@ -12,6 +12,7 @@ afterEach(cleanup)
 // a broken asChild composition on the kebab trigger fails here — the menu
 // must still open on click.
 
+vi.mock('@/app/chat/focused-tab-open', () => ({ openInFocusedSessionTab: vi.fn(() => false) }))
 vi.mock('@/components/pane-shell/tree/store', () => ({
   closeAllTreeTabs: vi.fn(),
   closeOtherTreeTabs: vi.fn(),

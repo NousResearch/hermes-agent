@@ -172,6 +172,37 @@ def _cfgset_guarded(fn):
 
 # ── per-key handlers
 
+def _cfgset_settle_prewarm_build(sid, session, rid, value, parsed_flags):
+    """A provider-qualified pick on a session with no agent yet is recorded as ``model_override``, which
+    the agent build reads when it starts. session.create pre-warms that build on a timer thread, so it
+    can start before the pick is recorded (before this call, or during it) and land on the profile
+    default — while config.set answered success. Settle any such build: a build that read the pick is
+    left alone, one that landed on the old model is switched live (the guards already passed), one that
+    failed is rebuilt on the pick (the failed-init path). With no build started nothing waits, so a
+    broken default is still never built or waited on. Returns an error envelope, or None."""
+    ready = session.get("agent_ready")
+    if session.get("agent") is not None or ready is None or not session.get("agent_build_started"):
+        return None
+    if not ready.wait(timeout=30.0):
+        return _err(rid, 5032, AGENT_STILL_STARTING)
+    agent, pick = session.get("agent"), session.get("model_override") or {}
+    if agent is None:
+        if session.get("agent_error") is None or session.get("agent_ready") is not ready:
+            return None
+        _restart_completed_failed_agent_build(sid, session, ready)
+        if init_err := _cfgset_await_agent(session, rid):
+            return init_err
+        with _session_profile_runtime_scope(session):
+            _persist_live_session_runtime(session)
+        return None
+    if (getattr(agent, "provider", None), getattr(agent, "model", None)) == (pick.get("provider"), pick.get("model")):
+        return None
+    with _session_profile_runtime_scope(session):
+        _apply_model_switch(sid, session, value, confirm_expensive_model=True, parsed_flags=parsed_flags,
+                            count_switch=False)
+    return None
+
+
 @_cfgset_guarded
 def _set_model(rid, params, key, value, session):
     """Live/deferred model switch; see _apply_model_switch and _apply_pending_model_switch."""
@@ -214,6 +245,9 @@ def _set_model(rid, params, key, value, session):
                 return init_err
             with _session_profile_runtime_scope(session):
                 _persist_live_session_runtime(session)
+        elif explicit_provider.strip() and not result.get("confirm_required"):
+            if init_err := _cfgset_settle_prewarm_build(sid, session, rid, value, parsed_flags):
+                return init_err
     else:
         # --once keeps its specific 5001; other sessionless model sets 4001 so
         # --global cannot persist profile defaults before session.create (#106397:

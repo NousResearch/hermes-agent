@@ -121,10 +121,11 @@ def test_saved_code_is_origin_bound_on_the_preview(home, monkeypatch):
     assert window.ops() == ["open", "evaluate", "close"]
 
 
-@pytest.mark.parametrize("surface", ["preview", "preview_deferred", "managed_page", "no_preview", "explicit"])
+@pytest.mark.parametrize("surface", ["preview", "preview_deferred", "managed_page", "plugin_page", "no_preview", "explicit"])
 def test_omitted_target_picks_the_preview_only_without_a_managed_page(home, monkeypatch, surface):
     """Desktop sessions with drive_preview (eager or behind tool_call) and no managed browser page fill
-    the in-app browser; a session that opened a page with browser_exec keeps filling that page."""
+    the in-app browser; a session that opened a page with browser_exec, OR whose live page is owned by a
+    plugin backend (e.g. Camofox), keeps filling that page."""
     from agent import tool_executor
     from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
     from tools import browser_session
@@ -134,7 +135,13 @@ def test_omitted_target_picks_the_preview_only_without_a_managed_page(home, monk
     monkeypatch.setattr(tool_executor, "_tool_search_scoped_names", lambda _agent: frozenset({"drive_preview"}))
     monkeypatch.setattr(browser_session, "session_for_task",
                         lambda tid: {"cdp_url": "ws://x"} if surface == "managed_page" else {})
+    # A plugin backend holding the task's live page must win over an omitted target, exactly like a
+    # managed CDP page: browser_vault's own backend selection already picks it (#150283 P1-4).
+    import agent.browser_page_registry as page_registry
+    monkeypatch.setattr(page_registry, "backend_for_task",
+                        lambda tid: object() if surface == "plugin_page" else None)
     names = {"preview": {"drive_preview"}, "preview_deferred": {"tool_call"}, "managed_page": {"drive_preview"},
+             "plugin_page": {"drive_preview"},
              "no_preview": set(), "explicit": {"drive_preview"}}[surface]
     window = PreviewWindow()
     agent = SimpleNamespace(drive_preview_callback=window, valid_tool_names=names)

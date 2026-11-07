@@ -61,10 +61,8 @@ def _strip_shell_comments(command: str) -> str:
     — quoted ``#`` is preserved by a simple state machine; the goal is removing the
     low-hanging injection surface, not full shell parsing.
 
-    Only for commands that really are shell. ``python -c '…'`` and heredoc bodies are
-    source: a ``#`` there can sit inside a string literal, so the caller passes those
-    through untouched (:func:`_is_program_body`) rather than guessing where the shell
-    part ends and rewriting the program the guardian is supposed to review.
+    Shell only: interpreter text (``python -c '…'``, heredocs) is source, and the caller
+    passes it through untouched instead of guessing where the shell part ends.
     """
     cleaned: list[str] = []
     for line in command.split("\n"):
@@ -72,12 +70,6 @@ def _strip_shell_comments(command: str) -> str:
         if stripped or not cleaned:
             cleaned.append(stripped)
     return "\n".join(cleaned).rstrip()
-
-
-def _is_program_body(description: str) -> bool:
-    """True when the flagged command is an interpreter invocation, i.e. its text is source."""
-    return description.startswith("script execution via")
-
 
 
 def _strip_python_comments(code: str) -> str:
@@ -199,7 +191,7 @@ def _smart_approve(command: str, description: str, *, code: str | None = None) -
                 "Respond with exactly one word: APPROVE, DENY, or ESCALATE"
             )
         else:
-            body = command if _is_program_body(description) else _strip_shell_comments(command)
+            body = command if description.startswith("script execution via") else _strip_shell_comments(command)
             user_prompt = (
                 f"The following command was flagged as: {description}\n\n"
                 f"<command>\n{_fence_escape(body)}\n</command>\n\n"

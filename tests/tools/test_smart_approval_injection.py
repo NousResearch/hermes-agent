@@ -15,7 +15,6 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from tools.approval_smart import (
-    _is_program_body,
     _smart_approve,
     _strip_line_comment,
     _strip_python_comments,
@@ -234,11 +233,6 @@ class TestPythonBodyIsNotShellLexed(unittest.TestCase):
         """Fail closed: source tokenize cannot read is assessed verbatim, never rewritten."""
         broken = "def f(:\n    pass  # comment\n"
         assert _strip_python_comments(broken) == broken
-
-    def test_program_body_detection_matches_the_flagged_descriptions(self):
-        assert _is_program_body("script execution via -e/-c flag")
-        assert _is_program_body("script execution via heredoc")
-        assert not _is_program_body("recursive delete")
 
     def test_interpreter_commands_are_passed_to_the_guardian_verbatim(self):
         """``python3 -c '…'`` and heredocs are source, not shell: the gate keys off the

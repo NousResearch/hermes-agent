@@ -37,6 +37,23 @@ def _parse_peer_tokens(raw: str) -> dict[str, str]:
     return {token: name for name, token in pairs if name and token}
 
 
+# Shortest credential we are willing to fingerprint: an 8-hex digest of a guessable token would
+# turn the log into an offline oracle for it. Real bearer tokens are 32+ chars.
+_FP_MIN_LEN = 16
+
+
+def credential_fingerprint(token: str) -> str:
+    """First 8 hex of SHA-256(presented credential), or "" when it is too short to fingerprint.
+
+    Says WHICH credential a request presented (shared vs per-peer, and which peer token) without
+    writing the credential anywhere. It does not name the caller when callers share one token —
+    User-Agent plus socket facts do that.
+    """
+    if not token or len(token) < _FP_MIN_LEN:
+        return ""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:8]
+
+
 def _configured_trusted_peers() -> frozenset[str]:
     raw = _startup_env("A2A_TRUSTED_PEERS")
     if raw:
@@ -89,21 +106,34 @@ class A2ASecurityContext:
             return "127.0.0.1"
         return self.requested_host
 
-    def authenticate(self, auth_header: Optional[str], client_ip: str = "") -> Optional[str]:
-        """Peer identity or None (401). Localhost-only: ``ip:<addr>``; per-peer token: that
-        peer's name; shared token: ``ip:<addr>``. Constant-time comparisons."""
+    def classify(self, auth_header: Optional[str], client_ip: str = "") -> Optional[dict]:
+        """Authenticate, returning the request's authentication facts (None => 401).
+
+        ``identity`` is exactly what ``authenticate()`` has always returned — trust lists, rate
+        limiting and the audit ``peer`` field keep keying on it, unchanged. The other keys are
+        observation only: which credential class was presented (``localhost`` / ``shared-token`` /
+        ``peer-token``) and its non-reversible ``fingerprint``. One comparison path for both
+        methods, so observation can never diverge from the accept/reject decision.
+        """
         if self.localhost_only():
-            return f"ip:{client_ip or 'local'}"
+            return {"identity": f"ip:{client_ip or 'local'}", "auth": "localhost", "fingerprint": ""}
         parts = (auth_header or "").split(None, 1)
         if len(parts) != 2 or parts[0].lower() != "bearer":
             return None
         presented = parts[1].strip()
         for token, name in self.peer_tokens:
             if hmac.compare_digest(presented, token):
-                return name
+                return {"identity": name, "auth": "peer-token", "fingerprint": credential_fingerprint(presented)}
         if self.bearer_token and hmac.compare_digest(presented, self.bearer_token):
-            return f"ip:{client_ip or 'unknown'}"
+            return {"identity": f"ip:{client_ip or 'unknown'}", "auth": "shared-token",
+                    "fingerprint": credential_fingerprint(presented)}
         return None
+
+    def authenticate(self, auth_header: Optional[str], client_ip: str = "") -> Optional[str]:
+        """Peer identity or None (401). Localhost-only: ``ip:<addr>``; per-peer token: that
+        peer's name; shared token: ``ip:<addr>``. Constant-time comparisons."""
+        facts = self.classify(auth_header, client_ip)
+        return facts["identity"] if facts else None
 
     def is_loopback_bind(self) -> bool:
         return is_loopback_host(self.resolve_bind_host())
@@ -247,11 +277,16 @@ def is_safe_callback_url(url: str, *, localhost_mode: Optional[bool] = None) -> 
     return True
 
 
-def audit(direction: str, peer: str, task_id: str, summary: str) -> None:
-    """Append an audit record (direction: inbound | outbound | push). Never raises."""
+def audit(direction: str, peer: str, task_id: str, summary: str, caller: Optional[dict] = None) -> None:
+    """Append an audit record (direction: inbound | outbound | push). ``caller`` is optional
+    request-local provenance — auth class, credential fingerprint, User-Agent, socket, claimed
+    identity — recorded as a nested object so the ``peer`` field existing readers key on keeps its
+    meaning. Never raises."""
     try:
         from hermes_constants import get_hermes_home
         rec = {"ts": time.time(), "direction": direction, "peer": peer, "task_id": task_id, "summary": (summary or "")[:500]}
+        if caller:
+            rec["caller"] = caller
         get_hermes_home().mkdir(parents=True, exist_ok=True)
         with (get_hermes_home() / "a2a_audit.jsonl").open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")

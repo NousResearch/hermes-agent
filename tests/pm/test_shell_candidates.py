@@ -23,6 +23,13 @@ def test_program_files_git_precedes_the_path_bash():
     assert candidates[0] == PF + r"\Git\bin\bash.exe"
     assert candidates[-1] == on_path
 
+def test_program_files_git_beats_the_system32_stub():
+    on_path = r"C:\Windows\System32\bash.exe"
+    candidates = windows_bash_candidates(on_path, {"ProgramFiles": PF})
+    assert candidates[0] == PF + r"\Git\bin\bash.exe"
+    assert all("system32" not in c.lower() and "windowsapps" not in c.lower()
+               for c in candidates)
+
 def test_per_user_and_32bit_git_roots_are_candidates():
     candidates = windows_bash_candidates(None, {
         "ProgramFiles": PF, "ProgramFiles(x86)": r"D:\Progs32",

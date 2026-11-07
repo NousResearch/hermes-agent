@@ -28,7 +28,7 @@ Hermes 将此称为**无 agent 模式**。这是去掉 LLM 的 cron 系统。
 
 - **无 LLM 调用。** 零 token，零 agent 循环，零模型费用。
 - **脚本即任务。** 由脚本决定是否告警。有输出 → 发送消息；无输出 → 静默执行。
-- **Bash 或 Python。** `.sh` / `.bash` 文件在 `/bin/bash` 下运行；其他扩展名在当前 Python 解释器下运行。`~/.hermes/scripts/` 中的任何文件均可接受。
+- **Bash 或 Python。** `.sh` / `.bash` 文件由 Hermes 规范解析器（`pm.shell.bash`）提供的 bash 运行——Windows 上使用 Git for Windows 的 bash（由 PM 存储暂存或已安装；绝不使用 System32 的 WSL 存根），POSIX 上使用 `PATH`/标准位置中的 bash，并在没有 bash 时回退到 `sh`；其他扩展名在当前 Python 解释器下运行。`~/.hermes/scripts/` 中的任何文件均可接受。
 - **同一调度器。** 与 LLM 任务共存于 `cronjob` 中——暂停、恢复、列出、日志和投递目标的操作方式完全相同。
 
 ## 适用场景
@@ -157,7 +157,7 @@ hermes cron run <job_id>    # 触发一次以测试
 
 | 扩展名 | 解释器 |
 |-----------|-------------|
-| `.sh`、`.bash` | `/bin/bash` |
+| `.sh`、`.bash` | 规范 bash（`pm.shell.bash`）；`sh` 回退 |
 | 其他任意扩展名 | `sys.executable`（当前 Python），或一个[自定义解释器](#使用你自己的-python-环境) |
 
 我们有意**不**遵循 `#!/...` shebang——保持解释器集合明确且精简，可减少调度器信任的攻击面。

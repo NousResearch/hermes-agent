@@ -86,7 +86,11 @@ import {
 import { secondaryProfileOwnerForEvent } from './session-event-provenance'
 import { $focusedStoredSessionId, TILE_PANE_PREFIX } from './session-focus'
 import { turnHasReply, withNoReplyNotice } from './session-no-reply'
-import { assertSessionOwnerResolved } from './session-owner-resolution'
+import {
+  ambientGatewayOwnsEverySession,
+  assertSessionOwnerResolved,
+  sessionOwnerIsKnown
+} from './session-owner-resolution'
 import {
   isSessionOwnerRoute,
   requestForSessionProfile,
@@ -1859,12 +1863,13 @@ export function isSessionRemote(sessionId: null | string | undefined): boolean {
 
 /**
  * Dispatch a session-scoped RPC through the OWNER of `sessionId` (tile route →
- * hint → connection-tagged row / known profile). This is the client half of
- * #91684: approval.respond (and siblings) sent on the ambient socket land on
- * whatever backend is active, which for a cross-profile session is a backend
- * that never held the approval. An UNKNOWN owner fails closed with an
- * explicit SessionOwnerResolutionError unless the ambient gateway is provably
- * the only backend (legacy single-profile, no registry source).
+ * hint → connection-tagged row / known profile → cross-profile by-id probe).
+ * This is the client half of #91684: approval.respond (and siblings) sent on
+ * the ambient socket land on whatever backend is active, which for a
+ * cross-profile session is a backend that never held the approval. An UNKNOWN
+ * owner fails closed with an explicit SessionOwnerResolutionError unless the
+ * ambient gateway is provably the only backend (legacy single-profile, no
+ * registry source).
  */
 export function requestForOwnedSession<T>(
   sessionId: null | string | undefined,
@@ -1880,6 +1885,61 @@ export function requestForOwnedSession<T>(
   signal?: AbortSignal
 ): Promise<T> {
   const owner = knownOwnerForSession(sessionId)
+
+  // The sync ladder only sees rows already in memory, and the rungs that feed
+  // it are empty for a session nothing has resolved yet — an ARCHIVED row the
+  // by-id open parked off-list, a row outside the loaded slices. A by-id probe
+  // would still name its backend, so the UNKNOWN-owner path probes across
+  // profiles BEFORE failing closed: the same async rung the RPC dispatcher
+  // already runs, which gives session.control.read parity with its siblings
+  // instead of leaving it strictly weaker (FRAMEWORK-07). Only the path that
+  // would otherwise THROW detours — a known owner, a null session and the
+  // legacy single-backend install (ambient gateway owns every session) keep
+  // the synchronous dispatch they have today, microtask shape included: the
+  // background pollers' gone-latch is timed against it.
+  if (sessionId && !sessionOwnerIsKnown(owner) && !ambientGatewayOwnsEverySession()) {
+    return dispatchViaOwnerProbe(sessionId, owner, ambientRequest, method, params, timeoutMs, signal)
+  }
+
+  try {
+    assertSessionOwnerResolved(owner, { method, sessionId })
+  } catch (error) {
+    return Promise.reject(error)
+  }
+
+  return requestForSessionProfile<T>(owner, ambientRequest, method, params, timeoutMs, signal)
+}
+
+/** The fail-closed detour of `requestForOwnedSession`: probe every profile by
+ *  id, then dispatch through the owner the probe named — or raise the
+ *  owner-resolution error when no backend claims the session. A probe that
+ *  itself fails must never replace that error, so it is swallowed here. */
+async function dispatchViaOwnerProbe<T>(
+  sessionId: string,
+  owner: SessionOwnerScope,
+  ambientRequest: <R>(
+    method: string,
+    params?: Record<string, unknown>,
+    timeoutMs?: number,
+    signal?: AbortSignal
+  ) => Promise<R>,
+  method: string,
+  params: Record<string, unknown>,
+  timeoutMs: number | undefined,
+  signal: AbortSignal | undefined
+): Promise<T> {
+  try {
+    // Lazy: a static import of use-session-actions/utils would drag that whole
+    // graph (and its init-time cycle) back into this store module.
+    const { resolveSessionOwner } = await import('@/app/session/hooks/use-session-actions/utils')
+    const probed = await resolveSessionOwner(storedSessionIdForRuntimeId(sessionId) ?? sessionId)
+
+    if (sessionOwnerIsKnown(probed)) {
+      owner = probed
+    }
+  } catch {
+    // Fall through with what the sync ladder already knew.
+  }
 
   try {
     assertSessionOwnerResolved(owner, { method, sessionId })

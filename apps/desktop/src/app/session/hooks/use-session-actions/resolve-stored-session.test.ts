@@ -6,6 +6,7 @@ import { $activeGatewayProfile, $profiles } from '@/store/profile'
 import { $projectTree } from '@/store/projects'
 import { $cronSessions, $messagingSessions, $sessions, $unlistedSessionOwnerRows } from '@/store/session'
 import { $removedSessionIds, tombstoneSessions, untombstoneSessions } from '@/store/session-removal'
+import { knownOwnerForSession } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
 
 import { cachedSessionRow, resolveStoredSession } from './utils'
@@ -210,6 +211,27 @@ describe('resolveStoredSession profile ownership', () => {
 
     expect(resolved?.archived).toBe(true)
     expect($sessions.get()).toEqual([])
+  })
+
+  it('parks an archived cross-profile hit off-list so owner resolution still finds it (FRAMEWORK-07)', async () => {
+    // Every other owner rung is empty for an archived row: it is in no sidebar
+    // slice, no resume hint was ever recorded for a local primary, and the
+    // tile opened it without an explicit route. The parked row is the only
+    // rung that can name the backend that holds it.
+    mockGetSession.mockResolvedValueOnce(session({ archived: true, id: 's1', profile: 'arthur' }))
+
+    const resolved = await resolveStoredSession('s1')
+
+    expect(resolved?.archived).toBe(true)
+    // Regression guard on #85163: an archived row is never a sidebar row, in
+    // ANY slice, after the resolve.
+    expect($sessions.get()).toEqual([])
+    expect($cronSessions.get()).toEqual([])
+    expect($messagingSessions.get()).toEqual([])
+    // ...but owner lookup sees it, so session.control.read routes instead of
+    // failing closed with SessionOwnerResolutionError.
+    expect($unlistedSessionOwnerRows.get().map(parked => parked.id)).toEqual(['s1'])
+    expect(knownOwnerForSession('s1')).toBe('arthur')
   })
 
   it('does not recache a stale by-id row when its tombstone clears before the response', async () => {

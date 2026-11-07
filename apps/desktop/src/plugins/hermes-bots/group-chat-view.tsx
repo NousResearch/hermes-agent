@@ -40,7 +40,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { avatarColor, botAppearance, BotFace } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
-import { groupCreationSource, groupDrivenByDesktop, groupExecutionMode } from './canonical-group-capabilities'
+import { groupCreationSource, groupDrivenByDesktop, groupExecutionMode, groupRoomRecorded } from './canonical-group-capabilities'
 import type { GroupExecutionMode } from './canonical-group-capabilities'
 import type { CanonicalGroupMessages } from './canonical-group-locales'
 import type { CanonicalGroupOrigin } from './canonical-group-registry'
@@ -654,7 +654,7 @@ interface GatePlan {
  *  main; on a gateway connection (or while that is unknown) what happened, why, what to do, and what
  *  happens to its earlier messages. Only a classic room whose Bots can form a gateway group here is
  *  offered Start new group. Workspace routing decides which rooms reach this gate. */
-function groupGatePlan({ mode, unavailable, lookup, props, route, canonical, open }: {
+function groupGatePlan({ mode, unavailable, lookup, props, route, canonical, open, recorded, updateRequired }: {
   mode: GroupExecutionMode | 'checking'
   unavailable: GateUnavailable
   lookup: GateLookup
@@ -662,10 +662,18 @@ function groupGatePlan({ mode, unavailable, lookup, props, route, canonical, ope
   route: { connectionId: string; profile: string }
   canonical: CanonicalGroupMessages
   open: GateOpenCopy
+  /** This Desktop has a room record for the name (`groupRoomRecorded`). */
+  recorded: boolean
+  /** What New group chat says when this gateway is too old to run group chats. */
+  updateRequired: string
 }): GatePlan {
   const plan = { classic: false, problem: '', canCreate: false, retry: null }
 
-  if (mode === 'legacy' && !props.owner) {return { ...plan, classic: true, message: '' }}
+  // An outdated gateway keeps running the rooms it already ran; a new name is a new group chat,
+  // which it cannot run, so the gate says so as New group chat does.
+  if (mode === 'legacy' && !props.owner) {
+    return recorded ? { ...plan, classic: true, message: '' } : { ...plan, message: updateRequired, retry: 'capability' }
+  }
 
   if (mode !== 'canonical') {
     return mode === 'checking' ? { ...plan, message: canonical.checkingDriver }
@@ -783,8 +791,12 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
 
   const route = { connectionId: connectionId ?? '', profile }
 
+  const place = connectionId === 'local' ? b.bot.thisDevice
+    : props.members.find(member => member.connectionId === connectionId)?.connectionLabel || connectionId || b.bot.thisDevice
+
   const plan = groupGatePlan({ mode, unavailable: current?.unavailable ?? 'unreachable', lookup: lookupStatus, props, route,
-    canonical: b.canonical, open: t.gatewayGroupOpen })
+    canonical: b.canonical, open: t.gatewayGroupOpen, recorded: groupRoomRecorded(classicRoom),
+    updateRequired: b.crossGateway.ownerUpdateRequired(place) })
 
   if (plan.classic) {return <LegacyGroupChatWorkspace {...props} />}
   const { canCreate } = plan

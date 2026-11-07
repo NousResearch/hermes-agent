@@ -335,6 +335,19 @@ Get access at [parallel.ai](https://parallel.ai).
 
 ---
 
+### Keenable
+
+Search and page extraction from Keenable's own index. Works without a key: it is one of the keyless ring vendors, and selecting **Keenable · Free (keyless)** in `hermes tools` pins it. A key raises the rate limits.
+
+```bash
+# ~/.hermes/.env
+KEENABLE_API_KEY=your-keenable-key-here
+```
+
+Get a key at [app.keenable.ai](https://app.keenable.ai/console). See the [Keenable docs](https://docs.keenable.ai/integrations/hermes-agent).
+
+---
+
 ### xAI (Grok) {#xai-grok}
 
 Routes `web_search` through Grok's server-side [web_search tool](https://docs.x.ai/developers/tools/web-search) on the Responses API. Grok runs the actual searching and returns the top results as structured JSON.
@@ -440,6 +453,7 @@ If no shared backend has **ever** been selected (no `web.backend` written by you
 | `PERPLEXITY_API_KEY` | perplexity |
 | `EXA_API_KEY` | exa |
 | `PARALLEL_API_KEY` | parallel |
+| `KEENABLE_API_KEY` | keenable |
 | `FIRECRAWL_API_KEY` or `FIRECRAWL_API_URL` | firecrawl |
 | Nous Tool Gateway ready (Portal subscription) | managed web search via the Tool Gateway |
 | `SEARXNG_URL` | searxng |

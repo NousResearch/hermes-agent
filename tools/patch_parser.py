@@ -556,7 +556,7 @@ def _apply_move(op: PatchOperation, file_ops: Any) -> ApplyResult:
 
 def _commit_planned_update(commit: _Commit, file_ops: Any) -> ApplyResult:
     """Write the bytes the planner already chose. Never read the file to select a site."""
-    from tools.fuzzy_match import boundary_note
+    from tools.fuzzy_match import _note_edit_match, boundary_note
     op = commit.op
     if not isinstance(commit.snapshot, str) or not isinstance(commit.content, str):
         return _fail("planned update is missing content")
@@ -568,6 +568,8 @@ def _commit_planned_update(commit: _Commit, file_ops: Any) -> ApplyResult:
         op.file_path, commit.read_sha)
     if not result.ok:
         return result
+    for strategy in commit.strategies:
+        _note_edit_match(strategy)  # shared metrics: which strategy landed each hunk
     notes = list(commit.notes)
     if note := boundary_note(commit.strategies, "the hunk's", f" in {op.file_path}"):
         notes.append(note)

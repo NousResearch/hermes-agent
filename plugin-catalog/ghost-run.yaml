@@ -1,0 +1,31 @@
+name: ghost-run
+title: Ghost Run
+repo: https://github.com/tnvolman/ghost-run
+sha: d00081ba41bcf758efb3bed5f4822bff9b7a0a98
+version: "0.1.0"
+description: >-
+  Dry-run mode for Hermes Agent. With /ghost on, file writes, patches, deletes and
+  terminal commands are redirected into a throwaway copy of the working folder, and
+  network-touching tools and commands are blocked. Review the diff in a Desktop pane
+  (or a local web view via hermes ghost ui), then optionally run one configured Verify
+  command in the ghost (Pass/Fail banner; Apply stays human), then apply selected paths
+  or discard. Commands: /ghost on|off|status|verify; hermes ghost diff|apply|discard|ui|verify.
+  Disclosure — copies the working folder into a temp sandbox and runs the agent's
+  terminal commands inside it; writes session state to ~/.hermes/ghost-run/; "apply"
+  writes the chosen changes back to the real folder; hermes ghost ui serves a local-only
+  page on 127.0.0.1 with a per-session token. Opt-in outbound only: with GHOST_RUN_AI=1
+  (and an API key), pending diffs are posted to OpenRouter for advisory notes; off by
+  default. No credentials stored by the plugin; no telemetry.
+maintainer: tnvolman
+tier: community
+category: tools
+docs_url: https://github.com/tnvolman/ghost-run#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware:
+    - tool_request
+  requires_env: []

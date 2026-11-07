@@ -167,6 +167,33 @@ def environment_pairs(value: str) -> dict[str, str]:
     return result
 
 
+# systemd's shell_maybe_quote(SHELL_ESCAPE_POSIX): a value that needs quoting prints as $'...' with
+# \\ and \' escaped and control or invalid UTF-8 bytes as C escapes (\t, \ooo); UTF-8 stays raw.
+_POSIX_QUOTED = re.compile(rb"\$'((?:[^\\']|\\(?:[abfnrtv\\']|[0-3][0-7]{2}))*)'")
+_C_ESCAPES = {b"a": b"\a", b"b": b"\b", b"f": b"\f", b"n": b"\n", b"r": b"\r", b"t": b"\t", b"v": b"\v",
+              b"\\": b"\\", b"'": b"'"}
+
+
+def manager_environment_pairs(value: str) -> dict[str, str]:
+    # `systemctl show-environment` prints one KEY=VALUE per line: not the space-separated
+    # Environment= property grammar above, so a quoted value is decoded rather than refused.
+    result = {}
+    for line in filter(None, value.splitlines()):
+        key, separator, val = line.partition("=")
+        if not separator or not key:
+            _unverified()
+        if val.startswith("$'"):
+            quoted = _POSIX_QUOTED.fullmatch(os.fsencode(val))
+            if not quoted:
+                _unverified()
+            val = os.fsdecode(re.sub(rb"\\([0-7]{3}|.)",
+                                     lambda m: _C_ESCAPES.get(m[1]) or bytes([int(m[1], 8)]), quoted[1]))
+        elif "\\" in val or "'" in val:
+            _unverified()
+        result[key] = val
+    return result
+
+
 def verify_systemd(props: dict[str, str], manager_env: str, home: Path, *, system: bool) -> None:
     import pwd
 
@@ -192,7 +219,7 @@ def verify_systemd(props: dict[str, str], manager_env: str, home: Path, *, syste
         service_uid = 0 if system else uid
     if service_uid != uid:
         raise ValueError("service_account_mismatch")
-    inherited = environment_pairs(manager_env)
+    inherited = manager_environment_pairs(manager_env)
     env = inherited if not system else {k: v for k, v in inherited.items() if k in props["PassEnvironment"].split()}
     env.update(environment_pairs(props["Environment"]))
     for item in shlex.split(props["UnsetEnvironment"]):

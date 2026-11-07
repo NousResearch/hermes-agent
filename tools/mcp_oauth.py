@@ -1157,6 +1157,33 @@ def _build_client_metadata(cfg: dict) -> "OAuthClientMetadata":
         return metadata_cls.model_validate(metadata_kwargs)
 
 
+# A ``${VAR}`` the env expansion missed (hermes_cli.config keeps unresolved refs verbatim so
+# callers can detect them). In a context that never loaded the profile's ``.env`` — e.g. the
+# launch profile's unified-dashboard process opening a secondary profile's session (#108253) —
+# the placeholder is NOT the configured client identity: pre-registering it would rewrite
+# ``client.json`` with the literal placeholder and drop the valid stored tokens, and a login
+# would send it to the authorization server as the client_id.
+_UNRESOLVED_ENV_REF_RE = re.compile(r"\$\{([^}]+)\}")
+
+
+def drop_unresolved_client_refs(cfg: dict, server_name: str) -> dict:
+    """Drop the configured client pair when ``client_id`` or ``client_secret`` still carries a ``${VAR}``.
+
+    Applied once where every flow (runtime provider, browser login, device login) copies the
+    ``oauth:`` block, so the placeholder is never persisted nor sent. Both keys go together: an id
+    kept without its secret would read as a changed identity and discard the stored tokens. A
+    stored client keeps working; a fresh login takes the normal unconfigured path."""
+    refs = sorted({ref for key in ("client_id", "client_secret") if isinstance(cfg.get(key), str)
+                   for ref in _UNRESOLVED_ENV_REF_RE.findall(cfg[key])})
+    if refs:
+        cfg.pop("client_id", None)
+        cfg.pop("client_secret", None)
+        logger.warning("MCP OAuth '%s': oauth client credentials reference %s, which is not set in this "
+                       "profile's .env or secret source; ignoring the configured client (stored client and "
+                       "tokens are left untouched)", server_name, ", ".join(f"${{{r}}}" for r in refs))
+    return cfg
+
+
 def _invalidate_tokens_on_client_change(
     storage: HermesTokenStorage, new_client_id: str, new_client_secret: str | None) -> None:
     """Drop cached tokens when the configured client identity changes: tokens minted under the old

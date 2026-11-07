@@ -17,6 +17,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -349,11 +350,16 @@ class TestSSEClientCert:
         assert "transport" in captured_client_kwargs
 
     def test_factory_forwards_custom_ca_bundle(self, patch_sse_client, tmp_path):
-        """ssl_verify as a path is forwarded to the factory's httpx client."""
+        """ssl_verify as a path resolves to a context loading that bundle (#146924)."""
+        import shutil
+
+        import certifi
+
+        from agent.ssl_verify import _shared_context
         from tools.mcp_tool import MCPServerTask
 
         ca_bundle = tmp_path / "ca.pem"
-        ca_bundle.write_text("dummy")
+        shutil.copyfile(certifi.where(), ca_bundle)  # a real PEM: the resolved context loads it
 
         server = MCPServerTask("sse-test")
         server._auth_type = ""
@@ -390,5 +396,6 @@ class TestSSEClientCert:
              _patch_sdk_transport(_DummyTransport):
             factory(headers=None, timeout=None, auth=None)
 
-        assert _DummyTransport.captured["verify"] == str(ca_bundle)
+        expected = _shared_context(str(Path(str(ca_bundle)).expanduser().resolve()))
+        assert _DummyTransport.captured["verify"] is expected
         assert "cert" not in _DummyTransport.captured

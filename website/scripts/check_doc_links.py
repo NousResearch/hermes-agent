@@ -35,8 +35,16 @@ EN_DOCS = WEBSITE / "docs"
 ZH_DOCS = WEBSITE / "i18n" / "zh-Hans" / "docusaurus-plugin-content-docs" / "current"
 
 # Written by generate-skill-docs.py; edit the generator, never these outputs.
-GENERATED_PREFIXES = ("user-guide/skills/bundled/", "user-guide/skills/optional/")
-GENERATED_FILES = {"reference/skills-catalog.md", "reference/optional-skills-catalog.md"}
+GENERATED_PREFIXES = (
+    "user-guide/skills/bundled/",
+    "user-guide/skills/optional/",
+    "user-guide/mcps/optional/",
+)
+GENERATED_FILES = {
+    "reference/skills-catalog.md",
+    "reference/optional-skills-catalog.md",
+    "reference/optional-mcps-catalog.md",
+}
 
 # Site routes that are not documents: React pages and static assets.
 NON_DOC_ROUTE_PREFIXES = ("/skills", "/plugins", "/img/", "/llms", "/api/")

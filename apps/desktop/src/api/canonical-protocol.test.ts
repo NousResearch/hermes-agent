@@ -170,6 +170,10 @@ test('composer branch and model switch become canonical prepared mutations with 
 test('/model with --provider becomes the same canonical model mutation the CLI and ACP send', () => {
   expect(slashMutation('/model gpt-5 --provider openai')).toEqual({ operation: 'model', payload: { model: 'gpt-5', provider: 'openai' } })
   expect(slashMutation('/model gpt-5 --provider openai --session')).toEqual({ operation: 'model', payload: { model: 'gpt-5', provider: 'openai' } })
+  expect(slashMutation('/model gpt-5 --session --provider openai')).toEqual({ operation: 'model', payload: { model: 'gpt-5', provider: 'openai' } })
+  expect(slashMutation('/model gpt-5 --session')).toEqual({ operation: 'model', payload: { model: 'gpt-5' } })
+  expect(slashMutation('/model --session gpt-5')).toEqual({ operation: 'model', payload: { model: 'gpt-5' } })
+  expect(slashMutation('/model gpt-5 --provider --session openai')).toBeNull()
   expect(slashMutation('/model gpt-5 --global')).toBeNull()
   expect(slashMutation('/model --provider openai')).toBeNull()
 })

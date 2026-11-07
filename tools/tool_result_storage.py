@@ -181,10 +181,19 @@ def _prune_spillover_once() -> None:
 
 
 def _is_host_side_env(env) -> bool:
-    """True when this process should write the spill file directly: ``env=None`` (no sandbox
-    yet) or a backend whose files are the host's. Others resolve ``read_file`` inside the sandbox."""
+    """True when the agent's file tools read a host spillover path as written: a backend whose
+    files are the host's. ``env=None`` (no sandbox registered: never started, failed to start, or
+    reaped while idle) defers to the ACTIVE backend, since a host path dangles inside a docker/ssh
+    sandbox (#121024). Fails closed when the terminal policy can't be read."""
     if env is None:
-        return True
+        from tools.credential_files import to_agent_visible_cache_path
+        from tools.terminal_scope import TerminalPolicyUnavailable
+        probe = str(get_spillover_dir() / "probe.txt")
+        try:
+            # Local, unknown and plugin backends with no cache_path_base keep host paths unchanged.
+            return to_agent_visible_cache_path(probe) == probe
+        except TerminalPolicyUnavailable:
+            return False
     from tools.environments.base import env_uses_host_filesystem
 
     return env_uses_host_filesystem(env)
@@ -418,7 +427,7 @@ def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, en
     host_side = _is_host_side_env(env)
     if host_side and host_path is not None:
         return _persisted(host_path)
-    if not host_side:
+    if not host_side and env is not None:
         # Remote backend: reference the mounted/synced path when the sandbox can actually read
         # it, else write into the sandbox temp dir (containers without the spillover mount).
         visible = _sandbox_visible_spillover_path(host_path, env) if host_path else None
@@ -433,7 +442,9 @@ def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, en
     logger.info("Inline-truncating large tool result: %s (%d chars, no sandbox write)",
                 tool_name, len(content))
     return (f"{preview}\n\n[Truncated: tool response was {len(content):,} chars. "
-            "Full output could not be saved to sandbox.]")
+            "The full output could not be saved anywhere you can read; do not look for it in "
+            "other files. If you need more, call the tool again with a narrower request (check "
+            "the current state first if the tool changes data).]")
 
 
 def _content_text_size(content) -> int:

@@ -354,20 +354,24 @@ def test_429_then_generic_403_reraises_the_403(is_async):
 
 
 @pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
-def test_opencode_go_candidate_classifies_on_its_concrete_provider(monkeypatch, is_async):
+@pytest.mark.parametrize("effective,backend", [("opencode-go", None), ("api-key", "opencode-go")],
+                         ids=["effective-provider", "backend-tag"])
+def test_opencode_go_candidate_classifies_on_its_concrete_provider(monkeypatch, is_async, effective, backend):
     """A sync candidate tagged opencode-go (converted to async by ``async_call_llm``) classifies on Go's
-    profile: the upstream throttle quarantines the candidate without rotating its key."""
+    profile: the upstream throttle quarantines the candidate without rotating its key. A discovered candidate keeps
+    the route label ``api-key`` as its effective provider and names Go in its backend tag."""
     import model_tools  # registers the bundled provider profiles
     from agent import auxiliary_error_policy as aux_errors
 
     seen, real = [], aux_errors.classify_api_error
-    monkeypatch.setattr(aux_errors, "classify_api_error",
-                        lambda exc, **kw: seen.append((kw["provider"], (v := real(exc, **kw)).reason)) or v)
+    monkeypatch.setattr(aux_errors, "classify_api_error", lambda exc, **kw: seen.append(
+        (kw["provider"], (v := real(exc, **kw)).reason, v.should_rotate_credential)) or v)
     body = {"error": {"type": "server_error", "message": "Upstream request failed: Rate limit exceeded."}}
     transport = httpx.MockTransport(lambda request: httpx.Response(429, json=body, request=request))
     go = openai.OpenAI(api_key="sk-go", base_url="https://opencode.ai/zen/go/v1", max_retries=0,
                        http_client=httpx.Client(transport=transport))
-    go._hermes_aux_effective_provider = "opencode-go"  # type: ignore[attr-defined]
+    go._hermes_aux_effective_provider = effective  # type: ignore[attr-defined]
+    go._hermes_aux_backend_provider = backend  # type: ignore[attr-defined]
     primary = MagicMock(base_url="https://openrouter.ai/api/v1", api_key="sk-primary")
     primary.chat.completions.create = (AsyncMock if is_async else MagicMock)(side_effect=sdk(503, "down"))
     with (
@@ -386,7 +390,7 @@ def test_opencode_go_candidate_classifies_on_its_concrete_provider(monkeypatch, 
             asyncio.run(async_call_llm(task="title_generation", messages=_MESSAGES))
         else:
             call_llm(task="title_generation", messages=_MESSAGES)
-    assert ("opencode-go", FailoverReason.upstream_rate_limit) in seen
+    assert ("opencode-go", FailoverReason.upstream_rate_limit, False) in seen
 
 
 @pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])

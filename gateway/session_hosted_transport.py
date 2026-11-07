@@ -298,6 +298,10 @@ def _check_remote_hosted_admission(authority, ref, row):
         if row['payload'] != attested_submission_payload(
                 attested['prompt'], attested['attachments'], attested.get('attachment_digests')):
             raise ValueError('input changed')
+    except RuntimeStoreError as exc:
+        if exc.reason == 'admission_conflict':  # the source says this attempt is over
+            raise
+        raise RuntimeStoreError('permission_denied') from exc
     except (ValueError, KeyError, TypeError) as exc:
         raise RuntimeStoreError('permission_denied') from exc
     # Outside the permission_denied fold: a corrupted or missing retained document is a

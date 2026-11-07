@@ -54,6 +54,17 @@ describe('paste title preview', () => {
     expect(preview).not.toContain('\u200d')
   })
 
+  it('drops a cluster that straddles the cut instead of keeping its dangling tail', () => {
+    // The cluster is 11 units long, so the cut can land inside it while the retained units still
+    // end on a complete pair — no lone surrogate for a "drop the half pair" rule to detect, but a
+    // ZWJ fragment (`👨‍👩` out of `👨‍👩‍👧‍👦`) in the stored title preview.
+    const family = '👨‍👩‍👧‍👦'
+    const kept = `${'a'.repeat(995)}${family}`
+
+    expect(kept.slice(0, LARGE_PASTE_TITLE_PREVIEW_CHARS)).toBe(`${'a'.repeat(995)}👨‍👩`)
+    expect(pasteTitlePreview(kept)).toBe('a'.repeat(995))
+  })
+
   it('keeps a trailing astral character that still fits in the budget', () => {
     const preview = pasteTitlePreview(`${'a'.repeat(LARGE_PASTE_TITLE_PREVIEW_CHARS - 2)}🧩`)
 

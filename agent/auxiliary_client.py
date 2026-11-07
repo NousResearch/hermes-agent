@@ -89,11 +89,12 @@ _aux_probe_state = threading.local()
 
 class _AuxProbeClientStub:
     """Non-functional placeholder returned while `aux_probe_mode` is active."""
-    __slots__ = ("api_key", "base_url")
+    __slots__ = ("_hermes_aux_backend_provider", "api_key", "base_url")
 
     def __init__(self, api_key: str = "", base_url: str = "") -> None:
         self.api_key = api_key
         self.base_url = base_url
+        self._hermes_aux_backend_provider = ""
 
     def __getattr__(self, name: str) -> Any:
         # Loud failure if a probe stub ever leaks into a runtime call path.
@@ -2162,7 +2163,8 @@ def _resolve_api_key_provider() -> tuple[Optional[OpenAI], Optional[str]]:
                 from hermes_cli.auth import is_provider_explicitly_configured
                 if not is_provider_explicitly_configured("anthropic"):
                     continue
-            return _try_anthropic()
+            client, model = _try_anthropic()
+            return _tag_backend(client, "anthropic"), model
         from providers import get_provider_profile
         if getattr(get_provider_profile(provider_id), "ambient_credentials", False):
             # Explicit-config gate: ambient credentials (another tool's login) must not silently become aux fallback (#114740).
@@ -2200,7 +2202,7 @@ def _resolve_api_key_provider() -> tuple[Optional[OpenAI], Optional[str]]:
         if provider_id == "gemini":
             from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
             if is_native_gemini_base_url(base_url):
-                return GeminiNativeClient(api_key=api_key, base_url=base_url), model
+                return _tag_backend(GeminiNativeClient(api_key=api_key, base_url=base_url), provider_id), model
         if base_url_host_matches(base_url, "api.kimi.com"):
             headers = {"User-Agent": "claude-code/0.1.0"}
         elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
@@ -2212,8 +2214,16 @@ def _resolve_api_key_provider() -> tuple[Optional[OpenAI], Optional[str]]:
         if merged:
             extra["default_headers"] = merged
         client = _create_openai_client(api_key=api_key, base_url=base_url, **extra)
-        return _maybe_wrap_anthropic(client, model, api_key, raw_base_url), model
+        return _tag_backend(_maybe_wrap_anthropic(client, model, api_key, raw_base_url), provider_id), model
     return None, None
+
+
+def _tag_backend(client: Any, provider: str) -> Any:
+    """Name the provider a discovery client was built for. Failures classify there; the request itself
+    keeps the route label's wire shape (``_hermes_aux_effective_provider`` stays the label)."""
+    if client is not None and isinstance(provider, str) and provider:
+        client._hermes_aux_backend_provider = provider
+    return client
 
 
 def _route_client_headers(base_url: str, provider: str, *, is_vision: bool = False) -> Optional[dict]:
@@ -3957,7 +3967,7 @@ def _fallback_candidate_ladder(fb_client: Any, fb_kwargs: dict[str, Any], destin
 def _candidate_classification_provider(fb_client: Any, fb_model: Optional[str], fb_label: str,
                                        task: Optional[str]) -> str:
     destination = _fallback_destination(task, fb_client, fb_model, fb_label)
-    return _fallback_provider_from_label(_effective_provider_for_client(fb_client, destination.provider))
+    return _classification_provider(fb_client, destination.provider)
 
 
 def _call_fallback_candidate_sync(
@@ -4502,6 +4512,14 @@ def _effective_provider_for_client(client: Any, fallback: str) -> str:
     return str(fallback or "")
 
 
+def _classification_provider(client: Any, fallback: str) -> str:
+    """The provider a failure on ``client`` is classified on: the one discovery built it for, else its route."""
+    backend = getattr(client, "_hermes_aux_backend_provider", "")
+    if isinstance(backend, str) and backend:
+        return backend
+    return _fallback_provider_from_label(_effective_provider_for_client(client, fallback))
+
+
 # Centralized Provider Router: resolve_provider_client() is the single entry point for building a configured
 # client (auth, base URL, headers, API format) from (provider, model). Never read auth env vars ad-hoc.
 
@@ -4799,6 +4817,8 @@ def _resolve_auto_branch(req: _ResolveRequest) -> _ResolveResult:
     if routed_client is not None and effective_provider:
         try:
             routed_client._hermes_aux_effective_provider = effective_provider
+            if routed_client is not client:  # the async rebuild keeps the provider discovery built the client for
+                _tag_backend(routed_client, getattr(client, "_hermes_aux_backend_provider", None))
         except (AttributeError, TypeError):
             logger.debug("Auxiliary client %s cannot retain effective provider %s",
                          type(routed_client).__name__, effective_provider)
@@ -7388,7 +7408,7 @@ def _classify_failure(exc: Exception, provider: Optional[str], client: Any, mode
                       base_url: Optional[str]) -> aux_errors.Failure:
     if isinstance(exc, _ClassifiedAttempt):
         return exc.failure
-    provider = _fallback_provider_from_label(_effective_provider_for_client(client, provider or ""))
+    provider = _classification_provider(client, provider or "")
     verdict = aux_errors.classify_attempt(exc, provider, client, model, base_url)
     failure = aux_errors.Failure(exc, verdict, any(rung[0](exc) for rung in _parameter_rungs(client, 0)))
     _note_relay_auxiliary_error(exc, failure)

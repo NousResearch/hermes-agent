@@ -699,6 +699,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
     def _handler(args: dict, **kwargs) -> Any:
         # Security boundary: untrusted-server write tools need approval before ANY transport work (incl. lazy spawn).
         booked: list = []  # a costed call's charge; refunded when the call never reaches the server
+        cached_read_only = _tool_is_read_only(server_name, tool_name)
         error = _trust_gate_check(server_name, tool_name, booked, args)
         if error is not None:
             return error
@@ -712,6 +713,19 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
         # Only a tool annotated readOnlyHint=True is replayed after session expiry; a 401 is always
         # pre-dispatch so the auth recoverer keeps its retry for every tool.
         read_only = _tool_is_read_only(server_name, tool_name)
+        if cached_read_only and not read_only:
+            # The session that will run the call was (re)discovered after the
+            # gate ran, and it no longer reports the tool as read-only.
+            # Consent must be decided against this metadata, not the cache.
+            from tools.mcp_tool_scope import _server_key
+            key = _server_key(server_name)
+            if (_core._server_trust_levels.get(key, _core._TRUST_FULL) == _core._TRUST_UNTRUSTED
+                    and not _trust_granted(server_name, tool_name)):
+                error = _ask_for_call(server_name, tool_name, None, booked, args=args)
+                if error is not None:
+                    for charge in booked:
+                        charge.refund()
+                    return error
         image_paths: list[str] = []  # the LAST attempt's cached images (a recoverer may retry _call)
         # Read on the agent's thread: the coroutine below runs on the MCP loop, outside this context.
         from agent.tool_progress_relay import current_tool_progress

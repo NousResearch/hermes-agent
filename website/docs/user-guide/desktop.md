@@ -162,6 +162,32 @@ whenever a profile has it turned on.
 If that build fails, the gateway reports the Webapp unavailable, and the page says so, until
 `hermes webapp` rebuilds it.
 
+### Reach your other gateways from one Webapp
+
+The Webapp's **Settings → Gateways** has the same **Saved connections** list as the native app,
+and it is the same list: a machine keeps one, in `gateway-connections.json` in its Hermes home
+(user-only, beside `ui-preferences.json`). Adding, editing or removing a connection in the native app
+shows in the Webapp, and the other way round, without a restart. The first time the native app runs
+after this change it copies its existing connections in, with the same ids, so nothing needs to be
+set up again.
+
+Each saved gateway joins the Webapp's gateway switcher and the sidebar's gateway groups. The
+browser still talks only to the gateway serving the page. That gateway sends each request and socket
+on to the saved one, with the credential saved for it, exactly as the native app would: the session
+token in the `X-Hermes-Session-Token` header, or the bearer token of a sign-in, plus any extra
+headers saved with the connection. The other gateway needs no setting of its own.
+
+Anyone who can sign in to this Webapp can use every gateway saved on this machine, as whoever the
+saved credential belongs to. Save only gateways you would let them reach. What a saved gateway sends
+back never runs as this Webapp's page: it is served under a sandboxing content policy, the browser
+keeps no copy of it, and it cannot redirect outside that gateway. Removing a connection closes its
+open sockets at once.
+
+A Webapp tab and the windows it opens run on the gateway serving the page, so **Open in new window**
+and **Set as default** are offered for that gateway's own profiles. Open another gateway's from the
+switcher. A chat on another gateway stays in the tab: popping it out says so instead of opening a
+window.
+
 ### Terminal in the Webapp
 
 The terminal rail opens the host's interactive shell, running as a child of the gateway, in your home

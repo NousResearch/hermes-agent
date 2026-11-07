@@ -220,6 +220,9 @@ async def http_lifespan(app: FastAPI):
             if policy(app.state).host_terminal:
                 from hermes_cli.web_host_terminal_sessions import host_terminal_lifespan
                 await surface.enter_async_context(host_terminal_lifespan(app))
+            if policy(app.state).gateway_connections:
+                from hermes_cli.gateway_connections_watch import watch_store
+                await surface.enter_async_context(watch_store())
             yield
     finally:
         for task in tasks:

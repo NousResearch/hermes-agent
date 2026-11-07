@@ -187,9 +187,7 @@ import {
   connectionDialFieldsChanged,
   connectionIdForPendingLogin,
   mergeConnectionInput,
-  migrateV1ToRegistry,
   normalizeConnectionInput,
-  normalizeRegistry,
   parseBackendScopeKey,
   profileMetadataFromApiProfiles,
   reconcileAppliedGlobalConnection,
@@ -268,6 +266,7 @@ import {
 import { createFirstRunSetupGate } from './first-run-setup-gate'
 import { registerFsIpc } from './fs-ipc'
 import { directoryExists, fileExists, isGitCheckout } from './fs-probes'
+import { createGatewayConnectionsStore, readLegacyUserDataRegistry } from './gateway-connections-store'
 import { downloadViaTokenToFile as downloadViaNativeGatewayToFile } from './gateway-download-transport'
 import type {
   GatewayFileSaveContext,
@@ -601,6 +600,7 @@ import {
   windowOpacityFor,
   windowOpacityOptions
 } from './translucency'
+import { uiPreferencesRoot } from './ui-preferences'
 import { registerMachineUiPreferences } from './ui-preferences-ipc'
 import {
   UPDATE_HANDOFF_DWELL_MS,
@@ -1325,11 +1325,6 @@ const BOOTSTRAP_COMPLETE_MARKER = path.join(ACTIVE_HERMES_ROOT, '.hermes-bootstr
 const BOOTSTRAP_MARKER_SCHEMA_VERSION = 1
 
 const DESKTOP_CONNECTION_CONFIG_PATH = path.join(app.getPath('userData'), 'connection.json')
-// v2 multi-connection registry (named agent sources). Lives BESIDE
-// connection.json — v1 stays on disk untouched so older builds sharing the
-// profile keep working; the registry imports from it once and then owns its
-// own file. Same secret posture as connection.json (encrypted tokens, 0600).
-const DESKTOP_CONNECTIONS_REGISTRY_PATH = path.join(app.getPath('userData'), 'connections.json')
 const DESKTOP_INSTALLATION_PATH = path.join(app.getPath('userData'), 'desktop-installation.json')
 const DESKTOP_UPDATE_CONFIG_PATH = path.join(app.getPath('userData'), 'updates.json')
 const DESKTOP_WINDOW_STATE_PATH = path.join(app.getPath('userData'), 'window-state.json')
@@ -1970,8 +1965,17 @@ let bootstrapRepairAttempt = 0
 const MAX_BOOTSTRAP_REPAIR_SOFT_ATTEMPTS = 3
 let connectionConfigCache = null
 let connectionConfigCacheMtime = null
-let connectionRegistryCache = null
-let connectionRegistryCacheMtime = null
+
+const gatewayConnectionsStore = createGatewayConnectionsStore({
+  root: uiPreferencesRoot(HERMES_HOME),
+  userData: app.getPath('userData'),
+  legacyRegistry: () =>
+    readLegacyUserDataRegistry(app.getPath('userData'), readDesktopConnectionConfig(), message => rememberLog(message)),
+  reconcile: registry => reconcileRegistryDrift(registry, readDesktopConnectionConfig()),
+  decrypt: secret => decryptDesktopSecret(secret),
+  log: message => rememberLog(message)
+})
+
 const remoteHeaderSessions = new WeakSet<object>()
 const remoteWsHeaderStore = createRemoteWsHeaderStore()
 const previewWatchers = new Map()
@@ -7326,26 +7330,10 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
 // Backed by the encrypted on-disk store so it survives restarts.
 const _nativeTokens = new Map<string, NativeTokenSet>()
 
-function _nativeTokenStorePath() {
-  // Co-located with the connection config under userData; one JSON file mapping
-  // baseUrl → { encoding, value } safeStorage payloads.
-  return path.join(app.getPath('userData'), 'native-oauth-tokens.json')
-}
-
-// The electron-coupled half of the token store: safeStorage encryption plus the
-// userData file. native-token-store.ts owns the serialization/parse round trip
-// so it can be tested without an Electron runtime.
+// Sign-ins live in the machine's gateway-connection-tokens.json beside the
+// shared registry, keyed by connection id (gateway-connections-store.ts).
 function _nativeTokenStoreIo(): NativeTokenStoreIo {
-  return {
-    encrypt: encryptDesktopSecret,
-    decrypt: decryptDesktopSecret,
-    readStoreText: () => fs.readFileSync(_nativeTokenStorePath(), 'utf8'),
-    writeStoreText: (text: string) => {
-      fs.mkdirSync(path.dirname(_nativeTokenStorePath()), { recursive: true })
-      fs.writeFileSync(_nativeTokenStorePath(), text, { mode: 0o600 })
-    },
-    rememberLog
-  }
+  return gatewayConnectionsStore.nativeTokenIo(rememberLog)
 }
 
 function _persistNativeTokens(baseUrl: string, tokens: NativeTokenSet | null) {
@@ -8445,134 +8433,17 @@ function writeDesktopConnectionConfig(config) {
 
 // ── v2 connection registry (multi-source) ──────────────────────────────────
 
-/**
- * Read the v2 registry, importing from v1 connection.json exactly once (when
- * connections.json does not exist yet). Same mtime-cache + tighten-mode
- * discipline as readDesktopConnectionConfig; a corrupt registry degrades to
- * local-only via normalizeRegistry rather than throwing at boot.
- *
- * An EXISTING registry is additionally reconciled against v1 when the two have
- * drifted — see reconcileRegistryDrift. The one-shot migration cannot cover a
- * user who registered nothing and then pointed Settings -> Gateway at a remote,
- * and until that heals, every launch re-homes them onto a local backend.
- */
-function readDesktopConnectionsRegistry() {
-  let mtime = null
-
-  try {
-    mtime = fs.statSync(DESKTOP_CONNECTIONS_REGISTRY_PATH).mtimeMs
-  } catch {
-    mtime = null
-  }
-
-  if (connectionRegistryCache && connectionRegistryCacheMtime === mtime) {
-    return connectionRegistryCache
-  }
-
-  let registry
-
-  if (mtime === null) {
-    // First run on this build: import the v1 single-connection config. The v1
-    // file is NOT modified or deleted — older builds keep reading it. The
-    // migration is deterministic over the v1 input, so even if two processes
-    // race the first run (updater relaunch, second window), both derive the
-    // same registry and the later atomic write is a no-op content-wise.
-    registry = migrateV1ToRegistry(readDesktopConnectionConfig())
-
-    try {
-      writeDesktopConnectionsRegistry(registry)
-    } catch {
-      // Write failed (full disk, read-only userData). Keep the migrated
-      // registry in memory so list/save keep working this session instead of
-      // hard-failing every hermes:connections:* call.
-      connectionRegistryCache = registry
-      connectionRegistryCacheMtime = null
-    }
-
-    return connectionRegistryCache
-  }
-
-  try {
-    // Same rationale as connection.json: tighten BEFORE parse so a corrupt
-    // file that still holds token bytes gets its mode fixed anyway.
-    tightenSecretFileMode(DESKTOP_CONNECTIONS_REGISTRY_PATH)
-    registry = normalizeRegistry(JSON.parse(fs.readFileSync(DESKTOP_CONNECTIONS_REGISTRY_PATH, 'utf8')))
-  } catch {
-    // Whole-file corruption (truncated write, mangled hand-edit). The
-    // degraded local-only registry keeps boot working, but the file BYTES are
-    // the user's connection data — preserve them in a sidecar BEFORE any
-    // later write (drift reconcile, connection save) overwrites the file
-    // (#94246: recovery must never be data loss).
-    preserveCorruptRegistrySidecar()
-    registry = normalizeRegistry(null)
-  }
-
-  if (registry?.quarantined?.length) {
-    rememberLog(
-      `[connections] ${registry.quarantined.length} malformed registry entr${registry.quarantined.length === 1 ? 'y was' : 'ies were'} quarantined (kept under "quarantined" in connections.json); healthy connections loaded normally.`
-    )
-  }
-
-  // Heal v1 -> v2 drift: the v1 global route names a remote this registry has
-  // never heard of, so the live descriptor resolves to no connectionId and the
-  // launch pick sends the window somewhere else. Persist so the repair is a
-  // one-time event rather than a recomputation on every read; a failed write
-  // still returns the healed registry for this session.
-  const reconciled = reconcileRegistryDrift(registry, readDesktopConnectionConfig())
-
-  if (reconciled.changed) {
-    registry = reconciled.registry
-
-    try {
-      writeDesktopConnectionsRegistry(registry)
-
-      return connectionRegistryCache
-    } catch {
-      connectionRegistryCache = registry
-      connectionRegistryCacheMtime = null
-
-      return registry
-    }
-  }
-
-  connectionRegistryCache = registry
-  connectionRegistryCacheMtime = mtime
-
-  return registry
-}
-
-// Copy an unparseable connections.json aside (once per corruption event) so a
-// later registry write can never destroy the only copy of the user's saved
-// connections (#94246). Best effort: failure to preserve must not block boot.
-function preserveCorruptRegistrySidecar() {
-  try {
-    const rawText = fs.readFileSync(DESKTOP_CONNECTIONS_REGISTRY_PATH, 'utf8')
-
-    if (!rawText.trim()) {
-      return
-    }
-
-    const sidecar = `${DESKTOP_CONNECTIONS_REGISTRY_PATH}.corrupt-${new Date().toISOString().replace(/[:.]/g, '-')}`
-
-    if (!fs.existsSync(sidecar)) {
-      fs.writeFileSync(sidecar, rawText, { mode: 0o600 })
-    }
-
-    rememberLog(
-      `[connections] connections.json could not be parsed; preserved the original file at ${sidecar} and continuing with a local-only registry. No connection data was deleted.`
-    )
-  } catch {
-    // The read itself failed (missing file, permissions) — nothing to save.
-  }
+// The registry lives in the machine's gateway-connections.json (shared with the
+// Webapp; see gateway-connections-store.ts), imported once from userData.
+// Untyped as before: callers hand entries to looser route-source shapes.
+function readDesktopConnectionsRegistry(): any {
+  return gatewayConnectionsStore.read()
 }
 
 function writeDesktopConnectionsRegistry(registry) {
-  fs.mkdirSync(path.dirname(DESKTOP_CONNECTIONS_REGISTRY_PATH), { recursive: true })
-  // Owner-only for the same reason as connection.json: entries carry
-  // safeStorage-encrypted tokens plus URLs and SSH host/user/keyPath.
-  writeSecretFileAtomic(DESKTOP_CONNECTIONS_REGISTRY_PATH, JSON.stringify(registry, null, 2))
-  connectionRegistryCache = registry
-  connectionRegistryCacheMtime = fs.statSync(DESKTOP_CONNECTIONS_REGISTRY_PATH).mtimeMs
+  gatewayConnectionsStore.write(registry)
+  // A remove or re-point drops that entry's sign-in on disk; the URL-keyed cache follows.
+  _nativeTokens.clear()
 }
 
 /**
@@ -11833,8 +11704,7 @@ async function startHermes(requestedProfile?: string, inheritsPrimary = false) {
         // The pre-update resolve can miss a registry primary (stale cache, v1
         // mode=local winning the first read). Re-read after the update gate
         // and select launchMode=primary before any local attach or spawn.
-        connectionRegistryCache = null
-        connectionRegistryCacheMtime = null
+        gatewayConnectionsStore.invalidate()
         attemptedRemote = true
 
         return resolveRemoteBackend(primaryProfile, { primary: true, forceRegistryPrimary: true })
@@ -16964,6 +16834,20 @@ ipcMain.on('hermes:logs:renderer-error', (_event, report) => {
 // machine's shared UI preferences (#145213) — see local-skin.ts, ui-preferences.ts.
 registerLocalSkinIpc(ipcMain, HERMES_HOME, id => windowConnectionRoutes.get(id)?.profile, primaryProfileKey)
 registerMachineUiPreferences(HERMES_HOME)
+// Another writer (the Webapp) changed the shared list: same teardown as a local save/remove.
+gatewayConnectionsStore.watch({
+  onRegistry: changes => {
+    for (const change of changes) {
+      if (change.reason !== 'saved') {
+        void stopRegistryConnectionBackends(change.connectionId)
+        evictConnectionCaches(change.connectionId)
+      }
+
+      broadcastConnectionsChanged(change)
+    }
+  },
+  onTokens: () => _nativeTokens.clear()
+})
 
 // Renderer error toasts (notifyError): the toast shows the summarized copy,
 // so the caller posts the full error here for desktop.log. Fire-and-forget,

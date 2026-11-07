@@ -26,6 +26,7 @@
 
 export const COMPOSER_HEIGHT_VAR = '--composer-measured-height'
 export const COMPOSER_SURFACE_HEIGHT_VAR = '--composer-surface-measured-height'
+export const THREAD_SETTLED_CLEARANCE_VAR = '--thread-settled-clearance-height'
 
 /**
  * The surface owning `el`, or null when `el` is detached or outside one.

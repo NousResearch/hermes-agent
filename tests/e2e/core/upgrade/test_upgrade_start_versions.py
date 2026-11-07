@@ -2,7 +2,7 @@
 
 Releases changed tag format from ``v<calver>`` to ``v0.<minor>.<patch>``; a start version chosen by
 the old format stayed on the last calver release while users moved to the new line. These checks
-run against this checkout's own tags (CI fetches them for the upgrade jobs).
+run against this checkout's own tags, in the full-history e2e-upgrade job.
 """
 from __future__ import annotations
 

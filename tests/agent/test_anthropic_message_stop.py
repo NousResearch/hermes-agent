@@ -93,6 +93,23 @@ def test_anthropic_message_stop_accepts_completed_stream_without_retry():
     assert agent._anthropic_client.messages.stream.call_count == 1
 
 
+def test_anthropic_message_stop_without_stop_reason_is_a_drop_not_a_finish():
+    """message_stop with no message_delta (so no stop_reason) after text is a cut stream: it must
+    come back as the clean-EOF continuation stub, not as a finished reply."""
+    from hermes_constants import PARTIAL_STREAM_STUB_ID
+
+    agent = _agent()
+    cut = SimpleNamespace(content=[SimpleNamespace(type="text", text="HALF")], stop_reason=None)
+    agent._anthropic_client.messages.stream.return_value = _stream_cm(
+        cut, [_event("message_start"), _text_delta("HALF"), _event("message_stop")],
+    )
+
+    response = agent._interruptible_streaming_api_call({"model": "claude-test"})
+
+    assert response.id == PARTIAL_STREAM_STUB_ID and response._clean_eof is True
+    assert response.stop_reason == "max_tokens" and response.content[0].text == "HALF"
+
+
 def test_auxiliary_anthropic_eof_before_message_stop_raises_empty_stream():
     from agent.anthropic_adapter import _stream_final_message
     from agent.errors import EmptyStreamError

@@ -78,7 +78,7 @@ def sandboxes(monkeypatch, tmp_path):
 
     lookups = []
 
-    async def detail(session_id, profile=None):
+    async def detail(request, session_id, profile=None):
         # The real lookup reads only the requested profile's state.db.
         lookups.append(session_id)
         row = rows.get(session_id)

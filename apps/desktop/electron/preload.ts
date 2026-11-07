@@ -444,6 +444,11 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   beginPreviewGuestActivity: webContentsId => ipcRenderer.invoke('hermes:preview-guest-activity:begin', webContentsId),
   endPreviewGuestActivity: token => ipcRenderer.invoke('hermes:preview-guest-activity:end', token),
   executePreviewGuestScript: (token, code) => ipcRenderer.invoke('hermes:preview-guest-activity:script', token, code),
+  syncPreviewSignins: request => ipcRenderer.invoke('hermes:preview-signins:sync', request),
+  migratePreviewSigninsForProfile: (request: { oldProfile: string; newProfile: string }) =>
+    ipcRenderer.invoke('hermes:preview-signins:profile-renamed', request),
+  dropPreviewSigninsForProfile: (request: { profile: string }) =>
+    ipcRenderer.invoke('hermes:preview-signins:profile-deleted', request),
   openExternal: url => ipcRenderer.invoke('hermes:openExternal', url),
   freeTierChallenge: {
     // Load the account service's challenge page in a hidden window (revealed

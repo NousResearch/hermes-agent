@@ -1,10 +1,10 @@
 # Saved-pane fixture import-delay control
 
-From a root `npm ci` installation, run in `apps/desktop`:
+From a root `pnpm install --frozen-lockfile` installation, run in `apps/desktop`:
 
 ```sh
-npx vitest run --config ../../evals/desktop-pane-fixture/vitest.config.mts --reporter verbose
-npx vitest run --project ui src/store/session-pane-focus.test.ts --sequence.shuffle.tests --sequence.seed=12345 --reporter verbose
+pnpm exec vitest run --config ../../evals/desktop-pane-fixture/vitest.config.mts --reporter verbose
+pnpm exec vitest run --project ui src/store/session-pane-focus.test.ts --sequence.shuffle.tests --sequence.seed=12345 --reporter verbose
 ```
 
 The Vite plugin appends an 11-second asynchronous wait to the real pane-tree

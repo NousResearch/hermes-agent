@@ -27,6 +27,9 @@
  * these into the IPC layer and owns file I/O + secret encryption.
  */
 
+// Relative, not `@hermes/shared`: esbuild bundles electron/ without tsconfig paths.
+import { HERMES_CLOUD_MANAGED, isHermesCloudUrl } from '../../shared/src/hermes-cloud'
+
 import {
   hostLabelFromBaseUrl,
   modeIsRemoteLike,
@@ -894,18 +897,18 @@ function pickCanonicalConnection<T extends { connection: RegistryConnection; ord
 export interface UpdateEligibility {
   eligible: boolean
   /** Present when not eligible: 'cloud-managed' (platform updates it). */
-  reason?: 'cloud-managed'
+  reason?: typeof HERMES_CLOUD_MANAGED
 }
 
 /**
  * Whether "Update all instances" may drive this connection. Hermes Cloud
- * instances are platform-managed — we never run `hermes update` against them.
- * Local, remote, and ssh sources are all eligible (reachability and busy
- * checks happen at dispatch time, not here).
+ * instances are platform-managed — we never run `hermes update` against them,
+ * including one saved as a plain URL remote. Local, remote, and ssh sources
+ * are all eligible (reachability and busy checks happen at dispatch time).
  */
 export function updateEligibility(connection: RegistryConnection): UpdateEligibility {
-  if (connection.kind === 'cloud') {
-    return { eligible: false, reason: 'cloud-managed' }
+  if (connection.kind === 'cloud' || isHermesCloudUrl(connection.url)) {
+    return { eligible: false, reason: HERMES_CLOUD_MANAGED }
   }
 
   return { eligible: true }

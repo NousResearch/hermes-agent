@@ -79,6 +79,26 @@ class TestAnthropicMcpPrefixStrip:
         assert len(result.tool_calls) == 1
         assert result.tool_calls[0].name == "read_file"
 
+    def test_strips_prefix_for_offered_tools_outside_the_registry(self):
+        """The tool_search bridge (and memory/context-engine tools) are sent on the request but never
+        registered: ``mcp__tool_call`` must come back as ``tool_call``, not fall through to repair."""
+        transport = self._get_transport()
+        response = _make_response(_make_tool_use_block("mcp__tool_call"),
+                                  _make_tool_use_block("mcp__read_file", block_id="tc_2"))
+        with patch("tools.registry.registry", _FakeRegistry({"read_file"})):
+            result = transport.normalize_response(response, strip_tool_prefix=True,
+                                                  tool_names={"tool_call", "tool_search", "read_file"})
+        assert [tc.name for tc in result.tool_calls] == ["tool_call", "read_file"]
+
+    def test_offered_tool_names_reach_the_transport_from_the_agent(self):
+        """The agent's live tool surface is what the main loop resolves against."""
+        from types import SimpleNamespace as NS
+        from agent.turn_truncation import normalize_response_for_agent
+        agent = NS(api_mode="anthropic_messages", _is_anthropic_oauth=True,
+                   valid_tool_names={"tool_call"}, _get_transport=self._get_transport)
+        with patch("tools.registry.registry", _FakeRegistry(set())):
+            result = normalize_response_for_agent(agent, _make_response(_make_tool_use_block("mcp__tool_call")))
+        assert result.tool_calls[0].name == "tool_call"
 
     def test_no_strip_when_flag_false(self):
         """When strip_tool_prefix=False, names are never modified."""

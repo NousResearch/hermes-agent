@@ -1,6 +1,6 @@
 """Anthropic Messages API transport: conversion via agent/anthropic_adapter.py, normalization here."""
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Collection, Dict, List, Optional
 
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall
@@ -9,16 +9,18 @@ _MCP_PREFIX = "mcp__"
 _THINKING_TYPES = ("thinking", "redacted_thinking")
 
 
-def _unprefix_oauth_tool_name(name: str) -> str:
+def _unprefix_oauth_tool_name(name: str, offered: Collection[str] = ()) -> str:
     """Reverse the OAuth-wire ``mcp__`` prefix back to the registered tool name.
     Two originals map onto one wire name (``read_file`` / ``mcp_linear_get_issue``), so
     resolve by registry lookup, never rewriting a name that already resolves natively.
-    OAuth wire aliases are checked LAST so a real tool under the wire name still wins."""
+    ``offered`` is the set of tool names the request actually sent: tools that live outside
+    the registry (the tool_search bridge, memory-provider and context-engine tools) resolve
+    against it. OAuth wire aliases are checked LAST so a real tool under the wire name still wins."""
     from agent.anthropic_adapter import _OAUTH_TOOL_NAME_REVERSE_ALIASES
     from tools.registry import registry as _tool_registry
     bare = name[len(_MCP_PREFIX):]
     for candidate in (name, "mcp_" + bare, bare):
-        if _tool_registry.get_entry(candidate):
+        if candidate in offered or _tool_registry.get_entry(candidate):
             return candidate
     return _OAUTH_TOOL_NAME_REVERSE_ALIASES.get(bare, name)
 
@@ -67,6 +69,7 @@ class AnthropicTransport(ProviderTransport):
         import json
         from agent.anthropic_message_convert import _sanitize_replay_block, _to_plain_data
         strip_tool_prefix = kwargs.get("strip_tool_prefix", False)
+        offered_tool_names = kwargs.get("tool_names") or ()
         text_parts, reasoning_parts, reasoning_details, tool_calls = [], [], [], []
         # Anthropic signs each thinking block against the blocks PRECEDING it; when thinking
         # interleaves with tool_use the parallel lists lose that order and replay -> HTTP 400.
@@ -88,7 +91,7 @@ class AnthropicTransport(ProviderTransport):
             elif block.type == "tool_use":
                 name = block.name
                 if strip_tool_prefix and name.startswith(_MCP_PREFIX):
-                    name = _unprefix_oauth_tool_name(name)
+                    name = _unprefix_oauth_tool_name(name, offered_tool_names)
                 tool_calls.append(ToolCall(id=block.id, name=name, arguments=json.dumps(block.input)))
         provider_data = {"reasoning_details": reasoning_details} if reasoning_details else {}
         stop_details = _to_plain_data(getattr(response, "stop_details", None))

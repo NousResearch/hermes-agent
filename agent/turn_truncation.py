@@ -163,7 +163,8 @@ def normalize_response_for_agent(agent: Any, response: Any) -> Any:
     """One OpenAI-style message from any transport; Anthropic strips the OAuth tool prefix."""
     if agent.api_mode == "anthropic_messages":
         return agent._get_transport().normalize_response(
-            response, strip_tool_prefix=agent._is_anthropic_oauth
+            response, strip_tool_prefix=agent._is_anthropic_oauth,
+            tool_names=getattr(agent, "valid_tool_names", None),
         )
     return agent._get_transport().normalize_response(response)
 

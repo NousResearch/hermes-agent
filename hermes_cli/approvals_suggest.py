@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Iterator, Optional
 
+from hermes_state_holders import read_only_db_uri
+
 
 # ---------------------------------------------------------------------------
 # Safety exclusions
@@ -92,7 +94,7 @@ def default_db_path() -> Path:
 
 
 def _connect_readonly(db_path: Path) -> sqlite3.Connection:
-    return sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    return sqlite3.connect(read_only_db_uri(db_path), uri=True)
 
 
 def _fetch_rows(cur) -> Iterator[tuple]:

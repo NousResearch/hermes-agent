@@ -10,7 +10,7 @@ import { copyNativeTree } from '../../apps/desktop/scripts/prepared-native-deps.
 import { frontendArgs, isMain, productOutput, withProduct, workspaceTool } from './frontend-common.mjs'
 import { recordProduct, buildInputs, rendererCurrent } from './freshness.mjs'
 
-function validateNativeTree(nativeDeps, platform) {
+export function validateNativeTree(nativeDeps, platform) {
   const pty = join(nativeDeps, 'node-pty')
   if (!existsSync(join(pty, 'package.json'))) throw new Error(`Missing prepared node-pty: ${pty}`)
   const bindings = readdirSync(pty, { recursive: true }).filter(name => name.endsWith('.node'))
@@ -20,7 +20,12 @@ function validateNativeTree(nativeDeps, platform) {
       throw new Error(`Prepared node-pty binding does not match ${platform}: ${binding}`)
     }
   }
-  if (platform === 'darwin' && !existsSync(join(nativeDeps, 'get-windows/main'))) {
+  // get-windows is an OPTIONAL dependency, and the filtered `pnpm install` that dependency prep
+  // runs does not materialize it. stage-native-deps then deliberately skips staging (a soft
+  // warning: read_window_below is unavailable) rather than failing the build. So only a staged
+  // tree missing its helper is an error — an absent tree is the tolerated path.
+  if (platform === 'darwin' && existsSync(join(nativeDeps, 'get-windows'))
+      && !existsSync(join(nativeDeps, 'get-windows/main'))) {
     throw new Error('Prepared get-windows is missing its macOS helper')
   }
 }

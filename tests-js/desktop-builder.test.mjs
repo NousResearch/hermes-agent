@@ -96,6 +96,20 @@ function files(root, dir = root) {
   })
 }
 
+test('an absent optional get-windows tree is a soft skip, not a build failure', async () => {
+  const { validateNativeTree } = await import('../scripts/build/desktop.mjs')
+  const input = fixture()
+  // A filtered pnpm install never materialises get-windows (an optionalDependency), and
+  // stage-native-deps deliberately skips staging it with a warning instead of failing the
+  // build, so the validator must tolerate an absent tree.
+  rmSync(join(input.nativeDeps, 'get-windows'), { recursive: true, force: true })
+  expect(() => validateNativeTree(input.nativeDeps, 'darwin')).not.toThrow()
+  // A tree that WAS staged and lost its helper is still the interrupted-install error (#90829).
+  mkdirSync(join(input.nativeDeps, 'get-windows'), { recursive: true })
+  writeFileSync(join(input.nativeDeps, 'get-windows/package.json'), '{"version":"9.3.0"}')
+  expect(() => validateNativeTree(input.nativeDeps, 'darwin')).toThrow(/missing its macOS helper/)
+})
+
 test('desktop compiler consumes explicit immutable inputs, replaces variants, and preserves the last product on failure', async () => {
   const { buildDesktop } = await import('../scripts/build/desktop.mjs')
   const input = fixture()

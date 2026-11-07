@@ -1876,6 +1876,7 @@ export * as icons from '@/lib/icons'
 export { isSubmitEnter } from '@/lib/ime'
 export { type KeybindContribution, KEYBINDS_AREA, PLUGIN_APP_ACTIONS } from '@/lib/keybinds/actions'
 export { formatModifierToken } from '@/lib/keybinds/combo'
+export { useKeybindCombos } from '@/lib/keybinds/use-keybind-hint'
 /** A `Map` with a ceiling, for the module-level caches a plugin keeps across
  *  a renderer that stays open for days. Only for values that can be
  *  regenerated — eviction costs a recompute or a refetch, never correctness. */

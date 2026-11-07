@@ -1691,6 +1691,10 @@ same overrides:
 jsx(KeybindEditor, { actionId: 'my-plugin.focus-left' })
 ```
 
+To show a shortcut in your own UI (a hint card, a legend), read the live
+binding with `useKeybindCombos(actionId)`. It returns the raw combos
+(`['ctrl+alt+f']`), or `[]` when unbound, and re-renders on a rebind.
+
 ### Files — `ctx.files` {#plugin-files}
 
 `ctx.files` is the one sanctioned way for a plugin to touch files on the

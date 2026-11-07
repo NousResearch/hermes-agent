@@ -34,3 +34,14 @@ export function useKeybindHint(actionId: string): string | null {
 
   return null
 }
+
+// The live combos bound to `actionId` (e.g. ['ctrl+alt+f']), raw and
+// unformatted, repainting on a rebind or a late plugin registration. For
+// plugins that render their own key caps; tooltips want `useKeybindHint`.
+export function useKeybindCombos(actionId: string): readonly string[] {
+  const bindings = useStore($bindings)
+
+  useStore($registryVersion)
+
+  return bindingsFor(actionId, bindings)
+}

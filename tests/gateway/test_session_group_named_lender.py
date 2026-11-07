@@ -117,6 +117,16 @@ def test_a_named_profile_is_lent_through_its_own_mirror_and_mints_its_own_grants
     assert lender.link(lender.helper)['endpoint']['url'] == 'https://helper.example.test/link'
 
 
+def test_a_single_profile_gateway_never_advertises_the_root_gateways_listener(lender, monkeypatch):
+    # `hermes -p helper gateway run`: its own process. The root gateway's listener neither serves
+    # helper nor holds this process's grant secret, so its /p/helper mirror would never answer.
+    secret_scope.set_multiplex_active(False)
+    monkeypatch.setenv('HERMES_HOME', str(lender.helper))
+    (lender.root / 'config.yaml').write_text(
+        'approvals:\n  mode: manual\ngateway:\n  room_link_url: https://root.example.test/link\n')
+    assert lender.link(lender.helper) == {'enabled': False, 'reason': 'endpoint_required'}
+
+
 @pytest.mark.asyncio
 async def test_a_granted_run_executes_in_the_lent_profile_and_its_grant_answers_nowhere_else(lender, monkeypatch):
     from gateway.hosted_room_peer import PROTOCOL_VERSION

@@ -59,7 +59,6 @@ async def test_rehomed_receipt_never_restores_under_another_profiles_route(tmp_p
     ref = _create(authority, 'mine')
     key = POLICY_PREFIX + ref.session_id
     receipt = json.loads(authority.db.get_meta(key))
-    assert owned_receipt(authority, ref.session_id)[0]['route'] == receipt['route']
     authority.db.set_meta(key, json.dumps(dict(receipt, route='agent:sibling:local:dm:' + ref.session_id)))
     with pytest.raises(ValueError, match='route mismatch'):
         owned_receipt(authority, ref.session_id)

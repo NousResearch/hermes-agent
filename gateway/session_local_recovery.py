@@ -96,7 +96,7 @@ def _checked_entry(authority, receipt, source, route):
         raise ValueError('route mismatch')
     entry = SessionEntry.from_dict(receipt['entry'])
     # Older local receipts omitted the served profile from the origin. The receipt's
-    # home and route already matched this authority; fill only that absent field,
+    # route already matched this authority; fill only that absent field,
     # never accept an explicitly different profile or change the durable route.
     if 'profile' not in receipt['entry']['origin']:
         entry.origin.profile = source.profile
@@ -113,8 +113,9 @@ def owned_receipt(authority, sid):
     """*sid*'s stored receipt with its LOCAL source, route and entry, once all are this owner's.
 
     The receipt's ``profile_id`` is the home path that minted it, kept as stored: the session id
-    hashes it (``local_identity``), so a store that moved with its profile (another machine, a moved
-    home) still owns its rows. Its owner is this store; the route namespace binds the profile."""
+    hashes it (``local_identity``; a legacy-adopted receipt is bound by its route alone), so a
+    store that moved with its profile (another machine, a moved home) still owns its rows. Its
+    owner is this store; the route namespace binds the profile."""
     receipt = local_receipt(authority.db, sid)
     chat_id = (receipt['legacy_session_id'] if 'legacy_session_id' in receipt else
                local_identity(receipt['profile_id'], receipt['principal_id'], receipt['request_id']))

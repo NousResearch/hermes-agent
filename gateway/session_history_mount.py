@@ -24,7 +24,7 @@ def _reader(authority, actor, sid):
     with authority.db._read_ctx() as conn:
         binding = history_binding(conn, sid)
     if binding is not None:
-        return binding_names(binding, actor.profile_id, actor.subject)
+        return binding_names(binding, actor.subject)
     return ('session:operator' in actor.capabilities
             or getattr(authority, '_native_legacy_transports', {}).get(actor.transport_id) == actor)
 

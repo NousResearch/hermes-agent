@@ -1398,6 +1398,7 @@ host.state.profile          // ReadableAtom<string>
 host.state.viewport         // ReadableAtom<{ width, height, narrow }>
 host.state.sessionLayout    // ReadableAtom<{ root, focusedGroupId, mainStoredSessionId }>  pane tree, read-only
 host.state.pinnedSessionIds // ReadableAtom<readonly string[]>  ids in the sidebar's Pinned section, in order
+host.state.sessionListDensity // ReadableAtom<'compact' | 'comfortable' | 'detailed'>  the user's session-list density
 ```
 
 `gatewayActivationEpoch` is a named SDK export: `import { gatewayActivationEpoch } from '@hermes/plugin-sdk'`.

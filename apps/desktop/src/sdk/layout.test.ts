@@ -75,6 +75,14 @@ describe('host.state.sessionLayout / host.layout', () => {
     expect(host.state.pinnedSessionIds.get()).toEqual(['p1', 'p2'])
   })
 
+  it('mirrors the session-list density setting', async () => {
+    const { host } = await setup()
+    const density = await import('@/store/session-list-density')
+
+    density.setSessionListDensity('detailed')
+    expect(host.state.sessionListDensity.get()).toBe('detailed')
+  })
+
   it('resizes and re-orients a split in the live tree', async () => {
     const { host, store } = await setup()
 

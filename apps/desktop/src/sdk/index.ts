@@ -93,6 +93,7 @@ import {
   setSessionOwnerHint
 } from '@/store/session'
 import { $focusedStoredSessionId } from '@/store/session-focus'
+import { $sessionListDensity, type SessionListDensity } from '@/store/session-list-density'
 import {
   $focusedRuntimeId,
   $focusedSessionState,
@@ -604,6 +605,10 @@ export const host = {
     focusedUsage: readonlyAtom<null | UsageStats>($focusedUsage),
     /** Durable ids of the sidebar's Pinned section, in order. */
     pinnedSessionIds: readonlyAtom<readonly string[]>($pluginPinnedSessionIds),
+    /** The user's session-list density (Settings → Appearance): `compact` is
+     *  one line, `comfortable` adds a metadata line (branch · model · counts),
+     *  `detailed` also adds the opening request. For plugins that list sessions. */
+    sessionListDensity: readonlyAtom<SessionListDensity>($sessionListDensity),
     /** The pane tree (splits with weights, groups of stacked panes) plus the
      *  focused zone and main's stored session id — read-only. Chat panes are
      *  `workspace` and `session-tile:<storedId>`. Pair with `host.layout` and

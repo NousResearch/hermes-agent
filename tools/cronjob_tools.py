@@ -977,7 +977,7 @@ def _update_run_fields(job: dict[str, Any], a: dict[str, Any], updates: dict[str
             if kind != "cron":
                 return "grace_minutes only applies to cron schedules."
     if a["schedule"] is not None:
-        parsed_schedule = parse_schedule(a["schedule"])
+        parsed_schedule = parse_schedule(a["schedule"], timezone=_pick(updates, job, "timezone"))
         updates["schedule"] = parsed_schedule
         updates["schedule_display"] = parsed_schedule.get("display", a["schedule"])
         if job.get("state") != "paused":

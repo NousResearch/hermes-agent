@@ -31,7 +31,7 @@ def merge_job_definition(local: dict[str, Any], authored: dict[str, Any]) -> dic
         "times": (authored.get("repeat") or {}).get("times"),
     }
     if isinstance(merged.get("schedule"), str):
-        merged["schedule"] = parse_schedule(merged["schedule"])
+        merged["schedule"] = parse_schedule(merged["schedule"], timezone=merged)
 
     # A zone change moves every wall-clock occurrence exactly like an expr change: the instant on
     # file belongs to the old zone and the next scan would re-anchor past it without firing.

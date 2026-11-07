@@ -784,10 +784,11 @@ def _interval_schedule(minutes: int) -> dict[str, Any]:
     return {"kind": "interval", "minutes": minutes, "display": f"every {minutes}m"}
 
 
-def parse_schedule(schedule: str) -> dict[str, Any]:
+def parse_schedule(schedule: str, *, timezone: Any = None) -> dict[str, Any]:
     """Parse a schedule string into ``{"kind": "once"|"interval"|"cron", ...}`` with ``run_at`` /
     ``minutes`` / ``expr``. "30m" and "every 30m" are recurring intervals; "every monday 9am" and
-    "0 9 * * *" are cron; an ISO timestamp is once."""
+    "0 9 * * *" are cron; an ISO timestamp is once — offset-less, it is the wall clock of the job's
+    pinned *timezone* (record or zone name, as for ``compute_next_run``), else the profile's."""
     schedule = schedule.strip()
     original = schedule
     schedule_lower = schedule.lower()
@@ -817,15 +818,15 @@ def parse_schedule(schedule: str) -> dict[str, Any]:
     if 'T' in schedule or re.match(r'^\d{4}-\d{2}-\d{2}', schedule):
         try:
             dt = datetime.fromisoformat(schedule)
-            # Naive timestamps become aware in the CONFIGURED Hermes timezone (not server-local):
-            # the due-check compares against hermes_time.now().
+            # Naive timestamps become aware in the job's pinned zone, else the CONFIGURED Hermes
+            # timezone (not server-local): the due-check compares against hermes_time.now().
             # Make naive timestamps timezone-aware at parse time so the stored value doesn't depend on the
             # system timezone matching at check time. UTC) while now() runs in Asia/Kolkata, the stored
             # instant would land hours off from the user's wall-clock intent — far enough that one-shots
             # never become due and recurring jobs fire at the wrong time. Using the configured zone makes
             # "20:07" mean 20:07 on the same clock the scheduler checks against (#51021).
             if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=_hermes_now().tzinfo)
+                dt = dt.replace(tzinfo=jobs_time.zone_for_job(timezone) or _hermes_now().tzinfo)
             return {
                 "kind": "once",
                 "run_at": dt.isoformat(),
@@ -1854,7 +1855,7 @@ def create_job(
         raise ValueError("paused_reason must be a string.")
     if paused_reason is not None and not paused:
         raise ValueError("paused_reason requires paused=True.")
-    parsed_schedule = parse_schedule(schedule)
+    parsed_schedule = parse_schedule(schedule, timezone=jobs_time.normalize_timezone(timezone))
     # Normalize repeat: treat 0 or negative values as None (infinite). String forms
     # ('forever'/'once'/numeric) coerce via normalize_repeat_value — the shared chokepoint with update paths
     # (#66824/#64520/#7142/#71987/#95706).
@@ -2066,7 +2067,8 @@ def _rederive_repeat_for_schedule_change(
         return
     new_schedule = updates["schedule"]
     if isinstance(new_schedule, str):
-        new_schedule = parse_schedule(new_schedule)
+        new_schedule = parse_schedule(
+            new_schedule, timezone=updates.get("timezone", job.get("timezone")))
         updates["schedule"] = new_schedule
     old_kind = (job.get("schedule") or {}).get("kind")
     new_kind = new_schedule.get("kind")
@@ -2088,7 +2090,7 @@ def _apply_schedule_update(updated: dict[str, Any], updates: dict[str, Any], job
     """Parse a string schedule, refresh ``schedule_display`` and (unless paused) ``next_run_at``."""
     updated_schedule = updated["schedule"]
     if isinstance(updated_schedule, str):
-        updated_schedule = parse_schedule(updated_schedule)
+        updated_schedule = parse_schedule(updated_schedule, timezone=updated)
         updated["schedule"] = updated_schedule
     updated["schedule_display"] = updates.get(
         "schedule_display", updated_schedule.get("display", updated.get("schedule_display")))
@@ -2276,7 +2278,7 @@ def rearm_oneshot(job_id: str, run_at: Any) -> Optional[dict[str, Any]]:
         return None
     if isinstance(run_at, datetime):
         run_at = run_at.isoformat()
-    parsed_schedule = parse_schedule(str(run_at))
+    parsed_schedule = parse_schedule(str(run_at), timezone=job_ref)
     if parsed_schedule.get("kind") != "once":
         raise ValueError(_REARM_RECURRING_ERROR)
     next_run_at = compute_next_run(parsed_schedule, timezone=job_ref.get("timezone"))

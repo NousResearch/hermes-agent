@@ -326,7 +326,7 @@ def test_extract_refuses_a_symlink_member(tmp_path):
         link.linkname = "/etc/passwd"
         tf.addfile(link)
 
-    with pytest.raises(ValueError, match="Unsupported archive member"):
+    with pytest.raises(ValueError, match="escapes the destination"):
         safe_extract_targz(archive, tmp_path / "out")
 
 

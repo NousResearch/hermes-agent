@@ -29,7 +29,7 @@ Six columns, left to right:
 - **Blocked** — a worker asked for human input, or the circuit breaker tripped.
 - **Done** — completed.
 
-The top bar has filters for search, tenant, and assignee, plus a `Lanes by profile` toggle and a `Nudge dispatcher` button that runs one dispatch tick right now instead of waiting for the daemon's next interval. Clicking any card opens its drawer on the right.
+The top bar has filters for search, tenant, and assignee, plus a `Lanes by profile` toggle and a `Nudge dispatcher` button that runs one dispatch tick right now instead of waiting for the daemon's next interval. Clicking any card opens it in a task modal: content and activity on the left, properties on the right.
 
 ### Flat view
 

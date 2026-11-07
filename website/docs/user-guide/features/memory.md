@@ -152,6 +152,20 @@ For information about the user's identity, preferences, and communication style:
 - Workflow habits
 - Technical skill level
 
+`USER.md` belongs to the Hermes profile and is shared by that profile's sessions.
+When several people message one bot, remembered names and roles do not establish
+who sent the current message. For non-shared gateway sessions, the session context
+includes the current sender's platform account ID alongside the display name (or
+states that the ID was not provided). Existing PII redaction applies to that ID.
+Shared sessions continue to use per-message sender labels without pinning one
+participant into the system prompt. Home channels are delivery destinations,
+not the current sender's identity.
+
+This is attribution guidance, not per-user memory isolation or authorization.
+As described in [the security policy](https://github.com/NousResearch/hermes-agent/blob/main/SECURITY.md#26-external-surfaces),
+allowlisted callers within one adapter are equally trusted. Use separate agent
+instances and allowlists when callers need different capabilities.
+
 ## What to Save vs Skip
 
 ### Save These (Proactively)

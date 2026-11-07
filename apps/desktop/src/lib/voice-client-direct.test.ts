@@ -117,7 +117,43 @@ describe('transcribeAudioClientDirect', () => {
     const form = init.body as FormData
     expect(form.get('model')).toBe('whisper-large-v3-turbo')
     expect(form.get('language')).toBe('en')
-    expect(form.get('response_format')).toBe('text')
+    // json is the one value every OpenAI-compatible endpoint accepts; the body parser
+    // still turns a bare-string response into the transcript.
+    expect(form.get('response_format')).toBe('json')
+  })
+
+  it('requests json, not text, from an OpenRouter-style endpoint and unwraps the JSON', async () => {
+    mockDesktopApi({
+      ok: true,
+      stt: {
+        ...directStt,
+        provider: 'openai',
+        base_url: 'https://openrouter.ai/api/v1',
+        api_key: 'sk-or-test',
+        model: 'openai/whisper-large-v3',
+        language: null
+      },
+      tts: relay
+    })
+
+    const fetchMock = vi.fn(
+      async () => new Response(JSON.stringify({ text: 'dictated through openrouter' }), { status: 200 })
+    )
+
+    vi.stubGlobal('fetch', fetchMock)
+
+    expect(await transcribeAudioClientDirect(new Blob(['x'], { type: 'audio/webm' }))).toBe(
+      'dictated through openrouter'
+    )
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('https://openrouter.ai/api/v1/audio/transcriptions')
+
+    const form = init.body as FormData
+    // OpenRouter answers HTTP 400 to response_format=text ("Only json and verbose_json
+    // are supported"); this is the stt.provider=openai + stt.openai.base_url workaround.
+    expect(form.get('response_format')).toBe('json')
+    expect(form.get('response_format')).not.toBe('text')
   })
 
   it('unwraps Mistral Voxtral JSON instead of dumping it into the composer', async () => {

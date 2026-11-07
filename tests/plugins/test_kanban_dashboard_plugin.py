@@ -468,6 +468,72 @@ def test_add_comment(client):
     assert comments[0]["body"] == "how's progress?"
     assert comments[0]["author"] == "teknium"
 
+
+def _client_with_session(session):
+    """Bare harness plus a stand-in for the dashboard auth middleware: it stamps a
+    verified ``request.state.session`` on every request, exactly as gated mode does,
+    so attribution can be tested without an identity provider."""
+    app = FastAPI()
+
+    @app.middleware("http")
+    async def _fake_auth(request, call_next):
+        request.state.session = session
+        return await call_next(request)
+
+    app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban")
+    return TestClient(app)
+
+
+@pytest.fixture
+def kanban_home_env(kanban_home):
+    return kanban_home
+
+
+def test_comment_author_is_verified_login_not_client_claim(kanban_home_env):
+    """A signed-in dashboard caller is attributed by their login, never by the
+    ``author`` string the client sends (the desktop bundle sends 'desktop')."""
+    from types import SimpleNamespace
+    client = _client_with_session(SimpleNamespace(
+        display_name="Mani", email="mani@example.com", user_id="u-1", provider="nous", issuer=""))
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
+    assert t["created_by"] == "Mani"
+    r = client.post(
+        f"/api/plugins/kanban/tasks/{t['id']}/comments",
+        json={"body": "how long?", "author": "desktop"},
+    )
+    assert r.status_code == 200
+    comments = client.get(f"/api/plugins/kanban/tasks/{t['id']}").json()["comments"]
+    assert comments[0]["author"] == "Mani"
+
+
+def test_comment_author_falls_back_to_email_then_user_id(kanban_home_env):
+    from types import SimpleNamespace
+    email_only = _client_with_session(SimpleNamespace(
+        display_name="  ", email="mani@example.com", user_id="u-1", provider="nous", issuer=""))
+    t = email_only.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
+    email_only.post(f"/api/plugins/kanban/tasks/{t['id']}/comments", json={"body": "b"})
+    c = email_only.get(f"/api/plugins/kanban/tasks/{t['id']}").json()["comments"][0]
+    assert c["author"] == "mani@example.com"
+
+    id_only = _client_with_session(SimpleNamespace(
+        display_name="", email="", user_id="u-42", provider="nous", issuer=""))
+    t2 = id_only.post("/api/plugins/kanban/tasks", json={"title": "y"}).json()["task"]
+    assert t2["created_by"] == "u-42"
+
+
+def test_attachment_uploader_is_verified_login(kanban_home_env):
+    from types import SimpleNamespace
+    client = _client_with_session(SimpleNamespace(
+        display_name="Mani", email="mani@example.com", user_id="u-1", provider="nous", issuer=""))
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
+    r = client.post(
+        f"/api/plugins/kanban/tasks/{t['id']}/attachments",
+        files={"file": ("note.txt", b"hello", "text/plain")},
+        data={"uploaded_by": "desktop"},
+    )
+    assert r.status_code == 200
+    assert r.json()["attachment"]["uploaded_by"] == "Mani"
+
 # ---------------------------------------------------------------------------
 # Dispatch nudge
 # ---------------------------------------------------------------------------

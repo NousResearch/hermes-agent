@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple
 
 from agent.display import KawaiiSpinner
-from agent.interrupt_control import interrupt_issuer, interrupted_during_api_call_reason
+from agent.interrupt_control import interrupted_between_iterations_reason, interrupted_during_api_call_reason
 from agent.turn_context_compaction import _reanchor
 from agent.turn_truncation import boosted_output_cap
 
@@ -381,8 +381,7 @@ def begin_iteration(
 
     if agent._interrupt_requested:
         interrupted = True
-        _issuer = interrupt_issuer(agent)
-        _turn_exit_reason = f"interrupted_by_system({_issuer})" if _issuer else "interrupted_by_user"
+        _turn_exit_reason = interrupted_between_iterations_reason(agent)
         if not agent.quiet_mode:
             agent._safe_print("\n⚡ Breaking out of tool loop due to interrupt...")
         return _verdict("break")

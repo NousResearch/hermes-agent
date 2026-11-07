@@ -1,7 +1,11 @@
 """Contract tests for the public plugin subagent lifecycle API."""
 
+import dataclasses
+import hashlib
+import json
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -11,6 +15,7 @@ from agent.subagent_lifecycle import (
     SubagentLaunchRequest,
     SubagentLifecycleError,
     SubagentLifecycleService,
+    SubagentResult,
     SubagentState,
     bind_subagent_parent,
     get_active_subagent_parent,
@@ -356,3 +361,108 @@ def test_provider_is_plugin_facing_only():
     props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
     exposed = set(props) | set(props["tasks"]["items"]["properties"])
     assert not exposed & {"provider", "model", "base_url", "api_key"}
+
+
+@pytest.fixture
+def native_result(lifecycle, monkeypatch):
+    monkeypatch.setattr("tools.delegate_tool._load_config", lambda: {"max_summary_chars": 40_000})
+
+    def run(entry):
+        monkeypatch.setattr("tools.delegate_tool._run_single_child", lambda *_args: entry)
+        handle = lifecycle.launch(SubagentLaunchRequest(goal="preserve native result"))
+        assert lifecycle.wait(handle, timeout_seconds=2).state is SubagentState.SUCCEEDED
+        return lifecycle.result(handle)
+
+    return run
+
+
+@pytest.mark.parametrize("wire", [False, True])
+def test_native_summary_and_spill_survive_lifecycle_result(native_result, wire):
+    from hermes_cli.plugin_host_wire import decode, encode, restore
+
+    summary = "HEAD\n" + "native summary line\n" * 3_000 + "TAIL"
+    entry = {"status": "completed", "summary": summary}
+    result = native_result(entry)
+    if wire:
+        result = restore(decode(json.loads(json.dumps(encode(result)))), SubagentResult)
+
+    assert isinstance(result, SubagentResult)
+    assert 32_000 < len(result.summary) < len(summary)
+    assert result.summary == entry["summary"]
+    assert "[SUMMARY TRUNCATED]" in result.summary
+    assert f'Full subagent output saved to: {entry["summary_full_path"]}' in result.summary
+    assert "offset=" in result.summary
+    assert result.summary_truncated is True
+    assert result.summary_full_path == entry["summary_full_path"]
+    assert Path(result.summary_full_path).read_text() == summary
+    payload = dataclasses.asdict(result)
+    payload.pop("result_hash")
+    assert result.result_hash == hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def test_native_usage_and_exit_reason_survive_lifecycle_result(native_result):
+    from hermes_cli.plugin_host_wire import decode, encode, restore
+
+    route = {"backend": "native", "model": "child-model", "fallback_activated": False,
+             "details": {"attempts": [1, None, {"provider": "test", "_internal": "hidden"}]},
+             "_private": "hidden", "nonfinite": float("nan")}
+    entry = {"status": "completed", "summary": "done", "api_calls": 3,
+             "model": "child-model", "tokens": {"input": 120, "output": 15.0, "_cached": 20},
+             "cost_usd": 2, "cost_status": "estimated", "route": route,
+             "duration_seconds": 0.25, "exit_reason": "max_iterations", "_child_context": "hidden"}
+    result = native_result(entry)
+    assert result.usage_metadata == {
+        "api_calls": 3, "model": "child-model", "tokens": {"input": 120, "output": 15},
+        "cost_usd": 2.0, "cost_status": "estimated",
+        "route": {"backend": "native", "model": "child-model", "fallback_activated": False,
+                  "details": {"attempts": [1, None, {"provider": "test"}]}},
+    }
+    assert type(result.usage_metadata["tokens"]["output"]) is int
+    assert type(result.usage_metadata["cost_usd"]) is float
+    assert result.usage_metadata["route"] is not entry["route"]
+    assert result.tool_execution_summary == {"duration_seconds": 0.25, "exit_reason": "max_iterations"}
+    assert restore(decode(json.loads(json.dumps(encode(result)))), SubagentResult) == result
+
+
+@pytest.mark.parametrize("metadata", [
+    {},
+    {"summary_truncated": "true", "summary_full_path": "", "model": 42, "tokens": "invalid",
+     "cost_usd": "2.5", "cost_status": False, "route": [], "exit_reason": 42},
+    {"summary_truncated": 1, "summary_full_path": 42, "tokens": {"input": True, "output": float("inf")},
+     "cost_usd": float("nan")},
+])
+def test_native_optional_result_fields_are_typed_and_defaulted(native_result, metadata):
+    result = native_result({"status": "completed", "summary": "done", **metadata})
+    assert result.summary_truncated is False
+    assert result.summary_full_path is None
+    assert result.usage_metadata == {"api_calls": 0, **({"tokens": {}} if isinstance(metadata.get("tokens"), dict) else {})}
+    assert result.tool_execution_summary == {"duration_seconds": 0}
+
+
+def test_old_shape_lifecycle_result_restores_with_defaults(native_result):
+    from hermes_cli.plugin_host_wire import decode, encode, restore
+
+    result = native_result({"status": "completed", "summary": "done"})
+    encoded = encode(result)
+    encoded["fields"].pop("summary_truncated", None)
+    encoded["fields"].pop("summary_full_path", None)
+    restored = restore(decode(json.loads(json.dumps(encoded))), SubagentResult)
+    assert isinstance(restored, SubagentResult)
+    assert restored.summary_truncated is False
+    assert restored.summary_full_path is None
+    assert restored == result
+    positional = SubagentResult(result.handle, result.terminal_state, result.ready, result.summary, None,
+                                result.started_at, result.completed_at, None, None,
+                                result.usage_metadata, result.tool_execution_summary, result.result_hash)
+    assert positional == result
+
+
+def test_lifecycle_summary_is_a_plain_str(lifecycle, monkeypatch):
+    from tools.delegation_redaction import parent_copy
+
+    carrier = parent_copy("parent text", "forced text")
+    monkeypatch.setattr("tools.delegate_tool._run_child_lifecycle", lambda *_args: {"status": "completed", "summary": carrier})
+    handle = lifecycle.launch(SubagentLaunchRequest(goal="plain summary"))
+    assert lifecycle.wait(handle, timeout_seconds=2).state is SubagentState.SUCCEEDED
+    summary = lifecycle.result(handle).summary
+    assert type(summary) is str and summary == "parent text"

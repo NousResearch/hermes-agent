@@ -10,6 +10,7 @@ redirect_host, client_name, client_metadata_url, cimd, user_agent, timeout."""
 
 from pm import install_hint
 import asyncio
+import base64
 import contextlib
 import contextvars
 import errno
@@ -17,6 +18,7 @@ import html
 import importlib.util as _importlib_util
 import json
 import logging
+import math
 import os
 import re
 import socket
@@ -56,6 +58,11 @@ logger = logging.getLogger(__name__)
 # outlast a slow network round trip. Bounded anyway -- a wedged peer must not
 # strand us forever -- but generous enough that a healthy refresh never trips it.
 _REFRESH_FENCE_TIMEOUT_SECONDS = 60.0
+
+# Seconds shaved off a JWT access token's own ``exp`` when bounding its stored lifetime, so the
+# preemptive refresh fires before the resource server starts rejecting it (request latency plus
+# minor clock skew). Raising it refreshes earlier; it never makes a lifetime longer (#149017).
+JWT_EXP_SAFETY_MARGIN_SECONDS = 30
 
 class RefreshFenceTimeout(RuntimeError):
     """The refresh fence could not be acquired within its bound.
@@ -409,6 +416,43 @@ def _model_json(model: Any) -> dict:
     return model.model_dump(mode="json", exclude_none=True)
 
 
+def _jwt_exp(access_token: Any) -> float | None:
+    """The ``exp`` claim of a JWS-compact access token, or None for anything else.
+
+    Reads the payload of a token this client already holds, offline and WITHOUT signature
+    verification: the claim only shortens how long we trust the token ourselves, it is never an
+    authorization decision. Opaque tokens, JWE, bad base64url/JSON, a non-object payload and a
+    non-numeric ``exp`` all yield None (callers keep the pre-#149017 behaviour)."""
+    if not isinstance(access_token, str) or access_token.count(".") != 2:
+        return None
+    payload = access_token.split(".")[1]
+    try:
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    except (ValueError, RecursionError):  # binascii.Error, JSONDecodeError, UnicodeDecodeError
+        return None
+    exp = claims.get("exp") if isinstance(claims, dict) else None
+    if isinstance(exp, bool) or not isinstance(exp, (int, float)) or not math.isfinite(exp):
+        return None
+    return float(exp)
+
+
+def jwt_bounded_expires_in(access_token: Any, expires_in: Any) -> Any:
+    """``expires_in`` bounded by the access token's own JWT ``exp`` (minus
+    ``JWT_EXP_SAFETY_MARGIN_SECONDS``): the minimum of the two, derived from ``exp`` when
+    ``expires_in`` is absent, never lengthened. Non-JWT tokens and odd ``expires_in`` values pass
+    through unchanged (#149017)."""
+    exp = _jwt_exp(access_token)
+    if exp is None:
+        return expires_in
+    jwt_remaining = int(max(exp - time.time() - JWT_EXP_SAFETY_MARGIN_SECONDS, 0))
+    if expires_in is None:
+        return jwt_remaining
+    try:
+        return min(int(expires_in), jwt_remaining)
+    except (TypeError, ValueError):
+        return expires_in
+
+
 class HermesTokenStorage:
     """Persist OAuth state as ``HERMES_HOME/mcp-tokens/<server_name>`` + ``.json`` (tokens),
     ``.client.json`` (client info), ``.meta.json`` (server metadata), ``.cimd-off`` (CIMD refused)."""
@@ -469,7 +513,8 @@ class HermesTokenStorage:
         """Rewrite ``expires_in`` to seconds remaining from the stored absolute ``expires_at`` (not an
         SDK field, so stripped): a relative value reloaded after restart would make ``is_token_valid()``
         True for tokens that expired while down. Legacy files without it use the file mtime, clamped
-        to zero (self-heals on the next ``set_tokens``)."""
+        to zero (self-heals on the next ``set_tokens``). Then bounded by the JWT ``exp``: files written
+        before #149017 recorded ``expires_in`` even when the token itself expires sooner."""
         absolute_expiry = data.pop("expires_at", None)
         if absolute_expiry is not None:
             data["expires_in"] = int(max(absolute_expiry - time.time(), 0))
@@ -477,6 +522,9 @@ class HermesTokenStorage:
             with contextlib.suppress(OSError, TypeError, ValueError):
                 implied_expiry = self._tokens_path().stat().st_mtime + int(data["expires_in"])
                 data["expires_in"] = int(max(implied_expiry - time.time(), 0))
+        bounded = jwt_bounded_expires_in(data.get("access_token"), data.get("expires_in"))
+        if bounded is not None:
+            data["expires_in"] = bounded
 
     def _fixup_loaded_tokens(self, data: dict) -> None:
         # ``hermes_issuer`` is Hermes bookkeeping, not an SDK OAuthToken field: pop before validation.
@@ -489,10 +537,12 @@ class HermesTokenStorage:
 
     async def set_tokens(self, tokens: "OAuthToken") -> None:
         payload = _model_json(tokens)
-        # Absolute ``expires_at``: see _rebase_expires_in.
-        if payload.get("expires_in") is not None:
+        # Absolute ``expires_at``: see _rebase_expires_in. Bounded by the JWT ``exp`` (#149017).
+        bounded = jwt_bounded_expires_in(payload.get("access_token"), payload.get("expires_in"))
+        if bounded is not None:
+            payload["expires_in"] = bounded
             with contextlib.suppress(TypeError, ValueError):  # mock tokens / odd shapes: skip, don't fail persistence
-                payload["expires_at"] = time.time() + int(payload["expires_in"])
+                payload["expires_at"] = time.time() + int(bounded)
         if self._bound_issuer:  # which authorization server granted these tokens (never sent on the wire)
             payload["hermes_issuer"] = self._bound_issuer
             self.loaded_issuer = self._bound_issuer

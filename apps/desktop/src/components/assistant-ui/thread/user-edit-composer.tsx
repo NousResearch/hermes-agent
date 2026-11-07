@@ -15,6 +15,7 @@ import {
   useState
 } from 'react'
 
+import { followTriggerPick } from '@/app/chat/composer/composer-utils'
 import { ComposerDirectiveActions } from '@/app/chat/composer/directive-actions'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from '@/app/chat/composer/drop-affordance'
 import {
@@ -115,6 +116,8 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   const [dragActive, setDragActive] = useState(false)
   const [trigger, setTrigger] = useState<TriggerState | null>(null)
   const [triggerActive, setTriggerActive] = useState(0)
+  // True once the user arrowed to a row, so a refreshed list follows that row (followTriggerPick).
+  const [triggerActiveExplicit, setTriggerActiveExplicit] = useState(false)
   const [triggerItems, setTriggerItems] = useState<readonly Unstable_TriggerItem[]>([])
   // See index.tsx: set in keydown when the open popover consumes a nav/control
   // key so the matching keyup skips refreshTrigger (timing-immune vs reading
@@ -334,6 +337,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
     // current selection instead of snapping back to the first item.
     if (detected?.kind !== trigger?.kind || detected?.query !== trigger?.query) {
       setTriggerActive(0)
+      setTriggerActiveExplicit(false)
     }
   }, [slash.adapter, trigger])
 
@@ -341,6 +345,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
     setTrigger(null)
     setTriggerItems([])
     setTriggerActive(0)
+    setTriggerActiveExplicit(false)
   }, [])
 
   const triggerAdapter: Unstable_TriggerAdapter | null =
@@ -362,9 +367,15 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
     setTriggerItems(triggerAdapter.search(trigger.query))
   }, [trigger, triggerAdapter])
 
-  useEffect(() => {
-    setTriggerActive(idx => Math.min(idx, Math.max(0, triggerItems.length - 1)))
-  }, [triggerItems.length])
+  const [seenItems, setSeenItems] = useState(triggerItems)
+
+  if (seenItems !== triggerItems) {
+    const next = followTriggerPick(seenItems, triggerItems, triggerActive, triggerActiveExplicit)
+
+    setSeenItems(triggerItems)
+    setTriggerActive(next.activeIndex)
+    setTriggerActiveExplicit(next.activeExplicit)
+  }
 
   const triggerLoading =
     trigger?.kind === '@'
@@ -785,6 +796,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
       if (event.key === 'ArrowDown') {
         event.preventDefault()
         triggerKeyConsumedRef.current = true
+        setTriggerActiveExplicit(true)
         setTriggerActive(idx => (idx + 1) % triggerItems.length)
 
         return
@@ -793,6 +805,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
       if (event.key === 'ArrowUp') {
         event.preventDefault()
         triggerKeyConsumedRef.current = true
+        setTriggerActiveExplicit(true)
         setTriggerActive(idx => (idx - 1 + triggerItems.length) % triggerItems.length)
 
         return

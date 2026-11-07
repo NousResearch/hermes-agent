@@ -421,9 +421,6 @@ _IMAGE_REJECTION_PHRASES = (
     # request until exhaustion, and the gateway leaves every subsequent message queued behind the stuck turn
     # — the P1 in issue #21160.
     "no endpoints found that support image input",
-    # vLLM and other text-only OpenAI-compatible hosts answer imaged history with HTTP 400
-    # "<model-id> is not a multimodal model"; unmatched, every retry re-sends the image and fails.
-    "is not a multimodal model",
 )
 
 # Provider error bodies meaning "this particular image payload is bad" — the model CAN see, it
@@ -457,15 +454,6 @@ def strip_images_for_rejecting_model(agent: Any, api_messages: Any) -> bool:
     return isinstance(api_messages, list) and _strip_images_from_messages(api_messages)
 
 
-def _messages_carry_images(messages: Any) -> bool:
-    """True when any message holds an image part in Hermes's own message format."""
-    return isinstance(messages, list) and any(
-        isinstance(m, dict) and isinstance(m.get("content"), list)
-        and any(isinstance(p, dict) and p.get("type") in _IMAGE_PART_TYPES for p in m["content"])
-        for m in messages
-    )
-
-
 def _looks_like_image_content_rejection(error_body: str) -> bool:
     """Return True when a provider error says image/multimodal input is unsupported."""
     body = str(error_body or "").lower()
@@ -479,7 +467,7 @@ def _looks_like_corrupt_image_rejection(error_body: str) -> bool:
 
 
 __all__ = [
-    "_SURROGATE_RE", "_escape_invalid_chars_in_json_strings", "_messages_carry_images", "_repair_tool_call_arguments",
+    "_SURROGATE_RE", "_escape_invalid_chars_in_json_strings", "_repair_tool_call_arguments",
     "_sanitize_messages_non_ascii", "_sanitize_messages_surrogates", "_sanitize_structure_non_ascii",
     "_sanitize_structure_surrogates", "_sanitize_surrogates", "_sanitize_tools_non_ascii",
     "_strip_images_from_messages", "_strip_non_ascii", "apply_reasoning_content_policy",
@@ -490,6 +478,7 @@ __all__ = [
     "route_reasoning_carriers",
     "sanitize_outbound_kwargs", "stale_thinking_reaches_wire", "strip_images_for_rejecting_model",
     "tool_call_id_variants", "tool_result_id_variants", "uniquify_tool_call_ids",
+    "_disambiguate_duplicate_tool_call_ids",
 ]
 
 
@@ -602,6 +591,84 @@ def uniquify_tool_call_ids(tool_calls: list, taken: Iterable[str] = ()) -> list:
             "pairing lossless.", cid, new_id, _fn_name,
         )
     return tool_calls
+
+
+def _disambiguate_duplicate_tool_call_ids(messages: list[dict]) -> tuple[list[dict], int]:
+    """Pass 4: disambiguate duplicate tool_call IDs across the whole conversation.
+    ``uniquify_tool_call_ids`` only renames NEW calls against the history; an older
+    assistant/tool sequence re-injected by compaction replay or session import can still
+    duplicate an id, and strict translation layers (e.g. OpenAI-to-Anthropic Messages API,
+    which requires unique tool_use ids) answer HTTP 400 'tool_use ids were found without
+    tool_result blocks'. Uses the same ``_d<n>`` suffix convention; idempotent."""
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+
+    repairs = 0
+    reserved_ids: set[str] = {
+        cid
+        for m in messages
+        if isinstance(m, dict) and m.get("role") == "assistant"
+        for tc in (m.get("tool_calls") or [])
+        if (cid := coalesce_tool_call_id(tc))
+    }
+    seen_tc_ids: set[str] = set()
+    for i, m in enumerate(messages):
+        if not (isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")):
+            continue
+        followers: list[dict] = []
+        for follower in messages[i + 1:]:
+            if not (isinstance(follower, dict) and follower.get("role") == "tool"):
+                break
+            followers.append(follower)
+        claimed_followers: set[int] = set()
+        for tc in m.get("tool_calls") or []:
+            cid = coalesce_tool_call_id(tc)
+            if not cid:
+                continue
+            old_variants = tool_call_id_variants(tc)
+            if cid not in seen_tc_ids:
+                seen_tc_ids.add(cid)
+                for f_idx, follower in enumerate(followers):
+                    if f_idx not in claimed_followers and (
+                        tool_result_id_variants(follower.get("tool_call_id")) & old_variants
+                    ):
+                        claimed_followers.add(f_idx)
+                        break
+                continue
+            n = 1
+            while f"{cid}_d{n}" in reserved_ids:
+                n += 1
+            new_id = f"{cid}_d{n}"
+            reserved_ids.add(new_id)
+            seen_tc_ids.add(new_id)
+            old_id = _tc_field(tc, "id")
+            _set_provider_tool_id(
+                tc, "id",
+                f"{new_id}|{old_id.split('|', 1)[1]}" if isinstance(old_id, str) and "|" in old_id else new_id,
+            )
+            old_call_id = _tc_field(tc, "call_id")
+            if old_call_id:
+                _set_provider_tool_id(
+                    tc, "call_id",
+                    f"{new_id}|{old_call_id.split('|', 1)[1]}"
+                    if isinstance(old_call_id, str) and "|" in old_call_id
+                    else new_id,
+                )
+            m.pop(_DB_PERSISTED_MARKER, None)
+            repairs += 1
+            for f_idx, follower in enumerate(followers):
+                if f_idx in claimed_followers:
+                    continue
+                if tool_result_id_variants(follower.get("tool_call_id")) & old_variants:
+                    claimed_followers.add(f_idx)
+                    raw_tid = follower.get("tool_call_id")
+                    follower["tool_call_id"] = (
+                        f"{new_id}|{raw_tid.split('|', 1)[1]}"
+                        if isinstance(raw_tid, str) and "|" in raw_tid
+                        else new_id
+                    )
+                    follower.pop(_DB_PERSISTED_MARKER, None)
+                    break
+    return messages, repairs
 
 
 _PROVIDER_TOOL_ID_PREFIXES = ("chatcmpl-tool-",)

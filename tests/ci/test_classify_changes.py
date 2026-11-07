@@ -809,7 +809,7 @@ def test_a_rename_counts_under_its_old_path_too(monkeypatch, capsys):
 def test_a_list_at_the_compare_cap_runs_every_lane(monkeypatch, capsys):
     """The compare API stops at 300 files without saying so; a docs-only first page must not skip lanes."""
     monkeypatch.setattr(_mod, "pull_request_labels", list)
-    monkeypatch.setattr(sys, "stdin", io.StringIO("".join(f"docs/page{i}.md\n" for i in range(_mod.COMPARE_FILE_CAP))))
+    monkeypatch.setattr(sys, "stdin", io.StringIO("".join(f"docs/page{i}.md\n" for i in range(300))))
     monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
 
     assert main() == 0

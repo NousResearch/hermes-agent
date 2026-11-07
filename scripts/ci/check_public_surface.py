@@ -124,12 +124,12 @@ def diff_surface(base: str, head: str) -> dict:
         before, after = _show(base, old), _show(head, path)
         if before is None or after is None:
             continue
-        if path.startswith("tests/"):
+        if old.startswith("tests/"):
             nb, na = len(_TEST_DEF_RE.findall(before)), len(_TEST_DEF_RE.findall(after))
             if na < nb:
                 test_drops[path] = (nb, na)
             continue
-        if not (_is_source(old) or _is_source(path)) or path.startswith("tests"):
+        if not (_is_source(old) or _is_source(path)):
             continue
         pb, pa = public_toplevel(before), public_toplevel(after)
         if pb is not None and pa is not None and (gone := sorted(pb - pa)):

@@ -123,3 +123,23 @@ def test_a_moved_file_is_compared_with_its_old_self(tmp_path, monkeypatch):
     assert report["dropped_names"] == {"src/hermes_agent/agent/mod.py": ["gone"], "gateway/util.py": ["lost"],
                                        "providers/out.py": ["dropped"], "agent/caf\u00e9.py": ["gone_too"]}
     assert report["test_drops"] == {"tests/test_moved.py": (2, 1)}
+
+    # A source module moved under tests/ and a test file moved out of tests/ keep their kind.
+    (repo / "agent" / "helper.py").write_text("def kept(): ...\ndef lost_too(): ...\n" + "U = 1\n" * 20, encoding="utf-8")
+    (repo / "tests" / "test_out.py").write_text("def test_a(): ...\ndef test_b(): ...\n" + "T = 1\n" * 20, encoding="utf-8")
+    _git(repo, "add", "."); _git(repo, "commit", "-qm", "more files")
+    (repo / "agent" / "helper.py").rename(repo / "tests" / "helper.py")
+    (repo / "tests" / "helper.py").write_text("def kept(): ...\n" + "U = 1\n" * 20, encoding="utf-8")
+    (repo / "scripts").mkdir()
+    (repo / "tests" / "test_out.py").rename(repo / "scripts" / "test_out.py")
+    (repo / "scripts" / "test_out.py").write_text("def test_a(): ...\n" + "T = 1\n" * 20, encoding="utf-8")
+    _git(repo, "add", "-A"); _git(repo, "commit", "-qm", "kind-crossing moves")
+    crossing = _load().diff_surface("HEAD~1", "HEAD")
+    assert crossing["dropped_names"] == {"tests/helper.py": ["lost_too"]}
+    assert crossing["test_drops"] == {"scripts/test_out.py": (2, 1)}
+
+    # Once the move lands, later edits have no old top-level source path.
+    (repo / "src" / "hermes_agent" / "agent" / "mod.py").write_text("X = 1\n" * 20, encoding="utf-8")
+    _git(repo, "add", "."); _git(repo, "commit", "-qm", "drop after move")
+    assert _load().diff_surface("HEAD~1", "HEAD")["dropped_names"] == {
+        "src/hermes_agent/agent/mod.py": ["keep"]}

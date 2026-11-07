@@ -689,6 +689,9 @@ function liveLaneForRepo(repoRoot: string, session: SessionInfo): null | Sidebar
 
 const NO_REMOVED: ReadonlySet<string> = new Set()
 
+export const isRemovedConversation = (session: SessionInfo, removed: ReadonlySet<string>): boolean =>
+  removed.size > 0 && conversationIds(session).some(id => removed.has(id))
+
 /**
  * Reconcile ONE repo's lanes against the live `$sessions` cache: evict
  * deleted/archived rows (`removed`) and inject freshly-created ones, so a lane
@@ -715,7 +718,7 @@ export function overlayRepoLanes(
       return { ...g, sessions: [...g.sessions] }
     }
 
-    const kept = g.sessions.filter(s => !removed.has(s.id))
+    const kept = g.sessions.filter(s => !isRemovedConversation(s, removed))
 
     changed ||= kept.length !== g.sessions.length
 
@@ -725,7 +728,7 @@ export function overlayRepoLanes(
   for (const session of live) {
     const sessionPath = livePathForRepo(repo.path ?? '', session)
 
-    if (removed.has(session.id) || !sessionPath) {
+    if (isRemovedConversation(session, removed) || !sessionPath) {
       continue
     }
 
@@ -845,7 +848,9 @@ function overlayHomeLane(
     return Boolean(owner) && owner !== NO_PROJECT_ID
   }
 
-  const belongs = (session: SessionInfo): boolean => !removed.has(session.id) && !ownedElsewhere(session)
+  const belongs = (session: SessionInfo): boolean =>
+    !isRemovedConversation(session, removed) && !ownedElsewhere(session)
+
   const lane = project.repos[0]?.groups[0]
 
   const homed = (session: SessionInfo): boolean =>
@@ -1005,7 +1010,7 @@ export function overlayLivePreviews(
   const authoritativeOwners = projectOwnerBySessionId(projects)
 
   for (const session of live) {
-    if (removed.has(session.id)) {
+    if (isRemovedConversation(session, removed)) {
       continue
     }
 
@@ -1024,7 +1029,7 @@ export function overlayLivePreviews(
 
   for (const node of projects) {
     const liveRows = byProject.get(node.id) ?? []
-    const base = (node.previewSessions ?? []).filter(session => !removed.has(session.id))
+    const base = (node.previewSessions ?? []).filter(session => !isRemovedConversation(session, removed))
 
     if (!liveRows.length && !base.length) {
       continue

@@ -151,6 +151,7 @@ def spawn_background_process(
     session_key: str, workdir: Optional[str], cwd: str, effective_pty: bool,
     notify_on_complete: bool, watch_patterns: Optional[list[str]], approval_note: Optional[str],
     completion_output_chars: int = 0,
+    bot_reply_receipt: Optional[dict[str, str]] = None,
     pty_disabled_reason: Optional[str],
     heartbeat_seconds: int = 0,
     persist_on_release: bool = False,
@@ -207,6 +208,7 @@ def spawn_background_process(
             logger.warning("background proc %s: %s", proc_session.id, conflict_note)
             result_data["watch_patterns_ignored"] = conflict_note
         if notify_on_complete:
+            proc_session.bot_reply_receipt = bot_reply_receipt
             proc_session.notify_on_complete = True
             result_data["notify_on_complete"] = True
             if completion_output_chars:

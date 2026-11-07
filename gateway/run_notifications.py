@@ -177,6 +177,8 @@ def _watch_notification_metadata(evt: dict, source) -> dict[str, Any]:
         # A local completion persists as the async-result card the in-process TUI wrote, and a tick
         # carries its CLI receipt; messaging rows stay internal_notification, as on main.
         metadata.update(_local_completion_card(evt))
+        if evt.get("bot_reply_receipt") and len(evt.get("_automation_identities") or ()) <= 1:
+            metadata["bot_reply_receipt"] = evt["bot_reply_receipt"]
     proven_session_id = str(evt.get("proven_session_id") or "").strip()
     if proven_session_id:
         metadata["gateway_proven_session_id"] = proven_session_id
@@ -1797,6 +1799,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             "completion_reason": getattr(session, "completion_reason", "exited"),
             "termination_source": getattr(session, "termination_source", ""),
             "output": _redact_gateway_user_facing_secrets(_out),
+            "bot_reply_receipt": getattr(session, "bot_reply_receipt", None),
             # Spawning session-db id: lets pre-flight drop this completion if the user /new'd first.
             "parent_session_id": (
                 watcher.get("parent_session_id") or getattr(session, "parent_session_id", "") or ""

@@ -180,6 +180,33 @@ class TestGenerateTitle:
             with patch("agent.title_generator.call_llm", return_value=resp):
                 assert generate_title("check ffmpeg") == expected
 
+    def test_list_shaped_content_blocks_flatten_instead_of_crashing(self):
+        """Mistral's GLM endpoints return message.content as a list of typed blocks
+        (thinking + text) even on non-streamed calls. _extract_title_text called
+        content.strip() on it ('list' object has no attribute 'strip'), so every
+        auto-title failed. Blocks must flatten to text; thinking blocks stay out."""
+        def response(content):
+            resp = MagicMock(spec=["choices"])
+            resp.choices = [MagicMock(spec=["message"])]
+            resp.choices[0].message = MagicMock(spec=["content"])
+            resp.choices[0].message.content = content
+            return resp
+
+        cases = [
+            # JSON payload split across typed text blocks
+            (response([{"type": "text", "text": '{"title": "Fix login button"}'}]), "Fix login button"),
+            # thinking block before the JSON block: thinking stays out, text titles
+            (response([
+                {"type": "thinking", "thinking": [{"type": "text", "text": "A short title would be"}], "closed": True},
+                {"type": "text", "text": '{"title": "Fix login button"}'},
+            ]), "Fix login button"),
+            # plain string content keeps working byte-for-byte
+            (response('{"title": "Fix login button"}'), "Fix login button"),
+        ]
+        for resp, expected in cases:
+            with patch("agent.title_generator.call_llm", return_value=resp):
+                assert generate_title("login is broken") == expected
+
     def test_strips_think_blocks(self):
         """Reasoning-model output wrapped in <think>...</think> must not
         leak into the session title."""

@@ -84,6 +84,32 @@ _MODEL_USAGE_FIELDS = frozenset((
     "actual_cost_usd", "cost_status", "cost_source", "api_call_count"))
 
 
+def _legacy_accounting_marker_present(db, prefix):
+    """Read legacy managed-home markers without creating, unlocking or deleting them."""
+    from hermes_state_lineage import _managed_root_and_current, SessionLineageInventoryError
+    managed = _managed_root_and_current(db.db_path)
+    if managed is None:
+        return False
+    legacy_root = managed[0] / ".session-lineage-locks"
+    directory = legacy_root / "accounting"
+    for path in (legacy_root, directory):
+        try:
+            st = path.lstat()
+        except FileNotFoundError:
+            return False
+        if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+            raise SessionLineageInventoryError("Unsafe legacy accounting marker directory")
+    _, location, physical, _ = prefix.split("-", 3)
+    with os.scandir(directory) as scan:
+        for count, entry in enumerate(scan, 1):
+            if count > 8192:
+                raise SessionLineageInventoryError("Legacy accounting marker inventory exceeds bound")
+            parts = entry.name.split("-", 3)
+            if len(parts) == 4 and parts[0] == "usage" and (parts[1] == location or parts[2] == physical):
+                return True
+    return False
+
+
 class _TokenBatchInterrupted(BaseException):
     """A batch stopped with a known unprocessed suffix and possibly unknown current item."""
     def __init__(self, cause, uncertain, pending):
@@ -154,7 +180,7 @@ class SessionUsageMixin:
     def _token_marker_prefix(self):
         """Locate this physical store's cross-process pending-accounting markers."""
         from pathlib import Path
-        from hermes_state_lineage import _managed_root_and_current, SessionLineageInventoryError
+        from hermes_state_lineage import _managed_root_and_current, _lineage_lock_directory, SessionLineageInventoryError
         try:
             st = os.stat(self.db_path, follow_symlinks=False)
             if (not stat.S_ISREG(st.st_mode) or self._db_file_identity != (st.st_dev, st.st_ino)
@@ -164,8 +190,11 @@ class SessionUsageMixin:
             if st.st_nlink != 1:
                 raise SessionLineageInventoryError("Hardlinked accounting stores cannot be inventoried safely")
             root = managed[0] if managed else Path(self.db_path).resolve().parent
-            lock_root = root / ".session-lineage-locks"
-            lock_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+            if managed:
+                lock_root = _lineage_lock_directory(root, create=True)
+            else:
+                lock_root = root / ".session-lineage-locks"
+                lock_root.mkdir(mode=0o700, parents=True, exist_ok=True)
             lst = lock_root.lstat()
             if not stat.S_ISDIR(lst.st_mode) or stat.S_ISLNK(lst.st_mode):
                 raise SessionLineageInventoryError("Unsafe lineage lock directory")
@@ -186,6 +215,8 @@ class SessionUsageMixin:
         """Hold a raw advisory marker before accepting any volatile delta."""
         from hermes_state_lineage import _advisory_lock_file, SessionLineageInventoryError
         directory, prefix = self._token_marker_prefix()
+        if _legacy_accounting_marker_present(self, prefix):
+            raise SessionLineageInventoryError("Unresolved legacy accounting marker; inspect before accepting usage")
         if self._token_pending_marker is not None:
             if self._token_pending_marker_path is None:
                 raise SessionLineageInventoryError("Accounting marker release is unresolved")
@@ -293,6 +324,8 @@ class SessionUsageMixin:
         from hermes_state_lineage import _advisory_lock_file
         try:
             directory, prefix = self._token_marker_prefix()
+            if _legacy_accounting_marker_present(self, prefix):
+                return True
             directory_stat = directory.lstat()
             _, location, physical, _ = prefix.split("-", 3)
             def inventory():

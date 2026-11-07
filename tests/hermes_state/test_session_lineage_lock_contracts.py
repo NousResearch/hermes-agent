@@ -300,6 +300,75 @@ def test_process_and_advisory_phases_share_the_same_timeout(tmp_path, monkeypatc
     assert released == [True]
 
 
+def test_lineage_lock_namespace_is_shared_private_and_not_a_profile(tmp_path, monkeypatch):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_cli.profiles import _iter_named_profile_dirs
+
+    root = tmp_path / "hermes"
+    profiles_root = root / "profiles"
+    profile = profiles_root / "science"
+    profile.mkdir(parents=True)
+    (profile / ".env").write_text("")
+    if os.name != "nt":
+        profiles_root.chmod(0o755)
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    token = set_hermes_home_override(str(root))
+    try:
+        with SessionDB(root / "state.db") as default_db, SessionDB(profile / "state.db") as named_db:
+            if os.name != "nt":
+                root.chmod(0o755)
+            with lineage.session_lineage_guard(default_db.db_path, "shared-lock-namespace"):
+                pass
+            with lineage.session_lineage_guard(named_db.db_path, "shared-lock-namespace"):
+                pass
+
+            lock_root = profiles_root / ".session-lineage-locks"
+            default_lock = lineage._lineage_lock_paths(root, ["shared-lock-namespace"])[0]
+            named_lock = lineage._lineage_lock_paths(root, ["shared-lock-namespace"])[0]
+            assert default_lock == named_lock == lock_root / default_lock.name
+            assert default_lock.is_file()
+            if os.name != "nt":
+                assert root.stat().st_mode & 0o777 == 0o755
+                assert profiles_root.stat().st_mode & 0o777 == 0o755
+                assert lock_root.stat().st_mode & 0o077 == 0
+                assert default_lock.stat().st_mode & 0o077 == 0
+
+            candidates = lineage.physical_store_candidates(root)
+            assert {name for _, name in candidates} == {"default", "science"}
+            assert all(path.parent != lock_root for path, _ in candidates)
+            assert [entry.name for entry in _iter_named_profile_dirs()] == ["science"]
+            # Reserved metadata is not a profile, but a stray physical store is
+            # evidence requiring inspection, never silently excluded or deleted.
+            stray = lock_root / "state.db"
+            stray.write_bytes(b"stray metadata")
+            with pytest.raises(lineage.SessionLineageInventoryError, match="reserved"):
+                lineage.physical_store_candidates(root)
+            assert stray.read_bytes() == b"stray metadata"
+    finally:
+        reset_hermes_home_override(token)
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("redirect", ["profiles", "lock-directory"])
+def test_lineage_lock_namespace_refuses_directory_redirection(tmp_path, monkeypatch, redirect):
+    root = tmp_path / "hermes"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    profiles_root = root / "profiles"
+    if redirect == "profiles":
+        profiles_root.symlink_to(outside, target_is_directory=True)
+    else:
+        profiles_root.mkdir()
+        (profiles_root / ".session-lineage-locks").symlink_to(outside, target_is_directory=True)
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    with SessionDB(root / "state.db") as db:
+        with pytest.raises(lineage.SessionLineageInventoryError):
+            with lineage.session_lineage_guard(db.db_path, "redirected-lock-namespace"):
+                pytest.fail("redirected lineage lock directory was accepted")
+    assert not list(outside.iterdir())
+
+
 def test_nested_guards_reuse_complete_sets_and_refuse_order_inversion(tmp_path, monkeypatch):
     root = tmp_path / "hermes"
     monkeypatch.setenv("HERMES_HOME", str(root))
@@ -356,12 +425,12 @@ def test_inherited_process_entries_do_not_change_current_lock_order(tmp_path, mo
     db = SessionDB(root / "state.db")
     # The cache key includes the PID because a child must not reuse a parent's fd.
     # Apply the same process boundary when checking nested acquisition order.
-    inherited = {f"999999999:{root / '.session-lineage-locks' / 'stripe-99.lock'}": -1}
+    inherited = {f"999999999:{root / 'profiles' / '.session-lineage-locks' / 'stripe-99.lock'}": -1}
     monkeypatch.setattr(lineage._THREAD_LOCKS, "active", inherited, raising=False)
     try:
         with lineage.session_lineage_guard(db.db_path, "current-process", timeout_s=0):
             pass
-        assert inherited == {f"999999999:{root / '.session-lineage-locks' / 'stripe-99.lock'}": -1}
+        assert inherited == {f"999999999:{root / 'profiles' / '.session-lineage-locks' / 'stripe-99.lock'}": -1}
     finally:
         db.close()
 
@@ -415,3 +484,115 @@ def test_shared_stripe_never_substitutes_for_session_ownership(tmp_path, monkeyp
     finally:
         sibling.close()
         local.close()
+
+
+def test_named_profile_pending_accounting_leaves_default_tree_untouched(tmp_path, monkeypatch):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tests.conformance.test_profile_write_tripwire import ProfileTripwire
+
+    root = tmp_path / 'hermes'
+    profile = root / 'profiles' / 'science'
+    profile.mkdir(parents=True)
+    (root / 'config.yaml').write_text('model: {}\n')
+    monkeypatch.setenv('HERMES_HOME', str(profile))
+    token = set_hermes_home_override(str(profile))
+    tripwire = ProfileTripwire(root, profile)
+    try:
+        with SessionDB(profile / 'state.db') as db:
+            db.create_session('usage', 'cli')
+            monkeypatch.setattr(db, '_token_writer_loop', lambda: None)
+            db.queue_token_counts('usage', input_tokens=3)
+            db._token_writer_thread.join(5)
+            assert db.has_pending_token_counts()
+            tripwire.assert_default_untouched()
+            assert db.flush_token_counts()
+            assert db.get_session('usage')['input_tokens'] == 3
+        tripwire.assert_default_untouched()
+    finally:
+        reset_hermes_home_override(token)
+
+
+@pytest.mark.parametrize('held', [False, True])
+def test_legacy_accounting_marker_blocks_without_mutation(tmp_path, monkeypatch, held):
+    from contextlib import nullcontext
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    root = tmp_path / 'hermes'
+    profile = root / 'profiles' / 'science'
+    profile.mkdir(parents=True)
+    monkeypatch.setenv('HERMES_HOME', str(profile))
+    token = set_hermes_home_override(str(profile))
+    try:
+        with SessionDB(profile / 'state.db') as db:
+            db.create_session('legacy-usage', 'cli')
+            _, prefix = db._token_marker_prefix()
+            legacy = root / '.session-lineage-locks' / 'accounting'
+            legacy.mkdir(parents=True)
+            marker = legacy / (prefix + 'legacy.lock')
+            marker.write_bytes(b'legacy receipt')
+            if os.name != 'nt':
+                marker.chmod(0o600)
+            before = marker.stat().st_mtime_ns, marker.read_bytes()
+            guard = lineage._advisory_lock_file(marker, 0, create=False) if held else nullcontext()
+            with guard:
+                assert db.has_pending_token_counts()
+                with pytest.raises(lineage.SessionLineageInventoryError, match='legacy'):
+                    db.queue_token_counts('legacy-usage', input_tokens=3)
+            assert (marker.stat().st_mtime_ns, marker.read_bytes()) == before
+            assert not db._token_queue and not db._token_writer_uncertain
+    finally:
+        reset_hermes_home_override(token)
+
+
+@pytest.mark.platforms('posix')
+def test_legacy_accounting_directory_symlink_fails_closed_without_writing(tmp_path, monkeypatch):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    root = tmp_path / 'hermes'
+    profile = root / 'profiles' / 'science'
+    profile.mkdir(parents=True)
+    outside = tmp_path / 'outside'
+    outside.mkdir()
+    (root / '.session-lineage-locks').symlink_to(outside, target_is_directory=True)
+    monkeypatch.setenv('HERMES_HOME', str(profile))
+    token = set_hermes_home_override(str(profile))
+    try:
+        with SessionDB(profile / 'state.db') as db:
+            db.create_session('legacy-symlink', 'cli')
+            assert db.has_pending_token_counts()
+            with pytest.raises(lineage.SessionLineageInventoryError, match='legacy'):
+                db.queue_token_counts('legacy-symlink', input_tokens=3)
+            assert not list(outside.iterdir())
+    finally:
+        reset_hermes_home_override(token)
+
+
+@pytest.mark.platforms('posix')
+@pytest.mark.parametrize('parent,mode', [
+    ('root', 0o775), ('root', 0o757), ('profiles', 0o775), ('profiles', 0o757),
+])
+def test_lineage_namespace_refuses_writable_parent_without_chmod(tmp_path, monkeypatch, parent, mode):
+    root = tmp_path / 'hermes'
+    profiles = root / 'profiles'
+    profiles.mkdir(parents=True)
+    selected = root if parent == 'root' else profiles
+    monkeypatch.setenv('HERMES_HOME', str(root))
+    with SessionDB(root / 'state.db') as db:
+        selected.chmod(mode)
+        with pytest.raises(lineage.SessionLineageInventoryError, match='permissions'):
+            with lineage.session_lineage_guard(db.db_path, 'unsafe-parent'):
+                pytest.fail('writable namespace parent was accepted')
+    assert selected.stat().st_mode & 0o777 == mode
+    assert not (profiles / '.session-lineage-locks').exists()
+
+
+@pytest.mark.platforms('posix')
+def test_lineage_parent_trust_accepts_root_owner_and_refuses_other_owner():
+    import stat
+    from types import SimpleNamespace
+
+    root_owned = SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_uid=0)
+    lineage._validate_lineage_parent(Path('/synthetic'), root_owned)
+    other = SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_uid=os.geteuid() + 1)
+    with pytest.raises(lineage.SessionLineageInventoryError, match='owner'):
+        lineage._validate_lineage_parent(Path('/synthetic'), other)

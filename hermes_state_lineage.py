@@ -170,12 +170,96 @@ def _select_owner(session_id: str, rows: tuple[SessionStoreRow, ...]) -> Session
     )
 
 
+def _validate_lineage_parent(path: Path, info) -> None:
+    """Require namespace parents to be controlled by this user or root on POSIX."""
+    if os.name == "nt":
+        return
+    if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        raise SessionLineageInventoryError(f"Unsafe permissions on lineage namespace parent: {path}")
+    if hasattr(os, "geteuid") and info.st_uid not in (0, os.geteuid()):
+        raise SessionLineageInventoryError(f"Untrusted owner of lineage namespace parent: {path}")
+
+
+def _lineage_lock_directory(root: Path, *, create: bool) -> Path:
+    """Return the private shared lock directory inside the excluded profiles tree."""
+    try:
+        root_stat = root.lstat()
+    except OSError as exc:
+        raise SessionLineageInventoryError(f"Cannot inspect Hermes home {root}: {exc}") from exc
+    if stat.S_ISLNK(root_stat.st_mode) or not stat.S_ISDIR(root_stat.st_mode):
+        raise SessionLineageInventoryError(f"Unsafe Hermes home for lineage locks: {root}")
+    _validate_lineage_parent(root, root_stat)
+
+    profiles_root = root / "profiles"
+    if create:
+        try:
+            profiles_root.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+        except OSError as exc:
+            raise SessionLineageInventoryError(
+                f"Cannot create profile metadata root {profiles_root}: {exc}") from exc
+    try:
+        profiles_stat = profiles_root.lstat()
+    except OSError as exc:
+        raise SessionLineageInventoryError(
+            f"Cannot inspect profile metadata root {profiles_root}: {exc}") from exc
+    if stat.S_ISLNK(profiles_stat.st_mode) or not stat.S_ISDIR(profiles_stat.st_mode):
+        raise SessionLineageInventoryError(f"Unsafe profiles directory: {profiles_root}")
+    _validate_lineage_parent(profiles_root, profiles_stat)
+
+    lock_root = profiles_root / ".session-lineage-locks"
+    if create:
+        try:
+            lock_root.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+        except OSError as exc:
+            raise SessionLineageInventoryError(
+                f"Cannot create session-lineage lock directory {lock_root}: {exc}") from exc
+    try:
+        lock_stat = lock_root.lstat()
+    except OSError as exc:
+        raise SessionLineageInventoryError(
+            f"Cannot inspect session-lineage lock directory {lock_root}: {exc}") from exc
+    if stat.S_ISLNK(lock_stat.st_mode) or not stat.S_ISDIR(lock_stat.st_mode):
+        raise SessionLineageInventoryError(f"Unsafe session-lineage lock directory: {lock_root}")
+    if os.name != "nt":
+        if stat.S_IMODE(lock_stat.st_mode) & 0o077:
+            raise SessionLineageInventoryError(
+                f"Unsafe permissions on session-lineage lock directory: {lock_root}")
+        if hasattr(os, "geteuid") and lock_stat.st_uid != os.geteuid():
+            raise SessionLineageInventoryError(
+                f"Session-lineage lock directory is not owned by this user: {lock_root}")
+    return lock_root
+
+
+def _prepare_advisory_parent(path: Path, create: bool) -> None:
+    if path.parent.name == ".session-lineage-locks" and path.parent.parent.name == "profiles":
+        _lineage_lock_directory(path.parent.parent.parent, create=create)
+    elif create:
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _validate_advisory_descriptor(path: Path, fd: int, before):
+    opened = os.fstat(fd)
+    if not stat.S_ISREG(opened.st_mode):
+        raise SessionLineageInventoryError(f"Lineage lock is not a regular file: {path}")
+    if before is not None and not os.path.samestat(before, opened):
+        raise SessionLineageInventoryError(f"Lineage lock changed while opening: {path}")
+    if os.name != "nt":
+        if stat.S_IMODE(opened.st_mode) & 0o077:
+            raise SessionLineageInventoryError(f"Unsafe permissions on lineage lock file: {path}")
+        if hasattr(os, "geteuid") and opened.st_uid != os.geteuid():
+            raise SessionLineageInventoryError(f"Lineage lock file is not owned by this user: {path}")
+    return opened
+
+
 @contextmanager
 def _advisory_lock_file(path: Path, timeout_s: float, *, create: bool = True) -> Iterator[int]:
     """Acquire an advisory lock; every opened descriptor closes on every exit path."""
     try:
-        if create:
-            path.parent.mkdir(parents=True, exist_ok=True)
+        _prepare_advisory_parent(path, create)
         try:
             before = path.lstat()
             if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
@@ -189,11 +273,7 @@ def _advisory_lock_file(path: Path, timeout_s: float, *, create: bool = True) ->
             flags |= os.O_NOFOLLOW
         fd = os.open(path, flags, 0o600)
         try:
-            opened = os.fstat(fd)
-            if not stat.S_ISREG(opened.st_mode):
-                raise SessionLineageInventoryError(f"Lineage lock is not a regular file: {path}")
-            if before is not None and not os.path.samestat(before, opened):
-                raise SessionLineageInventoryError(f"Lineage lock changed while opening: {path}")
+            opened = _validate_advisory_descriptor(path, fd, before)
             if os.name == "nt" and opened.st_size == 0:
                 os.write(fd, b"\0")
                 os.lseek(fd, 0, os.SEEK_SET)
@@ -404,6 +484,10 @@ def _store_candidates(root: Path, current_path: Path | None) -> list[tuple[Path,
                 raise SessionLineageInventoryError(f"Cannot inspect profile entry {profile_dir}: {exc}") from exc
             if stat.S_ISLNK(entry_stat.st_mode):
                 raise SessionLineageInventoryError(f"Cannot prove profile inventory: symlinked entry {profile_dir}")
+            if profile_dir.name == ".session-lineage-locks":
+                if _regular_file_or_none(profile_dir / "state.db", "reserved lineage namespace store") is not None:
+                    raise SessionLineageInventoryError("Unexpected state.db in reserved lineage namespace")
+                continue  # reserved shared metadata, never a profile store
             if not stat.S_ISDIR(entry_stat.st_mode):
                 continue
             db_path = profile_dir / "state.db"
@@ -476,7 +560,8 @@ _LINEAGE_LOCK_STRIPES = 32
 def _lineage_lock_paths(root: Path, ids: Iterable[str]) -> list[Path]:
     stripes = {int.from_bytes(hashlib.sha256(sid.encode("utf-8")).digest()[:4], "big")
                % _LINEAGE_LOCK_STRIPES for sid in ids}
-    return [root / ".session-lineage-locks" / f"stripe-{index:02}.lock" for index in sorted(stripes)]
+    return [root / "profiles" / ".session-lineage-locks" / f"stripe-{index:02}.lock"
+            for index in sorted(stripes)]
 
 
 @contextmanager
@@ -504,6 +589,9 @@ def session_lineage_guard(
         yield None
         return
     root, current_path = managed
+    # All cooperating writers, including the default profile, share one namespace. Its
+    # reserved hidden directory is inside the tree excluded by the profile-isolation contract.
+    _lineage_lock_directory(root, create=True)
     lock_paths = _lineage_lock_paths(root, ids)
     held = {key for key in getattr(_THREAD_LOCKS, "active", ()) if key.startswith(f"{os.getpid()}:")}
     requested = {f"{os.getpid()}:{path.resolve(strict=False)}" for path in lock_paths}

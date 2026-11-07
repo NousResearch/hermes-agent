@@ -331,7 +331,15 @@ class MCPServerRunMixin:
         and transport errors charge a rapid-drop budget with jittered backoff; exhausting it (or
         a permanent error) parks via :meth:`_park` rather than exiting, so the server stays
         revivable. Branch helpers return True to keep looping, False to exit."""
-        if not await self._prepare_run(config):
+        try:
+            if not await self._prepare_run(config):
+                return
+        except Exception as exc:
+            # Preparation precedes the transport retry loop, but start() still
+            # needs its failure instead of waiting for a readiness timeout.
+            logger.warning("MCP server '%s' failed startup preparation: %s: %s",
+                           self.name, type(exc).__name__, exc, exc_info=True)
+            self._publish_error(exc)
             return
         self._reconnect_retries = 0
         budget = _RetryBudget()

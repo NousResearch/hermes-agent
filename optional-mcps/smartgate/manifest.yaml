@@ -1,0 +1,34 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+name: smartgate
+description: >-
+  Hosted MCP: search, fetch, compress, dedup, budget, memory, pipelines.
+  Not an LLM proxy. Free plan includes 2M tokens/month.
+source: https://github.com/smartgate-network/smartgate-workflows
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Dashboard Bearer key, no OAuth.
+transport:
+  type: http
+  url: https://smartgate.network/api/mcp
+auth:
+  type: api_key
+  env:
+    - name: MCP_SMARTGATE_API_KEY
+      prompt: SmartGate Dashboard API key (sk_live_… from https://smartgate.network)
+      secret: true
+      required: true
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - smartgate
+  hosts:
+    - smartgate.network
+post_install: |
+  Mint the key at https://smartgate.network Dashboard → API Keys.
+  Hermes stores it as MCP_SMARTGATE_API_KEY (paste the same sk_live_ value;
+  do not type the word Bearer). Free plan includes 2M tokens/month.
+  Restart the session so tools load. A request without Authorization
+  returns 401 — that is expected.
+  Official Registry name: network.smartgate/smartgate.
+  Contact: support@smartgate.network

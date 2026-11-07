@@ -125,6 +125,12 @@ class MemoryProvider(ABC):
         ``~/.hermes``) and ``platform``; may include ``agent_context`` ("primary" |
         "subagent" | "cron" | "flush" — skip writes for non-primary contexts),
         ``agent_identity``, ``agent_workspace``, ``parent_session_id``, ``user_id``, ``user_id_alt``.
+        Agent builds also pass ``resumed`` (bool: an earlier turn of this session id ran) and
+        ``message_count`` (int: messages already stored for it, which on TUI/Desktop can include the
+        prompt being submitted). A new session id (subagent, cron run, fresh chat) or no session
+        store gives ``False`` and a count of 0 or 1; a ``/branch`` child seeded with copied history
+        reports the copy. Read both with ``kwargs.get``: older Hermes omits them. A mid-process
+        ``/resume`` rebinds through :meth:`on_session_switch` instead.
         """
 
     def unavailable_reason(self) -> str:
@@ -171,7 +177,8 @@ class MemoryProvider(ABC):
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         """Per-turn tick. kwargs may include remaining_tokens, model, platform, tool_count, author_id, author_name,
-        author_is_bot. The author trio names who wrote THIS turn (None, None, False without one): a shared session
+        author_is_bot. ``model`` is the turn's primary model id at turn start ("" when unset; a preset name
+        under mixture-of-agents). The author trio names who wrote THIS turn (None, None, False without one): a shared session
         carries several participants, so a provider keying durable state on identity must read it per turn."""
 
     def identity_signature(self) -> dict[str, Any]:

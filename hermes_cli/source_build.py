@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -29,8 +30,9 @@ def source_product_current(project_root: Path, product: str, out: Path) -> bool:
 def source_build_env(base_env: dict | None = None, *, explicit: bool = False, verify: bool = True) -> dict[str, str]:
     from pm import ensure
     from pm.environments import project_python, running_from_selected_environment
+    from pm.packages import pnpm_env
+    from pm.index_config import hermes_npmrc, user_npmrc
     from pm.paths import repo_root
-    from hermes_constants import get_hermes_home
 
     # The historical update runs on store Python with the selected environment
     # activated in-process. Icon generation starts an isolated child, which needs
@@ -46,14 +48,40 @@ def source_build_env(base_env: dict | None = None, *, explicit: bool = False, ve
     if vc_runtime.is_file():
         env["HERMES_VC_RUNTIME"] = str(vc_runtime)
     env.pop("ESBUILD_BINARY_PATH", None)
-    npmrc = get_hermes_home() / "npmrc"
-    if npmrc.is_file():
+    npmrc = user_npmrc(env)
+    if npmrc == hermes_npmrc():
         env.setdefault("NPM_CONFIG_USERCONFIG", str(npmrc))
-    return ensure("npm", base_env=env, explicit=explicit, verify=verify).env
+    # pnpm reads the npmrc that user_npmrc selects (an explicit userconfig, else Hermes's, else
+    # ~/.npmrc) only for its registry and auth. npm also handed every other key to the processes it
+    # spawned as npm_config_<key>; keep doing that, since it is how node-pre-gyp (run by
+    # stage-native-deps.mjs) finds a binary mirror (node_get_windows_binary_host_mirror).
+    inherited = {name.upper() for name in env}
+    for key, value in _npmrc_script_settings(npmrc, env):
+        name = f"npm_config_{key.replace('-', '_').lower()}"
+        if name.upper() not in inherited:  # an explicit setting wins, in any case
+            env[name] = value
+    return ensure("pnpm", base_env=pnpm_env(env), explicit=explicit, verify=verify).env
+
+
+_NPMRC_SETTING = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
+# A one-time password and the deprecated inline client TLS key and certificate are credentials,
+# whatever npm itself exported.
+_NPMRC_SECRETS = frozenset({"otp", "key", "cert"})
+
+
+def _npmrc_script_settings(npmrc: Path, env: dict) -> list[tuple[str, str]]:
+    """The npmrc's plain settings (``pm.index_config.read_npmrc``) that may reach install
+    scripts. Skipped: credentials (``//host/:_authToken``, ``_auth``, ``otp``, ``key``,
+    ``cert``) and scoped registries (``@scope:registry``)."""
+    from pm.index_config import read_npmrc
+
+    settings = read_npmrc(npmrc, env)
+    return [(key, value) for key, value in settings.items()
+            if _NPMRC_SETTING.fullmatch(key) and key.lower() not in _NPMRC_SECRETS]
 
 
 def run_in_custody(project_root: Path, command: list, label: str, **kwargs):
-    """``pm.progress.run_contained`` for a build command that writes the checkout (node, npm):
+    """``pm.progress.run_contained`` for a build command that writes the checkout (node, pnpm):
     it and everything it starts stay in the update's custody (POSIX: the checkout lock fd, the
     caller's process group, and every descendant killed when it exits; Windows: the owner's
     kill-on-close job), so the checkout is never handed to a contender while one of them still
@@ -67,10 +95,7 @@ def run_in_custody(project_root: Path, command: list, label: str, **kwargs):
 
 def run_source_script(project_root: Path, script: str, *args: str, env: dict, label: str) -> None:
     command = [shutil.which("node", path=env["PATH"]), str(project_root / script), *args]
-    # npm's deprecation warnings are the loudest lines and never actionable
-    # here; they still land in the failure tail.
-    run_in_custody(project_root, command, label, hide=lambda line: line.lower().startswith("npm warn"),
-                   indent="  ", cwd=project_root, env=env)
+    run_in_custody(project_root, command, label, indent="  ", cwd=project_root, env=env)
 
 
 def _install_args(explicit: bool) -> tuple[str, ...]:
@@ -179,8 +204,8 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
         publish_stage("Updating Node dependencies")
 
         def node_dependencies(selected: tuple[str, ...]) -> None:
-            # Acquiring npm is part of this step: its failure must be reported like the install's.
-            # A recorded install is trusted as at startup (re-hashing node+npm costs ~2 s per
+            # Acquiring pnpm is part of this step: its failure must be reported like the install's.
+            # A recorded install is trusted as at startup (re-hashing the toolchain costs seconds per
             # tail); a missing one is still installed explicitly.
             env.update(source_build_env(explicit=True, verify=False))
             prepare_source_dependencies(project_root, selected, env=env, explicit=True)
@@ -297,7 +322,7 @@ def _build_desktop_product(project_root: Path, env: dict, publish_stage) -> None
         try:
             build_prepared_desktop(
                 desktop_dir, source_mode=False,
-                npm=shutil.which("npm", path=env["PATH"]), env=env, icons=project_root,
+                pnpm=shutil.which("pnpm", path=env["PATH"]), env=env, icons=project_root,
             )
         finally:
             build_lock.release()

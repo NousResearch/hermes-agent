@@ -6,6 +6,8 @@ The Bots roster lists the selected connection/profile's gateway rooms as ordinar
 
 ## Which group chats are gateway group chats
 
+A gateway can also seat a text-only Bot from another gateway in a group chat it owns; Desktop does not offer that yet. These owner/lender rules apply to the canonical gateway (`hermes gateway run`), including when `hermes serve` forwards Desktop's group calls to it. The home must report `driver: true`, `persistent_process: true` and `groups.peer.register` in `groups.capabilities.methods`; it does not need its own `room_link.enabled`. The member gateway must report `room_link.enabled: true` with its catalog/endpoint and list `groups.peer.invite` in `methods` (see [the Bot Mode guide](../../../website/docs/user-guide/bot-mode.md#bots-from-another-gateway-in-a-gateway-owned-group-chat)). Standalone `hermes serve` answering for its own group chats derives `persistent_process` from its lending catalog and skips API-server and endpoint checks for `room_link`; clients should not use it as a home for gateway-owned group chats. Approvals from a bot on another gateway appear as ordinary pending actions and accept `once` or `deny`; the home answers the exact prompt using the lender's run generation.
+
 One classifier, `groupExecutionMode`, reads `groups.capabilities`. Two surfaces answer it: the gateway's own (`gateway/session_group_controls.py`) and the standalone server, reached by SSH, URL and Cloud connections (`hermes serve`, `hermes dashboard`; `tui_gateway/methods_groups.py`).
 
 - **Gateway group chats:** an answer with `driver: true`, from either surface. Both run their own group chat driver, so these group chats keep working while Desktop is closed. An answer without a running driver is unavailable (below), but a group chat Desktop has already bound (opened from the gateway list, or earlier in this session) still opens and says its group driver is unavailable.
@@ -35,6 +37,20 @@ The gateway owns the log and the work. Desktop polls `groups.state` and `groups.
 - **Retry, Discard and approvals** come only from `driver_status.pending_actions` and send the exact member, task, generation and request identity. The native pending-action cards keep their bot names and avatars. An approval shows its description and its command; only the choices the gateway offered appear, and **Allow once** needs this exact request with a real command, or with the description a synthetic tool label stands for (a plugin approval rule sends `<tool> (plugin approval rule)`, as in the chat approval card). Discard asks first: side effects are not undone.
 - **Attachments** upload with `groups.attachment.upload` and download with `groups.attachment.download`.
 - **Rename** (`groups.rename`) sends the trimmed new name from the group chat header. **Disband** (`groups.disband`) asks through a confirmation dialog, which stays open with the error when the gateway refuses; once the gateway confirms, Desktop leaves the group chat, drops it from the sidebar and its bindings, and says it was disbanded.
+
+For a deferred peer turn, Discard uses the member's non-admitting close operation
+when the home has no run receipt; an older or unreachable member keeps the turn.
+A closed key survives restart for the issuer's maximum status lifetime after
+closing. Retry after a lost close reply confirms the closure and cancels the same
+attempt. After the closed key expires, an explicit Retry under newly granted
+access can start a turn still deferred at home. With a run receipt, Discard waits
+for confirmed Stop as before.
+
+Disband retains scoped grants handed in during deletion as durable holds and
+revokes them before committing the tombstone. A late grant triggers another pass,
+up to three passes before a retryable refusal. An unreachable member keeps the
+group chat and its unrevoked holds. Grants received after the tombstone become
+ordinary owed revokes. Capacity failures preserve earlier holds.
 
 History shows messages and notices for failed, cancelled and deferred turns (a deferred turn names its reason, such as `member_unavailable`), a stop, the work limit (`room.activity` with status `bounded`), the group chat's end and lost ownership; Other events feed the member chips, handoffs and round strip without adding raw transport rows. Your own messages read as **You**. Group chat text may come from another machine: its `MEDIA:` paths, Markdown images, file links and directive cards stay inert, rich code fences (`listing`, `mermaid`, `svg`) show their source, and an explicit web link to a public host (not loopback, link-local or a private network) opens only on a click.
 

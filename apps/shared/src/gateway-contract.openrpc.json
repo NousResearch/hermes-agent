@@ -8137,6 +8137,60 @@
         "title": "CanonicalBotDeliverResult",
         "type": "object"
       },
+      "CanonicalClientIdentity": {
+        "additionalProperties": false,
+        "description": "A client naming itself: ``name`` matches ``[a-z0-9][a-z0-9._-]{0,63}``, ``version`` is 1-64\nprintable ASCII without spaces. Attribution only (owners advertising ``session-client-v1``).",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Version"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "CanonicalClientIdentity",
+        "type": "object"
+      },
+      "CanonicalClientLabel": {
+        "additionalProperties": false,
+        "description": "The client a session's creator declared itself as (``session.create`` ``client``).",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Version"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "CanonicalClientLabel",
+        "type": "object"
+      },
       "CanonicalConfigGetResult": {
         "additionalProperties": false,
         "properties": {
@@ -8848,6 +8902,17 @@
             ],
             "default": null,
             "title": "Client Env"
+          },
+          "client": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CanonicalClientIdentity"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "title": "CanonicalCreateParams",
@@ -8966,6 +9031,139 @@
           "count"
         ],
         "title": "CanonicalEventsResult",
+        "type": "object"
+      },
+      "CanonicalGroupsPeerInviteParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "home_install_id": {
+            "title": "Home Install Id",
+            "type": "string"
+          },
+          "authority_gateway_id": {
+            "title": "Authority Gateway Id",
+            "type": "string"
+          },
+          "authority_epoch": {
+            "title": "Authority Epoch",
+            "type": "integer"
+          },
+          "member_id": {
+            "title": "Member Id",
+            "type": "string"
+          },
+          "ttl_seconds": {
+            "default": 3600,
+            "title": "Ttl Seconds",
+            "type": "number"
+          },
+          "status_ttl_seconds": {
+            "title": "Status Ttl Seconds",
+            "type": "number"
+          }
+        },
+        "required": [
+          "room_id",
+          "home_install_id",
+          "authority_gateway_id",
+          "authority_epoch",
+          "member_id"
+        ],
+        "title": "CanonicalGroupsPeerInviteParams",
+        "type": "object"
+      },
+      "CanonicalGroupsPeerRegisterParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "member_id": {
+            "title": "Member Id",
+            "type": "string"
+          },
+          "target_url": {
+            "title": "Target Url",
+            "type": "string"
+          },
+          "target_profile": {
+            "title": "Target Profile",
+            "type": "string"
+          },
+          "grant": {
+            "title": "Grant",
+            "type": "string"
+          },
+          "catalog": {
+            "additionalProperties": true,
+            "title": "Catalog",
+            "type": "object"
+          }
+        },
+        "required": [
+          "room_id",
+          "member_id",
+          "target_url",
+          "target_profile",
+          "grant",
+          "catalog"
+        ],
+        "title": "CanonicalGroupsPeerRegisterParams",
+        "type": "object"
+      },
+      "CanonicalGroupsPeerRevokeParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "grant": {
+            "title": "Grant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "grant"
+        ],
+        "title": "CanonicalGroupsPeerRevokeParams",
         "type": "object"
       },
       "CanonicalListParams": {
@@ -10238,6 +10436,17 @@
             "default": null,
             "title": "Launch Request"
           },
+          "client": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CanonicalClientLabel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "reasoning_effort": {
             "anyOf": [
               {
@@ -10297,6 +10506,18 @@
             ],
             "default": null,
             "title": "Title"
+          },
+          "archived": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Archived"
           },
           "started_at": {
             "anyOf": [
@@ -11037,6 +11258,17 @@
             "default": null,
             "title": "Launch Request"
           },
+          "client": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CanonicalClientLabel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "reasoning_effort": {
             "anyOf": [
               {
@@ -11096,6 +11328,18 @@
             ],
             "default": null,
             "title": "Title"
+          },
+          "archived": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Archived"
           },
           "started_at": {
             "anyOf": [
@@ -20009,6 +20253,18 @@
             ],
             "default": null,
             "title": "Ttl Seconds"
+          },
+          "status_ttl_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Status Ttl Seconds"
           }
         },
         "title": "GroupsPeerInviteParams",
@@ -28085,6 +28341,26 @@
         "title": "PluginRestartTarget",
         "type": "string"
       },
+      "PluginRpcParams": {
+        "additionalProperties": true,
+        "description": "Open: the plugin's handler owns every other key. ``session_id`` names the session the call\nacts in and passes that session's authorization first.",
+        "properties": {
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          }
+        },
+        "title": "PluginRpcParams",
+        "type": "object"
+      },
       "PluginScanFinding": {
         "additionalProperties": false,
         "description": "One security-scan finding (``tools.plugin_guard``) on a plugin tree the scan blocked.",
@@ -34133,6 +34409,30 @@
             ],
             "default": null,
             "title": "Profile"
+          },
+          "undo_since": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Undo Since"
+          },
+          "undo_message_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Undo Message Id"
           }
         },
         "required": [
@@ -34154,6 +34454,17 @@
             },
             "title": "Checkpoints",
             "type": "array"
+          },
+          "undo_hint": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UndoRollbackHint"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -39862,6 +40173,17 @@
           "removed": {
             "title": "Removed",
             "type": "integer"
+          },
+          "undo_hint": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UndoRollbackHint"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -45943,6 +46265,28 @@
         "title": "UndoIntent",
         "type": "string"
       },
+      "UndoRollbackHint": {
+        "additionalProperties": false,
+        "description": "``/undo``'s line naming the files the undone turns changed and pointing at ``/rollback``: ``files`` are\nthe changed paths, ``text`` is the rendered line in the backend's language.",
+        "properties": {
+          "files": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Files",
+            "type": "array"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "UndoRollbackHint",
+        "type": "object"
+      },
       "Usage": {
         "additionalProperties": true,
         "description": "``tui_gateway/server.py::_get_usage`` + ``agent/context_breakdown.py::context_usage_fields``.",
@@ -48985,6 +49329,60 @@
       }
     },
     {
+      "name": "groups.peer.invite",
+      "summary": "Operator only: mint one room grant for a member of another gateway's room.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalGroupsPeerInviteParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsPeerInviteResult"
+        }
+      }
+    },
+    {
+      "name": "groups.peer.register",
+      "summary": "Bind a target grant to the room's pinned peer member after a live scoped probe.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalGroupsPeerRegisterParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsPeerRegisterResult"
+        }
+      }
+    },
+    {
+      "name": "groups.peer.revoke",
+      "summary": "Operator only: revoke one grant this gateway issued, by its exact room scope.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalGroupsPeerRevokeParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsPeerRevokeResult"
+        }
+      }
+    },
+    {
       "name": "groups.retry",
       "summary": "",
       "params": [
@@ -49522,6 +49920,26 @@
         "schema": {
           "$ref": "#/components/schemas/WorkerExecution"
         }
+      }
+    }
+  ],
+  "x-canonical-namespaces": [
+    {
+      "name": "plugin.{plugin_id}.{name}",
+      "summary": "A method a loaded plugin registered with ctx.register_rpc; the result is its handler's JSON value. With plugin-rpc-v1 in runtime.describe, -32601 means that plugin method is not loaded; without plugin-rpc-v1, clients must not assume plugin RPC is supported.",
+      "x-prefix": "plugin.",
+      "x-capability": "plugin-rpc-v1",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/PluginRpcParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {}
       }
     }
   ],

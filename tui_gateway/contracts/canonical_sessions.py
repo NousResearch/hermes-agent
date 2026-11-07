@@ -10,12 +10,21 @@ from .base import JsonValue, Params, Result
 from .common import ProfileParams, TranscriptMessage
 from .connectors_operation import ConnectionRequestPayload
 from .sessions import OpenRequestEntry, TodoState
-from .canonical import AdmissionStatus, CanonicalSessionRef, PromptResponseResult, SessionInventoryFields
+from .canonical import (AdmissionStatus, CanonicalClientLabel, CanonicalSessionRef, PromptResponseResult,
+                        SessionInventoryFields)
 from .registry import canonical_method
 
 
 class CanonicalSessionParams(ProfileParams):
     session_id: str
+
+
+class CanonicalClientIdentity(Params):
+    """A client naming itself: ``name`` matches ``[a-z0-9][a-z0-9._-]{0,63}``, ``version`` is 1-64
+    printable ASCII without spaces. Attribution only (owners advertising ``session-client-v1``)."""
+
+    name: str
+    version: str | None = None
 
 
 class CanonicalCreateParams(ProfileParams):
@@ -53,6 +62,8 @@ class CanonicalCreateParams(ProfileParams):
     # A shell-launched client's allowlisted environment (HERMES_* behaviour values, toolchain PATH/venv),
     # applied to this session only; never echoed in ``launch_request``.
     client_env: dict[str, str] | None = None
+    # The creating client's self-declared label, echoed as ``session.info.client``; no policy reads it.
+    client: CanonicalClientIdentity | None = None
 
 
 class CanonicalResumeParams(ProfileParams):
@@ -119,11 +130,15 @@ class CanonicalSnapshotInfo(SessionInventoryFields):
     cwd: str | None = None
     edit_approval_policy: Literal['ask', 'workspace_session', 'session'] | None = None
     launch_request: dict[str, JsonValue] | None = None
+    # ``session.info``'s ``client``: create and resume return the same projection.
+    client: CanonicalClientLabel | None = None
     reasoning_effort: str | None = None
     reasoning_effort_wire: str | None = None
     service_tier: str | None = None
     fast: bool | None = None
     title: str | None = None
+    # SQLite stores 0/1; the wire is a JSON boolean so Desktop's ``archived === true`` probe matches.
+    archived: bool | None = None
     started_at: float | None = None
     last_active_at: float | None = None
     yolo: bool | None = None

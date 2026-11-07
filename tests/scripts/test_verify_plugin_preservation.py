@@ -22,6 +22,8 @@ import sys
 
 import pytest
 
+from pm.filesystem import is_junction
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 VERIFIER = os.path.join(
     _HERE, "..", "install", "e2e-assets", "verify-plugin-preservation.py"
@@ -104,7 +106,7 @@ def test_preservation_cli_fault_matrix(home, tmp_path, relative, action, categor
                "--snapshot", str(snapshot), "--report", str(report)]
     def fingerprint():
         return {str(p): (p.read_bytes() if p.is_file() else None, p.lstat().st_mtime_ns,
-                         os.readlink(p) if p.is_symlink() or p.is_junction() else None)
+                         os.readlink(p) if p.is_symlink() or is_junction(p) else None)
                 for root in (home, tmp_path / "external-mnemosyne-runtime") for p in root.rglob("*")}
     before = fingerprint()
     result = subprocess.run([sys.executable, VERIFIER, "snapshot", "--home", str(home), "--out", str(snapshot)],

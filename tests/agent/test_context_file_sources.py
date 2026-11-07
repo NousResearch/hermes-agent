@@ -14,7 +14,14 @@ from agent.prompt_builder import build_context_files_prompt
 
 @pytest.fixture()
 def project(tmp_path):
-    (tmp_path / ".git").mkdir()
+    # A bare `mkdir .git` is a phantom: the repository test shared by prompt assembly, the
+    # coding posture and the web files API (`agent.git_root`) requires the layout `git init`
+    # writes (HEAD + objects), because an empty `.git` left behind by tooling used to hijack
+    # the root for every project below it.
+    dot_git = tmp_path / ".git"
+    (dot_git / "objects").mkdir(parents=True)
+    (dot_git / "refs").mkdir()
+    (dot_git / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
     return tmp_path
 
 

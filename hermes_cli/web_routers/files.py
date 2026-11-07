@@ -27,6 +27,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
+from agent.git_root import is_valid_git_root as _is_valid_git_root
 from hermes_cli import web_server_file_tickets as file_tickets
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.home_data_layout import SECRET_CACHE_STORES
@@ -241,12 +242,20 @@ def _fs_read_bytes(target: Path, limit: Optional[int] = None) -> bytes:
 
 
 def _fs_find_git_root(start: Path) -> str | None:
+    """Nearest ancestor (or *start*) that is a real repository root, else ``None``.
+
+    The 50-level bound and the ``parent == directory`` guard belong to this route (a
+    filesystem walk must terminate); the validity test is shared with the coding posture
+    and prompt assembly (:mod:`agent.git_root`) so a phantom ``.git`` — an empty
+    directory tooling leaves behind, e.g. at ``$HOME`` — no longer reports the home
+    directory as the root of every project below it.
+    """
     directory = start
     for _ in range(50):
         try:
-            if (directory / ".git").exists():
+            if _is_valid_git_root(directory):
                 return str(directory)
-        except OSError:
+        except OSError:  # the shared test fails closed; keep this route's no-root answer
             return None
         parent = directory.parent
         if parent == directory:

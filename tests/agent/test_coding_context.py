@@ -114,6 +114,72 @@ class TestWorkspaceBlock:
         assert "clean" not in block.split("Status:")[1].splitlines()[0]
 
 
+# ── git root validation (F9: a `.git` that merely exists is not a repo) ─────
+
+class TestGitRootValidation:
+    def test_git_root_rejects_phantom_and_accepts_worktree(self, tmp_path):
+        # A `.git` entry that merely *exists* is not a repository. Tooling leaves an empty
+        # `.git` behind (this host: `$HOME/.git`, 0 entries, `git -C $HOME rev-parse` →
+        # "not a git repository"). Matching it forced every non-git project below it to
+        # resolve its workspace root to `$HOME`, so manifests/verify commands came back
+        # empty and the verify-on-stop gate nudged forever.
+        phantom = tmp_path / "phantom"
+        (phantom / ".git").mkdir(parents=True)
+        assert cc._is_valid_git_root(phantom) is False
+        assert cc._git_root(phantom) != phantom.resolve()
+        # …and the workspace root falls through to the marker root instead of the phantom.
+        (phantom / "pyproject.toml").write_text("[project]\nname='x'\n")
+        assert cc._workspace_roots(phantom)[1] == phantom.resolve()
+        assert cc.detect_project_facts(phantom.resolve()).manifests == ["pyproject.toml"]
+
+        # A partial `.git` (refs/objects but no HEAD) is not a repo either.
+        partial = tmp_path / "partial"
+        (partial / ".git" / "objects").mkdir(parents=True)
+        (partial / ".git" / "refs").mkdir()
+        assert cc._is_valid_git_root(partial) is False
+        assert cc._git_root(partial) != partial.resolve()
+
+        # A real `git init` repo is a root.
+        real = tmp_path / "real"
+        real.mkdir()
+        _git_init(real)
+        assert cc._is_valid_git_root(real) is True
+        assert cc._git_root(real) == real.resolve()
+
+        # A `.git` FILE is a linked-worktree / submodule pointer; a relative `gitdir:` is
+        # resolved against the file's own directory and accepted when the target exists.
+        linked = tmp_path / "linked"
+        linked.mkdir()
+        (linked / ".git").write_text("gitdir: ../real/.git\n")
+        assert cc._is_valid_git_root(linked) is True
+        assert cc._git_root(linked) == linked.resolve()
+
+        # …but a dangling pointer fails closed: never invent a root.
+        dangling = tmp_path / "dangling"
+        dangling.mkdir()
+        (dangling / ".git").write_text("gitdir: ../gone/.git\n")
+        assert cc._is_valid_git_root(dangling) is False
+        assert cc._git_root(dangling) != dangling.resolve()
+
+    def test_git_root_accepts_real_worktree_layout(self, tmp_path):
+        # The layout `git worktree add` writes (`.git` file → `.git/worktrees/<name>`) must
+        # keep being detected: it is the legitimate case a stricter `.git` check regresses.
+        main_tree = tmp_path / "main"
+        main_tree.mkdir()
+        _git_init(main_tree)
+        worktree = tmp_path / "wt"
+        subprocess.run(
+            ["git", "-C", str(main_tree), "worktree", "add", "-b", "wt-branch", str(worktree)],
+            check=True,
+            env={"PATH": os.environ.get("PATH", ""), "HOME": str(tmp_path),
+                 "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+                 "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"},
+        )
+        assert (worktree / ".git").is_file()
+        assert cc._is_valid_git_root(worktree) is True
+        assert cc._git_root(worktree) == worktree.resolve()
+
+
 # ── project facts (verify-loop detection) ───────────────────────────────────
 
 class TestProjectFacts:

@@ -593,11 +593,19 @@ def _dashboard_plugin_entry(data: dict[str, Any], name: str, dashboard_dir: Path
             "not be mounted",
             name, raw_api,
         )
+    icon = data.get("icon", "Puzzle")
+    if not isinstance(icon, str):
+        _log.warning(
+            "Plugin %s: dashboard manifest icon must be a Lucide name string, got %s; "
+            "using Puzzle (set icon to a string in dashboard/manifest.json)",
+            name, type(icon).__name__,
+        )
+        icon = "Puzzle"
     return {
         "name": name,
         "label": data.get("label", name),
         "description": data.get("description", ""),
-        "icon": data.get("icon", "Puzzle"),
+        "icon": icon,
         "version": data.get("version", "0.0.0"),
         "tab": tab_info,
         "slots": slots,

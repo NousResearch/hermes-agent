@@ -140,11 +140,11 @@ class TestIssue78796NvidiaPrefixRepair:
     def test_third_party_model_gets_its_own_vendor(self):
         """NIM also hosts third-party models — the prefix is the catalogue's,
         not a hardcoded ``nvidia/``."""
-        assert normalize_model_for_provider("glm-5.2", "nvidia") == "z-ai/glm-5.2"
+        assert normalize_model_for_provider("glm-5.3", "nvidia") == "z-ai/glm-5.3"
 
     @pytest.mark.parametrize("model", [
         "nvidia/nemotron-3-ultra-550b-a55b",
-        "z-ai/glm-5.2",
+        "z-ai/glm-5.3",
     ])
     def test_already_prefixed_is_untouched(self, model):
         assert normalize_model_for_provider(model, "nvidia") == model

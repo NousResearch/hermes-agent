@@ -1033,6 +1033,31 @@ def test_link_tasks_inherits_all_routing_columns(kanban_home):
         conn.close()
     _assert_full_inherited_sub(subs)
 
+def test_inherited_sub_keeps_parent_kinds(kanban_home):
+    """A child's inherited subscription keeps the parent's event-kind
+    allowlist instead of silently reverting to unfiltered."""
+    import hermes_cli.kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_notify as kbn
+
+    conn = kbc.connect()
+    try:
+        parent = kb.create_task(conn, title="root", assignee=None)
+        kbn.add_notify_sub(
+            conn, task_id=parent, platform="telegram", chat_id="chat1",
+            kinds="blocked,gave_up,crashed",
+        )
+        child = kb.create_task(conn, title="child", assignee="w1")
+        kb.link_tasks(conn, parent, child)
+        subs = kbn.list_notify_subs(conn, child)
+    finally:
+        conn.close()
+    assert len(subs) == 1
+    assert subs[0]["kinds"] == ["blocked", "gave_up", "crashed"], (
+        "kinds dropped during inheritance — the child row would revert to "
+        "unfiltered and wake on every completion kind again"
+    )
+
 def test_create_with_parents_inherits_delivery_metadata(kanban_home):
     import hermes_cli.kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
@@ -1178,3 +1203,115 @@ def test_gc_purges_blocked_task_that_never_done(kanban_home):
         assert kbn.list_notify_subs(conn, tid) == []
     finally:
         conn.close()
+
+
+def test_notify_sub_kinds_persists_and_last_write_wins(kanban_home):
+    """A subscription's event-kind allowlist persists; an explicit
+    re-subscribe is last-write-wins (normalized: lowercase, deduped, blanks
+    dropped), a None re-subscribe leaves the stored filter untouched, and
+    "all" resets the row back to unfiltered."""
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="kinds sub task", assignee="worker1")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
+        subs = kbn.list_notify_subs(conn, tid)
+        assert subs[0]["kinds"] == []  # new subs start unfiltered
+
+        kbn.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="chat1",
+            kinds=" Blocked , gave_up ,",
+        )
+        subs = kbn.list_notify_subs(conn, tid)
+        assert subs[0]["kinds"] == ["blocked", "gave_up"]
+
+        # A None re-subscribe leaves the existing filter untouched.
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
+        assert kbn.list_notify_subs(conn, tid)[0]["kinds"] == ["blocked", "gave_up"]
+
+        # "all" resets the row back to unfiltered.
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1", kinds="all")
+        assert kbn.list_notify_subs(conn, tid)[0]["kinds"] == []
+    finally:
+        conn.close()
+
+
+def test_claim_honors_persisted_sub_kinds(kanban_home):
+    """The row's persisted kinds narrow the notifier's claim: an out-of-filter
+    'completed' event is skipped for a filtered row (and its cursor never
+    advances past it), an unfiltered row still claims it, and an in-filter
+    'blocked' event on the filtered row is delivered normally."""
+    conn = kbc.connect()
+    try:
+        quiet = kb.create_task(conn, title="quiet sub", assignee="worker1")
+        loud = kb.create_task(conn, title="loud sub", assignee="worker1")
+        kbn.add_notify_sub(
+            conn, task_id=quiet, platform="telegram", chat_id="1",
+            kinds=("blocked", "gave_up"),
+        )
+        kbn.add_notify_sub(conn, task_id=loud, platform="telegram", chat_id="1")
+        terminal_kinds = ("completed", "blocked", "gave_up", "crashed", "timed_out")
+
+        # quiet: blocked (in-filter) then completed (filtered out).
+        kb.block_task(conn, quiet, reason="needs a human")
+        kb.complete_task(conn, quiet, result="done with it")
+        kb.complete_task(conn, loud, result="ok")
+
+        _, _, quiet_events = kbn.claim_unseen_events_for_sub(
+            conn, task_id=quiet, platform="telegram", chat_id="1", kinds=terminal_kinds)
+        assert [ev.kind for ev in quiet_events] == ["blocked"]
+
+        # The filtered 'completed' event is skipped forever: the cursor never
+        # advances past it and no later claim returns it.
+        pinned_cursor = kbn.list_notify_subs(conn, quiet)[0]["last_event_id"]
+        _, _, quiet_events = kbn.claim_unseen_events_for_sub(
+            conn, task_id=quiet, platform="telegram", chat_id="1", kinds=terminal_kinds)
+        assert quiet_events == []
+        assert kbn.list_notify_subs(conn, quiet)[0]["last_event_id"] == pinned_cursor
+
+        # The unfiltered row on the same board claims its completion normally.
+        _, _, loud_events = kbn.claim_unseen_events_for_sub(
+            conn, task_id=loud, platform="telegram", chat_id="1", kinds=terminal_kinds)
+        assert [ev.kind for ev in loud_events] == ["completed"]
+
+        # A kind outside the caller's terminal list stays unseen for both rows.
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'comment', '{}', 12345)",
+            (loud,),
+        )
+        _, _, no_comments = kbn.claim_unseen_events_for_sub(
+            conn, task_id=loud, platform="telegram", chat_id="1", kinds=terminal_kinds)
+        assert no_comments == []
+    finally:
+        conn.close()
+
+
+def test_notify_subscribe_cli_sets_and_clears_kinds(kanban_home):
+    """--kinds round-trips through the CLI and 'all' clears it again."""
+    import argparse
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="cli kinds", assignee="worker")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="9")
+
+    parser = argparse.ArgumentParser()
+    kc.build_parser(parser.add_subparsers(dest="command"))
+    args = parser.parse_args([
+        "kanban", "notify-subscribe", tid, "--platform", "telegram", "--chat-id", "9",
+        "--kinds", "blocked,gave_up,crashed,timed_out",
+    ])
+    assert kc.kanban_command(args) == 0
+
+    with kbc.connect() as conn:
+        sub = kbn.list_notify_subs(conn, tid)[0]
+    assert sub["kinds"] == ["blocked", "gave_up", "crashed", "timed_out"]
+    assert sub["delivery_mode"] == "notify"  # kinds alone must not disturb mode
+
+    args = parser.parse_args([
+        "kanban", "notify-subscribe", tid, "--platform", "telegram", "--chat-id", "9",
+        "--kinds", "all",
+    ])
+    assert kc.kanban_command(args) == 0
+
+    with kbc.connect() as conn:
+        assert kbn.list_notify_subs(conn, tid)[0]["kinds"] == []

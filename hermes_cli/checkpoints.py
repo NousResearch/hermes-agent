@@ -26,6 +26,23 @@ def _fmt_age(ts: Any) -> str:
     return f"{int(age / 86400)}d ago"
 
 
+def _orphan_label(p: dict, *, pre_v2: bool = False) -> str:
+    """Name a checkpoint record in status / prune output.
+
+    Prefers the recorded workdir, then falls back to the identity a human can
+    use to locate the record — the shadow repo path for pre-v2 records, or
+    ``checkpoint <hash>`` for v2 records. The store always writes a hash (the
+    meta file name stem), so the final placeholder is defensive only and, unlike
+    the old ``(unknown)``, never mislabels a record the store itself wrote.
+    """
+    wd = p.get("workdir")
+    if wd:
+        return wd
+    if pre_v2:
+        return p.get("path") or "(no recorded identity)"
+    return f"checkpoint {p['hash']}" if p.get("hash") else "(no recorded identity)"
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     from tools.checkpoint_maintenance import store_status
 
@@ -42,11 +59,49 @@ def cmd_status(args: argparse.Namespace) -> int:
         print()
         print(f"  {'WORKDIR':<60}  {'COMMITS':>7}  {'LAST TOUCH':>12}  STATE")
         for p in projects[: getattr(args, "limit", None) or 20]:
-            wd = p.get("workdir") or "(unknown)"
+            wd = _orphan_label(p)
             if len(wd) > 60:
                 wd = "…" + wd[-59:]
-            state = "live" if p.get("exists") else "orphan"
+            if p.get("exists"):
+                state = "live"
+            elif p.get("orphan_confirmable"):
+                state = "orphan"
+            else:
+                state = "unreachable"
             print(f"  {wd:<60}  {p.get('commits', 0):>7}  {_fmt_age(p.get('last_touch')):>12}  {state}")
+            if state == "unreachable":
+                print(f"    unreachable but not prunable as an orphan: {p.get('unconfirmable_reason') or '(no reason recorded)'}")
+                print("    (prune won't treat it as an orphan; retention still drops it once older than --retention-days)")
+
+    # Pre-v2 per-project shadow repos: shown separately because they carry no
+    # commits/last_touch (they are git repos under base/<hash>/HEAD, not
+    # entries in the shared store). Reuses the same orphan_confirmable /
+    # unconfirmable_reason classification the prune preview binds to, so the
+    # human sees the same "unreachable but not prunable" reason for a pre-v2
+    # shadow repo that prune will skip.
+    pre_v2 = info.get("pre_v2_projects", [])
+    if pre_v2:
+        print()
+        print(f"Pre-v2 shadow repos ({len(pre_v2)}):")
+        print(f"  {'WORKDIR':<60}  STATE")
+        for p in pre_v2[: getattr(args, "limit", None) or 20]:
+            # Fall back to the shadow repo's own path so a blank/missing
+            # workdir row still names the directory the human may need to
+            # inspect or clean up by hand.
+            wd = _orphan_label(p, pre_v2=True)
+            if len(wd) > 60:
+                wd = "…" + wd[-59:]
+            if p.get("exists"):
+                state = "live"
+            elif p.get("orphan_confirmable"):
+                state = "orphan"
+            else:
+                state = "unreachable"
+            print(f"  {wd:<60}  {state}")
+            if state == "unreachable":
+                print(f"    unreachable but not prunable as an orphan: {p.get('unconfirmable_reason') or '(no reason recorded)'}")
+                print("    (pre-v2 shadow repo; prune won't treat it as an orphan; "
+                      "retention still drops it once older than --retention-days)")
 
     legacy = info.get("legacy_archives", [])
     if legacy:
@@ -75,21 +130,34 @@ def cmd_prune(args: argparse.Namespace) -> int:
 
     if delete_orphans and not args.force:
         info = store_status()
-        orphans = [p for p in info.get("projects", []) if not p.get("exists")]
-        pre_v2_orphans = [p for p in info.get("pre_v2_projects", []) if not p.get("exists")]
+        orphans = [p for p in info.get("projects", []) if p.get("orphan_confirmable")]
+        pre_v2_orphans = [p for p in info.get("pre_v2_projects", []) if p.get("orphan_confirmable")]
         if orphans or pre_v2_orphans:
             print(f"This will permanently delete {len(orphans) + len(pre_v2_orphans)} "
-                  "orphan checkpoint project(s) whose workdir is not currently reachable:")
+                  "orphan checkpoint project(s) that are not currently live (recorded "
+                  "workdir missing, deleted, or unreachable):")
             print()
             for p in orphans:
-                print(f"  {p.get('workdir') or '(unknown)'}  ({p.get('commits', 0)} commit(s))")
+                # A v2 record with a blank/missing workdir still gets deleted by
+                # this confirmation, so name it by project hash rather than
+                # printing a placeholder for something the user is about to lose.
+                print(f"  {_orphan_label(p)}  ({p.get('commits', 0)} commit(s))")
             for p in pre_v2_orphans:
-                print(f"  {p.get('workdir') or '(unknown)'}  (pre-v2 shadow repo)")
+                # Pre-v2 records are identified by their shadow repo path (that
+                # is also what the allowlist binds), so fall back to it when the
+                # recorded workdir is blank/missing — the path is the only hint
+                # a human has to locate the directory before confirming.
+                print(f"  {_orphan_label(p, pre_v2=True)}  (pre-v2 shadow repo)")
             print()
             print("A workdir can be unreachable because the project was deleted,")
             print("or because an external volume / network share / VPN is down.")
             print("Pass --keep-orphans to prune stale entries only.")
-            if not _confirm("Delete these orphan projects?"):
+            print("The count above is the orphan-deletion snapshot as of now: a workdir")
+            print("that comes back during the prompt is kept. Stale entries older than the")
+            print("retention window are removed by the same run per --retention-days and")
+            print("reported separately in the final counts below.")
+            if not _confirm("Delete these orphan projects (this also removes stale "
+                            "entries per --retention-days)?"):
                 print("Aborted.")
                 return 1
         # Bind deletion to exactly what was displayed/confirmed: a project that goes orphan

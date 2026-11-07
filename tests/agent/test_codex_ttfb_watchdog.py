@@ -20,6 +20,7 @@ Raw SSE comments are outside this layer.
 from __future__ import annotations
 
 import sys
+import threading
 import time
 import types
 from types import SimpleNamespace
@@ -235,6 +236,85 @@ def test_ttfb_installs_and_retires_the_codex_request_token(tmp_path, monkeypatch
     assert "TTFB" in str(excinfo.value)
     assert "retired worker" not in str(excinfo.value)
     assert "codex_ttfb_kill" in closes
+    assert getattr(agent, "_active_codex_stream_request_token", None) is None
+
+
+def test_abort_retires_codex_request_before_releasing_blocked_transport(
+    tmp_path, monkeypatch
+):
+    """A watchdog abort must revoke logical ownership before waking the socket.
+
+    The transport abort runs synchronously under the request-client registry
+    lock.  Hold it open long enough for the blocked worker to handle the
+    resulting transport error: a still-current request would enter the inner
+    retry and call ``responses.create`` a second time before the abort returns.
+    A retired request must instead stop at the retry ownership fence.  The
+    non-cancelled retry control remains covered by
+    ``test_event_stale_phase_is_scoped_to_physical_stream_attempt[retry_gap]``.
+    """
+    from agent.chat_completion_nonstream import _NonStreamRequest
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    transport_released = threading.Event()
+    first_read_blocked = threading.Event()
+    retry_opened = threading.Event()
+    worker_retired = threading.Event()
+    create_calls: list[int] = []
+
+    class BlockedStream:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            first_read_blocked.set()
+            assert transport_released.wait(timeout=5), "transport abort never released the read"
+            raise ConnectionError("watchdog shut down the request transport")
+
+        def close(self):
+            return None
+
+    def create(**_kwargs):
+        create_calls.append(len(create_calls) + 1)
+        if len(create_calls) == 1:
+            return BlockedStream()
+        retry_opened.set()
+        raise AssertionError("retired logical request opened another physical stream")
+
+    client = SimpleNamespace(responses=SimpleNamespace(create=create))
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **_kwargs: client)
+
+    def abort_transport(_client, *, reason):
+        assert reason == "codex_ttfb_kill"
+        transport_released.set()
+        # Keep the registry lock until the worker has handled the forced error.
+        # Its final retirement happens immediately before it tries to reacquire
+        # this lock for client cleanup, so waiting here does not deadlock.
+        assert worker_retired.wait(timeout=5), "worker did not handle the forced transport error"
+
+    monkeypatch.setattr(agent, "_abort_request_openai_client", abort_transport)
+    monkeypatch.setattr(agent, "_close_request_openai_client", lambda *_args, **_kwargs: None)
+
+    request = _NonStreamRequest(agent, {"model": "gpt-5.5", "input": "hi"})
+    worker = threading.Thread(target=request._call, daemon=True)
+    retire_codex_request_token = request._retire_codex_request_token
+
+    def retire_and_observe_worker():
+        retire_codex_request_token()
+        if threading.current_thread() is worker:
+            worker_retired.set()
+
+    monkeypatch.setattr(request, "_retire_codex_request_token", retire_and_observe_worker)
+    request.thread = worker
+    worker.start()
+    assert first_read_blocked.wait(timeout=5), "request never reached the blocked transport read"
+
+    request._abort_request("codex_ttfb_kill")
+    worker.join(timeout=5)
+
+    assert not worker.is_alive()
+    assert create_calls == [1]
+    assert not retry_opened.is_set()
+    assert request.result == {"response": None, "error": None}
     assert getattr(agent, "_active_codex_stream_request_token", None) is None
 
 

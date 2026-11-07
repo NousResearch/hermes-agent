@@ -214,10 +214,14 @@ async def login_device(name, server_url, oauth_config):
     provider = HermesMCPOAuthProvider(server_url=server_url, server_name=name, storage=storage,
                                      client_metadata=_build_client_metadata(cfg),
                                      token_user_agent=cfg.get("user_agent"))
+    provider._hermes_bind_configured_scope(cfg)  # re-asserted after _discover below (#142477)
     httpx = sdk_httpx()
     try:
         async with httpx.AsyncClient(timeout=10, follow_redirects=False) as client:
             await _discover(client, provider)
+            # _discover applies the SDK's scope selection, which overwrites the configured
+            # client_metadata.scope (#142477); re-assert it before it is presented to the AS.
+            provider._pin_configured_scope()
             await _register(client, provider, cfg)
             tokens = await _authorize(client, provider, cfg)
     except (ValueError, TypeError, KeyError):

@@ -1,6 +1,6 @@
 name: global-business-culture
 repo: https://github.com/pswong661-eng/hermes-global-business-culture
-sha: "9794f1b45aa7470fb303dbf5025a93662ec9c5a1"
+sha: "e31dead3cd78a233ebccbf09362f3794b7317790"
 version: "1.0.0"
 title: Global Business Culture
 description: "Cross-cultural business intelligence: country culture briefs and home-vs-host gap analysis computed from bundled Meyer, Hofstede, GLOBE and Lewis data. Three deterministic tools (culture_brief, culture_gap_analysis, culture_countries), a /culture command and a bundled practitioner-playbook skill. 57 economies offline, no dependencies, no network, no env vars — the gap analysis ranks the exact scale distances between two cultures, names the misread each gap produces and prescribes adaptation moves. Deep ASEAN/frontier coverage (Laos, Cambodia, Myanmar flagged as extrapolated from GLOBE-cluster neighbours)."

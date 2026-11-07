@@ -899,7 +899,14 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
                 return json.dumps(_stale_write_refusal(path, blocker, _resolved), ensure_ascii=False)
             warnings = _edit_warnings([path], path_to_resolved, task_id)
             rewrite_hint = _whole_file_rewrite_hint(task_id, _resolved, content)
-            result = _get_file_ops(task_id).write_file(_resolved or path, content)
+            file_ops = _get_file_ops(task_id)
+            from tools.file_write_policy import check_file_write_policy
+            denied = check_file_write_policy(
+                "write_file", {"path": path, "content": content}, task_id=task_id,
+                session_id=session_id, file_ops=file_ops, resolved=path_to_resolved)
+            if denied:
+                return tool_error(denied)
+            result = file_ops.write_file(_resolved or path, content)
             result_dict = result.to_dict()
             if warnings:
                 result_dict["_warning"] = warnings[0]
@@ -1001,12 +1008,28 @@ def patch_tool(mode: str = "replace", path: str | None = None, old_string: str |
                 if old_string is None or new_string is None:
                     return tool_error("old_string and new_string required")
                 _replace_target = _path_to_resolved.get(path) or path
+                from tools.file_write_policy import check_file_write_policy
+                denied = check_file_write_policy(
+                    "patch", {"mode": mode, "path": path, "old_string": old_string,
+                              "new_string": new_string, "replace_all": replace_all},
+                    task_id=task_id, session_id=session_id, file_ops=file_ops,
+                    resolved=_path_to_resolved)
+                if denied:
+                    return tool_error(denied)
                 result = file_ops.patch_replace(_replace_target, old_string, new_string, replace_all)
             elif mode == "patch":
                 if not patch:
                     return tool_error("patch content required")
-                result = file_ops.patch_v4a(
-                    _rewrite_v4a_patch_paths_for_host(patch, _path_to_resolved, _path_to_entry, file_ops))
+                effective_patch = _rewrite_v4a_patch_paths_for_host(
+                    patch, _path_to_resolved, _path_to_entry, file_ops)
+                from tools.file_write_policy import check_file_write_policy
+                denied = check_file_write_policy(
+                    "patch", {"mode": mode, "patch": patch}, task_id=task_id,
+                    session_id=session_id, file_ops=file_ops,
+                    resolved=_path_to_resolved, entries=_path_to_entry)
+                if denied:
+                    return tool_error(denied)
+                result = file_ops.patch_v4a(effective_patch)
             else:
                 return tool_error(f"Unknown mode: {mode}")
 

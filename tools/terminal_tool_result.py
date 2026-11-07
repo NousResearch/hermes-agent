@@ -167,7 +167,7 @@ def _failure_hint(command: str, returncode: int, output: str, exit_note) -> Opti
     return None
 
 
-def _redact_spill_file(path, total_chars, command) -> list[tuple[str, Any]]:
+def _redact_spill_file(path, total_chars, command, *, incomplete=False) -> list[tuple[str, Any]]:
     """Spill handle so the model can read the omitted middle instead of
     re-running. The collector wrote it raw; redact it with the same pass so no
     secret persists unmasked on disk. On failure drop the handle (and file)."""
@@ -186,9 +186,13 @@ def _redact_spill_file(path, total_chars, command) -> list[tuple[str, Any]]:
         logger.debug("spill redaction failed; dropping spill handle", exc_info=True)
         with _quiet("spill unlink"):
             Path(path).unlink()
-        return []
+        from tools.environments.capture import CaptureStatus
+        failed = CaptureStatus()
+        failed.capture_failed("spill redaction")
+        return list(failed.capture_fields().items())
+    description = "Retained output (incomplete)" if incomplete else f"Full output ({total_chars:,} chars)"
     note = ("Output exceeded the capture window (head+tail shown). "
-            f"Full output ({total_chars:,} chars) saved to {path} — search it with "
+            f"{description} saved to {path} — search it with "
             "search_files or page it with read_file instead of re-running the command.")
     return [("output_total_chars", total_chars), ("full_output_path", path), ("truncation_note", note)]
 
@@ -256,14 +260,25 @@ def finalize_foreground_result(
     if approval_note and returncode == 130 and "[Command interrupted]" in output:
         approval_note = approval_note.rstrip(".") + ", then interrupted."
 
-    result_dict = {"output": output, "exit_code": returncode, "error": None}
+    from tools.environments.capture import capture_fields
+    spill_fields = _redact_spill_file(result.get("full_output_path"), result.get("output_total_chars"), command,
+                                     incomplete=bool(result.get("output_incomplete") or result.get("capture_error")
+                                                     or result.get("full_output_capped")))
+    capture_error = redact_terminal_output(strip_ansi(
+        result.get("capture_error") or dict(spill_fields).get("capture_error") or ""), command)[:512]
+    integrity = capture_fields(capture_error, bool(result.get("output_incomplete")))
+    capture_error = integrity.get("capture_error", "")
+    # Status precedes potentially oversized output so downstream previews retain it.
+    result_dict = {"exit_code": returncode, "error": capture_error or None,
+                   **capture_fields(capture_error), "output": output}
     # Optional fields in observable JSON key order; None means "omit". Spill
     # metadata is present only when output overflowed the capture window.
     optional_fields: list[tuple[str, Any]] = [
         ("cwd", changed_cwd),
         ("environment_recreated", _ENV_RECREATED_NOTE if result.get("environment_recreated") else None),
-        *_redact_spill_file(result.get("full_output_path"), result.get("output_total_chars"), command),
-        ("verification_evidence", _verification_evidence(
+        *spill_fields,
+        ("full_output_capped", result.get("full_output_capped")),
+        ("verification_evidence", None if capture_error else _verification_evidence(
             command, command_cwd, session_id or task_id or effective_task_id or "default",
             returncode, output, result.get("pipeline_status"))),
         ("approval", approval_note or None),

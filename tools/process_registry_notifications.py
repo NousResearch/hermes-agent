@@ -458,6 +458,8 @@ def _completion_status(evt: dict) -> str:
     reason = evt.get("completion_reason") or "exited"
     if reason == "killed":
         return f"terminated by {evt.get('termination_source') or 'Hermes'}"
+    if evt.get("output_incomplete"):
+        return "exited with incomplete output capture"
     return _REASON_STATUS.get(reason) or ("completed normally" if evt.get("exit_code", "?") == 0 else "exited")
 
 
@@ -500,8 +502,11 @@ def format_process_notification(evt: dict) -> str | None:
             + _out[-600:])
     elif evt.get("output_cut"):
         # Say so where the output is the payload (a teammate's reply): a silent tail reads as whole.
+        available = "retained output" if evt.get("output_incomplete") else "full output"
         _out = (f"...(first {evt['output_cut']} characters cut — process(action=\"log\", "
-                f"session_id=\"{_sid}\") has the full output)\n{_out}")
+                f"session_id=\"{_sid}\") has the {available})\n{_out}")
+    if evt.get("capture_error"):
+        _out = f"{evt['capture_error']}\n{_out}"
     return (
         f"[IMPORTANT: Background process {_sid} {_completion_status(evt)} (exit code {_exit}{_signal}).\n"
         f"{attribution}Command: {_cmd}\nOutput:\n{_out}]")

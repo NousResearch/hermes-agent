@@ -31,6 +31,49 @@ def _kbn():
     return kanban_db_notify
 
 
+def _read_live_task_row(board: Optional[str], task_id: str) -> tuple[Optional[str], bool]:
+    """Return ``(status, has_completed_at)`` for a card, or ``(None, False)``.
+
+    Deliberately a FRESH read, not the task object captured at claim time: the
+    whole point of the staleness gate is that the card's status changed AFTER
+    the failure event was written.
+
+    ``status`` is the card's CURRENT ``tasks.status``; ``None`` means it could
+    not be read (missing row, locked DB, unreadable file) and the caller must
+    treat that as "not evidence that the card is terminal" and fail OPEN.
+
+    ``has_completed_at`` is the schema-independent "the card is finished"
+    signal: a card whose ``completed_at`` is set is done whatever its status
+    string says. That matters because the boards carry legacy status values
+    that predate ``kanban_db.VALID_STATUSES`` — ``completed`` (a synonym for
+    ``done``) and ``in_progress`` (written by an older path) both occur on the
+    live homelab board, and a card sitting at ``completed`` with
+    ``completed_at`` set IS finished. Matching on the status string alone
+    would let a wake through for a card that is genuinely over.
+
+    Opens the board read-only so the check never mutates the board and never
+    runs a schema migration (an init would write to a production DB).
+    """
+    import sqlite3
+
+    from hermes_cli import kanban_db as _kb
+
+    with _kb.pin_first_board_resolution():
+        path = _kb.kanban_db_path(board=board)
+        conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+        try:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT status, completed_at FROM tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+            if row is None:
+                return None, False
+            status = row["status"]
+            return (str(status) if status is not None else None), bool(row["completed_at"])
+        finally:
+            conn.close()
+
+
 def _pin_first():
     """Machine-flow board resolution: env pins outrank the enumerated slug.
 
@@ -48,6 +91,29 @@ TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "st
 # Kinds that hand a decision back to the origin, which must take a turn.
 # status/archived/unblocked are bookkeeping.
 _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "review_requested", "changes_requested", "block_loop_detected")
+
+# Failure kinds: the dispatcher gives up / the worker dies / the run times out.
+# These are the only kinds a stale card can still emit AFTER it reached a
+# terminal status (the "worker was still running when the card closed" race).
+FAILURE_KINDS = frozenset({"gave_up", "crashed", "timed_out"})
+
+# Task statuses that mean "the assignee has nothing left to do" for NOTIFICATION
+# purposes. Deliberately EXCLUDES ``failed``: a failed card is retryable and is
+# re-claimed by the dispatcher, so the assignee MUST be told.
+#
+# The gate ALSO treats a card as terminal when ``tasks.completed_at`` is set,
+# whatever its status string says — the boards carry legacy status values
+# (``completed``, ``in_progress``) that predate ``kanban_db.VALID_STATUSES``,
+# and a card at ``completed`` with a completion timestamp IS finished.
+#
+# NOTE: do NOT suppress on "live status != reported status". The dispatcher
+# re-queues a failed card immediately (``ready``/``todo``/``blocked``), so a
+# mismatch between the reported failure event and the live status is the NORMAL
+# case for every genuine escalation. Terminal status is the only reliable
+# signal that the card is over. Measured on the homelab board (2026-10-28):
+# of 740 cards whose last failure event is a failure, NOT ONE carries a failure
+# status, and ~84% carry ``done``.
+TERMINAL_NOTIFY_STATUSES = frozenset({"done", "archived", "cancelled"})
 
 
 def diagnostic_event(ev) -> bool:
@@ -605,6 +671,56 @@ class _KanbanNotification:
         logger.info("kanban notifier: woke agent for %s on %s/%s profile=%s events=%s",
                     self.task_id, self.platform_str, self.sub["chat_id"], self.sub_profile or "default", self.wake_kinds)
 
+    async def stale_failure_terminal(self) -> bool:
+        """True when this batch is a stale failure on a card that is already terminal.
+
+        A worker that was still running when its card closed can emit a
+        ``timed_out`` / ``crashed`` / ``gave_up`` event AFTER the card reached
+        ``done``. Waking the assignee then costs a full agent turn to discover
+        there is nothing to do.
+
+        Only batches whose wake-worthy kinds are ALL failure kinds are eligible:
+        a batch that also carries a genuine decision (``completed``,
+        ``review_requested``, ``changes_requested``, ``blocked``, ...) must be
+        delivered in full.
+
+        A live-status read FAILURE fails OPEN (returns False → deliver): an
+        unreadable row is not evidence that the card is terminal.
+        """
+        events = self.d.get("events") or []
+        failure_kinds = {ev.kind for ev in events if ev.kind in FAILURE_KINDS}
+        if not failure_kinds:
+            return False
+        # Every event that could wake someone must itself be a failure kind.
+        # Otherwise the batch carries a real decision and must go through.
+        wake_capable = {ev.kind for ev in events if ev.kind in _WAKE_KINDS}
+        if not wake_capable or not wake_capable.issubset(FAILURE_KINDS):
+            return False
+        try:
+            status, has_completed_at = await _to_thread_process_service(
+                _read_live_task_row, self.board_slug, self.task_id,
+            )
+        except Exception as exc:
+            logger.debug(
+                "kanban notifier: live-status read failed for %s (board %s); failing OPEN and delivering: %s",
+                self.task_id, self.board_slug, exc, exc_info=True,
+            )
+            return False
+        if status is None:
+            # Unreadable / missing row: not evidence of terminality.
+            logger.debug(
+                "kanban notifier: live status for %s (board %s) is unreadable; failing OPEN and delivering",
+                self.task_id, self.board_slug,
+            )
+            return False
+        if status not in TERMINAL_NOTIFY_STATUSES and not has_completed_at:
+            return False
+        logger.info(
+            "kanban notifier: suppressing stale %s notification for %s on board %s; live status is %r",
+            ",".join(sorted(failure_kinds)), self.task_id, self.board_slug, status,
+        )
+        return True
+
     def _served_wake_profile(self) -> Optional[str]:
         """The subscription's profile when THIS gateway is a multiplexer serving it, else ``None``.
 
@@ -764,6 +880,14 @@ class _KanbanNotification:
         self.adapter = adapter
         from gateway.wake import adapter_supports_push
         self.is_push_adapter = adapter_supports_push(adapter)
+
+        # Staleness gate: a failure event that landed AFTER the card reached a
+        # terminal status must not ping or wake anyone — the assignee has
+        # nothing left to do. The cursor still advances so the stale event is
+        # not re-claimed on every tick. A read failure fails OPEN (delivers).
+        if await self.stale_failure_terminal():
+            await self.advance()
+            return
 
         # Pings, artifact uploads (media policy) and the wake text (display.language) all read the
         # SUBSCRIBER profile's config; the notifier thread itself runs in the launch profile's scope.

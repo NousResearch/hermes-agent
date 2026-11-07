@@ -1,6 +1,8 @@
+import { useStore } from '@nanostores/react'
 import { type ComponentProps, useEffect, useRef } from 'react'
 
 import { cn } from '@/lib/utils'
+import { $reducedEffects } from '@/store/reduced-effects'
 
 export const LOADER_TYPES = [
   'original-thinking',
@@ -325,6 +327,7 @@ export function Loader({
   ...props
 }: LoaderProps) {
   const config = LOADER_CURVES[type]
+  const reducedEffects = useStore($reducedEffects)
   const groupRef = useRef<SVGGElement | null>(null)
   const particleRefs = useRef<Array<SVGCircleElement | null>>([])
   const pathRef = useRef<SVGPathElement | null>(null)
@@ -356,13 +359,15 @@ export function Loader({
         node.setAttribute('opacity', particle.opacity.toFixed(3))
       })
 
-      animationFrame = window.requestAnimationFrame(render)
+      if (!reducedEffects && !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+        animationFrame = window.requestAnimationFrame(render)
+      }
     }
 
     render(performance.now())
 
     return () => window.cancelAnimationFrame(animationFrame)
-  }, [config, pathSteps, strokeScale])
+  }, [config, pathSteps, reducedEffects, strokeScale])
 
   return (
     <div

@@ -257,3 +257,68 @@ class TestHandleMessageUsesAuthenticatedRead:
         assert event.media_types == ["image/png"]
 
 
+# ---------------------------------------------------------------------------
+# Attachment classification: non-raster image MIME -> document
+# ---------------------------------------------------------------------------
+
+class TestCollectAttachmentMediaClassification:
+    """Non-raster ``image/*`` types (e.g. ``image/svg+xml``) must be cached as
+    documents.
+
+    Routing them through the raster image cache made the image cacher fall back
+    to a CDN URL, which native-media admission rejects as "not a local regular
+    file" (``invalid_params``) — the SVG never reached the agent. This verifies
+    they instead land in the document path and produce a local path."""
+
+    @pytest.mark.asyncio
+    async def test_svg_is_cached_as_document_not_image(self):
+        adapter = _make_adapter()
+        svg = _make_attachment_with_read(b'<svg xmlns="http://www.w3.org/2000/svg"/>')
+        svg.filename = "diagram.svg"
+        svg.content_type = "image/svg+xml"
+
+        with patch(
+            "plugins.platforms.discord.adapter.cache_image_from_bytes_async",
+            new_callable=AsyncMock,
+        ) as mock_image, patch(
+            "plugins.platforms.discord.adapter.cache_image_from_url",
+            new_callable=AsyncMock,
+        ) as mock_image_url, patch(
+            "plugins.platforms.discord.adapter.cache_document_from_bytes_async",
+            new=AsyncMock(return_value="/tmp/doc_diagram.svg"),
+        ) as mock_doc:
+            media_urls, media_types, inlined, pending = await adapter._collect_attachment_media([svg])
+
+        mock_image.assert_not_called()
+        mock_image_url.assert_not_called()
+        mock_doc.assert_awaited_once_with(
+            b'<svg xmlns="http://www.w3.org/2000/svg"/>', "diagram.svg")
+        assert media_urls == ["/tmp/doc_diagram.svg"]
+        assert media_types == ["image/svg+xml"]
+        assert inlined == [False]
+        assert pending is None
+
+    @pytest.mark.asyncio
+    async def test_png_still_cached_as_image(self):
+        """Raster images keep routing through the image cache."""
+        adapter = _make_adapter()
+        png = _make_attachment_with_read(_PNG_BYTES)
+        png.content_type = "image/png"
+
+        with patch(
+            "plugins.platforms.discord.adapter.cache_image_from_bytes_async",
+            new=AsyncMock(return_value="/tmp/img.png"),
+        ) as mock_image, patch(
+            "plugins.platforms.discord.adapter.cache_document_from_bytes_async",
+            new_callable=AsyncMock,
+        ) as mock_doc:
+            media_urls, media_types, inlined, pending = await adapter._collect_attachment_media([png])
+
+        mock_image.assert_awaited_once_with(_PNG_BYTES, ext=".png")
+        mock_doc.assert_not_called()
+        assert media_urls == ["/tmp/img.png"]
+        assert media_types == ["image/png"]
+        assert inlined == [False]
+        assert pending is None
+
+

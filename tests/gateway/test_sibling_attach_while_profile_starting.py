@@ -188,12 +188,33 @@ async def test_a_profile_still_starting_when_the_wait_runs_out_is_refused_retrya
 
 
 @pytest.mark.asyncio
-async def test_a_profile_bound_grant_naming_a_starting_profile_is_refused_at_once(rig):
+@pytest.mark.parametrize('method', ['session.create', 'session.control.read'])
+async def test_a_profile_bound_grant_naming_a_starting_profile_is_refused_at_once(rig, method):
     """Only a host-scoped grant reaches another profile; a profile-bound one never waits for it."""
     sock = await rig.connect(scope='profile')
-    rig.create(sock, 'beta', 'bound-names-beta')
+    if method == 'session.create':
+        rig.create(sock, 'beta', 'bound-names-beta')
+    else:
+        sock.inbound.put_nowait({'jsonrpc': '2.0', 'id': 'bound-names-beta', 'method': method,
+                                'params': {'profile': 'beta', 'session_id': 'unknown-session'}})
     reply = await sock.reply('bound-names-beta', timeout=10)
     assert reply.get('error', {}).get('message') == 'profile_mismatch', reply
+
+
+@pytest.mark.asyncio
+async def test_a_control_read_waits_for_its_profile_without_blocking_a_running_profile(rig):
+    sock = await rig.connect()
+    sock.inbound.put_nowait({'jsonrpc': '2.0', 'id': 'beta-read', 'method': 'session.control.read',
+                            'params': {'profile': 'beta', 'session_id': 'unknown-session'}})
+    rig.create(sock, 'alpha', 'alpha-while-read-waits')
+    assert 'result' in await sock.reply('alpha-while-read-waits', timeout=10)
+    assert 'beta-read' not in sock.replies
+    rig.release.set()
+    await asyncio.wait_for(rig.serving, 30)
+    reply = await sock.reply('beta-read')
+    # The session is deliberately absent; resolution happens only once beta exists, then returns
+    # the ordinary session/method verdict instead of an early profile-start or internal failure.
+    assert reply.get('error', {}).get('message') not in {'runtime_draining', 'profile_mismatch', 'internal error'}, reply
 
 
 @pytest.mark.asyncio

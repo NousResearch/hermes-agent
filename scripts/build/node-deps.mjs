@@ -2,7 +2,7 @@
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import {
-  closeSync, existsSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync,
+  closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync,
   writeFileSync, writeSync,
 } from 'node:fs'
 import { hostname } from 'node:os'
@@ -123,8 +123,8 @@ function mtimeOf(path) {
   }
 }
 
-// flags[0]: released; flags[1]: the lock is no longer this owner's (it was broken while this
-// process was stopped, e.g. by Ctrl-Z, for longer than lockTiming.stale).
+// Refreshes the lock until it is released, or until the lock holds another run's token (broken
+// while this process was stopped) or cannot be read. flags[0]: released.
 const HEARTBEAT = `
 const { readFileSync, utimesSync } = require('node:fs')
 const { workerData: { lock, token, state, beat } } = require('node:worker_threads')
@@ -132,11 +132,10 @@ const flags = new Int32Array(state)
 const timer = setInterval(() => {
   if (Atomics.load(flags, 0)) return clearInterval(timer)
   try {
-    if (!readFileSync(lock, 'utf8').includes(token)) throw new Error('replaced')
+    if (!readFileSync(lock, 'utf8').includes(token)) return clearInterval(timer)
     const now = new Date()
     utimesSync(lock, now, now)
   } catch {
-    Atomics.store(flags, 1, 1)
     clearInterval(timer)
   }
 }, beat)
@@ -181,8 +180,20 @@ function describeOwner(text) {
   }
 }
 
+// A run that lost its lock (stopped, e.g. by Ctrl-Z, past lockTiming.stale, so another run broke
+// it) must not touch the trees: the run that holds it now may be moving them. `check()` reads the
+// lock itself, never the heartbeat's view, which lags a resumed process by up to a beat.
+class LockLost extends Error {
+  constructor(lock, cause) {
+    super(cause
+      ? `node-deps: cannot read the checkout lock, so this run stops without touching the trees; run again (${lock}: ${cause.code ?? cause.message})`
+      : `node-deps: this run lost the checkout lock (it was stopped for too long) and another run took over; run again (${lock})`)
+    this.code = 'ENODEPSLOCK'
+  }
+}
+
 function takeLock(lock, token) {
-  const flags = new Int32Array(new SharedArrayBuffer(8))
+  const flags = new Int32Array(new SharedArrayBuffer(4))
   const fd = openSync(lock, 'wx')
   try {
     writeSync(fd, JSON.stringify({ token, pid: process.pid, host: hostname() }))
@@ -195,8 +206,20 @@ function takeLock(lock, token) {
   const worker = new Worker(HEARTBEAT, { eval: true, workerData: { lock, token, state: flags.buffer, beat: lockTiming.beat } })
   worker.unref()
   return {
-    locked: true,
-    lost: () => Atomics.load(flags, 1) === 1,
+    check: () => {
+      // A transient read error is retried; one that persists means ownership is unknown, so the
+      // run touches nothing.
+      for (let tries = 1; ; tries++) {
+        try {
+          if (readText(lock)?.includes(token)) return
+          break
+        } catch (error) {
+          if (tries === 3) throw new LockLost(lock, error)
+          sleep(50)
+        }
+      }
+      throw new LockLost(lock)
+    },
     release: () => {
       Atomics.store(flags, 0, 1)
       void worker.terminate()
@@ -217,7 +240,7 @@ function lockCheckout(source) {
       return takeLock(lock, token)
     } catch (error) {
       // No run can write a checkout this process cannot write, so a reader needs no lock.
-      if (['EACCES', 'EPERM', 'EROFS'].includes(error.code)) return { locked: false, lost: () => false, release: () => {} }
+      if (['EACCES', 'EPERM', 'EROFS'].includes(error.code)) return { check: () => {}, release: () => {} }
       if (error.code !== 'EEXIST') throw error
     }
     const text = readText(lock)
@@ -254,7 +277,7 @@ function lockCheckout(source) {
 // .cache/node-deps-previous holds trees.json (written first: the projects whose trees
 // move, and those with none, whose partial trees a restore removes), each
 // <project>/node_modules, and `complete` once every tree has moved.
-function previousTrees(source) {
+function previousTrees(source, check) {
   const cache = join(source, '.cache')
   const aside = join(cache, 'node-deps-previous')
   const record = join(aside, 'trees.json')
@@ -263,25 +286,35 @@ function previousTrees(source) {
   const finished = join(source, 'node_modules/.pnpm-workspace-state-v1.json')
   // Renamed away first: a delete killed halfway must never leave a partial set
   // under the name restore reads.
+  // Every step that changes the trees first checks that this run still holds the lock.
   const discard = () => {
+    check()
     if (existsSync(aside)) renameSync(aside, join(cache, `node-deps-discard-${process.pid}-${Date.now()}`))
     for (const name of existsSync(cache) ? readdirSync(cache) : []) {
-      if (name.startsWith('node-deps-discard-')) rmSync(join(cache, name), { recursive: true, force: true, maxRetries: 3 })
+      if (!name.startsWith('node-deps-discard-')) continue
+      check()
+      rmSync(join(cache, name), { recursive: true, force: true, maxRetries: 3 })
     }
   }
   const tree = project => join(source, project, 'node_modules')
   // `complete` goes first, so a restore killed halfway is resumed, never mistaken
   // for a set a finished install replaced. Each step can run again.
   const restore = () => {
+    check()
     rmSync(complete, { force: true })
     const { moved = [], absent = [] } = existsSync(record) ? JSON.parse(readFileSync(record, 'utf8')) : {}
-    for (const project of absent) rmSync(tree(project), { recursive: true, force: true, maxRetries: 3 })
+    for (const project of absent) {
+      check()
+      rmSync(tree(project), { recursive: true, force: true, maxRetries: 3 })
+    }
     for (const project of moved) {
       const kept = join(aside, project, 'node_modules')
       // Gone: already put back. A workspace the checkout no longer has (a pull
       // dropped it) is discarded with the set.
       if (!existsSync(kept) || !existsSync(join(source, project, 'package.json'))) continue
+      check()
       rmSync(tree(project), { recursive: true, force: true, maxRetries: 3 })
+      check()
       renameSync(kept, tree(project))
     }
     discard()
@@ -292,6 +325,7 @@ function previousTrees(source) {
   const recover = () => (existsSync(complete) && existsSync(finished) ? discard() : restore())
   const moveAside = projects => {
     const moved = projects.filter(project => existsSync(tree(project)))
+    check()
     mkdirSync(aside, { recursive: true })
     // Renamed into place: a run killed (or out of space) mid-write must never leave a record
     // that every later run fails to parse.
@@ -299,12 +333,14 @@ function previousTrees(source) {
     renameSync(`${record}.tmp`, record)
     try {
       for (const project of moved) {
+        check()
         mkdirSync(join(aside, project), { recursive: true })
         moveTree(tree(project), join(aside, project, 'node_modules'))
       }
+      check()
       writeFileSync(complete, '')
     } catch (error) {
-      restore()
+      if (error.code !== 'ENODEPSLOCK') restore()
       throw error
     }
   }
@@ -396,9 +432,10 @@ export function prepareNodeDependencies({ source, workspaces, env = process.env,
   const key = inputs.digest('hex')
   const lock = lockCheckout(source)
   try {
-    const previous = previousTrees(source)
+    const previous = previousTrees(source, lock.check)
     previous.recover()
     if (reuse && completedInstallMatches({ source, receipt, installedLock, key, nativeKey })) {
+      lock.check()
       if (prepareElectron) prepareElectronRuntime({ source, install, env })
       console.log(`node-deps: reusing completed install (${selected.join(', ')})`)
       return { source, workspaces: selected }
@@ -408,29 +445,35 @@ export function prepareNodeDependencies({ source, workspaces, env = process.env,
     previous.moveAside(projects)
     try {
       console.log(`node-deps: installing workspace dependencies with pnpm (${selected.join(', ')})...`)
+      lock.check()
       execFileSync(pnpm, args, { cwd: source, env, stdio: 'inherit' })
       if (!installedLockMatches(lockText, installedLock, selected)) {
         throw new Error(`pnpm did not record the locked install of ${selected.join(', ')} in ${installedLock}`)
       }
+      lock.check()
       if (prepareElectron) prepareElectronRuntime({ source, install, env })
     } catch (error) {
+      // A run that lost the lock leaves the trees, and the set aside, to the run that holds it.
+      if (error.code === 'ENODEPSLOCK') throw error
       previous.restore()
       console.error('node-deps: install failed; restored the previously installed dependencies')
       throw error
     }
-    // Stopped (Ctrl-Z) past the stale limit, this run's lock was broken and another run may be
-    // moving the trees now: certify nothing.
-    if (lock.lost()) throw new Error('node-deps: this run was suspended and another run took over the checkout; run again')
     if (reuse) {
       const completed = `${key}\n${createHash('sha256').update(readFileSync(installedLock)).digest('hex')}\n`
+      lock.check()
       writeFileSync(receipt, completed)
-      if (nativeKey !== undefined) writeFileSync(nativeReceipt, `${completed}${nativeKey}\n`)
+      if (nativeKey !== undefined) {
+        lock.check()
+        writeFileSync(nativeReceipt, `${completed}${nativeKey}\n`)
+      }
     }
     // The install succeeded: a set that cannot be deleted now (an antivirus or indexer handle on
     // Windows) is discarded by the next run's recovery instead of failing this one.
     try {
       previous.discard()
     } catch (error) {
+      if (error.code === 'ENODEPSLOCK') throw error
       console.warn(`node-deps: could not delete the previous dependencies yet (${error.code ?? error.message}); the next run removes them`)
     }
   } finally {

@@ -82,8 +82,11 @@ back, and the run after a killed one recovers them. Both generations are on disk
 pnpm runs. A tree that cannot be moved (a mount point, or a `.cache` on another
 filesystem) is deleted in place as before and cannot be restored. Runs in one checkout
 are serialised by `.cache/node-deps.lock`. Its owner refreshes the lock's mtime every
-second, and a lock that nobody has refreshed for 30 s is broken, whatever pid, host or
-PID namespace it names. A live owner is waited for at most 10 minutes; then the run
+second, and a lock that nobody has
+refreshed for 30 s is broken, whatever pid, host or PID namespace it names. An owner
+stopped for longer (Ctrl-Z) loses the lock: before every move, restore, delete, receipt
+write and pnpm start it re-reads the lock, and once the lock is no longer its own it exits
+without touching the trees. A live owner is waited for at most 10 minutes; then the run
 fails. Downloads retry with pnpm's defaults, except for a source launch (`hermes --tui`,
 the dashboard), which retries once, so an unreachable registry fails it in about 10 s
 instead of 70 s.

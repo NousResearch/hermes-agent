@@ -238,6 +238,31 @@ def _redact_sensitive(text: str) -> str:
     return text
 
 
+# Chat's ``formattedText`` markup for a labelled hyperlink: ``<https://x|label>``.
+_FORMATTED_LINK_RE = re.compile(r"<(https?://[^|<>\s]+)\|([^<>]+)>")
+
+
+def _restore_link_urls(text: str, formatted: Optional[str]) -> str:
+    """Re-attach the URLs Chat's plain ``text``/``argumentText`` drop from labelled links.
+
+    A link written in the Chat UI reaches ``text`` as its label only; the URL survives
+    solely in ``formattedText``. Each label is rewritten to ``[label](url)`` in order, and
+    a label the plain text no longer carries still gets its URL appended.
+    """
+    out, cursor, unplaced = text, 0, []
+    for url, label in _FORMATTED_LINK_RE.findall(formatted or ""):
+        if label == url:
+            continue
+        at = out.find(label, cursor)
+        if at < 0:
+            unplaced.append(url)
+            continue
+        link = f"[{label}]({url})"
+        out = out[:at] + link + out[at + len(label):]
+        cursor = at + len(link)
+    return f"{out}\n{' '.join(unplaced)}".strip() if unplaced else out
+
+
 def _mime_for_message_type(mime: str) -> MessageType:
     """Map a MIME string to a MessageType; non-media falls through to DOCUMENT."""
     for prefix, message_type in _MIME_MESSAGE_TYPES:
@@ -941,7 +966,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         if sender_email and space_name:
             self._last_sender_by_chat[space_name] = sender_email.strip().lower()
         chat_type = "dm" if space_type in {"DIRECT_MESSAGE", "DM"} else "group"
-        text = (msg.get("argumentText") or msg.get("text") or "").strip()
+        text = _restore_link_urls((msg.get("argumentText") or msg.get("text") or "").strip(), msg.get("formattedText"))
         # Slash command: emit MessageType.COMMAND with normalized text.
         slash = msg.get("slashCommand") or {}
         if slash:

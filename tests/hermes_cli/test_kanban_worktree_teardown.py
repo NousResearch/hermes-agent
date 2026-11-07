@@ -20,6 +20,18 @@ from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_workspace as kbw
 from hermes_cli import kanban_db_connect as kbc
 
+# Import the CLI entrypoint at collection time, not inside a test: a
+# first-ever ``import cli`` runs hermes_bootstrap's dependency activation,
+# which probes files next to the checkout (``pm.environments.payload_venv``
+# stats ``<checkout>/../manifest.json``). On machines whose checkout lives
+# inside the real Hermes home (e.g. the default install layout), that stat is
+# I/O against the real home and the per-test home-I/O guard rightly refuses
+# it while a test is running. Importing here, before any guard fixture
+# installs, keeps the suite green regardless of test-file ordering
+# (t_beb01b0d); every other CLI-facing suite imports ``cli`` at module level
+# for the same reason.
+import cli  # noqa: E402
+
 
 def _git(*args: str, cwd: str | None = None) -> str:
     result = subprocess.run(
@@ -206,8 +218,6 @@ def test_tree_dirtied_between_check_and_removal_preserved(
     ``--force``, git's own dirty guard re-verifies at removal time and the
     removal fails safe.
     """
-    import cli
-
     wt = _make_worktree(repo, "t_gggg7777")
     (wt / "late-wip.txt").write_text("dirtied after the check\n", encoding="utf-8")
     # Pre-check lies (as if the file appeared just after it ran) — real git

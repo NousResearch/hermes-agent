@@ -40,7 +40,7 @@ def _env_value(hermes_home: Path, key: str) -> str | None:
     env_file = hermes_home / ".env"
     if not env_file.exists():
         return None
-    for line in env_file.read_text().splitlines():
+    for line in env_file.read_text(encoding="utf-8").splitlines():
         if "=" not in line:
             continue
         k, _, v = line.partition("=")
@@ -80,7 +80,7 @@ def test_aborted_setup_does_not_enable_whatsapp(isolated_home, monkeypatch):
 
     assert _env_value(isolated_home, "WHATSAPP_ENABLED") is None, (
         "Setup aborted before pairing — WHATSAPP_ENABLED must not be set. "
-        f"Got .env: {(isolated_home / '.env').read_text() if (isolated_home / '.env').exists() else '(missing)'}"
+        f"Got .env: {(isolated_home / '.env').read_text(encoding='utf-8') if (isolated_home / '.env').exists() else '(missing)'}"
     )
 
 
@@ -95,7 +95,7 @@ def test_existing_pairing_skip_branch_enables_whatsapp(isolated_home, monkeypatc
     # Pre-create a paired session WITHOUT WHATSAPP_ENABLED in .env.
     session = isolated_home / "whatsapp" / "session"
     session.mkdir(parents=True)
-    (session / "creds.json").write_text("{}")
+    (session / "creds.json").write_text("{}", encoding="utf-8")
     monkeypatch.setenv("WHATSAPP_MODE", "bot")
     monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15551234567")
 
@@ -138,3 +138,43 @@ def test_existing_pairing_skip_branch_enables_whatsapp(isolated_home, monkeypatc
 
     # The skip-rebar branch should have set the env var on its way out.
     assert _env_value(isolated_home, "WHATSAPP_ENABLED") == "true"
+
+
+def _run_plugin_setup(isolated_home, monkeypatch, *, pairing_succeeds: bool) -> None:
+    """Drive ``hermes setup`` -> messaging -> WhatsApp (the plugin's ``interactive_setup``) to the QR step."""
+    import importlib
+
+    adapter = importlib.import_module("plugins.platforms.whatsapp.adapter")
+    monkeypatch.setattr("hermes_cli.cli_output.prompt_yes_no", lambda q, default=True: "Enable WhatsApp" in q)
+    monkeypatch.setattr("hermes_cli.cli_output.prompt", lambda *_a, **_kw: "cron-chat@s.whatsapp.net")
+    monkeypatch.setattr("builtins.input", lambda _p="": "1")  # mode: bot; every later prompt: default
+    monkeypatch.setattr("hermes_cli.main._require_tty", lambda *_a, **_kw: None)
+    monkeypatch.setattr("hermes_cli.main_platform_setup._yes_no", lambda _q: False)
+    monkeypatch.setattr("hermes_cli.main_platform_setup.line_input", lambda _p="": "15551234567")
+    monkeypatch.setattr("hermes_cli.main_platform_setup._whatsapp_install_bridge", lambda _d: True)
+    session = isolated_home / "whatsapp" / "session"
+
+    def fake_bridge(*_a, **_kw):  # the `node bridge.js --pair-only` subprocess
+        if pairing_succeeds:
+            (session / "creds.json").write_text("{}", encoding="utf-8")
+        else:
+            raise KeyboardInterrupt  # user gives up at the QR code
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr("subprocess.run", fake_bridge)
+    with redirect_stdout(io.StringIO()):
+        adapter.interactive_setup()
+
+
+def test_plugin_setup_aborted_pairing_leaves_whatsapp_disabled(isolated_home, monkeypatch):
+    """The `hermes setup` entry point used to write WHATSAPP_ENABLED=true with no pairing at all."""
+    _run_plugin_setup(isolated_home, monkeypatch, pairing_succeeds=False)
+    assert _env_value(isolated_home, "WHATSAPP_ENABLED") is None
+    assert _env_value(isolated_home, "WHATSAPP_HOME_CHANNEL") is None
+
+
+def test_plugin_setup_enables_whatsapp_only_after_pairing(isolated_home, monkeypatch):
+    _run_plugin_setup(isolated_home, monkeypatch, pairing_succeeds=True)
+    assert _env_value(isolated_home, "WHATSAPP_ENABLED") == "true"
+    assert _env_value(isolated_home, "WHATSAPP_ALLOWED_USERS") == "15551234567"
+    assert _env_value(isolated_home, "WHATSAPP_HOME_CHANNEL") == "cron-chat@s.whatsapp.net"

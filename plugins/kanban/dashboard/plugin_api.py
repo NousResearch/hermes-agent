@@ -762,12 +762,13 @@ def _set_status_direct(conn: sqlite3.Connection, task_id: str, new_status: str) 
         was_running = prev["status"] == "running"
         reopening_satisfied_parent = prev["status"] in {"done", "archived"} and effective_status not in {"done", "archived"}
         cur = conn.execute(
-            "UPDATE tasks SET status = ?, "
+            "UPDATE tasks SET status = ?, todo_hold = ?, "
             "  claim_lock = CASE WHEN ? = 'running' THEN claim_lock ELSE NULL END, "
             "  claim_expires = CASE WHEN ? = 'running' THEN claim_expires ELSE NULL END, "
             "  worker_pid = CASE WHEN ? = 'running' THEN worker_pid ELSE NULL END "
             "WHERE id = ?",
-            (effective_status,) * 4 + (task_id,))
+            (effective_status, int(new_status == "todo"), effective_status, effective_status,
+             effective_status, task_id))
         if cur.rowcount != 1:
             return False
         run_id = None

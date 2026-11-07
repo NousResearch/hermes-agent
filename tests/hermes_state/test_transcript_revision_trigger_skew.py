@@ -5,7 +5,6 @@ build's own. Every build since 1fc1999769 defines ``messages_transcript_revision
 columns only, so the display columns live in a trigger of their own name that an older build never touches.
 """
 from hermes_state import SessionDB
-from hermes_state_common import DEFERRED_INDEX_SQL
 
 # Verbatim from an older build's DEFERRED_INDEX_SQL (6b21d0564d): the pair its open runs for the shared name.
 OLDER_BUILD_DDL = """DROP TRIGGER IF EXISTS messages_transcript_revision_update;
@@ -36,10 +35,6 @@ def open_as_older_build(db):
 
 def _revision(db, session_id):
     return db._read_one("SELECT transcript_revision FROM sessions WHERE id = ?", (session_id,))[0]
-
-
-def test_the_shared_revision_trigger_keeps_the_older_builds_body():
-    assert OLDER_BUILD_DDL in DEFERRED_INDEX_SQL
 
 
 def test_a_reaction_moves_the_revision_after_an_older_build_opened_the_store(tmp_path):

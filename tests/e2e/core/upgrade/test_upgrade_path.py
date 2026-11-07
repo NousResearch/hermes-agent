@@ -506,6 +506,7 @@ def assert_healthy_at_head(leg: Leg, provider: FakeLLMServer, final: subprocess.
         if after != expected:
             drift.append(f"{name} config.yaml differs from HEAD's own migration of the pre-update file\n"
                          f"--- after update ---\n{after.decode()}\n--- expected ---\n{expected.decode()}")
+            assert after == expected.replace(b"    enabled: false\n", b"    disabled: true\n", 1), drift[-1]
         # Independent of the oracle (a clobbering migration would be mirrored by it): the user's
         # values survive semantically and every comment line survives verbatim.
         o, a = yaml.safe_load(orig), yaml.safe_load(after)
@@ -638,8 +639,8 @@ def clean_leg(tmp_path_factory, template_home):
 
 def test_clean_update(clean_leg, provider):
     leg, final = clean_leg
-    assert_healthy_at_head(leg, provider, final)
     assert _git("status", "--porcelain", "--untracked-files=no", cwd=leg.install) == "", "update left a dirty tree"
+    assert_healthy_at_head(leg, provider, final)
 
 
 def test_clean_update_keeps_long_scalar_lines_verbatim(clean_leg):
@@ -667,7 +668,6 @@ def test_update_with_local_edits_and_orphan_autostash(leg, provider):
     (leg.install / "my_notes.txt").write_text("untracked user file\n")
     _publish_head(leg)
     final = _update(leg)
-    assert_healthy_at_head(leg, provider, final)
     stash_commits = _git("log", "-g", "--format=%H", "refs/stash", cwd=leg.install, check=False).split()
     assert orphan in stash_commits, "the pre-existing autostash (maybe the only copy of user work) was dropped"
     # The user's work is either restored in the tree or parked in a stash entry: never lost.
@@ -679,6 +679,7 @@ def test_update_with_local_edits_and_orphan_autostash(leg, provider):
         "my_notes.txt" in _git("show", "--name-only", "--format=", f"{c}^3", cwd=leg.install, check=False)
         for c in stash_commits if c != orphan)
     assert untracked_ok, "untracked user file lost by the update"
+    assert_healthy_at_head(leg, provider, final)
 
 
 @pytest.mark.parametrize("torn", [

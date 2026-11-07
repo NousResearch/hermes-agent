@@ -40,14 +40,6 @@ const registry = (ids: string[]): DesktopConnectionsRegistry => ({
 
 let stop: () => void = () => undefined
 
-function installProbe(bootstrapNeeded: boolean) {
-  const probeLocalBackend = vi.fn(async () => ({ bootstrapNeeded }))
-
-  ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = { probeLocalBackend }
-
-  return probeLocalBackend
-}
-
 beforeEach(() => {
   vi.useFakeTimers()
   released.length = 0
@@ -62,7 +54,6 @@ beforeEach(() => {
 afterEach(() => {
   stop()
   vi.useRealTimers()
-  delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
 })
 
 it('keeps every registered gateway the primary socket does not serve connected, and lets a removed one go', () => {
@@ -88,24 +79,38 @@ it('keeps every registered gateway the primary socket does not serve connected, 
   expect(keepRoute).toHaveBeenCalledTimes(2)
 })
 
-it('with a remote primary, keeps This device only where Hermes is installed (never starts the installer)', async () => {
+it('with a remote primary, never starts This device in the background even if Hermes is installed', async () => {
   $primaryGatewayRoute.set({ connectionId: 'homelab', mode: 'remote' })
-  installProbe(true)
   stop = startPersistentGateways()
-  await vi.advanceTimersByTimeAsync(0)
 
   expect(openGatewayForAgent.mock.calls).toEqual([['vps', 'default']])
 
   stop()
   openGatewayForAgent.mockClear()
-  installProbe(false)
   stop = startPersistentGateways()
-  await vi.advanceTimersByTimeAsync(0)
 
+  await vi.advanceTimersByTimeAsync(60_000)
   expect(openGatewayForAgent.mock.calls).toEqual([
     ['vps', 'default'],
-    ['local', 'default']
+    ['vps', 'default'],
+    ['vps', 'default']
   ])
+  expect(keepRoute.mock.calls).not.toContainEqual(['local', 'default'])
+})
+
+it('keeps remote peers when the user explicitly switches the primary to This device', () => {
+  $primaryGatewayRoute.set({ connectionId: 'homelab', mode: 'remote' })
+  stop = startPersistentGateways()
+  expect(dialedRoutes()).toEqual([['vps', 'default']])
+
+  openGatewayForAgent.mockClear()
+  $primaryGatewayRoute.set({ connectionId: 'local', mode: 'local' })
+
+  expect(dialedRoutes()).toEqual([
+    ['homelab', 'default'],
+    ['vps', 'default']
+  ])
+  expect(keepRoute.mock.calls).not.toContainEqual(['local', 'default'])
 })
 
 it('redials a dropped kept route even while a named profile on the same gateway stays open', () => {
@@ -140,142 +145,4 @@ it("dials nothing while no primary route is published, so the primary's own gate
   $primaryGatewayRoute.set({ connectionId: null, mode: null })
   vi.advanceTimersByTime(30_000)
   expect(openGatewayForAgent).not.toHaveBeenCalled()
-})
-
-it('probes This device once while it stays not installed, and again after the registry changes', async () => {
-  $primaryGatewayRoute.set({ connectionId: 'homelab', mode: 'remote' })
-  const probe = installProbe(true)
-  stop = startPersistentGateways()
-
-  await vi.advanceTimersByTimeAsync(5 * 60_000)
-  expect(probe).toHaveBeenCalledTimes(1)
-
-  $connectionsRegistry.set(registry(['local', 'homelab', 'vps', 'nas']))
-  await vi.advanceTimersByTimeAsync(0)
-  expect(probe).toHaveBeenCalledTimes(2)
-  expect(dialedRoutes()).not.toContainEqual(['local', 'default'])
-})
-
-it('re-probes This device on a new primary route, not on each reconnect that republishes the same one', async () => {
-  $primaryGatewayRoute.set({ connectionId: 'homelab', mode: 'remote' })
-  const probe = installProbe(true)
-  stop = startPersistentGateways()
-  await vi.advanceTimersByTimeAsync(0)
-
-  for (let reconnect = 0; reconnect < 3; reconnect += 1) {
-    $primaryGatewayRoute.set({ connectionId: 'homelab', mode: 'remote' })
-    await vi.advanceTimersByTimeAsync(0)
-  }
-
-  expect(probe).toHaveBeenCalledTimes(1)
-
-  $primaryGatewayRoute.set({ connectionId: 'vps', mode: 'remote' })
-  await vi.advanceTimersByTimeAsync(0)
-  expect(probe).toHaveBeenCalledTimes(2)
-})
-
-it('a dropped probe that fails late leaves the newer cached probe in place', async () => {
-  $primaryGatewayRoute.set({ connectionId: 'homelab', mode: 'remote' })
-  let failFirst: (error: Error) => void = () => undefined
-
-  const probeLocalBackend = vi
-    .fn<() => Promise<{ bootstrapNeeded: boolean }>>()
-    .mockImplementationOnce(() => new Promise((_resolve, reject) => (failFirst = reject)))
-    .mockImplementation(async () => ({ bootstrapNeeded: true }))
-
-  ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = { probeLocalBackend }
-  stop = startPersistentGateways()
-
-  // The registry change drops the in-flight probe and starts a second one.
-  $connectionsRegistry.set(registry(['local', 'homelab', 'vps', 'nas']))
-  await vi.advanceTimersByTimeAsync(0)
-  expect(probeLocalBackend).toHaveBeenCalledTimes(2)
-
-  failFirst(new Error('probe failed'))
-  await vi.advanceTimersByTimeAsync(5 * 60_000)
-  expect(probeLocalBackend).toHaveBeenCalledTimes(2)
-})
-
-it("a dropped probe's late installed answer neither clears its replacement's not-installed verdict nor dials", async () => {
-  $primaryGatewayRoute.set({ connectionId: 'homelab', mode: 'remote' })
-  let answerFirst: (result: { bootstrapNeeded: boolean }) => void = () => undefined
-
-  const probeLocalBackend = vi
-    .fn<() => Promise<{ bootstrapNeeded: boolean }>>()
-    .mockImplementationOnce(() => new Promise(resolve => (answerFirst = resolve)))
-    .mockImplementation(async () => ({ bootstrapNeeded: true }))
-
-  ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = { probeLocalBackend }
-  stop = startPersistentGateways()
-
-  // The registry change drops the in-flight probe; its replacement finds no install.
-  $connectionsRegistry.set(registry(['local', 'homelab', 'vps', 'nas']))
-  await vi.advanceTimersByTimeAsync(0)
-  expect(probeLocalBackend).toHaveBeenCalledTimes(2)
-
-  answerFirst({ bootstrapNeeded: false })
-  await vi.advanceTimersByTimeAsync(5 * 60_000)
-  expect(probeLocalBackend).toHaveBeenCalledTimes(2)
-  // Nor does it let its own waiting dial reach an install the newer probe found missing.
-  expect(dialedRoutes()).not.toContainEqual(['local', 'default'])
-})
-
-it('re-probes a missing This device install every ten minutes, so one installed meanwhile is kept', async () => {
-  $primaryGatewayRoute.set({ connectionId: 'homelab', mode: 'remote' })
-
-  const probeLocalBackend = vi
-    .fn<() => Promise<{ bootstrapNeeded: boolean }>>()
-    .mockImplementationOnce(async () => ({ bootstrapNeeded: true }))
-    .mockImplementation(async () => ({ bootstrapNeeded: false }))
-
-  ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = { probeLocalBackend }
-  stop = startPersistentGateways()
-  await vi.advanceTimersByTimeAsync(9 * 60_000)
-  expect(probeLocalBackend).toHaveBeenCalledTimes(1)
-  expect(dialedRoutes()).not.toContainEqual(['local', 'default'])
-
-  await vi.advanceTimersByTimeAsync(75_000)
-  expect(probeLocalBackend).toHaveBeenCalledTimes(2)
-  expect(dialedRoutes()).toContainEqual(['local', 'default'])
-})
-
-it('re-checks an installed This device before each redial, so an install removed since is never dialed', async () => {
-  $primaryGatewayRoute.set({ connectionId: 'homelab', mode: 'remote' })
-
-  const probeLocalBackend = vi
-    .fn<() => Promise<{ bootstrapNeeded: boolean }>>()
-    .mockImplementationOnce(async () => ({ bootstrapNeeded: false }))
-    .mockImplementation(async () => ({ bootstrapNeeded: true }))
-
-  ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = { probeLocalBackend }
-  stop = startPersistentGateways()
-  await vi.advanceTimersByTimeAsync(0)
-  expect(dialedRoutes()).toContainEqual(['local', 'default'])
-
-  // The local route never opened and the install is gone by the next tick.
-  openGatewayForAgent.mockClear()
-  await vi.advanceTimersByTimeAsync(30_000)
-
-  expect(probeLocalBackend).toHaveBeenCalledTimes(2)
-  expect(dialedRoutes()).not.toContainEqual(['local', 'default'])
-})
-
-it('drops a This device dial still waiting on its probe once the primary route is unpublished or the keeper stops', async () => {
-  $primaryGatewayRoute.set({ connectionId: 'homelab', mode: 'remote' })
-  let answer: (result: { bootstrapNeeded: boolean }) => void = () => undefined
-
-  const probeLocalBackend = vi.fn(() => new Promise<{ bootstrapNeeded: boolean }>(resolve => (answer = resolve)))
-
-  ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = { probeLocalBackend }
-  stop = startPersistentGateways()
-  $primaryGatewayRoute.set({ connectionId: null, mode: null })
-  answer({ bootstrapNeeded: false })
-  await vi.advanceTimersByTimeAsync(0)
-  expect(dialedRoutes()).not.toContainEqual(['local', 'default'])
-
-  $primaryGatewayRoute.set({ connectionId: 'homelab', mode: 'remote' })
-  stop()
-  answer({ bootstrapNeeded: false })
-  await vi.advanceTimersByTimeAsync(0)
-  expect(dialedRoutes()).not.toContainEqual(['local', 'default'])
 })

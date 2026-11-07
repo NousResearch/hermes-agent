@@ -110,7 +110,11 @@ async def _register(client, provider, cfg):
 
     context = provider.context
     metadata = context.client_metadata.model_dump(mode="json", exclude_none=True)
-    metadata.update(grant_types=[DEVICE_GRANT, "refresh_token"], response_types=[])
+    # Keep the authorization_code capability advertised: the same client also drives the browser
+    # flow, and a Dynamic Client Registration must carry a non-empty response_types — Semgrep's
+    # registration endpoint answers HTTP 400 to ``response_types: []`` (measured 2026-10-26), which
+    # parked the whole device login before it could ask for a code.
+    metadata.update(grant_types=["authorization_code", "refresh_token", DEVICE_GRANT])
     if cfg.get("client_id"):
         data = {**metadata, "client_id": cfg["client_id"]}
         if cfg.get("client_secret"):
@@ -146,8 +150,11 @@ async def _authorize(client, provider, cfg):
     from tools.mcp_tool import sdk_httpx
 
     context = provider.context
-    resource = context.get_resource_url()
-    data = {"client_id": context.client_info.client_id, "resource": resource}
+    data = {"client_id": context.client_info.client_id}
+    # RFC 8707 resource indicators are optional; drop them when the server advertised the metadata but
+    # rejects every value (``oauth.resource_param: false`` — Semgrep, measured 2026-10-26).
+    if provider.should_include_resource_param():
+        data["resource"] = context.get_resource_url()
     if context.client_metadata.scope:
         data["scope"] = context.client_metadata.scope
     data.update(google_offline_access_params(context))
@@ -164,7 +171,9 @@ async def _authorize(client, provider, cfg):
     print(f"\n  MCP OAuth: open {verification} on any device.\n  Code: {authorization['user_code']}\n"
           "  Waiting for approval...\n", file=sys.stderr, flush=True)
     token_data = {"client_id": context.client_info.client_id, "device_code": authorization["device_code"],
-                  "grant_type": DEVICE_GRANT, "resource": resource}
+                  "grant_type": DEVICE_GRANT}
+    if provider.should_include_resource_param():
+        token_data["resource"] = context.get_resource_url()
     token_data, headers = context.prepare_token_auth(token_data, {})
     httpx = sdk_httpx()
     while True:
@@ -213,7 +222,8 @@ async def login_device(name, server_url, oauth_config):
     cfg["_resolved_port"] = cfg.get("redirect_port", 8420)
     provider = HermesMCPOAuthProvider(server_url=server_url, server_name=name, storage=storage,
                                      client_metadata=_build_client_metadata(cfg),
-                                     token_user_agent=cfg.get("user_agent"))
+                                     token_user_agent=cfg.get("user_agent"),
+                                     resource_param=cfg.get("resource_param", True))
     httpx = sdk_httpx()
     try:
         async with httpx.AsyncClient(timeout=10, follow_redirects=False) as client:

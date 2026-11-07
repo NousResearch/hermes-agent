@@ -32,6 +32,101 @@ if TYPE_CHECKING:
     from hermes_cli.kanban_db import Task
 
 
+# ---------------------------------------------------------------------------
+# Dispatch eligibility (fail-closed gates evaluated BEFORE a claim)
+# ---------------------------------------------------------------------------
+#
+# The factory's budgets (card run cap, provider quota-wall budget, CI-retry
+# budget) used to be enforced only by the WORKER, after it had already
+# started and spent a model call. A quota wall was recorded as a neutral
+# requeue that no failure counter could see, so the card looped. Neither is
+# enforcement: the production decision path never consulted the policy.
+#
+# The gates below run inside ``_dispatch_lane_task`` between the existing
+# respawn guard and the claim, so an ineligible card consumes ZERO runs.
+#
+# The policy itself lives outside this module - in the factory's own repo -
+# so the budgets are reviewable and changeable without patching Hermes core.
+# This loader is the ONLY bridge: it resolves the policy module once per
+# process and degrades to "no policy" (fail closed) if it is absent.
+#
+# When the policy module is unavailable every card is INELIGIBLE. That is
+# deliberate: a factory that cannot read its own budgets must not run. The
+# dispatcher reports the reason (``policy_unreadable``) rather than silently
+# spawning unguarded work.
+
+_ELIGIBILITY_MODULE_NAME = "dispatch_eligibility"
+_ELIGIBILITY_SEARCH_PATHS: tuple[str, ...] = (
+    # The factory repo's scripts/lib/ directory - the canonical home of the
+    # policy module. Mirrors the pattern sanwa-ci-check.py already uses to
+    # reach hermes_cli from outside the checkout.
+    str(Path.home() / "src" / "hermes-factory" / "scripts" / "lib"),
+    # The live scripts directory, for an installed copy of the same module.
+    str(Path.home() / ".hermes" / "scripts" / "lib"),
+)
+_eligibility_module: Any = None
+_eligibility_module_loaded = False
+
+
+def _load_eligibility_module() -> Any:
+    """Resolve the factory's dispatch-eligibility module, or None.
+
+    Resolution order: already-imported module, then the configured search
+    paths. Cached per process: the policy module is read from disk on every
+    tick, but the import itself happens once.
+    """
+    global _eligibility_module, _eligibility_module_loaded
+    if _eligibility_module_loaded:
+        return _eligibility_module
+    _eligibility_module_loaded = True
+    import importlib
+    import importlib.util
+
+    existing = sys.modules.get(_ELIGIBILITY_MODULE_NAME)
+    if existing is not None:
+        _eligibility_module = existing
+        return _eligibility_module
+    for candidate_dir in _ELIGIBILITY_SEARCH_PATHS:
+        candidate = Path(candidate_dir) / f"{_ELIGIBILITY_MODULE_NAME}.py"
+        try:
+            if not candidate.is_file():
+                continue
+            spec = importlib.util.spec_from_file_location(
+                _ELIGIBILITY_MODULE_NAME, candidate
+            )
+            if spec is None or spec.loader is None:
+                continue
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[_ELIGIBILITY_MODULE_NAME] = module
+            spec.loader.exec_module(module)
+            _eligibility_module = module
+            return _eligibility_module
+        except Exception as exc:  # pragma: no cover - defensive
+            _kb._log.warning(
+                "kanban dispatch: eligibility module at %s failed to load: %s",
+                candidate, exc,
+            )
+            continue
+    _kb._log.warning(
+        "kanban dispatch: dispatch-eligibility module not found in %s; "
+        "every card is INELIGIBLE (fail closed) until it is installed.",
+        list(_ELIGIBILITY_SEARCH_PATHS),
+    )
+    return _eligibility_module
+
+
+def _eligibility_policy() -> Any:
+    """Read the board's eligibility policy (fail-closed on any error)."""
+    module = _load_eligibility_module()
+    if module is None:
+        return None
+    try:
+        return module.load_policy()
+    except Exception as exc:  # pragma: no cover - defensive
+        _kb._log.warning("kanban dispatch: failed to read eligibility policy: %s", exc)
+        return None
+
+
 # After this many consecutive non-success attempts on a task/profile the
 # dispatcher parks the task in ``blocked`` with a reason — prevents retry storms.
 DEFAULT_FAILURE_LIMIT = 2
@@ -142,6 +237,21 @@ class DispatchResult:
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released to ``ready`` WITHOUT counting
     a failure — a long quota window must never trip the circuit breaker."""
+    ineligible: list[tuple[str, str]] = field(default_factory=list)
+    """``(task_id, reason)`` refused by the dispatch-eligibility gates BEFORE
+    the claim: ``"run_cap"`` (card's cumulative builder runs reached the
+    budget), ``"provider_wall"`` (the card's provider is inside its quota
+    cooldown), ``"provider_wall_budget"`` (the provider's wall budget is
+    exhausted), ``"provider_slot"`` (the provider has no free slot),
+    ``"ci_retry_budget"``, ``"provider_unknown"`` or ``"policy_unreadable"``.
+    A card listed here consumed ZERO runs — the refusal happened before the
+    claim."""
+    parked: list[tuple[str, str, str]] = field(default_factory=list)
+    """``(task_id, native_park_state, reason)`` cards the gates moved into a
+    native park state (``scheduled`` for a provider wall, ``blocked`` for a
+    terminal budget, ``triage`` for a human decision). The dispatcher does
+    not spawn from ``scheduled``/``blocked``/``triage``, so a parked card
+    cannot re-enter the ready lane on its own."""
     skipped_locked: bool = False
     """True when another process held the board's dispatch lock: this tick did
     no DB writes; the lock holder is making progress on the same board."""

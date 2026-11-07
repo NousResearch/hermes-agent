@@ -1902,6 +1902,8 @@ class BasePlatformAdapter(ABC):
         # Post-delivery one-shots per session_key: bare callback (legacy) or ``(generation,
         # callback)`` so a stale run can't clear a fresher run's callback.
         self._post_delivery_callbacks: dict[str, Any] = {}
+        # carry_over=True callbacks folded into each slot, re-chained when a newer generation takes it.
+        self._post_delivery_carry_over: dict[str, list[Callable]] = {}
         self._expected_cancelled_tasks: set[asyncio.Task] = set()
         self._busy_session_handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]] = None
         # Owning multiplex profile (None on primary); see _session_key_profile.
@@ -3360,24 +3362,37 @@ class BasePlatformAdapter(ABC):
         await self._stop_typing_quietly(chat_id, metadata)
 
     def register_post_delivery_callback(
-        self, session_key: str, callback: Callable, *, generation: int | None = None) -> None:
+        self, session_key: str, callback: Callable, *, generation: int | None = None,
+        carry_over: bool = False) -> None:
         """Register a deferred callback to fire after the main response. Same-key registrations are
         chained (both fire in order, per-callback exception isolation) so independent features
         coexist; ``generation`` ties it to a gateway run — stale generations never overwrite a
-        fresher slot."""
+        fresher slot. ``carry_over`` callbacks (idempotent cleanup such as deleting a turn's
+        progress bubbles) survive a superseding generation: a newer registration chains them ahead
+        of its own callback, and a stale one is chained into the fresher slot instead of dropped."""
         if not session_key or not callable(callback):
             return
+        carried = _lazy_attr(self, "_post_delivery_carry_over", dict)
+        entry_gen, chained = generation, callback
         existing = self._post_delivery_callbacks.get(session_key)
-        if existing is not None:
+        if existing is None:
+            carried.pop(session_key, None)
+        else:
             existing_gen, existing_cb = _split_post_delivery_entry(existing)
-            if existing_gen is not None and generation is not None and int(generation) < int(existing_gen):
+            stale = existing_gen is not None and generation is not None and int(generation) < int(existing_gen)
+            if stale and not carry_over:
                 return
-            # Same-or-newer generation: chain so both fire in registration order.
-            if callable(existing_cb) and (
-                existing_gen is None or generation is None or int(existing_gen) == int(generation)):
-                callback = self._chain_callbacks(existing_cb, callback)
+            if stale or existing_gen is None or generation is None or int(existing_gen) == int(generation):
+                # Same generation (or a stale carry-over): chain so both fire in registration order.
+                entry_gen = existing_gen if stale else generation
+                if callable(existing_cb):
+                    chained = self._chain_callbacks(existing_cb, callback)
+            elif carried.get(session_key):
+                chained = self._chain_callbacks(*carried[session_key], callback)
+        if carry_over:
+            carried.setdefault(session_key, []).append(callback)
         self._post_delivery_callbacks[session_key] = (
-            callback if generation is None else (int(generation), callback))
+            chained if entry_gen is None else (int(entry_gen), chained))
 
     @staticmethod
     def _chain_callbacks(*callbacks: Callable) -> Callable[[], Awaitable[None]]:
@@ -3403,6 +3418,7 @@ class BasePlatformAdapter(ABC):
         if generation is not None and (entry_generation is None or int(entry_generation) != int(generation)):
             return None
         self._post_delivery_callbacks.pop(session_key, None)
+        _lazy_attr(self, "_post_delivery_carry_over", dict).pop(session_key, None)
         return callback if callable(callback) else None
 
     # ── Processing lifecycle hooks (Discord 👀/✅/❌ reactions). Adapters exposing

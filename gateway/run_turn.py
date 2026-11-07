@@ -2028,7 +2028,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
 
         try:
             _cleanup_adapter.register_post_delivery_callback(
-                session_key, _cleanup_temp_bubbles, generation=turn_ctx.run_generation,
+                session_key, _cleanup_temp_bubbles, generation=turn_ctx.run_generation, carry_over=True,
             )
         except Exception as _rpe:
             logger.debug("Post-delivery cleanup registration failed: %s", _rpe)

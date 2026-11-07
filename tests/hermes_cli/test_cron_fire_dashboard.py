@@ -19,6 +19,7 @@ from starlette.testclient import TestClient
 from hermes_cli import web_server
 import hermes_cli.config as _cfg_mod
 import hermes_cli.web_server_cron as _web_server_cron
+from tests.chronos_fixtures import ROOT_CHRONOS, enter_stale_profile
 
 
 def _client(auth_required: bool):
@@ -70,6 +71,38 @@ def test_bad_token_401(monkeypatch):
     finally:
         _restore(pa, ph)
         client.close()
+
+
+def test_profile_dashboard_verifies_fires_against_the_root_chronos_keys(monkeypatch, tmp_path):
+    """A dashboard launched as a profile whose config.yaml holds another agent's Chronos keys must
+    check THIS machine's audience, JWKS and issuer, which NAS seeds into the root config only."""
+    enter_stale_profile(tmp_path, monkeypatch)
+    seen = {}
+
+    def recording_verifier(**kw):  # records what it was asked to check, then rejects (None)
+        seen.update(kw)
+
+    monkeypatch.setattr(
+        "plugins.cron_providers.chronos.verify.get_fire_verifier",
+        lambda: recording_verifier,
+    )
+
+    client, pa, ph = _client(auth_required=False)
+    try:
+        resp = client.post("/api/cron/fire",
+                           headers={"Authorization": "Bearer tok"},
+                           json={"job_id": "abc"})
+        assert resp.status_code == 401
+    finally:
+        _restore(pa, ph)
+        client.close()
+
+    assert seen == {
+        "token": "tok",
+        "expected_audience": ROOT_CHRONOS["expected_audience"],
+        "jwks_or_key": ROOT_CHRONOS["nas_jwks_url"],
+        "issuer": ROOT_CHRONOS["portal_url"],
+    }
 
 
 def test_missing_job_id_400(monkeypatch):

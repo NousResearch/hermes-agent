@@ -1,0 +1,23 @@
+name: recall
+repo: https://github.com/Polign/polign
+sha: 262dd0ef37c2d01267b72c37ed1010921ccca6ac
+subdir: plugins/hermes
+version: "0.1.0"
+description: Recall by Polign memory provider. A new statement replaces the old one, the old one stays
+  in the history, and memory can be read as of any earlier time, so the agent sees the correction, not
+  just the latest value. Memories in front of each turn, extraction after it, mirroring of MEMORY.md,
+  and five memory tools. Local database under the profile by default, or a recall serve you run.
+  Disclosure. Each turn is sent to the extraction model named in the profile (Anthropic or OpenAI
+  key from .env, or a local Ollama model); with no model, text is kept as written and nothing leaves
+  the machine. On first use the recall binary downloads polign-server from dl.polign.com and checks
+  it against a SHA-256 built into the binary.
+maintainer: Polign
+tier: community
+category: memory
+docs_url: https://github.com/Polign/polign/tree/main/plugins/hermes#readme
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

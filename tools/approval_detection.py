@@ -76,6 +76,11 @@ _GLOBAL_FLAGS = r'(?:-\S++(?:\s++(?!-\S)\S++)?\s++)*'
 # separator is now the same whitespace run as _GLOBAL_FLAGS, so e.g. `docker --log-level  warn stop
 # web` reaches the lifecycle verb again. Single-space commands match exactly as before.
 _CONTAINER_GLOBAL_FLAGS = r'(?:-\S++(?:\s++(?!-\S)\S++)?\s++)*'
+# Git's global options sit between the binary and the subcommand: `git -C <path> push --force`,
+# `git --git-dir=<path> reset --hard`, `git -c key=val clean -fd`. Same grammar again — each option
+# takes at most ONE non-dash operand — so the git rules below match the SUBCOMMAND rather than the
+# literal `git <verb>` prefix, which no option-prefixed form ever has (#150744).
+_GIT_GLOBAL_FLAGS = r'(?:-\S++(?:\s++(?:"[^"]*"|\'[^\']*\'|(?!-\S)\S++))?\s++)*'
 # macOS: /etc, /var, /tmp, /home are symlinks to /private/*, so /private/etc/sudoers would bypass a plain
 # "/etc/" check. Match both forms.
 _MACOS_PRIVATE_SYSTEM_PATH = r'/private/(?:etc|var|tmp|home)/'
@@ -675,20 +680,20 @@ DANGEROUS_PATTERNS = [
     # Git destructive operations. `git reset --hard` accepts any unambiguous long-flag prefix (--h,
     # --ha, --har): --hard is the only reset mode starting with "h", and `--help` is special-cased
     # by git before mode resolution.
-    (r'\bgit\s+reset\s+--h(?:a(?:r(?:d)?)?)?\b', "git reset --hard (destroys uncommitted changes)"),
-    (r'\bgit\s+push\b.*--forc[a-z]*\b', "git force push (rewrites remote history)"),
-    (r'\bgit\s+push\b.*-f\b', "git force push short flag (rewrites remote history)"),
-    (r'\bgit\s+clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
+    (r'\bgit\s+' + _GIT_GLOBAL_FLAGS + r'reset\s+--h(?:a(?:r(?:d)?)?)?\b', "git reset --hard (destroys uncommitted changes)"),
+    (r'\bgit\s+' + _GIT_GLOBAL_FLAGS + r'push\b.*--forc[a-z]*\b', "git force push (rewrites remote history)"),
+    (r'\bgit\s+' + _GIT_GLOBAL_FLAGS + r'push\b.*-f\b', "git force push short flag (rewrites remote history)"),
+    (r'\bgit\s+' + _GIT_GLOBAL_FLAGS + r'clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
     # `-D` = `-d --force`: only the capital short flag is force-delete, so the group opts out of
     # the module-wide re.IGNORECASE and relies on _lower_preserving_flags keeping dash-prefixed
     # tokens' case in the detection input (every other pattern matches case-insensitively and is
     # unaffected). The safe merged-only -d / --delete stays ungated by design — git itself refuses
     # to delete a branch that is not fully merged.
-    (r'\bgit\s+branch\s+(?-i:-D)\b', "git branch force delete"),
+    (r'\bgit\s+' + _GIT_GLOBAL_FLAGS + r'branch\s+(?-i:-D)\b', "git branch force delete"),
     # `-D` = `-d --force`; the long spellings are different tokens, so match delete+force in either order, bounded to
     # one command segment (no `;`/`|`/`&`/newline) so an unrelated later command isn't contaminated.
-    (r'\bgit\s+branch\b[^;|&\n]*?(?:-d\b|--delete\b)[^;|&\n]*?(?:-f\b|--force\b)', "git branch force delete (long flags)"),
-    (r'\bgit\s+branch\b[^;|&\n]*?(?:-f\b|--force\b)[^;|&\n]*?(?:-d\b|--delete\b)', "git branch force delete (long flags, force-first)"),
+    (r'\bgit\s+' + _GIT_GLOBAL_FLAGS + r'branch\b[^;|&\n]*?(?:-d\b|--delete\b)[^;|&\n]*?(?:-f\b|--force\b)', "git branch force delete (long flags)"),
+    (r'\bgit\s+' + _GIT_GLOBAL_FLAGS + r'branch\b[^;|&\n]*?(?:-f\b|--force\b)[^;|&\n]*?(?:-d\b|--delete\b)', "git branch force delete (long flags, force-first)"),
     # chmod +x then immediate run: the script content may hold dangerous commands individual patterns miss.
     (r'\bchmod\s+\+x\b.*[;&|]+\s*\./', "chmod +x followed by immediate execution"),
     # Sudo stdin/askpass/shell/list-privs flags. The agent has no TTY, so sudo invocations that succeed
@@ -765,6 +770,21 @@ for _canonical_key, _legacy_key in [
 _old_branch_key = r"git\s+branch\s+-D"
 _PATTERN_KEY_ALIASES.setdefault("git branch force delete", set()).add(_old_branch_key)
 _PATTERN_KEY_ALIASES.setdefault(_old_branch_key, set()).add("git branch force delete")
+
+# The git rules now share the option-aware prefix (_GIT_GLOBAL_FLAGS), which moves their
+# regex-derived legacy key off the `git <verb>` spelling. Keep the pre-change spellings resolvable
+# so a permanent allowlist entry written by an older release still matches.
+for _old_git_key, _git_key_descriptions in (
+    (r"git\s+reset", ["git reset --hard (destroys uncommitted changes)"]),
+    (r"git\s+push", ["git force push (rewrites remote history)",
+                     "git force push short flag (rewrites remote history)"]),
+    (r"git\s+clean", ["git clean with force (deletes untracked files)"]),
+    (r"git\s+branch", ["git branch force delete", "git branch force delete (long flags)",
+                       "git branch force delete (long flags, force-first)"]),
+):
+    _PATTERN_KEY_ALIASES.setdefault(_old_git_key, set()).update(_git_key_descriptions)
+    for _description in _git_key_descriptions:
+        _PATTERN_KEY_ALIASES.setdefault(_description, set()).add(_old_git_key)
 
 
 def _approval_key_aliases(pattern_key: str) -> set[str]:

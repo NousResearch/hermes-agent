@@ -1,6 +1,6 @@
 name: proofops
 repo: https://github.com/rasrobo/proofops
-sha: 0cb490f87eeb38760dcfef9f58a00fec6ba72e46
+sha: 1dde6e8eb5bb0dcc27a7c1936595dcd51eb78c93
 description: >-
   Verification for AI agent completion claims: turn "the agent said done" into a sealed receipt of what
   was checked, what was observed, and what passing does NOT prove. Hermes runs a declared plan of read-only checks against a live service, a deliverable or a system of record, and gets a receipt: each check's actual result, what it proves, and - printed on every receipt - what passing does NOT prove. Fourteen check types: HTTP status/JSON/body/headers, command exit codes, file and directory inventory, checksums, CSV shape, image dimensions, PDF pages/size/text, and read-only SQLite queries. Receipts are sealed with a sha256 digest and can be HMAC-signed, so editing a verdict after the run is detectable; `verify` reports valid / tampered / unsealed / needs-key. A check that could not run is reported NOT RUN - never a green tick - and the receipt carries claimable: false. Refuses undeclared origins, undeclared commands, unknown check types, and paths outside the plan's allowed_paths. Disclosure - network: HTTP GET only, against origins the plan names; shell: exactly the argv a plan lists, and only with operator opt-in; reads: files and SQLite databases only inside declared paths, SQLite opened read-only and single-statement; storage: receipts under the plugin's own data directory containing observed values, hostname, cwd and command output; credentials: none read or stored, signing is CLI-only; no telemetry by default and no network access at import or registration; telemetry exists only as an explicit opt-in: a one-time "Send anonymous diagnostics" checkbox after the first run, framed as the feedback that decides what gets fixed next, where Enter leaves it unchecked and the refusal is remembered and the exact bytes printable via `proofops share --dry-run` sending an anonymous six-field aggregate (random install id, version, platform, run and plan counts, pass/fail/not-run counts) that `proofops share --dry-run` prints in full beforehand, with version and platform allow-listed on both client and server so no name, path or hostname can be stored; the aggregate carries pass/fail/not-run totals plus the same totals per check type from a closed set of fourteen, so the report can say what kind of thing is verified (web service, file, PDF, database) without saying whose, and is published at https://rasrobo.github.io/proofops/metrics/
@@ -9,7 +9,7 @@ tier: community
 category: tools
 requires_hermes: ">=0.21.5"
 docs_url: https://github.com/rasrobo/proofops#readme
-version: "0.3.8"
+version: "0.3.9"
 platforms: [linux, macos]
 title: "ProofOps"
 readme: true

@@ -12,6 +12,7 @@ tier: community
 category: general
 docs_url: https://github.com/MOTHR/hermes-security-suite#readme
 version: "1.8.0"
+requires_hermes: ">=0.21.5"
 readme: true
 platforms: []
 known_issues:

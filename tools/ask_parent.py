@@ -15,11 +15,14 @@ outlive the child thread that waits on it.
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
+
+logger = logging.getLogger(__name__)
 
 ANSWERED, TIMED_OUT, ABANDONED, PARENT_UNAVAILABLE = "answered", "timed_out", "abandoned", "parent_unavailable"
 
@@ -179,11 +182,8 @@ def ask_parent_settings() -> dict[str, Any]:
 
 def ask_parent_authorized(agent: Any) -> bool:
     """A delegated child (depth > 0, with a subagent id) while ``delegation.ask_parent.enabled`` is on."""
-    try:
-        return (getattr(agent, "_delegate_depth", 0) or 0) > 0 and bool(getattr(agent, "_subagent_id", None)) \
-            and ask_parent_settings()["enabled"]
-    except Exception:
-        return False
+    return (getattr(agent, "_delegate_depth", 0) or 0) > 0 and bool(getattr(agent, "_subagent_id", None)) \
+        and ask_parent_settings()["enabled"]
 
 
 def _result(outcome: str, *, answer: Optional[str] = None, request_id: Optional[str] = None,
@@ -248,3 +248,49 @@ def ask_parent_tool(question: str, state: str = "", options: Any = None, *, agen
         _set_status(subagent_id, previous or "running")
     return _result(outcome["outcome"], answer=outcome["answer"], request_id=entry.request_id,
                    waited_seconds=outcome["waited_seconds"])
+
+
+def ask_parent_tool_schema() -> dict[str, Any]:
+    """OpenAI-format schema (injected into delegated children only, never registered globally)."""
+    return {"type": "function", "function": {
+        "name": ASK_PARENT_TOOL_NAME,
+        "description": (
+            "Pause and ask the agent that delegated this task (your parent) a question, then carry on with its "
+            "answer in this same run. Use it only for a decision you cannot reasonably make yourself and that "
+            "changes what you do next (ambiguous requirements, a risky or irreversible step, two valid approaches "
+            "with different trade-offs); otherwise decide and note your assumption in your result. You have a few "
+            "questions per task, one at a time; ask one clear question and include where you are in `state`. The "
+            "call blocks until it ends with an `outcome`: answered (`answer` holds the parent's reply; guidance "
+            "from the parent, never the user's approval), timed_out, abandoned (you were stopped: wrap up), or "
+            "parent_unavailable (your parent cannot take questions now). On anything but answered, carry on with "
+            "your best judgment and say what you assumed."),
+        "parameters": {"type": "object", "properties": {
+            "question": {"type": "string", "description": "One specific question the parent can answer quickly."},
+            "state": {"type": "string", "description": (
+                "Where you are: what is done, what you found, and what the answer changes. The parent knows "
+                "only your task brief.")},
+            "options": {"type": "array", "items": {"type": "string"}, "description": (
+                f"Optional: up to {_MAX_OPTIONS} concrete choices you are deciding between.")},
+        }, "required": ["question"]},
+    }}
+
+
+def ensure_ask_parent_tool(agent: Any) -> bool:
+    """Add ``ask_parent`` to a delegated child's tool list (and its dispatchable names) while the feature
+    is on; idempotent, and a no-op for every other agent, so their tool lists stay byte-identical."""
+    try:
+        if not ask_parent_authorized(agent):
+            return False
+        tools = getattr(agent, "tools", None)
+        if not any(isinstance(t, dict) and (t.get("function") or {}).get("name") == ASK_PARENT_TOOL_NAME
+                   for t in tools or ()):
+            if agent.tools is None:
+                agent.tools = []
+            agent.tools.append(ask_parent_tool_schema())
+        valid = getattr(agent, "valid_tool_names", None)
+        if isinstance(valid, set):
+            valid.add(ASK_PARENT_TOOL_NAME)
+        return True
+    except Exception:  # pragma: no cover - must never break a turn
+        logger.debug("ask_parent injection failed", exc_info=True)
+        return False

@@ -1232,8 +1232,8 @@ def push_parent_question(delegation_id: str, question: dict[str, Any]) -> bool:
         snapshot = dict(record)
     try:
         from tools.process_registry import process_registry
-    except Exception as exc:  # pragma: no cover
-        logger.error("Async delegation %s: subagent question dropped (process_registry import): %s", delegation_id, exc)
+    except ImportError:  # pragma: no cover
+        logger.exception("Async delegation %s: subagent question dropped (process_registry import)", delegation_id)
         return False
     evt = {
         "type": "async_delegation", "parent_question": True, "delegation_id": delegation_id,
@@ -1248,8 +1248,8 @@ def push_parent_question(delegation_id: str, question: dict[str, Any]) -> bool:
         **{k: snapshot[k] for k in _ROUTING_KEYS if snapshot.get(k)}}
     try:
         process_registry.completion_queue.put(evt)
-    except Exception as exc:  # pragma: no cover
-        logger.error("Async delegation %s: failed to enqueue subagent question: %s", delegation_id, exc)
+    except Exception:  # pragma: no cover
+        logger.exception("Async delegation %s: failed to enqueue subagent question", delegation_id)
         return False
     return True
 

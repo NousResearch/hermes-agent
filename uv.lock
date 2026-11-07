@@ -2332,7 +2332,6 @@ dependencies = [
     { name = "ruamel-yaml" },
     { name = "ruamel-yaml-clib", marker = "(platform_machine in 'x86_64 aarch64 i686' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (platform_machine in 'AMD64 x86' and platform_python_implementation == 'CPython' and sys_platform == 'win32') or (platform_python_implementation == 'CPython' and sys_platform == 'darwin')" },
     { name = "snowballstemmer" },
-    { name = "tenacity" },
     { name = "tomli-w" },
     { name = "truststore" },
     { name = "tzdata", marker = "sys_platform == 'win32'" },
@@ -2757,7 +2756,6 @@ requires-dist = [
     { name = "starlette", marker = "extra == 'computer-use'", specifier = "==1.9.0" },
     { name = "starlette", marker = "extra == 'mcp'", specifier = "==1.9.0" },
     { name = "starlette", marker = "extra == 'web'", specifier = "==1.9.0" },
-    { name = "tenacity", marker = "python_full_version >= '3.14'", specifier = "==9.2.1" },
     { name = "tomli-w", marker = "python_full_version >= '3.14'", specifier = "==1.2.0" },
     { name = "truststore", marker = "python_full_version >= '3.14'", specifier = "==0.10.5" },
     { name = "tzdata", marker = "python_full_version >= '3.14' and sys_platform == 'win32'", specifier = "==2025.3" },
@@ -6693,15 +6691,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/46/58/8c37dea7bbf769b20d58e7ace7e5edfe65b849442b00ffcdd56be88697c6/tabulate-0.10.0.tar.gz", hash = "sha256:e2cfde8f79420f6deeffdeda9aaec3b6bc5abce947655d17ac662b126e48a60d", size = 91754, upload-time = "2026-03-04T18:55:34.402Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/99/55/db07de81b5c630da5cbf5c7df646580ca26dfaefa593667fc6f2fe016d2e/tabulate-0.10.0-py3-none-any.whl", hash = "sha256:f0b0622e567335c8fabaaa659f1b33bcb6ddfe2e496071b743aa113f8774f2d3", size = 39814, upload-time = "2026-03-04T18:55:31.284Z" },
-]
-
-[[package]]
-name = "tenacity"
-version = "9.2.1"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/82/9e/497c1c8ebe5a5b5d1d4a7511aea22c0bb1a97e3170d98abdef0e1b34265a/tenacity-9.2.1.tar.gz", hash = "sha256:a606b5c808d0cded4a359d5b9932d867ff2a6a6b64d37350260fd01bbdf83839", size = 58261, upload-time = "2026-10-07T12:13:01.633Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/d6/26/1ff2b0721ac66a3ec5b1402b333110b352ab0a8724052ac279a7b82d40c4/tenacity-9.2.1-py3-none-any.whl", hash = "sha256:9e56f17539296baab7beabb08b92f6ee3d7be92d8be72d763360677c2ad6580e", size = 32310, upload-time = "2026-10-07T12:13:00.102Z" },
 ]
 
 [[package]]

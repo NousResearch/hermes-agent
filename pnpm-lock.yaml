@@ -292,6 +292,9 @@ importers:
       frimousse:
         specifier: 0.4.0
         version: 0.4.0(react@19.3.0)(typescript@6.0.3)
+      get-windows:
+        specifier: 9.3.0
+        version: 9.3.0(encoding@0.1.13)(supports-color@10.2.2)
       hast-util-from-html-isomorphic:
         specifier: 2.0.0
         version: 2.0.0
@@ -304,6 +307,9 @@ importers:
       ignore:
         specifier: 7.0.12
         version: 7.0.12
+      js-yaml:
+        specifier: 4.3.2
+        version: 4.3.2
       katex:
         specifier: 0.19.0
         version: 0.19.0
@@ -355,6 +361,9 @@ importers:
       remend:
         specifier: 1.4.0
         version: 1.4.0
+      semver:
+        specifier: 7.7.4
+        version: 7.7.4
       shiki:
         specifier: 4.5.0
         version: 4.5.0
@@ -512,10 +521,6 @@ importers:
       ws:
         specifier: 8.22.0
         version: 8.22.0
-    optionalDependencies:
-      get-windows:
-        specifier: 9.3.0
-        version: 9.3.0(encoding@0.1.13)(supports-color@10.2.2)
 
   apps/shared:
     devDependencies:
@@ -553,6 +558,9 @@ importers:
       get-windows:
         specifier: 9.3.0
         version: 9.3.0(encoding@0.1.13)(supports-color@10.2.2)
+      js-yaml:
+        specifier: 4.3.2
+        version: 4.3.2
       jsdom:
         specifier: 29.1.1
         version: 29.1.1(@noble/hashes@2.4.0)
@@ -562,6 +570,9 @@ importers:
       plist:
         specifier: 3.1.1
         version: 3.1.1
+      semver:
+        specifier: 7.7.4
+        version: 7.7.4
       typescript:
         specifier: 6.0.3
         version: 6.0.3
@@ -693,12 +704,18 @@ importers:
         specifier: 9.0.2
         version: 9.0.2
     devDependencies:
+      '@types/node':
+        specifier: 22.20.5
+        version: 22.20.5
       esbuild:
         specifier: 0.28.2
         version: 0.28.2
       typescript:
         specifier: 6.0.3
         version: 6.0.3
+      vitest:
+        specifier: 4.1.12
+        version: 4.1.12(@types/node@22.20.5)(jsdom@29.1.1(@noble/hashes@2.4.0))(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
 
   web:
     dependencies:

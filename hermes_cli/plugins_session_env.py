@@ -19,10 +19,11 @@ Resolver = Callable[[str], Optional[Mapping[str, Optional[str]]]]
 
 _NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
 _LOCK = threading.Lock()
-_REGISTRATIONS: dict[object, tuple[str, frozenset[str], Resolver]] = {}
-# Every name declared in this process, kept past its plugin's unload: a shell snapshot taken while a
+_REGISTRATIONS: dict[object, tuple[str, Optional[str], frozenset[str], Resolver]] = {}  # (scope, owner, names, resolver)
+# Every name declared per profile scope, kept past its plugin's unload: a shell snapshot taken while a
 # value was injected may hold it, and the name must stay excluded so no later command restores it.
-_DECLARED: set[str] = set()
+# Another profile's shells never see these names (a multiplexed gateway serves several profiles).
+_DECLARED: dict[str, set[str]] = {}
 
 
 def _env_key(name: str) -> str:
@@ -31,8 +32,12 @@ def _env_key(name: str) -> str:
     return name.upper() if os.name == "nt" else name
 
 
-def register_session_env(scope: str, names: Iterable[str], resolver: Resolver) -> Callable[[], None]:
-    """Record ``resolver`` for ``names`` in profile ``scope``; return its release. ``HERMES_*`` stays core's."""
+def register_session_env(scope: str, names: Iterable[str], resolver: Resolver, *,
+                         owner: Optional[str] = None) -> Callable[[], None]:
+    """Record ``resolver`` for ``names`` in profile ``scope``; return its release. ``HERMES_*`` stays core's.
+    A name a live registration of another ``owner`` (plugin) in ``scope`` declares is refused (``ValueError``
+    naming the holder): one plugin per name, never a silent last-wins between plugins. One owner's own
+    overlapping registrations stack: the latest live one's value wins."""
     names = [names] if isinstance(names, str) else list(names)
     if not names or any(not isinstance(n, str) or not _NAME_RE.fullmatch(n) or n.upper().startswith("HERMES_")
                         for n in names):
@@ -40,10 +45,15 @@ def register_session_env(scope: str, names: Iterable[str], resolver: Resolver) -
     if not callable(resolver):
         raise TypeError("session env resolver must be callable")
     token = object()
+    keys = frozenset(_env_key(n) for n in names)
     with _LOCK:
-        keys = frozenset(_env_key(n) for n in names)
-        _REGISTRATIONS[token] = (scope, keys, resolver)
-        _DECLARED.update(keys)
+        clash = next(((sorted(keys & held)[0], holder) for other, holder, held, _ in _REGISTRATIONS.values()
+                      if other == scope and holder != owner and keys & held), None)
+        if clash is None:
+            _REGISTRATIONS[token] = (scope, owner, keys, resolver)
+            _DECLARED.setdefault(scope, set()).update(keys)
+    if clash is not None:
+        raise ValueError(f"session env {clash[0]!r} is already registered by {clash[1] or 'another plugin'!r}")
 
     def release() -> None:
         with _LOCK:
@@ -52,10 +62,12 @@ def register_session_env(scope: str, names: Iterable[str], resolver: Resolver) -
 
 
 def session_env_names() -> frozenset[str]:
-    """Every name declared in this process, all profiles, unloaded plugins' included: none may be baked
-    into (or restored from) a shared shell snapshot."""
+    """Every name declared in the active profile, unloaded plugins' included: none may be baked into (or
+    restored from) a shared shell snapshot."""
+    from hermes_constants import hermes_home_key
+    scope = hermes_home_key()
     with _LOCK:
-        return frozenset(_DECLARED)
+        return frozenset(_DECLARED.get(scope, ()))
 
 
 def resolve_session_env(session_id: str) -> dict[str, Optional[str]]:
@@ -68,7 +80,7 @@ def resolve_session_env(session_id: str) -> dict[str, Optional[str]]:
     from hermes_constants import hermes_home_key
     scope = hermes_home_key()
     out: dict[str, Optional[str]] = {}
-    for owner, names, resolver in registrations:
+    for owner, _, names, resolver in registrations:
         if owner != scope:
             continue
         try:

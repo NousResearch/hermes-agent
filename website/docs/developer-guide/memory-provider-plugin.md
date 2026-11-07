@@ -129,7 +129,28 @@ fields; callers may initialize a provider without an agent or a session database
 | `gateway_session_key` | Stable messaging-chat identity for per-chat session isolation. |
 | `user_id`, `user_id_alt`, `user_name`, `chat_id` | Gateway identity fields, included when present. |
 | `agent_identity` | Active profile name, when available. |
+| `resumed` | `True` when an earlier turn of this session id ran (the agent continues a stored transcript: `--resume`, a gateway chat after a restart, a reopened Desktop/TUI session). `False` for a new session id: a subagent, a cron run, a fresh chat. A `/branch` child seeded with copied history is `True`. A mid-process `/resume` arrives through `on_session_switch()` instead. |
+| `message_count` | Messages already stored for this session id. On TUI/Desktop it can include the prompt being submitted, so a fresh chat may report `1` with `resumed` `False`. |
 | `agent_workspace`, `agent_context` | Runtime agent scope. `agent_workspace` is `hermes`; `agent_context` is `cron` for scheduler runs, `subagent` for `delegate_task` children, else `primary` — skip automatic writes for the non-primary values. |
+
+Read optional keys with `kwargs.get(...)`; older Hermes versions omit the newer ones (`resumed`,
+`message_count`).
+
+`on_turn_start(turn_number, message, **kwargs)` receives `model` (the turn's primary model id at
+turn start; `""` when unset, a preset name under mixture-of-agents) and the turn's author:
+`author_id`, `author_name`, `author_is_bot`. Declare only the keywords you need; the manager passes
+a provider only the ones its signature accepts.
+
+It also receives `previous_message`: the text of the person's last message before this turn, taken
+from the transcript Hermes holds (`""` on a first turn, or when that message was image-only). Known
+runtime rows in the user role are skipped (continue nudges, task-list snapshots, single
+background-process completion and watch-match notices, compaction summaries, mid-turn `/steer`
+messages), a gateway timestamp prefix is removed, and the value is secret-scrubbed like `message`. It
+is best-effort: other runtime notices a gateway replays after a restart (a cron delivery, a process
+heartbeat, a watch-disabled or batched-completion notice) can still come through. A process
+that resumed a session (`hermes chat --resume`, a gateway after a restart) never ran the previous
+turn's end, so a provider that prepares recall in `queue_prefetch()` can redo that work from it, even
+when it stores no transcript of its own. Older Hermes omits it: read it with `kwargs.get`.
 
 Do not assume `os.getcwd()` identifies the conversation's workspace: one Desktop
 or gateway backend can serve several sessions. If `cwd` is absent and directory

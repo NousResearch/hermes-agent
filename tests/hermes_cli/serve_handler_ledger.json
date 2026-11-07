@@ -5,9 +5,9 @@
    "undecided": 327
   },
   "rpc": {
-   "authority": 106,
+   "authority": 108,
    "keep-host-wide": 1,
-   "undecided": 181
+   "undecided": 182
   },
   "websocket": {
    "undecided": 9
@@ -506,6 +506,7 @@
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "pet.select", "kind": "rpc", "ref": "D3"},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "pet.thumb", "kind": "rpc", "ref": "D3"},
   {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "ping", "kind": "rpc", "ref": ""},
+  {"current_path": "authority (after its own verbs); standalone: unknown method", "decision": "authority", "handler": "plugin.{plugin_id}.{name}", "kind": "rpc", "ref": ""},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "plugins.catalog.lookup", "kind": "rpc", "ref": "D3"},
   {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "plugins.list", "kind": "rpc", "ref": ""},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "plugins.manage", "kind": "rpc", "ref": "D3"},
@@ -588,6 +589,7 @@
   {"current_path": "authority refuses (-32601); standalone: legacy server.dispatch", "decision": "undecided", "handler": "session.status", "kind": "rpc", "ref": "D3"},
   {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "session.steer", "kind": "rpc", "ref": ""},
   {"current_path": "authority refuses (-32601); standalone: legacy server.dispatch", "decision": "undecided", "handler": "session.title", "kind": "rpc", "ref": "D3"},
+  {"current_path": "authority; standalone: unknown method", "decision": "authority", "handler": "session.transcript", "kind": "rpc", "ref": ""},
   {"current_path": "authority refuses (-32601); standalone: legacy server.dispatch", "decision": "undecided", "handler": "session.undo", "kind": "rpc", "ref": "D3"},
   {"current_path": "authority refuses (-32601); standalone: legacy server.dispatch", "decision": "undecided", "handler": "session.usage", "kind": "rpc", "ref": "D3"},
   {"current_path": "authority refuses (-32601); standalone: legacy server.dispatch", "decision": "undecided", "handler": "session.workspace.move", "kind": "rpc", "ref": "D3"},
@@ -630,6 +632,7 @@
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "vault.add", "kind": "rpc", "ref": "D3"},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "vault.list", "kind": "rpc", "ref": "D3"},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "vault.lock", "kind": "rpc", "ref": "D3"},
+  {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "vault.preview.fill", "kind": "rpc", "ref": "D3"},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "vault.remove", "kind": "rpc", "ref": "D3"},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "vault.source.set", "kind": "rpc", "ref": "D3"},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "vault.sources", "kind": "rpc", "ref": "D3"},

@@ -157,6 +157,15 @@ def plan_launch(profile: ModelProfile, budget: HardwareBudget, *, mtp_capable: b
                     window=target, spill_bytes=max(0, need - budget.usable_vram_bytes),
                     kv_on_gpu=ctx_bytes(posture, target) + overhead <= budget.usable_vram_bytes,
                     reasons=[f"grown window restored ({target // 1024}K)"])
+
+    # Plugin hook: allow other plugins to override launch parameters
+    try:
+        from plugins.local_models.hooks import apply_launch_overrides
+        result = apply_launch_overrides(result, model_id)
+    except (ImportError, AttributeError):
+        pass  # Plugin not installed or hook not registered
+    
+
         return LaunchPlan(decision, stacked, overhead, posture)
 
     lean = candidate(False)

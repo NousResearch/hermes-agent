@@ -473,8 +473,13 @@ def _latest_update_receipt_summary(action_id: Optional[str] = None) -> Optional[
         return None
     try:
         post = receipt.get("post_update") or {}
+        stages = [s for s in receipt.get("stages") or [] if isinstance(s, dict)]
         return {
             **{k: receipt.get(k) for k in ("outcome", "started_at", "finished_at", "action_id")},
+            # The running record is rewritten at every stage boundary: a client bounds a long update
+            # by the absence of this progress, never by wall time (#137848).
+            "stage": stages[-1].get("name") if stages else None,
+            "stage_at": stages[-1].get("at") if stages else None,
             "pre_sha": (receipt.get("pre_update") or {}).get("sha"),
             "post_sha": post.get("sha"), "post_version": post.get("version"),
             "fleet_states": sorted({str(e.get("state")) for e in receipt.get("fleet") or [] if isinstance(e, dict)}),

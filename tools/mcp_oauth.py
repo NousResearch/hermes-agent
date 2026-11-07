@@ -1169,7 +1169,10 @@ def _invalidate_tokens_on_client_change(
     """
     existing = _read_json(storage._client_info_path())
     old_client_id = existing.get("client_id") if isinstance(existing, dict) else None
-    if not old_client_id or (old_client_id == new_client_id and (existing.get("client_secret") or None) == (new_client_secret or None)):
+    old_secret = existing.get("client_secret") if isinstance(existing, dict) else None
+    # YAML reads a numeric id/secret as an int while client.json stores a string: compare as text.
+    if not old_client_id or (str(old_client_id) == str(new_client_id)
+                             and _optional_str(old_secret) == _optional_str(new_client_secret)):
         return
     removed = False
     for path in (storage._tokens_path(), storage._meta_path()):
@@ -1187,8 +1190,16 @@ def _invalidate_tokens_on_client_change(
             storage._server_name, old_client_id, new_client_id, storage._server_name)
 
 
+def _optional_str(value: Any) -> str | None:
+    """Empty/None -> None, anything else as text (YAML turns an all-digit client_id into an int)."""
+    return None if value is None or value == "" else str(value)
+
+
 def _maybe_preregister_client(storage: HermesTokenStorage, cfg: dict, client_metadata: "OAuthClientMetadata") -> None:
     """If cfg has a pre-registered client_id, persist it to storage."""
+    for key in ("client_id", "client_secret"):
+        if key in cfg:
+            cfg[key] = _optional_str(cfg[key])
     client_id = cfg.get("client_id")
     if not client_id:
         return

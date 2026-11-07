@@ -178,6 +178,77 @@ def test_start_flow_rejects_bad_client_redirect(monkeypatch):
     )
 
 
+_PINNED_CFG = {
+    "url": "https://mcp.facebook.com/ads", "auth": "oauth",
+    "oauth": {"client_id": 1435160201445150, "redirect_port": 8421, "redirect_host": "localhost"},
+}
+_PINNED_REFUSAL = (
+    "'meta-ads' uses a pre-registered OAuth client pinned to http://localhost:8421/callback, "
+    "which the Desktop relay can't use. Run `hermes mcp login meta-ads` on the gateway machine.")
+
+
+def _wiping_worker(calls):
+    """Stand-in for the real worker, whose rollback probe clears the saved tokens first."""
+    from tools.mcp_oauth import HermesTokenStorage
+
+    def worker(hermes_home, server_name, cfg, reconnect_live, *, flow, on_done=None, **_card_options):
+        calls.append(server_name)
+        HermesTokenStorage(server_name).remove()
+        flow.mark_error("stub worker")
+        flow.mark_worker_done()
+        if on_done is not None:
+            on_done()
+
+    return worker
+
+
+@pytest.mark.parametrize("entry", ["start_flow", "card_start"])
+def test_pinned_client_refuses_desktop_relay_and_keeps_tokens(monkeypatch, entry):
+    """A pre-registered client pinned to its registered loopback redirect can't finish on the
+    Desktop relay's random port: refuse before any flow/worker starts so saved tokens survive."""
+    from tools.mcp_oauth import HermesTokenStorage
+
+    storage = HermesTokenStorage("meta-ads")
+    tokens = storage._tokens_path()
+    tokens.parent.mkdir(parents=True, exist_ok=True)
+    tokens.write_bytes(b'{"access_token": "keep-me", "token_type": "Bearer"}')
+    before = tokens.read_bytes()
+    calls: list = []
+    worker = _wiping_worker(calls)
+    monkeypatch.setattr(mcp_oauth_sessions, "run_worker", worker)
+    monkeypatch.setattr(mcp_oauth, "run_worker", worker)
+    sessions_before = set(mcp_oauth_sessions._sessions)
+
+    with pytest.raises(ValueError) as excinfo:
+        if entry == "start_flow":
+            mcp_oauth_sessions.start_flow(
+                str(get_hermes_home()), "meta-ads", dict(_PINNED_CFG),
+                client_redirect_uri="http://127.0.0.1:51234/callback", url_timeout=2)
+        else:
+            mcp_oauth.start("meta-ads", cfg=dict(_PINNED_CFG),
+                            client_redirect_uri="http://127.0.0.1:51234/callback", url_timeout=2)
+
+    assert str(excinfo.value) == _PINNED_REFUSAL
+    assert calls == [], "no worker may start for a refused relay"
+    assert set(mcp_oauth_sessions._sessions) == sessions_before
+    assert tokens.read_bytes() == before
+
+
+def test_pinned_client_without_relay_uses_pinned_redirect(monkeypatch):
+    """The CLI / backend-listener path (no client_redirect_uri) keeps the registered redirect."""
+    _fake_worker_publishes_url(monkeypatch, state="pinstate")
+    bound = []
+    monkeypatch.setattr(mcp_oauth, "_start_loopback_receiver", lambda flow: bound.append(flow))
+
+    result = mcp_oauth_sessions.start_flow(str(get_hermes_home()), "meta-ads", dict(_PINNED_CFG))
+
+    rec = mcp_oauth_sessions._sessions[result["session_id"]]
+    assert rec["flow"].redirect_uri == "http://localhost:8421/callback"
+    assert rec["httpd"] is None and bound == []
+    deliver_callback_flow(result["session_id"], "meta-ads", code="authcode", state="pinstate")
+    rec["flow"]._worker_done.wait(5)
+
+
 # ---------------------------------------------------------------------------
 # deliver_callback_flow: relay accept/reject semantics
 # ---------------------------------------------------------------------------

@@ -1,5 +1,16 @@
 [
   {
+    "id": "github-d2epak-local-cos-multi-venture-fleet",
+    "source": "github",
+    "author": "@d2epak",
+    "url": "https://github.com/d2epak",
+    "date": "2026-11-06",
+    "category": "business-ops",
+    "headline": "A 6-profile executive CoS fleet running 19 crons on a local Mac with tiered free-cloud routing and a suggest-only Telegram gate",
+    "quote": "Running an executive Chief of Staff fleet on an Apple Silicon Mac with Hermes Agent: 6 isolated profiles (CoS + 4 venture advisory verticals) managed by a single 24/7 launchd gateway. Sensitive operations, memory consolidation, and mail triage run 100% locally on Qwen3.8-Flash-Next (65k context) at $0 token cost, while external research tasks route to free-tier cloud models across OpenRouter and NVIDIA that never touch real personal data. 19 daily crons handle market intelligence, nightly memory consolidation, and a 5-minute mail triage script. Crucially, email and calendar operate in \"suggest-only\" mode via Telegram—the agent drafts and recommends, but never acts without approval—backed by an idempotent 30-minute silent heartbeat that alerts only on service degradation.",
+    "size": "lg"
+  },
+  {
     "id": "x-alexandermann-grandfather-safety-system",
     "source": "x",
     "author": "@AlexanderMann",

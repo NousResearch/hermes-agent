@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -61,16 +62,19 @@ def _make_card_action_data(
     chat_id: str = "oc_12345",
     open_id: str = "ou_user1",
     token: str = "tok_abc",
+    form_value: Optional[dict] = None,
+    open_message_id: str = "om_card_001",
 ) -> SimpleNamespace:
     """Create a mock Feishu card action callback data object."""
     return SimpleNamespace(
         event=SimpleNamespace(
             token=token,
-            context=SimpleNamespace(open_chat_id=chat_id),
+            context=SimpleNamespace(open_chat_id=chat_id, open_message_id=open_message_id),
             operator=SimpleNamespace(open_id=open_id),
             action=SimpleNamespace(
                 tag="button",
                 value=action_value,
+                form_value=form_value,
             ),
         ),
     )
@@ -243,10 +247,10 @@ class TestResolveApproval:
 # ===========================================================================
 
 class TestNonApprovalCardAction:
-    """Non-approval card actions should still route as synthetic commands."""
+    """Non-approval card actions should still route as synthetic events."""
 
     @pytest.mark.asyncio
-    async def test_routes_as_synthetic_command(self):
+    async def test_routes_as_synthetic_event(self):
         adapter = _make_adapter()
 
         data = _make_card_action_data(
@@ -266,7 +270,56 @@ class TestNonApprovalCardAction:
 
         mock_handle.assert_called_once()
         event = mock_handle.call_args[0][0]
-        assert "/card button" in event.text
+        assert "card:button" in event.text
+        # Reply anchor must be the card's real message id — never the action token (c-…).
+        assert event.message_id == "om_card_001"
+
+    @pytest.mark.asyncio
+    async def test_forwards_form_value(self):
+        """Card input-box contents (form_value) must ride the synthetic command."""
+        adapter = _make_adapter()
+
+        data = _make_card_action_data(
+            action_value={"intake": {"q": "q1"}},
+            form_value={"q1_text": "荔湾区岭南湾畔C9栋503 严总"},
+        )
+
+        with (
+            patch.object(
+                adapter, "_resolve_sender_profile", new_callable=AsyncMock,
+                return_value={"user_id": "ou_u", "user_name": "Dave", "user_id_alt": None},
+            ),
+            patch.object(adapter, "get_chat_info", new_callable=AsyncMock, return_value={"name": "Test Chat"}),
+            patch.object(adapter, "_handle_message_with_guards", new_callable=AsyncMock) as mock_handle,
+        ):
+            await adapter._handle_card_action_event(data)
+
+        event = mock_handle.call_args[0][0]
+        assert 'FORM {"q1_text": "荔湾区岭南湾畔C9栋503 严总"}' in event.text
+
+    @pytest.mark.asyncio
+    async def test_missing_open_message_id_has_no_reply_anchor(self):
+        """Without context.open_message_id the event must not carry the action token (c-…) as anchor."""
+        adapter = _make_adapter()
+
+        data = _make_card_action_data(
+            action_value={"custom_action": "x"},
+            token="tok_c_style_token",
+            open_message_id="",
+        )
+
+        with (
+            patch.object(
+                adapter, "_resolve_sender_profile", new_callable=AsyncMock,
+                return_value={"user_id": "ou_u", "user_name": "Dave", "user_id_alt": None},
+            ),
+            patch.object(adapter, "get_chat_info", new_callable=AsyncMock, return_value={"name": "Test Chat", "type": "dm"}),
+            patch.object(adapter, "_handle_message_with_guards", new_callable=AsyncMock) as mock_handle,
+        ):
+            await adapter._handle_card_action_event(data)
+
+        event = mock_handle.call_args[0][0]
+        assert not event.message_id  # never the raw token — it is not a valid open_message_id
 
 
 # ===========================================================================

@@ -1369,3 +1369,16 @@ def test_me_gated_returns_verified_session_label(kanban_home):
     client = _client_with_session(SimpleNamespace(
         display_name="", email="mani@example.com", user_id="nas_user:u", provider="nous", issuer=""))
     assert client.get("/api/plugins/kanban/me").json() == {"author": "mani@example.com"}
+
+
+def test_me_loopback_falls_back_to_stored_token_claims(client, monkeypatch):
+    """The local-JWT account snapshot leaves email unset but keeps raw_claims —
+    the stored Portal token's email is a valid human-readable author."""
+    from types import SimpleNamespace
+    import hermes_cli.nous_account as na
+
+    monkeypatch.setattr(
+        na, "get_nous_portal_account_info",
+        lambda: SimpleNamespace(logged_in=True, email=None, org_name=None,
+                                raw_claims={"email": "mani@example.com", "sub": "nas_user:u"}))
+    assert client.get("/api/plugins/kanban/me").json() == {"author": "mani@example.com"}

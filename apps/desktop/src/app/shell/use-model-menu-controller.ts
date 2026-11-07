@@ -242,6 +242,12 @@ export function useModelMenuController({
       }
     },
 
+    // A new session has no model in use, so a level picked on another model's
+    // row is also a pick of that model. A live session keeps those edits
+    // preset-only: switching its model stays an explicit row click. A stored
+    // session still resuming has no runtime id yet but is not new.
+    effortPickSelects: !activeSessionId && !storedSessionId,
+
     // The composer picker never persists the profile default. With a session it
     // scopes the switch to that session; with none it's UI state shipped on the
     // next session.create. Always stamp sessionId from this surface so a tile
@@ -254,7 +260,8 @@ export function useModelMenuController({
       // Editing always records the model's global preset (keyed by
       // provider::model, not per-surface — a tile edit re-applies to that model
       // everywhere); the active model also gets it pushed onto its OWN session.
-      // Non-active edits stay preset-only — no model switch, no session write.
+      // Non-active edits stay preset-only here; the catalog does the model
+      // switch itself when `effortPickSelects` allows it.
       if (!row.isActive) {
         setModelPreset(row.provider, row.model, patch)
 

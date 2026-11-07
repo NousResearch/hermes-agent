@@ -1510,6 +1510,9 @@ class _LoopState:
     # contract (error/partial/compression_exhausted) (#98722).
     _compression_timeout_exhausted: bool = False
     _turn_exit_reason: str = "unknown"  # diagnostic: why the loop ended
+    # Tool-call iterations already spent by budget windows closed by a checkpoint
+    # continuation; ``api_call_count`` is reset per window, so this keeps the true turn total.
+    _cumulative_api_calls: int = 0
     # Answer held back by a verification gate (best user-facing result if the continuation
     # exhausts the budget) and whether it was streamed as interim; ``_response_was_previewed``
     # is set ONLY if it becomes the final response (#65919).
@@ -1606,12 +1609,58 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[dict[str, Any]]:
     return None
 
 
+# A budget-exhausted turn continues in a fresh window after a checkpoint summary, bounded
+# so an open-ended task cannot loop forever. 1 initial window + this many continuations.
+_MAX_BUDGET_CONTINUE_WINDOWS = 2
+
+# Appended after the checkpoint summary so the model resumes the real task instead of
+# treating the summary as its final answer.
+_BUDGET_CONTINUE_REQUEST = (
+    "You reached the per-turn iteration limit and summarized your progress above. "
+    "Continue the original task from where you left off, using that summary as your checkpoint, "
+    "and keep working with tools until the task is complete."
+)
+
+
+def _continue_after_budget_exhaustion(agent: Any, s: _LoopState, windows_used: int) -> bool:
+    """Checkpoint-and-continue a genuine budget-exhaustion exit, else leave it to finalize.
+
+    Returns True after appending the checkpoint summary + resume instruction to
+    ``s.messages`` and resetting the per-window budget; the caller re-enters the loop.
+    Returns False (no side effects) when the turn is not simply out of budget mid-task —
+    answered, interrupted, failed, budget still available, or out of continuation windows —
+    so the normal finalizer still owns the terminal summary.
+    """
+    if windows_used >= _MAX_BUDGET_CONTINUE_WINDOWS:
+        return False
+    if s.final_response is not None or s.interrupted or s.failed:
+        return False
+    # Compression/preflight breakdowns are terminal: a fresh window would just re-hit them.
+    if getattr(s, "_compression_timeout_exhausted", False) or getattr(s, "_preflight_compression_blocked", False):
+        return False
+    if not (s.api_call_count >= agent.max_iterations or agent.iteration_budget.remaining <= 0):
+        return False
+    # The summary call appends its request + the model's summary to the transcript; the
+    # returned text is deliberately discarded so a later window still finalizes normally.
+    agent._handle_max_iterations(s.messages, s.api_call_count)
+    append_message(s.messages, {"role": "user", "content": _BUDGET_CONTINUE_REQUEST})
+    s._cumulative_api_calls += s.api_call_count
+    s.api_call_count = 0
+    agent.iteration_budget.reset()
+    agent._budget_grace_call = False  # a stale grace flag must not extend the new window
+    return True
+
+
 def _finalize_from_state(agent: Any, s: _LoopState) -> dict[str, Any]:
     """Post-loop finalization (agent/turn_finalizer.finalize_turn) fed from the loop state."""
-    return finalize_turn(agent, **{
+    result = finalize_turn(agent, **{
         name: getattr(s, name)
         for name in inspect.signature(finalize_turn).parameters if name != "agent"
     })
+    # ``api_call_count`` is per-window; report the whole turn for usage/telemetry.
+    if s._cumulative_api_calls:
+        result["api_calls"] = s._cumulative_api_calls + int(result.get("api_calls") or 0)
+    return result
 
 
 def _turn_without_loop(agent: Any, s: _LoopState, block_message: str) -> Optional[dict[str, Any]]:
@@ -1748,54 +1797,59 @@ def _run_conversation_turn(
     _prelude_action, _prelude_result = play_prelude(agent, s, prelude)
     if _prelude_action == "return":
         return _prelude_result
-    while _prelude_action != "break" and (
-        (s.api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call
-    ):
-        if _run_phase(begin_iteration, agent, s).action == "break":
-            break
-        _run_phase(prepare_iteration, agent, s)
-        _run_phase(assemble_api_request, agent, s)
-        _pg = _run_phase(run_preflight_gate, agent, s)
-        if _pg.action == "return":
-            return _pg.result
-        if _pg.action == "break":
-            break
-        if _pg.action == "continue":
-            continue
-        _run_phase(announce_api_call, agent, s)
-
-        s.api_start_time, s.retry_count, s.max_retries = time.time(), 0, agent._api_max_retries
-        s._retry, s.finish_reason, s.response, s.api_kwargs = TurnRetryState(), "stop", None, None
-        s.api_request_id = agent._current_api_request_id = f"{s.turn_id}:api:{s.api_call_count}"
-
-        early_result = _run_api_retry_loop(agent, s)
-        if early_result is not None:
-            return early_result
-
-        _rs = _run_phase(apply_retry_restarts, agent, s)
-        if _rs.action == "break":
-            break
-        if _rs.action == "continue":
-            continue
-
-        try:
-            _ri = _run_phase(normalize_model_response, agent, s)
-            if _ri.action == "return":
-                return _ri.result
-            if _ri.action == "continue":
-                continue
-            _v = _run_phase(
-                run_tool_round if s.assistant_message.tool_calls else finish_text_response, agent, s
-            )
-            if _v.action == "return":
-                return _v.result
-            if _v.action == "break":
+    _budget_windows_used = 0
+    while True:
+        while _prelude_action != "break" and (
+            (s.api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call
+        ):
+            if _run_phase(begin_iteration, agent, s).action == "break":
                 break
-            if _v.action == "continue":
-                continue
-        except Exception as e:
-            if _run_phase(handle_outer_loop_error, agent, s, e=e).action == "break":
+            _run_phase(prepare_iteration, agent, s)
+            _run_phase(assemble_api_request, agent, s)
+            _pg = _run_phase(run_preflight_gate, agent, s)
+            if _pg.action == "return":
+                return _pg.result
+            if _pg.action == "break":
                 break
+            if _pg.action == "continue":
+                continue
+            _run_phase(announce_api_call, agent, s)
+
+            s.api_start_time, s.retry_count, s.max_retries = time.time(), 0, agent._api_max_retries
+            s._retry, s.finish_reason, s.response, s.api_kwargs = TurnRetryState(), "stop", None, None
+            s.api_request_id = agent._current_api_request_id = f"{s.turn_id}:api:{s.api_call_count}"
+
+            early_result = _run_api_retry_loop(agent, s)
+            if early_result is not None:
+                return early_result
+
+            _rs = _run_phase(apply_retry_restarts, agent, s)
+            if _rs.action == "break":
+                break
+            if _rs.action == "continue":
+                continue
+
+            try:
+                _ri = _run_phase(normalize_model_response, agent, s)
+                if _ri.action == "return":
+                    return _ri.result
+                if _ri.action == "continue":
+                    continue
+                _v = _run_phase(
+                    run_tool_round if s.assistant_message.tool_calls else finish_text_response, agent, s
+                )
+                if _v.action == "return":
+                    return _v.result
+                if _v.action == "break":
+                    break
+                if _v.action == "continue":
+                    continue
+            except Exception as e:
+                if _run_phase(handle_outer_loop_error, agent, s, e=e).action == "break":
+                    break
+        if not _continue_after_budget_exhaustion(agent, s, _budget_windows_used):
+            break
+        _budget_windows_used += 1
 
     result = _finalize_from_state(agent, s)
     if s._compression_timeout_exhausted:

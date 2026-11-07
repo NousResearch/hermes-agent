@@ -132,6 +132,10 @@ async def admit_producer(adapter, event):
         from gateway.run_inbound_consumer import POST_ADMISSION_HOOK
         from hermes_cli.lifecycle import has_hook
         webhook = adapter.platform == Platform.WEBHOOK
+        if not webhook:
+            from gateway.session_ingress_live_turn import answers_live_turn
+            if await answers_live_turn(authority.runner, event):
+                return None
         hooks = [name for name in ('pre_gateway_dispatch', POST_ADMISSION_HOOK) if has_hook(name)]
         if not (webhook or hooks):
             return await _admit_native(authority, event)

@@ -426,6 +426,9 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             # routing. Release this clarify first: redirect() degrades to steer() while tools
             # execute, and that steer cannot drain until the clarify tool returns.
             if _clarify_mod.resolve_gateway_clarify(_pending_clarify.clarify_id, _clarify_mod.CANCELLED):
+                # The user moved on: their message takes over the turn whatever busy_input_mode
+                # says (queue or steer would leave the agent carrying on without the answer).
+                event._clarify_superseded = True
                 # Adapters with a persistent native card (Slack Block Kit) retire it now, before the
                 # prose is routed, so its buttons stop advertising a dead answer path. The pop inside
                 # retire_clarify_card runs before its first await, so the agent thread's own expiry
@@ -733,12 +736,13 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         must NOT also be admitted as its own turn; False when the caller should admit it (queue mode,
         a demotion, or an interrupt — the ended turn lets the FIFO run the follow-up next)."""
         from gateway.run import _AGENT_PENDING_SENTINEL
-        mode = self._effective_busy_input_mode(source)
+        superseded = getattr(event, "_clarify_superseded", False)
+        mode = "interrupt" if superseded else self._effective_busy_input_mode(source)
         state = self._peek_session_state(_quick_key)
         running_agent = state.turn.agent if state else None
         adapter = self._delivery_adapter_for(source)
         if (self._draining or adapter is None or running_agent is None or running_agent is _AGENT_PENDING_SENTINEL
-                or (event.message_type == MessageType.TEXT and mode != "steer"
+                or (event.message_type == MessageType.TEXT and mode != "steer" and not superseded
                     and self._effective_busy_text_mode(source) == "queue")):
             return False
         outcome = await self._resolve_busy_steer_or_redirect(event, _quick_key, mode, running_agent)
@@ -763,7 +767,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         if _handled:
             return _result
 
-        effective_busy_input_mode = self._effective_busy_input_mode(source)
+        effective_busy_input_mode = ("interrupt" if getattr(event, "_clarify_superseded", False)
+                                     else self._effective_busy_input_mode(source))
         if self._hm_busy_telegram_grace_queue(event, source, _quick_key, effective_busy_input_mode):
             return None
 

@@ -7,6 +7,7 @@ silently replaced by the nested one. Both overwrite whatever legacy gateway.json
 """
 
 import contextlib
+import copy
 import json
 import logging
 import os
@@ -493,12 +494,15 @@ def read_yaml_layers(home: Path) -> dict:
     (``gateway.relay.relay_explicitly_disabled``) reads through here so it cannot disagree with
     ``load_gateway_config()`` on which files count.
     """
-    from hermes_cli.config_backend import config_exists, read_config_doc
+    from hermes_cli.config_backend import config_exists, read_config_doc_readonly
 
     config_path = Path(home) / "config.yaml"
     yaml_cfg: dict = {}
     if config_exists(config_path):
-        yaml_cfg = read_config_doc(config_path) or {}
+        # Signature-cached by the backend (stat + racy content digest): an unchanged file is parsed
+        # once, not on every cron tick. The cached document is shared, so every caller gets its own
+        # copy and the cache is never reachable from the overlay or env expansion below.
+        yaml_cfg = copy.deepcopy(read_config_doc_readonly(config_path) or {})
 
     from hermes_cli.config import _expand_env_vars
 

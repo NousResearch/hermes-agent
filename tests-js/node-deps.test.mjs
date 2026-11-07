@@ -499,6 +499,40 @@ test.skipIf(process.platform === 'win32').each([['failed', 'rc=1'], ['succeeded'
     expect(() => prepareNodeDependencies({ source, workspaces: ['web'], reuse: true, env, nativeToolchain: 'third', install: false })).toThrow(/disabled/)
   }, 60000)
 
+// A heartbeat that fails once (an antivirus or indexer handle on Windows, ESTALE on NFS, EMFILE)
+// keeps beating: a waiter must not break the lock of an install that is still running.
+test.skipIf(process.platform === 'win32')('a transient heartbeat error does not let another run break a live lock', async () => {
+  const { source, env } = fixture()
+  prepareNodeDependencies({ source, workspaces: ['web'], reuse: true, env })
+  addExtraOnly(source, env)
+  // Loaded in the heartbeat worker too: its second and third refreshes fail.
+  const fault = join(dirname(source), 'utimes-fault.cjs')
+  writeFileSync(fault, `
+    const fs = require('node:fs')
+    if (!require('node:worker_threads').isMainThread) {
+      const utimesSync = fs.utimesSync
+      let beats = 0
+      fs.utimesSync = (...args) => {
+        if (++beats === 2 || beats === 3) throw Object.assign(new Error('EBUSY: resource busy or locked, utime'), { code: 'EBUSY' })
+        return utimesSync(...args)
+      }
+    }
+  `)
+  const pnpm = slowPnpm(30)
+  const install = spawn(process.execPath, ['--require', fault, ...cli(source, '--workspace', 'web', '--reuse')],
+    { env: pnpm.env(env), stdio: 'pipe', detached: true })
+  await until(() => existsSync(pnpm.started))
+  const timing = { ...lockTiming }
+  Object.assign(lockTiming, { stale: 3_000, wait: 8_000 })
+  try {
+    expect(() => prepareNodeDependencies({ source, workspaces: ['web'], reuse: true, env, install: false }))
+      .toThrow(/^node-deps: another install in this checkout is still running after 8 s/)
+  } finally {
+    Object.assign(lockTiming, timing)
+    process.kill(-install.pid, 'SIGKILL')
+  }
+}, 60000)
+
 // The record of a moved set is renamed into place: a run killed while writing it (or out of
 // space) leaves nothing a later run fails to parse.
 test.skipIf(process.platform === 'win32')('a run killed while recording the moved trees does not break later runs', () => {

@@ -123,8 +123,10 @@ function mtimeOf(path) {
   }
 }
 
-// Refreshes the lock until it is released, or until the lock holds another run's token (broken
-// while this process was stopped) or cannot be read. flags[0]: released.
+// Refreshes the lock until it is released, or until the lock is gone or holds another run's token
+// (broken while this process was stopped). Any other error (an antivirus or indexer handle on
+// Windows, ESTALE on NFS, EMFILE) is retried on the next beat: stopping would let a waiter break
+// a live lock. flags[0]: released.
 const HEARTBEAT = `
 const { readFileSync, utimesSync } = require('node:fs')
 const { workerData: { lock, token, state, beat } } = require('node:worker_threads')
@@ -135,8 +137,8 @@ const timer = setInterval(() => {
     if (!readFileSync(lock, 'utf8').includes(token)) return clearInterval(timer)
     const now = new Date()
     utimesSync(lock, now, now)
-  } catch {
-    clearInterval(timer)
+  } catch (error) {
+    if (error.code === 'ENOENT') clearInterval(timer)
   }
 }, beat)
 `

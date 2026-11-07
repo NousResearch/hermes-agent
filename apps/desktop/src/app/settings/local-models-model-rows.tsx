@@ -217,7 +217,7 @@ export function CatalogModelRow({ model, status, jobs }: CatalogModelRowProps): 
                 </Pill>
               </Tip>
             ) : model.spilled ? (
-              <Tip label={model.quant_reason ?? model.fit_summary}>
+              <Tip label={model.fit_detail ?? model.quant_reason ?? model.fit_summary}>
                 <Pill tone="warn">
                   <Cpu className="mr-1 size-3" />
                   {copy.pillUsesRam}

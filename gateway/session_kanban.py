@@ -50,6 +50,11 @@ def build_kanban_policy(connection, params, config):
         raise RuntimeStoreError('invalid_kanban_claim') from exc
     cwd = task.workspace_path
     params_policy = {'source': 'cli', 'cwd': cwd}
+    isolated = task.context_isolation == 'task'
+    if isolated:
+        # Task-scoped isolation reuses the supported ignore_rules gate: rules, SOUL identity and the
+        # external memory provider stay out of the worker before its agent is constructed.
+        params_policy['ignore_rules'] = True
     for name, value in (('model', task.model_override), ('provider', task.provider_override), ('reasoning', task.reasoning_effort)):
         if value:
             params_policy[name] = value
@@ -66,7 +71,11 @@ def build_kanban_policy(connection, params, config):
     context['db'] = str(path)
     request = json.loads(policy.request_json)
     request.update(source='kanban', board=board, task_id=task.id, run_id=task.current_run_id)
-    return replace(policy, source='kanban', platform='cli', toolsets=tuple(sorted(set(policy.toolsets) | {'kanban'})),
+    toolsets = set(policy.toolsets) | {'kanban'}
+    if isolated:
+        # The built-in memory toolset overrides skip_memory and would load MEMORY.md/USER.md anyway.
+        toolsets.discard('memory')
+    return replace(policy, source='kanban', platform='cli', toolsets=tuple(sorted(toolsets)),
                    request_json=json.dumps(request, sort_keys=True), kanban_json=json.dumps(context)), private
 
 

@@ -1,0 +1,20 @@
+name: deepseek-search
+repo: https://github.com/statsmind/hermes-deepseek-search
+sha: 4b9477913167591e561206ff9d413faedaa3f0c2
+description: "DeepSeek Search & Fetch as a backend for the built-in web_search and web_extract. Disclosure — sends search queries and page URLs to api.deepseek.com with your DEEPSEEK_API_KEY, and DeepSeek fetches the pages server-side; billed to your DeepSeek balance per successful request; no other endpoint, no telemetry, no file or shell access."
+maintainer: statsmind
+tier: community
+category: web
+docs_url: https://github.com/statsmind/hermes-deepseek-search#readme
+version: "0.1.0"
+platforms: []
+known_issues:
+  - "Billed by DeepSeek per successful request (list price US$0.75 per 1,000; failed calls are free)."
+  - "web_extract calls DeepSeek's fetch endpoint one URL at a time, so a multi-URL extract runs sequentially."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - DEEPSEEK_API_KEY
+requires_hermes: ">=0.22.0"

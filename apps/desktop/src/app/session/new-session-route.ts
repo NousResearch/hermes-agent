@@ -2,13 +2,16 @@ import { NO_PROJECT_ID } from '@/app/chat/sidebar/projects/workspace-groups'
 import { $defaultProfileRoute } from '@/store/default-profile'
 import { notifyError } from '@/store/notifications'
 import {
+  $activeGatewayProfile,
   $newChatProfile,
   $newChatRoute,
   type AgentProfileRoute,
   captureNewChatSource,
   ensureGatewayAgent,
   ensureGatewayProfile,
-  pinLegacyNewChatProfile
+  normalizeProfileKey,
+  pinLegacyNewChatProfile,
+  resolveNewChatOwnerRoute
 } from '@/store/profile'
 import { $projectScope, ALL_PROJECTS } from '@/store/project-scope'
 import {
@@ -32,6 +35,21 @@ export function defaultNewSessionTarget(): { profile: string; route: AgentProfil
   // "Open profile in new window" makes the peer's launch route a default.
   const profile = !isPeerInstanceWindow() || isProfilePinnedWindow() ? windowProfileOverride() : null
   const saved = profile ? { connectionId: windowConnectionOverride(), profile } : $defaultProfileRoute.get()
+
+  // A persisted default-route preference must not re-home a generic New
+  // Session away from the profile that is live in this window (rail
+  // selection / new-chat pin): a conflicting saved preference previously
+  // won, silently creating the chat in the saved profile. The live
+  // selection wins a conflict; with no preference, no live profile, or a
+  // preference that merely confirms the live selection, behaviour is
+  // unchanged.
+  if (!profile && saved) {
+    const liveProfile = normalizeProfileKey($newChatProfile.get() || $activeGatewayProfile.get())
+
+    if (liveProfile && normalizeProfileKey(saved.profile) !== liveProfile) {
+      return { profile: liveProfile, route: resolveNewChatOwnerRoute(liveProfile) }
+    }
+  }
 
   if (!saved) {
     return null

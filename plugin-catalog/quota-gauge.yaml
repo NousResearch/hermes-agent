@@ -1,0 +1,21 @@
+name: quota-gauge
+title: Quota Gauge
+repo: https://github.com/cynricantao/hermes-quota-gauge
+sha: "11afe605d4c61e90f6f8a11db9bb1f00bd09e793"
+version: "0.2.1"
+description: "Desktop pane with draining quota bars for the AI subscriptions this profile is signed in to (Anthropic, ChatGPT/Codex, Command Code, xAI, OpenCode Go, GitHub Copilot, Nous Portal, Z.ai, Kimi Code, MiniMax, Devin, Antigravity), plus Today / 7d / All-time token charts split into input, output, cache read and cache write, kept in one account-wide ledger. Disclosure — quota for Anthropic, Codex, Nous Portal, OpenCode Go, xAI and Antigravity comes through Hermes's own account-usage route and credential list; Command Code, Copilot, Z.ai, Kimi and MiniMax are read from each vendor's usage endpoint with that provider's declared secret (config_schema, read via get_secret), at most every 2 minutes while the pane is open. Reads every profile's state.db read-only (token counters and session timestamps only, never message content) and writes one file, shared/quota-gauge/ledger.db, folded once a minute by a daemon thread while the backend runs. Never reads auth.json, .env, vendor CLI token files or browser data. No telemetry, no self-update."
+maintainer: cynricantao
+tier: community
+category: desktop
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/cynricantao/hermes-quota-gauge#readme
+readme: true
+screenshots:
+  - https://raw.githubusercontent.com/cynricantao/hermes-quota-gauge/11afe605d4c61e90f6f8a11db9bb1f00bd09e793/docs/images/quota-gauge-dark.png
+  - https://raw.githubusercontent.com/cynricantao/hermes-quota-gauge/11afe605d4c61e90f6f8a11db9bb1f00bd09e793/docs/images/quota-gauge-light.png
+  - https://raw.githubusercontent.com/cynricantao/hermes-quota-gauge/11afe605d4c61e90f6f8a11db9bb1f00bd09e793/docs/images/quota-gauge-hover.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

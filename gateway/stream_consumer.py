@@ -894,7 +894,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         tick.update_visible = await self._send_or_edit(
             display_text, finalize=tick.got_done or tick.got_segment_break,
             is_turn_final=tick.got_done)
-        self._last_edit_time = time.monotonic()
+        # A held first fragment has not started platform edit pacing yet; a failed
+        # attempt still paces its retry.
+        if not tick.update_visible or self._last_sent_text or self._message_id is not None:
+            self._last_edit_time = time.monotonic()
         # Lines stay in _tool_progress_lines for the next compose.
         self._tool_progress_active = False
 

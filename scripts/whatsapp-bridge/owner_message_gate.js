@@ -27,6 +27,39 @@
  *                        fromOwner: true
  */
 
+/**
+ * Pure classifier for owner-typed messages that arrive in a GROUP chat.
+ *
+ * The DM gate below deliberately pre-filters group JIDs ("the gate doesn't
+ * know about them"), so groups get their own decision: forwarding owner
+ * messages out of a group is opt-in (bot mode + WHATSAPP_FORWARD_OWNER_MESSAGES)
+ * and must pass the SAME group policy gate that inbound (non-fromMe) group
+ * traffic uses — see `matchesInboundWhatsAppGroup` in `allowlist.js`.
+ * Before this, fromMe group messages were dropped unconditionally, so an
+ * allowlisted group could receive from Hermes but never talk back.
+ *
+ * Echoes of our own /send are NOT checked here; `bridge.js` drops them
+ * downstream in the agent_echo check (recentlySentIds).
+ *
+ * Returned actions:
+ *   - 'forward_owner' : opted in and the group passes the policy gate
+ *   - 'drop_disabled' : not bot mode, or forwarding not opted into
+ *   - 'drop_policy'   : opted in but the group fails the group policy gate
+ */
+export function classifyOwnerGroupMessageGate({
+  botMode,
+  forwardOwnerEnabled,
+  groupPolicyMatches,
+}) {
+  if (!botMode || !forwardOwnerEnabled) {
+    return { action: 'drop_disabled' };
+  }
+  if (!groupPolicyMatches) {
+    return { action: 'drop_policy' };
+  }
+  return { action: 'forward_owner' };
+}
+
 export function classifyOwnerMessageGate({
   fromMe,
   fromOwnerEnabled,

@@ -21,6 +21,7 @@ from typing import Dict, List, Optional
 from agent.i18n import t
 from gateway.config import Platform
 from gateway.platforms.base import build_auto_tts_output_path
+from gateway.generated_audio import GeneratedAudio
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
 
@@ -420,7 +421,6 @@ class GatewayVoiceMixin:
         """Generate TTS audio and send as a voice message before the text reply. The TTS tool
         may return one combined file or several separately valid ones (combination unavailable /
         over a platform limit); legacy single-file results keep working."""
-        audio_path, actual_paths = None, []
         try:
             from tools.tts_text_normalize import _strip_markdown_for_tts
             from tools.tts_tool import text_to_speech_tool
@@ -429,28 +429,23 @@ class GatewayVoiceMixin:
                 return
             # Platforms whose native voice bubbles require Ogg/Opus (OPUS_VOICE_PLATFORMS) get an
             # explicit .ogg path; the TTS tool's container repair guarantees real Ogg/Opus bytes.
-            audio_path = build_auto_tts_output_path(event.source.platform)
-            raw = await asyncio.to_thread(text_to_speech_tool, text=tts_text,
-                                          output_path=audio_path)
-            try:
-                result = json.loads(raw)
-            except (json.JSONDecodeError, TypeError):
-                logger.warning("Auto voice reply TTS returned invalid JSON: %s",
-                               raw[:200] if raw else raw)
-                return
-            candidates = result.get("file_paths") or [result.get("file_path", audio_path)]
-            paths = [str(p) for p in candidates if p and os.path.isfile(p)]
-            if not result.get("success") or not paths:
-                logger.warning("Auto voice reply TTS failed: %s", result.get("error"))
-                return
-            actual_paths = paths
-            await self._deliver_voice_reply(event, actual_paths)
+            with GeneratedAudio(build_auto_tts_output_path(event.source.platform)) as audio:
+                raw = await audio.synthesize(text_to_speech_tool, text=tts_text)
+                try:
+                    result = json.loads(raw)
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning("Auto voice reply TTS returned invalid JSON: %s",
+                                   raw[:200] if raw else raw)
+                    return
+                candidates = result.get("file_paths") or [result.get("file_path", audio.output_path)]
+                paths = [str(p) for p in candidates if p and os.path.isfile(p)]
+                if not result.get("success") or not paths:
+                    logger.warning("Auto voice reply TTS failed: %s", result.get("error"))
+                    return
+                await self._deliver_voice_reply(event, paths)
         except Exception as e:
             logger.warning("Auto voice reply failed: %s", e, exc_info=True)
-        finally:
-            for p in ({audio_path, *actual_paths} - {None}):
-                with suppress(OSError):
-                    os.unlink(p)
+
 
     async def _deliver_voice_reply(self, event: MessageEvent, audio_paths: list[str]) -> None:
         """Play the files in the connected voice channel, else send them as voice messages."""

@@ -1,0 +1,45 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: fish-audio
+description: 'Fish Audio: speech, voice cloning and search, transcription, Story Studio audiobooks and podcasts, images and video.'
+source: https://github.com/fishaudio/fish-audio-plugin
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# (verified live 2026-10-14: RFC 9728 protected-resource metadata ->
+# AS metadata with registration_endpoint, PKCE S256, scope `mcp`; Fish's
+# consent page names the Hermes client and asks which Fish team to use).
+# Usage is billed to the chosen team's Fish plan credits. Hermes's MCP client
+# + mcp_oauth_manager handle discovery, PKCE, token exchange, and refresh.
+
+transport:
+  type: http
+  url: https://api.fish.audio/mcp
+
+auth:
+  type: oauth
+
+# get_audio_data is the server's player-UI helper (declared app-only via
+# _meta.ui.visibility); it returns base64 audio bytes, so keep it out of the
+# model's tool list. The other 47 tools stay on.
+tools:
+  default_excluded:
+    - get_audio_data
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - fish audio
+    - fishaudio
+    - story studio
+  hosts:
+    - fish.audio
+
+post_install: |
+  Run `hermes mcp login fish-audio` to authorize with your Fish Audio
+  account in the browser (Fish may email a 6-digit code to confirm).
+  Pick the team whose credits to use, approve access, then restart the
+  session so tools load. For Hermes voice replies, voice notes and
+  dictation, also install the fish-audio plugin.

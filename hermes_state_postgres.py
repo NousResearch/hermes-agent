@@ -281,6 +281,13 @@ def _rewrite_substr(statement: str) -> str:
 _MODEL_ONLY_RE = re.compile(
     r"COALESCE\(json_extract\(\(CASE WHEN json_valid\(([A-Za-z_][\w.]*)\) <> 0 THEN \1 ELSE 'null' END\), "
     r"'\$\.model_only'\), 0\) = 0")
+# ``COALESCE(json_extract((CASE WHEN json_valid(X) <> 0 THEN X ELSE 'null' END), 'P'), 0) = 1``
+# (the queued-prompt marker): SQLite's json_extract returns JSON true as 1, so the shared SQL
+# tests the boolean marker numerically; the TEXT shim returns 'true'. Test the scalar text
+# instead (absent/invalid extraction is NULL and drops the row, as COALESCE(..., 0) = 1 did).
+_JSON_BOOL_MARKER_RE = re.compile(
+    r"COALESCE\(json_extract\(\(CASE WHEN json_valid\(([A-Za-z_][\w.]*)\) <> 0 THEN \1 ELSE 'null' END\), "
+    r"('[^']*')\), 0\) = 1")
 # Remaining numeric-style ``json_valid(X) <> 0`` tests -> the bare boolean predicate.
 _JSON_VALID_NUM_RE = re.compile(r"json_valid\(\s*([A-Za-z_][\w.]*)\s*\)\s*<>\s*0\b")
 # ``json_valid(X) AND json_extract(X, 'P')`` (SQLite text-as-truthy, end of predicate) ->
@@ -336,6 +343,8 @@ def _convert_statement(statement: str) -> str:
     # text test over the extracted scalar.
     out = _MODEL_ONLY_RE.sub(
         r"COALESCE((\1::jsonb) ->> 'model_only', '0') NOT IN ('1', 'true')", out)
+    out = _JSON_BOOL_MARKER_RE.sub(
+        r"json_extract((CASE WHEN json_valid(\1) <> 0 THEN \1 ELSE 'null' END), \2) = 'true'", out)
     out = _RETIRED_OWN_CASE_RE.sub(
         r"CASE WHEN json_valid(\1) THEN json_extract(\1, \2) IS NOT NULL ELSE FALSE END", out)
     out = _ROUTE_FENCE_CASE_RE.sub(

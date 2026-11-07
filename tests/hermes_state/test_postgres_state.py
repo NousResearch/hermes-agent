@@ -570,6 +570,26 @@ def test_moved_receipts_scan_and_boot_heal_are_dialect_parity(state_db):
     assert malformed is not None
 
 
+def test_retire_undrained_queue_rows_runs_on_both_dialects(state_db):
+    """The drain's still-marked queue-row UPDATE tests the boolean marker numerically
+    (``COALESCE(json_extract(...), 0) = 1``): SQLite's json_extract yields JSON true as 1,
+    but the PG TEXT shim makes the int COALESCE a DatatypeMismatch that killed the session
+    drain task (DEFECT-3). The converter rewrites it to a text test; behavior is unchanged."""
+    session_id = "drain-queue"
+    state_db.create_session(session_id, "cli", model="test-model")
+    state_db.append_message(
+        session_id, "user", "queued prompt", display_metadata={"_queued_prompt": True})
+    state_db.append_message(session_id, "user", "unmarked prompt")
+
+    retired = state_db.retire_undrained_queue_rows(session_id)
+    assert retired == 1
+    with state_db._read_ctx() as conn:
+        rows = conn.execute(
+            "SELECT active FROM messages WHERE session_id = ? AND role = 'user' ORDER BY id",
+            (session_id,)).fetchall()
+    assert [r[0] for r in rows] == [0, 1]
+
+
 def test_auxiliary_usage_by_task_returns_native_scalars(state_db):
     """The turn result JSON-encodes the aggregated aux-usage dict at settlement. PostgreSQL's
     ``SUM(int8)`` returns ``numeric`` (psycopg ``Decimal``) where SQLite's ``SUM`` returns

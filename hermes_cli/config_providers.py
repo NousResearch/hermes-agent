@@ -473,6 +473,17 @@ def apply_custom_provider_tls_to_client_kwargs(
         client_kwargs["ssl_verify"] = tls["ssl_verify"]
 
 
+# Header names the OpenAI/Anthropic SDKs set themselves, in their spelling. The SDKs merge headers as
+# plain dicts, so a configured ``authorization`` or ``user-agent`` was a second key and both copies
+# went out; strict servers and WAFs reject the duplicate or read the SDK's value.
+_SDK_HEADER_NAMES = {name.lower(): name for name in (
+    "Accept", "Content-Type", "User-Agent", "Authorization", "X-Api-Key", "anthropic-version",
+    "OpenAI-Organization", "OpenAI-Project", "X-Stainless-Lang", "X-Stainless-Package-Version",
+    "X-Stainless-OS", "X-Stainless-Arch", "X-Stainless-Runtime", "X-Stainless-Runtime-Version",
+    "X-Stainless-Async",
+)}
+
+
 def normalize_extra_headers(extra_headers: Any) -> dict[str, str]:
     """Normalize a raw ``extra_headers`` value into a ``dict[str, str]``.
 
@@ -482,6 +493,15 @@ def normalize_extra_headers(extra_headers: Any) -> dict[str, str]:
     if not isinstance(extra_headers, dict) or not extra_headers:
         return {}
     return {str(k): str(v) for k, v in extra_headers.items() if v is not None}
+
+
+def merge_headers(base: Optional[dict], overrides: dict[str, str]) -> dict:
+    """``overrides`` on top of ``base`` for an SDK client's ``default_headers``. Names match
+    case-insensitively, as HTTP defines, and SDK-owned names take the SDK's spelling so a configured
+    value replaces the SDK default instead of riding beside it."""
+    lowered = {str(k).lower() for k in overrides}
+    kept = {k: v for k, v in (base or {}).items() if str(k).lower() not in lowered}
+    return {**kept, **{_SDK_HEADER_NAMES.get(str(k).lower(), k): v for k, v in overrides.items()}}
 
 
 def get_custom_provider_extra_headers(
@@ -507,9 +527,7 @@ def apply_custom_provider_extra_headers_to_client_kwargs(
     extra_headers = get_custom_provider_extra_headers(base_url, custom_providers, config)
     if not extra_headers:
         return
-    merged = dict(client_kwargs.get("default_headers") or {})
-    merged.update(extra_headers)
-    client_kwargs["default_headers"] = merged
+    client_kwargs["default_headers"] = merge_headers(client_kwargs.get("default_headers"), extra_headers)
 
 
 def get_custom_provider_session_affinity_header(

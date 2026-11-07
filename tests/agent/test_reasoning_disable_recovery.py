@@ -53,7 +53,7 @@ class _Agent:
         return lambda *args, **kwargs: None
 
 
-def _settle(disable_drop_attempted):
+def _settle(disable_drop_attempted, spent_on=None):
     from agent.route_verdicts import route_endpoint
     from agent.turn_api_error import settle_unrecovered_error
 
@@ -61,8 +61,9 @@ def _settle(disable_drop_attempted):
     err = _FakeApiError(400, _REVERSED_400)
     classified = classify_api_error(err, provider="custom", model=agent.model)
     assert classified.reason == FailoverReason.reasoning_mandatory
+    spent = spent_on if spent_on is not None else (route_endpoint(agent) if disable_drop_attempted else None)
     retry = SimpleNamespace(
-        reasoning_mandatory_retry_endpoint=route_endpoint(agent) if disable_drop_attempted else None, image_shrink_retry_attempted=False,
+        reasoning_mandatory_retry_endpoint=spent, image_shrink_retry_attempted=False,
         provider_stale_refresh_attempted=False, primary_recovery_attempted=False,
         restart_with_redirected_messages=False,
     )
@@ -89,6 +90,12 @@ def test_spent_disable_drop_falls_back_instead_of_replaying_the_request():
     # Control: before the drop has run the verdict stays retryable (the rung gets its shot;
     # the one-shot drop itself is pre-existing ``turn_recovery`` behaviour, not asserted here).
     agent, verdict = _settle(disable_drop_attempted=False)
+    assert verdict.action == "fallthrough"
+    assert agent.activated == []
+
+    # A drop spent on another endpoint (a mid-call rotation or refresh moved the route) does not
+    # count here: this endpoint's rejection still gets its own repair instead of the fallback chain.
+    agent, verdict = _settle(disable_drop_attempted=True, spent_on="https://other.example/v1")
     assert verdict.action == "fallthrough"
     assert agent.activated == []
 

@@ -3611,6 +3611,7 @@ export const ruOverrides = {
       command: 'Команда',
       moreOptions: 'Больше опций подтверждения',
       allowSession: 'Разрешить в этом сеансе',
+      switchToYolo: 'Одобрять всё в этом чате (YOLO)',
       alwaysAllowMenu: 'Всегда разрешать…',
       jumpToApproval: 'Нужно подтверждение',
       reject: 'Отклонить',

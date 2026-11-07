@@ -118,6 +118,7 @@
     "assistant.approval.reject",
     "assistant.approval.run",
     "assistant.approval.sendFailed",
+    "assistant.approval.switchToYolo",
     "assistant.approval.timedOutSystemLine",
     "assistant.catalogInstall.advanced",
     "assistant.catalogInstall.alreadyInstalled",

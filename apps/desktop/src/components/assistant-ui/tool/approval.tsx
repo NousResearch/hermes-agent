@@ -24,6 +24,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { ChevronDown, Loader2 } from '@/lib/icons'
 import { releaseApprovalKey } from '@/lib/keybinds/approval-keys'
 import { cn } from '@/lib/utils'
+import { setSessionYolo } from '@/lib/yolo-session'
 import { $gateway } from '@/store/gateway'
 import { reconnectAction } from '@/store/gateway-reconnect'
 import { notifyError } from '@/store/notifications'
@@ -42,7 +43,7 @@ import { isApprovalActivity } from './approval-activity'
 import { toolEntryDisclosureId } from './fallback-model/targets'
 import { isToolCallPart, summarizeToolRun } from './run-summary'
 
-type ApprovalChoice = 'once' | 'session' | 'always' | 'deny'
+type ApprovalChoice = 'once' | 'session' | 'always' | 'deny' | 'yolo'
 export const ApprovalPlacementContext = createContext<'inline' | 'floating'>('inline')
 
 // One transcript-owned host for the session. Execution rows never mount,
@@ -166,6 +167,29 @@ function ApprovalActivity({ floating, visible }: { floating: boolean; visible: b
   )
 }
 
+/**
+ * "Approve everything in this chat": arm the chat's YOLO (the same per-session flag as
+ * /yolo and the status-bar zap), then run every card already waiting in this chat.
+ * Calls made after the switch never ask; the ones queued before it were asked under the
+ * old mode, so they are answered here one by one. One by one, not `all: true`, because
+ * the canonical gateway protocol answers exactly one prompt per approval.respond.
+ */
+async function switchToYolo(gateway: NonNullable<ReturnType<typeof $gateway.get>>, request: ApprovalRequest) {
+  const sessionId = request.sessionId
+
+  if (!sessionId || !(await setSessionYolo((method, params) => gateway.request(method, params), sessionId, true))) {
+    throw new Error('YOLO could not be enabled')
+  }
+
+  const waiting = sessionApprovalRequests(sessionId).get()
+  const rest = waiting.filter(item => item.requestId !== request.requestId)
+
+  for (const item of [request, ...rest]) {
+    await answerApproval(gateway, item, 'once')
+    clearApprovalRequest(sessionId, item.requestId)
+  }
+}
+
 async function sendApproval(request: ApprovalRequest, choice: ApprovalChoice) {
   const gateway = $gateway.get()
 
@@ -181,7 +205,12 @@ async function sendApproval(request: ApprovalRequest, choice: ApprovalChoice) {
     return
   }
 
-  await answerApproval(gateway, request, choice)
+  if (choice === 'yolo') {
+    await switchToYolo(gateway, request)
+  } else {
+    await answerApproval(gateway, request, choice)
+  }
+
   triggerHaptic(choice === 'deny' ? 'cancel' : 'submit')
   clearApprovalRequest(request.sessionId, request.requestId)
   void replayPendingApproval(gateway, request.sessionId).catch(() => undefined)
@@ -226,6 +255,24 @@ export function ApprovalQueue({
       )}
     </CardStack>
   )
+}
+
+/** Which extra answers the card's options menu offers for this request. */
+function approvalMenuOptions(request: ApprovalRequest) {
+  // false when the backend won't honor a permanent allow → hide "Always allow".
+  const allowPermanent = request.allowPermanent !== false
+  const choices = request.choices ?? (request.smartDenied ? ['once', 'deny'] : undefined)
+  const allowSession = choices ? choices.includes('session') : true
+  const allowAlways = choices ? choices.includes('always') : allowPermanent
+
+  return {
+    allowAlways,
+    allowSession,
+    // Same gate as "Allow this session": a request the gateway limits to once/deny (a
+    // Smart DENY override) must not be widened to the whole chat from here.
+    allowYolo: allowSession && Boolean(request.sessionId),
+    hasMoreOptions: allowSession || allowAlways
+  }
 }
 
 interface ApprovalCardProps {
@@ -276,12 +323,7 @@ const ApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, stack }
     }
   }, [])
 
-  // false when the backend won't honor a permanent allow → hide "Always allow".
-  const allowPermanent = request.allowPermanent !== false
-  const choices = request.choices ?? (request.smartDenied ? ['once', 'deny'] : undefined)
-  const allowSession = choices ? choices.includes('session') : true
-  const allowAlways = choices ? choices.includes('always') : allowPermanent
-  const hasMoreOptions = allowSession || allowAlways
+  const { allowAlways, allowSession, allowYolo, hasMoreOptions } = approvalMenuOptions(request)
   const hasCommand = request.command.trim().length > 0
   // A plugin `approve` rule escalates through the same gate with a synthetic
   // display target (`<tool> (plugin approval rule)`) while the real command /
@@ -363,6 +405,9 @@ const ApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, stack }
             <DropdownMenuContent align="end" className="min-w-44">
               {allowSession && (
                 <DropdownMenuItem onSelect={() => void respond('session')}>{copy.allowSession}</DropdownMenuItem>
+              )}
+              {allowYolo && (
+                <DropdownMenuItem onSelect={() => void respond('yolo')}>{copy.switchToYolo}</DropdownMenuItem>
               )}
               {allowAlways && (
                 <DropdownMenuItem

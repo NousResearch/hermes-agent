@@ -5143,6 +5143,7 @@ export const deOverrides = {
       command: 'Befehl',
       moreOptions: 'Weitere Genehmigungsoptionen',
       allowSession: 'Diese Session erlauben',
+      switchToYolo: 'Alles in diesem Chat genehmigen (YOLO)',
       alwaysAllowMenu: 'Immer erlauben…',
       jumpToApproval: 'Genehmigung erforderlich',
       reject: 'Ablehnen',

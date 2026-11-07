@@ -338,12 +338,15 @@ test.skipIf(process.platform === 'win32')('a pnpm other than the pm/lock.json pi
   const { source, env } = fixture()
   pinPnpm(source, '12.0.1')
   const pnpm = fakePnpm({ manifest: '12.0.0' })
-  const options = { source, workspaces: ['web'], env: { ...env, PATH: `${pnpm.path}${delimiter}${env.PATH}` } }
+  const options = { source, workspaces: ['web'], reuse: true, env: { ...env, PATH: `${pnpm.path}${delimiter}${env.PATH}` } }
   expect(() => prepareNodeDependencies(options)).toThrow(/pnpm 12\.0\.1 is required \(pm\/lock\.json\).*found 12\.0\.0/)
   expect(existsSync(pnpm.spawned)).toBe(false)
   pnpm.writeManifest('12.0.1')
   prepareNodeDependencies(options)
   expect(readFileSync(pnpm.spawned, 'utf8')).toBe('install\n')
+  // pm/lock.json isn't a receipt input, so a re-pin must be refused before a completed install is reused.
+  pinPnpm(source, '12.0.2')
+  expect(() => prepareNodeDependencies(options)).toThrow(/pnpm 12\.0\.2 is required \(pm\/lock\.json\)/)
 }, 30000)
 
 test.skipIf(process.platform === 'win32')('a source without a pm/lock.json pnpm pin is refused with the reason, before anything is installed', () => {

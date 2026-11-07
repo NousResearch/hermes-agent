@@ -1,0 +1,47 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: make
+description: 'Make (make.com): run scenarios, manage connections and data stores.'
+source: https://developers.make.com/mcp-server/connect-using-oauth
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# (verified live: 401 → RFC 9728 protected-resource metadata → AS metadata
+# with registration_endpoint; DCR accepts client_name "Hermes Agent" with a
+# loopback redirect, client_secret_post, PKCE S256). This is the vendor's
+# documented OAuth URL; API-key URLs are zone-specific and not cataloged.
+# The tool list is dynamic: each scenario exposed for MCP becomes a tool,
+# and the scopes the user picks on Make's consent screen gate the
+# management tools (paid plans). With no fixed tool table to curate, this
+# entry ships uncurated: every tool the server lists is enabled.
+
+transport:
+  type: http
+  url: https://mcp.make.com/v2
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills). Multi-word: "make"
+# alone is an ordinary verb.
+suggest:
+  keywords:
+    - make.com
+    - make scenario
+    - make automation
+  hosts:
+    - make.com
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with
+  Make (or run `hermes mcp login make`). Pick the organization and
+  scopes on Make's consent screen, then restart the session so tools
+  load.
+
+  Scenario-run tools work on every plan; management tools (scenarios,
+  connections, webhooks, data stores, teams) need a paid plan and the
+  matching scope. Scenario runs through this OAuth URL time out after
+  25 seconds but keep running in Make; grant scenarios:read so the
+  agent can fetch the result later by executionId.

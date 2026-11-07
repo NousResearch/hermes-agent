@@ -147,3 +147,23 @@ def test_enabled_config_failure_logs_warning(caplog):
     ), caplog.at_level(logging.WARNING, logger="agent.background_review"):
         assert background_review.load_background_review_settings()[0] is True
     assert any(r.levelno >= logging.WARNING for r in caplog.records)
+
+def test_records_fork_cost_status_and_source(db):
+    db.create_session("sess-parent", source="cli")
+
+    background_review._record_review_usage_to_parent(
+        _FakeParent(db),
+        _usage(cost_status="estimated", cost_source="provider_models_api"),
+    )
+
+    (r,) = _usage_rows(db, "sess-parent")
+    assert r["cost_status"] == "estimated"
+    assert r["cost_source"] == "provider_models_api"
+
+def test_snapshot_carries_fork_cost_status_and_source():
+    class _Fork:
+        session_cost_status = "estimated"
+        session_cost_source = "provider_models_api"
+
+    snap = background_review._snapshot_review_usage(_Fork())
+    assert (snap["cost_status"], snap["cost_source"]) == ("estimated", "provider_models_api")

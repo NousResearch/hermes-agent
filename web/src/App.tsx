@@ -71,8 +71,7 @@ import { PageHeaderProvider } from "@/contexts/PageHeaderProvider";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { ProfileSwitcher } from "@/components/ProfileSwitcher";
 import { ProfileScopeBanner } from "@/components/ProfileScopeBanner";
-import { MemoryPressureBanner } from "@/components/MemoryPressureBanner";
-import { MultiplexStandaloneBanner } from "@/components/MultiplexStandaloneBanner";
+import { StatusBanners } from "@/components/StatusBanners";
 import { SharedMetricsConsentBanner } from "@/components/SharedMetricsConsentBanner";
 import { useSystemActions } from "@/contexts/useSystemActions";
 import type { SystemAction } from "@/contexts/system-actions-context";
@@ -576,8 +575,7 @@ export default function App() {
       <div aria-hidden className="h-14 shrink-0 lg:hidden" />
       <PluginSlot name="header-banner" />
       <ProfileScopeBanner />
-      <MemoryPressureBanner status={sidebarStatus} />
-      <MultiplexStandaloneBanner status={sidebarStatus} />
+      <StatusBanners status={sidebarStatus} />
       <SharedMetricsConsentBanner />
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">

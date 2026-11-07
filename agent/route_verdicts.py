@@ -27,6 +27,7 @@ ROUTE_VERDICT_FIELDS = (
 
 def reset_route_verdicts(agent: Any) -> None:
     """Clear every per-route rejection verdict on ``agent`` (called whenever the route changes)."""
+    agent._route_visit = route_visit(agent) + 1  # re-arms the one-shot repairs (TurnRetryState)
     for name in ROUTE_REJECTION_FIELDS:
         setattr(agent, name, False)
     if hasattr(agent, "_disable_streaming"):  # back to the configured ``model.streaming`` seed (agent_init)
@@ -64,6 +65,12 @@ def route_endpoint(agent: Any) -> str:
     """``agent.base_url`` normalized: the key a route verdict and a one-shot repair are bound to."""
     from hermes_cli.route_identity import normalize_route_base_url
     return normalize_route_base_url(getattr(agent, "base_url", "") or "")
+
+
+def route_visit(agent: Any) -> int:
+    """Counts ``reset_route_verdicts`` calls: a one-shot repair is spent for one route visit."""
+    visit = getattr(agent, "_route_visit", 0)
+    return visit if isinstance(visit, int) else 0  # test doubles with a catch-all __getattr__
 
 
 def _stamp_primary_verdicts(agent: Any, rt: Any) -> Any:

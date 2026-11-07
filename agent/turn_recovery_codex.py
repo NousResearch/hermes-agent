@@ -5,7 +5,7 @@ import logging
 from typing import Any
 
 from agent.error_classifier import classify_api_error
-from agent.route_verdicts import route_endpoint
+from agent.route_verdicts import route_visit
 from agent.turn_retry_state import TurnRetryState
 
 logger = logging.getLogger(__name__)
@@ -39,7 +39,7 @@ def _recover_stale_codex_reasoning(
     route mints from now on are sealed with its current key; a repeat rejection means the route
     cannot round-trip its own blobs, so replay is disabled until the route changes."""
     if (
-        _retry.invalid_encrypted_content_retry_endpoint == route_endpoint(agent)
+        _retry.invalid_encrypted_content_retry_visit == route_visit(agent)
         or agent.api_mode != "codex_responses"
         or not bool(getattr(agent, "_codex_reasoning_replay_enabled", True))
         or not any(
@@ -57,7 +57,7 @@ def _recover_stale_codex_reasoning(
     if transport is not None and (removed := transport.drop_unverified_replay(messages, api_messages)):
         _vlines(agent, f"⚠️  Encrypted reasoning replay was rejected — dropped {removed} item(s) minted elsewhere, retrying...")
         return True
-    _retry.invalid_encrypted_content_retry_endpoint = route_endpoint(agent)
+    _retry.invalid_encrypted_content_retry_visit = route_visit(agent)
     keep_replay = not getattr(agent, "_codex_reasoning_replay_rejected", False)
     agent._codex_reasoning_replay_rejected = True
     replay_stats = agent._disable_codex_reasoning_replay(messages, keep_replay=keep_replay)

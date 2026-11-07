@@ -167,7 +167,7 @@ def test_a_rotation_to_another_endpoint_gives_its_effort_rejection_a_recovery(ro
         assert _wire_reasoning_config(agent) is None
     else:
         assert _wire_reasoning_config(agent) is None
-        assert retry.reasoning_mandatory_retry_endpoint is not None
+        assert retry.reasoning_mandatory_retry_visit is not None
         assert _recover_from(agent, retry, 400, _STRUCTURED_LEVEL_400)[0] is False
     assert agent.activated == []
 
@@ -272,7 +272,7 @@ def test_a_nous_401_refresh_onto_another_host_rearms_its_effort_repair(new_url, 
     from agent.client_lifecycle import ClientLifecycleMixin
 
     agent = _rotation_agent()
-    agent.provider, agent.base_url = "nous", _PAID
+    agent.provider, agent.base_url, agent._auth_pool_refresh_counts = "nous", _PAID, {}
     agent._client_kwargs["base_url"], agent._extract_api_error_context = _PAID, lambda exc: {}
     for name in ("_try_refresh_nous_client_credentials", "_adopt_openai_credentials"):
         setattr(agent, name, MethodType(getattr(ClientLifecycleMixin, name), agent))
@@ -311,3 +311,25 @@ def test_transport_recovery_onto_another_endpoint_rearms_its_effort_repair(moved
         )
     assert verdict.action == "continue"
     _destination_effort_repaired(agent, retry, moved)
+
+
+def test_a_return_to_the_endpoint_that_spent_the_repair_rearms_it():
+    """A -> B -> A in one call: the return resets A's verdicts, so A's repeated rejection gets a repair."""
+    from types import MethodType, SimpleNamespace
+
+    from agent.client_lifecycle import ClientLifecycleMixin
+    from agent.turn_recovery import _recover_welcome_tier
+
+    agent = _rotation_agent()
+    agent.provider, agent.base_url, agent._auth_pool_refresh_counts = "nous", _PAID, {}
+    agent._client_kwargs["base_url"], agent._extract_api_error_context = _PAID, lambda exc: {}
+    for name in ("_try_refresh_nous_client_credentials", "_adopt_openai_credentials"):
+        setattr(agent, name, MethodType(getattr(ClientLifecycleMixin, name), agent))
+    retry = _spent_effort_repair(agent)
+    with patch("hermes_cli.auth.resolve_nous_runtime_credentials", return_value={"api_key": "free", "base_url": _WELCOME}):
+        assert _recover_from(agent, retry, 401, "invalid api key")[0] is True
+    heal = SimpleNamespace(error_context={"welcome_route": "named_on_welcome_host"})
+    with patch("hermes_cli.auth.resolve_nous_runtime_credentials", return_value={"api_key": "paid", "base_url": _PAID}):
+        assert _recover_welcome_tier(agent, heal, retry) is True
+    assert agent.base_url == _PAID
+    _destination_effort_repaired(agent, retry, True)

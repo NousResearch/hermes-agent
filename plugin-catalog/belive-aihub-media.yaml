@@ -1,7 +1,7 @@
 name: belive-aihub-media
 title: BeLive AI Hub Media
 repo: https://github.com/belivetech/hermes-belive-aihub
-sha: 2089238c596c903ebde069a6aac142b5e7a69409
+sha: 6eeb45e5f212752ad941f32fc6de7f2bbeb757ca
 subdir: media
 description: >-
   BeLive AI Hub backends for Hermes' image_generate, video_generate, text_to_speech and
@@ -19,8 +19,8 @@ maintainer: belivetech
 tier: community
 category: tools
 requires_hermes: ">=0.22.7"
-docs_url: https://github.com/belivetech/hermes-belive-aihub/blob/2089238c596c903ebde069a6aac142b5e7a69409/media/README.md
-version: "0.2.0"
+docs_url: https://github.com/belivetech/hermes-belive-aihub/blob/6eeb45e5f212752ad941f32fc6de7f2bbeb757ca/media/README.md
+version: "0.2.2"
 readme: true
 capabilities:
   provides_tools: []

@@ -402,9 +402,15 @@ class SessionUsageMixin:
         if (not self._token_queue and not self._token_writer_busy and not self._token_writer_uncertain
                 and self._token_pending_marker is None):
             return True
+        # Polling must not claim accepted work or enter a blocking write path.
+        if timeout <= 0:
+            return False
+        deadline = time.monotonic() + timeout
         batch = None
+        if not self._token_queue_cond.acquire(timeout=max(0.0, deadline - time.monotonic())):
+            return False
         try:
-            with self._token_queue_cond:
+            try:
                 if self._token_writer_uncertain:
                     return False
                 if not self._token_queue and not self._token_writer_busy:
@@ -413,7 +419,6 @@ class SessionUsageMixin:
                     except Exception:
                         logger.warning("Cannot release idle accounting marker", exc_info=True)
                         return False
-                deadline = time.monotonic() + timeout
                 while self._token_queue or self._token_writer_busy:
                     if self._token_writer_uncertain:
                         return False
@@ -421,24 +426,32 @@ class SessionUsageMixin:
                     # race its in-flight batch and reorder deltas (breaking last-non-None-wins /
                     # first-accounted-route / COALESCE-backfill fields). Only a dead writer lets
                     # the caller take leftovers; a claimed busy means "wait".
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return False
                     thread = self._token_writer_thread
                     if (thread is None or not thread.is_alive()) and not self._token_writer_busy:
                         batch = self._claim_token_batch_locked()
                         break
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        return False
                     self._token_queue_cond.wait(remaining)
+            finally:
+                self._token_queue_cond.release()
             if batch:
-                if not self._apply_claimed_batch(batch):
-                    return False
+                previous_deadline = getattr(self._token_batch_write_context, "deadline", None)
+                self._token_batch_write_context.deadline = deadline
+                try:
+                    if not self._apply_claimed_batch(batch):
+                        return False
+                finally:
+                    self._token_batch_write_context.deadline = previous_deadline
                 with self._token_queue_cond:
                     return not (self._token_queue or self._token_writer_busy
                                 or self._token_writer_uncertain or self._token_pending_marker is not None)
             return True
 
         finally:
-            self._quarantine_abandoned_claim()
+            if self._token_writer_claim_owner == threading.get_ident():
+                self._quarantine_abandoned_claim()
 
     def _token_writer_loop(self) -> None:
         while True:
@@ -481,6 +494,9 @@ class SessionUsageMixin:
             raise _TokenBatchInterrupted(exc, [], batch) from exc
         from hermes_state_lineage import SessionLineageError
         for index, (session_id, kwargs) in enumerate(coalesced):
+            deadline = getattr(self._token_batch_write_context, "deadline", None)
+            if deadline is not None and time.monotonic() >= deadline:
+                return coalesced[index:]
             receipt = _TokenBatchWriteReceipt()
             previous = getattr(self._token_batch_write_context, "receipt", None)
             self._token_batch_write_context.receipt = receipt
@@ -609,13 +625,22 @@ class SessionUsageMixin:
         # writer it must carry the agent's real source: the turn lease treats an existing row as
         # proof the create already happened, so the creator never returns to repair an anonymous
         # ``unknown`` placeholder and the session stays a phantom for life (#111999).
-        from hermes_state_lineage import session_lineage_guard
+        from hermes_state_lineage import session_lineage_guard, SessionLineageInventoryError, _lineage_inventory_deadline
         from hermes_state_worker_lifecycle import insert_session_row_in_transaction
+        deadline = getattr(self._token_batch_write_context, "deadline", None)
+        def remaining():
+            if deadline is None:
+                return self._TRANSCRIPT_WRITE_PATIENCE_S
+            budget = deadline - time.monotonic()
+            if budget <= 0:
+                raise SessionLineageInventoryError("Accounting flush deadline expired before write")
+            return min(self._TRANSCRIPT_WRITE_PATIENCE_S, budget)
         def write(conn):
             insert_session_row_in_transaction(self, conn, session_id, source or "unknown", model=model)
             self._update_token_counts_in_transaction(conn, session_id, **values)
-        with session_lineage_guard(self.db_path, session_id, timeout_s=self._TRANSCRIPT_WRITE_PATIENCE_S):
-            self._execute_write(write, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+        with _lineage_inventory_deadline(deadline):
+            with session_lineage_guard(self.db_path, session_id, timeout_s=remaining()):
+                self._execute_write(write, patience_s=remaining())
 
     def _update_token_counts_in_transaction(
         self, conn, session_id: str, input_tokens: int=0, output_tokens: int=0, model: str | None=None, cache_read_tokens: int=0,

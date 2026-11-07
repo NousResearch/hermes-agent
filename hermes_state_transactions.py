@@ -2,6 +2,8 @@
 
 import logging
 import sqlite3
+import time
+from contextlib import contextmanager
 
 logger = logging.getLogger("hermes_state")
 
@@ -81,3 +83,41 @@ def retry_locked_write(db, error, retry_safe, deadline, patience_s, receipt, log
     if receipt is not None:
         receipt.retryable_lock_timeout(lock_error)
     raise lock_error from error
+
+
+@contextmanager
+def accounting_write_lock(db, deadline):
+    """Bound foreground accounting lock acquisition to its caller's budget."""
+    if deadline is None:
+        with db._lock:
+            yield
+        return
+    from hermes_state_lineage import SessionLineageInventoryError
+    remaining = max(0.0, deadline - time.monotonic())
+    if not db._lock.acquire(timeout=remaining):
+        raise SessionLineageInventoryError("Accounting flush deadline expired waiting for database lock")
+    try:
+        if time.monotonic() >= deadline:
+            raise SessionLineageInventoryError("Accounting flush deadline expired before database write")
+        yield
+    finally:
+        db._lock.release()
+
+
+@contextmanager
+def accounting_busy_timeout(conn, deadline):
+    """Use application retries for bounded foreground writes; restore the handle's policy."""
+    if deadline is None:
+        yield
+        return
+    previous = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+    conn.execute("PRAGMA busy_timeout=0")
+    try:
+        yield
+    finally:
+        conn.execute(f"PRAGMA busy_timeout={int(previous)}")
+
+
+def write_deadline(patience_s, caller_deadline):
+    deadline = time.monotonic() + patience_s
+    return min(deadline, caller_deadline) if caller_deadline is not None else deadline

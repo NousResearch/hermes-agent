@@ -506,3 +506,139 @@ def test_commit_busy_cleanup_interrupt_propagates_and_quarantines(delete_databas
         sibling.close()
         inner.rollback()
         db._conn = inner
+
+
+def _queue_for_deadline(db, monkeypatch):
+    db.create_session("deadline", "cli")
+    monkeypatch.setattr(db, "_token_writer_loop", lambda: None)
+    db.queue_token_counts("deadline", input_tokens=3, model="m", billing_provider="p")
+    db._token_writer_thread.join(5)
+    db._TRANSCRIPT_WRITE_PATIENCE_S = 0.5
+
+
+def _hold_write_lock(db):
+    import threading
+    ready = threading.Event()
+    release = threading.Event()
+    def holder():
+        sibling = sqlite3.connect(db.db_path, timeout=0, isolation_level=None)
+        try:
+            sibling.execute("BEGIN IMMEDIATE")
+            ready.set()
+            release.wait(0.4)
+            sibling.execute("ROLLBACK")
+        finally:
+            sibling.close()
+    thread = threading.Thread(target=holder)
+    thread.start()
+    assert ready.wait(2)
+    return release, thread
+
+
+def test_async_session_getter_does_not_drain_queued_accounting(database, monkeypatch):
+    import asyncio
+    import time
+
+    db = database
+    _queue_for_deadline(db, monkeypatch)
+    release, holder = _hold_write_lock(db)
+    async def read():
+        loop = asyncio.get_running_loop()
+        beat = asyncio.Event()
+        beat_at = []
+        loop.call_later(0.01, lambda: (beat_at.append(time.monotonic()), beat.set()))
+        start = time.monotonic()
+        result = db.get_session("deadline")
+        returned = time.monotonic()
+        await beat.wait()
+        return result, returned - start, beat_at[0] - start
+    try:
+        result, elapsed, beat_delay = asyncio.run(read())
+        assert elapsed < 0.2 and beat_delay < 0.2
+        assert result["input_tokens"] == 0
+        assert [sid for sid, _ in db._token_queue] == ["deadline"]
+        assert not db._token_writer_uncertain and db._token_pending_marker is not None
+    finally:
+        release.set()
+        holder.join(2)
+    assert db.flush_token_counts()
+    assert db.get_session("deadline")["input_tokens"] == 3
+    db.update_session_billing_route("deadline", provider="p", base_url="u", billing_mode="m")
+    db.close()
+
+
+def test_positive_flush_budget_bounds_sqlite_wait(database, monkeypatch):
+    import time
+
+    db = database
+    _queue_for_deadline(db, monkeypatch)
+    release, holder = _hold_write_lock(db)
+    try:
+        start = time.monotonic()
+        result = db.flush_token_counts(timeout=0.03)
+        elapsed = time.monotonic() - start
+        assert result is False and elapsed < 0.2
+        assert [sid for sid, _ in db._token_queue] == ["deadline"]
+        assert not db._token_writer_uncertain and db._token_pending_marker is not None
+        assert getattr(db._token_batch_write_context, "deadline", None) is None
+        assert db._conn.execute("PRAGMA busy_timeout").fetchone()[0] == 1000
+        assert db._TRANSCRIPT_WRITE_PATIENCE_S == 0.5
+        assert db._conn.execute("SELECT input_tokens FROM sessions WHERE id='deadline'").fetchone()[0] == 0
+    finally:
+        release.set()
+        holder.join(2)
+    assert db.flush_token_counts()
+    assert db.get_session("deadline")["input_tokens"] == 3
+
+
+@pytest.mark.parametrize("lock_kind", ["lineage", "advisory", "connection", "queue"])
+def test_positive_flush_budget_bounds_process_locks(database, monkeypatch, lock_kind):
+    import threading
+    import time
+    from hermes_state_lineage import (
+        session_lineage_guard, _advisory_lock_file, _managed_root_and_current, _lineage_lock_paths,
+    )
+
+    db = database
+    _queue_for_deadline(db, monkeypatch)
+    ready = threading.Event()
+    release = threading.Event()
+    def hold():
+        if lock_kind == "lineage":
+            guard = session_lineage_guard(db.db_path, "deadline")
+        elif lock_kind == "advisory":
+            root, _ = _managed_root_and_current(db.db_path)
+            guard = _advisory_lock_file(_lineage_lock_paths(root, ("deadline",))[0], 2)
+        elif lock_kind == "connection":
+            guard = db._lock
+        else:
+            guard = db._token_queue_cond
+        with guard:
+            ready.set()
+            release.wait(0.4)
+    holder = threading.Thread(target=hold)
+    holder.start()
+    assert ready.wait(2)
+    try:
+        start = time.monotonic()
+        assert not db.flush_token_counts(timeout=0.03)
+        assert time.monotonic() - start < 0.2
+        assert [sid for sid, _ in db._token_queue] == ["deadline"]
+        assert not db._token_writer_uncertain and db._token_pending_marker is not None
+    finally:
+        release.set()
+        holder.join(2)
+    assert db.flush_token_counts()
+    assert db.get_session("deadline")["input_tokens"] == 3
+
+
+@pytest.mark.parametrize("timeout", [0, -1])
+def test_poll_does_not_claim_even_without_sqlite_contention(database, monkeypatch, timeout):
+    db = database
+    _queue_for_deadline(db, monkeypatch)
+    assert not db.flush_token_counts(timeout=timeout)
+    assert [sid for sid, _ in db._token_queue] == ["deadline"]
+    assert not db._token_writer_uncertain
+    assert db._conn.execute("SELECT input_tokens FROM sessions WHERE id='deadline'").fetchone()[0] == 0
+    assert db.flush_token_counts()
+    assert db.get_session("deadline")["input_tokens"] == 3

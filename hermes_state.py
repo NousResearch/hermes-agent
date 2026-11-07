@@ -1024,7 +1024,9 @@ class SessionDB(
         and the WHOLE callback retried — *fn* must stay idempotent under retry."""
         if patience_s is None:
             patience_s = self._WRITE_PATIENCE_S
-        deadline = time.monotonic() + patience_s
+        from hermes_state_transactions import write_deadline
+        caller_deadline = getattr(self._token_batch_write_context, "deadline", None)
+        deadline = write_deadline(patience_s, caller_deadline)
         compression_deadline: Optional[float] = None  # set on the first compression-busy collision
         # One retry for SQLITE_IOERR raised by BEGIN IMMEDIATE itself (callback not run: nothing
         # replayed). Once fn has started, an IOERR leaves settlement unknown and must propagate.
@@ -1046,14 +1048,15 @@ class SessionDB(
             # raising a sticky DeletedWalGenerationError that permanently refuses
             # later writes (#105567). Inside the lock the probe only ever sees the
             # stable post-close state (identity cleared → adopt / reopen path).
-            from hermes_state_transactions import WriteAttempt, retry_locked_write
+            from hermes_state_transactions import WriteAttempt, retry_locked_write, accounting_write_lock, accounting_busy_timeout
             attempt = WriteAttempt(token_batch_receipt)
             try:
-                with self._lock:
+                with accounting_write_lock(self, caller_deadline):
                     self._raise_if_db_replaced()
                     if self._conn is None:  # close() raced this writer
                         self._reopen_after_close_locked(context="write")
-                    result = attempt.execute(self._conn, fn)
+                    with accounting_busy_timeout(self._conn, caller_deadline):
+                        result = attempt.execute(self._conn, fn)
                 # Success — periodic best-effort checkpoint + FTS merge.
                 self._write_count += 1
                 if self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0:

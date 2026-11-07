@@ -203,7 +203,7 @@ def _advisory_lock_file(path: Path, timeout_s: float, *, create: bool = True) ->
                     except OSError as exc:
                         if time.monotonic() >= deadline:
                             raise SessionLineageInventoryError("Timed out acquiring session-lineage lock") from exc
-                        time.sleep(0.05)
+                        time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
                 try:
                     yield fd
                 finally:
@@ -219,7 +219,7 @@ def _advisory_lock_file(path: Path, timeout_s: float, *, create: bool = True) ->
                     except OSError as exc:
                         if time.monotonic() >= deadline:
                             raise SessionLineageInventoryError("Timed out acquiring session-lineage lock") from exc
-                        time.sleep(0.05)
+                        time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
                 try:
                     yield fd
                 finally:
@@ -241,6 +241,16 @@ class _ProcessLockEntry:
 _PROCESS_LOCKS: dict[str, _ProcessLockEntry] = {}
 _PROCESS_LOCKS_GUARD = threading.Lock()
 _THREAD_LOCKS = threading.local()
+
+
+@contextmanager
+def _lineage_inventory_deadline(deadline):
+    previous = getattr(_THREAD_LOCKS, "inventory_deadline", None)
+    _THREAD_LOCKS.inventory_deadline = deadline
+    try:
+        yield
+    finally:
+        _THREAD_LOCKS.inventory_deadline = previous
 
 
 def _drop_process_lock_reference(key: str, entry: _ProcessLockEntry) -> None:
@@ -402,12 +412,12 @@ def _store_candidates(root: Path, current_path: Path | None) -> list[tuple[Path,
     return candidates
 
 
-def _rows_for_ids(path: Path, profile: str, session_ids: tuple[str, ...]) -> dict[str, SessionStoreRow]:
+def _rows_for_ids(path: Path, profile: str, session_ids: tuple[str, ...], timeout_s: float = 2.0) -> dict[str, SessionStoreRow]:
     if not session_ids:
         return {}
     try:
         uri = path.resolve(strict=True).as_uri() + "?mode=ro"
-        conn = sqlite3.connect(uri, uri=True, timeout=2.0)
+        conn = sqlite3.connect(uri, uri=True, timeout=timeout_s)
         conn.row_factory = sqlite3.Row
         try:
             conn.execute("PRAGMA query_only = ON")
@@ -501,7 +511,14 @@ def session_lineage_guard(
         candidates = _store_candidates(root, current_path)
         rows_by_id: dict[str, list[SessionStoreRow]] = {session_id: [] for session_id in ids}
         for path, profile in candidates:
-            rows = _rows_for_ids(path, profile, ids)
+            inventory_deadline = getattr(_THREAD_LOCKS, "inventory_deadline", None)
+            if inventory_deadline is not None:
+                remaining = inventory_deadline - time.monotonic()
+                if remaining <= 0:
+                    raise SessionLineageInventoryError("Timed out inspecting session-lineage inventory")
+                rows = _rows_for_ids(path, profile, ids, min(2.0, remaining))
+            else:
+                rows = _rows_for_ids(path, profile, ids)
             for session_id, row in rows.items():
                 rows_by_id[session_id].append(row)
         frozen = {session_id: tuple(rows) for session_id, rows in rows_by_id.items()}

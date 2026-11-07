@@ -1698,6 +1698,7 @@ class SlackAdapter(BasePlatformAdapter):
             _plugin_handlers = []
         if self._plugin_actions_app is not self._app:
             self._plugin_actions_app, self._plugin_actions_wired = self._app, set()
+            self._card_action_patterns = []
         _plugin_handlers = [(a, cb, n) for a, cb, n in _plugin_handlers
                             if (repr(a), n) not in self._plugin_actions_wired]
         # Closure factory: slack_bolt passes ``None`` for unrecognised listener params, so loop
@@ -1721,6 +1722,8 @@ class SlackAdapter(BasePlatformAdapter):
         for _action_id, _cb, _plugin_name in _plugin_handlers:
             self._app.action(_action_id)(_make_wrapper(_cb, _plugin_name))
             self._plugin_actions_wired.add((repr(_action_id), _plugin_name))
+            # Card ``Button``s may only target ids a plugin handles (card_blocks).
+            self._card_action_patterns.append(_action_id)
             logger.debug(
                 "[Slack] Registered plugin action handler %s (from %s)", _action_id, _plugin_name)
         if _plugin_handlers:
@@ -1729,6 +1732,8 @@ class SlackAdapter(BasePlatformAdapter):
     # ``(repr(action_id), plugin)`` pairs registered on ``_plugin_actions_app``; reset per AsyncApp.
     _plugin_actions_app: Any = None
     _plugin_actions_wired: set = frozenset()
+    #: Plugin-registered action ids/regexes a card ``Button`` may target (card_blocks).
+    _card_action_patterns: list = []
 
     def rewire_plugin_handlers(self) -> None:
         """Late plugin loads carry both registries: action handlers and ``register_platform_handler``
@@ -3137,7 +3142,9 @@ class SlackAdapter(BasePlatformAdapter):
         when the flag is off, the content carries no card, or the spec does
         not render; every failure mode falls back to the markdown path.
         """
-        payload = card_blocks_payload(content) if self._extra_flag("card_blocks") else None
+        if not self._extra_flag("card_blocks"):
+            return None
+        payload = card_blocks_payload(content, button_allowed=self._card_button_allowed)
         if not payload:
             return None
         stripped, fallback_text, blocks = payload
@@ -3146,11 +3153,27 @@ class SlackAdapter(BasePlatformAdapter):
             return None
         return stripped, fallback_text, blocks
 
+    def _card_button_allowed(self, action_id: str) -> bool:
+        """Whether a card ``Button`` has a click handler: only ids a plugin registered via
+        ``ctx.register_slack_action_handler`` (exact string or regex). Hermes' own ids
+        (approval, clarify, feedback, model picker) are never reachable from a card —
+        a model must not be able to compose a message that drives those flows."""
+        for pattern in getattr(self, "_card_action_patterns", ()):
+            if isinstance(pattern, str):
+                if pattern == action_id:
+                    return True
+            elif hasattr(pattern, "match") and pattern.match(action_id):
+                return True
+        return False
+
     def _card_text(self, stripped: str, fallback_text: str) -> str:
-        """Visible text for a message whose card rendered as blocks: the prose
-        around the fence when there is any, else the card's mrkdwn summary."""
+        """``text`` for a message whose card rendered as blocks: the prose around the
+        fence AND the card's mrkdwn summary. Slack shows ``text`` in notifications and
+        to screen readers, and ``_call_with_block_fallback`` re-posts it alone when the
+        blocks are rejected — so it must carry the card's data, not just the prose."""
         text = self.format_message(stripped) if stripped.strip() else ""
-        return text or fallback_text or " "
+        parts = [part for part in (text, fallback_text) if part and part.strip()]
+        return "\n\n".join(parts) or " "
 
     def _maybe_blocks(self, content: str) -> Optional[list]:
         """Block Kit for ``content``: ``card_blocks`` (json-render spec fence) first,

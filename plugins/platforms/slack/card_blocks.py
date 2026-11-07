@@ -35,7 +35,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 Block = dict[str, Any]
 
@@ -58,43 +58,101 @@ MAX_FIELDS_PER_SECTION = 10
 # action_id cap (https://docs.slack.dev/reference/block-kit/block-objects/button)
 MAX_ACTION_ID = 255
 
-#: A `` ```card `` fenced code block. The JSON body is everything up to the
-#: closing fence; a fence with no closing fence on the same message is not a
-#: card (let the markdown path render it as a normal code block).
-_CARD_FENCE_RE = re.compile(r"```card[ \t]*\r?\n(.*?)```", re.DOTALL)
+#: Aggregate character budget across all cells of one table block.
+MAX_DATA_TABLE_CHARS = 20000  # data_table (https://docs.slack.dev/reference/block-kit/blocks/data-table-block)
+MAX_TABLE_CHARS = 10000  # table (https://docs.slack.dev/reference/block-kit/blocks/table-block)
+#: data_table ``page_size`` bounds; Slack defaults to 5 rows per page when omitted.
+MAX_TABLE_PAGE_SIZE = 100
+#: ``caption`` is REQUIRED on data_table; @chat-adapter/slack defaults it the same way.
+DEFAULT_TABLE_CAPTION = "Table"
 
-_MRKDWN_ESCAPE_RE = re.compile(r"([*_`~])")
+#: Slack's three control characters in ``mrkdwn`` text (links, mentions, dates).
+#: Slack has NO backslash escape, so ``*``/``_`` cannot be neutralised; entity
+#: escaping is the only escaping Slack performs
+#: (https://docs.slack.dev/messaging/formatting-message-text/#escaping-text).
+_ENTITY_ESCAPES = (("&", "&amp;"), ("<", "&lt;"), (">", "&gt;"))
 
 
-def _mrkdwn(text: str) -> str:
-    """Escape Slack mrkdwn emphasis markers in model-provided strings.
+def _mrkdwn(text: Any) -> str:
+    """Escape model-provided data for an ``mrkdwn`` text object.
 
-    Card props are data (device names, values), not formatting: an unescaped
-    ``*`` or ``_`` would pair up across fields and garble the fallback text.
+    Card props are data (ticket titles, device names, field values), not
+    formatting. Unescaped ``<!channel>``, ``<@U…>`` or ``<url|label>`` in a
+    prop would ping the room, mention a person or render a spoofed link, so
+    ``& < >`` become entities exactly as Slack requires. Emphasis markers are
+    left alone: Slack ignores backslashes, so a backslash-escaped asterisk
+    would render literally.
     """
-    return _MRKDWN_ESCAPE_RE.sub(r"\\\1", str(text))
+    out = str(text)
+    for raw, entity in _ENTITY_ESCAPES:
+        out = out.replace(raw, entity)
+    return out
+
+
+def _plain(text: Any) -> str:
+    """Text for a ``plain_text`` object (header, button label, caption).
+
+    ``plain_text`` is never parsed for links or mentions and entities are not
+    decoded there, so the value goes through verbatim.
+    """
+    return str(text)
+
+
+_FENCE_LINE_RE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})[ \t]*(\S*)[ \t]*$")
+
+
+def _top_level_card_fences(content: str) -> list[tuple[int, int, str]]:
+    """``(start, end, body)`` of every CLOSED `` ```card `` fence that is not
+    nested inside another fence.
+
+    A ```` ````markdown ```` block quoting a card example must not be mistaken
+    for the card, and a fence the model never closed (truncated reply) is not
+    a card either: both stay in the text and render as ordinary code.
+    """
+    out: list[tuple[int, int, str]] = []
+    open_marker: Optional[str] = None  # marker chars of the fence currently open
+    open_is_card = False
+    open_start = 0
+    body_start = 0
+    pos = 0
+    for line in content.splitlines(keepends=True):
+        m = _FENCE_LINE_RE.match(line.rstrip("\r\n"))
+        if m:
+            marker, info = m.group(1), m.group(2)
+            if open_marker is None:
+                open_marker, open_is_card, open_start = marker, info == "card", pos
+                body_start = pos + len(line)
+            elif marker[0] == open_marker[0] and len(marker) >= len(open_marker) and not info:
+                if open_is_card:
+                    # end excludes the closing fence's newline, so the prose
+                    # around the card keeps its own line breaks
+                    out.append((open_start, pos + len(line.rstrip("\r\n")), content[body_start:pos]))
+                open_marker, open_is_card = None, False
+        pos += len(line)
+    return out
 
 
 def extract_card(content: str) -> tuple[Optional[dict[str, Any]], str]:
-    """Pull the first `` ```card `` fenced JSON spec out of ``content``.
+    """Pull the `` ```card `` fenced JSON spec out of ``content``.
 
     Returns ``(spec, text_without_the_fence)``. When there is no (valid) card
     fence, returns ``(None, content)`` unchanged so the caller can fall back
-    to the markdown path without touching the text.
+    to the markdown path without touching the text. Only top-level, closed
+    fences count; when the reply holds several, the LAST well-formed one is
+    the card (a model that quotes the format first and then answers).
     """
     if not content:
         return None, content
-    match = _CARD_FENCE_RE.search(content)
-    if not match:
-        return None, content
-    try:
-        spec = json.loads(match.group(1))
-    except (json.JSONDecodeError, ValueError):
-        return None, content
-    if not isinstance(spec, dict):
-        return None, content
-    stripped = (content[: match.start()] + content[match.end() :]).strip()
-    return spec, stripped
+    for start, end, body in reversed(_top_level_card_fences(content)):
+        try:
+            spec = json.loads(body)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(spec, dict):
+            continue
+        stripped = (content[:start] + content[end:]).strip()
+        return spec, stripped
+    return None, content
 
 
 # ----------------------------------------------------------------------------
@@ -124,7 +182,7 @@ def _prop_text(props: dict[str, Any], key: str, *, required: bool = False) -> Op
 
 
 def _header_block(title: str) -> Optional[Block]:
-    clean = _mrkdwn(title).strip()
+    clean = _plain(title).strip()
     if not clean:
         return None
     return {"type": "header", "text": {"type": "plain_text", "text": clean[:MAX_HEADER_TEXT], "emoji": True}}
@@ -173,26 +231,57 @@ def _table_block(props: dict[str, Any]) -> Optional[Block]:
     out_rows: list[list[Block]] = [
         [{"type": "raw_text", "text": cell} for cell in header_cells]
     ]
+    total_chars = sum(len(cell) for cell in header_cells)
     for row in rows:
         if not isinstance(row, list) or len(row) != len(headers):
             return None
         cells = [display(cell) for cell in row]
         if any(cell is None for cell in cells):
             return None
+        total_chars += sum(len(cell) for cell in cells)
         out_rows.append([{"type": "raw_text", "text": cell} for cell in cells])
-    block: Block = {"type": "data_table", "rows": out_rows}
+    if not rows:
+        # data_table needs a header plus at least one row; the JS adapter emits
+        # a plain ``table`` for an empty result set, so mirror it.
+        if total_chars > MAX_TABLE_CHARS:
+            return None
+        return {"type": "table", "rows": out_rows}
+    # Slack rejects the WHOLE message past the aggregate cell budget; the
+    # renderer checks it here so the caller falls back instead of losing the card.
+    if total_chars > MAX_DATA_TABLE_CHARS:
+        return None
     caption = props.get("caption")
-    if isinstance(caption, str) and caption.strip():
-        block["caption"] = _mrkdwn(caption)[:200]
+    caption_text = _plain(caption).strip() if isinstance(caption, str) else ""
+    block: Block = {
+        "type": "data_table",
+        # REQUIRED by Slack; @chat-adapter/slack defaults it to "Table" too.
+        "caption": (caption_text or DEFAULT_TABLE_CAPTION)[:200],
+        "rows": out_rows,
+    }
+    page_size = props.get("pageSize")
+    if isinstance(page_size, (int, float)) and not isinstance(page_size, bool):
+        block["page_size"] = max(1, min(MAX_TABLE_PAGE_SIZE, int(page_size)))
     return block
 
 
-def render_card_blocks(spec: dict[str, Any]) -> Optional[list[Block]]:
+ButtonPolicy = Callable[[str], bool]
+
+
+def render_card_blocks(
+    spec: dict[str, Any], *, button_allowed: Optional[ButtonPolicy] = None
+) -> Optional[list[Block]]:
     """Convert a json-render card spec to a Block Kit block list.
 
     Returns ``None`` (never raises) when the spec is empty, uses an unknown
     component or an invalid prop, or expands past Slack's block budget — the
-    caller then falls back to the ordinary markdown path."""
+    caller then falls back to the ordinary markdown path.
+
+    ``button_allowed(action_id)`` decides whether an interactive ``Button`` has
+    a registered click handler. A button nobody handles is not harmless: Slack
+    shows "This app is not responding" on the first tap. Unhandled buttons are
+    DROPPED (and an ``Actions`` left empty is dropped with them) rather than
+    rejecting the card, because the rest of the card is still the answer.
+    ``None`` keeps every button (pure renderer parity with the JS adapter)."""
     if not isinstance(spec, dict):
         return None
     elements = spec.get("elements")
@@ -200,7 +289,7 @@ def render_card_blocks(spec: dict[str, Any]) -> Optional[list[Block]]:
     if not isinstance(elements, dict) or not root or root not in elements:
         return None
     try:
-        blocks = _render_children(elements, [root], depth=0)
+        blocks = _render_children(elements, [root], depth=0, button_allowed=button_allowed)
     except Exception:  # defensive boundary: a bad card must never lose a message
         logger.warning("[Slack] card_blocks render failed; falling back to markdown", exc_info=True)
         return None
@@ -210,7 +299,8 @@ def render_card_blocks(spec: dict[str, Any]) -> Optional[list[Block]]:
 
 
 def _render_children(
-    elements: dict[str, Any], ids: list[str], depth: int
+    elements: dict[str, Any], ids: list[str], depth: int,
+    button_allowed: Optional[ButtonPolicy] = None,
 ) -> Optional[list[Block]]:
     """Depth-first render of the children ``ids``; ``None`` on any problem."""
     if depth > _MAX_DEPTH:  # a card is header/sections/actions, not a tree
@@ -231,7 +321,7 @@ def _render_children(
         if handler is None:
             # Unknown component (e.g. Chart — no Slack equivalent): reject.
             return None
-        rendered = handler(props, children, (elements, depth))
+        rendered = handler(props, children, (elements, depth, button_allowed))
         if rendered is None:
             return None
         blocks.extend(rendered)
@@ -250,18 +340,20 @@ def _render_card(props: dict[str, Any], children: list, ctx: tuple) -> Optional[
     subtitle = _prop_text(props, "subtitle")
     if subtitle:
         blocks.append({"type": "context", "elements": [_text_element(_mrkdwn(subtitle))]})
-    rendered = _render_children(ctx[0], children, ctx[1] + 1)
+    rendered = _render_children(ctx[0], children, ctx[1] + 1, ctx[2])
     if rendered is None:
         return None
     blocks.extend(rendered)
     image_url = _prop_str(props, "imageUrl")
     if image_url:
-        blocks.append({"type": "image", "image_url": image_url, "alt_text": title or "card image"})
+        if not image_url.startswith("https://"):
+            return None  # same rule as Image: Slack fetches it, so https only
+        blocks.append({"type": "image", "image_url": image_url, "alt_text": _plain(title) or "card image"})
     return blocks
 
 
 def _render_section(props: dict[str, Any], children: list, ctx: tuple) -> Optional[list[Block]]:
-    return _render_children(ctx[0], children, ctx[1] + 1)
+    return _render_children(ctx[0], children, ctx[1] + 1, ctx[2])
 
 
 def _render_text(props: dict[str, Any], children: list, ctx: tuple) -> Optional[list[Block]]:
@@ -314,16 +406,27 @@ def _render_image(props: dict[str, Any], children: list, ctx: tuple) -> Optional
     alt = _prop_str(props, "alt", required=True)
     if url is None or alt is None or not url.startswith("https://"):
         return None
-    return [{"type": "image", "image_url": url, "alt_text": alt[:200]}]
+    return [{"type": "image", "image_url": url, "alt_text": _plain(alt)[:200]}]
 
 
 def _render_actions(props: dict[str, Any], children: list, ctx: tuple) -> Optional[list[Block]]:
-    rendered = _render_children(ctx[0], children, ctx[1] + 1)
+    rendered = _render_children(ctx[0], children, ctx[1] + 1, ctx[2])
     if rendered is None or not rendered or len(rendered) > MAX_ACTIONS:
         return None
     action_ids = [b.get("action_id") for b in rendered if b.get("type") == "button"]
     if len(action_ids) != len(rendered) or len(set(action_ids)) != len(action_ids):
         return None
+    policy = ctx[2]
+    if policy is not None:
+        kept = [b for b in rendered if "url" in b or policy(str(b.get("action_id")))]
+        dropped = len(rendered) - len(kept)
+        if dropped:
+            logger.warning(
+                "[Slack] card_blocks: dropped %d Button(s) with no registered action handler "
+                "(register one via ctx.register_slack_action_handler, or use LinkButton)", dropped)
+        if not kept:
+            return []  # an Actions row with nothing left simply disappears
+        rendered = kept
     return [{"type": "actions", "elements": rendered}]
 
 
@@ -335,7 +438,7 @@ def _render_button(props: dict[str, Any], children: list, ctx: tuple) -> Optiona
     style = props.get("style")
     if style not in (None, "primary", "danger", "default"):
         return None
-    button = _button_element(_mrkdwn(label), action_id, style, None)
+    button = _button_element(_plain(label), action_id, style, None)
     return [button] if button else None
 
 
@@ -344,7 +447,7 @@ def _render_link_button(props: dict[str, Any], children: list, ctx: tuple) -> Op
     url = _prop_str(props, "url", required=True)
     if label is None or url is None:
         return None
-    button = _button_element(_mrkdwn(label), f"link-{url}", None, url)
+    button = _button_element(_plain(label), f"link-{url}", None, url)
     return [button] if button else None
 
 
@@ -477,7 +580,7 @@ def card_fallback_text(spec: dict[str, Any]) -> str:
 
 
 def card_blocks_payload(
-    content: str,
+    content: str, *, button_allowed: Optional[ButtonPolicy] = None,
 ) -> Optional[tuple[str, str, list[Block]]]:
     """Extract + render + summarize in one step.
 
@@ -488,7 +591,7 @@ def card_blocks_payload(
     if spec is None:
         return None
     try:
-        blocks = render_card_blocks(spec)
+        blocks = render_card_blocks(spec, button_allowed=button_allowed)
     except Exception:  # defensive boundary: a bad card must never lose a message
         logger.warning("[Slack] card_blocks render failed; falling back to markdown", exc_info=True)
         return None

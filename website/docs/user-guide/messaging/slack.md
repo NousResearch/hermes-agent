@@ -388,11 +388,54 @@ that map onto Slack: Card, Section, Text, Fields, Field, Table, Divider,
 Image, Actions, Button, LinkButton (a `Chart` has no Slack equivalent and
 rejects the card). Anything that fails to render — invalid JSON, an unknown
 component, a spec over Slack's limits — falls back to the ordinary markdown
-path, so a bad card can never lose the message. The fence is stripped from
-the visible text; when the card carries the whole reply, the message text is
-a plain mrkdwn summary of the card (used by notifications and screen readers).
-Button `id`s arrive as Block Kit `action_id`s your app's interactivity handler
-receives.
+path, so a bad card can never lose the message. Only a top-level, closed
+` ```card ` fence counts (an example quoted inside another code block, or a
+fence the model never closed, stays ordinary code); when a reply holds
+several, the last well-formed one is the card.
+
+**Message text.** The fence is stripped from the visible text. The message
+`text` carries the prose around the fence *and* a plain mrkdwn summary of the
+card (title, `label: value` lines, an aligned table), because that text is
+what notifications and screen readers show, and what gets posted on its own if
+Slack rejects the blocks.
+
+**Escaping.** Card props are treated as data, not formatting: `&`, `<` and `>`
+become entities in every mrkdwn surface, so a ticket title containing
+`<!channel>` or `<https://…|label>` cannot ping the room or render a spoofed
+link. Emphasis markers (`*`, `_`) are left alone — Slack has no backslash
+escape.
+
+**Tables.** A `Table` renders as a native `data_table` (paginated; pass
+`pageSize` to control rows per page, default 5). `caption` defaults to
+"Table" because Slack requires it; an empty `rows` renders as a plain `table`
+block. Tables over 100 rows, 20 columns or 20,000 characters across cells
+reject the card.
+
+**Buttons.** A `LinkButton` always renders. A `Button` renders **only when a
+plugin has registered a handler for its `id`** via
+`ctx.register_slack_action_handler` (exact id or regex): a button nobody
+handles shows "This app is not responding" on the first tap, so unhandled
+buttons are dropped (with a gateway warning) and an `Actions` row left empty
+disappears. Hermes' own action ids (approval, clarify, feedback) are never
+reachable from a card.
+
+**Streaming.** The card appears once, when the reply is final. With streaming
+on, the fence is visible as a code block while the model is still writing it;
+turn streaming off for card-heavy agents, or accept the flash.
+
+**Telling the agent.** Nothing in Hermes decides *when* to use a card; the
+system prompt does. The platform hint still tells the model that tables are
+unsupported, so add something like this to `SOUL.md` or the agent's system
+prompt when you enable the flag:
+
+    When a structured answer helps (status overview, a short table of
+    records, a few key figures with a link), reply with prose plus ONE
+    ```card fenced JSON block: {"root": id, "elements": {id: {"type", "props",
+    "children"}}}. Components: Card(title, subtitle), Section, Text(content,
+    style plain|bold|muted), Fields > Field(label, value), Table(headers,
+    rows, caption), Divider, Image(url https, alt), Actions > LinkButton(label,
+    url). Keep the key numbers in the prose too. Never wrap a plain
+    conversational reply in a card.
 
 ### Advanced: emit only the slash-commands array
 

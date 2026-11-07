@@ -140,6 +140,20 @@ class TestExtractCard:
         assert spec is None
         assert stripped.startswith("```card")
 
+    def test_quoted_example_inside_an_outer_fence_is_not_the_card(self):
+        example = json.dumps({"root": "c", "elements": {"c": {"type": "Card", "props": {"title": "Example"}, "children": []}}})
+        real = json.dumps({"root": "c", "elements": {"c": {"type": "Card", "props": {"title": "Real"}, "children": []}}})
+        content = f"Format:\n````markdown\n```card\n{example}\n```\n````\nAnswer:\n```card\n{real}\n```"
+        spec, stripped = extract_card(content)
+        assert spec["elements"]["c"]["props"]["title"] == "Real"
+        assert "Example" in stripped and "Real" not in stripped
+
+    def test_last_well_formed_fence_wins(self):
+        a = json.dumps({"root": "c", "elements": {"c": {"type": "Card", "props": {"title": "A"}, "children": []}}})
+        b = json.dumps({"root": "c", "elements": {"c": {"type": "Card", "props": {"title": "B"}, "children": []}}})
+        spec, _ = extract_card(f"```card\n{a}\n```\nthen\n```card\n{b}\n```")
+        assert spec["elements"]["c"]["props"]["title"] == "B"
+
 
 class TestRenderCardBlocks:
     def test_matches_the_js_adapter_golden(self):
@@ -203,6 +217,89 @@ class TestRenderCardBlocks:
         assert render_card_blocks(hostile) is None  # self-referential children
         assert render_card_blocks({"root": [], "elements": []}) is None
 
+    def test_mrkdwn_props_cannot_ping_or_spoof_links(self):
+        # Data in props is a prompt-injection surface (a Jira title the agent
+        # summarises). ``<!channel>`` must not broadcast, ``<url|label>`` must
+        # not become a link, ``<@U…>`` must not mention.
+        spec = {"root": "c", "elements": {
+            "c": {"type": "Card", "props": {"title": "T", "subtitle": "<!here> now"}, "children": ["fs", "x"]},
+            "fs": {"type": "Fields", "props": {}, "children": ["f"]},
+            "f": {"type": "Field", "props": {"label": "Who", "value": "<@U0123> & <https://evil.example|click>"}, "children": []},
+            "x": {"type": "Text", "props": {"content": "<!channel> deploy"}, "children": []}}}
+        blocks = render_card_blocks(spec)
+        mrkdwn = json.dumps([b for b in blocks if b["type"] in ("context", "section")])
+        assert "<!" not in mrkdwn and "<@" not in mrkdwn and "<https" not in mrkdwn
+        assert "&lt;!channel&gt; deploy" in mrkdwn
+        assert "&lt;@U0123&gt; &amp; &lt;https://evil.example|click&gt;" in mrkdwn
+
+    def test_plain_text_surfaces_are_not_backslash_escaped(self):
+        # header / button labels are plain_text: nothing is parsed there, and
+        # Slack would show a backslash literally.
+        spec = {"root": "c", "elements": {
+            "c": {"type": "Card", "props": {"title": "Q3 *Results* & more"}, "children": ["a"]},
+            "a": {"type": "Actions", "props": {}, "children": ["b"]},
+            "b": {"type": "Button", "props": {"id": "go", "label": "snake_case_label"}, "children": []}}}
+        blocks = render_card_blocks(spec)
+        assert blocks[0]["text"]["text"] == "Q3 *Results* & more"
+        assert blocks[1]["elements"][0]["text"]["text"] == "snake_case_label"
+        assert "\\" not in json.dumps(blocks)
+
+    def test_table_caption_defaults_like_the_js_adapter(self):
+        # ``caption`` is REQUIRED on data_table; a caption-less spec must not
+        # produce invalid_blocks (which would drop the whole card).
+        spec = {"root": "c", "elements": {
+            "c": {"type": "Card", "props": {"title": "t"}, "children": ["t"]},
+            "t": {"type": "Table", "props": {"headers": ["a"], "rows": [["1"]]}, "children": []}}}
+        table = render_card_blocks(spec)[1]
+        assert table["type"] == "data_table" and table["caption"] == "Table"
+
+    def test_empty_table_is_a_plain_table_block(self):
+        # data_table needs header + 1 row; the JS adapter emits ``table`` for
+        # an empty result set.
+        spec = {"root": "c", "elements": {
+            "c": {"type": "Card", "props": {"title": "t"}, "children": ["t"]},
+            "t": {"type": "Table", "props": {"headers": ["a", "b"], "rows": []}, "children": []}}}
+        table = render_card_blocks(spec)[1]
+        assert table["type"] == "table" and "caption" not in table and len(table["rows"]) == 1
+
+    def test_table_over_the_aggregate_char_budget_rejects_the_card(self):
+        # 100 rows x 20 cols x 50 chars passes the row/col caps but Slack caps a
+        # data_table at 20k characters across cells.
+        spec = {"root": "c", "elements": {
+            "c": {"type": "Card", "props": {"title": "t"}, "children": ["t"]},
+            "t": {"type": "Table", "props": {"headers": [f"h{i}" for i in range(20)],
+                                              "rows": [["x" * 50] * 20] * 100}, "children": []}}}
+        assert render_card_blocks(spec) is None
+
+    def test_table_page_size_passes_through_clamped(self):
+        spec = {"root": "c", "elements": {
+            "c": {"type": "Card", "props": {"title": "t"}, "children": ["t"]},
+            "t": {"type": "Table", "props": {"headers": ["a"], "rows": [["1"]], "pageSize": 500}, "children": []}}}
+        assert render_card_blocks(spec)[1]["page_size"] == 100
+
+    def test_card_image_url_requires_https_like_image(self):
+        spec = {"root": "c", "elements": {
+            "c": {"type": "Card", "props": {"title": "t", "imageUrl": "http://x/y.png"}, "children": []}}}
+        assert render_card_blocks(spec) is None
+
+    def test_unhandled_buttons_are_dropped_not_shipped(self):
+        # A Button nobody handles shows "This app is not responding" on tap.
+        # With a policy, unhandled buttons go, LinkButtons stay, and an Actions
+        # row left empty disappears while the rest of the card still renders.
+        blocks = render_card_blocks(HOME_SPEC, button_allowed=lambda action_id: False)
+        actions = [b for b in blocks if b["type"] == "actions"]
+        assert len(actions) == 1
+        assert [e["action_id"] for e in actions[0]["elements"]] == ["link-http://grace:8123"]
+        only_button = {"root": "c", "elements": {
+            "c": {"type": "Card", "props": {"title": "t"}, "children": ["a"]},
+            "a": {"type": "Actions", "props": {}, "children": ["b"]},
+            "b": {"type": "Button", "props": {"id": "nope", "label": "x"}, "children": []}}}
+        blocks = render_card_blocks(only_button, button_allowed=lambda action_id: False)
+        assert [b["type"] for b in blocks] == ["header"]
+        # Registered ids survive.
+        blocks = render_card_blocks(HOME_SPEC, button_allowed=lambda action_id: action_id == "kitchen-off")
+        assert _canonical(blocks) == _canonical(GOLDEN_BLOCKS)
+
 
 class TestFallbackText:
     def test_summary_covers_title_fields_table_and_buttons(self):
@@ -214,11 +311,14 @@ class TestFallbackText:
         assert "[Turn kitchen light off]" in text
         assert "[Front camera](http://grace:8123)" in text
 
-    def test_summary_escapes_mrkdwn_markers(self):
+    def test_summary_escapes_slack_control_characters_only(self):
+        # Slack has no backslash escape: ``*``/``_`` stay as-is (a ``\*`` would
+        # render literally), while ``& < >`` MUST become entities.
         spec = {"root": "c", "elements": {
-            "c": {"type": "Card", "props": {"title": "a * b _c_"}, "children": []}}}
+            "c": {"type": "Card", "props": {"title": "a * b _c_ <!channel> & co"}, "children": []}}}
         text = card_fallback_text(spec)
-        assert "a \\* b \\_c\\_" in text
+        assert "a * b _c_ &lt;!channel&gt; &amp; co" in text
+        assert "\\" not in text
 
 
 class TestCardBlocksPayload:
@@ -240,10 +340,42 @@ class TestCardBlocksPayload:
 
 
 class TestAdapterCardPair:
-    def _adapter(self, extra):
+    def _adapter(self, extra, handled=("kitchen-off",)):
         from gateway.config import PlatformConfig
 
-        return SlackAdapter(PlatformConfig(enabled=True, token="***", extra=extra))
+        adapter = SlackAdapter(PlatformConfig(enabled=True, token="***", extra=extra))
+        # What ``_register_plugin_action_handlers`` records for plugin-registered ids.
+        adapter._card_action_patterns = list(handled)
+        return adapter
+
+    def test_buttons_without_a_plugin_handler_are_dropped(self):
+        adapter = self._adapter({"card_blocks": True}, handled=())
+        pair = adapter._card_pair(_card_message())
+        assert pair is not None
+        actions = [b for b in pair[2] if b["type"] == "actions"]
+        assert [e["action_id"] for e in actions[0]["elements"]] == ["link-http://grace:8123"]
+
+    def test_regex_plugin_handlers_admit_matching_buttons(self):
+        import re
+
+        adapter = self._adapter({"card_blocks": True}, handled=(re.compile(r"^kitchen-"),))
+        assert _canonical(adapter._card_pair(_card_message())[2]) == _canonical(GOLDEN_BLOCKS)
+
+    def test_hermes_internal_action_ids_are_never_reachable_from_a_card(self):
+        adapter = self._adapter({"card_blocks": True}, handled=())
+        for internal in ("hermes_feedback", "hermes_clarify_choice_1", "hermes_clarify_other"):
+            assert adapter._card_button_allowed(internal) is False
+
+    def test_message_text_carries_prose_and_the_card_summary(self):
+        # ``text`` is what notifications, screen readers and the blocks-rejected
+        # retry show: dropping the card summary when prose exists loses the data.
+        adapter = self._adapter({"card_blocks": True})
+        stripped, fallback, _ = adapter._card_pair(_card_message(before="Status:\n"))
+        text = adapter._card_text(stripped, fallback)
+        assert text.startswith("Status:")
+        assert "Home status" in text and "Lights on: 3" in text
+        assert adapter._card_text("", fallback) == fallback
+        assert adapter._card_text("", "") == " "
 
     def test_flag_off_leaves_content_alone(self):
         adapter = self._adapter({})

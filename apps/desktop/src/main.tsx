@@ -48,7 +48,7 @@ installClipboardShim()
 // theme's computed colors inlined; without this guard a dark-theme selection
 // pastes as near-white text into light-background targets.
 installSelectionCopyColorGuard()
-// Browser host only: the tab carries session status while the user is away.
+// The focused session names browser tabs and native windows; browser tabs also carry status.
 installBrowserTabTitle()
 // One preferences store per machine, shared by native Desktop and its Webapp (#145213).
 startUiPreferencesSync(window.hermesDesktop?.uiPreferences)

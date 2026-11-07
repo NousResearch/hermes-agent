@@ -13,6 +13,60 @@ from gateway.run_common import _UNSET
 logger = logging.getLogger("gateway.run")
 
 
+def _format_duration(seconds: float) -> str:
+    total = max(0, round(seconds))
+    hours, rem = divmod(total, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
+async def _probe_audio_duration(path: str) -> Optional[str]:
+    """Best-effort duration probe. Returns formatted MM:SS / HH:MM:SS, or None on failure.
+
+    Async local variant of the canonical sync probe in ``tools/transcription_audio.py``; keep the
+    ffprobe command shape in sync with it."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".wav":
+        try:
+            def _wav_duration() -> float:
+                import wave
+                with wave.open(path, "rb") as wf:
+                    frames = wf.getnframes()
+                    rate = wf.getframerate() or 1
+                    return frames / float(rate)
+            return _format_duration(await asyncio.to_thread(_wav_duration))
+        except Exception:
+            pass
+    if ext in (".ogg", ".opus", ".oga"):
+        try:
+            def _ogg_duration() -> float:
+                from mutagen.oggopus import OggOpus
+                return float(OggOpus(path).info.length)
+            return _format_duration(await asyncio.to_thread(_ogg_duration))
+        except Exception:
+            pass
+    proc = None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", path,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
+        if proc.returncode == 0:
+            return _format_duration(float(stdout.decode().strip()))
+    except Exception:
+        pass
+    finally:
+        if proc is not None and proc.returncode is None:
+            # wait_for() only cancels communicate(): a hung ffprobe would keep running under the gateway.
+            from agent.deadline import kill_process_tree
+            await asyncio.to_thread(kill_process_tree, proc.pid)
+
+    return None
+
+
 class GatewayInboundTranscriptionMixin:
     """STT enrichment and the once-only echo of pending voice transcripts."""
 
@@ -23,7 +77,6 @@ class GatewayInboundTranscriptionMixin:
         ``(enriched_text, successful_transcripts)``; the transcripts (input order; empty if every clip
         failed or STT is disabled) let callers echo them back before the agent loop. ``clip_memo``
         (path → ``_transcribe_one_clip`` result) skips clips an earlier pass already transcribed."""
-        from gateway.run import _probe_audio_duration
         audio_paths = list(dict.fromkeys(audio_paths))
         if not getattr(self.config, "stt_enabled", True):
             notes = []

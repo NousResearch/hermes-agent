@@ -730,12 +730,13 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
         with contextlib.suppress(Exception):
             self._release_platform_lock()
         observer, self._observer = self._observer, None
-        if observer is not None:
-            await observer.close(timeout=2.5)  # bounded, inside the gateway's 5 s disconnect budget
         await cancel_task(self._ws_task)
         self._ws_task = None
         await cancel_task(self._poll_task)
         self._poll_task = None
+        if observer is not None:  # last, so nothing it does can leave the inbound transport running
+            with contextlib.suppress(Exception):
+                await observer.close(timeout=2.0)  # bounded; the gateway allows 5 s per disconnect
         self._channel_state = {}
         self._poll_count = 0
 

@@ -68,12 +68,34 @@ def _bare_publisher():
     return pub
 
 
+def _bip340_valid(pubkey_hex: str, msg: bytes, sig: bytes) -> bool:
+    """BIP-340 verification, independent of the signer (only curve arithmetic is shared)."""
+    na = observer._na
+    n = na.CURVE_ORDER
+    r, s_ = int.from_bytes(sig[:32], "big"), int.from_bytes(sig[32:], "big")
+    if r >= observer._FIELD_P or s_ >= n:
+        return False
+    point = observer._lift_x(pubkey_hex)
+    e = int.from_bytes(na._tagged_hash("BIP0340/challenge", sig[:32] + bytes.fromhex(pubkey_hex) + msg),
+                       "big") % n
+    big_r = na._point_add(na._point_multiply(s_), na._point_multiply(n - e, point))
+    return big_r is not None and big_r[1] % 2 == 0 and big_r[0] == r
+
+
 def _verify_sig(ev):
-    """Recompute the NIP-01 id; the signature must verify against it (BIP-340)."""
+    """Recompute the NIP-01 id and verify the BIP-340 signature over it."""
     ser = json.dumps([0, ev["pubkey"], ev["created_at"], ev["kind"], ev["tags"], ev["content"]],
                      separators=(",", ":"), ensure_ascii=False).encode()
     assert hashlib.sha256(ser).hexdigest() == ev["id"]
-    assert len(ev["sig"]) == 128
+    assert _bip340_valid(ev["pubkey"], bytes.fromhex(ev["id"]), bytes.fromhex(ev["sig"]))
+
+
+def test_signature_check_rejects_a_tampered_signature():
+    ev = _bare_publisher()._presence_event("online")
+    sig = bytearray(bytes.fromhex(ev["sig"]))
+    sig[40] ^= 1
+    assert not _bip340_valid(ev["pubkey"], bytes.fromhex(ev["id"]), bytes(sig))
+    assert not _bip340_valid(ev["pubkey"], hashlib.sha256(b"other").digest(), bytes.fromhex(ev["sig"]))
 
 
 def test_observer_event_shape():

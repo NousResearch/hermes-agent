@@ -174,8 +174,9 @@ def test_bad_owner_in_auth_tag_is_rejected_at_construction():
 class FakeRelay:
     """Plays the relay: NIP-42 challenge, then OK for every EVENT (or a scripted answer)."""
 
-    def __init__(self, *, accept_auth=True, answer_auth=True):
+    def __init__(self, *, accept_auth=True, answer_auth=True, deny_with=None):
         self.accept_auth, self.answer_auth = accept_auth, answer_auth
+        self.deny_with = deny_with  # None | "notice" | "close"
         self.events: list[dict] = []
         self.connections = 0
 
@@ -185,7 +186,12 @@ class FakeRelay:
         async for raw in ws:
             msg = json.loads(raw)
             if msg[0] == "AUTH":
-                if self.answer_auth:
+                if self.deny_with == "notice":
+                    await ws.send(json.dumps(["NOTICE", "restricted: authorization denied"]))
+                elif self.deny_with == "close":
+                    await ws.close()
+                    return
+                elif self.answer_auth:
                     await ws.send(json.dumps(["OK", msg[1]["id"], self.accept_auth,
                                               "" if self.accept_auth else "restricted: bad auth tag"]))
             elif msg[0] == "EVENT":
@@ -279,6 +285,44 @@ def test_rejected_auth_is_an_error_and_publishes_nothing(caplog):
     asyncio.run(run())
 
 
+def test_auth_denial_by_notice_or_close_is_reported_once_and_backs_off(caplog):
+    async def run(deny_with):
+        relay = FakeRelay(deny_with=deny_with)
+        async with _serve(relay) as url:
+            pub = _publisher(url)
+            pub.start()
+            await asyncio.sleep(2.5)  # backoff 1 s then 2 s: at most two dials
+            await pub.close(timeout=1.0)
+        assert relay.events == []
+        assert 1 <= relay.connections <= 2, relay.connections
+    caplog.set_level("DEBUG")
+    for mode, text in (("notice", "restricted: authorization denied"), ("close", "socket closed during AUTH")):
+        caplog.clear()
+        asyncio.run(run(mode))
+        errors = [r for r in caplog.records if r.levelname == "ERROR"]
+        assert len(errors) == 1 and text in errors[0].getMessage()
+
+
+def test_a_full_channel_never_builds_an_oversized_frame():
+    async def run():
+        pub = _publisher()
+        ck = observer.get_conversation_key(_OWNER_PRIV, observer.public_key_hex(_AGENT_PRIV))
+        for i in range(observer.MAX_OPEN_TURNS):
+            pub.turn_started(object(), channel_id="c1", message_id="e" * 64, thread_root="r" * 64, is_dm=False)
+        now, published = 100.0, 0
+        while pub._turns and published < observer.MAX_OPEN_TURNS:
+            due = pub._due(now)
+            events = [pub._observer_event(k, p, channel_id=t.channel_id, turn_id=t.turn_id,
+                                          started_at=t.started_at) for k, p, t in due.events]
+            frame = pub._observer_frame(events)
+            assert len(observer.nip44_decrypt(frame["content"], ck).encode()) < 65535
+            published += len(due.turns)
+            pub._commit(due, now)
+            now += 1.0
+        assert published == observer.MAX_OPEN_TURNS
+    asyncio.run(run())
+
+
 def test_relay_down_at_start_recovers_when_it_comes_up():
     async def run():
         relay = FakeRelay()
@@ -346,8 +390,20 @@ def test_typing_carries_the_thread_and_disconnect_closes_once():
         await a.send_typing("c1", {"thread_id": "r1"})
         await a.disconnect()
         await a.disconnect()
-        assert obs.calls == [("typing", "c1", "r1"), ("close", 2.5)]
+        assert obs.calls == [("typing", "c1", "r1"), ("close", 2.0)]
         assert a._observer is None
+    asyncio.run(run())
+
+
+def test_a_failing_observer_close_cannot_leave_the_inbound_transport_running():
+    async def run():
+        class Exploding(RecordingObserver):
+            async def close(self, timeout):
+                raise RuntimeError("boom")
+        a = _bare_adapter(Exploding())
+        a._ws_task = asyncio.create_task(asyncio.sleep(3600))
+        await a.disconnect()
+        assert a._ws_task is None and a._observer is None
     asyncio.run(run())
 
 

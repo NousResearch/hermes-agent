@@ -64,6 +64,10 @@ PRESENCE_EVERY_S = 60.0  # relay presence TTL is 180 s
 OK_TIMEOUT_S = 5.0
 RECONNECT_MAX_S = 30.0
 MAX_OPEN_TURNS = 256  # only a core bug (start without complete) can reach this
+# Turns per 24200 frame. Each turn adds at most two events of bounded shape (~0.5 KB
+# serialized), so 32 keeps a batch far below NIP-44's 65535-byte plaintext limit;
+# the rest of the channel goes out on the next ticks.
+MAX_TURNS_PER_FRAME = 32
 
 # ── NIP-44 v2 (validated against the paulmillr/nip44 official vectors) ───────
 
@@ -194,6 +198,11 @@ class _Typing:
     sent: float = -math.inf
 
 
+def _connection_closed():
+    from websockets.exceptions import ConnectionClosed
+    return ConnectionClosed
+
+
 class _AuthRejected(Exception):
     """The relay answered our NIP-42 AUTH with OK=false: a configuration problem."""
 
@@ -298,6 +307,8 @@ class ObserverPublisher:
         batches per channel) plus every typing indicator that is due."""
         due = _Due()
         for key, turn in self._turns.items():
+            if len(due.turns) >= MAX_TURNS_PER_FRAME:
+                break
             if due.channel_id is not None and turn.channel_id != due.channel_id:
                 continue
             events = []
@@ -388,17 +399,37 @@ class ObserverPublisher:
             _na.build_auth_event, private_key=self._priv, challenge=str(msg[1]),
             relay_url=self.ws_url, auth_tag_json=self._auth_tag_json)
         await ws.send(json.dumps(["AUTH", auth], separators=(",", ":")))
-        ok, reason = await self._await_ok(ws, auth["id"])
-        if not ok:
-            raise _AuthRejected(reason)
+        # The relay denies with OK=false; NIP-FI paths deny with a NOTICE, and a ban
+        # closes the socket. All three must surface as a rejection, not a timeout.
+        deadline = time.monotonic() + OK_TIMEOUT_S
+        try:
+            while True:
+                msg = json.loads(await asyncio.wait_for(
+                    ws.recv(), timeout=max(deadline - time.monotonic(), 0.01)))
+                if not isinstance(msg, list) or not msg:
+                    continue
+                if msg[0] == "OK" and len(msg) >= 3 and msg[1] == auth["id"]:
+                    if msg[2] is True:
+                        return
+                    raise _AuthRejected(str(msg[3]) if len(msg) > 3 else "OK=false")
+                if msg[0] in ("NOTICE", "CLOSED"):
+                    raise _AuthRejected(str(msg[-1]))
+        except TimeoutError:
+            raise ConnectionError(f"no answer to AUTH within {OK_TIMEOUT_S:.0f}s") from None
+        except _connection_closed() as exc:
+            raise _AuthRejected(f"socket closed during AUTH ({exc})") from None
 
     async def _publish_due(self, ws, due: _Due, now: float) -> None:
         if due.events:
             events = [self._observer_event(kind, payload, channel_id=turn.channel_id,
                                            turn_id=turn.turn_id, started_at=turn.started_at)
                       for kind, payload, turn in due.events]
-            frame = await asyncio.to_thread(self._observer_frame, events)
-            if await self._send(ws, frame):
+            try:
+                frame = await asyncio.to_thread(self._observer_frame, events)
+            except ValueError as exc:  # unbuildable (e.g. over the NIP-44 limit): retrying cannot help
+                logger.warning("Buzz observer: dropped an unbuildable frame: %s", exc)
+                frame = None
+            if frame is not None and await self._send(ws, frame):
                 self.published += len(events)
         for (channel_id, thread_root), _entry in due.typing:
             await self._send(ws, await asyncio.to_thread(self._typing_event, channel_id, thread_root))
@@ -406,7 +437,6 @@ class ObserverPublisher:
         self._commit(due, now)
 
     async def _session(self, ws) -> None:
-        await self._authenticate(ws)
         if not self._announced:
             frame = await asyncio.to_thread(self._observer_frame, [self._observer_event(
                 "harness_started", {"adapter": "hermes-native-observer", "telemetry": "kind:24200"})])
@@ -427,22 +457,31 @@ class ObserverPublisher:
 
     async def _run(self) -> None:
         import websockets
-        backoff, failures = 1.0, 0
+        backoff, failures, last_rejection = 1.0, 0, None
         while not self._closing.is_set():
             try:
                 async with websockets.connect(self.ws_url, max_size=2_000_000,
                                               open_timeout=10, close_timeout=0.5) as ws:
-                    failures, backoff = 0, 1.0
+                    await self._authenticate(ws)
+                    # Reset only once authenticated: a relay that keeps rejecting
+                    # AUTH must keep backing off, not be redialled every second.
+                    failures, backoff, last_rejection = 0, 1.0, None
                     await self._session(ws)
                     return
             except asyncio.CancelledError:
                 raise
             except _AuthRejected as exc:
-                logger.error("Buzz observer: relay rejected AUTH (%s) — check BUZZ_AUTH_TAG", exc)
+                # Not fatal: the relay also answers OK=false for transient causes
+                # ("error: internal") and for "auth-required: …; reconnect".
+                reason = str(exc)
+                log = logger.error if reason != last_rejection else logger.debug
+                last_rejection = reason
+                log("Buzz observer: relay rejected AUTH (%s) — check BUZZ_AUTH_TAG; "
+                    "retrying with backoff", reason)
             except Exception as exc:
                 failures += 1
                 log = logger.warning if failures == 1 else logger.debug
-                log("Buzz observer: connection lost (%s); reconnecting", exc)
+                log("Buzz observer: connection lost (%s: %s); reconnecting", type(exc).__name__, exc)
             with contextlib.suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(self._closing.wait(), timeout=backoff)
             backoff = min(backoff * 2, RECONNECT_MAX_S)

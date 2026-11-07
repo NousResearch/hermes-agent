@@ -332,6 +332,13 @@ wake = [
   "sounddevice==0.5.6",
   "numpy==2.5.4",
 ]
+# Smart Turn v3 semantic end-of-turn endpointer for the converse loop (voice.endpoint.model).
+# Opt-in and lazy-installed on first use (pm.ensure_import("voice-endpoint")); excluded from [all]. transformers
+# is used ONLY for the Whisper log-mel front end (numpy path — no torch); onnxruntime runs the model.
+voice-endpoint = [
+  "onnxruntime==1.31.0; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin') and sys_platform != 'android'",
+  "transformers==5.20.2; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin') and sys_platform != 'android'",
+]
 # Platform sub-extras / alias extras — declared so pm.extras.ANCHORS names
 # only real extras (contract: tests/pm/test_extras.py). Each is
 # lazy-installed at first use via pm.ensure_import(name) and therefore
@@ -634,6 +641,8 @@ neutts = "python_version < '3.14'"
 # Windows ARM64 wheel.
 kittentts = "(platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin') and sys_platform != 'android'"
 piper = "(platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin') and sys_platform != 'android'"
+# Smart Turn runs on onnxruntime: no Windows ARM64, Intel macOS or Android wheel.
+voice-endpoint = "(platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin') and sys_platform != 'android'"
 # no playwright on android
 google-meet = "sys_platform != 'android'"
 

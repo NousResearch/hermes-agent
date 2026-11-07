@@ -2554,6 +2554,10 @@ voice = [
     { name = "numpy" },
     { name = "sounddevice" },
 ]
+voice-endpoint = [
+    { name = "onnxruntime", marker = "(platform_machine != 'x86_64' and sys_platform == 'darwin') or (platform_machine != 'ARM64' and sys_platform == 'win32') or (sys_platform != 'android' and sys_platform != 'darwin' and sys_platform != 'win32')" },
+    { name = "transformers", marker = "(platform_machine != 'x86_64' and sys_platform == 'darwin') or (platform_machine != 'ARM64' and sys_platform == 'win32') or (sys_platform != 'android' and sys_platform != 'darwin' and sys_platform != 'win32')" },
+]
 wake = [
     { name = "numpy" },
     { name = "pvporcupine" },
@@ -2691,6 +2695,7 @@ requires-dist = [
     { name = "numpy", marker = "extra == 'audio-io'", specifier = "==2.5.4" },
     { name = "numpy", marker = "extra == 'voice'", specifier = "==2.5.4" },
     { name = "numpy", marker = "extra == 'wake'", specifier = "==2.5.4" },
+    { name = "onnxruntime", marker = "(platform_machine != 'x86_64' and sys_platform == 'darwin' and extra == 'voice-endpoint') or (platform_machine != 'ARM64' and sys_platform == 'win32' and extra == 'voice-endpoint') or (sys_platform != 'android' and sys_platform != 'darwin' and sys_platform != 'win32' and extra == 'voice-endpoint')", specifier = "==1.31.0" },
     { name = "openai", marker = "python_full_version >= '3.14'", specifier = "==2.54.0" },
     { name = "openpyxl", marker = "extra == 'documents'", specifier = "==3.1.5" },
     { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'otlp'", specifier = "==1.45.1" },
@@ -2757,6 +2762,7 @@ requires-dist = [
     { name = "starlette", marker = "extra == 'mcp'", specifier = "==1.9.0" },
     { name = "starlette", marker = "extra == 'web'", specifier = "==1.9.0" },
     { name = "tomli-w", marker = "python_full_version >= '3.14'", specifier = "==1.2.0" },
+    { name = "transformers", marker = "(platform_machine != 'x86_64' and sys_platform == 'darwin' and extra == 'voice-endpoint') or (platform_machine != 'ARM64' and sys_platform == 'win32' and extra == 'voice-endpoint') or (sys_platform != 'android' and sys_platform != 'darwin' and sys_platform != 'win32' and extra == 'voice-endpoint')", specifier = "==5.20.2" },
     { name = "truststore", marker = "python_full_version >= '3.14'", specifier = "==0.10.5" },
     { name = "tzdata", marker = "python_full_version >= '3.14' and sys_platform == 'win32'", specifier = "==2025.3" },
     { name = "urllib3", marker = "python_full_version >= '3.14'", specifier = ">=2.8.0,<3" },
@@ -2773,7 +2779,7 @@ requires-dist = [
     { name = "winrt-windows-services-store", marker = "python_full_version >= '3.14' and sys_platform == 'win32'", specifier = ">=3.2.1,<4" },
     { name = "youtube-transcript-api", marker = "extra == 'youtube'", specifier = "==1.2.4" },
 ]
-provides-extras = ["uvloop", "anthropic", "exa", "firecrawl", "parallel-web", "ddgs", "fal", "edge-tts", "neutts", "kittentts", "piper", "modal", "daytona", "vercel", "google-meet", "messaging", "cron", "slack", "matrix", "wecom", "keychain", "tts-premium", "voice", "wake", "telegram", "discord", "stt-whisper", "audio-io", "silk", "wake-openwakeword", "wake-sherpa", "wake-porcupine", "google-chat", "doc-extract", "documents", "documents-pdf", "trace-upload", "vision", "pty", "mcp", "nemo-relay", "sms", "teams", "computer-use", "acp", "mistral", "otlp", "bedrock", "vertex", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
+provides-extras = ["uvloop", "anthropic", "exa", "firecrawl", "parallel-web", "ddgs", "fal", "edge-tts", "neutts", "kittentts", "piper", "modal", "daytona", "vercel", "google-meet", "messaging", "cron", "slack", "matrix", "wecom", "keychain", "tts-premium", "voice", "wake", "voice-endpoint", "telegram", "discord", "stt-whisper", "audio-io", "silk", "wake-openwakeword", "wake-sherpa", "wake-porcupine", "google-chat", "doc-extract", "documents", "documents-pdf", "trace-upload", "vision", "pty", "mcp", "nemo-relay", "sms", "teams", "computer-use", "acp", "mistral", "otlp", "bedrock", "vertex", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
 
 [package.metadata.requires-dev]
 dev = [

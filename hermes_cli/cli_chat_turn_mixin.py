@@ -261,7 +261,8 @@ class CLIChatTurnMixin:
                     _cprint(answer_label())
                 if not turn.box_opened:
                     turn.box_opened = True
-                    label = " ☤ Hermes "
+                    from hermes_cli.skin_engine import get_active_response_label
+                    label = get_active_response_label()
                     if self.show_timestamps:
                         label = f"{label}{datetime.now().strftime(self.timestamp_format)} "
                     w = self._scrollback_box_width(getattr(self.console, "width", 80))

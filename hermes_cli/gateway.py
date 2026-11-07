@@ -5016,11 +5016,8 @@ def _refuse_from_inside_gateway(verb: str, reason: str) -> None:
     """Refuse self-targeting stop/restart/uninstall from inside the gateway process (#92560)."""
     from tools.process_registry import _is_supervised_gateway_process
     if _is_supervised_gateway_process():
-        print_error(
-            f"Refusing to {verb} the gateway from inside the gateway process.\n"
-            f"This command was blocked to prevent {reason}.\n"
-            f"Use `hermes gateway {verb}` from a shell outside the running gateway."
-        )
+        from hermes_cli.gateway_lifecycle_guards import gateway_self_targeting_message
+        print_error(gateway_self_targeting_message(verb, reason))
         sys.exit(1)
 
 

@@ -960,6 +960,44 @@ never clash:
 The default profile keeps the historical names: `ai.hermes.gateway.plist` /
 `hermes-gateway.service`.
 
+## Recover from duplicate profile gateways
+
+Current startup guards prevent ordinary foreground launches from competing with
+the service that already owns a profile. These recovery steps apply to legacy
+installations or explicit `--force` launches that left an unmanaged foreground
+gateway beside the intended service.
+
+Open a separate terminal or SSH session. Recovery through gateway chat can kill
+the command itself before it finishes. Run `hermes gateway status` first and
+identify the owning profile, service and PID. A multiplexing host can serve a
+named profile from another profile's process: manage the reported owner rather
+than assuming that the default or the named profile has a separate service.
+
+### Linux (systemd)
+
+Inspect the intended service and the suspected foreground process:
+
+```bash
+hermes gateway status
+systemctl --user list-units 'hermes-gateway*' --all
+systemctl --user status <confirmed-owner-unit> --no-pager
+ps -p <suspected-foreground-pid> -o pid=,ppid=,args=
+```
+
+After confirming the unmanaged process belongs to the conflicting profile,
+terminate only that foreground process. Leave unrelated healthy services running.
+Restart the intended owner from the same external shell and Unix account:
+
+```bash
+kill -TERM <confirmed-foreground-pid>
+hermes -p <owner-profile> gateway restart
+```
+
+If systemd reports a start-limit failure, reset only the confirmed owner's unit
+with `systemctl --user reset-failed <confirmed-owner-unit>` before restarting.
+On macOS or Windows, use the same ownership check and the platform's service
+manager; the runtime refusal deliberately contains no systemd-only commands.
+
 ## Viewing logs
 
 Each profile writes to its own log files:

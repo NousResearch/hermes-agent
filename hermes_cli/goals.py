@@ -654,6 +654,18 @@ def load_goal(session_id: str) -> Optional[GoalState]:
         return None
 
 
+def goal_skips_clarify(session_id: Optional[str]) -> bool:
+    """True when ``goals.clarify`` is ``skip`` and this session's goal is active, so a clarify
+    call answers at once instead of parking the unattended loop on the user."""
+    from hermes_cli.config import load_config
+
+    mode = str((load_config().get("goals") or {}).get("clarify") or "block").strip().lower()
+    if mode != "skip" or not session_id:
+        return False
+    state = load_goal(session_id)
+    return state is not None and state.status == "active"
+
+
 def save_goal(session_id: str, state: GoalState) -> None:
     """Persist a goal to SessionDB. No-op if DB unavailable."""
     if not session_id:
